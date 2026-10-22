@@ -32,6 +32,12 @@ function notify(): void {
   else setTimeout(run, 0);
 }
 
+/** Forget every series (a test starting from nothing). */
+export function clearSeries(): void {
+  rings.clear();
+  notify();
+}
+
 /** Add one tick's values (Unix seconds `t`). */
 export function feedSeries(t: number, values: Record<string, number>): void {
   for (const k in values) {
@@ -72,7 +78,8 @@ function subscribe(l: () => void): () => void {
 
 /** Re-render when new values arrive (at most once a frame); returns a counter. */
 export function useSeriesTick(): number {
-  return useSyncExternalStore(subscribe, () => version);
+  const get = () => version;
+  return useSyncExternalStore(subscribe, get, get);
 }
 
 /** A series' recent points; re-renders as they come. */

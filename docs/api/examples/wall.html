@@ -76,7 +76,7 @@ document.getElementById("audio").onclick = async () => {
   draw();
 };
 rec.on("audio", (chunk) => {
-  const name = rec.status?.systems.find((s) => s.index === chunk.system)?.shortName ?? rec.calls.find((c) => c.id === chunk.callId)?.systemName;
+  const name = rec.status?.systemNames[chunk.system] ?? rec.calls.find((c) => c.id === chunk.callId)?.systemName;
   if (audioOn && wanted(name, chunk.talkgroup)) player.play(chunk);
 });
 rec.on("change", () => draw());

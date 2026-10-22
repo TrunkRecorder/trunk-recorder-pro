@@ -64,3 +64,6 @@ impl Rate {
         C4fm::with_options(rate, C4fmOptions::nxdn(self.baud()))
     }
 }
+
+#[cfg(test)]
+mod bench;

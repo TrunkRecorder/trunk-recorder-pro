@@ -192,11 +192,12 @@ When the control channel has announced its own frequency, a **Ready to record** 
 it will set. Until everything is measured it also says *Still measuring...*; you can add the
 system then, but waiting until the checklist is done gets you the band plan, correction and gain.
 
-The drop-down next to the button chooses **as a new system** or **replacing** one already set up
-(it picks the system that already has one of these control channels, if any). The button reads
-**Add this system** or **Update it**.
+The drop-down next to the button chooses **as a new system**, **as a site of** a system already set
+up, or **replacing** one of its sites. It picks the site that already has one of these control
+channels, if any, else a site of the system the control channel announces. The button reads **Add
+this system**, **Add this site** or **Update it**.
 
-It sets, on the system:
+It sets:
 
 - the type (P25, or SmartNet with the learned band plan);
 - the control channels: the one it announced for itself first, then the alternates;
@@ -206,8 +207,8 @@ It sets, on the system:
 - the voice channels it saw (used to place radios; shown on the system card as *voice 14/16
   covered*).
 
-A new system gets a short name made from its identity, and if another site of the same system is
-already set up, its talkgroup list.
+A new system gets a short name made from its identity. A site added to a system uses that system's
+talkgroup list.
 
 And on the radio that scanned:
 
@@ -249,6 +250,45 @@ In the **Signals found** list:
 source that covers its control channel.
 
 You can still edit everything by hand afterwards on the **Systems** and **Radios** tabs.
+
+## Identify surveyed sites
+
+Who holds the FCC license on a frequency names the system on it. Looking it up is optional, and
+nothing is sent until you ask. FCC licenses are tied to where the transmitters are, so it needs
+your location:
+
+- **Use my location** asks the browser. If you've already allowed this page, it fills in at once.
+  Browsers share a location only with pages on HTTPS or `localhost`, so for an interface opened
+  over the network by its address, type the location instead.
+- Or type a latitude and longitude. Right-click a spot in Google Maps to copy them.
+- **Look for licenses within** sets how far: 10 to 150 km (50 by default). Wide-area systems can
+  have towers 50 km or more away.
+
+The frequencies and the location go to trunkrecorder.pro, which answers from the FCC's license
+database (Universal Licensing System) and keeps nothing. If you'd rather not share a location,
+leave it out: no lookup is made, and everything works exactly the same. This browser remembers the
+location and distance for next time.
+
+There are three places to ask:
+
+- **The setup guide**: when choosing bands, turn on **Look up who holds the FCC license for each
+  system found** and give the location. When the scan finds a system, the guide shows who it is
+  *Licensed to*.
+- **The survey** (Systems tab): **Identify surveyed sites**, under the signals found. The
+  **Licensed to** column then shows each signal's nearest licensee, its call sign, radio service and
+  how far away and in which direction, plus up to four more. *lapsed* means no active license is
+  nearby on that frequency, so these are expired or cancelled ones.
+- **A system already set up** (trunked or conventional): **Identify** on its card looks up its
+  control, voice and repeater frequencies (a conventional system's channels), and shows the nearest
+  licensee on each; **Keep** puts them in its **FCC licenses**. Call signs heard on the air with no
+  licensee yet can be named without a location: only the call signs are sent.
+
+What a lookup finds goes in the system's [FCC licenses](../configuration/systems.md#fcc-licenses),
+by frequency: a frequency with nothing yet, or another lookup's, gets it; one with the same call sign
+heard on the air gets its licensee's name. Yours, and call signs heard on the air, are never
+replaced. A system added from the survey gets the licensees of its control and voice channels, and
+the control channel's as its name if it has none. Edit them in its **FCC licenses**; they are
+optional, and plugins are told them.
 
 ## From the command line
 

@@ -2,32 +2,61 @@
 // their decoding, neighbours not recorded yet, patches, DMR and NXDN carriers.
 
 import { formatMhz, systemColor, systemWithChannel } from "../config.ts";
+import { Light } from "../charts.tsx";
 import { addSite, setNotice, type AppState } from "../controller.ts";
-import type { Config, DmrSiteStatus, NxdnSiteStatus, SystemStatus, TalkgroupName } from "../protocol.ts";
+import { num } from "../fmt.ts";
+import type { Config, DmrSiteStatus, NxdnSiteStatus, Patch, TalkgroupName } from "../protocol.ts";
 import type { CcMark } from "../Waterfall.tsx";
+import { K, recentAvg, siteHealth, val, type DashSystem, type DetailedSite, type RunningSite } from "./data.ts";
 
 export const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
 
-/** One marker per control channel frequency (systems sharing one share a marker). */
-export function ccMarks(c: Config | null, systems: SystemStatus[]): CcMark[] {
-  const at = new Map<number, SystemStatus[]>();
-  for (const x of systems) if (x.controlChannelHz) at.set(x.controlChannelHz, [...(at.get(x.controlChannelHz) ?? []), x]);
-  return [...at].map(([hz, xs]) => ({ hz, label: systems.length > 1 ? xs.map((x) => x.shortName).join(" · ") : "CC", color: systemColor(c, xs[0].shortName) }));
+/** One marker per control channel frequency (sites sharing one share a marker), coloured by system. */
+export function ccMarks(c: Config | null, sites: RunningSite[]): CcMark[] {
+  const at = new Map<number, RunningSite[]>();
+  for (const x of sites) if (x.controlChannelHz) at.set(x.controlChannelHz, [...(at.get(x.controlChannelHz) ?? []), x]);
+  return [...at].map(([hz, xs]) => ({ hz, label: sites.length > 1 ? xs.map((x) => x.label).join(" · ") : "CC", color: systemColor(c, xs[0].shortName) }));
 }
 
-/** Neighbouring sites the control channels announce that aren't set up yet — add one to record it too (next Start). */
-export function Neighbours(props: { s: AppState; systems: SystemStatus[] }) {
+/** A system of several sites: a row each — its control channel, how it decodes, its health. */
+export function SiteRows(props: { s: AppState; x: DashSystem }) {
+  const { s, x } = props;
+  if (x.sites.length < 2) return null;
+  return (
+    <div className="site-rows">
+      {x.sites.map((site) => {
+        const h = siteHealth(s, site);
+        const good = recentAvg(K.cc(site, "good"), 60) ?? 0;
+        const bad = recentAvg(K.cc(site, "bad"), 60) ?? 0;
+        const hz = site.status?.controlChannelHz;
+        return (
+          <div key={site.name} className="site-row small" title={h.why}>
+            <Light level={h.level} title={h.why} />
+            <b>{site.name}</b>
+            <span className="mono">{hz ? formatMhz(hz) : "hunting"}</span>
+            <span className="mono muted">
+              {num(val(s, K.cc(site, "good")))} msg/s{good + bad > 0 ? ` · ${num((100 * good) / (good + bad), 0)}%` : ""}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Neighbouring sites the control channels announce that aren't set up yet — add one to record it too, as a site of its system (next Start). */
+export function Neighbours(props: { s: AppState; sites: DetailedSite[] }) {
   const c = props.s.config;
   if (!c) return null;
-  const seen = new Map<string, { a: SystemStatus["adjacent"][number]; from: SystemStatus }>();
-  for (const x of props.systems)
+  const seen = new Map<string, { a: DetailedSite["adjacent"][number]; from: DetailedSite }>();
+  for (const x of props.sites)
     for (const a of x.adjacent) {
       const k = `${a.sysId}/${a.rfss}/${a.site}`;
-      const recorded = props.systems.some((y) => y.identity.sysId === a.sysId && y.identity.rfss === a.rfss && y.identity.site === a.site);
+      const recorded = props.sites.some((y) => y.identity.sysId === a.sysId && y.identity.rfss === a.rfss && y.identity.site === a.site);
       if (!recorded && !systemWithChannel(c, a.freqHz) && !seen.has(k)) seen.set(k, { a, from: x });
     }
   if (!seen.size) return null;
-  const add = (a: SystemStatus["adjacent"][number], from: SystemStatus) => {
+  const add = (a: DetailedSite["adjacent"][number], from: DetailedSite) => {
     const name = addSite([a.freqHz], { wacn: from.identity.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site });
     setNotice(`Added ${name} (site ${a.rfss}-${a.site}, ${formatMhz(a.freqHz)} MHz). It records from the next Start, if a source covers it.`);
   };
@@ -43,7 +72,7 @@ export function Neighbours(props: { s: AppState; systems: SystemStatus[] }) {
             <span className="mono">
               SysID {hex(a.sysId)} · site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
             </span>
-            <span className="muted">via {from.shortName}</span>
+            <span className="muted">via {from.label}</span>
             <button className="btn ghost small" onClick={() => add(a, from)}>
               Add
             </button>
@@ -56,9 +85,9 @@ export function Neighbours(props: { s: AppState; systems: SystemStatus[] }) {
 
 export const tgText = (t: TalkgroupName) => (t.alphaTag ? `${t.alphaTag} (${t.talkgroup})` : String(t.talkgroup));
 
-/** The patches the control channels say stand now. A patched call is on its supergroup, usually not in the talkgroup file. */
-export function Patches(props: { systems: SystemStatus[] }) {
-  const all = props.systems.flatMap((x) => (x.patches ?? []).map((p) => ({ p, from: x })));
+/** The patches a system's control channels say stand now. A patched call is on its supergroup, usually not in the talkgroup file. */
+export function Patches(props: { patches: Patch[] }) {
+  const all = props.patches;
   if (!all.length) return null;
   return (
     <section className="panel">
@@ -67,11 +96,10 @@ export function Patches(props: { systems: SystemStatus[] }) {
         <span className="muted small">{all.length} active</span>
       </header>
       <div className="row">
-        {all.map(({ p, from }) => (
-          <span key={`${from.shortName}/${p.supergroup.talkgroup}`} className="chip">
+        {all.map((p) => (
+          <span key={p.supergroup.talkgroup} className="chip">
             <span className="mono">SG {tgText(p.supergroup)}</span>
             <span>= {p.members.map(tgText).join(" + ")}</span>
-            {props.systems.length > 1 && <span className="muted">· {from.shortName}</span>}
           </span>
         ))}
       </div>
@@ -88,8 +116,8 @@ export function dmrText(d: DmrSiteStatus): string {
 }
 
 /** Each DMR site: its frequencies (which carries control, each slot's call now) and its channel table. */
-export function DmrSites(props: { systems: SystemStatus[] }) {
-  const sites = props.systems.filter((x) => x.dmr);
+export function DmrSites(props: { sites: DetailedSite[] }) {
+  const sites = props.sites.filter((x) => x.dmr);
   return (
     <section className="panel">
       <header className="panel-head">
@@ -107,9 +135,9 @@ export function DmrSites(props: { systems: SystemStatus[] }) {
             <span className="muted">—</span>
           );
         return (
-          <div key={x.shortName} className="stack">
+          <div key={x.label} className="stack">
             <div className="row small">
-              {props.systems.length > 1 && <b>{x.shortName}</b>}
+              {props.sites.length > 1 && <b>{x.label}</b>}
               <span>{d.variant ?? "type unknown"}</span>
               <span className="mono">{dmrText(d)}</span>
             </div>
@@ -172,8 +200,8 @@ export function nxdnText(d: NxdnSiteStatus): string {
 }
 
 /** Each NXDN site: its watched frequencies (control, repeater number, the call now), its channel table and the channels granted but not placed. */
-export function NxdnSites(props: { systems: SystemStatus[] }) {
-  const sites = props.systems.filter((x) => x.nxdn);
+export function NxdnSites(props: { sites: DetailedSite[] }) {
+  const sites = props.sites.filter((x) => x.nxdn);
   return (
     <section className="panel">
       <header className="panel-head">
@@ -184,9 +212,9 @@ export function NxdnSites(props: { systems: SystemStatus[] }) {
         const typeD = d.kind === "NXDN Type-D";
         const offTable = d.channels.filter((e) => !d.carriers.some((c) => c.freqHz === e.freqHz));
         return (
-          <div key={x.shortName} className="stack">
+          <div key={x.label} className="stack">
             <div className="row small">
-              {props.systems.length > 1 && <b>{x.shortName}</b>}
+              {props.sites.length > 1 && <b>{x.label}</b>}
               <span>{d.kind}</span>
               <span className="mono">{nxdnText(d)}</span>
             </div>

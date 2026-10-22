@@ -16,9 +16,10 @@ Each channel has a mode:
 
 | Mode | Config value | What it is |
 |---|---|---|
-| Analog FM | `fm` | Narrowband FM voice, 12.5 kHz |
+| Analog FM | `fm` | FM voice, narrowband (12.5 kHz) or wide (25 kHz) |
+| Analog AM | `am` | AM voice: VHF airband (118–137 MHz) and UHF military air (225–400 MHz) |
 | P25 | `p25` | P25 Phase 1, C4FM or CQPSK |
-| DMR | `dmr` | DMR Tier II; both slots, each recording its own calls |
+| DMR | `dmr` | DMR Tier II; both slots, each recording its own calls (the channel is opened 6.25 kHz wide, as for trunked DMR) |
 | NXDN48 | `nxdn48` | NXDN at 4800 bps (6.25 kHz) |
 | NXDN96 | `nxdn96` | NXDN at 9600 bps (12.5 kHz) |
 
@@ -33,15 +34,15 @@ has its own:
 - short name, which is the folder its calls go to and the name plugins see,
 - squelch (for its channels that don't set their own),
 - channel list, or a linked channel file,
-- unit names, plugin settings, and recording rules (**Recording override**),
+- unit names, plugin settings and delays (**Plugins**), and recording rules (**Recording**),
 - on/off switch for the whole group.
 
-A frequency can belong to only one conventional system. You can have at most 256.
+A frequency can belong to only one conventional system.
 
-Plugins treat each conventional system as one more system. Trunked systems are numbered from 0;
-conventional systems are numbered down from 65535: the first is 65535, the second 65534, and so
-on. That number is what `{sys_num}` gives in a [file name format](recordings.md#tokens), and what
-upload plugins see.
+Plugins treat each conventional system as one more system. Systems are numbered from 0: the
+trunked systems being recorded first, then the conventional ones. That number is what
+`{sys_num}` gives in a [file name format](recordings.md#tokens), and what upload plugins see. It
+can change when you add, remove or switch off a system, so plugins go by short name.
 
 ## Adding channels
 
@@ -54,22 +55,30 @@ panel that appears:
    if you like, a **Name** such as "County Fire".
 2. Type frequencies in MHz into **Add frequencies, MHz** (for example `154.430, 155.100,
    460.125`), pick the mode beside it, and click **Add**. Or click **Add a channel** for one row.
-3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Tone**, **Name**,
-   **Talkgroup** and **Squelch**.
+3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Bandwidth** (analog
+   only; see [Bandwidth](#bandwidth)), **Records** (what it takes, as chips), **Name** (the alpha
+   tag), **TG Number** and **Squelch**. **Edit** opens the rest of the row: its **Code**, DMR's
+   **Slot** and a digital row's **Match TG**, and the **Description**, **Tag** and **Category** its
+   calls carry (offering the tags and categories the system uses already). A row's tag and category
+   show under its name.
 4. Leave **Squelch, dB above noise** at 8 to start with. See [Tuning the squelch](#tuning-the-squelch).
 
-The **Talkgroup** column is the number calls are filed under: in file names, the call JSON and
+The **TG Number** column is the number calls are filed under: in file names, the call JSON and
 uploads. Leave it blank and it defaults to the frequency in kHz (154.430 MHz becomes 154430),
 which stays the same however you reorder the list. A second row on the same frequency gets that
-number with a digit added (1543251, 1543252, ...). P25 channels use the talkgroup the radio sends
-when there is a single row on the frequency, and DMR and NXDN calls keep the talkgroup on the air.
+number with a digit added (1543251, 1543252, ...). A digital (P25, DMR or NXDN) row with no
+TG Number is filed under the talkgroup the radio sends, when it sends one. The air's number is also
+written to the call JSON as `talkgroup_ota`.
 
-**Tone** limits a row to transmissions carrying one CTCSS tone, DCS code, NAC, colour code or RAN.
-Leave it blank to record everything on the frequency. Splitting a shared frequency is covered in
-[Tones and access codes](tones.md).
+**Code** limits a row to transmissions carrying one CTCSS tone, DCS code, NAC, colour code or RAN,
+written bare (`151.4`, `D023N`, `293`, `1`, `5`). **Slot** (DMR) and **Match TG** (P25, DMR, NXDN)
+narrow it further. Leave them blank to record everything on the frequency. Splitting a shared
+frequency is covered in [Tones and access codes](tones.md). A config with an older `tone` key is
+upgraded when it loads.
 
 **Import CSV…** reads a channel file and asks whether to **Replace the list** or **Add to the
-list**. **Export CSV** writes the current list as a CSV you can edit.
+list**. **Export CSV** writes the whole list, codes and names included, as a CSV you can edit and
+import again (or link as a [channel file](#in-a-spreadsheet-desktop-app)).
 
 ### In a spreadsheet (desktop app)
 
@@ -94,9 +103,17 @@ Channel files aren't available in the browser version.
   "squelchDb": 8,
   "channels": [
     { "freqHz": 154430000, "mode": "fm",  "name": "County Fire Dispatch", "talkgroup": 1001 },
-    { "freqHz": 155100000, "mode": "fm",  "name": "EMS Ops", "tone": "151.4" },
+    { "freqHz": 155100000, "mode": "fm",  "name": "EMS Ops", "code": "151.4" },
     { "freqHz": 460125000, "mode": "p25", "name": "PD Tac 2", "squelchDb": 12 },
     { "freqHz": 453000000, "mode": "fm",  "enabled": false }
+  ]
+}, {
+  "shortName": "air",
+  "demod": { "squelchHangMs": 150 },
+  "channels": [
+    { "freqHz": 119100000, "mode": "am", "name": "Tower" },
+    { "freqHz": 132650000, "mode": "am", "name": "ATIS" },
+    { "freqHz": 269000000, "mode": "am", "name": "Mil Approach" }
   ]
 }, {
   "shortName": "pd",
@@ -113,17 +130,21 @@ Frequencies in the config are in Hz. Every key is listed in the
 A header row names the columns, in any order and any case; then one channel per row:
 
 ```csv
-TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable
-1001,154.4300,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,true
-,154.3250,D223N,fm,County A Fire,,,Fire,,true
-,154.3250,151.4,fm,County B Fire,,,Fire,,true
-,460.1250,,p25,PD Tac 2,,Law Tac,Police,12,true
+TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
+1001,154.4300,,,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
+,154.3250,D223N,,,fm,County A Fire,,,Fire,,,true
+,154.3250,151.4,,,fm,County B Fire,,,Fire,,,true
+,460.1250,,,,p25,PD Tac 2,,Law Tac,Police,12,,true
+,119.1000,,,,am,Tower,,Aircraft,Airport,,,true
 ```
 
 - `Frequency` is MHz when it has a decimal point, otherwise Hz.
-- `Mode` is `fm`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Tone` holds a NAC
-  (then `p25`), a colour code (`dmr`) or a RAN (`nxdn48`).
+- `Mode` is `fm`, `am`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Code` holds
+  a NAC (then `p25`), a colour code (`dmr`) or a RAN (`nxdn48`). An old `Tone` column still reads,
+  as `Code`. A combined string such as `CC1 TS2 TG201` in `Code` is split into `Code`, `Slot` and
+  `Match TG`.
 - `Squelch dB` is 3-40 dB above the noise floor; empty uses the system's.
+- `Bandwidth kHz` is an `fm` or `am` row's filter width, 4-20; empty uses the mode's default.
 - `Enable` set to `false`, `no`, `0` or `off` turns a row off.
 - Commas, semicolons or tabs all work, as do decimal commas and the byte-order mark Excel adds in
   some locales. Blank rows and lines starting with `#` are skipped.
@@ -154,18 +175,19 @@ Here is what happens, step by step:
    signals in a slice don't raise it, and measuring per slice follows the SDR's passband, which is
    usually lower near the edges.
 2. **Each channel's energy is compared with the floor.** For every block of samples, the power
-   within ±5 kHz of the channel (±3.125 kHz for NXDN48) is averaged, lightly smoothed (20 ms), and
+   within ±5 kHz of the channel (±3.125 kHz for NXDN48; an analog channel's bandwidth less 1 kHz) is averaged
+   (AM also looks for its carrier's line: see [Airband](#airband-am)), lightly smoothed (20 ms), and
    compared with the floor under it. The difference in dB is the channel's SNR.
 3. **The channel opens at the squelch.** When the SNR reaches the channel's squelch (default
    8 dB), a receiver is started on that frequency. It begins 0.3 s in the past: the air from just
    before the detection is replayed into it (pre-roll), so the first syllable isn't lost.
 4. **A narrower filter confirms the carrier.** The receiver measures power through a ±5.5 kHz
-   channel filter. This filter is narrower than the spectrum view, so energy leaking over from a
+   channel filter (an analog channel's own [bandwidth](#bandwidth)). This filter is narrower than the spectrum view, so energy leaking over from a
    strong neighbour 12.5 kHz away doesn't count. If the filter never sees a carrier, the detection
    was leakage or a spur: the receiver closes, and that channel's threshold is raised to 3 dB above
    whatever set it off until the band quietens down again. This stops a neighbour from reopening the
    channel over and over.
-5. **The audio is decoded.** Analog FM is demodulated to 8 kHz audio. Audio passes only while the
+5. **The audio is decoded.** Analog FM and AM are demodulated to 8 kHz audio. Audio passes only while the
    carrier, measured through that channel filter, stays above a level 3 dB lower than the squelch
    (and never lower than 3 dB above the floor), so the gaps between transmissions are cut out.
    P25, DMR and NXDN go through the same decoders trunked calls use, and the same level decides
@@ -185,6 +207,76 @@ Things that follow from this:
   Recording tab is for trunked calls (audio before each grant) and doesn't change it.
 - A call longer than **Longest call, s** is saved and a new one started. With no limit set, a
   stuck carrier is saved in 600 s parts.
+
+## Airband (AM)
+
+Aircraft and air traffic control talk in AM: VHF airband from 118 to 137 MHz on 25 kHz channels
+(8.33 kHz in Europe), and UHF military air from 225 to 400 MHz. Add these channels with mode
+**Analog AM** (`am`). An RTL-SDR at 2.4 MSPS covers about 2 MHz of airband, enough for a tower,
+ground, approach and ATIS together.
+
+How AM differs from FM here:
+
+- **The volume follows the modulation, not the signal strength.** An aircraft's signal rises and
+  falls as it turns and moves away; the audio level is measured against its own carrier, so a
+  weak or fading aircraft sounds as loud as the tower. **AM level** sets how fast that follows
+  (see [Demodulation settings](#demodulation-settings)).
+- **No tones or codes.** AM has nothing to split a frequency by, so an AM frequency has one row.
+- **Off-frequency transmitters are fine.** AM is detected from the envelope, which doesn't care
+  where in the channel filter the carrier sits. Aircraft radios can be a couple of kHz off; UHF
+  military radios more, which is why UHF channels get a wider filter by default.
+- **Impulse noise is limited.** Clicks from ignition and power lines are clipped at 150 %
+  modulation, above any voice, so they don't blast through.
+- **Weak aircraft are heard by their carrier.** At least half of an AM signal's power is its
+  carrier, a single line in the spectrum, while noise spreads across the channel. Besides the
+  channel's power, an AM channel listens for that line, which stands out of the noise about
+  10 dB sooner: a transmission whose power in the channel is no higher than the noise's opens it
+  at the default squelch of 8 dB. The squelch applies to both, and so does its audio gate.
+- **Spurs are learned.** A line detector also hears the steady, unmodulated whistles ("birdies")
+  that SDRs and nearby electronics put in many channels. An AM channel learns them: in its first
+  3 s (when it doesn't open), and afterwards any line that stays put for about a minute. It then
+  ignores them. A birdie that starts later can open a channel for that first minute. A carrier
+  strong enough to open the channel by its power, such as a nearby ATIS, is still recorded
+  however steady it is; a weak continuous broadcast is learned like a birdie.
+
+A good first test is the airport's ATIS, which transmits all the time: it should record as one
+long call, cut into parts at **Longest call, s** if you have set one.
+
+## Bandwidth
+
+An analog channel's **Bandwidth** is the width of the filter its audio and carrier meter come
+through. Leave it at **Default** unless one of these applies:
+
+| Mode | Width | Use for |
+|---|---|---|
+| `fm` | 11 kHz (default) | Narrowband FM: 12.5 kHz channels, ±2.5 kHz deviation. Almost all US public safety and business radio since 2013 |
+| `fm` | 16 kHz | Wide FM: 25 kHz channels, ±5 kHz deviation. Older systems, some federal, and many outside the US. Loud voice distorts through the narrow filter |
+| `am` | 6 kHz | 8.33 kHz airband channels (Europe) |
+| `am` | 11 kHz (default below 225 MHz) | 25 kHz airband channels |
+| `am` | 16 kHz (default from 225 MHz) | UHF military air, a transmitter that is well off frequency, or offset-carrier sites |
+
+Wider takes in more noise and makes a strong neighbour more likely to be heard; narrower cuts a
+transmitter that is off frequency, or the high end of wide FM's voice. Rows sharing a frequency
+share one bandwidth: changing it on one row in Setup changes them all.
+
+## Demodulation settings
+
+Each conventional system's **Demodulation** group (in its card on the Conventional tab, shown
+when it has analog channels) applies to all of its FM and AM channels. Everything left at
+**Default** behaves as before. To use other settings for some channels, put them in a
+conventional system of their own.
+
+| Setting | Default | What it does |
+|---|---|---|
+| **FM de-emphasis** | 750 µs | FM transmitters boost the treble (pre-emphasis) and receivers cut it back. Set **Off** for a channel sent without pre-emphasis: with de-emphasis on it sounds muffled |
+| **AM level** | Fast (50 ms) | How fast the volume follows a fading carrier. **Fast** keeps a moving aircraft steady. **Slow** (0.5 s) pumps less on a steady signal such as ATIS |
+| **AM low cut, Hz** | 200 | A high-pass under the voice, for carrier hum and the flutter of a fading signal. 0 turns it off; 300 helps a humming ground transmitter |
+| **Squelch open delay, ms** | 30 | How long the carrier must hold before audio passes, so a neighbour's splatter as it keys up doesn't open the channel. Lower catches the first syllable of very short transmissions |
+| **Squelch hang, ms** | 2 | How long audio keeps passing after the carrier drops. Raise it (100-300) for weak or fluttering signals, such as distant aircraft, whose audio is cut into pieces |
+
+The hang doesn't add noise to the end of a transmission: audio runs a little behind the air, and
+when the gate closes, everything since the carrier dropped is removed. A fade shorter than the
+hang keeps playing (as the noise it is), and live audio runs the hang later than the air.
 
 ## Tuning the squelch
 
@@ -227,10 +319,10 @@ Each saved call also records how strong it was: `signal`, `noise` and `snr` in i
 
 | What you see | Try |
 |---|---|
-| Lots of very short calls with only noise | Raise the channel's squelch a few dB. Set **Shortest call, s** in the system's **Recording override** to drop what's left. |
+| Lots of very short calls with only noise | Raise the channel's squelch a few dB. Set **Shortest call, s** under the system's **Recording** override to drop what's left. |
 | Calls appear whenever a strong neighbouring channel is busy | Raise that channel's squelch. Check that your gain isn't so high the dongle is overloading. |
 | Weak units are missing, or calls start mid-word | Lower the squelch, a few dB at a time. Improve the antenna or gain; see [Radios](radios.md). |
-| One conversation is split into many calls | Raise **Call timeout, s** in the system's **Recording override**. |
+| One conversation is split into many calls | Raise **Call timeout, s** under the system's **Recording** override. |
 | Separate conversations are merged into one call | Lower **Call timeout, s**. |
 | Calls are cut into 10-minute pieces | A carrier is stuck on. Raise the squelch, or set **Longest call, s** if the channel really is that busy. |
 
@@ -247,7 +339,7 @@ If a channel isn't recording as you expect, work through these:
 4. **What does the SNR do?** On the RF page, watch the channel during a transmission. If the SNR
    never gets near the squelch, lower the squelch or improve reception. If it sits above the squelch
    while idle, raise it.
-5. **Is a tone filtering it out?** If the row has a **Tone**, transmissions with a different code
+5. **Is a tone filtering it out?** If the row has a **Code**, transmissions with a different code
    (or none) aren't recorded. The **Heard** line under the channel counts them as "not recorded".
    See [Tones and access codes](tones.md).
 6. **Are calls dropped after recording?** **Shortest call, s**, **Shortest transmission, s** and
@@ -268,14 +360,21 @@ saved. There is no separate log line for each detection.
 | `Conventional channel ... MHz is listed twice without a tone` (or NAC, or code) | Give each row its own code; one may have none. |
 | `Conventional channel ... MHz has two rows for ...` | Two rows ask for the same code (or two DCS codes that are the same signal). |
 | `A conventional channel has no frequency yet.` | A row was added and left empty. |
-| `At most 256 conventional systems.` | |
 | `Channel file ...: ...` | The linked CSV couldn't be read. |
 
 ## Talkgroup names on digital channels
 
-P25, DMR and NXDN channels can carry a talkgroup number. A call's names come from the row it was
-recorded under first. If the config has exactly one trunked system, its talkgroup list is also used
-to name talkgroups heard on conventional digital channels.
+P25, DMR and NXDN channels can carry a talkgroup number. A call's names are the row's it was
+recorded under, if the row has any; else the conventional system's own talkgroup file's
+(`<shortName>.talkgroups.csv` beside the config; Setup shows it on a conventional system with
+digital channels), looked up by the number the call is filed under. The Radio page names
+talkgroups the same way; a talkgroup filed under the air's number, on a row with names, is named
+once a call of it has been heard.
+
+Several P25 channels whose radios all send talkgroup 1 would all be filed under 1. Give each row
+its own **TG Number**: calls are filed and named under it, and the air's 1 stays in
+`talkgroup_ota`. A new talkgroup on the air within an open call still starts a new call, even when
+the row files both under the same number.
 
 ## Coming from Trunk Recorder
 
@@ -285,7 +384,7 @@ to name talkgroups heard on conventional digital channels.
 - **No signal detector settings.** There is no `signalDetectorThreshold` and no `Signal Detector`
   column to set: detection always works from the noise floor as described above.
 - **Channel files read as they are.** **Import CSV…** and channel files accept Trunk Recorder's
-  format, `Tone` included. Its `Comment` and `Signal Detector` columns are ignored, and its
+  format, with its `Tone` column read as **Code**. Its `Comment` and `Signal Detector` columns are ignored, and its
   `Squelch` column isn't read; use `Squelch dB` instead. Add a `Mode` column to mix analog and
   digital in one file.
 - **System types merge.** `conventional`, `conventionalP25` and `conventionalDMR` systems become

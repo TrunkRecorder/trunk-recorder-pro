@@ -27,7 +27,8 @@ system".
 
 ## Setting it up
 
-In **Setup** → **Systems**, **Add a system** and set **Type** to **DMR (trunked)**. The fields are:
+In **Setup** → **Systems**, **Add a system** and set **Type** to **DMR (trunked)**. Its site (under
+**Sites**) has these fields:
 
 - **Site frequencies, MHz** (`controlChannelsHz`): for Capacity Plus, **every repeater** of the
   site. For the others, the control channel(s).
@@ -36,21 +37,22 @@ In **Setup** → **Systems**, **Add a system** and set **Type** to **DMR (trunke
 - **Colour code** (`colorCode`): leave empty ("auto") to take the control channel's.
 - **Channel table (optional)** (`lcnTableHz`): channel numbers you already know, as
   `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Leave it empty to learn them.
-- **Site group**: see [Several sites](#several-sites).
 
 In the config file (frequencies in Hz):
 
 ```json
-{ "shortName": "capplus", "type": "dmr", "controlChannelsHz": [463375000, 463750000, 464350000] }
+{ "shortName": "capplus", "type": "dmr", "sites": [{ "controlChannelsHz": [463375000, 463750000, 464350000] }] }
 ```
 
 ```json
 {
   "shortName": "capmax",
   "type": "dmr",
-  "controlChannelsHz": [452175000],
-  "dmrChannelsHz": [452275000, 452300000],
-  "lcnTableHz": { "101": 452275000 }
+  "sites": [{
+    "controlChannelsHz": [452175000],
+    "dmrChannelsHz": [452275000, 452300000],
+    "lcnTableHz": { "101": 452275000 }
+  }]
 }
 ```
 
@@ -121,12 +123,13 @@ can't decrypt anything.
 ## Several sites
 
 A DMR site doesn't announce which system it belongs to, so the recorder can't tell on its own that
-two sites are the same system. If you record several sites of one system, give them the same
-**Site group** name so a call heard on both is saved once:
+two sites are the same system. If you record several sites of one system, add each under the
+system's **Sites** (**Add site**) so a call heard on both is saved once:
 
 ```json
-{ "shortName": "capmax-north", "type": "dmr", "siteGroup": "capmax", "controlChannelsHz": [452175000] },
-{ "shortName": "capmax-south", "type": "dmr", "siteGroup": "capmax", "controlChannelsHz": [452525000] }
+{ "shortName": "capmax", "type": "dmr",
+  "sites": [{ "name": "north", "controlChannelsHz": [452175000] },
+            { "name": "south", "controlChannelsHz": [452525000] }] }
 ```
 
 There is no site lock for DMR; colour codes keep sites apart. See
@@ -143,7 +146,7 @@ The **Decode** page has a **DMR** panel for each site (in the system's detail):
   **Slot 1** and **Slot 2** right now (talkgroup and radio);
 - the channels in the table that aren't watched frequencies.
 
-On the **Calls** page, a DMR call shows its slot (`s0` / `s1`) after the frequency.
+On a system's page under **Radio system**, a DMR call shows its slot (`s0` / `s1`) after the frequency.
 
 ## Diagnostic tools
 

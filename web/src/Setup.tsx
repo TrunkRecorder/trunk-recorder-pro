@@ -1,61 +1,90 @@
-import { Fragment, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useId, useMemo, useRef, useState } from "react";
+import { SystemDot, SystemTag } from "./charts.tsx";
 import {
+  activeSites,
   activeSystems,
-  AIRSPY_RATES,
+  AM_LOW_CUT_MAX_HZ,
+  BANDWIDTH_PRESETS,
+  defaultBandwidthKhz,
+  SQUELCH_HANG_MAX_MS,
+  SQUELCH_OPEN_MAX_MS,
   channelsToCsv,
-  channelTalkgroups,
+  defaultTalkgroups,
   defaultLog,
   enabledChannels,
   formatFromPath,
-  formatGain,
   formatMhz,
   mhzCell,
-  multiSiteGroup,
-  newAirspy,
   newConventional,
   newDongle,
-  newFile,
-  newSoapy,
-  newUsrp,
   nextTalkgroup,
   parseChannelCsv,
   parseFreqList,
+  newSiteName,
   newSystem,
   resolvedCenters,
-  SAMPLE_RATES,
-  siteSiblings,
-  SOAPY_RATES,
+  sameOnTheAir,
+  siteActive,
+  siteNameOf,
   sourceCovering,
   systemColor,
-  USRP_RATES,
   usableHalfWidth,
   siteLockFields,
+  siteText,
+  systemType,
+  deviceKey,
+  needsDriver,
+  sourceKey,
+  SOURCE_KINDS,
 } from "./config.ts";
-import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
-import { InterfacesPanel } from "./Interfaces.tsx";
-import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
+import {
+  can,
+  cardKey,
+  currentView,
+  dismissTodo,
+  downloadText,
+  findRadios,
+  forgetTalkgroups,
+  moveTalkgroups,
+  renameSystem,
+  newSiteOf,
+  openGuide,
+  refreshDevices,
+  setChannelFile,
+  setNotice,
+  setSetupTab,
+  setView,
+  unlockKeys,
+  updateConfig,
+  useApp,
+  web,
+  type SetupTab,
+} from "./controller.ts";
+import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } from "./Plugins.tsx";
+import { renameSystemRefs } from "./pluginSettings.ts";
+import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
-import { addCard, Card, ExpandAll, forgetCard, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
+import { FccTable, IdentifyFcc } from "./Identify.tsx";
+import { ShareSystem } from "./ShareSystem.tsx";
+import { siteFrequencies } from "./controller.ts";
+import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
+import { readTalkgroupCsv } from "./talkgroups.ts";
+import { DraftInput, Field, FileInput, NumberInput, Toggle } from "./inputs.tsx";
+import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
 import { openTodos } from "./todo.ts";
-import { parseAccess, sameTone } from "./tones.ts";
+import { parseAccess, sameAccess, type AccessParts } from "./tones.ts";
 
-/** `needs`: what an import left to fill in here (highlighted); `anchor`: its place, for the to-do list's Show. */
-function Field(props: { label: string; hint?: string; children: React.ReactNode; wide?: boolean; needs?: string; anchor?: string }) {
-  return (
-    <label className={`field${props.wide ? " wide" : ""}${props.needs ? " needs" : ""}`} id={props.anchor && `need-${props.anchor}`}>
-      <span className="field-label">{props.label}</span>
-      {props.children}
-      {props.needs && <span className="field-needs">{props.needs}</span>}
-      {props.hint && <span className="field-hint">{props.hint}</span>}
-    </label>
-  );
-}
+/** Each card's key (the controller's `cardKey`), seeded from what its entry is now; `all`: its list. */
+const srcKey = (x: Source, i: number, all: Source[]) => cardKey(x, `src:${i}`, all);
+const sysKey = (x: System, _i: number, all: System[]) => cardKey(x, `sys:${x.shortName}`, all);
+const siteKey = (sys: System, x: Site) => cardKey(x, `site:${sys.shortName}/${siteNameOf(sys, x)}`, sys.sites);
+const convKey = (x: Conventional, _i: number, all: Conventional[]) => cardKey(x, `conv:${x.shortName}`, all);
 
 /** What an import left to do at a setup field (see todo.ts), or undefined. */
 function useNeed(): (target: string) => string | undefined {
@@ -88,10 +117,11 @@ export function showTodo(target: string, tries = 0): void {
   const el = document.getElementById(`need-${target}`);
   // Not drawn yet (a plugin just installed, say): a moment more.
   if (!el && tries < 30) return void setTimeout(() => showTodo(target, tries + 1), 100);
-  // In a folded card: open it, then look again.
-  const card = el?.closest<HTMLElement>("[data-card]");
-  if (card?.dataset.collapsed) {
-    setCardOpen(card.dataset.card!, true);
+  // In a folded card (a site's, in its system's): open them, then look again.
+  const folded: HTMLElement[] = [];
+  for (let card = el?.closest<HTMLElement>("[data-card]"); card; card = card.parentElement?.closest<HTMLElement>("[data-card]")) if (card.dataset.collapsed) folded.push(card);
+  if (folded.length) {
+    for (const card of folded) setCardOpen(card.dataset.card!, true);
     return void setTimeout(() => showTodo(target, tries), 60);
   }
   if (el instanceof HTMLDetailsElement) el.open = true;
@@ -134,93 +164,322 @@ function TodoPanel() {
   );
 }
 
-function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean }) {
+/** A key container waiting for its password, or unlocked. */
+function KeyContainer(props: { k: LockableKeys }) {
+  const { k } = props;
+  const [password, setPassword] = useState("");
+  const state = <span className={`chip ${k.unlocked ? "ok" : "warn"}`}>{k.unlocked ? "Unlocked" : "Locked"}</span>;
   return (
-    <label className={`toggle${props.disabled ? " disabled" : ""}`}>
-      <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} />
-      <span className="toggle-text">
-        <span>{props.label}</span>
-        {props.hint && <span className="field-hint">{props.hint}</span>}
-      </span>
-    </label>
+    <section className="set-card">
+      <Group title={k.name} hint={`For ${k.systems.join(", ")}`} actions={state} cols={1}>
+        {k.unlocked ? (
+          <div className="row">
+            <span className="muted small">Its systems decrypt with these keys until you lock them or the app quits.</span>
+            <button className="btn" onClick={() => unlockKeys(k.name, null)}>
+              Lock
+            </button>
+          </div>
+        ) : (
+          <form
+            className="row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!password) return;
+              unlockKeys(k.name, password);
+              setPassword("");
+            }}
+          >
+            <Field label="Password">
+              <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} />
+            </Field>
+            <button className="btn primary" type="submit" disabled={!password}>
+              Unlock
+            </button>
+          </form>
+        )}
+      </Group>
+    </section>
   );
 }
 
-/** A frequency input that keeps the user's text while typing. */
-function MhzInput(props: { hz: number; placeholder?: string; onChange: (hz: number) => void }) {
-  const [text, setText] = useState(props.hz ? formatMhz(props.hz) : "");
-  return (
-    <input
-      className="mono"
-      value={text}
-      placeholder={props.placeholder ?? "MHz"}
-      onChange={(e) => {
-        setText(e.target.value);
-        props.onChange(parseFreqList(e.target.value)[0] ?? 0);
-      }}
-    />
-  );
-}
+/** A conventional channel's modes, as the mode menus list them. */
+const MODE_OPTIONS: { mode: Channel["mode"]; label: string }[] = [
+  { mode: "fm", label: "Analog FM" },
+  { mode: "am", label: "Analog AM" },
+  { mode: "p25", label: "P25" },
+  { mode: "dmr", label: "DMR" },
+  { mode: "nxdn48", label: "NXDN48 (6.25 kHz)" },
+  { mode: "nxdn96", label: "NXDN96 (12.5 kHz)" },
+];
 
-/** A gain in dB, shown to a tenth (the value kept may be longer); the user's text while typing. Blank = null. */
-function GainInput(props: { value: number | null; placeholder?: string; disabled?: boolean; onChange: (db: number | null) => void; label?: string }) {
-  const [text, setText] = useState<string | null>(null);
-  const shown = props.value === null ? "" : formatGain(props.value);
-  return (
-    <input
-      className="mono"
-      value={text ?? shown}
-      disabled={props.disabled}
-      aria-label={props.label}
-      placeholder={props.placeholder}
-      onFocus={() => setText(shown)}
-      onBlur={() => setText(null)}
-      onChange={(e) => {
-        setText(e.target.value);
-        const v = e.target.value.trim();
-        props.onChange(v === "" ? null : Number(v));
-      }}
-    />
-  );
-}
+const modeOptions = MODE_OPTIONS.map((o) => (
+  <option key={o.mode} value={o.mode}>
+    {o.label}
+  </option>
+));
 
-const TONE_HINT = {
+const CODE_HINT = {
   fm: { placeholder: "any", title: "CTCSS tone or DCS code (151.4 PL, 023 DPL). Empty: any." },
-  p25: { placeholder: "any NAC", title: "NAC, hex (293). Empty: any." },
-  dmr: { placeholder: "any CC", title: "Colour code, optional slot and talkgroup (CC1 TS2 TG201). Empty: any." },
-  nxdn48: { placeholder: "any RAN", title: "RAN, optional talkgroup (RAN 5 TG 201). Empty or RAN 0: any." },
-  nxdn96: { placeholder: "any RAN", title: "RAN, optional talkgroup (RAN 5 TG 201). Empty or RAN 0: any." },
+  am: { placeholder: "—", title: "AM carries no tone or code." },
+  p25: { placeholder: "any NAC", title: "NAC, hex (293). Empty: any. NAC 293 TG 1 fills Match TG too." },
+  dmr: { placeholder: "any CC", title: "Colour code (1). Empty: any. RadioReference's CC1 TS2 TG201 fills Slot and Match TG too." },
+  nxdn48: { placeholder: "any RAN", title: "RAN (5). Empty or 0: any. RAN 5 TG 201 fills Match TG too." },
+  nxdn96: { placeholder: "any RAN", title: "RAN (5). Empty or 0: any. RAN 5 TG 201 fills Match TG too." },
 };
 
-/** A channel's code (CTCSS / DCS, NAC, colour code, RAN): kept as typed, tidied when left. */
-function ToneInput(props: { mode: Channel["mode"]; tone: string; disabled?: boolean; onChange: (tone: string) => void }) {
-  const [text, setText] = useState(props.tone);
-  const parsed = parseAccess(props.mode, text);
+/** Digital modes: those whose transmissions name their talkgroup. */
+const digital = (mode: Channel["mode"]) => mode !== "fm" && mode !== "am";
+
+/** A row's access fields set to `p` (absent when empty). */
+function setAccess(x: Channel, p: AccessParts) {
+  if (p.code) x.code = p.code;
+  else delete x.code;
+  if (p.slot !== undefined) x.slot = p.slot;
+  else delete x.slot;
+  if (p.matchTalkgroup !== undefined) x.matchTalkgroup = p.matchTalkgroup;
+  else delete x.matchTalkgroup;
+}
+
+/**
+ * What a row records: its code (CTCSS / DCS, NAC, colour code, RAN; kept as
+ * typed, tidied when left — a pasted `CC1 TS2 TG201` fills the slot and
+ * talkgroup too), DMR's slot, and a digital mode's talkgroup.
+ */
+function AccessInput(props: { ch: Channel; disabled?: boolean; onChange: (p: AccessParts) => void }) {
+  const { ch } = props;
+  const code = ch.code ?? "";
+  const parsed = parseAccess(ch.mode, code);
   const error = "error" in parsed ? parsed.error : null;
+  const now: AccessParts = { code, slot: ch.slot, matchTalkgroup: ch.matchTalkgroup };
+  const tidy = () => {
+    if ("error" in parsed) return;
+    const p = { code: parsed.code, slot: parsed.slot ?? ch.slot, matchTalkgroup: parsed.matchTalkgroup ?? ch.matchTalkgroup };
+    if (p.code !== code || p.slot !== ch.slot || p.matchTalkgroup !== ch.matchTalkgroup) props.onChange(p);
+  };
   return (
-    <input
-      className={`mono narrow${error ? " invalid" : ""}`}
-      disabled={props.disabled}
-      value={text}
-      placeholder={TONE_HINT[props.mode].placeholder}
-      aria-label="Tone"
-      aria-invalid={!!error}
-      title={error ?? TONE_HINT[props.mode].title}
-      onChange={(e) => {
-        setText(e.target.value);
-        props.onChange(e.target.value.trim());
-      }}
-      onBlur={() => {
-        if ("tone" in parsed) {
-          setText(parsed.tone);
-          props.onChange(parsed.tone);
-        }
-      }}
-    />
+    <span className="access-input">
+      <DraftInput
+        className={`mono narrow${error ? " invalid" : ""}`}
+        disabled={props.disabled}
+        value={code}
+        codec={asTyped}
+        placeholder={CODE_HINT[ch.mode].placeholder}
+        readOnly={ch.mode === "am" && !code}
+        aria-label="Code"
+        aria-invalid={!!error}
+        title={error ?? CODE_HINT[ch.mode].title}
+        onChange={(c) => props.onChange({ ...now, code: c })}
+        onBlur={tidy}
+      />
+      {ch.mode === "dmr" && (
+        <select
+          value={ch.slot ?? ""}
+          disabled={props.disabled}
+          aria-label="Slot"
+          title="The slot it records; either: both"
+          onChange={(e) => props.onChange({ ...now, slot: e.target.value ? Number(e.target.value) : undefined })}
+        >
+          <option value="">either slot</option>
+          <option value="1">slot 1</option>
+          <option value="2">slot 2</option>
+        </select>
+      )}
+      {digital(ch.mode) && (
+        <NumberInput
+          narrow
+          disabled={props.disabled}
+          value={ch.matchTalkgroup}
+          placeholder="any TG"
+          label="Match TG: record only transmissions naming this talkgroup"
+          onChange={(v) => props.onChange({ ...now, matchTalkgroup: v === undefined || v <= 0 ? undefined : Math.round(v) })}
+        />
+      )}
+    </span>
   );
 }
 
-const NONE_LABEL = { fm: "no tone", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code" };
+/** The CSV help's example: the cases a channel list meets. */
+const CSV_EXAMPLE = `TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Category
+1001,154.4300,,,,fm,County Fire Dispatch,Fire
+,154.3250,D223N,,,fm,County A Fire,Fire
+,154.3250,151.4,,,fm,County B Fire,Fire
+46012,460.1250,,,,p25,Townville PD,Police
+45351,453.5000,293,,1,p25,Townville PW,Public Works
+,453.5000,293,,,p25,Townville (other),Public Works
+9001,451.5000,1,1,1,dmr,Dispatch,Business
+,119.1000,,,,am,Tower,Airport`;
+
+/** Column, what it holds, what empty means. */
+const CSV_COLUMNS: [string, React.ReactNode, string][] = [
+  ["Frequency", <>MHz with a decimal point (<code>154.4300</code>), else Hz. Required.</>, "row skipped"],
+  ["Mode", <><code>fm</code>, <code>am</code>, <code>p25</code>, <code>dmr</code>, <code>nxdn48</code>, <code>nxdn96</code></>, "fm, or what Code says (a NAC p25, CC dmr, RAN nxdn48)"],
+  ["Code", <>The code it records: a tone <code>151.4</code> or DCS <code>D023N</code> (fm), a NAC <code>293</code> (p25), a colour code <code>1</code> (dmr), a RAN <code>5</code> (nxdn)</>, "any"],
+  ["Slot", <>dmr: <code>1</code> or <code>2</code></>, "either"],
+  ["Match TG", <>p25, dmr, nxdn: only transmissions naming this talkgroup</>, "any"],
+  ["TG Number", <>The number its calls are filed under (the archive folder, OpenMHz, the Listen page)</>, "p25 / dmr / nxdn: the air's; else the frequency in kHz (more rows on it: 1543251, 1543252 …)"],
+  ["Alpha Tag", "Its name", "the talkgroup file's, by TG"],
+  ["Description, Tag, Category", "As in a talkgroup file", "—"],
+  ["Squelch dB", "Open threshold, dB above the noise floor, 3–40", "the system's"],
+  ["Bandwidth kHz", "fm and am: the channel filter's width, 4–20", "the mode's"],
+  ["Enable", <><code>false</code>, <code>no</code>, <code>0</code> or <code>off</code> keeps the row without recording it</>, "on"],
+];
+
+type MatchKind = "tone" | "code" | "slot" | "tg" | "any";
+const KIND_TITLE: Record<MatchKind, string> = {
+  tone: "CTCSS tone or DCS code (FM)",
+  code: "NAC (P25), colour code (DMR) or RAN (NXDN)",
+  slot: "DMR slot",
+  tg: "Talkgroup the air names (P25, DMR, NXDN)",
+  any: "No code: what no other row on the frequency takes",
+};
+
+/** What a row records, as chips: each code it gives, coloured by kind; none: everything (else). */
+function matchChips(ch: Channel, shared: boolean): { kind: MatchKind; text: string; bad?: string }[] {
+  const code = ch.code ?? "";
+  const parsed = parseAccess(ch.mode, code);
+  const bad = "error" in parsed ? parsed.error : undefined;
+  const out: { kind: MatchKind; text: string; bad?: string }[] = [];
+  if (code) {
+    const named = { fm: /^\d/.test(code) ? `${code} Hz` : code, am: code, p25: `NAC ${code}`, dmr: `CC ${code}`, nxdn48: `RAN ${code}`, nxdn96: `RAN ${code}` }[ch.mode];
+    // (What doesn't read is shown as typed.)
+    out.push({ kind: ch.mode === "fm" ? "tone" : "code", text: bad ? code : named, bad });
+  }
+  if (ch.slot !== undefined) out.push({ kind: "slot", text: `slot ${ch.slot}` });
+  if (ch.matchTalkgroup !== undefined) out.push({ kind: "tg", text: `TG ${ch.matchTalkgroup}` });
+  if (!out.length) out.push({ kind: "any", text: shared ? "everything else" : "everything" });
+  return out;
+}
+
+/** A row at a glance: the chips of what it records. Clicking opens the row's editor. */
+function MatchLine(props: { ch: Channel; shared: boolean; open: boolean; onToggle: () => void }) {
+  const { ch } = props;
+  const chips = matchChips(ch, props.shared);
+  return (
+    <button
+      type="button"
+      className={`match-line${props.open ? " open" : ""}`}
+      aria-expanded={props.open}
+      title={ch.mode === "am" ? "AM has no codes: every transmission. Click to edit the row" : "What this row records — click to edit the row"}
+      onClick={props.onToggle}
+    >
+      {chips.map((c, k) => (
+        <span key={k} className={`match-chip k-${c.kind}${c.bad ? " bad" : ""}`} title={c.bad ?? KIND_TITLE[c.kind]}>
+          {c.text}
+        </span>
+      ))}
+    </button>
+  );
+}
+
+/** The kinds of chip a system's rows can have, for the legend. */
+function MatchLegend(props: { modes: Set<Channel["mode"]> }) {
+  const m = props.modes;
+  const dig = [...m].some(digital);
+  const kinds: [MatchKind, string][] = [
+    ...(m.has("fm") ? [["tone", "tone / DCS"] as [MatchKind, string]] : []),
+    ...(dig ? [["code", [m.has("p25") && "NAC", m.has("dmr") && "colour code", (m.has("nxdn48") || m.has("nxdn96")) && "RAN"].filter(Boolean).join(" / ")] as [MatchKind, string]] : []),
+    ...(m.has("dmr") ? [["slot", "slot"] as [MatchKind, string]] : []),
+    ...(dig ? [["tg", "talkgroup"] as [MatchKind, string]] : []),
+    ["any", "everything else"],
+  ];
+  return (
+    <div className="match-legend small">
+      <span className="muted">Each row records</span>
+      {kinds.map(([k, label]) => (
+        <span key={k} className={`match-chip k-${k}`} title={KIND_TITLE[k]}>
+          {label}
+        </span>
+      ))}
+      <span className="muted">
+        · calls are filed under its TG Number{dig ? " (empty: the talkgroup the air names, kept in the call's JSON as talkgroup_ota either way)" : ""}. The most specific row
+        that fits takes a transmission. <b>Edit</b> opens a row's codes and its description, tag and category.
+      </span>
+    </div>
+  );
+}
+
+/** A row's names beside its alpha tag (the table's Name), as a talkgroup file has them. */
+type NameField = "description" | "tag" | "group";
+const NAME_FIELDS: [NameField, string, string][] = [
+  ["description", "Description", "Fire / EMS dispatch"],
+  ["tag", "Tag", "Fire Dispatch"],
+  ["group", "Category", "Fire"],
+];
+
+/** The Tag and Category values a conventional system uses already (its rows', its talkgroup file's), most used first: offered as each row's are typed. */
+function useNameSuggestions(conv: Conventional): { tag: string[]; group: string[] } {
+  const csv = useApp().talkgroups[conv.shortName] ?? "";
+  return useMemo(() => {
+    const file = [...readTalkgroupCsv(csv).talkgroups.values()];
+    const ranked = (values: string[]) => {
+      const n = new Map<string, number>();
+      for (const v of values.map((v) => v.trim()).filter(Boolean)) n.set(v, (n.get(v) ?? 0) + 1);
+      return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([v]) => v);
+    };
+    return {
+      tag: ranked([...conv.channels.map((c) => c.tag ?? ""), ...file.map((t) => t.tag)]),
+      group: ranked([...conv.channels.map((c) => c.group ?? ""), ...file.map((t) => t.group)]),
+    };
+  }, [conv.channels, csv]);
+}
+
+/**
+ * Under a row: what the table has no room for, each labelled. What it
+ * records (its code, DMR's slot, a digital mode's talkgroup) and the names
+ * its calls carry beside the alpha tag: description, tag and category, as
+ * in a talkgroup file (the call JSON's talkgroup_description,
+ * talkgroup_group_tag and talkgroup_group; uploads send them on).
+ */
+function RowEditor(props: {
+  ch: Channel;
+  disabled: boolean;
+  /** The datalists offering the system's tags and categories. */
+  lists: Record<"tag" | "group", string>;
+  onAccess: (p: AccessParts) => void;
+  onName: (field: NameField, value: string) => void;
+  onDone: () => void;
+}) {
+  const { ch } = props;
+  return (
+    <tr className="rule-edit">
+      <td />
+      <td colSpan={8}>
+        <div className="row-editor">
+          <fieldset>
+            <legend>Records</legend>
+            {ch.mode === "am" ? <span className="muted small">Every transmission: AM carries no codes.</span> : <AccessInput ch={ch} disabled={props.disabled} onChange={props.onAccess} />}
+          </fieldset>
+          <fieldset>
+            <legend>Names</legend>
+            {NAME_FIELDS.map(([field, label, placeholder]) => (
+              <label key={field} className="row-name">
+                <span className="small muted">{label}</span>
+                <input
+                  value={ch[field] ?? ""}
+                  disabled={props.disabled}
+                  placeholder={placeholder}
+                  list={field === "description" ? undefined : props.lists[field]}
+                  onChange={(e) => props.onName(field, e.target.value)}
+                />
+              </label>
+            ))}
+          </fieldset>
+          <button className="btn small" onClick={props.onDone}>
+            Done
+          </button>
+        </div>
+        <div className="field-hint">
+          {ch.mode !== "am" && CODE_HINT[ch.mode].title}
+          {ch.mode === "dmr" && " Slot: either, or one."}
+          {digital(ch.mode) && " Match TG: only transmissions naming this talkgroup (empty: any). Give the row a TG Number to file them under another; the air's stays in the call's JSON as talkgroup_ota."}
+          {" "}Names go with every call the row takes, as a talkgroup file's do (empty: the talkgroup file's for the number filed under, if the row has no names at all).
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+const NONE_LABEL = { fm: "no tone", am: "no code", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code" };
 const SHOWN_CODES = 8;
 
 /**
@@ -228,22 +487,23 @@ const SHOWN_CODES = 8;
  * codes), most heard first, each with an Add that makes a row for it — the
  * way to find a frequency's codes without knowing them.
  */
-function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (code: string) => void }) {
+function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (p: AccessParts) => void }) {
   const mode = props.rows[0].mode;
   // Only what this mode's Tone can say (NXDN's RAN 0 is any: "RAN 0 TG 201" is "TG 201").
   const nxdn = mode === "nxdn48" || mode === "nxdn96";
   const codes = props.heard.flatMap((h) => {
     const p = parseAccess(mode, h.code);
-    return "tone" in p && (p.tone === h.code || (nxdn && /^RAN 0\b/.test(h.code))) ? [{ ...h, code: p.tone }] : [];
+    return "error" in p || (nxdn && /^RAN 0\b/.test(h.code) && !p.matchTalkgroup) ? [] : [{ ...h, parts: p }];
   });
   if (!codes.length) return null;
-  const listed = (code: string) => props.rows.some((r) => (code ? !!r.tone && sameTone(r.tone, code) : !r.tone));
+  // Already recorded by a row of its own (not just by the catch-all).
+  const listed = (p: AccessParts) => props.rows.some((r) => sameAccess({ code: r.code ?? "", slot: r.slot, matchTalkgroup: r.matchTalkgroup }, p));
   const label = (code: string) => (!code ? NONE_LABEL[mode] : mode === "fm" && /^\d/.test(code) ? `${code} Hz` : code);
   const shown = codes.slice(0, SHOWN_CODES);
   return (
     <tr className="heard-row">
       <td />
-      <td colSpan={7}>
+      <td colSpan={8}>
         <span className="muted small">Heard:</span>
         {shown.map((h) => (
           <span key={h.code} className="heard-code" title={`Last heard ${new Date(h.lastMs).toLocaleString()}`}>
@@ -254,14 +514,14 @@ function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean;
               {h.calls && h.skipped ? ", " : ""}
               {h.skipped ? `${h.skipped} not recorded` : ""}
             </span>
-            {listed(h.code) ? (
+            {listed(h.parts) ? (
               <span className="muted small" title="Already listed">
                 {" "}
                 ✓
               </span>
             ) : (
               !props.linked && (
-                <button className="btn ghost small" title={`Add a row for ${label(h.code)}`} onClick={() => props.onAdd(h.code)}>
+                <button className="btn ghost small" title={`Add a row for ${label(h.code)}`} onClick={() => props.onAdd(h.parts)}>
                   Add
                 </button>
               )
@@ -298,15 +558,7 @@ function RateInput(props: { hz: number; options: number[]; onChange: (hz: number
   }
   return (
     <>
-      <input
-        className="mono"
-        list={id}
-        defaultValue={props.hz / 1e6}
-        onChange={(e) => {
-          const v = Number(e.target.value);
-          if (v > 0) props.onChange(Math.round(v * 1e6));
-        }}
-      />
+      <DraftInput className="mono" list={id} codec={msps} value={props.hz} onChange={(hz) => hz > 0 && props.onChange(hz)} />
       <datalist id={id}>
         {props.options.map((r) => (
           <option key={r} value={r / 1e6} />
@@ -317,29 +569,48 @@ function RateInput(props: { hz: number; options: number[]; onChange: (hz: number
 }
 
 /** Why an optional driver can't be used, and how to install it. */
-function DriverMissing(props: { kind: "usrp" | "airspy" | "soapy"; detail: string }) {
+function DriverMissing(props: { kind: Source["type"]; detail: string }) {
+  const k = SOURCE_KINDS[props.kind];
+  const d = k.driver;
+  if (!d) return null;
   return (
     <div className="banner bad small wide">
-      {props.kind === "soapy" ? (
-        <span>
-          SoapySDR support needs <b>SoapySDR</b> and your radio&apos;s module, which weren&apos;t found ({props.detail}). Install them — macOS:{" "}
-          <code>brew install soapysdr soapyhackrf</code>; Debian/Ubuntu: <code>sudo apt install soapysdr0.8-module-all</code>; Windows: PothosSDR or
-          radioconda — then restart Trunk Recorder Pro.
-        </span>
-      ) : props.kind === "usrp" ? (
-        <span>
-          USRP support needs <b>UHD</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>brew install uhd</code>; Debian/Ubuntu:{" "}
-          <code>sudo apt install libuhd-dev uhd-host</code>; Windows: Ettus&apos;s UHD installer — then run <code>uhd_images_downloader</code> and restart
-          Trunk Recorder Pro.
-        </span>
-      ) : (
-        <span>
-          Airspy support needs <b>libairspy</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>brew install airspy</code>; Debian/Ubuntu:{" "}
-          <code>sudo apt install libairspy0</code>; Windows: put <code>airspy.dll</code> (from airspy-tools) next to <code>trunk-pro.exe</code> — then
-          restart Trunk Recorder Pro.
-        </span>
-      )}
+      <span>
+        {k.label} support needs <b>{d.name}</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>{d.macos}</code>; Debian/Ubuntu:{" "}
+        <code>{d.linux}</code>; Windows: {d.windows} — then {d.then ? `${d.then} and ` : ""}restart Trunk Recorder Pro.
+      </span>
     </div>
+  );
+}
+
+/** A radio picked by serial from those its driver found (Airspy, bladeRF). */
+function SerialPicker(props: { kind: "airspy" | "bladerf"; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
+  const s = useApp();
+  const { kind, serial, used } = props;
+  const k = SOURCE_KINDS[kind];
+  const state = s.radios?.[kind];
+  const devices = state?.devices ?? [];
+  return (
+    <Field label={k.label} hint={devices.length ? state?.detail : `${state?.detail ?? k.driver?.name} · none found — plug one in and press Refresh`}>
+      <div className="row">
+        <select value={serial} onChange={(e) => props.onChange(e.target.value)}>
+          <option value="">First available</option>
+          {serial && !devices.some((d) => d.serial === serial) && <option value={serial}>SN {serial} (not connected)</option>}
+          {devices.map((d) => {
+            const inUse = used.has(deviceKey(kind, d.serial ?? ""));
+            return (
+              <option key={d.serial} value={d.serial} disabled={inUse}>
+                {d.label}
+                {inUse ? " (in use)" : ""}
+              </option>
+            );
+          })}
+        </select>
+        <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
+          Refresh
+        </button>
+      </div>
+    </Field>
   );
 }
 
@@ -385,34 +656,11 @@ function SoapyModules(props: { soapy: SoapyState }) {
 
 type EditSource = (fn: (x: Source) => void) => void;
 
-/** A number typed as text (kept while typing); blank = undefined. Negative and decimal numbers too. */
-function DecInput(props: { value: number | undefined; placeholder?: string; disabled?: boolean; label: string; onChange: (v: number | undefined) => void; narrow?: boolean }) {
-  const [text, setText] = useState(props.value === undefined ? "" : String(props.value));
-  useEffect(() => setText((t) => (parse(t) === props.value ? t : props.value === undefined ? "" : String(props.value))), [props.value]); // eslint-disable-line react-hooks/exhaustive-deps
-  function parse(t: string): number | undefined {
-    const v = t.trim().replace(",", ".");
-    return v === "" || !Number.isFinite(Number(v)) ? undefined : Number(v);
-  }
-  return (
-    <input
-      className={`mono${props.narrow ? " narrow" : ""}`}
-      aria-label={props.label}
-      value={text}
-      disabled={props.disabled}
-      placeholder={props.placeholder}
-      onChange={(e) => {
-        setText(e.target.value);
-        props.onChange(parse(e.target.value));
-      }}
-    />
-  );
-}
-
 function PpmField(props: { src: Exclude<Source, { type: "file" }>; edit: EditSource }) {
   const { src, edit } = props;
   return (
     <Field label="Frequency correction, ppm" hint={src.type === "rtlsdr" ? "Whole numbers" : undefined}>
-      <DecInput
+      <NumberInput
         label="Frequency correction, ppm"
         value={src.ppm}
         onChange={(v) =>
@@ -421,6 +669,41 @@ function PpmField(props: { src: Exclude<Source, { type: "file" }>; edit: EditSou
           })
         }
       />
+    </Field>
+  );
+}
+
+/** USB transfer sizes offered (Trunk Recorder's buflen), bytes; 0 = the driver's 256 KiB. */
+const BUF_LENS = [0, 131_072, 65_536, 32_768, 16_384];
+/** As many RTL-SDRs as this at 2 MS/s or more get the advice (as `Config::rtl_buflen_hint`). */
+const RTL_BUSY_COUNT = 4;
+
+/**
+ * An RTL-SDR's USB transfer size: smaller transfers let several dongles take
+ * turns on one USB 2.0 bus without any of their small FIFOs overflowing.
+ */
+function UsbTransfers(props: { src: Extract<Source, { type: "rtlsdr" }>; sources: Source[]; devices: Device[]; edit: EditSource }) {
+  const { src, sources, devices, edit } = props;
+  const len = src.bufLen ?? 0;
+  const busy = sources.filter((x) => x.type === "rtlsdr" && x.rateHz >= 2_000_000).length;
+  const mine = devices.find((d) => (src.serial ? d.serial === src.serial : true));
+  const onBus = mine?.bus ? devices.filter((d) => d.bus === mine.bus).length : null;
+  const crowded = busy >= RTL_BUSY_COUNT && (onBus === null || onBus >= RTL_BUSY_COUNT);
+  const hint =
+    crowded && len === 0
+      ? `${busy} dongles at full rate${onBus !== null ? `, ${onBus} on this USB bus` : ""}: 64 KiB recommended`
+      : "Smaller helps several dongles share one USB 2.0 bus (Trunk Recorder's buflen)";
+  const kib = (n: number) => `${n / 1024} KiB`;
+  return (
+    <Field label="USB transfer size" hint={hint}>
+      <select value={len} onChange={(e) => edit((x) => x.type === "rtlsdr" && void (x.bufLen = Number(e.target.value)))}>
+        {BUF_LENS.map((n) => (
+          <option key={n} value={n}>
+            {n === 0 ? "256 KiB (default)" : kib(n)}
+          </option>
+        ))}
+        {!BUF_LENS.includes(len) && <option value={len}>{len % 1024 ? `${len} bytes` : kib(len)}</option>}
+      </select>
     </Field>
   );
 }
@@ -537,7 +820,7 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
         {Object.entries(gains).map(([k, v]) => (
           <span key={k} className="stage">
             <span className="mono small">{k}</span>
-            <DecInput narrow label={`${k} gain, dB`} value={v} disabled={disabled} onChange={(n) => set((g) => void (g[k] = n ?? 0))} />
+            <NumberInput narrow label={`${k} gain, dB`} value={v} disabled={disabled} onChange={(n) => set((g) => void (g[k] = n ?? 0))} />
             <button className="btn ghost small danger" aria-label={`Remove the ${k} stage`} title="Remove" onClick={() => set((g) => void delete g[k])}>
               ×
             </button>
@@ -557,13 +840,6 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
   );
 }
 
-const KINDS: { kind: Source["type"]; label: string; desktop?: boolean }[] = [
-  { kind: "rtlsdr", label: "RTL-SDR" },
-  { kind: "usrp", label: "USRP", desktop: true },
-  { kind: "airspy", label: "Airspy", desktop: true },
-  { kind: "soapy", label: "SoapySDR", desktop: true },
-  { kind: "file", label: "Capture file" },
-];
 
 /** `fresh`: just added (measuring its roll-off is offered). */
 function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
@@ -576,21 +852,23 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
   const setKind = (kind: Source["type"]) =>
     updateConfig((x) => {
       const old = x.sources[i];
-      const fresh = kind === "rtlsdr" ? newDongle() : kind === "usrp" ? newUsrp() : kind === "airspy" ? newAirspy() : kind === "soapy" ? newSoapy() : newFile();
-      x.sources[i] = { ...fresh, centerHz: old.centerHz } as Source;
+      x.sources[i] = { ...SOURCE_KINDS[kind].fresh(), centerHz: old.centerHz } as Source;
     });
   const fileRef = useRef<HTMLInputElement>(null);
   const others = c.sources.filter((_, k) => k !== i);
-  const used = new Set(others.map((x) => (x.type === "rtlsdr" ? `r:${x.serial}` : x.type === "airspy" ? `a:${x.serial}` : x.type === "usrp" ? `u:${x.args}` : x.type === "soapy" ? `s:${x.args}` : "")));
+  const used = new Set(others.map(sourceKey));
   const radios = s.radios;
+  // Its driver isn't installed (desktop app).
+  const driverState = needsDriver(src) ? radios?.[src.type] : undefined;
+  const missing = !!driverState && !driverState.available;
   const needs = useNeed()(`src-${i}`);
 
-  const kindLabel = KINDS.find((k) => k.kind === src.type)?.label ?? src.type;
+  const kindLabel = SOURCE_KINDS[src.type].label;
   const tuned = src.centerHz || auto;
 
   return (
     <Card
-      cardKey={`src-${i}`}
+      cardKey={srcKey(src, i, c.sources)}
       n={c.sources.length}
       className={`source-card${needs ? " needs" : ""}`}
       id={`need-src-${i}`}
@@ -612,7 +890,6 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             className="btn ghost small"
             onClick={() => {
               web?.removeFile(i);
-              forgetCard("src-", i, c.sources.length);
               updateConfig((x) => void x.sources.splice(i, 1));
             }}
           >
@@ -626,11 +903,13 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         <div className="field wide">
           <span className="field-label">Kind</span>
           <div className="seg small" role="radiogroup" aria-label={`Source ${i + 1} kind`}>
-            {KINDS.filter((k) => !k.desktop || !web).map((k) => (
-              <button key={k.kind} role="radio" aria-checked={src.type === k.kind} className={src.type === k.kind ? "on" : ""} onClick={() => setKind(k.kind)}>
-                {k.label}
-              </button>
-            ))}
+            {(Object.keys(SOURCE_KINDS) as Source["type"][])
+              .filter((k) => !SOURCE_KINDS[k].driver || can("drivers"))
+              .map((k) => (
+                <button key={k} role="radio" aria-checked={src.type === k} className={src.type === k ? "on" : ""} onClick={() => setKind(k)}>
+                  {SOURCE_KINDS[k].label}
+                </button>
+              ))}
           </div>
         </div>
         {src.type === "rtlsdr" && (
@@ -658,10 +937,9 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             </div>
           </Field>
         )}
-        {src.type === "usrp" &&
-          (radios && !radios.usrp.available ? (
-            <DriverMissing kind="usrp" detail={radios.usrp.detail} />
-          ) : (
+        {src.type === "rtlsdr" && can("drivers") && <UsbTransfers src={src} sources={c.sources} devices={s.devices} edit={edit} />}
+        {missing && <DriverMissing kind={src.type} detail={driverState.detail} />}
+        {src.type === "usrp" && !missing && (
             <Field
               label="USRP"
               hint={
@@ -692,41 +970,31 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
                 </button>
               </div>
             </Field>
-          ))}
+        )}
         {src.type === "usrp" && (
           <Field label="Antenna" hint="e.g. RX2, TX/RX">
             <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.type === "usrp" && void (x.antenna = e.target.value.trim()))} />
           </Field>
         )}
-        {src.type === "airspy" &&
-          (radios && !radios.airspy.available ? (
-            <DriverMissing kind="airspy" detail={radios.airspy.detail} />
-          ) : (
-            <Field label="Airspy" hint={radios?.airspy.devices?.length ? radios.airspy.detail : `${radios?.airspy.detail ?? "libairspy"} · none found`}>
-              <div className="row">
-                <select value={src.serial} onChange={(e) => edit((x) => x.type === "airspy" && void (x.serial = e.target.value))}>
-                  <option value="">First available</option>
-                  {src.serial && !(radios?.airspy.devices ?? []).some((d) => d.serial === src.serial) && <option value={src.serial}>SN {src.serial} (not connected)</option>}
-                  {(radios?.airspy.devices ?? []).map((d) => (
-                    <option key={d.serial} value={d.serial} disabled={used.has(`a:${d.serial}`)}>
-                      {d.label}
-                      {used.has(`a:${d.serial}`) ? " (in use)" : ""}
-                    </option>
-                  ))}
-                </select>
-                <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
-                  Refresh
-                </button>
-              </div>
-            </Field>
-          ))}
+        {(src.type === "airspy" || src.type === "bladerf") && !missing && (
+          <SerialPicker kind={src.type} serial={src.serial} used={used} onChange={(v) => edit((x) => (x.type === "airspy" || x.type === "bladerf") && void (x.serial = v))} />
+        )}
         {src.type === "airspy" && (
-          <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
+          <>
+            <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
+            <Toggle
+              label="Pack samples"
+              hint="12-bit samples on the USB: a quarter less of the bus (an Airspy at 10 MSPS nearly fills a USB 2.0 bus). Off only for old firmware"
+              checked={src.packing ?? true}
+              onChange={(v) => edit((x) => x.type === "airspy" && void (x.packing = v))}
+            />
+          </>
+        )}
+        {src.type === "bladerf" && (
+          <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable (bladeRF 2.0)" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "bladerf" && void (x.biasTee = v))} />
         )}
         {src.type === "soapy" &&
-          (radios?.soapy && !radios.soapy.available ? (
-            <DriverMissing kind="soapy" detail={radios.soapy.detail} />
-          ) : (
+          (missing ? null : (
             <>
               <Field
                 label="Device"
@@ -748,9 +1016,9 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
                   />
                   <datalist id={`soapy-${i}`}>
                     {(radios?.soapy?.devices ?? []).map((d) => (
-                      <option key={d.args} value={d.args} disabled={used.has(`s:${d.args}`)}>
+                      <option key={d.args} value={d.args} disabled={used.has(deviceKey("soapy", d.args))}>
                         {d.label}
-                        {used.has(`s:${d.args}`) ? " (in use)" : ""}
+                        {used.has(deviceKey("soapy", d.args)) ? " (in use)" : ""}
                       </option>
                     ))}
                   </datalist>
@@ -777,15 +1045,11 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
                 </button>
                 <span className="mono">{web.file(i)?.name ?? (src.path ? `${src.path} (choose again)` : "none")}</span>
               </div>
-              <input
-                ref={fileRef}
-                type="file"
-                hidden
-                onChange={(e) => {
-                  const f = e.target.files?.[0] ?? null;
-                  web?.setFile(i, f);
+              <FileInput
+                inputRef={fileRef}
+                onFile={(f) => {
+                  web?.setFile(i, f ?? null);
                   edit((x) => x.type === "file" && void (x.path = f?.name ?? ""));
-                  e.target.value = "";
                 }}
               />
             </Field>
@@ -805,7 +1069,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
               />
             </Field>
           ))}
-        {src.type === "file" && !web && (
+        {src.type === "file" && can("service") && (
           <Field label="Sample format">
             <select value={src.format ?? "cu8"} onChange={(e) => edit((x) => x.type === "file" && void (x.format = e.target.value as "cu8" | "cs16" | "cf32"))}>
               <option value="cu8">cu8 — rtl_sdr (unsigned 8-bit)</option>
@@ -821,20 +1085,25 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
           label="Center frequency, MHz"
           hint={src.centerHz ? undefined : auto ? `Auto: ${formatMhz(auto, 4)} MHz` : "Auto: no uncovered system to place over"}
         >
-          <MhzInput hz={src.centerHz} placeholder={auto ? formatMhz(auto, 4) : "MHz"} onChange={(hz) => edit((x) => void (x.centerHz = hz))} />
+          <DraftInput className="mono" codec={mhz} value={src.centerHz} placeholder={auto ? formatMhz(auto, 4) : "MHz"} onChange={(hz) => edit((x) => void (x.centerHz = hz))} />
         </Field>
         <Field
           label="Sample rate"
-          hint={src.type === "usrp" ? "MSPS; wider costs more CPU" : src.type === "airspy" ? "R2: 10 or 2.5; Mini: 6 or 3" : src.type === "soapy" ? "MSPS, one the device supports" : undefined}
+          hint={SOURCE_KINDS[src.type].rateHint}
         >
           <RateInput
             key={src.type}
             hz={src.rateHz}
-            free={src.type === "usrp" || src.type === "soapy" || (src.type === "file" && !web)}
-            options={src.type === "usrp" ? USRP_RATES : src.type === "airspy" ? AIRSPY_RATES : src.type === "soapy" ? SOAPY_RATES : src.type === "file" ? [...SAMPLE_RATES, 8_000_000, 10_000_000] : SAMPLE_RATES}
+            free={!!SOURCE_KINDS[src.type].freeRate || (src.type === "file" && can("service"))}
+            options={SOURCE_KINDS[src.type].rates}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>
+        {src.type === "bladerf" && (
+          <Field label="Filter bandwidth, MHz" hint="The analog low-pass filter. Blank = the sample rate.">
+            <DraftInput className="mono" codec={mhz} value={src.bandwidthHz} placeholder={formatMhz(src.rateHz, 2)} aria-label="Filter bandwidth, MHz" onChange={(hz) => edit((x) => x.type === "bladerf" && void (x.bandwidthHz = hz))} />
+          </Field>
+        )}
         <GuardBand c={c} i={i} fresh={props.fresh} onFreshDone={props.onFreshDone} />
         {center ? (
           <div className="wide">
@@ -843,11 +1112,16 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         ) : null}
       </Group>
       {src.type !== "file" && (
-        <Group title="Gain" hint={src.type === "airspy" ? "A preset, or each stage set by hand." : "Too little loses weak signals; too much overloads near strong ones."}>
+        <Group
+          title="Gain"
+          hint={`${src.type === "airspy" ? "A preset, or each stage set by hand." : "Too little loses weak signals; too much overloads near strong ones."} ${
+            SOURCE_KINDS[src.type].liveAgc ? "Changes apply at once, also while recording." : "The gain in dB applies at once, also while recording; AGC on or off when recording starts."
+          }`}
+        >
           {src.type === "rtlsdr" && (
             <Field label="Gain, dB" hint={src.agc ? "A fixed gain usually works better" : "Most dongles: 0–49.6"}>
               <div className="row">
-                <GainInput label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => v !== null && edit((x) => x.type === "rtlsdr" && void (x.gainDb = v))} />
+                <NumberInput gain label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => v !== undefined && edit((x) => x.type === "rtlsdr" && void (x.gainDb = v))} />
                 <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "rtlsdr" && void (x.agc = v))} />
               </div>
             </Field>
@@ -855,8 +1129,16 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
           {src.type === "usrp" && (
             <Field label="Gain, dB" hint={src.agc ? "AGC: B200 / B210 and E3xx only" : "B200/B210: 0–76"}>
               <div className="row">
-                <GainInput label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.gainDb = v || 0))} />
+                <NumberInput gain label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.gainDb = v || 0))} />
                 <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.agc = v))} />
+              </div>
+            </Field>
+          )}
+          {src.type === "bladerf" && (
+            <Field label="Gain, dB" hint={src.agc ? "The board's AGC sets it. A fixed gain is usually better for trunking." : "Overall RX gain; bladeRF 2.0: about −15 to 60"}>
+              <div className="row">
+                <NumberInput gain label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => edit((x) => x.type === "bladerf" && void (x.gainDb = v ?? 0))} />
+                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "bladerf" && void (x.agc = v))} />
               </div>
             </Field>
           )}
@@ -865,7 +1147,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             <>
               <Field label="Gain, dB">
                 <div className="row">
-                  <GainInput label="Gain, dB" value={src.gainDb} placeholder={src.agc ? "AGC" : "as is"} disabled={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.gainDb = v))} />
+                  <NumberInput gain label="Gain, dB" value={src.gainDb ?? undefined} placeholder={src.agc ? "AGC" : "as is"} disabled={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.gainDb = v ?? null))} />
                   <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.agc = v))} />
                 </div>
               </Field>
@@ -891,13 +1173,14 @@ function CoverageBar(props: { c: Config; center: number; rateHz: number; guardHz
   const inside = (hz: number) => Math.abs(hz - center) <= half;
   const systems = activeSystems(c);
   const ticks: { hz: number; kind: "cc" | "voice"; color: string; label: string }[] = [];
-  systems.forEach((x) => {
-    for (const f of x.controlChannelsHz) if (inside(f)) ticks.push({ hz: f, kind: "cc", color: systemColor(c, x.shortName), label: `${x.shortName} control channel ${formatMhz(f)} MHz` });
-    for (const f of x.voiceChannelsHz) if (inside(f)) ticks.push({ hz: f, kind: "voice", color: systemColor(c, x.shortName), label: `${x.shortName} voice ${formatMhz(f)} MHz` });
+  activeSites(c).forEach(({ sys: x, site }) => {
+    const name = siteNameOf(x, site);
+    for (const f of site.controlChannelsHz) if (inside(f)) ticks.push({ hz: f, kind: "cc", color: systemColor(c, x.shortName), label: `${name} control channel ${formatMhz(f)} MHz` });
+    for (const f of site.voiceChannelsHz) if (inside(f)) ticks.push({ hz: f, kind: "voice", color: systemColor(c, x.shortName), label: `${name} voice ${formatMhz(f)} MHz` });
   });
   const conv = enabledChannels(c).filter((ch) => inside(ch.freqHz));
   for (const ch of conv) ticks.push({ hz: ch.freqHz, kind: "voice", color: "var(--text)", label: `conventional ${ch.name || formatMhz(ch.freqHz)}` });
-  const here = systems.filter((x) => x.controlChannelsHz.some(inside) || x.voiceChannelsHz.some(inside));
+  const here = systems.filter((x) => x.sites.filter(siteActive).some((y) => y.controlChannelsHz.some(inside) || y.voiceChannelsHz.some(inside)));
   return (
     <div className="stack" style={{ gap: 4 }}>
       <div className="coverage" role="img" aria-label={`Covers ${formatMhz(center - half, 3)} to ${formatMhz(center + half, 3)} MHz`}>
@@ -911,10 +1194,7 @@ function CoverageBar(props: { c: Config; center: number; rateHz: number; guardHz
           {formatMhz(center - half, 3)} – {formatMhz(center + half, 3)} MHz
         </span>
         {here.map((x) => (
-          <span key={x.shortName}>
-            <span className="sys-dot" style={{ background: systemColor(c, x.shortName) }} />
-            {x.shortName}
-          </span>
+          <SystemTag key={x.shortName} config={c} name={x.shortName} />
         ))}
         {conv.length > 0 && <span>{conv.length} conventional</span>}
         {!here.length && !conv.length && <span>nothing in range</span>}
@@ -935,15 +1215,18 @@ function ConventionalTab(props: { c: Config }) {
   return (
     <Section
       title="Conventional systems"
-      hint="Single frequencies (analog FM, P25, DMR or NXDN), kept together as a system with its own folder."
+      hint="Single frequencies (analog FM or AM, P25, DMR or NXDN), kept together as a system with its own folder."
       actions={
         <>
-          <ExpandAll prefix="conv-" n={c.conventional.length} />
+          <ExpandAll keys={c.conventional.map(convKey)} />
           <button
             className="btn"
             onClick={() => {
-              addCard("conv-", c.conventional.length);
-              updateConfig((x) => void x.conventional.push(newConventional(x)));
+              updateConfig((x) => {
+                const n = newConventional(x);
+                x.conventional.push(n);
+                addCard(c.conventional.map(convKey), convKey(n, x.conventional.length - 1, x.conventional));
+              });
             }}
           >
             Add a conventional system
@@ -951,8 +1234,8 @@ function ConventionalTab(props: { c: Config }) {
         </>
       }
     >
-      {c.conventional.map((_, k) => (
-        <ConventionalPanel key={`${k}-${c.conventional.length}-${s.configEpoch}`} c={c} k={k} />
+      {c.conventional.map((x, k) => (
+        <ConventionalPanel key={convKey(x, k, c.conventional)} c={c} k={k} />
       ))}
       {!c.conventional.length && <p className="set-empty">No conventional systems yet.</p>}
     </Section>
@@ -963,10 +1246,9 @@ function ConventionalTab(props: { c: Config }) {
  * One conventional system: a table editor, bulk add, CSV import / export,
  * and (desktop) a linked CSV file to edit in a spreadsheet instead.
  */
-function ConventionalPanel(props: { c: Config; k: number }) {
+export function ConventionalPanel(props: { c: Config; k: number }) {
   const { c, k } = props;
   const need = useNeed();
-  const plugins = useApp().plugins?.plugins ?? [];
   const conv = c.conventional[k];
   const chans = conv.channels;
   const name = conv.shortName;
@@ -978,7 +1260,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
   const [bulk, setBulk] = useState("");
   const [pending, setPending] = useState<{ name: string; channels: Channel[]; notes: string[] } | null>(null);
   const [filePath, setFilePath] = useState(`${conv.shortName || "conv"}-channels.csv`);
-  const linked = !web && !!conv.channelFile;
+  const linked = can("service") && !!conv.channelFile;
   const [bulkMode, setBulkMode] = useState<Channel["mode"]>("fm");
   const edit = (fn: (x: Conventional) => void) =>
     updateConfig((x) => {
@@ -990,21 +1272,36 @@ function ConventionalPanel(props: { c: Config; k: number }) {
     edit((x) => void x.channels.splice(i, 1));
   };
   const heard = useApp().heard;
+  const suggest = useNameSuggestions(conv);
+  const listId = useId();
+  const lists = { tag: `${listId}-tag`, group: `${listId}-group` };
+  /** The rows (by id) whose editor is open. */
+  const [editing, setEditing] = useState<Set<number>>(() => new Set());
+  const toggleEdit = (id: number) =>
+    setEditing((e) => {
+      const n = new Set(e);
+      if (!n.delete(id)) n.add(id);
+      return n;
+    });
   /** The last row on row i's frequency. */
   const lastOfFreq = (i: number) => chans.reduce((at, o, k) => (Math.abs(o.freqHz - chans[i].freqHz) < 1 ? Math.max(at, k) : at), i);
-  /** Another row on row i's frequency (after the last of them), for another tone — `tone` when it is known. */
-  const addTone = (i: number, tone = "") => {
+  /** Another row on row i's frequency (after the last of them), for another code — `access` when it is known. */
+  const addRule = (i: number, access: AccessParts = { code: "" }) => {
     const ch = chans[i];
     const at = lastOfFreq(i);
-    const row: Channel = { freqHz: ch.freqHz, mode: ch.mode, name: "", enabled: true, tone };
-    // A DMR / NXDN code naming a talkgroup files under it; others get the next free number.
-    if (!(ch.mode !== "fm" && ch.mode !== "p25" && /\bTG \d/.test(tone))) row.talkgroup = nextTalkgroup(chans, ch.freqHz);
-    if (!tone) delete row.tone;
+    const row: Channel = { freqHz: ch.freqHz, mode: ch.mode, name: "", enabled: true };
+    setAccess(row, access);
+    if (ch.bandwidthKhz !== undefined) row.bandwidthKhz = ch.bandwidthKhz;
+    // Analog: the next free number. Digital: the air's, until one is typed.
+    if (!digital(ch.mode)) row.talkgroup = nextTalkgroup(chans, ch.freqHz);
     if (ch.squelchDb !== undefined) row.squelchDb = ch.squelchDb;
-    ids.current.splice(at + 1, 0, nextRowId++);
+    const id = nextRowId++;
+    ids.current.splice(at + 1, 0, id);
+    // A new rule's editor opens, unless it came with its code.
+    if (!access.code && access.matchTalkgroup === undefined) setEditing((e) => new Set(e).add(id));
     edit((x) => void x.channels.splice(at + 1, 0, row));
   };
-  const talkgroups = channelTalkgroups(chans);
+  const talkgroups = defaultTalkgroups(chans);
   const shared = (i: number) => chans.some((o, k) => k !== i && Math.abs(o.freqHz - chans[i].freqHz) < 1);
   const add = (list: Channel[]) => {
     ids.current.push(...list.map(() => nextRowId++));
@@ -1026,11 +1323,10 @@ function ConventionalPanel(props: { c: Config; k: number }) {
   const exportCsv = () => downloadText(`${conv.shortName || "channels"}-channels.csv`, channelsToCsv(chans));
   const enabled = chans.filter((ch) => ch.enabled).length;
   const todo = useTodosAt(["channels", "squelch", "convunits", "convplug"], name);
-  const optNum = (v: string): number | undefined => (v.trim() === "" || !Number.isFinite(Number(v)) ? undefined : Number(v));
 
   return (
     <Card
-      cardKey={`conv-${k}`}
+      cardKey={convKey(conv, k, c.conventional)}
       n={c.conventional.length}
       className={conv.enabled ? undefined : "off"}
       id={`need-conv-${name}`}
@@ -1050,27 +1346,21 @@ function ConventionalPanel(props: { c: Config; k: number }) {
       actions={
         <>
           <Switch label="Record" checked={conv.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
+          <IdentifyFcc target={{ kind: "conventional", index: k }} what={conv.name || conv.shortName} freqs={[...new Set(chans.map((ch) => ch.freqHz).filter((f) => f > 0))]} fcc={conv.fcc} />
           <button
             className="btn ghost small"
             onClick={() => {
               if (window.confirm(`Remove ${name || "this conventional system"} and its ${chans.length} channel${chans.length === 1 ? "" : "s"}? Its recordings stay on disk.`)) {
-                forgetCard("conv-", k, c.conventional.length);
-                updateConfig((x) => void x.conventional.splice(k, 1));
+                updateConfig((x) => {
+                  x.conventional.splice(k, 1);
+                  forgetTalkgroups(x, conv.shortName);
+                });
               }
             }}
           >
             Remove
           </button>
-          <input
-            ref={csvRef}
-            type="file"
-            accept=".csv,text/csv"
-            hidden
-            onChange={(e) => {
-              void onCsv(e.target.files?.[0]);
-              e.target.value = "";
-            }}
-          />
+          <FileInput inputRef={csvRef} accept=".csv,text/csv" onFile={(f) => void onCsv(f)} />
         </>
       }
     >
@@ -1079,11 +1369,8 @@ function ConventionalPanel(props: { c: Config; k: number }) {
           <input
             value={conv.shortName}
             onChange={(e) => {
-              const to = e.target.value.replace(/[^\w.-]/g, "");
-              updateConfig((x) => {
-                renameSystemRefs(x, x.conventional[k].shortName, to, plugins);
-                x.conventional[k].shortName = to;
-              });
+              const to = cleanShortName(e.target.value);
+              updateConfig((x) => renameSystem(x, x.conventional[k], to));
             }}
           />
         </Field>
@@ -1091,12 +1378,20 @@ function ConventionalPanel(props: { c: Config; k: number }) {
           <input value={conv.name ?? ""} placeholder="County Fire" onChange={(e) => edit((x) => void (e.target.value ? (x.name = e.target.value) : delete x.name))} />
         </Field>
         <Field needs={need(`squelch-${name}`)} anchor={`squelch-${name}`} label="Squelch, dB above noise" hint="For channels without their own">
-          <input className="mono" value={conv.squelchDb} onChange={(e) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, Number(e.target.value) || 8))))} />
+          <NumberInput label="Squelch, dB above noise" value={conv.squelchDb} onChange={(v) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, v ?? 8))))} />
         </Field>
       </Group>
+      <Group title="FCC licenses" hint="Optional: who is licensed on each channel's frequency (they can be different licensees'). Identify looks them up; Motorola P25 channels say theirs on the air." cols={1}>
+        <FccTable target={{ kind: "conventional", index: k }} fcc={conv.fcc} />
+      </Group>
+      {chans.some((c) => c.mode !== "fm" && c.mode !== "am") && (
+        <Group title="Talkgroup names" hint="For the talkgroups its P25, DMR and NXDN channels name on the air (a row's own name is for calls filed under its talkgroup).">
+          <TalkgroupsField sys={conv} />
+        </Group>
+      )}
       <Group
         title="Channels"
-        hint="Each frequency, with the tone, NAC, colour code or RAN it records. Several rows can share a frequency."
+        hint="Each frequency, what it records (tone, NAC, colour code, RAN, slot, talkgroup), the talkgroup number its calls are filed under, and their names. Several rows can share a frequency."
         full
         cols={1}
         actions={
@@ -1168,11 +1463,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
             <div className="row">
               <input className="mono grow" value={bulk} placeholder="154.430, 155.100, 460.125" onChange={(e) => setBulk(e.target.value)} />
               <select value={bulkMode} onChange={(e) => setBulkMode(e.target.value as Channel["mode"])} aria-label="Mode for the added channels">
-                <option value="fm">Analog FM</option>
-                <option value="p25">P25</option>
-                <option value="dmr">DMR</option>
-                <option value="nxdn48">NXDN48 (6.25 kHz)</option>
-                <option value="nxdn96">NXDN96 (12.5 kHz)</option>
+                {modeOptions}
               </select>
               <button
                 className="btn"
@@ -1189,6 +1480,14 @@ function ConventionalPanel(props: { c: Config; k: number }) {
         )}
         {chans.length > 0 && (
           <>
+            <MatchLegend modes={new Set(chans.map((c) => c.mode))} />
+            {(["tag", "group"] as const).map((f) => (
+              <datalist key={f} id={lists[f]}>
+                {suggest[f].map((v) => (
+                  <option key={v} value={v} />
+                ))}
+              </datalist>
+            ))}
             <div className="table-wrap channels-wrap">
               <table className="calls channels">
                 <thead>
@@ -1196,11 +1495,10 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                     <th title="Record this channel">On</th>
                     <th>Frequency, MHz</th>
                     <th>Mode</th>
-                    <th title="Tone, NAC, colour code or RAN to record; blank takes the rest">
-                      Tone
-                    </th>
+                    <th title="Analog: the channel filter's width">Bandwidth</th>
+                    <th title="What the row records: a tone, NAC, colour code or RAN; DMR's slot; a digital mode's talkgroup. Click a row's to change it">Records</th>
                     <th>Name</th>
-                    <th title="Calls are filed under it; P25 uses the on-air one">Talkgroup</th>
+                    <th title="Calls are filed under it. Empty: digital modes the talkgroup the air names, else the frequency in kHz. The air's is kept in the call's JSON as talkgroup_ota">TG Number</th>
                     <th title="dB above the noise floor">Squelch</th>
                     <th />
                   </tr>
@@ -1213,44 +1511,72 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                         <input type="checkbox" disabled={linked} checked={ch.enabled} aria-label="Record this channel" onChange={(e) => editRow(i, (x) => void (x.enabled = e.target.checked))} />
                       </td>
                       <td>
-                        {linked ? <span className="mono">{mhzCell(ch.freqHz)}</span> : <MhzInput hz={ch.freqHz} onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />}
+                        {linked ? <span className="mono">{mhzCell(ch.freqHz)}</span> : <DraftInput className="mono" codec={mhz} value={ch.freqHz} placeholder="MHz" aria-label="Frequency, MHz" onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />}
                       </td>
                       <td>
-                        <select value={ch.mode} disabled={linked} aria-label="Mode" onChange={(e) => editRow(i, (x) => void (x.mode = e.target.value as Channel["mode"]))}>
-                          <option value="fm">Analog FM</option>
-                          <option value="p25">P25</option>
-                          <option value="dmr">DMR</option>
-                          <option value="nxdn48">NXDN48 (6.25 kHz)</option>
-                          <option value="nxdn96">NXDN96 (12.5 kHz)</option>
+                        <select
+                          value={ch.mode}
+                          disabled={linked}
+                          aria-label="Mode"
+                          onChange={(e) =>
+                            editRow(i, (x) => {
+                              x.mode = e.target.value as Channel["mode"];
+                              // A bandwidth is the mode's (AM's and FM's mean different channels); AM has no codes.
+                              delete x.bandwidthKhz;
+                              // The code is the mode's; Match TG only digital modes', Slot only DMR's.
+                              if (x.mode === "am") delete x.code;
+                              if (!digital(x.mode)) delete x.matchTalkgroup;
+                              if (x.mode !== "dmr") delete x.slot;
+                            })
+                          }
+                        >
+                          {modeOptions}
                         </select>
                       </td>
                       <td>
-                        <ToneInput
-                          key={ch.mode}
-                          mode={ch.mode}
-                          tone={ch.tone ?? ""}
+                        <BandwidthSelect
+                          ch={ch}
                           disabled={linked}
-                          onChange={(t) =>
-                            editRow(i, (x) => {
-                              if (t) x.tone = t;
-                              else delete x.tone;
+                          onChange={(khz) =>
+                            edit((x) => {
+                              // Rows sharing the frequency share it.
+                              for (const r of x.channels.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)) {
+                                if (khz === undefined) delete r.bandwidthKhz;
+                                else r.bandwidthKhz = khz;
+                              }
                             })
                           }
                         />
                       </td>
                       <td>
-                        <input value={ch.name} disabled={linked} placeholder="Name" aria-label="Name" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
+                        <MatchLine
+                          ch={ch}
+                          shared={shared(i)}
+                          open={editing.has(ids.current[i])}
+                          onToggle={() => toggleEdit(ids.current[i])}
+                        />
                       </td>
                       <td>
-                        <input
-                          className="mono narrow"
+                        <input value={ch.name} disabled={linked} placeholder="Name" aria-label="Name (alpha tag)" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
+                        {(ch.tag || ch.group || ch.description) && (
+                          <button type="button" className="row-meta small" title={ch.description || "Its description, tag and category — click to edit"} onClick={() => toggleEdit(ids.current[i])}>
+                            {[ch.tag, ch.group].filter(Boolean).join(" · ") || ch.description}
+                          </button>
+                        )}
+                      </td>
+                      <td>
+                        <NumberInput
+                          narrow
                           disabled={linked}
-                          value={ch.talkgroup ?? ""}
-                          placeholder={ch.freqHz ? String(talkgroups[i]) : "auto"}
-                          aria-label="Talkgroup"
-                          onChange={(e) =>
+                          value={ch.talkgroup}
+                          placeholder={ch.freqHz ? (digital(ch.mode) ? "air's" : String(talkgroups[i])) : "auto"}
+                          label={
+                            digital(ch.mode)
+                              ? `TG Number: calls are filed under it; empty: the talkgroup the air names (${ch.freqHz ? talkgroups[i] : "the frequency in kHz"} when it names none)`
+                              : "TG Number: calls are filed under it"
+                          }
+                          onChange={(v) =>
                             editRow(i, (x) => {
-                              const v = optNum(e.target.value);
                               if (v === undefined || v <= 0) delete x.talkgroup;
                               else x.talkgroup = Math.round(v);
                             })
@@ -1258,15 +1584,14 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                         />
                       </td>
                       <td>
-                        <input
-                          className="mono narrow"
+                        <NumberInput
+                          narrow
                           disabled={linked}
-                          value={ch.squelchDb ?? ""}
+                          value={ch.squelchDb}
                           placeholder={String(conv.squelchDb)}
-                          aria-label="Squelch, dB above noise"
-                          onChange={(e) =>
+                          label="Squelch, dB above noise"
+                          onChange={(v) =>
                             editRow(i, (x) => {
-                              const v = optNum(e.target.value);
                               if (v === undefined) delete x.squelchDb;
                               else x.squelchDb = Math.max(3, Math.min(40, v));
                             })
@@ -1274,31 +1599,52 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                         />
                       </td>
                       <td>
+                        <span className="row-actions">
+                          <button
+                            className="btn ghost small"
+                            aria-expanded={editing.has(ids.current[i])}
+                            title="Its codes, and its description, tag and category"
+                            onClick={() => toggleEdit(ids.current[i])}
+                          >
+                            Edit
+                          </button>
                         {!linked && (
-                          <span className="row-actions">
-                            {ch.freqHz > 0 && (
+                          <>
+                            {ch.freqHz > 0 && ch.mode !== "am" && (
                               <button
                                 className="btn ghost small"
-                                title={`Another ${{ fm: "tone", p25: "NAC", dmr: "colour code or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode]} on this frequency`}
+                                title={`Another ${{ fm: "tone", p25: "NAC or talkgroup", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode]} on this frequency`}
                                 aria-label="Add a row on this frequency"
-                                onClick={() => addTone(i)}
+                                onClick={() => addRule(i)}
                               >
-                                {{ fm: "+ tone", p25: "+ NAC", dmr: "+ code", nxdn48: "+ code", nxdn96: "+ code" }[ch.mode]}
+                                {ch.mode === "fm" ? "+ tone" : "+ rule"}
                               </button>
                             )}
                             <button className="btn ghost small danger" title="Remove" aria-label="Remove channel" onClick={() => remove(i)}>
                               ×
                             </button>
-                          </span>
+                          </>
                         )}
+                        </span>
                         </td>
                       </tr>
+                      {(editing.has(ids.current[i]) || "error" in parseAccess(ch.mode, ch.code ?? "")) && (
+                        <RowEditor
+                          key={`e${ch.mode}`}
+                          ch={ch}
+                          disabled={linked}
+                          lists={lists}
+                          onAccess={(p) => editRow(i, (x) => setAccess(x, p))}
+                          onName={(f, v) => editRow(i, (x) => void (v ? (x[f] = v) : delete x[f]))}
+                          onDone={() => setEditing((e) => (e.delete(ids.current[i]) ? new Set(e) : e))}
+                        />
+                      )}
                       {lastOfFreq(i) === i && heard[String(Math.round(ch.freqHz))] && (
                         <HeardRow
                           rows={chans.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)}
                           heard={heard[String(Math.round(ch.freqHz))]}
                           linked={linked}
-                          onAdd={(code) => addTone(i, code)}
+                          onAdd={(p) => addRule(i, p)}
                         />
                       )}
                     </Fragment>
@@ -1324,7 +1670,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
             )}
           </>
         )}
-        {!web && !linked && (
+        {can("service") && !linked && (
           <Field
             needs={need(`channels-${name}`)}
             anchor={`channels-${name}`}
@@ -1339,19 +1685,68 @@ function ConventionalPanel(props: { c: Config; k: number }) {
             </div>
           </Field>
         )}
-        <details className="help">
+        <details className="help csv-help">
           <summary>CSV format</summary>
           <p className="small">
-            A header row, then one channel per row; <b>Export CSV</b> writes one to start from. Columns, in any order: <code>TG Number</code> (empty = the
-            frequency in kHz), <code>Frequency</code> (MHz with a decimal point, or Hz), <code>Mode</code> (<code>fm</code>, <code>p25</code>,{" "}
-            <code>dmr</code>, <code>nxdn48</code> or <code>nxdn96</code>; empty = fm, or what the Tone says: a NAC p25, a colour code dmr, a RAN nxdn48),{" "}
-            <code>Tone</code> (the code the row records: a CTCSS tone <code>151.4</code>, a DCS code <code>D023N</code>, a NAC <code>NAC 293</code>, a
-            colour code <code>CC1 TS2 TG201</code>, a RAN <code>RAN 5</code>; empty = any), <code>Alpha Tag</code>, <code>Description</code>,{" "}
-            <code>Tag</code>, <code>Category</code>, <code>Squelch dB</code> (above the noise; empty = the default), <code>Enable</code> (<code>false</code> =
-            off). Trunk Recorder's channel file reads as is; its <code>Squelch</code> column (an absolute level) isn't used.
+            One channel per row, under a header row naming the columns (any order, any case; others are ignored). <b>Export CSV</b> writes this list as
+            one to start from, and Trunk Recorder's channel file reads as it is. For example:
           </p>
+          <pre className="mono small csv-example">{CSV_EXAMPLE}</pre>
+          <table className="csv-columns small">
+            <thead>
+              <tr>
+                <th>Column</th>
+                <th>What it holds</th>
+                <th>Empty</th>
+              </tr>
+            </thead>
+            <tbody>
+              {CSV_COLUMNS.map(([col, what, empty]) => (
+                <tr key={col}>
+                  <td>
+                    <code>{col}</code>
+                  </td>
+                  <td>{what}</td>
+                  <td className="muted">{empty}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <ul className="small">
+            <li>
+              Rows with the same <code>Frequency</code> split it: a transmission goes to the most specific row it fits (one row may give no{" "}
+              <code>Code</code>, <code>Slot</code> or <code>Match TG</code>: it takes the rest), else it isn't recorded.
+            </li>
+            <li>
+              <code>Code</code> takes RadioReference's spellings — <code>151.4 PL</code>, <code>023 DPL</code>, <code>293 NAC</code>, <code>CC1 TS2 TG201</code>,{" "}
+              <code>RAN 5 TG 201</code> — and a slot or talkgroup in it fills <code>Slot</code> and <code>Match TG</code>.
+            </li>
+            <li>
+              A P25, DMR or NXDN call keeps the talkgroup the air named in its JSON (<code>talkgroup_ota</code>), also when <code>TG Number</code> files it
+              under another.
+            </li>
+            <li>
+              Commas, semicolons or tabs; quoted fields; decimal commas (<code>154,43</code>) with semicolons, as Excel writes them in some locales. Blank
+              rows and <code>#</code> comments are skipped. A value that can't be read is left empty, and the row is named after reading.
+            </li>
+            <li>
+              From Trunk Recorder: its <code>Tone</code> column reads as <code>Code</code>, and its <code>Squelch</code> (an absolute level) isn't used.
+            </li>
+          </ul>
         </details>
       </Group>
+      {chans.some((ch) => ch.mode === "fm" || ch.mode === "am") && (
+        <DemodGroup
+          conv={conv}
+          edit={(fn) =>
+            edit((x) => {
+              x.demod = { ...x.demod };
+              fn(x.demod);
+              if (!Object.keys(x.demod).length) delete x.demod;
+            })
+          }
+        />
+      )}
       {chans.length > 0 && (
         <Group title="Units" hint="Names for the radios heard on these channels." cols={1}>
           <UnitNamesField
@@ -1368,9 +1763,14 @@ function ConventionalPanel(props: { c: Config; k: number }) {
         </Group>
       )}
       {chans.length > 0 && (
-        <Group title="Overrides" hint="This system's own plugin settings and call rules. Anything left at Default follows the Recording tab." cols={1}>
+        <Group title="Plugins" hint="This system's own plugin settings and delays. Anything left at Default follows the Plugins tab." cols={1}>
           <SystemPluginSettings system={{ conv: k }} />
-          <RecordingOverridePanel
+          <SystemDelays system={{ conv: k }} />
+        </Group>
+      )}
+      {chans.length > 0 && (
+        <Group title="Recording" hint="These channels' own call rules and what they keep. Anything left at Default follows the Recording tab." cols={1}>
+          <RecordingOverrides
             c={c}
             value={conv.recording}
             onChange={(fn) =>
@@ -1387,34 +1787,80 @@ function ConventionalPanel(props: { c: Config; k: number }) {
   );
 }
 
-/** A hex or decimal number field; empty = none. */
-function NumInput(props: { value: number | null | undefined; hex?: boolean; placeholder?: string; onChange: (v: number | null) => void; label: string }) {
-  const show = (v: number | null | undefined) => (v === null || v === undefined ? "" : props.hex ? v.toString(16).toUpperCase() : String(v));
-  const [text, setText] = useState(show(props.value));
-  useEffect(() => setText((t) => (parse(t) === (props.value ?? null) ? t : show(props.value))), [props.value]); // eslint-disable-line react-hooks/exhaustive-deps
-  function parse(t: string): number | null {
-    const v = t.trim();
-    if (!v) return null;
-    const n = props.hex ? parseInt(v, 16) : Number(v);
-    return Number.isFinite(n) && n >= 0 ? n : null;
-  }
+/** An analog channel's filter width: the mode's default, or a preset (or what a file set). */
+function BandwidthSelect(props: { ch: Channel; disabled: boolean; onChange: (khz: number | undefined) => void }) {
+  const { ch } = props;
+  if (ch.mode !== "fm" && ch.mode !== "am") return <span className="muted">—</span>;
+  const presets = BANDWIDTH_PRESETS[ch.mode];
+  const value = ch.bandwidthKhz === undefined ? "" : String(ch.bandwidthKhz);
+  const custom = ch.bandwidthKhz !== undefined && !presets.some((p) => p.khz === ch.bandwidthKhz);
   return (
-    <input
-      className="mono"
-      aria-label={props.label}
-      value={text}
-      placeholder={props.placeholder ?? "any"}
-      onChange={(e) => {
-        setText(e.target.value);
-        props.onChange(parse(e.target.value));
-      }}
-    />
+    <select
+      value={value}
+      disabled={props.disabled}
+      aria-label="Bandwidth"
+      title={
+        ch.mode === "fm"
+          ? "The channel filter: narrow for 12.5 kHz channels, wide FM for 25 kHz ones (±5 kHz deviation)."
+          : "The channel filter: 8.33 kHz or 25 kHz airband channels, or wide for UHF military air and a transmitter that is off frequency."
+      }
+      onChange={(e) => props.onChange(e.target.value ? Number(e.target.value) : undefined)}
+    >
+      <option value="">Default ({defaultBandwidthKhz(ch)} kHz)</option>
+      {presets.map((p) => (
+        <option key={p.khz} value={p.khz}>
+          {p.khz} kHz: {p.label}
+        </option>
+      ))}
+      {custom && <option value={value}>{value} kHz</option>}
+    </select>
   );
 }
 
-const hexText = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
+/** A conventional system's demodulation settings, for the analog modes it has; each left at Default is left out. */
+function DemodGroup(props: { conv: Conventional; edit: (fn: (d: Demod) => void) => void }) {
+  const d = props.conv.demod ?? {};
+  const fm = props.conv.channels.some((ch) => ch.mode === "fm");
+  const am = props.conv.channels.some((ch) => ch.mode === "am");
+  const set = <K extends keyof Demod>(k: K, v: Demod[K] | undefined) =>
+    props.edit((x) => {
+      if (v === undefined) delete x[k];
+      else x[k] = v;
+    });
+  const clamp = (v: number | undefined, max: number) => (v === undefined ? undefined : Math.max(0, Math.min(max, Math.round(v))));
+  return (
+    <Group title="Demodulation" hint="How the analog channels become audio. Each channel's bandwidth is in its row. Default suits most channels." cols={3}>
+      {fm && (
+        <Field label="FM de-emphasis" hint="Off for channels sent without pre-emphasis: they sound muffled with it">
+          <select value={d.fmDeemphasis === false ? "off" : ""} onChange={(e) => set("fmDeemphasis", e.target.value === "off" ? false : undefined)}>
+            <option value="">Default (750 µs)</option>
+            <option value="off">Off</option>
+          </select>
+        </Field>
+      )}
+      {am && (
+        <Field label="AM level" hint="How fast the volume follows a fading carrier: Fast keeps an aircraft steady, Slow pumps less on a steady signal">
+          <select value={d.amLevel ?? ""} onChange={(e) => set("amLevel", e.target.value === "slow" ? "slow" : undefined)}>
+            <option value="">Default (Fast, 50 ms)</option>
+            <option value="slow">Slow (0.5 s)</option>
+          </select>
+        </Field>
+      )}
+      {am && (
+        <Field label="AM low cut, Hz" hint="Takes carrier hum and flutter from under the voice. 0: none">
+          <NumberInput label="AM low cut, Hz" value={d.amLowCutHz} placeholder="200" onChange={(v) => set("amLowCutHz", clamp(v, AM_LOW_CUT_MAX_HZ))} />
+        </Field>
+      )}
+      <Field label="Squelch open delay, ms" hint="The carrier must hold this long, so a neighbour's splatter doesn't open it">
+        <NumberInput label="Squelch open delay, ms" value={d.squelchOpenMs} placeholder="30" onChange={(v) => set("squelchOpenMs", clamp(v, SQUELCH_OPEN_MAX_MS))} />
+      </Field>
+      <Field label="Squelch hang, ms" hint="Bridges fades on weak signals; the noise after a transmission is still cut. Live audio runs this much later">
+        <NumberInput label="Squelch hang, ms" value={d.squelchHangMs} placeholder="2" onChange={(v) => set("squelchHangMs", clamp(v, SQUELCH_HANG_MAX_MS))} />
+      </Field>
+    </Group>
+  );
+}
 
-/** "WACN BEE00 · SysID 445 · site 1-3" from what is known. */
 /** The site-lock inputs, in order. */
 const LOCK_INPUTS: { key: keyof SiteIdentity; label: string; hex: boolean }[] = [
   { key: "nac", label: "NAC", hex: true },
@@ -1424,123 +1870,50 @@ const LOCK_INPUTS: { key: keyof SiteIdentity; label: string; hex: boolean }[] = 
   { key: "site", label: "Site", hex: false },
 ];
 
-/** A group the recorder names from the air ("p25:bee00.1a2") in words: "P25 WACN BEE00 · SysID 1A2". */
-function groupText(group: string | null): string {
-  const [proto, id = ""] = (group ?? "").split(":");
-  const [a, b] = id.split(".").map((x) => x.toUpperCase());
-  if (proto === "p25") return `P25 WACN ${a} · SysID ${b}`;
-  if (proto === "smartnet") return `SmartNet SysID ${a}`;
-  if (proto === "nxdn") return `NXDN system code ${a}`;
-  return group ?? "";
-}
-
-export function siteText(id: SiteIdentity): string {
-  const parts: string[] = [];
-  if (id.wacn != null) parts.push(`WACN ${hexText(id.wacn)}`);
-  if (id.sysId != null) parts.push(`SysID ${hexText(id.sysId)}`);
-  if (id.nac != null) parts.push(`NAC ${hexText(id.nac)}`);
-  if (id.site != null) parts.push(id.rfss != null ? `site ${id.rfss}-${id.site}` : `site ${id.site}`);
-  else if (id.rfss != null) parts.push(`RFSS ${id.rfss}`);
-  return parts.join(" · ");
-}
-
-/** A SmartNet system's band plan (Trunk Recorder's settings) and default voice mode. */
-/** "101=452.275, 102=452.3" ↔ { "101": 452275000, … }. */
-function lcnText(t: Record<string, number> | undefined): string {
-  return Object.entries(t ?? {})
-    .map(([k, v]) => `${k}=${(v / 1e6).toFixed(5).replace(/0+$/, "")}`)
-    .join(", ");
-}
-function parseLcn(s: string): Record<string, number> {
-  const t: Record<string, number> = {};
-  for (const part of s.split(/[,;\s]+/)) {
-    const m = /^(\d+)=(\d+(?:\.\d+)?)$/.exec(part.trim());
-    if (m) {
-      const v = Number(m[2]);
-      t[m[1]] = v < 1e5 ? Math.round(v * 1e6) : v;
-    }
-  }
-  return t;
-}
-
-function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
-  const { sys, edit } = props;
-  const [chText, setChText] = useState(() => (sys.dmrChannelsHz ?? []).map((f) => (f / 1e6).toFixed(5)).join(", "));
-  const [lcn, setLcn] = useState(() => lcnText(sys.lcnTableHz));
+function DmrFields(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
+  const { site, edit } = props;
   return (
     <>
       <Field label="Voice frequencies, MHz" hint="Tier III, Capacity Max, Connect Plus" wide>
-        <input
+        <DraftInput
           className="mono"
-          value={chText}
+          codec={mhzList}
+          value={site.dmrChannelsHz ?? []}
           placeholder="452.275, 452.300"
-          onChange={(e) => {
-            setChText(e.target.value);
-            const list = parseFreqList(e.target.value);
+          onChange={(list) =>
             edit((x) => {
               if (list.length) x.dmrChannelsHz = list;
               else delete x.dmrChannelsHz;
-            });
-          }}
+            })
+          }
         />
       </Field>
       <Field label="Colour code">
-        <input
-          className="mono"
-          value={sys.colorCode ?? ""}
+        <NumberInput
+          label="Colour code"
+          value={site.colorCode}
           placeholder="auto"
-          onChange={(e) =>
+          onChange={(v) =>
             edit((x) => {
-              const v = parseInt(e.target.value, 10);
-              if (v >= 0 && v <= 15) x.colorCode = v;
+              if (v !== undefined && Number.isInteger(v) && v >= 0 && v <= 15) x.colorCode = v;
               else delete x.colorCode;
             })
           }
         />
       </Field>
-      <Field label="Channel table (optional)" hint="Channel = MHz, e.g. 101=452.275" wide>
-        <input
-          className="mono"
-          value={lcn}
-          placeholder="learned from the air"
-          onChange={(e) => {
-            setLcn(e.target.value);
-            const t = parseLcn(e.target.value);
-            edit((x) => {
-              if (Object.keys(t).length) x.lcnTableHz = t;
-              else delete x.lcnTableHz;
-            });
-          }}
-        />
-      </Field>
+      <LcnTableField site={site} edit={edit} label="Channel table (optional)" hint="Channel = MHz, e.g. 101=452.275" placeholder="learned from the air" />
     </>
   );
 }
 
-function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
-  const { sys, edit } = props;
+function NxdnFields(props: { sys: System; site: Site; edit: (fn: (x: Site) => void) => void }) {
+  const { sys, site, edit } = props;
   const typeD = sys.nxdnType === "typeD";
-  const [chText, setChText] = useState(() => (sys.nxdnChannelsHz ?? []).map((f) => (f / 1e6).toFixed(5)).join(", "));
-  const [table, setTable] = useState(() => lcnText(sys.lcnTableHz));
   return (
     <>
-      <Field label="NXDN type">
-        <select
-          value={typeD ? "typeD" : "typeC"}
-          onChange={(e) =>
-            edit((x) => {
-              if (e.target.value === "typeD") x.nxdnType = "typeD";
-              else delete x.nxdnType;
-            })
-          }
-        >
-          <option value="typeC">Type-C (control channel)</option>
-          <option value="typeD">Type-D / IDAS (no control channel)</option>
-        </select>
-      </Field>
       <Field label="Rate" hint={typeD ? "The repeaters'" : "The control channel's"}>
         <select
-          value={sys.nxdnRate === "nxdn96" ? "nxdn96" : "nxdn48"}
+          value={site.nxdnRate === "nxdn96" ? "nxdn96" : "nxdn48"}
           onChange={(e) =>
             edit((x) => {
               if (e.target.value === "nxdn96") x.nxdnRate = "nxdn96";
@@ -1553,49 +1926,39 @@ function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => voi
         </select>
       </Field>
       <Field label="RAN">
-        <input
-          className="mono"
-          value={sys.ran ?? ""}
+        <NumberInput
+          label="RAN"
+          value={site.ran}
           placeholder="auto"
-          onChange={(e) =>
+          onChange={(v) =>
             edit((x) => {
-              const v = parseInt(e.target.value, 10);
-              if (v >= 0 && v <= 63) x.ran = v;
+              if (v !== undefined && Number.isInteger(v) && v >= 0 && v <= 63) x.ran = v;
               else delete x.ran;
             })
           }
         />
       </Field>
       <Field label={typeD ? "More repeaters, MHz" : "Voice frequencies, MHz"} hint={typeD ? "Optional: may all go above" : "Watched; channel numbers are learned from them"} wide>
-        <input
+        <DraftInput
           className="mono"
-          value={chText}
+          codec={mhzList}
+          value={site.nxdnChannelsHz ?? []}
           placeholder="451.0125, 451.0375"
-          onChange={(e) => {
-            setChText(e.target.value);
-            const list = parseFreqList(e.target.value);
+          onChange={(list) =>
             edit((x) => {
               if (list.length) x.nxdnChannelsHz = list;
               else delete x.nxdnChannelsHz;
-            });
-          }}
+            })
+          }
         />
       </Field>
-      <Field label="Channel table (optional)" hint={typeD ? "Repeater number = MHz, e.g. 1=451.0125" : "Channel number = MHz, e.g. 20=451.0125"} wide>
-        <input
-          className="mono"
-          value={table}
-          placeholder={typeD ? "none" : "learned from the air"}
-          onChange={(e) => {
-            setTable(e.target.value);
-            const t = parseLcn(e.target.value);
-            edit((x) => {
-              if (Object.keys(t).length) x.lcnTableHz = t;
-              else delete x.lcnTableHz;
-            });
-          }}
-        />
-      </Field>
+      <LcnTableField
+        site={site}
+        edit={edit}
+        label="Channel table (optional)"
+        hint={typeD ? "Repeater number = MHz, e.g. 1=451.0125" : "Channel number = MHz, e.g. 20=451.0125"}
+        placeholder={typeD ? "none" : "learned from the air"}
+      />
       {!typeD && (
         <p className="muted small" style={{ gridColumn: "1 / -1", margin: 0 }}>
           A Type-C control channel grants channel numbers. Their frequencies come from the channel table (RadioReference lists it for many systems), from the site if it
@@ -1606,18 +1969,65 @@ function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => voi
   );
 }
 
-function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
-  const { sys, edit } = props;
-  const custom = (sys.bandplan ?? "").startsWith("400") || sys.bandplan?.toLowerCase() === "obt";
-  const setNum = (k: "bandplanBaseHz" | "bandplanSpacingHz" | "bandplanOffset" | "bandplanHighHz", v: number | null) =>
+/** A site's `lcnTableHz`: channel number = MHz (DMR, NXDN, EDACS). */
+function LcnTableField(props: { site: Site; edit: (fn: (x: Site) => void) => void; label: string; hint: string; placeholder: string }) {
+  const { site, edit } = props;
+  return (
+    <Field label={props.label} hint={props.hint} wide>
+      <DraftInput
+        className="mono"
+        codec={lcnTable}
+        value={site.lcnTableHz ?? {}}
+        placeholder={props.placeholder}
+        onChange={(t) =>
+          edit((x) => {
+            if (Object.keys(t).length) x.lcnTableHz = t;
+            else delete x.lcnTableHz;
+          })
+        }
+      />
+    </Field>
+  );
+}
+
+/** An EDACS site's channel list (LCN → frequency) and ESK. */
+function EdacsFields(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
+  const { site, edit } = props;
+  return (
+    <>
+      <LcnTableField site={site} edit={edit} label="Channels (LCNs)" hint="LCN = MHz, e.g. 1=856.1875, 3=857.7125" placeholder="1=856.1875, 2=…" />
+      <Toggle
+        label="ESK 0xA0"
+        hint="Some Harris systems scramble the control channel"
+        checked={!!site.esk}
+        onChange={(v) =>
+          edit((x) => {
+            if (v) x.esk = true;
+            else delete x.esk;
+          })
+        }
+      />
+      <p className="muted small" style={{ gridColumn: "1 / -1", margin: 0 }}>
+        The control channel grants calls a channel number (LCN); this list (RadioReference has it) turns it into a frequency. Every listed frequency is watched, so a list
+        with its numbers mixed up is put right from the air. A call on an LCN whose frequency isn't listed is logged and not recorded.
+      </p>
+    </>
+  );
+}
+
+/** A SmartNet site's band plan (Trunk Recorder's settings). */
+function SmartnetFields(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
+  const { site, edit } = props;
+  const custom = (site.bandplan ?? "").startsWith("400") || site.bandplan?.toLowerCase() === "obt";
+  const setNum = (k: "bandplanBaseHz" | "bandplanSpacingHz" | "bandplanOffset" | "bandplanHighHz", v: number | undefined) =>
     edit((x) => {
-      if (v === null) delete x[k];
+      if (v === undefined || v < 0) delete x[k];
       else x[k] = v;
     });
   return (
     <>
       <Field label="Band plan">
-        <select value={custom ? "400_custom" : (sys.bandplan ?? "800_standard")} onChange={(e) => edit((x) => void (x.bandplan = e.target.value))}>
+        <select value={custom ? "400_custom" : (site.bandplan ?? "800_standard")} onChange={(e) => edit((x) => void (x.bandplan = e.target.value))}>
           <option value="800_standard">800 MHz standard</option>
           <option value="800_reband">800 MHz rebanded</option>
           <option value="800_splinter">800 MHz splinter</option>
@@ -1625,25 +2035,19 @@ function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) =>
           <option value="400_custom">VHF / UHF (custom, OBT)</option>
         </select>
       </Field>
-      <Field label="Voice of unknown talkgroups" hint="Until a grant says otherwise">
-        <select value={sys.defaultMode ?? "digital"} onChange={(e) => edit((x) => void (e.target.value === "analog" ? (x.defaultMode = "analog") : delete x.defaultMode))}>
-          <option value="digital">P25</option>
-          <option value="analog">Analog FM</option>
-        </select>
-      </Field>
       {custom && (
         <div className="id-grid wide">
           <Field label="Base, Hz" hint="Frequency of the offset channel">
-            <NumInput label="Band plan base" placeholder="489087500" value={sys.bandplanBaseHz} onChange={(v) => setNum("bandplanBaseHz", v)} />
+            <NumberInput label="Band plan base" placeholder="489087500" value={site.bandplanBaseHz} onChange={(v) => setNum("bandplanBaseHz", v)} />
           </Field>
           <Field label="Spacing, Hz">
-            <NumInput label="Band plan spacing" placeholder="25000" value={sys.bandplanSpacingHz} onChange={(v) => setNum("bandplanSpacingHz", v)} />
+            <NumberInput label="Band plan spacing" placeholder="25000" value={site.bandplanSpacingHz} onChange={(v) => setNum("bandplanSpacingHz", v)} />
           </Field>
           <Field label="Offset (channel)">
-            <NumInput label="Band plan offset" placeholder="380" value={sys.bandplanOffset} onChange={(v) => setNum("bandplanOffset", v)} />
+            <NumberInput label="Band plan offset" placeholder="380" value={site.bandplanOffset} onChange={(v) => setNum("bandplanOffset", v)} />
           </Field>
           <Field label="High, Hz" hint="Highest outbound channel">
-            <NumInput label="Band plan high" placeholder="496612500" value={sys.bandplanHighHz} onChange={(v) => setNum("bandplanHighHz", v)} />
+            <NumberInput label="Band plan high" placeholder="496612500" value={site.bandplanHighHz} onChange={(v) => setNum("bandplanHighHz", v)} />
           </Field>
         </div>
       )}
@@ -1651,55 +2055,254 @@ function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) =>
   );
 }
 
-const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "SmartNet / SmartZone", dmr: "DMR (trunked)", nxdn: "NXDN (trunked)" };
+const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "SmartNet / SmartZone", dmr: "DMR (trunked)", nxdn: "NXDN (trunked)", edacs: "EDACS (analog / ProVoice)" };
+
+/** A system's own settings, as a confirm names them: making two systems one keeps the first's. */
+const SYSTEM_OWN: [keyof System, string][] = [
+  ["unitNames", "unit names"],
+  ["recording", "recording rules"],
+  ["plugins", "plugin settings"],
+  ["pluginDelays", "plugin delays"],
+  ["keys", "keys"],
+  ["defaultMode", "default mode"],
+];
+
+/** Whether a site's control channels and voice channels land inside a source: chips. */
+function SiteCoverage(props: { c: Config; sys: System; sites: Site[] }) {
+  const { c, sys } = props;
+  const sites = sys.enabled ? props.sites.filter((x) => x.enabled) : [];
+  const ccs = sites.flatMap((x) => x.controlChannelsHz);
+  const voice = sites.flatMap((x) => x.voiceChannelsHz);
+  if (!ccs.length && !voice.length) return null;
+  const centers = resolvedCenters(c);
+  const ccOn = [...new Set(ccs.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
+  const voiceIn = voice.filter((f) => sourceCovering(c, centers, f) >= 0).length;
+  return (
+    <>
+      {ccs.length > 0 &&
+        (ccOn.length ? (
+          <span className="chip ok">control channel on source {ccOn.map((k) => k + 1).join(", ")}</span>
+        ) : (
+          <span className="chip bad">no control channel inside a source</span>
+        ))}
+      {voice.length > 0 && (
+        <span className={`chip ${voiceIn === voice.length ? "ok" : "warn"}`} title="Voice channels found by the survey, inside a source">
+          voice {voiceIn}/{voice.length} covered
+        </span>
+      )}
+    </>
+  );
+}
+
+/** One site of system `i`: folded, its name, Record switch, control channels and coverage; open, how it is followed. */
+function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () => void }) {
+  const { c, i, k } = props;
+  const sys = c.systems[i];
+  const site = sys.sites[k];
+  const need = useNeed();
+  const edit = (fn: (x: Site) => void) => updateConfig((x) => fn(x.systems[i].sites[k]));
+  const setExpect = (f: keyof SiteIdentity, v: number | undefined) =>
+    edit((x) => {
+      x.expect = { ...x.expect };
+      if (v === undefined) delete x.expect[f];
+      else x.expect[f] = v;
+    });
+  const name = siteNameOf(sys, site);
+  const dupName = sys.sites.some((x, j) => j !== k && siteNameOf(sys, x) === name);
+  // The lock, on the fields this protocol states (others are ignored).
+  const lockFields = siteLockFields(sys);
+  const lockedTo: SiteIdentity = Object.fromEntries(lockFields.filter((f) => site.expect[f] != null).map((f) => [f, site.expect[f]]));
+  const locked = Object.keys(lockedTo).length > 0;
+  // Its to-dos' fields: `site-<system>-<k>`, `cc-<system>-<k>`.
+  const at = `${sys.shortName}-${k}`;
+  const todo = openTodos(useApp()).filter((t) => t.target === `site-${at}` || t.target === `cc-${at}`).length;
+  const typeD = sys.type === "nxdn" && sys.nxdnType === "typeD";
+  const remove = () => {
+    if (sys.sites.length === 1) return props.onRemoveSystem();
+    if (!confirm(`Remove the site ${name} from ${sys.shortName}?`)) return;
+    updateConfig((x) => void x.systems[i].sites.splice(k, 1));
+  };
+  return (
+    <Card
+      cardKey={siteKey(sys, site)}
+      // Sites start folded.
+      n={2}
+      className={`site-card${site.enabled ? "" : " off"}`}
+      head={
+        <>
+          <div className="set-card-title">
+            <h3>{name}</h3>
+            <span className="set-card-sub mono">
+              {site.controlChannelsHz.length ? `${site.controlChannelsHz.map((f) => formatMhz(f)).join(", ")} MHz` : "no control channel"}
+              {locked ? ` · ${siteText(lockedTo)}` : ""}
+            </span>
+          </div>
+          <div className="row set-card-chips">
+            {todo > 0 && <span className="chip warn">{todo} to finish</span>}
+            <SiteCoverage c={c} sys={sys} sites={[site]} />
+          </div>
+        </>
+      }
+      actions={
+        <>
+          <Switch label="Record" checked={site.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
+          <button className="btn ghost small" onClick={remove}>
+            Remove
+          </button>
+        </>
+      }
+    >
+      <div className="set-group-body cols-2 site-body">
+        <Field label="Site name" hint={dupName ? "Another site has it — each needs its own" : "As the talkgroup file's Preferred Site names it"}>
+          <input
+            value={site.name ?? ""}
+            placeholder={sys.shortName}
+            onChange={(e) =>
+              edit((x) => {
+                if (e.target.value.trim()) x.name = e.target.value;
+                else delete x.name;
+              })
+            }
+          />
+        </Field>
+        {sys.type !== "dmr" && sys.type !== "nxdn" && sys.type !== "edacs" && (
+          <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
+            <select value={site.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as Site["modulation"]))}>
+              <option value="auto">Detect (then only that receiver)</option>
+              <option value="fsk4">C4FM (fsk4)</option>
+              <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
+            </select>
+          </Field>
+        )}
+        <Field
+          needs={need(`cc-${at}`)}
+          anchor={`cc-${at}`}
+          label={sys.type === "dmr" ? "Site frequencies, MHz" : typeD ? "Repeaters, MHz" : "Control channels, MHz"}
+          hint={
+            sys.type === "dmr"
+              ? "Capacity Plus: every repeater. Others: control channels."
+              : typeD
+                ? "Every repeater of the site"
+                : sys.type === "edacs"
+                  ? "The site's control channel; list more (or every channel) if it moves"
+                  : "Later ones are fallbacks"
+          }
+          wide
+        >
+          <DraftInput
+            className="mono"
+            codec={mhzList}
+            value={site.controlChannelsHz}
+            placeholder="857.9875, 858.9875"
+            onChange={(list) => edit((x) => void (x.controlChannelsHz = list))}
+          />
+        </Field>
+        {sys.type === "smartnet" && <SmartnetFields site={site} edit={edit} />}
+        {sys.type === "dmr" && <DmrFields site={site} edit={edit} />}
+        {sys.type === "nxdn" && <NxdnFields sys={sys} site={site} edit={edit} />}
+        {sys.type === "edacs" && <EdacsFields site={site} edit={edit} />}
+        {lockFields.length > 0 && (
+          <details className={`help wide${need(`site-${at}`) ? " needs" : ""}`} id={`need-site-${at}`} open={need(`site-${at}`) ? true : undefined}>
+            <summary>
+              Site lock{locked ? <span className="muted"> — only {siteText(lockedTo)}</span> : <span className="muted"> — off</span>}
+            </summary>
+            <p className="muted small">
+              {need(`site-${at}`) && (
+                <>
+                  <span className="field-needs">{need(`site-${at}`)}</span>{" "}
+                </>
+              )}
+              Follow only a control channel announcing this site, not a neighbour. Empty = any;{" "}
+              {sys.type === "edacs" ? "the site number as the control channel says it" : sys.type === "smartnet" || sys.type === "nxdn" ? "System ID in hex" : "NAC, WACN and System ID in hex"}.
+            </p>
+            <div className="id-grid">
+              {LOCK_INPUTS.filter((x) => lockFields.includes(x.key)).map((x) => (
+                <Field key={x.key} label={x.label}>
+                  <NumberInput label={x.label} hex={x.hex} value={site.expect[x.key] ?? undefined} onChange={(v) => setExpect(x.key, v)} />
+                </Field>
+              ))}
+            </div>
+            {locked && (
+              <button className="btn ghost small" onClick={() => edit((x) => void (x.expect = {}))}>
+                Clear the lock
+              </button>
+            )}
+          </details>
+        )}
+      </div>
+    </Card>
+  );
+}
 
 function SystemCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
-  const [ccText, setCcText] = useState(() => sys.controlChannelsHz.map((f) => formatMhz(f)).join(", "));
   const need = useNeed();
   const app = useApp();
   const plugins = app.plugins?.plugins ?? [];
   const edit = (fn: (x: System) => void) => updateConfig((x) => fn(x.systems[i]));
-  const setExpect = (k: keyof SiteIdentity, v: number | null) =>
-    edit((x) => {
-      x.expect = { ...x.expect };
-      if (v === null) delete x.expect[k];
-      else x.expect[k] = v;
-    });
   const color = systemColor(c, sys.shortName);
-  // Multi-site: as configured, or as the running recorder's control channels say.
-  const live = app.status?.systems ?? [];
-  const siblings = siteSiblings(c, sys, live);
-  const group = multiSiteGroup(sys, live.find((y) => y.shortName === sys.shortName));
-  const groupWhy = sys.siteGroup?.trim()
-    ? `Site group "${sys.siteGroup.trim()}"`
-    : group && multiSiteGroup(sys) === group
-      ? siteText(sys.expect)
-      : `The same system on the air (${groupText(group)})`;
-  // The lock, on the fields this protocol states (others are ignored).
-  const lockFields = siteLockFields(sys);
-  const lockedTo: SiteIdentity = Object.fromEntries(lockFields.filter((f) => sys.expect[f] != null).map((f) => [f, sys.expect[f]]));
-  const locked = Object.keys(lockedTo).length > 0;
   const dupName = c.systems.some((x, k) => k !== i && x.shortName === sys.shortName);
-  // Where it lands on the sources.
-  const centers = resolvedCenters(c);
-  const ccOn = [...new Set(sys.controlChannelsHz.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
-  const voiceIn = sys.voiceChannelsHz.filter((f) => sourceCovering(c, centers, f) >= 0).length;
+  // Its to-dos on this tab, its sites' among them.
+  const todo = openTodos(app).filter((t) => "system" in t.item && t.item.system === sys.shortName && tabOf(t.target) === "systems").length;
+  // Systems set up apart that announce this one on the air.
+  const same = sameOnTheAir(c, app.status?.systems ?? []).flatMap(([a, b]) => (a === sys ? [b] : b === sys ? [a] : []));
 
-  const todo = useTodosAt(["cc", "tg", "units", "site", "sysplug"], sys.shortName);
-  const multiSite = sys.type === "dmr" || (sys.type === "nxdn" && sys.nxdnType === "typeD");
+  const remove = (lastSite = false) => {
+    if (!confirm(`${lastSite ? `This is ${sys.shortName}'s only site. ` : ""}Remove ${sys.shortName}? Its recordings stay on disk.`)) return;
+    updateConfig((x) => {
+      x.systems.splice(i, 1);
+      forgetTalkgroups(x, sys.shortName);
+    });
+  };
+  const addSite = () => {
+    edit((x) => {
+      const n = newSiteOf(x, {});
+      x.sites.push(n);
+      setCardOpen(siteKey(x, n), true);
+    });
+  };
+  // The other system's sites move here (each named as its system was, unless it has a name); this one's settings stay.
+  const join = (other: System) => {
+    const j = c.systems.indexOf(other);
+    const dropped = SYSTEM_OWN.filter(([k]) => other[k] !== undefined && other[k] !== "" && JSON.stringify(other[k]) !== JSON.stringify(sys[k])).map(([, w]) => w);
+    // Its talkgroup file comes along if this one has none.
+    const [theirs, mine] = [app.talkgroups[other.shortName], app.talkgroups[sys.shortName]];
+    if (theirs && mine && theirs !== mine) dropped.push("talkgroup file");
+    const n = other.sites.length;
+    const ask =
+      `Make ${other.shortName} a site${n === 1 ? "" : "s"} of ${sys.shortName}? ` +
+      `Its ${n === 1 ? "site moves" : `${n} sites move`} here and ${other.shortName} is removed; its recordings stay on disk.` +
+      (dropped.length ? ` Its ${dropped.join(", ")} ${dropped.length === 1 ? "is" : "are"} dropped: ${sys.shortName}'s are kept.` : "");
+    if (j < 0 || !confirm(ask)) return;
+    updateConfig((x) => {
+      const to = x.systems[i];
+      const from = x.systems[j];
+      for (const s of from.sites) {
+        const taken = new Set(to.sites.map((y) => siteNameOf(to, y)));
+        const want = s.name?.trim() || from.shortName;
+        to.sites.push({ ...s, name: taken.has(want) ? newSiteName(to) : want, enabled: s.enabled && from.enabled });
+      }
+      if (from.enabled) to.enabled = true;
+      // Plugin settings that named it name this one.
+      renameSystemRefs(x, from.shortName, to.shortName, plugins);
+      if (!mine) moveTalkgroups(from.shortName, to.shortName);
+      x.systems.splice(j, 1);
+      forgetTalkgroups(x, from.shortName);
+    });
+    setNotice(`${other.shortName} is a part of ${sys.shortName} now.`);
+  };
 
   return (
     <Card
-      cardKey={`sys-${i}`}
+      cardKey={sysKey(sys, i, c.systems)}
       n={c.systems.length}
       className={`system-card${sys.enabled ? "" : " off"}`}
       style={{ ["--sys-color" as string]: color }}
       id={`need-sys-${sys.shortName}`}
       head={
         <>
-          <span className="sys-dot" style={{ background: color }} />
+          <SystemDot color={color} />
           <div className="set-card-title">
             <h3>{sys.shortName || "(no name)"}</h3>
             <span className="set-card-sub">
@@ -1709,41 +2312,35 @@ function SystemCard(props: { c: Config; i: number }) {
           </div>
           <div className="row set-card-chips">
             {todo > 0 && <span className="chip warn">{todo} to finish</span>}
-            {sys.enabled && sys.controlChannelsHz.length > 0 ? (
-              ccOn.length ? (
-                <span className="chip ok">control channel on source {ccOn.map((k) => k + 1).join(", ")}</span>
-              ) : (
-                <span className="chip bad">no control channel inside a source</span>
-              )
-            ) : null}
-            {sys.enabled && sys.voiceChannelsHz.length > 0 && (
-              <span className={`chip ${voiceIn === sys.voiceChannelsHz.length ? "ok" : "warn"}`} title="Voice channels found by the survey, inside a source">
-                voice {voiceIn}/{sys.voiceChannelsHz.length} covered
-              </span>
-            )}
-            {siblings.length > 0 && (
-              <span className="chip" title={`${groupWhy} — ${c.recording.dropDuplicateCalls ? "calls saved once" : "every site's copy saved"}`}>
-                multi-site with {siblings.map((x) => x.shortName).join(", ")}
-              </span>
-            )}
+            {sys.sites.length > 1 && <span className="chip">{sys.sites.length} sites</span>}
+            <SiteCoverage c={c} sys={sys} sites={sys.sites} />
           </div>
         </>
       }
       actions={
         <>
           <Switch label="Record" checked={sys.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
-          <button
-            className="btn ghost small"
-            onClick={() => {
-              if (confirm(`Remove ${sys.shortName}? Its recordings stay on disk.`)) {
-                forgetCard("sys-", i, c.systems.length);
-                updateConfig((x) => void x.systems.splice(i, 1));
-              }
-            }}
-          >
+          <IdentifyFcc target={{ kind: "system", index: i }} what={sys.name || sys.shortName} freqs={siteFrequencies(sys.sites).map((x) => x.freqHz)} fcc={sys.fcc} />
+          <button className="btn ghost small" onClick={() => remove()}>
             Remove
           </button>
         </>
+      }
+      note={
+        same.length > 0 && (
+          <div className="set-card-needs">
+            {same.map((other) => (
+              <div key={other.shortName} className="banner same-system">
+                <span>
+                  <b>{other.shortName}</b> announces the same system on the air.
+                </span>
+                <button className="btn small" onClick={() => join(other)}>
+                  Make them one system
+                </button>
+              </div>
+            ))}
+          </div>
+        )
       }
     >
       <Group title="Basics" hint="The short name is its calls' folder.">
@@ -1751,12 +2348,8 @@ function SystemCard(props: { c: Config; i: number }) {
           <input
             value={sys.shortName}
             onChange={(e) => {
-              const to = e.target.value.replace(/[^\w.-]/g, "");
-              // Plugin settings that name it follow it.
-              updateConfig((x) => {
-                renameSystemRefs(x, x.systems[i].shortName, to, plugins);
-                x.systems[i].shortName = to;
-              });
+              const to = cleanShortName(e.target.value);
+              updateConfig((x) => renameSystem(x, x.systems[i], to));
             }}
           />
         </Field>
@@ -1768,8 +2361,8 @@ function SystemCard(props: { c: Config; i: number }) {
             value={sys.type}
             onChange={(e) =>
               edit((x) => {
-                x.type = e.target.value === "smartnet" ? "smartnet" : e.target.value === "dmr" ? "dmr" : e.target.value === "nxdn" ? "nxdn" : "p25";
-                if (x.type === "smartnet" && !x.bandplan) x.bandplan = "800_standard";
+                x.type = systemType(e.target.value);
+                if (x.type === "smartnet") for (const y of x.sites) y.bandplan ??= "800_standard";
               })
             }
           >
@@ -1780,47 +2373,54 @@ function SystemCard(props: { c: Config; i: number }) {
             ))}
           </select>
         </Field>
-        {sys.type !== "dmr" && sys.type !== "nxdn" && (
-          <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
-            <select value={sys.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as System["modulation"]))}>
-              <option value="auto">Auto (both receivers)</option>
-              <option value="fsk4">C4FM (fsk4)</option>
-              <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
+        {sys.type === "smartnet" && (
+          <Field label="Voice of unknown talkgroups" hint="Until a grant says otherwise">
+            <select value={sys.defaultMode ?? "digital"} onChange={(e) => edit((x) => void (e.target.value === "analog" ? (x.defaultMode = "analog") : delete x.defaultMode))}>
+              <option value="digital">P25</option>
+              <option value="analog">Analog FM</option>
             </select>
           </Field>
         )}
+        {sys.type === "nxdn" && (
+          <Field label="NXDN type">
+            <select
+              value={sys.nxdnType === "typeD" ? "typeD" : "typeC"}
+              onChange={(e) =>
+                edit((x) => {
+                  if (e.target.value === "typeD") x.nxdnType = "typeD";
+                  else delete x.nxdnType;
+                })
+              }
+            >
+              <option value="typeC">Type-C (control channel)</option>
+              <option value="typeD">Type-D / IDAS (no control channel)</option>
+            </select>
+          </Field>
+        )}
+        <ShareSystem c={c} i={i} />
       </Group>
-      <Group title="On the air" hint="Where the recorder finds it.">
-        <Field
-          needs={need(`cc-${sys.shortName}`)}
-          anchor={`cc-${sys.shortName}`}
-          label={sys.type === "dmr" ? "Site frequencies, MHz" : sys.type === "nxdn" && sys.nxdnType === "typeD" ? "Repeaters, MHz" : "Control channels, MHz"}
-          hint={
-            sys.type === "dmr"
-              ? "Capacity Plus: every repeater. Others: control channels."
-              : sys.type === "nxdn" && sys.nxdnType === "typeD"
-                ? "Every repeater of the site"
-                : "Later ones are fallbacks"
-          }
-          wide
-        >
-          <input
-            className="mono"
-            value={ccText}
-            placeholder="857.9875, 858.9875"
-            onChange={(e) => {
-              setCcText(e.target.value);
-              const list = parseFreqList(e.target.value);
-              edit((x) => void (x.controlChannelsHz = list));
-            }}
-          />
-        </Field>
-        {sys.type === "smartnet" && <SmartnetFields sys={sys} edit={edit} />}
-        {sys.type === "dmr" && <DmrFields sys={sys} edit={edit} />}
-        {sys.type === "nxdn" && <NxdnFields sys={sys} edit={edit} />}
+      <Group
+        title="Sites"
+        hint="Where the recorder finds it: each site's control channel. A call heard on several sites is saved once."
+        actions={
+          <button className="btn small" onClick={addSite}>
+            Add site
+          </button>
+        }
+        cols={1}
+      >
+        <div className="sites-list">
+          {sys.sites.map((x, k) => (
+            <SiteCard key={siteKey(sys, x)} c={c} i={i} k={k} onRemoveSystem={() => remove(true)} />
+          ))}
+          {!sys.sites.length && <p className="muted small">No sites: add one with its control channel.</p>}
+        </div>
+      </Group>
+      <Group title="FCC licenses" hint="Optional: who is licensed on each frequency. Motorola P25 sites say their call signs on the air; Identify looks licensees up. Plugins are told them." cols={1}>
+        <FccTable target={{ kind: "system", index: i }} fcc={sys.fcc} />
       </Group>
       <Group title="Talkgroups and units" hint="Names for what is heard, and which talkgroups are recorded.">
-        <TalkgroupsField sys={sys} index={i} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
+        <TalkgroupsField sys={sys} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
         <UnitNamesField
           value={sys.unitNames}
           anchor={`units-${sys.shortName}`}
@@ -1833,50 +2433,12 @@ function SystemCard(props: { c: Config; i: number }) {
           }
         />
       </Group>
-      <Group title="Sites" hint={multiSite ? "Systems with the same site group save a call heard on several sites once." : "Sites of one system are matched from the air; a site lock follows only one."}>
-        <Field label="Site group" hint={multiSite ? "Same name on each site: calls saved once" : "Only to join ISSI-linked systems or split a site"}>
-          <input
-            value={sys.siteGroup ?? ""}
-            placeholder={multiSite ? "none" : "from the air"}
-            onChange={(e) =>
-              edit((x) => {
-                if (e.target.value.trim()) x.siteGroup = e.target.value;
-                else delete x.siteGroup;
-              })
-            }
-          />
-        </Field>
-        {lockFields.length > 0 && (
-          <details className={`help wide${need(`site-${sys.shortName}`) ? " needs" : ""}`} id={`need-site-${sys.shortName}`} open={need(`site-${sys.shortName}`) ? true : undefined}>
-            <summary>
-              Site lock{locked ? <span className="muted"> — only {siteText(lockedTo)}</span> : <span className="muted"> — off</span>}
-            </summary>
-            <p className="muted small">
-              {need(`site-${sys.shortName}`) && (
-                <>
-                  <span className="field-needs">{need(`site-${sys.shortName}`)}</span>{" "}
-                </>
-              )}
-              Follow only a control channel announcing this site. Empty = any; {sys.type === "smartnet" || sys.type === "nxdn" ? "System ID in hex" : "NAC, WACN and System ID in hex"}.
-            </p>
-            <div className="id-grid">
-              {LOCK_INPUTS.filter((x) => lockFields.includes(x.key)).map((x) => (
-                <Field key={x.key} label={x.label}>
-                  <NumInput label={x.label} hex={x.hex} value={sys.expect[x.key]} onChange={(v) => setExpect(x.key, v)} />
-                </Field>
-              ))}
-            </div>
-            {locked && (
-              <button className="btn ghost small" onClick={() => edit((x) => void (x.expect = {}))}>
-                Clear the lock
-              </button>
-            )}
-          </details>
-        )}
-      </Group>
-      <Group title="Overrides" hint="This system's own plugin settings and call rules. Anything left at Default follows the Recording tab." cols={1}>
+      <Group title="Plugins" hint="This system's own plugin settings and delays. Anything left at Default follows the Plugins tab." cols={1}>
         <SystemPluginSettings system={i} />
-        <RecordingOverridePanel
+        <SystemDelays system={i} />
+      </Group>
+      <Group title="Recording" hint="This system's own call rules and what it keeps. Anything left at Default follows the Recording tab." cols={1}>
+        <RecordingOverrides
           c={c}
           value={sys.recording}
           onChange={(fn) =>
@@ -1924,14 +2486,10 @@ function UnitNamesField(props: { value: UnitNames | undefined; onChange: (u: Uni
           <option value="none">No names</option>
         </select>
       </div>
-      <input
-        ref={ref}
-        type="file"
+      <FileInput
+        inputRef={ref}
         accept=".csv,text/csv,text/plain"
-        hidden
-        onChange={async (e) => {
-          const f = e.target.files?.[0];
-          e.target.value = "";
+        onFile={async (f) => {
           if (!f) return;
           const csv = await f.text();
           set({ csv, name: f.name });
@@ -1990,7 +2548,7 @@ function LogPanel(props: { c: Config }) {
           </select>
         </Field>
         <Field label="Decode rate warning, msg/s" hint="Fewer is logged as an error; −1 always logs it">
-          <DecInput label="Decode rate warning" value={l.controlWarnRatePerS} onChange={(v) => set({ controlWarnRatePerS: v ?? 10 })} />
+          <NumberInput label="Decode rate warning" value={l.controlWarnRatePerS} onChange={(v) => set({ controlWarnRatePerS: v ?? 10 })} />
         </Field>
         <Field label="Frequencies as">
           <select value={l.frequencyFormat} onChange={(e) => set({ frequencyFormat: e.target.value as LogSettings["frequencyFormat"] })}>
@@ -2035,9 +2593,11 @@ type Rule =
       kind: "bool";
       label: string;
       hint?: string;
-      desktop?: boolean;
+      service?: boolean;
       /** Why it does nothing with these settings (greyed out), if it doesn't. */
       inactive?: (r: RecordingRules) => string | undefined;
+      /** What the plugins on (those taking an .m4a, by name) make of it, if anything. */
+      note?: (m4aPlugins: string[]) => string | undefined;
     }
   | { key: NumRule; kind: "num"; label: string; hint?: string; min: number; max: number; zero?: string }
   | { key: "filenameFormat"; kind: "text"; label: string };
@@ -2081,32 +2641,38 @@ const RULE_GROUPS: { title: string; hint?: string; rules: Rule[] }[] = [
   },
   {
     title: "Files",
-    hint: "Where each call is saved, and in what format.",
-    rules: [
-      { key: "filenameFormat", kind: "text", label: "Folders and file names" },
-      { key: "compressWav", kind: "bool", label: "Also save an M4A", hint: "a tenth the size; needs ffmpeg or afconvert", desktop: true },
-    ],
+    hint: "Where each call is saved.",
+    rules: [{ key: "filenameFormat", kind: "text", label: "Folders and file names" }],
   },
   {
     // What stays in the recordings folder once the plugins are done with a call (docs/guides/recordings.md).
     title: "Archive",
     hint: "What stays in the recordings folder once the plugins are done with a call.",
     rules: [
-      { key: "audioArchive", kind: "bool", label: "Keep audio", hint: "off: deleted once the plugins are done with the call", desktop: true },
-      { key: "callLog", kind: "bool", label: "Keep call JSON", hint: "off: deleted once the plugins are done with the call", desktop: true },
+      { key: "archiveWav", kind: "bool", label: "Keep .wav", hint: "off: deleted once the plugins are done with the call", service: true },
+      {
+        key: "archiveM4a",
+        kind: "bool",
+        label: "Keep .m4a",
+        hint: "a tenth the size of the WAV; needs ffmpeg or afconvert",
+        service: true,
+        // (An .m4a is made for a plugin that takes one either way: this is only whether it stays.)
+        note: (m) => (m.length ? `${m.join(", ")} ${m.length > 1 ? "get" : "gets"} one either way; off: deleted once the plugins are done` : undefined),
+      },
+      { key: "callLog", kind: "bool", label: "Keep call JSON", hint: "off: deleted once the plugins are done with the call", service: true },
       {
         key: "archiveFilesOnFailure",
         kind: "bool",
         label: "Keep when a plugin fails",
-        hint: "keeps the audio and JSON when any plugin reports a failure",
-        desktop: true,
-        inactive: (r) => (r.audioArchive && r.callLog ? "both are kept anyway" : undefined),
+        hint: "keeps every file of the call when any plugin reports a failure",
+        service: true,
+        inactive: (r) => (r.archiveWav && r.archiveM4a && r.callLog ? "everything is kept anyway" : undefined),
       },
     ],
   },
 ];
 
-const ruleShown = (r: Rule) => !(web && r.kind === "bool" && r.desktop);
+const ruleShown = (r: Rule) => !(r.kind === "bool" && r.service && !can("service"));
 
 function ruleValue(r: Rule, v: Recording[keyof Recording] | undefined): string {
   if (r.kind === "bool") return v ? "on" : "off";
@@ -2117,6 +2683,7 @@ function ruleValue(r: Rule, v: Recording[keyof Recording] | undefined): string {
 /** The call rules for the whole recorder (the Recording tab). */
 function CallRules(props: { c: Config }) {
   const r = props.c.recording;
+  const m4a = useM4aPlugins().map((p) => p.manifest!.name);
   const set = <K extends keyof RecordingRules>(k: K, v: RecordingRules[K]) => updateConfig((x) => void ((x.recording as RecordingRules)[k] = v));
   return (
     <section className="set-card">
@@ -2127,14 +2694,14 @@ function CallRules(props: { c: Config }) {
               <Toggle
                 key={rule.key}
                 label={rule.label}
-                hint={rule.inactive?.(r) ?? rule.hint}
+                hint={rule.inactive?.(r) ?? rule.note?.(m4a) ?? rule.hint}
                 checked={!!r[rule.key]}
                 disabled={!!rule.inactive?.(r)}
                 onChange={(v) => set(rule.key, v)}
               />
             ) : rule.kind === "num" ? (
               <Field key={rule.key} label={rule.label} hint={rule.hint}>
-                <DecInput
+                <NumberInput
                   label={rule.label}
                   value={r[rule.key]}
                   placeholder={rule.zero ? `0 = ${rule.zero}` : undefined}
@@ -2148,14 +2715,14 @@ function CallRules(props: { c: Config }) {
                 value={r.filenameFormat}
                 fallback={DEFAULT_FORMAT}
                 fallbackName="Trunk Recorder's layout"
-                root={web ? undefined : props.c.recording.captureDir}
+                root={can("service") ? props.c.recording.captureDir : undefined}
                 onChange={(v) => set("filenameFormat", v.trim() ? v : "")}
               />
             ),
           )}
-          {g.title === "Archive" && (!r.audioArchive || !r.callLog) && !Object.values(props.c.plugins ?? {}).some((p) => p.enabled) && (
+          {g.title === "Archive" && (!(r.archiveWav || r.archiveM4a) || !r.callLog) && !Object.values(props.c.plugins ?? {}).some((p) => p.enabled) && (
             <p className="muted small wide">
-              No plugin is on, so there's nothing to wait for: {!r.audioArchive && !r.callLog ? "calls aren't saved at all" : !r.audioArchive ? "calls' audio isn't saved at all" : "calls' JSON isn't saved at all"}.
+              No plugin is on, so there's nothing to wait for: {!(r.archiveWav || r.archiveM4a) && !r.callLog ? "calls aren't saved at all" : !r.callLog ? "calls' JSON isn't saved at all" : "calls' audio isn't saved at all"}.
             </p>
           )}
         </Group>
@@ -2164,11 +2731,26 @@ function CallRules(props: { c: Config }) {
   );
 }
 
+/** The Recording tab's groups a system's own rules are in, by its card's two overrides. */
+const ARCHIVE_GROUPS = ["Files", "Archive"];
+
+type OverrideProps = { c: Config; value: RecordingOverride | undefined; onChange: (fn: (o: RecordingOverride) => void) => void };
+
 /**
- * A system's own call rules (or the conventional channels'): each setting
- * left at Default follows the Recording tab.
+ * A system's own call rules (or the conventional channels'), in two: what's
+ * recorded and kept (Recording), and where its files go and which stay
+ * (Archive). Each setting left at Default follows the Recording tab.
  */
-function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | undefined; onChange: (fn: (o: RecordingOverride) => void) => void }) {
+function RecordingOverrides(props: OverrideProps) {
+  return (
+    <>
+      <RecordingOverridePanel {...props} title="Recording" groups={RULE_GROUPS.filter((g) => !ARCHIVE_GROUPS.includes(g.title))} />
+      <RecordingOverridePanel {...props} title="Archive" groups={RULE_GROUPS.filter((g) => ARCHIVE_GROUPS.includes(g.title))} />
+    </>
+  );
+}
+
+function RecordingOverridePanel(props: OverrideProps & { title: string; groups: typeof RULE_GROUPS }) {
   const { c, value, onChange } = props;
   const own = value ?? {};
   const base = c.recording;
@@ -2177,14 +2759,15 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
       if (v === undefined) delete o[k];
       else (o as Record<string, unknown>)[k] = v;
     });
-  const rules = RULE_GROUPS.flatMap((g) => g.rules).filter(ruleShown);
+  const rules = props.groups.flatMap((g) => g.rules).filter(ruleShown);
+  const m4a = useM4aPlugins().map((p) => p.manifest!.name);
   const mine = rules.filter((r) => own[r.key] !== undefined);
   // The settings this system ends up with (its own, else the Recording tab's).
   const effective = { ...base, ...own } as RecordingRules;
   return (
     <details className="help override">
       <summary>
-        Recording override
+        {props.title}
         <span className="muted">{mine.length ? ` — ${mine.length} changed` : " — defaults"}</span>
       </summary>
       <div className="grid3">
@@ -2198,7 +2781,7 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
                 value={own.filenameFormat ?? ""}
                 fallback={base.filenameFormat || DEFAULT_FORMAT}
                 fallbackName={base.filenameFormat ? "from Recording" : "Trunk Recorder's layout"}
-                root={web ? undefined : base.captureDir}
+                root={can("service") ? base.captureDir : undefined}
                 onChange={(v) => set("filenameFormat", v.trim() ? v : undefined)}
               />
             );
@@ -2206,7 +2789,11 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
             <Field
               key={rule.key}
               label={rule.label}
-              hint={(rule.kind === "bool" && rule.inactive?.(effective)) || (mineNow ? `Default: ${ruleValue(rule, base[rule.key])}` : undefined)}
+              hint={
+                (rule.kind === "bool" && rule.inactive?.(effective)) ||
+                [rule.kind === "bool" && rule.note?.(m4a), mineNow && `Default: ${ruleValue(rule, base[rule.key])}`].filter(Boolean).join(" · ") ||
+                undefined
+              }
             >
               {rule.kind === "bool" ? (
                 <select
@@ -2220,7 +2807,7 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
                   <option value="off">Off</option>
                 </select>
               ) : (
-                <DecInput
+                <NumberInput
                   label={rule.label}
                   value={own[rule.key]}
                   placeholder={`Default (${ruleValue(rule, base[rule.key])})`}
@@ -2268,7 +2855,7 @@ function SetupTabs(props: { c: Config; tab: SetupTab }) {
   };
   return (
     <nav className="setup-tabs" role="tablist" aria-label="Setup">
-      {TABS.filter((t) => t.id !== "plugins" || !web).map((t) => {
+      {TABS.filter((t) => t.id !== "plugins" || can("plugins")).map((t) => {
         const todo = todos.filter((x) => tabOf(x.target) === t.id).length;
         return (
           <button key={t.id} role="tab" aria-selected={props.tab === t.id} className={props.tab === t.id ? "on" : ""} onClick={() => setSetupTab(t.id)}>
@@ -2307,15 +2894,20 @@ export function Setup() {
             hint="P25, SmartNet, DMR and NXDN systems, followed through their control channels."
             actions={
               <>
-                <ExpandAll prefix="sys-" n={c.systems.length} />
+                <ExpandAll keys={c.systems.map(sysKey)} />
                 <button className="btn ghost" onClick={() => openGuide("import")}>
                   Import Trunk Recorder config…
                 </button>
                 <button
                   className="btn"
                   onClick={() => {
-                    addCard("sys-", c.systems.length);
-                    updateConfig((x) => void x.systems.push(newSystem(x)));
+                    updateConfig((x) => {
+                      const n = newSystem(x);
+                      x.systems.push(n);
+                      addCard(c.systems.map(sysKey), sysKey(n, x.systems.length - 1, x.systems));
+                      // Its site open too, for its control channel.
+                      setCardOpen(siteKey(n, n.sites[0]), true);
+                    });
                   }}
                 >
                   Add a system
@@ -2323,8 +2915,8 @@ export function Setup() {
               </>
             }
           >
-            {c.systems.map((_, i) => (
-              <SystemCard key={`${i}-${c.systems.length}-${s.configEpoch}`} c={c} i={i} />
+            {c.systems.map((x, i) => (
+              <SystemCard key={sysKey(x, i, c.systems)} c={c} i={i} />
             ))}
             {c.systems.length === 0 && <p className="set-empty">No trunked systems yet. Add one, import a Trunk Recorder config, or find one on the air below.</p>}
           </Section>
@@ -2340,13 +2932,16 @@ export function Setup() {
           hint="Each source hears a slice of spectrum; the systems and channels inside it are recorded."
           actions={
             <>
-              <ExpandAll prefix="src-" n={c.sources.length} />
+              <ExpandAll keys={c.sources.map(srcKey)} />
               <button
                 className="btn"
                 onClick={() => {
                   setFreshSource(c.sources.length);
-                  addCard("src-", c.sources.length);
-                  updateConfig((x) => void x.sources.push(newDongle()));
+                  updateConfig((x) => {
+                    const n = newDongle();
+                    x.sources.push(n);
+                    addCard(c.sources.map(srcKey), srcKey(n, x.sources.length - 1, x.sources));
+                  });
                 }}
               >
                 Add a source
@@ -2354,8 +2949,8 @@ export function Setup() {
             </>
           }
         >
-          {c.sources.map((_, i) => (
-            <SourceCard key={`${i}-${s.configEpoch}`} c={c} i={i} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
+          {c.sources.map((x, i) => (
+            <SourceCard key={srcKey(x, i, c.sources)} c={c} i={i} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
           ))}
           <details className="help">
             <summary>Dongle not showing up?</summary>
@@ -2406,10 +3001,10 @@ export function Setup() {
                   />
                   {c.recording.ramSpool?.enabled && (
                     <Field label="RAM spool size, MB" hint="When full, calls go to the recordings folder">
-                      <input
-                        className="mono"
+                      <NumberInput
+                        label="RAM spool size, MB"
                         value={c.recording.ramSpool.sizeMb}
-                        onChange={(e) => updateConfig((x) => void (x.recording.ramSpool = { ...x.recording.ramSpool!, sizeMb: Math.max(16, Math.min(8192, Number(e.target.value) || 256)) }))}
+                        onChange={(v) => updateConfig((x) => void (x.recording.ramSpool = { ...x.recording.ramSpool!, sizeMb: Math.max(16, Math.min(8192, Math.round(v || 256))) }))}
                       />
                     </Field>
                   )}
@@ -2418,10 +3013,10 @@ export function Setup() {
             </Group>
             <Group title="Recording" hint="How many calls at once, and how each one is decoded." cols={3}>
               <Field label="Recorders" hint="Calls recorded at once">
-                <input className="mono" value={c.recording.maxRecorders} onChange={(e) => updateConfig((x) => void (x.recording.maxRecorders = Math.max(1, Math.min(64, Number(e.target.value) || 32))))} />
+                <NumberInput label="Recorders" value={c.recording.maxRecorders} onChange={(v) => updateConfig((x) => void (x.recording.maxRecorders = Math.max(1, Math.min(64, Math.round(v || 32)))))} />
               </Field>
               <Field label="Pre-roll, s" hint="Audio kept from before each grant">
-                <input className="mono" value={c.recording.prerollS} onChange={(e) => updateConfig((x) => void (x.recording.prerollS = Math.max(0, Math.min(3, Number(e.target.value) || 0))))} />
+                <NumberInput label="Pre-roll, s" value={c.recording.prerollS} onChange={(v) => updateConfig((x) => void (x.recording.prerollS = Math.max(0, Math.min(3, v || 0))))} />
               </Field>
               <Field label="P25 voice decoder" hint="Fixed-point usually sounds most natural">
                 <select value={c.recording.vocoder ?? "fixed"} onChange={(e) => updateConfig((x) => void (x.recording.vocoder = e.target.value as "fixed" | "enhanced" | "mbelib"))}>
@@ -2437,7 +3032,7 @@ export function Setup() {
                 onChange={(v) => updateConfig((x) => void (x.recording.dropDuplicateCalls = v))}
               />
             </Group>
-            {!web && (
+            {can("service") && (
               <Group title="Startup and diagnostics">
                 <Toggle label="Start recording when the app starts" checked={c.server.autoStart} onChange={(v) => updateConfig((x) => void (x.server.autoStart = v))} />
                 <Toggle
@@ -2451,20 +3046,26 @@ export function Setup() {
           </section>
         </Section>
       )}
+      {tab === "recording" && can("keys") && s.lockable.length > 0 && (
+        <Section title="Key containers" hint="Encryption keys in a KFDtool container with no password file. Unlocked keys stay in memory until you lock them or the app quits; the password is never saved.">
+          {s.lockable.map((k) => (
+            <KeyContainer key={k.name} k={k} />
+          ))}
+        </Section>
+      )}
       {tab === "recording" && (
         <Section title="Call rules" hint="Defaults for every system; each system can override them on its card.">
           <CallRules c={c} />
         </Section>
       )}
-      {tab === "recording" && !web && (
-        <Section title="Advanced" hint="Audio encoding, the log, and other pages that use the recorder.">
+      {tab === "recording" && can("service") && (
+        <Section title="Advanced" hint="Audio encoding and the log.">
           <M4aSettings />
           <LogPanel c={c} />
-          <InterfacesPanel />
         </Section>
       )}
 
-      {tab === "plugins" && !web && <PluginSetupPanel />}
+      {tab === "plugins" && can("plugins") && <PluginSetupPanel />}
     </div>
   );
 }

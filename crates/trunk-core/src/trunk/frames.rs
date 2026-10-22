@@ -32,9 +32,10 @@ pub struct VoiceFrame {
 }
 
 impl VoiceFrame {
-    /// Repeated, muted or otherwise not synthesized as sent.
+    /// Repeated, muted or otherwise not synthesized as sent (a tone frame,
+    /// played as its tone, is as sent).
     pub fn bad(&self) -> bool {
-        self.erased || self.kind != Kind::Voice
+        self.erased || !matches!(self.kind, Kind::Voice | Kind::Tone)
     }
 }
 
@@ -88,26 +89,21 @@ impl FrameErrors {
         self.intervals.iter().map(|i| i.errors).sum()
     }
 
-    /// `"errorList":[…]` — `pos` / `len` in seconds of the call's audio.
-    pub fn json(&self) -> String {
+    /// The call record's `errorList`: `pos` / `len` in seconds of the call's audio.
+    pub fn intervals(&self) -> Vec<super::record::ErrorInterval> {
         let interval_s = INTERVAL_FRAMES as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64;
-        let mut j = String::from("\"errorList\":[");
-        for (k, i) in self.intervals.iter().enumerate() {
-            let len = i.frames as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64;
-            let _ = write!(
-                j,
-                "{}{{\"pos\":{},\"len\":{},\"frames\":{},\"error_count\":{},\"bad_frames\":{},\"max_frame_errors\":{}}}",
-                if k > 0 { "," } else { "" },
-                k as f64 * interval_s,
-                (len * 100.0).round() / 100.0,
-                i.frames,
-                i.errors,
-                i.bad_frames,
-                i.max_frame_errors
-            );
-        }
-        j.push(']');
-        j
+        self.intervals
+            .iter()
+            .enumerate()
+            .map(|(k, i)| super::record::ErrorInterval {
+                pos: k as f64 * interval_s,
+                len: (i.frames as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64 * 100.0).round() / 100.0,
+                frames: i.frames as u64,
+                error_count: i.errors as u64,
+                bad_frames: i.bad_frames as u64,
+                max_frame_errors: i.max_frame_errors as u64,
+            })
+            .collect()
     }
 }
 
@@ -245,9 +241,9 @@ mod tests {
         assert_eq!(e.intervals[1], ErrorInterval { frames: 500, errors: 508, bad_frames: 0, max_frame_errors: 9 });
         assert_eq!(e.intervals[2], ErrorInterval { frames: 200, errors: 200, bad_frames: 1, max_frame_errors: 1 });
         assert_eq!(e.total_errors(), 1208);
-        let j = e.json();
-        assert!(j.starts_with("\"errorList\":[{\"pos\":0,\"len\":10,\"frames\":500,"), "{j}");
-        assert!(j.contains("{\"pos\":20,\"len\":4,\"frames\":200,\"error_count\":200,\"bad_frames\":1,\"max_frame_errors\":1}"), "{j}");
+        let list = e.intervals();
+        assert_eq!((list[0].pos, list[0].len, list[0].frames), (0.0, 10.0, 500));
+        assert_eq!((list[2].pos, list[2].len, list[2].frames, list[2].error_count, list[2].bad_frames, list[2].max_frame_errors), (20.0, 4.0, 200, 200, 1, 1));
     }
 
     #[test]

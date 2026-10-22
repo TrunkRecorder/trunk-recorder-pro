@@ -71,7 +71,7 @@ If `uname -m` prints `armv7l`, the OS is 32-bit and Trunk Recorder Pro won't run
 
 Download the **`linux-aarch64`** package on the Pi. Replace `<version>` with the latest version from
 the [releases page](https://github.com/TrunkRecorder/trunk-recorder-pro/releases) (for example
-`0.1.4`):
+`0.2.0`):
 
 ```bash
 curl -LO https://github.com/TrunkRecorder/trunk-recorder-pro/releases/download/v<version>/trunk-pro-<version>-linux-aarch64.tar.gz

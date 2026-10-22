@@ -44,11 +44,10 @@ use crate::dsp::c4fm::SYMBOL_RATE;
 use crate::dsp::{Channelizer, HeadId};
 use crate::p25::diversity::{best_frame, control_frame, Bank, BankConfig, Group};
 use crate::p25::frame::{LDU1, LDU2};
-use crate::p25::Tsbk;
 use crate::trunk::identity::{IdField, Identity};
 use crate::smartnet::plan::{self, PlanConfig, PlanFinder};
 use crate::smartnet::{self as sn, Word};
-use crate::trunk::{Message, MessageType, TsbkParser};
+use crate::trunk::{Message, MessageType, P25Parser};
 
 /// One-sided channel filter cutoff for P25, Hz.
 const CUTOFF_HZ: f64 = 7000.0;
@@ -450,16 +449,11 @@ impl FreqEst {
     }
 }
 
-fn tsbk_bits(t: &Tsbk) -> impl Fn(u32, u64) -> u32 + use<> {
-    let v = t.iter().fold(0u128, |a, &b| (a << 8) | b as u128);
-    move |shift, mask| ((v >> shift) as u64 & mask) as u32
-}
-
 /// Frames → counts, NAC, identity and messages; shared by the scan's
 /// checks and the monitor.
 #[derive(Default)]
 struct Decode {
-    parser: TsbkParser,
+    parser: P25Parser,
     nac_votes: BTreeMap<u16, u32>,
     frames: u32,
     voice: u32,
@@ -471,7 +465,7 @@ struct Decode {
 }
 
 impl Decode {
-    fn group(&mut self, g: &Group, t: f64, out: &mut Vec<(Tsbk, Vec<Message>)>) {
+    fn group(&mut self, g: &Group, t: f64, out: &mut Vec<Message>) {
         let f = best_frame(g);
         self.frames += 1;
         *self.nac_votes.entry(f.nid.nac).or_default() += 1;
@@ -479,30 +473,26 @@ impl Decode {
         if f.nid.duid == LDU1 || f.nid.duid == LDU2 {
             self.voice += 1;
         }
-        let cf = control_frame(g, f.nid.duid, self.id.wacn().zip(self.id.sys_id()));
+        let cf = control_frame(g, f.nid.duid);
         self.bad += cf.lost as u64;
         self.air += cf.air;
-        for blk in cf.blocks {
+        for o in &cf.osps {
             self.good += 1;
-            // (An MBT without a TSBK form: counted, not read.)
-            let Ok(blk) = blk else { continue };
-            let b = tsbk_bits(&blk);
-            if b(80, 0xff) == 0 {
-                match b(88, 0x3f) {
-                    0x3a => {
-                        self.id.set(IdField::SysId, b(56, 0xfff));
-                        self.id.set(IdField::Rfss, b(48, 0xff));
-                        self.id.set(IdField::Site, b(40, 0xff));
+            for m in self.parser.parse(o, f.nid.nac, t) {
+                match m.kind {
+                    MessageType::SysId => {
+                        self.id.set(IdField::SysId, m.sys_id);
+                        self.id.set(IdField::Rfss, m.rfss);
+                        self.id.set(IdField::Site, m.site);
                     }
-                    0x3b => {
-                        self.id.set(IdField::Wacn, b(52, 0xfffff));
-                        self.id.set(IdField::SysId, b(40, 0xfff));
+                    MessageType::Status => {
+                        self.id.set(IdField::Wacn, m.wacn);
+                        self.id.set(IdField::SysId, m.sys_id);
                     }
                     _ => {}
                 }
+                out.push(m);
             }
-            let msgs = self.parser.parse(&blk, f.nid.nac, t);
-            out.push((blk, msgs));
         }
     }
 }
@@ -655,6 +645,8 @@ const PROBE_BANK: BankConfig = BankConfig {
     eq_mu: 0.02,
     framer: crate::p25::frame::FramerOptions { flywheel: true, flywheel_errs: 12, nid_recover: true, nid_max_errs: 11 },
     soft: true,
+    // (A probe is short: it tells the modulation by which kind decodes.)
+    detect: false,
 };
 
 /// One hop of the scan.
@@ -671,7 +663,7 @@ struct HopScan {
     decode_from: Option<u64>,
     probes: Vec<Probe>,
     groups: Vec<Group>,
-    msgs: Vec<(Tsbk, Vec<Message>)>,
+    msgs: Vec<Message>,
 }
 
 impl HopScan {
@@ -976,14 +968,14 @@ struct Monitor {
     noise: Vec<f64>,
     snr: Option<f64>,
     secondary: BTreeSet<u64>,
-    adjacent: BTreeMap<(u32, u32), Adjacent>,
+    adjacent: BTreeMap<(u32, u32, u32), Adjacent>,
     voice: BTreeMap<u64, VoiceChannel>,
     info: SystemInfo,
     gains: Vec<f32>,
     gain: GainPhase,
     pending: Option<Command>,
     groups: Vec<Group>,
-    msgs: Vec<(Tsbk, Vec<Message>)>,
+    msgs: Vec<Message>,
     ppm_applied: f64,
     sn: SnMonitor,
     /// Its P25 receivers' settings (a re-centre starts them afresh).
@@ -1079,15 +1071,15 @@ impl Monitor {
         for g in std::mem::take(&mut self.groups) {
             self.msgs.clear();
             self.dec.group(&g, t, &mut self.msgs);
-            for (blk, msgs) in std::mem::take(&mut self.msgs) {
-                self.message(&blk, &msgs);
+            for m in std::mem::take(&mut self.msgs) {
+                self.message(&m);
             }
         }
         if self.blocks % 4 == 0 {
             self.chz.noise_profile(&mut self.noise);
             let off = self.head_hz - self.center;
             let fs = self.chz.fs();
-            let s = (((off + fs / 2.0) / fs * self.noise.len() as f64) as usize).min(self.noise.len() - 1);
+            let s = crate::dsp::channelizer::floor_slice(self.noise.len(), fs, off);
             let nb = self.noise[s];
             if nb > 0.0 {
                 let r = ((self.chz.band_power(off, 5000.0) - nb) / nb).max(1e-3);
@@ -1168,36 +1160,23 @@ impl Monitor {
         i.smartnet = Some(info.clone());
     }
 
-    fn message(&mut self, blk: &Tsbk, msgs: &[Message]) {
-        let b = tsbk_bits(blk);
-        let (op, std) = (b(88, 0x3f), b(80, 0xff) == 0);
-        if std && op == 0x3a {
-            // RFSS status: this site's control channel.
-            let f = self.dec.parser.channel_to_hz(b(24, 0xffff));
-            if f != 0 {
-                self.info.advertised_hz = Some(f);
+    fn message(&mut self, m: &Message) {
+        match m.kind {
+            // This site's control channel (RFSS and network status name it).
+            MessageType::SysId | MessageType::Status if m.freq_hz != 0 => self.info.advertised_hz = Some(m.freq_hz),
+            MessageType::Adjacent if m.freq_hz != 0 => {
+                let a = Adjacent { rfss: m.rfss, site: m.site, sys_id: m.sys_id, freq_hz: m.freq_hz };
+                self.adjacent.insert((a.sys_id, a.rfss, a.site), a);
             }
-        }
-        if std && op == 0x3c {
-            let f = self.dec.parser.channel_to_hz(b(24, 0xffff));
-            if f != 0 {
-                let a = Adjacent { rfss: b(48, 0xff), site: b(40, 0xff), sys_id: b(56, 0xfff), freq_hz: f };
-                self.adjacent.insert((a.rfss, a.site), a);
+            MessageType::ControlChannel if m.freq_hz != 0 => {
+                self.secondary.insert(m.freq_hz);
             }
-        }
-        for m in msgs {
-            match m.kind {
-                MessageType::Status if m.freq_hz != 0 => self.info.advertised_hz = Some(m.freq_hz),
-                MessageType::ControlChannel if m.freq_hz != 0 => {
-                    self.secondary.insert(m.freq_hz);
-                }
-                MessageType::Grant | MessageType::Update | MessageType::UuVGrant | MessageType::UuVUpdate if m.freq_hz != 0 => {
-                    let v = self.voice.entry(m.freq_hz).or_insert(VoiceChannel { freq_hz: m.freq_hz, grants: 0, tdma: false });
-                    v.grants += 1;
-                    v.tdma |= m.phase2_tdma;
-                }
-                _ => {}
+            MessageType::Grant | MessageType::Update | MessageType::UuVGrant | MessageType::UuVUpdate | MessageType::PhoneGrant | MessageType::PhoneUpdate if m.freq_hz != 0 => {
+                let v = self.voice.entry(m.freq_hz).or_insert(VoiceChannel { freq_hz: m.freq_hz, grants: 0, tdma: false });
+                v.grants += 1;
+                v.tdma |= m.voice.tdma();
             }
+            _ => {}
         }
         if let Some(own) = self.info.advertised_hz {
             self.secondary.remove(&own);

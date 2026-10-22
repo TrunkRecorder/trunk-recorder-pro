@@ -7,11 +7,11 @@
 import { useState } from "react";
 import { formatGain, formatMhz, systemColor, usableHalfWidth } from "../config.ts";
 import { setView, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
-import { Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, type Line } from "../charts.tsx";
+import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall } from "../Waterfall.tsx";
-import { K, recentAvg, running, sourceGuard, sourceHealth, useHistory, val } from "./data.ts";
+import { K, recentAvg, running, runningSites, sourceGuard, sourceHealth, useHistory, val } from "./data.ts";
 import { ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { quality } from "./Decode.tsx";
@@ -23,11 +23,13 @@ function gainText(c: Source | undefined): string {
     case "rtlsdr":
       return c.agc ? "AGC" : `${formatGain(c.gainDb)} dB`;
     case "usrp":
-      return c.agc ? "AGC" : `${c.gainDb} dB${c.antenna ? ` · ${c.antenna}` : ""}`;
+      return c.agc ? "AGC" : `${formatGain(c.gainDb)} dB${c.antenna ? ` · ${c.antenna}` : ""}`;
     case "airspy":
       return c.gainMode === "manual" ? (c.agc ? `AGC (VGA ${c.vgaStep})` : `LNA ${c.lnaStep} · mixer ${c.mixerStep} · VGA ${c.vgaStep}`) : `${c.gainMode} ${c.gainStep}`;
+    case "bladerf":
+      return c.agc ? "AGC" : `${c.gainDb} dB${c.biasTee ? " · bias-T" : ""}`;
     case "soapy":
-      return c.agc ? "AGC" : c.gainDb !== null ? `${c.gainDb} dB` : Object.entries(c.gains ?? {}).map(([k, v]) => `${k} ${v}`).join(" · ") || "default";
+      return c.agc ? "AGC" : c.gainDb !== null ? `${formatGain(c.gainDb)} dB` : Object.entries(c.gains ?? {}).map(([k, v]) => `${k} ${formatGain(v)}`).join(" · ") || "default";
     case "file":
       return "capture file";
   }
@@ -185,7 +187,7 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
  */
 function BandOverview({ s }: { s: AppState }) {
   if (!s.sources.length) return null;
-  const ccs = s.status?.systems.flatMap((y) => (y.controlChannelHz ? [{ hz: y.controlChannelHz, name: y.shortName }] : [])) ?? [];
+  const ccs = s.status?.systems.flatMap((y) => y.sites.flatMap((x) => (x.controlChannelHz ? [{ hz: x.controlChannelHz, name: y.shortName }] : []))) ?? [];
   const conv = (s.config?.conventional ?? []).flatMap((c) => c.channels.filter((ch) => ch.enabled).map((ch) => ({ hz: ch.freqHz, name: c.shortName, label: ch.name })));
   // The bands in use, low to high; a source straddling two goes in the one its center's in.
   const lows = new Map<string, number>();
@@ -315,7 +317,7 @@ function SourceWaterfall({ s, i, title }: { s: AppState; i: number; title?: stri
     >
       {on &&
         (s.spectra[i] ? (
-          <Waterfall radio={s.spectra[i]} label={src.label} ccs={ccMarks(s.config, s.status?.systems ?? [])} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
+          <Waterfall radio={s.spectra[i]} label={src.label} ccs={ccMarks(s.config, runningSites(s.status?.systems ?? []))} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
         ) : (
           <div className="chart-empty">Waiting for the spectrum…</div>
         ))}
@@ -342,11 +344,7 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
   const meanOffset = offsets.length ? offsets.reduce((a, c) => a + c.offsetHz! / c.freqHz, 0) / offsets.length : null;
   return (
     <div className="stack">
-      <div className="row">
-        <button className="btn ghost small" onClick={() => setView("rf")}>
-          ← All sources
-        </button>
-      </div>
+      <BackBar to="All sources" onBack={() => setView("rf")} />
       <SourceCard s={s} src={src} i={i} />
       <SourceWaterfall s={s} i={i} title="Waterfall" />
       <Card title="Across the band">

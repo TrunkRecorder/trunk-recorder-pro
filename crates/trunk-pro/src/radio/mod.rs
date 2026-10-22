@@ -1,14 +1,32 @@
 //! Radios whose drivers are vendor C libraries — USRP (UHD), Airspy
-//! (libairspy) and anything with a SoapySDR module. Nothing links against
+//! (libairspy), bladeRF (libbladeRF) and anything with a SoapySDR module. Nothing links against
 //! them: each library is looked for at run time, so the same binary records
 //! from RTL-SDRs out of the box and from these once their driver is
-//! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_SOAPY` name a
+//! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_BLADERF` / `TRUNK_PRO_SOAPY` name a
 //! library file to use instead of searching.
 
 pub mod airspy;
+pub mod bladerf;
 mod sdrplay;
 pub mod soapy;
 pub mod uhd;
+
+/// The frequency to ask a radio for: a reference off by `ppm` makes a
+/// requested f come out at f·(1 + ppm).
+pub fn ppm_corrected(hz: f64, ppm: f64) -> f64 {
+    hz / (1.0 + ppm * 1e-6)
+}
+
+/// A C string from a driver ("" for null).
+///
+/// SAFETY (callers): `p` is null or NUL-terminated.
+pub unsafe fn cstr(p: *const std::ffi::c_char) -> String {
+    if p.is_null() {
+        return String::new();
+    }
+    // SAFETY: as the caller promises.
+    unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
+}
 
 use std::path::PathBuf;
 
@@ -85,7 +103,7 @@ pub fn candidates(unix_name: &str, mac_name: &str, win_names: &[&'static str]) -
 }
 
 /// Drivers and the devices found through them, for the interface:
-/// `{usrp: {available, detail, devices}, airspy: {…}, soapy: {…, modules}}`.
+/// `{usrp: {available, detail, devices}, airspy: {…}, bladerf: {…}, soapy: {…, modules}}`.
 /// USRPs and SoapySDR devices are searched only with `search` (a device
 /// search can take seconds).
 pub fn radios_json(search: bool) -> serde_json::Value {
@@ -102,7 +120,14 @@ pub fn radios_json(search: bool) -> serde_json::Value {
     } else {
         serde_json::Value::Null
     };
-    serde_json::json!({ "usrp": uj, "airspy": airspy_json(), "soapy": soapy::json(search) })
+    serde_json::json!({ "usrp": uj, "airspy": airspy_json(), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
+}
+
+fn bladerf_json() -> serde_json::Value {
+    let b = bladerf::info();
+    let mut j = b.json();
+    j["devices"] = serde_json::Value::Array(if b.loaded { bladerf::devices() } else { vec![] });
+    j
 }
 
 fn airspy_json() -> serde_json::Value {

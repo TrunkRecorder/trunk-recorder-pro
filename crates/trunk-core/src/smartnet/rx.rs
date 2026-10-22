@@ -54,11 +54,16 @@ pub struct Fsk2Options {
     /// same OSWs on WMATA (`tool snr`). The discriminator still tracks the
     /// tones (carrier offset) and runs the clock's level tracker.
     pub tones: bool,
+    /// Watch for a stuck level: a start-up transient can push one level past
+    /// the far tone, where no symbol reaches it, and the other then follows
+    /// both tones' mean. After 400 symbols on one side (more than any run in
+    /// the data: EDACS, ProVoice), the levels start again around that mean.
+    pub dc: bool,
 }
 
 impl Default for Fsk2Options {
     fn default() -> Self {
-        Fsk2Options { ma_symbols: 1.0, clock_gain: CLOCK_GAIN, level_alpha: LEVEL_ALPHA, tones: true }
+        Fsk2Options { ma_symbols: 1.0, clock_gain: CLOCK_GAIN, level_alpha: LEVEL_ALPHA, tones: true, dc: false }
     }
 }
 
@@ -101,6 +106,10 @@ pub struct Fsk2 {
     /// The discriminator's value at the last sample (levels are tracked on it).
     prev_disc: f32,
     rate: f64,
+    /// Smallest believable tone separation, Hz.
+    min_spread: f32,
+    /// Symbols decided since a level was last updated: (high, low) ([`Fsk2Options::dc`]).
+    since: (u32, u32),
 }
 
 impl Fsk2 {
@@ -109,7 +118,13 @@ impl Fsk2 {
     }
 
     pub fn with_options(rate: f64, opts: Fsk2Options) -> Self {
-        let sps = rate / SYMBOL_RATE;
+        Self::with_baud(rate, SYMBOL_RATE, NOMINAL_DEV_HZ, opts)
+    }
+
+    /// Another 2FSK signal: `baud` symbols a second, each tone `dev_hz` from
+    /// the carrier at first (EDACS and ProVoice: 9600 baud).
+    pub fn with_baud(rate: f64, baud: f64, dev_hz: f32, opts: Fsk2Options) -> Self {
+        let sps = rate / baud;
         Fsk2 {
             opts,
             sps,
@@ -118,8 +133,8 @@ impl Fsk2 {
             ma: vec![0.0; (sps * opts.ma_symbols).round().max(1.0) as usize],
             ma_pos: 0,
             ma_sum: 0.0,
-            hi: NOMINAL_DEV_HZ,
-            lo: -NOMINAL_DEV_HZ,
+            hi: dev_hz,
+            lo: -dev_hz,
             phase: 0.0,
             prev: 0.0,
             n: 0,
@@ -129,6 +144,8 @@ impl Fsk2 {
             tone_ph: [0.0; 2],
             prev_disc: 0.0,
             rate,
+            min_spread: MIN_SPREAD_HZ.min(dev_hz),
+            since: (0, 0),
         }
     }
 
@@ -154,6 +171,11 @@ impl Fsk2 {
     /// Carrier offset: the midpoint of the two tones, Hz (+ = above the channel).
     pub fn offset_hz(&self) -> f32 {
         (self.hi + self.lo) / 2.0
+    }
+
+    /// Samples taken so far.
+    pub fn samples(&self) -> u64 {
+        self.n
     }
 
     /// Tone separation / 2, Hz.
@@ -205,15 +227,32 @@ impl Fsk2 {
         let center = self.offset_hz();
         let half = (self.hi - self.lo) / 2.0;
         let a = self.opts.level_alpha;
+        if self.opts.dc {
+            // A level no symbol has reached for this long is stuck (a start-up
+            // transient pushed it past the far tone, and the other level now
+            // follows both tones' mean): start again around that mean.
+            const STUCK: u32 = 400;
+            if v > center {
+                self.since = (0, self.since.1 + 1);
+            } else {
+                self.since = (self.since.0 + 1, 0);
+            }
+            if self.since.0 > STUCK || self.since.1 > STUCK {
+                let c = if self.since.1 > STUCK { self.hi } else { self.lo };
+                let d = half.max(self.min_spread / 2.0);
+                (self.hi, self.lo) = (c + d, c - d);
+                self.since = (0, 0);
+            }
+        }
         if v > center {
             self.hi += a * (level - self.hi);
         } else {
             self.lo += a * (level - self.lo);
         }
-        if self.hi - self.lo < MIN_SPREAD_HZ {
+        if self.hi - self.lo < self.min_spread {
             let c = self.offset_hz();
-            self.hi = c + MIN_SPREAD_HZ / 2.0;
-            self.lo = c - MIN_SPREAD_HZ / 2.0;
+            self.hi = c + self.min_spread / 2.0;
+            self.lo = c - self.min_spread / 2.0;
         }
         out.push(Bit { soft: ((v - center) / half).clamp(-2.0, 2.0), sample });
     }

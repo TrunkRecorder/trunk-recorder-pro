@@ -1,5 +1,5 @@
 //! What a site says about itself, and the site lock that holds a system to
-//! one site ([`super::engine::SystemConfig::expect`]).
+//! one site ([`super::engine::SiteConfig::expect`]).
 //!
 //! An identity is a set of facts, each an [`IdField`]. Each protocol says
 //! which it states ([`super::control::ControlChannel::identity_fields`]):

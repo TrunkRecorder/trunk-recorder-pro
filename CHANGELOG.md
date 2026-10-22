@@ -5,6 +5,24 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Share a system with the community directory** ([trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/)):
+  a switch in each system's Basics (`"share": true`). While it records, the recorder shares what it
+  heard: the sites, their control and voice channels, neighbours, call signs heard on the air, and
+  the talkgroups granted (numbers, how often, where, encrypted or not). Not talkgroup names or
+  anything else typed in, and not a location. It shares after 5 minutes of decoding, then as it
+  hears new talkgroups or voice channels (at most hourly), otherwise daily. Setup shows the last
+  share and links to the system's page; the directory's IDs are kept as `directory` and each site's
+  `directoryId`. P25, SmartNet, DMR and NXDN; desktop and the browser build.
+- **Colours never look like a status light.** Green, amber, orange and red
+  now mean only OK, a warning or a problem. Systems and chart lines share
+  one palette of blues, teal, violets and magenta, and a system's mark is
+  square where a light is round (#40).
+- **A light names what it's about.** With several systems, radios or
+  plugins, the navigation's lights say which one is in trouble: "ipscpend:
+  Calls are being missed…". The Radio page shows the light and why on that
+  system's card, its button in the picker and its "What happened to calls".
+  The Overview's system cards include missed calls, and "Missed, 24 h" says
+  which systems missed them (#41).
 - **Two SDRplay radios in one process:** a second RSP source no longer
   fails with `SelectDevice() failed`. SoapySDRPlay3 opens one SDRplay API
   session per process, which can select only one radio, so trunk-pro now
@@ -15,6 +33,494 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   2.5 + 6 MS/s worked. A source at 2 MS/s or
   below runs its radio at 6 MS/s; use separate USB controllers if a
   pair doesn't fit.
+
+## [0.2.7] — 2026-10-22
+
+- **EDACS** trunked systems (`"type": "edacs"`): Standard and Networked
+  sites (GE / Ericsson / Harris), with their analog FM calls and **ProVoice**
+  digital voice. The 9600 baud control channel is decoded (three copies of
+  each message voted, BCH corrected; a word is kept only when two of its
+  three copies agree), channel numbers turn into frequencies by each site's
+  channel list (`lcnTableHz`, an **EDACS** section in Setup), and
+  ProVoice's IMBE 7100 frames are decoded and spoken by the P25 vocoder.
+  ESK 0xA0 systems are read with `esk`. Extended Addressing isn't decoded
+  yet. Every frequency of a site is watched at once, so the control channel
+  is found wherever it moves, and each LCN's frequency is checked against
+  the air (the carrier that keys when a call is assigned it): a list whose
+  numbers are off is corrected. A site is reported in failsoft only when its site ID says so and it has
+  stopped assigning calls (some sites set the flag and trunk all the same).
+  A site ID is believed once three in
+  a row agree. A grant to the frequency the control channel is on is never
+  followed. The 9600 baud burst at the start of an analog transmission is
+  left out of the audio.
+- **bladeRF** sources (optional; bladeRF 2.0 micro xA4 / xA9 and the
+  original x40 / x115): used when libbladeRF 2.x is installed (`"type":
+  "bladerf"`). Serial, any sample rate to 61.44 MSPS, overall gain or the
+  board's AGC, analog filter bandwidth and bias-T; samples USB drops are
+  counted from the board's timestamps. Trunk Recorder's osmosdr
+  `bladerf=…` sources (and `"driver": "bladerf"`) import as bladeRF sources.
+- **Gain changes apply while recording** on RTL-SDRs and Airspys (the
+  gain and AGC on or off; an Airspy's preset or stages), and on USRPs,
+  bladeRFs and SoapySDR devices (the gain in dB, AGC off), without a Stop
+  and Start; the log says the gain each took, and a radio reopened after an error keeps
+  the gain it was given. Other radio settings still apply when recording
+  starts, which the log says too.
+- **Who is licensed on each frequency.** A system, trunked or conventional, can keep an `fcc` map:
+  the FCC licensee and call sign on each of its frequencies, in an **FCC licenses** table on its
+  card. **Identify** on the card looks them up from a location you give (trunkrecorder.pro's FCC
+  lookup; nothing is sent until you ask, and everything works the same without it). The survey's
+  **Identify surveyed sites** adds a *Licensed to* column, and the setup guide names the systems it
+  finds. Motorola P25 systems fill in their call signs from the air, from the base station ID they
+  send on control and voice channels. Plugins get them in `hello`.
+- **P25 Phase 2:** a Motorola `$83` MAC message no longer hides the messages after it in the same
+  PDU.
+- **Restart.** While recording, a Restart button beside Stop starts the run again with the
+  settings as they are now. Changing a setting that only applies at start (radios, systems,
+  recording options) shows a "Change requires restart" banner. Settings the recorder takes while
+  recording (plugins and their delays, the log, a radio's gain) don't raise it.
+- **A background tab that falls behind reconnects** (Safari and other browsers that slow
+  background tabs instead of freezing them): once it is more than 10 s behind the recorder, it
+  reconnects instead of replaying the backlog when brought forward.
+- **Conventional rows say what they record and what they file it under**: a row's Tone is now
+  **Code** (tone, NAC, colour code or RAN), **Slot** (DMR) and **Match TG** (P25, DMR, NXDN), and
+  the most specific row that fits takes a transmission. P25 rows can now split a frequency by
+  talkgroup, not just by NAC. An older config's `tone`, and a channel file's `Tone` column, are read
+  as the three; RadioReference's `CC1 TS2 TG201` pasted into Code still works.
+- **A typed TG Number on a digital row now wins** over the talkgroup the air names (before, it was
+  used only when the air named none). Several P25 channels whose radios all send TG 1 can each file
+  under a number of their own. An empty TG Number keeps the air's, as before. P25 rows that shared a
+  frequency (and filed under their own number) have that number written in on upgrade, so nothing
+  already recorded files differently.
+- **`talkgroup_ota` in the call JSON**: a conventional P25, DMR or NXDN call keeps the talkgroup the
+  air named, also when its row files it under another number. A new talkgroup on the air still
+  starts a new call. Plugins see it on `CallRecord` and `CallInfo` (SDK 0.5.1).
+- **Shown where calls are**: the console log's `TG:` reads `46012 (air 1)` when a row files the
+  air's talkgroup under another number, as do Live calls and the Listen page (`air 1`); the
+  archive path has a `{talkgroup_ota}` token.
+- **Setup's channel table shows what each row records** as chips coloured by kind — tone / DCS,
+  NAC / colour code / RAN, slot, talkgroup, or everything else — opening the row's Code, Slot and
+  Match TG to edit; a code that doesn't read is marked. The CSV format's help is an example and a
+  table of the columns.
+- **A row's names come first**: a conventional call takes its row's names, if the row has any, else
+  the system's talkgroup file's for the number it's filed under.
+- **Every name on a conventional row can be edited in Setup**: **Edit** opens a row's codes and the
+  Description, Tag and Category its calls carry (before, only the Name could be changed without
+  editing the config), offering the tags and categories the system uses already. A row's tag and
+  category show under its name. **Export CSV** writes them all.
+- **The call JSON says what kind of call it was**: `system_type` (`p25`, `smartnet`, `dmr`, `nxdn`
+  or `conventional`, as plugins have it), `voice_mode` (`p25`, `p25_phase2`, `dmr`, `nxdn48`,
+  `nxdn96`, `provoice`, `fm` or `am`) and, for P25, `nac`: the NAC a conventional channel's frames carried, a
+  trunked system's site NAC, in hex as channel files and Setup write it (`"293"`). The archive path has `{system_type}`, `{voice_mode}` and `{nac}`
+  tokens. SDK 0.5.1 has the fields on `CallRecord`.
+- **The Radio page names a conventional system's talkgroups** as Listen does (from #53's review; it
+  showed bare numbers in 0.2.6 too): by the row, else the talkgroup file; a talkgroup filed under the
+  air's number is named as its last named call was.
+- **Setup keeps a system's card open while its Short name is typed** (from #53's review): a pause
+  saved the edit, and the recorder's copy coming back closed the card.
+- **P25 Phase 1 voice repeats fewer good frames.** A frame whose FEC corrected a lot of errors
+  is repeated only when the errors fall in its pitch word *and* there are many in total, as
+  TIA-102.BABA-A §7.7 has it, not on either one (an `||` inherited from op25, which taclane
+  found). With noise added to a DCFD capture, the audio comes out closer to the clean decode's
+  at every SNR tried. `tool snr --repeat` measures repeat rules.
+
+## [0.2.6] — 2026-10-20
+
+- **A tab woken from the background shows how things are now** (by taclane, #54), not minutes of
+  calls and status replayed as if live: one that heard nothing from the recorder for 30 s (it
+  hears from it every 2 s) reconnects, and the recorder closes a connection that stops reading
+  for 10 s or falls behind, so it reconnects afresh.
+- **A call times out from when its last update came in, not when it was on the air** (by
+  taclane, #55). A control channel's messages come out some 0.4 s after they were sent (P25's
+  diversity bank holds them 0.35 s), so every call ended that much early: a `callTimeoutS` of 1,
+  carried over from Trunk Recorder, ended calls about half a second after their last update,
+  shorter than the gap between a busy system's updates in hangtime, and split conversations into
+  pieces with empty calls between them. `callTimeoutS` now means seconds after the last update
+  came in; Trunk Recorder's once-a-second checks end calls up to 2 s later than its own setting.
+- **Numbers show as they should**: an SNR, an airtime or a gain no longer reads like
+  8.600000381469727 (in a frequency's tooltip on Overview and Decode, a USRP's or SoapySDR's gain
+  on RF, a talkgroup's or radio's airtime). A gain the survey finds is saved as 49.6, not
+  49.599998474121094.
+
+## [0.2.5] — 2026-10-19
+
+- **The Live page is each system's now**: a system's page under **Radio system** has its
+  **Active calls** (with **Listen live** for that system, and its talkgroups and radios linking to
+  their pages) in place of the "On the air now" card, and its **Control channel log** at the
+  bottom. The Live page, which showed every system's calls and messages together, is gone; links
+  to it open Radio system.
+- **Platform comes before Plugins** in the side rail.
+
+## [0.2.4] — 2026-10-19
+
+- **Every page that drills down goes back the same way**: a system on Radio now starts with
+  "← All systems" and the systems beside it, as Decode does with its sites, instead of a button on
+  the right of the system's header. A talkgroup's or radio's page starts with "← <system>"; RF's
+  source page with "← All sources".
+- **A system's overrides in Setup are two groups**: **Plugins** (its plugin settings and plugin
+  delays) and **Recording**, in two parts: **Recording** (what's recorded and kept, loudness) and
+  **Archive** (folders and file names, the M4A, and what stays once the plugins are done).
+- **Keep .wav and Keep .m4a, each on its own**, in place of **Keep audio** (`audioArchive`) and
+  **Also save an M4A** (`compressWav`), on the Recording tab and in a system's Archive override:
+  keep the M4A and not the WAV, or both, or neither (`archiveWav`, on by default; `archiveM4a`,
+  off). An older config is upgraded as it's read, keeping what it kept. With OpenMHz (or another
+  plugin that uploads M4A) on, an .m4a is made for every call either way, and Keep .m4a's hint
+  says so; off, it's deleted once the plugins are done. An M4A to keep that couldn't be made
+  leaves the WAV in its place, and **Keep when a plugin fails** now keeps every file of the call.
+
+## [0.2.3] — 2026-10-19
+
+- **Listen says why a system is missing** instead of "No recorded calls yet": a system whose calls'
+  audio isn't kept (Keep audio off, its own or the Recording tab's) has nothing to play, so its
+  talkgroups are left out of the Talkgroups tab, and a card above the calls names it and where to
+  turn Keep audio on.
+
+## [0.2.2] — 2026-10-18
+
+- **A radio's delivered rate holds steady** on the RF page (by taclane, #43): it's measured over
+  5 s from one buffer's arrival to another's, not over the status tick's second, which counted a
+  whole RTL-SDR transfer (55 ms at 2.4 MS/s) in or out of it. Healthy dongles no longer warn that
+  they deliver 5% off their rate; one that goes quiet still falls to zero.
+- **Reinstall a plugin in place** (by taclane, #38): a plugin's card has **Reinstall** where it
+  would say **Update to vX** with nothing newer, taking it again from where it came (the
+  registry, its GitHub repository's latest release, or your build's file) with its settings kept.
+  Adding your build's file again does the same, and restarts it if it's on. A build of your own
+  says **Uninstall** too (its file stays).
+
+## [0.2.1] — 2026-10-18
+
+- **A dashboard card opens what it's about from anywhere on it**, not only its title: a system's
+  card on the Radio page opens that system (its "Open …" link is gone), a site's on Decode, a
+  source's on RF, and so on. A row of a system's busiest talkgroups opens that talkgroup, and a
+  row of who talks on a talkgroup opens that radio. Buttons, links and charts in a card still do
+  their own thing.
+- **The Listen page's Talkgroups tab opens again** (0.2.0 failed with "s.talkgroups is
+  undefined"): the page didn't take the talkgroup files from the store when they moved out of
+  the config.
+- **Every closed choice in the config is read in any case**, the few that weren't too: a source's
+  `type` (`"RTLSDR"`), an interface's `access`, and the log's `level`, `frequencyFormat` and
+  `talkgroupDisplayFormat` (`"warn"` is `"warning"`). They're saved in their own case, as before.
+
+## [0.2.0] — 2026-10-18
+
+A release with breaking changes, for interface and plugin authors more than for recording. An
+older config is upgraded when it's read (its talkgroups are moved into files beside it), and
+recording carries on as before. What to know before upgrading:
+
+- **Update your plugins** from the Plugins page once the recorder is upgraded: the plugins in the
+  store are rebuilt on plugin SDK 0.5.0 (OpenMHz 0.1.6, Broadcastify 0.1.6, Rdio Scanner 0.1.5,
+  simplestream 0.1.5, Upload script 0.1.4, MQTT 0.1.7). Systems are numbered from 0 now,
+  conventional ones too, and the call record names every field, so an older MQTT plugin would
+  report a call's signal, noise and frequency error as 0.
+- **Interfaces** that use `setConfig`, the talkgroups, the store messages or a site's identity
+  need a version made for this one (Trunk City 2000 0.4.0 is; Trunk-tris needs no change).
+- **A config written by hand** with a choice the recorder doesn't list (a system `type` of
+  "P25x", say) is refused when it's read, where it used to fall back to the default without a
+  word.
+- **The dashboard needs a browser with WebAssembly SIMD** (Safari 16.4, Chrome 91, Firefox 89 or
+  later).
+
+- **Talkgroup files live beside the config, not in it** (breaking for interface authors). A system's
+  talkgroup file (Trunk Recorder's CSV format) is `<shortName>.talkgroups.csv` in the config's
+  folder, and `talkgroupsCsv` / `talkgroupsName` are gone from the config, so editing one no longer
+  sends every system's file to the recorder and back to every connection. An older config is
+  upgraded when it's read: its talkgroups are moved out into those files (the log says which).
+  Renaming a system in Setup moves its file. In the API the recorder sends `talkgroups { system,
+  csv }` for each system on connecting and whenever one changes (`""`: none), and an interface with
+  control access changes one with `setTalkgroups { system, csv }`. client.js: `rec.talkgroupFiles`
+  and `rec.setTalkgroups(shortName, csv)`.
+- **A config edit names the version it edits** (breaking for interface authors). `config` carries a
+  `version`, and `setConfig` is `{ config, version }`. If the config changed elsewhere meanwhile
+  (another browser saved), the edit is refused rather than saved over the newer config. Every
+  `setConfig` is answered to its sender with `configSaved { version, error? }`: `version` is the
+  config's now, and `error` says the edit wasn't taken (an old version, or a bad config) or
+  couldn't be saved. client.js tracks `rec.configVersion` and sends it; a refusal sets `rec.error`.
+- **A connection is greeted with ordinary messages, and `hello` comes last** (breaking for
+  interface authors). It used to carry a copy of the config, phase, history, aliases, heard codes,
+  radios, survey, events, host, devices and keys, in its own shapes. Now a new connection is sent
+  `state`, `config`, `talkgroups`, `units`, `heard`, `history`, `radios`, `survey`, `monitorEvent`
+  (each recent event) and `host` (with control access also `devices`, `keys`, `plugins` and
+  `interfaces`) like any later change, and then `hello`, which means "caught up" and is just
+  `{ version, platform, api, configPath?, surveyBands }`. New messages: `history { entries }` (the
+  latest calls, newest first) and `units { system, csv }` (a system's saved talker aliases).
+  Wait for `hello` before treating something missing as missing. A listen-only connection gets the
+  same messages as before, without plugin settings and key sources. client.js emits `change` once
+  at `hello` during the greeting.
+- **A conventional system has its own talkgroup file.** Its P25, DMR and NXDN channels name the
+  talkgroups they hear by it (Setup shows it on a conventional system with digital channels). They no
+  longer borrow the names, or the receiver settings, of the only trunked system when there is one:
+  give the conventional system the file instead.
+- **Conventional calls have their frequency error** (`freq_error` in the call JSON), measured from
+  their decoder's offset as a trunked call's is (P25; analog and DMR receivers don't measure one).
+- **Conventional DMR opens its channel as wide as trunked DMR** (6.25 kHz, was 7 kHz): a shade
+  fewer bad frames on the test capture.
+- **The recorder's own log lines reach the browsers** with their clock time and level (`LogLine.time`,
+  `.level`): warnings and errors to every connection, the rest to those watching the `log` topic.
+- **Calls are finished by a small pool of threads** that write every file a call's plan says (an
+  .m4a made for a plugin too), so the plugins are handed finished files.
+- **Plugin SDK: one `CallRecord`.** The call JSON is one typed record from the engine to the file,
+  the history and the plugins, where it was a string parsed again four times. Every field the
+  recorder writes is named (`freq_error`, `signal`, `noise`, `snr`, `clean_voice_pct`,
+  `recorder_num`, `algid`, `key_id`, `color_code`, `ran`, the tone fields, `errorList`…), so a plugin
+  no longer finds them in `extra`; flags are written back as 0/1, as the recorder's files have them.
+  The files themselves are byte for byte as before.
+- **One store for plugins and interfaces** (breaking for control-access interfaces). `pluginStore` /
+  `interfaceStore`, `installPlugin` / `installInterface` and `pluginInstall` / `interfaceInstall` are
+  `store { kind }`, `install { kind, … }` and `installProgress { kind, … }`, with `kind` `plugin` or
+  `interface`; a store's list is `listings`. The Plugins and Interfaces pages share one store panel.
+  `trunk-pro interface install` reports progress directly instead of reading it back off a hub.
+- **One site identity everywhere** (breaking for interface authors). A site's identity in `status`,
+  the survey's candidates and monitor, and the config's `expect` is one shape, `SiteIdentity`: a
+  field not heard yet is left out (it was `null` in messages), so test with `!= null`. The survey's
+  suggestion carries `identity` instead of `nac`, `sysId`… beside its other fields, and its learned
+  SmartNet band plan uses the config's names (`bandplanBaseHz`, `bandplanSpacingHz`,
+  `bandplanHighHz`).
+- **`hello.capabilities`** says what a recorder can do beyond recording: `service`, `drivers`,
+  `plugins`, `interfaces`, `host`, `keys` (the desktop app has all; the browser build none). The
+  interface shows what the recorder can do instead of checking which build it is, and the browser
+  build answers a command it can't do with an `error` instead of dropping it. client.js:
+  `rec.capabilities`.
+- **`status` is slimmer** (breaking for interface authors). It's sent to everyone twice a second,
+  and each site carried its neighbour list, DMR and NXDN channels and carriers, and each system its
+  patches, which only the Decode page's system view reads. They moved to `decodeDetail` (topic
+  `decode:<shortName>`): `sites: [{ index, name, adjacent, dmr, nxdn }]` and `patches: [{
+  supergroup, members }]`.
+- **Setup applies the recorder's own rules.** Why Start would refuse a config, where an automatic
+  source is centred, how a stored config is read (and an older one upgraded), and reading and writing
+  a channel CSV were written twice, in the recorder and again in the interface, and had drifted:
+  Setup let Start be pressed with an RTL-SDR's USB transfer size the recorder refuses, or a channel
+  bandwidth or demodulation setting out of range. The interface now runs the recorder's code for
+  these (as WebAssembly, which the browser version already used), so they can't disagree. The
+  dashboard now needs a browser with WebAssembly SIMD (Safari 16.4, Chrome 91, Firefox 89 or
+  later), and says so if it hasn't. The browser version starts from the recorder's default
+  config, with the M4A, spool and monitor settings it lacked.
+- **A config with a choice it doesn't list is refused when it's read**, as one with a wrong type is:
+  a system `type`, a site's `modulation`, `nxdnType`, `nxdnRate`, `defaultMode`, `vocoder`, the M4A
+  `encoder`, `unitNames.mode` and `log.color`. They used to fall back without a word (a `type` of
+  "P25x" recorded as P25). A listed name is read in any case (`"P25"`, `"QPSK"`), and an empty value
+  still means the default.
+- **A file name format with a token nobody knows is refused at Start**, the config's or a system's
+  own. Setup already said so; a config edited by hand or by another interface wasn't checked.
+- **Renaming a system in the setup guide keeps its plugin settings pointing at it**, as renaming it
+  in Setup does.
+- **A command the recorder can't read is answered.** One with a field missing or of the wrong kind,
+  or of a type the recorder doesn't know, used to be ignored without a word (or read with a
+  default in place of what was missing); now the connection gets an `error` saying what was wrong.
+- **Systems are numbered from 0, conventional ones too.** Conventional systems used to be numbered
+  down from 65535; now the systems being recorded are numbered 0, 1, 2…, trunked first, then
+  conventional. This is the number `{sys_num}` gives in a file name format and plugins see as
+  `system`. The `status` message lists every system's short name by that number
+  (`status.systemNames`); the API client's `systemName(status, system)` reads it, and
+  `CONVENTIONAL` / `conventionalIndex` are gone (from the plugin SDK too: SDK 0.5.0, since 0.4.0
+  on crates.io still has it; a plugin tells a conventional system by its `kind` in `Setup`). There
+  is no longer a limit of 256 conventional systems.
+  - Inside, a system's talkgroups, rules, unit names and keys are kept once for the whole system
+    rather than copied into each of its sites, so a talkgroup file edited while recording reaches
+    every site from one place.
+- **A conventional DMR call is DMR from its start.** One whose colour code wasn't heard yet was
+  logged as a P25 call and its files had no slot in their name; now it is DMR on its slot at once.
+  (Inside, a call says what its voice is on — P25, P25 Phase 2 on a slot, DMR on a slot, NXDN,
+  FM or AM — in one field, where five fields used to be read in order to tell.)
+- **A lost control channel on a named site links to its system.** The `controlLost` and
+  `controlRegained` events now carry the system's short name in `system` and the site's own name
+  in `site`; `system` used to be "dcfd/south", so the event's link to the Decode page found no
+  system.
+
+## [0.1.15] — 2026-10-17
+
+- **A call to a radio isn't taken for a copy of a talkgroup call.** Multi-site matched copies of a
+  call by number alone, and a unit-to-unit call's number is the radio called: one to radio 1234 on
+  one site and a call on talkgroup 1234 on another, within 3 s, were taken for one call and one of
+  them wasn't saved.
+- **A system has sites.** Sites of one radio system used to be systems of their own, joined while
+  recording (a site group, or the same WACN and System ID on the air), and anything set or counted
+  by short name — talkgroups, unit names, recording rules, plugin settings and delays, Ignore, the
+  Listen page — went by whichever site a call was kept from. Now a system has a list of sites, each
+  a control channel to follow, and everything else is the system's: one talkgroup file, one Listen
+  list, one folder, one Overview card (a row per site); the Decode page has a card per site. A call
+  heard on several sites is still saved once, now only among a system's own sites; the call JSON
+  says its `site`, and `{site}` can go in a filename format.
+  - **Setup**: a system's **Sites** (Add site; each with its own Record switch, control channels,
+    modulation, protocol settings and site lock). A neighbouring site the control channel announces
+    is added as a site of its system, and the survey can add a control channel as a site or replace
+    one. Two systems set up apart that the air says are one get **Make them one system**.
+  - **Your config is updated on the first start** (the old one kept as `config.json.before-sites`):
+    each system becomes a site named as it was, and those joined by a site group or by site locks
+    naming one system become one system, with the first one's name and settings; the log says what
+    wasn't kept. Systems joined only from the air are offered in Setup.
+  - From Trunk Recorder: systems with `multiSite` and one `multiSiteSystemName` are one system with
+    a site each.
+  - Plugin SDK 0.4.0: `site` on calls, unit events and the call record, `site_name` in status; a
+    call is started and ended once for plugins however many sites hear it.
+  - The API: `status.systems[]` is one per system with its `sites[]` (control channel, identity,
+    decoding); calls carry `site`. `--system name/site` in `trunk-pro replay`.
+  - Also fixed on the way: switching on an avoided talkgroup on Listen left it avoided.
+- **RTL-SDR USB transfer size** (`bufLen`, **USB transfer size** in Setup): Trunk Recorder's
+  `buflen`. Four or more dongles at 2.4 MSPS on one USB 2.0 bus overflow with the driver's
+  256 KiB transfers (the control channel goes unreliable first); 64 KiB transfers let them take
+  turns. Imported from a Trunk Recorder config's `buflen=` / `buffers=`, and suggested in the log
+  and in Setup once 4 or more dongles run at full rate. The RTL-SDR driver (`rtlsdr-nusb`) is now
+  a fork in the workspace to allow it.
+- **Airspy sample packing.** Airspys now send 12-bit samples packed over USB (`packing`, on by
+  default; **Pack samples** in Setup): a quarter less of the bus. An Airspy at 10 MSPS nearly
+  fills a USB 2.0 bus by itself; with several radios on one bus, that's what overflows.
+- **Losses a radio can't report are caught.** An RTL-SDR has no way to say its FIFO overflowed
+  (its USB bus too busy to read it in time). The recorder now notices a source's samples falling
+  behind the wall clock beyond its crystal's drift, counts them as dropped and logs "lost without
+  its driver saying so", so the dashboard's dropped count and alert cover RTL-SDRs too.
+- RTL-SDR and capture-file buffers are reused rather than allocated per transfer.
+
+- **Fewer Airspy drops.** libairspy converted the Airspy's samples to IQ on the same thread that
+  drains its USB queue (about half a core at 10 MS/s), and dropped a buffer whenever that thread
+  ran ~50 ms late. The recorder now asks for the raw samples and converts them on the source's
+  decoding thread, with no allocation per buffer on libairspy's. `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1`
+  goes back to libairspy's conversion. Also fixed: drops reported by libairspy were under-counted
+  when they came back to back.
+- **Sources don't wait on the dashboard.** With many sources, the threads that read status, the
+  channel list and the history for the dashboard held the engine while waiting on a busy source,
+  and every other source's decoding waited behind them.
+
+- **Each source decodes on its own core.** With many sources one core used to do all the
+  decoding while the others sat idle (and samples were dropped once it couldn't keep up). Each
+  source now has a decoding thread of its own — its channelizer, its voice and control channels —
+  while the calls are followed in one place. Results are the same as before, fed from one thread
+  bit for bit; `trunk-pro replay --threads` feeds each source from its own thread, as live.
+- **NXDN trunked sites cost far less.** A Type-D site watches every repeater at once; each
+  watched NXDN48 carrier now decimates before demodulating, 42 % less CPU with the same decodes.
+- **P25 `modulation: "auto"` detects the modulation.** Instead of running the CQPSK and C4FM
+  receivers on every channel all the time, each channel runs both until one clearly decodes
+  better (a few seconds), then only that one — about 70 % less CPU on a P25 channel. The log says
+  what was detected and the setting that skips detecting it; Setup's option reads **Detect**. On a
+  weak simulcast signal (9–11 dB) this decodes up to 1 % fewer control messages than running both
+  kept doing.
+- **Faster 4FSK receivers.** Multi-symbol detection (P25 C4FM, DMR, NXDN) does the same work in
+  7–12 % less time.
+
+- **AM channels (airband).** Conventional channels can now be analog AM: VHF airband (118–137 MHz)
+  and UHF military air (225–400 MHz). The audio level follows each transmission's own carrier, so
+  a fading aircraft keeps its volume; impulse noise is clipped; and a transmitter a few kHz off
+  frequency is heard as it is. Pick **Analog AM** in Setup, `"mode": "am"`, `am` in a channel CSV,
+  or `--am` on `trunk-pro replay`. See [Airband (AM)](docs/guides/conventional.md#airband-am).
+  AM channels listen for the carrier's spectral line as well as the channel's power, which opens
+  them about 10 dB sooner, so distant aircraft are heard; the steady whistles of SDR spurs and
+  nearby electronics are learned and ignored.
+- **Channel bandwidth.** Each FM or AM channel can set its filter width (`bandwidthKhz`, Setup's
+  new **Bandwidth** column, the CSV's `Bandwidth kHz`): wide FM for 25 kHz channels, 6 kHz for
+  8.33 kHz airband, wider for UHF military air (its default from 225 MHz).
+- **Demodulation settings per conventional system** (`demod`, Setup's **Demodulation** group): FM
+  de-emphasis on or off, AM level speed and low cut, and the squelch's open delay and hang. A
+  longer hang bridges fades on weak signals without keeping the noise after a transmission: the
+  squelch now cuts the audio from just before the carrier dropped, whatever the hang.
+
+## [0.1.14] — 2026-10-16
+
+- **Interfaces for people who listen, from an interface store.** Besides its own interface, the
+  recorder now serves other web interfaces — a player, a scanner wall, a phone page — each on a
+  port of its own, so each is a separate site to the browser. The new **Interfaces** page
+  installs them from the interface store ([TrunkRecorder/interfaces](https://github.com/TrunkRecorder/interfaces),
+  checksums pinned as the plugin store's are) or a GitHub release, adds folders of your own,
+  updates and removes them, and sets their ports; changes take effect at once, no restart.
+  `trunk-pro interface …` does the same from the command line. See
+  [docs/interfaces](docs/interfaces/README.md). The store shows each interface's screenshots
+  (fetched and checked by the recorder) and who made it; plugin cards show their author too.
+  The first listed is [Trunkamp](https://github.com/ge0metrix/TrunkAmp) by ge0metrix, a
+  Winamp-style player.
+- **Listen access.** An interface gets **listen** access unless you give it **control**: it sees
+  and plays everything, and can't change settings, start or stop, quit, or manage plugins; the
+  config it sees leaves out plugin settings and key sources. The recorder's own port keeps full
+  control. Share a listener's interface without sharing the controls.
+- **Changed:** interfaces are no longer served at `/ui/<name>/`, `/builtin/` and `/ui/` are gone,
+  and `/` is always the recorder's own interface (`server.home` is dropped). `server.interfaces`
+  is now a map by id (`port`, `enabled`, `access`, `path`); an old list is read and given ports.
+  `--ui <folder>` serves the folder on the next free port and opens it. `/api/interfaces` is
+  replaced by the `interfaces` message. The interface panel moved from Setup to the Interfaces
+  page.
+
+## [0.1.13] — 2026-10-16
+
+- **P25 decoding checked against the TIA-102 standards.** The control channel, Phase 1 voice,
+  Phase 2 and encryption were gone through against the standards' own message layouts and test
+  vectors, which the tests now follow. What you'll notice:
+  - **Phase 2 calls hold together.** Grant updates for both slots of a TDMA carrier now come
+    through, so a call being followed no longer ends and starts again partway.
+  - **Phase 2 calls joined late name their talkers.** The source IDs come from the voice channel
+    as well as the call's start, so a call heard after it began no longer has an empty `srcList`.
+  - **Unit-to-unit calls aren't wrongly skipped.** On some systems every unit-to-unit call was
+    taken for encrypted (or an emergency) and skipped.
+  - **Telephone interconnect calls are recorded**, with `recordUnitToUnit`.
+  - **No more noise from encrypted calls joined late.** Voice heard before it's known whether it's
+    encrypted is held until it is, instead of being played as if clear.
+  - **A wrong key is caught.** Phase 1 voice a key decrypts to noise is no longer saved as
+    decrypted: the log says which key ID doesn't fit, and that voice is left out.
+  - **More decoded in weak signal.** Phase 2 signalling survives about twice as many errors, and
+    Phase 1 headers and link control use what the error correction already knows is damaged.
+  - **Keys:** with keys loaded, encrypted link control is read (talkgroup and talker). A 3DES key
+    whose three parts are the same also decrypts DES ($81), as the standard says; DES keys with a
+    mistyped (wrong-parity) byte are warned of; from a KFDtool container, a key in both the active
+    and an inactive keyset is taken from the active one; a second key for the same talkgroup is an
+    error. ALGID $85 is shown as AES-128 and $89 as AES-128 (Motorola).
+- **Each radio's own flags in the call JSON.** Every `srcList` entry now has `encrypted`, `duplex`,
+  `mode` and `priority` beside `emergency`: what that radio's transmission said of itself (its
+  grant, then the voice channel while it talked), so one talker's emergency isn't another's.
+- **Plugins** (SDK 0.3.1, additive): `CallInfo` has `sources`, each radio with those flags, and the
+  call's `duplex`, `packet` and `priority`; `SrcEntry` reads the new `srcList` fields;
+  `UnitEvent` has `emergency`.
+
+## [0.1.12] — 2026-10-16
+
+- **Import several Trunk Recorder configs into one setup.** With systems already set up, the import
+  now asks whether to add the config to them (the default) or replace them, so a setup split over
+  several configs (700 MHz, 800 MHz, VHF…) can be imported one after another. Radios and systems
+  already here aren't added twice; your Recording and log settings stay. See
+  [Running the import](docs/migrating-from-trunk-recorder.md#running-the-import).
+- **`srcList` positions are in the audio.** Each source's `pos` in the call JSON is where it starts
+  in the saved audio, as in Trunk Recorder, not the time since the call was granted: the gaps
+  between transmissions and the transmissions left out (short key-ups, encrypted ones) are no
+  longer counted, so a position can't fall past the end of the file.
+
+- **Plugin delays.** Plugins can be given calls late: for a whole system, some of its talkgroups,
+  one plugin on every system, or one plugin on one system (`pluginDelays`, at the top of the config
+  and in each system). A rule that narrows another replaces it; otherwise the longest delay wins.
+  Held calls are kept on disk until they're given, so a restart doesn't lose them; a delayed call's
+  live audio isn't streamed. In Setup, under a system's Overrides and on each plugin's card. See
+  [Delays](docs/configuration/plugins.md#delays).
+
+- **Key sources.** The config's new top-level `keys` names each keys file once, and a system's
+  `keys` names a source instead of a file, so systems on the same radios share one and it is read
+  once. A config whose systems name a file is read as one source per file, named after it.
+- **Encryption keys from a KFDtool container:** a key source's `file` can be a KFDtool key
+  container (`.ekc`), with `passwordFile` naming a file that holds its password. A password file
+  others can read is refused. Keys the recorder can't decrypt (key-encryption keys, DES-XL) are
+  listed in the log and left out. `replay` takes `--keys-password-file` too.
+- **Unlock a key container in the interface.** A container with no `passwordFile` no longer stops
+  the start: Setup → Recording → Key containers asks for its password. Unlocked keys are held in
+  memory until Lock or the app stops, and reach calls already in progress.
+
+- **Decrypted calls go only to the plugins you allow.** A call decrypted with your keys (its live
+  audio, files and JSON) is no longer given to every plugin: turn on **Share decrypted calls** on a
+  plugin's card in Setup → Plugins (`plugins.<id>.shareDecrypted`) for each one that should have
+  them. Voice of a call that ends in the same moment it is decrypted is no longer taken for clear.
+  See [Decrypted calls](docs/plugins/README.md#decrypted-calls).
+
+- **Encryption keys are wiped from memory:** the keys in a system's keyring,
+  the keys file's text and its parsed contents, and the cipher's key-derived
+  state are overwritten when they are dropped, so a freed page doesn't keep a
+  key for a crash dump or a memory scan to find.
+
+- **No CTCSS hum on analog audio.** The voice high-pass now removes every CTCSS tone. The higher
+  tones (roughly 150–254 Hz) used to come through as a low hum; a 250 Hz tone was cut by only
+  10 dB, and every tone is now cut by 50 dB or more. Voice and two-tone paging tones from 288 Hz
+  up are kept, as before.
+
+- **Phase 2, DMR and NXDN tone frames now play as tones:** a dispatch tone-out sent
+  as AMBE+2 tone frames (a pure tone or a pair, with a tone ID and a level)
+  came out as silence with a click at each frame edge, because the decoder
+  took the tone ID for part of a pitch and faded to nothing. It now reads the
+  frame by TIA-102.BABA-A §2.10 and plays the Annex T tone at the level it
+  names, continuous from frame to frame (checked against the reference
+  vocoder's amplitude to within 4 %). A tone frame the FEC damaged keeps the
+  tone going if its four ID copies still name it, and otherwise repeats it up
+  to 3 times, as voice does. Tone frames no longer count as bad frames. The
+  mbelib profile still plays none, as mbelib doesn't.
 
 ## [0.1.11] — 2026-10-14
 

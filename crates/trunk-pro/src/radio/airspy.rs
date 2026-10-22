@@ -1,11 +1,12 @@
 //! Airspy R2 / Mini through libairspy, loaded at run time. Needs libairspy
 //! installed: `brew install airspy`, `apt install libairspy0`, or airspy.dll
 //! (from the airspy-tools release) next to trunk-pro.exe / on PATH on Windows.
-//! libairspy does the real-to-IQ conversion; samples arrive as float IQ at
-//! the chosen rate, centred on the tuned frequency.
+//! libairspy hands over real samples, turned into IQ (centred on the tuned
+//! frequency, at the chosen rate) on the source's decoding thread; its own
+//! conversion is kept behind `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` ([`library_iq`]).
 
 use std::ffi::{c_int, c_void, CStr};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -13,8 +14,8 @@ use std::time::Duration;
 use libloading::Library;
 use num_complex::Complex32;
 
-use super::DriverInfo;
-use crate::sdr::{Control, SourceMsg};
+use super::{ppm_corrected, DriverInfo};
+use crate::sdr::{Applied, Control, Gain, Pool, SourceMsg, Tunable};
 
 type Dev = *mut c_void;
 
@@ -37,6 +38,16 @@ struct LibVersion {
 }
 
 const SAMPLE_FLOAT32_IQ: c_int = 0;
+const SAMPLE_INT16_REAL: c_int = 3;
+
+/// libairspy's own IQ conversion, as before (`TRUNK_PRO_AIRSPY_LIBRARY_IQ=1`):
+/// by default it hands over real samples and they're converted on the
+/// source's decoding thread ([`SourceMsg::Real16`]), so its thread only
+/// copies — it drops a buffer when that thread runs late by more than its
+/// eight (~50 ms at 10 MS/s).
+fn library_iq() -> bool {
+    std::env::var_os("TRUNK_PRO_AIRSPY_LIBRARY_IQ").is_some_and(|v| v != "0")
+}
 
 type Callback = extern "C" fn(*mut Transfer) -> c_int;
 
@@ -50,6 +61,7 @@ struct Api {
     get_samplerates: unsafe extern "C" fn(Dev, *mut u32, u32) -> c_int,
     set_samplerate: unsafe extern "C" fn(Dev, u32) -> c_int,
     set_sample_type: unsafe extern "C" fn(Dev, c_int) -> c_int,
+    set_packing: unsafe extern "C" fn(Dev, u8) -> c_int,
     set_freq: unsafe extern "C" fn(Dev, u32) -> c_int,
     set_linearity_gain: unsafe extern "C" fn(Dev, u8) -> c_int,
     set_sensitivity_gain: unsafe extern "C" fn(Dev, u8) -> c_int,
@@ -94,6 +106,7 @@ fn api() -> Result<&'static Api, String> {
                 get_samplerates: f!("airspy_get_samplerates"),
                 set_samplerate: f!("airspy_set_samplerate"),
                 set_sample_type: f!("airspy_set_sample_type"),
+                set_packing: f!("airspy_set_packing"),
                 set_freq: f!("airspy_set_freq"),
                 set_linearity_gain: f!("airspy_set_linearity_gain"),
                 set_sensitivity_gain: f!("airspy_set_sensitivity_gain"),
@@ -153,11 +166,13 @@ pub struct AirspyConfig {
     pub rate_hz: f64,
     pub gain: AirspyGain,
     pub bias_tee: bool,
+    /// 12-bit packing on the USB.
+    pub packing: bool,
     pub ppm: f64,
 }
 
 /// How its gain is set.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AirspyGain {
     /// libairspy's linearity table, step 0..21.
     Linearity(u8),
@@ -169,20 +184,29 @@ pub enum AirspyGain {
     Agc { vga: u8 },
 }
 
-pub fn run(source: usize, cfg: AirspyConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
-    run_with(source, cfg, tx, stop, None)
+impl std::fmt::Display for AirspyGain {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            AirspyGain::Linearity(g) => write!(f, "linearity {g}"),
+            AirspyGain::Sensitivity(g) => write!(f, "sensitivity {g}"),
+            AirspyGain::Manual { lna, mixer, vga } => write!(f, "LNA {lna} · mixer {mixer} · VGA {vga}"),
+            AirspyGain::Agc { vga } => write!(f, "AGC (VGA {vga})"),
+        }
+    }
 }
 
-/// [`run`], retuned on request.
-pub fn run_with(source: usize, mut cfg: AirspyConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
-    while !stop.load(Ordering::Relaxed) {
-        if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
-            cfg.center_hz = c;
+impl crate::sdr::Radio for AirspyConfig {
+    const BACKOFF: Duration = Duration::from_secs(3);
+    fn retune_to(&mut self, hz: f64) {
+        self.center_hz = hz;
+    }
+    fn gain_to(&mut self, g: Gain) {
+        if let Gain::Airspy(g) = g {
+            self.gain = g;
         }
-        if let Err(e) = stream_once(source, &cfg, &tx, &stop, ctl.as_deref()) {
-            let _ = tx.send(SourceMsg::Error { source, error: e });
-            std::thread::sleep(Duration::from_secs(3));
-        }
+    }
+    fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+        stream_once(source, self, tx, stop, ctl)
     }
 }
 
@@ -192,7 +216,8 @@ struct Ctx {
     tx: SyncSender<SourceMsg>,
     stop: Arc<AtomicBool>,
     closed: AtomicBool,
-    dropped: AtomicU64,
+    /// Buffers for its real samples (its thread allocates none).
+    pool: Pool<i16>,
 }
 
 extern "C" fn on_samples(t: *mut Transfer) -> c_int {
@@ -202,13 +227,24 @@ extern "C" fn on_samples(t: *mut Transfer) -> c_int {
     if ctx.stop.load(Ordering::Relaxed) || ctx.closed.load(Ordering::Relaxed) {
         return 1; // stop streaming
     }
-    if t.sample_type != SAMPLE_FLOAT32_IQ || t.sample_count <= 0 {
+    if t.sample_count <= 0 {
         return 0;
     }
-    // SAFETY: sample_count complex floats.
-    let s = unsafe { std::slice::from_raw_parts(t.samples as *const Complex32, t.sample_count as usize) };
-    let dropped = t.dropped_samples.saturating_sub(ctx.dropped.swap(t.dropped_samples, Ordering::Relaxed));
-    if ctx.tx.send(SourceMsg::Iq { source: ctx.source, samples: s.to_vec(), dropped, at: std::time::Instant::now() }).is_err() {
+    // (dropped_samples: the buffers libairspy dropped just before this one, in this one's samples — not a running total.)
+    let msg = match t.sample_type {
+        SAMPLE_INT16_REAL => {
+            // SAFETY: sample_count 16-bit real samples.
+            let s = unsafe { std::slice::from_raw_parts(t.samples as *const i16, t.sample_count as usize) };
+            SourceMsg::Real16 { source: ctx.source, samples: ctx.pool.copy(s), dropped: t.dropped_samples / 2, at: std::time::Instant::now() }
+        }
+        SAMPLE_FLOAT32_IQ => {
+            // SAFETY: sample_count complex floats.
+            let s = unsafe { std::slice::from_raw_parts(t.samples as *const Complex32, t.sample_count as usize) };
+            SourceMsg::Iq { source: ctx.source, samples: s.to_vec(), dropped: t.dropped_samples, at: std::time::Instant::now() }
+        }
+        _ => return 0,
+    };
+    if ctx.tx.send(msg).is_err() {
         ctx.closed.store(true, Ordering::Relaxed);
         return 1;
     }
@@ -219,6 +255,22 @@ struct Device<'a> {
     a: &'a Api,
     dev: Dev,
     streaming: bool,
+    ppm: f64,
+}
+
+impl Tunable for Device<'_> {
+    fn tune(&mut self, hz: f64) -> Result<f64, String> {
+        // SAFETY: an open device.
+        check(self.a, "tune", unsafe { (self.a.set_freq)(self.dev, ppm_corrected(hz, self.ppm).round() as u32) })?;
+        Ok(hz)
+    }
+    /// Its own settings, which libairspy takes while streaming (a survey's
+    /// dB is left alone: the linearity gain stays as set).
+    fn set_gain(&mut self, g: Gain) -> Result<(), String> {
+        let Gain::Airspy(g) = g else { return Ok(()) };
+        // SAFETY: an open device.
+        unsafe { set_gain(self.a, self.dev, g) }
+    }
 }
 
 impl Drop for Device<'_> {
@@ -229,6 +281,30 @@ impl Drop for Device<'_> {
                 (self.a.stop_rx)(self.dev);
             }
             (self.a.close)(self.dev);
+        }
+    }
+}
+
+/// Set the gain as `g` says.
+///
+/// SAFETY (callers): `dev` is open.
+unsafe fn set_gain(a: &Api, dev: Dev, g: AirspyGain) -> Result<(), String> {
+    unsafe {
+        match g {
+            AirspyGain::Linearity(g) => check(a, "gain", (a.set_linearity_gain)(dev, g.min(21))),
+            AirspyGain::Sensitivity(g) => check(a, "gain", (a.set_sensitivity_gain)(dev, g.min(21))),
+            AirspyGain::Manual { lna, mixer, vga } => {
+                check(a, "LNA AGC off", (a.set_lna_agc)(dev, 0))?;
+                check(a, "mixer AGC off", (a.set_mixer_agc)(dev, 0))?;
+                check(a, "LNA gain", (a.set_lna_gain)(dev, lna.min(14)))?;
+                check(a, "mixer gain", (a.set_mixer_gain)(dev, mixer.min(15)))?;
+                check(a, "VGA gain", (a.set_vga_gain)(dev, vga.min(15)))
+            }
+            AirspyGain::Agc { vga } => {
+                check(a, "LNA AGC", (a.set_lna_agc)(dev, 1))?;
+                check(a, "mixer AGC", (a.set_mixer_agc)(dev, 1))?;
+                check(a, "VGA gain", (a.set_vga_gain)(dev, vga.min(15)))
+            }
         }
     }
 }
@@ -244,19 +320,22 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
             let sn = u64::from_str_radix(cfg.serial.trim_start_matches("0x"), 16).map_err(|_| format!("Airspy serial {:?} isn't hex", cfg.serial))?;
             check(a, "open", (a.open_sn)(&mut dev, sn))?;
         }
-        let mut d = Device { a, dev, streaming: false };
-        check(a, "sample type", (a.set_sample_type)(d.dev, SAMPLE_FLOAT32_IQ))?;
+        let mut d = Device { a, dev, streaming: false, ppm: cfg.ppm };
+        // (Before the rate: for real samples libairspy lists and takes rates doubled.)
+        let real = !library_iq();
+        check(a, "sample type", (a.set_sample_type)(d.dev, if real { SAMPLE_INT16_REAL } else { SAMPLE_FLOAT32_IQ }))?;
         let mut count = 0u32;
         (a.get_samplerates)(d.dev, &mut count, 0);
         let mut rates = vec![0u32; count as usize];
         (a.get_samplerates)(d.dev, rates.as_mut_ptr(), count);
-        let want = cfg.rate_hz.round() as u32;
+        let per = if real { 2 } else { 1 };
+        let want = cfg.rate_hz.round() as u32 * per;
         if !rates.contains(&want) {
-            let list: Vec<String> = rates.iter().map(|r| format!("{}", *r as f64 / 1e6)).collect();
+            let list: Vec<String> = rates.iter().map(|r| format!("{}", *r as f64 / per as f64 / 1e6)).collect();
             return Err(format!("this Airspy runs at {} MSPS, not {}", list.join(" / "), cfg.rate_hz / 1e6));
         }
         check(a, "sample rate", (a.set_samplerate)(d.dev, want))?;
-        check(a, "tune", (a.set_freq)(d.dev, (cfg.center_hz / (1.0 + cfg.ppm * 1e-6)).round() as u32))?;
+        d.tune(cfg.center_hz)?;
         match cfg.gain {
             AirspyGain::Linearity(g) => check(a, "gain", (a.set_linearity_gain)(d.dev, g.min(21)))?,
             AirspyGain::Sensitivity(g) => check(a, "gain", (a.set_sensitivity_gain)(d.dev, g.min(21)))?,
@@ -274,20 +353,21 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
             }
         }
         check(a, "bias-T", (a.set_rf_bias)(d.dev, cfg.bias_tee as u8))?;
-        let ctx = Box::new(Ctx { source, tx: tx.clone(), stop: stop.clone(), closed: AtomicBool::new(false), dropped: AtomicU64::new(0) });
+        // (Older firmware can't pack: it streams unpacked then, as it always did.)
+        if cfg.packing && (a.set_packing)(d.dev, 1) != 0 {
+            log::warn!("Airspy {}: this firmware can't pack samples; streaming them unpacked (a third more USB bandwidth)", if cfg.serial.is_empty() { "(first)" } else { &cfg.serial });
+        }
+        let ctx = Box::new(Ctx { source, tx: tx.clone(), stop: stop.clone(), closed: AtomicBool::new(false), pool: Pool::default() });
         let ctx_ptr = &*ctx as *const Ctx as *mut c_void;
         check(a, "start", (a.start_rx)(d.dev, on_samples, ctx_ptr))?;
         d.streaming = true;
         let result = loop {
             std::thread::sleep(Duration::from_millis(if ctl.is_some() { 10 } else { 100 }));
             if let Some(c) = ctl {
-                // Only the frequency: a survey leaves the linearity gain as set.
-                if let (Some(f), _) = c.take() {
-                    if let Err(e) = check(a, "tune", (a.set_freq)(d.dev, (f / (1.0 + cfg.ppm * 1e-6)).round() as u32)) {
-                        break Err(e);
-                    }
-                    *c.current_hz.lock().unwrap() = Some(f);
-                    let _ = tx.send(SourceMsg::Tuned { center_hz: f });
+                match c.apply(&mut d, cfg.center_hz, tx) {
+                    Err(e) => break Err(e),
+                    Ok(Applied::Closed) => break Ok(()),
+                    Ok(_) => {}
                 }
             }
             if stop.load(Ordering::Relaxed) || ctx.closed.load(Ordering::Relaxed) {

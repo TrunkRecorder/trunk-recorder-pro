@@ -24,15 +24,22 @@ Unless the user asks otherwise, deliver an interface the recorder serves:
 - Import the client library from the recorder:
     import { TrunkClient, LivePlayer, escapeHtml } from "/api/client.js";
 - Refer to your own files with relative paths ("./app.js", "style.css"). The
-  folder is served at /ui/<name>/, or at / when it's the home interface.
-- Refer to the recorder with absolute paths: /api/…, /calls/….
+  folder is served at the root of a port of its own (http://host:8081/), and
+  the recorder's API beside it on that port.
+- Refer to the recorder with absolute paths: /api/…, /calls/…. Never
+  hard-code a port.
+- Add an interface.json beside index.html:
+    {"id": "<lowercase-id>", "name": "…", "version": "0.1.0", "description": "…", "api": 1, "access": "listen"}
+  "listen" (the default) can see and play everything and change nothing:
+  setConfig, setTalkgroups, start, stop, quit and the plugin / interface / key commands are
+  refused, and the config comes without plugin settings and key sources.
+  Ask for "control" only if the interface must change the recorder.
 - Tell the user how to run it, in one of two ways:
     trunk-pro --ui /path/to/folder
-      Shows it at http://localhost:8080/ for this run. The built-in
-      interface stays at /builtin/.
-    Setup → Recording → Interfaces → Add, then open /ui/<name>/.
-      Or in the config: "server": {"interfaces": [{"name": "…", "path": "…"}],
-      "home": "<name>"}.
+      Serves it on the next free port for this run (with control) and
+      opens it.
+    The Interfaces page → Add a folder… (or trunk-pro interface add <folder>),
+      then Open. It keeps being served, on a port of its own.
   The recorder serves the files as they are on disk: edit, then reload.
 - Make it work at phone width as well as on a desktop.
 
@@ -98,18 +105,23 @@ new TrunkClient({ server?, secure?, historyLimit? })
   version     the recorder's version
   config      the whole config (Config)
   phase       { phase: "idle" | "starting" | "running" | "stopping", error: string|null, ended: boolean }
-  status      EngineStatus while running, else null: { nowS, activeCalls, recording, callsConcluded, systems: SystemStatus[] }
+  status      EngineStatus while running, else null: { nowS, activeCalls, recording, callsConcluded, systemNames, systems: SystemStatus[] }
   sources     SourceStatus[]: each radio (centerHz, rateHz, dropped, errors, errorPpm…)
   calls       CallView[]: the calls on the air now; [] when not running
+  configVersion  the config's version (setConfig sends it)
+  talkgroupFiles each system's talkgroup file as CSV text: { shortName: csv }
   history     CallEntry[]: recorded calls, newest first (the last 300 at
               connect, plus each one recorded since; up to historyLimit)
-  log         LogLine[]: the latest 500 log lines { timeS, kind, text, system? }
+  log         LogLine[]: the latest 500 log lines { timeS, kind, text, time?, level?, system?, site? }
+              (after rec.subscribe(["log"]); the recorder's own lines have time (Unix s) and level)
   aliases     talker aliases heard on the air: { shortName: { unit: alias } }
-  error       the text of the latest error message, or null
+  capabilities  hello.capabilities: what the recorder can do beyond recording
+  error       the text of the latest error message (or why a setConfig was refused), or null
   exited      true after the recorder said it was exiting; it keeps
               reconnecting (every 5 s), and this clears when it's back
  Events: rec.on(type, fn) returns a function that removes the handler.
-  "change"      fn(rec): after every message. Redraw here.
+  "change"      fn(rec): after every message. Redraw here. (While a connection is being
+                greeted, once, at hello.)
   "<type>"      fn(message) for one message type, e.g. "concluded", "status", "state".
   "message"     fn(message): every message.
   "audio"       fn({ system, callId, talkgroup, samples: Float32Array /* 8000/s */ })
@@ -122,6 +134,9 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.listen(false)                  none
                                      (kept across reconnects; one filter per connection)
   rec.setConfig((c) => { … })        change a copy of the config; the whole config is sent
+                                     with configVersion. Refused if the config changed elsewhere
+                                     meanwhile (rec.error says so)
+  rec.setTalkgroups(shortName, csv)  replace a system's talkgroup file ("" for none)
   rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL
   rec.talkgroups(shortName)          Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode }
                                      (a conventional system's: its channels, alphaTag the channel's name)
@@ -136,45 +151,61 @@ new LivePlayer({ followCall = true, quietS = 1.5, gain = 2, onNowPlaying })
   player.nowPlaying       { callId, system, talkgroup } or null
   player.stop()
 Helpers: escapeHtml(s), duration(seconds) → "1:05", mhz(hz) → "155.2000 MHz",
-  parseTalkgroups(csv), decodeAudioFrame(arrayBuffer), CONVENTIONAL (65535),
-  conventionalIndex(system).
+  parseTalkgroups(csv), decodeAudioFrame(arrayBuffer), systemName(status, system)
+  (status.systemNames[system]).
 
 
 ## The data
 
 CallView: a call on the air (rec.calls, from the "status" message)
-  id, system (number), systemName (short name), talkgroup, alphaTag ("" if
+  id, system (number), systemName (short name), site? (its site's name), talkgroup, alphaTag ("" if
   not in the talkgroup file), freqHz, slot, analog, tone, encrypted,
   emergency, startS (engine seconds), sources (unit numbers that talked,
   in order), state ("recording" | "monitoring"), reason (why it's only
   monitored: "ignored" | "unknown_tg" | "encrypted" | "no_source" |
-  "no_recorder" | null), patched?, alsoOn?
+  "no_recorder" | null), patched?, alsoOn? (names of the system's other
+  sites carrying the same call; one copy is saved)
   How long it's been going: rec.status.nowS - call.startS.
 
 CallEntry: a recorded call (rec.history, the "concluded" message)
   { path, record }. path has no extension; the files are
   /calls/<path>.wav and .json (rec.callUrl(entry)).
   record is Trunk Recorder's call JSON (snake_case):
-    talkgroup, talkgroup_tag, talkgroup_description, talkgroup_group,
-    short_name (the system), start_time / stop_time (Unix seconds),
+    talkgroup, talkgroup_ota? (conventional P25/DMR/NXDN: the talkgroup the air named), talkgroup_tag,
+    talkgroup_description, talkgroup_group,
+    short_name (the system), site? (the site its copy was kept from), start_time / stop_time (Unix seconds),
     start_time_ms, call_length (seconds of audio), freq (Hz),
     emergency (1/0), encrypted (1/0), audio_type ("analog" | "digital" |
-    "digital tdma"), srcList [{ src (unit), tag (its name or ""), tag_ota,
+    "digital tdma"), system_type? ("p25" | "smartnet" | "dmr" | "nxdn" | "edacs" |
+    "conventional"), voice_mode? ("p25" | "p25_phase2" | "dmr" | "nxdn48" |
+    "nxdn96" | "provoice" | "fm" | "am"), nac? (P25's NAC in hex, "293"; "" none), srcList [{ src (unit), tag (its name or ""), tag_ota,
     time (Unix s), pos (s into the audio), emergency, lat? lon? (GPS) }], signal / noise
     (dBFS) / snr (dB) (or null), tone_detected, patched_talkgroups?
 
-SystemStatus: one trunked system or site (rec.status.systems)
-  index (the `system` its calls carry), shortName, controlChannelHz,
-  identity { nac, wacn, sysId, rfss, site }, good / bad (control messages
-  decoded / failed: decode rate = good / (good + bad)), activeCalls,
-  recording, callsConcluded, mismatch, adjacent, patches?, dmr?, siteGroup?
+SystemStatus: one running trunked system (rec.status.systems)
+  index (the `system` its calls carry), shortName, activeCalls, recording,
+  callsConcluded, sites: SiteStatus[]
+  (patches are in decodeDetail)
+
+SiteStatus: one of its sites, each following its own control channel
+  index, name (a system of one site: its short name), nowS,
+  controlChannelHz (null while searching), identity { nac?, wacn?, sysId?,
+  rfss?, site? } (SiteIdentity, as a config site's `expect`: a field not
+  heard yet is absent, so test with `!= null`), good / bad (control messages decoded / failed: decode
+  rate = good / (good + bad)), modulation, activeCalls, recording,
+  callsConcluded, mismatch
+  (adjacent sites, dmr and nxdn are in decodeDetail)
 
 Systems and numbering
   config.systems[]: trunked systems ({ shortName, name?, type: "p25" |
-    "smartnet" | "dmr", enabled, talkgroupsCsv, … }).
-  config.conventional[k]: conventional systems. Their calls carry
-    system = 65535 - k.
-  Calls and audio carry `system` as a number. Match systems by short name
+    "smartnet" | "dmr" | "nxdn", enabled, …, sites: [{ name?,
+    enabled, controlChannelsHz, … }] }). A call heard on several sites of
+    a system is one call, saved once.
+  config.conventional[k]: conventional systems. Systems are numbered
+    from 0, the trunked ones being recorded then the conventional ones;
+    status.systemNames[n] is system n's short name.
+  Calls and audio carry `system` as a number (a system, never a site:
+  a call's site is CallView.site, by name). Match systems by short name
   (CallView.systemName, record.short_name, SystemStatus.shortName), not by
   position. Talkgroup numbers can repeat across systems: key talkgroups by
   (short name, talkgroup).
@@ -191,25 +222,47 @@ Connect to ws://<host>/api/ws. Text messages are JSON with a "type".
 Binary messages are live audio:
   [u8 2][u16 system][u32 callId][u32 talkgroup][i16 samples…], little-endian, 8000/s.
 From the recorder:
-  hello        first; carries everything: version, config, phase, history (≤ 300),
-               units (short name → aliases heard, CSV unit,alias,source,time,wacn,sys,tg; newest line wins), …
-  plugins      second
+  On connecting you get how things are now as ordinary messages, then hello last
+  ("caught up": draw the first screen then, and don't treat anything missing as
+  missing before it):
+  state, config, talkgroups, units, heard, history, radios, survey, monitorEvent, host
+  (with control access also devices, keys, plugins, interfaces), then
+  hello        { version, platform, api, configPath?, surveyBands, capabilities }
+               capabilities: what it can do beyond recording, of "service" (quit, files by path, log,
+               M4A), "drivers" (USRP/Airspy/SoapySDR), "plugins", "interfaces", "host", "keys".
+               The desktop app has all; the browser build none. Show only what works.
+  config       { config, version }: on connecting, and when someone changes it
+  configSaved  { version, error? }: answers your setConfig; error when the edit wasn't taken
+               (the config changed elsewhere meanwhile) or couldn't be saved
+  talkgroups   { system (short name), csv }: a system's talkgroup file (Trunk Recorder's CSV;
+               "" none); one per system on connecting, and when one changes
+  history      { entries }: the latest calls (≤ 300), newest first
+  units        { system, csv }: a system's saved talker aliases (CSV unit,alias,source,time,wacn,sys,tg;
+               newest line wins)
+  decodeDetail topic decode:<shortName>: { system, channels, sites: [{ index, name, adjacent, dmr, nxdn }],
+               patches: [{ supergroup, members }] }
   state        { phase, error, ended }: recording started / stopped
   status       ~2/s while running: { status, sources, load, calls }
   spectrum     ~7/s per radio: { source, centerHz, rateHz, bins: 512 dBFS levels }
   concluded    { entry }: a call was recorded
-  log          { lines }
+  log          { lines }: topic log (warnings and errors always); { timeS, kind, text, time?, level?, system?, site? }
+  olderCalls   { before, entries, more }: answers the olderCalls command
+  keys         { sources: [{ name, systems, unlocked }] }: key containers waiting for a password (control access)
   unitAlias    { system (short name), unit, alias }
-  config       { config }: someone changed the config
   error / notice  { message }: about your command
   quit         the recorder is exiting; keep reconnecting, slowly, in case it's restarted
   (more in protocol.ts; ignore types you don't use)
 To the recorder:
   { type: "start" }, { type: "stop" }
   { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required)
-  { type: "setConfig", config: <the whole config> }
+  { type: "setConfig", config: <the whole config>, version: <the last config message's> }
+  { type: "setTalkgroups", system: <short name>, csv: <Trunk Recorder talkgroup CSV, "" for none> }
+  { type: "olderCalls", before: <Unix ms>, limit: <≤ 500> }   recorded calls before that, from the last 24 hours (listen access may send it)
+  { type: "subscribe", topics: ["log", "spectrum:0", "rf:0", "decode:<shortName>", "platform"] }
+  A command it can't read (unknown type, a missing field) is answered with an error message.
   (more in protocol.ts: devices, survey, plugins, …)
 Listening is per connection. Send listen again after every hello (each reconnect).
+system is a system's short name; you get its audio from whichever of its sites carries the call.
 
 
 ## Rules
@@ -232,8 +285,10 @@ Listening is per connection. Send listen again after every hello (each reconnect
    rec.start / rec.stop. Never build a config from scratch: fields left out
    reset to defaults.
 7. History reaches back 300 calls at connect, and grows as calls are
-   recorded. Older recordings are on disk, but there's no API to list them.
-   Say so if the user asks for more.
+   recorded. For older ones (the last 24 hours) send olderCalls { before:
+   <Unix ms of the oldest you have>, limit } and read the olderCalls reply
+   (more: false at the end). Before that there's no API to list them. Say so
+   if the user asks for more.
 8. One live-audio filter per connection: one talkgroup, or everything. For
    several talkgroups, listen to everything and drop the chunks you don't
    want before player.play.

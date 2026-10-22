@@ -4,6 +4,7 @@
 //! audio — the same outputs as the P25 and DMR trackers, so the engine
 //! records it the same way.
 
+use crate::trunk::Flags;
 use super::alias::Aliases;
 use super::channel::{self, SacchAssembler};
 use super::frame::{Body, Frame, Framer, RfChannel};
@@ -170,7 +171,7 @@ impl NxdnVoice {
                 let encrypted = s.cipher() != 0;
                 if encrypted != self.encrypted {
                     self.encrypted = encrypted;
-                    out.push(Out { t, out: TrackerOut::Info { source: self.source, emergency: self.emergency, encrypted } });
+                    out.push(Out { t, out: TrackerOut::Info { source: self.source, flags: Flags { emergency: self.emergency, encrypted, ..Default::default() } } });
                 }
             }
             2 | 4 if !special && s.short_id() != 0 => {
@@ -187,7 +188,7 @@ impl NxdnVoice {
                 let src = Some(s.id() as u32);
                 if self.source != src {
                     self.source = src;
-                    out.push(Out { t, out: TrackerOut::Info { source: src, emergency: self.emergency, encrypted: self.encrypted } });
+                    out.push(Out { t, out: TrackerOut::Info { source: src, flags: Flags { emergency: self.emergency, encrypted: self.encrypted, ..Default::default() } } });
                 }
             }
             _ => {}
@@ -215,7 +216,7 @@ impl NxdnVoice {
                 self.emergency = head.emergency();
                 self.efr = head.efr();
                 if fresh {
-                    out.push(Out { t, out: TrackerOut::Info { source: src, emergency: self.emergency, encrypted } });
+                    out.push(Out { t, out: TrackerOut::Info { source: src, flags: Flags { emergency: self.emergency, encrypted, ..Default::default() } } });
                 }
                 self.name_source(t, out);
             }
@@ -262,7 +263,7 @@ impl NxdnVoice {
         let v = decode_vcw(d, Some(r));
         let mut buf = [0f32; FRAME_SAMPLES];
         let kind = self.dec.ambe(&v.bits, v.errs, &mut buf);
-        if kind != Kind::Voice {
+        if !matches!(kind, Kind::Voice | Kind::Tone) {
             self.bad_vch += 1;
         }
         mbe::to_limited(&mut buf);
@@ -310,7 +311,7 @@ mod tests {
             let (v, out) = run(&tx(rate, 0));
             assert_eq!(v.talkgroup(), Some(3100), "{rate:?}");
             assert_eq!(v.ran(), Some(3));
-            assert!(out.iter().any(|o| matches!(o.out, TrackerOut::Info { source: Some(501), encrypted: false, .. })));
+            assert!(out.iter().any(|o| matches!(o.out, TrackerOut::Info { source: Some(501), flags: Flags { encrypted: false, .. } })));
             let audio = out.iter().filter(|o| matches!(o.out, TrackerOut::Audio(..))).count();
             // 4 superframes: 16 frames × 4 codewords (at 9600 every other frame is FACCH1).
             let want = if rate == Rate::N96 { 32 } else { 64 };
@@ -384,7 +385,7 @@ mod tests {
     #[test]
     fn an_encrypted_call_is_flagged_and_not_vocoded() {
         let (_, out) = run(&tx(Rate::N48, 3));
-        assert!(out.iter().any(|o| matches!(o.out, TrackerOut::Info { encrypted: true, .. })));
+        assert!(out.iter().any(|o| matches!(o.out, TrackerOut::Info { flags: Flags { encrypted: true, .. }, .. })));
         assert!(!out.iter().any(|o| matches!(o.out, TrackerOut::Audio(..))));
     }
 }

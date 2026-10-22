@@ -12,8 +12,11 @@ several radios, see the [radios guide](../guides/radios.md).
 ```
 
 A source receives a block of spectrum `rateHz` wide, centered on `centerHz`. Every source has a
-`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"soapy"` or `"file"`. Any other `type` makes the file
-unreadable.
+`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"bladerf"`, `"soapy"` or `"file"` (any case). Any other
+`type`, or none, makes the file unreadable.
+
+The fixed choices below (`gainMode`, `format`) are read in any case, and an empty string is the default.
+Anything else is refused when the file is read.
 
 ## Keys every source shares
 
@@ -78,6 +81,15 @@ An RTL-SDR dongle, driven directly over USB (no driver library needed).
 | `ppm` | ✓ | | integer | Frequency correction, whole ppm |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
+| `bufLen` | | `0` | integer | Bytes per USB transfer (Trunk Recorder's `buflen`), a multiple of 512, at most 16 MiB. `0` = 262 144. **USB transfer size** in Setup |
+| `buffers` | | `0` | integer | USB transfers kept in flight (Trunk Recorder's `buffers`), at most 256. `0` = enough for about 2 MiB: 8 at the default size, 32 at 65 536 |
+
+**Several dongles on one USB bus.** Four or more RTL-SDRs at 2.4 MSPS on one USB 2.0 bus
+(including behind one hub) can overflow: each dongle holds only a few milliseconds of samples on
+the chip, and a 256 KiB transfer from one keeps the others waiting. The usual sign is a control
+channel that keeps dropping out while voice mostly works. Set `bufLen` to `65536` on each (as
+Trunk Recorder's docs advise). The recorder logs this advice at start when 4 or more dongles at
+2 MSPS or more are left at the default, and Setup shows it next to **USB transfer size**.
 
 The native driver handles R820T and R828D tuners (the RTL-SDR Blog V3 and V4, and most current
 dongles). For an older dongle with an E4000, FC0012, FC0013 or FC2580 tuner, use a `soapy` source
@@ -112,18 +124,41 @@ An Airspy R2 or Mini, through libairspy. libairspy must be installed separately.
 | `serial` | | `""` | string | Serial number in hex. `""` = the first found |
 | `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
 | `rateHz` | ✓ | | number | R2: 10 000 000 or 2 500 000. Mini: 6 000 000 or 3 000 000 |
-| `gainMode` | | `"linearity"` | string | `"linearity"` (best near transmitters), `"sensitivity"` (best for weak signals) or `"manual"` (each stage set separately) |
+| `gainMode` | | `"linearity"` | string | `"linearity"` (best near transmitters), `"sensitivity"` (best for weak signals) or `"manual"` (each stage set separately). Any other value is refused |
 | `gainStep` | | `14` | integer | Linearity or sensitivity step, 0–21 |
 | `lnaStep` | | `10` | integer | Manual mode: LNA step, 0–14 |
 | `mixerStep` | | `10` | integer | Manual mode: mixer step, 0–15 |
 | `vgaStep` | | `10` | integer | Manual mode: VGA (IF) step, 0–15 |
 | `agc` | | `false` | bool | Manual mode: the Airspy's AGC sets the LNA and mixer (the VGA step still applies) |
 | `biasTee` | | `false` | bool | Power an LNA through the antenna cable |
+| `packing` | | `true` | bool | Send 12-bit samples packed over USB: a quarter less of the bus (an Airspy at 10 MSPS nearly fills a USB 2.0 bus by itself). Turn off only for firmware too old to pack |
 | `ppm` | | `0` | number | Frequency correction, ppm |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 
 The Airspy gains are the driver's steps, not dB.
+
+## `"type": "bladerf"`
+
+A bladeRF 2.0 micro (xA4 / xA9) or original bladeRF (x40 / x115), through libbladeRF 2.x.
+libbladeRF and the board's FPGA image must be installed separately (Debian / Ubuntu:
+`libbladerf2 bladerf-fpga-hostedxa4`).
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `type` | ✓ | | string | `"bladerf"` |
+| `serial` | | `""` | string | The board's serial (32 hex digits). `""` = the first found. Set it whenever another program has a bladeRF open |
+| `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
+| `rateHz` | ✓ | | number | Any rate from 520 834 to 61 440 000. Over ~40 MSPS needs USB 3 and a fast CPU |
+| `bandwidthHz` | | `0` | number | The analog low-pass filter, Hz. `0` = the sample rate |
+| `gainDb` | | `30` | number | Overall RX gain, dB (bladeRF 2.0: about −15 to 60). Ignored with `agc` |
+| `agc` | | `false` | bool | The board's AGC instead of `gainDb` |
+| `biasTee` | | `false` | bool | Power an LNA through the antenna cable (bladeRF 2.0 only) |
+| `ppm` | | `0` | number | Frequency correction, ppm |
+| `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
+| `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
+
+Samples that USB drops are counted from the board's sample timestamps.
 
 ## `"type": "soapy"`
 
@@ -157,7 +192,7 @@ from an IQ file someone sent you.
 | `centerHz` | ✓ | | number | The frequency it was recorded at, Hz |
 | `rateHz` | ✓ | | number | Its sample rate |
 | `realtime` | ✓ | | bool | `true`: play it at the speed it was recorded. `false`: as fast as the computer can |
-| `format` | | from the name | string | `"cu8"` (rtl_sdr, unsigned 8-bit), `"cs16"` (signed 16-bit) or `"cf32"` (32-bit float: GNU Radio, UHD). Left out: `.cs16` and `.sc16` files are `cs16`; `.cf32`, `.fc32`, `.cfile` and `.complex` are `cf32`; anything else is `cu8` |
+| `format` | | from the name | string | `"cu8"` (rtl_sdr, unsigned 8-bit), `"cs16"` (signed 16-bit) or `"cf32"` (32-bit float: GNU Radio, UHD). Left out: `.cs16` and `.sc16` files are `cs16`; `.cf32`, `.fc32`, `.cfile` and `.complex` are `cf32`; anything else is `cu8`. Any other `format` is refused |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 

@@ -3,9 +3,10 @@
 // light and dark. Thin marks, recessive axes, a tooltip on hover.
 
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { systemColor } from "./config.ts";
 import { clockAt, ticks } from "./fmt.ts";
 import { useSeries } from "./series.ts";
-import type { SeriesData } from "./protocol.ts";
+import type { Config, SeriesData } from "./protocol.ts";
 
 export type Level = "ok" | "warn" | "bad" | "idle";
 
@@ -19,6 +20,26 @@ const LEVEL_TEXT: Record<Level, string> = { ok: "OK", warn: "Needs attention", b
 /** A status light, with its meaning for screen readers and on hover. */
 export function Light({ level, title }: { level: Level; title?: string }) {
   return <span className={`light light-${level}`} role="img" aria-label={title ?? LEVEL_TEXT[level]} title={title ?? LEVEL_TEXT[level]} />;
+}
+
+/** A system's mark: its colour, square (a status light is round, and wears no system's colour). */
+export function SystemDot({ color }: { color: string }) {
+  return <span className="sys-dot" style={{ background: color }} />;
+}
+
+/**
+ * A system named wherever it's shown: its mark, its name (and what follows,
+ * a site), and a light when something's wrong with it, the why on hover.
+ */
+export function SystemTag({ config, name, health, children }: { config: Config | null | undefined; name: string; health?: { level: Level; why: string }; children?: ReactNode }) {
+  return (
+    <span className="sys-tag">
+      <SystemDot color={systemColor(config, name)} />
+      {name}
+      {children}
+      {health && (health.level === "warn" || health.level === "bad") && <Light level={health.level} title={health.why} />}
+    </span>
+  );
 }
 
 /** ▲ / ▼ and how much, coloured by whether that direction is good. */
@@ -655,6 +676,9 @@ export function RadialEgo(props: { center: { label: string; sub?: string }; inne
 
 // ── layout ───────────────────────────────────────────────────────────────────
 
+/** What, inside a card, does something of its own when clicked. */
+const OWN_CLICK = "a, button, input, select, textarea, label, summary, [role=button], [role=tab], [role=radio], canvas, .bip-node, .ego-node, .heatstrip, .opens, .card-detail";
+
 /**
  * A card: title, a status light and why, actions, and a body. `open` /
  * `onToggle`: a part that expands for detail (remembered per `id`).
@@ -676,8 +700,17 @@ export function Card(props: { title: ReactNode; level?: Level; why?: string; act
       // Not remembered.
     }
   };
+  // A card that opens something opens it from anywhere on it, except what
+  // does something of its own or text being selected.
+  const go = props.onTitle;
+  const onCard = go
+    ? (e: React.MouseEvent) => {
+        if (e.defaultPrevented || (e.target as Element).closest(OWN_CLICK) || window.getSelection()?.toString()) return;
+        go();
+      }
+    : undefined;
   return (
-    <section className={`card${props.level ? ` card-${props.level}` : ""}${props.className ? ` ${props.className}` : ""}`}>
+    <section className={`card${props.level ? ` card-${props.level}` : ""}${go ? " card-opens" : ""}${props.className ? ` ${props.className}` : ""}`} onClick={onCard}>
       <header className="card-head">
         <div className="card-title">
           {props.level && props.level !== "idle" && <Light level={props.level} title={props.why} />}
@@ -714,6 +747,22 @@ export function Choice<T extends string>(props: { value: T; options: { v: T; lab
           {o.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/**
+ * A drilled-down page's way back up (to every system, every source, or the
+ * system a talkgroup is on), with what picks within the page beside it (a
+ * site). The same on every page that drills down.
+ */
+export function BackBar({ to, onBack, children }: { to: string; onBack: () => void; children?: ReactNode }) {
+  return (
+    <div className="row back-bar">
+      <button className="btn ghost small" onClick={onBack}>
+        ← {to}
+      </button>
+      {children}
     </div>
   );
 }

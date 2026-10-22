@@ -31,14 +31,16 @@
 
 mod archive;
 pub mod cli;
+pub mod delay;
 mod encode;
+pub mod hold;
 mod host;
 pub mod manage;
 pub mod store;
 
 pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
-pub use host::{CallAudio, Note, PluginHost, Spec};
+pub use host::{Note, PluginHost, Spec};
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -97,14 +99,26 @@ pub fn parse_label(label: &str) -> (&str, usize) {
     }
 }
 
-/// Forget plugin `id`: its entry and its settings for every system.
+/// Forget plugin `id`: its entry, its settings for every system, and its
+/// delays (a rule for it and others is for the others now; one for it alone
+/// goes, rather than coming to be for every plugin).
 pub fn forget(cfg: &mut Config, id: &str) {
     cfg.plugins.remove(id);
+    let forget_delays = |rules: &mut Vec<crate::config::DelayRule>| {
+        rules.retain_mut(|r| {
+            let had = !r.plugins.is_empty();
+            r.plugins.retain(|p| parse_label(p).0 != id);
+            !had || !r.plugins.is_empty()
+        })
+    };
+    forget_delays(&mut cfg.plugin_delays);
     for s in &mut cfg.systems {
         s.plugins.remove(id);
+        forget_delays(&mut s.plugin_delays);
     }
     for c in &mut cfg.conventional {
         c.plugins.remove(id);
+        forget_delays(&mut c.plugin_delays);
     }
 }
 
@@ -194,40 +208,61 @@ pub fn describe(exe: &Path) -> Result<Manifest, String> {
 
 /// Every system calls can come from, as plugins know them (settings not filled in).
 pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::SystemInfo> {
+    use crate::config::{fcc_primary, FccLicenses};
     cfg.call_systems()
         .into_iter()
-        .map(|s| trunk_recorder_plugin::SystemInfo { index: s.index, short_name: s.short_name.to_string(), kind: s.kind.into(), ..Default::default() })
+        .map(|s| {
+            // Name, FCC licenses and sites: a trunked system's or a conventional one's.
+            let sys = cfg.systems.iter().find(|y| y.short_name == s.short_name && s.kind != "conventional");
+            let conv = cfg.conventional.iter().find(|y| y.short_name == s.short_name && s.kind == "conventional");
+            let (name, fcc, ccs): (String, FccLicenses, Vec<f64>) = match (sys, conv) {
+                (Some(y), _) => (y.name.clone(), y.fcc.clone(), y.active_sites().flat_map(|t| t.control_channels_hz.iter().copied()).collect()),
+                (None, Some(c)) => (c.name.clone(), c.fcc.clone(), vec![]),
+                _ => Default::default(),
+            };
+            let primary = fcc_primary(&fcc, &ccs).cloned().unwrap_or_default();
+            trunk_recorder_plugin::SystemInfo {
+                index: s.index,
+                short_name: s.short_name.to_string(),
+                kind: s.kind.into(),
+                name,
+                fcc: fcc.into_iter().map(|(k, l)| (k, trunk_recorder_plugin::FccLicense { call_sign: l.call_sign, name: l.name })).collect(),
+                fcc_call_sign: primary.call_sign,
+                fcc_name: primary.name,
+                sites: sys.map_or_else(Vec::new, |y| y.active_sites().map(|t| trunk_recorder_plugin::SiteInfo { name: y.site_name(t).to_string() }).collect()),
+                ..Default::default()
+            }
+        })
         .collect()
 }
 
-/// Plugin notes as log lines (the plugins view follows each plugin's state
+/// Plugin notes as log lines, which the log shows the browsers too
+/// ([`crate::logging::text`]; the plugins view follows each plugin's state
 /// and results in its `pluginRuntime`).
-pub fn notes_to_hub(hub: crate::runtime::Hub) -> host::Notes {
-    use serde_json::json;
+pub fn notes_to_log() -> host::Notes {
     use trunk_recorder_plugin::{Level, Outcome, State};
-    let log = move |hub: &crate::runtime::Hub, plugin: &str, error: bool, text: &str| {
+    let log = |plugin: &str, error: bool, text: &str| {
         let text = if plugin.is_empty() { format!("Plugins: {text}") } else { format!("[{plugin}] {text}") };
         if error {
-            log::error!("{text}");
+            log::error!(target: "plugin", "{text}");
         } else {
-            log::info!("{text}");
+            log::info!(target: "plugin", "{text}");
         }
-        crate::runtime::publish(hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": if error { "error" } else { "plugin" }, "text": text }] }));
     };
     std::sync::Arc::new(move |n: Note| match n {
         Note::Log { plugin, level, text } => {
             if level != Level::Debug {
-                log(&hub, &plugin, level <= Level::Warn, &text);
+                log(&plugin, level <= Level::Warn, &text);
             }
         }
         Note::State { plugin, state, message } => {
             if state == State::Error {
-                log(&hub, &plugin, true, &message);
+                log(&plugin, true, &message);
             }
         }
         Note::Result { plugin, path, outcome, message, .. } => {
             if outcome == Outcome::Failed {
-                log(&hub, &plugin, true, &format!("{path}: {message}"));
+                log(&plugin, true, &format!("{path}: {message}"));
             }
         }
         // (In the plugin's pluginRuntime.)
@@ -240,12 +275,47 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Allowing a plugin decrypted calls, or no longer, restarts the plugins.
+    #[test]
+    fn a_change_to_share_decrypted_reloads_the_plugins() {
+        let a: Config = serde_json::from_value(json!({ "plugins": { "openmhz": { "enabled": true } } })).unwrap();
+        let mut b = a.clone();
+        b.plugins.get_mut("openmhz").unwrap().share_decrypted = true;
+        assert!(changed(&a, &b) && changed(&b, &a));
+    }
+
+    /// A system's name, FCC licenses (and the one that names it) and sites are told to plugins, a
+    /// conventional system's licenses too; left out, they're absent.
+    #[test]
+    fn plugins_are_told_a_systems_fcc_licenses_and_sites() {
+        let c: Config = serde_json::from_value(json!({
+            "systems": [
+                { "shortName": "dcfd", "name": "DC Fire",
+                  "fcc": { "859087500": { "callSign": "KNJA391", "from": "air" }, "857987500": { "callSign": "WPXT459", "name": "DISTRICT OF COLUMBIA" } },
+                  "sites": [{ "controlChannelsHz": [857987500] }, { "name": "south", "controlChannelsHz": [858987500] }] },
+                { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }] }
+            ],
+            "conventional": [{ "shortName": "county", "fcc": { "155475000": { "callSign": "KQX123" } }, "channels": [{ "freqHz": 155475000, "mode": "fm" }] }]
+        }))
+        .unwrap();
+        let s = systems_of(&c);
+        assert_eq!(s[0].name, "DC Fire");
+        assert_eq!((s[0].fcc_call_sign.as_str(), s[0].fcc_name.as_str()), ("WPXT459", "DISTRICT OF COLUMBIA"));
+        assert_eq!(s[0].fcc["859087500"], trunk_recorder_plugin::FccLicense { call_sign: "KNJA391".into(), name: String::new() });
+        assert_eq!(s[0].sites.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["dcfd", "south"]);
+        let wire = serde_json::to_value(&s[1]).unwrap();
+        assert!(wire.get("fcc").is_none() && wire.get("fcc_call_sign").is_none() && wire.get("name").is_none(), "{wire}");
+        assert_eq!(wire["sites"][0]["name"], "wmata");
+        let county = s.iter().find(|x| x.short_name == "county").unwrap();
+        assert_eq!(county.fcc_call_sign, "KQX123");
+    }
+
     #[test]
     fn what_plugins_get_from_the_config() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": { "apiKey": "k" } } },
-                { "shortName": "wmata", "controlChannelsHz": [489087500] }
+                { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": { "apiKey": "k" } } },
+                { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }] }
             ],
             "conventional": [{ "shortName": "conv", "plugins": { "openmhz": { "apiKey": "c" } } }],
             "plugins": {
@@ -261,6 +331,10 @@ mod tests {
         assert!(!specs[0].systems.contains_key("wmata"), "wmata has no settings");
         assert_eq!(specs[0].systems.len(), 1, "no conventional channels, so no conventional system");
         assert_eq!(executable("mine", &c.plugins["mine"]), PathBuf::from("/builds/mine"));
+        let mut with_delays = c.clone();
+        with_delays.plugin_delays = serde_json::from_value(json!([{ "plugins": ["openmhz"], "delayS": 60 }, { "plugins": ["openmhz#2", "mine"], "delayS": 60 }, { "delayS": 5 }])).unwrap();
+        forget(&mut with_delays, "openmhz");
+        assert_eq!(with_delays.plugin_delays, serde_json::from_value::<Vec<crate::config::DelayRule>>(json!([{ "plugins": ["mine"], "delayS": 60 }, { "delayS": 5 }])).unwrap(), "a rule for it alone goes; it leaves the others");
         let mut gone = c.clone();
         forget(&mut gone, "openmhz");
         assert!(!gone.plugins.contains_key("openmhz") && gone.systems[0].plugins.is_empty() && gone.conventional[0].plugins.is_empty());
@@ -274,18 +348,18 @@ mod tests {
     fn plugins_know_systems_by_short_name() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "old", "enabled": false, "controlChannelsHz": [851000000], "plugins": { "openmhz": { "apiKey": "old" } } },
+                { "shortName": "old", "enabled": false, "sites": [{ "controlChannelsHz": [851000000] }], "plugins": { "openmhz": { "apiKey": "old" } } },
                 { "shortName": "draft", "plugins": { "openmhz": { "apiKey": "draft" } } },
-                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": { "apiKey": "dcfd" } } }
+                { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": { "apiKey": "dcfd" } } }
             ],
             "conventional": [{ "shortName": "county", "channels": [{ "freqHz": 154430000 }], "plugins": { "openmhz": { "apiKey": "conv" } } }],
             "plugins": { "openmhz": { "enabled": true } }
         }))
         .unwrap();
         let systems = systems_of(&c);
-        let conv = trunk_core::trunk::conventional_system(0);
-        assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (conv, "county", "conventional")]);
-        assert_eq!(c.engine_config(0.0).systems[0].short_name, "dcfd", "the engine numbers dcfd 0 too");
+        assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (1, "county", "conventional")]);
+        let e = c.engine_config(0.0, &Default::default());
+        assert_eq!(e.systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["dcfd", "county"], "the engine numbers them so too");
         let specs = Spec::enabled(&c);
         assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "dcfd" })));
         assert_eq!(specs[0].systems.get("county"), Some(&json!({ "apiKey": "conv" })));
@@ -298,8 +372,8 @@ mod tests {
     fn a_second_copy_runs_for_its_systems_only() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }] } },
-                { "shortName": "wmata", "controlChannelsHz": [489087500], "plugins": { "openmhz": { "apiKey": "w" } } }
+                { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }] } },
+                { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }], "plugins": { "openmhz": { "apiKey": "w" } } }
             ],
             "plugins": { "openmhz": { "enabled": true, "settings": { "server": "s" } } }
         }))

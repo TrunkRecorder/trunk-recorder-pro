@@ -1,0 +1,108 @@
+{
+  "format": 1,
+  "interfaces": [
+    {
+      "id": "trunk-city-2000",
+      "name": "Trunk City 2000",
+      "description": "A pixel-art city for each radio system, built from its talkgroups. Every call sends someone out: fire trucks, ambulances, buses, plows. Now and then, a flying saucer comes for a cow.",
+      "repository": "https://github.com/TrunkRecorder/trunk-city-2000",
+      "license": "MIT",
+      "tier": "official",
+      "version": "0.4.0",
+      "api": 1,
+      "access": "listen",
+      "tag": "v0.4.0",
+      "commit": "d6ee7958fa9f9c630fc2f581cff5afa3f50d7dc6",
+      "asset": {
+        "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0.zip",
+        "sha256": "e59d0de54159f0287f4a67bf9db47f410f74567ca8c7cc22d7947d1686c521e1"
+      },
+      "screenshots": [
+        {
+          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0-main.png",
+          "sha256": "2288a20258a874e0f300e3efb6fe2010e2019bcdd2e7d86b2ba617f3451cd451",
+          "caption": "Radios on the air as vehicles and buildings, glowing with their names while they talk"
+        },
+        {
+          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0-quad.png",
+          "sha256": "82c94e83627b608112376aa08909a5062efecfcbaf34c6b48d0692212b50325d",
+          "caption": "Four systems at once, each with its own headlines"
+        },
+        {
+          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0-planning.png",
+          "sha256": "bec1316b54ee22aa6f4f28380f205777120382ca0414ef8dda17a04714a19eed",
+          "caption": "City Planning: which systems and talkgroups count, and what each one is"
+        }
+      ]
+    },
+    {
+      "id": "trunk-tris",
+      "name": "Trunk-tris",
+      "description": "A relaxing game of Tetris for each radio system, played by the computer, its pieces made by the control channel: grants, affiliations and registrations. NES or Game Boy look, music, high scores.",
+      "repository": "https://github.com/TrunkRecorder/trunk-tris",
+      "license": "MIT",
+      "tier": "official",
+      "version": "0.2.0",
+      "api": 1,
+      "access": "listen",
+      "tag": "v0.2.0",
+      "commit": "d21cfe3d5d8522819e5aa0f092962319352bcae2",
+      "asset": {
+        "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.2.0/trunk-tris-0.2.0.zip",
+        "sha256": "709757c1ae52d6d933634f7cba7415c263b3e0d00f1c8e56316e02f3731215af"
+      },
+      "screenshots": [
+        {
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.2.0/trunk-tris-0.2.0-main.png",
+          "sha256": "f98f6162cffd803008e5c8d13d9281eddecd4b958906aae0d4a72e9df60130f7",
+          "caption": "Two systems' games side by side, each piece made by a message on that system's control channel"
+        },
+        {
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.2.0/trunk-tris-0.2.0-gameboy.png",
+          "sha256": "13150c575dc9ada8453bb197667e1af6554c771db37bfda1cf6789ee44cd7535",
+          "caption": "The Game Boy look: the LCD's dot matrix, its shadows and its slow pixels, in the green of the first Game Boy"
+        },
+        {
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.2.0/trunk-tris-0.2.0-four.png",
+          "sha256": "3f564727a0756b173e4c1018eb409198d80a47590d243fe05fed344c76d658b1",
+          "caption": "As many games as the screen fits; with more systems than that, they take turns"
+        },
+        {
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.2.0/trunk-tris-0.2.0-scores.png",
+          "sha256": "0f321816597603fd2b7aa7d4d86de68d09bedbe07fe87395f1c2594e30b87177",
+          "caption": "Game over, and one high score table for every system"
+        }
+      ]
+    },
+    {
+      "id": "trunkamp",
+      "name": "Trunkamp",
+      "description": "A Winamp-style player: live audio and recorded calls, with an equalizer.",
+      "repository": "https://github.com/ge0metrix/TrunkAmp",
+      "homepage": "https://github.com/ge0metrix/TrunkAmp",
+      "license": "MIT",
+      "tier": "community",
+      "version": "1.0.4",
+      "api": 1,
+      "access": "listen",
+      "tag": "v1.0.4",
+      "commit": "fccb49e0d0ebd14ef5a203120964c92f9e275a4d",
+      "asset": {
+        "url": "https://github.com/ge0metrix/TrunkAmp/releases/download/v1.0.4/trunkamp-1.0.4.zip",
+        "sha256": "9fcd272605230c9285220c6695ae309e689c612a978cc3d7a50537d7c271fad4"
+      },
+      "screenshots": [
+        {
+          "url": "https://github.com/ge0metrix/TrunkAmp/releases/download/v1.0.4/trunkamp-1.0.4-Full.png",
+          "sha256": "6f4fb0b9ed4a799b90db8e8b44e1b10470b7b626ac04e909326b1f07fed10841",
+          "caption": "The player, with the playlist"
+        },
+        {
+          "url": "https://github.com/ge0metrix/TrunkAmp/releases/download/v1.0.4/trunkamp-1.0.4-Phone.png",
+          "sha256": "0b1be8ff3e8975312f28be6bf2b0c19f4526b2b19a43fe9538cd04a62a6cddbb",
+          "caption": "At phone width"
+        }
+      ]
+    }
+  ]
+}

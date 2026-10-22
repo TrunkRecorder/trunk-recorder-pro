@@ -2,29 +2,23 @@
 //! control channel's multi-block form of a TSBK, which carries both channels
 //! of an explicit grant or broadcast and full (WACN, System ID, ID) unit
 //! addresses. Some sites send their RFSS and network status only this way,
-//! and without it their WACN and System ID are never heard.
+//! and without it their WACN and System ID are never heard. What one says is
+//! [`super::osp::from_mbt`]'s to read.
 //!
 //! A PDU is a header block and the number of data blocks it names, each 196
 //! bits of the same interleave and 1/2-rate trellis as a TSBK (a confirmed
 //! packet's blocks are 3/4-rate, but trunking never is). The header ends in a
-//! CRC-CCITT like a TSBK's; the data blocks end, together, in a CRC-32.
-//! Field positions are SDRTrunk's (`pdu/ambtc/osp`), which agree with op25's
-//! and Trunk Recorder's (`decode_mbt_data`) where those read a field.
-//!
-//! Opcodes without a TSBK form here are counted, not acted on: data and
-//! telephone grants, status and message updates, roaming, authentication,
-//! and the uncoordinated-band-plan adjacent status (0x3e). IDEN_UP_TDMA
-//! (0x33) names the WACN and System ID its band plan is for, and a site may
-//! send its neighbouring systems' too (CLMRN, ~8 a second): only one for the
-//! site's own system, once its network status has said which that is, is
-//! passed on.
+//! CRC-CCITT like a TSBK's; the data blocks end, together, in a CRC-32. An
+//! outbound MBT is always the alternate format (AABC-D §2.2: the unconfirmed
+//! one, %10101, is inbound only).
 
 use super::tsbk::{trellis_viterbi, tsbk_ok, Tsbk};
 
 /// Header format: unconfirmed alternate multiple block trunking.
 const AMBTC: u8 = 0x17;
-/// Header SAP: trunking control.
+/// Header SAP: trunking control, and protected (encrypted) trunking control.
 const SAP_TRUNKING: u8 = 0x3d;
+const SAP_PROTECTED_TRUNKING: u8 = 0x3f;
 
 /// The longest PDU the framer follows, in blocks (header included): a frame
 /// may be no longer than an LDU, which the receiver bank holds for.
@@ -73,117 +67,6 @@ impl Mbt {
     pub fn blocks(&self) -> usize {
         1 + blocks_to_follow(&self.header)
     }
-
-    /// The (WACN, System ID) an IDEN_UP_TDMA's band plan is for.
-    pub fn band_plan_system(&self) -> Option<(u32, u32)> {
-        let h = &self.header;
-        (self.opcode() == 0x33 && self.mfid() == 0).then(|| ((h[4] as u32) << 12 | (h[5] as u32) << 4 | (h[8] as u32) >> 4, (h[8] as u32 & 0xf) << 8 | h[9] as u32))
-    }
-
-    /// The same message as a single TSBK (CRC included), for the opcodes
-    /// the TSBK parser acts on: the outbound channel stands for the pair, a
-    /// unit's ID for its full (WACN, System ID, ID) address. `own`: the
-    /// site's (WACN, System ID), when known, which a band plan must be for.
-    pub fn to_tsbk(&self, own: Option<(u32, u32)>) -> Option<Tsbk> {
-        let (h, d) = (&self.header, &self.data);
-        // Header: [3..6] the address (source or target), [8] service options.
-        let need = |n: usize| (d.len() >= n).then_some(());
-        let mut t = [0u8; 12];
-        t[0] = 0x80 | self.opcode();
-        t[1] = self.mfid();
-        match (self.opcode(), self.mfid()) {
-            // Group voice channel grant: options, channel, group, source.
-            (0x00, 0) => {
-                need(8)?;
-                t[2] = h[8];
-                t[3..5].copy_from_slice(&d[2..4]);
-                t[5..7].copy_from_slice(&d[6..8]);
-                t[7..10].copy_from_slice(&h[3..6]);
-            }
-            // Motorola regroup (patch) channel grant: options, channel, supergroup, source.
-            (0x02, 0x90) => {
-                need(6)?;
-                t[2] = h[8];
-                t[3..5].copy_from_slice(&d[0..2]);
-                t[5..7].copy_from_slice(&d[4..6]);
-                t[7..10].copy_from_slice(&h[3..6]);
-            }
-            // Unit-to-unit grant and update: channel, target, source.
-            (0x04 | 0x06, 0) => {
-                need(12)?;
-                t[2..4].copy_from_slice(&d[10..12]);
-                t[4..7].copy_from_slice(&d[7..10]);
-                t[7..10].copy_from_slice(&d[4..7]);
-            }
-            // Unit-to-unit answer request: options, target, source.
-            (0x05, 0) => {
-                need(8)?;
-                t[2] = h[8];
-                t[4..7].copy_from_slice(&h[3..6]);
-                t[7..10].copy_from_slice(&d[5..8]);
-            }
-            // Call alert: target, source.
-            (0x1f, 0) => {
-                need(5)?;
-                t[4..7].copy_from_slice(&h[3..6]);
-                t[7..10].copy_from_slice(&d[2..5]);
-            }
-            // Group affiliation response (two blocks): LG and GAV, announcement group, group, target.
-            (0x28, 0) => {
-                need(9)?;
-                t[2] = d[8];
-                t[3..7].copy_from_slice(&d[4..8]);
-                t[7..10].copy_from_slice(&h[3..6]);
-            }
-            // Unit registration response: RV and System ID, the unit's ID, its address.
-            (0x2c, 0) => {
-                need(6)?;
-                t[2] = (d[5] & 3) << 4 | d[0] & 0x0f;
-                t[3] = d[1];
-                t[4..7].copy_from_slice(&d[2..5]);
-                t[7..10].copy_from_slice(&h[3..6]);
-            }
-            // Band plan (TDMA): identifier and type, offset and spacing, base.
-            (0x33, 0) => {
-                need(7)?;
-                if own.is_none() || self.band_plan_system() != own {
-                    return None;
-                }
-                t[2] = h[3];
-                t[3..6].copy_from_slice(&d[4..7]);
-                t[6..10].copy_from_slice(&d[0..4]);
-            }
-            // RFSS status: LRA, System ID, RFSS, site, channel.
-            (0x3a, 0) => {
-                need(4)?;
-                t[2] = h[3];
-                t[3..5].copy_from_slice(&h[4..6]);
-                t[5..7].copy_from_slice(&d[0..2]);
-                t[7..9].copy_from_slice(&d[2..4]);
-            }
-            // Network status: LRA, WACN, System ID, channel.
-            (0x3b, 0) => {
-                need(5)?;
-                t[2] = h[3];
-                t[3..5].copy_from_slice(&d[0..2]);
-                t[5] = d[2] & 0xf0 | h[4] & 0x0f;
-                t[6] = h[5];
-                t[7..9].copy_from_slice(&d[3..5]);
-            }
-            // Adjacent site: LRA, System ID, RFSS, site, channel.
-            (0x3c, 0) => {
-                need(2)?;
-                t[2] = h[3];
-                t[3..5].copy_from_slice(&h[4..6]);
-                t[5..7].copy_from_slice(&h[8..10]);
-                t[7..9].copy_from_slice(&d[0..2]);
-            }
-            _ => return None,
-        }
-        let crc = crate::bits::crc_ccitt_bytes(&t[..10]);
-        t[10..12].copy_from_slice(&crc.to_be_bytes());
-        Some(t)
-    }
 }
 
 /// What a PDU frame (or a group of copies) held.
@@ -207,7 +90,7 @@ pub fn decode<'a>(copies: impl Iterator<Item = (&'a [u8], Option<&'a [f32]>)> + 
     let Some(h) = copies.clone().find_map(|(b, s)| block(b, s, 0).and_then(|(b, s)| decode_header(b, s))) else {
         return Pdu::Lost;
     };
-    if h[0] & 0x1f != AMBTC || h[1] & 0x3f != SAP_TRUNKING {
+    if h[0] & 0x1f != AMBTC || !matches!(h[1] & 0x3f, SAP_TRUNKING | SAP_PROTECTED_TRUNKING) {
         return Pdu::Other(h);
     }
     let n = blocks_to_follow(&h);
@@ -254,7 +137,6 @@ pub fn decode<'a>(copies: impl Iterator<Item = (&'a [u8], Option<&'a [f32]>)> + 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::p25::tsbk::{tsbk_last, tsbk_opcode};
 
     /// The 1/2-rate trellis encoder and interleave (the inverse of
     /// `trellis_viterbi`): 12 octets → 196 bits.
@@ -330,107 +212,6 @@ pub(crate) mod tests {
     fn crc32_matches_the_reference() {
         // This is CRC-32/CKSUM (cksum appends the length; the check value doesn't).
         assert_eq!(crc32(b"123456789"), 0x765e_7680);
-    }
-
-    #[test]
-    fn network_status_becomes_its_tsbk() {
-        // WACN BEE00, System ID 3A9, LRA 0x12, channel 0x1234 / 0x5678, SSC 0x70.
-        let h = ambtc_header(0x3b, [0x12, 0x03, 0xa9], [0, 0]);
-        let bits = pdu_bits(h, &[0xbe, 0xe0, 0x00, 0x12, 0x34, 0x56, 0x78, 0x70]);
-        let Pdu::Mbt(m) = decode(std::iter::once((&bits[..], None))) else { panic!("no MBT") };
-        let t = m.to_tsbk(None).expect("has a TSBK form");
-        assert!(tsbk_ok(&t) && tsbk_last(&t));
-        assert_eq!(tsbk_opcode(&t), 0x3b);
-        let v = t.iter().fold(0u128, |a, &b| (a << 8) | b as u128);
-        let b = |shift: u32, mask: u64| ((v >> shift) as u64 & mask) as u32;
-        assert_eq!((b(52, 0xfffff), b(40, 0xfff), b(24, 0xffff)), (0xbee00, 0x3a9, 0x1234));
-    }
-
-    #[test]
-    fn a_grant_keeps_its_options_from_the_header() {
-        // Source 0x123456, emergency + encrypted; channel 0x1234, group 0x0101.
-        let h = ambtc_header(0x00, [0x12, 0x34, 0x56], [0xc0, 0]);
-        let bits = pdu_bits(h, &[0, 0, 0x12, 0x34, 0x56, 0x78, 0x01, 0x01]);
-        let Pdu::Mbt(m) = decode(std::iter::once((&bits[..], None))) else { panic!("no MBT") };
-        let t = m.to_tsbk(None).expect("has a TSBK form");
-        let v = t.iter().fold(0u128, |a, &b| (a << 8) | b as u128);
-        let b = |shift: u32, mask: u64| ((v >> shift) as u64 & mask) as u32;
-        assert_eq!((b(72, 0xff), b(56, 0xffff), b(40, 0xffff), b(16, 0xffffff)), (0xc0, 0x1234, 0x0101, 0x123456));
-    }
-
-    /// Each MBT the TSBK parser should hear, as the parser reads it.
-    #[test]
-    fn each_converted_mbt_parses_as_its_tsbk() {
-        use crate::trunk::message::{MessageType as K, TsbkParser};
-        let parse = |opcode: u8, mfid: u8, addr: [u8; 3], tail: [u8; 2], body: &[u8]| {
-            let mut h = ambtc_header(opcode, addr, tail);
-            h[2] = mfid;
-            let Pdu::Mbt(m) = decode(std::iter::once((&pdu_bits(h, body)[..], None))) else { panic!("no MBT 0x{opcode:02x}") };
-            let t = m.to_tsbk(None).unwrap_or_else(|| panic!("0x{opcode:02x} has no TSBK form"));
-            assert!(tsbk_ok(&t));
-            let mut p = TsbkParser::default();
-            let mut msgs = p.parse(&t, 0x332, 0.0);
-            msgs.pop().unwrap()
-        };
-        let unit = [0x0a, 0x0b, 0x0c]; // 0x0a0b0c
-        // Motorola patch grant: supergroup 0x0204 on channel 0x1001, from the unit.
-        let m = parse(0x02, 0x90, unit, [0x80, 0], &[0x10, 0x01, 0x10, 0x01, 0x02, 0x04, 0, 0]);
-        assert_eq!((m.kind, m.talkgroup, m.source, m.emergency), (K::Grant, 0x0204, 0x0a0b0c, true));
-        // Unit-to-unit grant and update: source 0x010203 → target 0x040506 on channel 0x1001.
-        let uu = [0xbe, 0xe0, 0x03, 0xa9, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x10, 0x01, 0x10, 0x01, 0, 0];
-        for (op, kind) in [(0x04, K::UuVGrant), (0x06, K::UuVUpdate)] {
-            let m = parse(op, 0, [0; 3], [0, 0], &uu);
-            assert_eq!((m.kind, m.source, m.talkgroup), (kind, 0x010203, 0x040506), "0x{op:02x}");
-        }
-        // Answer request: from 0x010203 to the unit.
-        let m = parse(0x05, 0, unit, [0, 0], &[0, 0xbe, 0xe0, 0x03, 0xa9, 0x01, 0x02, 0x03]);
-        assert_eq!((m.kind, m.source, m.talkgroup), (K::UuAnsReq, 0x010203, 0x0a0b0c));
-        // Call alert: from 0x010203 to the unit.
-        let m = parse(0x1f, 0, unit, [0, 0], &[0xe0, 0x3a, 0x01, 0x02, 0x03, 0, 0, 0]);
-        assert_eq!((m.kind, m.source, m.talkgroup), (K::CallAlert, 0x010203, 0x0a0b0c));
-        // Affiliation response: the unit to group 0x0101.
-        let m = parse(0x28, 0, unit, [0, 0], &[0xe0, 0x3a, 0, 0, 0, 0, 0x01, 0x01, 0]);
-        assert_eq!((m.kind, m.source, m.talkgroup), (K::Affiliation, 0x0a0b0c, 0x0101));
-        // Refused (GAV 3): not an affiliation.
-        let m = parse(0x28, 0, unit, [0, 0], &[0xe0, 0x3a, 0, 0, 0, 0, 0x01, 0x01, 3]);
-        assert_ne!(m.kind, K::Affiliation);
-        // Registration response: unit 0x010203.
-        let m = parse(0x2c, 0, unit, [0, 0], &[0xe0, 0x3a, 0x01, 0x02, 0x03, 0, 0, 0]);
-        assert_eq!((m.kind, m.source), (K::Registration, 0x010203));
-        // Denied (RV 2): not a registration.
-        let m = parse(0x2c, 0, unit, [0, 0], &[0xe0, 0x3a, 0x01, 0x02, 0x03, 2, 0, 0]);
-        assert_ne!(m.kind, K::Registration);
-        // RFSS status: System ID 3A9, RFSS 1, site 7.
-        let m = parse(0x3a, 0, [0x12, 0x03, 0xa9], [0, 0], &[1, 7, 0x10, 0x01, 0, 0, 0x70, 0]);
-        assert_eq!((m.kind, m.sys_id, m.rfss, m.site), (K::SysId, 0x3a9, 1, 7));
-        // Adjacent site 1-7 of System ID 3A9.
-        let m = parse(0x3c, 0, [0x12, 0x03, 0xa9], [1, 7], &[0x10, 0x01, 0x10, 0x01, 0, 0x70, 0, 0]);
-        assert_eq!((m.kind, m.sys_id, m.rfss, m.site), (K::Adjacent, 0x3a9, 1, 7));
-    }
-
-    fn from_hex(hex: &str) -> Mbt {
-        let b: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
-        let m = Mbt { header: b[..12].try_into().unwrap(), data: b[12..].to_vec() };
-        assert!(tsbk_ok(&m.header));
-        m
-    }
-
-    /// A band plan (CLMRN-I's sample, for WACN BEE00 System ID 9EF) is
-    /// passed on only on a site of that system; a site on a band plan of its
-    /// own (0x3e) not at all.
-    #[test]
-    fn only_the_sites_own_band_plan_is_passed_on() {
-        use crate::trunk::message::TsbkParser;
-        let m = from_hex("37fd0011bee0813309ef4afd09157562cb003200");
-        assert_eq!(m.band_plan_system(), Some((0xbee00, 0x9ef)));
-        assert_eq!(m.to_tsbk(None), None, "system not known yet");
-        assert_eq!(m.to_tsbk(Some((0xbee00, 0x3a9))), None, "a neighbour's");
-        let t = m.to_tsbk(Some((0xbee00, 0x9ef))).expect("its own");
-        assert!(tsbk_ok(&t));
-        let mut p = TsbkParser::default();
-        let msg = p.parse(&t, 0x332, 0.0).pop().unwrap();
-        assert!(msg.meta.contains("IDEN_UP_TDMA 1: base 762.00625 MHz, step 6250 Hz"), "{}", msg.meta);
-        assert_eq!(from_hex("37fd00011097813e0101b14700a8ffff70000010").to_tsbk(Some((0xbee00, 0x9ef))), None);
     }
 
     #[test]

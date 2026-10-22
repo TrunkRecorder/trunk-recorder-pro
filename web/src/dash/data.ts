@@ -3,17 +3,19 @@
 // health rules — plain functions returning a level and why, the why worded as
 // a hint (what it means, what to try).
 
-import { activeSystems } from "../config.ts";
+import { activeSystems, siteActive, siteNameOf } from "../config.ts";
 import { snapshot, statsQuery, usePolled, type AppState, type StatsRange } from "../controller.ts";
 import { keyPart, num, pct } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
 import type { Level } from "../charts.tsx";
-import type { PluginInfo, SeriesData, SourceStatus, SystemStatus } from "../protocol.ts";
+import type { PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, SystemStatus } from "../protocol.ts";
 
 // ── series names (crates/trunk-app/src/stats) ────────────────────────────────
 
 export const K = {
   sys: (short: string, k: string) => `sys/${keyPart(short)}/${k}`,
+  /** A site's control channel series (the recorder's SiteConfig::stats_key). */
+  cc: (site: DashSite, k: string) => `${site.key}/cc/${k}`,
   src: (label: string, k: string) => `src/${keyPart(label)}/${k}`,
   plg: (id: string, k: string) => `plg/${keyPart(id)}/${k}`,
 };
@@ -34,24 +36,52 @@ export function recentAvg(key: string, sinceS: number): number | null {
 
 export interface DashSystem {
   name: string;
-  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "conventional";
-  /** The running system's status (trunked, once its control channel is open). */
+  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional";
+  /** The running system's status (trunked, once a control channel is open). */
   status: SystemStatus | null;
+  /** Its sites being recorded (a conventional system: none). */
+  sites: DashSite[];
 }
 
-/** Every system set up (trunked, then conventional with channels), with its status while running. */
+/** One site of a dashboard system. */
+export interface DashSite {
+  name: string;
+  /** Where its control channel's series are: see [`K.cc`]. */
+  key: string;
+  /** Its status, once its control channel is open. */
+  status: SiteStatus | null;
+}
+
+/** A site's series key (the recorder's SiteKey::stats_key): a site named as its system is under the system's. */
+export const siteKey = (system: string, site: string) => (site === system ? `sys/${keyPart(system)}` : `sys/${keyPart(system)}/site/${keyPart(site)}`);
+
+/** Every system set up (trunked, then conventional with channels), with its sites and its status while running. */
 export function dashSystems(s: AppState): DashSystem[] {
   if (!s.config) return [];
-  const out: DashSystem[] = activeSystems(s.config).map((x) => ({
-    name: x.shortName,
-    kind: (x.type ?? "p25") as DashSystem["kind"],
-    status: s.status?.systems.find((y) => y.shortName === x.shortName) ?? null,
-  }));
-  for (const c of s.config.conventional) if (c.enabled !== false && c.channels.some((ch) => ch.enabled)) out.push({ name: c.shortName, kind: "conventional", status: null });
+  const out: DashSystem[] = activeSystems(s.config).map((x) => {
+    const status = s.status?.systems.find((y) => y.shortName === x.shortName) ?? null;
+    const sites = x.sites.filter(siteActive).map((site) => {
+      const name = siteNameOf(x, site);
+      return { name, key: siteKey(x.shortName, name), status: status?.sites.find((y) => y.name === name) ?? null };
+    });
+    return { name: x.shortName, kind: (x.type ?? "p25") as DashSystem["kind"], status, sites };
+  });
+  for (const c of s.config.conventional) if (c.enabled !== false && c.channels.some((ch) => ch.enabled)) out.push({ name: c.shortName, kind: "conventional", status: null, sites: [] });
   return out;
 }
 
-export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", conventional: "Conventional" };
+/** A running site, with its system's short name and how the dashboard names it: "dcfd", "dcfd/south". */
+export type RunningSite = SiteStatus & { shortName: string; label: string };
+
+/** A running site with its detail (decodeDetail: what its control channel announces). */
+export type DetailedSite = RunningSite & SiteDetail;
+
+/** Every running site, its system's in order. */
+export function runningSites(systems: SystemStatus[]): RunningSite[] {
+  return systems.flatMap((y) => y.sites.map((x) => ({ ...x, shortName: y.shortName, label: x.name === y.shortName ? y.shortName : `${y.shortName}/${x.name}` })));
+}
+
+export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS", conventional: "Conventional" };
 
 export const running = (s: AppState) => s.phase === "running" || s.phase === "starting";
 
@@ -132,17 +162,37 @@ const worst = (hs: Health[]): Health => {
   return { level: "idle", why: "" };
 };
 
-/** A trunked system's control channel, judged against its own usual rate. */
-export function systemHealth(s: AppState, x: DashSystem, usualRate?: Usual | null): Health {
+/**
+ * The worst of several things' health (sites, systems, sources, plugins), the
+ * one in trouble named when there are several: a light then says which.
+ */
+export function worstOf<T>(items: T[], name: (x: T) => string, health: (x: T) => Health): Health {
+  return worst(items.map((x) => {
+    const h = health(x);
+    return items.length > 1 && (h.level === "warn" || h.level === "bad") ? { ...h, why: `${name(x)}: ${h.why}` } : h;
+  }));
+}
+
+/**
+ * A trunked system's control channels, each judged against its own usual
+ * rate (`usual`, by series key): the worst site's, named when it has several.
+ */
+export function systemHealth(s: AppState, x: DashSystem, usual: Record<string, Usual | null> = {}): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   if (x.kind === "conventional") return OK("Listening on its channels");
-  const st = x.status;
+  if (!x.sites.length) return { level: "bad", why: "No site set up" };
+  return worstOf(x.sites, (site) => site.name, (site) => siteHealth(s, site, usual[K.cc(site, "good")]));
+}
+
+/** A site's control channel, judged against its own usual rate. */
+export function siteHealth(s: AppState, site: DashSite, usualRate?: Usual | null): Health {
+  const st = site.status;
   if (!st) return { level: "bad", why: "No control channel open — is one inside a source's band?" };
   if (st.mismatch) return { level: "bad", why: `The control channel is another system's: ${st.mismatch}` };
-  const locked = val(s, K.sys(x.name, "cc/locked"));
-  const rate = recentAvg(K.sys(x.name, "cc/good"), 30);
-  const bad = recentAvg(K.sys(x.name, "cc/bad"), 60) ?? 0;
-  const good = recentAvg(K.sys(x.name, "cc/good"), 60) ?? 0;
+  const locked = val(s, K.cc(site, "locked"));
+  const rate = recentAvg(K.cc(site, "good"), 30);
+  const bad = recentAvg(K.cc(site, "bad"), 60) ?? 0;
+  const good = recentAvg(K.cc(site, "good"), 60) ?? 0;
   const badPct = good + bad > 0 ? (100 * bad) / (good + bad) : 0;
   if (locked === 0) return { level: "bad", why: "Not decoding its control channel — hunting for another. Check the antenna, the gain, and that the frequency is right." };
   if (rate === null) return { level: "ok", why: "Starting…" };
@@ -220,27 +270,41 @@ export function rfHealth(s: AppState): Health {
     const c = s.config?.sources[i];
     return !!c && "autoTune" in c && !!c.autoTune;
   };
-  return worst(s.sources.map((x, i) => sourceHealth(s, x, auto(i))));
+  return worstOf(s.sources.map((x, i) => ({ x, i })), ({ x }) => x.label, ({ x, i }) => sourceHealth(s, x, auto(i)));
 }
 
 export function decodeHealth(s: AppState): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  return worst(dashSystems(s).map((x) => systemHealth(s, x)));
+  return worstOf(dashSystems(s), (x) => x.name, (x) => systemHealth(s, x));
 }
 
 export function pluginsHealth(s: AppState): Health {
   const ps = s.plugins?.plugins ?? [];
   const on = (id: string) => !!s.config?.plugins?.[id]?.enabled;
-  const hs = ps.filter((p) => on(p.id)).map((p) => pluginHealth(p, true));
-  return hs.length ? worst(hs) : { level: "idle", why: "No plugins on" };
+  const ons = ps.filter((p) => on(p.id));
+  return ons.length ? worstOf(ons, (p) => p.manifest?.name ?? p.id, (p) => pluginHealth(p, true)) : { level: "idle", why: "No plugins on" };
 }
 
-/** Calls lost for want of a recorder or a source, last few minutes. */
+/** A system's calls lost for want of a recorder or a source, last few minutes: which of the two. */
+export function systemRadioHealth(s: AppState, x: DashSystem): Health {
+  if (!running(s)) return { level: "idle", why: "Not recording" };
+  const busy = (recentAvg(K.sys(x.name, "why/no_recorder"), 300) ?? 0) > 0;
+  const outside = (recentAvg(K.sys(x.name, "why/no_source"), 300) ?? 0) > 0;
+  if (busy && outside) return { level: "warn", why: "Calls are being missed: no free recorder for some, others outside every source's band" };
+  if (busy) return { level: "warn", why: "Calls are being missed: no free recorder. Add recorders, or a source" };
+  if (outside) return { level: "warn", why: "Calls are being missed: their frequencies are outside every source's band (Out of band)" };
+  return OK("Recording what it hears");
+}
+
+/** Calls lost, any system: the system that loses them named. */
 export function radioHealth(s: AppState): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  const missed = dashSystems(s).reduce((a, x) => a + (recentAvg(K.sys(x.name, "why/no_recorder"), 300) ?? 0) + (recentAvg(K.sys(x.name, "why/no_source"), 300) ?? 0), 0);
-  if (missed > 0) return { level: "warn", why: "Calls are being missed: no free recorder, or outside every source's band" };
-  return OK("Recording what it hears");
+  return worstOf(dashSystems(s), (x) => x.name, (x) => systemRadioHealth(s, x));
+}
+
+/** A system all told, as the Overview shows it: its control channels, and whether it's missing calls. */
+export function systemOverallHealth(s: AppState, x: DashSystem, usual: Record<string, Usual | null> = {}): Health {
+  return worst([systemHealth(s, x, usual), systemRadioHealth(s, x)]);
 }
 
 /** The health of a page, for the navigation's lights. */

@@ -2,18 +2,17 @@
 // config, the dongles and the drivers say), what each asks, and the setup
 // field it points at. An item closes by itself once its field is filled in.
 
-import { formatMhz, resolvedCenters, sourceCovering, type ImportTodo } from "./config.ts";
+import { formatMhz, resolvedCenters, siteNameOf, SOURCE_KINDS, sourceCovering, type ImportTodo } from "./config.ts";
 import type { AppState } from "./controller.ts";
 
 export interface OpenTodo {
   item: ImportTodo;
-  /** The setup field it belongs to: its element is `need-<target>`; "plugins" and "plugin-<id>" are on Setup's Plugins tab. */
+  /** The setup field it belongs to: its element is `need-<target>` (a site's: `<kind>-<system>-<site index>`); "plugins" and "plugin-<id>" are on Setup's Plugins tab. */
   target: string;
   title: string;
   text: string;
 }
 
-const DRIVER = { usrp: "UHD", airspy: "libairspy", soapy: "SoapySDR and your radio's module" };
 
 export function openTodos(s: AppState): OpenTodo[] {
   const c = s.config;
@@ -23,7 +22,7 @@ export function openTodos(s: AppState): OpenTodo[] {
     switch (item.kind) {
       case "talkgroups": {
         const sys = c.systems.find((x) => x.shortName === item.system);
-        if (sys && !sys.talkgroupsCsv)
+        if (sys && !s.talkgroups[sys.shortName])
           out.push({ item, target: `tg-${item.system}`, title: `Talkgroups for ${item.system}`, text: `“${item.file}” wasn't found. Load it to name the talkgroups.` });
         break;
       }
@@ -48,11 +47,13 @@ export function openTodos(s: AppState): OpenTodo[] {
       }
       case "siteLock": {
         const sys = c.systems.find((x) => x.shortName === item.system);
-        if (sys && sys.expect.site == null)
+        const k = item.site ?? 0;
+        const site = sys?.sites[k];
+        if (sys && site && site.expect.site == null)
           out.push({
             item,
-            target: `site-${item.system}`,
-            title: `Site lock for ${item.system}`,
+            target: `site-${item.system}-${k}`,
+            title: `Site lock for ${sys.sites.length > 1 ? `${siteNameOf(sys, site)} of ${item.system}` : item.system}`,
             text: `Trunk Recorder followed only site ${item.siteId}. Fill in the site number — a first run shows the one the control channel announces.`,
           });
         break;
@@ -74,7 +75,7 @@ export function openTodos(s: AppState): OpenTodo[] {
         const src = c.sources[item.index];
         const d = s.radios?.[item.driver];
         if (!src || src.type !== item.driver || !s.radios || d?.available) break;
-        out.push({ item, target: `src-${item.index}`, title: `Source ${item.index + 1}`, text: `Needs ${DRIVER[item.driver]} installed on this computer, then a restart.` });
+        out.push({ item, target: `src-${item.index}`, title: `Source ${item.index + 1}`, text: `Needs ${SOURCE_KINDS[item.driver].driver?.name} installed on this computer, then a restart.` });
         break;
       }
       case "squelch":
@@ -101,14 +102,16 @@ export function openTodos(s: AppState): OpenTodo[] {
       }
       case "coverage": {
         const sys = c.systems.find((x) => x.shortName === item.system);
-        if (!sys || !sys.enabled || !sys.controlChannelsHz.length) break;
+        const sites = sys?.enabled ? sys.sites.filter((x) => x.enabled && x.controlChannelsHz.length) : [];
+        if (!sys || !sites.length) break;
         const centers = resolvedCenters(c);
-        if (sys.controlChannelsHz.some((f) => sourceCovering(c, centers, f) >= 0)) break;
+        if (sites.some((x) => x.controlChannelsHz.some((f) => sourceCovering(c, centers, f) >= 0))) break;
+        const ccs = sites.flatMap((x) => x.controlChannelsHz);
         out.push({
           item,
-          target: `cc-${item.system}`,
+          target: `cc-${item.system}-${sys.sites.indexOf(sites[0])}`,
           title: `Control channel of ${item.system}`,
-          text: `No radio hears ${sys.controlChannelsHz.map((f) => formatMhz(f, 4)).join(" or ")} MHz. Move a radio's center frequency there, or add a radio.`,
+          text: `No radio hears ${ccs.map((f) => formatMhz(f, 4)).join(" or ")} MHz. Move a radio's center frequency there, or add a radio.`,
         });
         break;
       }

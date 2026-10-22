@@ -32,6 +32,7 @@ tools. Most people only ever run `trunk-pro` with no arguments and do the rest i
 | [`rolloff`](#rolloff) | Measure how a radio's band edges sag, and the guard band to use |
 | [`tool …`](#tool) | Diagnostics: one channel's decode, scans, weak-signal curves, re-vocoding |
 | [`plugin …`](#plugin) | Find, install, update, remove and test plugins |
+| [`interface …`](#interface) | Find, install, update and remove interfaces, or add a folder of your own |
 
 ## Running the app (`serve`)
 
@@ -48,11 +49,11 @@ you press **Start** in the interface, or right away with `--start` or the config
 | Option | Default | What it does |
 |---|---|---|
 | `--config file.json` | the app's config folder | The config file to use. Everything the app learns and installs (band plans, unit names, plugins, stats history, logs) is kept in the folder this file is in, so two recorders with their own configs never share them. |
-| `--port n` | `server.port` (8080) | The web interface's port, for this run only. |
+| `--port n` | `server.port` (8080) | The built-in interface's port, for this run only. |
 | `--bind address` | `server.bind` (`127.0.0.1`) | The address to listen on, for this run only. `0.0.0.0` makes the interface reachable from other machines. There is no login: see [Remote access](guides/interface.md#remote-access). |
 | `--no-open` | | Don't open a browser (headless machines, services). |
 | `--start` | `server.autoStart` | Start recording at once with the saved settings. If the settings can't start, the reason is logged as `Not started: …` and the app keeps running. |
-| `--ui folder` | | Serve an interface of your own (a folder with an `index.html`) at `/` for this run. The built-in interface stays at `/builtin/`. See [Interfaces of your own](guides/interface.md#interfaces-of-your-own). |
+| `--ui folder` | | Serve a folder with an `index.html` as an interface for this run, with control access, on the first free port above the built-in interface's, and open it instead of the built-in one. Nothing is saved. See [Interfaces](interfaces/README.md). |
 | `--log-level level` | `log.level` (`info`) | `trace`, `debug`, `info`, `warning` (or `warn`), `error` or `fatal`. Overrides the config's level for this run. |
 
 Where the default config lives:
@@ -65,12 +66,15 @@ Where the default config lives:
 
 If the file doesn't exist, the app starts with the default config (one RTL-SDR source, no
 systems) and the interface offers the setup guide. If it exists but can't be read, the app stops with
-`<path>: not a config this version reads (…)`. See [Troubleshooting](troubleshooting.md).
+`<path>: not a config this version reads (…)`: a wrong type, or a choice the app doesn't list (a
+system `type` of `P25x`). See [Troubleshooting](troubleshooting.md). A config from an older version
+is upgraded when it's read: its talkgroups are moved out into `<shortName>.talkgroups.csv` files
+beside it, and the log says what changed.
 
 At start the log says where everything is:
 
 ```text
-Trunk Recorder Pro 0.1.4 — open http://localhost:8080
+Trunk Recorder Pro 0.2.0 — open http://localhost:8080
 Using Config file: /home/pi/.config/trunk-pro/config.json
 Capture Directory: /home/pi/TrunkRecorderPro
 Log Level: info · Log to File: false · System log: false
@@ -116,7 +120,8 @@ trunk-pro devices [--usrp [args]]
 ```
 
 Lists the RTL-SDRs it can see (model and serial number), then whether the optional Airspy
-(libairspy), USRP (UHD) and SoapySDR drivers are installed. For Airspy it lists the devices; for
+(libairspy), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy and
+bladeRF it lists the devices, bladeRFs with their full serials; for
 SoapySDR it lists the installed modules (and any that failed to load, with why) and the devices
 found. USRPs are only searched for with `--usrp`, optionally with UHD device arguments
 (`--usrp type=b200`), because a search can be slow.
@@ -130,7 +135,7 @@ trunk-pro devices --usrp
 
 ```bash
 trunk-pro capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--ppm 0] [--serial S]
-                  [--seconds 10]
+                  [--seconds 10] [--buflen n] [--buffers n]
 ```
 
 Records raw IQ from an RTL-SDR to a file, like `rtl_sdr` does: unsigned 8-bit I/Q pairs (`.cu8`).
@@ -145,6 +150,7 @@ to a bug report.
 | `--ppm n` | 0 | Frequency correction |
 | `--serial S` | first dongle | Which dongle |
 | `--seconds n` | 10 | How long |
+| `--buflen n` `--buffers n` | 0 (the driver's) | USB transfer size in bytes and transfers in flight, as a source's [`bufLen` and `buffers`](configuration/sources.md#type-rtlsdr). `survey` and `rolloff` take them too |
 
 When it's done it prints how many samples it got and how many the driver dropped. Stop the
 recorder first if it is using the same dongle: only one program can open a dongle at a time.
@@ -178,6 +184,7 @@ trunk-pro replay --source cap1.cu8,center,rate[,format] [--source …] --cc Hz[,
 | `--format cu8\|cs16\|cf32` | from the extension | Sample format: `cu8` (rtl_sdr), `cs16` (`.cs16`, `.sc16`), `cf32` (`.cf32`, `.cfile`, `.fc32`). Anything else is refused. |
 | `--guard Hz` | 75000 | Left unused at each edge of a source's band (the guard band) |
 | `--auto-tune` | off | Correct the sources' frequency error as measured on the control channels and calls. The error is reported at the end either way. |
+| `--threads` | off | Feed each source from a thread of its own, as live, none far ahead of the slowest, instead of in step on one thread. |
 
 ### A trunked system
 
@@ -185,16 +192,16 @@ trunk-pro replay --source cap1.cu8,center,rate[,format] [--source …] --cc Hz[,
 |---|---|---|
 | `--cc Hz[,Hz…]` | | The system's control channels. P25 unless `--smartnet`, `--dmr-trunk` or `--nxdn-trunk` says otherwise. |
 | `--short-name name` | `replay` | The `--cc` system's short name |
-| `--talkgroups file.csv` | | A talkgroup file, in the usual [format](configuration/systems.md) |
-| `--bandplan file` | | Read a learned band plan from this file before, and save it after. With several systems, one file each: `<file>.<shortName>`. |
-| `--system name:Hz[,Hz…][:keys]` | | Another system (or site); repeatable. The keys lock it to one site: `nac`, `sysid`, `wacn` (hex), `rfss`, `site` (decimal), and `group=name` for its site group. A control channel that disagrees isn't followed. |
+| `--talkgroups file.csv` | | A talkgroup file, in the usual [format](configuration/systems.md#talkgroup-file). Every system in the replay uses it, the conventional one too |
+| `--bandplan file` | | Read a learned band plan from this file before, and save it after. With several sites, one file each: `<file>.<shortName>`, or `<file>.<shortName>.<site>` for a site with a name of its own. |
+| `--system name[/site]:Hz[,Hz…][:keys]` | | Another system, or with `/site` a site of one (`county/south` is site `south` of system `county`); repeatable. A call heard on several sites of a system is saved once. The keys lock it to one site: `nac`, `sysid`, `wacn` (hex), `rfss`, `site` (decimal). A control channel that disagrees isn't followed. |
 
 With more than one system, each one's calls go to `<out>/<shortName>/`.
 
 ```bash
 # Two sites of one system from one capture, each locked to its own site number
 trunk-pro replay p25.cu8 --center 858500000 --rate 2400000 \
-  --system north:857262500:site=1,group=county --system south:858237500:site=3,group=county
+  --system county/north:857262500:site=1 --system county/south:858237500:site=3
 ```
 
 ### SmartNet
@@ -226,6 +233,7 @@ called `conv`.
 | Option | Default | What it does |
 |---|---|---|
 | `--fm Hz,…` | | Analog FM channels |
+| `--am Hz,…` | | Analog AM channels (airband) |
 | `--p25 Hz,…` | | Conventional P25 channels |
 | `--dmr Hz,…` | | Conventional DMR channels |
 | `--nxdn48 Hz,…` `--nxdn96 Hz,…` | | Conventional NXDN channels |
@@ -243,7 +251,8 @@ called `conv`.
 | `--epoch s` | 0 | The Unix time the capture started, for call times and file names |
 | `--no-unknown` | off | Don't record talkgroups that aren't in the talkgroup file |
 | `--record-encrypted` | off | Record (and keep) encrypted calls |
-| `--keys file` | none | Decrypt P25 voice with these [keys](configuration/systems.md#encryption-keys-keys) (every system) |
+| `--keys file` | none | Decrypt P25 voice with these [keys](configuration/systems.md#encryption-keys-keys) (every system): a JSON file, or a [KFDtool container](configuration/systems.md#keys-in-a-kfdtool-container) with `--keys-password-file` |
+| `--keys-password-file file` | none | The file holding the password of a key container given to `--keys` |
 | `--keep-silent` | off | Keep calls with no audio |
 | `--min-call s` | 0 | Drop calls shorter than this |
 | `--max-call s` | 0 (no limit) | Split calls longer than this |
@@ -272,6 +281,7 @@ trunk-pro replay vhf.cu8 --center 154500000 --rate 2400000 --fm 154130000,154415
 trunk-pro survey [--serial S] [--bands 800,700,…] [--gain dB | --no-gain] [--ppm 0] [--seconds 30]
                  [--rate 2400000]
 trunk-pro survey <capture> --center Hz [--rate Hz] [--format cu8|cs16|cf32]
+    either: [--identify lat,lon[,km]] [--api URL]
 ```
 
 The command-line version of **Find my system**: scans the bands for control channels (P25,
@@ -290,6 +300,8 @@ settings (`suggest`) and how long it took.
 | `--no-gain` | | Don't search for the best gain |
 | `--ppm n` | 0 | Frequency correction while scanning |
 | `--seconds n` | 30 | How long to listen to the best control channel |
+| `--identify lat,lon[,km]` | | Then look up the FCC licenses within `km` (50) of there for what was heard, from trunkrecorder.pro: a last JSON line, `{"licenses": [...]}` |
+| `--api URL` | https://trunkrecorder.pro | The API `--identify` asks |
 | `--rate Hz` | 2400000 | Sample rate |
 | `<capture>` `--center` `--format` | | Look at a capture instead of scanning with a dongle. An unknown `--format` is refused |
 
@@ -436,14 +448,16 @@ Replay it with a different key and it's noise.
 ```bash
 trunk-pro tool snr <capture.cu8> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet|p2
                    [--seconds N] [--snr 40,20,16,14,12,10,8,6] [--variant base,…] [--cutoff Hz]
-                   [--trials 1] [--nac --sysid --wacn]
+                   [--trials 1] [--nac --sysid --wacn] [--repeat]
 ```
 
 Takes one strong channel from a capture and decodes it again and again with noise added at each
 SNR, counting how much of what the clean run decoded still comes through. It's how receiver
 changes are compared. `--kind p2` needs `--nac`, `--sysid` and `--wacn` (hex). `--quality`
 (with `--kind p2`) reports a real channel as it is, and `--separation` the C4FM receiver's level
-separation at each SNR.
+separation at each SNR. `--repeat` (with `--kind p25`) scores the vocoder's frame-repeat rules,
+on soft- and hard-decision error counts: wrong frames played, good frames repeated, and how far
+the audio is from the clean run's.
 
 ### tool revoice
 
@@ -454,7 +468,7 @@ trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile enhan
 
 Runs a call's saved vocoder frames through the vocoder again, for example to hear it with another
 vocoder. The frames are saved when **Save vocoder frames** is on in Setup → Recording (or with
-`replay --capture-frames`). `--hard-fec` uses the standard's repeat thresholds; `--s16` writes raw
+`replay --capture-frames`). `--hard-fec` uses the standard's repeat rule; `--s16` writes raw
 16-bit samples instead of a WAV.
 
 ### tool sdr
@@ -507,12 +521,40 @@ trunk-pro plugin install openmhz
 trunk-pro plugin run openmhz ~/TrunkRecorderPro/dcfd --limit 3
 ```
 
+## interface
+
+```bash
+trunk-pro interface search | install | update | add | uninstall | list …
+```
+
+Interfaces besides the built-in one, each served on a port of its own (see
+[Interfaces](interfaces/README.md)). Installed ones are kept beside the config, in `interfaces/`;
+each is listed in the config's `server.interfaces`. Every subcommand takes `--config file.json`. A
+running recorder picks up what these write when it restarts; its Interfaces page does the same
+at once.
+
+| Subcommand | What it does |
+|---|---|
+| `interface search [text]` | The interfaces in the store (github.com/TrunkRecorder/interfaces), or those whose id, name or description contains `text`; which you have, whether an update is out, and which ask for control. |
+| `interface install <id \| owner/repo> [--tag v1.2.0] [--port n]` | Install an interface from the store, or from a GitHub repository's release (its latest, or `--tag`). It's served on the first free port, or `--port`. One from outside the store gets listen access whatever it asks for. |
+| `interface update [id…]` | Install newer versions of installed interfaces (all, or these). |
+| `interface add <folder> [--port n]` | Serve a folder of your own. Its `interface.json`, if any, gives its id and the access it gets; otherwise the folder's name is its id. |
+| `interface uninstall <id>` | Stop serving it and forget it. An installed copy is deleted; a folder of your own is left alone. |
+| `interface list` | Every interface: its port, access, address or why it isn't served, and its folder. |
+
+```bash
+trunk-pro interface search player
+trunk-pro interface install trunkamp
+trunk-pro interface add ~/wall-display --port 8090
+```
+
 ## Environment variables
 
 | Variable | What it does |
 |---|---|
 | `TRUNK_PRO_UHD` | The UHD library file to load for USRPs, instead of searching for it |
 | `TRUNK_PRO_AIRSPY` | The libairspy library file to load, instead of searching |
+| `TRUNK_PRO_BLADERF` | The libbladeRF library file to load, instead of searching |
 | `TRUNK_PRO_SOAPY` | The SoapySDR library file to load, instead of searching |
 | `NO_COLOR` | When set (and `log.color` is empty), the log isn't coloured |
 | `XDG_CONFIG_HOME` | Linux: where the default config folder goes (`$XDG_CONFIG_HOME/trunk-pro`) |

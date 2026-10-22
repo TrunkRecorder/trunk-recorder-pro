@@ -14,12 +14,26 @@
   --bad: #ff6b6b;
   --rec: #ff5a5f;
   --trace: #6cd4ff;
-  --sys-0: #3fb6ff;
-  --sys-1: #f2b84b;
-  --sys-2: #c792ea;
-  --sys-3: #3fcf8e;
-  --sys-4: #ff8f6b;
-  --sys-5: #7fdbca;
+  /* The categorical colours, for what's told apart by colour: systems
+     (--sys-*, config.ts systemColor) and chart series (--series-*). Cool hues
+     only — blue, teal, violet, magenta — because green, amber, orange and red
+     are the status colours (--ok, --warn, --serious, --bad): nothing else
+     wears them, so a colour that looks like a warning is one. Validated with
+     the dataviz checks on both themes' panels: every pair apart for normal
+     vision, neighbours apart under colour blindness, none near a status
+     colour. A system's mark is square, a status light round. */
+  --cat-1: #3fb6ff;
+  --cat-2: #5358ee;
+  --cat-3: #017e9a;
+  --cat-4: #ebaafa;
+  --cat-5: #b8338a;
+  --cat-6: #c065f9;
+  --sys-0: var(--cat-1);
+  --sys-1: var(--cat-2);
+  --sys-2: var(--cat-3);
+  --sys-3: var(--cat-4);
+  --sys-4: var(--cat-5);
+  --sys-5: var(--cat-6);
   --radius: 8px;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
@@ -39,12 +53,12 @@
     --bad: #d64545;
     --rec: #d63a3f;
     --trace: #0a7bd6;
-    --sys-0: #0a7bd6;
-    --sys-1: #b7791f;
-    --sys-2: #8b5cc4;
-    --sys-3: #16965c;
-    --sys-4: #d0582f;
-    --sys-5: #1a8f86;
+    --cat-1: #0a7bd6;
+    --cat-2: #4f38d9;
+    --cat-3: #05568b;
+    --cat-4: #9e87e0;
+    --cat-5: #ac30c5;
+    --cat-6: #753479;
     color-scheme: light;
   }
 }
@@ -137,6 +151,7 @@ main { display: flex; flex-direction: column; gap: 16px; }
 table.channels input:not([type="checkbox"]), table.channels select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 7px; min-width: 0; width: 100%; }
 table.channels input.narrow { width: 7em; }
 table.channels td { padding: 4px 6px; }
+table.channels .access-input { display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
 table.channels input.invalid { border-color: var(--bad); }
 table.channels tr.shared-freq td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 table.channels .row-actions { display: inline-flex; gap: 4px; white-space: nowrap; }
@@ -254,6 +269,8 @@ td.unit-cell .unit, .now-playing .unit {
 .check b { font-weight: 600; margin-right: 4px; }
 
 /* several systems */
+.sys-tag { display: inline-flex; align-items: center; }
+.sys-tag .light { margin-left: 6px; }
 .sys-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; vertical-align: baseline; margin-right: 6px; }
 .system-card { border: 1px solid var(--line); border-left: 3px solid var(--sys-color, var(--line)); border-radius: var(--radius); padding: 10px 12px; background: var(--panel-2); display: flex; flex-direction: column; gap: 10px; }
 .system-card.off { opacity: 0.65; }
@@ -797,6 +814,12 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .rule-group + .rule-group { border-top: 1px solid var(--line); padding-top: 12px; }
 .help.override { margin-top: 10px; }
 .help.override > .grid3 { margin-top: 8px; }
+/* Plugin delays (Delays.tsx): rules as a small table, then what they come to. */
+.help.override > .table-wrap { margin: 8px 0; }
+.setup table.channels.delays td:first-child input { min-width: 150px; }
+.delay-effect { margin-top: 10px; }
+.delay-effect ul { margin: 4px 0 0; padding-left: 18px; color: var(--text); }
+.plugin-delay .field input { max-width: 8em; }
 .field select.overridden, .field input.overridden { border-color: var(--accent); }
 .field input.narrow { width: 6em; }
 .field input.invalid { border-color: var(--bad); }
@@ -807,14 +830,14 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .panel.off { opacity: 0.65; }
 
 /* ══ The dashboard ═══════════════════════════════════════════════════════════
-   Data colours: a validated categorical order (--series-1…8, dataviz
-   reference palette, re-checked on these surfaces), one-hue ramps for
+   Data colours: the categorical order (--series-1…6, the --cat-* colours
+   systems wear too, clear of the status colours), one-hue ramps for
    magnitude (--seq-*: activity, blue) and trouble (--hot-*: orange → red),
    and the status colours (--ok / --warn / --bad, plus --serious). Marks
    wear them; text never does. */
 :root {
-  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
-  --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+  --series-1: var(--cat-1); --series-2: var(--cat-2); --series-3: var(--cat-3);
+  --series-4: var(--cat-4); --series-5: var(--cat-5); --series-6: var(--cat-6);
   --good: var(--ok); --critical: var(--bad); --serious: #ec835a; --muted-mark: #5b6676;
   --seq-0: #1d2532; --seq-1: #104281; --seq-2: #1c5cab; --seq-3: #2a78d6; --seq-4: #5598e7; --seq-5: #9ec5f4;
   --hot-0: #1d2532; --hot-1: #4a2a1a; --hot-2: #7a3418; --hot-3: #b8481f; --hot-4: #e8693a; --hot-5: #f59a72;
@@ -825,8 +848,6 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 }
 @media (prefers-color-scheme: light) {
   :root {
-    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
-    --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
     --muted-mark: #b4bcc8;
     --seq-0: #eef1f5; --seq-1: #cde2fb; --seq-2: #9ec5f4; --seq-3: #5598e7; --seq-4: #2a78d6; --seq-5: #184f95;
     --hot-0: #eef1f5; --hot-1: #fde3d6; --hot-2: #f6b394; --hot-3: #ec835a; --hot-4: #d95926; --hot-5: #a8360f;
@@ -899,7 +920,7 @@ h2.big { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: 
 .badge-kind { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
 .badge.new { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
 .badge.unknown { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
-.badge.enc { background: color-mix(in srgb, var(--series-7) 25%, transparent); color: var(--text); }
+.badge.enc { background: color-mix(in srgb, var(--series-6) 25%, transparent); color: var(--text); }
 .badge.ign { background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
 .btn.on { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 
@@ -996,6 +1017,8 @@ h2.big { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: 
 .card-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-title h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .card .why { margin: 0; }
+.card-opens { cursor: pointer; }
+.card-opens:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .card-more { align-self: flex-start; background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font-size: 12.5px; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--gap); align-items: start; }
 .card-grid.wide { grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); }
@@ -1028,6 +1051,9 @@ h2.big { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: 
 .barlist li { display: grid; grid-template-columns: minmax(90px, 160px) minmax(0, 1fr) 40px; gap: 10px; align-items: center; font-size: 13px; }
 .barlist .bar { height: 8px; border-radius: 0 4px 4px 0; background: var(--series-1); min-width: 2px; }
 .barlist b { text-align: right; }
+.barlist li.opens { cursor: pointer; border-radius: 4px; }
+.barlist li.opens:hover { background: var(--panel-2); }
+.barlist li.opens:hover .linkish { color: var(--accent); }
 .timeline li { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; font-size: 13px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
 .timeline { max-height: 260px; overflow-y: auto; }
 .stackbar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; gap: 2px; }
@@ -1217,6 +1243,10 @@ table.calls tr.ignored td { opacity: 0.55; }
 .listen-more { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 10px; }
 
 .tg-chips { margin: 10px 0; }
+/* A system of several sites: a row each under its control channel figure. */
+.site-rows { display: grid; gap: 3px; margin-top: 8px; }
+.site-row { display: grid; grid-template-columns: auto auto auto 1fr; gap: 8px; align-items: center; }
+.site-row .mono.muted { justify-self: end; }
 .tg-chips h2 { margin-bottom: 6px; }
 .chip3.on { border-color: var(--accent); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 .chip3.some { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); border-style: dashed; }
@@ -1255,3 +1285,78 @@ table.calls tr.ignored td { opacity: 0.55; }
 .setup .system-card.set-card.collapsed:hover { border-left-color: var(--sys-color, var(--line)); }
 @media (prefers-reduced-motion: reduce) { .set-card-chevron { transition: none; } }
 @container (max-width: 760px) { .set-card-head.foldable { padding: 0 18px 0 0; } .set-card-toggle { padding: 14px 0 14px 12px; } }
+
+/* A system's sites (Setup's SiteCard): smaller cards inside its Sites group. */
+.sites-list { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.setup .site-card.set-card { border-radius: 10px; background: var(--panel-2); }
+.site-card .set-card-head.foldable { padding: 0 14px 0 0; }
+.site-card .set-card-toggle { padding: 10px 0 10px 12px; border-radius: 9px 0 0 9px; }
+.site-card .set-card-title h3 { font-size: var(--fs-group); }
+.site-card .set-card-sub { font-size: 12.5px; }
+.site-body { padding: 16px 18px 18px; }
+.set-card-needs .same-system { margin: 0; }
+.set-card-needs .same-system + .same-system { margin-top: 8px; }
+
+/* Interfaces (Interfaces.tsx): the ports table and a card's access menu. */
+.iface-ports { display: flex; flex-direction: column; border-top: 1px solid var(--line); margin-bottom: 10px; }
+.iface-ports-row { display: grid; grid-template-columns: minmax(140px, 1fr) auto minmax(0, 1.4fr); gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.iface-ports-row a { color: var(--accent); overflow-wrap: anywhere; }
+.iface-port { display: inline-flex; align-items: center; gap: 8px; }
+.iface-port input { width: 7ch; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; font-family: var(--mono); color: inherit; }
+.iface-port input[aria-invalid="true"] { border-color: var(--bad); }
+.iface-access { display: inline-flex; align-items: center; gap: 6px; }
+@media (max-width: 640px) { .iface-ports-row { grid-template-columns: 1fr auto; } .iface-ports-row > :last-child { grid-column: 1 / -1; } }
+
+/* Store cards: screenshots (StoreParts.tsx). */
+.shots { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 4px; }
+.shot { flex: none; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); cursor: zoom-in; overflow: hidden; }
+.shot img { display: block; height: 120px; width: auto; max-width: 240px; object-fit: cover; }
+.shot:hover, .shot:focus-visible { border-color: var(--accent); }
+.shot-view { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; background: color-mix(in srgb, var(--bg) 85%, transparent); }
+.shot-view figure { margin: 0; max-width: min(1200px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+.shot-view img { max-width: 100%; max-height: calc(100vh - 120px); object-fit: contain; border-radius: 6px; }
+.shot-view figcaption { gap: 8px; }
+
+/* A conventional call's talkgroup as the air named it, beside the number it is filed under. */
+.air-tg { color: var(--muted); font-family: ui-monospace, monospace; white-space: nowrap; }
+
+/* Conventional channels: what a row records, as chips coloured by kind (as the archive path's tokens are), and what it files under. */
+.match-line { display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 3px; padding: 2px 4px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.match-line:hover:not(:disabled), .match-line.open { border-color: var(--line); background: var(--bg); }
+.match-line:disabled { cursor: default; }
+.match-chip { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 6px; border: 1px solid transparent; font-size: 12px; line-height: 18px; white-space: nowrap; font-family: ui-monospace, monospace; color: var(--text); }
+.match-chip.k-tone { background: color-mix(in srgb, #a371f7 20%, transparent); }
+.match-chip.k-code { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.match-chip.k-slot { background: color-mix(in srgb, var(--warn) 20%, transparent); }
+.match-chip.k-tg { background: color-mix(in srgb, var(--ok) 20%, transparent); }
+.match-chip.k-any { border: 1px dashed var(--line); color: var(--muted); font-family: inherit; }
+.match-chip.k-out { border-color: var(--line); font-weight: 600; }
+.match-chip.k-out.auto { font-weight: 400; font-style: italic; color: var(--muted); }
+.match-chip.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); border-color: var(--bad); }
+.match-arrow { color: var(--muted); padding: 0 2px; }
+.match-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 4px 0 8px; }
+.match-legend .match-chip { font-family: inherit; }
+table.channels tr.rule-edit td { padding-top: 0; padding-bottom: 8px; }
+table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white-space: normal; }
+.rule-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* A channel row's editor: what it records, and its names. */
+.row-editor { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; }
+.row-editor fieldset { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin: 0; padding: 4px 10px 8px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.row-editor legend { padding: 0 4px; font-size: 12px; color: var(--muted); }
+.row-editor .access-input > * { flex: none; }
+.row-editor .access-input > select { width: auto; }
+.row-editor .row-name { display: flex; flex-direction: column; gap: 2px; }
+.row-editor .row-name input { width: 15ch; }
+.row-editor .row-name:first-child input { width: 22ch; }
+/* Under a row's name: its tag and category, opening its editor. */
+.row-meta { display: block; max-width: 24ch; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.row-meta:hover { color: var(--text); text-decoration: underline; }
+.csv-help .csv-example { overflow-x: auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.csv-help table.csv-columns { border-collapse: collapse; margin: 6px 0; }
+.csv-help table.csv-columns th, .csv-help table.csv-columns td { text-align: left; vertical-align: top; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); }
+
+/* A dialog over the page (Identify surveyed sites). */
+.modal-back { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; background: color-mix(in srgb, var(--bg) 85%, transparent); }
+.modal { width: min(520px, 100%); max-height: 100%; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.modal h3 { margin: 0; }
+.license details summary { cursor: pointer; }

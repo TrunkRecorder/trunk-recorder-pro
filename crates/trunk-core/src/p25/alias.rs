@@ -13,6 +13,7 @@
 //!   talking.
 //! - Harris, Phase 2: MAC message 0xA8, MFID 0xA4, plain ASCII.
 
+use super::mac::MacMsg;
 use crate::alias::Alias;
 use crate::bits::crc_ccitt_bytes;
 
@@ -87,9 +88,10 @@ pub enum AliasLc {
     MacFragment,
 }
 
-/// A link control word that is part of a talker alias (Motorola or Harris).
+/// A link control word that is part of a talker alias (Motorola or Harris):
+/// a manufacturer's, so its MFID is explicit (SF clear, AABF-D §7.2).
 pub fn is_alias_lcw(w: &[u8; 9]) -> bool {
-    matches!((w[0] & 0x3f, w[1]), (0x15 | 0x17, MOTOROLA) | (0x32..=0x35, HARRIS))
+    w[0] & 0x40 == 0 && matches!((w[0] & 0x3f, w[1]), (0x15 | 0x17, MOTOROLA) | (0x32..=0x35, HARRIS))
 }
 
 /// A MAC message that is part of a talker alias (Motorola or Harris).
@@ -158,63 +160,6 @@ impl LcAliases {
 
 // ── Phase 2: MAC messages ────────────────────────────────────────────────────
 
-/// Length of each MAC message by opcode, when the opcode alone says
-/// (op25 p25p2_tdma.cc mac_msg_len).
-#[rustfmt::skip]
-const MAC_MSG_LEN: [u8; 256] = [
-     0,  7,  8,  7,  0, 16,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-     0, 14, 15,  0,  0, 15,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-     5,  7,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-     9,  7,  9,  0,  9,  8,  9,  0, 10, 10,  9,  0, 10,  0,  0,  0,
-     0,  0,  0,  0,  9,  7,  0,  0, 10,  0,  7,  0, 10,  8, 14,  7,
-     9,  9,  0,  0,  9,  0,  0,  9, 10,  0,  7, 10, 10,  7,  0,  9,
-     9, 29,  9,  9,  9,  9, 10, 13,  9,  9,  9, 11,  9,  9,  0,  0,
-     8,  0,  0,  7, 11,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-    16,  0,  0, 11, 13, 11, 11, 11, 10,  0,  0,  0,  0,  0,  0,  0,
-     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-    11,  0,  0,  8, 15, 12, 15, 32, 12, 12,  0, 27, 14, 29, 29, 32,
-     0,  0,  0,  0,  0,  0,  9,  0, 14, 29, 11, 27, 14,  0, 40, 11,
-    28,  0,  0, 14, 17, 14,  0,  0, 16,  8, 11,  0, 13, 19,  0,  0,
-     0,  0, 16, 14,  0,  0, 12,  0, 22,  0, 11, 13, 11,  0, 15,  0,
-];
-
-/// One MAC message: opcode, MFID (manufacturer-specific messages only; else 0), bytes.
-pub struct MacMsg<'a> {
-    pub op: u8,
-    pub mfid: u8,
-    pub bytes: &'a [u8],
-}
-
-/// The messages in a MAC PDU's payload (op25 decode_mac_msg): from byte 1,
-/// each message's length from its opcode, its length field, or the table;
-/// an unknown length ends the walk.
-pub fn mac_messages(pdu: &[u8]) -> Vec<MacMsg<'_>> {
-    let mut out = Vec::new();
-    let mut p = 1;
-    while p < pdu.len() {
-        let op = pdu[p];
-        let at = |i: usize| pdu.get(p + i).copied().unwrap_or(0) as usize;
-        let (mfid, len) = match op {
-            0x00 => (0, pdu.len() - p),
-            0x08 => (0, at(1) & 0x3f),
-            0x11 => (0, ((at(1) & 3) + 1) * 2 + 2),
-            0x12 => (0, ((at(1) & 3) + 1) * 3 + 2),
-            // Motorola's abbreviated supergroup voice channel user has no length octet.
-            0x80 if at(1) == MOTOROLA as usize => (MOTOROLA, 8),
-            _ if op >> 6 == 2 => (at(1) as u8, at(2) & 0x3f),
-            _ => (0, MAC_MSG_LEN[op as usize] as usize),
-        };
-        if len == 0 {
-            break;
-        }
-        out.push(MacMsg { op, mfid, bytes: &pdu[p..(p + len).min(pdu.len())] });
-        p += len;
-    }
-    out
-}
-
 /// Collects alias fragments from one TDMA slot's MAC messages.
 #[derive(Default)]
 pub struct MacAliases {
@@ -257,21 +202,6 @@ impl MacAliases {
             p.push_str(&hex(b.as_ref()?.get(4..17)?)[1..]);
         }
         decode_motorola(&p, 12, "MotoP25_TDMA")
-    }
-}
-
-/// A unit a MAC message names as talking: Group Voice Channel User,
-/// abbreviated (0x01) or extended (0x21), or Motorola's for a supergroup
-/// (0x80, 0xA0; op25 and SDRTrunk agree on the layouts).
-pub fn mac_talker(m: &MacMsg) -> Option<u32> {
-    let b = m.bytes;
-    let u24 = |i: usize| Some((*b.get(i)? as u32) << 16 | (*b.get(i + 1)? as u32) << 8 | *b.get(i + 2)? as u32);
-    match (m.op, m.mfid) {
-        (0x01, 0) => u24(4),
-        (0x21, 0) => u24(11),
-        (0x80, MOTOROLA) => u24(5),
-        (0xa0, MOTOROLA) => u24(6),
-        _ => None,
     }
 }
 
@@ -454,7 +384,7 @@ mod tests {
         assert!(a.lcw(&pb, None, None).is_none());
 
         let pdu = [0x80, 0xa8, HARRIS, 11, b'D', b'I', b'S', b'P', b'A', b'T', b'C', b'H', 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
-        let msgs = mac_messages(&pdu);
+        let msgs = crate::p25::mac::messages(&pdu);
         assert_eq!((msgs[0].op, msgs[0].mfid, msgs[0].bytes.len()), (0xa8, HARRIS, 11));
         let mut m = MacAliases::default();
         assert_eq!(m.msg(&msgs[0], Some(5), None).map(|x| (x.unit, x.alias)), Some((5, "DISPATCH".into())));
@@ -466,11 +396,11 @@ mod tests {
         // supergroup 0x0204, source 0x123456; then an extended one from 0x0a0b0c.
         let mut pdu = vec![0x00, 0x80, MOTOROLA, 0x00, 0x02, 0x04, 0x12, 0x34, 0x56];
         pdu.extend([0xa0, MOTOROLA, 16, 0x00, 0x02, 0x04, 0x0a, 0x0b, 0x0c, 0, 0, 0, 0, 0, 0, 0]);
-        let msgs = mac_messages(&pdu);
+        let msgs = crate::p25::mac::messages(&pdu);
         assert_eq!(msgs.iter().map(|m| (m.op, m.bytes.len())).collect::<Vec<_>>(), [(0x80, 8), (0xa0, 16)]);
-        assert_eq!(msgs.iter().map(mac_talker).collect::<Vec<_>>(), [Some(0x123456), Some(0x0a0b0c)]);
+        assert_eq!(msgs.iter().map(MacMsg::talker).collect::<Vec<_>>(), [Some(0x123456), Some(0x0a0b0c)]);
         // The same opcode from another manufacturer names nobody.
-        assert_eq!(mac_talker(&MacMsg { op: 0x80, mfid: HARRIS, bytes: &pdu[1..9] }), None);
+        assert_eq!(MacMsg { op: 0x80, mfid: HARRIS, bytes: &pdu[1..9] }.talker(), None);
     }
 
     #[test]
@@ -489,10 +419,10 @@ mod tests {
 
     #[test]
     fn mac_walk_and_talker() {
-        // Group Voice Channel User (abbreviated): grp 0x1234, src 0x0a0b0c; then null.
+        // Group Voice Channel User (abbreviated): grp 0x1234, src 0x0a0b0c; then null, which ends it.
         let pdu = [0x80, 0x01, 0x00, 0x12, 0x34, 0x0a, 0x0b, 0x0c, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let msgs = mac_messages(&pdu);
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(mac_talker(&msgs[0]), Some(0x0a0b0c));
+        let msgs = crate::p25::mac::messages(&pdu);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].talker(), Some(0x0a0b0c));
     }
 }

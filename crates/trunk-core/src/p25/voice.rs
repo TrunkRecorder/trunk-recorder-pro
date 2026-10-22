@@ -7,10 +7,11 @@
 //! indexes that layout.
 
 use super::fec::{
-    golay23_decode, golay23_decode_soft, golay23_encode, golay24_decode, hamming1063_decode, hamming15_decode, hamming15_decode_soft, hamming15_encode,
-    rs_decode, Fec,
+    golay18_codewords, golay23_decode, golay23_decode_soft, golay23_encode, golay24_codewords, golay24_decode, hamming1063_codewords,
+    hamming1063_decode, hamming15_decode, hamming15_decode_soft, hamming15_encode, ml_decode, rs_decode_erasures, rs_decode_gmd, Fec,
 };
 use super::frame::Frame;
+use super::lc::{self, LinkControl};
 use crate::tables::{HDU_CODEWORD_BITS, LDU_LS_DATA_BITS, VOICE_CODEWORD_BITS};
 
 pub use super::crypt::ALGID_CLEAR;
@@ -37,8 +38,10 @@ pub struct ImbeParams {
 fn extract(cw: &[u8], begin: usize, end: usize) -> u32 {
     cw[begin..end].iter().fold(0, |v, &b| (v << 1) | (b & 1) as u32)
 }
+/// The IMBE whitening generator: the next `nbits` bits, from state `pr`
+/// (ProVoice whitens with it too).
 #[inline]
-fn pngen(pr: &mut u32, nbits: u32) -> u32 {
+pub(crate) fn pngen(pr: &mut u32, nbits: u32) -> u32 {
     let mut n = 0;
     for i in (0..nbits).rev() {
         *pr = (173 * *pr + 13849) & 0xffff;
@@ -169,33 +172,24 @@ pub fn ldu_imbe(fr: &Frame, soft: bool) -> [ImbeParams; 9] {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LinkControl {
-    pub lco: u8,
-    /// The manufacturer: 0 for the standard's words (the SF bit set, or MFID 0 or 1).
-    pub mfid: u8,
-    pub protected: bool,
-    pub svc_opts: Option<u8>,
-    pub tgid: Option<u32>,
-    pub target: Option<u32>,
-    pub source: Option<u32>,
-    /// The word itself (manufacturer-specific formats: talker aliases).
-    pub raw: [u8; 9],
-}
-
-impl LinkControl {
-    /// A voice channel user word, naming the call's group (or target) and
-    /// talker: group (0x00) or unit-to-unit (0x03), or Motorola's
-    /// supergroup one (0x00, the patch's supergroup in place of the group).
-    pub fn voice_user(&self) -> bool {
-        matches!((self.mfid, self.lco), (0, 0x00 | 0x03) | (0x90, 0x00))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EncryptionSync {
     pub algid: u8,
     pub keyid: u16,
     pub mi: [u8; 9],
+}
+
+impl EncryptionSync {
+    /// Whether it can be what was sent; if not, the RS decoder corrected to
+    /// the wrong word. Clear voice's MI is null (AAAD-B Table 5-1);
+    /// encrypted voice's never is (BAAC-C §2.6, AAAD-B §3.1), and is the
+    /// LFSR's 64 bits with 8 zeros after them (AAAD-B §5.2).
+    pub fn plausible(&self) -> bool {
+        if self.algid == ALGID_CLEAR {
+            self.mi == [0; 9]
+        } else {
+            self.mi[..8] != [0; 8] && self.mi[8] == 0
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -242,86 +236,110 @@ pub(crate) fn bytes_to_hexbits(bytes: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-fn ldu_hexbits(fb: &[u8]) -> [u8; 63] {
+/// Parity symbols the soft RS decoders keep spare on a try with erasures
+/// (see [`rs_decode_gmd`]), so a word too damaged to decode is refused
+/// rather than rewritten to the nearest codeword. LC has no other check
+/// behind it.
+const LC_SPARE: usize = 4;
+const ES_SPARE: usize = 4;
+const HDU_SPARE: usize = 6;
+
+/// A small code's word read from frame-body bits `at` (MSB first) and,
+/// when soft, their reliabilities.
+fn word(f: &Frame, at: &[u16], soft: bool) -> (u32, Option<Vec<f32>>) {
+    let cw = at.iter().fold(0, |cw, &k| (cw << 1) | bit(&f.raw, k as usize));
+    let w = (soft && !f.raw_soft.is_empty()).then(|| at.iter().map(|&k| f.raw_soft.get(k as usize).copied().unwrap_or(0.0)).collect());
+    (cw, w)
+}
+
+/// An LDU's 24 Hamming(10,6) hexbits (from 39, as RS(63,·) shortened), the
+/// erasures (hard: words with more errors than the code corrects) and each
+/// hexbit's reliability (soft: maximum likelihood's margin).
+fn ldu_hexbits(f: &Frame, soft: bool) -> ([u8; 63], Vec<usize>, Option<[f32; 63]>) {
     let mut hb = [0u8; 63];
-    let mut k = 0;
+    let mut rel = [f32::INFINITY; 63];
+    let mut erasures = Vec::new();
+    let mut is_soft = false;
     for i in 0..24 {
-        let mut cw = 0u32;
-        for _ in 0..10 {
-            cw = (cw << 1) | bit(fb, LDU_LS_DATA_BITS[k] as usize);
-            k += 1;
+        let (cw, w) = word(f, &LDU_LS_DATA_BITS[10 * i..10 * i + 10], soft);
+        if let Some(w) = w {
+            let r = ml_decode(cw, &w, 10, hamming1063_codewords());
+            hb[39 + i] = r.data as u8;
+            rel[39 + i] = r.margin;
+            is_soft = true;
+            continue;
         }
-        hb[39 + i] = hamming1063_decode(cw >> 4, cw & 0x0f);
+        match hamming1063_decode(cw >> 4, cw & 0x0f) {
+            Some(h) => hb[39 + i] = h,
+            None => {
+                hb[39 + i] = (cw >> 4) as u8;
+                erasures.push(39 + i);
+            }
+        }
     }
-    hb
+    (hb, erasures, is_soft.then_some(rel))
 }
 
-pub fn parse_lcw(w: &[u8; 9]) -> LinkControl {
-    // SF set: the standard's format, octet 1 no MFID. Otherwise octet 1 names
-    // the manufacturer, whose opcodes mean something else.
-    let mfid = if w[0] & 0x40 != 0 || w[1] <= 1 { 0 } else { w[1] };
-    let mut lc = LinkControl { lco: w[0] & 0x3f, mfid, protected: w[0] & 0x80 != 0, raw: *w, ..Default::default() };
-    if lc.protected || !lc.voice_user() {
-        return lc;
+/// RS errors-and-erasures (hard: the words found too damaged erased), or
+/// GMD when there are reliabilities.
+fn rs(hb: &mut [u8; 63], nroots: usize, erasures: &[usize], first: usize, rel: Option<[f32; 63]>, spare: usize) -> bool {
+    match rel {
+        Some(rel) => rs_decode_gmd(hb, nroots, first, &rel, spare) >= 0,
+        None => rs_decode_erasures(hb, nroots, erasures, first) >= 0,
     }
-    let u24 = |a: usize| ((w[a] as u32) << 16) | ((w[a + 1] as u32) << 8) | w[a + 2] as u32;
-    match lc.lco {
-        0x00 => {
-            lc.svc_opts = Some(w[2]);
-            lc.tgid = Some(((w[4] as u32) << 8) | w[5] as u32);
-            lc.source = Some(u24(6));
-        }
-        0x03 => {
-            lc.svc_opts = Some(w[2]);
-            lc.target = Some(u24(3));
-            lc.source = Some(u24(6));
-        }
-        _ => {}
-    }
-    lc
 }
 
-/// LDU1 link control: RS(24,12,13), ≤ 6 corrections.
-pub fn decode_ldu1_lc(fb: &[u8]) -> Option<LinkControl> {
-    let mut hb = ldu_hexbits(fb);
-    let ec = rs_decode(&mut hb, 12, 39);
-    (0..=6).contains(&ec).then(|| parse_lcw(&hexbits_to_bytes(&hb, 39)))
+/// LDU1 link control: RS(24,12,13). `soft`: from the frame's bit
+/// reliabilities, when it has them.
+pub fn decode_ldu1_lc(f: &Frame, soft: bool) -> Option<LinkControl> {
+    let (mut hb, erasures, rel) = ldu_hexbits(f, soft);
+    rs(&mut hb, 12, &erasures, 39, rel, LC_SPARE).then(|| lc::parse(&hexbits_to_bytes(&hb, 39)))
 }
 
-/// LDU2 encryption sync: RS(24,16,9), ≤ 4 corrections.
-pub fn decode_ldu2_es(fb: &[u8]) -> Option<EncryptionSync> {
-    let mut hb = ldu_hexbits(fb);
-    let ec = rs_decode(&mut hb, 8, 39);
-    if !(0..=4).contains(&ec) {
+/// LDU2 encryption sync: RS(24,16,9).
+pub fn decode_ldu2_es(f: &Frame, soft: bool) -> Option<EncryptionSync> {
+    let (mut hb, erasures, rel) = ldu_hexbits(f, soft);
+    if !rs(&mut hb, 8, &erasures, 39, rel, ES_SPARE) {
         return None;
     }
     let j = 51;
-    Some(EncryptionSync {
+    let es = EncryptionSync {
         mi: hexbits_to_bytes(&hb, 39),
         algid: ((hb[j] << 2) | (hb[j + 1] >> 4)) as u8,
         keyid: (((hb[j + 1] & 0x0f) as u16) << 12) | ((hb[j + 2] as u16) << 6) | hb[j + 3] as u16,
-    })
+    };
+    es.plausible().then_some(es)
 }
 
-/// HDU: 36 Golay(18,6) hexbits → RS(36,20,17), ≤ 8 corrections.
-pub fn decode_hdu(fb: &[u8]) -> Option<HduInfo> {
+/// HDU: 36 Golay(18,6) hexbits → RS(36,20,17). The (18,6) code is the
+/// (24,12) with its first six bits deleted (BAAA-A §5.7): hard, a
+/// correction there means the word was too damaged, an erasure.
+pub fn decode_hdu(f: &Frame, soft: bool) -> Option<HduInfo> {
     let mut hb = [0u8; 63];
-    let mut k = 0;
+    let mut rel = [f32::INFINITY; 63];
+    let mut erasures = Vec::new();
+    let mut is_soft = false;
     for i in 0..36 {
-        let mut cw = 0u32;
-        for _ in 0..18 {
-            cw = (cw << 1) | bit(fb, HDU_CODEWORD_BITS[k] as usize);
-            k += 1;
+        let (cw, w) = word(f, &HDU_CODEWORD_BITS[18 * i..18 * i + 18], soft);
+        if let Some(w) = w {
+            let r = ml_decode(cw, &w, 18, golay18_codewords());
+            hb[27 + i] = r.data as u8;
+            rel[27 + i] = r.margin;
+            is_soft = true;
+            continue;
         }
-        hb[27 + i] = (golay24_decode(cw).data & 63) as u8;
+        let r = golay24_decode(cw);
+        hb[27 + i] = (r.data & 63) as u8;
+        if r.errs < 0 || r.data >> 6 != 0 {
+            erasures.push(27 + i);
+        }
     }
-    let ec = rs_decode(&mut hb, 16, 27);
-    if !(0..=8).contains(&ec) {
+    if !rs(&mut hb, 16, &erasures, 27, is_soft.then_some(rel), HDU_SPARE) {
         return None;
     }
     let j = 39;
     let h = |i: usize| hb[j + i] as u16;
-    Some(HduInfo {
+    let hdu = HduInfo {
         es: EncryptionSync {
             mi: hexbits_to_bytes(&hb, 27),
             algid: (((h(1) & 0x0f) << 4) | (h(2) >> 2)) as u8,
@@ -329,45 +347,48 @@ pub fn decode_hdu(fb: &[u8]) -> Option<HduInfo> {
         },
         mfid: ((h(0) << 2) | (h(1) >> 4)) as u8,
         tgid: ((h(5) & 0x0f) << 12) | (h(6) << 6) | h(7),
-    })
+    };
+    hdu.es.plausible().then_some(hdu)
 }
 
-/// TDULC: 12 Golay(24,12) words → link control.
-pub fn decode_tdulc(fb: &[u8]) -> Option<LinkControl> {
+/// TDULC: 12 Golay(24,12) words, two hexbits each (hard: a word it can't
+/// correct, both erasures) → RS(24,12,13) → link control.
+pub fn decode_tdulc(f: &Frame, soft: bool) -> Option<LinkControl> {
     let mut hb = [0u8; 63];
-    let mut k = 0;
+    let mut rel = [f32::INFINITY; 63];
+    let mut erasures = Vec::new();
+    let mut is_soft = false;
     for i in (0..=22).step_by(2) {
-        let mut cw = 0u32;
-        for _ in 0..24 {
-            cw = (cw << 1) | bit(fb, HDU_CODEWORD_BITS[k] as usize);
-            k += 1;
+        let (cw, w) = word(f, &HDU_CODEWORD_BITS[12 * i..12 * i + 24], soft);
+        let r = match w {
+            Some(w) => {
+                is_soft = true;
+                ml_decode(cw, &w, 24, golay24_codewords())
+            }
+            None => golay24_decode(cw),
+        };
+        hb[39 + i] = (r.data >> 6) as u8;
+        hb[40 + i] = (r.data & 63) as u8;
+        (rel[39 + i], rel[40 + i]) = (r.margin, r.margin);
+        if r.errs < 0 {
+            erasures.extend([39 + i, 40 + i]);
         }
-        let d = golay24_decode(cw).data;
-        hb[39 + i] = (d >> 6) as u8;
-        hb[40 + i] = (d & 63) as u8;
     }
-    let ec = rs_decode(&mut hb, 12, 39);
-    (0..=6).contains(&ec).then(|| parse_lcw(&hexbits_to_bytes(&hb, 39)))
+    rs(&mut hb, 12, &erasures, 39, is_soft.then_some(rel), LC_SPARE).then(|| lc::parse(&hexbits_to_bytes(&hb, 39)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// AAAD-B Table 5-1, §5.2, BAAC-C §2.6: clear's MI is null; encrypted's never is, and ends in $00.
     #[test]
-    fn a_manufacturers_link_control_is_not_the_standards() {
-        // Group voice channel user: TG 0x0101 from 0x123456.
-        let lc = parse_lcw(&[0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
-        assert!(lc.voice_user());
-        assert_eq!((lc.tgid, lc.source), (Some(0x0101), Some(0x123456)));
-        // Motorola's supergroup voice channel user: supergroup 0x0204 from 0x123456.
-        let lc = parse_lcw(&[0x00, 0x90, 0x00, 0x00, 0x02, 0x04, 0x12, 0x34, 0x56]);
-        assert_eq!((lc.tgid, lc.source), (Some(0x0204), Some(0x123456)));
-        // Motorola 0x03 (regroup add) isn't a unit-to-unit voice channel user.
-        let lc = parse_lcw(&[0x03, 0x90, 0x02, 0x04, 0x01, 0x01, 0x01, 0x02, 0x00]);
-        assert!(!lc.voice_user());
-        assert_eq!((lc.target, lc.source), (None, None));
-        // The SF bit: the standard's format, whatever octet 1 holds.
-        assert!(parse_lcw(&[0x43, 0x90, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x07]).voice_user());
+    fn an_implausible_sync_is_refused() {
+        let es = |algid: u8, mi: [u8; 9]| EncryptionSync { algid, keyid: 1, mi };
+        assert!(es(0x84, [1, 2, 3, 4, 5, 6, 7, 8, 0]).plausible());
+        assert!(!es(0x84, [0; 9]).plausible());
+        assert!(!es(0x84, [1, 2, 3, 4, 5, 6, 7, 8, 9]).plausible());
+        assert!(es(ALGID_CLEAR, [0; 9]).plausible());
+        assert!(!es(ALGID_CLEAR, [1, 2, 3, 4, 5, 6, 7, 8, 0]).plausible());
     }
 }

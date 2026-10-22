@@ -62,6 +62,7 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
 | `systemId` | ✓ | | integer | **System ID.** The system's number on Broadcastify Calls. Needed whenever the system has an API key. |
 | `talkgroupAllow` | | (all) | list | **Only these talkgroups.** Upload these and no others. |
 | `talkgroupDeny` | | (none) | list | **Not these talkgroups.** Never upload these. |
+| `sites` | | (none) | list | **Sites of their own.** A site of the system that Broadcastify Calls knows as a system of its own: `site` (its name, as under Sites in Setup), `systemId`, and `apiKey` if not the system's. Its calls go there; the other sites' to the system's. (Plugin 0.1.5 and later.) |
 
 ```json
 {
@@ -69,7 +70,7 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
   "systems": [
     {
       "shortName": "dcfd",
-      "controlChannelsHz": [857987500],
+      "sites": [{ "controlChannelsHz": [857987500] }],
       "plugins": { "broadcastify": { "apiKey": "your-broadcastify-api-key", "systemId": 1234, "talkgroupDeny": ["99*"] } }
     }
   ]

@@ -282,14 +282,14 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
 
 <main>
 <header class="hero">
-  <div class="eyebrow"><span>docs/developer</span><span>Trunk Recorder Pro</span><span>branch state: 2026-10-09</span></div>
+  <div class="eyebrow"><span>docs/developer</span><span>Trunk Recorder Pro</span><span>v0.2.0 · 2026-10-18</span></div>
   <h1>How Trunk Recorder Pro is built</h1>
   <p>A guide for developers: how samples get from an SDR to a call file, how each signal is decoded, how calls get recorders, why one slow part never stalls the rest, how plugins attach, and what the data and the config look like. Click any box in a diagram for detail. Every diagram is also written out as text beneath it.</p>
   <div class="figures">
-    <div class="fig"><span class="n">1</span><span class="l">engine thread runs all DSP and decoding</span></div>
+    <div class="fig"><span class="n">1</span><span class="l">decoding thread per source; calls followed under one lock</span></div>
     <div class="fig"><span class="n">16,384</span><span class="l">point FFT per source, shared by every channel</span></div>
     <div class="fig"><span class="n">12,288</span><span class="l">new samples per block (5.12 ms at 2.4 MSPS)</span></div>
-    <div class="fig"><span class="n">256</span><span class="l">blocks in the only queue that blocks</span></div>
+    <div class="fig"><span class="n">256</span><span class="l">blocks in each source's queue, the only kind that blocks</span></div>
     <div class="fig"><span class="n">32</span><span class="l">recorders by default (<code>maxRecorders</code>)</span></div>
   </div>
 </header>
@@ -303,23 +303,27 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <div class="tablewrap"><table>
     <thead><tr><th>Thread</th><th>Count</th><th>What it does</th></tr></thead>
     <tbody>
-      <tr><td><code>source-N</code></td><td>one per source</td><td>Reads the SDR or capture file and sends <code>SourceMsg</code> blocks into the engine queue. Airspy samples arrive on libairspy's own callback thread.</td></tr>
-      <tr><td><code>engine</code></td><td>one</td><td>Owns the <code>Session</code> and so the <code>Engine</code>. Loop: receive one block (50 ms timeout) → <code>push</code> → <code>poll</code> → <code>deliver</code>. All DSP and decoding for all sources runs here.</td></tr>
-      <tr><td><code>finish</code></td><td>one</td><td>Writes call files, encodes the kept M4A, sends <code>concluded</code> to browsers, hands calls to plugins and the Archive.</td></tr>
-      <tr><td><code>encode-N</code></td><td>1–3</td><td>Makes M4A for plugins that ask for it.</td></tr>
-      <tr><td><code>plugin-&lt;id&gt;</code> + writer + stderr reader</td><td>per plugin process</td><td>Supervises one plugin process: feeds its stdin, reads stdout and stderr, restarts it.</td></tr>
-      <tr><td>tokio runtime</td><td>pool</td><td>The axum web server: one task per WebSocket client.</td></tr>
-      <tr><td><code>monitor</code>, net probe</td><td>one each</td><td>Samples the computer and plugins every 2 s; internet checks every 15 s.</td></tr>
+      <tr><td><code>source-N</code></td><td>one per source</td><td>Runs the radio (<code>sdr::run_with</code> over a <code>Radio</code>, or <code>runtime::run_file</code>) and sends <code>SourceMsg</code> blocks into its own queue. Airspy samples arrive on libairspy's own callback thread.</td></tr>
+      <tr><td><code>dsp-N</code></td><td>one per source</td><td>The source's decoding thread (<code>runtime::feed_source</code>, a <code>Feeder</code>): pushes each block into the engine, which decodes it under the source's own lock, then follows it under the engine's. The DSP runs here, each source on a core of its own.</td></tr>
+      <tr><td><code>engine</code></td><td>one</td><td>Owns the <code>Session</code>. Waits on its one <code>EngineCmd</code> channel (20 ms timeout), then <code>poll</code> → <code>deliver</code>; saves band plans, aliases, AutoTune scores and the radio registry from time to time.</td></tr>
+      <tr><td><code>finish-N</code></td><td>1–3</td><td>The finish pool: writes every file of a call's plan (.json, .wav, .m4a, frames), sends <code>concluded</code> to browsers, hands calls to the plugins and the Archive.</td></tr>
+      <tr><td><code>plugin-&lt;id&gt;</code> + writer + stderr reader</td><td>per plugin process</td><td>Supervises one plugin process: feeds its stdin, reads stdout and stderr, restarts it. <code>plugin-hold</code> keeps what plugin delays hold back.</td></tr>
+      <tr><td>tokio runtime</td><td>pool</td><td>The axum web server: one task per WebSocket client, one listener per interface.</td></tr>
+      <tr><td><code>monitor</code>, <code>net-probe</code>, <code>spotlight</code></td><td>one each</td><td>Samples the computer and plugins every 2 s; internet checks every 15 s; the Spotlight check of the recordings folder.</td></tr>
       <tr><td><code>stats-load</code>, <code>stats-store</code>, <code>history</code></td><td>one each</td><td>Load and append dashboard rollups; fill the call list from disk.</td></tr>
+      <tr><td><code>survey</code>, <code>survey-source-N</code></td><td>while surveying</td><td>The first-run survey and its radio (never with recording).</td></tr>
     </tbody>
   </table></div>
   <p class="small muted">The browser build has no threads. <code>engine.worker.ts</code> pulls blocks from <code>WebRtl::next()</code> (WebUSB), calls <code>WebSession.push</code> and <code>poll</code> on a timer, and keeps call files in OPFS. It speaks the same messages as the desktop WebSocket, so the interface code is shared.</p>
+  <h3>The recorder's lifecycle</h3>
+  <p><code>Ctx.lifecycle</code> (<code>runtime.rs</code>) is one <code>Mutex&lt;Lifecycle&gt;</code>: <code>Idle</code>, <code>Recording(Runner)</code>, <code>Surveying(SurveyRunner)</code> or <code>Quitting</code>. Only <code>Ctx</code>'s methods change it, each holding the lock throughout (<code>begin_recording</code>, <code>begin_survey</code>, <code>with_radios</code> for profiling a source, <code>stop_recording</code>, <code>stop_survey</code>, <code>quit</code>), so two starts never interleave and nothing starts once quitting. The phase the browsers see (<code>state</code>: idle, starting, running, stopping) is the engine thread's report.</p>
+  <p>While recording, everything for the engine thread goes through one channel, <code>Ctx.engine</code> (<code>Ctx::tell_engine</code>): <code>EngineCmd::Source</code> (a source's error or end, by way of its decoding thread), <code>Topics</code> (what the browsers watch), <code>Talkgroups</code> (a talkgroup file changed) and <code>Keys</code> (a key container unlocked or locked). The plugin host is cloned once per loop (<code>Plugins::host()</code>), so a plugin reload never waits on the engine.</p>
 </section>
 
 <section id="sample-flow">
   <div class="eyebrow"><b>02</b><span>trunk-pro/src/runtime.rs · trunk-app/src/session.rs · trunk-core/src/trunk/engine.rs</span></div>
   <h2>From SDR to saved call</h2>
-  <p>Samples cross a thread boundary twice: once into the engine, once out of it. Between those two points everything happens synchronously on the engine thread, in a fixed order, one channelizer block at a time. Press <b>Follow a block</b> to walk the path, or click any stage.</p>
+  <p>Samples cross a thread boundary twice: from the radio's thread into the source's decoding thread, and from the engine's events out to the engine thread. Between those two points everything happens synchronously on the source's decoding thread (<code>dsp-N</code>), in a fixed order, one channelizer block at a time: its channels are decoded under the source's own lock (each control channel under a lock of its own), then followed under the engine's, so sources decode on cores of their own while the calls are followed in one place. Locks are never nested except the engine's with one other. Press <b>Follow a block</b> to walk the path, or click any stage.</p>
   <div id="dia-flow"></div>
   <div class="callout"><p><b>Latency, roughly:</b> the driver's block (RTL about 55 ms, others about 10 ms) + up to one channelizer block (5.12 ms at 2.4 MSPS) + filter delay (under 1 ms) + any backlog in the source queue + decoder framing (the C4FM receiver's block timing adds about 100 ms).</p></div>
 </section>
@@ -335,7 +339,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
       <tr><td>Collect</td><td>12,288 new samples (L = N − P + 1) after the 4,096 carried over from the last block. <code>u8</code> becomes (b − 127.5)/127.5; an odd trailing byte waits for the next buffer so I and Q never swap.</td></tr>
       <tr><td>FFT</td><td>One 16,384-point forward FFT, no window (rectangular overlap-save). The spectrum is stored in the pre-roll ring.</td></tr>
       <tr><td>Each head</td><td>M bins around the head's bin × the cached filter response (a 4,097-tap Blackman windowed-sinc at the channel's cutoff) → M-point inverse FFT → keep the valid L/D outputs → overlap-save phase correction (exact, integer mod N) → residual NCO for the part of the offset between bins.</td></tr>
-      <tr><td>Side outputs</td><td>The same spectrum gives the waterfall (<code>power_spectrum</code>), the noise floor per slice (<code>noise_profile</code>: median |X|² / ln 2) and the conventional energy detector (<code>band_power</code>), so an idle conventional channel needs no head at all.</td></tr>
+      <tr><td>Side outputs</td><td>The same spectrum gives the waterfall (<code>power_spectrum</code>), the noise floor per slice (<code>noise_profile</code>: median |X|² / ln 2, in <code>floor_slices(fs)</code> slices: 64, fewer where a slice would be under 30 kHz; <code>floor_slice</code> finds the one under a frequency) and the conventional energy detector (<code>band_power</code>), so an idle conventional channel needs no head at all. From the floor, <code>noise_in_band</code> gives the noise a filter passes and <code>threshold</code> a carrier level so many dB above it: the one threshold the trunked analog squelch and conventional's carrier meter both use.</td></tr>
     </tbody>
   </table></div>
   <h3>Pre-roll</h3>
@@ -344,14 +348,16 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <div class="tablewrap"><table>
     <thead><tr><th>Channel</th><th class="num">One-sided cutoff</th></tr></thead>
     <tbody>
-      <tr><td>P25 control and voice; conventional FM, P25 and DMR</td><td class="num">7,000 Hz</td></tr>
-      <tr><td>Trunked DMR</td><td class="num">6,250 Hz</td></tr>
+      <tr><td>P25 control and voice (Phase 1 and 2); conventional P25</td><td class="num">7,000 Hz</td></tr>
+      <tr><td>DMR, trunked and conventional</td><td class="num">6,250 Hz</td></tr>
       <tr><td>NXDN48</td><td class="num">3,400 Hz</td></tr>
       <tr><td>NXDN96</td><td class="num">6,250 Hz</td></tr>
       <tr><td>SmartNet control channel</td><td class="num">5,000 Hz</td></tr>
       <tr><td>SmartNet analog voice</td><td class="num">7,000 Hz</td></tr>
+      <tr><td>Conventional FM / AM</td><td class="num">7,000 Hz, widened or narrowed with <code>bandwidthKhz</code></td></tr>
     </tbody>
   </table></div>
+  <p class="small muted">A trunked voice channel opens at <code>VoiceKind::cutoff_hz()</code>; a conventional channel's widths (detector band, head cutoff, carrier meter) are worked out once per frequency by <code>ChannelShape::of</code>, a digital one's head as a trunked channel of its kind.</p>
   <p><b>DC and frequency error.</b> Nothing removes DC; auto-centring keeps control channels at least 25 kHz from it. Hardware ppm is applied in the drivers by tuning to f/(1 + ppm·10⁻⁶). AutoTune (section 05) only moves head offsets. <b>Guard band:</b> a frequency belongs to a source when |f − centre| ≤ max(rate/2 − <code>guardHz</code>, rate/4); <code>Radio::source_for</code> takes the first source that qualifies.</p>
 </section>
 
@@ -367,7 +373,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
 <section id="trunking">
   <div class="eyebrow"><b>05</b><span>trunk-core/src/trunk/{control,engine,identity,message,calls}.rs</span></div>
   <h2>How trunking messages are processed</h2>
-  <p>Every protocol decodes its control channel into the same struct, <code>trunk::Message</code>. Above that line nothing is protocol-specific: one <code>Trunk</code> per system handles hunting, the site lock, AutoTune and the clock, and one <code>CallManager</code> turns messages into calls for P25, SmartNet, DMR and NXDN alike. Choose a protocol to see its front end.</p>
+  <p>Every protocol decodes its control channel into the same struct, <code>trunk::Message</code>. Above that line nothing is protocol-specific: one <code>Trunk</code> per site handles hunting, the site lock, AutoTune and the clock, and one <code>CallManager</code> per site turns messages into calls for P25, SmartNet, DMR and NXDN alike. What a system decides (talkgroups, rules, keys) is its <code>SystemConfig</code>'s, kept once for all its sites and handed to the call manager as a <code>Policy</code>. How a site listens is one enum, decided once by <code>Trunk::start</code> from its protocol's <code>CarrierPlan</code>: <code>Listening::Off</code>, <code>Hunting(Hunt)</code> or <code>Watching(Vec&lt;Carrier&gt;)</code>. The control channel decodes on its source's decoding thread, under its own lock; the site follows the <code>CcResult</code> under the engine's, without taking that lock. Choose a protocol to see its front end.</p>
   <div class="tabs" id="proto-tabs" role="tablist"></div>
   <div id="dia-trunk"></div>
   <h3>Message kinds and what the call manager does with them</h3>
@@ -376,36 +382,39 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
     <tbody>
       <tr><td><code>Grant</code></td><td><code>grant(m)</code>: refresh the matching call, or create and admit a new one.</td></tr>
       <tr><td><code>Update</code></td><td><code>grant(m)</code> as well (<code>new_call_from_update</code> is always on in the app), so a call first heard by an update is still recorded.</td></tr>
-      <tr><td><code>UuVGrant</code></td><td><code>grant(m)</code> as unit-to-unit, if <code>recordUnitToUnit</code>.</td></tr>
-      <tr><td><code>UuVUpdate</code></td><td><code>update(m)</code> (refresh only), if <code>recordUnitToUnit</code>.</td></tr>
+      <tr><td><code>UuVGrant</code>, <code>PhoneGrant</code></td><td><code>grant(m)</code> as unit-to-unit, if <code>recordUnitToUnit</code>.</td></tr>
+      <tr><td><code>UuVUpdate</code>, <code>PhoneUpdate</code></td><td><code>update(m)</code> (refresh only), if <code>recordUnitToUnit</code>.</td></tr>
       <tr><td><code>PatchAdd</code></td><td>Add to <code>Patches</code>; calls fold in patch members; a call skipped as an unknown talkgroup is re-admitted (the grant can come before the patch).</td></tr>
       <tr><td><code>PatchDelete</code></td><td>Remove from <code>Patches</code>.</td></tr>
       <tr><td><code>Status</code>, <code>SysId</code>, <code>Adjacent</code></td><td>Not the call manager's: they set the site identity and adjacent-site list in <code>Trunk::follow</code>.</td></tr>
-      <tr><td><code>Registration</code>, <code>Deregistration</code>, <code>Affiliation</code>, <code>Acknowledge</code>, <code>Location</code>, <code>DataGrant</code>, <code>UuAnsReq</code>, <code>CallAlert</code></td><td>Ignored by the call manager. <code>Session</code> turns them into plugin <code>unit</code> events and the radio registry.</td></tr>
-      <tr><td><code>ControlChannel</code>, <code>Unknown</code></td><td>Logged only. P25 IDEN updates come through as <code>Unknown</code> after updating the band plan.</td></tr>
+      <tr><td><code>Registration</code>, <code>Deregistration</code>, <code>Affiliation</code>, <code>Acknowledge</code>, <code>Location</code>, <code>DataGrant</code>, <code>UuAnsReq</code>, <code>CallAlert</code>, <code>EmergencyAlarm</code></td><td>Ignored by the call manager. <code>Session</code> turns them into plugin <code>unit</code> events and the radio registry.</td></tr>
+      <tr><td><code>ControlChannel</code>, <code>StatusUpdate</code>, <code>MessageUpdate</code>, <code>Deny</code>, <code>Queued</code>, <code>BaseStationId</code>, <code>Unknown</code></td><td>Logged only. P25 IDEN updates come through as <code>Unknown</code> after updating the band plan.</td></tr>
     </tbody>
   </table></div>
-  <h3>P25 TSBK opcodes</h3>
+  <h3>P25 opcodes</h3>
+  <p>The TSBKs and MBTs are first read into typed outbound signalling packets (<code>p25::osp::Osp</code>, <code>Msg</code>); <code>P25Parser::parse</code> then makes <code>Message</code>s of them.</p>
   <div class="tablewrap"><table>
     <thead><tr><th>Opcode</th><th>Standard</th><th>Motorola (MFID 0x90)</th></tr></thead>
     <tbody>
-      <tr><td><code>0x00</code></td><td>Grant (group voice)</td><td>PatchAdd</td></tr>
+      <tr><td><code>0x00</code> / <code>0x01</code></td><td>Grant (group voice) / —</td><td>PatchAdd / PatchDelete</td></tr>
       <tr><td><code>0x02</code></td><td>Update (a second if ch2 differs)</td><td>Grant (patch)</td></tr>
       <tr><td><code>0x03</code></td><td>Update (explicit)</td><td>Update (patch)</td></tr>
-      <tr><td><code>0x04</code> / <code>0x05</code> / <code>0x06</code></td><td>UuVGrant / UuAnsReq / UuVUpdate</td><td>0x05: traffic channel ID, ignored</td></tr>
-      <tr><td><code>0x14</code> · <code>0x1f</code> · <code>0x20</code></td><td>DataGrant · CallAlert · Acknowledge</td><td></td></tr>
+      <tr><td><code>0x04</code> / <code>0x05</code> / <code>0x06</code> / <code>0x07</code></td><td>UuVGrant / UuAnsReq / UuVUpdate / —</td><td>extended function / traffic channel ID (ignored) / Queued / Deny</td></tr>
+      <tr><td><code>0x08</code>, <code>0x09</code> · <code>0x0a</code> · <code>0x0b</code></td><td>PhoneGrant, PhoneUpdate · telephone answer request · —</td><td>Acknowledge (0x08) · EmergencyAlarm · BaseStationId (callsign)</td></tr>
+      <tr><td><code>0x14</code> · <code>0x18</code>, <code>0x1c</code> · <code>0x1f</code> · <code>0x20</code></td><td>DataGrant · StatusUpdate, MessageUpdate · CallAlert · Acknowledge</td><td></td></tr>
+      <tr><td><code>0x21</code>, <code>0x27</code></td><td>Queued, Deny</td><td></td></tr>
       <tr><td><code>0x28</code> · <code>0x2b</code> · <code>0x2c</code> · <code>0x2f</code></td><td>Affiliation · Location · Registration · Deregistration</td><td></td></tr>
       <tr><td><code>0x29</code>, <code>0x39</code></td><td>ControlChannel (secondary control channels)</td><td></td></tr>
-      <tr><td><code>0x30</code> (MFID 0xa4)</td><td>M/A-COM PatchAdd / PatchDelete</td><td></td></tr>
+      <tr><td><code>0x30</code> (MFID 0xa4)</td><td>L3Harris (M/A-COM) regroup: PatchAdd / PatchDelete</td><td></td></tr>
       <tr><td><code>0x33</code>, <code>0x34</code>, <code>0x3d</code></td><td>IDEN_UP_TDMA, IDEN_UP_VU, IDEN_UP: update the band plan</td><td></td></tr>
       <tr><td><code>0x3a</code> · <code>0x3b</code> · <code>0x3c</code></td><td>SysId (system, RFSS, site) · Status (WACN, system, CC) · Adjacent</td><td></td></tr>
     </tbody>
   </table></div>
-  <p class="small muted">Service options byte: emergency 0x80, encrypted 0x40, duplex 0x20, mode 0x10, priority 0x07. Every TSBK yields at least one message.</p>
+  <p class="small muted">Service options byte: emergency 0x80, encrypted 0x40, duplex 0x20, mode 0x10, priority 0x07. Every TSBK yields at least one message. A grant's or update's <code>voice: Voice</code> says what the call's voice is on. A call's identity is (talkgroup, frequency, its place on the channel: Phase 2 or not, the slot). A talkgroup of mode <code>A</code> turns a Phase 1 grant into <code>Voice::Fm</code> (a two-slot grant keeps its slot); one of an encrypted mode (E, TE, DE) marks the call encrypted.</p>
   <h3>Hunting, AutoTune and patches</h3>
   <ul>
     <li><b>Hunting</b> (<code>CC_HUNT_S</code> = 5 s). If no step decoded cleanly for 5 s and the system lists more than one control channel, <code>tune(next)</code> removes the control head, opens one on the next covered frequency, resets the protocol and forgets the site's identity. Steps from a site that fails the lock never count as good, so a foreign control channel is hunted away from. DMR and NXDN watch every carrier and never hunt.</li>
-    <li><b>AutoTune</b>. Every 10 s, if the control channel decoded in the last second, the engine records ppm = applied ppm + offset/f × 10⁶, and so does each call of a second or more (|ppm| ≤ 50; the median of the last 20, of both kinds; kept for the next run). With <code>autoTune</code> on, new heads open at f × (1 + ppm·10⁻⁶) − centre, and a P25 control channel more than 150 Hz off is reopened (at most every 200 s). The error is always measured and shown.</li>
+    <li><b>AutoTune</b>. Every 10 s, if the control channel decoded in the last second, the site takes the receiver's offset (<code>CcResult::offset_hz</code>) and records ppm = applied ppm + offset/f × 10⁶, and so does each call of a second or more (|ppm| ≤ 50; the median of the last 20, of both kinds; kept for the next run in <code>tune.json</code>). With <code>autoTune</code> on, new heads open at f × (1 + ppm·10⁻⁶) − centre, and a P25 control channel more than 150 Hz off is reopened (at most every 200 s). The error is always measured and shown.</li>
     <li><b>Patches</b>. Supergroup → member → last heard. Members expire after 10 s (P25) or 4 s (SmartNet). A call's <code>patched_talkgroups</code> come from <code>members_of(tg)</code>.</li>
   </ul>
 </section>
@@ -413,25 +422,25 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
 <section id="recorders">
   <div class="eyebrow"><b>06</b><span>trunk-core/src/trunk/{calls,engine,voice,multisite}.rs</span></div>
   <h2>How recorders are managed and assigned</h2>
-  <p>A recorder is not a pre-built object as in Trunk Recorder. It is a <code>Recording</code> (audio, vocoder frames, transmissions, reception meter) in <code>Radio.recordings</code>, plus a channelizer head and a voice decoder that exist only while the call does. <code>maxRecorders</code> (32) caps how many recordings exist at once; recorder numbers are reused lowest-free. Try a grant below.</p>
+  <p>A recorder is not a pre-built object as in Trunk Recorder. It is a <code>Recording</code> (audio, vocoder frames, transmissions, reception meter) in <code>Radio.recordings</code>, plus a channelizer head and a voice decoder that exist only while the call does. <code>Radio</code> is shared by every site: each source's radio side behind its own lock (<code>rx: Arc&lt;Vec&lt;Mutex&lt;SourceRx&gt;&gt;&gt;</code>: its channelizer, its voice channels keyed by (site, frequency), its control channel taps, its copy of each site's <code>VoiceParams</code>), the engine's one copy of the sources' settings (<code>cfgs: Arc&lt;[SourceConfig]&gt;</code>), the recordings, the recorder numbers, the calls followed without a recorder (<code>followed</code>) and the outputs to apply (<code>pending</code>). <code>maxRecorders</code> (32) caps how many recordings exist at once; recorder numbers are reused lowest-free. Try a grant below.</p>
   <div class="panel" id="rec-sim"></div>
   <h3>While recording</h3>
-  <p>Decoder outputs (<code>VoiceOut { slot, t, out: TrackerOut }</code>) are queued in <code>radio.pending</code> and applied after the block (<code>apply_pending</code>), so a voice channel never borrows its <code>Trunk</code> mutably. Audio is appended to the recording and moves <code>last_audio_s</code>; <code>Info</code> adds the talking unit and latches encrypted/emergency (<code>CallUpdate</code>); <code>Alias</code> teaches a talker alias. Live audio leaves as <code>Event::Audio</code> from the copy that leads its multi-site conversation.</p>
+  <p>Decoder outputs (<code>VoiceOut { slot, out: TrackerOut }</code>) are routed to the call on their slot, queued in <code>radio.pending</code> and applied after the block (<code>apply_pending</code>) at the site's control channel clock, so a voice channel never borrows its <code>Trunk</code> mutably. Each output finds its site, recording and call once. Audio is appended to the recording and moves <code>last_audio_s</code>; <code>Info</code> adds the talking unit and latches encrypted/emergency (<code>CallUpdate</code>); <code>Cipher</code>, <code>Decrypted</code> and <code>WrongKey</code> follow the encryption; <code>Position</code> gives <code>Event::UnitPosition</code>; <code>Alias</code> teaches a talker alias. Live audio leaves as <code>Event::Audio</code> from the copy that leads its multi-site conversation.</p>
   <h3>Ending, splitting and freeing</h3>
   <ul>
     <li><b>End.</b> <code>CallManager::tick</code> ends a call when the control channel has said nothing about it for <code>callTimeoutS</code> (3 s), and either it isn't recording or its audio has also been quiet that long. <code>RecorderHost::release</code> clears its slot; the head closes when both slots are empty.</li>
     <li><b>Split.</b> A call longer than <code>maxCallS</code> (or 600 s when that is 0) is saved and carries on as a new call id on the same channel and recorder (<code>record_continued</code>, which skips the <code>maxRecorders</code> check so it can't lose its recorder).</li>
-    <li><b>Free.</b> The recorder is returned in <code>Engine::conclude</code>, at the end of the block, when the recording is removed and its number goes back to <code>free_nums</code>.</li>
+    <li><b>Free.</b> The recorder is returned in <code>Core::conclude</code>, at the end of the block, when the recording is removed and its number goes back to <code>free_nums</code>.</li>
     <li><b>No priority, no preemption.</b> A call refused with <code>no_recorder</code> stays monitored until it times out and is not retried. The talkgroup CSV's <code>Priority</code> only matters when negative (ignore); <code>Message.priority</code> is written to the call JSON and used nowhere else.</li>
   </ul>
   <h3>Multi-site: every copy is recorded</h3>
-  <p>Sites are twins when they share a site group but are not the same site or control channel. Calls on twin sites with the same talkgroup that start within 3 s are linked into one conversation. Unlike Trunk Recorder, every copy gets a recorder. Live audio follows one copy until it has been quiet for 0.5 s. When the last copy ends one is kept: the talkgroup's preferred site if its clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC errors, then the earliest start. The rest become <code>Duplicate</code> events.</p>
+  <p>Sites are twins when they are sites of one system (one <code>SystemConfig</code>'s <code>sites</code>); nothing is grouped from what the control channels announce. Calls on twin sites with the same talkgroup (or, unit to unit, the same radio called) that start within 3 s are linked into one conversation (<code>Call::twin</code> marks the later copies). Unlike Trunk Recorder, every copy gets a recorder. Live audio follows one copy until it has been quiet for 0.5 s. When the last copy ends one is kept: the talkgroup's preferred site if its clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC errors, then the earliest start. The rest become <code>Duplicate</code> events.</p>
 </section>
 
 <section id="backpressure">
   <div class="eyebrow"><b>07</b><span>trunk-pro/src/runtime.rs · sdr.rs · radio/ · plugins/host.rs · main.rs</span></div>
   <h2>Buffering and back-pressure, compared with GNU Radio</h2>
-  <p>Trunk Recorder is a GNU Radio flowgraph: many blocks, each on its own thread, joined by circular buffers. Trunk Recorder Pro is one thread that runs every stage to completion for each block, with one blocking queue in front of it and non-blocking, explicitly lossy queues behind it. Pick a slow part in each diagram to see where the pressure goes.</p>
+  <p>Trunk Recorder is a GNU Radio flowgraph: many blocks, each on its own thread, joined by circular buffers. Trunk Recorder Pro is one thread per source that runs every stage to completion for each block, with one blocking queue in front of each and non-blocking, explicitly lossy queues behind it. Pick a slow part in each diagram to see where the pressure goes.</p>
   <div class="tabs" id="bp-tabs" role="tablist"></div>
   <div id="bp-body"></div>
   <h3>How long the input queue lasts</h3>
@@ -440,13 +449,13 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <div class="tablewrap"><table>
     <thead><tr><th>Queue</th><th class="num">Capacity</th><th>Producer → consumer</th><th>When full</th></tr></thead>
     <tbody>
-      <tr><td>Source → engine<br><span class="small muted">runtime.rs <code>sync_channel</code></span></td><td class="num">256 blocks</td><td>source threads → engine</td><td><b>Sender blocks.</b> The driver stops collecting, the device overflows; drops reported where the driver can tell, gap-filled with faint noise, clock re-anchored past 0.25 s.</td></tr>
+      <tr><td>Source → decoding<br><span class="small muted">runtime.rs <code>sync_channel</code></span></td><td class="num">256 blocks per source</td><td><code>source-N</code> → <code>dsp-N</code></td><td><b>Sender blocks.</b> The driver stops collecting, the device overflows; drops reported where the driver can tell, gap-filled with faint noise, clock re-anchored past 0.25 s.</td></tr>
       <tr><td>rtlsdr-nusb USB transfers</td><td class="num">8 × 256 KiB</td><td>USB → source thread</td><td>Device FIFO overflows.</td></tr>
       <tr><td>UHD receive frames</td><td class="num">256 frames</td><td>USRP → UHD streamer</td><td>Overflow (<code>O</code>); counted from the packet timestamp gap.</td></tr>
-      <tr><td>Hub<br><span class="small muted">tokio broadcast</span></td><td class="num">4,096 messages</td><td>engine, finish, monitor → each WebSocket task</td><td>A lagging client loses its oldest messages, silently. Recording and other clients are unaffected.</td></tr>
-      <tr><td>Finish</td><td class="num">1,024 calls</td><td>engine → finish thread</td><td>The engine thread writes the call itself, without M4A.</td></tr>
-      <tr><td>Plugin events</td><td class="num">1,024 lines per process</td><td>engine, finish, encoders → plugin stdin</td><td>Dropped and counted (<code>dropped</code>); logged at most every 30 s.</td></tr>
-      <tr><td>Encode jobs</td><td class="num">256 calls</td><td>finish → 1–3 encoder threads</td><td>The call goes to plugins as WAV only.</td></tr>
+      <tr><td>Engine commands<br><span class="small muted"><code>EngineCmd</code></span></td><td class="num">unbounded</td><td>decoding threads, server → engine</td><td>—</td></tr>
+      <tr><td>Hub<br><span class="small muted">tokio broadcast</span></td><td class="num">4,096 messages</td><td>engine, finish, monitor, logger → each WebSocket task</td><td>A lagging client loses its oldest messages, silently. Recording and other clients are unaffected.</td></tr>
+      <tr><td>Finish</td><td class="num">1,024 calls</td><td>engine → finish pool (1–3)</td><td>The engine thread waits up to 5 s (<code>FINISH_WAIT</code>) for room, then finishes the call itself with the same <code>finish_one</code> and <code>plugins::plan</code> (its .m4a too, if the plan has one). Decoding carries on.</td></tr>
+      <tr><td>Plugin events</td><td class="num">1,024 lines per process</td><td>engine, finish → plugin stdin</td><td>Dropped and counted (<code>dropped</code>); logged at most every 30 s.</td></tr>
       <tr><td>Stats rollups</td><td class="num">unbounded</td><td>engine → stats-store</td><td>One small message a minute.</td></tr>
       <tr><td>SDK <code>CallQueue</code> (in a plugin)</td><td class="num">10,000 calls</td><td>plugin's own workers</td><td><code>call.result failed</code>: "too many calls waiting".</td></tr>
     </tbody>
@@ -456,16 +465,16 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <div class="tablewrap"><table>
     <thead><tr><th></th><th>Trunk Recorder (GNU Radio)</th><th>Trunk Recorder Pro</th></tr></thead>
     <tbody>
-      <tr><td>Scheduling</td><td>A thread per block (thread-per-block scheduler)</td><td>One engine thread; stages called in a fixed order per block</td></tr>
+      <tr><td>Scheduling</td><td>A thread per block (thread-per-block scheduler)</td><td>A decoding thread per source; stages called in a fixed order per block</td></tr>
       <tr><td>Between stages</td><td>A circular buffer on every block output</td><td>Nothing: a head's output is overwritten every block</td></tr>
       <tr><td>Unit of work</td><td>Whatever items are ready (<code>noutput_items</code>)</td><td>One channelizer block: 12,288 input samples</td></tr>
       <tr><td>When a stage runs</td><td>When its input has enough items <i>and</i> its output has room</td><td>When the previous stage returns</td></tr>
       <tr><td>Channel extraction</td><td>A full-rate filter per recorder (<code>xlat_channelizer</code>)</td><td>A shared FFT; an M-point inverse FFT per channel</td></tr>
       <tr><td>Recorders</td><td>Built at start, enabled through a <code>selector</code> port</td><td>Built per call; only a count cap</td></tr>
       <tr><td>Control → recorder</td><td>A message queue polled by the main loop</td><td>A direct call (<code>CallManager</code> → <code>RecorderHost</code>) in the same block</td></tr>
-      <tr><td>Back-pressure</td><td>Propagates buffer by buffer to the source</td><td>One blocking queue at the input; nothing downstream blocks the engine</td></tr>
+      <tr><td>Back-pressure</td><td>Propagates buffer by buffer to the source</td><td>One blocking queue per source at the input; nothing downstream blocks decoding</td></tr>
       <tr><td>Overload</td><td>Hardware overflow; one slow recorder can stall all</td><td>Hardware overflow, measured, gap-filled, clock re-anchored</td></tr>
-      <tr><td>Cores</td><td>Many, automatically</td><td>One for DSP; I/O, encoding, plugins and the server elsewhere</td></tr>
+      <tr><td>Cores</td><td>Many, automatically</td><td>One per source for DSP (calls followed under one lock); I/O, encoding, plugins and the server elsewhere</td></tr>
       <tr><td>CPU</td><td></td><td>4–6× less than Trunk Recorder on Raspberry Pi / Linux (benchmark of 2026-10-02)</td></tr>
     </tbody>
   </table></div>
@@ -487,15 +496,15 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
       <tr><td>Restarts</td><td>Back-off from 1 s doubling to 60 s, reset after a run longer than 60 s. Exit code 78 means a config error: not restarted, and calls stop waiting for it.</td></tr>
       <tr><td>Settings change</td><td>Plugins are restarted; new processes start only after the old ones exit (they share data folders). Events wait meanwhile.</td></tr>
       <tr><td>Shutdown</td><td><code>shutdown {grace_s}</code> is queued behind pending events and stdin closes after it. A plugin gets its grace (10 s at stop) from when it has read it, after up to 30 s to drain, then it is killed.</td></tr>
-      <tr><td>Archive</td><td>For each call, takers = live processes subscribed to <code>call.concluded</code>. Each <code>call.result</code> counts down; at zero <code>audioArchive</code>, <code>callLog</code>, <code>archiveFilesOnFailure</code> and <code>compressWav</code> decide what to delete: <code>ok</code> and <code>skipped</code> count the same; only a <code>failed</code> keeps files (with <code>archiveFilesOnFailure</code>). An unsettled call counts as failed after 1 h. With no takers the Keep rules alone decide.</td></tr>
-      <tr><td>Audio formats</td><td>WAV always; M4A if an encoder exists (ffmpeg, afconvert or fdkaac) and the plugin asked. The WAV is piped to the encoder from memory and written to disk only when kept, when a plugin takes WAV, or when encoding failed.</td></tr>
+      <tr><td>Archive</td><td>For each call, takers = live processes subscribed to <code>call.concluded</code>. Each <code>call.result</code> counts down; at zero <code>archiveWav</code>, <code>archiveM4a</code>, <code>callLog</code> and <code>archiveFilesOnFailure</code> decide what to delete: <code>ok</code> and <code>skipped</code> count the same; only a <code>failed</code> keeps files (with <code>archiveFilesOnFailure</code>). An unsettled call counts as failed after 1 h. With no takers the Keep rules alone decide.</td></tr>
+      <tr><td>Audio formats</td><td>WAV always; M4A if an encoder exists (ffmpeg, afconvert or fdkaac) and the plugin asked. One plan (<code>plugins::plan</code>) decides every file; the finisher pipes the WAV to the encoder from memory, and writes the WAV to disk only when kept, when a plugin takes WAV, or when encoding failed.</td></tr>
       <tr><td>RAM spool</td><td>With <code>recording.ramSpool</code>, files that will be deleted once plugins are done go to a RAM disk (macOS <code>hdiutil</code>, Linux <code>/dev/shm</code>) to spare the SSD. No room → recordings folder. Files older than 2 h are moved out.</td></tr>
-      <tr><td>Store</td><td>Registry <code>index.json</code> from the TrunkRecorder/plugins repository (cached 15 min, built-in fallback). Install: download ≤ 200 MiB → SHA-256 must match → unpack to staging (no links, no path escapes) → <code>--describe</code> must match id and version → atomic rename into place. A GitHub release with <code>SHA256SUMS</code> can be installed unlisted.</td></tr>
-      <tr><td>Several copies <span class="small muted">(this branch)</span></td><td>A system's <code>plugins.&lt;id&gt;</code> may be an array: one process per element (<code>openmhz</code>, <code>openmhz#2</code>…), each with its own queue, back-off, data folder and drop count. Copy <i>k</i> gets the shared settings and element <i>k</i> per system (<code>null</code> where a system has fewer). The Archive waits for every copy.</td></tr>
+      <tr><td>Store</td><td>One store for plugins and interfaces (<code>trunk-pro/src/store.rs</code>: <code>Registry</code>, <code>Shelf</code>, <code>download</code>, <code>stage</code>, <code>put_in_place</code>, <code>Release</code>; thin <code>plugins/store.rs</code> and <code>interfaces/store.rs</code>), asked with <code>store {kind}</code> and <code>install {kind, …}</code>. Registry <code>index.json</code> from the TrunkRecorder/plugins repository (cached 15 min in <code>plugin-registry.json</code>, built-in fallback). Install: download ≤ 200 MiB → SHA-256 must match → unpack to staging (no links, no path escapes) → <code>--describe</code> must match id and version → atomic rename into place. A GitHub release with <code>SHA256SUMS</code> can be installed unlisted.</td></tr>
+      <tr><td>Several copies</td><td>A system's <code>plugins.&lt;id&gt;</code> may be an array: one process per element (<code>openmhz</code>, <code>openmhz#2</code>…), each with its own queue, back-off, data folder and drop count. Copy <i>k</i> gets the shared settings and element <i>k</i> per system (<code>null</code> where a system has fewer). The Archive waits for every copy.</td></tr>
     </tbody>
   </table></div>
   <h3>Writing one in Rust</h3>
-  <p>The <code>trunk-recorder-plugin</code> crate's <code>sdk</code> feature gives a <code>Plugin</code> trait (typed <code>Config</code> and <code>SystemConfig</code> with schemas from schemars; <code>start</code>, <code>call_concluded</code>, <code>unit</code>, <code>audio</code>, <code>status</code>, <code>shutdown</code>…) and <code>run::&lt;P&gt;()</code> for <code>--describe</code>, the handshake and exit codes. <code>CallQueue</code> adds worker threads (2), retries at 10 s, 60 s, 300 s and 900 s, endpoint health, metrics and a <code>queue.jsonl</code> that survives restarts. <code>TalkgroupFilter</code> gives allow/deny globs; <code>testing</code> drives a plugin with messages against an HTTP mock server.</p>
+  <p>The <code>trunk-recorder-plugin</code> crate has <code>CallRecord</code>, the call JSON as one typed record: the recorder makes one per call (<code>record::call_record</code>), writes the <code>.json</code> from it (<code>CallRecord::to_json</code>, byte for byte as the files always were) and hands the same record to the history and the plugins; every field it writes is named, others are kept in <code>extra</code>, flags are written 0/1 and read as 0/1 or booleans. Its <code>sdk</code> feature gives a <code>Plugin</code> trait (typed <code>Config</code> and <code>SystemConfig</code> with schemas from schemars; <code>start</code>, <code>call_concluded</code>, <code>unit</code>, <code>audio</code>, <code>status</code>, <code>shutdown</code>…) and <code>run::&lt;P&gt;()</code> for <code>--describe</code>, the handshake and exit codes. <code>CallQueue</code> adds worker threads (2 per lane: a queue per server), retries at 10 s, 60 s, 300 s and 900 s, endpoint health, metrics and a <code>queue.jsonl</code> that survives restarts. <code>TalkgroupFilter</code> gives allow/deny globs; <code>testing</code> drives a plugin with messages against an HTTP mock server.</p>
 </section>
 
 <section id="objects">
@@ -513,7 +522,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
 <section id="config">
   <div class="eyebrow"><b>10</b><span>trunk-app/src/config.rs · trunk-pro/src/paths.rs</span></div>
   <h2>The configuration file</h2>
-  <p>One JSON file, <code>config.json</code>, written whole by the interface (<code>setConfig</code>) through an atomic write (temporary file, sync, rename). Keys are camelCase. Unknown keys are kept and written back at the top level and inside each system, conventional system, <code>recording</code>, <code>server</code> and <code>log</code>; a value of the wrong type makes the file unreadable rather than half-read. Click any key in the example to see what it means.</p>
+  <p>One JSON file, <code>config.json</code>, written whole by the interface through an atomic write (temporary file, sync, rename). It is versioned: <code>Ctx.config_version</code> goes up by one at every change (<code>Ctx::config_changed</code>, which tells every browser <code>config { config, version }</code>), and <code>setConfig { config, version }</code> names the version it was edited from, so an edit of an older one is refused (<code>configSaved</code> with an <code>error</code>) rather than saved over another browser's change. Keys are camelCase. Unknown keys are kept and written back at the top level and inside each system, conventional system, <code>recording</code>, <code>server</code> and <code>log</code>; a value of the wrong type makes the file unreadable rather than half-read, and so does a closed choice it doesn't list (a system <code>type</code>, <code>modulation</code>, <code>nxdnType</code>, <code>nxdnRate</code>, <code>defaultMode</code>, <code>vocoder</code>, the M4A <code>encoder</code>, <code>unitNames.mode</code>, the log's <code>color</code>, <code>level</code> and formats, an interface's <code>access</code>, a channel <code>mode</code>…): each is declared once by the <code>choice!</code> macro (<code>trunk-app/src/choice.rs</code>) with its names, read in any case (<code>"P25"</code>, <code>"QPSK"</code>), "" meaning the default. A source's <code>type</code> is the tag of <code>Source</code>, put in its own case by <code>Config::from_value</code> before it is read. Click any key in the example to see what it means.</p>
   <div class="cfg">
     <div class="tree" id="cfg-tree" aria-label="Example config.json"></div>
     <div class="panel cfg-doc" id="cfg-doc"><p class="muted" style="margin:0">Select a key on the left.</p></div>
@@ -522,41 +531,51 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <ul>
     <li>macOS <code>~/Library/Application Support/trunk-pro/config.json</code>; Windows <code>%APPDATA%\trunk-pro\</code>; Linux <code>$XDG_CONFIG_HOME/trunk-pro/</code> or <code>~/.config/trunk-pro/</code>; Docker <code>/data/config/trunk-pro/</code>; browser <code>localStorage["trp.config"]</code>.</li>
     <li><code>--config file.json</code> uses another file, and its folder becomes the data folder for every companion file, so two configs in different folders share nothing.</li>
+    <li>Talkgroup files are not in it: each system's (trunked or conventional) is <code>&lt;shortName&gt;.talkgroups.csv</code> beside it (<code>config::talkgroups_path</code>; <code>TalkgroupFiles</code> by short name), written by <code>setTalkgroups</code> and taken by a recording at once (<code>EngineCmd::Talkgroups</code>). An older config's <code>talkgroupsCsv</code> / <code>talkgroupsName</code> are moved out into those files before it is read, by every reader (<code>Config::load</code> → <code>migrate::move_talkgroups</code>). The browser keeps them in <code>localStorage["trp.talkgroups"]</code>.</li>
+    <li>Every upgrade of an older config is in <code>migrate.rs</code> (<code>migrate::config</code>, run by <code>Config::from_value</code>: key files named by systems, interfaces as a list and <code>server.home</code>, each site a system of its own, talkgroups in the config); what it changed is in <code>Config::notes</code>. The desktop app saves an upgraded one (<code>migrate::save</code>), keeping the old file as <code>config.json.before-sites</code>.</li>
     <li>Flags for one run only, never saved: <code>--port</code>, <code>--bind</code>, <code>--start</code> (as <code>autoStart</code>), <code>--log-level</code>, <code>--ui</code>, <code>--no-open</code>.</li>
   </ul>
   <h3>Every key</h3>
   <div id="cfg-tables" style="display:grid;gap:14px;grid-template-columns:minmax(0,1fr)"></div>
   <h3>From config to engine</h3>
-  <p><code>Config::engine_config</code> builds trunk-core's <code>EngineConfig</code>. Active systems (enabled, with a control channel) become <code>SystemConfig</code>s with their <code>CallConfig</code> and <code>SaveRules</code> (global <code>recording</code> overlaid with the system's own), talkgroups, unit tags, receiver bank, <code>expect</code>, protocol and site group. Every conventional entry becomes a <code>ConvSystem</code> so indexes line up; enabled channels become channel rows. Sources get their resolved centres. File names, archive rules, M4A, the spool, server, log, monitor and plugins never reach the engine; the platform uses them.</p>
+  <p><code>Config::engine_config(epoch_ms, &amp;TalkgroupFiles)</code> builds trunk-core's <code>EngineConfig</code>, whose <code>systems</code> are kept once for a whole system. Each active system (enabled, with an active site) becomes a <code>SystemConfig</code>: its short name, its <code>CallConfig</code> and <code>SaveRules</code> (global <code>recording</code> overlaid with the system's own), its talkgroup file and unit tags (keys are set by the app), and its active sites, each a <code>SiteConfig</code> (its name, control channels, receiver bank, <code>expect</code> and protocol). Then each active conventional system becomes a <code>SystemConfig</code> with no sites and its own talkgroup file; its enabled channels become channel rows naming their system's number. Sources get their resolved centres. File names, archive rules, M4A, the spool, server, log, monitor and plugins never reach the engine; the platform uses them.</p>
+  <p><code>Config::call_systems</code> numbers every system as the engine does: active trunked systems 0, 1, …, then the active conventional systems. It is the one place that number is worked out: the engine, plugins, status (<code>status.systemNames</code>) and the interface all go by it. There is no limit on conventional systems. The per-system recording settings are declared once (the <code>recording!</code> macro's <code>per_system</code> block makes <code>Recording</code>, <code>RecordingOverride</code> and <code>Recording::with</code>), and <code>Config::recordings()</code> resolves every system's once when recording starts.</p>
   <h3>Checked at Start, first failure wins</h3>
   <ol>
     <li>No sources.</li>
     <li>A file source without a path.</li>
+    <li>An RTL-SDR's <code>bufLen</code> not a multiple of 512 (or over 16 MiB), or more than 256 <code>buffers</code>.</li>
     <li>Nothing to record (no active system and no enabled conventional channel).</li>
-    <li>A missing or duplicate short name, across trunked and conventional, enabled or not.</li>
+    <li>A missing or duplicate short name, across trunked and conventional, enabled or not; or two sites of a system with one name (<code>Config::name_problem</code>).</li>
     <li>A source whose centre can't be resolved by auto-centring.</li>
-    <li>An active system's control channels (and DMR / NXDN carriers) outside every source; a bad SmartNet band plan.</li>
-    <li>More than 256 conventional systems.</li>
+    <li>An active site's bad SmartNet band plan, DMR / NXDN carriers outside every source, or no control channel inside one.</li>
     <li>One frequency in two conventional systems.</li>
-    <li>A channel frequency ≤ 0 or outside every source.</li>
+    <li>A channel frequency ≤ 0, or outside every source.</li>
     <li>A tone that doesn't parse for its mode.</li>
+    <li>An analog channel's <code>bandwidthKhz</code> outside 4–20, or a <code>demod</code> setting out of range.</li>
+    <li>A file name format with a token nobody knows (the config's, or a system's own).</li>
     <li>Rows sharing a frequency that can't be told apart (same mode required; at most one without a code).</li>
   </ol>
-  <p><b>Auto-centring.</b> Sources with <code>centerHz</code> 0 are placed in order over the systems not yet covered: start at the midpoint of the frequencies (rounded to 1 kHz), step ±12.5 kHz until no channel is within 25 kHz of DC, and accept when every frequency is inside half-width − 10 kHz.</p>
+  <p class="small muted">The interface runs this same code (section 13), so Setup says what Start will say.</p>
+  <p><b>Auto-centring.</b> Sources with <code>centerHz</code> 0 are placed in order over the systems not yet covered: start at the midpoint of the frequencies (rounded to 1 kHz), step to either side in widening 12.5 kHz steps until no channel is within 25 kHz of DC (<code>off_dc</code>), and accept when every frequency is inside half-width − 10 kHz. The first-run guide places sources for a system found on the air with <code>plan_centers</code>, through the same <code>off_dc</code>.</p>
   <h3>Companion files, beside the config</h3>
   <div class="tablewrap"><table>
     <thead><tr><th>File</th><th>Contents</th></tr></thead>
     <tbody>
-      <tr><td><code>&lt;short&gt;.bandplan</code></td><td>Learned P25 IDEN tables, DMR / NXDN channel maps. Saved every 10 s when changed, and at stop.</td></tr>
+      <tr><td><code>&lt;short&gt;.talkgroups.csv</code></td><td>The system's talkgroup file (trunked or conventional).</td></tr>
+      <tr><td><code>&lt;short&gt;.bandplan</code>, <code>&lt;short&gt;.&lt;site&gt;.bandplan</code></td><td>Learned P25 IDEN tables, DMR / NXDN channel maps, per site (<code>SiteKey::file_stem</code>). Saved every 10 s when changed, and at stop.</td></tr>
       <tr><td><code>&lt;short&gt;.units.csv</code></td><td>Talker aliases heard over the air (Trunk Recorder's unitTagsOTA format).</td></tr>
       <tr><td><code>conventional.heard.json</code></td><td>Codes heard per conventional frequency (up to 40 each).</td></tr>
+      <tr><td><code>tune.json</code></td><td>AutoTune's scores per source, for the next run.</td></tr>
       <tr><td><code>radio/&lt;short&gt;.json</code></td><td>The radio registry: units, talkgroups, affiliations. Every 15 min and at stop.</td></tr>
       <tr><td><code>stats/YYYY-MM-DD.jsonl</code></td><td>One dashboard rollup per minute; gzipped after the day, kept 8 days.</td></tr>
-      <tr><td><code>plugins/&lt;id&gt;/</code>, <code>plugin-data/&lt;id&gt;/</code>, <code>plugin-registry.json</code></td><td>Installed plugins, their state, the cached plugin index.</td></tr>
+      <tr><td><code>plugins/&lt;id&gt;/</code>, <code>plugin-data/&lt;id&gt;/</code>, <code>plugin-hold/</code></td><td>Installed plugins, their state, finished calls held back by plugin delays.</td></tr>
+      <tr><td><code>interfaces/&lt;id&gt;/</code>, <code>plugin-registry.json</code>, <code>interface-registry.json</code></td><td>Installed interfaces; the cached store indexes.</td></tr>
+      <tr><td><code>config.json.before-sites</code></td><td>An older config as it was before the upgrade to sites.</td></tr>
       <tr><td><code>logs/</code></td><td>Log files (or <code>log.dir</code>).</td></tr>
     </tbody>
   </table></div>
-  <p class="small muted">The talkgroup CSV is stored inside the config (<code>talkgroupsCsv</code>): headed (<code>Decimal, Hex, Mode, Alpha Tag, Description, Tag, Category, Priority, Preferred NAC, Preferred Site, Ignore</code>, any order) or Trunk Recorder's headerless form. A conventional channel file has <code>TG Number, Frequency, Tone, Mode, Alpha Tag, Description, Tag, Category, Squelch dB, Enable</code>.</p>
+  <p class="small muted">The talkgroup CSV (<code>&lt;short&gt;.talkgroups.csv</code>, beside the config): headed (<code>Decimal, Hex, Mode, Alpha Tag, Description, Tag, Category, Priority, Preferred NAC, Preferred Site, Ignore</code>, any order) or Trunk Recorder's headerless form. A conventional channel file has <code>TG Number, Frequency, Tone, Mode, Alpha Tag, Description, Tag, Category, Squelch dB, Bandwidth kHz, Enable</code> (<code>trunk-app/src/channels.rs</code>).</p>
 </section>
 
 <section id="time">
@@ -568,8 +587,8 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <p>Each dot is one buffer's lag: the wall time since start minus the source's sample time. Buffers only ever arrive late (USB, driver buffering), so the lowest lag in each 10 s window is the clock's own. The dashed line is each window's minimum (the target); the solid line is the offset set on the engine.</p>
   <div class="panel" id="clock-sim"></div>
   <ul>
-    <li><b>Where each part of the clock's time comes from.</b> Each <code>Trunk</code> takes its time from its control channel's source; the engine's own <code>now_s</code> comes from source 0. Wall time is the epoch taken at start plus engine time. <code>Session</code> applies the local UTC offset for folder names, which only the platform knows.</li>
-    <li><b>Gaps.</b> Samples a driver reports dropped, and a running source that sends nothing for over a second, are fed as faint noise (up to 10 s). Calls on a dead source still time out, and sources stay comparable for multi-site matching. Conventional channels don't learn their noise floor from it or open on it.</li>
+    <li><b>Where each part of the clock's time comes from.</b> Each <code>Trunk</code> (a site) takes its time from its control channel's source, and every voice output of a block is applied at it, whichever source its channel is on; the engine's own <code>now_s</code> comes from source 0. Wall time is the epoch taken at start plus engine time. <code>Session</code> applies the local UTC offset for folder names, which only the platform knows.</li>
+    <li><b>Gaps.</b> Samples a driver reports dropped (<code>Feeder::gap</code>), and a running source that sends nothing for over a second (<code>Feeder::idle</code>; <code>fill_quiet</code> in the browser), are fed as faint noise (up to 10 s). Calls on a dead source still time out, and sources stay comparable for multi-site matching. Conventional channels don't learn their noise floor from it or open on it.</li>
     <li><b>Not live.</b> A capture played as fast as it can be keeps pure sample time; <code>ClockFit</code> ignores it.</li>
   </ul>
   <h3>Identifiers</h3>
@@ -577,9 +596,10 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
     <thead><tr><th>Identifier</th><th>Indexes</th><th>Used by</th></tr></thead>
     <tbody>
       <tr><td><code>shortName</code></td><td>Every system, unique, saved</td><td>The identity: folders, companion files, plugin settings, what plugins and the interface key on</td></tr>
-      <tr><td>Position in <code>config.systems</code></td><td>Every configured trunked system</td><td>The Setup cards</td></tr>
-      <tr><td>Engine system index (<code>Call::system</code>)</td><td>Active systems only, in config order</td><td>Calls, events, live-audio frames, plugin <code>system</code></td></tr>
-      <tr><td>Conventional system id</td><td>65535 − k for conventional system k</td><td>Calls and plugins</td></tr>
+      <tr><td>Engine system index (<code>Call::system</code>)</td><td>Active systems, trunked then conventional, from 0, in config order</td><td>Calls, events, live-audio frames, plugin <code>system</code>, <code>{sys_num}</code> in file names, <code>status.systems[].index</code> (<code>status.systemNames</code> maps them to short names)</td></tr>
+      <tr><td>Engine site index (<code>Call::site</code>)</td><td>Active sites, system by system</td><td>Calls, control channel events, <code>status.systems[].sites[].index</code></td></tr>
+      <tr><td>A site's <code>name</code></td><td>Unique in its system</td><td>Preferred Site, call JSON <code>site</code>, control channel stats and band plan files (<code>SiteKey</code>)</td></tr>
+      <tr><td>A Setup card's key (<code>cardKey</code>)</td><td>Every configured system and site, in this browser</td><td>The Setup cards (seeded from the short name, site name or position; never sent)</td></tr>
       <tr><td><code>CallId</code></td><td>One sequence for every system and conventional channel</td><td><code>call_num</code> in the JSON</td></tr>
     </tbody>
   </table></div>
@@ -599,12 +619,13 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
       <tr><td><code>History</code></td><td>A minute grid per series, a week in memory. <code>statsQuery</code> (names or prefixes ending in <code>*</code>, over 10 m to 7 d) is answered downsampled to about the points asked for (360 by default).</td></tr>
       <tr><td>stats files</td><td><code>stats/YYYY-MM-DD.jsonl</code> (UTC days): rollups appended, never rewritten; a finished day is gzipped; days past 8 deleted; read back into <code>History</code> in the background at start (<code>statsResult</code> says <code>loading</code> meanwhile).</td></tr>
       <tr><td><code>Registry</code></td><td>Per system, bounded maps of talkgroups (5,000), units (20,000), unit pairs, frequencies and affiliations, with hourly activity for a week. Answers <code>radioQuery</code>; saved as <code>radio/&lt;short&gt;.json</code> every 15 min and at stop.</td></tr>
-      <tr><td><code>Monitor</code></td><td>Notable events: talkgroup or unit first seen, talkgroup active, call volume, control channel lost / regained, source drops, clipping, disk and spool space. Each goes to the registered watchers (the hook for alert rules; none yet) and, if it is one for the feed, to browsers as <code>monitorEvent</code>. The last 200 are kept for <code>hello</code>.</td></tr>
+      <tr><td><code>NameBook</code></td><td>Each system's talkgroups (as <code>engine_config</code> makes them) and talker aliases, by short name: the names <code>radioQuery</code> answers with. The session keeps it current; the desktop app fills it at start, on config changes and talkgroup edits.</td></tr>
+      <tr><td><code>Monitor</code></td><td>Notable events: talkgroup or unit first seen, talkgroup active, call volume, control channel lost / regained (<code>MonitorEvent::ControlLost { system, site, … }</code>: the system's short name and the site's own name), source drops, clipping, disk and spool space. Each goes to the registered watchers (the hook for alert rules; none yet) and, if it is one for the feed, to browsers as <code>monitorEvent</code>. The last 200 are sent when a connection is greeted.</td></tr>
       <tr><td>monitor thread (desktop)</td><td>Every 2 s the computer (CPU, memory, disks, cgroup limits, container detection; internet checks every 15 s) and the plugins (queued, retries, latency, drops) report into their own aggregator: a <code>host</code> message to browsers, and rollups into the same history.</td></tr>
-      <tr><td>Per-channel detail</td><td><code>VoiceDecoder::report</code> and the control channel's level separation reach <code>Engine::channels()</code>, sent only to clients subscribed to <code>rf:&lt;source&gt;</code> (<code>rfDetail</code>) or <code>decode:&lt;shortName&gt;</code> (<code>decodeDetail</code>).</td></tr>
+      <tr><td>Per-channel detail</td><td><code>VoiceDecoder::quality()</code> and <code>ControlChannel::quality()</code> (<code>ChannelQuality</code>) reach <code>Engine::channels()</code>, sent only to clients subscribed to <code>rf:&lt;source&gt;</code> (<code>rfDetail</code>) or <code>decode:&lt;shortName&gt;</code> (<code>decodeDetail</code>).</td></tr>
     </tbody>
   </table></div>
-  <p class="small muted">A new protocol brings its own figures through <code>ControlChannel::report</code> (default: nothing); <code>Engine::report</code> adds what every system and source shares (levels, ppm, calls). The registry and monitor live in <code>stats::Shared</code>, which the platform holds so they outlive a recording session.</p>
+  <p class="small muted">A new protocol brings its own figures through <code>ControlChannel::report</code> (default: nothing); <code>Engine::report</code> adds what every system and source shares (levels, ppm, calls). The registry, the name book and the monitor live in <code>stats::Shared</code>, which the platform holds so they outlive a recording session.</p>
 </section>
 
 <section id="browser">
@@ -615,32 +636,36 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <div class="tablewrap"><table>
     <thead><tr><th></th><th>Desktop (<code>trunk-pro</code>)</th><th>Browser (<code>trunk-web</code>)</th></tr></thead>
     <tbody>
-      <tr><td>Threads</td><td>Source threads, engine thread, finish, encoders, plugins, web server</td><td>One worker. <code>pumpRtl</code> awaits <code>WebRtl.next()</code> and pushes the block; a 50 ms timer polls.</td></tr>
-      <tr><td>Back-pressure</td><td>A 256-block queue in front of the engine</td><td>None needed: the pump asks for the next block only after pushing the last, so a slow engine leaves USB transfers waiting and the dongle overflows, reported as <code>dropped</code></td></tr>
+      <tr><td>Threads</td><td>Source and decoding threads, engine thread, finish pool, plugins, web server</td><td>One worker. <code>pumpRtl</code> awaits <code>WebRtl.next()</code> and pushes the block (<code>Session::push</code>, the single-threaded path); a 50 ms timer polls.</td></tr>
+      <tr><td>Back-pressure</td><td>A 256-block queue in front of each source's decoding</td><td>None needed: the pump asks for the next block only after pushing the last, so a slow engine leaves USB transfers waiting and the dongle overflows, reported as <code>dropped</code></td></tr>
       <tr><td>Transport</td><td>WebSocket <code>/api/ws</code> and binary audio frames</td><td><code>postMessage</code>: <code>{msg}</code> or <code>{audio, tg}</code></td></tr>
-      <tr><td>Config</td><td><code>config.json</code> beside the data folder</td><td><code>localStorage["trp.config"]</code>, kept by the page</td></tr>
+      <tr><td>Config</td><td><code>config.json</code>, the talkgroup files beside it</td><td><code>localStorage["trp.config"]</code> and <code>["trp.talkgroups"]</code>, kept by the page</td></tr>
       <tr><td>Call files, aliases, heard codes, registry</td><td>Files in the recordings and data folders</td><td>OPFS (the origin's private file system); <b>Export to folder…</b> copies calls out</td></tr>
       <tr><td>Sources</td><td>RTL-SDR, USRP, Airspy, SoapySDR, files</td><td>RTL-SDR over WebUSB, and capture files the user picks (forgotten on reload)</td></tr>
-      <tr><td>Not available</td><td></td><td>Plugins, M4A, channel files, <code>findRadios</code>, <code>listDir</code>, Trunk Recorder import from disk, <code>quit</code></td></tr>
+      <tr><td><code>hello.capabilities</code></td><td>All: <code>service</code>, <code>drivers</code>, <code>plugins</code>, <code>interfaces</code>, <code>host</code>, <code>keys</code></td><td>None: a command it can't do is answered with an <code>error</code></td></tr>
+      <tr><td>Not available</td><td></td><td>Plugins, interfaces, M4A, channel files, <code>findRadios</code>, <code>listDir</code>, Trunk Recorder import from disk, key containers, <code>quit</code></td></tr>
       <tr><td>Staying awake</td><td></td><td>A screen wake lock while recording, because phones and tablets freeze a tab once the screen sleeps</td></tr>
     </tbody>
   </table></div>
-  <p class="small muted">Build: <code>cargo build -p trunk-web --target wasm32-unknown-unknown --profile dist</code> with <code>-C target-feature=+simd128</code>, then <code>wasm-bindgen --target web</code> (<code>npm run build:wasm</code>). The wasm exports: <code>WebSession</code>, <code>WebRtl</code>, <code>WebSurvey</code>, <code>WebProfiler</code>.</p>
+  <p class="small muted">Build: <code>cargo build -p trunk-web --target wasm32-unknown-unknown --profile dist</code> with <code>-C target-feature=+simd128</code> (<code>.cargo/config.toml</code>), then <code>wasm-bindgen --target web</code> into <code>web/src/web/pkg</code> (<code>npm run wasm</code>). The wasm exports: <code>WebSession</code>, <code>WebRtl</code>, <code>WebSurvey</code>, <code>WebProfiler</code>, and the config rules below.</p>
+  <h3>The config rules in the interface</h3>
+  <p>The interface doesn't write the config's rules again: it runs the recorder's own, compiled to WebAssembly, in both builds (the desktop app's page too). <code>crates/trunk-web/src/rules.rs</code> exports, over trunk-app's <code>config.rs</code>: <code>configNormalize</code> (a config as the recorder reads it, an older one upgraded, with its <code>notes</code>), <code>configTalkgroups</code> (the talkgroup files an older config held), <code>configProblem</code> (<code>Config::problem</code>), <code>configNameProblem</code>, <code>configCenters</code> (<code>resolved_centers</code>), <code>autoCenter</code>, <code>planCenters</code>, <code>usableHalfWidth</code>, <code>channelsParse</code> / <code>channelsWrite</code> (the channel CSV) and <code>bandplanProblem</code>. <code>web/src/rules.ts</code> loads them before the page renders (<code>loadRules</code>) and keeps each answer for the store's config until it is replaced (<code>configReplaced</code>). So the dashboard needs a browser with WebAssembly SIMD (Safari 16.4, Chrome 91, Firefox 89 or later), and says so if it hasn't. Left in TypeScript on purpose: the file name chip editor, the tone and talkgroup parsers used for inline hints, and the builders for new cards and the Trunk Recorder import.</p>
 </section>
 
 <section id="protocol">
   <div class="eyebrow"><b>14</b><span>web/src/protocol.ts · trunk-pro/src/server.rs · docs/api/</span></div>
   <h2>The interface protocol</h2>
-  <p>Everything the interface does goes over one WebSocket, <code>/api/ws</code>: JSON text both ways, plus binary frames for live audio. <code>web/src/protocol.ts</code> is the source of truth; <code>docs/api/protocol.schema.json</code> is generated from it (<code>npm run schema</code>), and <code>trunk-pro/src/protocol_tests.rs</code> checks the Rust side's messages against that schema. The full reference for people building their own interface is <a href="../api/README.md">docs/api/README.md</a>.</p>
+  <p>Everything the interface does goes over one WebSocket, <code>/api/ws</code>: JSON text both ways, plus binary frames for live audio. <code>web/src/protocol.ts</code> is the source of truth; <code>docs/api/protocol.schema.json</code> is generated from it (<code>npm run schema</code>). The Rust side is two enums in <code>trunk-app/src/protocol.rs</code>: <code>ToClient</code> (every message, serialized as <code>{"type": &lt;variant&gt;, …}</code>, with <code>audience()</code>) and <code>Command</code> (every command, read strictly by <code>Command::parse</code>, with <code>listen_may_send()</code>); <code>trunk-pro/src/protocol_tests.rs</code> checks their variants against protocol.ts both ways and the messages against the schema. Every message to the browsers goes through <code>runtime::publish</code>, which serializes it once as each kind of connection may hear it (<code>Out::of</code>: for everyone, control access only, or the config in two versions, the listen one without plugin settings and key sources); bodies still put together as JSON ride as a <code>Body</code>. A command that doesn't parse, or that the connection's access doesn't allow, is answered with an <code>error</code>. <code>hello.capabilities</code> (<code>service</code>, <code>drivers</code>, <code>plugins</code>, <code>interfaces</code>, <code>host</code>, <code>keys</code>) says what a recorder can do beyond recording, so an interface shows what works rather than checking which build it is. The full reference for people building their own interface is <a href="../api/README.md">docs/api/README.md</a>.</p>
   <div class="panel" id="ws-seq"></div>
   <h3>Who gets what</h3>
   <div class="tablewrap"><table>
     <thead><tr><th>Delivery</th><th>Messages</th></tr></thead>
     <tbody>
-      <tr><td>On connect, to that client</td><td><code>hello</code> (version, platform, config and its path, devices, phase, the last 300 calls, talker aliases, heard codes, radios, survey state, recent events, the computer, plugin runtimes), then <code>plugins</code></td></tr>
-      <tr><td>To every client</td><td><code>state</code>, <code>status</code> (about every 500 ms while recording), <code>stats</code> (every second), <code>host</code> (every 2 s, desktop), <code>concluded</code> (after a call's files exist), <code>callFiles</code>, <code>monitorEvent</code>, <code>unitAlias</code>, <code>heard</code>, <code>config</code>, <code>survey</code>, <code>surveySpectrum</code>, <code>pluginRuntime</code>, <code>pluginInstall</code>, <code>quit</code></td></tr>
-      <tr><td>Only to clients subscribed to the topic</td><td><code>spectrum</code> (<code>spectrum:&lt;source&gt;</code>, about 7 a second, 512 bins), <code>log</code> (<code>log</code>), <code>rfDetail</code> (<code>rf:&lt;source&gt;</code>, 1/s), <code>decodeDetail</code> (<code>decode:&lt;shortName&gt;</code>, 1/s), per-core figures in <code>host</code> (<code>platform</code>). Nothing is computed for a topic nobody watches.</td></tr>
-      <tr><td>Only to the sender</td><td><code>devices</code>, <code>radios</code>, <code>dir</code>, <code>trConfig</code>, <code>pluginStore</code>, <code>subscribed</code>, <code>statsResult</code>, <code>radioResult</code>, <code>olderCalls</code>, <code>sourceProfile</code>, <code>error</code>, <code>notice</code></td></tr>
+      <tr><td>On connect, to that client</td><td>The greeting, as the ordinary messages sent later: <code>state</code>, <code>config</code> (with its <code>version</code>), <code>talkgroups</code> (each system's file), <code>units</code> (each system's saved aliases), <code>heard</code>, <code>history</code> (the last 300 calls), <code>radios</code>, <code>survey</code>, <code>monitorEvent</code> (each recent event), <code>host</code>; with control access also <code>devices</code>, <code>keys</code>, <code>plugins</code>, <code>interfaces</code>. Then <code>hello</code> (version, platform, api, config path, survey bands, capabilities): caught up. An interface waits for <code>hello</code> before treating something missing as missing.</td></tr>
+      <tr><td>To every client</td><td><code>state</code>, <code>status</code> (about every 500 ms while recording: calls and a summary of each system's sites), <code>stats</code> (every second), <code>host</code> (every 2 s, desktop), <code>concluded</code> (after a call's files exist), <code>callFiles</code>, <code>monitorEvent</code>, <code>unitAlias</code>, <code>heard</code>, <code>config</code>, <code>talkgroups</code>, <code>survey</code>, <code>surveySpectrum</code>, <code>log</code> (the recorder's own warnings and errors, with their clock time and level), <code>quit</code></td></tr>
+      <tr><td>Control access only</td><td><code>plugins</code>, <code>pluginRuntime</code>, <code>interfaces</code>, <code>store</code>, <code>installProgress</code>, <code>keys</code> (<code>ToClient::audience</code>)</td></tr>
+      <tr><td>Only to clients subscribed to the topic</td><td><code>spectrum</code> (<code>spectrum:&lt;source&gt;</code>, about 7 a second, 512 bins), <code>log</code> (<code>log</code>: control channel lines and the rest of the recorder's log), <code>rfDetail</code> (<code>rf:&lt;source&gt;</code>, 1/s), <code>decodeDetail</code> (<code>decode:&lt;shortName&gt;</code>, 1/s: channels, each site's adjacent sites and DMR / NXDN detail, patches), per-core figures in <code>host</code> (<code>platform</code>). Nothing is computed for a topic nobody watches.</td></tr>
+      <tr><td>Only to the sender</td><td><code>configSaved</code>, <code>devices</code>, <code>radios</code>, <code>dir</code>, <code>trConfig</code>, <code>store</code>, <code>subscribed</code>, <code>statsResult</code>, <code>radioResult</code>, <code>olderCalls</code>, <code>sourceProfile</code>, <code>error</code>, <code>notice</code></td></tr>
       <tr><td>Binary, to clients that asked to <code>listen</code></td><td>Live audio frames, filtered per client by system and talkgroup</td></tr>
     </tbody>
   </table></div>
@@ -648,10 +673,11 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <div class="tablewrap"><table>
     <thead><tr><th>Area</th><th>Client → recorder</th></tr></thead>
     <tbody>
-      <tr><td>Recording</td><td><code>setConfig</code> (always the whole config), <code>start</code>, <code>stop</code>, <code>quit</code>, <code>channelFile</code></td></tr>
+      <tr><td>Recording</td><td><code>setConfig {config, version}</code> (always the whole config, edited from that version; answered with <code>configSaved {version, error?}</code>), <code>setTalkgroups {system, csv}</code>, <code>start</code>, <code>stop</code>, <code>quit</code>, <code>channelFile</code></td></tr>
       <tr><td>Watching</td><td><code>subscribe {topics}</code> (replaces the last; up to 64), <code>listen {on, system, talkgroup}</code>, <code>statsQuery {id, …}</code>, <code>radioQuery {id, what, …}</code>, <code>olderCalls {before, limit}</code></td></tr>
       <tr><td>Setup</td><td><code>devices</code>, <code>findRadios</code>, <code>listDir</code>, <code>readTrConfig</code>, <code>profileSource</code>, <code>surveyStart</code>, <code>surveyListen</code>, <code>surveyRescan</code>, <code>surveyStop</code></td></tr>
-      <tr><td>Plugins</td><td><code>plugins</code>, <code>pluginStore</code>, <code>installPlugin</code> (by id, or a GitHub repository and tag), <code>addPlugin</code>, <code>removePlugin</code></td></tr>
+      <tr><td>Plugins and interfaces</td><td><code>plugins</code>, <code>addPlugin</code>, <code>removePlugin</code>, <code>interfaces</code>, <code>addInterface</code>, <code>removeInterface</code>; their stores: <code>store {kind, refresh?}</code>, <code>install {kind, id}</code> or <code>{kind, repository, tag?}</code> (progress in <code>installProgress {kind, key, id, stage, message}</code>), <code>kind</code> <code>plugin</code> or <code>interface</code></td></tr>
+      <tr><td>Keys</td><td><code>unlockKeys {source, password}</code>, <code>lockKeys {source}</code> (key containers without a password file)</td></tr>
     </tbody>
   </table></div>
   <h3>Live audio frame</h3>
@@ -670,11 +696,13 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
     <thead><tr><th>Route</th><th>Serves</th></tr></thead>
     <tbody>
       <tr><td><code>/api/ws</code></td><td>The WebSocket</td></tr>
-      <tr><td><code>/api/version</code>, <code>/api/schema</code>, <code>/api/protocol.ts</code>, <code>/api/docs</code>, <code>/api/interfaces</code>, <code>/api/*</code></td><td>Version, the generated schema, the TypeScript types, the API docs and examples (embedded <code>docs/api</code>), the custom interfaces</td></tr>
+      <tr><td><code>/api/version</code>, <code>/api/schema</code>, <code>/api/protocol.ts</code>, <code>/api/docs</code>, <code>/api/*</code></td><td>Version (and the interface API), the generated schema, the TypeScript types, the API docs and examples (embedded <code>docs/api</code>)</td></tr>
       <tr><td><code>/calls/&lt;path&gt;</code></td><td>Recordings (the recordings folder, then the RAM spool), with WAV ↔ M4A substitution and Range requests</td></tr>
-      <tr><td><code>/builtin/</code>, <code>/ui/&lt;name&gt;/</code>, <code>/</code></td><td>The embedded interface, interfaces from disk (<code>server.interfaces</code>), and the home interface (<code>server.home</code>)</td></tr>
+      <tr><td><code>/store/screenshots/&lt;sha256&gt;</code>, <code>/interfaces/&lt;id&gt;/screenshots/&lt;n&gt;</code></td><td>Store listings' screenshots (built-in port only)</td></tr>
+      <tr><td>Everything else</td><td>On <code>server.port</code> the embedded interface; on an interface's port, its folder (no hidden files)</td></tr>
     </tbody>
   </table></div>
+  <p>These are served on the built-in interface's port and, the same, on each other interface's (<code>server.interfaces</code>, a listener each, kept by <code>interfaces::serve::reconcile</code> as the config changes). The port a request came in on decides what a WebSocket may do (<code>access.rs</code>): control on the built-in port; on an interface's, its <code>access</code>: <code>listen</code> may only <code>subscribe</code>, query, page through calls and <code>listen</code>, gets no plugin, interface or key messages, and sees the config without plugin settings and key sources.</p>
   <p>Every request passes a guard. Programs that aren't browsers send no <code>Origin</code> and are let in. A browser page must be the recorder's own origin or listed in <code>server.allowedOrigins</code> (which also gets CORS headers); anything else gets 403. Bound to localhost, the <code>Host</code> must be localhost too, so a site whose name was pointed at 127.0.0.1 (DNS rebinding) is still another site. A client that falls more than 4,096 messages behind on the hub skips the oldest without notice.</p>
 </section>
 
@@ -691,16 +719,19 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
       <tr><td>Vocoders, loudness</td><td><code>trunk-core/src/mbe/</code>, <code>loudness.rs</code></td></tr>
       <tr><td>Engine, sources, recorder pool</td><td><code>trunk-core/src/trunk/engine.rs</code></td></tr>
       <tr><td>Control channels per protocol</td><td><code>trunk-core/src/trunk/control.rs</code></td></tr>
-      <tr><td>Messages, TSBK parsing</td><td><code>trunk-core/src/trunk/message.rs</code></td></tr>
+      <tr><td>Messages, P25 parsing (<code>P25Parser</code>) · typed P25 OSPs</td><td><code>trunk-core/src/trunk/message.rs</code> · <code>p25/osp.rs</code></td></tr>
       <tr><td>Calls, <code>RecorderHost</code>, call ids</td><td><code>trunk-core/src/trunk/calls.rs</code></td></tr>
       <tr><td>Voice decoders</td><td><code>trunk-core/src/trunk/{voice,tracker,tdma}.rs</code></td></tr>
       <tr><td>Site lock · patches</td><td><code>trunk-core/src/trunk/identity.rs</code> · <code>patches.rs</code></td></tr>
       <tr><td>Saving a call · multi-site · conventional</td><td><code>trunk-core/src/trunk/{record,frames}.rs</code> · <code>multisite.rs</code> · <code>conventional.rs</code></td></tr>
-      <tr><td>Config · Session</td><td><code>trunk-app/src/config.rs</code> · <code>session.rs</code></td></tr>
-      <tr><td>Threads, deliver, finish</td><td><code>trunk-pro/src/runtime.rs</code></td></tr>
-      <tr><td>SDR drivers</td><td><code>trunk-pro/src/sdr.rs</code>, <code>trunk-pro/src/radio/</code></td></tr>
-      <tr><td>Web server · plugin host</td><td><code>trunk-pro/src/server.rs</code> · <code>trunk-pro/src/plugins/</code></td></tr>
+      <tr><td>Config, its upgrades, channel CSV · Session</td><td><code>trunk-app/src/config.rs</code>, <code>migrate.rs</code>, <code>channels.rs</code> · <code>session.rs</code></td></tr>
+      <tr><td>Interface protocol (Rust)</td><td><code>trunk-app/src/protocol.rs</code>; checked by <code>trunk-pro/src/protocol_tests.rs</code></td></tr>
+      <tr><td>Threads, lifecycle, deliver, finish</td><td><code>trunk-pro/src/runtime.rs</code></td></tr>
+      <tr><td>SDR drivers</td><td><code>trunk-pro/src/sdr.rs</code> (<code>Radio</code>, <code>run_with</code>), <code>trunk-pro/src/radio/</code></td></tr>
+      <tr><td>Web server, access · logging</td><td><code>trunk-pro/src/server.rs</code>, <code>access.rs</code> · <code>logging.rs</code></td></tr>
+      <tr><td>Plugin host · stores</td><td><code>trunk-pro/src/plugins/</code> · <code>trunk-pro/src/store.rs</code>, <code>plugins/store.rs</code>, <code>interfaces/</code></td></tr>
       <tr><td>Plugin protocol and SDK</td><td><code>trunk-recorder-plugin/src/</code></td></tr>
+      <tr><td>Config rules for the interface</td><td><code>trunk-web/src/rules.rs</code> → <code>web/src/rules.ts</code></td></tr>
       <tr><td>Interface protocol</td><td><code>web/src/protocol.ts</code> → <code>docs/api/protocol.schema.json</code></td></tr>
     </tbody>
   </table></div>
@@ -955,12 +986,12 @@ function rows(nodes, opt) {
 diagram($("dia-crates"), {
   w: 960, h: 400, title: "Crates and how they depend on each other", textTitle: "Crates as text",
   nodes: [
-    { id: "ui", x: 385, y: 20, label: "web/", sub: "React interface", cls: "k-out", text: "The interface. <code>web/src/protocol.ts</code> is the source of truth for every message between interface and recorder. It is embedded in the <code>trunk-pro</code> binary and also runs the browser build." },
-    { id: "pro", x: 190, y: 120, label: "trunk-pro", sub: "desktop program", text: "Threads, SDR drivers (<code>sdr.rs</code>, <code>radio/</code>), the engine loop (<code>runtime.rs</code>), the axum web server (<code>server.rs</code>), the plugin host (<code>plugins/</code>), stats storage, the CLI and analysis tools. The only crate here that owns files, sockets and devices on the desktop." },
-    { id: "web", x: 580, y: 120, label: "trunk-web", sub: "wasm32 browser build", text: "<code>WebSession</code>, <code>WebRtl</code> (RTL-SDR over WebUSB) and <code>WebSurvey</code>, exported with wasm-bindgen to <code>web/src/web/engine.worker.ts</code>. Single-threaded: the worker pushes samples and polls on a timer." },
-    { id: "app", x: 385, y: 220, label: "trunk-app", sub: "no I/O", text: "<code>Config</code> (schema, defaults, validation, auto-centring), <code>Session</code> (engine events → interface messages, call files, plugin events), <code>stats</code>, file names, log records, conventional channel CSV, sample formats. Platform-independent." },
+    { id: "ui", x: 385, y: 20, label: "web/", sub: "React interface", cls: "k-out", text: "The interface. <code>web/src/protocol.ts</code> is the source of truth for every message between interface and recorder. It is embedded in the <code>trunk-pro</code> binary and also runs the browser build. It loads trunk-web's WebAssembly for the config rules (<code>web/src/rules.ts</code>), in both builds." },
+    { id: "pro", x: 190, y: 120, label: "trunk-pro", sub: "desktop program", text: "Source and decoding threads, SDR drivers (<code>sdr.rs</code>, <code>radio/</code>), the engine loop, the lifecycle and the finish pool (<code>runtime.rs</code>), the axum web server (<code>server.rs</code>), the plugin host (<code>plugins/</code>), the stores, stats storage, the CLI and analysis tools. The only crate here that owns files, sockets and devices on the desktop." },
+    { id: "web", x: 580, y: 120, label: "trunk-web", sub: "wasm32 browser build", text: "<code>WebSession</code>, <code>WebRtl</code> (RTL-SDR over WebUSB), <code>WebSurvey</code> and <code>WebProfiler</code>, exported with wasm-bindgen to <code>web/src/web/engine.worker.ts</code>. Single-threaded: the worker pushes samples and polls on a timer. Also the config rules (<code>rules.rs</code>) the page runs in both builds." },
+    { id: "app", x: 385, y: 220, label: "trunk-app", sub: "no I/O", text: "<code>Config</code> (schema, defaults, validation, auto-centring; <code>migrate.rs</code> for older ones), <code>Session</code> (engine events → interface messages, call files, plugin events), the interface protocol (<code>protocol.rs</code>: <code>ToClient</code>, <code>Command</code>), <code>stats</code>, file names, log records, conventional channel CSV, sample formats, the survey. Platform-independent." },
     { id: "core", x: 385, y: 320, label: "trunk-core", sub: "no I/O · no threads · no clock", text: "DSP (channelizer, receivers), protocol decoders (P25, DMR, NXDN, SmartNet), vocoders (<code>mbe</code>), the trunking engine (<code>trunk::Engine</code>), multi-site, saving calls as JSON + audio. Builds for native and wasm32." },
-    { id: "plug", x: 30, y: 220, label: "trunk-recorder-plugin", sub: "protocol + SDK (crates.io)", w: 210, text: "The plugin wire protocol (<code>HostMessage</code>, <code>PluginMessage</code>, <code>Manifest</code>), used by <code>trunk-pro</code> with default features off, plus a Rust SDK for plugin authors (feature <code>sdk</code>): <code>Plugin</code>, <code>run</code>, <code>CallQueue</code>." },
+    { id: "plug", x: 30, y: 220, label: "trunk-recorder-plugin", sub: "protocol + SDK (crates.io)", w: 210, text: "The plugin wire protocol (<code>HostMessage</code>, <code>PluginMessage</code>, <code>Manifest</code>, <code>CallRecord</code>: the call JSON), used by <code>trunk-pro</code> with default features off, plus a Rust SDK for plugin authors (feature <code>sdk</code>): <code>Plugin</code>, <code>run</code>, <code>CallQueue</code>." },
     { id: "exe", x: 30, y: 320, label: "plugin executables", sub: "openmhz, broadcastify…", w: 210, cls: "k-out", text: "Separate programs in their own repositories, built on the SDK (or any language that can read and write JSON lines). The recorder runs them as child processes." }
   ],
   edges: [["ui", "pro", "embedded in"], ["ui", "web", "runs on"], ["pro", "app", "uses"], ["web", "app", "uses"], ["app", "core", "uses"], ["pro", "plug", "protocol"], ["exe", "plug", "SDK", { s: "tb" }]]
@@ -969,38 +1000,39 @@ diagram($("dia-crates"), {
 /* ---------- 02 sample flow ---------- */
 const C = [30, 250, 470, 690, 930];
 diagram($("dia-flow"), {
-  w: 1150, h: 610, minW: 920, nw: 176, title: "The path of a block of samples, by thread", stepLabel: "Follow a block",
+  w: 1150, h: 710, minW: 920, nw: 176, title: "The path of a block of samples, by thread", stepLabel: "Follow a block",
   textTitle: "The path as numbered steps",
   lanes: [
-    { y: 10, h: 110, label: "source-N threads", color: "var(--lane-src)" },
-    { y: 130, h: 270, label: "engine thread (one, single-threaded)", color: "var(--lane-eng)" },
-    { y: 410, h: 190, label: "finish · plugins · web server", color: "var(--lane-out)" }
+    { y: 10, h: 110, label: "source-N threads (one per source)", color: "var(--lane-src)" },
+    { y: 130, h: 250, label: "dsp-N threads (one per source): decoded under the source's lock, followed under the engine's", color: "var(--lane-eng)" },
+    { y: 390, h: 100, label: "engine thread (one)", color: "var(--lane-eng)" },
+    { y: 500, h: 200, label: "finish pool · plugins · web server", color: "var(--lane-out)" }
   ],
   nodes: [
-    { id: "src", x: C[0], y: 42, label: "SDR driver", sub: "RTL · USRP · Airspy · Soapy · file", w: 200, text: "Each source thread reads its radio. RTL-SDR (pure Rust over <code>rtlsdr-nusb</code>): 262,144-byte USB transfers, 8 in flight, sent as raw <code>u8</code> IQ (about 55 ms per block at 2.4 MSPS). USRP, Soapy: about 10 ms blocks of float IQ. Airspy: libairspy's callback. File: 32,768-sample chunks, paced to real time or not. Each block is stamped with the instant it was handed over (<code>at</code>) and carries the driver's <code>dropped</code> count." },
-    { id: "queue", x: C[1] + 10, y: 42, label: "Source queue", sub: "sync_channel::<SourceMsg>(256)", w: 210, cls: "k-queue", text: "One bounded channel shared by every source. Senders <b>block</b> when it is full; nothing is dropped here. This is the only place back-pressure exists in the system (section 07)." },
-    { id: "push", x: C[0], y: 222, label: "Session::push", sub: "drops · ClockFit", text: "Adds reported drops to the source's stats and feeds them to <code>Engine::push_gap</code> as faint noise (up to 10 s) so sample time stays in step with the air. Feeds the block's arrival time to <code>ClockFit</code>, which keeps the source's clock offset. Then calls <code>Engine::push_u8</code> or <code>push_iq</code>." },
-    { id: "chz", x: C[1], y: 222, label: "Channelizer", sub: "16,384-pt FFT per block", text: "One per source. Collects 12,288 new samples, runs one 16,384-point FFT, stores the spectrum for pre-roll, then calls <code>Engine::on_block(source)</code>. A driver block of 131,072 RTL samples is about 10.7 channelizer blocks, all run inside the one <code>push</code> call." },
-    { id: "voice", x: C[2], y: 150, label: "Voice heads", sub: "VoiceDecoder::push", text: "Step 1 of <code>on_block</code>: every open voice channel on this source runs its head (M bins × filter → inverse FFT) and its decoder. Outputs (<code>VoiceOut</code>) are queued in <code>radio.pending</code>, not applied yet." },
-    { id: "cc", x: C[2], y: 222, label: "Control heads", sub: "ControlChannel::push", text: "Step 2: every trunk whose control channel is on this source decodes it into <code>Step</code>s (messages plus the site's identity so far)." },
-    { id: "conv", x: C[2], y: 300, label: "Conventional", sub: "shared-spectrum energy", text: "Step 4: each conventional frequency's power is read from the stored spectrum with no head. A channel above its squelch opens a head with 0.3 s pre-roll and the same decoder a trunked call would use." },
-    { id: "calls", x: C[3], y: 222, label: "Trunk::follow", sub: "site lock → CallManager", text: "Checks each step against the site lock, emits every message, and hands the messages to the system's <code>CallManager</code>. A grant can call <code>RecorderHost::record</code>, which opens a voice head right away and decodes its pre-roll into <code>pending</code>." },
-    { id: "apply", x: C[3], y: 150, label: "apply_pending", sub: "audio → Recording", text: "Step 3 (and again after conventional): decoded audio is appended to each call's <code>Recording</code>; live audio becomes <code>Event::Audio</code>; unit IDs, encryption and talker aliases update their calls." },
-    { id: "emit", x: C[4], y: 186, label: "emit_call_events", sub: "start · end → conclude", text: "Step 5: call starts link multi-site twins and become <code>CallStart</code>; ends go through <code>conclude()</code>: <code>MultiSite</code> holds copies until all twins end, <code>record::save_call</code> trims, normalises and writes the JSON, giving <code>Event::Concluded</code> (or <code>NotSaved</code> / <code>Duplicate</code>). The recorder is freed here." },
-    { id: "poll", x: C[4], y: 300, label: "Session::poll", sub: "Event → Output", text: "Runs after every received block (or 50 ms idle). Drains engine events into <code>Output</code>s: <code>Text</code> (status every 500 ms, stats every 1 s), <code>Topic</code> (spectrum, logs, RF detail, only while watched), <code>Audio</code>, <code>File</code>, <code>Plugin</code>, <code>Log</code>, <code>Rollup</code>." },
-    { id: "deliver", x: C[3], y: 330, label: "runtime::deliver", sub: "route each Output", text: "Text, Topic, Audio → the hub. Audio, Plugin → the plugin host. File → the finish queue. Log → logging. Rollup → stats store. None of these block the engine (one exception: a full finish queue, see section 07)." },
-    { id: "finq", x: C[2], y: 448, label: "Finish queue", sub: "sync_channel(1024)", cls: "k-queue", text: "Calls waiting to be written. If it is full, the engine writes the call itself without M4A." },
-    { id: "plq", x: C[3], y: 448, label: "Plugin queues", sub: "1024 lines per process", cls: "k-queue", text: "One per plugin process, fed with <code>try_send</code>. When full, events are dropped and counted; the engine never waits." },
-    { id: "hub", x: C[4], y: 448, label: "Hub", sub: "tokio broadcast(4096)", cls: "k-queue", text: "Every WebSocket task subscribes. Sending never blocks; a client more than 4,096 messages behind loses the oldest." },
-    { id: "fin", x: C[2], y: 530, label: "finish thread", sub: "files · concluded", cls: "k-out", text: "Writes the JSON (and WAV when kept or a plugin takes WAV), encodes the kept M4A, sends <code>concluded</code> to browsers once the files exist, adds the call to history, registers it with the Archive and sends <code>call.concluded</code> to plugins." },
-    { id: "plug", x: C[3], y: 530, label: "Plugin processes", sub: "stdin JSON lines", cls: "k-out", text: "Upload or stream calls and answer <code>call.result</code>. The Archive deletes files not to be kept once every plugin has answered." },
-    { id: "ws", x: C[4], y: 530, label: "Browsers", sub: "one task per WebSocket", cls: "k-out", text: "Each WebSocket task forwards everyone's messages, topic messages it subscribed to, and live audio for what it asked to <code>listen</code> to." }
+    { id: "src", x: C[0], y: 42, label: "SDR driver", sub: "RTL · USRP · Airspy · Soapy · file", w: 200, text: "Each source thread runs its radio: a <code>Radio</code> (<code>BACKOFF</code>, <code>retune_to</code>, <code>stream_once</code>) under one loop, <code>sdr::run_with</code>, which reopens it after an error (RTL 2 s, the others 3 s); <code>runtime::spawn_source</code> starts it for recording, the survey and profiling. RTL-SDR (pure Rust over <code>rtlsdr-nusb</code>): 262,144-byte USB transfers, 8 in flight, sent as raw <code>u8</code> IQ in reused buffers (about 55 ms per block at 2.4 MSPS). USRP, Soapy: about 10 ms blocks of float IQ. Airspy: libairspy's callback, real samples made IQ on the decoding thread. File: 32,768-sample chunks, paced to real time or not. Each block is stamped with the instant it was handed over (<code>at</code>) and carries the driver's <code>dropped</code> count." },
+    { id: "queue", x: C[1] + 10, y: 42, label: "Source queue", sub: "sync_channel::<SourceMsg>(256) each", w: 210, cls: "k-queue", text: "One bounded channel per source, from its <code>source-N</code> to its <code>dsp-N</code>. The sender <b>blocks</b> when it is full; nothing is dropped here. The only queues that block (section 07). Errors and ends go on to the engine thread as <code>EngineCmd::Source</code>." },
+    { id: "push", x: C[0], y: 222, label: "Feeder::push", sub: "drops · ClockFit · meter", text: "On the source's decoding thread. Feeds reported drops to <code>Engine::push_gap</code> as faint noise (up to 10 s) so sample time stays in step with the air, and the block's arrival time to <code>ClockFit</code>, which keeps the source's clock offset; counts the sample meter. Then calls <code>Engine::push_u8</code> or <code>push_iq</code>. <code>Feeder::idle</code> fills in a source quiet for over 1 s." },
+    { id: "chz", x: C[1], y: 222, label: "Channelizer", sub: "16,384-pt FFT per block", text: "One per source, in its <code>SourceRx</code>, under the source's lock. Collects 12,288 new samples, runs one 16,384-point FFT and stores the spectrum for pre-roll. A driver block of 131,072 RTL samples is about 10.7 channelizer blocks, all run inside the one <code>push</code> call." },
+    { id: "voice", x: C[2], y: 150, label: "Voice channels", sub: "SourceRx::decode_block", text: "Under the source's lock: every open voice channel on this source runs its head (M bins × filter → inverse FFT) and its decoder, giving a <code>VoiceResult</code> (outputs routed to their calls' slots, reception, frequency error). The control channel carriers' head IQ is copied out with them (<code>BlockDsp</code>)." },
+    { id: "cc", x: C[2], y: 222, label: "Control channels", sub: "BlockDsp::decode_control", text: "Each control channel under its own lock: <code>ControlChannel::push</code> turns its carriers' IQ into <code>Step</code>s (messages plus the site's identity so far), gathered with what the site follows each block (notes, counts, <code>control_hz</code>, <code>offset_hz</code>, voice params) into a <code>CcResult</code>, so the site never locks its control channel to follow it." },
+    { id: "conv", x: C[2], y: 300, label: "Conventional", sub: "shared-spectrum energy", text: "Step 4 of <code>Core::after_block</code>, under the source's lock again: each conventional frequency's power is read from the stored spectrum with no head. A channel above its squelch opens a head with 0.3 s pre-roll and the same decoder a trunked call would use. It reports with the engine's own <code>Event</code>s." },
+    { id: "calls", x: C[3], y: 222, label: "Trunk::on_block", sub: "site lock → CallManager", text: "Under the engine's lock (<code>Core::after_block</code>, step 2): every site with carriers on this source moves its clock on, checks each step against the site lock, emits every message, and hands the messages to its <code>CallManager</code> with its system's <code>Policy</code>. A grant can call <code>RecorderHost::record</code>, which opens a voice head right away and decodes its pre-roll into <code>pending</code>. Then hunting or AutoTune, and <code>CallManager::tick</code>." },
+    { id: "apply", x: C[3], y: 150, label: "apply_pending", sub: "audio → Recording", text: "Step 1 takes the voice results (<code>Radio::take</code>) into <code>radio.pending</code>; step 3 (and again after conventional) applies them at the site's clock: decoded audio is appended to each call's <code>Recording</code>; live audio becomes <code>Event::Audio</code>; unit IDs, encryption, ciphers, positions and talker aliases update their calls." },
+    { id: "emit", x: C[4], y: 186, label: "emit_call_events", sub: "start · end → conclude", text: "Step 5: call starts link multi-site twins and become <code>CallStart</code>; ends go through <code>conclude()</code>: <code>MultiSite</code> holds copies until all twins end, <code>record::save_call</code> trims, normalises and makes the <code>CallRecord</code>, giving <code>Event::Concluded</code> (or <code>NotSaved</code> / <code>Duplicate</code>). The recorder is freed here." },
+    { id: "poll", x: C[4], y: 420, label: "Session::poll", sub: "Event → Output", text: "On the engine thread, about every 20 ms (sooner when an <code>EngineCmd</code> comes). Steers the sources' clocks and drains engine events into <code>Output</code>s: <code>Message</code> (a <code>ToClient</code>: status every 500 ms, stats every 1 s), <code>Topic</code> (spectrum, logs, RF and decode detail, only while watched), <code>Audio</code>, <code>File</code> (with its <code>CallRecord</code>), <code>Plugin</code>, <code>Log</code>, <code>Rollup</code>." },
+    { id: "deliver", x: C[3], y: 420, label: "runtime::deliver", sub: "route each Output", text: "Message → <code>publish</code> (the one way onto the hub, sorted by who may hear it); Topic, Audio → the hub. Audio, Plugin → the plugin host. File → the finish queue. Log → logging. Rollup → stats store. None of these block decoding; a full finish queue makes the engine thread wait up to 5 s, then finish the call itself by the same plan (section 07)." },
+    { id: "finq", x: C[2], y: 538, label: "Finish queue", sub: "sync_channel(1024)", cls: "k-queue", text: "Calls waiting to be written. When it is full the engine thread waits up to 5 s for room, then finishes the call itself (<code>finish_one</code>, the same plan, .m4a included)." },
+    { id: "plq", x: C[3], y: 538, label: "Plugin queues", sub: "1024 lines per process", cls: "k-queue", text: "One per plugin process, fed with <code>try_send</code>. When full, events are dropped and counted; nobody waits." },
+    { id: "hub", x: C[4], y: 538, label: "Hub", sub: "tokio broadcast(4096)", cls: "k-queue", text: "Every WebSocket task subscribes. Sending never blocks; a client more than 4,096 messages behind loses the oldest." },
+    { id: "fin", x: C[2], y: 625, label: "finish-N (1–3)", sub: "plan · files · concluded", cls: "k-out", text: "<code>plugins::plan</code> decides once which files are written and kept (the system's file rules, what the plugins take). The finisher writes them (to the RAM spool what only plugins need), sends <code>concluded</code> to browsers once the files exist, adds the call to history, encodes the .m4a (to keep, or for a plugin; the WAV instead should that fail), registers it with the Archive and hands the plugins the finished files (<code>call.concluded</code>)." },
+    { id: "plug", x: C[3], y: 625, label: "Plugin processes", sub: "stdin JSON lines", cls: "k-out", text: "Upload or stream calls and answer <code>call.result</code>. The Archive deletes files not to be kept once every plugin has answered." },
+    { id: "ws", x: C[4], y: 625, label: "Browsers", sub: "one task per WebSocket", cls: "k-out", text: "Each WebSocket task forwards the messages its access allows, topic messages it subscribed to, and live audio for what it asked to <code>listen</code> to." }
   ],
   edges: [
     ["src", "queue", "SourceMsg"], ["queue", "push", "recv (50 ms)", { s: "bt", lx: 70, ly: 14 }], ["push", "chz"], ["chz", "voice"], ["chz", "cc"], ["chz", "conv"],
-    ["voice", "apply", "pending"], ["cc", "calls", "Step"], ["calls", "voice", "opens", { dash: true, s: "tb", lx: 26 }], ["conv", "apply", "", { dash: true, s: "rb" }],
+    ["voice", "apply", "VoiceResult"], ["cc", "calls", "CcResult"], ["calls", "voice", "opens", { dash: true, s: "tb", lx: 26 }], ["conv", "apply", "", { dash: true, s: "rb" }],
     ["apply", "emit"], ["calls", "emit", "CallEvents"], ["emit", "poll", "events"], ["poll", "deliver", "Output"],
-    ["deliver", "finq", "File"], ["deliver", "plq", "Plugin, Audio"], ["deliver", "hub", "Text, Topic, Audio"],
+    ["deliver", "finq", "File"], ["deliver", "plq", "Plugin, Audio"], ["deliver", "hub", "Message, Topic, Audio"],
     ["finq", "fin"], ["fin", "plq", "call.concluded", { s: "rl" }], ["plq", "plug"], ["hub", "ws"]
   ],
   steps: ["src", "queue", "push", "chz", "voice", "cc", "calls", "apply", "conv", "emit", "poll", "deliver", "finq", "fin", "plq", "plug", "hub", "ws"],
@@ -1085,7 +1117,7 @@ const DSP = [
       { id: "f2", x: 480, y: 138, label: "Framer", sub: "one per receiver", text: "As above, for the equalised CQPSK receiver." },
       { id: "f3", x: 480, y: 236, label: "Framer", sub: "one per receiver", text: "As above, for the C4FM receiver." },
       { id: "bank", x: 710, y: 138, label: "Diversity bank", sub: "group by sample · pick best", text: "<code>p25::diversity::Bank</code>. Frames whose start samples are within 36 symbols form a group, released once every receiver has passed it by 0.35 s. <code>best_frame</code>: fewest NID corrections. <code>best_tsbks</code>: per block, the first CRC-valid decode. <code>best_imbe</code>: per IMBE codeword, the lowest soft cost per unit of reliability (erased bits count against a copy). <code>modulation</code> limits which receivers run: <code>fsk4</code> → C4FM only, <code>qpsk</code> → the two CQPSK." },
-      { id: "tsbk", x: 940, y: 40, label: "TSDU → TSBKs", sub: "soft Viterbi · CRC-CCITT", text: "Control channel: 196-bit de-interleave, soft Viterbi over the 4-state rate-½ trellis (49 steps), CRC-CCITT over 80 bits. Three TSBKs per TSDU go to <code>TsbkParser</code> (section 05)." },
+      { id: "tsbk", x: 940, y: 40, label: "TSDU → TSBKs", sub: "soft Viterbi · CRC-CCITT", text: "Control channel: 196-bit de-interleave, soft Viterbi over the 4-state rate-½ trellis (49 steps), CRC-CCITT over 80 bits. Three TSBKs per TSDU (and MBTs) are read into typed <code>p25::osp</code> packets for <code>P25Parser</code> (section 05)." },
       { id: "trk", x: 940, y: 138, label: "VoiceTracker", sub: "HDU · LDU1/2 · TDU", text: "Voice: HDU gives algorithm and talkgroup; LDU1 link control (Hamming(10,6) + RS(24,12,13)) gives talkgroup, source, emergency, encryption, talker aliases; LDU2 the encryption sync (RS(24,16,9)); TDU / TDULC end the transmission. Encrypted frames are not vocoded." },
       { id: "imbe", x: 940, y: 236, label: "IMBE vocoder", sub: "9 codewords per LDU · 8 kHz", text: "Each LDU carries nine 144-bit IMBE codewords: Golay(23,12) with Chase-II soft decoding, Hamming(15,11) maximum-likelihood soft decoding, PN whitening. The <code>fixed</code> profile (Pavel Yazev's fixed-point decoder) is the default. 20 ms of 8 kHz audio per codeword." }
     ], edges: [["head", "cq"], ["head", "eq"], ["head", "c4"], ["cq", "f1", "Symbols"], ["eq", "f2", "Symbols"], ["c4", "f3", "Symbols"], ["f1", "bank", "Frame"], ["f2", "bank", "Frame"], ["f3", "bank", "Frame"], ["bank", "tsbk", "control"], ["bank", "trk", "voice"], ["trk", "imbe", "codewords"]] } },
@@ -1121,7 +1153,7 @@ const DSP = [
     ] },
   { id: "dmr", tab: "DMR", intro: "Trunked (Capacity Plus, Capacity Max, Connect Plus, Tier III) and conventional DMR. Every carrier of a trunked site is watched with its own receiver.",
     nodes: [
-      ["Head", "±6.25 kHz trunked", "Conventional DMR heads use 7 kHz."],
+      ["Head", "±6.25 kHz", "Trunked and conventional DMR alike."],
       ["C4FM (DMR)", "4,800 Bd · RRC α 0.2 · MSD", "The C4FM receiver with DMR options; multi-symbol detection uses 16 hypotheses with decision feedback."],
       ["dmr::Framer", "9 sync patterns", "Bursts of CACH 12 + 132 dibits (30 ms). Lock on ≤ 3 sync errors; on the burst grid ≤ 7 (≤ 11 for base-station syncs). Unlock after 24 bursts without a sync."],
       ["Slot assignment", "CACH TACT · Hamming(7,4)", "On a repeater the CACH names the slot; in direct mode the sync does; a mobile is anchored to its last sync."],
@@ -1148,26 +1180,28 @@ const DSP = [
       ["OSW framer", "84 bits · sync 0xAC", "76 interleaved bits (19 × 4) → 38 data/parity pairs, 2-state soft Viterbi, 10-bit CRC. Hunting needs both syncs; in sync, a flywheel at 84 ± 2 bits tolerates 3 misses."],
       ["smartnet::Parser", "6-OSW queue · band plans", "Port of Trunk Recorder's SmartnetParser / OP25. Talkgroup = address & 0xfff0; low 4 bits are flags. Band plans: 800 standard, reband, splinter, 900, OBT."]
     ] },
-  { id: "fm", tab: "Analog FM", intro: "SmartNet analog grants and conventional FM channels (dsp/fm.rs Nbfm), with tone and unit-ID decoding.",
+  { id: "fm", tab: "Analog FM / AM", intro: "SmartNet analog grants and conventional FM channels (dsp/fm.rs Nbfm), with tone and unit-ID decoding; conventional AM (dsp/am.rs) last.",
     nodes: [
-      ["Channel filter", "64 taps · 5,500 Hz", "Blackman low-pass; also the carrier power meter (τ 10 ms)."],
+      ["Channel filter", "64 taps · 5,500 Hz", "Blackman low-pass; also the carrier power meter (τ 10 ms). A conventional channel's <code>bandwidthKhz</code> sets its width."],
       ["Discriminator", "5 kHz = full scale", ""],
-      ["De-emphasis", "750 µs", "One-pole, unity at 1 kHz."],
+      ["De-emphasis", "750 µs", "One-pole, unity at 1 kHz. A conventional system's <code>demod.fmDeemphasis</code> can turn it off."],
       ["Audio low-pass", "128 taps · 3,400 Hz → 8 kHz", "Resampled to 8 kHz by interpolating between filter outputs. This pre-high-pass audio feeds the CTCSS / DCS detector (conventional)."],
       ["High-pass", "300 Hz · 6th-order Butterworth", "Removes CTCSS from the recorded audio."],
-      ["Squelch gate", "open 30 ms · close 2 ms", "10 ms gain ramps; audio is delayed 15 ms behind the gate so the squelch tail is never heard. Trunked threshold: noise floor + 6 dB; conventional: the channel's squelch."],
+      ["Squelch gate", "open 30 ms · close 2 ms", "10 ms gain ramps; audio is delayed 15 ms behind the gate so the squelch tail is never heard (conventional: <code>demod.squelchOpenMs</code> / <code>squelchHangMs</code>). Trunked threshold: 6 dB above the noise under the channel (<code>Channelizer::threshold</code>); conventional: the channel's squelch."],
       ["Signalling", "MDC1200 · FleetSync", "Unit IDs decoded from the gated audio (<code>dsp/signalling.rs</code>) become the call's source unit."],
-      ["Tones", "51 CTCSS · DCS Golay(23,12)", "<code>dsp/tones.rs</code>, conventional only: CTCSS by per-tone power over 250 ms windows; DCS by 8 staggered bit slicers and a Golay lookup. Used to tell rows sharing a frequency apart."]
+      ["Tones", "51 CTCSS · DCS Golay(23,12)", "<code>dsp/tones.rs</code>, conventional only: CTCSS by per-tone power over 250 ms windows; DCS by 8 staggered bit slicers and a Golay lookup. Used to tell rows sharing a frequency apart."],
+      ["AM (conventional)", "envelope · carrier-line squelch", "<code>dsp/am.rs</code>, mode <code>am</code> (airband): the same channel filter (±5.5 kHz for 25 kHz channels, ±3 kHz for 8.33 kHz ones), the envelope over the tracked carrier level (50 ms, or 0.5 s with <code>demod.amLevel</code> slow), a noise limiter, the 8 kHz low-pass and a low cut (200 Hz, <code>demod.amLowCutHz</code>), then the same squelch gate, opened and closed by the carrier's spectral line (<code>CarrierLine</code>); spurs' steady lines are learned and left out (<code>LineWatch</code>)."]
     ] },
   { id: "conv", tab: "Conventional detection", intro: "How a conventional channel opens without a head running while it's idle (trunk/conventional.rs).",
     nodes: [
-      ["Noise floor", "64 slices · every 0.1 s", "<code>noise_profile</code> of the shared spectrum, smoothed (0.3). Not updated from gap-fill noise."],
-      ["Band power", "±5 kHz (±3.125 NXDN48)", "<code>band_power</code> from the stored spectrum, smoothed with a 20 ms time constant. No head needed."],
+      ["Noise floor", "≤ 64 slices · every 0.1 s", "<code>noise_profile</code> of the shared spectrum in <code>floor_slices</code> slices, smoothed (0.3). Not updated from gap-fill noise."],
+      ["Band power", "±5 kHz (±3.125 NXDN48)", "<code>band_power</code> over the channel's detector band (<code>ChannelShape</code>; an analog channel's follows its bandwidth) from the stored spectrum, smoothed with a 20 ms time constant. No head needed. AM also reads its carrier's line, about 9 dB more sensitive."],
       ["Squelch", "SNR ≥ squelchDb (8)", "The lowest squelch among the rows on that frequency."],
       ["Open head", "pre-roll 0.3 s", "<code>add_head</code> replays 0.3 s so the start of the transmission is kept, then the same decoder a trunked call would use: FM → Analog (with tone detection), P25 → receiver bank, DMR, NXDN."],
-      ["Carrier meter", "3 dB hysteresis", "Confirms a carrier is really there. A false open raises the bar 3 dB until the level drops."],
+      ["Carrier meter", "3 dB hysteresis", "Confirms a carrier is really there (its level from <code>Channelizer::threshold</code>). A false open raises the bar 3 dB until the level drops."],
       ["Access match", "tone · NAC · CC · RAN", "Rows sharing a frequency are told apart by CTCSS / DCS (FM: held up to 1 s while the detector decides), NAC, colour code / slot / talkgroup, or RAN / talkgroup. Unmatched traffic → <code>ConvSkipped</code>."],
-      ["Close", "0.5 s after the carrier", "When no call is live and the carrier has been gone 0.5 s, the head closes."]
+      ["Close", "0.5 s after the carrier", "When no call is live and the carrier has been gone 0.5 s, the head closes."],
+      ["Calls", "the engine's Call and Event", "A conventional call is the engine's <code>Call</code> (no site; its <code>voice</code> from the channel's mode, a DMR call on its slot from the start), reported through the engine's own <code>Event</code>s (<code>ConvOut::Event</code>), link control applied as for a trunked call (<code>CallManager::note_info</code>). Its frequency error is measured from its decoder (P25); its P25, DMR and NXDN channels name talkgroups by its own system's talkgroup file. It keeps its own call lifecycle (opened by energy or a tone, ended with its carrier) rather than being a grant source for <code>CallManager</code>."]
     ] },
   { id: "save", tab: "Vocoder and saving", intro: "From vocoder frames to the .wav / .json pair (mbe/, loudness.rs, trunk/record.rs).",
     nodes: [
@@ -1204,7 +1238,7 @@ const DSP = [
 const PROTO = {
   P25: { rx: ["Receiver bank", "CQPSK · CQPSK+EQ · C4FM", "Up to three receivers on one head; the bank keeps the best TSBKs of each frame group (section 04)."],
          fr: ["p25::Framer", "TSDU frames · NID", "Frame sync and NID per receiver. Only TSDU frames carry control messages; the NAC is voted from every frame's NID."],
-         pa: ["TsbkParser", "opcode · MFID → Message", "Soft Viterbi + CRC give 12-byte TSBKs; the opcode (and Motorola / M/A-COM MFIDs) picks the <code>MessageType</code>. IDEN_UP messages update the band plan used to turn channel numbers into Hz. One <code>Step</code> per TSBK."],
+         pa: ["Osp → P25Parser", "opcode · MFID → Message", "Soft Viterbi + CRC give 12-byte TSBKs (and MBTs); <code>p25::osp</code> reads each into a typed <code>Msg</code> by opcode and MFID (Motorola, L3Harris), and <code>P25Parser::parse</code> picks the <code>MessageType</code>. IDEN_UP messages update the band plan (<code>P25Parser::tables</code>) used to turn channel numbers into Hz. One <code>Step</code> per TSBK."],
          lock: "P25 locks on NAC, WACN, System ID, RFSS and site, as set in <code>expect</code>. Status (0x3b) and SysId (0x3a) messages fill in the identity.", plan: "Hunt: one control channel at a time, moving through <code>controlChannelsHz</code>." },
   SmartNet: { rx: ["Fsk2", "3,600 Bd 2FSK", "Tone matched filters, DPLL clock, level tracker; outputs bits with soft values."],
          fr: ["OSW framer", "84-bit words · Viterbi · CRC", "Sync 0xAC, de-interleave, 2-state soft Viterbi, 10-bit CRC; a bad word becomes <code>Word::Bad</code> so the parser can reset."],
@@ -1228,17 +1262,17 @@ const PROTO = {
     diagram($("dia-trunk"), {
       w: 1130, h: 510, minW: 900, nw: 180, title: p + " control channel to calls", textTitle: p + ": control channel to calls, as text",
       nodes: [
-        { id: "head", x: X[0], y: 30, label: "Control head", sub: p === "DMR" || p === "NXDN" ? "one per carrier" : "one, hunted", text: "Opened by <code>Trunk::tune</code> (hunted plans) or for every carrier (watched plans) with no pre-roll. " + P.plan },
+        { id: "head", x: X[0], y: 30, label: "Control head", sub: p === "DMR" || p === "NXDN" ? "one per carrier" : "one, hunted", text: "Opened by <code>Trunk::tune</code> (hunted plans) or <code>Trunk::watch</code> (every carrier) with no pre-roll, with a <code>Tap</code> on its source so that source's decoding thread feeds the control channel. " + P.plan },
         { id: "rx", x: X[1], y: 30, label: P.rx[0], sub: P.rx[1], text: P.rx[2] },
         { id: "fr", x: X[2], y: 30, label: P.fr[0], sub: P.fr[1], text: P.fr[2] },
         { id: "pa", x: X[3], y: 30, label: P.pa[0], sub: P.pa[1], text: P.pa[2] },
-        { id: "step", x: X[4], y: 30, label: "Step", sub: "good · msgs · identity", text: "What <code>ControlChannel::push</code> returns: whether something decoded cleanly (the channel is alive), the messages, and what the site has said about itself so far." },
+        { id: "step", x: X[4], y: 30, label: "Step · CcResult", sub: "good · msgs · identity", text: "What <code>ControlChannel::push</code> returns, on the source's decoding thread under the control channel's own lock: whether something decoded cleanly (the channel is alive), the messages, and what the site has said about itself so far. With the block's notes, counts, <code>control_hz</code>, <code>offset_hz</code> and voice params they make a <code>CcResult</code>, which the site follows under the engine's lock." },
         { id: "ev", x: X[3], y: 160, label: "Event::Message", sub: "log · unit events · registry", cls: "k-out", text: "Every message is emitted, matched or not, for the control-channel log, plugin <code>unit</code> events (registrations, affiliations…) and the radio registry." },
         { id: "lock", x: X[4] - 10, y: 150, w: 220, h: 92, shape: "diamond", label: "Site lock", sub: "identity = expect?", cls: "k-dec", text: "<code>Trunk::follow</code> compares the step's identity with the configured <code>expect</code>, on the fields the protocol states. " + P.lock + " A new mismatch logs \"Control channel X MHz is not this system\"." },
         { id: "skip", x: X[3], y: 300, label: "Skip the step", sub: "last_good_s not refreshed", cls: "s-none", text: "Messages from a site that isn't this system never reach the call manager, and don't count as a good decode." },
         { id: "hunt", x: X[2], y: 300, label: "Hunt", sub: "tune(next) after 5 s", text: "If nothing decoded cleanly for <code>CC_HUNT_S</code> = 5 s and there is more than one control channel, the next one covered by a source is tried, and the site's identity is forgotten. Watched plans never hunt." },
-        { id: "hold", x: X[4], y: 300, label: "Hold grants", sub: "until identity confirmed", text: "Until every locked field has been heard, grants are held back so a call is never recorded from the wrong site. Then the Phase 2 scrambling key (WACN, System ID, NAC) is passed to voice channels." },
-        { id: "cm", x: X[4], y: 420, label: "CallManager::handle", sub: "grant · update · patches", text: "Turns messages into calls: Grant / Update → <code>grant()</code>; unit-to-unit if enabled; PatchAdd / PatchDelete → <code>Patches</code>. A matching call is refreshed; a new one gets the next call id and is admitted (section 06)." },
+        { id: "hold", x: X[4], y: 300, label: "Hold grants", sub: "until identity confirmed", text: "Until every locked field has been heard, grants are held back so a call is never recorded from the wrong site. Then the Phase 2 scrambling key (WACN, System ID, NAC) and the NAC go to voice channels (<code>VoiceParams</code>: the site keeps its own and copies a change to every source's <code>SourceRx</code>)." },
+        { id: "cm", x: X[4], y: 420, label: "CallManager::handle", sub: "grant · update · patches", text: "Turns messages into calls, with the system's <code>Policy</code> (its talkgroups, whether it has keys): Grant / Update → <code>grant()</code>; unit-to-unit and telephone if enabled; PatchAdd / PatchDelete → <code>Patches</code>. A matching call is refreshed; a new one gets the next call id and is admitted (section 06)." },
         { id: "host", x: X[3], y: 420, label: "RecorderHost", sub: "record · follow · release", text: "Implemented by the engine's <code>SysHost</code>: takes a recorder and opens a voice head (<code>record</code>), opens a channel without a recording for an encrypted call (<code>follow</code>), closes a slot (<code>release</code>), or carries a split call on (<code>record_continued</code>)." },
         { id: "pat", x: X[2], y: 420, label: "Patches", sub: "supergroup → members", text: "Members expire after 10 s (P25) or 4 s (SmartNet). A call's <code>patched_talkgroups</code> come from here." }
       ],
@@ -1284,13 +1318,13 @@ const PROTO = {
     nodes: [
       { id: "g", x: D, y: 20, w: 270, label: "Grant or Update", sub: "freq_hz ≠ 0", text: "<code>CallManager::grant</code>. A grant whose frequency isn't known yet (DMR, NXDN learning a channel) is ignored." },
       { id: "m", x: D, y: 105, w: 270, label: "Matching call?", sub: "talkgroup · freq · slot · phase 2", cls: "k-dec", text: "If one exists it is refreshed: <code>last_update_s</code>, patches, encrypted / emergency latched on, a new talking unit added. Nothing is admitted again." },
-      { id: "ign", x: D, y: 190, w: 270, label: "Ignored talkgroup?", sub: "CSV Ignore or priority < 0", cls: "k-dec", text: "Reason <code>ignored</code>." },
+      { id: "ign", x: D, y: 190, w: 270, label: "Ignored talkgroup?", sub: "CSV Ignore or priority < 0", cls: "k-dec", text: "Reason <code>ignored</code> (a negative priority is read as Ignore)." },
       { id: "unk", x: D, y: 275, w: 270, label: "Unknown talkgroup?", sub: "and recordUnknown off", cls: "k-dec", text: "Not in a non-empty talkgroup file and not a member of a known patch. Reason <code>unknown_tg</code>. A later PatchAdd can re-admit it." },
-      { id: "enc", x: D, y: 360, w: 270, label: "Encrypted?", sub: "and recordEncrypted off", cls: "k-dec", text: "Unless the system has keys and the call is P25 (it is then recorded, to see whether a key fits): reason <code>encrypted</code>. The engine may still <b>follow</b> it: open the channel with no recording, to collect talking units and aliases, if recordings plus followed channels are below <code>maxRecorders</code> (never for analog)." },
+      { id: "enc", x: D, y: 360, w: 270, label: "Encrypted?", sub: "and recordEncrypted off", cls: "k-dec", text: "Unless the system has keys (<code>Policy::can_decrypt</code>) and the call's voice can be decrypted (<code>Voice::decryptable</code>: P25 Phase 1 or 2; it is then recorded, to see whether a key fits): reason <code>encrypted</code>. The engine may still <b>follow</b> it: open the channel with no recording, to collect talking units and aliases, if recordings plus followed channels are below <code>maxRecorders</code> (never for analog)." },
       { id: "pool", x: D, y: 445, w: 270, label: "Recorder free?", sub: "recordings < maxRecorders", cls: "k-dec", text: "Reason <code>no_recorder</code> otherwise. No priority, no preemption, no retry: the call is monitored until it times out." },
       { id: "src", x: D, y: 530, w: 270, label: "Source covers it?", sub: "Radio::source_for(freq)", cls: "k-dec", text: "The first source whose usable band holds the frequency. Reason <code>no_source</code> otherwise." },
       { id: "take", x: D, y: 615, w: 270, label: "Take a recorder", sub: "lowest free number · Recording", text: "The recorder number (the JSON's <code>recorder_num</code>) comes from <code>free_nums</code>; a <code>Recording</code> is inserted; <code>open_channel</code> runs." },
-      { id: "open", x: D, y: 700, w: 270, label: "Channel open on this freq?", sub: "(system, freq_hz)", cls: "k-dec", text: "Systems never share a voice channel." },
+      { id: "open", x: D, y: 700, w: 270, label: "Channel open on this freq?", sub: "(site, freq_hz)", cls: "k-dec", text: "<code>SysHost::open_channel</code>, under the covering source's lock. The kind is the call's <code>voice.kind()</code>. Sites never share a voice channel." },
       { id: "o_ref", x: O, y: 105, w: W, label: "Refresh the existing call", sub: "no new recorder", cls: "k-ok", text: "Repeated grants and updates keep a call alive. A call that was refused (for example <code>no_recorder</code>) stays refused." },
       { id: "o_ign", x: O, y: 190, w: W, label: "Not recorded", sub: "reason: ignored", text: "Shown as monitored in the interface until it times out." },
       { id: "o_unk", x: O, y: 275, w: W, label: "Not recorded", sub: "reason: unknown_tg", text: "" },
@@ -1299,7 +1333,7 @@ const PROTO = {
       { id: "o_nosrc", x: O, y: 530, w: W, label: "Not recorded", sub: "reason: no_source", text: "" },
       { id: "o_join", x: 20, y: 800, w: 200, label: "Join the channel", sub: "same kind: take the slot", cls: "k-ok", text: "Phase 2 and DMR: the call takes its slot on the open head and decoder. A newer call on an occupied slot takes it over; the older one stops getting audio and times out." },
       { id: "o_repl", x: 240, y: 800, w: 200, label: "Replace the channel", sub: "other kind: old calls end", cls: "k-ok", text: "The old head and decoder are removed and their calls time out; a new head opens for this kind." },
-      { id: "o_new", x: 460, y: 800, w: 200, label: "Open a new head", sub: "add_head · pre-roll · decoder", cls: "k-ok", text: "<code>add_head</code> at the AutoTune-corrected offset with <code>prerollS</code>, <code>voice::build</code> for the call's kind, and the replayed pre-roll decoded at once." }
+      { id: "o_new", x: 460, y: 800, w: 200, label: "Open a new head", sub: "add_head · pre-roll · decoder", cls: "k-ok", text: "<code>add_head</code> at the AutoTune-corrected offset with <code>prerollS</code> and <code>VoiceKind::cutoff_hz()</code>, the noise under it from the source's floor (an analog squelch 6 dB above it), <code>voice::build</code> for the call's kind, and the replayed pre-roll decoded at once." }
     ],
     edges: [["g", "m"], ["m", "o_ref", "yes"], ["m", "ign", "no"], ["ign", "o_ign", "yes"], ["ign", "unk", "no"], ["unk", "o_unk", "yes"], ["unk", "enc", "no"], ["enc", "o_enc", "yes"], ["enc", "pool", "no"],
             ["pool", "o_norec", "no"], ["pool", "src", "yes"], ["src", "o_nosrc", "no"], ["src", "take", "yes"], ["take", "open"], ["open", "o_join", "same kind", { s: "bt" }], ["open", "o_repl", "other kind", { s: "bt" }], ["open", "o_new", "none", { s: "rt" }]],
@@ -1404,43 +1438,40 @@ const BP = {
   },
   trp: {
     tab: "Trunk Recorder Pro",
-    intro: "One engine thread does all the DSP, one block at a time, to completion. Only the queue in front of it blocks. Every queue after it has its own rule for when it is full, and none of them can stop decoding.",
+    intro: "A decoding thread per source does that source's DSP, one block at a time, to completion, and follows its calls under the engine's lock. Only the queue in front of each blocks. Every queue after decoding has its own rule for when it is full, and none of them can stop decoding.",
     spec: () => {
-      const X = [20, 230, 440, 650, 860, 1070];
+      const X = [20, 220, 420, 620, 820, 1020, 1220];
       return {
-        w: 1280, h: 430, minW: 1000, nw: 170, title: "Trunk Recorder Pro's threads and queues", textTitle: "The threads and queues as text",
+        w: 1420, h: 430, minW: 1100, nw: 170, title: "Trunk Recorder Pro's threads and queues", textTitle: "The threads and queues as text",
         nodes: [
           { id: "radio", x: X[0], y: 180, label: "Radio", sub: "device FIFO · USB transfers", text: "RTL-SDR: 8 USB transfers of 256 KiB in flight. USRP: 256 receive frames. If nobody collects them, the device's own buffer overflows." },
-          { id: "sth", x: X[1], y: 180, label: "source thread", sub: "send() blocks when full", text: "Collects driver blocks, stamps them, sends them on. It blocks while the queue is full, which is how back-pressure reaches the radio." },
-          { id: "q", x: X[2], y: 180, label: "Source queue", sub: "256 blocks · blocking", cls: "k-queue", text: "About 14 s of RTL data at 2.4 MSPS (256 × 131,072 samples), about 2.5 s of 10 ms USRP / Soapy blocks." },
-          { id: "eng", x: X[3], y: 180, label: "engine thread", sub: "every stage, in order", text: "Channelizer, every head and decoder, the call manager, saving, poll and deliver. No queues between stages." },
-          { id: "gap", x: X[3], y: 330, label: "push_gap · ClockFit", sub: "drops → faint noise", text: "Reported drops are fed as faint noise (up to 10 s) so sample time stays in step with the air; samples more than 0.25 s off the wall clock re-anchor it." },
-          { id: "hubq", x: X[4], y: 30, label: "Hub", sub: "4096 · per-client position", cls: "k-queue", text: "A broadcast ring. Sending never blocks; each client reads at its own pace and one more than 4,096 behind skips the oldest." },
-          { id: "finq", x: X[4], y: 130, label: "Finish queue", sub: "1024 calls", cls: "k-queue", text: "If full, the engine writes the call itself, without M4A." },
-          { id: "plq", x: X[4], y: 330, label: "Plugin queue", sub: "1024 lines per process", cls: "k-queue", text: "Fed with try_send: when full, the event is dropped and counted." },
-          { id: "encq", x: X[4], y: 230, label: "Encode queue", sub: "256 calls", cls: "k-queue", text: "If full, the call goes to plugins as WAV only." },
-          { id: "ws", x: X[5], y: 30, label: "Browser", sub: "WebSocket task", cls: "k-out", text: "One tokio task per connection." },
-          { id: "fin", x: X[5], y: 130, label: "finish thread", sub: "disk · concluded", cls: "k-out", text: "Writes files and hands calls on." },
-          { id: "plug", x: X[5], y: 330, label: "Plugin process", sub: "stdin", cls: "k-out", text: "Reads events at its own pace." },
-          { id: "enc", x: X[5], y: 230, label: "encode-N", sub: "ffmpeg · afconvert · fdkaac", cls: "k-out", text: "1 to 3 encoder threads." }
+          { id: "sth", x: X[1], y: 180, label: "source-N thread", sub: "send() blocks when full", text: "Collects driver blocks, stamps them, sends them on. It blocks while its queue is full, which is how back-pressure reaches the radio." },
+          { id: "q", x: X[2], y: 180, label: "Source queue", sub: "256 blocks · blocking · per source", cls: "k-queue", text: "About 14 s of RTL data at 2.4 MSPS (256 × 131,072 samples), about 2.5 s of 10 ms USRP / Soapy blocks." },
+          { id: "eng", x: X[3], y: 180, label: "dsp-N thread", sub: "every stage, in order", text: "The source's decoding thread: channelizer, every head and decoder on its source (under its lock), its control channels (each under its own), then the call manager and saving (under the engine's). No queues between stages. Other sources decode on their own threads." },
+          { id: "gap", x: X[3], y: 330, label: "Feeder · ClockFit", sub: "drops → faint noise", text: "Reported drops are fed as faint noise (up to 10 s) so sample time stays in step with the air; samples more than 0.25 s off the wall clock re-anchor it." },
+          { id: "et", x: X[4], y: 180, label: "engine thread", sub: "poll · deliver", text: "Waits on its one <code>EngineCmd</code> channel (20 ms), then <code>Session::poll</code> turns the engine's events into outputs and <code>deliver</code> routes them. Never on the sample path." },
+          { id: "hubq", x: X[5], y: 30, label: "Hub", sub: "4096 · per-client position", cls: "k-queue", text: "A broadcast ring. Sending never blocks; each client reads at its own pace and one more than 4,096 behind skips the oldest." },
+          { id: "finq", x: X[5], y: 180, label: "Finish queue", sub: "1024 calls", cls: "k-queue", text: "If full, the engine thread waits up to 5 s for room, then finishes the call itself by the same plan (its .m4a too)." },
+          { id: "plq", x: X[5], y: 330, label: "Plugin queue", sub: "1024 lines per process", cls: "k-queue", text: "Fed with try_send: when full, the event is dropped and counted." },
+          { id: "ws", x: X[6], y: 30, label: "Browser", sub: "WebSocket task", cls: "k-out", text: "One tokio task per connection." },
+          { id: "fin", x: X[6], y: 180, label: "finish-N (1–3)", sub: "disk · m4a · concluded", cls: "k-out", text: "Writes every file of the call's plan, encodes its .m4a (ffmpeg, afconvert or fdkaac), hands the call on." },
+          { id: "plug", x: X[6], y: 330, label: "Plugin process", sub: "stdin", cls: "k-out", text: "Reads events at its own pace." }
         ],
-        edges: [["radio", "sth", "blocks"], ["sth", "q", "send"], ["q", "eng", "recv"], ["eng", "gap", "", { s: "bt", dash: true }], ["eng", "hubq"], ["eng", "finq"], ["eng", "plq"], ["hubq", "ws"], ["finq", "fin"], ["plq", "plug"], ["fin", "encq", "", { s: "lr" }], ["encq", "enc"]],
-        order: ["radio", "sth", "q", "eng", "gap", "hubq", "ws", "finq", "fin", "plq", "plug", "encq", "enc"], listEdges: false
+        edges: [["radio", "sth", "blocks"], ["sth", "q", "send"], ["q", "eng", "recv"], ["eng", "gap", "", { s: "bt", dash: true }], ["eng", "et", "events"], ["et", "hubq"], ["et", "finq"], ["et", "plq"], ["hubq", "ws"], ["finq", "fin"], ["plq", "plug"], ["fin", "plq", "", { s: "bt", dash: true }]],
+        order: ["radio", "sth", "q", "eng", "gap", "et", "hubq", "ws", "finq", "fin", "plq", "plug"], listEdges: false
       };
     },
     scen: [
-      { label: "The engine is too slow", states: { eng: "bad", q: "warn", sth: "warn", radio: "bad", gap: "ok", hubq: "ok", finq: "ok", plq: "ok" }, edges: { "q>eng": "bad", "sth>q": "warn", "radio>sth": "bad" },
-        text: "The source queue fills, the source thread blocks in <code>send</code>, the driver stops collecting and the device overflows. Drops the driver can see are reported in status and filled with faint noise; loss it can't see is caught when the clock re-anchors. Calls carry on with a hole. Nothing downstream is affected except that less comes out." },
-      { label: "A browser is slow", states: { ws: "bad", hubq: "warn", eng: "ok", q: "ok", finq: "ok", plq: "ok" }, edges: { "hubq>ws": "bad" },
+      { label: "A source's decoding is too slow", states: { eng: "bad", q: "warn", sth: "warn", radio: "bad", gap: "ok", et: "ok", hubq: "ok", finq: "ok", plq: "ok" }, edges: { "q>eng": "bad", "sth>q": "warn", "radio>sth": "bad" },
+        text: "Its source queue fills, its source thread blocks in <code>send</code>, the driver stops collecting and the device overflows. Drops the driver can see are reported in status and filled with faint noise; loss it can't see is caught when the clock re-anchors. Calls carry on with a hole. Other sources decode on their own cores; nothing downstream is affected except that less comes out." },
+      { label: "A browser is slow", states: { ws: "bad", hubq: "warn", eng: "ok", et: "ok", q: "ok", finq: "ok", plq: "ok" }, edges: { "hubq>ws": "bad" },
         text: "That client's WebSocket task falls more than 4,096 messages behind and skips the oldest. Recording, the other browsers and the plugins don't notice." },
-      { label: "The disk is slow", states: { fin: "bad", finq: "warn", eng: "warn", q: "ok" }, edges: { "finq>fin": "bad", "eng>finq": "warn" },
-        text: "Up to 1,024 calls wait for the finish thread. Past that, the engine writes each call itself, without M4A, which slows decoding until the queue drains. This is the one place disk speed can reach the engine." },
-      { label: "A plugin is slow or hung", states: { plug: "bad", plq: "warn", eng: "ok", fin: "ok" }, edges: { "plq>plug": "bad" },
+      { label: "The disk or encoder is slow", states: { fin: "bad", finq: "warn", et: "warn", eng: "ok", q: "ok" }, edges: { "finq>fin": "bad", "et>finq": "warn" },
+        text: "Up to 1,024 calls wait for the finish pool (1–3 finishers, each writing files and encoding .m4a). Past that, the engine thread waits up to 5 s for room, then finishes the call itself with the same plan (its .m4a too). Its messages and plugin events wait meanwhile; decoding doesn't." },
+      { label: "A plugin is slow or hung", states: { plug: "bad", plq: "warn", eng: "ok", et: "ok", fin: "ok" }, edges: { "plq>plug": "bad" },
         text: "Its 1,024-line queue fills and further events for that plugin are dropped and counted (shown on the Plugins page, logged at most every 30 s). Other plugins have their own queues. The Archive keeps the files of calls it never answered for, and gives up waiting after an hour." },
-      { label: "The M4A encoder is slow", states: { enc: "bad", encq: "warn", fin: "ok", plug: "ok" }, edges: { "encq>enc": "bad" },
-        text: "When 256 calls are waiting to be encoded, further calls go to plugins as WAV only, with a warning." },
       { label: "A radio stalls", states: { radio: "bad", sth: "warn", gap: "ok", eng: "ok" }, edges: { "radio>sth": "bad" },
-        text: "After a second with no data, <code>Session::poll</code> feeds silence for that source so its calls time out and its clock stays comparable. The driver reopens the device after 2–3 s." }
+        text: "After a second with no data, its feeder (<code>Feeder::idle</code>) feeds silence for that source so its calls time out and its clock stays comparable. The driver reopens the device after 2–3 s." }
     ]
   }
 };
@@ -1495,7 +1526,7 @@ const BP = {
           <option value="rtl:3200000">RTL-SDR at 3.2 MSPS</option>
           <option value="ten:0">USRP or SoapySDR (about 10 ms blocks)</option>
         </select></div>
-      <div class="ctl"><label for="qc-speed">Engine speed: <b id="qc-sv">85</b> % of real time</label><input id="qc-speed" type="range" min="40" max="150" value="85"></div>
+      <div class="ctl"><label for="qc-speed">The source's decoding speed: <b id="qc-sv">85</b> % of real time</label><input id="qc-speed" type="range" min="40" max="150" value="85"></div>
     </div>
     <div class="kv" id="qc-out"></div>
     <div><div class="small muted" style="margin-bottom:4px">Queue fill after one minute</div><div class="qbar"><span id="qc-bar"></span></div></div>
@@ -1505,7 +1536,7 @@ const BP = {
     $("qc-sv").textContent = Math.round(speed * 100);
     const cap = kind === "rtl" ? 256 * 131072 / +r : 2.56;
     let fill, loss, note;
-    if (speed >= 1) { fill = "never"; loss = "0 %"; note = "The engine keeps up, so the queue stays near empty and every block is processed as it arrives. Headroom above 100 % is what the dashboard's load figure shows."; }
+    if (speed >= 1) { fill = "never"; loss = "0 %"; note = "Its decoding keeps up, so the queue stays near empty and every block is processed as it arrives. Headroom above 100 % is what the dashboard's load figure shows."; }
     else {
       const t = cap / (1 - speed);
       fill = fmt(t, 1) + " s"; loss = fmt((1 - speed) * 100) + " %";
@@ -1524,23 +1555,23 @@ diagram($("dia-plugins"), {
   w: 1130, h: 420, minW: 900, title: "Plugin host and one plugin process", textTitle: "The plugin host as text",
   nodes: [
     { id: "eng", x: 20, y: 40, label: "engine · deliver", sub: "call.start/end · unit · audio · status", w: 210, text: "Plugin events are built by <code>Session</code> only for topics some plugin subscribes to, and reach the host as <code>Output::Plugin</code> / <code>Output::Audio</code>. Status goes out every 5 s." },
-    { id: "fin", x: 20, y: 160, label: "finish thread", sub: "call.concluded · Archive", w: 210, text: "After writing a call's files, registers it with the Archive (expecting a result from each taker) and sends <code>call.concluded</code> with the json / wav / m4a paths." },
-    { id: "enc", x: 20, y: 290, label: "encode-N threads", sub: "M4A for plugins", w: 210, text: "When a plugin asked for M4A, the call waits in a 256-deep encode queue; once encoded, <code>call.concluded</code> is dispatched with the M4A path (or WAV only if the queue was full or encoding failed)." },
-    { id: "disp", x: 270, y: 160, label: "PluginHost::dispatch", sub: "serialise once · try_send", text: "Each event is turned into a JSON line once and shared by every subscribed plugin." },
+    { id: "fin", x: 20, y: 160, label: "finish-N (1–3)", sub: "plan · files · call.concluded", w: 210, text: "<code>plugins::plan</code> says which files a call needs (its system's file rules, what the plugins take: <code>PluginAudio</code>). The finisher writes them all, the .m4a included (for a plugin that wants one; the WAV instead should encoding fail), registers the call with the Archive (expecting a result from each taker) and hands the host the finished files (<code>CallFiles</code>) for <code>call.concluded</code>. The host writes and encodes nothing itself." },
+    { id: "hold", x: 20, y: 290, label: "Hold", sub: "plugin delays", w: 210, text: "What <code>pluginDelays</code> (<code>delay.rs</code>) say a plugin is to have late goes to the hold (<code>hold.rs</code>) instead of its queue, and is given when it's due, to whichever host runs then; a finished call is kept on disk meanwhile (<code>plugin-hold/</code>)." },
+    { id: "disp", x: 270, y: 160, label: "PluginHost::dispatch", sub: "serialise once · try_send", text: "Each event is turned into a JSON line once and shared by every subscribed plugin. A call decrypted with the recorder's keys goes only to plugins with <code>shareDecrypted</code>. The engine and finishers take the running host with <code>Plugins::host()</code> (a clone, no lock held), so a reload swaps it without waiting on them." },
     { id: "q", x: 500, y: 160, label: "Event queue", sub: "1024 lines · per process", cls: "k-queue", text: "Survives restarts of the process. When full, events are dropped and counted." },
     { id: "wr", x: 720, y: 80, label: "writer thread", sub: "→ stdin", text: "Blocks on the plugin's stdin. A plugin that stops reading backs up only its own queue." },
     { id: "proc", x: 930, y: 160, label: "Plugin process", sub: "own process group · cwd plugin-data/<id>", w: 190, cls: "k-out", text: "Any executable that speaks the protocol; usually built on the Rust SDK. Its manifest came from <code>--describe</code>." },
     { id: "sup", x: 720, y: 240, label: "supervisor", sub: "plugin-<id> · reads stdout", text: "Parses <code>PluginMessage</code>s (lines that aren't JSON become log lines; bad UTF-8 is replaced, never fatal), restarts the process with back-off, honours exit code 78." },
     { id: "err", x: 930, y: 330, label: "stderr reader", sub: "→ log lines", w: 190, text: "Every stderr line is logged under the plugin's name." },
-    { id: "arch", x: 500, y: 330, label: "Archive", sub: "counts call.result", text: "When every taker has answered, applies <code>audioArchive</code>, <code>callLog</code>, <code>archiveFilesOnFailure</code>, <code>compressWav</code>: deletes, or moves files out of the RAM spool." },
+    { id: "arch", x: 500, y: 330, label: "Archive", sub: "counts call.result", text: "When every taker has answered, applies <code>archiveWav</code>, <code>archiveM4a</code>, <code>callLog</code>, <code>archiveFilesOnFailure</code>: deletes, or moves files out of the RAM spool." },
     { id: "ui", x: 270, y: 330, label: "Plugins page", sub: "state · metrics · drops", text: "Runtime state for the interface: worst state across copies, metrics, restarts, dropped events, results per minute for the last hour." }
   ],
-  edges: [["eng", "disp"], ["fin", "disp"], ["enc", "disp"], ["fin", "enc", "EncodeJob", { dash: true, s: "bt" }], ["disp", "q"], ["q", "wr"], ["wr", "proc", "JSON lines"], ["proc", "sup", "stdout", { s: "lr" }], ["proc", "err", "stderr", { s: "bt" }], ["sup", "arch", "call.result", { s: "bt" }], ["sup", "ui", "status · metrics"]],
+  edges: [["eng", "disp"], ["fin", "disp"], ["disp", "hold", "delayed", { dash: true, s: "bt" }], ["hold", "q", "when due", { dash: true, s: "rb", lx: -40, ly: -6 }], ["disp", "q"], ["q", "wr"], ["wr", "proc", "JSON lines"], ["proc", "sup", "stdout", { s: "lr" }], ["proc", "err", "stderr", { s: "bt" }], ["sup", "arch", "call.result", { s: "bt" }], ["sup", "ui", "status · metrics"]],
   listEdges: true
 });
 
 const SEQ = [
-  ["h", "hello", "Settings, systems (index, short name, kind, per-system config), capture and data folders, audio formats. Sent first.", `{"type":"hello","api":1,"host":{"name":"trunk-pro","version":"0.1.8"},"config":{…},"systems":[{"index":0,"short_name":"county-p25","kind":"p25","config":{…}}],"capture_dir":"…","data_dir":"…","audio_formats":["wav","m4a"]}`],
+  ["h", "hello", "Settings, systems (index: this run's number, from 0, trunked then conventional; short name; kind, <code>conventional</code> included; per-system config; the plugin's own settings as a system's <code>override</code> changes them), capture and data folders, audio formats. Sent first.", `{"type":"hello","api":1,"host":{"name":"trunk-pro","version":"0.2.0"},"config":{…},"systems":[{"index":0,"short_name":"county-p25","kind":"p25","config":{…}}],"capture_dir":"…","data_dir":"…","audio_formats":["wav","m4a"]}`],
   ["p", "ready", "The plugin started. With the SDK, a <code>start</code> error instead sends <code>status: error</code> and exits 78 (config error, not restarted).", `{"type":"ready"}`],
   ["h", "call.start", "A call began (recorded or not, with its reason).", `{"type":"call.start","id":4182,"system":0,"short_name":"county-p25","talkgroup":1201,"freq_hz":851312500,"recording":true,…}`],
   ["h", "unit", "Registration, affiliation, location… from the control channel.", `{"type":"unit","short_name":"county-p25","kind":"affiliation","unit":1201234,"talkgroup":1201,"time":1791500000.4}`],
@@ -1550,7 +1581,7 @@ const SEQ = [
   ["p", "log", "Any time.", `{"type":"log","level":"info","message":"uploaded in 412 ms"}`],
   ["p", "metrics", "Queue depth, retries, latency, endpoint health, for the Plugins page.", `{"type":"metrics","queued":0,"retrying":0,"latencyMs":412,"endpoints":[{"name":"openmhz","state":"up"}]}`],
   ["p", "call.result", "ok, skipped or failed. The Archive counts these to decide when files can go.", `{"type":"call.result","path":"county-p25/…","outcome":"ok","url":"https://…"}`],
-  ["h", "status", "Every 5 s: control channel, decode rate, active and recording calls per system.", `{"type":"status","time":1791500005,"systems":[{"index":0,"short_name":"county-p25","decode_rate":39.8,…}]}`],
+  ["h", "status", "Every 5 s: control channel, decode rate, active and recording calls per site (with its <code>site_name</code>), and its identity (NAC, WACN, system ID, RFSS, site) once stated.", `{"type":"status","time":1791500005,"systems":[{"index":0,"short_name":"county-p25","site_name":"site3","decode_rate":39.8,…}]}`],
   ["p", "status", "The plugin's own state for the interface.", `{"type":"status","state":"warning","message":"3 calls waiting to retry"}`],
   ["h", "shutdown", "Queued behind any pending events; stdin closes after it. The grace starts when the plugin reads it.", `{"type":"shutdown","grace_s":10}`]
 ];
@@ -1580,9 +1611,12 @@ sequence($("seq"), SEQ.map(([d, ...r]) => [d === "h" ? "l" : "r", ...r]), { left
 
 /* ---------- 09 data objects ---------- */
 const OBJ = [
-  ["SourceMsg", "platform", "trunk-pro/src/sdr.rs", "What a source thread sends the engine thread through the 256-deep queue.", [
-    ["Data", "{ source, bytes: Vec<u8>, dropped: u64, at: Instant }", "raw u8 IQ (RTL-SDR, cu8 files)"], ["Iq", "{ source, samples: Vec<Complex32>, dropped, at }", "float IQ (USRP, Airspy, Soapy, other files)"],
-    ["Error", "{ source, error: String }", "the source failed; it will reopen"], ["End", "{ source }", "end of a capture file"], ["Tuned", "{ center_hz }", "survey retunes only"]]],
+  ["SourceMsg", "platform", "trunk-pro/src/sdr.rs", "What a source thread sends its decoding thread through its 256-deep queue.", [
+    ["Data", "{ source, bytes: Pooled<u8>, dropped: u64, at: Instant }", "raw u8 IQ (RTL-SDR, cu8 files), in a reused buffer"], ["Iq", "{ source, samples: Vec<Complex32>, dropped, at }", "float IQ (USRP, Soapy, other files)"],
+    ["Real16", "{ source, samples: Pooled<i16>, dropped, at }", "an Airspy's real samples, made IQ on the decoding thread (IqFrom)"],
+    ["Error", "{ source, error: String }", "the source failed; it will reopen (passed on to the engine thread)"], ["End", "{ source }", "end of a capture file (passed on to the engine thread)"], ["Tuned", "{ center_hz }", "survey retunes only"]]],
+  ["EngineCmd", "platform", "trunk-pro/src/runtime.rs", "Everything the engine thread is told, on its one channel (Ctx::tell_engine).", [
+    ["Source", "(SourceMsg)", "a source's error or end"], ["Topics", "(Topics)", "what the browsers watch"], ["Talkgroups", "{ short_name, csv }", "a talkgroup file changed"], ["Keys", "{ short_name, ring }", "a key container unlocked or locked"]]],
   ["Symbol", "core", "trunk-core/src/dsp/mod.rs", "One decided symbol from a receiver.", [
     ["dibit", "u8", "0..3"], ["sample", "f64", "channel-sample instant, ties the symbol to the source clock"], ["rel_hi", "f32", "reliability of the high bit (negative = hard decision only)"], ["rel_lo", "f32", "reliability of the low bit"]]],
   ["p25::Frame", "core", "trunk-core/src/p25/frame.rs", "One P25 Phase 1 frame from a framer.", [
@@ -1596,58 +1630,69 @@ const OBJ = [
     ["dibits", "[u8; BODY_SYMBOLS]", "descrambled body"], ["rel", "[f32; BODY_BITS]", ""], ["sync_errs", "Option<u32>", "None when found by the flywheel"], ["sample", "f64", ""]]],
   ["Step", "core", "trunk-core/src/trunk/control.rs", "What a ControlChannel returns for each decoded unit.", [
     ["good", "bool", "something decoded cleanly: the channel is alive"], ["msgs", "Vec<Message>", ""], ["identity", "Identity", "what the site has said about itself so far"]]],
+  ["CcResult", "core", "trunk-core/src/trunk/engine.rs", "A source's control channel decoding of one block, per site (internal): what the site follows without taking the control channel's lock.", [
+    ["site · head", "u16 · Option<HeadId>", ""], ["steps", "Vec<Step>", ""], ["params", "Vec<VoiceParams>", "one per step"], ["samples", "u64", "the site's clock (hunting)"], ["notes", "Vec<(NoteLevel, String)>", ""],
+    ["control_hz", "Option<u64>", "watching: the carrier control is on"], ["counts", "(u64, u64)", "good, bad"], ["offset_hz", "Option<f32>", "AutoTune"]]],
   ["Message", "core", "trunk-core/src/trunk/message.rs", "One trunking message, the same struct for every protocol.", [
-    ["kind", "MessageType", "Grant, Update, UuVGrant, UuVUpdate, PatchAdd, PatchDelete, Status, SysId, Adjacent, ControlChannel, Registration, Deregistration, Affiliation, Acknowledge, Location, DataGrant, UuAnsReq, CallAlert, Unknown"],
+    ["kind", "MessageType", "Grant, Update, UuVGrant, UuVUpdate, PhoneGrant, PhoneUpdate, PatchAdd, PatchDelete, Status, SysId, Adjacent, ControlChannel, Registration, Deregistration, Affiliation, Acknowledge, Location, DataGrant, UuAnsReq, CallAlert, StatusUpdate, MessageUpdate, Deny, Queued, EmergencyAlarm, BaseStationId, Unknown"],
     ["time_s", "f64", "sample-clock time"], ["freq_hz", "u64", "0 = not resolved yet"], ["talkgroup", "u32", ""], ["source", "i64", "unit; −1 = none"],
-    ["encrypted · emergency · duplex · mode", "bool", "service options"], ["priority", "u8", "P25 service options bits 0–2; SmartNet 3"], ["phase2_tdma · tdma_slot", "bool · u8", ""],
-    ["sys_id · wacn · rfss · site", "u32", "identity"], ["nac", "u16", ""], ["analog", "bool", "SmartNet analog voice"], ["patch", "Option<Patch { sg, ga: [u32; 3] }>", ""],
-    ["color_code", "Option<u8>", "DMR (makes the voice kind Dmr)"], ["nxdn · ran", "Option<Rate> · Option<u8>", "NXDN"], ["opcode", "u8", ""], ["meta", "String", "human summary for the log"]]],
+    ["encrypted · emergency · duplex · mode", "bool", "service options"], ["priority", "u8", "P25 service options bits 0–2; SmartNet 3"], ["voice", "Voice", "a grant's or update's: what the call's voice is on"],
+    ["sys_id · wacn · rfss · site", "u32", "identity"], ["nac", "u16", ""], ["patch", "Option<Patch { sg, ga: [u32; 3] }>", ""],
+    ["ran", "Option<u8>", "NXDN"], ["opcode", "u8", ""], ["callsign", "Option<String>", "Motorola: the site's CW ID"], ["meta", "String", "human summary for the log"]]],
   ["Identity", "core", "trunk-core/src/trunk/identity.rs", "What a site says about itself; compared with the config's expect.", [
     ["(map)", "BTreeMap<IdField, u32>", "IdField = Nac, Wacn, SysId, Rfss, Site"]]],
   ["Talkgroup", "core", "trunk-core/src/trunk/talkgroups.rs", "One row of the talkgroup CSV.", [
     ["number", "u32", "Decimal"], ["mode", "String", "D, A, E, TE, DE…"], ["alpha_tag · description · tag · group", "String", ""], ["priority", "i32", "< 0 means ignore; otherwise unused"],
-    ["preferred_nac", "u32", "multi-site: NAC or RRRRssss"], ["preferred_site", "String", "multi-site: short name"], ["ignore", "bool", ""]]],
+    ["preferred_nac", "u32", "multi-site: NAC or RRRRssss"], ["preferred_site", "String", "multi-site: a site's name"], ["ignore", "bool", ""]]],
+  ["Voice", "core", "trunk-core/src/trunk/calls.rs", "What a call's voice is on, one field for every protocol (Message.voice, Call.voice).", [
+    ["P25", "", "Phase 1 (FDMA): IMBE"], ["P25Tdma", "{ slot }", "Phase 2 on slot 0 / 1: AMBE+2"], ["Dmr", "{ slot, color_code: Option<u8> }", "DMR on a slot, its colour code once known"], ["Nxdn", "(Rate)", ""], ["Fm · Am", "", "analog"],
+    ["methods", "kind() · slot() · analog() · tdma() · decryptable() · color_code() · nxdn()", "kind(): the VoiceKind its channel needs"]]],
   ["Call", "core", "trunk-core/src/trunk/calls.rs", "One trunked or conventional call, from grant to end.", [
-    ["id", "CallId(u32)", "one sequence for every system"], ["system", "u16", "engine system index; conventional = 65535 − k"], ["talkgroup", "u32", ""], ["freq_hz", "u64", ""],
-    ["phase2_tdma · tdma_slot", "bool · u8", ""], ["unit_to_unit", "bool", ""], ["recording", "bool", "has a recorder"], ["reason", "Option<Reason>", "ignored · unknown_tg · encrypted · no_source · no_recorder"],
-    ["encrypted · emergency", "bool", "latched on"], ["priority", "u8", ""], ["duplex · mode · analog", "bool", ""], ["start_s · last_update_s · last_audio_s", "f64", "sample-clock times; drive timeouts"],
-    ["sources", "Vec<CallSource { src, time_s, emergency }>", "units heard"], ["talkgroup_info", "Option<Talkgroup>", ""], ["patched_talkgroups", "Vec<u32>", ""],
-    ["color_code · nxdn · ran · nac", "Option<…>", "protocol details"], ["tone · tone_set", "Option<ToneHeard> · Option<Tone>", "conventional CTCSS / DCS heard and configured"]]],
-  ["Channel", "core", "trunk-core/src/trunk/engine.rs", "An open voice channel (internal to the engine).", [
-    ["system · source · head", "u16 · usize · HeadId", ""], ["calls", "[Option<CallId>; 2]", "one per slot"], ["voice", "Box<dyn VoiceDecoder>", "built by voice::build"], ["freq_hz", "u64", ""], ["tune_ppm", "f64", "AutoTune at open"], ["meter · noise", "", "reception meter, noise floor"]]],
+    ["id", "CallId (u32)", "one sequence for every system"], ["site", "Option<u16>", "engine site index; none for a conventional call"], ["system", "u16", "engine system index: trunked, then conventional, from 0"], ["twin", "bool", "multi-site: a copy of a call another site had first"],
+    ["talkgroup", "u32", ""], ["freq_hz", "u64", ""], ["voice", "Voice", "what its voice is on"], ["unit_to_unit", "bool", ""], ["recording", "bool", "has a recorder"], ["followed", "bool", "has a channel without a recorder"],
+    ["reason", "Option<Reason>", "ignored · unknown_tg · encrypted · no_source · no_recorder"],
+    ["encrypted · emergency", "bool", "latched on"], ["cipher · decrypted", "Option<CipherId> · bool", "the ALGID / key ID its voice named; some of it decrypted"], ["priority", "u8", ""], ["duplex · mode", "bool", ""], ["start_s · last_update_s · last_audio_s", "f64", "sample-clock times; drive timeouts"],
+    ["sources", "Vec<CallSource { src, time_s, flags: Flags, audio_pos, position }>", "units heard, each with what its transmission said of itself"], ["talkgroup_info", "Option<Talkgroup>", ""], ["patched_talkgroups", "Vec<u32>", ""],
+    ["ran · nac", "Option<u8> · Option<u16>", "NXDN RAN; conventional P25 NAC"], ["tone · tone_set", "Option<ToneHeard> · Option<Tone>", "conventional CTCSS / DCS heard and configured"]]],
+  ["SystemConfig · SiteConfig · SiteKey", "core", "trunk-core/src/trunk/engine.rs", "A system, kept once for all its sites (EngineConfig.systems), and how a site is named outside the engine.", [
+    ["SystemConfig", "short_name, calls: CallConfig, save: SaveRules, talkgroups, unit_tags, keys, sites: Vec<SiteConfig>", "no sites: conventional (its channels name it)"],
+    ["SiteConfig", "name, control_channels, bank, expect: Identity, protocol", "what control::build takes"],
+    ["SiteKey", "{ system, site }", "own_name() · stats_key() (sys/<system>[/site/<site>]) · file_stem() (<system>[.<site>]) · Display (<system>[/<site>])"]]],
+  ["Channel", "core", "trunk-core/src/trunk/engine.rs", "An open voice channel, in its source's SourceRx (internal to the engine).", [
+    ["site · head", "u16 · HeadId", "the site whose grant opened it"], ["calls", "[Option<OnSlot { id, talkgroup }>; 2]", "one per slot"], ["voice", "Box<dyn VoiceDecoder>", "built by voice::build"], ["freq_hz", "f64", ""], ["tune_ppm", "f64", "AutoTune at open"], ["meter · noise", "", "reception meter, noise floor"]]],
   ["Recording", "core", "trunk-core/src/trunk/engine.rs", "A recorder: what is kept for one call (internal).", [
-    ["audio", "Vec<f32>", "8 kHz"], ["frames", "CallFrames", "error intervals; vocoder frames if captureFrames"], ["recorder_num", "u32", "the JSON's recorder_num"], ["tx", "Transmissions", "transmission boundaries, encrypted flags"], ["freq_error", "(f64, u32)", "sum and count"], ["reception", "Reception", "signal, noise, SNR, clean voice"]]],
-  ["VoiceOut", "core", "trunk-core/src/trunk/voice.rs", "One output of a voice decoder, queued in radio.pending.", [
-    ["slot", "u8", ""], ["t", "f64", "air time"], ["out", "TrackerOut", "Audio(Vec<f32>, VoiceFrame) · Info { source, emergency, encrypted } · AnalogAudio · Subaudible · Alias · AliasLc"]]],
+    ["audio", "Vec<f32>", "8 kHz"], ["frames", "CallFrames", "error intervals; vocoder frames if captureFrames"], ["recorder_num", "u32", "the JSON's recorder_num"], ["tx", "Transmissions", "transmission boundaries, encrypted flags"], ["freq_error", "(f64, u32)", "sum and count"], ["source", "usize", "AutoTune"], ["reception", "Reception", "signal, noise, SNR, clean voice"], ["decrypted", "bool", ""]]],
+  ["VoiceOut", "core", "trunk-core/src/trunk/voice.rs", "One output of a voice decoder, routed to its call and queued in radio.pending; applied at the site's control channel clock.", [
+    ["slot", "u8", ""], ["out", "TrackerOut", "Audio(Vec<f32>, VoiceFrame) · Info { source, flags } · Cipher · Decrypted · WrongKey · AnalogAudio · Subaudible · Alias · AliasLc · Position"]]],
   ["VoiceFrame", "core", "trunk-core/src/trunk/frames.rs", "One vocoder frame.", [
     ["codec", "Codec", "Imbe or Ambe"], ["bits", "Vec<u8>", ""], ["e0 · errs", "u32", "FEC errors"], ["erased", "bool", ""], ["kind", "mbe::Kind", ""]]],
   ["Concluded", "core", "trunk-core/src/trunk/record.rs", "A finished call ready to store.", [
-    ["call", "Call", ""], ["json", "String", "the call JSON"], ["short_name", "String", ""], ["base_name", "String", "<tg>-<startEpoch>_<freq>[.slot]"], ["audio", "Vec<f32>", "8 kHz, normalised"], ["frames", "Option<Capture { ext, bytes }>", ".sdr or .frames.jsonl"]]],
+    ["call", "Call", ""], ["record", "CallRecord", "the call JSON, typed"], ["short_name · site", "String", "its system; the site its copy was kept from"], ["base_name", "String", "<tg>-<startEpoch>_<freq>[.slot]"], ["audio", "Vec<f32>", "8 kHz, normalised"], ["frames", "Option<Capture { ext, bytes }>", ".sdr or .frames.jsonl"]]],
   ["Event", "core", "trunk-core/src/trunk/engine.rs", "Everything the engine reports, drained by Session::poll.", [
-    ["ControlChannel", "{ system, freq_hz }", "a control channel was tuned"], ["Message", "{ system, msg }", "every decoded message"], ["Note", "{ system, level, text }", "log-worthy note"],
-    ["CallStart · CallUpdate · CallEnd", "(Call)", ""], ["Audio", "{ call_id, system, talkgroup, samples }", "live audio"], ["UnitAlias", "{ system, unit, alias, talkgroup }", ""],
+    ["ControlChannel", "{ site, freq_hz }", "a site tuned a control channel"], ["Message", "{ site, msg }", "every decoded message"], ["Note", "{ system, site: Option<u16>, level, text }", "log-worthy note"],
+    ["CallStart · CallUpdate · CallEnd", "(Call)", "conventional calls too"], ["Audio", "{ call_id, system, talkgroup, samples, decrypted }", "live audio"], ["UnitAlias", "{ system, unit, alias, talkgroup }", ""], ["UnitPosition", "{ system, unit, lat, lon, talkgroup }", "a new GPS position"],
     ["Concluded", "(Concluded)", ""], ["NotSaved", "(Call)", "too short or silent"], ["Duplicate", "{ call, kept }", "another site's copy kept"], ["ConvSkipped", "{ freq_hz, code }", "traffic no conventional row took"]]],
   ["Status · SystemStatus", "core", "trunk-core/src/trunk/engine.rs", "The engine's snapshot for the dashboard.", [
-    ["Status", "now_s, systems, active_calls, recording, channels_open, conventional_open, calls_concluded, sources: Vec<SourceTune { error_ppm, applied_ppm }>", ""],
-    ["SystemStatus", "system, short_name, now_s, control_channel_hz, identity, good, bad, modulation, active_calls, recording, calls_concluded, mismatch, adjacent, patches, protocol, site_group", ""],
-    ["ChannelSnapshot", "system, freq_hz, source, kind, power_db, noise_db, offset_hz, quality, phase_err, calls", "per channel, for RF detail"]]],
+    ["Status", "now_s, sites, active_calls, recording, channels_open, conventional_open, calls_concluded, sources: Vec<SourceTune { error_ppm, applied_ppm, seeded }>", ""],
+    ["SiteStatus", "site, system, short_name, site_name, now_s, control_channel_hz, identity, good, bad, modulation, active_calls, recording, calls_concluded, mismatch, adjacent, patches, protocol", "one per running site; the session's status message sends a summary of each, grouped by system, and adjacent, DMR / NXDN detail and patches go in decodeDetail"],
+    ["ChannelSnapshot", "system, site: Option<u16>, freq_hz, source, kind: ChannelKind (Control · Carrier · Voice · Conventional), power_db, noise_db, offset_hz, quality: ChannelQuality { sep, phase_err_deg }, calls", "per channel, for RF and decode detail"]]],
   ["Output", "app", "trunk-app/src/session.rs", "What Session::poll hands the platform.", [
-    ["Text", "String", "a JSON message for every browser"], ["Topic", "{ topic, text }", "only for subscribers"], ["Audio", "{ system, short_name, tg, frame }", "[2][u16 system][u32 call][u32 tg][i16…]"],
-    ["File", "{ rel, system, wav, json, frames, entry }", "a call to store"], ["Plugin", "(HostMessage)", ""], ["Log", "(log::Record)", ""], ["Rollup", "(Rollup)", "a minute of dashboard series"]]],
-  ["Call JSON", "file", "trunk-core/src/trunk/record.rs (call_record)", "Trunk Recorder's call file plus reception figures.", [
-    ["call_num · freq · freq_error", "", ""], ["signal · noise · snr · clean_voice_pct", "", "reception"], ["source_num · recorder_num", "", "source_num is always 0"], ["tdma_slot · phase2_tdma", "", ""],
-    ["start_time · stop_time · *_ms", "", "Unix s / ms"], ["emergency · priority · mode · duplex · encrypted", "", ""], ["call_length · call_length_ms", "", ""],
+    ["Message", "(ToClient)", "a typed interface message, for the browsers that may hear it"], ["Topic", "{ topic, msg: ToClient }", "only for subscribers"], ["Audio", "{ system, short_name, tg, frame, decrypted }", "[2][u16 system][u32 call][u32 tg][i16…]"],
+    ["File", "{ rel, system, wav, record: CallRecord, frames, decrypted }", "a call to store (its history entry: session::call_entry)"], ["Plugin", "(HostMessage)", ""], ["Log", "(log::Record)", ""], ["Rollup", "(Rollup)", "a minute of dashboard series"]]],
+  ["Call JSON", "file", "trunk-recorder-plugin CallRecord, made by record::call_record", "Trunk Recorder's call file plus reception figures: CallRecord's fields in its order, written once by the finisher (to_json); flags 0/1, levels to a tenth of a dB.", [
+    ["call_num · freq · freq_error", "", ""], ["signal · noise · snr · clean_voice_pct", "", "reception (null: not measured)"], ["source_num · recorder_num", "", "source_num is always 0"], ["tdma_slot · phase2_tdma", "", ""],
+    ["start_time · stop_time · *_ms", "", "Unix s / ms"], ["emergency · priority · mode · duplex · encrypted", "", ""], ["algid · key_id · decrypted", "", "−1 if none"], ["call_length · call_length_ms", "", ""],
     ["talkgroup · talkgroup_tag · talkgroup_description · talkgroup_group_tag · talkgroup_group", "", ""], ["color_code · ran", "", "−1 if none"], ["tone_mode · tone_detected · tone_confidence", "", "conventional"],
-    ["audio_type", "", "analog · digital tdma · digital"], ["short_name", "", ""], ["patched_talkgroups", "", "only when more than one"],
-    ["freqList", "[{freq, time, pos, len, error_count, spike_count}]", ""], ["errorList", "[{pos, len, frames, error_count, bad_frames, max_frame_errors}]", ""], ["srcList", "[{src, time, pos, emergency, signal_system, tag, tag_ota, lat?, lon?}]", ""]]],
+    ["audio_type", "", "analog · digital tdma · digital"], ["short_name · site", "", "site: its name; none for conventional"], ["patched_talkgroups", "", "only when more than one"],
+    ["freqList", "[{freq, time, pos, len, error_count, spike_count}]", ""], ["errorList", "[{pos, len, frames, error_count, bad_frames, max_frame_errors}]", ""], ["srcList", "[{src, time, pos, emergency, encrypted, duplex, mode, priority, signal_system, tag, tag_ota, lat?, lon?}]", "each source's own flags"]]],
   ["Manifest", "plugin", "trunk-recorder-plugin/src/protocol.rs", "What a plugin prints for --describe.", [
     ["id · name · version · description", "String", ""], ["api", "u32", "1 ≤ api ≤ API_VERSION"], ["subscribe", "Vec<String>", "call.start, call.end, call.concluded, unit, audio, status"], ["audio_formats", "Vec<String>", "m4a, wav"],
     ["config · system_config", "Option<JSON Schema>", "the Plugins page's forms"], ["homepage · repository · authors · license", "", ""]]],
   ["HostMessage", "plugin", "trunk-recorder-plugin/src/protocol.rs", "Recorder → plugin, one JSON line on stdin, tagged by type.", [
-    ["hello", "api, host, config, systems [SystemInfo { index, short_name, kind, config }], capture_dir, data_dir, audio_formats", ""],
-    ["call.start · call.end", "CallInfo { id, system, short_name, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, emergency, recording, reason, start_time, units, patched_talkgroups }", ""],
-    ["call.concluded", "path, system, call: CallRecord, files { json, wav, m4a }", "CallRecord = the call JSON, extra keys kept"], ["unit", "system, short_name, kind, unit, talkgroup, time", ""],
-    ["audio", "call_id, system, short_name, talkgroup, sample_rate, pcm (base64 i16)", ""], ["status", "time, systems [{ index, short_name, control_channel_hz, decode_rate, active_calls, recording }]", ""], ["shutdown", "grace_s", ""]]],
+    ["hello", "api, host, config, systems [SystemInfo { index, short_name, kind, config, settings }], capture_dir, data_dir, audio_formats", "index: from 0, trunked then conventional, this run only"],
+    ["call.start · call.end", "CallInfo { id, system, short_name, site, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources, patched_talkgroups }", "once per call, from its first copy"],
+    ["call.concluded", "path, system, call: CallRecord, files { json, wav, m4a }", "CallRecord = the call JSON, every field named, unknown keys in extra"], ["unit", "system, short_name, site, kind, unit, talkgroup, emergency, time", ""],
+    ["audio", "call_id, system, short_name, talkgroup, sample_rate, pcm (base64 i16)", ""], ["status", "time, systems [{ index, short_name, site_name, control_channel_hz, decode_rate, active_calls, recording, nac, wacn, sys_id, rfss, site }]", ""], ["shutdown", "grace_s", ""]]],
   ["PluginMessage", "plugin", "trunk-recorder-plugin/src/protocol.rs", "Plugin → recorder, one JSON line on stdout.", [
     ["ready", "", "after hello"], ["log", "level, message", ""], ["status", "state (ok · warning · error), message", ""], ["call.result", "path, outcome (ok · skipped · failed), message, url", "one per call.concluded"],
     ["metrics", "queued, retrying, inFlight, retries, bytesSent, latencyMs, lastOk, lastError, lastErrorText, endpoints [{ name, state, latencyMs, lastOk, lastError }], extra", "all optional"]]]
@@ -1701,6 +1746,9 @@ const CFG = {
   "sources[].ppm": ["number", "rtlsdr required (integer) · others 0", "Crystal correction applied in the driver."],
   "sources[].autoTune": ["bool", "false", "Apply the frequency error measured on control channels and calls to new heads (section 05)."],
   "sources[].guardHz": ["number", "75000", "Unusable edge of the band. Usable half-width = max(rate/2 − guardHz, rate/4)."],
+  "sources[].bufLen": ["bytes", "0 (= 262144)", "rtlsdr: bytes per USB transfer (Trunk Recorder's buflen), a multiple of 512; 65536 for several dongles on one USB 2.0 bus."],
+  "sources[].buffers": ["number", "0 (= about 2 MiB in flight)", "rtlsdr: USB transfers in flight, at most 256."],
+  "sources[].packing": ["bool", "true", "airspy: 12-bit samples packed on the USB."],
   "sources[].antenna": ["string", "\"\"", "usrp / soapy antenna."],
   "sources[].gainMode": ["linearity · sensitivity · manual", "linearity", "airspy; with gainStep 14, or lnaStep / mixerStep / vgaStep 10 in manual."],
   "sources[].biasTee": ["bool", "false", "airspy bias tee (soapy: settings \"biastee=true\")."],
@@ -1709,47 +1757,52 @@ const CFG = {
   "sources[].path": ["string", "required", "file: the capture to replay."],
   "sources[].realtime": ["bool", "required", "file: pace to real time, or run as fast as the engine goes."],
   "sources[].format": ["cu8 · cs16 · cf32", "from the extension", "file sample format."],
-  "systems": ["array", "[]", "Trunked systems, one entry per site."],
+  "systems": ["array", "[]", "Trunked systems, each with its sites."],
   "systems[].shortName": ["string", "sys1", "The identity: folder, companion files, plugin settings. Unique across every system."],
   "systems[].name": ["string", "\"\"", "Display name."],
-  "systems[].type": ["p25 · smartnet · dmr · nxdn", "p25", "The protocol."],
-  "systems[].enabled": ["bool", "true", "Active when enabled and it has a control channel."],
-  "systems[].controlChannelsHz": ["array of Hz", "[]", "P25 / SmartNet: hunted in order. DMR / NXDN: every carrier watched."],
-  "systems[].modulation": ["auto · fsk4 · qpsk", "auto", "Which receivers the P25 bank runs: all three, C4FM only, or the two CQPSK."],
-  "systems[].talkgroupsCsv": ["string", "\"\"", "The talkgroup file's contents, stored inside the config."],
-  "systems[].talkgroupsName": ["string", "\"\"", "The file name it came from, for display."],
+  "systems[].type": ["p25 · smartnet · dmr · nxdn", "p25", "The protocol. A name not listed is refused when the config is read."],
+  "systems[].enabled": ["bool", "true", "Active when enabled and one of its sites is."],
   "systems[].unitNames": ["{ csv, name, mode }", "—", "Unit names; mode user · ota · user_only · none."],
-  "systems[].expect": ["{ nac, wacn, sysId, rfss, site }", "{}", "The site lock, in decimal. Messages from a site that doesn't match are ignored."],
-  "systems[].expect.nac": ["number", "—", "P25 NAC (decimal; 659 = 0x293)."],
-  "systems[].expect.wacn": ["number", "—", "P25 WACN."],
-  "systems[].expect.sysId": ["number", "—", "System ID (P25, SmartNet, NXDN Type-C)."],
-  "systems[].expect.rfss": ["number", "—", "P25 RFSS."],
-  "systems[].expect.site": ["number", "—", "Site (P25, SmartNet, NXDN Type-C)."],
-  "systems[].voiceChannelsHz": ["array of Hz", "[]", "From the survey; only used for auto-centring."],
   "systems[].recording": ["object", "{}", "This system's own recording rules (keys marked per system in recording)."],
-  "systems[].siteGroup": ["string", "\"\"", "Multi-site: sites in one group are deduplicated."],
-  "systems[].plugins": ["object", "{}", "Per-system plugin settings by plugin id. An array runs several copies of that plugin."],
-  "systems[].bandplan": ["800_standard · 800_reband · 800_splinter · 900 · obt…", "800_standard", "SmartNet band plan; OBT needs bandplanBaseHz, bandplanSpacingHz, bandplanHighHz (and bandplanOffset)."],
+  "systems[].plugins": ["object", "{}", "Per-system plugin settings by plugin id (with override for the plugin's own settings it changes here). An array runs several copies of that plugin."],
+  "systems[].pluginDelays": ["array", "[]", "How long plugins wait for this system's calls: { plugins, talkgroups, delayS }; before the config's own."],
+  "systems[].keys": ["string", "\"\"", "The key source (in the config's keys) it decrypts with."],
   "systems[].defaultMode": ["analog · digital", "digital", "SmartNet: voice mode until a talkgroup's mode is learned."],
-  "systems[].lcnTableHz": ["{ LCN: Hz }", "{}", "DMR / NXDN logical channel numbers to frequencies."],
-  "systems[].dmrChannelsHz": ["array of Hz", "[]", "DMR: more carriers to watch."],
-  "systems[].colorCode": ["number or null", "null", "DMR colour code."],
   "systems[].nxdnType": ["typeC · typeD", "typeC", "NXDN trunking type."],
-  "systems[].nxdnRate": ["nxdn48 · nxdn96", "nxdn48", ""],
-  "systems[].nxdnChannelsHz": ["array of Hz", "[]", "NXDN: more carriers to watch."],
-  "systems[].ran": ["number or null", "null", "NXDN RAN."],
-  "conventional": ["array", "[]", "Conventional systems: groups of single-frequency channels (at most 256)."],
+  "systems[].sites": ["array", "[]", "Where it is recorded from: each site a control channel to follow. A call heard on several of a system's sites is saved once."],
+  "systems[].sites[].name": ["string", "the system's shortName", "Unique in its system: Preferred Site, call JSON site, band plan file."],
+  "systems[].sites[].enabled": ["bool", "true", "Active when enabled and it has a control channel."],
+  "systems[].sites[].controlChannelsHz": ["array of Hz", "[]", "P25 / SmartNet: hunted in order. DMR / NXDN: every carrier watched."],
+  "systems[].sites[].modulation": ["auto · fsk4 · qpsk", "auto", "Which receivers the P25 bank runs: all three, C4FM only, or the two CQPSK."],
+  "systems[].sites[].expect": ["{ nac, wacn, sysId, rfss, site }", "{}", "The site lock, in decimal. Messages from a site that doesn't match are ignored."],
+  "systems[].sites[].expect.nac": ["number", "—", "P25 NAC (decimal; 659 = 0x293)."],
+  "systems[].sites[].expect.wacn": ["number", "—", "P25 WACN."],
+  "systems[].sites[].expect.sysId": ["number", "—", "System ID (P25, SmartNet, NXDN Type-C)."],
+  "systems[].sites[].expect.rfss": ["number", "—", "P25 RFSS."],
+  "systems[].sites[].expect.site": ["number", "—", "Site (P25, SmartNet, NXDN Type-C)."],
+  "systems[].sites[].voiceChannelsHz": ["array of Hz", "[]", "From the survey; only used for auto-centring."],
+  "systems[].sites[].bandplan": ["800_standard · 800_reband · 800_splinter · 900 · 400_custom / obt", "800_standard", "SmartNet band plan; OBT needs bandplanBaseHz, bandplanSpacingHz, bandplanHighHz (and bandplanOffset)."],
+  "systems[].sites[].lcnTableHz": ["{ LCN: Hz }", "{}", "DMR / NXDN logical channel numbers to frequencies."],
+  "systems[].sites[].dmrChannelsHz": ["array of Hz", "[]", "DMR: more carriers to watch."],
+  "systems[].sites[].colorCode": ["number or null", "null", "DMR colour code."],
+  "systems[].sites[].nxdnRate": ["nxdn48 · nxdn96", "nxdn48", ""],
+  "systems[].sites[].nxdnChannelsHz": ["array of Hz", "[]", "NXDN: more carriers to watch."],
+  "systems[].sites[].ran": ["number or null", "null", "NXDN RAN."],
+  "conventional": ["array", "[]", "Conventional systems: groups of single-frequency channels, numbered after the trunked ones."],
   "conventional[].shortName": ["string", "conv", "Unique identity, as for trunked systems."],
   "conventional[].enabled": ["bool", "true", ""],
   "conventional[].squelchDb": ["number", "8", "Open threshold in dB above the noise floor."],
+  "conventional[].demod": ["{ fmDeemphasis, amLevel, amLowCutHz, squelchOpenMs, squelchHangMs }", "{}", "How its analog channels are demodulated: FM de-emphasis on or off, AM level fast or slow, AM low cut 0–600 Hz, squelch open 0–500 ms and hang 0–1000 ms."],
+  "conventional[].keys": ["string", "\"\"", "The key source its P25 channels decrypt with."],
   "conventional[].channelFile": ["string", "\"\"", "A channel CSV; when set, channels are read from it and saved as []."],
   "conventional[].channels": ["array", "[]", "The channels."],
   "conventional[].channels[].freqHz": ["number", "required", ""],
-  "conventional[].channels[].mode": ["fm · p25 · dmr · nxdn48 · nxdn96", "fm", ""],
+  "conventional[].channels[].mode": ["fm · am · p25 · dmr · nxdn48 · nxdn96", "fm", "Digital channels name talkgroups by the system's own talkgroup file."],
   "conventional[].channels[].name": ["string", "\"\"", "Alpha tag."],
   "conventional[].channels[].talkgroup": ["number", "kHz of the frequency", "Second and later rows on one frequency get kHz × 10 + k."],
   "conventional[].channels[].tone": ["string", "\"\" (any)", "151.4 (CTCSS) · D023N (DCS) · NAC 293 · CC 1 TS 2 TG 201 · RAN 5 TG 201. Tells rows on one frequency apart."],
   "conventional[].channels[].squelchDb": ["number", "the system's", ""],
+  "conventional[].channels[].bandwidthKhz": ["kHz", "the mode's", "Analog: the channel filter's width, 4–20 (FM 11, or 16 wide; AM 11, 6 for 8.33 kHz channels)."],
   "conventional[].channels[].enabled": ["bool", "true", ""],
   "conventional[].channels[].tag": ["string", "\"\"", ""], "conventional[].channels[].group": ["string", "\"\"", ""], "conventional[].channels[].description": ["string", "\"\"", ""],
   "recording": ["object", "", "Where and how calls are saved; the global rules."],
@@ -1768,8 +1821,8 @@ const CFG = {
   "recording.normalizeAudio": ["bool", "true", "Per system. Loudness to −12 dBFS speech."],
   "recording.digitalLevelDb": ["dB", "0", "Per system. ±40."],
   "recording.analogLevelDb": ["dB", "0", "Per system. ±40."],
-  "recording.compressWav": ["bool", "false", "Per system. Keep M4A instead of WAV."],
-  "recording.audioArchive": ["bool", "true", "Per system. Keep audio after plugins upload it."],
+  "recording.archiveWav": ["bool", "true", "Per system. Keep the WAV after plugins upload it."],
+  "recording.archiveM4a": ["bool", "false", "Per system. Keep an M4A of each call."],
   "recording.callLog": ["bool", "true", "Per system. Keep the JSON after upload."],
   "recording.archiveFilesOnFailure": ["bool", "true", "Per system."],
   "recording.filenameFormat": ["string", "\"\"", "Per system. \"\" = <short>/<Y>/<M>/<D>/<tg>-<epoch>_<freq>."],
@@ -1780,29 +1833,32 @@ const CFG = {
   "server": ["object", "", "The web server."],
   "server.bind": ["address", "127.0.0.1", "--bind overrides for one run."], "server.port": ["number", "8080", "--port overrides for one run."],
   "server.autoStart": ["bool", "false", "Start recording at launch (or --start)."], "server.allowedOrigins": ["array", "[]", "CORS origins for other web pages."],
-  "server.interfaces": ["[{ name, path }]", "[]", "Custom interfaces served at /ui/<name>/."], "server.home": ["string", "\"\"", "The interface at /; \"\" = built-in."],
+  "server.interfaces": ["{ id: { port, enabled, access, path } }", "{}", "Other interfaces, each on a port of its own with the API beside it; access listen (the default) or control. A port of 0 gets the next free one on load."],
   "plugins": ["{ id: { enabled, settings, path } }", "{}", "Plugins on or off, their recorder-wide settings, an optional custom executable."],
-  "plugins.*.enabled": ["bool", "false", ""], "plugins.*.settings": ["object", "null", "As the plugin's config schema describes."], "plugins.*.path": ["string", "\"\"", "Custom executable."],
+  "plugins.*.enabled": ["bool", "false", ""], "plugins.*.settings": ["object", "null", "As the plugin's config schema describes."], "plugins.*.path": ["string", "\"\"", "Custom executable."], "plugins.*.shareDecrypted": ["bool", "false", "Give it calls decrypted with the recorder's keys."],
+  "pluginDelays": ["array", "[]", "How long plugins wait for calls, every system: { plugins, talkgroups, delayS }; a system's own come first."],
+  "keys": ["{ name: { file, passwordFile } }", "{}", "Encryption key sources (a keys file or a KFDtool .ekc container); a system names one in its keys."],
   "log": ["object", "", "Log options, in Trunk Recorder's style."],
   "log.level": ["trace · debug · info · warning · error · fatal", "info", "--log-level overrides."], "log.console": ["bool", "true", ""], "log.file": ["bool", "false", "Daily files, rotated at 100 MB."],
-  "log.dir": ["path", "logs beside the config", ""], "log.syslogFriendly": ["bool", "false", ""], "log.syslog": ["bool", "false", ""], "log.color": ["console · logfile · all · none", "\"\"", ""],
+  "log.dir": ["path", "logs beside the config", ""], "log.syslogFriendly": ["bool", "false", ""], "log.syslog": ["bool", "false", ""], "log.color": ["\"\" · console · logfile · all · none", "\"\"", "\"\": the console's when it is a terminal."],
   "log.frequencyFormat": ["exp · mhz · hz", "mhz", ""], "log.talkgroupDisplayFormat": ["id · id_tag · tag_id", "id", ""], "log.statusAsString": ["bool", "true", ""], "log.controlWarnRatePerS": ["number", "10", "Warn below this decode rate; −1 always logs it."],
   "monitor": ["{ probeHosts }", "", "Internet checks for the dashboard."], "monitor.probeHosts": ["array of host:port", "[\"1.1.1.1:443\", \"dns.google:443\"]", "[] turns them off."]
 };
 const CFG_EXAMPLE = {
   sources: [{ type: "rtlsdr", serial: "00000101", centerHz: 0, rateHz: 2400000, gainDb: 25.4, agc: false, ppm: 1, autoTune: true, guardHz: 75000 }],
   systems: [
-    { shortName: "county-p25", name: "County Public Safety (Site 3)", type: "p25", enabled: true, controlChannelsHz: [851012500, 851262500], modulation: "auto",
-      talkgroupsCsv: "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n1201,4b1,D,FD Disp,…", talkgroupsName: "county.csv",
-      expect: { nac: 659, wacn: 781824, sysId: 989, rfss: 1, site: 3 }, recording: { minCallS: 1, recordUnknown: false },
+    { shortName: "county-p25", name: "County Public Safety", type: "p25", enabled: true,
+      sites: [{ name: "site3", controlChannelsHz: [851012500, 851262500], modulation: "auto", expect: { nac: 659, wacn: 781824, sysId: 989, rfss: 1, site: 3 } },
+              { name: "site5", controlChannelsHz: [852137500], expect: { nac: 659, wacn: 781824, sysId: 989, rfss: 1, site: 5 } }],
+      recording: { minCallS: 1, recordUnknown: false },
       plugins: { openmhz: { apiKey: "REPLACE_ME", systemName: "countyp25" } } },
-    { shortName: "city-smartnet", type: "smartnet", enabled: true, controlChannelsHz: [851637500], bandplan: "800_reband", defaultMode: "analog", expect: { sysId: 18205 } }
+    { shortName: "city-smartnet", type: "smartnet", enabled: true, defaultMode: "analog", sites: [{ controlChannelsHz: [851637500], bandplan: "800_reband", expect: { sysId: 18205 } }] }
   ],
   conventional: [{ shortName: "county-fire-conv", enabled: true, squelchDb: 8, channels: [
     { freqHz: 852087500, mode: "fm", name: "FG North", tone: "151.4" },
     { freqHz: 852087500, mode: "fm", name: "FG South", tone: "D023N" },
     { freqHz: 851812500, mode: "p25", name: "PD Tac 2", tone: "NAC 293", squelchDb: 12 }] }],
-  recording: { captureDir: "/home/me/TrunkRecorderPro", prerollS: 1, maxRecorders: 32, callTimeoutS: 3, compressWav: true, vocoder: "fixed", m4a: { encoder: "auto", bitrateKbps: 32 }, ramSpool: { enabled: false, sizeMb: 256 } },
+  recording: { captureDir: "/home/me/TrunkRecorderPro", prerollS: 1, maxRecorders: 32, callTimeoutS: 3, archiveM4a: true, vocoder: "fixed", m4a: { encoder: "auto", bitrateKbps: 32 }, ramSpool: { enabled: false, sizeMb: 256 } },
   server: { bind: "127.0.0.1", port: 8080, autoStart: true },
   plugins: { openmhz: { enabled: true } },
   log: { level: "info", file: true },
@@ -1879,8 +1935,8 @@ const CFG_EXAMPLE = {
 diagram($("dia-clock"), {
   w: 1130, h: 270, minW: 900, nw: 196, title: "How a source's sample clock is tied to the wall clock", textTitle: "The clock path as text",
   nodes: [
-    { id: "drv", x: 20, y: 40, label: "Driver hands over a block", sub: "at = Instant::now()", text: "Stamped in the source thread (or by the worker in the browser), before the block waits in any queue. Time spent queued for a busy engine therefore never counts as clock error." },
-    { id: "fed", x: 250, y: 40, label: "Session::push", sub: "samples += n", text: "The source's sample count grows by the block's length. The engine's sample time for this source is count ÷ rate." },
+    { id: "drv", x: 20, y: 40, label: "Driver hands over a block", sub: "at = Instant::now()", text: "Stamped in the source thread (or by the worker in the browser), before the block waits in any queue. Time spent queued for a busy decoder therefore never counts as clock error." },
+    { id: "fed", x: 250, y: 40, label: "Feeder::push", sub: "samples += n", text: "On the source's decoding thread (<code>Session::push</code> in the browser). The source's sample count grows by the block's length. The engine's sample time for this source is count ÷ rate." },
     { id: "obs", x: 480, y: 40, label: "ClockFit::observe", sub: "lag = wall − sample time", text: "Lag = (at − epoch) − samples ÷ rate, in seconds. Buffers only ever arrive late, so the least lag is the clock's own." },
     { id: "win", x: 710, y: 40, label: "10 s window", sub: "least lag → target", text: "The very first block sets the target at once (this absorbs the radio's open time, such as a USRP's FPGA load). After that, each 10 s window's least lag becomes the new target." },
     { id: "steer", x: 920, y: 40, label: "steer, each poll", sub: "slew ≤ 1 ms/s · step > 0.25 s", text: "Within 0.25 s of the offset already set, the difference is drift (crystal error): the offset moves toward it at most 1 ms per second of wall clock (1000 ppm, far more than any crystal). Further than 0.25 s, samples were lost without being reported, or invented: the offset is set at once, and the log says \"clock re-anchored\"." },
@@ -1888,7 +1944,7 @@ diagram($("dia-clock"), {
     { id: "time", x: 710, y: 175, label: "Source::time()", sub: "samples ÷ rate + offset", text: "Every frame and message is timed from its sample instant this way." },
     { id: "trunk", x: 480, y: 175, label: "Trunk now_s · call times", sub: "from the CC's source", text: "Each system's clock is its control channel's source; timeouts, call starts and ends use it. Multi-site matching compares these across sources, which is why their clocks must agree." },
     { id: "wall", x: 250, y: 175, label: "Wall time", sub: "epoch_ms + engine time", text: "Unix times in the call JSON and file names. Session adds the local UTC offset for folder names." },
-    { id: "gap", x: 20, y: 175, label: "push_gap · fill_quiet", sub: "drops and silence count", text: "Samples a driver reports dropped (up to 10 s), and silence for a source quiet for over 1 s, are fed as faint noise and counted as samples, so sample time keeps pace with the air." }
+    { id: "gap", x: 20, y: 175, label: "Feeder::gap · idle", sub: "drops and silence count", text: "Samples a driver reports dropped (up to 10 s), and silence for a source quiet for over 1 s, are fed as faint noise and counted as samples, so sample time keeps pace with the air." }
   ],
   edges: [["drv", "fed"], ["fed", "obs"], ["obs", "win"], ["win", "steer", "target"], ["steer", "set", "offset"], ["set", "time"], ["time", "trunk"], ["trunk", "wall"], ["gap", "fed", "samples", { s: "tb" }]],
   steps: ["drv", "fed", "obs", "win", "steer", "set", "time", "trunk", "wall", "gap"], stepLabel: "Walk through"
@@ -1966,7 +2022,7 @@ diagram($("dia-meas"), {
     { id: "eng", x: 20, y: 95, label: "Engine::report", sub: "levels · ppm · calls", text: "What every system and source shares: signal levels, measured ppm, calls, decode rates." },
     { id: "meter", x: 20, y: 170, label: "SampleMeter", sub: "headroom · clipping · 1 in 16", text: "On the sample path, looking at one sample in 16: how close the radio is to clipping, and how often it clips." },
     { id: "tally", x: 20, y: 245, label: "Tally", sub: "calls · airtime · reasons", text: "Counted from engine events: calls started and saved, airtime, why calls weren't recorded, voice errors." },
-    { id: "vd", x: 20, y: 440, label: "VoiceDecoder::report", sub: "eye opening · phase error", text: "Per voice channel; only for the RF and decode detail views." },
+    { id: "vd", x: 20, y: 440, label: "quality() · ChannelQuality", sub: "eye opening · phase error", text: "<code>VoiceDecoder::quality()</code> and <code>ControlChannel::quality()</code> give a <code>ChannelQuality { sep, phase_err_deg }</code> per channel; only for the RF and decode detail views." },
     { id: "ev", x: 20, y: 330, label: "Session events", sub: "Stats::observe", text: "Every engine event passes <code>Stats::observe</code>, which feeds the tally, the registry and the monitor." },
     { id: "hm", x: 290, y: 20, label: "monitor thread", sub: "computer · plugins, every 2 s", text: "Desktop only. The computer (CPU, memory, disks, cgroup limits, internet checks) and each plugin's metrics go into the host's own aggregator." },
     { id: "agg", x: 290, y: 150, label: "Aggregator", sub: "rates · avg / min / max", text: "Turns counters into rates and keeps each series' value now and its minute's average, lowest and highest." },
@@ -1975,7 +2031,7 @@ diagram($("dia-meas"), {
     { id: "stats", x: 560, y: 95, label: "stats message", sub: "every 1 s", cls: "k-out", text: "<code>{type: \"stats\", t, values}</code> to every browser while recording." },
     { id: "roll", x: 560, y: 190, label: "Rollup", sub: "every minute", text: "<code>{t, s: {key: [avg, min, max]}}</code>." },
     { id: "chan", x: 560, y: 440, label: "rfDetail · decodeDetail", sub: "topics, 1/s", cls: "k-out", text: "Built from <code>Engine::channels()</code> only while a browser subscribes to <code>rf:&lt;source&gt;</code> or <code>decode:&lt;shortName&gt;</code>." },
-    { id: "rq", x: 560, y: 300, label: "radioQuery → radioResult", sub: "talkgroups · units · freqs", cls: "k-out", text: "Answers the Radio pages' questions." },
+    { id: "rq", x: 560, y: 300, label: "radioQuery → radioResult", sub: "talkgroups · units · freqs", cls: "k-out", text: "Answers the Radio pages' questions (<code>Shared::radio_query</code>), with names from the <code>NameBook</code>: each system's talkgroups as <code>engine_config</code> makes them, and talker aliases. Both builds answer through it." },
     { id: "feed", x: 560, y: 375, label: "monitorEvent · watchers", sub: "the feed · alert hook", cls: "k-out", text: "Events for the feed go to browsers; every event goes to the registered watchers (none yet: the hook for alert rules)." },
     { id: "host", x: 900, y: 20, w: 210, label: "host message", sub: "every 2 s", cls: "k-out", text: "<code>{type: \"host\", t, values, platform}</code>; per-core detail only for the <code>platform</code> topic." },
     { id: "hist", x: 900, y: 140, w: 210, label: "History", sub: "a week in memory · statsQuery", text: "A minute grid per series. <code>statsQuery</code> is answered downsampled." },
@@ -1992,11 +2048,11 @@ diagram($("dia-web"), {
   w: 1130, h: 400, minW: 900, nw: 200, title: "The browser build: page and worker", textTitle: "The browser build as text",
   lanes: [{ y: 10, h: 125, label: "the page (main thread)", color: "var(--lane-out)" }, { y: 145, h: 245, label: "a Web Worker", color: "var(--lane-eng)" }],
   nodes: [
-    { id: "page", x: 20, y: 50, label: "Interface (React)", sub: "same code as desktop", text: "The same interface. A controller talks to either a WebSocket or the worker through the same <code>FromRecorder</code> / <code>ToRecorder</code> messages." },
+    { id: "page", x: 20, y: 50, label: "Interface (React)", sub: "same code as desktop", text: "The same interface. A controller talks to either a WebSocket or the worker through the same <code>FromRecorder</code> / <code>ToRecorder</code> messages, and shows what <code>hello.capabilities</code> says works. It runs the config rules from trunk-web's WebAssembly (<code>rules.ts</code>)." },
     { id: "wt", x: 270, y: 50, label: "WorkerTransport", sub: "postMessage", text: "Starts the worker, forwards commands, plays live audio frames, keeps the config." },
-    { id: "ls", x: 520, y: 50, label: "localStorage", sub: "trp.config", text: "The config (workers can't use localStorage, so the page keeps it)." },
+    { id: "ls", x: 520, y: 50, label: "localStorage", sub: "trp.config · trp.talkgroups", text: "The config and the talkgroup files (workers can't use localStorage, so the page keeps them)." },
     { id: "wl", x: 770, y: 50, label: "Wake lock", sub: "while recording", text: "Phones and tablets freeze a tab once the screen sleeps; a screen wake lock keeps it recording while the tab is in front." },
-    { id: "worker", x: 270, y: 185, label: "engine.worker.ts", sub: "ToWorker / FromWorker", text: "Owns the session and the dongles; answers commands; desktop-only commands are left out." },
+    { id: "worker", x: 270, y: 185, label: "engine.worker.ts", sub: "ToWorker / FromWorker", text: "Owns the session and the dongles. Greets the page as the desktop app greets a connection (<code>state</code>, <code>config</code>, <code>talkgroups</code>, <code>units</code>, <code>heard</code>, <code>history</code>, <code>survey</code>, <code>devices</code>, then <code>hello</code> with no <code>capabilities</code>); answers commands, and those it can't do with an <code>error</code>." },
     { id: "rtl", x: 20, y: 300, label: "WebRtl", sub: "RTL-SDR over WebUSB", text: "rtlsdr-nusb on nusb's WebUSB backend. Works in a worker once the page has been granted the device. <code>pumpRtl</code> awaits <code>next()</code>, then pushes." },
     { id: "file", x: 20, y: 185, label: "Capture file", sub: "chosen by the user", text: "Read in 128 KiB slices, paced to real time or not. The browser forgets the file on reload." },
     { id: "sess", x: 270, y: 300, label: "WebSession", sub: "Session + Engine (wasm)", text: "trunk-app's <code>Session</code> compiled to WebAssembly with SIMD: the same decoding, call saving and stats as the desktop." },
@@ -2012,8 +2068,8 @@ diagram($("dia-web"), {
 /* ---------- 14 interface protocol ---------- */
 sequence($("ws-seq"), [
   ["l", "connect /api/ws", "The guard checks Origin and Host first: the recorder's own pages, allowed origins and non-browser programs get in; others get 403.", ""],
-  ["r", "hello", "Everything for the first screen: config, phase, devices, the last 300 calls, aliases, heard codes, radios, survey state, recent events, the computer, plugin runtimes.", `{"type":"hello","version":"0.1.8","platform":"macos","config":{…},"phase":{"type":"state","phase":"running"},"history":[…],…}`],
-  ["r", "plugins", "The installed plugins.", `{"type":"plugins","plugins":[…]}`],
+  ["r", "state · config · talkgroups · …", "The greeting, as the ordinary messages sent later: state, config (with its version), each system's talkgroups and saved units, heard, history (the last 300 calls), radios, survey, each recent monitorEvent, host; with control access also devices, keys, plugins, interfaces.", `{"type":"config","config":{…},"version":3}`],
+  ["r", "hello", "Last: caught up. Version, platform, API version, config path, survey bands, and what this recorder can do beyond recording.", `{"type":"hello","version":"0.2.0","platform":"macos","api":1,"configPath":"…","surveyBands":[…],"capabilities":["service","drivers","plugins","interfaces","host","keys"]}`],
   ["r", "status · stats · host", "Broadcast to everyone: status about every 500 ms and stats every second while recording; host every 2 s.", `{"type":"stats","t":1791500000,"values":{"sys/county-p25/cc/good":39.8,…}}`],
   ["l", "subscribe", "What this connection watches; replaces the last. Costly messages are built only while someone watches.", `{"type":"subscribe","topics":["spectrum:0","log"]}`],
   ["r", "subscribed", "Confirms the topics.", `{"type":"subscribed","topics":["spectrum:0","log"]}`],
@@ -2023,9 +2079,12 @@ sequence($("ws-seq"), [
   ["r", "concluded", "A saved call, sent only once its files are on disk.", `{"type":"concluded","entry":{…}}`],
   ["l", "statsQuery", "History for the dashboard's charts; the id ties the answer to the question.", `{"type":"statsQuery","id":7,"series":["sys/county-p25/*"],"range":"6h"}`],
   ["r", "statsResult", "To the asker only.", `{"type":"statsResult","id":7,"from":…,"to":…,"loading":false,"series":{…}}`],
-  ["l", "setConfig", "Always the whole config; saved atomically.", `{"type":"setConfig","config":{…}}`],
-  ["r", "config", "The new config, to every client.", `{"type":"config","config":{…}}`],
-  ["l", "start / stop", "Recording on or off (they never interleave: one lifecycle lock).", `{"type":"start"}`],
+  ["l", "setConfig", "Always the whole config, with the version it was edited from; saved atomically.", `{"type":"setConfig","config":{…},"version":3}`],
+  ["r", "configSaved", "To the sender: the config's version now, and an error when the edit wasn't taken (an older version, a bad config) or couldn't be saved.", `{"type":"configSaved","version":4}`],
+  ["r", "config", "The new config and its version, to every client (none when the edit was refused).", `{"type":"config","config":{…},"version":4}`],
+  ["l", "setTalkgroups", "A system's talkgroup file (Trunk Recorder's CSV; \"\" for none), kept beside the config; a recording takes it at once.", `{"type":"setTalkgroups","system":"county-p25","csv":"Decimal,Alpha Tag\\n1201,FD Disp"}`],
+  ["r", "talkgroups", "That file, to every client.", `{"type":"talkgroups","system":"county-p25","csv":"…"}`],
+  ["l", "start / stop", "Recording on or off (they never interleave: one lifecycle, behind one lock).", `{"type":"start"}`],
   ["r", "state", "The new phase, to every client.", `{"type":"state","phase":"running","error":null}`]
 ], { left: "browser (client)", right: "recorder", lr: "client → recorder", rl: "recorder → client" });
 </script>

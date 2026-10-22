@@ -12,6 +12,8 @@ name = "trunk-pro"
 path = "src/main.rs"
 
 [dependencies]
+# A key container's password, typed into the interface, is wiped after use.
+zeroize = "1"
 trunk-core.workspace = true
 trunk-app.workspace = true
 trunk-recorder-plugin.workspace = true
@@ -34,6 +36,8 @@ log = { version = "0.4", features = ["std"] }
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
 ureq = "3"
 sha2 = "0.11"
+# The install's anonymous directory recorder ID (directory.rs).
+getrandom = "0.3"
 flate2 = "1"
 tar = "0.4"
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
@@ -47,3 +51,5 @@ libc = "0.2.190"
 
 [dev-dependencies]
 jsonschema = { version = "0.58.4", default-features = false }
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", default-features = false }

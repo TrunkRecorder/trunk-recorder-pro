@@ -13,12 +13,12 @@ use num_complex::Complex32;
 use super::crypt::{next_mi, Algorithm, Keystream, Phase};
 use super::fec::{golay24_encode, hamming1063_encode, rs_encode};
 use super::frame::{encode_nid, frame_dibits, HDU, LDU1, LDU2, SYNC_BITS, TDU};
-use super::phase2::{xor_mask, Packet, BURST_2V, BURST_4V, BURST_DIBITS, SLOT_DIBITS};
+use super::phase2::{crc12, duid_codeword, xor_mask, Packet, BURST_2V, BURST_4V, BURST_DIBITS, BURST_FACCH_S, BURST_SACCH_S, SLOT_DIBITS};
 use super::voice::{bytes_to_hexbits, imbe_bits_to_params, imbe_header_encode, EncryptionSync};
 use crate::ambe::encode_vcw;
 use crate::dsp::c4fm::SYMBOL_RATE;
 use crate::dsp::filters::rc;
-use crate::tables::{DUID_LOOKUP, HDU_CODEWORD_BITS, ISCH_CODEWORDS, LDU_LS_DATA_BITS, VOICE_CODEWORD_BITS};
+use crate::tables::{HDU_CODEWORD_BITS, ISCH_CODEWORDS, LDU_LS_DATA_BITS, VOICE_CODEWORD_BITS};
 
 /// The status symbols' value (any will do: the decoders skip them).
 const STATUS: u8 = 0b01;
@@ -210,12 +210,16 @@ pub fn modulate(dibits: &[u8], fs: f64, offset_hz: f64, amp: f32, phase: &mut f6
 /// is a frame to the vocoder; what matters is that it comes back the same).
 pub fn imbe(n: usize) -> [u8; 88] {
     let mut x = 0x9e37_79b9u32 ^ (n as u32).wrapping_mul(0x85eb_ca6b);
-    std::array::from_fn(|_| {
+    let mut bits: [u8; 88] = std::array::from_fn(|_| {
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
         (x & 1) as u8
-    })
+    });
+    // A pitch an encoder sends (b0, the first 8 bits, below 208): a clear
+    // MSB keeps it under 128.
+    bits[0] = 0;
+    bits
 }
 
 // ── Phase 2: one logical channel's bursts, as framed slot packets ────────────
@@ -299,20 +303,65 @@ impl Tx2 {
                     }
                 }
                 let slot = 2 * burst;
-                let mut p = Packet { sf_slot: slot, sample: 0.0, dibits: [0; SLOT_DIBITS], rel: vec![1.0; 2 * SLOT_DIBITS] };
+                let mut p = Packet { sf_slot: slot, sample: 0.0, dibits: [0; SLOT_DIBITS], rel: vec![1.0; 2 * SLOT_DIBITS], ultraframe: None };
                 p.dibits[..20].copy_from_slice(&isch(slot));
                 for i in 10..BURST_DIBITS {
                     p.dibits[10 + i] = x[i] ^ mask[slot * SLOT_DIBITS + i];
                 }
                 let kind = if burst < 4 { BURST_4V } else { BURST_2V };
-                let duid = (0..=255u8).find(|&v| DUID_LOOKUP[v as usize] == kind).unwrap();
-                for (k, pos) in [10, 47, 132, 169].into_iter().enumerate() {
-                    p.dibits[10 + pos] = duid >> (6 - 2 * k) & 3;
-                }
+                put_duid(&mut p, kind);
                 out.push((p, 0.36 * s as f64 + 0.03 * slot as f64));
             }
         }
         out
+    }
+}
+
+impl Tx2 {
+    /// MAC PDU `pdu` (its payload: 18 octets on a FACCH, 21 on a SACCH, the
+    /// rest zero) in superframe slot `slot`, as burst type `kind` (SACCH or
+    /// FACCH, scrambled or not): BBAC §5.6.1's coding, [`super::phase2::decode_acch`]
+    /// backwards.
+    pub fn mac_packet(&self, slot: usize, kind: i8, pdu: &[u8], ultraframe: Option<u8>) -> Packet {
+        let fast = matches!(kind, BURST_FACCH_S | super::phase2::BURST_FACCH_U);
+        let (first, info) = if fast { (9, 26) } else { (5, 30) };
+        let payload = 6 * info - 12;
+        let mut bits: Vec<u8> = (0..payload).map(|i| pdu.get(i / 8).map_or(0, |b| b >> (7 - i % 8) & 1)).collect();
+        let crc = crc12(&bits, payload);
+        bits.extend((0..12).rev().map(|b| (crc >> b & 1) as u8));
+        let mut cw = [0u8; 63];
+        for (j, h) in bits.chunks(6).enumerate() {
+            cw[first + j] = h.iter().fold(0, |v, &b| v << 1 | b);
+        }
+        rs_encode(&mut cw, 28);
+        // What goes on air: the shortened symbols left out, the punctured too.
+        let sent: Vec<u8> = cw[first..if fast { 54 } else { 57 }].iter().flat_map(|h| (0..6).rev().map(move |b| h >> b & 1)).collect();
+        let runs: &[(usize, usize)] = if fast { &[(11, 36), (48, 31), (100, 32), (133, 36)] } else { &[(11, 36), (48, 84), (133, 36)] };
+        let mut x = [0u8; BURST_DIBITS];
+        let mut it = sent.chunks(2);
+        for &(s, n) in runs {
+            for d in &mut x[s..s + n] {
+                let c = it.next().unwrap();
+                *d = c[0] << 1 | c[1];
+            }
+        }
+        let mut p = Packet { sf_slot: slot, sample: 0.0, dibits: [0; SLOT_DIBITS], rel: vec![1.0; 2 * SLOT_DIBITS], ultraframe };
+        p.dibits[..20].copy_from_slice(&isch(slot));
+        let scrambled = matches!(kind, BURST_SACCH_S | BURST_FACCH_S);
+        let mask = xor_mask(self.nac, self.sys_id, self.wacn);
+        for i in 0..BURST_DIBITS {
+            p.dibits[10 + i] = if scrambled { x[i] ^ mask[slot * SLOT_DIBITS + i] } else { x[i] };
+        }
+        put_duid(&mut p, kind);
+        p
+    }
+}
+
+/// A burst type's DUID dibits (burst positions 10, 47, 132, 169).
+fn put_duid(p: &mut Packet, kind: i8) {
+    let duid = duid_codeword(kind);
+    for (k, pos) in [10, 47, 132, 169].into_iter().enumerate() {
+        p.dibits[10 + pos] = duid >> (6 - 2 * k) & 3;
     }
 }
 
@@ -369,12 +418,12 @@ mod tests {
         let duids: Vec<u8> = f.iter().map(|f| f.nid.duid).collect();
         assert_eq!(duids, [HDU, LDU1, LDU2, LDU1, LDU2, LDU1, LDU2, TDU]);
         assert!(f.iter().all(|f| f.nid.nac == 0x293 && f.nid.errors == 0));
-        let h = decode_hdu(&f[0].raw).expect("HDU");
+        let h = decode_hdu(&f[0], true).expect("HDU");
         assert_eq!((h.es, h.tgid, h.mfid), (es(ALGID_AES_256, 0x370E), 1201, 0));
-        let lc = decode_ldu1_lc(&f[1].raw).expect("LC");
-        assert_eq!((lc.lco, lc.svc_opts, lc.tgid, lc.source), (0, Some(0x40), Some(1201), Some(1_234_567)));
+        let lc = decode_ldu1_lc(&f[1], true).expect("LC");
+        assert_eq!((lc.lco, lc.opts().map(|o| o.0), lc.group(), lc.source()), (0, Some(0x40), Some(1201), Some(1_234_567)));
         for s in 0..3 {
-            let e = decode_ldu2_es(&f[2 + 2 * s].raw).expect("ES");
+            let e = decode_ldu2_es(&f[2 + 2 * s], true).expect("ES");
             assert_eq!(e, EncryptionSync { mi: t.mi(s + 1).unwrap(), ..es(ALGID_AES_256, 0x370E) });
         }
         // The IMBE words are the ciphertext; clear, they're the voice.
@@ -386,12 +435,13 @@ mod tests {
                 assert_eq!(imbe_params_to_bits(&p.u), t.voice[9 * n + k], "LDU{} frame {k}", n + 1);
             }
         }
-        assert_eq!(decode_hdu(&f[0].raw).unwrap().es.algid, 0x80);
+        assert_eq!(decode_hdu(&f[0], true).unwrap().es.algid, 0x80);
     }
 
     struct Heard {
         cipher: Vec<CipherId>,
         decrypted: usize,
+        wrong_key: usize,
         /// The audio frames' bits and erasure flags.
         voice: Vec<([u8; 88], bool)>,
     }
@@ -427,6 +477,8 @@ mod tests {
             bank: Default::default(),
             squelch: 0.0,
             subaudible: false,
+            analog: Default::default(),
+            ignore_hz: Vec::new(),
             keys: keys.map(Arc::new),
         });
         let mut out = Vec::new();
@@ -434,11 +486,12 @@ mod tests {
             v.push(c, &mut out);
         }
         v.flush(&mut out);
-        let mut h = Heard { cipher: Vec::new(), decrypted: 0, voice: Vec::new() };
+        let mut h = Heard { cipher: Vec::new(), decrypted: 0, wrong_key: 0, voice: Vec::new() };
         for o in out {
             match o.out {
                 TrackerOut::Cipher(c) => h.cipher.push(c),
                 TrackerOut::Decrypted => h.decrypted += 1,
+                TrackerOut::WrongKey(_) => h.wrong_key += 1,
                 TrackerOut::Audio(_, f) => h.voice.push((f.bits.try_into().unwrap(), f.erased)),
                 _ => {}
             }
@@ -470,13 +523,15 @@ mod tests {
         }
     }
 
-    /// The wrong key decrypts to something else; no key, nothing is heard.
+    /// The wrong key decrypts to noise, found out within the first
+    /// superframe: never reported decrypted, and its voice stops; no key,
+    /// nothing is heard.
     #[test]
     fn without_the_right_key_the_voice_stays_secret() {
         let t = tx(Some((es(ALGID_AES_256, 0x0009), vec![1; 32])), 2);
         let h = hear(&t.frames(), Some(keyring(ALGID_AES_256, 0x0009, &[2; 32])), 0.0);
-        assert_eq!(h.voice.len(), t.voice.len());
-        assert!(h.voice.iter().zip(&t.voice).all(|((b, _), v)| b != v));
+        assert_eq!((h.decrypted, h.wrong_key), (0, 1));
+        assert!(h.voice.len() < 18 && h.voice.iter().zip(&t.voice).all(|((b, _), v)| b != v));
         for keys in [None, Some(Keyring::default()), Some(keyring(ALGID_AES_256, 0x000A, &[1; 32]))] {
             let h = hear(&t.frames(), keys, 0.0);
             assert_eq!((h.decrypted, h.voice.len()), (0, 0));
@@ -499,7 +554,7 @@ mod tests {
                 ldu2[p / 2] ^= 1 << (1 - p % 2);
             }
         }
-        assert!(decode_ldu2_es(&raw(ldu2).raw).is_none());
+        assert!(decode_ldu2_es(&raw(ldu2), true).is_none());
         let h = hear(&frames, Some(keyring(ALGID_ADP, 0x1B50, &[9, 8, 7, 6, 5])), 0.0);
         assert_eq!(h.voice.len(), t.voice.len());
         assert!(h.voice.iter().zip(&t.voice).all(|((b, e), v)| !e && b == v));
@@ -534,7 +589,11 @@ mod tests {
         let h = hear(&frames, Some(keyring(ALGID_ADP, 0x1B50, &[1, 2, 3, 4, 5])), 0.0);
         assert_eq!(h.cipher, [CipherId { algid: ALGID_ADP, keyid: 0x1B50 }]);
         assert_eq!(h.voice.len(), t.voice.len());
-        assert!(h.voice.iter().zip(&t.voice).all(|((b, e), v)| !e && b == v));
+        // (u7, the last 7 bits, has no FEC: a symbol the receivers get wrong
+        // there passes unseen, which is theirs to answer for, not decryption's.)
+        for (i, ((b, e), v)) in h.voice.iter().zip(&t.voice).enumerate() {
+            assert!(!e && b[..81] == v[..81], "frame {i}");
+        }
     }
 
     /// In noise (the FEC correcting about a bit per codeword), the voice

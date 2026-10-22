@@ -75,11 +75,13 @@ const send = (msg) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringif
 
 function onMessage(m) {
   switch (m.type) {
+    // Before hello, the greeting says how things are now: the latest calls, the phase, …
+    case "history":
+      history = m.entries;
+      renderRecorded();
+      break;
     case "hello":
       $("conn").textContent = `connected · Trunk Recorder Pro ${m.version}`;
-      history = m.history;
-      setPhase(m.phase);
-      renderRecorded();
       // Listening is per connection: ask again after every (re)connect.
       if ($("live").checked) send({ type: "listen", on: true, system: null, talkgroup: null });
       break;
@@ -111,13 +113,17 @@ function setPhase(p) {
 }
 $("startStop").onclick = () => send({ type: phase === "idle" ? "start" : "stop" });
 
+// A row per site: each follows its own control channel.
 function renderSystems(systems) {
   $("systems").innerHTML = systems
-    .map((s) => {
-      const total = s.good + s.bad;
-      const decode = total ? `${Math.round((100 * s.good) / total)} %` : "—";
-      return `<tr><td>${esc(s.shortName)}</td><td>${mhz(s.controlChannelHz)}</td><td>${decode}</td><td>${s.callsConcluded}</td></tr>`;
-    })
+    .flatMap((sys) =>
+      sys.sites.map((s) => {
+        const total = s.good + s.bad;
+        const decode = total ? `${Math.round((100 * s.good) / total)} %` : "—";
+        const name = sys.sites.length > 1 ? `${sys.shortName} · ${s.name}` : sys.shortName;
+        return `<tr><td>${esc(name)}</td><td>${s.controlChannelHz ? mhz(s.controlChannelHz) : "searching"}</td><td>${decode}</td><td>${s.callsConcluded}</td></tr>`;
+      }),
+    )
     .join("");
 }
 

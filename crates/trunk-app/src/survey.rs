@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use trunk_core::survey::{Command, GainState, Kind, Stage, Survey, SurveyConfig, BANDS};
 
 use crate::config::{auto_center, usable_half_width, Config, Source};
+use crate::protocol::ToClient;
 #[cfg(test)]
 use crate::config::DEFAULT_GUARD_HZ;
 use crate::session::Output;
@@ -66,6 +67,12 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
             sc.ppm = *ppm;
             sc.tune_range_hz = (24e6, 1800e6);
             sc.settle_s = 0.2;
+        }
+        // bladeRF 2.0 (AD9361): 47 MHz – 6 GHz.
+        Source::Bladerf { ppm, .. } => {
+            sc.ppm = *ppm;
+            sc.tune_range_hz = (47e6, 6e9);
+            sc.settle_s = 0.15;
         }
         // The device's range isn't known here: the widest any module offers; a
         // tune it refuses shows as a source error.
@@ -137,6 +144,21 @@ impl SurveySession {
         self.changed = true;
     }
 
+    /// What to look licenses up for: the monitored system's control
+    /// channels first (the ones that name it), then the signals found, the
+    /// strongest first (not the weak unknown ones).
+    pub fn heard(&self) -> Vec<crate::licenses::Signal> {
+        let s = &self.survey;
+        let mut out: Vec<crate::licenses::Signal> = Vec::new();
+        if let Some(m) = s.system() {
+            out.extend(m.advertised_hz.into_iter().chain(m.secondary.iter().copied()).map(|f| crate::licenses::Signal { freq_hz: f as f64, width_hz: None }));
+        }
+        let mut cands: Vec<_> = s.candidates().iter().filter(|c| c.kind != Kind::Other || c.snr_db >= 10.0).collect();
+        cands.sort_by(|a, b| (a.kind == Kind::Other).cmp(&(b.kind == Kind::Other)).then(b.snr_db.total_cmp(&a.snr_db)));
+        out.extend(cands.iter().map(|c| crate::licenses::Signal { freq_hz: s.corrected(c.freq_hz).unwrap_or(c.freq_hz), width_hz: Some(c.width_hz) }));
+        out
+    }
+
     /// A snapshot every 400 ms of wall clock (at once after a stage change),
     /// the spectrum every 150 ms.
     pub fn poll(&mut self, now_ms: f64, out: &mut Vec<Output>) {
@@ -144,13 +166,13 @@ impl SurveySession {
             self.last_spec_ms = now_ms;
             if let Some((center, bins)) = self.survey.spectrum(512) {
                 let bins: Vec<f32> = bins.iter().map(|v| (v * 10.0).round() / 10.0).collect();
-                out.push(Output::Text(json!({ "type": "surveySpectrum", "source": self.source, "centerHz": center, "rateHz": self.survey.rate_hz(), "bins": bins }).to_string()));
+                out.push(Output::Message(ToClient::SurveySpectrum { source: self.source, center_hz: center, rate_hz: self.survey.rate_hz(), bins }));
             }
         }
         if self.changed && now_ms - self.last_ms >= 400.0 {
             self.last_ms = now_ms;
             self.changed = false;
-            out.push(Output::Text(self.snapshot().to_string()));
+            out.push(Output::Message(ToClient::Survey(crate::protocol::body(self.snapshot()))));
         }
     }
 
@@ -180,8 +202,8 @@ impl SurveySession {
                 "offsetHz": m.offset_hz.map(f64::round), "ppm": m.ppm.map(|p| (p * 100.0).round() / 100.0),
                 "gain": {
                     "state": match m.gain.state { GainState::Off => "off", GainState::Waiting => "waiting", GainState::Running => "running", GainState::Done => "done" },
-                    "steps": m.gain.steps.iter().map(|g| json!({ "gainDb": g.gain_db, "snrDb": (g.snr_db * 10.0).round() / 10.0, "okRatio": g.ok_ratio, "clipped": g.clipped })).collect::<Vec<_>>(),
-                    "bestDb": m.gain.best_db,
+                    "steps": m.gain.steps.iter().map(|g| json!({ "gainDb": (g.gain_db as f64 * 10.0).round() / 10.0, "snrDb": (g.snr_db * 10.0).round() / 10.0, "okRatio": g.ok_ratio, "clipped": g.clipped })).collect::<Vec<_>>(),
+                    "bestDb": m.gain.best_db.map(|g| (g as f64 * 10.0).round() / 10.0),
                 },
                 "elapsedS": m.elapsed_s, "ready": m.ready(),
                 "smartnet": m.smartnet.as_ref().map(|s| json!({
@@ -232,11 +254,7 @@ impl SurveySession {
             "voiceCovered": covered,
             "voiceTotal": voice.len(),
             "spanHz": if hi > lo { hi - lo } else { 0.0 },
-            "nac": m.identity.nac(),
-            "sysId": m.identity.sys_id(),
-            "wacn": m.identity.wacn(),
-            "rfss": m.identity.rfss(),
-            "site": m.identity.site(),
+            "identity": crate::session::identity_json(&m.identity),
             "voiceChannels": voice,
         }))
     }
@@ -245,7 +263,7 @@ impl SurveySession {
 /// A learned SmartNet band plan in the config's terms (Trunk Recorder's names).
 fn plan_json(p: &trunk_core::smartnet::plan::PlanConfig) -> Value {
     if p.name == "400_custom" {
-        json!({ "bandplan": p.name, "bandplanBase": p.base_hz, "bandplanSpacing": p.spacing_hz, "bandplanOffset": p.offset, "bandplanHigh": p.high_hz })
+        json!({ "bandplan": p.name, "bandplanBaseHz": p.base_hz, "bandplanSpacingHz": p.spacing_hz, "bandplanOffset": p.offset, "bandplanHighHz": p.high_hz })
     } else {
         json!({ "bandplan": p.name })
     }

@@ -6,11 +6,11 @@
 import { useMemo, useState } from "react";
 import { systemColor } from "../config.ts";
 import { radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
-import { Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, type Node } from "../charts.tsx";
+import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
 import type { CipherSeen, LengthHistogram, RadioResult, TgRow, UnitRow } from "../protocol.ts";
-import { aliasOf } from "./Calls.tsx";
-import { dashSystems, K, KIND_LABEL, running, total, useHistory, type DashSystem } from "./data.ts";
+import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
+import { dashSystems, K, KIND_LABEL, running, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
 
 type Hours = "24" | "168";
 const HOURS: { v: Hours; label: string }[] = [
@@ -23,7 +23,7 @@ const REASONS: { k: string; label: string; color: string; hint: string }[] = [
   { k: "recorded", label: "Recorded", color: "var(--series-1)", hint: "" },
   { k: "monitored", label: "Followed only", color: "var(--series-3)", hint: "Followed, not recorded" },
   { k: "ignored", label: "Ignored", color: "var(--muted-mark)", hint: "Set to Ignore in the talkgroup file" },
-  { k: "encrypted", label: "Encrypted", color: "var(--series-7)", hint: "Encrypted calls are off" },
+  { k: "encrypted", label: "Encrypted", color: "var(--series-6)", hint: "Encrypted calls are off" },
   { k: "unknown_tg", label: "Not in the file", color: "var(--series-4)", hint: "Unknown talkgroups are off" },
   { k: "no_recorder", label: "No recorder", color: "var(--critical)", hint: "All recorders busy" },
   { k: "no_source", label: "Out of band", color: "var(--serious)", hint: "No source covers the frequency" },
@@ -62,12 +62,12 @@ function IgnoreToggle({ sys, r }: { sys: DashSystem; r: TgRow }) {
 
 // ── the system ───────────────────────────────────────────────────────────────
 
-function Reasons({ name, range }: { name: string; range: "24h" | "7d" }) {
+function Reasons({ name, range, health }: { name: string; range: "24h" | "7d"; health: Health }) {
   const hist = useHistory(REASONS.map((r) => K.sys(name, `why/${r.k}`)), range, 48);
   const counts = REASONS.map((r) => Math.round(total(hist?.[K.sys(name, `why/${r.k}`)]) ?? 0));
   const sum = counts.reduce((a, b) => a + b, 0);
   return (
-    <Card title="What happened to calls">
+    <Card title="What happened to calls" level={health.level} why={health.why}>
       {sum === 0 ? (
         <p className="empty">No calls yet.</p>
       ) : (
@@ -90,35 +90,6 @@ function Reasons({ name, range }: { name: string; range: "24h" | "7d" }) {
             )}
           </ul>
         </>
-      )}
-    </Card>
-  );
-}
-
-function ActiveNow({ s, sys }: { s: AppState; sys: DashSystem }) {
-  const calls = s.calls.filter((c) => c.systemName === sys.name);
-  return (
-    <Card title="On the air now">
-      {calls.length === 0 ? (
-        <p className="empty">Quiet.</p>
-      ) : (
-        <ul className="air">
-          {calls.map((c) => (
-            <li key={c.id}>
-              <button className="linkish" onClick={() => setView("radio", sys.name, "tg", c.talkgroup)}>
-                <span className={`dot dot-${c.state}${c.encrypted ? " dot-enc" : ""}`} />
-                <TgName r={{ tg: c.talkgroup, alphaTag: c.alphaTag }} />
-              </button>
-              <span className="row">
-                {[...new Set(c.sources)].slice(-4).map((u) => (
-                  <button key={u} className="chip" onClick={() => setView("radio", sys.name, "unit", u)}>
-                    {aliasOf(s, sys.name, u) ?? u}
-                  </button>
-                ))}
-              </span>
-            </li>
-          ))}
-        </ul>
       )}
     </Card>
   );
@@ -332,9 +303,10 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
         />
         <Stat label="Unknown" value={summary ? summary.unknownTgs24h : "—"} sub="not in the talkgroup file" />
       </div>
+      <ActiveCalls s={s} system={sys.name} />
       <div className="columns">
-        <Reasons name={sys.name} range={hours === "24" ? "24h" : "7d"} />
-        <ActiveNow s={s} sys={sys} />
+        <Reasons name={sys.name} range={hours === "24" ? "24h" : "7d"} health={systemRadioHealth(s, sys)} />
+        <Lengths h={lenR?.histogram} />
       </div>
       {busy.length > 0 && (
         <Card title={`Busiest ${busy.length} by hour`}>
@@ -348,10 +320,8 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
       )}
       <Network s={s} sys={sys} tgs={tgs} units={units} />
       <Talkgroups sys={sys} rows={tgs} hours={h} />
-      <div className="columns">
-        <Units s={s} sys={sys} rows={units} total={unitsR?.total ?? units.length} />
-        <Lengths h={lenR?.histogram} />
-      </div>
+      <Units s={s} sys={sys} rows={units} total={unitsR?.total ?? units.length} />
+      <Log s={s} system={sys.name} />
     </div>
   );
 }
@@ -378,11 +348,6 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
   const maxN = Math.max(1, ...talkers.map((t) => t.n));
   return (
     <div className="stack">
-      <div className="row">
-        <button className="btn ghost small" onClick={() => setView("radio", sys.name)}>
-          ← {sys.name}
-        </button>
-      </div>
       <section className="hero">
         <div>
           <h2 className="big">{row.alphaTag || `Talkgroup ${tg}`}</h2>
@@ -412,8 +377,8 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
           ) : (
             <ul className="barlist">
               {talkers.map((t) => (
-                <li key={t.unit}>
-                  <button className="linkish" onClick={() => setView("radio", sys.name, "unit", t.unit)}>
+                <li key={t.unit} className="opens" onClick={() => setView("radio", sys.name, "unit", t.unit)}>
+                  <button className="linkish">
                     {aliasOf(s, sys.name, t.unit) ?? (t.alias || t.unit)}
                   </button>
                   <span className="bar" style={{ width: `${(t.n / maxN) * 100}%` }} />
@@ -493,11 +458,6 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
   const affTag = row.aff !== null ? (tgs.find((t) => t.tg === row.aff)?.alphaTag ?? "") : "";
   return (
     <div className="stack">
-      <div className="row">
-        <button className="btn ghost small" onClick={() => setView("radio", sys.name)}>
-          ← {sys.name}
-        </button>
-      </div>
       <section className="hero">
         <div>
           <h2 className="big">{alias || `Radio ${unit}`}</h2>
@@ -570,10 +530,13 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
 
 // ── the page ─────────────────────────────────────────────────────────────────
 
-/** Which system a page is about: its colour, name, kind and site, and the way back to all of them. */
-function SystemHeader({ s, sys, multi }: { s: AppState; sys: DashSystem; multi: boolean }) {
-  const id = sys.status?.identity;
-  const site = id && (id.sysId != null || id.site != null) ? [id.sysId != null ? `SysID ${id.sysId.toString(16).toUpperCase()}` : "", id.site != null ? `site ${id.rfss ?? "?"}-${id.site}` : ""].filter(Boolean).join(" · ") : "";
+/** Which system a page is about: its colour, name, kind and site. */
+function SystemHeader({ s, sys }: { s: AppState; sys: DashSystem }) {
+  // Its sites as their control channels say: "SysID 1A2 · site 1-3", or "SysID 1A2 · sites 1-3, 1-4".
+  const ids = sys.sites.flatMap((x) => (x.status ? [x.status.identity] : []));
+  const sysId = ids.find((i) => i.sysId != null)?.sysId;
+  const numbers = ids.filter((i) => i.site != null).map((i) => `${i.rfss ?? "?"}-${i.site}`);
+  const site = [sysId != null ? `SysID ${sysId.toString(16).toUpperCase()}` : "", numbers.length ? `site${numbers.length > 1 ? "s" : ""} ${numbers.join(", ")}` : ""].filter(Boolean).join(" · ");
   return (
     <div className="sys-header" style={{ borderLeftColor: systemColor(s.config, sys.name) }}>
       <div>
@@ -583,11 +546,6 @@ function SystemHeader({ s, sys, multi }: { s: AppState; sys: DashSystem; multi: 
           {site ? ` · ${site}` : ""}
         </p>
       </div>
-      {multi && (
-        <button className="btn ghost small" onClick={() => setView("radio")}>
-          All systems
-        </button>
-      )}
     </div>
   );
 }
@@ -604,16 +562,14 @@ function AllSystems({ s, systems }: { s: AppState; systems: DashSystem[] }) {
         const sm = sum?.systems?.[x.name];
         const top = (tops?.[i]?.rows ?? []) as TgRow[];
         const onAir = s.calls.filter((c) => c.systemName === x.name);
+        const h = systemRadioHealth(s, x);
         return (
           <Card
             key={x.name}
             className="sys-section"
-            title={
-              <span className="row">
-                <span className="sys-dot" style={{ background: systemColor(s.config, x.name) }} />
-                {x.name}
-              </span>
-            }
+            level={h.level}
+            why={h.why}
+            title={<SystemTag config={s.config} name={x.name} />}
             onTitle={() => setView("radio", x.name)}
             actions={<span className="badge-kind">{KIND_LABEL[x.kind]}</span>}
           >
@@ -638,8 +594,8 @@ function AllSystems({ s, systems }: { s: AppState; systems: DashSystem[] }) {
             {top.length > 0 ? (
               <ul className="barlist">
                 {top.map((r) => (
-                  <li key={r.tg}>
-                    <button className="linkish" onClick={() => setView("radio", x.name, "tg", r.tg)}>
+                  <li key={r.tg} className="opens" onClick={() => setView("radio", x.name, "tg", r.tg)}>
+                    <button className="linkish">
                       <TgName r={r} />
                     </button>
                     <span className="bar" style={{ width: `${(r.secs / Math.max(1, top[0].secs)) * 100}%`, background: systemColor(s.config, x.name) }} />
@@ -666,9 +622,6 @@ function AllSystems({ s, systems }: { s: AppState; systems: DashSystem[] }) {
                 {sm.newTgs.length > 6 ? "…" : ""}
               </p>
             )}
-            <button className="card-more" onClick={() => setView("radio", x.name)}>
-              Open {x.name} ▸
-            </button>
           </Card>
         );
       })}
@@ -698,19 +651,29 @@ export function RadioPage() {
   const sys = systems.find((x) => x.name === name);
   if (!sys) return <p className="empty">No system called {name}.</p>;
   const [, what, key] = s.path;
+  // The other systems, beside the way back to them all (as Decode's sites are).
+  const picker = multi && (
+    <div className="filter-row" role="tablist" aria-label="System">
+      {systems.map((x) => (
+        <button key={x.name} className={`btn ghost small${x.name === sys.name ? " on" : ""}`} onClick={() => setView("radio", x.name)}>
+          <SystemTag config={s.config} name={x.name} health={systemRadioHealth(s, x)} />
+        </button>
+      ))}
+    </div>
+  );
   return (
     <div className="page">
-      <SystemHeader s={s} sys={sys} multi={multi} />
-      {multi && (
-        <div className="filter-row" role="tablist" aria-label="System">
-          {systems.map((x) => (
-            <button key={x.name} className={`btn ghost small${x.name === sys.name ? " on" : ""}`} onClick={() => setView("radio", x.name)}>
-              <span className="sys-dot" style={{ background: systemColor(s.config, x.name) }} />
-              {x.name}
-            </button>
-          ))}
-        </div>
+      {/* (A talkgroup's or radio's page goes back to its system; a system's, with others, to them all.) */}
+      {what && key ? (
+        <BackBar to={sys.name} onBack={() => setView("radio", sys.name)} />
+      ) : (
+        multi && (
+          <BackBar to="All systems" onBack={() => setView("radio")}>
+            {picker}
+          </BackBar>
+        )
       )}
+      <SystemHeader s={s} sys={sys} />
       {!running(s) && (
         <p className="muted small">
           <Light level="idle" /> Not recording — showing past data.

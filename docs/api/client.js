@@ -9,10 +9,8 @@
 // connection asked for after reconnecting, and plays live audio. The message
 // shapes are FromRecorder / ToRecorder in protocol.ts (/api/protocol.ts).
 
-/** The `system` of conventional system 0; conventional system k is 65535 - k. */
-export const CONVENTIONAL = 65535;
-/** Which conventional system a `system` is, or null for a trunked one. */
-export const conventionalIndex = (system) => (system > CONVENTIONAL - 256 && system <= CONVENTIONAL ? CONVENTIONAL - system : null);
+/** The short name of the system a call or live-audio chunk names by number (`status.systemNames`); "" if unknown. */
+export const systemName = (status, system) => status?.systemNames?.[system] ?? "";
 
 /**
  * A live-audio frame (binary message) → { system, callId, talkgroup, samples }
@@ -36,8 +34,10 @@ export function decodeAudioFrame(buf) {
  *
  * State (read it, don't change it): connected, version, config, phase
  * ({ phase, error, ended }), status (EngineStatus), sources, calls (on the
- * air now), history (recorded calls, newest first), log (after subscribe(["log"])), aliases,
- * error, exited (the recorder quit; it keeps trying to reconnect).
+ * air now), history (recorded calls, newest first), configVersion, talkgroupFiles,
+ * capabilities, log (after subscribe(["log"])), aliases, error (also why a
+ * setConfig was refused), exited (the recorder quit; it keeps trying to reconnect).
+ * "change" fires once, at `hello`, while a connection is being greeted.
  */
 export class TrunkClient {
   /**
@@ -56,12 +56,18 @@ export class TrunkClient {
 
     this.connected = false;
     this.version = null;
+    /** What the recorder can do beyond recording (hello.capabilities: "service", "drivers", "plugins", "interfaces", "host", "keys"). */
+    this.capabilities = [];
     this.config = null;
+    /** The version of `config`: a `setConfig` names the one it edits. */
+    this.configVersion = 0;
     this.phase = { phase: "idle", error: null, ended: false };
     this.status = null;
     this.sources = [];
     this.calls = [];
     this.history = [];
+    /** Each system's talkgroup file (Trunk Recorder's CSV), by short name. */
+    this.talkgroupFiles = {};
     this.log = [];
     /** Talker aliases heard on the air (saved ones, then live): short name → { unit: alias }. */
     this.aliases = {};
@@ -108,12 +114,6 @@ export class TrunkClient {
   }
 
   /**
-   * Live audio on this connection: listen() every call, listen({ talkgroup })
-   * one talkgroup's, listen({ system, talkgroup }) one system's (`system`: its
-   * short name), listen(false) none.
-   * Kept across reconnects. Chunks come to on("audio", …).
-   */
-  /**
    * Costly messages come only when asked for, while you show them:
    * subscribe(["log", "spectrum:0"]) — the control channel log, a radio's
    * waterfall (also "rf:<source>", "decode:<shortName>", "platform").
@@ -124,6 +124,12 @@ export class TrunkClient {
     this.send({ type: "subscribe", topics: this._topics });
   }
 
+  /**
+   * Live audio on this connection: listen() every call, listen({ talkgroup })
+   * one talkgroup's, listen({ system, talkgroup }) one system's (`system`: its
+   * short name), listen(false) none.
+   * Kept across reconnects. Chunks come to on("audio", …).
+   */
   listen(filter = {}) {
     this._listen = filter === false ? null : { system: filter.system ?? null, talkgroup: filter.talkgroup ?? null };
     this.send({ type: "listen", on: !!this._listen, system: this._listen?.system ?? null, talkgroup: this._listen?.talkgroup ?? null });
@@ -132,7 +138,9 @@ export class TrunkClient {
   /**
    * Change the config: `edit` gets a copy of the latest one to change; the
    * whole config is sent back. Everyone gets the new one as a `config`
-   * message. Recording uses it from the next start.
+   * message. Recording uses it from the next start. If the config changed
+   * elsewhere meanwhile, the edit isn't saved: the `configSaved` reply says
+   * so (`error` is set) and `config` stays the newer one.
    *
    *   rec.setConfig((c) => { c.recording.minCallS = 2; });
    */
@@ -140,7 +148,7 @@ export class TrunkClient {
     if (!this.config) throw new Error("No config yet: wait for the first change event.");
     const next = structuredClone(this.config);
     edit(next);
-    this.send({ type: "setConfig", config: next });
+    this.send({ type: "setConfig", config: next, version: this.configVersion });
   }
 
   /**
@@ -163,19 +171,24 @@ export class TrunkClient {
   /**
    * System `shortName`'s talkgroups: Map talkgroup → { talkgroup, alphaTag,
    * description, tag, group, mode }. A trunked system's from its talkgroup
-   * file (Trunk Recorder's CSV, as in the config); a conventional system's
-   * from its channels (alphaTag the channel's name).
+   * file (Trunk Recorder's CSV: `talkgroups` messages); a conventional
+   * system's from its channels (alphaTag the channel's name).
    */
   talkgroups(shortName) {
     const conv = this.config?.conventional?.find((s) => s.shortName === shortName);
     if (conv) return channelTalkgroups(conv.channels ?? []);
-    const csv = this.config?.systems.find((s) => s.shortName === shortName)?.talkgroupsCsv ?? "";
+    const csv = this.talkgroupFiles[shortName] ?? "";
     this._tgCache ??= new Map();
     const hit = this._tgCache.get(shortName);
     if (hit?.csv === csv) return hit.map;
     const map = parseTalkgroups(csv);
     this._tgCache.set(shortName, { csv, map });
     return map;
+  }
+
+  /** Replace system `shortName`'s talkgroup file (Trunk Recorder's CSV; "" for none). Needs control access. */
+  setTalkgroups(shortName, csv) {
+    this.send({ type: "setTalkgroups", system: shortName, csv });
   }
 
   /** A recorded call's file: entry (or its path), "wav" | "json" | "m4a". */
@@ -207,6 +220,9 @@ export class TrunkClient {
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       this._retryMs = 500;
+      // The greeting says how things are, from nothing; "change" waits for its end (hello).
+      this._greeting = true;
+      Object.assign(this, { talkgroupFiles: {}, aliases: {}, error: null, exited: false });
       for (const m of this._queue.splice(0)) ws.send(JSON.stringify(m));
     };
     ws.onmessage = (ev) => {
@@ -219,7 +235,7 @@ export class TrunkClient {
       this._apply(m);
       this._emit(m.type, m);
       this._emit("message", m);
-      this._emit("change", this);
+      if (!this._greeting) this._emit("change", this);
     };
     ws.onclose = () => {
       this._ws = null;
@@ -237,9 +253,11 @@ export class TrunkClient {
 
   _apply(m) {
     switch (m.type) {
+      // The greeting's end: every message before it said how things are now.
       case "hello":
-        Object.assign(this, { version: m.version, config: m.config, phase: m.phase, history: m.history, error: null, exited: false });
-        this.aliases = Object.fromEntries(Object.entries(m.units ?? {}).map(([name, csv]) => [name, parseUnitAliases(csv)]));
+        this.version = m.version;
+        this.capabilities = m.capabilities ?? [];
+        this._greeting = false;
         if (!this.connected) {
           this.connected = true;
           this._emit("connection", true);
@@ -257,6 +275,23 @@ export class TrunkClient {
         break;
       case "config":
         this.config = m.config;
+        this.configVersion = m.version;
+        break;
+      case "configSaved":
+        if (m.error) this.error = m.error;
+        break;
+      case "talkgroups":
+        if (m.csv) this.talkgroupFiles = { ...this.talkgroupFiles, [m.system]: m.csv };
+        else {
+          const { [m.system]: _, ...rest } = this.talkgroupFiles;
+          this.talkgroupFiles = rest;
+        }
+        break;
+      case "history":
+        this.history = m.entries.slice(0, this.historyLimit);
+        break;
+      case "units":
+        this.aliases = { ...this.aliases, [m.system]: parseUnitAliases(m.csv) };
         break;
       case "concluded":
         this.history = [m.entry, ...this.history].slice(0, this.historyLimit);
@@ -297,7 +332,7 @@ function splitCsv(line) {
 }
 
 /**
- * Talker aliases as the recorder saves them (`hello.units`: Trunk Recorder's
+ * Talker aliases as the recorder saves them (a `units` message: Trunk Recorder's
  * unitTagsOTA CSV, `unit,alias,source,time,wacn,sys,tg`) → { unit: alias }; the newest line wins.
  */
 export function parseUnitAliases(csv) {

@@ -82,7 +82,7 @@ see [Building from source](README.md#building-from-source).)
 
 Calls are stored inside the browser, per site, in Trunk Recorder's layout
 (`<system>/<year>/<month>/<day>/<talkgroup>-<time>_<frequency>.wav` and `.json`). You can play them
-on the **Calls** page. At the bottom of that page:
+on the **Listen** page. Beside its list of calls:
 
 | Button | What it does |
 |---|---|

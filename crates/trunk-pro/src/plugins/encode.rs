@@ -7,6 +7,7 @@
 //! can't read one, gets a file next to the output): a call that's only
 //! uploaded never has its WAV written at all.
 
+use crate::config::M4aEncoder;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -27,8 +28,9 @@ impl Encoder {
         }
     }
 
-    /// `choice`: "auto", or an encoder's name to use only that one; "none" for none.
-    pub fn find(choice: &str) -> Option<Encoder> {
+    /// `choice`: the first found, or that one only, or none.
+    pub fn find(choice: M4aEncoder) -> Option<Encoder> {
+        let choice = choice.name();
         ["ffmpeg", "afconvert", "fdkaac"].into_iter().filter(|n| choice == "auto" || choice == *n).find_map(|n| {
             let p = which(n)?;
             Some(match n {
@@ -136,8 +138,9 @@ mod tests {
         // Two minutes: more than a pipe holds, so the encoder has to read as it goes.
         let tone: Vec<f32> = (0..8000 * 120).map(|i| (i as f32 * 0.3).sin() * 0.5).collect();
         let wav = trunk_core::wav::encode(&tone, 8000);
-        for name in ["ffmpeg", "afconvert", "fdkaac"] {
-            let Some(e) = Encoder::find(name) else {
+        for choice in [M4aEncoder::Ffmpeg, M4aEncoder::Afconvert, M4aEncoder::Fdkaac] {
+            let name = choice.name();
+            let Some(e) = Encoder::find(choice) else {
                 continue;
             };
             let out = dir.join(format!("{name}.m4a"));

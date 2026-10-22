@@ -3,6 +3,7 @@
 *
 !Cargo.toml
 !Cargo.lock
+!.cargo/
 !crates/
 !docs/api/
 !packaging/icons/

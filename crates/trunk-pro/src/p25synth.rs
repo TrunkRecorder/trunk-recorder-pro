@@ -29,7 +29,7 @@ pub fn run(a: &Args) {
     let fs = a.num("rate", 2_400_000.0);
     let freq = a.num("freq", center + 100_000.0);
     let cipher = a.get("keys").map(|p| {
-        let keys = trunk_app::keys::load(std::path::Path::new(p)).unwrap_or_else(|e| die(&e));
+        let keys = trunk_app::keys::load(std::path::Path::new(p), None).unwrap_or_else(|e| die(&e)).ring;
         let k = keys.keys().first().unwrap_or_else(|| die(&format!("{p}: no keys")));
         let keyid = k.keyid.unwrap_or_else(|| die(&format!("{p}: the first key needs a keyId")));
         let Lookup::Key(alg, key) = keys.lookup(k.alg.algid(), keyid, None) else { die(&format!("{p}: the first key can't be used by key ID alone")) };
