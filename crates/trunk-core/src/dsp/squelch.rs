@@ -77,6 +77,8 @@ pub struct Gate {
     ramp_n: usize,
     lead: usize,
     guard: usize,
+    /// Held shut by the demod (data on the channel, not voice): see [`Gate::mute`].
+    muted: bool,
 }
 
 impl Gate {
@@ -121,6 +123,7 @@ impl Gate {
             ramp_n,
             lead: out(lead_s),
             guard,
+            muted: false,
         }
     }
 
@@ -162,6 +165,23 @@ impl Gate {
         self.open
     }
 
+    /// Shut the audio while `on` (the channel carries data, not voice),
+    /// cutting the last `back` 8 kHz samples too (what the detector heard
+    /// before it was sure). Cut audio is left out, as when the carrier's
+    /// gone; it ramps back up after.
+    pub fn mute(&mut self, on: bool, back: usize) {
+        if on && !self.muted {
+            let room = self.line.len() - 1;
+            for k in 1..=back.min(room) {
+                self.back(k).2 = -1.0;
+            }
+        }
+        if on {
+            self.gain = 0.0;
+        }
+        self.muted = on;
+    }
+
     /// The line's `k`th newest entry (from 1).
     fn back(&mut self, k: usize) -> &mut (f32, f32, f32) {
         let n = self.line.len();
@@ -183,7 +203,10 @@ impl Gate {
                 self.gain = (self.gain + self.ramp).min(1.0);
                 let g = self.gain;
                 let e = self.back(k);
-                e.2 = e.2.max(g);
+                // (Not what the demod cut: data, never voice.)
+                if e.2 >= 0.0 {
+                    e.2 = e.2.max(g);
+                }
             }
         } else if !self.open && self.was_open {
             // Cut from the guard before the carrier went, ramping down before that.
@@ -199,7 +222,10 @@ impl Gate {
             self.gain = 0.0;
         }
         self.was_open = self.open;
-        let g = if self.open {
+        // (Cut by the demod: −1, which an opening's lead doesn't let through either.)
+        let g = if self.muted {
+            -1.0
+        } else if self.open {
             self.gain = (self.gain + self.ramp).min(1.0);
             self.gain
         } else {

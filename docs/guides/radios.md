@@ -2,13 +2,13 @@
 
 This page explains how Trunk Recorder Pro uses your radios (it calls them *sources*): how much
 spectrum each covers, where it is tuned, gain, frequency correction, and running several at once.
-Installing drivers for USRP, Airspy and SoapySDR radios is covered in
+Installing drivers for USRP, Airspy, bladeRF and SoapySDR radios is covered in
 [Other radios](../install/other-radios.md); every source key is listed in the
 [configuration reference](../configuration/sources.md).
 
 All of these settings are on the **Radios** tab of **Setup**, one card per source. **Add a
 source** adds another; the buttons at the top of a card pick its kind: **RTL-SDR**, **USRP**,
-**Airspy**, **SoapySDR** or **Capture file** (USRP, Airspy and SoapySDR only in the desktop app).
+**Airspy**, **bladeRF**, **SoapySDR** or **Capture file** (USRP, Airspy, bladeRF and SoapySDR only in the desktop app).
 
 ## What a source is
 
@@ -37,6 +37,7 @@ The sample rates offered for each kind:
 | RTL-SDR | 2.4, 2.048, 2.56, 3.2, 1.92, 1.024 MSPS | 2.4 MSPS is the default |
 | USRP | 2.4 to 20 MSPS, or any rate typed in | any rate its master clock divides to; default 8 MSPS |
 | Airspy | 10, 6, 3, 2.5 MSPS | R2: 10 or 2.5; Mini: 6 or 3 |
+| bladeRF | any rate typed in, 0.52 to 61.44 MSPS | over ~40 MSPS needs USB 3 and a fast CPU |
 | SoapySDR | 2 to 10 MSPS, or any rate typed in | one the device supports |
 
 Wider costs more CPU, but not by much: see [CPU](#cpu). A system whose frequencies spread wider
@@ -145,6 +146,7 @@ usually works better for trunked systems, so the default is AGC off (except on S
 | RTL-SDR | **Gain, dB**, 0 to 49.6 on most dongles, or **AGC** | 25.4 dB, AGC off |
 | USRP | **Gain, dB** (B200/B210: 0 to 76), or **AGC** (B200 / B210 and E3xx only) | 40 dB, AGC off |
 | Airspy | **Gain**: **Linearity** or **Sensitivity**, a step 0 to 21; or **Each stage**: **LNA** 0 to 14, **Mixer** and **VGA (IF)** 0 to 15, with **AGC** for the LNA and mixer | Linearity, step 14 |
+| bladeRF | **Gain, dB** overall (bladeRF 2.0: about −15 to 60), or **AGC** | 30 dB, AGC off |
 | SoapySDR | **Gain, dB** overall (blank leaves it as the device has it), then **Gain stages, dB** one by one (HackRF LNA / VGA / AMP, SDRplay IFGR / RFGR...), or **AGC** | AGC on |
 
 On an Airspy, **Linearity** is best near transmitters and **Sensitivity** for weak signals.
@@ -254,7 +256,7 @@ Pro can't tell those apart, and it has no way to change a dongle's serial. Use l
 `rtl_eeprom` tool to give each one its own serial (for example `rtl_eeprom -d 0 -s 00000200` for
 the first dongle), unplug and replug it, then pick it in Setup.
 
-Airspys are picked by serial the same way. USRPs and SoapySDR devices are picked by their device
+Airspys and bladeRFs are picked by serial the same way. USRPs and SoapySDR devices are picked by their device
 arguments (`serial=...`, `addr=192.168.10.2`, `driver=sdrplay,serial=...`); **Find** lists what's
 connected.
 

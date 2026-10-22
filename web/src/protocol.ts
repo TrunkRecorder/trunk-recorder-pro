@@ -46,6 +46,11 @@ export type Source = (
       ppm: number;
     }
   /**
+   * bladeRF 2.0 micro (xA4 / xA9) or original bladeRF through libbladeRF (desktop app). `serial` "" = the first;
+   * `bandwidthHz` the analog filter, 0 = the sample rate; `agc` the board's AGC instead of `gainDb`; `biasTee` bladeRF 2.0 only.
+   */
+  | { type: "bladerf"; serial: string; centerHz: number; rateHz: number; bandwidthHz: number; gainDb: number; agc: boolean; biasTee: boolean; ppm: number }
+  /**
    * Any SDR with a SoapySDR module (desktop app). `args` "" = first found ("driver=hackrf,serial=…");
    * `agc` the device's AGC; else `gainDb` overall (null: left as it is), then each stage in `gains`
    * (HackRF LNA / VGA / AMP …); `settings` device settings ("biastee=true").
@@ -79,6 +84,7 @@ export interface SoapyState extends DriverState {
 export interface Radios {
   usrp: DriverState;
   airspy: DriverState;
+  bladerf: DriverState;
   soapy?: SoapyState;
 }
 
@@ -161,8 +167,10 @@ export interface System {
    *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
    *  control channel and `dmrChannelsHz` frequency is watched.
    *  "nxdn": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed);
-   *  every control channel and `nxdnChannelsHz` frequency is watched. */
-  type: "p25" | "smartnet" | "dmr" | "nxdn";
+   *  every control channel and `nxdnChannelsHz` frequency is watched.
+   *  "edacs": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz`
+   *  is its channel list. */
+  type: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs";
   /** NXDN: "typeC" (a control channel; the default) or "typeD" (IDAS distributed: list every repeater). */
   nxdnType?: "typeC" | "typeD";
   /** SmartNet: the voice of a talkgroup never heard granted. */
@@ -201,7 +209,8 @@ export interface Site {
   bandplanOffset?: number;
   bandplanHighHz?: number;
   /** DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned.
-   *  NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency). */
+   *  NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency).
+   *  EDACS: the site's channel list, LCN (1–25) → frequency; checked against the air. */
   lcnTableHz?: Record<string, number>;
   /** DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels). */
   dmrChannelsHz?: number[];
@@ -214,6 +223,8 @@ export interface Site {
   nxdnChannelsHz?: number[];
   /** NXDN: only this RAN. */
   ran?: number;
+  /** EDACS: the system scrambles its control channel with ESK 0xA0. */
+  esk?: boolean;
 }
 
 /**

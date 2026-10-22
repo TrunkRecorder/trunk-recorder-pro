@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, FccLicense, FccLicenses, LogSettings, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, FccLicense, FccLicenses, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { dmrTalkgroup } from "./tones.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
@@ -32,6 +32,11 @@ export function newUsrp(): Source {
 export function newAirspy(): Source {
   return { type: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, packing: true, ppm: 0 };
 }
+/** Offered for a bladeRF (any rate 0.52–61.44 MSPS can be typed; above ~40 MSPS needs USB 3 and a fast CPU). */
+export const BLADERF_RATES = [2_400_000, 4_000_000, 5_000_000, 6_000_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000, 25_000_000, 30_720_000];
+export function newBladerf(): Source {
+  return { type: "bladerf", serial: "", centerHz: 0, rateHz: 10_000_000, bandwidthHz: 0, gainDb: 30, agc: false, biasTee: false, ppm: 0 };
+}
 /** Offered for SoapySDR devices; any rate the device takes can be typed. */
 export const SOAPY_RATES = [2_000_000, 2_400_000, 2_500_000, 3_000_000, 6_000_000, 8_000_000, 10_000_000];
 export function newSoapy(): Source {
@@ -39,6 +44,108 @@ export function newSoapy(): Source {
 }
 export function newFile(): Source {
   return { type: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8" };
+}
+
+export type Os = "windows" | "macos" | "linux";
+
+/** A driver library a kind of radio needs (desktop app), and how to install it. */
+export interface Driver {
+  /** "libairspy", "UHD". */
+  name: string;
+  /** Install commands, and what to do on Windows. */
+  macos: string;
+  linux: string;
+  windows: string;
+  /** A step after installing ("run uhd_images_downloader"). */
+  then?: string;
+}
+
+/**
+ * What the interface knows of each kind of source — Setup's card, the setup
+ * guide, the survey, the import. Adding a radio starts here (and in protocol.ts).
+ */
+export interface SourceKind {
+  label: string;
+  /** A new source of this kind. */
+  fresh: () => Source;
+  /** Sample rates offered; `freeRate`: any other can be typed too. */
+  rates: number[];
+  freeRate?: boolean;
+  rateHint?: string;
+  /** The field that names its device ("" = the first found). */
+  device?: "serial" | "args";
+  /** The library it needs, loaded at run time (desktop app only). */
+  driver?: Driver;
+  /** The name SoapySDR lists it under, when this source drives it natively. */
+  soapyDriver?: string;
+  /** The radios it covers, when its name doesn't say ("HackRF, SDRplay…"). */
+  covers?: string;
+}
+
+export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
+  rtlsdr: { label: "RTL-SDR", fresh: newDongle, rates: SAMPLE_RATES, device: "serial", soapyDriver: "rtlsdr" },
+  usrp: {
+    label: "USRP",
+    fresh: newUsrp,
+    rates: USRP_RATES,
+    freeRate: true,
+    rateHint: "MSPS; wider costs more CPU",
+    device: "args",
+    driver: { name: "UHD", macos: "brew install uhd", linux: "sudo apt install libuhd-dev uhd-host", windows: "Ettus's UHD installer", then: "run uhd_images_downloader" },
+    soapyDriver: "uhd",
+  },
+  airspy: {
+    label: "Airspy",
+    fresh: newAirspy,
+    rates: AIRSPY_RATES,
+    rateHint: "R2: 10 or 2.5; Mini: 6 or 3",
+    device: "serial",
+    driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll (from airspy-tools) next to trunk-pro.exe" },
+    soapyDriver: "airspy",
+  },
+  bladerf: {
+    label: "bladeRF",
+    fresh: newBladerf,
+    rates: BLADERF_RATES,
+    freeRate: true,
+    rateHint: "MSPS, 0.52–61.44",
+    device: "serial",
+    driver: { name: "libbladeRF 2.x", macos: "brew install libbladerf", linux: "sudo apt install libbladerf2 bladerf-fpga-hostedxa4", windows: "Nuand's bladeRF installer" },
+    soapyDriver: "bladerf",
+  },
+  soapy: {
+    label: "SoapySDR",
+    fresh: newSoapy,
+    rates: SOAPY_RATES,
+    freeRate: true,
+    rateHint: "MSPS, one the device supports",
+    device: "args",
+    driver: { name: "SoapySDR and your radio's module", macos: "brew install soapysdr soapyhackrf", linux: "sudo apt install soapysdr0.8-module-all", windows: "PothosSDR or radioconda" },
+    covers: "HackRF, SDRplay, LimeSDR, PlutoSDR…",
+  },
+  file: { label: "Capture file", fresh: newFile, rates: [...SAMPLE_RATES, 8_000_000, 10_000_000] },
+};
+
+/** The kinds of source that need a driver (and so the desktop app): the recorder reports each in `radios`. */
+export type DriverKind = keyof Radios;
+export const DRIVER_KINDS = (Object.keys(SOURCE_KINDS) as Source["type"][]).filter((k): k is DriverKind => !!SOURCE_KINDS[k].driver);
+/** A source that needs a driver, and so the desktop app. */
+export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind }> => !!SOURCE_KINDS[x.type].driver;
+
+/** The device a source names ("" = the first found, or a file). */
+export function deviceId(x: Source): string {
+  const f = SOURCE_KINDS[x.type].device;
+  return f ? ((x as Record<string, unknown>)[f] as string) : "";
+}
+
+/** A device's key ("airspy:…"): two sources with one aren't both used. */
+export const deviceKey = (type: Source["type"], id: string) => `${type}:${id}`;
+export const sourceKey = (x: Source) => deviceKey(x.type, deviceId(x));
+
+/** A new source of `type` for device `id`. */
+export function sourceFor(type: Source["type"], id: string): Source {
+  const k = SOURCE_KINDS[type];
+  return (k.device ? { ...k.fresh(), [k.device]: id } : k.fresh()) as Source;
 }
 
 /** A capture's sample format from its name (as the recorder guesses it). */
@@ -85,18 +192,24 @@ function dmrImport(sys: Record<string, unknown>): SystemInput {
  */
 export function siteLockFields(sys: Pick<System, "type" | "nxdnType">): (keyof SiteIdentity)[] {
   if (sys.type === "nxdn") return sys.nxdnType === "typeD" ? [] : ["sysId", "site"];
-  return sys.type === "smartnet" ? ["sysId", "site"] : sys.type === "dmr" ? [] : ["nac", "wacn", "sysId", "rfss", "site"];
+  return sys.type === "smartnet" ? ["sysId", "site"] : sys.type === "edacs" ? ["site"] : sys.type === "dmr" ? [] : ["nac", "wacn", "sysId", "rfss", "site"];
 }
 
-/** Frequencies a watching protocol (DMR, NXDN) needs besides the control channels (the recorder's Site::watched_channels). */
+/** A system's type as written: "p25" for one this version doesn't know. */
+export function systemType(t: unknown): System["type"] {
+  return t === "smartnet" || t === "dmr" || t === "nxdn" || t === "edacs" ? t : "p25";
+}
+
+/** Frequencies a watching protocol (DMR, NXDN, EDACS) needs besides the control channels (the recorder's Site::watched_channels). */
 export function watchedChannels(sys: Pick<System, "type">, x: Site): number[] {
+  if (sys.type === "edacs") return Object.entries(x.lcnTableHz ?? {}).filter(([k, f]) => +k >= 1 && +k <= 25 && f > 0).map(([, f]) => f);
   return sys.type === "dmr" ? (x.dmrChannelsHz ?? []) : sys.type === "nxdn" ? (x.nxdnChannelsHz ?? []) : [];
 }
 
 /** A site's fields in an older config's system (before sites, each system was one, its fields at the top). */
 const SITE_KEYS = [
   "controlChannelsHz", "modulation", "expect", "voiceChannelsHz", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz",
-  "lcnTableHz", "dmrChannelsHz", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran",
+  "lcnTableHz", "dmrChannelsHz", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran", "esk",
 ] as const satisfies readonly (keyof Site)[];
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
@@ -174,6 +287,12 @@ export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site
           ...(typeof x.ran === "number" ? { ran: x.ran } : {}),
         }
       : {}),
+    ...(type === "edacs"
+      ? {
+          ...(x.lcnTableHz && Object.keys(x.lcnTableHz).length ? { lcnTableHz: x.lcnTableHz } : {}),
+          ...(x.esk ? { esk: true } : {}),
+        }
+      : {}),
     ...(type === "smartnet"
       ? {
           bandplan: x.bandplan ?? "800_standard",
@@ -192,7 +311,7 @@ export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site
  * site's fields at its top — gets that site.
  */
 export function normalizeSystem(x: SystemInput): System {
-  const type = x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : x.type === "nxdn" ? "nxdn" : "p25";
+  const type = systemType(x.type);
   const sites: Partial<Site>[] = Array.isArray(x.sites)
     ? x.sites.filter((s): s is Partial<Site> => !!plain(s))
     : [{ ...Object.fromEntries(SITE_KEYS.filter((k) => k in x).map((k) => [k, x[k]])), ...(x.enabled === false ? { enabled: false } : {}) }];
@@ -428,7 +547,6 @@ export function formatGain(db: number): string {
 /** osmosdr device strings → SoapySDR's driver names, for radios with no source of their own here. */
 const OSMOSDR_DRIVERS: Record<string, string> = {
   hackrf: "hackrf",
-  bladerf: "bladerf",
   airspyhf: "airspyhf",
   lime: "lime",
   limesdr: "lime",
@@ -440,7 +558,7 @@ const OSMOSDR_DRIVERS: Record<string, string> = {
 
 /**
  * A Trunk Recorder osmosdr device string → SoapySDR device arguments, or null
- * when it's a radio with its own source (rtl=, airspy=, uhd). "soapy=0,driver=sdrplay"
+ * when it's a radio with its own source (rtl=, airspy=, bladerf=, uhd). "soapy=0,driver=sdrplay"
  * keeps its arguments; "hackrf=0" → "driver=hackrf"; "hackrf=0000000000000000a06063c8"
  * → "driver=hackrf,serial=…". Other osmosdr options (bias=1, buffers=…) are left out
  * (an RTL-SDR source keeps buflen= and buffers=).
@@ -471,7 +589,7 @@ export type ImportTodo =
   /** An RTL-SDR that wasn't free when imported (`serial` as configured). */
   | { kind: "source"; index: number; serial: string }
   /** A source whose driver isn't installed here. */
-  | { kind: "driver"; index: number; driver: "usrp" | "airspy" | "soapy" }
+  | { kind: "driver"; index: number; driver: DriverKind }
   /** Conventional squelch means something else here (a conventional system's). */
   | { kind: "squelch"; system: string }
   /** Trunk Recorder plugins with no counterpart here. */
@@ -623,7 +741,7 @@ function trRecording(sys: Record<string, unknown>): RecordingOverride {
 
 /** The talkgroup and channel files a Trunk Recorder config.json names, as it names them. */
 export function trConfigFiles(text: string): { file: string; kind: "talkgroups" | "channels" | "units"; system: string }[] {
-  const j = JSON.parse(text) as { systems?: Record<string, unknown>[] };
+  const j = JSON.parse(text.replace(/^\uFEFF/, "")) as { systems?: Record<string, unknown>[] };
   const out: { file: string; kind: "talkgroups" | "channels" | "units"; system: string }[] = [];
   for (const sys of j.systems ?? []) {
     const name = typeof sys.shortName === "string" ? sys.shortName : "";
@@ -638,8 +756,7 @@ export function trConfigFiles(text: string): { file: string; kind: "talkgroups" 
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 /** Which device a source is, when it names one (null: the first free, or a file). */
-const deviceOf = (s: Source): string | null =>
-  s.type === "rtlsdr" || s.type === "airspy" ? (s.serial ? `${s.type}:${s.serial}` : null) : s.type === "usrp" || s.type === "soapy" ? (s.args ? `${s.type}:${s.args}` : null) : null;
+const deviceOf = (s: Source): string | null => (deviceId(s) ? sourceKey(s) : null);
 
 /**
  * Import a Trunk Recorder config.json: its sources (one per dongle / SDR),
@@ -661,7 +778,8 @@ export function importTrunkRecorderConfig(
   files: Record<string, string> = {},
   merge = false,
 ): { config: Config; talkgroups: Record<string, string>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
-  const j = JSON.parse(text) as Record<string, unknown>;
+  // A byte-order mark (Windows editors add one) is not JSON; Trunk Recorder skips it, so do we.
+  const j = JSON.parse(text.replace(/^\uFEFF/, "")) as Record<string, unknown>;
   const notes: string[] = [];
   const todo: ImportTodo[] = [];
   // Trunk Recorder short name → the one here (made unique; the first system of a name), and each system → its name here.
@@ -697,7 +815,9 @@ export function importTrunkRecorderConfig(
       notes.push("USRP source imported: it needs UHD installed on this computer.");
       continue;
     }
-    if (s.driver && s.driver !== "osmosdr") {
+    // Trunk Recorder builds with a native bladeRF driver use "driver": "bladerf" (same device string).
+    const bladerfDriver = s.driver === "bladerf";
+    if (s.driver && s.driver !== "osmosdr" && !bladerfDriver) {
       notes.push(`Source driver "${String(s.driver)}" skipped — not supported.`);
       continue;
     }
@@ -720,6 +840,29 @@ export function importTrunkRecorderConfig(
         ...autoTune,
       });
       notes.push(`"${dev}" imported as a SoapySDR source (${soapyArgs || "first found"}): it needs SoapySDR and the device's module installed on this computer.`);
+      continue;
+    }
+    if (bladerfDriver || /(^|,)\s*bladerf(=|,|$)/i.test(dev)) {
+      // osmosdr: "bladerf=0" (index) or "bladerf=<serial>", anywhere in the string ("numchan=1,bladerf=…"),
+      // with options such as biastee=rx|on, bandwidth=…
+      const id = /bladerf=([^,\s]*)/i.exec(dev)?.[1] ?? "";
+      const bw = /bandwidth=(\d+(?:\.\d+)?(?:e\d+)?)/i.exec(dev)?.[1];
+      const bwHz = typeof s.bandwidth === "number" ? s.bandwidth : bw ? Number(bw) : 0;
+      // Trunk Recorder's bladeRF gain is one overall dB value (gain, or gainSettings.full).
+      const full = stage((s.gainSettings as Record<string, unknown> | undefined)?.full) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.FULL);
+      imported.push({
+        type: "bladerf",
+        serial: /^\d{1,2}$/.test(id) ? "" : id,
+        centerHz: center,
+        rateHz: typeof s.rate === "number" ? s.rate : 10_000_000,
+        bandwidthHz: bwHz,
+        gainDb: gain ?? full ?? 30,
+        agc,
+        biasTee: /bias(tee)?=(1|on|rx|both|true)/i.test(dev),
+        ppm,
+        ...autoTune,
+      });
+      notes.push(`bladeRF source imported (${agc ? "AGC" : `gain ${gain ?? full ?? 30} dB`}): it needs libbladeRF 2.x and the board's FPGA image installed on this computer.`);
       continue;
     }
     if (/airspy/.test(dev)) {

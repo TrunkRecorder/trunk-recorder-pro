@@ -30,7 +30,7 @@ use super::slot::{Channel, Csbk, LcFrom, SlotEvent, FID_MOTOROLA, FID_STANDARD};
 use crate::bits::field;
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::{Receiver, Symbol};
-use crate::trunk::message::{Message, MessageType};
+use crate::trunk::message::{table_from_str, table_to_string, Message, MessageType};
 use crate::trunk::Voice;
 
 pub const FID_CONNECT_PLUS: u8 = 0x06;
@@ -252,16 +252,10 @@ impl Site {
 
     /// The learned table as `lcn=hz` lines.
     pub fn map_to_string(&self) -> String {
-        self.learned.iter().map(|(l, h)| format!("{l}={h}\n")).collect()
+        table_to_string(&self.learned)
     }
     pub fn map_from_str(&mut self, s: &str) {
-        for line in s.lines() {
-            if let Some((l, h)) = line.split_once('=') {
-                if let (Ok(l), Ok(h)) = (l.trim().parse(), h.trim().parse()) {
-                    self.learned.insert(l, h);
-                }
-            }
-        }
+        self.learned.extend(table_from_str(s));
     }
 
     /// Carrier `idx`'s channel IQ; `t0` + sample / `rate` is a sample's air time (s).

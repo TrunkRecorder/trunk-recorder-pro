@@ -13,7 +13,7 @@ one.
   built on musl (Alpine) can't run it; use [Docker](docker.md) there.
 
 Nothing else is needed for RTL-SDRs. The binary is not static only so that it can load the
-optional USRP, Airspy and SoapySDR drivers if you install them ([Other radios](other-radios.md)).
+optional USRP, Airspy, bladeRF and SoapySDR drivers if you install them ([Other radios](other-radios.md)).
 
 ## Install
 

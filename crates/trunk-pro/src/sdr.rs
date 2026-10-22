@@ -5,7 +5,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rtlsdr_nusb::{Device, GainConfig, MaybeFuture, RxBuffers};
+use rtlsdr_nusb::{Device, GainConfig, MaybeFuture, RxBuffers, RxStream, SampleMode};
 
 #[derive(Clone, Debug)]
 pub struct RtlConfig {
@@ -227,6 +227,42 @@ impl Control {
         }
         g
     }
+
+    /// Between blocks: the pending requests applied to `radio` (opened at
+    /// `center_hz`) and answered with [`SourceMsg::Tuned`].
+    pub fn apply(&self, radio: &mut impl Tunable, center_hz: f64, tx: &SyncSender<SourceMsg>) -> Result<Applied, String> {
+        let (freq, gain) = self.take();
+        if freq.is_none() && gain.is_none() {
+            return Ok(Applied::Nothing);
+        }
+        if let Some(f) = freq {
+            let hz = radio.tune(f)?;
+            *self.current_hz.lock().unwrap() = Some(hz);
+        }
+        if let Some(g) = gain {
+            radio.set_gain(g)?;
+        }
+        let hz = self.current_hz.lock().unwrap().unwrap_or(center_hz);
+        Ok(if tx.send(SourceMsg::Tuned { center_hz: hz }).is_ok() { Applied::Tuned } else { Applied::Closed })
+    }
+}
+
+/// What [`Control::apply`] did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Applied {
+    Nothing,
+    /// Retuned or regained: samples queued before it are from before.
+    Tuned,
+    /// The receiver is gone: stop streaming.
+    Closed,
+}
+
+/// An open radio, as the survey's requests change it ([`Control::apply`]).
+pub trait Tunable {
+    /// Retune to `hz`; the centre it is at now.
+    fn tune(&mut self, hz: f64) -> Result<f64, String>;
+    /// A manual gain, dB.
+    fn set_gain(&mut self, db: f32) -> Result<(), String>;
 }
 
 /// A radio's driver: [`run_with`] keeps it streaming.
@@ -278,6 +314,25 @@ impl Radio for RtlConfig {
     }
 }
 
+/// An open RTL-SDR and its stream, for [`Control::apply`].
+struct Rtl<'a, M: SampleMode> {
+    dev: &'a mut Device<M>,
+    rx: &'a mut RxStream<M>,
+}
+
+impl<M: SampleMode> Tunable for Rtl<'_, M> {
+    fn tune(&mut self, hz: f64) -> Result<f64, String> {
+        // Stopped while retuning, so no queued block is from the old frequency.
+        self.rx.stop().wait().map_err(|e| format!("USB: {e}"))?;
+        self.dev.set_frequency_hz(hz.round() as u64).wait().map_err(|e| format!("tune {:.4} MHz: {e}", hz / 1e6))?;
+        self.rx.start().wait().map_err(|e| format!("USB: {e}"))?;
+        Ok(self.dev.actual_frequency_hz() as f64)
+    }
+    fn set_gain(&mut self, db: f32) -> Result<(), String> {
+        self.dev.set_gain(GainConfig::Manual(db)).wait().map_err(|e| format!("gain {db} dB: {e}"))
+    }
+}
+
 fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     let mut b = Device::builder().raw_iq().frequency_hz(cfg.center_hz).sample_rate_hz(cfg.rate_hz).correction_ppm(cfg.ppm);
     b = b.gain(cfg.gain_db.map_or(GainConfig::Auto, GainConfig::Manual));
@@ -301,24 +356,6 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
             break Ok(());
         }
         if let Some(c) = ctl {
-            let (freq, gain) = c.take();
-            if let Some(f) = freq {
-                // Stopped while retuning, so no queued block is from the old frequency.
-                if let Err(e) = rx.stop().wait() {
-                    break Err(format!("USB: {e}"));
-                }
-                if let Err(e) = dev.set_frequency_hz(f.round() as u64).wait() {
-                    break Err(format!("tune {:.4} MHz: {e}", f / 1e6));
-                }
-                if let Err(e) = rx.start().wait() {
-                    break Err(format!("USB: {e}"));
-                }
-            }
-            if let Some(g) = gain {
-                if let Err(e) = dev.set_gain(GainConfig::Manual(g)).wait() {
-                    break Err(format!("gain {g} dB: {e}"));
-                }
-            }
             if let Some(g) = c.take_live_gain() {
                 let name = if cfg.serial.is_empty() { "(first)" } else { &cfg.serial };
                 if let Err(e) = dev.set_gain(if g.agc { GainConfig::Auto } else { GainConfig::Manual(g.gain_db) }).wait() {
@@ -326,12 +363,10 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
                 }
                 log::info!("RTL-SDR {name}: gain now {}", if g.agc { "AGC".to_string() } else { format!("{} dB", g.gain_db) });
             }
-            if freq.is_some() || gain.is_some() {
-                let hz = dev.actual_frequency_hz() as f64;
-                *c.current_hz.lock().unwrap() = Some(hz);
-                if tx.send(SourceMsg::Tuned { center_hz: hz }).is_err() {
-                    break Ok(());
-                }
+            match c.apply(&mut Rtl { dev: &mut dev, rx: &mut rx }, cfg.center_hz as f64, tx) {
+                Err(e) => break Err(e),
+                Ok(Applied::Closed) => break Ok(()),
+                Ok(_) => {}
             }
         }
         match rx.next_block(Some(Duration::from_secs(2))).wait() {
