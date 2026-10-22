@@ -244,9 +244,13 @@ pub enum Msg {
     /// System Service Class of $00 marks one that isn't).
     SecondaryControl { rfss: u8, site: u8, channels: Vec<Secondary> },
     /// SYNC_BCST (§6.2.33). `synced`: Phase 2 traffic channels keep the
-    /// control channel's burst timing (US clear). `time` (when IST is
-    /// clear): the year, month, day, hour and minute.
-    SyncBroadcast { synced: bool, time: Option<(u16, u8, u8, u8, u8)> },
+    /// control channel's burst timing (US clear). `time`: the system's
+    /// year, month, day, hour, minute, and the micro-slots (7.5 ms each,
+    /// 8000 a minute) into the minute; `time_valid`: IST clear, the system
+    /// vouches for it. (Decoded either way: DCFD sets IST with its time
+    /// right to the second, so a system's time marked invalid is shown, and
+    /// only a valid one is gone by.)
+    SyncBroadcast { synced: bool, time: Option<(u16, u8, u8, u8, u8, u16)>, time_valid: bool },
     // ── Motorola (MFID $90, AABH §4.4) ──
     /// MOT_GRG_ADD_CMD: groups (up to 3; 0 unused) patched into a supergroup.
     MotPatchAdd { sg: u16, groups: [u16; 3] },
@@ -444,7 +448,7 @@ fn tsbk_msg(o: Octets, opcode: u8, mfid: u8) -> Msg {
             let (wacn, sys_id) = o.system(3);
             Deregistration { wacn, sys_id, id: o.u24(7) }
         }
-        (0, 0x30) => SyncBroadcast { synced: !o.bit(3, 3), time: (!o.bit(3, 2)).then(|| sync_time(o)) },
+        (0, 0x30) => SyncBroadcast { synced: !o.bit(3, 3), time: Some(sync_time(o)).filter(|t| t.0 > 2000 || t.1 > 0), time_valid: !o.bit(3, 2) },
         (0, 0x33 | 0x34 | 0x3d) => identifier(opcode, o.u32(2), o.u32(6), None).map_or(Unknown, Identifier),
         (0, 0x35) => Other("TIME_DATE_ANN"),
         (0, 0x36) => Other("ROAM_ADDR_CMD"),
@@ -493,10 +497,11 @@ fn tsbk_msg(o: Octets, opcode: u8, mfid: u8) -> Msg {
 }
 
 /// SYNC_BCST's date and time (Figure 6.2.33-1): year (since 2000, 7 bits),
-/// month (4), day (5), hours (5), minutes (6), from octet 5.
-fn sync_time(o: Octets) -> (u16, u8, u8, u8, u8) {
+/// month (4), day (5), hours (5), minutes (6) and micro-slots (13), from
+/// octet 5 to the end of octet 9.
+fn sync_time(o: Octets) -> (u16, u8, u8, u8, u8, u16) {
     let v = o.u32(5);
-    (2000 + (v >> 25) as u16, (v >> 21 & 0xf) as u8, (v >> 16 & 0x1f) as u8, (v >> 11 & 0x1f) as u8, (v >> 5 & 0x3f) as u8)
+    (2000 + (v >> 25) as u16, (v >> 21 & 0xf) as u8, (v >> 16 & 0x1f) as u8, (v >> 11 & 0x1f) as u8, (v >> 5 & 0x3f) as u8, ((v & 0x1f) << 8 | o.0[9] as u32) as u16)
 }
 
 /// SCCB entries, less those a System Service Class of $00 marks invalid.
@@ -872,14 +877,17 @@ mod tests {
         assert_eq!(m.msg, Msg::SecondaryControl { rfss: 1, site: 7, channels: vec![Secondary { ch: Channel(0x1005), rx: Some(Channel(0x2005)), class: 0x70 }] });
     }
 
-    /// Figure 6.2.33-1: US and IST in octet 3; 2026-10-16 12:34.
+    /// Figure 6.2.33-1: US and IST in octet 3; 2026-10-16 12:34 and 6789
+    /// micro-slots (50.9175 s).
     #[test]
     fn sync_broadcast() {
-        let t = (26u32 << 25 | 10 << 21 | 16 << 16 | 12 << 11 | 34 << 5).to_be_bytes();
-        let m = tsbk(0x30, 0, [0, 0x00, 0, t[0], t[1], t[2], t[3], 0]);
-        assert_eq!(m.msg, Msg::SyncBroadcast { synced: true, time: Some((2026, 10, 16, 12, 34)) });
+        let t = (26u32 << 25 | 10 << 21 | 16 << 16 | 12 << 11 | 34 << 5 | 6789 >> 8).to_be_bytes();
+        let m = tsbk(0x30, 0, [0, 0x00, 0, t[0], t[1], t[2], t[3], (6789 & 0xff) as u8]);
+        assert_eq!(m.msg, Msg::SyncBroadcast { synced: true, time: Some((2026, 10, 16, 12, 34, 6789)), time_valid: true });
         let m = tsbk(0x30, 0, [0, 0x0c, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(m.msg, Msg::SyncBroadcast { synced: false, time: None });
+        assert_eq!(m.msg, Msg::SyncBroadcast { synced: false, time: None, time_valid: false }, "nothing in it");
+        let m = tsbk(0x30, 0, [0, 0x04, 0, t[0], t[1], t[2], t[3], (6789 & 0xff) as u8]);
+        assert_eq!(m.msg, Msg::SyncBroadcast { synced: true, time: Some((2026, 10, 16, 12, 34, 6789)), time_valid: false }, "IST: a time all the same");
     }
 
     /// Figure 6.2.18-1, 6.2.10-1.

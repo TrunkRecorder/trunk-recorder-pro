@@ -210,13 +210,16 @@ The **Health** tab has a card for each plugin that's on (**Install & settings** 
 | **Sent** | Calls it handled this run, and how many it skipped |
 | **Failed** | Calls it failed on, as a share of tries. Hover for the last failure. |
 | **Waiting** | Calls queued for it (amber over 20), and how many are waiting to retry |
-| **Upload time** | How long its uploads take, and how much it has sent |
+| **Age at delivery** | How long after a call ended the plugin finished with it, over the last 5 minutes (or the hour, when nothing was delivered in the last 5), and its parts: **held** by your delay rules, **waiting** (the call's files being finished, the plugin's queue, failed tries) and the plugin's own **upload**. Then the hour's longest. A plugin built before SDK 0.6 doesn't say its upload time, so only the age shows. All by this computer's clock: no service reports it. |
 
-Under them: a bar per minute for the last hour (sent, skipped, failed), each service the plugin
+Under them: how much it has sent this run, a bar per minute for the last hour (sent, skipped, failed), each service the plugin
 talks to with its state, any figures of its own the plugin reports (simplestream's packets sent and
 dropped, for example), and when it last succeeded and failed. **Restarted N×** means the plugin
 crashed and was restarted; **Fell behind N events** means it was too slow to take events and some
-were dropped. **Last 24 h and log ▾** shows its history and recent log lines.
+were dropped. **Last 24 h and log ▾** shows its history (the age at delivery among it) and recent log lines.
+
+The age at delivery is local, so it's only as right as this computer's clock: see [Clock](#clock).
+A call recorded while the clock was off says so in its JSON (`"clock_off": true`).
 
 A service shows as down after 3 failures in a row, or 5 minutes without a success.
 
@@ -237,6 +240,46 @@ The computer the recorder runs on, recording or not:
 the spool, and **About … of recordings left** at last week's daily average. **Network** shows each
 internet check (`monitor.probeHosts`, by default `1.1.1.1:443` and `dns.google:443`), and **This
 computer** the system, cores, uptime and anything the platform can't measure.
+
+### Clock
+
+Call times come from this computer's clock. Calls from several recorders are matched by their
+times, and services such as Broadcastify Calls go by them, so the clock is worth watching. The
+recorder only watches it: the operating system's time service (chrony, systemd-timesyncd, ntpd,
+macOS) keeps it. Nothing extra needs installing, and nothing runs with privileges.
+
+| Number | What it is |
+|---|---|
+| **Offset, measured** | This clock less the time server's (`monitor.timeServer`, by default `pool.ntp.org`), from one SNTP query every 15 minutes, and whether this clock is behind or ahead. It's measured here, so it's right whatever the time service says. |
+| **Operating system** | Whether the time service tells the kernel the clock is synchronized, and its own bound on the error. The bound is loose: a synchronized clock often claims hundreds of milliseconds. Linux and macOS; on Windows only the offset is measured. In a container this is the host's clock, which the container shares. |
+| **Round trip** | The query's round trip. The offset is good to about half of it. |
+
+Under them, when they're known:
+- **Kept by…**: the time service and the server it follows, its stratum and when it last
+  synchronized (Linux: chrony or systemd-timesyncd).
+- **Calls are stamped by the clock as it was at Start**: while recording. Calls are stamped by the
+  clock as it was when recording started, carried on by a clock that never jumps, so a call's times
+  never go backwards. A correction the time service makes after Start reaches them only at the
+  next Start: this line says how far apart the two are now.
+- **The radio systems' clocks**: P25 systems (Phase 2) broadcast their own time, to 7.5 ms,
+  usually from GPS. Each site's line says how far call times are from it. Some systems mark their
+  time not valid even when it's right (DCFD does): those are shown, not gone by. A system set to its
+  local time is far off by hours and isn't compared.
+
+The chart shows the offset over time. The Platform light turns amber, with an event, when call
+times are off by `monitor.clockWarnMs` (250 ms) or more, or the operating system says the clock
+isn't synchronized; red at 5 s. What's judged is the clock calls are stamped by:
+- measured against the time server, as the clock now plus how far it has moved since Start;
+- without an answer from the time server, against the radio systems that vouch for their time
+  (offline recorders).
+
+A measurement over an hour old isn't counted. A jump of the clock (its time service setting it, or
+the computer sleeping) is an event of its own. Some networks block NTP (UDP port 123): then nothing
+is measured, the card says the queries go unanswered, and the internet checks don't count it.
+Pointing `monitor.timeServer` at a server inside your network (often your router) can help.
+
+The offset is local: nothing Broadcastify or another service reports. Broadcastify Calls doesn't
+report how far off a recorder's clock is.
 
 On macOS, if Spotlight is indexing the recordings folder, a note at the top explains how to
 exclude it. See [Troubleshooting](../troubleshooting.md#spotlight).

@@ -123,6 +123,10 @@
           "type": "number",
           "description": "1: its encrypted voice was decrypted, at least in part (absent in calls saved before)."
         },
+        "clock_off": {
+          "type": "boolean",
+          "description": "true: its times may be off: the recorder's clock was measured 250 ms or more off, or the operating system said it wasn't synchronized, when it ended (absent otherwise)."
+        },
         "phase2_tdma": {
           "type": "number"
         },
@@ -779,6 +783,232 @@
       ],
       "additionalProperties": false,
       "description": "A cipher heard on a talkgroup: P25 ALGID and key ID."
+    },
+    "ClockInfo": {
+      "type": "object",
+      "properties": {
+        "warnMs": {
+          "type": "number",
+          "description": "The warning threshold, ms (monitor.clockWarnMs)."
+        },
+        "os": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "synced": {
+                  "type": "boolean"
+                },
+                "maxErrorMs": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "synced",
+                "maxErrorMs"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The OS's word (Linux, macOS; null elsewhere). maxErrorMs: its own loose bound."
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "server": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "stratum": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "lastSync": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "server",
+                "stratum",
+                "lastSync"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The time service keeping the clock, when it says (Linux: chrony, systemd-timesyncd). lastSync: Unix s."
+        },
+        "driftMs": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "While recording: the wall clock less the clock calls are stamped by (the wall clock at Start, carried on monotonically), ms."
+        },
+        "radio": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "site": {
+                "type": "string"
+              },
+              "offsetMs": {
+                "type": "number"
+              },
+              "at": {
+                "type": "number"
+              },
+              "sane": {
+                "type": "boolean"
+              },
+              "valid": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "site",
+              "offsetMs",
+              "at",
+              "sane",
+              "valid"
+            ],
+            "additionalProperties": false
+          },
+          "description": "The radio systems' own clocks (P25 SYNC_BCST) against the recording's: offsetMs > 0 when the recording's is behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by)."
+        },
+        "server": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The time server asked (null: none set, or not asked yet)."
+        },
+        "measured": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "offsetMs": {
+                  "type": "number"
+                },
+                "delayMs": {
+                  "type": "number"
+                },
+                "stratum": {
+                  "type": "number"
+                },
+                "at": {
+                  "type": "number"
+                },
+                "current": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "offsetMs",
+                "delayMs",
+                "stratum",
+                "at",
+                "current"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its last answer: offsetMs > 0 when this clock is behind; `at` Unix s; `current`: recent enough to go by."
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why the last query failed, while it fails."
+        },
+        "problem": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "warn",
+                    "bad"
+                  ]
+                },
+                "cause": {
+                  "type": "string",
+                  "enum": [
+                    "clock",
+                    "recording",
+                    "radio",
+                    "os"
+                  ]
+                },
+                "why": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "level",
+                "cause",
+                "why"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What's wrong with the clock, decided by the recorder (the light and the events go by it)."
+        },
+        "check": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProbeRow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The time server's check: tries, failures, last answer."
+        }
+      },
+      "required": [
+        "warnMs",
+        "os",
+        "service",
+        "driftMs",
+        "radio",
+        "server",
+        "measured",
+        "error",
+        "problem",
+        "check"
+      ],
+      "additionalProperties": false,
+      "description": "The computer's clock: what the operating system says of it, and what the time server (monitor.timeServer) measured. Read only: the OS's time service keeps the clock."
     },
     "Config": {
       "type": "object",
@@ -2656,7 +2886,10 @@
                 "diskLow",
                 "spoolLow",
                 "spoolFull",
-                "spoolRecovered"
+                "spoolRecovered",
+                "clockOff",
+                "clockOk",
+                "clockStep"
               ]
             },
             "system": {
@@ -2732,6 +2965,17 @@
             "calls": {
               "type": "number",
               "description": "spoolFull: calls that went to the recordings folder for want of room."
+            },
+            "why": {
+              "type": "string",
+              "description": "clockOff: what's wrong, and whether it's badly off."
+            },
+            "bad": {
+              "type": "boolean"
+            },
+            "byMs": {
+              "type": "number",
+              "description": "clockStep: how far the wall clock jumped, ms (positive: forward)."
             },
             "type": {
               "type": "string",
@@ -3596,10 +3840,20 @@
             "type": "string"
           },
           "description": "Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks."
+        },
+        "timeServer": {
+          "type": "string",
+          "description": "The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked."
+        },
+        "clockWarnMs": {
+          "type": "number",
+          "description": "The clock off by this much or more, ms: a warning, and calls marked clock_off (a problem at 5 s, or 4 times this)."
         }
       },
       "required": [
-        "probeHosts"
+        "probeHosts",
+        "timeServer",
+        "clockWarnMs"
       ],
       "additionalProperties": false
     },
@@ -3925,60 +4179,11 @@
         "probes": {
           "type": "array",
           "items": {
-            "type": "object",
-            "properties": {
-              "target": {
-                "type": "string"
-              },
-              "ok": {
-                "type": [
-                  "boolean",
-                  "null"
-                ]
-              },
-              "rttMs": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "lastOk": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "lastFail": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "downSince": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "tries": {
-                "type": "number"
-              },
-              "fails": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "target",
-              "ok",
-              "rttMs",
-              "lastOk",
-              "lastFail",
-              "downSince",
-              "tries",
-              "fails"
-            ],
-            "additionalProperties": false
+            "$ref": "#/definitions/ProbeRow"
           }
+        },
+        "clock": {
+          "$ref": "#/definitions/ClockInfo"
         },
         "perCore": {
           "anyOf": [
@@ -4059,6 +4264,7 @@
         "uptimeS",
         "disks",
         "probes",
+        "clock",
         "perCore",
         "interfaces",
         "unavailable"
@@ -4596,6 +4802,62 @@
     "PluginValues": {
       "type": "object",
       "additionalProperties": {}
+    },
+    "ProbeRow": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "ok": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "rttMs": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lastOk": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lastFail": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "downSince": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tries": {
+          "type": "number"
+        },
+        "fails": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "target",
+        "ok",
+        "rttMs",
+        "lastOk",
+        "lastFail",
+        "downSince",
+        "tries",
+        "fails"
+      ],
+      "additionalProperties": false,
+      "description": "Something checked again and again and how it's been answering: an internet target, or the time server."
     },
     "Radios": {
       "type": "object",
@@ -5293,6 +5555,34 @@
             "additionalProperties": false
           },
           "description": "Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel)."
+        },
+        "radioClock": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "offsetMs": {
+                  "type": "number"
+                },
+                "at": {
+                  "type": "number"
+                },
+                "valid": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "offsetMs",
+                "at",
+                "valid"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "P25 SYNC_BCST: the system's own clock less the recording's, ms (positive: the recording's is behind), and when it was heard, Unix s."
         }
       },
       "required": [

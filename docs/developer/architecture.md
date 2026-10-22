@@ -773,9 +773,10 @@ anything on stderr becomes a log line.
 | `host.rs` | `PluginHost`: processes, queues, dispatch, handing finished calls on, shutdown |
 | `manage.rs` | `Plugins`: runtime state for the UI, reloads (`Plugins::host()` hands out the running host), stats, installs |
 | `store.rs` | the plugin registry, over the shared `trunk-pro/src/store.rs` |
-| `archive.rs` | `plan` (which of a call's files are written and kept); counts `call.result`s to decide when files can be deleted |
+| `archive.rs` | `plan` (which of a call's files are written and kept); follows each finished call to its plugins: their `call.result`s decide when files can be deleted, and time each delivery |
 | `encode.rs` | ffmpeg / afconvert / fdkaac M4A (the finish pool calls it) |
 | `delay.rs`, `hold.rs` | plugin delays (`pluginDelays`): what is held back from a plugin, and for how long |
+| `timing.rs` | `Totals`: a plugin's delivery timing (age, held, waiting, upload) as `plg/<id>/…` series; the archive keeps one per plugin |
 | `cli.rs` | `trunk-pro plugin …` commands |
 
 Per plugin process: a supervisor thread (`plugin-<id>`) reading stdout, a writer thread feeding
@@ -1156,7 +1157,7 @@ unlike the other messages).
 | `pluginDelays` | array of `{plugins, talkgroups, delayS}` | `[]` | how long plugins wait for calls, every system (a system's own come first) |
 | `keys` | map name → `{file, passwordFile}` | `{}` | encryption key sources; a system names one in its `keys` |
 | `log` | object | see 10.9 | log options |
-| `monitor` | `{probeHosts}` | `["1.1.1.1:443","dns.google:443"]` | internet checks |
+| `monitor` | `{probeHosts, timeServer, clockWarnMs}` | `["1.1.1.1:443","dns.google:443"]`, `"pool.ntp.org"`, `250` | internet checks; the clock's SNTP check and its warning threshold |
 
 ### 10.3 `sources[]`
 

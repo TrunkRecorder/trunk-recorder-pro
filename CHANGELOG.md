@@ -5,6 +5,40 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The clock, on the Platform page** (#61): how far off this computer's
+  clock is, measured by one SNTP query to `monitor.timeServer` (default
+  `pool.ntp.org`) every 15 minutes, and whether the operating system says
+  its time service has it synchronized (Linux, macOS). The light turns
+  amber at 250 ms off or when the OS says unsynchronized (red at 5 s), with
+  an event. It only watches the clock: chrony, systemd-timesyncd, ntpd or
+  macOS keep it. No new dependencies, no privileges; in a container it's
+  the host's clock. A time server that doesn't answer (UDP port 123 is often
+  blocked) isn't counted as the internet down.
+- **How long calls take to reach each plugin's service** (#61): on each
+  plugin's card, the age at delivery (from the call's end to the plugin's
+  success) over the last 5 minutes or the hour, its parts (held by delay
+  rules, waiting, the plugin's own upload) and the hour's longest. The same
+  for every plugin (Broadcastify Calls, OpenMHz, Rdio Scanner, a script);
+  measured by the recorder, by its own clock. Plugins built on SDK 0.6 tell
+  their upload time apart; older ones show the age alone.
+- **`clock_off` in a call's JSON** when the clock was off as it ended (250 ms
+  or more, or the operating system said it wasn't synchronized).
+- **The clock calls are stamped by, judged** (#61): calls keep the clock they
+  started with, so a correction during a recording doesn't reach them. The
+  Clock card now says how far that is from the clock now, and the warning
+  goes by it ("Stop and Start again to stamp them by it").
+- **Radio systems' own clocks** (#61): P25 Phase 2 systems broadcast their
+  time to 7.5 ms (SYNC_BCST). Each site's offset from the call times is on
+  the Clock card and in the site's status. Without an answer from the time
+  server, the systems that vouch for their time are the reference.
+- **The time service on the Clock card** (Linux: chrony, systemd-timesyncd):
+  the server it follows, its stratum, when it last synchronized.
+- **`monitor.clockWarnMs`** sets the clock warning (250 ms by default), and a
+  jump of the clock is an event.
+- **Plugin SDK 0.6.0:** `call.result` takes `took_ms`
+  (`Host::call_result_took`; `CallQueue` sends it), and `CallRecord` has
+  `clock_off`.
+
 - **Share a system with the community directory** ([trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/)):
   a switch in each system's Basics (`"share": true`). While it records, the recorder shares what it
   heard: the sites, their control and voice channels, neighbours, call signs heard on the air, and

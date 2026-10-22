@@ -92,6 +92,7 @@
 //! ```
 
 mod access;
+mod clock;
 mod directory;
 mod dmrtool;
 mod interfaces;
@@ -886,6 +887,7 @@ fn serve(a: &Args) {
         engine: Mutex::new(None),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
+        clock: Default::default(),
         unlocked: Default::default(),
     });
     monitor::start(ctx.clone());

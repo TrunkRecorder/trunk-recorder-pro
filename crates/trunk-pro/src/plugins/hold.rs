@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use trunk_recorder_plugin::Level;
@@ -113,9 +113,6 @@ pub struct Hold {
     notes: Mutex<Option<Notes>>,
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
-}
 
 impl Hold {
     pub fn new(archive: Arc<Archive>) -> Arc<Hold> {
@@ -221,7 +218,7 @@ impl Hold {
     /// Hold `line` for plugin `label` (`call`: it's that finished call's).
     /// False: too much is held already, and it's dropped.
     pub fn push(self: &Arc<Self>, label: &str, about: &About, line: &Arc<str>, call: Option<&str>) -> bool {
-        let mut item = Item { plugin: label.to_string(), about: about.clone(), at_ms: now_ms(), line: line.clone(), call: call.map(str::to_string), ticket: None, file: None };
+        let mut item = Item { plugin: label.to_string(), about: about.clone(), at_ms: crate::clock::unix_ms(), line: line.clone(), call: call.map(str::to_string), ticket: None, file: None };
         if let Some(rel) = call {
             item.ticket = self.archive.ticket(rel);
             self.archive.hold(rel);
@@ -292,7 +289,7 @@ impl Hold {
     fn run(&self) {
         let mut st = self.state.lock().unwrap();
         loop {
-            let now = now_ms();
+            let now = crate::clock::unix_ms();
             let due: Vec<(u64, u64)> = st.waiting.range(..(now + 1, 0)).map(|(k, _)| *k).collect();
             let mut given = Vec::new();
             let mut dropped = Vec::new();
@@ -338,17 +335,19 @@ impl Hold {
 
     /// What was given and dropped: its files go, and the archive is told.
     fn settle(&self, given: Vec<Item>, dropped: Vec<Item>) {
+        let now = crate::clock::unix_ms();
         for i in &given {
             if let Some(rel) = &i.call {
-                self.archive.release(rel);
+                // (How long it was held is its part of the call's delivery time.)
+                self.archive.release(rel, &i.plugin, now.saturating_sub(i.at_ms));
             }
         }
         // Dropped calls, by plugin, to say once each.
         let mut said: BTreeMap<&str, usize> = BTreeMap::new();
         for i in &dropped {
             if let Some(rel) = &i.call {
-                self.archive.release(rel);
-                self.archive.result(rel, trunk_recorder_plugin::Outcome::Skipped);
+                self.archive.release(rel, &i.plugin, 0);
+                self.archive.result(rel, &i.plugin, trunk_recorder_plugin::Outcome::Skipped, None);
                 *said.entry(&i.plugin).or_default() += 1;
             }
         }
@@ -444,6 +443,26 @@ mod tests {
         assert_eq!(out.got.lock().unwrap().iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>(), ["a\n"], "a decrypted call isn't given to a plugin that may not have it");
     }
 
+    /// The time a delay rule held a call is told to the delivery timing, as
+    /// its part of the call's age.
+    #[test]
+    fn the_time_held_is_timed() {
+        let archive: Arc<Archive> = Arc::default();
+        let hold = Hold::new(archive.clone());
+        hold.set_delays(delays(json!({ "pluginDelays": [{ "delayS": 1 }] })));
+        let out = Arc::new(Plugins { got: Mutex::default(), full: Mutex::new(false) });
+        hold.attach(Some(out.clone()));
+        let rules = super::super::FileRules { archive_wav: true, archive_m4a: true, call_log: true, archive_files_on_failure: false };
+        archive.expect("dcfd/a", 1, rules, &std::env::temp_dir().join("trunk-pro-hold-timed"), None, Some(false), Some(crate::clock::unix_ms()));
+        hold.push("openmhz", &about(1), &"call\n".into(), Some("dcfd/a"));
+        assert!(wait_for(|| out.got.lock().unwrap().len() == 1));
+        std::thread::sleep(Duration::from_millis(200));
+        archive.result("dcfd/a", "openmhz", trunk_recorder_plugin::Outcome::Ok, Some(150));
+        let t = archive.timing("openmhz");
+        assert!((1000..1500).contains(&t.held_ms), "held about the second its rule says: {t:?}");
+        assert!(t.age_ms >= t.held_ms + t.upload_ms && t.wait_ms < 500, "{t:?}");
+    }
+
     /// Not recording: a finished call waits for the next recording, live events don't.
     #[test]
     fn calls_wait_for_a_recording() {
@@ -468,7 +487,7 @@ mod tests {
         let base = dir.join("rec/dcfd/a");
         std::fs::create_dir_all(base.parent().unwrap()).unwrap();
         std::fs::write(base.with_extension("wav"), b"x").unwrap();
-        archive.expect("dcfd/a", 1, rules, &base, None, Some(true));
+        archive.expect("dcfd/a", 1, rules, &base, None, Some(true), None);
         let hold = Hold::new(archive);
         hold.open(&dir.join("hold"));
         hold.set_delays(delays(json!({ "pluginDelays": [{ "delayS": 3600 }] })));
@@ -488,7 +507,7 @@ mod tests {
         assert!(wait_for(|| out.got.lock().unwrap().len() == 1));
         assert!(wait_for(|| std::fs::read_dir(dir.join("hold")).unwrap().count() == 0), "its file goes once it's given");
         // The plugin reports: nothing keeps the call, so its files go.
-        archive.result("dcfd/a", trunk_recorder_plugin::Outcome::Ok);
+        archive.result("dcfd/a", "openmhz", trunk_recorder_plugin::Outcome::Ok, None);
         assert!(!base.with_extension("wav").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

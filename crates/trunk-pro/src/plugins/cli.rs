@@ -321,7 +321,7 @@ fn print_note(n: Note) {
             };
             eprintln!("[{plugin}] status {s}: {message}");
         }
-        Note::Result { plugin, path, outcome, message, url } => {
+        Note::Result { plugin, path, outcome, message, url, .. } => {
             let mark = match outcome {
                 Outcome::Ok => "✓",
                 Outcome::Skipped => "–",

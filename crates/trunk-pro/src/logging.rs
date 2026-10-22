@@ -97,7 +97,7 @@ fn to_browsers(level: Level, kind: &str, text: &str) {
     if level < Level::Warning && !LOG_WATCHED.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
-    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    let time = crate::clock::unix_s();
     let line = serde_json::json!({ "timeS": 0, "time": (time * 10.0).round() / 10.0, "level": level.as_str(), "kind": kind, "text": text });
     let m = ToClient::Log { lines: vec![line] };
     if level >= Level::Warning {

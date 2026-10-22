@@ -26,14 +26,21 @@
 //! it waits: that plugin's [`GIVE_UP`] counts from when it's given the call.
 //! The hold keeps what the archive needs of it ([`Ticket`]) with the call,
 //! so it's settled the same after a restart.
+//!
+//! It follows every finished call to every plugin it goes to, so it's also
+//! where a call's delivery is timed ([`super::timing`]): from the call's end,
+//! less what the hold kept it, to each plugin's Ok.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use trunk_recorder_plugin::Outcome;
+use trunk_core::metrics::Sink;
+
+use super::timing::Totals;
 
 /// A call not settled after this counts as failed (a plugin lost it).
 const GIVE_UP: Duration = Duration::from_secs(3600);
@@ -155,6 +162,10 @@ struct Pending {
     /// Whether a WAV was written (None: look, for a ticket from before this was kept).
     wav: Option<bool>,
     since: Instant,
+    /// When the call ended, Unix ms (None: not known, a ticket from before this was kept).
+    ended_ms: Option<u64>,
+    /// How long it was held back from each plugin it was then given to, ms, by label.
+    held_ms: Vec<(String, u64)>,
 }
 
 /// What the archive is to do with a call's files once its plugins are done,
@@ -169,6 +180,9 @@ pub struct Ticket {
     /// A WAV was written (absent in tickets from before this was kept: looked for).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wav: Option<bool>,
+    /// When the call ended, Unix ms, so its delivery is timed after a restart too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_ms: Option<u64>,
 }
 
 /// Told what a call kept once its plugins are done: (its path, audio kept, JSON kept).
@@ -178,6 +192,8 @@ pub type OnSettle = Box<dyn Fn(&str, bool, bool) + Send + Sync>;
 pub struct Archive {
     pending: Mutex<HashMap<String, Pending>>,
     on_settle: Mutex<Option<OnSettle>>,
+    /// Each plugin's delivery timing, by id (its copies together).
+    timing: Mutex<BTreeMap<String, Totals>>,
 }
 
 impl Archive {
@@ -193,19 +209,19 @@ impl Archive {
     }
 
     /// Call `rel` (at `base`, and `spooled`; `wav`: whether a WAV was
-    /// written) goes to `plugins` plugins, each of which will report on it.
-    /// With none, it's settled now.
-    pub fn expect(&self, rel: &str, plugins: usize, rules: FileRules, base: &Path, spooled: Option<&Path>, wav: Option<bool>) {
-        let x = Pending { left: plugins, held: 0, failed: false, rules, base: base.to_path_buf(), spooled: spooled.map(Path::to_path_buf), wav, since: Instant::now() };
+    /// written; `ended_ms`: when it ended, Unix ms) goes to `plugins`
+    /// plugins, each of which will report on it. With none, it's settled now.
+    #[allow(clippy::too_many_arguments)]
+    pub fn expect(&self, rel: &str, plugins: usize, rules: FileRules, base: &Path, spooled: Option<&Path>, wav: Option<bool>, ended_ms: Option<u64>) {
+        let x = Pending { left: plugins, held: 0, failed: false, rules, base: base.to_path_buf(), spooled: spooled.map(Path::to_path_buf), wav, since: Instant::now(), ended_ms, held_ms: Vec::new() };
         let mut p = self.pending.lock().unwrap();
         // Calls a plugin never reported on: failed.
         let lost: Vec<(String, Pending)> = p.extract_if(|_, x| x.held == 0 && x.since.elapsed() >= GIVE_UP).collect();
+        // (Followed even when nothing waits on its files: its delivery is timed.)
         let now = if plugins == 0 {
             Some(x)
         } else {
-            if !(rules.keeps_all() && spooled.is_none()) {
-                p.insert(rel.to_string(), x);
-            }
+            p.insert(rel.to_string(), x);
             None
         };
         drop(p);
@@ -222,7 +238,7 @@ impl Archive {
 
     /// What's to be done with call `rel`'s files (None: nothing waits on its plugins).
     pub fn ticket(&self, rel: &str) -> Option<Ticket> {
-        self.pending.lock().unwrap().get(rel).map(|x| Ticket { rules: x.rules, base: x.base.clone(), spooled: x.spooled.clone(), wav: x.wav })
+        self.pending.lock().unwrap().get(rel).map(|x| Ticket { rules: x.rules, base: x.base.clone(), spooled: x.spooled.clone(), wav: x.wav, ended_ms: x.ended_ms })
     }
 
     /// Call `rel` is held back from one of its plugins.
@@ -232,25 +248,38 @@ impl Archive {
         }
     }
 
-    /// Call `rel` was given to a plugin it was held back from (whose hour to report starts now).
-    pub fn release(&self, rel: &str) {
+    /// Call `rel` was given to plugin `label` after it was held back `held_ms`
+    /// (whose hour to report starts now).
+    pub fn release(&self, rel: &str, label: &str, held_ms: u64) {
         if let Some(x) = self.pending.lock().unwrap().get_mut(rel) {
             x.held = x.held.saturating_sub(1);
             x.since = Instant::now();
+            x.held_ms.push((label.to_string(), held_ms));
         }
     }
 
     /// After a restart: call `rel` is still held back from `plugins` plugins.
     /// (Those that had it already are forgotten with the run before.)
     pub fn restore(&self, rel: &str, plugins: usize, t: Ticket) {
-        let x = Pending { left: plugins, held: plugins, failed: false, rules: t.rules, base: t.base, spooled: t.spooled, wav: t.wav, since: Instant::now() };
+        let x = Pending { left: plugins, held: plugins, failed: false, rules: t.rules, base: t.base, spooled: t.spooled, wav: t.wav, since: Instant::now(), ended_ms: t.ended_ms, held_ms: Vec::new() };
         self.pending.lock().unwrap().insert(rel.to_string(), x);
     }
 
-    /// A plugin reported on call `rel`.
-    pub fn result(&self, rel: &str, outcome: Outcome) {
+    /// Plugin `label` (a copy's: `openmhz#2`) reported on call `rel`, its own
+    /// time on it `took_ms` when it said.
+    pub fn result(&self, rel: &str, label: &str, outcome: Outcome, took_ms: Option<u64>) {
+        self.result_at(rel, label, outcome, took_ms, crate::clock::unix_ms());
+    }
+
+    /// The same, at `now_ms` (Unix ms).
+    fn result_at(&self, rel: &str, label: &str, outcome: Outcome, took_ms: Option<u64>, now_ms: u64) {
         let mut p = self.pending.lock().unwrap();
         let Some(x) = p.get_mut(rel) else { return };
+        let held = x.held_ms.iter().position(|(l, _)| l == label).map_or(0, |i| x.held_ms.swap_remove(i).1);
+        if let (Outcome::Ok, Some(ended)) = (outcome, x.ended_ms) {
+            let id = super::parse_label(label).0.to_string();
+            self.timing.lock().unwrap().entry(id).or_default().delivered(now_ms.saturating_sub(ended), held, took_ms);
+        }
         x.failed |= outcome == Outcome::Failed;
         x.left = x.left.saturating_sub(1);
         if x.left == 0 {
@@ -259,6 +288,20 @@ impl Archive {
             let (audio, json) = settle(&x);
             self.settled(rel, audio, json);
         }
+    }
+}
+
+impl Archive {
+    /// Each plugin's delivery timing into `sink` ([`Totals::report`]).
+    pub fn report(&self, sink: &mut dyn Sink) {
+        for (id, t) in self.timing.lock().unwrap().iter_mut() {
+            t.report(id, sink);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn timing(&self, id: &str) -> Totals {
+        self.timing.lock().unwrap().get(id).copied().unwrap_or_default()
     }
 }
 
@@ -313,6 +356,35 @@ mod tests {
     fn rules(wav: bool, m4a: bool, json: bool, on_failure: bool) -> FileRules {
         FileRules { archive_wav: wav, archive_m4a: m4a, call_log: json, archive_files_on_failure: on_failure }
     }
+    /// The archive follows each call to every plugin, so it times each
+    /// delivery: from the call's end, the hold's part, to each plugin's Ok.
+    #[test]
+    fn deliveries_are_timed_as_the_call_is_followed() {
+        let a = Archive::default();
+        let keep = rules(true, true, true, false);
+        let base = std::env::temp_dir().join("trunk-pro-archive-timed");
+        a.expect("dcfd/a", 3, keep, &base, None, Some(false), Some(10_000));
+        a.result_at("dcfd/a", "broadcastify", Outcome::Ok, Some(400), 12_500);
+        a.release("dcfd/a", "openmhz#2", 60_000);
+        a.result_at("dcfd/a", "openmhz#2", Outcome::Ok, Some(300), 71_200);
+        a.result_at("dcfd/a", "rdioscanner", Outcome::Failed, Some(9), 13_000);
+        let b = a.timing("broadcastify");
+        assert_eq!((b.delivered, b.age_ms, b.held_ms, b.upload_ms, b.wait_ms), (1, 2500, 0, 400, 2100));
+        let o = a.timing("openmhz");
+        assert_eq!((o.age_ms, o.held_ms, o.upload_ms, o.wait_ms), (61_200, 60_000, 300, 900), "a copy counts as its plugin");
+        assert_eq!(a.timing("rdioscanner").delivered, 0, "only a delivery is timed");
+        assert!(a.ticket("dcfd/a").is_none(), "every plugin has said: settled, though nothing waited on its files");
+        // Held through a restart: the ticket keeps when it ended.
+        a.expect("dcfd/b", 1, keep, &base, None, Some(false), Some(20_000));
+        let t = a.ticket("dcfd/b").unwrap();
+        assert_eq!(t.ended_ms, Some(20_000));
+        let next = Archive::default();
+        next.restore("dcfd/b", 1, t);
+        next.release("dcfd/b", "openmhz", 5000);
+        next.result_at("dcfd/b", "openmhz", Outcome::Ok, None, 26_000);
+        assert_eq!((next.timing("openmhz").age_ms, next.timing("openmhz").held_ms, next.timing("openmhz").uploads), (6000, 5000, 0));
+    }
+
     const BOOLS: [bool; 2] = [false, true];
 
     /// What a plugin may answer, or (None) never answer.
@@ -352,24 +424,21 @@ mod tests {
                 let told = std::sync::Arc::new(Mutex::new(None));
                 let t = told.clone();
                 a.on_settle(Box::new(move |_, audio, json| *t.lock().unwrap() = Some((audio, json))));
-                a.expect(&rel, answers.len(), r, &base, None, None);
+                a.expect(&rel, answers.len(), r, &base, None, None, None);
                 for o in answers.iter().flatten() {
-                    a.result(&rel, *o);
+                    a.result(&rel, "p", *o, None);
                 }
                 let failed = answers.iter().any(|o| *o != Some(Outcome::Ok) && *o != Some(Outcome::Skipped));
-                if answers.contains(&None) && !r.keeps_all() {
+                if answers.contains(&None) {
                     // A plugin that never answers: an hour on, the next call settles it.
-                    // (With everything kept, nothing waits on it.)
                     a.pending.lock().unwrap().get_mut(&rel).unwrap().since = Instant::now() - GIVE_UP;
-                    a.expect("next", 0, rules(true, true, true, true), &dir.join("next"), None, None);
+                    a.expect("next", 0, rules(true, true, true, true), &dir.join("next"), None, None, None);
                 }
                 let (keep_wav, keep_m4a, keep_json) = kept(r, failed);
                 let want: Vec<&str> = [("wav", keep_wav), ("sdr", keep_wav || keep_m4a), ("m4a", keep_m4a), ("json", keep_json)].into_iter().filter(|x| x.1).map(|x| x.0).collect();
                 let case = format!("wav {wav} m4a {m4a} json {json} keep-on-failure {on_failure}, answers {answers:?}");
                 assert_eq!(left(&base), want, "{case}");
-                if !r.keeps_all() {
-                    assert_eq!(*told.lock().unwrap(), Some((keep_wav || keep_m4a, keep_json)), "{case}");
-                }
+                assert_eq!(*told.lock().unwrap(), Some((keep_wav || keep_m4a, keep_json)), "{case}");
                 assert!(a.pending.lock().unwrap().is_empty(), "{case}: settled");
             }
         }
@@ -399,8 +468,8 @@ mod tests {
                 let base = dir.join(format!("{audio}{json}{on_failure}{o:?}"));
                 write(&base, &["wav", "json"]);
                 let a = Archive::default();
-                a.expect("x", 1, r, &base, None, None);
-                a.result("x", o);
+                a.expect("x", 1, r, &base, None, None, None);
+                a.result("x", "p", o, None);
                 got.push(left(&base));
             }
             assert_eq!(got[0], got[1], "audio {audio} json {json} keep-on-failure {on_failure}");
@@ -415,14 +484,14 @@ mod tests {
         let base = dir.join("a");
         write(&base, &["wav", "json"]);
         let a = Archive::default();
-        a.expect("a", 3, rules(false, false, false, true), &base, None, None);
-        a.result("a", Outcome::Ok);
-        a.result("a", Outcome::Skipped);
+        a.expect("a", 3, rules(false, false, false, true), &base, None, None, None);
+        a.result("a", "p", Outcome::Ok, None);
+        a.result("a", "p", Outcome::Skipped, None);
         assert_eq!(left(&base), ["wav", "json"]);
-        a.result("a", Outcome::Ok);
+        a.result("a", "p", Outcome::Ok, None);
         assert!(left(&base).is_empty());
         // An answer about a call that isn't waiting changes nothing.
-        a.result("a", Outcome::Failed);
+        a.result("a", "p", Outcome::Failed, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -436,7 +505,7 @@ mod tests {
             let base = dir.join(format!("{audio}{json}{on_failure}"));
             write(&base, &["wav", "json"]);
             let a = Archive::default();
-            a.expect("x", 0, r, &base, None, None);
+            a.expect("x", 0, r, &base, None, None, None);
             let want: Vec<&str> = [("wav", audio), ("json", json)].into_iter().filter(|x| x.1).map(|x| x.0).collect();
             assert_eq!(left(&base), want, "audio {audio} json {json} keep-on-failure {on_failure}");
             assert!(a.pending.lock().unwrap().is_empty());
@@ -490,35 +559,35 @@ mod tests {
         };
         // Done: nothing is left anywhere.
         let (b, s) = call("a", &[], &["json", "m4a"]);
-        a.expect("a", 1, plugins_only, &b, Some(&s), None);
-        a.result("a", Outcome::Ok);
+        a.expect("a", 1, plugins_only, &b, Some(&s), None, None);
+        a.result("a", "p", Outcome::Ok, None);
         assert!(left(&b).is_empty() && left(&s).is_empty());
         // Failed: the M4A (the only audio) and the JSON move to the recordings folder.
         let (b, s) = call("b", &[], &["json", "m4a"]);
-        a.expect("b", 1, plugins_only, &b, Some(&s), None);
-        a.result("b", Outcome::Failed);
+        a.expect("b", 1, plugins_only, &b, Some(&s), None, None);
+        a.result("b", "p", Outcome::Failed, None);
         assert_eq!((left(&b), left(&s)), (vec!["m4a", "json"], vec![]));
         // Failed, but failures change nothing: gone.
         let (b, s) = call("c", &[], &["json", "m4a"]);
-        a.expect("c", 1, rules(false, false, false, false), &b, Some(&s), None);
-        a.result("c", Outcome::Failed);
+        a.expect("c", 1, rules(false, false, false, false), &b, Some(&s), None, None);
+        a.result("c", "p", Outcome::Failed, None);
         assert!(left(&b).is_empty() && left(&s).is_empty());
         // The JSON kept, written to the recordings folder; the spooled M4A goes.
         let (b, s) = call("d", &["json"], &["m4a"]);
-        a.expect("d", 1, rules(false, false, true, true), &b, Some(&s), None);
-        a.result("d", Outcome::Skipped);
+        a.expect("d", 1, rules(false, false, true, true), &b, Some(&s), None, None);
+        a.result("d", "p", Outcome::Skipped, None);
         assert_eq!((left(&b), left(&s)), (vec!["json"], vec![]));
         // Never answered: after an hour it has failed, so it moves to the recordings folder…
         let (b, s) = call("e", &[], &["json", "m4a"]);
-        a.expect("e", 1, plugins_only, &b, Some(&s), None);
+        a.expect("e", 1, plugins_only, &b, Some(&s), None, None);
         a.pending.lock().unwrap().get_mut("e").unwrap().since = Instant::now() - GIVE_UP;
-        a.expect("next", 0, plugins_only, &capture.join("sys/next"), None, None);
+        a.expect("next", 0, plugins_only, &capture.join("sys/next"), None, None, None);
         assert_eq!((left(&b), left(&s)), (vec!["m4a", "json"], vec![]));
         // …or, with failures changing nothing, goes.
         let (b, s) = call("f", &[], &["json", "m4a"]);
-        a.expect("f", 1, rules(false, false, false, false), &b, Some(&s), None);
+        a.expect("f", 1, rules(false, false, false, false), &b, Some(&s), None, None);
         a.pending.lock().unwrap().get_mut("f").unwrap().since = Instant::now() - GIVE_UP;
-        a.expect("next", 0, plugins_only, &capture.join("sys/next"), None, None);
+        a.expect("next", 0, plugins_only, &capture.join("sys/next"), None, None, None);
         assert!(left(&b).is_empty() && left(&s).is_empty() && a.pending.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -156,7 +156,15 @@ impl Host {
 
     /// What became of a concluded call.
     pub fn call_result(&self, path: &str, outcome: Outcome, message: impl Into<String>, url: impl Into<String>) {
-        self.send(&PluginMessage::CallResult { path: path.to_string(), outcome, message: message.into(), url: url.into() });
+        self.send(&PluginMessage::CallResult { path: path.to_string(), outcome, message: message.into(), url: url.into(), took_ms: None });
+    }
+
+    /// The same, and how long the work on it took (an upload's last try):
+    /// the recorder tells waiting from uploading by it. [`crate::CallQueue`]
+    /// says it for you.
+    pub fn call_result_took(&self, path: &str, outcome: Outcome, message: impl Into<String>, url: impl Into<String>, took: std::time::Duration) {
+        let took_ms = Some(took.as_millis() as u64);
+        self.send(&PluginMessage::CallResult { path: path.to_string(), outcome, message: message.into(), url: url.into(), took_ms });
     }
 }
 

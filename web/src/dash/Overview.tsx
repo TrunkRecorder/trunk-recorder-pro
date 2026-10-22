@@ -5,7 +5,7 @@
 import { formatMhz } from "../config.ts";
 import { can, pluginOn, radioQuery, statsSince, setView, start, usePolled, useApp, type AppState } from "../controller.ts";
 import { Card, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
-import { ago, bytes, compact, hmm, mhz, num, pct } from "../fmt.ts";
+import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
 import { change, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
@@ -228,6 +228,12 @@ export function eventText(e: MonitorEvent): string {
       return `The RAM spool was full: ${e.calls} call${e.calls === 1 ? "" : "s"} written to the recordings folder instead`;
     case "spoolRecovered":
       return `The RAM spool has room again (${e.freePct}% free)`;
+    case "clockOff":
+      return e.why ?? "The clock is off";
+    case "clockOk":
+      return "The clock is right again";
+    case "clockStep":
+      return (e.byMs ?? 0) > 0 ? `The clock jumped ${ms(e.byMs)} forward (its time service set it, or the computer slept)` : `The clock was set back ${ms(e.byMs)}`;
     default:
       return `${e.kind}${e.system ? ` (${e.system})` : ""}`;
   }

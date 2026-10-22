@@ -10,7 +10,7 @@
 use trunk_app::protocol::{body, ToClient};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use trunk_app::stats::{Aggregator, MonitorEvent};
@@ -45,16 +45,18 @@ pub fn start(ctx: Arc<Ctx>) {
 }
 
 fn run(ctx: Arc<Ctx>) {
-    let (targets, capture) = {
+    let (targets, time_server, capture) = {
         let c = ctx.config.lock().unwrap();
-        (c.monitor.probe_hosts.clone(), c.recording.capture_dir.clone())
+        (c.monitor.probe_hosts.clone(), Some(c.monitor.time_server.trim().to_string()).filter(|s| !s.is_empty()), c.recording.capture_dir.clone())
     };
+    ctx.clock.start(time_server);
     let c2 = ctx.clone();
     let probes = Probes::start(targets, move |(target, up, down_s)| {
         c2.event(if up { MonitorEvent::LinkUp { target, down_s: down_s.round() } } else { MonitorEvent::LinkDown { target } });
     });
     let watched = vec![Watched { name: "recordings", path: capture.into() }, Watched { name: "data", path: crate::paths::data_dir() }];
-    run_with(ctx, Platform::new(watched, probes));
+    let clock = ctx.clock.clone();
+    run_with(ctx, Platform::new(watched, probes, clock));
 }
 
 fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
@@ -64,7 +66,12 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
     let spotlight: Arc<Mutex<Option<Value>>> = Default::default();
     let mut spotlight_for: Option<(String, Instant)> = None;
     loop {
-        let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+        let t = crate::clock::unix_s();
+        // The clock judged once a tick: the dashboard, the events and the calls go by it.
+        let warn_ms = ctx.config.lock().unwrap().monitor.clock_warn_ms;
+        for e in ctx.clock.look(warn_ms) {
+            ctx.event(e);
+        }
         if let Some(r) = agg.begin(t) {
             ctx.store.add(r);
         }

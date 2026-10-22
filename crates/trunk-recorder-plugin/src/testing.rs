@@ -44,7 +44,7 @@ impl Output {
         self.messages
             .iter()
             .filter_map(|m| match m {
-                PluginMessage::CallResult { path, outcome, message, url } => Some((path.clone(), *outcome, message.clone(), url.clone())),
+                PluginMessage::CallResult { path, outcome, message, url, .. } => Some((path.clone(), *outcome, message.clone(), url.clone())),
                 _ => None,
             })
             .collect()
