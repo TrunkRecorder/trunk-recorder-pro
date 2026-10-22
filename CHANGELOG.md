@@ -67,6 +67,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   2.5 + 6 MS/s worked. A source at 2 MS/s or
   below runs its radio at 6 MS/s; use separate USB controllers if a
   pair doesn't fit.
+- **Multi-site duplicates:** a transmission one site gave its own channel, while another site
+  kept one channel (one call) through several, is linked as a copy of that call; and a copy is
+  dropped as a duplicate only when the copy kept heard it (another site, the same time), so a
+  transmission isn't lost when the copy kept is a shorter one.
 
 ## [0.2.7] — 2026-10-22
 
