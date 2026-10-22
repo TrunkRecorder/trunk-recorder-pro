@@ -595,14 +595,18 @@ enum Ambe {
 }
 
 /// Read a tone frame out of mbelib's ambe_d (û0 12 bits, û1 12, û2 11, û3 14,
-/// most significant first). Its signature is û0(11..6) all ones and û3(3..0)
-/// zero; the 8-bit tone ID is sent four times (û1(11..4); û1(3..0) with
-/// û2(10..7); û2(6..0) with û3(13); û3(12..5)) and read by bitwise majority,
-/// ties to the first copy, which the Golay code protects (it votes twice);
-/// the level is û0(5..0) then û3(4). mbelib looks at the same bits as a
-/// pitch and takes most tone frames for an erasure.
+/// most significant first). Its signature is û0(11..6) all ones: that's all
+/// TIA-102.BABA-A §16 has a decoder look at, and the Golay code protects
+/// it. (The sender zeroes û3(3..0) too, but û3 has no protection: one bit
+/// error there would lose a tone frame mid-tone to b0, whose low bits are
+/// the ID's there, as heard on CLMRN.) The
+/// 8-bit tone ID is sent four times (û1(11..4); û1(3..0) with û2(10..7);
+/// û2(6..0) with û3(13); û3(12..5)) and read by bitwise majority, ties to
+/// the first copy, which the Golay code protects (it votes twice); the
+/// level is û0(5..0) then û3(4). mbelib looks at the same bits as a pitch
+/// and takes most tone frames for an erasure.
 fn tone_frame(d: &[u8; 49]) -> Option<(u8, u8)> {
-    if d[..6].contains(&0) || d[45..].contains(&1) {
+    if d[..6].contains(&0) {
         return None;
     }
     let num = |a: usize, n: usize| d[a..a + n].iter().fold(0u32, |v, &b| v << 1 | b as u32);
@@ -947,6 +951,12 @@ impl Decoder {
         if enhanced && let Some((id, level)) = tone_frame(d) {
             return self.tone(id, level, errs, out);
         }
+        // A tone playing goes on through a frame too damaged to read (its
+        // signature lost): a repeat is of the frame before (§14.6), the tone,
+        // not the voice from before it.
+        if enhanced && errs > 3 && self.tone.is_some() {
+            return self.tone(0, 0, errs, out);
+        }
         self.tone = None;
         let r = decode_ambe2450_parms(d, &mut self.cur, &mut self.prev);
         let mut kind = Kind::Voice;
@@ -1004,7 +1014,7 @@ impl Decoder {
         move_parms(&self.cur, &mut self.enh);
     }
 
-    /// A tone frame (TIA-102.BABA-A §2.10.3): the Annex T row for `id` names
+    /// A tone frame (TIA-102.BABA-A §16.3, §16.4): the Annex T row for `id` names
     /// the fundamental and the one or two harmonics that carry the tone, each
     /// voiced at `16384 · 10^(0.03555 · (level − 127))` (Eq. 209) and
     /// everything else silent, through the ordinary voiced synthesis (so the
@@ -1133,14 +1143,15 @@ mod tests {
             assert_eq!(tone_frame(&bits(s)), Some(want), "{s}");
             assert_eq!(tone_bits(want.0, want.1), bits(s), "the test's encoder matches the reference's");
         }
-        // Not tone frames: no signature, or a nonzero trailer.
+        // Not a tone frame: no signature.
         let mut d = tone_bits(32, 100);
         d[3] = 0;
         assert_eq!(tone_frame(&d), None);
+        assert_eq!(tone_frame(&[0; 49]), None);
+        // An error in the unprotected trailer doesn't lose it.
         let mut d = tone_bits(32, 100);
         d[47] = 1;
-        assert_eq!(tone_frame(&d), None);
-        assert_eq!(tone_frame(&[0; 49]), None);
+        assert_eq!(tone_frame(&d), Some((32, 100)));
     }
 
     #[test]
@@ -1218,6 +1229,16 @@ mod tests {
             assert_eq!(dec.ambe(&tone_bits(32, 20), 6, &mut out), Kind::Tone);
         }
         assert!(level_at(&out, 1000.0) > 3000.0, "level 100, not the damaged frames' 20");
+        // Damaged past reading (its signature lost: a voice frame's bits) while
+        // the tone plays: the tone repeats, not the voice from before it.
+        let mut garbled = tone_bits(32, 100);
+        garbled[2] = 0;
+        for _ in 0..3 {
+            assert_eq!(dec.ambe(&garbled, 8, &mut out), Kind::Repeat);
+            assert!(level_at(&out, 1000.0) > 3000.0, "still the 1000 Hz tone");
+        }
+        assert_eq!(dec.ambe(&garbled, 8, &mut out), Kind::Muted);
+        dec.ambe(&tone_bits(32, 100), 0, &mut out);
         // A reserved ID is not played.
         assert_eq!(dec.ambe(&tone_bits(1, 100), 0, &mut out), Kind::Erasure);
         // Silence.
