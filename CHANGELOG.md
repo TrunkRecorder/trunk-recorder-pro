@@ -13,6 +13,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   hears new talkgroups or voice channels (at most hourly), otherwise daily. Setup shows the last
   share and links to the system's page; the directory's IDs are kept as `directory` and each site's
   `directoryId`. P25, SmartNet, DMR and NXDN; desktop and the browser build.
+- **bladeRF** sources (optional; bladeRF 2.0 micro xA4 / xA9 and the
+  original x40 / x115): used when libbladeRF 2.x is installed (`"type":
+  "bladerf"`). Serial, any sample rate to 61.44 MSPS, overall gain or the
+  board's AGC, analog filter bandwidth and bias-T; samples USB drops are
+  counted from the board's timestamps. Trunk Recorder's osmosdr
+  `bladerf=…` sources (and `"driver": "bladerf"`) import as bladeRF sources.
 - **EDACS** trunked systems (`"type": "edacs"`): Standard and Networked
   sites (GE / Ericsson / Harris), with their analog FM calls and **ProVoice**
   digital voice. The 9600 baud control channel is decoded (three copies of

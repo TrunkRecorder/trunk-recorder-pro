@@ -120,7 +120,8 @@ trunk-pro devices [--usrp [args]]
 ```
 
 Lists the RTL-SDRs it can see (model and serial number), then whether the optional Airspy
-(libairspy), USRP (UHD) and SoapySDR drivers are installed. For Airspy it lists the devices; for
+(libairspy), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy and
+bladeRF it lists the devices, bladeRFs with their full serials; for
 SoapySDR it lists the installed modules (and any that failed to load, with why) and the devices
 found. USRPs are only searched for with `--usrp`, optionally with UHD device arguments
 (`--usrp type=b200`), because a search can be slow.
@@ -553,6 +554,7 @@ trunk-pro interface add ~/wall-display --port 8090
 |---|---|
 | `TRUNK_PRO_UHD` | The UHD library file to load for USRPs, instead of searching for it |
 | `TRUNK_PRO_AIRSPY` | The libairspy library file to load, instead of searching |
+| `TRUNK_PRO_BLADERF` | The libbladeRF library file to load, instead of searching |
 | `TRUNK_PRO_SOAPY` | The SoapySDR library file to load, instead of searching |
 | `NO_COLOR` | When set (and `log.color` is empty), the log isn't coloured |
 | `XDG_CONFIG_HOME` | Linux: where the default config folder goes (`$XDG_CONFIG_HOME/trunk-pro`) |

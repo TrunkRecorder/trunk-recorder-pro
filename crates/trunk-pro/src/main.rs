@@ -209,8 +209,9 @@ usage:
       --start begins recording with the saved settings at once.
       --log-level debug: more in the log (stderr; files and syslog as set up).
   trunk-pro devices [--usrp]
-      List RTL-SDRs, Airspys and SoapySDR devices (and USRPs with --usrp);
-      shows whether the optional USRP (UHD), Airspy (libairspy) and SoapySDR
+      List RTL-SDRs, Airspys, bladeRFs and SoapySDR devices (and USRPs with
+      --usrp); shows whether the optional USRP (UHD), Airspy (libairspy),
+      bladeRF (libbladeRF) and SoapySDR
       drivers are installed, and which SoapySDR modules.
   trunk-pro capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
       Record raw IQ, like rtl_sdr.
@@ -302,6 +303,11 @@ fn devices(a: &Args) {
     println!("Airspy: {}", ai.detail);
     for d in radio::airspy::devices() {
         println!("  {}", d["label"].as_str().unwrap_or(""));
+    }
+    let bi = radio::bladerf::info();
+    println!("bladeRF: {}", bi.detail);
+    for d in radio::bladerf::devices() {
+        println!("  {} · serial {}", d["label"].as_str().unwrap_or(""), d["serial"].as_str().unwrap_or(""));
     }
     let ui = radio::uhd::info();
     println!("USRP: {}", ui.detail);

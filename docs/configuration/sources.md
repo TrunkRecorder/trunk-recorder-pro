@@ -12,7 +12,7 @@ several radios, see the [radios guide](../guides/radios.md).
 ```
 
 A source receives a block of spectrum `rateHz` wide, centered on `centerHz`. Every source has a
-`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"soapy"` or `"file"` (any case). Any other
+`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"bladerf"`, `"soapy"` or `"file"` (any case). Any other
 `type`, or none, makes the file unreadable.
 
 The fixed choices below (`gainMode`, `format`) are read in any case, and an empty string is the default.
@@ -137,6 +137,28 @@ An Airspy R2 or Mini, through libairspy. libairspy must be installed separately.
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 
 The Airspy gains are the driver's steps, not dB.
+
+## `"type": "bladerf"`
+
+A bladeRF 2.0 micro (xA4 / xA9) or original bladeRF (x40 / x115), through libbladeRF 2.x.
+libbladeRF and the board's FPGA image must be installed separately (Debian / Ubuntu:
+`libbladerf2 bladerf-fpga-hostedxa4`).
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `type` | ✓ | | string | `"bladerf"` |
+| `serial` | | `""` | string | The board's serial (32 hex digits). `""` = the first found. Set it whenever another program has a bladeRF open |
+| `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
+| `rateHz` | ✓ | | number | Any rate from 520 834 to 61 440 000. Over ~40 MSPS needs USB 3 and a fast CPU |
+| `bandwidthHz` | | `0` | number | The analog low-pass filter, Hz. `0` = the sample rate |
+| `gainDb` | | `30` | number | Overall RX gain, dB (bladeRF 2.0: about −15 to 60). Ignored with `agc` |
+| `agc` | | `false` | bool | The board's AGC instead of `gainDb` |
+| `biasTee` | | `false` | bool | Power an LNA through the antenna cable (bladeRF 2.0 only) |
+| `ppm` | | `0` | number | Frequency correction, ppm |
+| `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
+| `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
+
+Samples that USB drops are counted from the board's sample timestamps.
 
 ## `"type": "soapy"`
 
