@@ -91,6 +91,7 @@ export function App() {
   const s = useSelect((x) => ({
     connected: x.connected,
     quit: x.quit,
+    restartNeeded: x.restartNeeded,
     phase: x.phase,
     config: x.config,
     version: x.version,
@@ -155,9 +156,16 @@ export function App() {
               {!s.connected ? "Disconnected" : s.phase === "running" ? (liveDongle ? "Recording" : "Replaying") : s.phase === "idle" ? "Stopped" : s.phase === "starting" ? "Starting…" : "Stopping…"}
             </span>
             {running ? (
-              <button className="btn primary" onClick={stop}>
-                Stop
-              </button>
+              <>
+                {s.restartNeeded && (
+                  <button className="btn ghost" onClick={start} title="Stop and start again, with the settings as they are now">
+                    Restart
+                  </button>
+                )}
+                <button className="btn primary" onClick={stop}>
+                  Stop
+                </button>
+              </>
             ) : (
               <button className="btn primary" disabled={!s.connected || s.phase === "stopping" || !!problem} title={problem ?? ""} onClick={start}>
                 Start
@@ -186,6 +194,11 @@ export function App() {
               <button className="btn ghost small" onClick={() => setNotice(null)}>
                 OK
               </button>
+            </div>
+          )}
+          {running && s.restartNeeded && (
+            <div className="banner" role="status">
+              Change requires restart — some settings you changed only apply when recording starts again.
             </div>
           )}
           {s.ended && s.phase === "idle" && <div className="banner">Replay finished.</div>}

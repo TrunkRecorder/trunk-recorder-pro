@@ -7,6 +7,32 @@ import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./r
 // The recorder's rules, as it applies them (rules.ts):
 export { autoCenter, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, planCenters, readConfig, resolvedCenters, startProblem, usableHalfWidth } from "./rules.ts";
 
+/**
+ * The settings the recorder reads only when it starts. Left out are those it
+ * takes while recording (plugins, their settings and delays,
+ * the log, the dashboard's monitor, the web server's origins / home /
+ * interfaces; with `liveGain`, the desktop recorder, a radio's gain) and what
+ * only matters when the app launches (server address, start on launch).
+ */
+export function restartKey(c: Config, liveGain: boolean): string {
+  return JSON.stringify({
+    sources: liveGain ? c.sources.map(withoutLiveGain) : c.sources,
+    systems: c.systems.map(({ plugins: _a, pluginDelays: _d, ...s }) => s),
+    conventional: c.conventional.map(({ plugins: _a, pluginDelays: _d, channelFileStatus: _f, ...s }) => s),
+    recording: c.recording,
+  });
+}
+
+/** A source without the gain settings a running recorder takes from it (as runtime::live_gain decides). */
+function withoutLiveGain(x: Source): Source {
+  const k = SOURCE_KINDS[x.type];
+  const agc = "agc" in x && x.agc;
+  if (!k.liveGain || (agc && !k.liveAgc)) return x;
+  const y: Record<string, unknown> = { ...x };
+  for (const f of [...k.liveGain, ...(k.liveAgc ? ["agc"] : [])]) delete y[f];
+  return y as Source;
+}
+
 /** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
 export const RTL_DEFAULT_GAIN_DB = 25.4;
 
@@ -77,14 +103,16 @@ export interface SourceKind {
   driver?: Driver;
   /** The name SoapySDR lists it under, when this source drives it natively. */
   soapyDriver?: string;
-  /** Its AGC switches on or off while recording (the gain in dB always does; runtime::live_gain). */
+  /** Its gain settings, which the desktop recorder takes while recording (runtime::live_gain). */
+  liveGain?: string[];
+  /** Its AGC switches on or off while recording too (else only with AGC off is the gain live). */
   liveAgc?: boolean;
   /** The radios it covers, when its name doesn't say ("HackRF, SDRplay…"). */
   covers?: string;
 }
 
 export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
-  rtlsdr: { label: "RTL-SDR", fresh: newDongle, rates: SAMPLE_RATES, device: "serial", soapyDriver: "rtlsdr", liveAgc: true },
+  rtlsdr: { label: "RTL-SDR", fresh: newDongle, rates: SAMPLE_RATES, device: "serial", soapyDriver: "rtlsdr", liveGain: ["gainDb"], liveAgc: true },
   usrp: {
     label: "USRP",
     fresh: newUsrp,
@@ -94,6 +122,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     device: "args",
     driver: { name: "UHD", macos: "brew install uhd", linux: "sudo apt install libuhd-dev uhd-host", windows: "Ettus's UHD installer", then: "run uhd_images_downloader" },
     soapyDriver: "uhd",
+    liveGain: ["gainDb"],
   },
   airspy: {
     label: "Airspy",
@@ -103,6 +132,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     device: "serial",
     driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll (from airspy-tools) next to trunk-pro.exe" },
     soapyDriver: "airspy",
+    liveGain: ["gainMode", "gainStep", "lnaStep", "mixerStep", "vgaStep"],
     liveAgc: true,
   },
   bladerf: {
@@ -114,6 +144,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     device: "serial",
     driver: { name: "libbladeRF 2.x", macos: "brew install libbladerf", linux: "sudo apt install libbladerf2 bladerf-fpga-hostedxa4", windows: "Nuand's bladeRF installer" },
     soapyDriver: "bladerf",
+    liveGain: ["gainDb"],
   },
   soapy: {
     label: "SoapySDR",
@@ -124,6 +155,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     device: "args",
     driver: { name: "SoapySDR and your radio's module", macos: "brew install soapysdr soapyhackrf", linux: "sudo apt install soapysdr0.8-module-all", windows: "PothosSDR or radioconda" },
     covers: "HackRF, SDRplay, LimeSDR, PlutoSDR…",
+    liveGain: ["gainDb"],
   },
   file: { label: "Capture file", fresh: newFile, rates: [...SAMPLE_RATES, 8_000_000, 10_000_000] },
 };
