@@ -35,7 +35,8 @@ use super::{describe, executable, Encoder};
 pub enum Note {
     Log { plugin: String, level: Level, text: String },
     State { plugin: String, state: State, message: String },
-    Result { plugin: String, path: String, outcome: Outcome, message: String, url: String },
+    /// `took_ms`: the plugin's own time on it, when it said (SDK 0.6 and later).
+    Result { plugin: String, path: String, outcome: Outcome, message: String, url: String, took_ms: Option<u64> },
     /// Its figures (queue, timing, the services it talks to).
     Metrics { plugin: String, metrics: Metrics },
 }
@@ -729,7 +730,7 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
             Ok(PluginMessage::Ready) => Note::State { plugin: p.id.clone(), state: State::Ok, message: "running".into() },
             Ok(PluginMessage::Log { level, message }) => Note::Log { plugin: p.id.clone(), level, text: message },
             Ok(PluginMessage::Status { state, message }) => Note::State { plugin: p.id.clone(), state, message },
-            Ok(PluginMessage::CallResult { path, outcome, message, url }) => Note::Result { plugin: p.id.clone(), path, outcome, message, url },
+            Ok(PluginMessage::CallResult { path, outcome, message, url, took_ms }) => Note::Result { plugin: p.id.clone(), path, outcome, message, url, took_ms },
             Ok(PluginMessage::Metrics(metrics)) => Note::Metrics { plugin: p.id.clone(), metrics },
             Ok(PluginMessage::Unknown) => continue,
             // Not the protocol (a stray print): keep it as a log line.

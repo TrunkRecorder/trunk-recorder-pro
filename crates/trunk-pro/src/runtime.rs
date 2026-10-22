@@ -118,6 +118,8 @@ pub struct Ctx {
     pub host_last: Mutex<Option<ToClient>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
+    /// The computer's clock, watched (#61): what calls' `clock_off` and the dashboard go by.
+    pub clock: Arc<crate::clock::Clock>,
     /// Key containers unlocked from the interface ([`crate::unlock`]).
     pub unlocked: crate::unlock::Unlocked,
 }
@@ -175,7 +177,7 @@ impl Ctx {
 
     /// Hand an event to the monitor, and to the browsers when it's one for the feed.
     pub fn event(&self, e: trunk_app::stats::MonitorEvent) {
-        let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+        let t = crate::clock::unix_s();
         if let Some(v) = self.shared.emit(t, e) {
             publish(&self.hub, ToClient::MonitorEvent(body(v)));
         }
@@ -407,7 +409,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     open_spool(&ctx, &cfg);
     // The wall clock now, and a monotonic clock from now: the session's
     // `now_ms` is the one plus the other (wall time that never jumps).
-    let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
+    let epoch_ms = crate::clock::unix_ms() as f64;
     let epoch_at = Instant::now();
     let talkgroups = ctx.talkgroups.lock().unwrap().clone();
     let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
@@ -838,6 +840,9 @@ impl Air {
 /// browsers' and the server's changes ([`Ctx::engine`] holds its sender).
 fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
     ctx.set_phase("running", None, false);
+    // Calls are stamped by this clock: the clock's health watches it against the wall clock.
+    ctx.clock.recording(Some(epoch));
+    let mut radio_at = Instant::now();
     let (ctl_tx, rx) = ctl;
     session.set_topics(ctx.topics());
     let at_ms: Arc<Vec<AtomicU64>> = Arc::new(cfg.sources.iter().map(|_| AtomicU64::new(0)).collect());
@@ -954,6 +959,10 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
             tune_at = Instant::now();
             save_tune(&mut session);
         }
+        if radio_at.elapsed() >= Duration::from_secs(5) {
+            radio_at = Instant::now();
+            ctx.clock.set_radio(session.radio_clocks());
+        }
         if plans_at.elapsed() >= Duration::from_secs(10) {
             plans_at = Instant::now();
             save_bandplans(&session, &mut saved_plans);
@@ -986,6 +995,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     save_units(&mut session);
     save_tune(&mut session);
     save_registry(&ctx.shared);
+    ctx.clock.recording(None);
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
 }
@@ -1024,13 +1034,15 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 /// the .m4a (to keep, or for a plugin; its WAV instead should that fail),
 /// and the plugins, handed the files as they are; their results settle
 /// what's kept ([`crate::plugins::Archive`]).
-fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
+fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
     let host = ctx.plugins.host();
     let r = f.rules;
     let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.decrypted));
     let p = plugins::plan(r, to_plugins, encoder.is_some());
     let (keep_wav, keep_m4a, keep_json, keep_audio) = (p.keep_wav, p.keep_m4a, p.keep_json, p.keep_audio);
     let base = dir.join(&f.rel);
+    // Stamped while the clock was off: said with it, for whoever matches it with others' calls.
+    f.record.clock_off = ctx.clock.off();
     // (The record written once, as the .json file has it.)
     let json = f.record.to_json();
     let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_wav { f.wav.len() } else { 0 };
@@ -1071,7 +1083,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
             }
         }
     }
-    ctx.plugins.archive.expect(&f.rel, to_plugins.takers, r, &base, spooled.as_deref(), Some(wav_written));
+    ctx.plugins.archive.expect(&f.rel, to_plugins.takers, r, &base, spooled.as_deref(), Some(wav_written), Some(f.record.stop_time_ms.max(0) as u64));
     if let Some(h) = host {
         h.concluded(f.system, &f.rel, f.record, trunk_recorder_plugin::CallFiles { json: json_at, wav: wav_at, m4a }, f.decrypted);
     }
@@ -1094,7 +1106,7 @@ fn share(ctx: &Arc<Ctx>, short_name: String, observation: serde_json::Value, sit
         if d.system.is_empty() {
             return Ok(());
         }
-        let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |t| t.as_millis() as f64);
+        let at = crate::clock::unix_ms() as f64;
         crate::server::edit_config(ctx, |c| {
             c.link_shared(&short_name, &d.system, d.rev, &site_names, &d.sites, at);
         })
@@ -1198,7 +1210,7 @@ pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
         names.extend(c.conventional.iter().map(|v| v.short_name.clone()));
         (PathBuf::from(&c.recording.capture_dir), names)
     };
-    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let now_ms = crate::clock::unix_ms() as i64;
     let floor_ms = now_ms - OLDER_WINDOW_MS;
     let before_ms = before_ms.min(now_ms + 60_000);
     // Each system's day folders from `before` back to the window's start.
@@ -1214,7 +1226,7 @@ pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
     let start_of = |p: &Path, e: &fs::DirEntry| -> i64 {
         let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let from_name = stem.split_once('-').and_then(|(_, r)| r.split(['_', '.', '-']).next()).and_then(|s| s.parse::<i64>().ok());
-        from_name.unwrap_or_else(|| e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64))
+        from_name.unwrap_or_else(|| e.metadata().and_then(|m| m.modified()).map_or(0, |t| crate::clock::unix_s_of(t) as i64))
     };
     let mut found: Vec<(i64, PathBuf)> = Vec::new();
     for f in &folders {

@@ -1125,6 +1125,10 @@ pub struct Channel {
     pub bandwidth_khz: Option<f64>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// Its calls' carrier offsets score its source's AutoTune (digital rows;
+    /// a repeater output to trust, not radios on simplex). Off by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_tune: bool,
 }
 
 /// A USRP's gain when none is given, dB (as the interface starts one).
@@ -1213,6 +1217,7 @@ impl Channel {
                 ignore: false,
             }),
             squelch_db: self.squelch_db,
+            tune_ref: self.auto_tune,
             access: self.parsed_access().ok().flatten(),
             system: 0,
             analog: Demod::default().tuning(self),
@@ -1764,11 +1769,18 @@ pub struct MonitorSettings {
     /// Where to check the internet answers (`host:port`, a TCP connect every
     /// 15 s): the uplink's history. Empty: no checks.
     pub probe_hosts: Vec<String>,
+    /// The time server asked how far off the clock is (SNTP, every 15
+    /// minutes; a name or address, port 123 unless given). It only measures:
+    /// the operating system's time service keeps the clock. Empty: not asked.
+    pub time_server: String,
+    /// The clock off by this much or more, ms: a warning, and calls marked
+    /// `clock_off` (a problem at 5 s, or 4 times this). Applies at once.
+    pub clock_warn_ms: f64,
 }
 
 impl Default for MonitorSettings {
     fn default() -> Self {
-        MonitorSettings { probe_hosts: vec!["1.1.1.1:443".into(), "dns.google:443".into()] }
+        MonitorSettings { probe_hosts: vec!["1.1.1.1:443".into(), "dns.google:443".into()], time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0 }
     }
 }
 
@@ -2897,7 +2909,7 @@ mod tests {
             code: tone.into(),
             slot: None,
             match_talkgroup: None,
-            enabled: true,
+            enabled: true, auto_tune: false,
         };
         let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
         c.conventional[0].channels = vec![row("", None), row("D023N", None), row("151.4", Some(500)), row("94.8", None)];
@@ -2950,7 +2962,7 @@ mod tests {
             code: String::new(),
             slot: None,
             match_talkgroup: None,
-            enabled: true,
+            enabled: true, auto_tune: false,
         }];
         // Linking a new path writes the current list there.
         c.link_channel_file(0, &cfg_path, "channels.csv").unwrap();

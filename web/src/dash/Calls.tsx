@@ -96,10 +96,10 @@ export function reasonText(c: CallView): string {
   }
 }
 
-/** The systems calls can come from, by short name: each running system, then the conventional ones. */
+/** The systems calls can come from, by short name: each running system, then the conventional ones set up. */
 export function systemChoices(s: AppState): string[] {
   const out = (s.status?.systems ?? []).map((x) => x.shortName);
-  for (const v of s.config?.conventional ?? []) if (v.enabled && v.channels.some((ch) => ch.enabled)) out.push(v.shortName);
+  for (const v of s.config?.conventional ?? []) if (v.enabled && v.channels.some((ch) => ch.enabled) && !out.includes(v.shortName)) out.push(v.shortName);
   return out;
 }
 

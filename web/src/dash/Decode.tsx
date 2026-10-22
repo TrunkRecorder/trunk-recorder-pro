@@ -7,9 +7,9 @@ import { Fragment, useState } from "react";
 import { formatMhz, usableHalfWidth } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
-import { mhz, num, signed } from "../fmt.ts";
-import type { FreqRow, SeriesData, SourceStatus } from "../protocol.ts";
-import { change, dashSystems, K, KIND_LABEL, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
+import { compact, mhz, num, signed } from "../fmt.ts";
+import type { ChannelSnapshot, FreqRow, SeriesData, SourceStatus } from "../protocol.ts";
+import { change, dashSystems, K, KIND_LABEL, perLive, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
 import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 
 /** `a / b` step by step (errors per frame from the two rates). */
@@ -28,8 +28,8 @@ function scaled(a: SeriesData | undefined, mul: number, cap = Infinity): SeriesD
 
 /** Voice frames that couldn't be decoded, %, over the last `sinceS` (live). */
 export function voiceBadPct(name: string, sinceS = 600): number | null {
-  const f = recentAvg(K.sys(name, "voice/frames"), sinceS) ?? 0;
-  return f > 0 ? (100 * (recentAvg(K.sys(name, "voice/bad"), sinceS) ?? 0)) / f : null;
+  const p = perLive(K.sys(name, "voice/bad"), K.sys(name, "voice/frames"), sinceS);
+  return p === null ? null : 100 * p;
 }
 
 /** How a bad-frame share reads. */
@@ -40,6 +40,14 @@ export const BAD_MAX = 20;
 /** CQPSK phase error, RMS degrees: errors creep in past ~13°, a few % by 20°. */
 const PHASE_WARN = 15;
 const PHASE_BAD = 20;
+
+const MODE_LABEL: Record<NonNullable<ChannelSnapshot["mode"]>, string> = { fm: "FM", am: "AM", p25: "P25", dmr: "DMR", nxdn48: "NXDN 4800", nxdn96: "NXDN 9600" };
+
+/** What a channel is: a trunked one's role, a conventional one's mode and names ("P25 · Fire Dispatch"). */
+export function channelWhat(c: ChannelSnapshot): string {
+  if (!c.mode) return c.kind;
+  return c.names?.length ? `${MODE_LABEL[c.mode]} · ${c.names.join(", ")}` : MODE_LABEL[c.mode];
+}
 
 /** A channel's demodulation quality: the eye opening, or CQPSK's phase error. */
 export function quality(c: { quality: number | null; phaseErrDeg: number | null }): string {
@@ -183,6 +191,15 @@ function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x
             )}
           </>
         )}
+        {x.kind === "conventional" && (
+          <Stat
+            label="Calls"
+            value={x.status ? compact(x.status.callsConcluded) : "—"}
+            unit="this run"
+            spark={<LiveSpark k={k("calls")} mul={60} lo={0} title="Calls a minute, last 10 min" />}
+            sub={x.status ? `${x.status.activeCalls} on the air now · ${num((recentAvg(k("calls"), 600) ?? 0) * 60, 1)}/min` : "not recording"}
+          />
+        )}
         {voice && <Stat
           label="Voice lost"
           value={vbad === null ? "—" : num(vbad, 1)}
@@ -223,7 +240,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
   const site = x?.sites.find((y) => y.name === siteName) ?? x?.sites[0];
   const k = (n: string) => K.sys(name, n);
   const cc = (n: string) => (site ? K.cc(site, n) : k(`cc/${n}`));
-  const hist = useHistory([cc("good"), cc("bad"), cc("airSym"), cc("sep"), cc("phaseErr"), cc("snr"), cc("offset"), k("voice/frames"), k("voice/bad")], range, 360);
+  const hist = useHistory([cc("good"), cc("bad"), cc("airSym"), cc("sep"), cc("phaseErr"), cc("snr"), cc("offset"), k("voice/frames"), k("voice/bad"), k("calls"), k("airMs")], range, 360);
   const usual = useUsual([cc("good")]);
   const freqs = usePolled(`dfreqs:${name}:${range}`, () => radioQuery({ what: "freqs", system: name, hours: range === "7d" ? 168 : 24 }), 120_000);
   const rows = (freqs?.rows ?? []) as FreqRow[];
@@ -276,6 +293,13 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
           </span>
         </div>
       )}
+      {x.kind === "conventional" && x.status && (
+        <div className="kv small">
+          <span>
+            {x.status.callsConcluded} calls saved this run · {x.status.activeCalls} active
+          </span>
+        </div>
+      )}
       {live && live.channels.length > 0 && (
         <Card title="Channels now">
           <div className="table-wrap">
@@ -294,7 +318,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
                 {live.channels.map((c) => (
                   <tr key={c.freqHz}>
                     <td className="mono">{formatMhz(c.freqHz)}</td>
-                    <td>{c.kind}</td>
+                    <td>{channelWhat(c)}</td>
                     <td className="mono">
                       <span className={`snr ${c.snrDb >= 15 ? "ok" : c.snrDb >= 8 ? "warn" : "bad"}`}>{num(c.snrDb, 0)} dB</span>
                     </td>
@@ -333,6 +357,20 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
               hi={100}
               fmt={(v) => v.toFixed(1)}
               empty="No coverage measured yet."
+            />
+          </Card>
+        )}
+        {x.kind === "conventional" && (
+          <Card title="Calls">
+            {/* Rates a second: calls a minute, and seconds on the air a minute (every channel's together). */}
+            <TimeSeries
+              lines={[
+                { label: "Calls /min", color: "var(--series-1)", data: scaled(hist?.[k("calls")], 60) },
+                { label: "On the air, s/min", color: "var(--series-2)", data: scaled(hist?.[k("airMs")], 60 / 1000) },
+              ]}
+              zero
+              fmt={(v) => v.toFixed(1)}
+              empty="No calls yet."
             />
           </Card>
         )}

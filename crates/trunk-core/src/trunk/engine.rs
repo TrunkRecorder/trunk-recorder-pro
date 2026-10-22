@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use num_complex::Complex32;
 
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Policy, Reason, RecorderHost};
-use super::conventional::{ConvChannel, ConvConfig, ConvOut, Conventional};
+use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
 use super::message::{Message, MessageType};
 use super::multisite::{Held, MultiSite};
 use super::record::{save_call, Reception, SaveContext, Transmissions};
@@ -345,6 +345,11 @@ pub struct SiteStatus {
     /// (Motorola's MOT_BSI_GRANT), each with the channel it's for, Hz: a
     /// site's licenses can be several, one a channel. Never another site's.
     pub callsigns: Vec<(String, u64)>,
+    /// The system's own clock, as its control channel last said it (P25's
+    /// SYNC_BCST): when it was heard, on the engine's clock (s), the time
+    /// the system said then, Unix ms, and whether it vouched for it. Never
+    /// another site's.
+    pub system_time: Option<(f64, i64, bool)>,
     /// Patches standing now: (supergroup, the talkgroups patched into it).
     pub patches: Vec<(u32, Vec<u32>)>,
     /// A trunked DMR site: its kind, rest channel, channel table, carriers.
@@ -363,8 +368,25 @@ pub struct Status {
     /// Conventional channels with a head open (a signal on them now).
     pub conventional_open: usize,
     pub calls_concluded: u64,
+    /// Each system being recorded (a trunked one with a site running, a
+    /// conventional one with channels), in order; its sites are in `sites`.
+    pub systems: Vec<SystemStatus>,
     /// Each source's frequency error, as measured and as corrected.
     pub sources: Vec<SourceTune>,
+}
+
+/// A system being recorded, trunked or conventional, as [`Engine::status`] reports it.
+#[derive(Clone, Debug, Default)]
+pub struct SystemStatus {
+    /// Its number (`Call::system`) and short name.
+    pub system: u16,
+    pub short_name: String,
+    pub active_calls: usize,
+    /// Recorders its trunked calls use.
+    pub recording: usize,
+    /// Its conventional frequencies with a signal on them now.
+    pub conventional_open: usize,
+    pub calls_concluded: u64,
 }
 
 /// One channel the engine listens to, as the dashboard shows it ([`Engine::channels`]).
@@ -385,6 +407,8 @@ pub struct ChannelSnapshot {
     pub quality: ChannelQuality,
     /// Calls on it now.
     pub calls: usize,
+    /// A conventional channel: its rows' names, each once.
+    pub names: Vec<String>,
 }
 
 /// What a channel is to the engine ([`ChannelSnapshot`]).
@@ -396,7 +420,8 @@ pub enum ChannelKind {
     /// Another carrier a DMR / NXDN site's channels are watched on.
     Carrier,
     Voice,
-    Conventional,
+    /// A conventional frequency, and how it is received.
+    Conventional(ConvMode),
 }
 
 impl ChannelKind {
@@ -406,7 +431,7 @@ impl ChannelKind {
             ChannelKind::Control => "control",
             ChannelKind::Carrier => "carrier",
             ChannelKind::Voice => "voice",
-            ChannelKind::Conventional => "conventional",
+            ChannelKind::Conventional(_) => "conventional",
         }
     }
 }
@@ -422,6 +447,7 @@ struct Want {
     offset_hz: Option<f32>,
     quality: ChannelQuality,
     calls: usize,
+    names: Vec<String>,
 }
 
 /// Noise profile slices per source for the dashboard.
@@ -460,6 +486,27 @@ const TUNE_EVERY_S: f64 = 10.0;
 /// off by more than this, Hz, but not more often than every TUNE_RETUNE_S.
 const TUNE_RETUNE_HZ: f64 = 150.0;
 const TUNE_RETUNE_S: f64 = 200.0;
+
+/// Where a source puts its channels: its centre, and the AutoTune
+/// correction they are placed with. A channel keeps the one it was placed
+/// with; what its receiver measures is on top of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Tuning {
+    pub center_hz: f64,
+    pub ppm: f64,
+}
+
+impl Tuning {
+    /// Where `hz` is from the centre, corrected, Hz.
+    pub fn offset(&self, hz: f64) -> f64 {
+        hz * (1.0 + self.ppm * 1e-6) - self.center_hz
+    }
+    /// A carrier heard `off` Hz above a channel on `hz` placed with this:
+    /// how far it is from `hz` against the ppm set, corrected or not, Hz.
+    pub fn error_hz(&self, hz: f64, off: f64) -> f64 {
+        off + self.ppm * 1e-6 * hz
+    }
+}
 
 struct Source {
     /// Every source's settings (the engine's one copy), and which this is.
@@ -518,9 +565,13 @@ impl Source {
     fn time(&self) -> f64 {
         self.chz.sample_position() as f64 / self.chz.fs() + self.clock_offset_s
     }
+    /// Where it puts channels now.
+    fn tuning(&self) -> Tuning {
+        Tuning { center_hz: self.cfg().center_hz, ppm: self.tune_ppm }
+    }
     /// A channel's offset from the tuned centre, corrected.
     fn offset(&self, hz: f64) -> f64 {
-        hz * (1.0 + self.tune_ppm * 1e-6) - self.cfg().center_hz
+        self.tuning().offset(hz)
     }
 }
 
@@ -532,8 +583,8 @@ struct Channel {
     calls: [Option<OnSlot>; 2],
     voice: Box<dyn VoiceDecoder>,
     freq_hz: f64,
-    /// The correction it was opened with, ppm.
-    tune_ppm: f64,
+    /// Where it was placed.
+    tuning: Tuning,
     /// Its power, and the noise floor under it when it opened ([`Reception`]).
     meter: ChannelFilter,
     noise: f64,
@@ -674,7 +725,7 @@ impl SourceRx {
         }
         Radio::route(ch, tout, &mut r.routed);
         if let Some(off) = ch.voice.offset_hz() {
-            let err = off as f64 + ch.tune_ppm * 1e-6 * ch.freq_hz;
+            let err = ch.tuning.error_hz(ch.freq_hz, off as f64);
             for c in ch.calls.iter().flatten() {
                 r.freq_error.push((c.id, err));
             }
@@ -769,6 +820,16 @@ impl Radio {
         self.rx[source].lock().unwrap()
     }
 
+    /// AutoTune: a call heard on `source` with this frequency error, Hz,
+    /// scores it once it lasted (a trunked call; a conventional one on a
+    /// channel asked to, [`ConvChannel::tune_ref`]).
+    fn score_call(&self, source: usize, call: &Call, freq_error_hz: Option<f64>) {
+        let lasted = call.freq_hz > 0 && call.last_update_s - call.start_s >= TUNE_CALL_MIN_S;
+        if let (Some(hz), Some(r), true) = (freq_error_hz, self.rx.get(source), lasted) {
+            r.lock().unwrap().src.measured(hz / call.freq_hz as f64 * 1e6);
+        }
+    }
+
     /// What a voice channel's block came to: its calls' reception and frequency error, its outputs to apply.
     fn take(&mut self, v: VoiceResult) {
         for (id, sig, noise) in v.reception {
@@ -850,7 +911,7 @@ impl SysHost<'_> {
         let s = &mut rx.src;
         let rate = s.chz.output_rate();
         let cutoff = kind.cutoff_hz();
-        let tune_ppm = s.tune_ppm;
+        let tuning = s.tuning();
         let (head, pre, start_sample) = s.chz.add_head(s.offset(call.freq_hz as f64), cutoff, r.preroll_s);
         // The noise floor under the channel, from the source's spectrum: analog squelch, and reception.
         let n = floor_slices(s.cfg().rate_hz);
@@ -874,7 +935,7 @@ impl SysHost<'_> {
         });
         let mut calls = [None, None];
         calls[slot] = Some(OnSlot::of(call));
-        let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tune_ppm, meter: ChannelFilter::new(rate), noise };
+        let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tuning, meter: ChannelFilter::new(rate), noise };
         // Pre-roll: decode the replayed air now.
         let params = rx.voice_params.get(self.site as usize).copied().unwrap_or_default();
         rx.tout.clear();
@@ -986,9 +1047,9 @@ struct Hunt {
     /// Its source's clock offset when it opened (time since is samples
     /// since, plus how much the offset moved).
     offset_s: f64,
-    /// AutoTune: the correction it was opened with, ppm; when it was last
-    /// measured, and when the site last reopened one at a correction.
-    ppm: f64,
+    /// AutoTune: where it was placed; when it was last measured, and when
+    /// the site last reopened one at a correction.
+    tuning: Tuning,
     measured_s: f64,
     retuned_s: f64,
 }
@@ -1028,6 +1089,8 @@ struct Trunk {
     adjacent: std::collections::BTreeMap<(u32, u32, u32), AdjacentSite>,
     /// The call signs its base station IDs say, by the channel (Hz) each is for.
     callsigns: std::collections::BTreeMap<u64, String>,
+    /// Its system's time, last said ([`SiteStatus::system_time`]).
+    system_time: Option<(f64, i64, bool)>,
     /// What its protocol says of itself, once: the identity fields its site
     /// lock goes by, and whether a control channel is reopened at a correction.
     id_fields: &'static [IdField],
@@ -1116,7 +1179,7 @@ impl Trunk {
             let mut rx = radio.rx(src);
             let s = &mut rx.src;
             let (head, _, _) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
-            let hunt = Hunt { cutoff_hz, index, source: src, head, start_s: self.now_s, samples: 0, offset_s: s.clock_offset_s, ppm: s.tune_ppm, measured_s: self.now_s, retuned_s };
+            let hunt = Hunt { cutoff_hz, index, source: src, head, start_s: self.now_s, samples: 0, offset_s: s.clock_offset_s, tuning: s.tuning(), measured_s: self.now_s, retuned_s };
             let rate = s.chz.output_rate();
             rx.set_tap(Self::hunt_tap(self.site, &self.cc, &hunt));
             (hunt, rate)
@@ -1132,6 +1195,7 @@ impl Trunk {
             self.mismatch = None;
             self.adjacent.clear();
             self.callsigns.clear();
+            self.system_time = None;
         }
         events.push(Event::ControlChannel { site: self.site, freq_hz: hz.round() as u64 });
         Ok(())
@@ -1239,6 +1303,9 @@ impl Trunk {
             for m in st.msgs.iter().filter(|m| m.kind == MessageType::Adjacent && m.freq_hz > 0) {
                 self.adjacent.insert((m.sys_id, m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
             }
+            if let Some(m) = st.msgs.iter().rev().find(|m| m.system_time_ms.is_some()) {
+                self.system_time = m.system_time_ms.map(|(ms, valid)| (m.time_s, ms, valid));
+            }
             for m in st.msgs.iter().filter(|m| m.kind == MessageType::BaseStationId) {
                 if let Some(c) = m.callsign.as_ref().filter(|_| m.freq_hz > 0) {
                     if self.callsigns.insert(m.freq_hz, c.clone()).as_ref() != Some(c) {
@@ -1299,13 +1366,13 @@ impl Trunk {
         let hz = hz as f64;
         let mut rx = radio.rx(h.source);
         let s = &mut rx.src;
-        s.measured(h.ppm + off as f64 / hz * 1e6);
-        let off_by = (s.tune_ppm - h.ppm) * 1e-6 * hz;
+        s.measured(h.tuning.error_hz(hz, off as f64) / hz * 1e6);
+        let off_by = s.offset(hz) - h.tuning.offset(hz);
         if reopens && off_by.abs() > TUNE_RETUNE_HZ && now - h.retuned_s >= TUNE_RETUNE_S {
             s.chz.remove_head(h.head);
             let (head, _, _) = s.chz.add_head(s.offset(hz), h.cutoff_hz, 0.0);
             h.head = head;
-            h.ppm = s.tune_ppm;
+            h.tuning = s.tuning();
             h.retuned_s = now;
             h.start_s = now;
             h.samples = 0;
@@ -1341,6 +1408,7 @@ impl Trunk {
             mismatch: self.mismatch.clone(),
             adjacent: self.adjacent.values().copied().collect(),
             callsigns: if self.mismatch.is_none() { self.callsigns.iter().map(|(&hz, c)| (c.clone(), hz)).collect() } else { vec![] },
+            system_time: self.system_time.filter(|_| self.mismatch.is_none()),
             patches: self.calls.patches.active(),
             protocol,
         }
@@ -1460,6 +1528,7 @@ impl Core {
                 mismatch: None,
                 adjacent: Default::default(),
                 callsigns: Default::default(),
+                system_time: None,
                 id_fields: &[],
                 reopens: false,
                 voice_params: VoiceParams::default(),
@@ -1588,14 +1657,24 @@ impl Core {
                 let c = t.cc();
                 (c.offset_hz(), c.quality())
             };
-            control.push(Want { system: t.system, site: Some(t.site), hz, src, kind: ChannelKind::Control, offset_hz, quality, calls: 0 });
+            control.push(Want { system: t.system, site: Some(t.site), hz, src, kind: ChannelKind::Control, offset_hz, quality, ..Default::default() });
         }
         let conv = self
             .conv
             .channels()
-            .filter_map(|(hz, system, calls)| {
-                let src = self.radio.source_for(hz)?;
-                Some(Want { system: system as u16, site: None, hz, src, kind: ChannelKind::Conventional, calls, ..Default::default() })
+            .filter_map(|c| {
+                let src = self.radio.source_for(c.freq_hz)?;
+                Some(Want {
+                    system: c.system as u16,
+                    site: None,
+                    hz: c.freq_hz,
+                    src,
+                    kind: ChannelKind::Conventional(c.mode),
+                    offset_hz: c.offset_hz,
+                    quality: c.quality,
+                    calls: c.calls,
+                    names: c.names.iter().map(|n| n.to_string()).collect(),
+                })
             })
             .collect();
         (control, conv)
@@ -1674,10 +1753,38 @@ impl Core {
             channels_open: self.radio.channel_count() + self.conv.open_count(),
             conventional_open: self.conv.open_count(),
             calls_concluded: self.systems.iter().map(|s| s.concluded).sum(),
+            systems: self.system_status(&sites),
             sites,
             // ([`Engine::status`] fills these in, from the sources.)
             sources: Vec::new(),
         }
+    }
+
+    /// Each system being recorded: its sites' calls (`sites`, those
+    /// running), its conventional channels', and its calls saved.
+    fn system_status(&self, sites: &[SiteStatus]) -> Vec<SystemStatus> {
+        let mut out: Vec<SystemStatus> = Vec::new();
+        let mut add = |system: u16, calls: usize, recording: usize, open: bool| {
+            let i = match out.iter().position(|v| v.system == system) {
+                Some(i) => i,
+                None => {
+                    let sys = &self.systems[system as usize];
+                    out.push(SystemStatus { system, short_name: sys.cfg.short_name.clone(), calls_concluded: sys.concluded, ..Default::default() });
+                    out.len() - 1
+                }
+            };
+            out[i].active_calls += calls;
+            out[i].recording += recording;
+            out[i].conventional_open += open as usize;
+        };
+        for y in sites {
+            add(y.system, y.active_calls, y.recording, false);
+        }
+        for c in self.conv.channels() {
+            add(c.system as u16, c.calls, 0, c.open);
+        }
+        out.sort_by_key(|v| v.system);
+        out
     }
 
     /// End of input: release what the receivers still hold and end every call.
@@ -1720,7 +1827,10 @@ impl Core {
         for o in out.drain(..) {
             match o {
                 ConvOut::Event(e) => self.events.push(e),
-                ConvOut::End { call, audio, frames, recorder_num, tx, reception, freq_error_hz } => {
+                ConvOut::End { call, audio, frames, recorder_num, tx, reception, freq_error_hz, tune_source } => {
+                    if let Some(src) = tune_source {
+                        self.radio.score_call(src, &call, freq_error_hz);
+                    }
                     self.write_call(Held { call: call.clone(), audio, frames, recorder_num, tx, reception, freq_error_hz });
                     self.events.push(Event::CallEnd(call));
                 }
@@ -1755,7 +1865,8 @@ impl Core {
             let mut out = std::mem::take(&mut self.conv_out);
             {
                 let mut rx = self.radio.rx[source].lock().unwrap();
-                self.conv.on_block(source, &mut rx.src.chz, dsp.time, dsp.in_gap, &self.call_ids, &|i| &self.systems[i].cfg, &mut out);
+                let tuning = rx.src.tuning();
+                self.conv.on_block(source, &mut rx.src.chz, dsp.time, dsp.in_gap, tuning, &self.call_ids, &|i| &self.systems[i].cfg, &mut out);
             }
             self.emit_conv(out);
         }
@@ -1931,13 +2042,8 @@ impl Core {
         let held = self.radio.recordings.remove(&call.id).map(|rec| {
             self.radio.free_nums.push(rec.recorder_num);
             let freq_error_hz = (rec.freq_error.1 > 0).then(|| rec.freq_error.0 / rec.freq_error.1 as f64);
-            // AutoTune: every call that lasted (each site's copy, encrypted
-            // ones too) scores its source.
-            if let Some(hz) = freq_error_hz.filter(|_| call.freq_hz > 0 && call.last_update_s - call.start_s >= TUNE_CALL_MIN_S) {
-                if let Some(r) = self.radio.rx.get(rec.source) {
-                    r.lock().unwrap().src.measured(hz / call.freq_hz as f64 * 1e6);
-                }
-            }
+            // AutoTune: every call (each site's copy, encrypted ones too).
+            self.radio.score_call(rec.source, call, freq_error_hz);
             // (A call whose record never learned it was decrypted, because it was already gone when the news came, is saved
             // as the decrypted call it is.)
             let mut call = call.clone();
@@ -2122,6 +2228,7 @@ impl Engine {
                 offset_hz: w.offset_hz,
                 quality: w.quality,
                 calls: w.calls,
+                names: w.names.clone(),
             }
         };
         let (mut control_out, mut conv_out): (Vec<Option<ChannelSnapshot>>, Vec<Option<ChannelSnapshot>>) = (control.iter().map(|_| None).collect(), conv.iter().map(|_| None).collect());
@@ -2135,7 +2242,7 @@ impl Engine {
             }
             for ch in r.channels.values() {
                 let system = self.shared.site_systems[ch.site as usize];
-                let w = Want { system, site: Some(ch.site), hz: ch.freq_hz, src, kind: ChannelKind::Voice, offset_hz: ch.voice.offset_hz(), quality: ch.voice.quality(), calls: ch.calls.iter().flatten().count() };
+                let w = Want { system, site: Some(ch.site), hz: ch.freq_hz, src, kind: ChannelKind::Voice, offset_hz: ch.voice.offset_hz(), quality: ch.voice.quality(), calls: ch.calls.iter().flatten().count(), ..Default::default() };
                 voice.push(snap(&r.src, &profile, &w));
             }
         }
@@ -2387,6 +2494,30 @@ mod tests {
         e.shared.rx[0].lock().unwrap().src.measured(1.0);
         let t = e.status().sources[0];
         assert_eq!((t.applied_ppm, t.seeded), (1.0, false));
+    }
+
+    /// A conventional system is in the status as a trunked one is, and its
+    /// channels say their mode and names (each once) for the dashboard.
+    #[test]
+    fn conventional_channels_report_their_mode_names_and_calls() {
+        use super::super::conventional::{ConvChannel, ConvMode};
+        let named = |n: &str| Some(super::super::talkgroups::Talkgroup { alpha_tag: n.into(), ..Default::default() });
+        let pd = ConvChannel { talkgroup: Some(2), info: named("Town PD"), ..ConvChannel::new(155.2e6, ConvMode::P25) };
+        let pd2 = ConvChannel { talkgroup: Some(3), info: named("Town PD"), access: Some(super::super::conventional::Access::P25 { nac: Some(0x131), tg: None }), ..ConvChannel::new(155.2e6, ConvMode::P25) };
+        let pw = ConvChannel { talkgroup: Some(4), info: named("Town PW"), ..ConvChannel::new(155.4e6, ConvMode::Fm) };
+        let e = Engine::new(EngineConfig {
+            systems: vec![SystemConfig::conventional("town")],
+            sources: vec![SourceConfig { center_hz: 155e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            conventional: vec![pd, pd2, pw],
+            ..Default::default()
+        })
+        .unwrap();
+        let st = e.status();
+        assert_eq!(st.systems.len(), 1);
+        let v = &st.systems[0];
+        assert_eq!((v.system, v.short_name.as_str(), v.active_calls, v.conventional_open, v.calls_concluded), (0, "town", 0, 0, 0));
+        let chans: Vec<_> = e.channels().into_iter().filter(|c| c.site.is_none()).map(|c| (c.freq_hz, c.kind, c.names, c.offset_hz)).collect();
+        assert_eq!(chans, [(155_200_000, ChannelKind::Conventional(ConvMode::P25), vec!["Town PD".to_string()], None), (155_400_000, ChannelKind::Conventional(ConvMode::Fm), vec!["Town PW".to_string()], None)]);
     }
 
     /// An engine on one source, with a conventional channel (so it runs).

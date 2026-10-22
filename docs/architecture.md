@@ -702,9 +702,16 @@ changes what is recorded.
 - **Delays** (`delay.rs`, `hold.rs`; `pluginDelays`). What a plugin is to
   have late goes to the hold instead of its queue, and is given to it when
   due (a finished call is kept on disk until then, across restarts).
-- **Archive.** `Archive` counts `call.result`s to decide when a call's files
-  can be deleted (`archiveWav: false`, `archiveM4a: false` / `callLog: false`). It is told at
-  finish time whether a WAV was written.
+- **Archive.** `Archive` follows each finished call to every plugin it goes
+  to: told at finish time whether a WAV was written and when the call ended,
+  by the hold when it gives a held call (and how long it held it), and each
+  `call.result`. Its results decide when a call's files can be deleted
+  (`archiveWav: false`, `archiveM4a: false` / `callLog: false`), and each
+  `ok` times the delivery (`timing.rs`, #61): the call's age at delivery,
+  split into held, waiting and the plugin's own upload (`took_ms`, when it
+  says), per plugin as running totals (`plg/<id>/ageMs`, `heldMs`,
+  `waitMs`, `uploadMs`, `delivered`, `uploads`) and each tick's longest
+  (`age`, `upload`). It's the same for every plugin, so none measures it.
 - **WAV only when needed.** A call's `Plan` (`plugins::plan`) is the one
   place that says which of its files are written. The WAV goes to the
   encoder on stdin (afconvert gets a temporary file), so it's written only

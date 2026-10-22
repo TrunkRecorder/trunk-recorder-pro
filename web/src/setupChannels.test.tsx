@@ -59,3 +59,27 @@ test("Setup's channels: each row's code, slot and talkgroup as chips, and what i
   const tagList = editor.match(/list="([^"]+-tag)"/)?.[1];
   assert.ok(tagList && html.includes(`<datalist id="${tagList}"><option value="Law Dispatch"></option></datalist>`), "the system's tags offered");
 });
+
+test("Setup's channels: a digital row can correct its source's AutoTune; an analog row can't", () => {
+  const c = defaultConfig();
+  c.conventional.push(
+    newConventional(c, {
+      shortName: "town",
+      channels: [
+        // (A code that doesn't read opens the row's editor.)
+        row(453_375_000, "p25", { code: "NAC?", name: "Town PD", autoTune: true }),
+        row(453_225_000, "fm", { code: "999.9", name: "Town PW", autoTune: true }),
+      ],
+    }),
+  );
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const html = renderToString(<ConventionalPanel c={c} k={0} />);
+  const labels = [...html.matchAll(/class="row-meta small muted"[^>]*>(.*?)<\/span>/g)].map((m) => text(m[1]).trim());
+  assert.deepEqual(labels, ["AutoTune"], "the P25 row's, not the FM row's");
+  const editors = html.split('class="rule-edit"').slice(1);
+  assert.equal(editors.length, 2);
+  assert.match(text(editors[0]), /AutoTune Correct the source from its calls/);
+  assert.match(editors[0], /type="checkbox" checked=""/);
+  assert.doesNotMatch(text(editors[1]), /Correct the source/);
+  assert.match(text(html), /AutoTune p25, dmr, nxdn: true lets its calls correct/);
+});

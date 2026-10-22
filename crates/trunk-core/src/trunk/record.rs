@@ -207,6 +207,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
         algid: call.cipher.map_or(-1, |c| c.algid as i64),
         key_id: call.cipher.map_or(-1, |c| c.keyid as i64),
         decrypted: call.decrypted,
+        clock_off: false,
         call_length: secs.round(),
         call_length_ms: (secs * 1000.0).round() as i64,
         talkgroup: call.talkgroup,

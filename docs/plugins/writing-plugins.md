@@ -112,7 +112,7 @@ entry per site, with its `site_name`. A call heard on several sites of a system 
 | `ready` | It read `hello` and is running |
 | `log` | A log line at `error`, `warn`, `info` or `debug`. All but debug show in the plugin's log in the interface and in the recorder's log |
 | `status` | Its health (`ok`, `warning`, `error`) and a message, shown on its card until the next one |
-| `call.result` | What became of a concluded call: `ok`, `skipped` or `failed`, a message, and optionally a URL |
+| `call.result` | What became of a concluded call: `ok`, `skipped` or `failed`, a message, optionally a URL, and optionally `took_ms`, how long your work on it took (an upload's last try) |
 | `metrics` | Figures for the Health tab: queue depth, retries, in flight, bytes sent, latency, the services it talks to (up, degraded, down), and any of its own |
 
 Lines on stdout that aren't protocol messages become log lines, and so does everything on stderr.
@@ -122,6 +122,12 @@ each call's files until every plugin taking recorded calls has reported on it, t
 the user's **Archive** settings don't keep. `ok` and `skipped` count the same there: the plugin is
 finished with the call. Only `failed` matters, and keeps the files when the user has **Keep when a
 plugin fails** on. A call your plugin never reports on counts as failed after an hour.
+
+The recorder times every call it gives you, from the call's end to your `ok`, and shows that age
+on your card in the Health tab with its parts: how long the user's delay rules held it, and how
+long it waited. Send `took_ms` with `ok` (`Host::call_result_took`; `CallQueue` does it for you)
+and the card can tell your upload from the waiting. Without it, the card shows the age alone. You
+don't measure anything else: the recorder does, the same for every plugin.
 
 ### Audio
 
@@ -182,7 +188,7 @@ The main pieces:
 | `manifest!()` | A `Manifest` with the id, version, description, homepage, repository, authors and license from `Cargo.toml`; set `name`, `subscribe` and `audio_formats` |
 | `run::<P>()` | Answers `--describe` (and `--version`), parses `hello` and your settings, calls your methods, and exits with 78 when `start` returns `Err` |
 | `Setup` | What `start` gets: `config`, `systems` (each with `index`, `short_name`, `kind`, `name`, `fcc` (its FCC licenses by frequency), `fcc_call_sign` and `fcc_name` (the one that names it), `sites` (each `SiteInfo { name }`), and your `SystemConfig` or `None`), `capture_dir`, `data_dir`, `audio_formats`; `system_named()` and `has_format()`. The name and FCC licenses are optional, so often empty |
-| `Host` | The way back, usable from any thread: `info`/`warn`/`error`/`debug`, `status`, `call_result`, `metrics`. Never `println!` in a plugin: stdout belongs to the protocol |
+| `Host` | The way back, usable from any thread: `info`/`warn`/`error`/`debug`, `status`, `call_result` (and `call_result_took`, with your time on it), `metrics`. Never `println!` in a plugin: stdout belongs to the protocol |
 | `CallQueue`, `QueueOptions`, `Attempt` | An upload queue on worker threads (2 by default) with retries after 10 s, 1 min, 5 min and 15 min, a warning status while calls wait, `call.result`s and `metrics` sent for you, and calls still waiting at shutdown saved to the data folder (`QueueOptions::saved_in`) and resumed next start. Your closure returns `Attempt::Done`, `Skip`, `Retry` or `Fail`. `CallQueue::start_by` also takes a closure naming each call's lane (the server it goes to): each lane gets workers, retries and an endpoint status of its own |
 | `TalkgroupFilter` | Trunk Recorder's talkgroup allow and deny patterns (`507*`, `12?45`); `filter::patterns` deserializes a list that mixes numbers and strings |
 | `Multipart` | A `multipart/form-data` body for any HTTP client |
