@@ -40,6 +40,7 @@ import {
   usableHalfWidth,
   siteLockFields,
   siteText,
+  systemType,
 } from "./config.ts";
 import {
   can,
@@ -1622,20 +1623,7 @@ function DmrFields(props: { site: Site; edit: (fn: (x: Site) => void) => void })
           }
         />
       </Field>
-      <Field label="Channel table (optional)" hint="Channel = MHz, e.g. 101=452.275" wide>
-        <DraftInput
-          className="mono"
-          codec={lcnTable}
-          value={site.lcnTableHz ?? {}}
-          placeholder={"learned from the air"}
-          onChange={(t) =>
-            edit((x) => {
-              if (Object.keys(t).length) x.lcnTableHz = t;
-              else delete x.lcnTableHz;
-            })
-          }
-        />
-      </Field>
+      <LcnTableField site={site} edit={edit} label="Channel table (optional)" hint="Channel = MHz, e.g. 101=452.275" placeholder="learned from the air" />
     </>
   );
 }
@@ -1686,26 +1674,65 @@ function NxdnFields(props: { sys: System; site: Site; edit: (fn: (x: Site) => vo
           }
         />
       </Field>
-      <Field label="Channel table (optional)" hint={typeD ? "Repeater number = MHz, e.g. 1=451.0125" : "Channel number = MHz, e.g. 20=451.0125"} wide>
-        <DraftInput
-          className="mono"
-          codec={lcnTable}
-          value={site.lcnTableHz ?? {}}
-          placeholder={typeD ? "none" : "learned from the air"}
-          onChange={(t) =>
-            edit((x) => {
-              if (Object.keys(t).length) x.lcnTableHz = t;
-              else delete x.lcnTableHz;
-            })
-          }
-        />
-      </Field>
+      <LcnTableField
+        site={site}
+        edit={edit}
+        label="Channel table (optional)"
+        hint={typeD ? "Repeater number = MHz, e.g. 1=451.0125" : "Channel number = MHz, e.g. 20=451.0125"}
+        placeholder={typeD ? "none" : "learned from the air"}
+      />
       {!typeD && (
         <p className="muted small" style={{ gridColumn: "1 / -1", margin: 0 }}>
           A Type-C control channel grants channel numbers. Their frequencies come from the channel table (RadioReference lists it for many systems), from the site if it
           uses Direct Frequency Assignment, or are learned when the voice frequencies are listed above.
         </p>
       )}
+    </>
+  );
+}
+
+/** A site's `lcnTableHz`: channel number = MHz (DMR, NXDN, EDACS). */
+function LcnTableField(props: { site: Site; edit: (fn: (x: Site) => void) => void; label: string; hint: string; placeholder: string }) {
+  const { site, edit } = props;
+  return (
+    <Field label={props.label} hint={props.hint} wide>
+      <DraftInput
+        className="mono"
+        codec={lcnTable}
+        value={site.lcnTableHz ?? {}}
+        placeholder={props.placeholder}
+        onChange={(t) =>
+          edit((x) => {
+            if (Object.keys(t).length) x.lcnTableHz = t;
+            else delete x.lcnTableHz;
+          })
+        }
+      />
+    </Field>
+  );
+}
+
+/** An EDACS site's channel list (LCN → frequency) and ESK. */
+function EdacsFields(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
+  const { site, edit } = props;
+  return (
+    <>
+      <LcnTableField site={site} edit={edit} label="Channels (LCNs)" hint="LCN = MHz, e.g. 1=856.1875, 3=857.7125" placeholder="1=856.1875, 2=…" />
+      <Toggle
+        label="ESK 0xA0"
+        hint="Some Harris systems scramble the control channel"
+        checked={!!site.esk}
+        onChange={(v) =>
+          edit((x) => {
+            if (v) x.esk = true;
+            else delete x.esk;
+          })
+        }
+      />
+      <p className="muted small" style={{ gridColumn: "1 / -1", margin: 0 }}>
+        The control channel grants calls a channel number (LCN); this list (RadioReference has it) turns it into a frequency. Every listed frequency is watched, so a list
+        with its numbers mixed up is put right from the air. A call on an LCN whose frequency isn't listed is logged and not recorded.
+      </p>
     </>
   );
 }
@@ -1750,7 +1777,7 @@ function SmartnetFields(props: { site: Site; edit: (fn: (x: Site) => void) => vo
   );
 }
 
-const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "SmartNet / SmartZone", dmr: "DMR (trunked)", nxdn: "NXDN (trunked)" };
+const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "SmartNet / SmartZone", dmr: "DMR (trunked)", nxdn: "NXDN (trunked)", edacs: "EDACS (analog / ProVoice)" };
 
 /** A system's own settings, as a confirm names them: making two systems one keeps the first's. */
 const SYSTEM_OWN: [keyof System, string][] = [
@@ -1860,7 +1887,7 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
             }
           />
         </Field>
-        {sys.type !== "dmr" && sys.type !== "nxdn" && (
+        {sys.type !== "dmr" && sys.type !== "nxdn" && sys.type !== "edacs" && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
             <select value={site.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as Site["modulation"]))}>
               <option value="auto">Detect (then only that receiver)</option>
@@ -1873,7 +1900,15 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
           needs={need(`cc-${at}`)}
           anchor={`cc-${at}`}
           label={sys.type === "dmr" ? "Site frequencies, MHz" : typeD ? "Repeaters, MHz" : "Control channels, MHz"}
-          hint={sys.type === "dmr" ? "Capacity Plus: every repeater. Others: control channels." : typeD ? "Every repeater of the site" : "Later ones are fallbacks"}
+          hint={
+            sys.type === "dmr"
+              ? "Capacity Plus: every repeater. Others: control channels."
+              : typeD
+                ? "Every repeater of the site"
+                : sys.type === "edacs"
+                  ? "The site's control channel; list more (or every channel) if it moves"
+                  : "Later ones are fallbacks"
+          }
           wide
         >
           <DraftInput
@@ -1887,6 +1922,7 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
         {sys.type === "smartnet" && <SmartnetFields site={site} edit={edit} />}
         {sys.type === "dmr" && <DmrFields site={site} edit={edit} />}
         {sys.type === "nxdn" && <NxdnFields sys={sys} site={site} edit={edit} />}
+        {sys.type === "edacs" && <EdacsFields site={site} edit={edit} />}
         {lockFields.length > 0 && (
           <details className={`help wide${need(`site-${at}`) ? " needs" : ""}`} id={`need-site-${at}`} open={need(`site-${at}`) ? true : undefined}>
             <summary>
@@ -1898,7 +1934,8 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
                   <span className="field-needs">{need(`site-${at}`)}</span>{" "}
                 </>
               )}
-              Follow only a control channel announcing this site, not a neighbour. Empty = any; {sys.type === "smartnet" || sys.type === "nxdn" ? "System ID in hex" : "NAC, WACN and System ID in hex"}.
+              Follow only a control channel announcing this site, not a neighbour. Empty = any;{" "}
+              {sys.type === "edacs" ? "the site number as the control channel says it" : sys.type === "smartnet" || sys.type === "nxdn" ? "System ID in hex" : "NAC, WACN and System ID in hex"}.
             </p>
             <div className="id-grid">
               {LOCK_INPUTS.filter((x) => lockFields.includes(x.key)).map((x) => (
@@ -2046,7 +2083,7 @@ function SystemCard(props: { c: Config; i: number }) {
             value={sys.type}
             onChange={(e) =>
               edit((x) => {
-                x.type = e.target.value === "smartnet" ? "smartnet" : e.target.value === "dmr" ? "dmr" : e.target.value === "nxdn" ? "nxdn" : "p25";
+                x.type = systemType(e.target.value);
                 if (x.type === "smartnet") for (const y of x.sites) y.bandplan ??= "800_standard";
               })
             }

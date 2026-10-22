@@ -9,6 +9,20 @@ use std::fmt::Write;
 use super::calls::Voice;
 use crate::p25::osp::{Answer, Channel, HarrisMember, Identifier, Msg, Osp, ServiceOptions, MFID_MOTOROLA};
 
+/// A channel table learned from the air (DMR, NXDN, EDACS) as `channel=hz`
+/// lines, kept between runs like a band plan.
+pub fn table_to_string<K: std::fmt::Display>(t: &BTreeMap<K, u64>) -> String {
+    t.iter().map(|(k, hz)| format!("{k}={hz}\n")).collect()
+}
+
+/// [`table_to_string`]'s lines read back (the ones that parse).
+pub fn table_from_str<K: std::str::FromStr>(s: &str) -> impl Iterator<Item = (K, u64)> + '_ {
+    s.lines().filter_map(|line| {
+        let (k, hz) = line.split_once('=')?;
+        Some((k.trim().parse().ok()?, hz.trim().parse().ok()?))
+    })
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MessageType {
     Grant,

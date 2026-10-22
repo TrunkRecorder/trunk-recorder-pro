@@ -11,6 +11,23 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   board's AGC, analog filter bandwidth and bias-T; samples USB drops are
   counted from the board's timestamps. Trunk Recorder's osmosdr
   `bladerf=…` sources (and `"driver": "bladerf"`) import as bladeRF sources.
+- **EDACS** trunked systems (`"type": "edacs"`): Standard and Networked
+  sites (GE / Ericsson / Harris), with their analog FM calls and **ProVoice**
+  digital voice. The 9600 baud control channel is decoded (three copies of
+  each message voted, BCH corrected; a word is kept only when two of its
+  three copies agree), channel numbers turn into frequencies by each site's
+  channel list (`lcnTableHz`, an **EDACS** section in Setup), and
+  ProVoice's IMBE 7100 frames are decoded and spoken by the P25 vocoder.
+  ESK 0xA0 systems are read with `esk`. Extended Addressing isn't decoded
+  yet. Every frequency of a site is watched at once, so the control channel
+  is found wherever it moves, and each LCN's frequency is checked against
+  the air (the carrier that keys when a call is assigned it): a list whose
+  numbers are off is corrected. A site is reported in failsoft only when its site ID says so and it has
+  stopped assigning calls (some sites set the flag and trunk all the same).
+  A site ID is believed once three in
+  a row agree. A grant to the frequency the control channel is on is never
+  followed. The 9600 baud burst at the start of an analog transmission is
+  left out of the audio.
 - **P25 Phase 1 voice repeats fewer good frames.** A frame whose FEC corrected a lot of errors
   is repeated only when the errors fall in its pitch word *and* there are many in total, as
   TIA-102.BABA-A §7.7 has it, not on either one (an `||` inherited from op25, which taclane

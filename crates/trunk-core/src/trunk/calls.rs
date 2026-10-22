@@ -38,6 +38,8 @@ pub enum Voice {
     Fm,
     /// Analog AM (conventional channels).
     Am,
+    /// EDACS ProVoice (9600 baud 2FSK, IMBE 7100).
+    ProVoice,
 }
 
 impl Voice {
@@ -50,6 +52,7 @@ impl Voice {
             Voice::Nxdn(r) => VoiceKind::Nxdn(r),
             Voice::Fm => VoiceKind::Analog,
             Voice::Am => VoiceKind::Am,
+            Voice::ProVoice => VoiceKind::ProVoice,
         }
     }
 

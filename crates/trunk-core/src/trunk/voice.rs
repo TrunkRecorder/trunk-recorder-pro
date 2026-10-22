@@ -12,6 +12,7 @@
 //!   P25 Phase 2: H-DQPSK → slot framer → TdmaTracker (AMBE+2, both slots)
 //!   DMR:         4FSK → burst framer → DmrVoice (AMBE+2, both slots)
 //!   NXDN:        4FSK (2400 / 4800 baud) → frame framer → NxdnVoice (AMBE+2)
+//!   ProVoice:    2FSK (9600 baud) → frame framer → IMBE 7100 (EDACS)
 //!   analog FM:   discriminator, squelch, MDC1200 / FleetSync unit IDs
 //! ```
 
@@ -55,6 +56,8 @@ pub enum VoiceKind {
     Dmr,
     /// NXDN (4FSK at either rate, AMBE+2).
     Nxdn(Rate),
+    /// EDACS ProVoice (9600 baud 2FSK, IMBE 7100).
+    ProVoice,
 }
 
 impl VoiceKind {
@@ -69,6 +72,7 @@ impl VoiceKind {
         match self {
             VoiceKind::Nxdn(r) => r.cutoff_hz(),
             VoiceKind::Dmr => crate::dmr::CHANNEL_CUTOFF_HZ,
+            VoiceKind::ProVoice => crate::edacs::CHANNEL_CUTOFF_HZ,
             // (P25 Phase 1 and 2, and SmartNet's analog FM.)
             _ => 7000.0,
         }
@@ -282,6 +286,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             subaudible: spec.subaudible,
             carrier: false,
         }),
+        VoiceKind::ProVoice => Box::new(ProVoice { pv: crate::edacs::ProVoice::new(spec.rate, spec.seed, spec.vocoder), t0: spec.t0, air: None }),
         VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), ids: None, squelch: spec.squelch, subaudible: false, carrier: false }),
     }
 }
@@ -491,6 +496,41 @@ impl VoiceDecoder for Nxdn {
     }
     fn offset_hz(&self) -> Option<f32> {
         self.rx.offset_hz()
+    }
+}
+
+/// EDACS ProVoice: 9600 baud 2FSK, the frame framer, IMBE 7100.
+struct ProVoice {
+    pv: crate::edacs::ProVoice,
+    /// Air time of the channel's first sample (the receiver counts samples from it).
+    t0: f64,
+    /// The air with voice in the last push.
+    air: Option<(f64, f64)>,
+}
+
+impl VoiceDecoder for ProVoice {
+    fn kind(&self) -> VoiceKind {
+        VoiceKind::ProVoice
+    }
+    fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
+        self.air = None;
+        let mut pv = Vec::new();
+        self.pv.push(iq, self.t0, &mut pv);
+        for o in pv {
+            if matches!(o.out, TrackerOut::Audio(..)) {
+                self.air = Some((self.air.map_or(o.t, |a| a.0), o.t + 0.02));
+            }
+            out.push(VoiceOut { slot: 0, out: o.out });
+        }
+    }
+    fn air(&self, slot: u8) -> AirInfo {
+        if slot != 0 {
+            return AirInfo::default();
+        }
+        AirInfo { air: self.air, ..Default::default() }
+    }
+    fn offset_hz(&self) -> Option<f32> {
+        Some(self.pv.offset_hz())
     }
 }
 

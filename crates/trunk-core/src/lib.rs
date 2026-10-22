@@ -13,6 +13,7 @@ pub mod ambe;
 pub mod bits;
 pub mod dmr;
 pub mod dsp;
+pub mod edacs;
 pub mod loudness;
 pub mod mbe;
 pub mod nxdn;
