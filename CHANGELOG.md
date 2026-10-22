@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.8] — 2026-10-22
+
 - **The clock, on the Platform page** (#61): how far off this computer's
   clock is, measured by one SNTP query to `monitor.timeServer` (default
   `pool.ntp.org`) every 15 minutes, and whether the operating system says
@@ -38,7 +40,6 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Plugin SDK 0.6.0:** `call.result` takes `took_ms`
   (`Host::call_result_took`; `CallQueue` sends it), and `CallRecord` has
   `clock_off`.
-
 - **Share a system with the community directory** ([trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/)):
   a switch in each system's Basics (`"share": true`). While it records, the recorder shares what it
   heard: the sites, their control and voice channels, neighbours, call signs heard on the air, and
@@ -67,6 +68,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   2.5 + 6 MS/s worked. A source at 2 MS/s or
   below runs its radio at 6 MS/s; use separate USB controllers if a
   pair doesn't fit.
+- **Conventional systems on the dashboard** (#71): a conventional system has
+  a working card on the Overview (its calls this run and in 24 h, and its
+  channels) and on Decode (its calls, and each channel's mode, name, offset
+  and quality), and it's in the status (`status.systems`).
+- **AutoTune for conventional channels** (#71): they take up their source's
+  frequency correction, as trunked channels do. A source with no control
+  channel learns it from calls on the digital rows you turn **AutoTune** on
+  for (a repeater output; `autoTune`, or the CSV's `AutoTune` column).
+- **Live gain with several Airspys** (#69): checked and tested; an Airspy
+  reopened after a USB stall comes back with exactly the gain last set while
+  recording.
 
 ## [0.2.7] — 2026-10-22
 
