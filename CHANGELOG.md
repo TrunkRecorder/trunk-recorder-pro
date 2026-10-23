@@ -9,7 +9,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   only if four unprotected bits at its end were zero, so a single bit error there lost it and the
   tone faded out for a frame. A tone frame is now recognised by its Golay-protected signature alone,
   as TIA-102.BABA-A §16 has a decoder do. A frame damaged past reading in the middle of a tone
-  repeats the tone (up to 3 times, then fades) rather than the speech from before it.
+  repeats the tone (up to 3 times, then fades, and stays faded while the damage lasts) rather than
+  the speech from before it.
 - **Choosing a location for Identify is a map.** Move it so its circle (5 km across) is roughly
   where you are: only your general area is needed. Or find a place by city ("Arlington, VA"),
   ZIP code or coordinates, or use your browser's location. The map is the systems directory's,
