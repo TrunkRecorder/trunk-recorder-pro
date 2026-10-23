@@ -8,6 +8,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **DMR calls have their frequency error** (`freq_error` in the call JSON), conventional and
   trunked: it was always 0. A conventional DMR channel's `autoTune` now corrects its source,
   as the docs said it did.
+- **Trunked DMR, NXDN and EDACS sites measure their control channel's frequency error** for
+  AutoTune and the dashboard's frequency error, as P25 and SmartNet sites do. They measured
+  nothing from it before: a DMR radio's error went unmeasured, and an NXDN one's came only from
+  calls.
 - **Choosing a location for Identify is a map.** Move it so its circle (5 km across) is roughly
   where you are: only your general area is needed. Or find a place by city ("Arlington, VA"),
   ZIP code or coordinates, or use your browser's location. The map is the systems directory's,

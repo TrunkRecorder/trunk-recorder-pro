@@ -115,10 +115,9 @@ pub trait ControlChannel: Send {
     fn flush(&mut self, _out: &mut Vec<Step>) {}
     /// Blocks decoded cleanly and lost, so far.
     fn counts(&self) -> (u64, u64);
-    /// How far off the control channel comes in, Hz, when known (AutoTune).
-    fn offset_hz(&self) -> Option<f32> {
-        None
-    }
+    /// How far off the control channel comes in, Hz, when known (AutoTune,
+    /// the dashboard). No default: each protocol says.
+    fn offset_hz(&self) -> Option<f32>;
     /// AutoTune may reopen the control channel at the corrected frequency.
     fn reopens(&self) -> bool {
         false
@@ -163,9 +162,7 @@ pub trait ControlChannel: Send {
     /// eye opening, deviation…; see [`crate::metrics`]). Default: none.
     fn report(&self, _sink: &mut dyn Sink) {}
     /// How well its receiver hears the control channel (the dashboard's).
-    fn quality(&self) -> super::voice::ChannelQuality {
-        Default::default()
-    }
+    fn quality(&self) -> super::voice::ChannelQuality;
 }
 
 /// The control channel for system `cfg`; `rate` is a channel's sample rate.
@@ -388,6 +385,10 @@ impl ControlChannel for Smartnet {
     fn offset_hz(&self) -> Option<f32> {
         self.cc.as_ref().map(|c| c.offset_hz())
     }
+    /// (Its 2FSK receiver doesn't measure an eye opening.)
+    fn quality(&self) -> super::voice::ChannelQuality {
+        Default::default()
+    }
     fn identity_fields(&self) -> &'static [IdField] {
         &[IdField::SysId, IdField::Site]
     }
@@ -435,6 +436,10 @@ impl ControlChannel for Edacs {
     }
     fn offset_hz(&self) -> Option<f32> {
         self.site.offset_hz()
+    }
+    /// (Its 2FSK receiver doesn't measure an eye opening.)
+    fn quality(&self) -> super::voice::ChannelQuality {
+        Default::default()
     }
     fn control_hz(&self) -> Option<u64> {
         self.site.control_hz()
@@ -496,6 +501,13 @@ impl ControlChannel for Dmr {
     fn control_hz(&self) -> Option<u64> {
         self.site.control_hz()
     }
+    /// The carrier sending control blocks now: its receiver's.
+    fn offset_hz(&self) -> Option<f32> {
+        self.site.offset_hz()
+    }
+    fn quality(&self) -> super::voice::ChannelQuality {
+        super::voice::ChannelQuality { sep: self.site.quality(), phase_err_deg: None }
+    }
     fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
         // (All news: the colour code, the variant, channels learned.)
         self.site.take_notes().into_iter().map(|t| (NoteLevel::Info, t)).collect()
@@ -551,6 +563,13 @@ impl ControlChannel for Nxdn {
     }
     fn control_hz(&self) -> Option<u64> {
         self.site.control_hz()
+    }
+    /// The carrier sending control blocks now: its receiver's.
+    fn offset_hz(&self) -> Option<f32> {
+        self.site.offset_hz()
+    }
+    fn quality(&self) -> super::voice::ChannelQuality {
+        super::voice::ChannelQuality { sep: self.site.quality(), phase_err_deg: None }
     }
     fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
         self.site.take_notes()
