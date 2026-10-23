@@ -6,7 +6,8 @@
 
 import { useEffect, useState } from "react";
 import { fccKey } from "./config.ts";
-import { editFcc, identifySurvey, lookupCallSigns, lookupLicenses, lookupLicensesByFreq, mergeLookup, nameCallSigns, type FccTarget, type LicenseLookup } from "./controller.ts";
+import { editFcc, identifySurvey, lookupCallSigns, lookupLicenses, lookupLicensesByFreq, mergeLookup, nameCallSigns, useApp, type FccTarget, type LicenseLookup } from "./controller.ts";
+import { LocationMap } from "./LocationMap.tsx";
 import type { FccLicense, FccLicenses, LicenseResultRow, SurveyLicense } from "./protocol.ts";
 
 const LOCATION_KEY = "trp.surveyLocation";
@@ -79,9 +80,11 @@ export function WhyLocation(props: { what: string }) {
 
 type Locate = { state: "idle" } | { state: "locating" } | { state: "located"; accuracyM: number } | { state: "failed"; why: string };
 
-/** The location: the browser's (at once if this page may already have it), or typed; and how far to look. */
+/** The location: the browser's (at once if this page may already have it), a place found, or where the map's circle is; and how far to look. */
 export function WhereFields(props: { value: Where; onChange: (w: Where) => void }) {
   const { value: w, onChange } = props;
+  const app = useApp();
+  const base = (app.config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
   const [locate, setLocate] = useState<Locate>({ state: "idle" });
   const point = parseLatLon(w.text);
   const geo = typeof navigator !== "undefined" && "geolocation" in navigator;
@@ -117,6 +120,28 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
       .catch(() => {});
   }, []);
 
+  // A place by name ("Arlington, VA"), ZIP code, or coordinates: the directory's place search.
+  const [find, setFind] = useState("");
+  const [found, setFound] = useState<{ name: string; state: string; lat: number; lon: number }[] | null>(null);
+  const [finding, setFinding] = useState(false);
+  const search = async () => {
+    setFound(null);
+    const p = parseLatLon(find);
+    if (p) return onChange({ ...w, text: fmt(p.lat, p.lon) });
+    if (find.trim().length < 3) return;
+    setFinding(true);
+    try {
+      const r = (await (await fetch(`${base}/directory/api/v1/search?q=${encodeURIComponent(find.trim())}`)).json()) as { places?: { kind: string; name: string; state: string; lat: number | null; lon: number | null }[] };
+      const places = (r.places ?? []).filter((x) => x.kind !== "state" && x.lat != null && x.lon != null) as { name: string; state: string; lat: number; lon: number }[];
+      if (places.length === 1) onChange({ ...w, text: fmt(places[0].lat, places[0].lon) });
+      else setFound(places);
+    } catch {
+      setFound([]);
+    } finally {
+      setFinding(false);
+    }
+  };
+
   return (
     <div className="stack">
       <div className="row">
@@ -126,11 +151,32 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
         {locate.state === "located" && <span className="muted small">{`Located (within ${Math.round(locate.accuracyM)} m)`}</span>}
       </div>
       {locate.state === "failed" && <p className="warn small">{locate.why}</p>}
-      <label className="field">
-        <span className="field-label">Or type it: latitude, longitude</span>
-        <input className="mono" value={w.text} placeholder="38.9072, -77.0369" onChange={(e) => onChange({ ...w, text: e.target.value })} />
-        <span className="field-hint">{w.text && !point ? "Two numbers, like 38.9072, -77.0369 (copied from a map)." : "Right-click a spot in Google Maps to copy its numbers."}</span>
-      </label>
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void search();
+        }}
+      >
+        <input className="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Or find a place: City, ST · ZIP code · coordinates" aria-label="Find a place" style={{ flex: 1 }} />
+        <button className="btn" disabled={finding}>
+          {finding ? "Finding…" : "Find"}
+        </button>
+      </form>
+      {found && (
+        <div className="row small">
+          {!found.length && <span className="muted">No place by that name. Try "City, ST" or a ZIP code.</span>}
+          {found.slice(0, 6).map((x) => (
+            <button key={`${x.name}${x.state}`} className="btn ghost small" onClick={() => (setFound(null), onChange({ ...w, text: fmt(x.lat, x.lon) }))}>
+              {`${x.name}, ${x.state}`}
+            </button>
+          ))}
+        </div>
+      )}
+      <LocationMap base={base} at={point ? [point.lat, point.lon] : null} onMove={([lat, lon]) => onChange({ ...w, text: fmt(lat, lon) })} />
+      <span className="field-hint">
+        {point ? `Move the map so the circle is roughly where you are: only your general area is needed (${fmt(point.lat, point.lon)}).` : "Move the map so the circle is roughly where you are: only your general area is needed."}
+      </span>
       <label className="field">
         <span className="field-label">Look for licenses within</span>
         <select value={w.radiusKm} onChange={(e) => onChange({ ...w, radiusKm: Number(e.target.value) })}>
