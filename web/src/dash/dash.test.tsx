@@ -14,6 +14,7 @@ import { Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
 import { PlatformPage } from "./Platform.tsx";
 import { PluginHealthPage } from "./PluginHealth.tsx";
+import { TimeSeries } from "../charts.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
   index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
@@ -205,7 +206,7 @@ test("Platform: the time service, the recording's clock and the radio systems' c
   twoSites();
   setView("platform");
   host({
-    os: synced, service: { name: "systemd-timesyncd", server: "2.debian.pool.ntp.org (45.33.53.84)", stratum: 2, lastSync: now() - 120 }, driftMs: 1800, warnMs: 500,
+    os: synced, server: "pool.ntp.org", service: { name: "systemd-timesyncd", server: "2.debian.pool.ntp.org (45.33.53.84)", stratum: 2, lastSync: now() - 120 }, driftMs: 1800, warnMs: 500,
     radio: [{ site: "dcfd", offsetMs: -12, at: now() - 30, sane: true, valid: false }, { site: "other", offsetMs: -4 * 3600e3, at: now() - 30, sane: false, valid: true }],
     problem: { level: "warn", cause: "recording", why: "Calls are being stamped 1.8 s behind the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it" },
   });
@@ -215,8 +216,8 @@ test("Platform: the time service, the recording's clock and the radio systems' c
   assert.match(page, /Kept by systemd-timesyncd from 2\.debian\.pool\.ntp\.org \(45\.33\.53\.84\), stratum 2, last synchronized 2 m/);
   // (driftMs: the wall clock less the recording's: the recording's is behind.)
   assert.match(page, /Calls are stamped by the clock as it was at Start: 1\.8 s behind the clock now/);
-  assert.match(page, /dcfd system clock: calls stamped 12 ms ahead of it \(the system marks its time not valid: shown, not gone by\)/);
-  assert.match(page, /other system clock set to another time \(its local time\?\): not compared/);
+  assert.match(page, /The radio systems(?:'|&#x27;) own clocks, against the calls(?:'|&#x27;) time: dcfd 12 ms behind them \(the system marks its time not valid: shown, not gone by\)/);
+  assert.match(page, /other set to another time \(its local time\?\): not compared/);
   assert.match(page, /A warning at 500 ms off/);
   assert.equal(pageHealth(snapshot()).platform.level, "warn");
 });
@@ -254,4 +255,10 @@ test("Plugins: a plugin that doesn't say its upload time gives the age alone", (
   const html = renderToString(<PluginHealthPage manage={null} />);
   assert.match(text(html), /Age at delivery 62 s last 5 min: held 60 s/);
   assert.match(html, /doesn&#x27;t say its own upload time/);
+});
+
+test("A chart of one line says what it is and in what unit, as one of several does", () => {
+  const data = { t0: Date.now() / 1000 - 600, stepS: 60, v: [3, -2, 1, 0, 2, -1, 3, 0, 1, 2], lo: Array(10).fill(null), hi: Array(10).fill(null), n: Array(10).fill(1) };
+  const html = renderToString(<TimeSeries lines={[{ label: "This computer's clock against pool.ntp.org, ms (+: behind)", color: "red", data }]} />);
+  assert.match(text(html), /This computer(?:'|&#x27;)s clock against pool\.ntp\.org, ms \(\+: behind\)/);
 });

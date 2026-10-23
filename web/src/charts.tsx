@@ -257,7 +257,8 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
   const ht = near && near[0] >= 0 ? pts[0].t[near[0]] : hover;
   return (
     <div className="ts">
-      {props.lines.length > 1 && (
+      {/* (A single line's too: its label says what it is, and in what unit.) */}
+      {props.lines.length > 0 && (
         <div className="legend">
           {props.lines.map((l) => (
             <span key={l.label}>

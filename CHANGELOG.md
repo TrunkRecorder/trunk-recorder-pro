@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Charts say what they show.** A chart of one line now shows its label
+  and unit, as a chart of several does: the Clock card's ("this computer's
+  clock against pool.ntp.org, ms"), the plugin queue and age at delivery,
+  the internet connect time and a channel's frequency offset.
+- **The radio systems' clocks read plainly** on the Clock card: "3.0 s
+  behind them" (the system's clock against the calls' time) under a heading
+  of their own, so they aren't taken for the time server's offset in ms.
+
 ## [0.2.8] — 2026-10-22
 
 - **The clock, on the Platform page** (#61): how far off this computer's
