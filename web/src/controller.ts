@@ -63,6 +63,7 @@ import {
   shortNameFor,
   siteNameOf,
   sourceCovering,
+  trpBase,
   usableHalfWidth,
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
@@ -1125,6 +1126,19 @@ export function lookupLicenses(lat: number, lon: number, radiusM: number, signal
 }
 
 const callSignWaiting = new Map<number, (r: { results: CallSignHolder[]; error: string | null }) => void>();
+
+/** A place the directory's place search found: a city, or a ZIP code's. */
+export type Place = { name: string; state: string; lat: number; lon: number };
+
+/** Places by name ("Arlington, VA") or ZIP code: the directory's place search, asked by the browser (as its map is). None when it couldn't be reached. */
+export async function findPlaces(q: string): Promise<Place[]> {
+  try {
+    const r = (await (await fetch(`${trpBase(state.config)}/directory/api/v1/search?q=${encodeURIComponent(q)}`)).json()) as { places?: { kind: string; name: string; state: string; lat: number | null; lon: number | null }[] };
+    return (r.places ?? []).filter((x): x is typeof x & Place => x.kind !== "state" && x.lat != null && x.lon != null).map(({ name, state, lat, lon }) => ({ name, state, lat, lon }));
+  } catch {
+    return [];
+  }
+}
 
 /** Who holds these call signs (heard on the air): asked of trunkrecorder.pro, by the recorder; no location. */
 export function lookupCallSigns(callSigns: string[]): Promise<{ results: CallSignHolder[]; error: string | null }> {
