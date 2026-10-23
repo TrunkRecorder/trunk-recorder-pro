@@ -48,6 +48,15 @@ pub fn has_call_sign(sys: &System) -> bool {
     sys.fcc.values().any(|l| !l.call_sign.trim().is_empty())
 }
 
+/// What sharing uses of a system's config (its switch, directory links and
+/// licenses), from `src` as it is now into `dst`.
+pub fn sync(dst: &mut System, src: &System) {
+    (dst.share, dst.directory, dst.fcc) = (src.share, src.directory.clone(), src.fcc.clone());
+    for (a, b) in dst.sites.iter_mut().zip(&src.sites) {
+        a.directory_id = b.directory_id.clone();
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Heard {
     grants: u32,
@@ -74,11 +83,18 @@ pub struct Evidence {
     last_ms: f64,
     /// A share on its way.
     pending: bool,
-    /// It has an FCC call sign (none: not shared yet).
-    call_sign_known: bool,
+    /// Its config has an FCC call sign (or one is in [`Evidence::call_signs`]; neither: not shared yet).
+    fcc_call_sign: bool,
     failures: u32,
     retry_at_ms: f64,
     error: Option<String>,
+}
+
+impl Evidence {
+    /// An FCC call sign, in its config or heard on the air: sharing waits for one.
+    fn has_call_sign(&self) -> bool {
+        self.fcc_call_sign || !self.call_signs.is_empty()
+    }
 }
 
 /// Every shared system's evidence and schedule, by short name.
@@ -104,7 +120,7 @@ impl Ledger {
         if shareable(sys) {
             let e = self.systems.entry(sys.short_name.clone()).or_default();
             e.last_ms = e.last_ms.max(sys.directory.as_ref().map_or(0.0, |d| d.shared_at as f64));
-            e.call_sign_known |= has_call_sign(sys);
+            e.fcc_call_sign = has_call_sign(sys);
         } else {
             self.systems.remove(&sys.short_name);
         }
@@ -138,7 +154,6 @@ impl Ledger {
     /// A call sign heard on the air for one of the system's frequencies.
     pub fn call_sign(&mut self, short_name: &str, freq_hz: u64, call_sign: &str) {
         let Some(e) = self.systems.get_mut(short_name) else { return };
-        e.call_sign_known = true;
         if e.call_signs.insert(freq_hz, call_sign.to_string()).as_deref() != Some(call_sign) {
             e.changed = true;
         }
@@ -155,7 +170,7 @@ impl Ledger {
     pub fn due(&self, short_name: &str, now_ms: f64) -> bool {
         let Some(e) = self.systems.get(short_name) else { return false };
         let Some(since) = e.since_ms else { return false };
-        if !e.call_sign_known || e.pending || now_ms < e.retry_at_ms || now_ms - since < self.first_after_ms.unwrap_or(FIRST_AFTER_MS) {
+        if !e.has_call_sign() || e.pending || now_ms < e.retry_at_ms || now_ms - since < self.first_after_ms.unwrap_or(FIRST_AFTER_MS) {
             return false;
         }
         let gap = now_ms - e.last_ms;
@@ -194,7 +209,7 @@ impl Ledger {
     /// For the interface: `{ state: needsCallSign | waiting | shared | error, lastShared, error }`, or null when it isn't shared.
     pub fn status_json(&self, short_name: &str) -> Value {
         let Some(e) = self.systems.get(short_name) else { return Value::Null };
-        let state = if !e.call_sign_known { "needsCallSign" } else if e.error.is_some() { "error" } else if e.last_ms > 0.0 { "shared" } else { "waiting" };
+        let state = if !e.has_call_sign() { "needsCallSign" } else if e.error.is_some() { "error" } else if e.last_ms > 0.0 { "shared" } else { "waiting" };
         json!({ "state": state, "lastShared": if e.last_ms > 0.0 { Some(e.last_ms) } else { None }, "error": e.error })
     }
 
@@ -395,6 +410,11 @@ mod tests {
         l.set(&c.systems[0]);
         assert!(l.due("dcfd", NOW + 10.0 * MIN));
         assert_eq!(l.status_json("dcfd")["state"], "waiting");
+        // Removed again: not shared again.
+        c.systems[0].fcc.clear();
+        l.set(&c.systems[0]);
+        assert!(!l.due("dcfd", NOW + 10.0 * MIN));
+        assert_eq!(l.status_json("dcfd")["state"], "needsCallSign");
     }
 
     #[test]

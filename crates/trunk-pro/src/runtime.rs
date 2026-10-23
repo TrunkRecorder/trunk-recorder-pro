@@ -135,7 +135,7 @@ pub enum EngineCmd {
     Talkgroups { short_name: String, csv: String },
     /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
     Keys { short_name: String, ring: Option<Arc<trunk_core::p25::crypt::Keyring>> },
-    /// A system's sharing switched, or its directory link changed ([`crate::directory`]).
+    /// A system's config changed: what sharing uses of it, its switch, directory link and licenses ([`trunk_app::share::sync`]).
     ShareSystem(trunk_app::config::System),
     /// How a system's share went.
     Shared { short_name: String, result: Result<(), String> },
