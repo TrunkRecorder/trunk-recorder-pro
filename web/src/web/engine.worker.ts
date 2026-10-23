@@ -4,7 +4,7 @@
 
 import init, { directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
-import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS } from "../config.ts";
+import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, trpBase } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
 /** Page → worker: the protocol's commands (those it can't do get an `error`), and its own setup. */
@@ -177,7 +177,7 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
 /** Who is licensed on some frequencies near the location the user gave:
  *  asked of the trunkrecorder.pro API (as the desktop app does). */
 async function licenseQuery(m: Extract<ToRecorder, { type: "licenseQuery" }>): Promise<void> {
-  const base = (config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+  const base = trpBase(config);
   const answer = (results: unknown[], error: string | null) => post({ type: "licenseResult", id: m.id, results: results as never, error });
   const body = JSON.stringify({ lat: m.lat, lon: m.lon, radiusM: m.radiusM, signals: m.signals.slice(0, 64) });
   try {
@@ -205,7 +205,7 @@ async function recorderId(): Promise<string> {
 
 /** A system's share, to the directory: its answer links the system in the config (the page stores it). */
 async function share(shortName: string, observation: string, siteNames: string): Promise<void> {
-  const base = (config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+  const base = trpBase(config);
   let error: string | null = null;
   try {
     const r = await fetch(`${base}/directory/api/v1/observations`, { method: "POST", headers: { "content-type": "application/json" }, body: observation });
@@ -226,7 +226,7 @@ async function share(shortName: string, observation: string, siteNames: string):
 }
 
 async function callSignQuery(m: Extract<ToRecorder, { type: "callSignQuery" }>): Promise<void> {
-  const base = (config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+  const base = trpBase(config);
   const answer = (results: unknown[], error: string | null) => post({ type: "callSignResult", id: m.id, results: results as never, error });
   try {
     const r = await fetch(`${base}/api/v1/fcc/callsigns`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ callSigns: m.callSigns.slice(0, 64) }) });
@@ -485,10 +485,10 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       const before = config;
       config = m.config;
       post({ type: "configSaved", version: ++configVersion });
-      // Sharing switched on or off: at once, as on the desktop.
+      // Sharing switched on or off (or what it uses changed, like licenses): at once, as on the desktop.
       for (const x of m.config.systems) {
         const was = before?.systems.find((y) => y.shortName === x.shortName);
-        if (session && (!was || !!was.share !== !!x.share || JSON.stringify(was.directory) !== JSON.stringify(x.directory) || JSON.stringify(was.fcc) !== JSON.stringify(x.fcc))) {
+        if (session && JSON.stringify(was) !== JSON.stringify(x)) {
           if (x.share) session.set_recorder(await recorderId());
           session?.set_share(JSON.stringify(x));
         }

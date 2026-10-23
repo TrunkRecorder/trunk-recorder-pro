@@ -5,8 +5,8 @@
 // worker) asks the trunkrecorder.pro API (POST /api/v1/fcc/identify).
 
 import { useEffect, useState } from "react";
-import { fccKey } from "./config.ts";
-import { editFcc, identifySurvey, lookupCallSigns, lookupLicenses, lookupLicensesByFreq, mergeLookup, nameCallSigns, useApp, type FccTarget, type LicenseLookup } from "./controller.ts";
+import { fccKey, trpBase } from "./config.ts";
+import { editFcc, findPlaces, identifySurvey, lookupCallSigns, lookupLicenses, lookupLicensesByFreq, mergeLookup, nameCallSigns, useApp, type FccTarget, type LicenseLookup, type Place } from "./controller.ts";
 import { LocationMap } from "./LocationMap.tsx";
 import type { FccLicense, FccLicenses, LicenseResultRow, SurveyLicense } from "./protocol.ts";
 
@@ -84,7 +84,7 @@ type Locate = { state: "idle" } | { state: "locating" } | { state: "located"; ac
 export function WhereFields(props: { value: Where; onChange: (w: Where) => void }) {
   const { value: w, onChange } = props;
   const app = useApp();
-  const base = (app.config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+  const base = trpBase(app.config);
   const [locate, setLocate] = useState<Locate>({ state: "idle" });
   const point = parseLatLon(w.text);
   const geo = typeof navigator !== "undefined" && "geolocation" in navigator;
@@ -122,7 +122,7 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
 
   // A place by name ("Arlington, VA"), ZIP code, or coordinates: the directory's place search.
   const [find, setFind] = useState("");
-  const [found, setFound] = useState<{ name: string; state: string; lat: number; lon: number }[] | null>(null);
+  const [found, setFound] = useState<Place[] | null>(null);
   const [finding, setFinding] = useState(false);
   const search = async () => {
     setFound(null);
@@ -130,16 +130,10 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
     if (p) return onChange({ ...w, text: fmt(p.lat, p.lon) });
     if (find.trim().length < 3) return;
     setFinding(true);
-    try {
-      const r = (await (await fetch(`${base}/directory/api/v1/search?q=${encodeURIComponent(find.trim())}`)).json()) as { places?: { kind: string; name: string; state: string; lat: number | null; lon: number | null }[] };
-      const places = (r.places ?? []).filter((x) => x.kind !== "state" && x.lat != null && x.lon != null) as { name: string; state: string; lat: number; lon: number }[];
-      if (places.length === 1) onChange({ ...w, text: fmt(places[0].lat, places[0].lon) });
-      else setFound(places);
-    } catch {
-      setFound([]);
-    } finally {
-      setFinding(false);
-    }
+    const places = await findPlaces(find.trim());
+    setFinding(false);
+    if (places.length === 1) onChange({ ...w, text: fmt(places[0].lat, places[0].lon) });
+    else setFound(places);
   };
 
   return (
@@ -350,14 +344,21 @@ export function FccTable(props: { target: FccTarget; fcc: FccLicenses | undefine
   );
 }
 
+/** What Identify can do for a system: look up its frequencies (at most 64), and name the call signs it has without a licensee. */
+function identifiable(freqs: number[], fcc: FccLicenses | undefined) {
+  return {
+    signals: freqs.slice(0, 64).map((freqHz) => ({ freqHz })),
+    unnamed: [...new Set(Object.values(fcc ?? {}).filter((x) => x.callSign && !x.name).map((x) => x.callSign))],
+  };
+}
+
 /** Setup's Identify on a system or a conventional system: names for the call signs heard on the air (no location), and who is licensed on its frequencies near where the user is, into its FCC licenses. */
 export function IdentifyFcc(props: { target: FccTarget; what: string; freqs: number[]; fcc: FccLicenses | undefined }) {
   const [open, setOpen] = useState(false);
-  const signals = props.freqs.slice(0, 64);
-  const unnamed = Object.values(props.fcc ?? {}).some((x) => x.callSign && !x.name);
+  const { signals, unnamed } = identifiable(props.freqs, props.fcc);
   return (
     <>
-      <button className="btn ghost small" disabled={!signals.length && !unnamed} onClick={() => setOpen(true)} title="Look up who holds its FCC licenses (optional)">
+      <button className="btn ghost small" disabled={!signals.length && !unnamed.length} onClick={() => setOpen(true)} title="Look up who holds its FCC licenses (optional)">
         Identify
       </button>
       {open && <IdentifyDialog {...props} onClose={() => setOpen(false)} />}
@@ -365,28 +366,18 @@ export function IdentifyFcc(props: { target: FccTarget; what: string; freqs: num
   );
 }
 
-/**
- * Identify's dialog. `onClose(kept)`: the licenses as they are after it (what
- * was kept merged in), or null when nothing was kept.
- */
-export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: number[]; fcc: FccLicenses | undefined; intro?: React.ReactNode; onClose: (kept: FccLicenses | null) => void }) {
+/** Identify's dialog: what is kept goes into the config at once (`onClose` can read it there). */
+export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: number[]; fcc: FccLicenses | undefined; intro?: React.ReactNode; onClose: () => void }) {
   const [where, setWhere] = useState(savedWhere);
   const [l, setL] = useState<LicenseLookup | null>(null);
   const [named, setNamed] = useState<string | null>(null);
-  const [kept, setKept] = useState<FccLicenses | null>(null);
-  const signals = props.freqs.slice(0, 64).map((freqHz) => ({ freqHz }));
-  const unnamed = [...new Set(Object.values(props.fcc ?? {}).filter((x) => x.callSign && !x.name).map((x) => x.callSign))];
-  const close = (k: FccLicenses | null = kept) => props.onClose(k);
+  const { signals, unnamed } = identifiable(props.freqs, props.fcc);
+  const close = props.onClose;
   const nameThem = () => {
     setNamed("Looking them up…");
     void lookupCallSigns(unnamed).then((r) => {
       let n = 0;
-      if (!r.error) {
-        const next = { ...(props.fcc ?? {}) };
-        n = nameCallSigns(next, r.results);
-        editFcc(props.target, (f) => void nameCallSigns(f, r.results));
-        if (n) setKept(next);
-      }
+      if (!r.error) editFcc(props.target, (f) => void (n = nameCallSigns(f, r.results)));
       setNamed(r.error ?? `Named ${n} of ${unnamed.length}.`);
     });
   };
@@ -401,7 +392,7 @@ export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: 
   const merged = { ...(props.fcc ?? {}) };
   const changes = mergeLookup(merged, found);
   return (
-    <Modal title={`Identify ${props.what}`} onClose={() => close()}>
+    <Modal title={`Identify ${props.what}`} onClose={close}>
       {props.intro}
       {unnamed.length > 0 && (
         <div className="stack">
@@ -422,7 +413,7 @@ export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: 
             {l?.stage === "error" && <div className="banner bad small">{l.error}</div>}
             <div className="row">
               <span className="spacer" />
-              <button className="btn ghost" onClick={() => close()}>
+              <button className="btn ghost" onClick={close}>
                 Not now
               </button>
               <button className="btn primary" disabled={!parseLatLon(where.text)} onClick={go}>
@@ -459,7 +450,7 @@ export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: 
                 Look again
               </button>
               <span className="spacer" />
-              <button className="btn ghost" onClick={() => close()}>
+              <button className="btn ghost" onClick={close}>
                 Close
               </button>
               <button
@@ -467,7 +458,7 @@ export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: 
                 disabled={!changes}
                 onClick={() => {
                   editFcc(props.target, (f) => void mergeLookup(f, found));
-                  close(merged);
+                  close();
                 }}
               >
                 {changes ? `Keep ${changes}` : "Nothing new"}
@@ -478,7 +469,7 @@ export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: 
       {!signals.length && (
         <div className="row">
           <span className="spacer" />
-          <button className="btn ghost" onClick={() => close()}>
+          <button className="btn ghost" onClick={close}>
             Close
           </button>
         </div>

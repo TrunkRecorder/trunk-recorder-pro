@@ -759,14 +759,11 @@ impl Session {
         self.share.first_after(ms);
     }
 
-    /// A system's `share` switched (or its directory link, or its licenses, changed) while recording.
+    /// A system's config changed while recording: what sharing uses of it ([`crate::share::sync`]).
     pub fn set_share(&mut self, sys: &crate::config::System) {
         self.share.set(sys);
         if let Some(c) = self.cfg.systems.iter_mut().find(|s| s.short_name == sys.short_name) {
-            (c.share, c.directory, c.fcc) = (sys.share, sys.directory.clone(), sys.fcc.clone());
-            for (a, b) in c.sites.iter_mut().zip(&sys.sites) {
-                a.directory_id = b.directory_id.clone();
-            }
+            crate::share::sync(c, sys);
         }
     }
 

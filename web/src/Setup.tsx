@@ -64,13 +64,13 @@ import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } fr
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
 import { FccTable, IdentifyFcc } from "./Identify.tsx";
 import { ShareSystem } from "./ShareSystem.tsx";
-import { siteFrequencies } from "./controller.ts";
+import { siteFrequencies, type FccTarget } from "./controller.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
 import { readTalkgroupCsv } from "./talkgroups.ts";
@@ -1393,12 +1393,11 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
           <NumberInput label="Squelch, dB above noise" value={conv.squelchDb} onChange={(v) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, v ?? 8))))} />
         </Field>
       </Group>
-      {/* (Only once a channel has a license: Identify, or the air, fills it.) */}
-      {Object.keys(conv.fcc ?? {}).length > 0 && (
-        <Group title="FCC licenses" hint="Optional: who is licensed on each channel's frequency (they can be different licensees'). Identify looks them up; Motorola P25 channels say theirs on the air." cols={1}>
-          <FccTable target={{ kind: "conventional", index: k }} fcc={conv.fcc} />
-        </Group>
-      )}
+      <FccLicensesGroup
+        target={{ kind: "conventional", index: k }}
+        fcc={conv.fcc}
+        hint="Optional: who is licensed on each channel's frequency (they can be different licensees'). Identify looks them up; Motorola P25 channels say theirs on the air."
+      />
       {chans.some((c) => c.mode !== "fm" && c.mode !== "am") && (
         <Group title="Talkgroup names" hint="For the talkgroups its P25, DMR and NXDN channels name on the air (a row's own name is for calls filed under its talkgroup).">
           <TalkgroupsField sys={conv} />
@@ -2255,6 +2254,16 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
   );
 }
 
+/** A system's or a conventional system's FCC licenses: only once a frequency has one (Identify, the air, or the config fills it). */
+function FccLicensesGroup(props: { target: FccTarget; fcc: FccLicenses | undefined; hint: string }) {
+  if (!Object.keys(props.fcc ?? {}).length) return null;
+  return (
+    <Group title="FCC licenses" hint={props.hint} cols={1}>
+      <FccTable target={props.target} fcc={props.fcc} />
+    </Group>
+  );
+}
+
 export function SystemCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
@@ -2437,12 +2446,11 @@ export function SystemCard(props: { c: Config; i: number }) {
           {!sys.sites.length && <p className="muted small">No sites: add one with its control channel.</p>}
         </div>
       </Group>
-      {/* (Only once a frequency has a license: Identify, or the air, fills it.) */}
-      {Object.keys(sys.fcc ?? {}).length > 0 && (
-        <Group title="FCC licenses" hint="Optional: who is licensed on each frequency. Motorola P25 sites say their call signs on the air; Identify looks licensees up. Plugins are told them." cols={1}>
-          <FccTable target={{ kind: "system", index: i }} fcc={sys.fcc} />
-        </Group>
-      )}
+      <FccLicensesGroup
+        target={{ kind: "system", index: i }}
+        fcc={sys.fcc}
+        hint="Optional: who is licensed on each frequency. Motorola P25 sites say their call signs on the air; Identify looks licensees up. Plugins are told them."
+      />
       <Group title="Talkgroups and units" hint="Names for what is heard, and which talkgroups are recorded.">
         <TalkgroupsField sys={sys} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
         <UnitNamesField
