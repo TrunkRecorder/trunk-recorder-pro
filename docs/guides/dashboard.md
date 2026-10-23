@@ -262,11 +262,13 @@ Under them, when they're known:
   never go backwards. A correction the time service makes after Start reaches them only at the
   next Start: this line says how far apart the two are now.
 - **The radio systems' clocks**: P25 systems (Phase 2) broadcast their own time, to 7.5 ms,
-  usually from GPS. Each site's line says how far call times are from it. Some systems mark their
-  time not valid even when it's right (DCFD does): those are shown, not gone by. A system set to its
-  local time is far off by hours and isn't compared.
+  usually from GPS. Each site's line says how far its system's clock is ahead of or behind the
+  calls' time ("3.0 s behind them": the system's clock is three seconds slow). Times are in ms under
+  a second, then seconds. Some systems mark their time not valid, and those can be seconds off
+  (or right, as DCFD's is): they're shown, not gone by. A system set to its local time is off by
+  hours and isn't compared.
 
-The chart shows the offset over time. The Platform light turns amber, with an event, when call
+The chart shows this computer's clock against the time server over time, in ms. The Platform light turns amber, with an event, when call
 times are off by `monitor.clockWarnMs` (250 ms) or more, or the operating system says the clock
 isn't synchronized; red at 5 s. What's judged is the clock calls are stamped by:
 - measured against the time server, as the clock now plus how far it has moved since Start;

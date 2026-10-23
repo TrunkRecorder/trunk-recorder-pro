@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { formatGain, formatMhz, systemColor, usableHalfWidth } from "../config.ts";
 import { setView, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
-import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, type Line } from "../charts.tsx";
+import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall } from "../Waterfall.tsx";
@@ -134,10 +134,11 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
   let lo = Math.min(...edges);
   let hi = Math.max(...edges);
   if (hi - lo < 200e3) [lo, hi] = [(lo + hi) / 2 - 100e3, (lo + hi) / 2 + 100e3];
-  const W = 1000;
+  // (Drawn in the width it's shown at: its labels keep their shape.)
+  const [measure, W] = useWidth(1000);
   const x = (hz: number) => ((hz - lo) / (hi - lo)) * W;
   return (
-    <svg viewBox={`0 0 ${W} 74`} className="band-svg" preserveAspectRatio="none" role="img" aria-label={`${label}: sources and channels by frequency`}>
+    <svg ref={measure} viewBox={`0 0 ${W} 74`} className="band-svg" role="img" aria-label={`${label}: sources and channels by frequency`}>
       <text x={2} y={10} className="axis">
         {label}
       </text>
@@ -239,7 +240,7 @@ function BandOverview({ s }: { s: AppState }) {
 
 /** The floor across the band (bars) and each channel's power above it (stems). */
 function ChannelPlot({ profile, channels, src, color }: { profile: number[]; channels: ChannelSnapshot[]; src: SourceStatus; color: (sys: string) => string }) {
-  const W = 1000;
+  const [measure, W] = useWidth(1000);
   const H = 180;
   const all = [...profile, ...channels.map((c) => c.powerDb)];
   const lo = Math.floor(Math.min(...profile) - 3);
@@ -248,7 +249,7 @@ function ChannelPlot({ profile, channels, src, color }: { profile: number[]; cha
   const x = (hz: number) => ((hz - (src.centerHz - src.rateHz / 2)) / src.rateHz) * W;
   const bw = W / profile.length;
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="chplot" preserveAspectRatio="none" role="img" aria-label="noise floor and channel power">
+    <svg ref={measure} viewBox={`0 0 ${W} ${H}`} className="chplot" role="img" aria-label="noise floor and channel power">
       {profile.map((p, i) => (
         <rect key={i} x={i * bw + 1} width={bw - 2} y={y(p)} height={H - 18 - y(p)} className="floor-bar">
           <title>{`${mhz(src.centerHz - src.rateHz / 2 + (i + 0.5) * (src.rateHz / profile.length), 3)} MHz: floor ${num(p)} dBFS`}</title>
