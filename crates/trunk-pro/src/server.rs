@@ -820,7 +820,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 // Sharing switched on or off: at once too.
                 for sys in &c.systems {
                     let was = old.systems.iter().find(|o| o.short_name == sys.short_name);
-                    if was.is_none_or(|o| o.share != sys.share || o.directory != sys.directory) {
+                    // (Its licenses too: sharing waits for a call sign.)
+                    if was.is_none_or(|o| o.share != sys.share || o.directory != sys.directory || o.fcc != sys.fcc) {
                         ctx.tell_engine(crate::runtime::EngineCmd::ShareSystem(sys.clone()));
                     }
                 }

@@ -488,7 +488,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       // Sharing switched on or off: at once, as on the desktop.
       for (const x of m.config.systems) {
         const was = before?.systems.find((y) => y.shortName === x.shortName);
-        if (session && (!was || !!was.share !== !!x.share || JSON.stringify(was.directory) !== JSON.stringify(x.directory))) {
+        if (session && (!was || !!was.share !== !!x.share || JSON.stringify(was.directory) !== JSON.stringify(x.directory) || JSON.stringify(was.fcc) !== JSON.stringify(x.fcc))) {
           if (x.share) session.set_recorder(await recorderId());
           session?.set_share(JSON.stringify(x));
         }

@@ -1360,3 +1360,11 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .modal { width: min(520px, 100%); max-height: 100%; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
 .modal h3 { margin: 0; }
 .license details summary { cursor: pointer; }
+
+/* The location picker: a map, and a circle in its middle (where you roughly are). */
+.location-map { position: relative; height: 260px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.location-map > .location-map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.location-circle {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; border-radius: 50%;
+  border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); box-shadow: 0 0 0 1px rgb(0 0 0 / 0.25);
+}

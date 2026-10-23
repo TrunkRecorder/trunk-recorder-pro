@@ -42,6 +42,12 @@ pub fn shareable(sys: &System) -> bool {
     sys.share && matches!(sys.kind, SystemKind::P25 | SystemKind::Smartnet | SystemKind::Dmr | SystemKind::Nxdn)
 }
 
+/// Whether the system has an FCC call sign (Identify, the air, or typed): for
+/// now, a system is shared only once it has one.
+pub fn has_call_sign(sys: &System) -> bool {
+    sys.fcc.values().any(|l| !l.call_sign.trim().is_empty())
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Heard {
     grants: u32,
@@ -68,6 +74,8 @@ pub struct Evidence {
     last_ms: f64,
     /// A share on its way.
     pending: bool,
+    /// It has an FCC call sign (none: not shared yet).
+    call_sign_known: bool,
     failures: u32,
     retry_at_ms: f64,
     error: Option<String>,
@@ -96,6 +104,7 @@ impl Ledger {
         if shareable(sys) {
             let e = self.systems.entry(sys.short_name.clone()).or_default();
             e.last_ms = e.last_ms.max(sys.directory.as_ref().map_or(0.0, |d| d.shared_at as f64));
+            e.call_sign_known |= has_call_sign(sys);
         } else {
             self.systems.remove(&sys.short_name);
         }
@@ -129,6 +138,7 @@ impl Ledger {
     /// A call sign heard on the air for one of the system's frequencies.
     pub fn call_sign(&mut self, short_name: &str, freq_hz: u64, call_sign: &str) {
         let Some(e) = self.systems.get_mut(short_name) else { return };
+        e.call_sign_known = true;
         if e.call_signs.insert(freq_hz, call_sign.to_string()).as_deref() != Some(call_sign) {
             e.changed = true;
         }
@@ -145,7 +155,7 @@ impl Ledger {
     pub fn due(&self, short_name: &str, now_ms: f64) -> bool {
         let Some(e) = self.systems.get(short_name) else { return false };
         let Some(since) = e.since_ms else { return false };
-        if e.pending || now_ms < e.retry_at_ms || now_ms - since < self.first_after_ms.unwrap_or(FIRST_AFTER_MS) {
+        if !e.call_sign_known || e.pending || now_ms < e.retry_at_ms || now_ms - since < self.first_after_ms.unwrap_or(FIRST_AFTER_MS) {
             return false;
         }
         let gap = now_ms - e.last_ms;
@@ -181,10 +191,10 @@ impl Ledger {
         }
     }
 
-    /// For the interface: `{ state: waiting | shared | error, lastShared, error }`, or null when it isn't shared.
+    /// For the interface: `{ state: needsCallSign | waiting | shared | error, lastShared, error }`, or null when it isn't shared.
     pub fn status_json(&self, short_name: &str) -> Value {
         let Some(e) = self.systems.get(short_name) else { return Value::Null };
-        let state = if e.error.is_some() { "error" } else if e.last_ms > 0.0 { "shared" } else { "waiting" };
+        let state = if !e.call_sign_known { "needsCallSign" } else if e.error.is_some() { "error" } else if e.last_ms > 0.0 { "shared" } else { "waiting" };
         json!({ "state": state, "lastShared": if e.last_ms > 0.0 { Some(e.last_ms) } else { None }, "error": e.error })
     }
 
@@ -362,6 +372,29 @@ mod tests {
         l.done("dcfd", t2, Ok(()));
         assert!(!l.due("dcfd", t2 + 23.0 * 60.0 * MIN));
         assert!(l.due("dcfd", t2 + 24.0 * 60.0 * MIN));
+    }
+
+    #[test]
+    fn not_shared_without_a_call_sign_until_one_is_known() {
+        let mut c = config(true);
+        c.systems[0].fcc.clear();
+        let mut l = Ledger::new(&c.systems);
+        l.decoding("dcfd", NOW);
+        l.call("dcfd", Some(0), 101, 851_000_000, false, false);
+        assert!(!l.due("dcfd", NOW + 10.0 * MIN), "no call sign: not shared");
+        assert_eq!(l.status_json("dcfd")["state"], "needsCallSign");
+        // One heard on the air (a Motorola base station ID): shared.
+        l.call_sign("dcfd", 857_987_500, "WPXT459");
+        assert!(l.due("dcfd", NOW + 10.0 * MIN));
+        // Or one looked up (Identify), told while recording.
+        let mut l = Ledger::new(&c.systems);
+        l.decoding("dcfd", NOW);
+        l.call("dcfd", Some(0), 101, 851_000_000, false, false);
+        assert!(!l.due("dcfd", NOW + 10.0 * MIN));
+        c.systems[0].fcc.insert("857987500".into(), crate::config::FccLicense { call_sign: "WPXT459".into(), name: "DISTRICT OF COLUMBIA".into(), from: FccFrom::Lookup });
+        l.set(&c.systems[0]);
+        assert!(l.due("dcfd", NOW + 10.0 * MIN));
+        assert_eq!(l.status_json("dcfd")["state"], "waiting");
     }
 
     #[test]

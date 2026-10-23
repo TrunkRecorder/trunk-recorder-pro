@@ -5,6 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Choosing a location for Identify is a map.** Move it so its circle (5 km across) is roughly
+  where you are: only your general area is needed. Or find a place by city ("Arlington, VA"),
+  ZIP code or coordinates, or use your browser's location. The map is the systems directory's,
+  from trunkrecorder.pro (its tiles, fonts and style), loaded only when the picker opens. In
+  Setup's Identify, Share, the survey and the Setup Guide.
+- **Setup shows a system's FCC licenses section only once a frequency has a license**
+  (Identify, the air, or the config). **Sharing needs an FCC call sign**, for now: switching
+  Share on without one opens Identify, and Share turns on only if a call sign is kept. A
+  Motorola P25 system's call sign heard on the air counts at once; one found by Identify while
+  recording does too.
 - **Charts say what they show.** A chart of one line now shows its label
   and unit, as a chart of several does: the Clock card's ("this computer's
   clock against pool.ntp.org, ms"), the plugin queue and age at delivery,
