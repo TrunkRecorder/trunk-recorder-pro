@@ -1393,9 +1393,12 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
           <NumberInput label="Squelch, dB above noise" value={conv.squelchDb} onChange={(v) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, v ?? 8))))} />
         </Field>
       </Group>
-      <Group title="FCC licenses" hint="Optional: who is licensed on each channel's frequency (they can be different licensees'). Identify looks them up; Motorola P25 channels say theirs on the air." cols={1}>
-        <FccTable target={{ kind: "conventional", index: k }} fcc={conv.fcc} />
-      </Group>
+      {/* (Only once a channel has a license: Identify, or the air, fills it.) */}
+      {Object.keys(conv.fcc ?? {}).length > 0 && (
+        <Group title="FCC licenses" hint="Optional: who is licensed on each channel's frequency (they can be different licensees'). Identify looks them up; Motorola P25 channels say theirs on the air." cols={1}>
+          <FccTable target={{ kind: "conventional", index: k }} fcc={conv.fcc} />
+        </Group>
+      )}
       {chans.some((c) => c.mode !== "fm" && c.mode !== "am") && (
         <Group title="Talkgroup names" hint="For the talkgroups its P25, DMR and NXDN channels name on the air (a row's own name is for calls filed under its talkgroup).">
           <TalkgroupsField sys={conv} />
@@ -2252,7 +2255,7 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
   );
 }
 
-function SystemCard(props: { c: Config; i: number }) {
+export function SystemCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
   const need = useNeed();
@@ -2434,9 +2437,12 @@ function SystemCard(props: { c: Config; i: number }) {
           {!sys.sites.length && <p className="muted small">No sites: add one with its control channel.</p>}
         </div>
       </Group>
-      <Group title="FCC licenses" hint="Optional: who is licensed on each frequency. Motorola P25 sites say their call signs on the air; Identify looks licensees up. Plugins are told them." cols={1}>
-        <FccTable target={{ kind: "system", index: i }} fcc={sys.fcc} />
-      </Group>
+      {/* (Only once a frequency has a license: Identify, or the air, fills it.) */}
+      {Object.keys(sys.fcc ?? {}).length > 0 && (
+        <Group title="FCC licenses" hint="Optional: who is licensed on each frequency. Motorola P25 sites say their call signs on the air; Identify looks licensees up. Plugins are told them." cols={1}>
+          <FccTable target={{ kind: "system", index: i }} fcc={sys.fcc} />
+        </Group>
+      )}
       <Group title="Talkgroups and units" hint="Names for what is heard, and which talkgroups are recorded.">
         <TalkgroupsField sys={sys} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
         <UnitNamesField
