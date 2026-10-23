@@ -126,7 +126,7 @@ It is written on a single line.
 |---|---|
 | `call_num` | The call's number |
 | `freq` | Frequency, Hz |
-| `freq_error` | How far off the channel the voice was, Hz (0 when not measured). Conventional P25 calls have it too; conventional analog and DMR receivers don't measure one |
+| `freq_error` | How far off the channel the voice was, Hz (0 when not measured). Conventional P25, DMR and NXDN calls have it too; conventional analog receivers don't measure one |
 | `signal`, `noise` | The channel's power during the call and the noise floor under it, dBFS, one decimal; `null` if not measured |
 | `snr` | `signal` minus `noise`, dB |
 | `clean_voice_pct` | Share of vocoder frames decoded cleanly, %; `null` for analog calls |

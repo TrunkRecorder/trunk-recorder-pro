@@ -74,7 +74,7 @@ Notes:
   conventional system doesn't borrow the names, or the settings, of a trunked system: give it its
   own file. The file's format is the [talkgroup file](systems.md#talkgroup-file)'s.
 - **Frequency error.** A conventional call's `freq_error` is measured as a trunked call's is, from
-  the decoder's offset (P25 only: analog and DMR receivers don't measure one).
+  the decoder's offset (P25, DMR and NXDN: analog receivers don't measure one).
 - **Channel width.** A conventional DMR channel is opened 6.25 kHz wide, as a trunked one is.
 
 ## Channel keys

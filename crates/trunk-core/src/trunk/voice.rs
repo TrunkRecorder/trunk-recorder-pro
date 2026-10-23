@@ -454,6 +454,9 @@ impl VoiceDecoder for Dmr {
     fn air(&self, slot: u8) -> AirInfo {
         AirInfo { talkgroup: self.voice.talkgroup(slot), nac: None, color_code: self.voice.color_code(slot), ran: None, air: self.air[slot as usize & 1] }
     }
+    fn offset_hz(&self) -> Option<f32> {
+        self.rx.offset_hz()
+    }
 }
 
 /// NXDN: 4FSK at the channel's rate, the frame framer, one call at a time.

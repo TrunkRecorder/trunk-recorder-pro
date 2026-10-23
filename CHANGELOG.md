@@ -5,6 +5,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **DMR calls have their frequency error** (`freq_error` in the call JSON), conventional and
+  trunked: it was always 0. A conventional DMR channel's `autoTune` now corrects its source,
+  as the docs said it did.
 - **Choosing a location for Identify is a map.** Move it so its circle (5 km across) is roughly
   where you are: only your general area is needed. Or find a place by city ("Arlington, VA"),
   ZIP code or coordinates, or use your browser's location. The map is the systems directory's,
