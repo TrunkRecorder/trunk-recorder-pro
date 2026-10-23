@@ -24,11 +24,13 @@ function connected(systems: System[], share: ShareStatus | null = null): Config 
 /** A P25 system with an FCC call sign (sharing needs one, for now). */
 const p25 = (more: Partial<System> = {}) => normalizeSystem({ shortName: "dcfd", type: "p25", controlChannelsHz: [857_987_500], fcc: { "857987500": { callSign: "WPXT459", from: "air" } }, ...more });
 
-test("Share: no switch until the system has an FCC call sign", () => {
+test("Share: the switch is there without an FCC call sign (switching it on asks Identify); on in the file, it says it waits for one", () => {
   const c = connected([p25({ fcc: {} })]);
-  assert.equal(renderToString(<ShareSystem c={c} i={0} />), "");
+  const html = renderToString(<ShareSystem c={c} i={0} />);
+  assert.ok(html.includes("Share channel and talkgroup config with the community"), html);
+  assert.ok(!html.includes("checked"));
   const d = connected([p25({ fcc: {}, share: true })]);
-  assert.equal(renderToString(<ShareSystem c={d} i={0} />), "", "switched on in the file, still hidden (and not shared)");
+  assert.ok(renderToString(<ShareSystem c={d} i={0} />).includes("Not shared until it has an FCC call sign"));
 });
 
 test("Share: the switch says what goes to the directory, and not names or a location", () => {

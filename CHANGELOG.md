@@ -6,9 +6,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 ## [Unreleased]
 
 - **Setup shows a system's FCC licenses section only once a frequency has a license**
-  (Identify, the air, or the config), and **Share** only once the system has an FCC call sign:
-  for now, a system is shared only with one. A Motorola P25 system's call sign heard on the air
-  counts at once; one found by Identify while recording does too.
+  (Identify, the air, or the config). **Sharing needs an FCC call sign**, for now: switching
+  Share on without one opens Identify, and Share turns on only if a call sign is kept. A
+  Motorola P25 system's call sign heard on the air counts at once; one found by Identify while
+  recording does too.
 - **Charts say what they show.** A chart of one line now shows its label
   and unit, as a chart of several does: the Clock card's ("this computer's
   clock against pool.ntp.org, ms"), the plugin queue and age at delivery,
