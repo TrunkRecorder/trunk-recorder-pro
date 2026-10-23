@@ -9,6 +9,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   and unit, as a chart of several does: the Clock card's ("this computer's
   clock against pool.ntp.org, ms"), the plugin queue and age at delivery,
   the internet connect time and a channel's frequency offset.
+- **Charts drawn at their real width:** a chart's labels and dots are no
+  longer stretched sideways on a wide screen (time charts, and the RF
+  page's band and channel plots), and a y axis never shows two ticks that
+  read the same (the Clock chart's "37, 37, 36, 36").
 - **The radio systems' clocks read plainly** on the Clock card: "3.0 s
   behind them" (the system's clock against the calls' time) under a heading
   of their own, so they aren't taken for the time server's offset in ms.

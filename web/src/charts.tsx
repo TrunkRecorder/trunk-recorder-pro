@@ -202,13 +202,64 @@ function points(l: Line): { t: number[]; v: (number | null)[]; lo: (number | nul
 }
 
 /**
+ * An element's width in px, kept as it's resized: a chart draws in real
+ * pixels, so its text and dots aren't stretched to fit (`fallback` until
+ * measured, and when rendered on the server). Give the returned ref to the
+ * element to measure.
+ */
+export function useWidth(fallback: number): [(el: Element | null) => void, number] {
+  const [el, setEl] = useState<Element | null>(null);
+  const [w, setW] = useState(fallback);
+  useEffect(() => {
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => {
+      const cw = Math.round(e.contentRect.width);
+      if (cw > 0) setW(cw);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [el]);
+  return [setEl, w];
+}
+
+/**
+ * The finest step `fmt` writes differently around `v`: one whose every
+ * neighbour reads apart (so a rounding boundary alone doesn't count).
+ */
+export function resolution(fmt: (v: number) => string, v: number): number {
+  for (let e = -6; e <= 9; e++) {
+    const r = 10 ** e;
+    if (fmt(v) !== fmt(v + r) && fmt(v + r) !== fmt(v + 2 * r) && fmt(v + 2 * r) !== fmt(v + 3 * r)) return r;
+  }
+  return 1;
+}
+
+/**
+ * A y axis's ticks from `lo` to `hi`, none closer than `fmt` writes apart:
+ * a narrow span widened to whole steps of its resolution, so two ticks never
+ * read the same (0.2 ms apart under a whole-ms format).
+ */
+export function axisTicks(lo: number, hi: number, fmt: (v: number) => string, n = 4): number[] {
+  // (The coarser end's: a format may write tenths below 100 and whole numbers above.)
+  const res = Math.max(resolution(fmt, lo), resolution(fmt, hi));
+  if (hi - lo < 2 * res) {
+    lo = Math.floor(lo / res) * res;
+    hi = Math.max(lo + res, Math.ceil(hi / res) * res);
+  }
+  const on = (v: number) => Math.abs(v / res - Math.round(v / res)) < 1e-6;
+  const yt = ticks(lo, hi, n).filter(on);
+  return yt.length >= 2 ? yt : [lo, hi];
+}
+
+/**
  * A time chart: one y axis, a hairline grid, a crosshair and the values
  * under it on hover. `zero`: start the axis at 0. `fmt`: how values read.
  * `marks`: horizontal reference lines (a threshold, the usual).
  */
 export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: number) => string; zero?: boolean; lo?: number; hi?: number; marks?: { v: number; label: string }[]; empty?: string }) {
   const H = props.height ?? 160;
-  const W = 640;
+  // (Drawn in the width it's shown at: text and dots keep their shape.)
+  const [measure, W] = useWidth(640);
   const L = 44;
   const R = 8;
   const T = 8;
@@ -220,7 +271,7 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
   const all = pts.flatMap((p) => [...p.v, ...p.lo, ...p.hi]).filter((x): x is number => x !== null && Number.isFinite(x));
   // The span with data (a week's chart of a new install shows its hours, not six empty days).
   const ts = pts.flatMap((p) => p.t.filter((_, i) => p.v[i] !== null));
-  if (!all.length || ts.length < 1) return <div className="chart-empty" style={{ height: H }}>{props.empty ?? "Collecting data…"}</div>;
+  if (!all.length || ts.length < 1) return <div ref={measure} className="chart-empty" style={{ height: H }}>{props.empty ?? "Collecting data…"}</div>;
   let lo = props.lo ?? Math.min(...all, ...(props.marks ?? []).map((m) => m.v));
   let hi = props.hi ?? Math.max(...all, ...(props.marks ?? []).map((m) => m.v));
   if (props.zero) lo = Math.min(0, lo);
@@ -228,7 +279,7 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
     hi += 1;
     lo -= props.zero ? 0 : 1;
   }
-  const yt = ticks(lo, hi, 4);
+  const yt = axisTicks(lo, hi, fmt);
   lo = Math.min(lo, yt[0] ?? lo);
   hi = Math.max(hi, yt[yt.length - 1] ?? hi);
   let t0 = Math.min(...ts);
@@ -256,7 +307,7 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
   });
   const ht = near && near[0] >= 0 ? pts[0].t[near[0]] : hover;
   return (
-    <div className="ts">
+    <div className="ts" ref={measure}>
       {/* (A single line's too: its label says what it is, and in what unit.) */}
       {props.lines.length > 0 && (
         <div className="legend">
@@ -268,7 +319,7 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
           ))}
         </div>
       )}
-      <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="ts-svg" style={{ height: H }} preserveAspectRatio="none" onMouseMove={onMove} onMouseLeave={() => setHover(null)} role="img" aria-label={props.lines.map((l) => l.label).join(", ")}>
+      <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="ts-svg" style={{ height: H }} onMouseMove={onMove} onMouseLeave={() => setHover(null)} role="img" aria-label={props.lines.map((l) => l.label).join(", ")}>
         {yt.map((v) => (
           <g key={v}>
             <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} className="grid" vectorEffect="non-scaling-stroke" />

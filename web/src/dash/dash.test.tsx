@@ -14,7 +14,7 @@ import { Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
 import { PlatformPage } from "./Platform.tsx";
 import { PluginHealthPage } from "./PluginHealth.tsx";
-import { TimeSeries } from "../charts.tsx";
+import { axisTicks, TimeSeries } from "../charts.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
   index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
@@ -261,4 +261,17 @@ test("A chart of one line says what it is and in what unit, as one of several do
   const data = { t0: Date.now() / 1000 - 600, stepS: 60, v: [3, -2, 1, 0, 2, -1, 3, 0, 1, 2], lo: Array(10).fill(null), hi: Array(10).fill(null), n: Array(10).fill(1) };
   const html = renderToString(<TimeSeries lines={[{ label: "This computer's clock against pool.ntp.org, ms (+: behind)", color: "red", data }]} />);
   assert.match(text(html), /This computer(?:'|&#x27;)s clock against pool\.ntp\.org, ms \(\+: behind\)/);
+});
+
+test("A y axis never has two ticks that read the same", () => {
+  const whole = (v: number) => v.toFixed(0);
+  // The clock chart's: 36.2 to 36.9 ms under a whole-ms format (it read 37, 37, 36, 36).
+  assert.deepEqual(axisTicks(36.2, 36.9, whole), [36, 37]);
+  const tenth = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
+  for (const [lo, hi, f] of [[36.2, 36.9, tenth], [-3.3, 0.8, whole], [0, 1500, whole], [99.7, 100.4, tenth], [0, 0.04, tenth], [-2, 2, (v: number) => `${v.toFixed(1)} s`]] as const) {
+    const t = axisTicks(lo, hi, f);
+    const labels = t.map(f);
+    assert.equal(new Set(labels).size, labels.length, `${lo}..${hi}: ${labels.join(", ")}`);
+    assert.ok(t.length >= 2 && t[0] <= lo + 1e-9 + (t[1] - t[0]) && t[t.length - 1] >= hi - (t[1] - t[0]) - 1e-9, `${lo}..${hi}: ${t.join(", ")} spans the data`);
+  }
 });
