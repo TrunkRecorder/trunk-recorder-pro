@@ -19,6 +19,9 @@ export function directoryUrl(c: Config, id: string): string {
   return `${base}/directory/systems/${encodeURIComponent(id)}`;
 }
 
+/** For now, a system is shared only once it has an FCC call sign (Identify, the air, or typed): the switch shows then. */
+export const hasCallSign = (sys: System) => Object.values(sys.fcc ?? {}).some((l) => l.callSign.trim() !== "");
+
 export function ShareSystem(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
@@ -26,6 +29,7 @@ export function ShareSystem(props: { c: Config; i: number }) {
   const [explain, setExplain] = useState(false);
   const can = SHAREABLE.includes(sys.type);
   const status = app.status?.systems.find((y) => y.shortName === sys.shortName)?.share ?? null;
+  if (!hasCallSign(sys)) return null;
   const set = (on: boolean) =>
     updateConfig((x) => {
       if (on) x.systems[i].share = true;

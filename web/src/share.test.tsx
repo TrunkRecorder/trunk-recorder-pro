@@ -21,7 +21,15 @@ function connected(systems: System[], share: ShareStatus | null = null): Config 
   return snapshot().config!;
 }
 
-const p25 = (more: Partial<System> = {}) => normalizeSystem({ shortName: "dcfd", type: "p25", controlChannelsHz: [857_987_500], ...more });
+/** A P25 system with an FCC call sign (sharing needs one, for now). */
+const p25 = (more: Partial<System> = {}) => normalizeSystem({ shortName: "dcfd", type: "p25", controlChannelsHz: [857_987_500], fcc: { "857987500": { callSign: "WPXT459", from: "air" } }, ...more });
+
+test("Share: no switch until the system has an FCC call sign", () => {
+  const c = connected([p25({ fcc: {} })]);
+  assert.equal(renderToString(<ShareSystem c={c} i={0} />), "");
+  const d = connected([p25({ fcc: {}, share: true })]);
+  assert.equal(renderToString(<ShareSystem c={d} i={0} />), "", "switched on in the file, still hidden (and not shared)");
+});
 
 test("Share: the switch says what goes to the directory, and not names or a location", () => {
   const c = connected([p25()]);
@@ -43,7 +51,7 @@ test("Share: shared, with when and a link to its page in the directory", () => {
 test("Share: its error, and conventional-only protocols can't be shared", () => {
   let c = connected([p25({ share: true })], { state: "error", lastShared: null, error: "Too many shares" });
   assert.ok(renderToString(<ShareSystem c={c} i={0} />).includes("Not shared: Too many shares"));
-  c = connected([normalizeSystem({ shortName: "ed", type: "edacs" })]);
+  c = connected([normalizeSystem({ shortName: "ed", type: "edacs", fcc: { "851012500": { callSign: "WQAA123" } } })]);
   const html = renderToString(<ShareSystem c={c} i={0} />);
   assert.ok(html.includes("can&#x27;t be shared yet") || html.includes("can't be shared yet"), html);
 });
