@@ -979,19 +979,13 @@ impl Decoder {
                 self.play_tone(id, level, out);
                 Kind::Tone
             }
-            // A reserved ID (§16.3).
-            Some(_) => {
-                self.fade_out(out);
-                Kind::Erasure
-            }
+            // A reserved ID: an erasure (§16.3).
+            Some(_) => self.erasure(out),
             // Damaged while a tone plays: most likely a tone frame whose
             // signature was lost, and its b0 is the ID's bits, not a frame type.
             None if damaged && self.tone.is_some() => self.conceal(out),
             None => match decode_ambe2450_parms(d, &mut self.cur, &mut self.prev) {
-                Ambe::Erasure | Ambe::Tone => {
-                    self.fade_out(out);
-                    Kind::Erasure
-                }
+                Ambe::Erasure | Ambe::Tone => self.erasure(out),
                 Ambe::Voice if damaged => self.conceal(out),
                 Ambe::Voice => {
                     self.invalid = 0;
@@ -1021,6 +1015,16 @@ impl Decoder {
             }
         }
         Kind::Repeat
+    }
+
+    /// An erasure frame is invalid, so a frame repeat like any other
+    /// (TIA-102.BABA-A §13.1, §14.6): it repeats the voice or tone before it
+    /// and counts toward the mute. Still reported as an erasure until muted.
+    fn erasure(&mut self, out: &mut [f32; FRAME_SAMPLES]) -> Kind {
+        match self.conceal(out) {
+            Kind::Repeat => Kind::Erasure,
+            kind => kind,
+        }
     }
 
     /// The mbelib profile: its repeat count rides in the frame parameters,
@@ -1324,6 +1328,51 @@ mod tests {
         // A good frame ends it: speech plays again, and a damaged one repeats it.
         assert_eq!(dec.ambe(&v, 0, &mut out), Kind::Voice);
         assert_eq!(dec.ambe(&v, 8, &mut out), Kind::Repeat);
+    }
+
+    #[test]
+    fn an_erasure_is_a_frame_repeat_and_counts_toward_the_mute() {
+        let mut out = [0f32; FRAME_SAMPLES];
+        let mut garbled = tone_bits(32, 100);
+        garbled[2] = 0;
+        // A voice erasure: b0 = 120, without the tone signature.
+        let mut erasure = [0u8; 49];
+        erasure[..4].fill(1);
+        let mut v = [0u8; 49];
+        for (i, b) in v.iter_mut().enumerate() {
+            *b = ((i * 7 + 3) % 5 == 0) as u8;
+        }
+        (v[0], v[1]) = (0, 1);
+        // Mid-tone, a plain erasure or a reserved ID repeats the tone; two
+        // damaged frames after it are the 2nd and 3rd repeats, and the next mutes.
+        for e in [tone_bits(0, 100), erasure] {
+            let mut dec = Decoder::new(lcg(1), Profile::Enhanced);
+            for _ in 0..20 {
+                dec.ambe(&v, 0, &mut out);
+            }
+            for _ in 0..10 {
+                dec.ambe(&tone_bits(32, 100), 0, &mut out);
+            }
+            assert_eq!(dec.ambe(&e, 0, &mut out), Kind::Erasure);
+            assert!(level_at(&out, 1000.0) > 3000.0, "the tone");
+            for _ in 0..2 {
+                assert_eq!(dec.ambe(&garbled, 8, &mut out), Kind::Repeat);
+                assert!(level_at(&out, 1000.0) > 3000.0, "the tone");
+            }
+            assert_eq!(dec.ambe(&garbled, 8, &mut out), Kind::Muted);
+            assert_eq!(dec.ambe(&e, 0, &mut out), Kind::Muted);
+            assert_eq!(dec.ambe(&v, 0, &mut out), Kind::Voice);
+        }
+        // In speech: erasures repeat the voice, 3 in a row, then mute.
+        let mut dec = Decoder::new(lcg(1), Profile::Enhanced);
+        for _ in 0..20 {
+            dec.ambe(&v, 0, &mut out);
+        }
+        for _ in 0..3 {
+            assert_eq!(dec.ambe(&erasure, 0, &mut out), Kind::Erasure);
+            assert!(out.iter().any(|&s| s != 0.0), "the voice repeated");
+        }
+        assert_eq!(dec.ambe(&erasure, 0, &mut out), Kind::Muted);
     }
 
     /// 200 frames of one steady frame (harmonics voiced where
