@@ -10,6 +10,30 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   tone faded out for a frame. A tone frame is now recognised by its Golay-protected signature alone,
   as TIA-102.BABA-A §16 has a decoder do. A frame damaged past reading in the middle of a tone
   repeats the tone (up to 3 times, then fades) rather than the speech from before it.
+- **Choosing a location for Identify is a map.** Move it so its circle (5 km across) is roughly
+  where you are: only your general area is needed. Or find a place by city ("Arlington, VA"),
+  ZIP code or coordinates, or use your browser's location. The map is the systems directory's,
+  from trunkrecorder.pro (its tiles, fonts and style), loaded only when the picker opens. In
+  Setup's Identify, Share, the survey and the Setup Guide.
+- **Setup shows a system's FCC licenses section only once a frequency has a license**
+  (Identify, the air, or the config). **Sharing needs an FCC call sign**, for now: switching
+  Share on without one opens Identify, and Share turns on only if a call sign is kept. A
+  Motorola P25 system's call sign heard on the air counts at once; one found by Identify while
+  recording does too.
+- **Charts say what they show.** A chart of one line now shows its label
+  and unit, as a chart of several does: the Clock card's ("this computer's
+  clock against pool.ntp.org, ms"), the plugin queue and age at delivery,
+  the internet connect time and a channel's frequency offset.
+- **Charts drawn at their real width:** a chart's labels and dots are no
+  longer stretched sideways on a wide screen (time charts, and the RF
+  page's band and channel plots), and a y axis never shows two ticks that
+  read the same (the Clock chart's "37, 37, 36, 36").
+- **The radio systems' clocks read plainly** on the Clock card: "3.0 s
+  behind them" (the system's clock against the calls' time) under a heading
+  of their own, so they aren't taken for the time server's offset in ms.
+
+## [0.2.8] — 2026-10-22
+
 - **The clock, on the Platform page** (#61): how far off this computer's
   clock is, measured by one SNTP query to `monitor.timeServer` (default
   `pool.ntp.org`) every 15 minutes, and whether the operating system says
@@ -43,7 +67,6 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Plugin SDK 0.6.0:** `call.result` takes `took_ms`
   (`Host::call_result_took`; `CallQueue` sends it), and `CallRecord` has
   `clock_off`.
-
 - **Share a system with the community directory** ([trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/)):
   a switch in each system's Basics (`"share": true`). While it records, the recorder shares what it
   heard: the sites, their control and voice channels, neighbours, call signs heard on the air, and
@@ -72,6 +95,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   2.5 + 6 MS/s worked. A source at 2 MS/s or
   below runs its radio at 6 MS/s; use separate USB controllers if a
   pair doesn't fit.
+- **Conventional systems on the dashboard** (#71): a conventional system has
+  a working card on the Overview (its calls this run and in 24 h, and its
+  channels) and on Decode (its calls, and each channel's mode, name, offset
+  and quality), and it's in the status (`status.systems`).
+- **AutoTune for conventional channels** (#71): they take up their source's
+  frequency correction, as trunked channels do. A source with no control
+  channel learns it from calls on the digital rows you turn **AutoTune** on
+  for (a repeater output; `autoTune`, or the CSV's `AutoTune` column).
+- **Live gain with several Airspys** (#69): checked and tested; an Airspy
+  reopened after a USB stall comes back with exactly the gain last set while
+  recording.
 
 ## [0.2.7] — 2026-10-22
 

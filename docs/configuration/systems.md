@@ -76,7 +76,10 @@ one on the most of its frequencies.
 With `share` on (**Share channel and talkgroup config with the community** in the system's Basics), the
 recorder shares the system with the community directory at
 [trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/) while it records. Only P25, SmartNet,
-DMR and NXDN systems can be shared for now.
+DMR and NXDN systems can be shared for now, and only once the system has an FCC call sign in its
+[`fcc`](#fcc-licenses) map: one heard on the air (Motorola P25), found by **Identify**, or typed.
+Switching **Share** on without one opens **Identify**: Share turns on only if a call sign is kept. A `share` set in
+the file waits for one.
 
 What it sends is what the radio heard of the system:
 - each site that's decoded: its identity, control channels, modulation, band plan, and the neighbours it

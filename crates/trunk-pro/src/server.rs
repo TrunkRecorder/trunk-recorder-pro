@@ -817,10 +817,9 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 }
                 // Their delays apply at once, to what's waiting too (no restart).
                 ctx.plugins.set_delays(&c);
-                // Sharing switched on or off: at once too.
+                // Sharing switched on or off (or what it uses changed, like licenses): at once too.
                 for sys in &c.systems {
-                    let was = old.systems.iter().find(|o| o.short_name == sys.short_name);
-                    if was.is_none_or(|o| o.share != sys.share || o.directory != sys.directory) {
+                    if old.systems.iter().find(|o| o.short_name == sys.short_name) != Some(sys) {
                         ctx.tell_engine(crate::runtime::EngineCmd::ShareSystem(sys.clone()));
                     }
                 }

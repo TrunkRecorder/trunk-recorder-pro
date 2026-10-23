@@ -273,6 +273,12 @@ function fccMap(x: unknown): { fcc?: FccLicenses } {
   return Object.keys(out).length ? { fcc: out } : {};
 }
 
+/** Whether some licenses have a call sign: for now, a system is shared only once it has one (Identify, the air, or typed). */
+export const hasCallSign = (fcc: FccLicenses | undefined) => Object.values(fcc ?? {}).some((l) => l.callSign.trim() !== "");
+
+/** The trunkrecorder.pro API base the config names (`server.trpApi`), no trailing slash: the FCC lookups, the directory and its map. */
+export const trpBase = (c: Config | null | undefined) => (c?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+
 /** The license that names a system: its control channels' (in order), else the call sign on the most of its frequencies. */
 export function fccPrimary(fcc: FccLicenses | undefined, controlChannelsHz: number[]): FccLicense | null {
   if (!fcc) return null;

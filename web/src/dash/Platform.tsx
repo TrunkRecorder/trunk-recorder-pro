@@ -346,22 +346,23 @@ function ClockCard({ c, offsets, osMissing }: { c: ClockInfo; offsets: SeriesDat
         </p>
       )}
       {c.radio.length > 0 && (
-        <ul className="line-list small" aria-label="Radio systems' clocks">
-          {c.radio.map((r) => {
-            const o = offsetText(r.offsetMs);
-            return (
+        <>
+          <p className="small">The radio systems' own clocks, against the calls' time:</p>
+          <ul className="line-list small" aria-label="Radio systems' clocks">
+            {c.radio.map((r) => (
               <li key={r.site}>
                 <b>{r.site}</b>
                 <span className="muted">
-                  {r.sane ? ` system clock: calls stamped ${o.by} ${o.way} it` : " system clock set to another time (its local time?): not compared"}
+                  {/* (offsetMs: the system's time less the calls': positive, the system's is ahead.) */}
+                  {r.sane ? ` ${ms(r.offsetMs)} ${r.offsetMs > 0 ? "ahead of" : "behind"} them` : " set to another time (its local time?): not compared"}
                   {r.sane && !r.valid ? " (the system marks its time not valid: shown, not gone by)" : ""}, {ago(r.at)}
                 </span>
               </li>
-            );
-          })}
-        </ul>
+            ))}
+          </ul>
+        </>
       )}
-      <TimeSeries lines={[{ label: "Offset, ms (+: this clock behind)", color: "var(--series-1)", data: offsets }]} height={110} fmt={(x) => x.toFixed(0)} />
+      <TimeSeries lines={[{ label: `This computer's clock against ${c.server ?? "the time server"}, ms (+: behind)`, color: "var(--series-1)", data: offsets }]} height={110} fmt={(x) => x.toFixed(0)} />
       {c.check && c.check.fails > 0 && (
         <p className="muted small">
           {c.check.fails} of {c.check.tries} queries unanswered{c.error ? ` (last: ${c.error})` : ""}. Some networks block NTP (UDP port 123); the internet checks don't count it.

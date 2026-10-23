@@ -259,8 +259,10 @@ your location:
 
 - **Use my location** asks the browser. If you've already allowed this page, it fills in at once.
   Browsers share a location only with pages on HTTPS or `localhost`, so for an interface opened
-  over the network by its address, type the location instead.
-- Or type a latitude and longitude. Right-click a spot in Google Maps to copy them.
+  over the network by its address, find it instead.
+- Or find a place: a city ("Arlington, VA"), a ZIP code, or a latitude and longitude.
+- Or move the map so its circle is roughly where you are. The circle is 5 km across: only your
+  general area is needed. The map comes from trunkrecorder.pro, the systems directory's.
 - **Look for licenses within** sets how far: 10 to 150 km (50 by default). Wide-area systems can
   have towers 50 km or more away.
 

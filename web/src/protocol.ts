@@ -145,9 +145,9 @@ export interface DirectoryLink {
   sharedAt?: number;
 }
 
-/** A shared system's sharing: waiting (to decode it a while first), shared (when last), or its last error. */
+/** A shared system's sharing: no FCC call sign yet (not shared until it has one), waiting (to decode it a while first), shared (when last), or its last error. */
 export interface ShareStatus {
-  state: "waiting" | "shared" | "error";
+  state: "needsCallSign" | "waiting" | "shared" | "error";
   lastShared: number | null;
   error: string | null;
 }
