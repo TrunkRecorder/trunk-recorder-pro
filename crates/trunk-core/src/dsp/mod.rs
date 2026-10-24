@@ -7,6 +7,7 @@ pub mod channelizer;
 pub mod cqpsk;
 pub mod filters;
 pub mod fm;
+pub mod inband;
 pub mod msd;
 pub mod real_iq;
 pub mod rolloff;

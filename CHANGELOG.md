@@ -5,6 +5,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Pages, alert tones, DTMF and Morse IDs as call metadata.** Every call's voice is searched for
+  in-band tones: P25 Phase 2, DMR and NXDN tone frames name them exactly, and P25 Phase 1 and analog
+  calls are measured. The call JSON lists them (`tones`) and what they make up (`tone_patterns`: a
+  two-tone page with its timing format and likely paging codes, a long tone, a warble, a DTMF or KNOX
+  string, a Morse ID). Each system's page has a **Tones** card listing what was heard, with ▶ to play
+  it in the browser (again to stop); **Add** names a pattern as one of the system's **signals**
+  (`signals` in its config), and **New signal** types one in from a paging list, each kind with its
+  own fields (DTMF and KNOX apart). A tone counts as a signal's within ±1.5 % when measured in the
+  audio and ±(15.7 Hz + 0.5 %) from tone frames, widened by its `extraTolerancePct`; the editor says
+  what that comes to and which paging tones it would take in too. Calls that carry a signal list it
+  (`signals`). Plugins can subscribe to `tone` to hear every pattern as it ends, with the signals it
+  is. `trunk-pro tool tones` reads them out of saved calls.
 - **DMR calls have their frequency error** (`freq_error` in the call JSON), conventional and
   trunked: it was always 0. A conventional DMR channel's `autoTune` now corrects its source,
   as the docs said it did.

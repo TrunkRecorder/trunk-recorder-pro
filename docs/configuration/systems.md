@@ -41,6 +41,39 @@ a system of its own.)
 | `recording` | | `{}` | object | This system's own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
 | `plugins` | | `{}` | object | This system's plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
 | `pluginDelays` | | `[]` | array | How long plugins wait for this system's calls (all of them, some talkgroups', some plugins'). See [plugins.md](plugins.md#delays) |
+| `signals` | | `[]` | array | The tone signals it sends (pages, alert tones, digit strings, Morse IDs), by id. See [Signals](#signals) |
+
+## Signals
+
+Each entry is a tone signal the system sends: a page (two tones), an alert tone, a warble, a DTMF string,
+a Morse ID. Its `id` is unique within the system; elsewhere it's written with the system first
+(`CLMRN:CSP_FIRE`). A call that carries one lists it in its JSON's `signals`, and the moment it's heard
+it's logged, sent to the interface, and named to plugins (topic `tone`). Signals are added from the
+Tones card at the bottom of the system's page on the Radio system tab: **Add** on a pattern heard, or
+**New signal** to type one in; ▶ plays one in the browser. Conventional systems have them too. See
+[Signals](../guides/signals.md).
+
+| Key | Default | Type | Description |
+|-----|---------|------|-------------|
+| `id` | | string | Its id: letters, digits and `_` (`CSP_FIRE`) |
+| `name` | `""` | string | What people call it ("Station 4 page"); empty: its id |
+| `pattern` | | string | As the call JSON's `tone_patterns`: `two_tone`, `long`, `hi_low`, `pulsed`, `digits`, `morse`, `sequence` or `beep` |
+| `tonesHz` | `[]` | array | Its tones, Hz, in order (two-tone: A then B) |
+| `digits` | `""` | string | Digit strings: the digits (`KNOX ` first for KNOX tones). Morse: the text (`WRV713`, either case) |
+| `lengthsS` | `[]` | array | Each tone's length, seconds: what ▶ plays (not matched on) |
+| `extraTolerancePct` | `0` | number | How much further than usual a heard tone may be from `tonesHz`, % of the tone. Usually it's within 1.5 % when found in the audio (P25 Phase 1, analog), and within 15.7 Hz + 0.5 % when a P25 Phase 2 tone frame names it (they name tones on a 31.25 Hz grid); this adds to both |
+| `talkgroups` | `[]` | array | Talkgroups it's sent on: numbers, ranges (`1000-1099`) and patterns (`507*`). Empty: any |
+
+```json
+"signals": [
+  { "id": "NORWALK_EMS", "name": "Norwalk EMS page", "pattern": "two_tone", "tonesHz": [788.5, 879.0], "lengthsS": [1, 3], "talkgroups": ["20341"] },
+  { "id": "SIREN_SIGNAL_1", "name": "Daily siren test", "pattern": "digits", "digits": "091363", "talkgroups": ["3"] }
+]
+```
+
+A pattern is told once nothing can add to it: a second after its last tone (a page about a second after
+its B tone ends; a DTMF string or Morse ID a second after its last digit or letter). A call heard on
+several sites of one system is told once.
 
 ## FCC licenses
 

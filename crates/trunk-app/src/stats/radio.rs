@@ -21,6 +21,7 @@ const MAX_PAIRS: usize = 50_000;
 const MAX_FREQS: usize = 512;
 const MAX_AFFILIATIONS: usize = 2000;
 const MAX_LENGTHS: usize = 5000;
+const MAX_TONES: usize = 5000;
 const MAX_RECENT_TX: usize = 30;
 const TOP_TGS: usize = 8;
 /// Ciphers (ALGID, key ID) kept per talkgroup.
@@ -132,6 +133,28 @@ pub struct SystemRadio {
     pub affiliations: VecDeque<(i64, u32, u32)>,
     /// (Unix s, talkgroup, seconds) of recent calls, newest last.
     pub lengths: VecDeque<(i64, u32, f32)>,
+    /// The tone patterns its calls carried (pages, alerts, digits), newest last.
+    pub tones: VecDeque<ToneHeard>,
+}
+
+/// A tone pattern heard on a call ([`trunk_recorder_plugin::TonePattern`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ToneHeard {
+    /// Unix s.
+    pub t: i64,
+    pub tg: u32,
+    pub pattern: String,
+    pub tones: Vec<f32>,
+    pub lengths: Vec<f32>,
+    pub digits: String,
+    pub format: String,
+    pub src: u32,
+    /// Its tones came from the vocoder's tone frames (not the audio).
+    pub frame: bool,
+    /// The system's signals it was (their ids), as configured when heard.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<String>,
 }
 
 /// What the configuration says of a talkgroup.
@@ -397,6 +420,23 @@ impl Registry {
             v.2 += errors;
             v.3 += bad;
         }, || (0, 0, 0, 0));
+        for p in &record.tone_patterns {
+            s.tones.push_back(ToneHeard {
+                t: record.start_time + p.pos as i64,
+                tg: record.talkgroup,
+                pattern: p.pattern.clone(),
+                tones: p.tones.iter().map(|&f| f as f32).collect(),
+                lengths: p.lengths.iter().map(|&l| l as f32).collect(),
+                digits: if p.knox { format!("KNOX {}", p.digits) } else { p.digits.clone() },
+                format: p.format.clone(),
+                src: p.src.max(0) as u32,
+                frame: p.origin == "frame",
+                signals: p.signals.clone(),
+            });
+        }
+        while s.tones.len() > MAX_TONES {
+            s.tones.pop_front();
+        }
         s.evict();
     }
 
@@ -440,6 +480,7 @@ impl Registry {
                 None => json!({ "error": "which radio?" }),
             },
             "freqs" => freqs(s, now, hours),
+            "tones" => tones(name, s, now, hours, limit, names),
             "lengths" => json!({ "histogram": histogram(s.lengths.iter().filter(|l| l.0 > now - hours * 3600).map(|l| l.2)) }),
             _ => json!({ "error": format!("unknown query {what}") }),
         };
@@ -633,6 +674,89 @@ fn freqs(s: &SystemRadio, now: i64, hours: i64) -> Value {
     json!({ "hours": hours, "rows": rows })
 }
 
+/// The tones log: the patterns heard over the last `hours`, alike ones (same
+/// talkgroup, pattern, digits and tones) together, most recently heard first.
+fn tones(name: &str, s: &SystemRadio, now: i64, hours: i64, limit: usize, names: &Names) -> Value {
+    use trunk_core::dsp::inband::tables::{identify_one, identify_pair, tolerance};
+    let near = |x: f32, y: f32, frame: bool| (x - y).abs() <= tolerance(x, frame).min(16.0);
+    let span = |t: &[f32]| (t.iter().copied().fold(f32::MAX, f32::min), t.iter().copied().fold(0.0, f32::max));
+    let alike = |a: &ToneHeard, b: &ToneHeard| {
+        let frame = a.frame && b.frame;
+        a.tg == b.tg
+            && a.pattern == b.pattern
+            && a.digits == b.digits
+            && if a.pattern == "sequence" {
+                // A chirp or a selective call heard with a tone more or less at
+                // either end (the vocoder drops some): the same sweep.
+                let ((alo, ahi), (blo, bhi)) = (span(&a.tones), span(&b.tones));
+                (alo - blo).abs() <= 32.0 && (ahi - bhi).abs() <= 32.0
+            } else {
+                a.tones.len() == b.tones.len() && a.tones.iter().zip(&b.tones).all(|(x, y)| near(*x, *y, frame))
+            }
+    };
+    let mut groups: Vec<Vec<&ToneHeard>> = Vec::new();
+    for h in s.tones.iter().rev().filter(|h| h.t > now - hours * 3600) {
+        match groups.iter_mut().find(|g| alike(g[0], h)) {
+            Some(g) => g.push(h),
+            None => groups.push(vec![h]),
+        }
+    }
+    let total = groups.len();
+    let rows: Vec<Value> = groups
+        .iter()
+        .take(limit)
+        .map(|g| {
+            let h = g[0];
+            let n = h.lengths.len();
+            let lengths: Vec<f32> = (0..n).map(|k| {
+                let mut v: Vec<f32> = g.iter().filter_map(|x| x.lengths.get(k).copied()).collect();
+                v.sort_by(f32::total_cmp);
+                v[v.len() / 2]
+            }).collect();
+            let mut formats: BTreeMap<&str, u32> = BTreeMap::new();
+            let mut radios: BTreeMap<u32, u32> = BTreeMap::new();
+            for x in g {
+                if !x.format.is_empty() {
+                    *formats.entry(x.format.as_str()).or_default() += 1;
+                }
+                if x.src != 0 {
+                    *radios.entry(x.src).or_default() += 1;
+                }
+            }
+            let mut radios: Vec<(u32, u32)> = radios.into_iter().collect();
+            radios.sort_by_key(|r| std::cmp::Reverse(r.1));
+            let format = formats.iter().max_by_key(|f| f.1).map_or("", |f| *f.0);
+            // Which paging codes it may be, likeliest first; none: custom tones.
+            // One tone is a code only held like a group call (8 s): a shorter
+            // one is an alert tone, a beep speech misread or a tone in the background.
+            let mut ids: Vec<String> = match (h.pattern.as_str(), h.tones.as_slice()) {
+                ("two_tone", &[a, b]) => identify_pair(a, b, h.frame, trunk_core::dsp::inband::pattern::format_plan(format)),
+                ("long", &[f]) if lengths[0] >= 6.0 => identify_one(f, h.frame),
+                _ => Vec::new(),
+            };
+            ids.truncate(4);
+            let info = (names.tg)(name, h.tg);
+            json!({
+                "tg": h.tg,
+                "alphaTag": info.as_ref().map_or("", |i| i.alpha_tag.as_str()),
+                "pattern": h.pattern,
+                "tones": h.tones,
+                "lengths": lengths.iter().map(|&l| (l as f64 * 100.0).round() / 100.0).collect::<Vec<f64>>(),
+                "digits": h.digits,
+                "format": format,
+                "count": g.len(),
+                "first": g.last().map_or(0, |x| x.t),
+                "last": h.t,
+                "radios": radios.iter().take(3).map(|&(u, n)| json!({ "unit": u, "name": (names.unit)(name, u), "n": n })).collect::<Vec<Value>>(),
+                "frame": h.frame,
+                "ids": ids,
+                "signals": h.signals,
+            })
+        })
+        .collect();
+    json!({ "hours": hours, "total": total, "rows": rows })
+}
+
 fn summary(name: &str, s: &SystemRadio, now: i64, names: &Names) -> Value {
     let day = now - NEW_S;
     let new_tgs: Vec<Value> = s
@@ -756,6 +880,30 @@ mod tests {
         let (tg, unit) = names();
         let q = back.query(&json!({ "what": "freqs", "system": "x" }), 30, &Names { tg: &tg, unit: &unit });
         assert_eq!(q["rows"][0]["errPerFrame"], 0.05);
+    }
+
+    #[test]
+    fn tones_log_groups_alike_pages() {
+        use trunk_recorder_plugin::{CallRecord, TonePattern};
+        let page = |tones: [f64; 2], src| TonePattern { pattern: "two_tone".into(), tones: tones.to_vec(), lengths: vec![0.98, 2.98], format: "Quick Call II".into(), src, origin: "frame".into(), ..Default::default() };
+        let rec = |t, tg, p: Vec<TonePattern>| CallRecord { start_time: t, talkgroup: tg, tone_patterns: p, ..Default::default() };
+        let mut r = Registry::default();
+        r.concluded("x", &rec(1000, 100, vec![page([781.25, 875.0], 7)]), 1010);
+        r.concluded("x", &rec(2000, 100, vec![page([781.25, 875.0], 7)]), 2010);
+        r.concluded("x", &rec(3000, 100, vec![page([1593.75, 1468.75], 8)]), 3010);
+        r.concluded("x", &rec(4000, 200, vec![page([781.25, 875.0], 9)]), 4010);
+        let (tg, unit) = names();
+        let q = r.query(&json!({ "what": "tones", "system": "x", "hours": 24 }), 5000, &Names { tg: &tg, unit: &unit });
+        assert_eq!(q["total"], 3, "one page on two talkgroups is two rows");
+        let rows = q["rows"].as_array().unwrap();
+        assert_eq!((rows[0]["tg"].as_u64(), rows[0]["count"].as_u64()), (Some(200), Some(1)), "most recent first");
+        let norwalk = &rows[2];
+        assert_eq!((norwalk["count"].as_u64(), norwalk["first"].as_i64(), norwalk["last"].as_i64()), (Some(2), Some(1000), Some(2000)));
+        assert_eq!(norwalk["alphaTag"], "Fire Dispatch");
+        assert_eq!(norwalk["format"], "Quick Call II");
+        assert_eq!(norwalk["radios"][0]["name"], "E7");
+        assert_eq!(norwalk["ids"][0], "QC2 126/128 (268)");
+        assert_eq!(rows[1]["ids"][0], "QC2 173/170");
     }
 
     #[test]
