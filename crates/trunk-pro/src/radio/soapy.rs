@@ -335,16 +335,12 @@ pub fn find() -> Result<Vec<serde_json::Value>, String> {
     if list.is_null() {
         return Ok(vec![]);
     }
+    // SAFETY: n kwargs.
+    let found: Vec<Vec<(String, String)>> = (0..n).map(|i| unsafe { kwargs(&*list.add(i)) }).collect();
     let mut out = Vec::new();
-    for i in 0..n {
-        // SAFETY: n kwargs.
-        let kv = unsafe { kwargs(&*list.add(i)) };
+    for (kv, args) in found.iter().zip(device_args(&found)) {
         let get = |k: &str| kv.iter().find(|(key, v)| key == k && !v.is_empty()).map(|(_, v)| v.clone());
         let driver = get("driver").unwrap_or_default();
-        let args = match get("serial") {
-            Some(s) if !driver.is_empty() => format!("driver={driver},serial={s}"),
-            _ => kv.iter().filter(|(k, _)| k != "label").map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","),
-        };
         let mut label = get("label").unwrap_or_else(|| driver.clone());
         if let Some((_, native)) = NATIVE.iter().find(|(d, _)| *d == driver) {
             label.push_str(&format!(" — the {native} source is recommended"));
@@ -358,6 +354,34 @@ pub fn find() -> Result<Vec<serde_json::Value>, String> {
     // SAFETY: the list enumerate returned.
     unsafe { (a.kwargs_list_clear)(list, n) };
     Ok(out)
+}
+
+/// The device arguments that open each device enumerate found: its driver
+/// and serial, and, where several entries share them (an SDRplay RSPduo is
+/// listed once per tuner mode: `mode=ST`, `DT`, `MA` …), the keys that tell
+/// them apart. Without a serial: every key but the label.
+fn device_args(found: &[Vec<(String, String)>]) -> Vec<String> {
+    let get = |kv: &[(String, String)], k: &str| kv.iter().find(|(key, v)| key == k && !v.is_empty()).map(|(_, v)| v.clone());
+    let base = |kv: &[(String, String)]| match (get(kv, "driver"), get(kv, "serial")) {
+        (Some(d), Some(s)) => Some(format!("driver={d},serial={s}")),
+        _ => None,
+    };
+    found
+        .iter()
+        .map(|kv| match base(kv) {
+            Some(b) => {
+                let twins: Vec<&Vec<(String, String)>> = found.iter().filter(|o| base(o).as_deref() == Some(b.as_str())).collect();
+                if twins.len() < 2 {
+                    return b;
+                }
+                // The keys whose values differ among the entries sharing driver and serial.
+                let differ = |k: &str| twins.iter().any(|o| get(o, k) != get(kv, k));
+                let extra: Vec<String> = kv.iter().filter(|(k, v)| !v.is_empty() && !["driver", "serial", "label"].contains(&k.as_str()) && differ(k)).map(|(k, v)| format!("{k}={v}")).collect();
+                if extra.is_empty() { b } else { format!("{b},{}", extra.join(",")) }
+            }
+            None => kv.iter().filter(|(k, _)| k != "label").map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","),
+        })
+        .collect()
 }
 
 /// For the interface: `{available, detail, modules, searchPaths, devices}`
@@ -779,6 +803,32 @@ impl Stamps {
 
 #[cfg(test)]
 mod tests {
+    fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    /// An RSPduo is listed once per tuner mode: each entry keeps its mode, so it
+    /// opens that mode; a radio listed once is its driver and serial.
+    #[test]
+    fn device_args_keep_what_tells_entries_apart() {
+        let duo = |mode: &str, label: &str| kv(&[("driver", "sdrplay"), ("label", label), ("mode", mode), ("serial", "1809075332")]);
+        let found = vec![
+            duo("ST", "RSPduo - Single Tuner"),
+            duo("DT", "RSPduo - Dual Tuner"),
+            kv(&[("driver", "hackrf"), ("label", "HackRF One"), ("serial", "abc"), ("version", "2024")]),
+            kv(&[("driver", "remote"), ("label", "x"), ("remote", "tcp://1.2.3.4")]),
+        ];
+        assert_eq!(
+            device_args(&found),
+            [
+                "driver=sdrplay,serial=1809075332,mode=ST",
+                "driver=sdrplay,serial=1809075332,mode=DT",
+                "driver=hackrf,serial=abc",
+                "driver=remote,remote=tcp://1.2.3.4",
+            ]
+        );
+    }
+
     use super::*;
 
     const RATE: f64 = 2_400_000.0;
