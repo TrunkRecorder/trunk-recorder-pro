@@ -279,9 +279,23 @@ impl Site {
 
     /// The carrier sending CAC now; on Type-D (no control channel), the
     /// last one heard, so the site doesn't look like it is hunting.
-    pub fn control_hz(&self) -> Option<u64> {
+    fn control_carrier(&self) -> Option<&Carrier> {
         let at = |c: &Carrier| if self.cfg.kind == Kind::TypeD { c.heard_s } else { c.control_s };
-        self.carriers.iter().filter(|c| self.now_s - at(c) < CONTROL_HOLD_S).max_by(|a, b| at(a).total_cmp(&at(b))).map(|c| c.hz)
+        self.carriers.iter().filter(|c| self.now_s - at(c) < CONTROL_HOLD_S).max_by(|a, b| at(a).total_cmp(&at(b)))
+    }
+
+    pub fn control_hz(&self) -> Option<u64> {
+        self.control_carrier().map(|c| c.hz)
+    }
+
+    /// How far off the control carrier comes in, Hz, once its receiver can tell (AutoTune).
+    pub fn offset_hz(&self) -> Option<f32> {
+        self.control_carrier().and_then(|c| c.rx.offset_hz())
+    }
+
+    /// The control carrier's eye opening (the dashboard's).
+    pub fn quality(&self) -> Option<f32> {
+        self.control_carrier().and_then(|c| c.rx.quality())
     }
 
     /// The learned table as `channel=hz` lines.

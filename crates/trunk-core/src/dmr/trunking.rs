@@ -246,8 +246,22 @@ impl Site {
     }
 
     /// The carrier sending control blocks now (control or rest channel).
+    fn control_carrier(&self) -> Option<&Carrier> {
+        self.carriers.iter().filter(|c| self.now_s - c.control_s < CONTROL_HOLD_S).max_by(|a, b| a.control_s.total_cmp(&b.control_s))
+    }
+
     pub fn control_hz(&self) -> Option<u64> {
-        self.carriers.iter().filter(|c| self.now_s - c.control_s < CONTROL_HOLD_S).max_by(|a, b| a.control_s.total_cmp(&b.control_s)).map(|c| c.hz)
+        self.control_carrier().map(|c| c.hz)
+    }
+
+    /// How far off the control carrier comes in, Hz, once its receiver can tell (AutoTune).
+    pub fn offset_hz(&self) -> Option<f32> {
+        self.control_carrier().and_then(|c| c.rx.offset_hz())
+    }
+
+    /// The control carrier's eye opening (the dashboard's).
+    pub fn quality(&self) -> Option<f32> {
+        self.control_carrier().and_then(|c| c.rx.quality())
     }
 
     /// The learned table as `lcn=hz` lines.

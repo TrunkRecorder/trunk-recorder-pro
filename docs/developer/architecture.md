@@ -542,7 +542,11 @@ reported an offset records its average the same way (|ppm| ≤ 50 kept; the medi
 of both kinds, is the score). `Session::load_tune` / `tune_unsaved` carry each source's score to
 the next run (`tune.json`), which starts from it. With `autoTune` on, new heads open at
 `f × (1 + ppm·1e-6) − center`. P25 control channels more than 150 Hz off are reopened at the
-corrected frequency, at most every 200 s. The measured error is always reported (`SourceTune`).
+corrected frequency, at most every 200 s. A watching site (DMR, NXDN, EDACS) measures the carrier
+the control channel is on now, against the correction it was opened with; its carriers stay where
+they were opened (their receivers follow the offset). The measured error is always reported
+(`SourceTune`). `ControlChannel::offset_hz` and `VoiceDecoder::offset_hz` have no default: every
+protocol says whether it measures one.
 
 ### 5.7 Patches
 

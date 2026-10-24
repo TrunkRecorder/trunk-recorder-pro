@@ -232,19 +232,17 @@ pub trait VoiceDecoder: Send {
     fn air(&self, _slot: u8) -> AirInfo {
         AirInfo::default()
     }
-    /// How far above the channel's centre the carrier is, Hz, when known.
-    fn offset_hz(&self) -> Option<f32> {
-        None
-    }
+    /// How far above the channel's centre the carrier is, Hz, when known:
+    /// the call's `freq_error`, and AutoTune. (No default: each decoder says,
+    /// so one that forgets doesn't report 0 for every call.)
+    fn offset_hz(&self) -> Option<f32>;
     /// Analog: whether the carrier was up during the last push (digital
     /// decoders don't tell: None).
     fn carrier(&self) -> Option<bool> {
         None
     }
-    /// How well its receiver hears the channel (the dashboard's): default, nothing measured.
-    fn quality(&self) -> ChannelQuality {
-        ChannelQuality::default()
-    }
+    /// How well its receiver hears the channel (the dashboard's).
+    fn quality(&self) -> ChannelQuality;
 }
 
 /// How well a receiver hears its channel, as the dashboard shows it.
@@ -454,6 +452,9 @@ impl VoiceDecoder for Dmr {
     fn air(&self, slot: u8) -> AirInfo {
         AirInfo { talkgroup: self.voice.talkgroup(slot), nac: None, color_code: self.voice.color_code(slot), ran: None, air: self.air[slot as usize & 1] }
     }
+    fn offset_hz(&self) -> Option<f32> {
+        self.rx.offset_hz()
+    }
 }
 
 /// NXDN: 4FSK at the channel's rate, the frame framer, one call at a time.
@@ -532,6 +533,10 @@ impl VoiceDecoder for ProVoice {
     fn offset_hz(&self) -> Option<f32> {
         Some(self.pv.offset_hz())
     }
+    /// (Its 2FSK receiver doesn't measure an eye opening.)
+    fn quality(&self) -> ChannelQuality {
+        ChannelQuality::default()
+    }
 }
 
 enum Demod {
@@ -586,5 +591,12 @@ impl VoiceDecoder for Analog {
     }
     fn carrier(&self) -> Option<bool> {
         Some(self.carrier)
+    }
+    /// (Its demodulators don't measure the carrier's offset, or an eye opening.)
+    fn offset_hz(&self) -> Option<f32> {
+        None
+    }
+    fn quality(&self) -> ChannelQuality {
+        ChannelQuality::default()
     }
 }

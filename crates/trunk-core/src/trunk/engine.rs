@@ -1047,10 +1047,9 @@ struct Hunt {
     /// Its source's clock offset when it opened (time since is samples
     /// since, plus how much the offset moved).
     offset_s: f64,
-    /// AutoTune: where it was placed; when it was last measured, and when
-    /// the site last reopened one at a correction.
+    /// AutoTune: where it was placed, and when the site last reopened one
+    /// at a correction.
     tuning: Tuning,
-    measured_s: f64,
     retuned_s: f64,
 }
 
@@ -1061,6 +1060,8 @@ struct Carrier {
     head: HeadId,
     /// The source sample its head began at.
     start: u64,
+    /// AutoTune: where it was placed (it stays there: its receiver follows the offset).
+    tuning: Tuning,
 }
 
 /// One site of a trunked system: its control channel, parser (band plan) and
@@ -1099,6 +1100,8 @@ struct Trunk {
     voice_params: VoiceParams,
     /// How far off the control channel came in at the last block, Hz (AutoTune).
     cc_offset_hz: Option<f32>,
+    /// AutoTune: when the control channel was last measured.
+    measured_s: f64,
     /// Terminators' link control, as talker aliases see it: encrypted,
     /// clear, alias fragments; then Phase 2 alias messages ([`AliasLc`]).
     alias_lc: [u64; 4],
@@ -1179,12 +1182,13 @@ impl Trunk {
             let mut rx = radio.rx(src);
             let s = &mut rx.src;
             let (head, _, _) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
-            let hunt = Hunt { cutoff_hz, index, source: src, head, start_s: self.now_s, samples: 0, offset_s: s.clock_offset_s, tuning: s.tuning(), measured_s: self.now_s, retuned_s };
+            let hunt = Hunt { cutoff_hz, index, source: src, head, start_s: self.now_s, samples: 0, offset_s: s.clock_offset_s, tuning: s.tuning(), retuned_s };
             let rate = s.chz.output_rate();
             rx.set_tap(Self::hunt_tap(self.site, &self.cc, &hunt));
             (hunt, rate)
         };
         self.listening = Listening::Hunting(hunt);
+        self.measured_s = self.now_s;
         self.cc_hz = Some(hz.round() as u64);
         self.last_good_s = self.now_s;
         self.cc().restart(rate);
@@ -1218,7 +1222,7 @@ impl Trunk {
             let mut rx = radio.rx(src);
             let s = &mut rx.src;
             let (head, _, start) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
-            heads.push(Carrier { hz, source: src, head, start });
+            heads.push(Carrier { hz, source: src, head, start, tuning: s.tuning() });
         }
         if !outside.is_empty() {
             let name = self.cc().name();
@@ -1228,6 +1232,7 @@ impl Trunk {
             radio.rx(c.source).set_tap(Tap { site: self.site, carrier: i, head: c.head, cc: self.cc.clone(), at: TapTime::Watch { start: c.start } });
         }
         self.listening = Listening::Watching(heads);
+        self.measured_s = self.now_s;
         events.push(self.note(NoteLevel::Info, note));
         Ok(())
     }
@@ -1257,12 +1262,12 @@ impl Trunk {
         h.samples += cc.samples;
         let moved = offset - h.offset_s;
         self.now_s = h.start_s + h.samples as f64 / rate + moved;
-        let (index, cutoff_hz, measured_s) = (h.index, h.cutoff_hz, h.measured_s);
+        let (index, cutoff_hz) = (h.index, h.cutoff_hz);
         self.cc_offset_hz = cc.offset_hz;
         self.follow(radio, sys, cc, events, call_events);
         if self.now_s - self.last_good_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
             let _ = self.tune(radio, sys, cutoff_hz, index + 1, events);
-        } else if self.now_s - measured_s >= TUNE_EVERY_S {
+        } else if self.now_s - self.measured_s >= TUNE_EVERY_S {
             self.measure(radio);
         }
         let mut host = self.host(radio, sys);
@@ -1283,7 +1288,11 @@ impl Trunk {
         if cc.control_hz.is_some() {
             self.last_good_s = self.now_s;
         }
+        self.cc_offset_hz = cc.offset_hz;
         self.follow(radio, sys, cc, events, call_events);
+        if self.now_s - self.measured_s >= TUNE_EVERY_S {
+            self.measure(radio);
+        }
         let mut host = self.host(radio, sys);
         self.calls.tick(self.now_s, &mut host, call_events);
     }
@@ -1353,17 +1362,28 @@ impl Trunk {
     }
 
     /// AutoTune: how far off the control channel comes in (while it decodes),
-    /// into its source's average; a control channel well off the correction
-    /// is reopened at it, when its protocol allows.
+    /// into its source's average. A hunted control channel well off the
+    /// correction is reopened at it, when its protocol allows; a watched
+    /// carrier stays where it was opened.
     fn measure(&mut self, radio: &mut Radio) {
         let now = self.now_s;
-        let (Listening::Hunting(h), Some(hz)) = (&mut self.listening, self.cc_hz) else { return };
-        h.measured_s = now;
+        let Some(hz) = self.cc_hz else { return };
+        self.measured_s = now;
         if now - self.last_good_s > 1.0 {
             return;
         }
         let (Some(off), reopens) = (self.cc_offset_hz, self.reopens) else { return };
         let hz = hz as f64;
+        let h = match &mut self.listening {
+            Listening::Hunting(h) => h,
+            Listening::Watching(carriers) => {
+                if let Some(c) = carriers.iter().find(|c| c.hz.round() == hz) {
+                    radio.rx(c.source).src.measured(c.tuning.error_hz(hz, off as f64) / hz * 1e6);
+                }
+                return;
+            }
+            Listening::Off => return,
+        };
         let mut rx = radio.rx(h.source);
         let s = &mut rx.src;
         s.measured(h.tuning.error_hz(hz, off as f64) / hz * 1e6);
@@ -1533,6 +1553,7 @@ impl Core {
                 reopens: false,
                 voice_params: VoiceParams::default(),
                 cc_offset_hz: None,
+                measured_s: 0.0,
                 alias_lc: [0; 4],
                 lc_protected_tgs: BTreeSet::new(),
                 cfg: sc.clone(),
@@ -1647,8 +1668,14 @@ impl Core {
         for t in &self.trunks {
             // Watching every carrier (a DMR site): each, the control one marked.
             if let Listening::Watching(carriers) = &t.listening {
+                let (offset_hz, quality) = {
+                    let c = t.cc();
+                    (c.offset_hz(), c.quality())
+                };
                 for c in carriers {
-                    control.push(Want { system: t.system, site: Some(t.site), hz: c.hz, src: c.source, kind: if Some(c.hz.round() as u64) == t.cc_hz { ChannelKind::Control } else { ChannelKind::Carrier }, ..Default::default() });
+                    let want = Want { system: t.system, site: Some(t.site), hz: c.hz, src: c.source, kind: ChannelKind::Carrier, ..Default::default() };
+                    // (The control carrier's receiver is the one measured.)
+                    control.push(if Some(c.hz.round() as u64) == t.cc_hz { Want { kind: ChannelKind::Control, offset_hz, quality, ..want } } else { want });
                 }
                 continue;
             }

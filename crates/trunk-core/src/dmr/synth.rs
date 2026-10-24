@@ -352,6 +352,43 @@ mod tests {
     }
 
     #[test]
+    fn a_conventional_dmr_call_has_its_frequency_error() {
+        // A repeater and a mobile in simplex, both 600 Hz above the channel.
+        let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
+        for t in [tx(), Tx { mobile: true, slot: 0, ..tx() }] {
+            let iq = wideband_of(&t, fs, freq - center + 600.0);
+            let cfg = EngineConfig {
+                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                conventional: vec![ConvChannel::new(freq, ConvMode::Dmr)],
+                ..Default::default()
+            };
+            let done = run(cfg, &iq);
+            assert_eq!(done.len(), 1);
+            let err = done[0].record.freq_error;
+            assert!((err - 600).abs() < 100, "mobile {}: {err} Hz", t.mobile);
+        }
+    }
+
+    #[test]
+    fn a_trunked_dmr_sites_control_carrier_is_measured_for_autotune() {
+        // A control channel (CSBKs on the other slot) 600 Hz above where it should be, for 13 s.
+        let (fs, center, freq) = (240_000.0, 460_000_000.0, 460_050_000.0);
+        let t = Tx { superframes: 1, idle_before: 420, idle_after: 10, csbks: vec![[0x19, 0, 0, 0, 0, 0, 0, 0, 0, 0]], ..tx() };
+        let iq = wideband_of(&t, fs, freq - center + 600.0);
+        let cfg = EngineConfig {
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            systems: vec![SystemConfig::trunked("cap", vec![SiteConfig { control_channels: vec![freq], protocol: crate::trunk::Protocol::Dmr(Default::default()), ..Default::default() }])],
+            ..Default::default()
+        };
+        let e = Engine::new(cfg).unwrap();
+        for c in iq.chunks(8192) {
+            e.push_iq(0, c);
+        }
+        let ppm = e.status().sources[0].error_ppm.expect("the control carrier measured");
+        assert!((ppm - 600.0 / 460.05).abs() < 0.2, "{ppm:.3} ppm");
+    }
+
+    #[test]
     fn engine_records_a_trunked_dmr_call_found_by_its_link_control() {
         let (fs, center, freq) = (240_000.0, 460_000_000.0, 460_050_000.0);
         let iq = wideband(fs, freq - center);

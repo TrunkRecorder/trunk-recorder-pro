@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **DMR calls have their frequency error** (`freq_error` in the call JSON), conventional and
+  trunked: it was always 0. A conventional DMR channel's `autoTune` now corrects its source,
+  as the docs said it did.
+- **Trunked DMR, NXDN and EDACS sites measure their control channel's frequency error** for
+  AutoTune and the dashboard's frequency error, as P25 and SmartNet sites do. They measured
+  nothing from it before: a DMR radio's error went unmeasured, and an NXDN one's came only from
+  calls.
 - **Phase 2, DMR and NXDN tones no longer drop out on a weak signal.** A tone frame was recognised
   only if four unprotected bits at its end were zero, so a single bit error there lost it and the
   tone faded out for a frame. A tone frame is now recognised by its Golay-protected signature alone,
