@@ -459,7 +459,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `olderCalls` | Answers `olderCalls` | `before` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still) |
 | `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
-| `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `row` and its detail, `systems` (summary), `histogram` |
+| `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `outOfBand` (freqs), `row` and its detail, `systems` (summary), `histogram` |
 | `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the plugins are done (`audio`: some audio, .wav or .m4a, stays: **Keep .wav** / **Keep .m4a**; `json`: **Keep call JSON**; false: deleted then) |
 | `callFiles` | A call's upload plugins are done, and it kept other than its entry said (an upload failed and its files stay) | `path`, `audio`, `json` |
 | `log` | Topic `log` (warnings and errors always) | `lines[]`: `{ timeS, kind, text, system?, time?, level? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, `"info"`, or a control-message kind; the decoder's lines have `timeS` (seconds into the recording), the recorder's own `time` (Unix seconds) and `level` |
@@ -715,7 +715,8 @@ The **radio registry** (`radioQuery`) is what the recorder has heard of each
 system: talkgroups (first and last heard, calls and airtime by hour, whether
 in the talkgroup file or ignored), radios (transmissions, affiliation, the
 talkgroups they use, the radios heard with them), and each frequency's voice
-quality. It is kept between runs (`<data folder>/radio/`).
+quality and calls out of band (`freqs`: `rows`, the frequencies with a call
+recorded; `outOfBand`, those granted calls no source covered). It is kept between runs (`<data folder>/radio/`).
 
 ## Compatibility
 

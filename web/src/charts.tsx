@@ -735,7 +735,7 @@ const OWN_CLICK = "a, button, input, select, textarea, label, summary, [role=but
  * A card: title, a status light and why, actions, and a body. `open` /
  * `onToggle`: a part that expands for detail (remembered per `id`).
  */
-export function Card(props: { title: ReactNode; level?: Level; why?: string; actions?: ReactNode; children?: ReactNode; className?: string; onTitle?: () => void; detail?: ReactNode; id?: string }) {
+export function Card(props: { title: ReactNode; level?: Level; why?: string; onWhy?: () => void; actions?: ReactNode; children?: ReactNode; className?: string; onTitle?: () => void; detail?: ReactNode; id?: string }) {
   const key = props.id ? `trp.card.${props.id}` : null;
   const [open, setOpen] = useState(() => {
     try {
@@ -776,7 +776,18 @@ export function Card(props: { title: ReactNode; level?: Level; why?: string; act
         </div>
         <div className="row">{props.actions}</div>
       </header>
-      {props.why && props.level && props.level !== "ok" && props.level !== "idle" && <p className={`why why-${props.level}`}>{props.why}</p>}
+      {/* (A warning that says where what it's about is listed links there.) */}
+      {props.why && props.level && props.level !== "ok" && props.level !== "idle" && (
+        <p className={`why why-${props.level}`}>
+          {props.onWhy ? (
+            <button className="linkish why-link" onClick={props.onWhy}>
+              {props.why} <span aria-hidden="true">→</span>
+            </button>
+          ) : (
+            props.why
+          )}
+        </p>
+      )}
       {props.children}
       {props.detail && (
         <>

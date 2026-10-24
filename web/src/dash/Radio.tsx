@@ -3,14 +3,14 @@
 // affiliated with and who they talk with — and, for one talkgroup or one
 // radio, its week and its connections.
 
-import { useMemo, useState } from "react";
-import { systemColor } from "../config.ts";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { formatMhz, systemColor } from "../config.ts";
 import { radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
 import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
-import type { CipherSeen, LengthHistogram, RadioResult, TgRow, UnitRow } from "../protocol.ts";
+import type { CipherSeen, LengthHistogram, OutOfBandRow, RadioResult, TgRow, UnitRow } from "../protocol.ts";
 import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
-import { dashSystems, K, KIND_LABEL, running, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
+import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
 
 type Hours = "24" | "168";
 const HOURS: { v: Hours; label: string }[] = [
@@ -18,15 +18,15 @@ const HOURS: { v: Hours; label: string }[] = [
   { v: "168", label: "7 days" },
 ];
 
-/** Why calls weren't recorded (and were), in the order shown. */
-const REASONS: { k: string; label: string; color: string; hint: string }[] = [
+/** Why calls weren't recorded (and were), in the order shown; `at`: the part of the system's page listing them. */
+const REASONS: { k: string; label: string; color: string; hint: string; at?: string }[] = [
   { k: "recorded", label: "Recorded", color: "var(--series-1)", hint: "" },
   { k: "monitored", label: "Followed only", color: "var(--series-3)", hint: "Followed, not recorded" },
   { k: "ignored", label: "Ignored", color: "var(--muted-mark)", hint: "Set to Ignore in the talkgroup file" },
   { k: "encrypted", label: "Encrypted", color: "var(--series-6)", hint: "Encrypted calls are off" },
   { k: "unknown_tg", label: "Not in the file", color: "var(--series-4)", hint: "Unknown talkgroups are off" },
   { k: "no_recorder", label: "No recorder", color: "var(--critical)", hint: "All recorders busy" },
-  { k: "no_source", label: "Out of band", color: "var(--serious)", hint: "No source covers the frequency" },
+  { k: "no_source", label: "Out of band", color: "var(--serious)", hint: "No source covers the frequency: which ones", at: OUT_OF_BAND },
 ];
 
 const hourLabel = (hours: number) => (i: number) => {
@@ -67,7 +67,7 @@ function Reasons({ name, range, health }: { name: string; range: "24h" | "7d"; h
   const counts = REASONS.map((r) => Math.round(total(hist?.[K.sys(name, `why/${r.k}`)]) ?? 0));
   const sum = counts.reduce((a, b) => a + b, 0);
   return (
-    <Card title="What happened to calls" level={health.level} why={health.why}>
+    <Card title="What happened to calls" level={health.level} why={health.why} onWhy={goTo(health)}>
       {sum === 0 ? (
         <p className="empty">No calls yet.</p>
       ) : (
@@ -80,9 +80,9 @@ function Reasons({ name, range, health }: { name: string; range: "24h" | "7d"; h
           <ul className="legend-list">
             {REASONS.map((r, i) =>
               counts[i] > 0 ? (
-                <li key={r.k} title={r.hint}>
+                <li key={r.k} title={r.hint} className={r.at ? "opens" : undefined} onClick={r.at ? () => setView("radio", name, r.at!) : undefined}>
                   <i style={{ background: r.color }} />
-                  {r.label}
+                  {r.at ? <button className="linkish">{r.label} →</button> : r.label}
                   <b>{compact(counts[i])}</b>
                   <span className="muted">{Math.round((100 * counts[i]) / sum)}%</span>
                 </li>
@@ -267,7 +267,65 @@ function Lengths({ h }: { h: LengthHistogram | undefined }) {
   );
 }
 
-function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
+/**
+ * The frequencies granted that no source covered, in the span: how often,
+ * when last, and the nearest source with how far past its usable edge each
+ * is. Shown when there are some, or when asked for (`focus`: scrolled to).
+ */
+function OutOfBand({ s, sys, rows, hours, focus }: { s: AppState; sys: DashSystem; rows: OutOfBandRow[]; hours: number; focus: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focus) ref.current?.scrollIntoView({ block: "start" });
+  }, [focus]);
+  if (!rows.length && !focus) return null;
+  const n = rows.reduce((a, r) => a + r.calls, 0);
+  return (
+    <div ref={ref}>
+      <Card title={`Out of band (${rows.length})`} actions={rows.length > 0 && <span className="muted small">{compact(n)} calls missed</span>}>
+        {rows.length === 0 ? (
+          <p className="empty">None in the last {hours === 24 ? "24 hours" : "7 days"}: every frequency granted was in a source's band.</p>
+        ) : (
+          <>
+            <p className="muted small">
+              Calls granted on these frequencies weren't recorded: no source covers them. Move a source's centre toward them, widen its sample rate, or add a source.
+            </p>
+            <div className="table-wrap">
+              <table className="calls">
+                <thead>
+                  <tr>
+                    <th>MHz</th>
+                    <th>Calls</th>
+                    <th>By hour</th>
+                    <th>Last</th>
+                    <th>Nearest source</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const c = coverage(s, r.freqHz);
+                    return (
+                      <tr key={r.freqHz}>
+                        <td className="mono">{formatMhz(r.freqHz)}</td>
+                        <td className="mono" title={`${r.totalCalls} all told`}>{r.calls}</td>
+                        <td className="spark-cell">
+                          <HeatStrip v={r.hourly} titles={r.hourly.map((v, i) => `${hourLabel(hours)(i)}: ${v} calls`)} />
+                        </td>
+                        <td className="small">{ago(r.last)}</td>
+                        <td className="small">{!c ? "—" : c.beyondHz > 0 ? `${c.src.label}: ${c.beyondHz >= 1e6 ? `${num(c.beyondHz / 1e6, 2)} MHz` : `${num(c.beyondHz / 1000, 1)} kHz`} past its usable edge` : `${c.src.label} (covers it now)`}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function SystemView({ s, sys, focus }: { s: AppState; sys: DashSystem; focus?: string }) {
   const [hours, setHours] = useState<Hours>("24");
   const h = Number(hours);
   const live = running(s);
@@ -276,6 +334,7 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
   const unitsR = usePolled(`units:${sys.name}:${hours}`, () => radioQuery({ what: "units", system: sys.name, hours: h, limit: 1000 }), every);
   const sumR = usePolled(`sum:${sys.name}`, () => radioQuery({ what: "summary" }), every * 2);
   const lenR = usePolled(`len:${sys.name}:${hours}`, () => radioQuery({ what: "lengths", system: sys.name, hours: h }), every * 2);
+  const freqsR = usePolled(`oob:${sys.name}:${hours}`, () => radioQuery({ what: "freqs", system: sys.name, hours: h }), every * 2);
   const tgs = (tgsR?.rows ?? []) as TgRow[];
   const units = (unitsR?.rows ?? []) as UnitRow[];
   const summary = sumR?.systems?.[sys.name];
@@ -308,6 +367,7 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
         <Reasons name={sys.name} range={hours === "24" ? "24h" : "7d"} health={systemRadioHealth(s, sys)} />
         <Lengths h={lenR?.histogram} />
       </div>
+      <OutOfBand s={s} sys={sys} rows={freqsR?.outOfBand ?? []} hours={h} focus={focus === OUT_OF_BAND} />
       {busy.length > 0 && (
         <Card title={`Busiest ${busy.length} by hour`}>
           <Heatmap
@@ -569,6 +629,7 @@ function AllSystems({ s, systems }: { s: AppState; systems: DashSystem[] }) {
             className="sys-section"
             level={h.level}
             why={h.why}
+            onWhy={goTo(h)}
             title={<SystemTag config={s.config} name={x.name} />}
             onTitle={() => setView("radio", x.name)}
             actions={<span className="badge-kind">{KIND_LABEL[x.kind]}</span>}
@@ -679,7 +740,7 @@ export function RadioPage() {
           <Light level="idle" /> Not recording — showing past data.
         </p>
       )}
-      {what === "tg" && key ? <TgView s={s} sys={sys} tg={Number(key)} /> : what === "unit" && key ? <UnitView s={s} sys={sys} unit={Number(key)} /> : <SystemView s={s} sys={sys} />}
+      {what === "tg" && key ? <TgView s={s} sys={sys} tg={Number(key)} /> : what === "unit" && key ? <UnitView s={s} sys={sys} unit={Number(key)} /> : <SystemView s={s} sys={sys} focus={what} />}
     </div>
   );
 }

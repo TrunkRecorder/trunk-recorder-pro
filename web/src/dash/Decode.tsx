@@ -4,12 +4,12 @@
 // so a bad channel, a band edge or a source's ppm shows up as a pattern.
 
 import { Fragment, useState } from "react";
-import { formatMhz, usableHalfWidth } from "../config.ts";
+import { formatMhz } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
-import type { ChannelSnapshot, FreqRow, SeriesData, SourceStatus } from "../protocol.ts";
-import { change, dashSystems, K, KIND_LABEL, perLive, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
+import type { ChannelSnapshot, FreqRow, SeriesData } from "../protocol.ts";
+import { change, coverage, dashSystems, K, KIND_LABEL, perLive, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
 import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 
 /** `a / b` step by step (errors per frame from the two rates). */
@@ -54,22 +54,6 @@ export function quality(c: { quality: number | null; phaseErrDeg: number | null 
   return c.quality !== null ? num(c.quality, 1) : c.phaseErrDeg !== null ? `${num(c.phaseErrDeg, 1)}°` : "—";
 }
 
-/**
- * The source covering `hz` (the one it's deepest in), and how far inside the
- * usable part of its band it is: 0 at the usable edge (half the band less the
- * source's guard) or out in the guard, 1 at the centre.
- */
-function placeOn(s: AppState, hz: number): { src: SourceStatus; depth: number } | null {
-  let best: { src: SourceStatus; depth: number } | null = null;
-  for (const src of s.sources) {
-    const off = Math.abs(hz - src.centerHz);
-    if (off > src.rateHz / 2) continue;
-    const depth = Math.max(0, 1 - off / usableHalfWidth(src.rateHz, sourceGuard(s, src)));
-    if (!best || depth > best.depth) best = { src, depth };
-  }
-  return best;
-}
-
 /** What the frequencies say together: a common offset, trouble at a band edge, one bad channel. */
 function freqHints(rows: FreqRow[], s: AppState): string[] {
   const out: string[] = [];
@@ -86,7 +70,7 @@ function freqHints(rows: FreqRow[], s: AppState): string[] {
     const median = sorted[Math.floor(sorted.length / 2)];
     for (const r of rated) {
       if (r.badPct! < Math.max(3, median * 3)) continue;
-      const p = placeOn(s, r.freqHz);
+      const p = coverage(s, r.freqHz);
       if (p && p.depth < 0.15) out.push(`${mhz(r.freqHz)} MHz decodes worse, at the edge of ${p.src.label}'s band: move the centre toward it.`);
       else out.push(`${mhz(r.freqHz)} MHz decodes worse (${num(r.badPct, 1)}% lost vs ${num(median, 1)}%): interference or a weak path.`);
     }
@@ -414,7 +398,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
               </thead>
               <tbody>
                 {rows.map((r) => {
-                  const p = placeOn(s, r.freqHz);
+                  const p = coverage(s, r.freqHz);
                   return (
                     <tr key={r.freqHz}>
                       <td className="mono">{formatMhz(r.freqHz)}</td>
