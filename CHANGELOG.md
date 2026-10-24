@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.9] — 2026-10-24
+
 - **Add a system from the directory.** A system's page in the systems directory opens it in
   Trunk Recorder Pro (the web version, or the desktop app at its address), or downloads it
   for **Setup → Systems → Import…** (formerly "Import Trunk Recorder config…", which still
