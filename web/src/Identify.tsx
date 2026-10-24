@@ -187,7 +187,7 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
 }
 
 /** A dialog over the page: Escape or a click outside closes it. */
-function Modal(props: { title: string; onClose: () => void; children: React.ReactNode }) {
+export function Modal(props: { title: string; onClose: () => void; children: React.ReactNode }) {
   // Focus once on open: an inline ref callback runs again on every render and would pull focus out of the fields.
   const back = useRef<HTMLDivElement>(null);
   useEffect(() => back.current?.focus(), []);

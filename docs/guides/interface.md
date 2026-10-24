@@ -59,7 +59,7 @@ same recorder.
 
 | Tab | What's there | Details |
 |---|---|---|
-| **Systems** | **Find my system**, your trunked systems, **Add a system**, **Import Trunk Recorder config…** | [Find my system](find-my-system.md), [P25](p25.md), [SmartNet](smartnet.md), [DMR](dmr.md), [NXDN](nxdn.md) |
+| **Systems** | **Find my system**, your trunked systems, **Add a system**, **Import…** (a Trunk Recorder config, or a [system from the directory](from-the-directory.md)) | [Find my system](find-my-system.md), [P25](p25.md), [SmartNet](smartnet.md), [DMR](dmr.md), [NXDN](nxdn.md) |
 | **Conventional** | Conventional systems and their channels | [Conventional](conventional.md) |
 | **Radios** | Your sources (dongles, other radios, capture files), **Add a source**, **Dongle not showing up?** | [Radios](radios.md) |
 | **Recording** | **Recorder** (recordings folder, recorders, pre-roll, voice decoder, RAM spool, start on launch), **Call rules**, **Log**, **M4A audio** | [Recordings](recordings.md) |
