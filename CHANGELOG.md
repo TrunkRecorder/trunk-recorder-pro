@@ -11,7 +11,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   model and rates (**Setup → Radios** lists "Airspy R2 · SN …", and `trunk-pro devices` its
   rates): a source added for one starts at a rate it runs at, picking a different Airspy moves
   the rate to one it does, the rate list offers what it does, and a rate it can't do is flagged
-  on the page. The log's refusal names the model and points at Setup.
+  on the page. Starting the recorder with an Airspy set to a rate it doesn't do runs it at its
+  first rate instead and saves that in the config, with a warning in the log; one that can't be
+  asked still refuses, naming the model and pointing at Setup.
 - **Two Airspys starting at once no longer lose each other.** libairspy finds a radio by
   opening every Airspy to read its serial; with two sources opening at the same moment one
   scan missed the other's radio ("Airspy open: AIRSPY_ERROR_NOT_FOUND") until the retry.

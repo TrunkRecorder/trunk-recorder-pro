@@ -1122,7 +1122,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
           hint={
             airspyMsps && airspy?.rates && !airspy.rates.includes(src.rateHz) ? (
               <span className="warn-text">
-                This Airspy{airspy.model ? ` ${airspy.model}` : ""} runs at {airspyMsps} MSPS — it won&apos;t start at {src.rateHz / 1e6}
+                This Airspy{airspy.model ? ` ${airspy.model}` : ""} runs at {airspyMsps} MSPS, not {src.rateHz / 1e6}: starting it sets {airspy.rates[0] / 1e6}
               </span>
             ) : airspyMsps ? (
               `This Airspy${airspy?.model ? ` ${airspy.model}` : ""}: ${airspyMsps}`

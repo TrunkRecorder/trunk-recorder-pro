@@ -232,6 +232,26 @@ fn describe(serial: u64, identified: Option<(&str, Vec<u32>)>) -> serde_json::Va
     }
 }
 
+/// What the Airspy `serial` ("" = the first) is — (model, IQ rates in Hz) — asked by opening it
+/// for a moment; None when libairspy isn't there or it can't be opened (not attached, streaming).
+pub fn ask(serial: &str) -> Option<(&'static str, Vec<u32>)> {
+    let a = api().ok()?;
+    // SAFETY: opened here, closed here, nothing else uses the handle.
+    unsafe {
+        let dev = open(a, serial).ok()?;
+        let (version, rates) = identify(a, dev);
+        (a.close)(dev);
+        Some((model_of(&version, &rates), rates))
+    }
+}
+
+/// The rate to run at instead of `rate_hz` when the Airspy doesn't do it: its first (widest)
+/// rate. None when it does `rate_hz` — or its rates aren't known.
+pub fn rate_instead(rate_hz: f64, rates: &[u32]) -> Option<u32> {
+    let want = rate_hz.round() as u32;
+    (!rates.is_empty() && !rates.contains(&want)).then(|| rates[0])
+}
+
 /// Attached Airspys: [{serial (hex), label, model ("R2" / "Mini"), rates (IQ, Hz)}]. Each is
 /// opened for a moment to ask its model and rates (as airspy_info does). One streaming for a
 /// source is listed by serial alone if it can't be opened — or not at all: libairspy's own
@@ -482,6 +502,14 @@ mod tests {
         let d = describe(1, None);
         assert_eq!(d["label"], "Airspy · SN 0000000000000001");
         assert!(d.get("model").is_none() && d.get("rates").is_none());
+    }
+
+    #[test]
+    fn a_rate_the_airspy_does_not_do_becomes_its_first() {
+        assert_eq!(rate_instead(6e6, &[10_000_000, 2_500_000]), Some(10_000_000));
+        assert_eq!(rate_instead(2.5e6, &[10_000_000, 2_500_000]), None);
+        assert_eq!(rate_instead(10e6, &[6_000_000, 3_000_000]), Some(6_000_000));
+        assert_eq!(rate_instead(6e6, &[]), None, "rates not known: left alone");
     }
 
     #[test]
