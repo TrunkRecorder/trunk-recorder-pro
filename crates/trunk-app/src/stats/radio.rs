@@ -173,15 +173,18 @@ fn pair_key(a: u32, b: u32) -> u64 {
 }
 
 fn bump_hour<T>(hours: &mut VecDeque<(i64, T)>, h: i64, f: impl FnOnce(&mut T), new: impl FnOnce() -> T) {
-    match hours.back_mut() {
-        Some((hh, v)) if *hh == h => f(v),
+    // (Usually the last hour; a long call's air reaches back into earlier ones.)
+    let at = hours.iter().rposition(|(hh, _)| *hh <= h);
+    match at {
+        Some(i) if hours[i].0 == h => f(&mut hours[i].1),
         _ => {
             let mut v = new();
             f(&mut v);
-            hours.push_back((h, v));
+            hours.insert(at.map_or(0, |i| i + 1), (h, v));
         }
     }
-    while hours.front().is_some_and(|(hh, _)| *hh <= h - HOURS) {
+    let last = hours.back().map_or(h, |(hh, _)| *hh);
+    while hours.front().is_some_and(|(hh, _)| *hh <= last - HOURS) {
         hours.pop_front();
     }
 }
@@ -290,10 +293,15 @@ impl Registry {
             if let Some(cp) = c.cipher {
                 note_cipher(&mut g.ciphers, cp.algid, cp.keyid, t);
             }
-            bump_hour(&mut g.hours, h, |v: &mut (u32, f32)| {
-                v.0 += 1;
-                v.1 += secs;
-            }, || (0, 0.0));
+            // Its air in the hours it was on (a channel held open past the hour isn't all the last one's); the call in the last.
+            for hh in start.div_euclid(3600).max(h - HOURS + 1)..=h {
+                let on = (t.min((hh + 1) * 3600) - start.max(hh * 3600)).max(0) as f32;
+                let air = if t > start { secs * on / (t - start) as f32 } else { secs };
+                bump_hour(&mut g.hours, hh, |v: &mut (u32, f32)| {
+                    v.0 += (hh == h) as u32;
+                    v.1 += air;
+                }, || (0, 0.0));
+            }
             s.lengths.push_back((t, c.talkgroup, secs));
             while s.lengths.len() > MAX_LENGTHS {
                 s.lengths.pop_front();
@@ -711,6 +719,18 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn names() -> (impl Fn(&str, u32) -> Option<TgInfo>, impl Fn(&str, u32) -> Option<String>) {
         (|_: &str, tg: u32| (tg == 100).then(|| TgInfo { alpha_tag: "Fire Dispatch".into(), ignore: false }), |_: &str, u: u32| (u == 7).then(|| "E7".to_string()))
+    }
+
+    #[test]
+    fn a_long_calls_air_is_in_the_hours_it_was_on() {
+        let mut r = Registry::default();
+        let t0 = 1_700_000_000 / 3600 * 3600 + 1800;
+        // 2½ hours held open, from half past: half an hour, an hour, an hour.
+        r.call_end("x", &call(100, &[], 0.0, 9000.0), t0 + 9000);
+        r.call_end("x", &call(100, &[], 0.0, 10.0), t0 + 9010);
+        let (calls, secs) = hourly(&r.systems["x"].tgs[&100], t0 + 9010, 4);
+        assert_eq!(calls, [0, 0, 0, 2], "a call counts in the hour it ended");
+        assert_eq!(secs, [1800.0, 3600.0, 3600.0, 10.0]);
     }
 
     #[test]

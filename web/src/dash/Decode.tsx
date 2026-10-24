@@ -325,7 +325,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
         {x.kind !== "conventional" && (
           <Card title="Control channel">
             <TimeSeries
-              lines={[line(cc("good"), "Decoded /s", "var(--series-1)", { band: true }), line(cc("bad"), "Lost /s", "var(--serious)")]}
+              lines={[line(cc("good"), "Decoded /s", "var(--series-1)", { band: true }), line(cc("bad"), "Lost /s", "var(--serious)", { band: true })]}
               zero
               marks={usual[cc("good")] ? [{ v: usual[cc("good")]!.avg, label: "usual" }] : []}
             />
@@ -346,11 +346,13 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
         )}
         {x.kind === "conventional" && (
           <Card title="Calls">
-            {/* Rates a second: calls a minute, and seconds on the air a minute (every channel's together). */}
+            {/* Calls a minute, and seconds on the air a minute (every channel's
+                together: 60 is one channel busy the whole minute), each on its
+                own scale. */}
             <TimeSeries
               lines={[
                 { label: "Calls /min", color: "var(--series-1)", data: scaled(hist?.[k("calls")], 60) },
-                { label: "On the air, s/min", color: "var(--series-2)", data: scaled(hist?.[k("airMs")], 60 / 1000) },
+                { label: "On the air, s/min", color: "var(--series-2)", data: scaled(hist?.[k("airMs")], 60 / 1000), right: true },
               ]}
               zero
               fmt={(v) => v.toFixed(1)}
@@ -363,7 +365,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
         </Card>
         {x.kind !== "conventional" && (
           <Card title="Signal and demodulation">
-            <TimeSeries lines={[line(cc("snr"), "SNR, dB", "var(--series-1)"), x.kind === "p25" && (hist?.[cc("sep")] == null || st?.modulation === "CQPSK") ? line(cc("phaseErr"), "Phase error, °", "var(--series-3)") : line(cc("sep"), "Eye opening", "var(--series-3)")]} />
+            <TimeSeries lines={[line(cc("snr"), "SNR, dB", "var(--series-1)"), x.kind === "p25" && (hist?.[cc("sep")] == null || st?.modulation === "CQPSK") ? line(cc("phaseErr"), "Phase error, °", "var(--series-3)", { right: true }) : line(cc("sep"), "Eye opening", "var(--series-3)", { right: true })]} />
           </Card>
         )}
         {x.kind !== "conventional" && (

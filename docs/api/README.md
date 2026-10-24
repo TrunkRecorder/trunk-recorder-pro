@@ -696,7 +696,7 @@ the day). The live values come in `stats` (and `host`); the history answers
 | `sys/<short>/cc/locked`, `snr`, `signal`, `noise`, `offset`, `sep`, `phaseErr` | Decoding (1/0), the channel's SNR and levels, its carrier offset (Hz), the C4FM receiver's eye opening, the CQPSK receiver's phase error (RMS degrees: under 10 clean, ~25 noise) |
 | `sys/<short>/cc/syncs`, `nidFails`, `flywheels`, `eqResets` | P25 framing: syncs found, headers failed, frames carried over a missed sync, equaliser resets (a second) |
 | `sys/<short>/cc/airSym` | P25: symbols of control channel air decoded a second; over 4800, the coverage |
-| `sys/<short>/calls`, `airMs`, `audioBytes`, `active`, `recording` | Calls ending a second, airtime (ms a second), audio written, calls on the air and being recorded now |
+| `sys/<short>/calls`, `airMs`, `audioBytes`, `active`, `recording` | Calls ending a second, airtime (ms a second, counted while the calls are on the air), audio written, calls on the air and being recorded now |
 | `sys/<short>/why/<reason>` | Calls starting a second by what happened to them: `recorded`, `monitored`, `ignored`, `encrypted`, `unknown_tg`, `no_source`, `no_recorder` |
 | `sys/<short>/voice/frames`, `errors`, `bad` | Voice frames decoded, bit errors corrected, frames lost (a second) |
 | `all/…`, `day/…`, `eng/…` | Every system together; this run's totals today; the decoder's load and recorders |

@@ -187,6 +187,8 @@ export interface Line {
   band?: boolean;
   dashed?: boolean;
   mul?: number;
+  /** On a scale of its own, read off the right edge (a line in other units, or of another size). */
+  right?: boolean;
 }
 
 /** (t, v) points of a line, scaled. */
@@ -260,28 +262,38 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
   const H = props.height ?? 160;
   // (Drawn in the width it's shown at: text and dots keep their shape.)
   const [measure, W] = useWidth(640);
+  const twoScales = props.lines.some((l) => l.right) && props.lines.some((l) => !l.right);
   const L = 44;
-  const R = 8;
+  const R = twoScales ? 44 : 8;
   const T = 8;
   const B = 20;
   const fmt = props.fmt ?? ((v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1)));
   const pts = useMemo(() => props.lines.map(points), [props.lines]);
   const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<SVGSVGElement>(null);
-  const all = pts.flatMap((p) => [...p.v, ...p.lo, ...p.hi]).filter((x): x is number => x !== null && Number.isFinite(x));
+  // (A line's band counts toward its scale only when drawn: a spike's highest a minute, unshown, would squash the rest flat.)
+  const valuesOf = (right: boolean) =>
+    pts.flatMap((p, k) => (!!props.lines[k].right === right || !twoScales ? [...p.v, ...(props.lines[k].band ? [...p.lo, ...p.hi] : [])] : [])).filter((x): x is number => x !== null && Number.isFinite(x));
+  const all = valuesOf(false);
   // The span with data (a week's chart of a new install shows its hours, not six empty days).
   const ts = pts.flatMap((p) => p.t.filter((_, i) => p.v[i] !== null));
   if (!all.length || ts.length < 1) return <div ref={measure} className="chart-empty" style={{ height: H }}>{props.empty ?? "Collecting data…"}</div>;
-  let lo = props.lo ?? Math.min(...all, ...(props.marks ?? []).map((m) => m.v));
-  let hi = props.hi ?? Math.max(...all, ...(props.marks ?? []).map((m) => m.v));
-  if (props.zero) lo = Math.min(0, lo);
-  if (hi === lo) {
-    hi += 1;
-    lo -= props.zero ? 0 : 1;
-  }
-  const yt = axisTicks(lo, hi, fmt);
-  lo = Math.min(lo, yt[0] ?? lo);
-  hi = Math.max(hi, yt[yt.length - 1] ?? hi);
+  // A side's ticks and range: the left's takes the marks and the fixed ends, the right's starts at 0 when the left's does.
+  const scale = (vs: number[], left: boolean) => {
+    const marks = left ? (props.marks ?? []).map((m) => m.v) : [];
+    let lo = (left ? props.lo : undefined) ?? Math.min(...vs, ...marks);
+    let hi = (left ? props.hi : undefined) ?? Math.max(...vs, ...marks);
+    if (props.zero) lo = Math.min(0, lo);
+    if (hi === lo) {
+      hi += 1;
+      lo -= props.zero ? 0 : 1;
+    }
+    const yt = axisTicks(lo, hi, fmt);
+    return { yt, lo: Math.min(lo, yt[0] ?? lo), hi: Math.max(hi, yt[yt.length - 1] ?? hi) };
+  };
+  const { yt, lo, hi } = scale(all, true);
+  const rightVs = twoScales ? valuesOf(true) : [];
+  const rs = rightVs.length ? scale(rightVs, false) : { yt: [] as number[], lo, hi };
   let t0 = Math.min(...ts);
   let t1 = Math.max(...ts);
   if (t1 - t0 < 120) {
@@ -291,6 +303,10 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
   }
   const x = (t: number) => L + unit(t, t0, t1) * (W - L - R);
   const y = (v: number) => T + (1 - unit(v, lo, hi)) * (H - T - B);
+  const yr = (v: number) => T + (1 - unit(v, rs.lo, rs.hi)) * (H - T - B);
+  const yOf = (k: number) => (twoScales && props.lines[k].right ? yr : y);
+  // With two scales, each side's numbers in its line's colour.
+  const sideColor = (right: boolean) => (twoScales ? props.lines.find((l) => !!l.right === right)?.color : undefined);
   const span = t1 - t0;
   const xt = [0, 0.25, 0.5, 0.75, 1].map((f) => t0 + f * span);
   const onMove = (e: React.MouseEvent) => {
@@ -323,10 +339,15 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
         {yt.map((v) => (
           <g key={v}>
             <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} className="grid" vectorEffect="non-scaling-stroke" />
-            <text x={L - 6} y={y(v) + 4} textAnchor="end" className="axis">
+            <text x={L - 6} y={y(v) + 4} textAnchor="end" className="axis" style={{ fill: sideColor(false) }}>
               {fmt(v)}
             </text>
           </g>
+        ))}
+        {rs.yt.map((v) => (
+          <text key={v} x={W - R + 6} y={yr(v) + 4} textAnchor="start" className="axis" style={{ fill: sideColor(true) }}>
+            {fmt(v)}
+          </text>
         ))}
         {xt.map((t, i) => (
           <text key={i} x={x(t)} y={H - 4} textAnchor={i === 0 ? "start" : i === 4 ? "end" : "middle"} className="axis">
@@ -343,6 +364,7 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
         ))}
         {pts.map((p, k) => {
           const l = props.lines[k];
+          const y = yOf(k);
           const xs = p.t.map(x);
           const bandD =
             l.band && p.lo.length
@@ -378,7 +400,7 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
         )}
         {near &&
           near.map((i, k) =>
-            i >= 0 && pts[k].v[i] !== null ? <circle key={k} cx={x(pts[k].t[i])} cy={y(pts[k].v[i]!)} r={4} fill={props.lines[k].color} className="ts-dot" /> : null,
+            i >= 0 && pts[k].v[i] !== null ? <circle key={k} cx={x(pts[k].t[i])} cy={yOf(k)(pts[k].v[i]!)} r={4} fill={props.lines[k].color} className="ts-dot" /> : null,
           )}
       </svg>
       {near && ht !== null && (

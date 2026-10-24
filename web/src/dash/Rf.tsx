@@ -407,10 +407,11 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
           <TimeSeries lines={[line(k("ppm"), "Measured", "var(--series-2)", { band: true }), line(k("tune"), "Corrected", "var(--series-1)", { dashed: true })]} fmt={(v) => v.toFixed(2)} />
         </Card>
         <Card title="Dropped samples">
-          <TimeSeries lines={[line(k("dropped"), "Dropped a second", "var(--critical)")]} zero fmt={(v) => compact(v)} empty="No drops recorded." />
+          {/* (Drops and clipping come in bursts: a band shows a step's worst, which its average hides.) */}
+          <TimeSeries lines={[line(k("dropped"), "Dropped a second", "var(--critical)", { band: true })]} zero fmt={(v) => compact(v)} empty="No drops recorded." />
         </Card>
         <Card title="Clipping">
-          <TimeSeries lines={[line(k("clipPct"), "Samples at full scale, %", "var(--serious)")]} zero fmt={(v) => v.toFixed(2)} empty="No clipping recorded." />
+          <TimeSeries lines={[line(k("clipPct"), "Samples at full scale, %", "var(--serious)", { band: true })]} zero fmt={(v) => v.toFixed(2)} empty="No clipping recorded." />
         </Card>
       </div>
     </div>

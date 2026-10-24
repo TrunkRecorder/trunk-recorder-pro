@@ -5,6 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **On the air counts while calls are on the air.** A call's air time (`airMs`) was counted
+  when it ended, all in that minute: a channel held open an hour drew a spike of 3600 s/min.
+  It now counts a second at a time. The Decode page's **Calls** chart (conventional) reads
+  On the air, s/min (every channel's together: 60 is one channel busy the whole minute) off
+  its own scale on the right, and a chart's scale no longer stretches to a line's highest a
+  minute when it doesn't draw that band. A talkgroup's airtime by hour is likewise spread over
+  the hours its calls were on, not all in the hour each ended.
+- **Charts in two units read each off its own scale**: Signal and demodulation's eye opening or
+  phase error is on the right, beside SNR in dB. Dropped samples, Clipping, Lost /s and a
+  plugin's Failed a minute show their band, so a short burst isn't averaged away.
+
 ## [0.2.9] — 2026-10-24
 
 - **Add a system from the directory.** A system's page in the systems directory opens it in
