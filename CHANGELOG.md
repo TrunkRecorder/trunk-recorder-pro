@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Add a system from the directory.** A system's page in the systems directory opens it in
+  Trunk Recorder Pro (the web version, or the desktop app at its address), or downloads it
+  for **Setup → Systems → Import…** (formerly "Import Trunk Recorder config…", which still
+  takes those). Either way you see what comes first: its sites, licenses and named
+  talkgroups, its short name, and, if you already have the system, updating it instead
+  (nothing of yours is replaced). It keeps its directory link, so sharing it adds to the
+  same record. See docs/guides/from-the-directory.md.
 - **DMR calls have their frequency error** (`freq_error` in the call JSON), conventional and
   trunked: it was always 0. A conventional DMR channel's `autoTune` now corrects its source,
   as the docs said it did.

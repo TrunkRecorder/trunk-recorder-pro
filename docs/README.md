@@ -56,6 +56,8 @@ LimeSDR...).
 - [Getting started](getting-started.md): from a new install to your first recorded call
 - [Radios](guides/radios.md): center frequency, sample rate, gain, frequency correction, using
   more than one SDR
+- [Adding a system from the directory](guides/from-the-directory.md): a system other users share, with its
+  sites, licenses and named talkgroups, into your recorder.
 - [Find my system](guides/find-my-system.md): let the recorder scan for control channels and set
   itself up
 

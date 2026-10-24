@@ -334,3 +334,27 @@ export function withIgnore(csv: string, tg: number, ignore: boolean, alphaTag = 
   }
   return lines.join("\n") + "\n";
 }
+
+/**
+ * `existing` (a system's talkgroup file) with the talkgroups of `incoming` it
+ * doesn't have added, in its own columns and delimiter: its rows, names and
+ * columns stay as they are (a name of yours is never replaced). No file yet:
+ * `incoming` as it is.
+ */
+export function mergeTalkgroupCsv(existing: string, incoming: string): { csv: string; added: number } {
+  const inc = parseTalkgroupCsv(incoming);
+  if (!existing.trim()) return { csv: incoming, added: inc.size };
+  const have = parseTalkgroupCsv(existing);
+  const add = [...inc.values()].filter((t) => !have.has(t.number));
+  if (!add.length) return { csv: existing, added: 0 };
+  const lines = withHeader(existing).replace(/^﻿/, "").split(/\r?\n/);
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  const hi = lines.findIndex((l) => !!l.trim() && !l.trim().startsWith("#"));
+  const delim = csvDelimiter(lines[hi]);
+  const cols = splitCsvLine(lines[hi], delim).map(canonical);
+  const value = (t: Talkgroup, c: string): string =>
+    (({ Decimal: String(t.number), Hex: t.number.toString(16), Mode: t.mode || "D", "Alpha Tag": t.alphaTag, Description: t.description, Tag: t.tag, Category: t.group, Priority: t.priority > 1 ? String(t.priority) : "" }) as Record<string, string>)[c] ?? "";
+  const cell = (v: string) => (v.includes(delim) || /["\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  for (const t of add) lines.push(cols.map((c) => cell(value(t, c))).join(delim));
+  return { csv: lines.join("\n") + "\n", added: add.length };
+}
