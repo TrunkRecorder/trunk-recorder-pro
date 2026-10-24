@@ -7,7 +7,7 @@
 // identity or control channels), updating that one instead of adding it again.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { newSiteName, normalizeSite, normalizeSystem, type SystemInput } from "./config.ts";
+import { newSiteName, normalizeSite, normalizeSystem, sameSystem, trpBase, type SystemInput } from "./config.ts";
 import { setTalkgroups, snapshot, updateConfig, useSelect } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { Modal } from "./Identify.tsx";
@@ -46,22 +46,17 @@ export function importUrl(hash: string, directory: string): string | null {
   return null;
 }
 
-/** The system in `c` that is the bundle's (to update, not add again): by its directory record, its identity, or a control channel. -1: none. */
-export function sameSystem(c: Config, b: Bundle): number {
+/**
+ * The system in `c` that is the bundle's (to update, not add again): by its
+ * directory record, else by identity (sameSystem: the same WACN and System
+ * ID) or a control channel in common, of the same type. -1: none.
+ */
+export function findExisting(c: Config, b: Bundle): number {
   const byLink = c.systems.findIndex((s) => s.directory?.id === b.source.id);
   if (byLink >= 0) return byLink;
-  const type = b.system.type;
   const ids = b.system.sites.map((s) => s.expect ?? {});
   const ccs = new Set(b.system.sites.flatMap((s) => s.controlChannelsHz ?? []));
-  return c.systems.findIndex(
-    (s) =>
-      s.type === type &&
-      s.sites.some(
-        (x) =>
-          ids.some((id) => id.wacn != null && id.sysId != null && x.expect.wacn === id.wacn && x.expect.sysId === id.sysId) ||
-          x.controlChannelsHz.some((f) => ccs.has(f)),
-      ),
-  );
+  return c.systems.findIndex((s) => s.type === b.system.type && s.sites.some((x) => ids.some((id) => sameSystem(x.expect, id)) || x.controlChannelsHz.some((f) => ccs.has(f))));
 }
 
 /** A short name for the bundle's system none in `c` has: its own, else from its name. */
@@ -155,8 +150,7 @@ export function DirectoryImport() {
   const ready = useSelect((s) => !!s.config);
   useEffect(() => {
     if (!ready || typeof location === "undefined") return;
-    const base = snapshot().config?.server?.trpApi || "https://trunkrecorder.pro";
-    const url = importUrl(location.hash, base);
+    const url = importUrl(location.hash, trpBase(snapshot().config));
     if (!url) return;
     history.replaceState(null, "", location.pathname + location.search);
     void openImportUrl(url);
@@ -194,7 +188,7 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
   const s = useSelect((x) => ({ config: x.config, talkgroups: x.talkgroups }));
   const c = s.config;
   const [sites, setSites] = useState<number[]>(() => b.system.sites.map((_, k) => k));
-  const same = c ? sameSystem(c, b) : -1;
+  const same = c ? findExisting(c, b) : -1;
   const [mode, setMode] = useState<"update" | "add">(same >= 0 ? "update" : "add");
   const [name, setName] = useState(() => (c ? freeShortName(c, b.system.shortName ?? b.system.name ?? "system") : "system"));
   const [done, setDone] = useState<string | null>(null);

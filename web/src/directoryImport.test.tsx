@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { renderToString } from "react-dom/server";
 import { defaultConfig, normalizeSystem } from "./config.ts";
 import { snapshot, transport } from "./controller.ts";
-import { addSystem, freeShortName, ImportDialog, importUrl, parseBundle, sameSystem, updateSystem, type Bundle } from "./directoryImport.tsx";
+import { addSystem, findExisting, freeShortName, ImportDialog, importUrl, parseBundle, updateSystem, type Bundle } from "./directoryImport.tsx";
 import type { Config, ToRecorder } from "./protocol.ts";
 import { mergeTalkgroupCsv, parseTalkgroupCsv } from "./talkgroups.ts";
 
@@ -68,14 +68,14 @@ test("a link's import: the bundle's URL, or (an older link) a directory system I
 test("the system the config already has: by its directory record, its identity, or a control channel", () => {
   const c = defaultConfig();
   c.systems = [normalizeSystem({ shortName: "other", type: "p25", controlChannelsHz: [770_000_000] })];
-  assert.equal(sameSystem(c, bundle()), -1);
+  assert.equal(findExisting(c, bundle()), -1);
   c.systems.push(normalizeSystem({ shortName: "dcfd", type: "p25", controlChannelsHz: [855_462_500] }));
-  assert.equal(sameSystem(c, bundle()), 1, "a control channel");
+  assert.equal(findExisting(c, bundle()), 1, "a control channel");
   c.systems[1] = normalizeSystem({ shortName: "dcfd", type: "p25", controlChannelsHz: [860_000_000], expect: { wacn: 0xbee00, sysId: 0x445 } });
-  assert.equal(sameSystem(c, bundle()), 1, "its identity");
+  assert.equal(findExisting(c, bundle()), 1, "its identity");
   c.systems[0].directory = { id: "sys_dcfd", rev: 3 };
-  assert.equal(sameSystem(c, bundle()), 0, "its directory record first");
-  assert.equal(sameSystem({ ...c, systems: [normalizeSystem({ shortName: "x", type: "smartnet", controlChannelsHz: [855_462_500] })] }, bundle()), -1, "another type isn't it");
+  assert.equal(findExisting(c, bundle()), 0, "its directory record first");
+  assert.equal(findExisting({ ...c, systems: [normalizeSystem({ shortName: "x", type: "smartnet", controlChannelsHz: [855_462_500] })] }, bundle()), -1, "another type isn't it");
 });
 
 test("a short name none has", () => {
