@@ -350,12 +350,77 @@ pub struct System {
     /// plugins'): see [`DelayRule`]. These come before the whole recorder's.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugin_delays: Vec<DelayRule>,
+    /// The tone signals it sends (pages, alerts, digit strings, Morse IDs): see [`SignalDef`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<SignalDef>,
     /// Where it is recorded from: one site, or several of one system.
     pub sites: Vec<Site>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
     pub other: BTreeMap<String, serde_json::Value>,
+}
+
+/// A tone signal a system sends: a page (two tones), an alert, a warble, a
+/// digit string, a Morse ID. Its `id` is unique within its system (written
+/// `CLMRN:CSP_FIRE` where the system isn't said): calls carrying it list it
+/// (the call JSON's `signals`), and plugins hear it named (topic `tone`).
+///
+/// ```json
+/// { "id": "NORWALK_EMS", "name": "Norwalk EMS page", "pattern": "two_tone", "tonesHz": [788.5, 879.0], "talkgroups": ["20341"] }
+/// ```
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SignalDef {
+    pub id: String,
+    /// What people call it (empty: its id).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The call JSON's `pattern`: `two_tone`, `long`, `hi_low`, `pulsed`,
+    /// `digits`, `morse`, `sequence` or `beep`.
+    pub pattern: String,
+    /// Its tones, Hz, in order (as the call JSON's `tones`; digits: none).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tones_hz: Vec<f64>,
+    /// Digits: the string (`KNOX ` first for KNOX tones); Morse: the text.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub digits: String,
+    /// How long each tone is, s, as the call JSON's `lengths` (for playing
+    /// it back; not matched on).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lengths_s: Vec<f64>,
+    /// How much further a heard tone may be than the recorder allows by
+    /// itself, % of the tone (1.5 % in audio; 15.7 Hz + 0.5 % from P25 Phase
+    /// 2's tone frames). 0: no further.
+    #[serde(skip_serializing_if = "is_default")]
+    pub extra_tolerance_pct: f64,
+    /// The talkgroups it's sent on: numbers, ranges (`1000-1099`) and
+    /// patterns (`507*`), as [`DelayRule::talkgroups`]. Empty: any.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "trunk_recorder_plugin::filter::patterns")]
+    pub talkgroups: Vec<String>,
+    /// Keys this version doesn't know (a newer version's, a hand edit's):
+    /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
+}
+
+impl SignalDef {
+    /// The engine's matcher; none when its pattern isn't one this version knows.
+    pub fn engine(&self) -> Option<trunk_core::dsp::inband::signal::Signal> {
+        Some(trunk_core::dsp::inband::signal::Signal {
+            id: self.id.clone(),
+            pattern: trunk_core::dsp::inband::pattern::PatternKind::from_name(&self.pattern)?,
+            hz: self.tones_hz.iter().map(|&f| f as f32).collect(),
+            digits: self.digits.clone(),
+            extra_pct: self.extra_tolerance_pct as f32,
+            talkgroups: self.talkgroups.clone(),
+        })
+    }
+}
+
+/// A system's signals for the engine.
+fn engine_signals(defs: &[SignalDef]) -> Vec<trunk_core::dsp::inband::signal::Signal> {
+    defs.iter().filter(|d| !d.id.trim().is_empty()).filter_map(SignalDef::engine).collect()
 }
 
 /// One site of a [`System`]: a control channel to follow, and how.
@@ -775,6 +840,7 @@ impl Default for System {
             nxdn_type: NxdnType::default(),
             plugins: BTreeMap::new(),
             plugin_delays: vec![],
+            signals: vec![],
             sites: vec![],
         }
     }
@@ -899,6 +965,9 @@ pub struct Conventional {
     /// How long plugins wait for their calls, as a trunked system's ([`System::plugin_delays`]).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugin_delays: Vec<DelayRule>,
+    /// The tone signals they send, as a trunked system's ([`System::signals`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<SignalDef>,
     /// Their own recording rules; what's left out is as in [`Config::recording`].
     #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
     pub recording: RecordingOverride,
@@ -955,6 +1024,7 @@ impl Default for Conventional {
             channel_file_status: String::new(),
             plugins: BTreeMap::new(),
             plugin_delays: vec![],
+            signals: vec![],
             recording: RecordingOverride::default(),
             unit_names: UnitNames::default(),
         }
@@ -2345,6 +2415,7 @@ impl Config {
                     save: rules.save_rules(),
                     talkgroups: tg(&sys.short_name),
                     unit_tags: sys.unit_names.engine(),
+                    signals: engine_signals(&sys.signals),
                     ..SystemConfig::trunked(&sys.short_name, sites)
                 }
             })
@@ -2359,6 +2430,7 @@ impl Config {
                 save: r.save_rules(),
                 talkgroups: tg(&v.short_name),
                 unit_tags: v.unit_names.engine(),
+                signals: engine_signals(&v.signals),
                 ..SystemConfig::conventional(&v.short_name)
             });
         }
@@ -2531,6 +2603,20 @@ mod tests {
         let sys: System = serde_json::from_value(serde_json::json!({ "shortName": "x", "fcc": { "857987500": { "callSign": "WPXT459" } } })).unwrap();
         assert_eq!(sys.fcc["857987500"].from, FccFrom::User);
         assert_eq!(serde_json::to_value(&sys).unwrap()["fcc"], serde_json::json!({ "857987500": { "callSign": "WPXT459" } }));
+    }
+
+    /// A system's signals are saved as written, a newer version's keys kept; none, no field.
+    #[test]
+    fn signals_round_trip() {
+        assert!(serde_json::to_value(System::default()).unwrap().get("signals").is_none());
+        let page = serde_json::json!({ "id": "NORWALK_EMS", "name": "Norwalk EMS page", "pattern": "two_tone", "tonesHz": [781.25, 875.0], "lengthsS": [0.98, 2.98], "talkgroups": ["20341"], "color": "red" });
+        let sys: System = serde_json::from_value(serde_json::json!({ "shortName": "x", "signals": [page.clone(), { "id": "SIREN_SIGNAL_1", "pattern": "digits", "digits": "091363" }, { "id": "NEWER", "pattern": "chirp" }] })).unwrap();
+        assert_eq!((sys.signals[0].tones_hz.clone(), sys.signals[1].digits.as_str()), (vec![781.25, 875.0], "091363"));
+        let back = serde_json::to_value(&sys).unwrap();
+        assert_eq!(back["signals"][0], page);
+        assert_eq!(back["signals"][1], serde_json::json!({ "id": "SIREN_SIGNAL_1", "pattern": "digits", "digits": "091363" }), "defaults left out");
+        // The engine's: a pattern this version doesn't know is left out (and kept in the config).
+        assert_eq!(engine_signals(&sys.signals).iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["NORWALK_EMS", "SIREN_SIGNAL_1"]);
     }
 
     /// A system's `keys` that named a file (before key sources) becomes a source named after the file;

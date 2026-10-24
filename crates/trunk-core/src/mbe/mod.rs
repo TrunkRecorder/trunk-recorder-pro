@@ -9,6 +9,8 @@ pub mod fixed;
 mod fixed_tables;
 mod tone_table;
 
+pub use tone_table::annex_t;
+
 use std::f64::consts::{E, PI};
 use std::sync::Arc;
 
@@ -605,7 +607,7 @@ enum Ambe {
 /// the first copy, which the Golay code protects (it votes twice); the
 /// level is û0(5..0) then û3(4). mbelib looks at the same bits as a pitch
 /// and takes most tone frames for an erasure.
-fn tone_frame(d: &[u8; 49]) -> Option<(u8, u8)> {
+pub fn tone_frame(d: &[u8; 49]) -> Option<(u8, u8)> {
     if d[..6].contains(&0) {
         return None;
     }

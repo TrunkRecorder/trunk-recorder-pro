@@ -2083,6 +2083,7 @@ const SYSTEM_OWN: [keyof System, string][] = [
   ["recording", "recording rules"],
   ["plugins", "plugin settings"],
   ["pluginDelays", "plugin delays"],
+  ["signals", "signals"],
   ["keys", "keys"],
   ["defaultMode", "default mode"],
 ];

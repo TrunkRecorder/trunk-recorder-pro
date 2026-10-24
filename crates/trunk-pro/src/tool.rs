@@ -45,7 +45,7 @@ use crate::toolkit::{hex, AudioOut, Capture};
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
-    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr … (trunk-pro --help)"));
+    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr|tones … (trunk-pro --help)"));
     match mode {
         "cc" | "voice" | "frames" => run_p25(a, mode),
         "p2" => run_p2(a),
@@ -59,7 +59,8 @@ pub fn run(a: &Args) {
         "snr" => crate::snrtool::run(a),
         "revoice" => run_revoice(a),
         "sdr" => run_sdr(a),
-        _ => die(&format!("tool {mode}: no such tool (cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr)")),
+        "tones" => run_tones(a),
+        _ => die(&format!("tool {mode}: no such tool (cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr|tones)")),
     }
 }
 
@@ -320,6 +321,103 @@ fn run_sdr(a: &Args) {
     }
     let bytes = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
     println!("{}", trunk_core::trunk::sdr::sdr_sidecar_json(&bytes).unwrap_or_else(|| die(&format!("{path}: no call header"))));
+}
+
+/// A 16-bit PCM WAV's samples in [−1, 1] (the first channel), and its rate.
+fn read_wav(path: &str) -> (u32, Vec<f32>) {
+    let b = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+    let bad = || -> ! { die(&format!("{path}: not a 16-bit PCM WAV")) };
+    if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        bad();
+    }
+    let (mut rate, mut channels, mut at) = (0u32, 0usize, 12);
+    while at + 8 <= b.len() {
+        let id = &b[at..at + 4];
+        let len = u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap()) as usize;
+        let body = &b[at + 8..(at + 8 + len).min(b.len())];
+        if id == b"fmt " && body.len() >= 16 {
+            if u16::from_le_bytes([body[14], body[15]]) != 16 {
+                bad();
+            }
+            channels = u16::from_le_bytes([body[2], body[3]]) as usize;
+            rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
+        } else if id == b"data" && channels > 0 {
+            return (rate, body.chunks_exact(2 * channels).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect());
+        }
+        at += 8 + len + (len & 1);
+    }
+    bad()
+}
+
+/// `tool tones`: the in-band tones in saved calls: an `.sdr` or
+/// `.frames.jsonl` capture's tone frames and (vocoded) audio, or a `.wav`'s
+/// audio; and a count of the frames that carried tones.
+fn run_tones(a: &Args) {
+    use trunk_core::trunk::call_tones::CallTones;
+    use trunk_core::trunk::frames::Codec;
+    let paths = &a.positional[1..];
+    if paths.is_empty() {
+        die("tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]");
+    }
+    let secs = |n: usize| n as f64 / mbe::SAMPLE_RATE as f64;
+    let (mut imbe, mut ambe, mut tone_frames, mut calls) = (0usize, 0usize, 0usize, 0usize);
+    let mut kinds = BTreeMap::<&str, u32>::new();
+    for path in paths {
+        let mut tones = CallTones::default();
+        if path.ends_with(".wav") {
+            let (rate, audio) = read_wav(path);
+            if rate != mbe::SAMPLE_RATE {
+                die(&format!("{path}: {rate} Hz; 8000 Hz audio only"));
+            }
+            tones.audio(&audio, 0);
+        } else {
+            let mut dec = mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced);
+            for (k, f) in load_frames(path).iter().enumerate() {
+                let mut buf = [0f32; FRAME_SAMPLES];
+                match f.codec {
+                    Codec::Imbe => {
+                        imbe += 1;
+                        dec.imbe(&f.bits[..].try_into().unwrap(), f.e0, if f.erased { 0 } else { f.errs }, f.erased, &mut buf);
+                    }
+                    Codec::Ambe => {
+                        ambe += 1;
+                        let bits: [u8; 49] = f.bits[..].try_into().unwrap();
+                        tone_frames += mbe::tone_frame(&bits).is_some() as usize;
+                        dec.ambe(&bits, f.errs, &mut buf);
+                    }
+                }
+                tones.frame(f, k);
+                mbe::to_limited(&mut buf);
+                tones.audio(&buf, k * FRAME_SAMPLES);
+            }
+        }
+        tones.finish();
+        if tones.segs.is_empty() {
+            continue;
+        }
+        calls += 1;
+        // --patterns: what they make up, as JSON lines.
+        if a.flag("patterns") {
+            use trunk_core::dsp::inband::pattern::patterns;
+            let list: Vec<serde_json::Value> = patterns(&tones.segs)
+                .iter()
+                .map(|p| serde_json::json!({ "pattern": p.kind.name(), "tones": p.hz, "lengths": p.lengths, "digits": p.digits, "knox": p.knox, "cycles": p.cycles, "format": p.format, "pos": secs(p.start), "len": secs(p.len), "origin": p.origin.name() }))
+                .collect();
+            println!("{}", serde_json::json!({ "path": path, "patterns": list }));
+            continue;
+        }
+        let list: Vec<String> = tones
+            .segs
+            .iter()
+            .map(|t| {
+                *kinds.entry(t.kind.name()).or_default() += 1;
+                let level = t.level.map_or(String::new(), |l| format!(" {:.1} dBm0", trunk_core::dsp::inband::level_dbm0(l)));
+                format!("{} {} @{:.2}s {:.2}s{level} ({})", t.kind.name(), t.kind, secs(t.start), secs(t.len), t.origin.name())
+            })
+            .collect();
+        println!("{path}: {}", list.join(", "));
+    }
+    eprintln!("{} files: {imbe} IMBE frames, {ambe} AMBE frames ({tone_frames} tone frames); {calls} with tones: {kinds:?}", paths.len());
 }
 
 /// `tool revoice`: a frame capture back through the vocoder.

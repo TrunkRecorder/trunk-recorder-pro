@@ -215,8 +215,35 @@ export interface System {
   plugins?: Record<string, SystemPluginValues>;
   /** How long plugins wait for its calls; these come before the whole recorder's (see DelayRule). */
   pluginDelays?: DelayRule[];
+  /** The tone signals it sends (pages, alerts, digit strings, Morse IDs): see SignalDef. */
+  signals?: SignalDef[];
   /** Where it is recorded from: one site, or several of one system. */
   sites: Site[];
+}
+
+/** A call's tone pattern, as the call JSON's `tone_patterns` names it. */
+export type TonePatternKind = "two_tone" | "long" | "hi_low" | "pulsed" | "digits" | "morse" | "sequence" | "beep";
+
+/**
+ * A tone signal a system sends: a page (two tones), an alert, a warble, a digit string, a Morse ID. Its `id` is unique
+ * within its system (written "CLMRN:CSP_FIRE" where the system isn't said): calls carrying it list it (the call JSON's
+ * `signals`), and plugins hear it named (topic `tone`).
+ */
+export interface SignalDef {
+  id: string;
+  /** What people call it (absent: its id). */
+  name?: string;
+  pattern: TonePatternKind;
+  /** Its tones, Hz, in order (as the call JSON's `tones`; digits: none). */
+  tonesHz?: number[];
+  /** Digits: the string ("KNOX " first for KNOX tones); Morse: the text. */
+  digits?: string;
+  /** How long each tone is, s, as the call JSON's `lengths` (for playing it back; not matched on). */
+  lengthsS?: number[];
+  /** How much further than usual (1.5 % in audio; 15.7 Hz + 0.5 % from Phase 2 tone frames) a heard tone may be, % of it. */
+  extraTolerancePct?: number;
+  /** The talkgroups it's sent on: numbers, ranges ("1000-1099") and patterns ("507*"); absent: any. */
+  talkgroups?: string[];
 }
 
 /** One site of a system: a control channel to follow, and how. */
@@ -394,6 +421,8 @@ export interface Conventional {
   plugins?: Record<string, SystemPluginValues>;
   /** How long plugins wait for its calls (as System's). */
   pluginDelays?: DelayRule[];
+  /** The tone signals it sends (as System's). */
+  signals?: SignalDef[];
   /** Its own recording rules; each left out is the Recording tab's. */
   recording?: RecordingOverride;
   unitNames?: UnitNames;
@@ -815,6 +844,16 @@ export interface CallRecord {
    * file or the alias heard, by the system's mode); `tag_ota`: the alias heard. `lat`, `lon`: where the radio said it was (GPS, decimal degrees), when it did.
    */
   srcList: { src: number; time: number; pos: number; emergency: number; signal_system: string; tag: string; tag_ota: string; lat?: number; lon?: number }[];
+  /**
+   * In-band tones sent in its voice, in order (only when there were any): `type` "dtmf" | "knox" | "call_progress" | "tone";
+   * `value` the digit, "350+440", or a single tone's Hz; `pos` / `len` s into the audio; `src` the radio talking (0: not known);
+   * `origin` "frame" (the vocoder's tone frames) or "audio"; `level` dBm0 (tone frames).
+   */
+  tones?: { type: "dtmf" | "knox" | "call_progress" | "tone"; value: string; pos: number; len: number; src: number; origin: "frame" | "audio"; level?: number }[];
+  /** What its tones make up (pages, alerts, digit strings, Morse), in order (only when there were any): see the recordings guide. */
+  tone_patterns?: { pattern: TonePatternKind; tones: number[]; lengths: number[]; digits?: string; knox?: boolean; cycles?: number; format?: string; pos: number; len: number; src: number; origin: "frame" | "audio"; signals?: string[] }[];
+  /** The system's signals it carried (their ids), in the order first heard (only when there were any). */
+  signals?: string[];
 }
 
 /** A recorded call: `path` (no extension) under the capture folder. */
@@ -1389,6 +1428,61 @@ export interface ClockInfo {
   check: ProbeRow | null;
 }
 
+/**
+ * A call's tones made a pattern (a page, an alert, digits, a Morse ID), sent as soon as nothing can add to it (a second
+ * after its last tone). `signals`: the ids of the system's signals it is; `time` Unix s.
+ */
+export interface ToneEvent {
+  system: string;
+  site: string;
+  callId: number;
+  talkgroup: number;
+  alphaTag: string;
+  src: number;
+  pattern: TonePatternKind;
+  tones: number[];
+  lengths: number[];
+  digits: string;
+  knox: boolean;
+  cycles: number;
+  format: string;
+  origin: "frame" | "audio";
+  /** For a log line: "two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)". */
+  text: string;
+  signals: string[];
+  time: number;
+}
+
+/**
+ * The tones log (`radioQuery` "tones"): one tone pattern as heard on one talkgroup over the span, every time it was
+ * (the same pattern, digits and tones) counted together.
+ */
+export interface ToneRow {
+  tg: number;
+  alphaTag: string;
+  pattern: TonePatternKind;
+  /** Hz, as the call JSON's `tones`. */
+  tones: number[];
+  /** Seconds, each the typical (median) of the times heard. */
+  lengths: number[];
+  /** Digits: the string ("KNOX " first for KNOX); Morse: the text. */
+  digits: string;
+  /** A two-tone page's format by its timing ("Quick Call II"), or "". */
+  format: string;
+  count: number;
+  /** Unix s. */
+  first: number;
+  last: number;
+  /** The radios that sent it, most first. */
+  radios: { unit: number; name: string | null; n: number }[];
+  /** From the vocoder's tone frames (Phase 2's are on a 31.25 Hz grid). */
+  frame: boolean;
+  /** Paging codes it may be, likeliest first ("QC2 126/128"). */
+  ids: string[];
+  /** The system's signals it was when last heard (their ids). */
+  signals?: string[];
+}
+
 /** A talkgroup as heard (radioQuery talkgroups / tg). */
 export interface TgRow {
   tg: number;
@@ -1487,15 +1581,15 @@ export type RadioResult = { type: "radioResult" } & RadioResultBody;
 
 export interface RadioResultBody {
   id: number;
-  what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths";
+  what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths" | "tones";
   error?: string;
   system?: string;
   /** summary */
   systems?: Record<string, RadioSummary>;
-  /** talkgroups, units, freqs */
+  /** talkgroups, units, freqs, tones */
   hours?: number;
   total?: number;
-  rows?: (TgRow | UnitRow | FreqRow)[];
+  rows?: (TgRow | UnitRow | FreqRow | ToneRow)[];
   /** tg / unit: the one asked about (null: never heard). */
   tg?: number;
   unit?: number;
@@ -1605,6 +1699,7 @@ export type FromRecorder =
   /** Answers statsQuery: `loading` while the history files are still being read. */
   | { type: "statsResult"; id: number; from: number; to: number; loading: boolean; series: Record<string, SeriesData> }
   | ({ type: "radioResult" } & RadioResultBody)
+  | { type: "tone"; tone: ToneEvent }
   /** Answers olderCalls; `more`: there are older ones still. */
   | { type: "olderCalls"; before: number; entries: CallEntry[]; more: boolean }
   | { type: "quit" };
@@ -1666,7 +1761,7 @@ export type ToRecorder =
   /** Calls that started before `before` (Unix ms), newest first, from the last 24 hours (the Listen page's "Load older"). */
   | { type: "olderCalls"; before: number; limit: number }
   /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
-  | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths"; system?: string; key?: number; hours?: number; limit?: number }
+  | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths" | "tones"; system?: string; key?: number; hours?: number; limit?: number }
   | { type: "quit" };
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */

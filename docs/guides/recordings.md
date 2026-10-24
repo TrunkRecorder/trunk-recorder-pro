@@ -160,11 +160,14 @@ It is written on a single line.
 | `freqList` | One entry for the call: `freq`, `time`, `pos` (0), `len` (seconds of audio), `error_count` (FEC errors), `spike_count` (0) |
 | `errorList` | Per 10 s of audio: `pos`, `len`, `frames`, `error_count`, `bad_frames` (repeated, muted or erased), `max_frame_errors` |
 | `srcList` | Each radio heard: `src` (unit ID), `time`, `pos` (seconds into the call), `emergency`, `signal_system` (empty), `tag` (its name), `tag_ota` (its talker alias), and `lat` and `lon` when it sent its GPS position (P25, Motorola and L3Harris radios) |
+| `tones` | Only when the voice carried any: each in-band tone in order, `type` (`dtmf`, `knox`, `call_progress`, or `tone` for a single tone), `value` (the digit, `350+440`, or the tone's Hz), `pos` and `len` (seconds), `src` (the radio talking, `0` if not known), `origin` (`frame`: named by a half-rate vocoder's tone frames, so P25 Phase 2, DMR and NXDN; `audio`: found in the audio, so P25 Phase 1, analog FM and AM, and half-rate voice sent without tone frames), and `level` (dBm0, tone frames) |
+| `tone_patterns` | Only when the voice carried any: what the tones make up, in order. `pattern` (`two_tone`, `long`, `hi_low` warble, `pulsed`, `digits` DTMF / KNOX, `morse` (a CW ID), `sequence` of short tones, `beep`), `tones` (Hz: two-tone A then B), `lengths` (seconds; Morse: its dot), `digits` and `knox` for digit strings (Morse: the text), `cycles` (hi-low tones, pulses), `format` (a two-tone page's timing, by Midian's paging timings: `Quick Call II` 1 s + 3 s, `Quick Call II battery save` 2.7 s + 0.8 s, `Quick Call I` 1 s, 0.2 s gap, 1 s, `GE Type 99` 1 s + 1.5 s, `NEC A`, …), `pos`, `len`, `src`, `origin`, and `signals` (the ids of the system's [signals](../configuration/systems.md#signals) it is) |
+| `signals` | Only when the call carried any of its system's [signals](../configuration/systems.md#signals): their ids, in the order first heard |
 
 Compared with Trunk Recorder's JSON:
 
-- `snr`, `clean_voice_pct`, `nac`, `ran`, `talkgroup_ota`, `system_type`, `voice_mode`, `errorList`
-  and the three tone fields are additions.
+- `snr`, `clean_voice_pct`, `nac`, `ran`, `talkgroup_ota`, `system_type`, `voice_mode`, `errorList`,
+  `tones`, `tone_patterns`, `signals` and the three tone fields are additions.
 - `signal` and `noise` are in dBFS with a decimal, not whole numbers.
 - `freqList` has one entry for the whole call rather than one per transmission.
 - Trunk Recorder pretty-prints its JSON; this is one line. JSON readers don't mind.
