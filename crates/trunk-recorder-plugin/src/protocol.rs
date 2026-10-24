@@ -36,8 +36,11 @@ pub mod topic {
     pub const AUDIO: &str = "audio";
     /// Every system's state, every few seconds ([`super::Status`]).
     pub const STATUS: &str = "status";
+    /// A call's tones made a pattern ([`super::ToneEvent`]): every page, alert
+    /// tone, DTMF string and Morse ID heard, named by the system's signals or not.
+    pub const TONE: &str = "tone";
 
-    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS];
+    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE];
 }
 
 /// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
@@ -83,6 +86,53 @@ pub struct Manifest {
     pub authors: Vec<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub license: String,
+    /// A page of its own in the interface, in the navigation, for settings
+    /// too many for its card (rules, destinations, …). None: its card in
+    /// Setup is enough.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<Page>,
+    /// Buttons it adds elsewhere in the interface, each adding an item to
+    /// its settings from what it's on ([`Contribution`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub contribute: Vec<Contribution>,
+    /// It takes new settings while it runs ([`HostMessage::Settings`]):
+    /// changing its own settings doesn't restart it, or anything else.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub live_settings: bool,
+}
+
+/// A plugin's own page ([`Manifest::page`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Page {
+    /// Its name in the navigation ("Notifications"); empty: the plugin's name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
+}
+
+/// A button a plugin adds where the interface shows something it can act on
+/// ([`Manifest::contribute`]). Pressed, it adds `item` to the plugin's
+/// settings array `append`, with `{placeholders}` in its strings filled in
+/// from what it was pressed on, and opens the plugin's page (or card) there.
+///
+/// On `signal` (a system's signal, on the system's Tones card): `{system}`
+/// (its short name), `{signal}` (`system:ID`), `{id}` and `{name}` (its
+/// name, else its id). A string that is just one placeholder inside an array
+/// (`["{signal}"]`) becomes that value.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Contribution {
+    /// Where the button goes: `signal`.
+    pub on: String,
+    /// What it says ("Notify").
+    pub label: String,
+    /// A tooltip.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+    /// The settings array (a top-level key of the plugin's settings) it adds to.
+    pub append: String,
+    /// The item it adds.
+    pub item: Value,
 }
 
 impl Manifest {
@@ -116,6 +166,17 @@ pub enum HostMessage {
     Audio(AudioChunk),
     #[serde(rename = "status")]
     Status(Status),
+    #[serde(rename = "tone")]
+    Tone(ToneEvent),
+    /// Someone pressed one of the plugin's buttons (`x-actions` in its
+    /// settings schema): answer with [`PluginMessage::ActionResult`]. Only
+    /// a plugin that has actions is sent one.
+    #[serde(rename = "action")]
+    Action(Action),
+    /// Its settings changed: the hello it would start with now. Only a
+    /// plugin with [`Manifest::live_settings`] is sent one; others restart.
+    #[serde(rename = "settings")]
+    Settings(Hello),
     /// The recorder is stopping: finish what's queued, then exit. stdin closes
     /// after this, and the process is killed if it hasn't exited within
     /// [`Shutdown::grace_s`].
@@ -277,6 +338,10 @@ pub struct CallInfo {
 #[serde(default)]
 pub struct CallSource {
     pub unit: u32,
+    /// Its name, as the call JSON's `srcList` `tag` will have it (the
+    /// system's units file, or its talker alias). Empty: none known yet.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tag: String,
     /// Unix seconds it was first heard on the call.
     pub time: f64,
     pub emergency: bool,
@@ -431,6 +496,16 @@ pub struct CallRecord {
     pub error_list: Vec<ErrorInterval>,
     #[serde(rename = "srcList")]
     pub src_list: Vec<SrcEntry>,
+    /// In-band tones sent in its voice (DTMF, KNOX, call progress, single
+    /// tones), in order. This recorder's: Trunk Recorder has none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tones: Vec<ToneEntry>,
+    /// What its tones make up: pages, alerts, digit strings, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tone_patterns: Vec<TonePattern>,
+    /// The system's signals it carried (their ids), in the order first heard.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -485,6 +560,9 @@ impl Default for CallRecord {
             freq_list: Vec::new(),
             error_list: Vec::new(),
             src_list: Vec::new(),
+            tones: Vec::new(),
+            tone_patterns: Vec::new(),
+            signals: Vec::new(),
             extra: Map::new(),
         }
     }
@@ -578,6 +656,83 @@ pub struct SrcEntry {
     pub extra: Map<String, Value>,
 }
 
+/// An in-band tone sent in the call's voice.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToneEntry {
+    /// `dtmf`, `knox`, `call_progress` or `tone` (a single tone).
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The digit (`0`–`9`, `A`–`D`, `*`, `#`); call progress, its two
+    /// frequencies (`350+440`); a single tone, its frequency in Hz.
+    pub value: String,
+    /// Seconds into the audio.
+    #[serde(serialize_with = "plain")]
+    pub pos: f64,
+    /// Seconds.
+    #[serde(serialize_with = "plain")]
+    pub len: f64,
+    /// The radio talking when it was sent (0: not known).
+    pub src: i64,
+    /// `frame`: named by the vocoder's tone frames (half-rate digital
+    /// voice: P25 Phase 2, DMR, NXDN); `audio`: found in the audio (P25
+    /// Phase 1, analog, half-rate voice sent without tone frames).
+    pub origin: String,
+    /// Tone frames: the level they named, dBm0.
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "tenth_or_null")]
+    pub level: Option<f64>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A signal the call's tones make up.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TonePattern {
+    /// `two_tone` (a page: tone A then B), `long` (one tone, a second or
+    /// more), `hi_low` (a warble), `pulsed`, `digits` (DTMF / KNOX), `morse`
+    /// (a CW ID), `sequence` (a run of short tones: selective calling, a
+    /// chirp) or `beep`.
+    pub pattern: String,
+    /// Its tones, Hz: two-tone A then B; hi-low its two, lower first; a
+    /// sequence each in turn; otherwise its one.
+    pub tones: Vec<f64>,
+    /// Seconds: two-tone A and B; hi-low each tone's; pulsed on then off;
+    /// Morse its dot; a sequence each in turn; otherwise its one.
+    pub lengths: Vec<f64>,
+    /// Digits: the string, and `knox` when they're KNOX tones (DTMF
+    /// otherwise); Morse: the text.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub digits: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub knox: bool,
+    /// Hi-low: its tones; pulsed: its pulses.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cycles: u32,
+    /// A two-tone page's format, by its timing (`Quick Call II`, …).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub format: String,
+    /// Seconds into the audio.
+    #[serde(serialize_with = "plain")]
+    pub pos: f64,
+    /// Seconds.
+    #[serde(serialize_with = "plain")]
+    pub len: f64,
+    /// The radio talking when it began (0: not known).
+    pub src: i64,
+    /// `frame` or `audio`, as its tones' ([`ToneEntry::origin`]).
+    pub origin: String,
+    /// The system's signals it is (their ids).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
 // How the call JSON writes its numbers (as Trunk Recorder's files have
 // them): a flag as 0/1, a level to a tenth, a confidence to a thousandth, a
 // position to a millionth, seconds as Rust prints them ("4", not "4.0").
@@ -627,6 +782,49 @@ fn flag<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     })
 }
 
+/// A call's tones made a pattern — a page, an alert tone, a warble, a DTMF
+/// or KNOX string, a Morse ID — told as soon as nothing can add to it (a
+/// second after its last tone), whether or not it's one of the system's
+/// signals. The call's JSON (`tone_patterns`) has it again once it's saved.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToneEvent {
+    pub short_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub site: String,
+    /// The call it's on (its `call_num`).
+    pub call_num: u64,
+    pub talkgroup: u32,
+    pub alpha_tag: String,
+    /// The radio talking (0: not known).
+    pub src: u32,
+    /// Its name, as a call's would be. Empty: none known.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub src_tag: String,
+    /// As [`TonePattern::pattern`]: `two_tone`, `long`, `hi_low`, `pulsed`,
+    /// `digits`, `morse` or `sequence`; and its `tones`, `lengths`, `digits`,
+    /// `knox`, `cycles`, `format` and `origin` as there.
+    pub pattern: String,
+    pub tones: Vec<f64>,
+    pub lengths: Vec<f64>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub digits: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub knox: bool,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cycles: u32,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub format: String,
+    pub origin: String,
+    /// For a person: "two-tone 849.63 → 1292.85 Hz, 1 + 3.04 s (Quick Call II)".
+    pub text: String,
+    /// The system's signals it is (their ids; with the system,
+    /// `wood:PD_PAGE`). Empty: none of them.
+    pub signals: Vec<String>,
+    /// Unix seconds.
+    pub time: f64,
+}
+
 /// Something a radio did on the control channel.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -643,9 +841,15 @@ pub struct UnitEvent {
     pub kind: String,
     /// Radio ID.
     pub unit: u32,
+    /// Its name, as a call's would be (the units file, its talker alias). Empty: none known.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tag: String,
     /// The talkgroup involved (affiliation, location, answer request, call
     /// alert, emergency alarm).
     pub talkgroup: Option<u32>,
+    /// The talkgroup's name, from the system's talkgroup file. Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub alpha_tag: String,
     /// The message said it is an emergency (an emergency alarm, a data
     /// grant's options).
     pub emergency: bool,
@@ -722,6 +926,19 @@ pub struct Shutdown {
     pub grace_s: f64,
 }
 
+/// A button of the plugin's was pressed ([`HostMessage::Action`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Action {
+    /// Echo it in the [`PluginMessage::ActionResult`].
+    pub request: u64,
+    /// The action's `id`, as its `x-actions` entry names it.
+    pub action: String,
+    /// The settings object the button is on, as edited (saved or not): an
+    /// item of an array (a destination, to test it), or the whole settings.
+    pub value: Value,
+}
+
 // ─── Plugin → recorder ────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -761,6 +978,14 @@ pub enum PluginMessage {
     /// every few seconds ([`crate::CallQueue`] does it for you).
     #[serde(rename = "metrics")]
     Metrics(Metrics),
+    /// How an [`Action`] went: shown by the button that was pressed.
+    #[serde(rename = "action.result")]
+    ActionResult {
+        request: u64,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        message: String,
+    },
     #[serde(other)]
     Unknown,
 }

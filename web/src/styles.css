@@ -868,6 +868,10 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .rail-nav button.on { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text); box-shadow: inset 3px 0 0 var(--accent); }
 .nav-icon { width: 18px; height: 18px; flex: none; }
 .nav-label { flex: 1; }
+/* Plugins' own pages, under Plugins: indented (in a row, between thin rules instead). */
+.rail-nav button.nav-sub { padding-left: 28px; font-size: 13px; }
+.rail-nav button.nav-sub .nav-icon { width: 15px; height: 15px; }
+.nav-rule { display: none; }
 .main { min-width: 0; padding: 0 28px 56px; max-width: 1480px; width: 100%; }
 .shell .topbar { margin-bottom: 18px; padding: 16px 0 14px; }
 .shell .topbar h1 { font-size: 22px; }
@@ -882,6 +886,8 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
   .rail-nav button { padding: 6px 10px; white-space: nowrap; }
   .rail-nav button.on { box-shadow: inset 0 -2px 0 var(--accent); }
   .nav-icon { display: none; }
+  .rail-nav button.nav-sub { padding-left: 10px; font-size: 14px; }
+  .nav-rule { display: block; margin: 6px 2px; border-left: 1px solid var(--line); align-self: stretch; }
   .main { padding: 0 16px 48px; }
   .shell .topbar { position: static; flex-wrap: wrap; }
 }
@@ -1368,3 +1374,28 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; border-radius: 50%;
   border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); box-shadow: 0 0 0 1px rgb(0 0 0 / 0.25);
 }
+
+/* A row opened to edit (a signal). */
+.edit-row { padding: 10px 0 4px; }
+.tone-spec { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.tone-spec-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 16px; align-items: start; }
+.tone-spec-fields input, .tone-spec-fields select { width: 100%; }
+
+/* Plugins' settings: choices to tick, list items opened to edit, buttons; a plugin's own page. */
+.ticks { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip.tick { cursor: pointer; font: inherit; font-size: 13px; background: transparent; border: 1px solid var(--line); }
+.chip.tick.on { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.plugin-item { border: 1px solid var(--line); border-radius: var(--radius); }
+.plugin-item.open { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.plugin-item.off .plugin-item-title { opacity: 0.6; }
+.plugin-item-head { display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 12px; }
+.plugin-item-title { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 2px 0; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.plugin-item-name { font-weight: 600; }
+.plugin-item-line { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.plugin-item-body { padding: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; }
+.plugin-buttons { flex-wrap: wrap; }
+.plugin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px 20px; align-items: start; }
+.plugin-grid > .wide { grid-column: 1 / -1; }
+.plugin-grid .field input, .plugin-grid .field select, .plugin-grid .field textarea { width: 100%; }
+.plugin-panel-hint { margin: 0 0 10px; }
+.plugin-page .plugin-log { max-height: 360px; overflow: auto; }

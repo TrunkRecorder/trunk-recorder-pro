@@ -11,6 +11,7 @@ import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
 import type { CipherSeen, LengthHistogram, RadioResult, TgRow, UnitRow } from "../protocol.ts";
 import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
 import { dashSystems, K, KIND_LABEL, running, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
+import { Tones } from "./Tones.tsx";
 
 type Hours = "24" | "168";
 const HOURS: { v: Hours; label: string }[] = [
@@ -322,6 +323,7 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
       <Talkgroups sys={sys} rows={tgs} hours={h} />
       <Units s={s} sys={sys} rows={units} total={unitsR?.total ?? units.length} />
       <Log s={s} system={sys.name} />
+      <Tones s={s} sys={sys} hours={h} />
     </div>
   );
 }

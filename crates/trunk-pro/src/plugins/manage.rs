@@ -478,11 +478,15 @@ impl Plugins {
         let (hub, runtime, archive, monitor) = (self.hub.clone(), self.runtime.clone(), self.archive.clone(), self.monitor.clone());
         let log = super::notes_to_log();
         Arc::new(move |n: Note| {
+            if let Note::ActionResult { request, ok, message, .. } = n {
+                publish(&hub, ToClient::PluginActionResult { request, ok, message });
+                return;
+            }
             if let Note::Result { plugin, path, outcome, took_ms, .. } = &n {
                 archive.result(path, plugin, *outcome, *took_ms);
             }
             let label = match &n {
-                Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Result { plugin, .. } | Note::Metrics { plugin, .. } => plugin.clone(),
+                Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Result { plugin, .. } | Note::Metrics { plugin, .. } | Note::ActionResult { plugin, .. } => plugin.clone(),
             };
             // A copy's notes are its plugin's, said to be the copy's.
             let (id, copy) = super::parse_label(&label);
@@ -535,6 +539,8 @@ impl Plugins {
                         }
                     }
                     Note::Metrics { metrics, .. } => r.set_metrics(copy, metrics.clone()),
+                    // (Handled above.)
+                    Note::ActionResult { .. } => {}
                 }
                 publish(&hub, ToClient::PluginRuntime { id: id.clone(), runtime: json!(r) });
             }

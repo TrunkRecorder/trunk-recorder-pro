@@ -48,6 +48,7 @@ impl Held {
     /// their frames and the error summary with them.
     /// Each source is placed in the audio first, and moves with it.
     pub fn trim(&mut self, min_tx_s: f64) {
+        self.frames.tones.finish();
         self.tx.place(&mut self.call.sources, self.audio.len());
         if let Some(ranges) = self.tx.kept(self.audio.len(), min_tx_s, SAMPLE_RATE) {
             // Kept audio before it (a source in a part left out starts where the next kept part does).

@@ -94,6 +94,7 @@ far behind loses events (counted on the dashboard) rather than slowing the recor
 | `call.end` | `CallInfo` | A call ends; its files follow in `call.concluded` |
 | `call.concluded` | `ConcludedCall` | A recorded call's files are on disk: its path key, its call JSON (Trunk Recorder's format, as a typed `CallRecord`: every field the recorder writes is a named field) and the paths of its `.json`, `.wav` and, when asked for, `.m4a` |
 | `unit` | `UnitEvent` | A radio registered, deregistered, affiliated, acknowledged, reported its location, got a data grant, or sent an answer request or call alert |
+| `tone` | `ToneEvent` | A call's tones made a pattern: every page, alert tone, DTMF or KNOX string and Morse ID heard, as soon as it's over (a second after its last tone), with the ids of the system's [signals](../configuration/systems.md#signals) it is (none: it's not one of them). The call JSON's `tone_patterns` has it again once the call is saved |
 | `audio` | `AudioChunk` | Live audio of recording calls: 16-bit mono PCM at 8 kHz, base64 |
 | `status` | `Status` | Every system's state every few seconds: control channel, decode rate, active and recording calls |
 
@@ -114,6 +115,7 @@ entry per site, with its `site_name`. A call heard on several sites of a system 
 | `status` | Its health (`ok`, `warning`, `error`) and a message, shown on its card until the next one |
 | `call.result` | What became of a concluded call: `ok`, `skipped` or `failed`, a message, optionally a URL, and optionally `took_ms`, how long your work on it took (an upload's last try) |
 | `metrics` | Figures for the Health tab: queue depth, retries, in flight, bytes sent, latency, the services it talks to (up, degraded, down), and any of its own |
+| `action.result` | How one of its buttons went (an `action`, below): `ok`, and a message shown beside the button |
 
 Lines on stdout that aren't protocol messages become log lines, and so does everything on stderr.
 
@@ -184,7 +186,7 @@ The main pieces:
 
 | Item | What it does |
 |---|---|
-| `Plugin` | The trait. `Config` and `SystemConfig` are your settings types (`NoConfig` for none). `manifest()`, `start()`, one method per topic (`call_start`, `call_end`, `call_concluded`, `unit`, `audio`, `status`) and `shutdown(grace)`. Every method runs on the one thread reading the recorder's messages, so return quickly and hand network or disk work to threads of your own |
+| `Plugin` | The trait. `Config` and `SystemConfig` are your settings types (`NoConfig` for none). `manifest()`, `start()`, one method per topic (`call_start`, `call_end`, `call_concluded`, `unit`, `audio`, `status`, `tone`) and `shutdown(grace)`. Every method runs on the one thread reading the recorder's messages, so return quickly and hand network or disk work to threads of your own |
 | `manifest!()` | A `Manifest` with the id, version, description, homepage, repository, authors and license from `Cargo.toml`; set `name`, `subscribe` and `audio_formats` |
 | `run::<P>()` | Answers `--describe` (and `--version`), parses `hello` and your settings, calls your methods, and exits with 78 when `start` returns `Err` |
 | `Setup` | What `start` gets: `config`, `systems` (each with `index`, `short_name`, `kind`, `name`, `fcc` (its FCC licenses by frequency), `fcc_call_sign` and `fcc_name` (the one that names it), `sites` (each `SiteInfo { name }`), and your `SystemConfig` or `None`), `capture_dir`, `data_dir`, `audio_formats`; `system_named()` and `has_format()`. The name and FCC licenses are optional, so often empty |
@@ -225,11 +227,37 @@ The form understands:
 | `object` | A group of the above |
 | `"x-system": true` on a string | A menu of the recorder's systems; follows renames |
 | `"x-required": true` | Must be filled in; until it is, the plugin (or that system) shows as not set up. Mark it with `#[schemars(extend("x-required" = true))]` |
+| array whose items are an `enum` | The choices, to tick |
+| `"x-systems": true` on an array of strings | The recorder's systems, to tick |
+| `"x-signals": true` on an array of strings | Every system's [signals](../guides/signals.md), to tick, as `system:ID` |
+| `"x-ref": "<list>"` | Items of the top-level array `<list>` (by their `id`, else their `name`): a menu on a string, items to tick on an array. Renaming an item renames what names it |
+| `"x-tones": true` on an array of objects | Tones to type in, each `pattern`, `tonesHz`, `digits`, `lengthsS` and `extraTolerancePct` (a [signal](../configuration/systems.md#signals)'s fields), with ▶ and a note of what the recorder would match within |
+| `"x-summary": ["{field}", "{field\|fallback}", …]` on an object in an array | Its line in the list: each segment with its fields read as the form shows them (a choice by its label), left out when a field in it is empty (and has no fallback) or doesn't apply |
+| `"x-title": "<field>"` on an object in an array | Each item is titled by that field and opened to edit, one at a time, rather than all shown at once |
+| `"x-when": {"<field>": <value or [values]>}` | Shown only while the object's other fields are so (a webhook's URL only for `"type": "webhook"`); hidden, it keeps its value |
+| `"x-actions": [{"id", "label", "hint"}]` on an object | Buttons under it (an array's item, or the whole settings): pressed, the plugin is sent `action` with the object as edited |
 
 `Option<T>` becomes `T` (empty means not set), unit-variant enums become menus, and nested structs
-are inlined. The template's [Settings](https://github.com/TrunkRecorder/trunk-plugin-template/blob/main/docs/settings.md)
+are inlined. Extensions go on a field with `#[schemars(extend("x-ref" = "destinations"))]`, or on a
+struct used as an array's items with the same attribute on the struct. The template's [Settings](https://github.com/TrunkRecorder/trunk-plugin-template/blob/main/docs/settings.md)
 page has examples, and advice on changing settings in later versions without breaking existing
 installs. Mark API keys and passwords `x-secret`, and never log them.
+
+### More room, buttons, and live settings
+
+A plugin whose settings are more than a few fields (rules and where they send, say) can ask for
+more of the interface in its manifest:
+
+| Manifest | What it gets |
+|---|---|
+| `page: { title }` | A page of its own, in the navigation under the radio pages (`#/plugin/<id>`): its settings full width, its state and its log. Its card in Setup links to it |
+| `contribute: [{ on, label, hint, append, item }]` | Buttons elsewhere in the interface. `on: "signal"` puts one on each signal on a system's Tones card; pressed, it adds `item` to the settings array `append` (with `{system}`, `{signal}` (`system:ID`), `{id}` and `{name}` filled in) and opens the plugin's page |
+| `live_settings: true` | Its own settings, changed, are sent to it as `settings` (the hello it would start with now) instead of every plugin being restarted. The SDK calls `Plugin::settings` |
+
+An `x-actions` button sends the running plugin `action` (`request`, `action`: the button's `id`,
+`value`: the object it's under, as edited, saved or not). It answers with `action.result`; the
+SDK's `Plugin::action` gets a `Reply` to answer with, from any thread. Plugins only run while the
+recorder records: pressed while it doesn't, the button says so.
 
 ## Testing
 

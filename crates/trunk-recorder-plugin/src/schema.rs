@@ -14,6 +14,10 @@
 //! Two more, for a field of either:
 //! - `"x-system": true` on a string — a menu of the recorder's systems (by
 //!   short name); the recorder updates it when a system is renamed
+//! - `"x-systems"`, `"x-signals"` (arrays of strings: systems, signals to
+//!   tick), `"x-ref": "<list>"` (items of another top-level list), `"x-title"`
+//!   and `"x-actions"` (an array's items: their title, their buttons); see
+//!   the guide, docs/plugins/writing-plugins.md
 //! - `"x-required": true` — the field has to be filled in: until it is, the
 //!   recorder shows the plugin, or that system, as not set up. ([`normalize`]
 //!   moves these into the object's `required` list; `#[schemars(required)]`

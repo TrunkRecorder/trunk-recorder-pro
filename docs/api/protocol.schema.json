@@ -363,6 +363,130 @@
             "additionalProperties": false
           },
           "description": "The radios that talked: `time` Unix s, `pos` s into the audio. `tag`: the unit's name (the unit names file or the alias heard, by the system's mode); `tag_ota`: the alias heard. `lat`, `lon`: where the radio said it was (GPS, decimal degrees), when it did."
+        },
+        "tones": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "dtmf",
+                  "knox",
+                  "call_progress",
+                  "tone"
+                ]
+              },
+              "value": {
+                "type": "string"
+              },
+              "pos": {
+                "type": "number"
+              },
+              "len": {
+                "type": "number"
+              },
+              "src": {
+                "type": "number"
+              },
+              "origin": {
+                "type": "string",
+                "enum": [
+                  "frame",
+                  "audio"
+                ]
+              },
+              "level": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "type",
+              "value",
+              "pos",
+              "len",
+              "src",
+              "origin"
+            ],
+            "additionalProperties": false
+          },
+          "description": "In-band tones sent in its voice, in order (only when there were any): `type` \"dtmf\" | \"knox\" | \"call_progress\" | \"tone\"; `value` the digit, \"350+440\", or a single tone's Hz; `pos` / `len` s into the audio; `src` the radio talking (0: not known); `origin` \"frame\" (the vocoder's tone frames) or \"audio\"; `level` dBm0 (tone frames)."
+        },
+        "tone_patterns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "$ref": "#/definitions/TonePatternKind"
+              },
+              "tones": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "lengths": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "digits": {
+                "type": "string"
+              },
+              "knox": {
+                "type": "boolean"
+              },
+              "cycles": {
+                "type": "number"
+              },
+              "format": {
+                "type": "string"
+              },
+              "pos": {
+                "type": "number"
+              },
+              "len": {
+                "type": "number"
+              },
+              "src": {
+                "type": "number"
+              },
+              "origin": {
+                "type": "string",
+                "enum": [
+                  "frame",
+                  "audio"
+                ]
+              },
+              "signals": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "pattern",
+              "tones",
+              "lengths",
+              "pos",
+              "len",
+              "src",
+              "origin"
+            ],
+            "additionalProperties": false
+          },
+          "description": "What its tones make up (pages, alerts, digit strings, Morse), in order (only when there were any): see the recordings guide."
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The system's signals it carried (their ids), in the order first heard (only when there were any)."
         }
       },
       "required": [
@@ -1188,6 +1312,13 @@
             "$ref": "#/definitions/DelayRule"
           },
           "description": "How long plugins wait for its calls (as System's)."
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SignalDef"
+          },
+          "description": "The tone signals it sends (as System's)."
         },
         "recording": {
           "$ref": "#/definitions/RecordingOverride",
@@ -2573,6 +2704,30 @@
         },
         {
           "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pluginActionResult"
+            },
+            "request": {
+              "type": "number"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request",
+            "ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
           "additionalProperties": false,
           "properties": {
             "kind": {
@@ -3084,7 +3239,8 @@
                 "tg",
                 "unit",
                 "freqs",
-                "lengths"
+                "lengths",
+                "tones"
               ]
             },
             "error": {
@@ -3102,7 +3258,7 @@
             },
             "hours": {
               "type": "number",
-              "description": "talkgroups, units, freqs"
+              "description": "talkgroups, units, freqs, tones"
             },
             "total": {
               "type": "number"
@@ -3119,6 +3275,9 @@
                   },
                   {
                     "$ref": "#/definitions/FreqRow"
+                  },
+                  {
+                    "$ref": "#/definitions/ToneRow"
                   }
                 ]
               }
@@ -3310,6 +3469,23 @@
             "type",
             "what"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tone"
+            },
+            "tone": {
+              "$ref": "#/definitions/ToneEvent"
+            }
+          },
+          "required": [
+            "type",
+            "tone"
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -4295,6 +4471,54 @@
       "additionalProperties": false,
       "description": "The computer, as last sampled (desktop app). Missing values are listed in `unavailable`."
     },
+    "PluginActionDef": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "hint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "additionalProperties": false,
+      "description": "A plugin's button (`x-actions`): the plugin is sent `action` and answers how it went."
+    },
+    "PluginContribution": {
+      "type": "object",
+      "properties": {
+        "on": {
+          "type": "string",
+          "const": "signal",
+          "description": "Where: `signal` (each signal on a system's Tones card: `{system}`, `{signal}` = system:ID, `{id}`, `{name}`)."
+        },
+        "label": {
+          "type": "string"
+        },
+        "hint": {
+          "type": "string"
+        },
+        "append": {
+          "type": "string"
+        },
+        "item": {}
+      },
+      "required": [
+        "on",
+        "label",
+        "append",
+        "item"
+      ],
+      "additionalProperties": false,
+      "description": "A button a plugin adds elsewhere (`contribute`): it adds `item` (its `{placeholders}` filled in) to the settings list `append`."
+    },
     "PluginEndpoint": {
       "type": "object",
       "properties": {
@@ -4516,6 +4740,26 @@
         },
         "license": {
           "type": "string"
+        },
+        "page": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "description": "A page of its own in the navigation, for settings too many for its card."
+        },
+        "contribute": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginContribution"
+          }
+        },
+        "live_settings": {
+          "type": "boolean",
+          "description": "It takes changes to its settings as they're made, without restarting."
         }
       },
       "required": [
@@ -4792,6 +5036,45 @@
         "x-system": {
           "type": "boolean",
           "description": "A system's short name: drawn as a menu of the systems."
+        },
+        "x-systems": {
+          "type": "boolean",
+          "description": "A list of systems' short names: drawn as the systems to tick."
+        },
+        "x-tones": {
+          "type": "boolean",
+          "description": "A list of tones typed in (each `{pattern, tonesHz, digits, lengthsS, toleranceHz}`, as a signal's): drawn as tones to build, with ▶."
+        },
+        "x-signals": {
+          "type": "boolean",
+          "description": "A list of signals, as `system:ID`: drawn as every system's signals to tick."
+        },
+        "x-ref": {
+          "type": "string",
+          "description": "Names items of the top-level list it names (`\"destinations\"`), by their `id`, else their `name`: drawn as a menu (a string) or the items to tick (a list). Renaming an item renames what names it."
+        },
+        "x-title": {
+          "type": "string",
+          "description": "An object in a list: the field whose value titles it (\"name\")."
+        },
+        "x-summary": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "An object in a list: its line in the list, as segments (\"{event}\", \"{systems|any system}\", \"→ {to}\")."
+        },
+        "x-when": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "Shown only when the object's other fields are so: `{\"type\": \"command\"}`, `{\"event\": [\"signal\", \"tone\"]}`."
+        },
+        "x-actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginActionDef"
+          },
+          "description": "Buttons on this object (an item of a list, or the whole settings): each sends the plugin the object as edited."
         }
       },
       "additionalProperties": false,
@@ -5292,6 +5575,56 @@
       ],
       "additionalProperties": false,
       "description": "A shared system's sharing: no FCC call sign yet (not shared until it has one), waiting (to decode it a while first), shared (when last), or its last error."
+    },
+    "SignalDef": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "description": "What people call it (absent: its id)."
+        },
+        "pattern": {
+          "$ref": "#/definitions/TonePatternKind"
+        },
+        "tonesHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Its tones, Hz, in order (as the call JSON's `tones`; digits: none)."
+        },
+        "digits": {
+          "type": "string",
+          "description": "Digits: the string (\"KNOX \" first for KNOX tones); Morse: the text."
+        },
+        "lengthsS": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "How long each tone is, s, as the call JSON's `lengths` (for playing it back; not matched on)."
+        },
+        "extraTolerancePct": {
+          "type": "number",
+          "description": "How much further than usual (1.5 % in audio; 15.7 Hz + 0.5 % from Phase 2 tone frames) a heard tone may be, % of it."
+        },
+        "talkgroups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The talkgroups it's sent on: numbers, ranges (\"1000-1099\") and patterns (\"507*\"); absent: any."
+        }
+      },
+      "required": [
+        "id",
+        "pattern"
+      ],
+      "additionalProperties": false,
+      "description": "A tone signal a system sends: a page (two tones), an alert, a warble, a digit string, a Morse ID. Its `id` is unique within its system (written \"CLMRN:CSP_FIRE\" where the system isn't said): calls carrying it list it (the call JSON's `signals`), and plugins hear it named (topic `tone`)."
     },
     "Site": {
       "type": "object",
@@ -6864,6 +7197,13 @@
           },
           "description": "How long plugins wait for its calls; these come before the whole recorder's (see DelayRule)."
         },
+        "signals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SignalDef"
+          },
+          "description": "The tone signals it sends (pages, alerts, digit strings, Morse IDs): see SignalDef."
+        },
         "sites": {
           "type": "array",
           "items": {
@@ -7036,6 +7376,224 @@
       ],
       "additionalProperties": false,
       "description": "A talkgroup as heard (radioQuery talkgroups / tg)."
+    },
+    "ToneEvent": {
+      "type": "object",
+      "properties": {
+        "system": {
+          "type": "string"
+        },
+        "site": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "number"
+        },
+        "talkgroup": {
+          "type": "number"
+        },
+        "alphaTag": {
+          "type": "string"
+        },
+        "src": {
+          "type": "number"
+        },
+        "srcTag": {
+          "type": "string",
+          "description": "The radio's name (\"\" when none is known)."
+        },
+        "pattern": {
+          "$ref": "#/definitions/TonePatternKind"
+        },
+        "tones": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "lengths": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "digits": {
+          "type": "string"
+        },
+        "knox": {
+          "type": "boolean"
+        },
+        "cycles": {
+          "type": "number"
+        },
+        "format": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "frame",
+            "audio"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "description": "For a log line: \"two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)\"."
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "time": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "system",
+        "site",
+        "callId",
+        "talkgroup",
+        "alphaTag",
+        "src",
+        "srcTag",
+        "pattern",
+        "tones",
+        "lengths",
+        "digits",
+        "knox",
+        "cycles",
+        "format",
+        "origin",
+        "text",
+        "signals",
+        "time"
+      ],
+      "additionalProperties": false,
+      "description": "A call's tones made a pattern (a page, an alert, digits, a Morse ID), sent as soon as nothing can add to it (a second after its last tone). `signals`: the ids of the system's signals it is; `time` Unix s."
+    },
+    "TonePatternKind": {
+      "type": "string",
+      "enum": [
+        "two_tone",
+        "long",
+        "hi_low",
+        "pulsed",
+        "digits",
+        "morse",
+        "sequence",
+        "beep"
+      ],
+      "description": "A call's tone pattern, as the call JSON's `tone_patterns` names it."
+    },
+    "ToneRow": {
+      "type": "object",
+      "properties": {
+        "tg": {
+          "type": "number"
+        },
+        "alphaTag": {
+          "type": "string"
+        },
+        "pattern": {
+          "$ref": "#/definitions/TonePatternKind"
+        },
+        "tones": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Hz, as the call JSON's `tones`."
+        },
+        "lengths": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Seconds, each the typical (median) of the times heard."
+        },
+        "digits": {
+          "type": "string",
+          "description": "Digits: the string (\"KNOX \" first for KNOX); Morse: the text."
+        },
+        "format": {
+          "type": "string",
+          "description": "A two-tone page's format by its timing (\"Quick Call II\"), or \"\"."
+        },
+        "count": {
+          "type": "number"
+        },
+        "first": {
+          "type": "number",
+          "description": "Unix s."
+        },
+        "last": {
+          "type": "number"
+        },
+        "radios": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "unit": {
+                "type": "number"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "n": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "unit",
+              "name",
+              "n"
+            ],
+            "additionalProperties": false
+          },
+          "description": "The radios that sent it, most first."
+        },
+        "frame": {
+          "type": "boolean",
+          "description": "From the vocoder's tone frames (Phase 2's are on a 31.25 Hz grid)."
+        },
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Paging codes it may be, likeliest first (\"QC2 126/128\")."
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The system's signals it was when last heard (their ids)."
+        }
+      },
+      "required": [
+        "tg",
+        "alphaTag",
+        "pattern",
+        "tones",
+        "lengths",
+        "digits",
+        "format",
+        "count",
+        "first",
+        "last",
+        "radios",
+        "frame",
+        "ids"
+      ],
+      "additionalProperties": false,
+      "description": "The tones log (`radioQuery` \"tones\"): one tone pattern as heard on one talkgroup over the span, every time it was (the same pattern, digits and tones) counted together."
     },
     "Topic": {
       "type": "string",
@@ -7673,6 +8231,33 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "pluginAction"
+            },
+            "plugin": {
+              "type": "string"
+            },
+            "action": {
+              "type": "string"
+            },
+            "value": {},
+            "request": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "plugin",
+            "action",
+            "value",
+            "request"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "radioQuery"
             },
             "id": {
@@ -7687,7 +8272,8 @@
                 "tg",
                 "unit",
                 "freqs",
-                "lengths"
+                "lengths",
+                "tones"
               ]
             },
             "system": {

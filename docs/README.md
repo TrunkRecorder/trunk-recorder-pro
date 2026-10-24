@@ -75,6 +75,7 @@ LimeSDR...).
 - [The interface](guides/interface.md): Setup, live listening, events, remote access
 - [The dashboard](guides/dashboard.md): what each page and number means
 - [Recordings](guides/recordings.md): where calls go, file names, the call JSON, what is kept
+- [Signals](guides/signals.md): pages, alert tones, DTMF, KNOX and Morse IDs heard in calls, and naming them
 - [Plugins](plugins/README.md): uploading to [OpenMHz](plugins/openmhz.md),
   [Broadcastify](plugins/broadcastify.md) and [Rdio Scanner](plugins/rdioscanner.md),
   [streaming](plugins/simplestream.md), [running a script](plugins/upload-script.md),

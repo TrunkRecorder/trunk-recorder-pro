@@ -79,6 +79,8 @@ pub enum ToClient {
     /// A call's upload plugins are done and it kept other files than its entry said.
     CallFiles { path: String, audio: bool, json: bool },
     UnitAlias { system: String, unit: u32, alias: String },
+    /// A call's tones made a pattern (a page, an alert, digits, a Morse ID): see [`tone_json`](crate::session::tone_json).
+    Tone { tone: Value },
     Heard { heard: Value },
     Survey(Body),
     SurveySpectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
@@ -94,6 +96,8 @@ pub enum ToClient {
     Notice { message: String },
     Plugins(Body),
     PluginRuntime { id: String, runtime: Value },
+    /// How a plugin's button went (`pluginAction`'s `request`).
+    PluginActionResult { request: u64, ok: bool, #[serde(skip_serializing_if = "String::is_empty")] message: String },
     Interfaces(Body),
     /// A store's list (plugins' or interfaces'): `{ source, fetched, problem, listings, … }`.
     Store { kind: StoreKind, #[serde(flatten)] list: Body },
@@ -163,7 +167,7 @@ impl ToClient {
     pub fn audience(&self) -> Audience {
         use ToClient::*;
         match self {
-            Plugins(_) | PluginRuntime { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } => Audience::Control,
+            Plugins(_) | PluginRuntime { .. } | PluginActionResult { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } => Audience::Control,
             _ => Audience::Everyone,
         }
     }
@@ -260,6 +264,9 @@ pub enum Command {
     StatsQuery(StatsQuery),
     OlderCalls { #[serde(default = "i64_max")] before: i64, #[serde(default = "hundred")] limit: usize },
     RadioQuery(Body),
+    /// Press plugin `plugin`'s button `action` on `value` (the settings
+    /// object it's on, as edited): answered with `pluginActionResult`.
+    PluginAction { plugin: String, action: String, #[serde(default)] value: Value, request: u64 },
     Quit,
 }
 
