@@ -138,11 +138,9 @@ export interface FccLicense {
 /** A system's FCC licenses by frequency (Hz on the 6.25 kHz raster, as a string). Optional, for reference; plugins are told them. */
 export type FccLicenses = Record<string, FccLicense>;
 
-/** A system's record in the community directory: its ID, its version when last shared, and when (Unix ms). */
+/** A system's record in the community directory: its ID. (Its version and when it was last shared are kept beside the config, not in it.) */
 export interface DirectoryLink {
   id: string;
-  rev: number;
-  sharedAt?: number;
 }
 
 /** A shared system's sharing: no FCC call sign yet (not shared until it has one), waiting (to decode it a while first), shared (when last), or its last error. */

@@ -98,7 +98,7 @@ export function ShareSystem(props: { c: Config; i: number }) {
 
 function ShareLine(props: { c: Config; sys: System; state?: string; lastShared: number | null; error: string | null }) {
   const { c, sys } = props;
-  const last = props.lastShared ?? sys.directory?.sharedAt ?? null;
+  const last = props.lastShared;
   const link = sys.directory?.id && (
     <a href={directoryUrl(c, sys.directory.id)} target="_blank" rel="noreferrer">
       View in the directory

@@ -18,6 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use trunk_core::trunk::{SiteStatus, Talkgroup, Talkgroups};
 
@@ -65,6 +66,22 @@ struct Heard {
     encrypted: bool,
 }
 
+/// What the directory made of a share: its record, at this version.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Linked {
+    pub id: String,
+    pub rev: u64,
+}
+
+/// A directory record's sharing, as kept beside the config: the version this
+/// recorder last had of it, and when it last shared it (Unix ms).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Shared {
+    pub rev: u64,
+    pub shared_at: f64,
+}
+
 /// What this run has heard of one shared system, since its last share.
 #[derive(Clone, Debug, Default)]
 pub struct Evidence {
@@ -83,6 +100,8 @@ pub struct Evidence {
     last_ms: f64,
     /// A share on its way.
     pending: bool,
+    /// Its directory record and the version this recorder last had of it (none: not shared yet).
+    link: Option<(String, u64)>,
     /// Its config has an FCC call sign (or one is in [`Evidence::call_signs`]; neither: not shared yet).
     fcc_call_sign: bool,
     failures: u32,
@@ -101,12 +120,17 @@ impl Evidence {
 #[derive(Clone, Debug, Default)]
 pub struct Ledger {
     systems: BTreeMap<String, Evidence>,
+    /// What sharing has done, by directory ID: kept beside the config (the
+    /// platform saves [`Ledger::unsaved`], `sharing.json`), so sharing never
+    /// rewrites the config itself.
+    state: BTreeMap<String, Shared>,
+    dirty: bool,
     /// In place of [`FIRST_AFTER_MS`] (testing against a short capture).
     first_after_ms: Option<f64>,
 }
 
 impl Ledger {
-    /// The systems shared in `systems`, each from its last share (its directory link's `sharedAt`).
+    /// The systems shared in `systems` (their last shares: [`Ledger::load`]).
     pub fn new<'a>(systems: impl IntoIterator<Item = &'a System>) -> Ledger {
         let mut l = Ledger::default();
         for s in systems {
@@ -119,11 +143,37 @@ impl Ledger {
     pub fn set(&mut self, sys: &System) {
         if shareable(sys) {
             let e = self.systems.entry(sys.short_name.clone()).or_default();
-            e.last_ms = e.last_ms.max(sys.directory.as_ref().map_or(0.0, |d| d.shared_at as f64));
+            if let Some(d) = sys.directory.as_ref().filter(|d| !d.id.is_empty()) {
+                let st = self.state.get(&d.id).cloned().unwrap_or_default();
+                e.link = Some((d.id.clone(), st.rev));
+                e.last_ms = e.last_ms.max(st.shared_at);
+            }
             e.fcc_call_sign = has_call_sign(sys);
         } else {
             self.systems.remove(&sys.short_name);
         }
+    }
+
+    /// What sharing did in earlier runs ([`Ledger::unsaved`] gave): each
+    /// directory record's version and last share. Systems already set take it.
+    pub fn load(&mut self, json: &str) {
+        self.state = serde_json::from_str(json).unwrap_or_default();
+        for e in self.systems.values_mut() {
+            if let Some((id, rev)) = &mut e.link
+                && let Some(st) = self.state.get(id.as_str())
+            {
+                *rev = st.rev;
+                e.last_ms = e.last_ms.max(st.shared_at);
+            }
+        }
+    }
+
+    /// What sharing did, as JSON to keep beside the config, when it changed since the last call.
+    pub fn unsaved(&mut self) -> Option<String> {
+        if !std::mem::take(&mut self.dirty) {
+            return None;
+        }
+        serde_json::to_string_pretty(&self.state).ok()
     }
 
     /// Share first after `ms` of decoding, not [`FIRST_AFTER_MS`] (testing).
@@ -185,11 +235,17 @@ impl Ledger {
     }
 
     /// How its share went: taken (its counts start again), or why not (tried again later).
-    pub fn done(&mut self, short_name: &str, now_ms: f64, result: Result<(), String>) {
+    pub fn done(&mut self, short_name: &str, now_ms: f64, result: Result<Option<Linked>, String>) {
         let Some(e) = self.systems.get_mut(short_name) else { return };
         e.pending = false;
         match result {
-            Ok(()) => {
+            Ok(linked) => {
+                // (None: taken, but not linked to a record: a quarantined recorder's.)
+                if let Some(l) = linked {
+                    self.state.insert(l.id.clone(), Shared { rev: l.rev, shared_at: now_ms });
+                    self.dirty = true;
+                    e.link = Some((l.id, l.rev));
+                }
                 e.last_ms = now_ms;
                 e.changed = false;
                 e.failures = 0;
@@ -303,8 +359,8 @@ pub fn observation(recorder: &str, app: &str, sys: &System, sites: &[&SiteStatus
         "system": { "type": kind, "sites": site_json, "fcc": fcc },
         "heardTalkgroups": heard_tgs,
     });
-    if let Some(d) = &sys.directory {
-        o["directory"] = json!({ "id": d.id, "rev": d.rev });
+    if let Some((id, rev)) = &ev.link {
+        o["directory"] = json!({ "id": id, "rev": rev });
     }
     if SHARE_TALKGROUP_TEXT {
         if let Some(t) = talkgroups {
@@ -373,7 +429,7 @@ mod tests {
         l.sent("dcfd");
         assert!(!l.due("dcfd", t0 + 6.0 * MIN), "one on its way");
         let t1 = t0 + 6.0 * MIN;
-        l.done("dcfd", t1, Ok(()));
+        l.done("dcfd", t1, Ok(Some(Linked { id: "sys_1".into(), rev: 1 })));
         assert_eq!(l.status_json("dcfd")["state"], "shared");
         // The same talkgroup on the same channel again: nothing new.
         l.call("dcfd", Some(0), 101, 851_000_000, false, false);
@@ -384,7 +440,7 @@ mod tests {
         assert!(l.due("dcfd", t1 + 60.0 * MIN));
         // Shared, then nothing new: daily.
         let t2 = t1 + 60.0 * MIN;
-        l.done("dcfd", t2, Ok(()));
+        l.done("dcfd", t2, Ok(Some(Linked { id: "sys_1".into(), rev: 2 })));
         assert!(!l.due("dcfd", t2 + 23.0 * 60.0 * MIN));
         assert!(l.due("dcfd", t2 + 24.0 * 60.0 * MIN));
     }
@@ -439,22 +495,38 @@ mod tests {
     }
 
     #[test]
-    fn last_share_survives_a_restart() {
+    fn what_sharing_did_is_kept_beside_the_config_and_survives_a_restart() {
         let mut c = config(true);
-        assert!(c.link_shared("dcfd", "sys_1", 3, &["south".into()], &["site_s".into()], NOW));
         let mut l = Ledger::new(&c.systems);
+        l.decoding("dcfd", NOW);
+        l.sent("dcfd");
+        l.done("dcfd", NOW, Ok(Some(Linked { id: "sys_1".into(), rev: 3 })));
+        // Kept: the record's version and when, by its ID (once: unsaved again only after a change).
+        let saved = l.unsaved().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&saved).unwrap(), json!({ "sys_1": { "rev": 3, "sharedAt": NOW } }));
+        assert_eq!(l.unsaved(), None);
+        // The config gets the link once (its ID and its sites'), never the version or the time.
+        assert!(c.link_shared("dcfd", "sys_1", &["south".into()], &["site_s".into()]));
+        assert!(!c.link_shared("dcfd", "sys_1", &["south".into()], &["site_s".into()]), "the next share changes nothing in it");
+        let json = serde_json::to_value(&c.systems[0]).unwrap();
+        assert_eq!(json["directory"], json!({ "id": "sys_1" }));
+        // After a restart: half an hour since that share, so not yet; and its next share names the version it had.
+        let mut l = Ledger::new(&c.systems);
+        l.load(&saved);
         l.decoding("dcfd", NOW);
         l.call("dcfd", Some(0), 101, 851_000_000, false, false);
         assert!(!l.due("dcfd", NOW + 30.0 * MIN), "shared half an hour ago, before the restart");
         assert!(l.due("dcfd", NOW + 60.0 * MIN));
+        assert_eq!(l.evidence("dcfd").unwrap().link, Some(("sys_1".into(), 3)));
     }
 
     #[test]
     fn what_is_shared_is_what_was_heard() {
         let mut c = config(true);
-        c.link_shared("dcfd", "sys_1", 3, &["north".into()], &["site_n".into()], 1.0);
+        c.link_shared("dcfd", "sys_1", &["north".into()], &["site_n".into()]);
         let sys = &c.systems[0];
         let mut l = Ledger::new(&c.systems);
+        l.load(r#"{ "sys_1": { "rev": 3, "sharedAt": 1 } }"#);
         l.call("dcfd", Some(0), 101, 851_000_000, false, false);
         l.call("dcfd", Some(0), 101, 851_000_000, false, true);
         l.call("dcfd", Some(1), 101, 852_000_000, false, true);
@@ -509,11 +581,11 @@ mod tests {
     #[test]
     fn linking_names_sites_by_name() {
         let mut c = config(true);
-        assert!(c.link_shared("dcfd", "sys_1", 3, &["south".into(), "north".into()], &["site_s".into(), "site_n".into()], 7.0));
+        assert!(c.link_shared("dcfd", "sys_1", &["south".into(), "north".into()], &["site_s".into(), "site_n".into()]));
         let s = &c.systems[0];
-        assert_eq!(s.directory.as_ref().map(|d| (d.id.as_str(), d.rev)), Some(("sys_1", 3)));
+        assert_eq!(s.directory.as_ref().map(|d| d.id.as_str()), Some("sys_1"));
         assert_eq!((s.sites[0].directory_id.as_str(), s.sites[1].directory_id.as_str()), ("site_n", "site_s"));
-        assert!(!c.link_shared("dcfd", "sys_1", 3, &[], &[], 7.0), "nothing changed");
+        assert!(!c.link_shared("dcfd", "sys_1", &[], &[]), "nothing changed");
         // Kept in the config file, read back.
         let back = Config::from_json(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back.systems[0], c.systems[0]);

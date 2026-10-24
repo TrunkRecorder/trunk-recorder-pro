@@ -42,7 +42,7 @@ test("Share: the switch says what goes to the directory, and not names or a loca
 });
 
 test("Share: shared, with when and a link to its page in the directory", () => {
-  const sys = p25({ share: true, directory: { id: "sys_abc", rev: 4, sharedAt: Date.now() - 2 * 3600_000 } });
+  const sys = p25({ share: true, directory: { id: "sys_abc" } });
   const c = connected([sys], { state: "shared", lastShared: Date.now() - 3600_000, error: null });
   const html = renderToString(<ShareSystem c={c} i={0} />);
   assert.ok(html.includes("Shared 1 h ago") || html.includes("Shared 60 m ago"), html);
@@ -59,16 +59,16 @@ test("Share: its error, and conventional-only protocols can't be shared", () => 
 });
 
 test("Share: the config keeps the switch and the directory's link", () => {
-  const sys = normalizeSystem({ shortName: "dcfd", type: "p25", share: true, directory: { id: "sys_abc", rev: 4 }, sites: [{ name: "north", directoryId: "site_n", controlChannelsHz: [1] }] });
+  const sys = normalizeSystem({ shortName: "dcfd", type: "p25", share: true, directory: { id: "sys_abc", rev: 4, sharedAt: 1 } as never, sites: [{ name: "north", directoryId: "site_n", controlChannelsHz: [1] }] });
   assert.equal(sys.share, true);
-  assert.deepEqual(sys.directory, { id: "sys_abc", rev: 4 });
+  assert.deepEqual(sys.directory, { id: "sys_abc" }, "only its ID: what sharing did is kept beside the config");
   assert.equal(sys.sites[0].directoryId, "site_n");
   assert.equal(normalizeSystem({ shortName: "x", type: "p25", share: false }).share, undefined);
 });
 
 test("Share: switching it, or a share saving the directory's link, needs no restart", () => {
   const before = { ...defaultConfig(), systems: [p25()] };
-  const after = { ...before, systems: [{ ...p25({ share: true, directory: { id: "sys_abc", rev: 2, sharedAt: 1 } }), sites: p25().sites.map((x) => ({ ...x, directoryId: "site_n" })) }] };
+  const after = { ...before, systems: [{ ...p25({ share: true, directory: { id: "sys_abc" } }), sites: p25().sites.map((x) => ({ ...x, directoryId: "site_n" })) }] };
   assert.equal(restartKey(after, true), restartKey(before, true));
   assert.notEqual(restartKey({ ...before, systems: [p25({ name: "Other" })] }, true), restartKey(before, true));
 });

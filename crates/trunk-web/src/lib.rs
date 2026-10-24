@@ -161,8 +161,18 @@ impl WebSession {
         }
     }
     /// How system `short_name`'s share went: `error` when it didn't.
-    pub fn share_done(&mut self, short_name: &str, now_ms: f64, error: Option<String>) {
-        self.s.share_done(short_name, now_ms, error.map_or(Ok(()), Err));
+    /// `id` and `rev`: the directory's record and version for it (none: taken, not linked); `error`: why not.
+    pub fn share_done(&mut self, short_name: &str, now_ms: f64, id: Option<String>, rev: f64, error: Option<String>) {
+        let linked = id.map(|id| trunk_app::share::Linked { id, rev: rev.max(0.0) as u64 });
+        self.s.share_done(short_name, now_ms, error.map_or(Ok(linked), Err));
+    }
+    /// What sharing did before ([`WebSession::sharing_unsaved`] gave): each directory record's version and last share.
+    pub fn load_sharing(&mut self, json: &str) {
+        self.s.load_sharing(json);
+    }
+    /// What sharing did, as JSON to keep (not in the config), when it changed since the last call.
+    pub fn sharing_unsaved(&mut self) -> Option<String> {
+        self.s.sharing_unsaved()
     }
     /// Preload the radio registry: JSON `{shortName: registry}` ([`WebSession::registry_unsaved`]).
     pub fn load_registry(&mut self, json: &str) {
@@ -250,13 +260,13 @@ pub fn learn_call_sign(config_json: &str, short_name: &str, freq_hz: f64, call_s
 
 /// config `config_json` with system `short_name` linked to the directory's
 /// records, as a share's answer gave them ([`Config::link_shared`]): the
-/// config (JSON) when it changed, else undefined. `site_names_json`, `site_ids_json`: arrays.
+/// config (JSON) when it changed (a first share, a new site), else undefined. `site_names_json`, `site_ids_json`: arrays.
 #[wasm_bindgen]
-pub fn link_shared(config_json: &str, short_name: &str, id: &str, rev: f64, site_names_json: &str, site_ids_json: &str, shared_at: f64) -> Option<String> {
+pub fn link_shared(config_json: &str, short_name: &str, id: &str, site_names_json: &str, site_ids_json: &str) -> Option<String> {
     let mut cfg = Config::from_json(config_json).ok()?;
     let names: Vec<String> = serde_json::from_str(site_names_json).ok()?;
     let ids: Vec<String> = serde_json::from_str(site_ids_json).ok()?;
-    cfg.link_shared(short_name, id, rev as u64, &names, &ids, shared_at).then(|| serde_json::to_string(&cfg).unwrap_or_default())
+    cfg.link_shared(short_name, id, &names, &ids).then(|| serde_json::to_string(&cfg).unwrap_or_default())
 }
 
 /// A new directory recorder ID from 16 random bytes.
