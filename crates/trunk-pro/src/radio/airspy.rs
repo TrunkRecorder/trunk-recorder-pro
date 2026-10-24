@@ -233,8 +233,9 @@ fn describe(serial: u64, identified: Option<(&str, Vec<u32>)>) -> serde_json::Va
 }
 
 /// Attached Airspys: [{serial (hex), label, model ("R2" / "Mini"), rates (IQ, Hz)}]. Each is
-/// opened for a moment to ask its model and rates (as airspy_info does); one that can't be
-/// (streaming for a source) is listed by serial alone.
+/// opened for a moment to ask its model and rates (as airspy_info does). One streaming for a
+/// source is listed by serial alone if it can't be opened — or not at all: libairspy's own
+/// listing opens each Airspy to read its serial, and on Windows an open one is exclusive.
 pub fn devices() -> Vec<serde_json::Value> {
     let Ok(a) = api() else { return vec![] };
     let mut sn = [0u64; 16];
