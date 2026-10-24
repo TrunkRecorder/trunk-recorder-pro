@@ -187,7 +187,7 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
 }
 
 /** A dialog over the page: Escape or a click outside closes it. */
-function Modal(props: { title: string; onClose: () => void; children: React.ReactNode }) {
+export function Modal(props: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
     <div className="modal-back" role="dialog" aria-modal="true" aria-label={props.title} onClick={props.onClose} onKeyDown={(e) => e.key === "Escape" && props.onClose()} tabIndex={-1} ref={(el) => el?.focus()}>
       <div className="modal stack" onClick={(e) => e.stopPropagation()}>

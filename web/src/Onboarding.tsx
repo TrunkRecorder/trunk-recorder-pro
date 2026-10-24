@@ -33,6 +33,7 @@ import {
   type AppState,
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
+import { openImport, parseBundle, type Bundle } from "./directoryImport.tsx";
 import { FileInput } from "./inputs.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
@@ -1705,7 +1706,7 @@ function ImportFlow(props: { s: AppState; c: Config; onBack?: () => void; onStar
         })}
       </ol>
       {step === "pick" ? (
-        <ImportPick s={s} onLoaded={(l) => (setLoaded(l), setStep("review"))} onBack={props.onBack} />
+        <ImportPick s={s} onLoaded={(l) => (setLoaded(l), setStep("review"))} onBundle={(b) => (openImport(b), props.onClose())} onBack={props.onBack} />
       ) : step === "review" && loaded ? (
         <ImportReview s={s} c={c} loaded={loaded} onBack={() => setStep("pick")} onDone={() => setStep("done")} />
       ) : (
@@ -1715,7 +1716,7 @@ function ImportFlow(props: { s: AppState; c: Config; onBack?: () => void; onStar
   );
 }
 
-function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBack?: () => void }) {
+function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBundle: (b: Bundle) => void; onBack?: () => void }) {
   const { s } = props;
   const fileRef = useRef<HTMLInputElement>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -1723,7 +1724,9 @@ function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBack?
     if (!f) return;
     const text = await f.text();
     try {
-      JSON.parse(text);
+      // A system from the systems directory: its own import.
+      const bundle = parseBundle(JSON.parse(text));
+      if (bundle) return props.onBundle(bundle);
       props.onLoaded({ text, name: f.name, files: {} });
     } catch (e) {
       setProblem(`${f.name} isn't a Trunk Recorder config: ${e instanceof Error ? e.message : String(e)}`);
@@ -1746,11 +1749,11 @@ function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBack?
       <div className="ob-center-actions">
         {web ? (
           <button className="ob-btn primary big" onClick={() => fileRef.current?.click()}>
-            Choose config.json…
+            Choose a file…
           </button>
         ) : (
           <button className="ob-link" onClick={() => fileRef.current?.click()}>
-            Or upload a config.json
+            Or upload a config.json, or a system from the directory
           </button>
         )}
         <FileInput inputRef={fileRef} accept=".json,application/json" onFile={(f) => void upload(f)} />

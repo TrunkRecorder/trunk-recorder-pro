@@ -285,52 +285,98 @@ export function withHeader(csv: string): string {
   return lines.join("\n");
 }
 
+/** A talkgroup file opened for editing in place: its lines, its header's line and columns, its delimiter. */
+interface TalkgroupFile {
+  lines: string[];
+  hi: number;
+  /** Its header as written, and as Trunk Recorder names its columns. */
+  header: string[];
+  cols: string[];
+  delim: string;
+}
+
+const isData = (l: string) => !!l.trim() && !l.trim().startsWith("#");
+
+/** Open `csv` for editing: a legacy (headerless) file is given its header, none a default one. */
+function openFile(csv: string): TalkgroupFile {
+  const lines = withHeader(csv).replace(/^\uFEFF/, "").split(/\r?\n/);
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  let hi = lines.findIndex(isData);
+  if (hi < 0) {
+    lines.push("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category");
+    hi = lines.length - 1;
+  }
+  const delim = csvDelimiter(lines[hi]);
+  const header = splitCsvLine(lines[hi], delim);
+  return { lines, hi, header, cols: header.map(canonical), delim };
+}
+
+/** A cell in the file's delimiter. */
+const cellIn = (delim: string) => (v: string) => (v.includes(delim) || /["\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+
+/** Add column `name` to the file (when it has none); its index. */
+function ensureColumn(f: TalkgroupFile, name: string): number {
+  const at = f.cols.indexOf(name);
+  if (at >= 0) return at;
+  f.header.push(name);
+  f.cols.push(name);
+  f.lines[f.hi] = f.header.map(cellIn(f.delim)).join(f.delim);
+  return f.cols.length - 1;
+}
+
+/** A row for talkgroup `t` in the file's columns (what it doesn't say left empty). */
+function rowFor(f: TalkgroupFile, t: Partial<Talkgroup> & { number: number }, more: Record<string, string> = {}): string {
+  const v: Record<string, string> = {
+    Decimal: String(t.number), Hex: t.number.toString(16), Mode: t.mode || "D", "Alpha Tag": t.alphaTag ?? "", Description: t.description ?? "",
+    Tag: t.tag ?? "", Category: t.group ?? "", Priority: t.priority && t.priority > 1 ? String(t.priority) : "", ...more,
+  };
+  return f.cols.map((c) => cellIn(f.delim)(v[c] ?? "")).join(f.delim);
+}
+
+const closeFile = (f: TalkgroupFile) => f.lines.join("\n") + "\n";
+
 /**
  * The talkgroup file with talkgroup `tg` marked ignored (never recorded) or
  * not, in its Ignore column — added when the file has none (a headerless,
  * legacy file is given its header). Only that cell changes; a talkgroup not
- * in the file gets a row (named `alphaTag`). Comment lines stay as they are.
+ * in the file gets a row (named `alphaTag`). Comment lines, its columns and
+ * its delimiter stay as they are.
  */
 export function withIgnore(csv: string, tg: number, ignore: boolean, alphaTag = ""): string {
-  const lines = csv.split(/\r?\n/);
-  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-  const data = (l: string) => !!l.trim() && !l.trim().startsWith("#");
-  let hi = lines.findIndex(data);
-  let header: string[];
-  if (hi < 0) {
-    header = ["Decimal", "Hex", "Alpha Tag", "Mode", "Description", "Tag", "Category"];
-    lines.push(header.join(","));
-    hi = lines.length - 1;
-  } else if (splitCsvLine(lines[hi])[0] === "Decimal") {
-    header = splitCsvLine(lines[hi]);
-  } else {
-    // Legacy: give it a header (as many columns as its widest row).
-    header = legacyHeader(lines.filter(data));
-    lines.splice(hi, 0, header.join(","));
-  }
-  let ic = header.indexOf("Ignore");
-  if (ic < 0) {
-    header.push("Ignore");
-    ic = header.length - 1;
-    lines[hi] = header.map(csvCell).join(",");
-  }
-  const pc = header.indexOf("Priority");
+  const f = openFile(csv);
+  const ic = ensureColumn(f, "Ignore");
+  const pc = f.cols.indexOf("Priority");
+  const cell = cellIn(f.delim);
   let found = false;
-  for (let i = hi + 1; i < lines.length; i++) {
-    if (!data(lines[i])) continue;
-    const f = splitCsvLine(lines[i]);
-    while (f.length < header.length) f.push("");
-    if (Number.parseInt(f[0], 10) === tg) {
+  for (let i = f.hi + 1; i < f.lines.length; i++) {
+    if (!isData(f.lines[i])) continue;
+    const row = splitCsvLine(f.lines[i], f.delim);
+    while (row.length < f.cols.length) row.push("");
+    if (Number.parseInt(row[0], 10) === tg) {
       found = true;
-      f[ic] = ignore ? "x" : "";
+      row[ic] = ignore ? "x" : "";
       // Trunk Recorder's way of ignoring is a priority of −1: undo that too.
-      if (!ignore && pc >= 0 && Number.parseInt(f[pc], 10) < 0) f[pc] = "1";
+      if (!ignore && pc >= 0 && Number.parseInt(row[pc], 10) < 0) row[pc] = "1";
     }
-    lines[i] = f.map(csvCell).join(",");
+    f.lines[i] = row.map(cell).join(f.delim);
   }
-  if (!found && ignore) {
-    const f = header.map((h) => (h === "Decimal" ? String(tg) : h === "Hex" ? tg.toString(16) : h === "Alpha Tag" ? alphaTag : h === "Mode" ? "D" : h === "Ignore" ? "x" : ""));
-    lines.push(f.map(csvCell).join(","));
-  }
-  return lines.join("\n") + "\n";
+  if (!found && ignore) f.lines.push(rowFor(f, { number: tg, alphaTag }, { Ignore: "x" }));
+  return closeFile(f);
+}
+
+/**
+ * `existing` (a system's talkgroup file) with the talkgroups of `incoming` it
+ * doesn't have added, in its own columns and delimiter: its rows, names and
+ * columns stay as they are (a name of yours is never replaced). No file yet:
+ * `incoming` as it is.
+ */
+export function mergeTalkgroupCsv(existing: string, incoming: string): { csv: string; added: number } {
+  const inc = parseTalkgroupCsv(incoming);
+  if (!existing.trim()) return { csv: incoming, added: inc.size };
+  const have = parseTalkgroupCsv(existing);
+  const add = [...inc.values()].filter((t) => !have.has(t.number));
+  if (!add.length) return { csv: existing, added: 0 };
+  const f = openFile(existing);
+  for (const t of add) f.lines.push(rowFor(f, t));
+  return { csv: closeFile(f), added: add.length };
 }
