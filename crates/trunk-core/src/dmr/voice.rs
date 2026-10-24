@@ -143,7 +143,7 @@ impl DmrVoice {
                     self.bad_frames += 1;
                 }
                 mbe::to_limited(&mut buf);
-                let vf = VoiceFrame { codec: Codec::Ambe, bits: frame.bits.to_vec(), e0: 0, errs: frame.errs, erased: false, kind };
+                let vf = VoiceFrame { codec: Codec::Ambe, bits: frame.bits.to_vec(), e0: 0, errs: frame.errs, erased: false, kind, tone: s.dec.tone_played(kind) };
                 push(TrackerOut::Audio(buf.to_vec(), vf));
             }
             _ => {}

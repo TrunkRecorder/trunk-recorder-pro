@@ -2,10 +2,11 @@
 //! trunked systems (sites) and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use trunk_core::dsp::inband::pattern::PatternKind;
 use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
@@ -364,7 +365,7 @@ pub struct System {
 /// A tone signal a system sends: a page (two tones), an alert, a warble, a
 /// digit string, a Morse ID. Its `id` is unique within its system (written
 /// `CLMRN:CSP_FIRE` where the system isn't said): calls carrying it list it
-/// (the call JSON's `signals`), and plugins hear it named (topic `tone`).
+/// (the call JSON's `signals`), and plugins hear it named (topic `tone_pattern`).
 ///
 /// ```json
 /// { "id": "NORWALK_EMS", "name": "Norwalk EMS page", "pattern": "two_tone", "tonesHz": [788.5, 879.0], "talkgroups": ["20341"] }
@@ -382,9 +383,12 @@ pub struct SignalDef {
     /// Its tones, Hz, in order (as the call JSON's `tones`; digits: none).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tones_hz: Vec<f64>,
-    /// Digits: the string (`KNOX ` first for KNOX tones); Morse: the text.
+    /// Digits: the string; Morse: the text.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub digits: String,
+    /// Digits: KNOX's tones, not DTMF's.
+    #[serde(skip_serializing_if = "is_default")]
+    pub knox: bool,
     /// How long each tone is, s, as the call JSON's `lengths` (for playing
     /// it back; not matched on).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -405,22 +409,71 @@ pub struct SignalDef {
 }
 
 impl SignalDef {
-    /// The engine's matcher; none when its pattern isn't one this version knows.
+    /// The engine's matcher; none when it isn't one ([`SignalDef::problem`]).
     pub fn engine(&self) -> Option<trunk_core::dsp::inband::signal::Signal> {
+        if self.problem().is_some() {
+            return None;
+        }
         Some(trunk_core::dsp::inband::signal::Signal {
-            id: self.id.clone(),
-            pattern: trunk_core::dsp::inband::pattern::PatternKind::from_name(&self.pattern)?,
+            id: self.id.trim().to_string(),
+            pattern: PatternKind::from_name(&self.pattern)?,
             hz: self.tones_hz.iter().map(|&f| f as f32).collect(),
-            digits: self.digits.clone(),
+            digits: self.digits.trim().to_string(),
+            knox: self.knox,
             extra_pct: self.extra_tolerance_pct as f32,
             talkgroups: self.talkgroups.clone(),
         })
+    }
+
+    /// An id made from what people call a signal: letters and digits, upper
+    /// case, runs of anything else one `_` ("Norwalk EMS page" → NORWALK_EMS_PAGE).
+    pub fn id_from(text: &str) -> String {
+        let mut id = String::new();
+        for c in text.chars() {
+            if c.is_ascii_alphanumeric() {
+                id.push(c.to_ascii_uppercase());
+            } else if !id.is_empty() && !id.ends_with('_') {
+                id.push('_');
+            }
+        }
+        id.trim_end_matches('_').chars().take(40).collect()
+    }
+
+    /// What's wrong with it, as Setup and Start say it.
+    pub fn problem(&self) -> Option<String> {
+        let id = self.id.trim();
+        let name = if id.is_empty() { "A signal" } else { id };
+        if id.is_empty() {
+            return Some("A signal needs an id (calls and plugins name it by that).".into());
+        }
+        if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            return Some(format!("Signal {id}: an id is letters, digits, _ and - (it is written SYSTEM:{id} where the system isn't said)."));
+        }
+        let Some(kind) = PatternKind::from_name(&self.pattern) else {
+            return Some(format!("Signal {name}: no such pattern as \"{}\".", self.pattern));
+        };
+        match kind {
+            PatternKind::Digits | PatternKind::Morse if self.digits.trim().is_empty() => Some(format!("Signal {name}: which {} does it send?", if kind == PatternKind::Morse { "text" } else { "digits" })),
+            PatternKind::Digits | PatternKind::Morse => None,
+            _ if self.tones_hz.is_empty() || self.tones_hz.iter().any(|&f| !(100.0..=4000.0).contains(&f)) => Some(format!("Signal {name}: its tones, Hz (100–4000).")),
+            PatternKind::TwoTone | PatternKind::HiLow if self.tones_hz.len() != 2 => Some(format!("Signal {name}: a {} has two tones.", if kind == PatternKind::TwoTone { "two-tone page" } else { "hi-low warble" })),
+            _ => None,
+        }
     }
 }
 
 /// A system's signals for the engine.
 fn engine_signals(defs: &[SignalDef]) -> Vec<trunk_core::dsp::inband::signal::Signal> {
-    defs.iter().filter(|d| !d.id.trim().is_empty()).filter_map(SignalDef::engine).collect()
+    defs.iter().filter_map(SignalDef::engine).collect()
+}
+
+/// What's wrong with a system's signals: one's own problem, or an id used twice.
+fn signals_problem(system: &str, defs: &[SignalDef]) -> Option<String> {
+    if let Some(p) = defs.iter().find_map(SignalDef::problem) {
+        return Some(format!("{system}: {p}"));
+    }
+    let mut seen = BTreeSet::new();
+    defs.iter().map(|d| d.id.trim()).find(|id| !seen.insert(*id)).map(|id| format!("{system}: two signals are called {id} (an id is the system's own)."))
 }
 
 /// One site of a [`System`]: a control channel to follow, and how.
@@ -2300,6 +2353,10 @@ impl Config {
         if let Some(p) = self.name_problem() {
             return Some(p);
         }
+        let signals = self.systems.iter().map(|s| (&s.short_name, &s.signals)).chain(self.conventional.iter().map(|c| (&c.short_name, &c.signals)));
+        if let Some(p) = signals.filter_map(|(n, d)| signals_problem(n, d)).next() {
+            return Some(p);
+        }
         let centers = self.resolved_centers();
         if let Some(i) = centers.iter().position(|&c| c <= 0.0) {
             return Some(format!(
@@ -2615,8 +2672,22 @@ mod tests {
         let back = serde_json::to_value(&sys).unwrap();
         assert_eq!(back["signals"][0], page);
         assert_eq!(back["signals"][1], serde_json::json!({ "id": "SIREN_SIGNAL_1", "pattern": "digits", "digits": "091363" }), "defaults left out");
-        // The engine's: a pattern this version doesn't know is left out (and kept in the config).
+        // A pattern this version doesn't know is a problem, which Start says; the engine leaves it out.
         assert_eq!(engine_signals(&sys.signals).iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["NORWALK_EMS", "SIREN_SIGNAL_1"]);
+        assert_eq!(signals_problem("x", &sys.signals).unwrap(), "x: Signal NEWER: no such pattern as \"chirp\".");
+    }
+
+    #[test]
+    fn signals_say_whats_wrong() {
+        assert_eq!(SignalDef::id_from(" Norwalk EMS 1 page! "), "NORWALK_EMS_1_PAGE");
+        let def = |v: serde_json::Value| -> SignalDef { serde_json::from_value(v).unwrap() };
+        assert_eq!(def(serde_json::json!({ "id": "A", "pattern": "two_tone", "tonesHz": [400.0, 500.0] })).problem(), None);
+        assert!(def(serde_json::json!({ "pattern": "two_tone", "tonesHz": [400.0, 500.0] })).problem().unwrap().contains("needs an id"));
+        assert!(def(serde_json::json!({ "id": "A B", "pattern": "long", "tonesHz": [400.0] })).problem().unwrap().contains("letters, digits"));
+        assert!(def(serde_json::json!({ "id": "A", "pattern": "two_tone", "tonesHz": [400.0] })).problem().unwrap().contains("two tones"));
+        assert!(def(serde_json::json!({ "id": "A", "pattern": "digits" })).problem().unwrap().contains("which digits"));
+        let two = [def(serde_json::json!({ "id": "A", "pattern": "morse", "digits": "W1AW" })), def(serde_json::json!({ "id": "A", "pattern": "long", "tonesHz": [1000.0] }))];
+        assert!(signals_problem("x", &two).unwrap().contains("two signals are called A"));
     }
 
     /// A system's `keys` that named a file (before key sources) becomes a source named after the file;
@@ -3002,7 +3073,7 @@ mod tests {
         assert_eq!(c.problem(), None);
         let e = c.engine_channels();
         assert_eq!(e.iter().map(|x| x.talkgroup.unwrap_or(x.default_talkgroup)).collect::<Vec<_>>(), vec![154325, 1543251, 500, 1543253]);
-        assert_eq!(e[1].access, Some(Access::Tone(trunk_core::dsp::tones::Tone::Dcs(23, false))));
+        assert_eq!(e[1].access, Some(Access::Tone(trunk_core::dsp::inband::subaudible::Tone::Dcs(23, false))));
         c.conventional[0].channels.push(row("D047I", None));
         assert_eq!(c.problem().as_deref(), Some("Conventional channel 154.32500 MHz has two rows for D023N and D047I (the same signal)."));
         c.conventional[0].channels.pop();

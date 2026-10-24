@@ -23,7 +23,7 @@ use std::sync::{Arc, OnceLock};
 use num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 
-use super::{Origin, ToneKind, ToneSeg};
+use super::{Chunk, Detector, Found, Origin, ToneKind, ToneSeg, DTMF_HZ, KEYS, KNOX_HZ};
 
 /// Samples a block (20 ms), and the window looked at each block (40 ms).
 pub const BLOCK: usize = 160;
@@ -47,9 +47,6 @@ const MIN_TONE_BLOCKS: usize = 3;
 const STEADY_HZ: f32 = 0.006;
 const STEADY_DB: f32 = 6.0;
 
-const DTMF: ([f32; 4], [f32; 4]) = ([697.0, 770.0, 852.0, 941.0], [1209.0, 1336.0, 1477.0, 1633.0]);
-const KNOX: ([f32; 4], [f32; 4]) = ([606.0, 672.0, 743.0, 820.0], [1052.0, 1162.0, 1279.0, 1430.0]);
-const KEYS: [[char; 4]; 4] = [['1', '2', '3', 'A'], ['4', '5', '6', 'B'], ['7', '8', '9', 'C'], ['*', '0', '#', 'D']];
 
 /// What one block heard.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -87,14 +84,34 @@ impl Default for AudioTones {
     }
 }
 
+impl Detector for AudioTones {
+    /// Tones that ended go to `out`; blocks the tone frames named are left alone.
+    fn push(&mut self, c: &Chunk, out: &mut Vec<Found>) {
+        let mut segs = Vec::new();
+        self.feed(c.audio, c.at, |p| c.named.iter().any(|r| r.contains(&p)), &mut segs);
+        out.extend(segs.into_iter().map(Found::Tone));
+    }
+
+    /// The tone running at the end of the call, if it is one.
+    fn finish(&mut self, out: &mut Vec<Found>) {
+        let mut segs = Vec::new();
+        self.close(&mut segs);
+        out.extend(segs.into_iter().map(Found::Tone));
+    }
+
+    /// Where the tone being heard now began.
+    fn busy_since(&self) -> Option<usize> {
+        self.run.first().map(|r| r.0)
+    }
+}
+
 impl AudioTones {
     /// `samples` of the call's audio, starting at its sample `at`; `skip(p)`:
     /// the block at sample `p` is accounted for (a tone frame named it).
-    /// Tones that ended go to `out`.
-    pub fn push(&mut self, samples: &[f32], at: usize, skip: impl Fn(usize) -> bool, out: &mut Vec<ToneSeg>) {
+    fn feed(&mut self, samples: &[f32], at: usize, skip: impl Fn(usize) -> bool, out: &mut Vec<ToneSeg>) {
         if at != self.at {
             // A gap in the audio (or a call's first): start afresh.
-            self.finish(out);
+            self.close(out);
             self.filled = 0;
             self.part = 0;
             self.at = at;
@@ -113,16 +130,6 @@ impl AudioTones {
             let heard = if self.filled < WINDOW || skip(block) { None } else { self.look() };
             self.add(block, heard, out);
         }
-    }
-
-    /// Where the tone being heard now began (none: no tone).
-    pub fn running_since(&self) -> Option<usize> {
-        self.run.first().map(|r| r.0)
-    }
-
-    /// The tone running at the end of the call, if it is one.
-    pub fn finish(&mut self, out: &mut Vec<ToneSeg>) {
-        self.close(out);
     }
 
     fn add(&mut self, block: usize, heard: Option<Heard>, out: &mut Vec<ToneSeg>) {
@@ -199,7 +206,7 @@ impl AudioTones {
             let ratio = hi / lo;
             let on = |grid: &[f32; 4], f: f32| grid.iter().position(|&g| (f - g).abs() <= KEY_TOL * g);
             if (MIN_TWIST_DB..=MAX_TWIST_DB).contains(&twist) && (ratio - ratio.round()).abs() >= 0.04 {
-                for (grid, knox) in [(DTMF, false), (KNOX, true)] {
+                for (grid, knox) in [(DTMF_HZ, false), (KNOX_HZ, true)] {
                     if let (Some(r), Some(c)) = (on(&grid.0, lo), on(&grid.1, hi)) {
                         let key = KEYS[r][c];
                         return Some(Heard::Key(if knox { ToneKind::Knox(key) } else { ToneKind::Dtmf(key) }));
@@ -229,14 +236,18 @@ mod tests {
         out.extend(std::iter::repeat_n(0.0, (secs * SR) as usize));
     }
 
+    fn segs(found: Vec<Found>) -> Vec<ToneSeg> {
+        found.into_iter().map(|f| if let Found::Tone(t) = f { t } else { unreachable!() }).collect()
+    }
+
     fn run(audio: &[f32], chunk: usize) -> Vec<ToneSeg> {
         let mut d = AudioTones::default();
         let mut out = Vec::new();
         for (i, c) in audio.chunks(chunk).enumerate() {
-            d.push(c, i * chunk, |_| false, &mut out);
+            d.push(&Chunk { audio: c, at: i * chunk, named: &[] }, &mut out);
         }
         d.finish(&mut out);
-        out
+        segs(out)
     }
 
     #[test]
@@ -294,8 +305,9 @@ mod tests {
         tone(&mut a, &[1000.0], &[0.4], 1.0);
         let mut d = AudioTones::default();
         let mut out = Vec::new();
-        d.push(&a, 0, |p| p >= 4000, &mut out);
+        d.push(&Chunk { audio: &a, at: 0, named: &[4000..usize::MAX] }, &mut out);
         d.finish(&mut out);
+        let out = segs(out);
         assert_eq!(out.len(), 1);
         assert!(out[0].len <= 4000);
     }

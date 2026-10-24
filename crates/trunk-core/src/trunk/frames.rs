@@ -5,7 +5,6 @@
 
 use std::fmt::Write;
 
-use super::call_tones::CallTones;
 use crate::mbe::{Kind, FRAME_SAMPLES, SAMPLE_RATE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +29,9 @@ pub struct VoiceFrame {
     pub erased: bool,
     /// What the vocoder made of it.
     pub kind: Kind,
+    /// AMBE+2: the tone the vocoder played for it, (ID, level): a tone
+    /// frame's, or the one a damaged frame repeated ([`crate::mbe::Decoder::tone_played`]).
+    pub tone: Option<(u8, u8)>,
 }
 
 impl VoiceFrame {
@@ -168,8 +170,6 @@ pub fn frames_jsonl(frames: &[VoiceFrame]) -> String {
 pub struct CallFrames {
     pub errors: FrameErrors,
     pub captured: Option<Vec<VoiceFrame>>,
-    /// Its in-band tones: tone frames', and the audio's.
-    pub tones: CallTones,
     /// Each frame's errors, in order (so the summary can be redone for
     /// the frames a call keeps: [`CallFrames::keep`]).
     stats: Vec<FrameStat>,
@@ -191,12 +191,11 @@ impl FrameStat {
 
 impl CallFrames {
     pub fn new(capture: bool) -> Self {
-        CallFrames { errors: FrameErrors::default(), captured: capture.then(Vec::new), tones: CallTones::default(), stats: Vec::new() }
+        CallFrames { errors: FrameErrors::default(), captured: capture.then(Vec::new), stats: Vec::new() }
     }
 
     pub fn push(&mut self, f: VoiceFrame) {
         let st = FrameStat::of(&f);
-        self.tones.frame(&f, self.stats.len());
         self.stats.push(st);
         self.errors.add_stat(st);
         if let Some(c) = self.captured.as_mut() {
@@ -204,17 +203,16 @@ impl CallFrames {
         }
     }
 
-    /// The call's audio grew by `samples` at sample `at` (after their frames, if any).
-    pub fn audio(&mut self, samples: &[f32], at: usize) {
-        self.tones.audio(samples, at);
+    /// Frames so far.
+    pub fn count(&self) -> usize {
+        self.stats.len()
     }
 
     /// Keep only the frames whose audio is in `ranges` (sample ranges of the
-    /// call's `audio_len` samples), the error summary redone for them, and
-    /// the tones heard there. A call's digital audio is its frames one after
-    /// another; when it isn't (analog: no frames), only the tones change.
+    /// call's `audio_len` samples), the error summary redone for them. A
+    /// call's digital audio is its frames one after another; when it isn't
+    /// (analog: no frames), nothing changes.
     pub fn keep(&mut self, ranges: &[std::ops::Range<usize>], audio_len: usize) {
-        self.tones.keep(ranges);
         if self.stats.is_empty() || self.stats.len() * FRAME_SAMPLES != audio_len {
             return;
         }
@@ -237,7 +235,7 @@ mod tests {
     use super::*;
 
     fn frame(errs: u32, kind: Kind) -> VoiceFrame {
-        VoiceFrame { codec: Codec::Imbe, bits: vec![1; 88], e0: 0, errs, erased: false, kind }
+        VoiceFrame { codec: Codec::Imbe, bits: vec![1; 88], e0: 0, errs, erased: false, kind, tone: None }
     }
 
     #[test]

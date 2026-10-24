@@ -79,8 +79,6 @@ pub enum ToClient {
     /// A call's upload plugins are done and it kept other files than its entry said.
     CallFiles { path: String, audio: bool, json: bool },
     UnitAlias { system: String, unit: u32, alias: String },
-    /// A call's tones made a pattern (a page, an alert, digits, a Morse ID): see [`tone_json`](crate::session::tone_json).
-    Tone { tone: Value },
     Heard { heard: Value },
     Survey(Body),
     SurveySpectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },

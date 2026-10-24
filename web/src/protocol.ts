@@ -227,7 +227,7 @@ export type TonePatternKind = "two_tone" | "long" | "hi_low" | "pulsed" | "digit
 /**
  * A tone signal a system sends: a page (two tones), an alert, a warble, a digit string, a Morse ID. Its `id` is unique
  * within its system (written "CLMRN:CSP_FIRE" where the system isn't said): calls carrying it list it (the call JSON's
- * `signals`), and plugins hear it named (topic `tone`).
+ * `signals`), and plugins hear it named (topic `tone_pattern`). Start refuses a config with one it can't use (SignalDef::problem).
  */
 export interface SignalDef {
   id: string;
@@ -236,8 +236,10 @@ export interface SignalDef {
   pattern: TonePatternKind;
   /** Its tones, Hz, in order (as the call JSON's `tones`; digits: none). */
   tonesHz?: number[];
-  /** Digits: the string ("KNOX " first for KNOX tones); Morse: the text. */
+  /** Digits: the string; Morse: the text. */
   digits?: string;
+  /** Digits: KNOX's tones, not DTMF's. */
+  knox?: boolean;
   /** How long each tone is, s, as the call JSON's `lengths` (for playing it back; not matched on). */
   lengthsS?: number[];
   /** How much further than usual (1.5 % in audio; 15.7 Hz + 0.5 % from Phase 2 tone frames) a heard tone may be, % of it. */
@@ -851,7 +853,7 @@ export interface CallRecord {
    */
   tones?: { type: "dtmf" | "knox" | "call_progress" | "tone"; value: string; pos: number; len: number; src: number; origin: "frame" | "audio"; level?: number }[];
   /** What its tones make up (pages, alerts, digit strings, Morse), in order (only when there were any): see the recordings guide. */
-  tone_patterns?: { pattern: TonePatternKind; tones: number[]; lengths: number[]; digits?: string; knox?: boolean; cycles?: number; format?: string; pos: number; len: number; src: number; origin: "frame" | "audio"; signals?: string[] }[];
+  tone_patterns?: { pattern: TonePatternKind; tones: number[]; lengths: number[]; digits?: string; knox?: boolean; cycles?: number; format?: string; pos: number; len: number; src: number; origin: "frame" | "audio"; text: string; signals?: string[] }[];
   /** The system's signals it carried (their ids), in the order first heard (only when there were any). */
   signals?: string[];
 }
@@ -1318,6 +1320,7 @@ export interface MonitorEventBody {
     | "unitActive"
     | "unitAffiliated"
     | "callVolume"
+    | "tonePattern"
     | "controlLost"
     | "controlRegained"
     | "sourceDrops"
@@ -1343,6 +1346,9 @@ export interface MonitorEventBody {
   alias?: string;
   units?: number[];
   perMin?: number;
+  /** tonePattern: what was heard ("two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)"), and the system's signals it is (their ids). */
+  text?: string;
+  signals?: string[];
   freqHz?: number | null;
   /** A source's series name (its label). */
   source?: string;
@@ -1429,31 +1435,6 @@ export interface ClockInfo {
 }
 
 /**
- * A call's tones made a pattern (a page, an alert, digits, a Morse ID), sent as soon as nothing can add to it (a second
- * after its last tone). `signals`: the ids of the system's signals it is; `time` Unix s.
- */
-export interface ToneEvent {
-  system: string;
-  site: string;
-  callId: number;
-  talkgroup: number;
-  alphaTag: string;
-  src: number;
-  pattern: TonePatternKind;
-  tones: number[];
-  lengths: number[];
-  digits: string;
-  knox: boolean;
-  cycles: number;
-  format: string;
-  origin: "frame" | "audio";
-  /** For a log line: "two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)". */
-  text: string;
-  signals: string[];
-  time: number;
-}
-
-/**
  * The tones log (`radioQuery` "tones"): one tone pattern as heard on one talkgroup over the span, every time it was
  * (the same pattern, digits and tones) counted together.
  */
@@ -1465,10 +1446,16 @@ export interface ToneRow {
   tones: number[];
   /** Seconds, each the typical (median) of the times heard. */
   lengths: number[];
-  /** Digits: the string ("KNOX " first for KNOX); Morse: the text. */
+  /** Digits: the string; Morse: the text. */
   digits: string;
+  /** Digits: KNOX's tones, not DTMF's. */
+  knox: boolean;
+  /** Hi-low: its tones; pulsed: its pulses. */
+  cycles: number;
   /** A two-tone page's format by its timing ("Quick Call II"), or "". */
   format: string;
+  /** What was heard, for a person: "two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)", "DTMF 072864". */
+  text: string;
   count: number;
   /** Unix s. */
   first: number;
@@ -1479,8 +1466,8 @@ export interface ToneRow {
   frame: boolean;
   /** Paging codes it may be, likeliest first ("QC2 126/128"). */
   ids: string[];
-  /** The system's signals it was when last heard (their ids). */
-  signals?: string[];
+  /** The system's signals it is (their ids), as the system's signals are now. */
+  signals: string[];
 }
 
 /** A talkgroup as heard (radioQuery talkgroups / tg). */
@@ -1699,7 +1686,6 @@ export type FromRecorder =
   /** Answers statsQuery: `loading` while the history files are still being read. */
   | { type: "statsResult"; id: number; from: number; to: number; loading: boolean; series: Record<string, SeriesData> }
   | ({ type: "radioResult" } & RadioResultBody)
-  | { type: "tone"; tone: ToneEvent }
   /** Answers olderCalls; `more`: there are older ones still. */
   | { type: "olderCalls"; before: number; entries: CallEntry[]; more: boolean }
   | { type: "quit" };

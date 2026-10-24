@@ -1,6 +1,8 @@
 //! Talkgroup allow and deny lists, as Trunk Recorder's uploaders take them:
 //! patterns matched against the talkgroup number written out (`"507*"`,
-//! `"12?45"`, `"8001"`), where `*` is any run of characters and `?` any one.
+//! `"12?45"`, `"8001"`), where `*` is any run of characters and `?` any one,
+//! or ranges (`"1000-1099"`). The recorder's own talkgroup lists (delay
+//! rules, signals) are read the same way: [`talkgroup_matches`].
 //!
 //! ```
 //! # use trunk_recorder_plugin::TalkgroupFilter;
@@ -32,8 +34,7 @@ impl TalkgroupFilter {
 
     /// Allowed (matches an allow pattern, when there are any) and not denied.
     pub fn passes(&self, talkgroup: u32) -> bool {
-        let tg = talkgroup.to_string();
-        (self.allow.is_empty() || self.allow.iter().any(|p| glob(p, &tg))) && !self.deny.iter().any(|p| glob(p, &tg))
+        (self.allow.is_empty() || self.allow.iter().any(|p| talkgroup_matches(p, talkgroup))) && !self.deny.iter().any(|p| talkgroup_matches(p, talkgroup))
     }
 
     /// "allow 507*, 12???; deny 50799" — for the log.
@@ -47,6 +48,18 @@ impl TalkgroupFilter {
         }
         parts.join("; ")
     }
+}
+
+/// A talkgroup list's entry names `tg`: a range (`1000-1099`, either way
+/// round), or a pattern (`507*`, `12?45`, `8001`).
+pub fn talkgroup_matches(entry: &str, tg: u32) -> bool {
+    let e = entry.trim();
+    if let Some((a, b)) = e.split_once('-')
+        && let (Ok(a), Ok(b)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>())
+    {
+        return (a.min(b)..=a.max(b)).contains(&tg);
+    }
+    glob(e, &tg.to_string())
 }
 
 /// `text` matches all of `pattern`: `*` any run of characters, `?` any one.
@@ -92,6 +105,15 @@ pub fn patterns<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn talkgroup_lists() {
+        assert!(talkgroup_matches("1000-1099", 1000) && talkgroup_matches("1000-1099", 1099) && !talkgroup_matches("1000-1099", 1100));
+        assert!(talkgroup_matches("1099 - 1000", 1050), "either way round");
+        assert!(talkgroup_matches("507*", 50712) && !talkgroup_matches("507*", 5170) && talkgroup_matches("4?1", 401));
+        assert!(talkgroup_matches(" 8001 ", 8001) && !talkgroup_matches("8001", 80011));
+        assert!(TalkgroupFilter::new(&["400-499".into()], &["450".into()]).passes(401), "filters take ranges too");
+    }
 
     #[test]
     fn globs() {

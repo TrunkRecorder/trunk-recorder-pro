@@ -8,10 +8,11 @@ import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { pageHealth } from "./data.ts";
-import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
+import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
-import { Overview } from "./Overview.tsx";
+import { eventText, Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
+import { ToneTable } from "./Tones.tsx";
 import { PlatformPage } from "./Platform.tsx";
 import { PluginHealthPage } from "./PluginHealth.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
@@ -166,6 +167,26 @@ test("Radio: calls missed on one of several systems name it, in the navigation's
   const overview = renderToString(<Overview />);
   assert.match(overview, /<h3><span class="sys-tag">.*?other<\/span><\/h3>/, "the Overview's system card names it by its tag");
   assert.equal((overview.match(/class="card card-warn[^"]*"/g) ?? []).length, 1, "and only other's card warns");
+});
+
+test("Radio: a system's Tones card names its signals and goes to them in Setup; heard rows show what the recorder made of them", () => {
+  twoSites();
+  const c = snapshot().config!;
+  c.systems[0].signals = [{ id: "NORWALK_EMS", pattern: "two_tone", tonesHz: [788.5, 879], talkgroups: ["20341"] }];
+  transport.onMessage({ type: "config", config: c, version: 2 });
+  setView("radio", "dcfd");
+  const page = text(renderToString(<RadioPage />));
+  assert.match(page, /Tones Signals of dcfd: NORWALK_EMS\. Signals in Setup/);
+  const row = (r: Partial<ToneRow>): ToneRow => ({
+    tg: 20341, alphaTag: "Norwalk EMS 1", pattern: "two_tone", tones: [781.25, 875], lengths: [0.98, 2.98], digits: "", knox: false, cycles: 0, format: "Quick Call II",
+    text: "two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)", count: 3, first: 0, last: 0, radios: [{ unit: 7, name: "E7", n: 3 }], frame: true, ids: ["QC2 126/128"], signals: ["NORWALK_EMS"], ...r,
+  });
+  const rows = [row({}), row({ tg: 20342, alphaTag: "", pattern: "digits", tones: [], digits: "12#", text: "DTMF 12#", ids: [], signals: [] })];
+  const html = renderToString(<ToneTable rows={rows} system="dcfd" at={0} />);
+  const lines = [...html.matchAll(/<tr>(.*?)<\/tr>/g)].slice(1).map((m) => text(m[1]).trim());
+  assert.match(lines[0], /^Norwalk EMS 1 20341 two-tone 781\.25 → 875 Hz, 0\.98 \+ 2\.98 s \(Quick Call II\) QC2 126\/128 3 .* E7 ▶ NORWALK_EMS$/, "the recorder's text and its signal");
+  assert.match(lines[1], /^20342 DTMF 12# — 3 .* ▶ Add$/, "not a signal yet: Add");
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "info", kind: "tonePattern", system: "dcfd", talkgroup: 20341, text: "two-tone 781.25 → 875 Hz", signals: ["NORWALK_EMS"] }), "dcfd: NORWALK_EMS (two-tone 781.25 → 875 Hz) on talkgroup 20341");
 });
 
 /** The computer as the recorder samples it, its clock as given (the rest as nothing known). */

@@ -4,7 +4,7 @@
 //! channel IQ → ChannelFilter (±5.5 kHz narrow, ±8 kHz wide; also the carrier power meter)
 //!   → discriminator → de-emphasis (750 µs, unity at 1 kHz; or none)
 //!   → audio low-pass + resample to 8 kHz → 300 Hz high-pass (drops CTCSS, all 67–254 Hz;
-//!     `push_low` also hands over the audio before it, for tones::ToneDetector)
+//!     `push_low` also hands over the audio before it, for inband::subaudible::ToneDetector)
 //!   → squelch gate (squelch::Gate: carrier power vs a threshold, held 30 ms
 //!     before it opens — a neighbour keying up splatters for an instant —
 //!     10 ms ramps)
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn every_ctcss_tone_is_rejected() {
         let rate = 39_062.5;
-        for tone in super::super::tones::CTCSS.map(|t| t as f64 / 10.0) {
+        for tone in super::super::inband::subaudible::CTCSS.map(|t| t as f64 / 10.0) {
             let n = (rate * 2.0) as usize;
             let mut ph = 0.0f64;
             let iq: Vec<Complex32> = (0..n)
@@ -414,7 +414,7 @@ mod tests {
             let y: Vec<f32> = x.iter().map(|&v| hpf.iter_mut().fold(v, |s, h| h.step(s))).collect();
             10.0 * (tone_power(&y[8000..], AUDIO_RATE, hz) / 0.5).log10()
         };
-        for hz in super::super::tones::CTCSS.map(|t| t as f64 / 10.0) {
+        for hz in super::super::inband::subaudible::CTCSS.map(|t| t as f64 / 10.0) {
             assert!(gain(hz) < -45.0, "{hz} Hz only {:.1} dB down", -gain(hz));
         }
         for hz in [288.5, 313.0, 400.0, 1000.0, 3000.0] {

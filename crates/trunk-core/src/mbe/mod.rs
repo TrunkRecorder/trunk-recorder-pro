@@ -607,7 +607,7 @@ enum Ambe {
 /// the first copy, which the Golay code protects (it votes twice); the
 /// level is û0(5..0) then û3(4). mbelib looks at the same bits as a pitch
 /// and takes most tone frames for an erasure.
-pub fn tone_frame(d: &[u8; 49]) -> Option<(u8, u8)> {
+fn tone_frame(d: &[u8; 49]) -> Option<(u8, u8)> {
     if d[..6].contains(&0) {
         return None;
     }
@@ -1027,6 +1027,12 @@ impl Decoder {
             Kind::Repeat => Kind::Erasure,
             kind => kind,
         }
+    }
+
+    /// The tone a frame played, `kind` being what [`Decoder::ambe`] made of
+    /// it: a tone frame's, or the tone a damaged frame repeated (ID, level).
+    pub fn tone_played(&self, kind: Kind) -> Option<(u8, u8)> {
+        if matches!(kind, Kind::Tone | Kind::Repeat) { self.tone } else { None }
     }
 
     /// The mbelib profile: its repeat count rides in the frame parameters,

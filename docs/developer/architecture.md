@@ -342,8 +342,8 @@ frame:
    delayed 15 ms so the squelch tail is never heard (conventional: `demod.squelchOpenMs` /
    `squelchHangMs`). Trunked threshold: 6 dB above the noise under the channel
    (`Channelizer::threshold`).
-7. MDC1200 / FleetSync unit IDs decoded from the gated audio (`dsp/signalling.rs`); CTCSS/DCS
-   from the pre-high-pass audio (`dsp/tones.rs`, conventional only).
+7. The gated audio, and (conventional) the pre-high-pass audio, go to the call, whose in-band
+   detectors find MDC1200 / FleetSync unit IDs and CTCSS/DCS there (section 4.9).
 
 **Analog AM** (conventional channels, mode `am`: airband), `dsp/am.rs`: the same channel filter
 (±5.5 kHz for 25 kHz channels, ±3 kHz for 8.33 kHz ones), the envelope over the tracked carrier
@@ -398,11 +398,49 @@ learned and left out (`LineWatch`).
   it fades, and keeps fading until a valid frame. A damaged tone frame whose ID names the tone
   playing isn't invalid: the tone goes on at its level. Erasures fade without counting.
 - Scaling: ×7/32768, then a tanh soft limiter above −3 dBFS.
+- `trunk/recorded.rs`: `Recorded` is what a call has recorded, trunked or conventional alike (the
+  engine's `Recording`, conventional's `Live` and multi-site's `Held` each hold one): its audio,
+  the vocoder frames behind it, its transmissions, its in-band signalling, reception and frequency
+  error. Voice goes in one way, `Recorded::push(samples, frames, now)`, which returns what the
+  voice newly carried (section 4.9); `Recorded::trim` leaves out what the saved call won't have,
+  moving its frames, tones and sources with the audio.
 - `record::save_call`: drops transmissions shorter than `minTransmissionS` and encrypted ones
   that weren't decrypted,
   refuses too-short or silent calls, normalises loudness (−12 dBFS speech, about −14 LUFS; gain
   clamped −18..+24 dB; look-ahead limiter at −2.5 dBFS), writes the call JSON. `wav.rs`
   writes 16-bit mono 8 kHz.
+
+### 4.9 In-band signalling (`dsp/inband/`, `trunk/inband.rs`)
+
+What a call's voice carries besides speech. Every detector is a `dsp::inband::Detector`: it takes
+a `Chunk` of the call's audio (from its `Tap`: the voice, or FM's pre-high-pass audio) and gives
+`Found` items:
+
+| Detector | Finds | Calls |
+|---|---|---|
+| `audio::AudioTones` | DTMF / KNOX keys, call progress and single tones (a 512-point spectrum every 20 ms) | every call |
+| `units::Signalling` | MDC1200 and FleetSync unit IDs | analog FM |
+| `subaudible::ToneDetector` | the CTCSS tone or DCS code | conventional FM |
+
+A half-rate (AMBE+2) radio sends a tone as tone frames instead. The vocoder plays them (4.8) and
+the frame carries the tone it played, repeats included (`VoiceFrame::tone`, from
+`Decoder::tone_played`); audio a tone frame named is left to it (`Chunk::named`).
+
+`trunk::inband::InBand`, one per call (in its `Recorded`), owns its detectors and gathers what
+they find: the tones (`ToneSeg`s, a run of the vocoder's tone one segment, a clean frame missed in
+it bridged), the sub-audible reading (`Call::tone`), and the unit IDs, which become the call's
+sources as a voice channel's link control does (`CallManager::note_units`). Its tones are made into
+patterns (`pattern::patterns`: a page, a long tone, a warble, digits, Morse, a sequence, a beep)
+once nothing can add to them, a second after the last tone, unless a detector is still in the
+middle of one (`Detector::busy_since`). Each pattern is told once, as it settles (`News`), and kept:
+the call JSON's `tone_patterns` are the same patterns, moved with the audio when it's trimmed.
+
+The engine tells each pattern as `Event::TonePattern(PatternHeard)`: with the radio talking where
+it starts (`Recorded::talkers`), the system's signals it is (`signal::Signal::matches`), and
+whether its voice was decrypted. A multi-site call's patterns are told from the copy its live audio
+comes from (`MultiSite::leads`). The session gives it to plugins (topic `tone_pattern`, only to
+those allowed decrypted calls when it was), the log, and the stats: the radio registry's tones log
+and, for a signal, the event feed (`MonitorEvent::TonePattern`).
 
 ---
 
@@ -620,7 +658,7 @@ times out and is not retried. The talkgroup CSV `Priority` column only matters w
 | `Tdma` | `Cqpsk` 6000 Bd → `phase2::Framer` → `TdmaTracker` (both slots) → AMBE+2 |
 | `Dmr` | `C4fm::dmr` → `DmrVoice` (both slots) → AMBE+2 |
 | `Nxdn(rate)` | `C4fm` (NXDN) → `NxdnVoice` → AMBE+2 |
-| `Analog` | `Nbfm` → `Signalling` (MDC1200 / FleetSync IDs) |
+| `Analog` | `Nbfm` (its unit IDs and tones are found with the call's: section 4.9) |
 | `Am` | `Am` (conventional only) |
 
 ### 6.4 While recording
@@ -1688,7 +1726,8 @@ which defeats DNS rebinding.
 | Concern | File(s) |
 |---|---|
 | Channelizer | `trunk-core/src/dsp/channelizer.rs` |
-| Receivers | `trunk-core/src/dsp/{c4fm,cqpsk,msd,fm,tones,signalling}.rs`, `smartnet/rx.rs` |
+| Receivers | `trunk-core/src/dsp/{c4fm,cqpsk,msd,fm}.rs`, `smartnet/rx.rs` |
+| In-band signalling | `trunk-core/src/dsp/inband/` (detectors, patterns, signals, paging tables), `trunk/inband.rs` (a call's), `trunk/recorded.rs` (what a call recorded) |
 | P25 framer / FEC / bank | `trunk-core/src/p25/{frame,tsbk,voice,fec,diversity,phase2}.rs` |
 | DMR | `trunk-core/src/dmr/` |
 | NXDN | `trunk-core/src/nxdn/` |

@@ -5,7 +5,7 @@
 // is decided by the recorder (crates/trunk-pro/src/plugins/delay.rs);
 // `inEffect` here follows the same rules, to show what they come to.
 
-import { systemAt, updateConfig, useApp, type SystemRef } from "./controller.ts";
+import { editList, systemAt, useApp, type SystemRef } from "./controller.ts";
 import { minutes, talkgroupList } from "./fieldText.ts";
 import { DraftInput, Field } from "./inputs.tsx";
 import type { Config, DelayRule, PluginInfo } from "./protocol.ts";
@@ -17,15 +17,7 @@ function rulesAt(c: Config, at: Scope): DelayRule[] {
   return (at === "every" ? c.pluginDelays : systemAt(c, at)?.pluginDelays) ?? [];
 }
 
-function editRules(at: Scope, fn: (rules: DelayRule[]) => DelayRule[]): void {
-  updateConfig((x) => {
-    const owner = at === "every" ? x : systemAt(x, at);
-    if (!owner) return;
-    const next = fn([...(owner.pluginDelays ?? [])]);
-    if (next.length) owner.pluginDelays = next;
-    else delete owner.pluginDelays;
-  });
-}
+const editRules = (at: Scope, fn: (rules: DelayRule[]) => DelayRule[]) => editList(at, "pluginDelays", fn);
 
 /** "none", "45 s", "2 min", "1 h 30 min". */
 export function delayText(s: number): string {

@@ -36,11 +36,11 @@ pub mod topic {
     pub const AUDIO: &str = "audio";
     /// Every system's state, every few seconds ([`super::Status`]).
     pub const STATUS: &str = "status";
-    /// A call's tones made a pattern ([`super::ToneEvent`]): every page, alert
-    /// tone, DTMF string and Morse ID heard, named by the system's signals or not.
-    pub const TONE: &str = "tone";
+    /// A call's tones made a pattern ([`super::TonePatternEvent`]): every page,
+    /// alert tone, DTMF string and Morse ID heard, named by the system's signals or not.
+    pub const TONE_PATTERN: &str = "tone_pattern";
 
-    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE];
+    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE_PATTERN];
 }
 
 /// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
@@ -119,8 +119,8 @@ pub enum HostMessage {
     Audio(AudioChunk),
     #[serde(rename = "status")]
     Status(Status),
-    #[serde(rename = "tone")]
-    Tone(ToneEvent),
+    #[serde(rename = "tone_pattern")]
+    TonePattern(TonePatternEvent),
     /// The recorder is stopping: finish what's queued, then exit. stdin closes
     /// after this, and the process is killed if it hasn't exited within
     /// [`Shutdown::grace_s`].
@@ -662,6 +662,8 @@ pub struct TonePattern {
     pub src: i64,
     /// `frame` or `audio`, as its tones' ([`ToneEntry::origin`]).
     pub origin: String,
+    /// For a person: "two-tone 849.63 → 1292.85 Hz, 1 + 3.04 s (Quick Call II)".
+    pub text: String,
     /// The system's signals it is (their ids).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<String>,
@@ -725,10 +727,11 @@ fn flag<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
 /// A call's tones made a pattern — a page, an alert tone, a warble, a DTMF
 /// or KNOX string, a Morse ID — told as soon as nothing can add to it (a
 /// second after its last tone), whether or not it's one of the system's
-/// signals. The call's JSON (`tone_patterns`) has it again once it's saved.
+/// signals. The call's JSON (`tone_patterns`) has the same pattern once it's
+/// saved (its `pos` there in the saved audio, here in the call's so far).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ToneEvent {
+pub struct TonePatternEvent {
     pub short_name: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site: String,
@@ -736,30 +739,14 @@ pub struct ToneEvent {
     pub call_num: u64,
     pub talkgroup: u32,
     pub alpha_tag: String,
-    /// The radio talking (0: not known).
-    pub src: u32,
-    /// As [`TonePattern::pattern`]: `two_tone`, `long`, `hi_low`, `pulsed`,
-    /// `digits`, `morse` or `sequence`; and its `tones`, `lengths`, `digits`,
-    /// `knox`, `cycles`, `format` and `origin` as there.
-    pub pattern: String,
-    pub tones: Vec<f64>,
-    pub lengths: Vec<f64>,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub digits: String,
+    /// Heard in voice decrypted with the system's keys: only plugins allowed
+    /// decrypted calls get it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub knox: bool,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub cycles: u32,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub format: String,
-    pub origin: String,
-    /// For a person: "two-tone 849.63 → 1292.85 Hz, 1 + 3.04 s (Quick Call II)".
-    pub text: String,
-    /// The system's signals it is (their ids; with the system,
-    /// `wood:PD_PAGE`). Empty: none of them.
-    pub signals: Vec<String>,
+    pub decrypted: bool,
     /// Unix seconds.
     pub time: f64,
+    #[serde(flatten)]
+    pub pattern: TonePattern,
 }
 
 /// Something a radio did on the control channel.

@@ -1,18 +1,85 @@
-//! In-band tones: DTMF and KNOX digits, call progress tones, and the single
-//! tones paging is made of, sent in a call's voice. (Sub-audible tones,
-//! CTCSS and DCS, are [`super::tones`].)
+//! In-band signalling: what a call's voice carries besides speech, and the
+//! detectors that find it, each a [`Detector`] over the call's audio:
+//!
+//! - [`units`]: MDC1200 and FleetSync unit IDs (analog FM);
+//! - [`subaudible`]: the CTCSS tone or DCS code under the voice (analog FM);
+//! - [`audio`]: DTMF and KNOX digits, call progress tones and the single
+//!   tones paging is made of (P25 Phase 1, analog, and a half-rate radio
+//!   that sends no tone frames).
 //!
 //! A half-rate (AMBE+2) radio whose vocoder recognises a tone sends a tone
-//! frame naming it (TIA-102.BABA-A §16), read exactly from the frame's bits
-//! ([`ToneKind::from_tone_id`]). Full rate (IMBE) has no tone frames, and
-//! not every half-rate vocoder looks for tones; analog has no frames at all.
+//! frame naming it (TIA-102.BABA-A §16) instead, which the vocoder plays
+//! ([`crate::mbe::Decoder::tone`]) and the frame carries
+//! ([`crate::trunk::frames::VoiceFrame::tone`]). A call gathers all of it in
+//! one place ([`crate::trunk::inband::InBand`]). [`pattern`] makes its tones
+//! into the signals they are (a page, a DTMF string, a Morse ID), [`signal`]
+//! names those by a system's signals, and [`tables`] has the paging plans.
 
 use std::fmt;
+use std::ops::Range;
 
 pub mod audio;
 pub mod pattern;
 pub mod signal;
+pub mod subaudible;
 pub mod tables;
+pub mod units;
+
+/// What a detector listens to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tap {
+    /// The call's audio.
+    Voice,
+    /// FM: the audio before the voice high-pass (where CTCSS and DCS are).
+    Subaudible,
+}
+
+/// Some of a call's audio, for its detectors.
+pub struct Chunk<'a> {
+    pub audio: &'a [f32],
+    /// The call's sample `audio` starts at.
+    pub at: usize,
+    /// What the vocoder's tone frames already named (samples of the call's
+    /// audio): a detector leaves those alone.
+    pub named: &'a [Range<usize>],
+}
+
+/// Something a call's voice carried.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Found {
+    /// A unit ID burst: who is talking.
+    Unit(units::UnitId),
+    /// The sub-audible tone or code, as now read (each new reading).
+    Code(subaudible::ToneHeard),
+    /// A tone that ended.
+    Tone(ToneSeg),
+}
+
+/// A detector of one kind of in-band signalling, one per call.
+pub trait Detector: Send {
+    fn tap(&self) -> Tap {
+        Tap::Voice
+    }
+    fn push(&mut self, chunk: &Chunk, out: &mut Vec<Found>);
+    /// The call's audio is all in: what it was still in the middle of.
+    fn finish(&mut self, _out: &mut Vec<Found>) {}
+    /// In the middle of something since this sample of the call's audio:
+    /// what came just before it may still belong with it.
+    fn busy_since(&self) -> Option<usize> {
+        None
+    }
+}
+
+/// DTMF's and KNOX's low (row) and high (column) tones, Hz, and the key at
+/// each row and column.
+pub const DTMF_HZ: ([f32; 4], [f32; 4]) = ([697.0, 770.0, 852.0, 941.0], [1209.0, 1336.0, 1477.0, 1633.0]);
+pub const KNOX_HZ: ([f32; 4], [f32; 4]) = ([606.0, 672.0, 743.0, 820.0], [1052.0, 1162.0, 1279.0, 1430.0]);
+pub const KEYS: [[char; 4]; 4] = [['1', '2', '3', 'A'], ['4', '5', '6', 'B'], ['7', '8', '9', 'C'], ['*', '0', '#', 'D']];
+
+/// A key's two tones on `grid` (DTMF_HZ or KNOX_HZ), Hz, low first.
+pub fn key_hz(grid: &([f32; 4], [f32; 4]), key: char) -> Option<(f32, f32)> {
+    (0..4).flat_map(|r| (0..4).map(move |c| (r, c))).find(|&(r, c)| KEYS[r][c] == key).map(|(r, c)| (grid.0[r], grid.1[c]))
+}
 
 /// What a tone is.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -129,15 +196,8 @@ mod tests {
         for id in 128..=163u8 {
             let (f0, a, b) = crate::mbe::annex_t(id).unwrap();
             let want = match ToneKind::from_tone_id(id).unwrap() {
-                ToneKind::Dtmf(c) | ToneKind::Knox(c) => {
-                    let k = DIGITS.iter().position(|&d| d == c).unwrap();
-                    let (lo, hi) = if id < 144 {
-                        ([941, 697, 697, 697, 770, 770, 770, 852, 852, 852, 697, 770, 852, 941, 941, 941], [1336, 1209, 1336, 1477, 1209, 1336, 1477, 1209, 1336, 1477, 1633, 1633, 1633, 1633, 1209, 1477])
-                    } else {
-                        ([820, 606, 606, 606, 672, 672, 672, 743, 743, 743, 606, 672, 743, 820, 820, 820], [1162, 1052, 1162, 1279, 1052, 1162, 1279, 1052, 1162, 1279, 1430, 1430, 1430, 1430, 1052, 1279])
-                    };
-                    (lo[k] as f64, hi[k] as f64)
-                }
+                ToneKind::Dtmf(c) => key_hz(&DTMF_HZ, c).map(|(a, b)| (a as f64, b as f64)).unwrap(),
+                ToneKind::Knox(c) => key_hz(&KNOX_HZ, c).map(|(a, b)| (a as f64, b as f64)).unwrap(),
                 ToneKind::CallProgress(lo, hi) => (lo as f64, hi as f64),
                 ToneKind::Single(_) => unreachable!(),
             };

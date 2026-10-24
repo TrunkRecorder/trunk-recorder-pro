@@ -5,18 +5,27 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **Pages, alert tones, DTMF and Morse IDs as call metadata.** Every call's voice is searched for
-  in-band tones: P25 Phase 2, DMR and NXDN tone frames name them exactly, and P25 Phase 1 and analog
-  calls are measured. The call JSON lists them (`tones`) and what they make up (`tone_patterns`: a
-  two-tone page with its timing format and likely paging codes, a long tone, a warble, a DTMF or KNOX
-  string, a Morse ID). Each system's page has a **Tones** card listing what was heard, with ▶ to play
-  it in the browser (again to stop); **Add** names a pattern as one of the system's **signals**
-  (`signals` in its config), and **New signal** types one in from a paging list, each kind with its
-  own fields (DTMF and KNOX apart). A tone counts as a signal's within ±1.5 % when measured in the
-  audio and ±(15.7 Hz + 0.5 %) from tone frames, widened by its `extraTolerancePct`; the editor says
-  what that comes to and which paging tones it would take in too. Calls that carry a signal list it
-  (`signals`). Plugins can subscribe to `tone` to hear every pattern as it ends, with the signals it
-  is. `trunk-pro tool tones` reads them out of saved calls.
+- **Pages, alert tones, DTMF and Morse IDs as call metadata** (#82, by taclane). Every call's
+  voice is searched for in-band tones: P25 Phase 2, DMR and NXDN tone frames name them exactly (as
+  the vocoder plays them), and P25 Phase 1 and analog calls are measured. The call JSON lists them
+  (`tones`) and what they make up (`tone_patterns`, each with `text` in words: a two-tone page with
+  its timing format and likely paging codes, a long tone, a warble, a DTMF or KNOX string, a Morse
+  ID). Each system's page has a **Tones** card listing what was heard, with ▶ to play it in the
+  browser (again to stop) and **Add** to name a pattern as one of the system's **signals** (`signals`
+  in its config, edited in Setup under the system's **Signals**). A tone counts as a signal's within
+  ±1.5 % when measured in the audio and ±(15.7 Hz + 0.5 %) from tone frames, widened by its
+  `extraTolerancePct`; the editor says what that comes to and which paging tones (any plan's) it would
+  take in too. Calls that carry a signal list it (`signals`), the dashboard's event feed shows it, and
+  plugins subscribed to `tone_pattern` hear every pattern as it ends, with the signals it is (one heard
+  in decrypted voice only by plugins with `shareDecrypted`). Start refuses a signal it can't use.
+  `trunk-pro tool tones` reads them out of saved calls (`.sdr`, `.frames.jsonl` or `.wav`).
+- **In-band signalling is one path.** Analog unit IDs (MDC1200, FleetSync), CTCSS/DCS and the new
+  tones are each a detector a call runs over its audio, and a call's recording is one type,
+  trunked or conventional. Talkgroup lists everywhere (delay rules, signals, plugin filters) take
+  numbers, ranges either way round and patterns alike: plugin filters now take ranges too.
+- **Breaking, plugins:** SDK 0.7.0. The topic is `tone_pattern` (`TonePatternEvent`, the call JSON's
+  `TonePattern` with the call's context); `TonePattern` gained `text`. KNOX signals are `knox: true`
+  (no `KNOX ` prefix in `digits`).
 - **DMR calls have their frequency error** (`freq_error` in the call JSON), conventional and
   trunked: it was always 0. A conventional DMR channel's `autoTune` now corrects its source,
   as the docs said it did.

@@ -216,6 +216,8 @@ export function eventText(e: MonitorEvent): string {
       return `${e.system}: talkgroup ${e.alphaTag || e.talkgroup} heard for the first time`;
     case "unitFirstSeen":
       return `${e.system}: radio ${e.alias || e.unit} heard for the first time`;
+    case "tonePattern":
+      return `${e.system}: ${e.signals?.length ? `${e.signals.join(", ")} (${e.text})` : e.text} on talkgroup ${e.talkgroup}`;
     case "controlLost":
       return `${e.system}${e.site ? ` site ${e.site}` : ""}: lost its control channel${e.freqHz ? ` (${mhz(e.freqHz)} MHz)` : ""}`;
     case "controlRegained":
@@ -257,6 +259,8 @@ function eventPlace(e: MonitorEvent): () => void {
       return () => setView("radio", e.system ?? "", "tg", e.talkgroup ?? 0);
     case "unitFirstSeen":
       return () => setView("radio", e.system ?? "", "unit", e.unit ?? 0);
+    case "tonePattern":
+      return () => setView("radio", e.system ?? "");
     case "controlLost":
     case "controlRegained":
       return () => setView("decode", e.system ?? "");

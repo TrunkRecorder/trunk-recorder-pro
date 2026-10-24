@@ -31,6 +31,10 @@ pub enum MonitorEvent {
     /// Calls in the last minute (once a minute: watchers only).
     #[serde(rename_all = "camelCase")]
     CallVolume { system: String, per_min: u32 },
+    /// A call's tones made a pattern: one of the system's signals (always),
+    /// or any other (watchers only).
+    #[serde(rename_all = "camelCase")]
+    TonePattern { system: String, talkgroup: u32, text: String, signals: Vec<String> },
     /// A site's control channel stopped decoding (`site`: its own name, if it has one).
     #[serde(rename_all = "camelCase")]
     ControlLost {

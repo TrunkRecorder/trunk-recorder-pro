@@ -2,7 +2,7 @@
 // plays, stops it (some are long).
 
 import { useEffect, useRef, useState } from "react";
-import { play, schedule, type Playing, type ToneSpec } from "./tonePlayer.ts";
+import { play, type Playing, type ToneSpec } from "./tonePlayer.ts";
 
 export function PlayButton({ spec }: { spec: ToneSpec }) {
   const [playing, setPlaying] = useState(false);
@@ -11,7 +11,7 @@ export function PlayButton({ spec }: { spec: ToneSpec }) {
   useEffect(() => () => now.current?.stop(), []);
   const toggle = () => {
     if (now.current) return now.current.stop();
-    const p = play(schedule(spec));
+    const p = play(spec);
     now.current = p;
     setPlaying(true);
     void p.done.then(() => {

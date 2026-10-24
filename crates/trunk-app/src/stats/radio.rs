@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use trunk_core::p25::crypt::algid_name;
+use trunk_core::dsp::inband::signal::Heard;
 use trunk_core::trunk::{Call, Message, MessageType};
 
 /// Caps per system.
@@ -134,27 +135,28 @@ pub struct SystemRadio {
     /// (Unix s, talkgroup, seconds) of recent calls, newest last.
     pub lengths: VecDeque<(i64, u32, f32)>,
     /// The tone patterns its calls carried (pages, alerts, digits), newest last.
-    pub tones: VecDeque<ToneHeard>,
+    pub tones: VecDeque<PatternSeen>,
 }
 
-/// A tone pattern heard on a call ([`trunk_recorder_plugin::TonePattern`]).
+/// A tone pattern heard on a call: when, on which talkgroup, and the pattern
+/// as the call JSON and plugins have it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct ToneHeard {
+pub struct PatternSeen {
     /// Unix s.
     pub t: i64,
     pub tg: u32,
-    pub pattern: String,
-    pub tones: Vec<f32>,
-    pub lengths: Vec<f32>,
-    pub digits: String,
-    pub format: String,
-    pub src: u32,
-    /// Its tones came from the vocoder's tone frames (not the audio).
-    pub frame: bool,
-    /// The system's signals it was (their ids), as configured when heard.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub signals: Vec<String>,
+    #[serde(flatten)]
+    pub pattern: trunk_recorder_plugin::TonePattern,
+}
+
+impl PatternSeen {
+    fn frame(&self) -> bool {
+        self.pattern.origin == "frame"
+    }
+    fn tones(&self) -> Vec<f32> {
+        self.pattern.tones.iter().map(|&f| f as f32).collect()
+    }
 }
 
 /// What the configuration says of a talkgroup.
@@ -169,6 +171,8 @@ pub struct TgInfo {
 pub struct Names<'a> {
     pub tg: &'a dyn Fn(&str, u32) -> Option<TgInfo>,
     pub unit: &'a dyn Fn(&str, u32) -> Option<String>,
+    /// The system's signals a pattern heard on a talkgroup is (their ids).
+    pub signals: &'a dyn Fn(&str, &Heard, u32) -> Vec<String>,
 }
 
 #[derive(Default)]
@@ -420,24 +424,16 @@ impl Registry {
             v.2 += errors;
             v.3 += bad;
         }, || (0, 0, 0, 0));
-        for p in &record.tone_patterns {
-            s.tones.push_back(ToneHeard {
-                t: record.start_time + p.pos as i64,
-                tg: record.talkgroup,
-                pattern: p.pattern.clone(),
-                tones: p.tones.iter().map(|&f| f as f32).collect(),
-                lengths: p.lengths.iter().map(|&l| l as f32).collect(),
-                digits: if p.knox { format!("KNOX {}", p.digits) } else { p.digits.clone() },
-                format: p.format.clone(),
-                src: p.src.max(0) as u32,
-                frame: p.origin == "frame",
-                signals: p.signals.clone(),
-            });
-        }
+        s.evict();
+    }
+
+    /// A tone pattern heard on talkgroup `tg` of `system` at `t` (Unix s), as it was told.
+    pub fn tone_pattern(&mut self, system: &str, tg: u32, pattern: &trunk_recorder_plugin::TonePattern, t: i64) {
+        let s = self.sys(system, t);
+        s.tones.push_back(PatternSeen { t, tg, pattern: pattern.clone() });
         while s.tones.len() > MAX_TONES {
             s.tones.pop_front();
         }
-        s.evict();
     }
 
     /// Systems changed since the last call, as (short name, JSON) to save.
@@ -674,27 +670,30 @@ fn freqs(s: &SystemRadio, now: i64, hours: i64) -> Value {
     json!({ "hours": hours, "rows": rows })
 }
 
-/// The tones log: the patterns heard over the last `hours`, alike ones (same
-/// talkgroup, pattern, digits and tones) together, most recently heard first.
+/// The tones log: the patterns heard over the last `hours`, alike ones
+/// together (same talkgroup, pattern and digits, tones as close as a signal
+/// matches them), most recently heard first, each named by the system's
+/// signals as they are now.
 fn tones(name: &str, s: &SystemRadio, now: i64, hours: i64, limit: usize, names: &Names) -> Value {
+    use trunk_core::dsp::inband::pattern::{format_plan, PatternKind};
     use trunk_core::dsp::inband::tables::{identify_one, identify_pair, tolerance};
-    let near = |x: f32, y: f32, frame: bool| (x - y).abs() <= tolerance(x, frame).min(16.0);
     let span = |t: &[f32]| (t.iter().copied().fold(f32::MAX, f32::min), t.iter().copied().fold(0.0, f32::max));
-    let alike = |a: &ToneHeard, b: &ToneHeard| {
-        let frame = a.frame && b.frame;
+    let alike = |a: &PatternSeen, b: &PatternSeen| {
+        let (pa, pb) = (&a.pattern, &b.pattern);
+        let (ta, tb) = (a.tones(), b.tones());
         a.tg == b.tg
-            && a.pattern == b.pattern
-            && a.digits == b.digits
-            && if a.pattern == "sequence" {
+            && pa.pattern == pb.pattern
+            && (pa.digits.as_str(), pa.knox) == (pb.digits.as_str(), pb.knox)
+            && if pa.pattern == "sequence" {
                 // A chirp or a selective call heard with a tone more or less at
                 // either end (the vocoder drops some): the same sweep.
-                let ((alo, ahi), (blo, bhi)) = (span(&a.tones), span(&b.tones));
+                let ((alo, ahi), (blo, bhi)) = (span(&ta), span(&tb));
                 (alo - blo).abs() <= 32.0 && (ahi - bhi).abs() <= 32.0
             } else {
-                a.tones.len() == b.tones.len() && a.tones.iter().zip(&b.tones).all(|(x, y)| near(*x, *y, frame))
+                ta.len() == tb.len() && ta.iter().zip(&tb).all(|(&x, &y)| (x - y).abs() <= tolerance(x, a.frame() && b.frame()))
             }
     };
-    let mut groups: Vec<Vec<&ToneHeard>> = Vec::new();
+    let mut groups: Vec<Vec<&PatternSeen>> = Vec::new();
     for h in s.tones.iter().rev().filter(|h| h.t > now - hours * 3600) {
         match groups.iter_mut().find(|g| alike(g[0], h)) {
             Some(g) => g.push(h),
@@ -706,21 +705,22 @@ fn tones(name: &str, s: &SystemRadio, now: i64, hours: i64, limit: usize, names:
         .iter()
         .take(limit)
         .map(|g| {
-            let h = g[0];
-            let n = h.lengths.len();
-            let lengths: Vec<f32> = (0..n).map(|k| {
-                let mut v: Vec<f32> = g.iter().filter_map(|x| x.lengths.get(k).copied()).collect();
-                v.sort_by(f32::total_cmp);
-                v[v.len() / 2]
-            }).collect();
+            let (h, p) = (g[0], &g[0].pattern);
+            let lengths: Vec<f64> = (0..p.lengths.len())
+                .map(|k| {
+                    let mut v: Vec<f64> = g.iter().filter_map(|x| x.pattern.lengths.get(k).copied()).collect();
+                    v.sort_by(f64::total_cmp);
+                    v[v.len() / 2]
+                })
+                .collect();
             let mut formats: BTreeMap<&str, u32> = BTreeMap::new();
             let mut radios: BTreeMap<u32, u32> = BTreeMap::new();
             for x in g {
-                if !x.format.is_empty() {
-                    *formats.entry(x.format.as_str()).or_default() += 1;
+                if !x.pattern.format.is_empty() {
+                    *formats.entry(x.pattern.format.as_str()).or_default() += 1;
                 }
-                if x.src != 0 {
-                    *radios.entry(x.src).or_default() += 1;
+                if x.pattern.src > 0 {
+                    *radios.entry(x.pattern.src as u32).or_default() += 1;
                 }
             }
             let mut radios: Vec<(u32, u32)> = radios.into_iter().collect();
@@ -729,28 +729,34 @@ fn tones(name: &str, s: &SystemRadio, now: i64, hours: i64, limit: usize, names:
             // Which paging codes it may be, likeliest first; none: custom tones.
             // One tone is a code only held like a group call (8 s): a shorter
             // one is an alert tone, a beep speech misread or a tone in the background.
-            let mut ids: Vec<String> = match (h.pattern.as_str(), h.tones.as_slice()) {
-                ("two_tone", &[a, b]) => identify_pair(a, b, h.frame, trunk_core::dsp::inband::pattern::format_plan(format)),
-                ("long", &[f]) if lengths[0] >= 6.0 => identify_one(f, h.frame),
+            let tones = h.tones();
+            let frame = g.iter().all(|x| x.frame());
+            let mut ids: Vec<String> = match (p.pattern.as_str(), tones.as_slice()) {
+                ("two_tone", &[a, b]) => identify_pair(a, b, frame, format_plan(format)),
+                ("long", &[f]) if lengths[0] >= 6.0 => identify_one(f, frame),
                 _ => Vec::new(),
             };
             ids.truncate(4);
+            let heard = PatternKind::from_name(&p.pattern).map(|kind| Heard { kind, hz: &tones, digits: &p.digits, knox: p.knox, frame });
             let info = (names.tg)(name, h.tg);
             json!({
                 "tg": h.tg,
                 "alphaTag": info.as_ref().map_or("", |i| i.alpha_tag.as_str()),
-                "pattern": h.pattern,
-                "tones": h.tones,
-                "lengths": lengths.iter().map(|&l| (l as f64 * 100.0).round() / 100.0).collect::<Vec<f64>>(),
-                "digits": h.digits,
+                "pattern": p.pattern,
+                "tones": p.tones,
+                "lengths": lengths,
+                "digits": p.digits,
+                "knox": p.knox,
+                "cycles": p.cycles,
                 "format": format,
+                "text": p.text,
                 "count": g.len(),
                 "first": g.last().map_or(0, |x| x.t),
                 "last": h.t,
                 "radios": radios.iter().take(3).map(|&(u, n)| json!({ "unit": u, "name": (names.unit)(name, u), "n": n })).collect::<Vec<Value>>(),
-                "frame": h.frame,
+                "frame": frame,
                 "ids": ids,
-                "signals": h.signals,
+                "signals": heard.map_or_else(Vec::new, |h| (names.signals)(name, &h, g[0].tg)),
             })
         })
         .collect();
@@ -796,6 +802,10 @@ mod tests {
     }
 
     #[allow(clippy::type_complexity)]
+    fn no_signals(_: &str, _: &Heard, _: u32) -> Vec<String> {
+        Vec::new()
+    }
+
     fn names() -> (impl Fn(&str, u32) -> Option<TgInfo>, impl Fn(&str, u32) -> Option<String>) {
         (|_: &str, tg: u32| (tg == 100).then(|| TgInfo { alpha_tag: "Fire Dispatch".into(), ignore: false }), |_: &str, u: u32| (u == 7).then(|| "E7".to_string()))
     }
@@ -822,7 +832,7 @@ mod tests {
         r.call_end("dcfd", &c2, t0 + 7203);
 
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
         let q = r.query(&json!({ "what": "talkgroups", "system": "dcfd", "hours": 24 }), t0 + 7300, &n);
         assert_eq!(q["total"], 2);
         assert_eq!(q["rows"][0]["tg"], 100, "busiest first");
@@ -850,7 +860,7 @@ mod tests {
         c.talkgroup_info = None;
         r.call_end("conv", &c, t0 + 5);
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
         let q = r.query(&json!({ "what": "talkgroups", "system": "conv", "hours": 24 }), t0 + 10, &n);
         assert_eq!((q["rows"][0]["alphaTag"].as_str(), q["rows"][0]["known"].as_bool()), (Some("Townville (other)"), Some(false)));
     }
@@ -878,22 +888,23 @@ mod tests {
         assert_eq!(back.systems["x"].units[&42].aff, Some(100));
         assert_eq!(back.systems["x"].freqs[&851_000_000].errors, 5);
         let (tg, unit) = names();
-        let q = back.query(&json!({ "what": "freqs", "system": "x" }), 30, &Names { tg: &tg, unit: &unit });
+        let q = back.query(&json!({ "what": "freqs", "system": "x" }), 30, &Names { tg: &tg, unit: &unit, signals: &no_signals });
         assert_eq!(q["rows"][0]["errPerFrame"], 0.05);
     }
 
     #[test]
     fn tones_log_groups_alike_pages() {
-        use trunk_recorder_plugin::{CallRecord, TonePattern};
+        use trunk_recorder_plugin::TonePattern;
         let page = |tones: [f64; 2], src| TonePattern { pattern: "two_tone".into(), tones: tones.to_vec(), lengths: vec![0.98, 2.98], format: "Quick Call II".into(), src, origin: "frame".into(), ..Default::default() };
-        let rec = |t, tg, p: Vec<TonePattern>| CallRecord { start_time: t, talkgroup: tg, tone_patterns: p, ..Default::default() };
         let mut r = Registry::default();
-        r.concluded("x", &rec(1000, 100, vec![page([781.25, 875.0], 7)]), 1010);
-        r.concluded("x", &rec(2000, 100, vec![page([781.25, 875.0], 7)]), 2010);
-        r.concluded("x", &rec(3000, 100, vec![page([1593.75, 1468.75], 8)]), 3010);
-        r.concluded("x", &rec(4000, 200, vec![page([781.25, 875.0], 9)]), 4010);
+        r.tone_pattern("x", 100, &page([781.25, 875.0], 7), 1000);
+        r.tone_pattern("x", 100, &page([781.25, 875.0], 7), 2000);
+        r.tone_pattern("x", 100, &page([1593.75, 1468.75], 8), 3000);
+        r.tone_pattern("x", 200, &page([781.25, 875.0], 9), 4000);
         let (tg, unit) = names();
-        let q = r.query(&json!({ "what": "tones", "system": "x", "hours": 24 }), 5000, &Names { tg: &tg, unit: &unit });
+        // Named by the system's signals as they are now.
+        let signals = |_: &str, h: &Heard, tg: u32| if tg == 100 && h.hz.first().is_some_and(|&a| (a - 781.25).abs() < 1.0) { vec!["NORWALK_EMS".to_string()] } else { Vec::new() };
+        let q = r.query(&json!({ "what": "tones", "system": "x", "hours": 24 }), 5000, &Names { tg: &tg, unit: &unit, signals: &signals });
         assert_eq!(q["total"], 3, "one page on two talkgroups is two rows");
         let rows = q["rows"].as_array().unwrap();
         assert_eq!((rows[0]["tg"].as_u64(), rows[0]["count"].as_u64()), (Some(200), Some(1)), "most recent first");
@@ -903,7 +914,9 @@ mod tests {
         assert_eq!(norwalk["format"], "Quick Call II");
         assert_eq!(norwalk["radios"][0]["name"], "E7");
         assert_eq!(norwalk["ids"][0], "QC2 126/128 (268)");
+        assert_eq!(norwalk["signals"][0], "NORWALK_EMS");
         assert_eq!(rows[1]["ids"][0], "QC2 173/170");
+        assert_eq!(rows[0]["signals"].as_array().map(Vec::len), Some(0), "another talkgroup");
     }
 
     #[test]
@@ -925,7 +938,7 @@ mod tests {
         }
         assert_eq!(r.systems["dcfd"].tgs[&100].ciphers, vec![(0x84, 2, 1, t0 + 30), (0xAA, 0x1B50, 2, t0 + 20)]);
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
         let q = r.query(&json!({ "what": "tg", "system": "dcfd", "key": 100, "hours": 24 }), t0 + 40, &n);
         assert_eq!(q["row"]["ciphers"][1], json!({ "algid": 0xAA, "keyId": 0x1B50, "name": "ADP", "calls": 2, "last": t0 + 20 }));
     }

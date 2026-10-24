@@ -80,8 +80,8 @@
 //!     Vocode a call's saved frames again.
 //! trunk-pro tool sdr <call.sdr> [--frames]
 //!     A saved .sdr call's metadata as MimoSDR reads it, or its frames as JSON lines.
-//! trunk-pro tool tones <call.sdr | call.frames.jsonl>… [--patterns]
-//!     The in-band tones (DTMF, KNOX, …) saved calls' frames named, or (--patterns) the pages and alerts they make up.
+//! trunk-pro tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]
+//!     The in-band tones (DTMF, KNOX, …) in saved calls, or (--patterns) the pages and alerts they make up.
 //!
 //! trunk-pro plugin search | install | update | uninstall | list | describe | run …
 //!     Plugins (set up in the config's `plugins`, and each system's): find them in the registry,
@@ -264,9 +264,10 @@ usage:
       Vocode a call's saved frames (recording setting \"Save vocoder frames\") again.
   trunk-pro tool sdr <call.sdr> [--frames]
       A saved .sdr call's metadata as MimoSDR reads it, or (--frames) its frames as JSON lines.
-  trunk-pro tool tones <call.sdr | call.frames.jsonl>… [--patterns]
-      The in-band tones (DTMF, KNOX, call progress, single tones) saved calls' tone frames named,
-      or (--patterns) the pages, alert tones and digit strings they make up, as JSON lines.
+  trunk-pro tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]
+      The in-band tones (DTMF, KNOX, call progress, single tones) in saved calls, found as a
+      call's are, or (--patterns) the pages, alert tones and digit strings they make up, as the
+      call JSON's tone_patterns (JSON lines).
   trunk-pro plugin search | install | update | uninstall | list | describe | run …
       Plugins: find them in the registry, install, update and uninstall them,
       list them, show one's manifest, or run one against calls already on

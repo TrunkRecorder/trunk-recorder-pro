@@ -1368,9 +1368,3 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; border-radius: 50%;
   border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); box-shadow: 0 0 0 1px rgb(0 0 0 / 0.25);
 }
-
-/* A row opened to edit (a signal). */
-.edit-row { padding: 10px 0 4px; }
-.tone-spec { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
-.tone-spec-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 16px; align-items: start; }
-.tone-spec-fields input, .tone-spec-fields select { width: 100%; }

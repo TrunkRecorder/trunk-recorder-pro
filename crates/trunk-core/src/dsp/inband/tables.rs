@@ -5,7 +5,7 @@
 /// A plan: its short name, and its tones (code, Hz).
 pub struct Plan {
     pub name: &'static str,
-    pub tones: &'static [(&'static str, f32)],
+    pub tones: Vec<(&'static str, f32)>,
 }
 
 /// Motorola Quick Call II (one plus one) by reed group: tones 1–9 then 0,
@@ -24,18 +24,6 @@ pub const QC2_GROUPS: &[(u8, [(&str, f32); 10])] = &[
 /// Motorola's general encoding plan (Table 1): a pager code's first digit
 /// names the reed groups its A and B tones are from.
 const QC2_PLAN: &[(char, u8, u8)] = &[('1', 1, 1), ('2', 2, 2), ('3', 1, 2), ('4', 4, 4), ('5', 5, 5), ('6', 2, 1), ('7', 4, 5), ('8', 5, 4), ('9', 2, 4), ('0', 4, 2), ('A', 3, 3)];
-
-/// QC2's tones in one list, for [`PLANS`].
-const QC2: &[(&str, f32)] = &[
-    ("111", 349.0), ("112", 368.5), ("113", 389.0), ("114", 410.8), ("115", 433.7), ("116", 457.9), ("117", 483.5), ("118", 510.5), ("119", 539.0), ("110", 330.5),
-    ("121", 600.9), ("122", 634.5), ("123", 669.9), ("124", 707.3), ("125", 746.8), ("126", 788.5), ("127", 832.5), ("128", 879.0), ("129", 928.1), ("120", 569.1),
-    ("138", 288.5), ("108", 296.5), ("139", 304.7), ("109", 313.0), ("160", 953.7), ("130", 979.9), ("161", 1006.9), ("131", 1034.7), ("162", 1063.2), ("189", 1092.4),
-    ("141", 339.6), ("142", 358.6), ("143", 378.6), ("144", 399.8), ("145", 422.1), ("146", 445.7), ("147", 470.5), ("148", 496.8), ("149", 524.6), ("140", 321.7),
-    ("151", 584.8), ("152", 617.4), ("153", 651.9), ("154", 688.3), ("155", 726.8), ("156", 767.4), ("157", 810.2), ("158", 855.5), ("159", 903.2), ("150", 553.9),
-    ("191", 1153.4), ("192", 1185.2), ("193", 1217.8), ("194", 1251.4), ("195", 1285.8), ("196", 1321.2), ("197", 1357.6), ("198", 1395.0), ("199", 1433.4), ("190", 1122.5),
-    ("171", 1513.5), ("172", 1555.2), ("173", 1598.0), ("174", 1642.0), ("175", 1687.2), ("176", 1733.7), ("177", 1781.5), ("178", 1830.5), ("179", 1881.0), ("170", 1472.9),
-    ("201", 1989.0), ("202", 2043.8), ("203", 2094.5), ("204", 2155.6), ("205", 2212.2), ("206", 2271.7), ("207", 2334.6), ("208", 2401.0), ("209", 2468.2), ("200", 1930.2),
-];
 
 /// Motorola Quick Call I (two plus two): A, B and Z series.
 const QC1: &[(&str, f32)] = &[
@@ -69,13 +57,15 @@ const AVCALL: &[(&str, f32)] = &[
     ("J", 716.1), ("K", 794.3), ("L", 881.0), ("M", 977.2), ("P", 1083.9), ("Q", 1202.3), ("R", 1333.5), ("S", 1479.1),
 ];
 
-pub const PLANS: &[Plan] = &[
-    Plan { name: "QC2", tones: QC2 },
-    Plan { name: "QC1", tones: QC1 },
-    Plan { name: "GE99", tones: GE99 },
-    Plan { name: "Reach", tones: REACH },
-    Plan { name: "AvCall", tones: AVCALL },
-];
+/// The plans, Quick Call II first (its tones in one list, from [`QC2_GROUPS`]).
+pub fn plans() -> &'static [Plan] {
+    static PLANS: std::sync::OnceLock<Vec<Plan>> = std::sync::OnceLock::new();
+    PLANS.get_or_init(|| {
+        let qc2 = QC2_GROUPS.iter().flat_map(|(_, tones)| tones.iter().copied()).collect();
+        let plan = |name, tones: &[(&'static str, f32)]| Plan { name, tones: tones.to_vec() };
+        vec![Plan { name: "QC2", tones: qc2 }, plan("QC1", QC1), plan("GE99", GE99), plan("Reach", REACH), plan("AvCall", AVCALL)]
+    })
+}
 
 /// One plan's code for a heard tone, and how far off it is, Hz.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -105,7 +95,7 @@ pub fn fits(code: f32, heard: f32, from_frame: bool) -> bool {
 
 /// Each plan's codes within `tol` Hz of `hz`, nearest first.
 pub fn candidates(hz: f32, tol: f32) -> Vec<Candidate> {
-    let mut out: Vec<Candidate> = PLANS
+    let mut out: Vec<Candidate> = plans()
         .iter()
         .flat_map(|p| p.tones.iter().map(move |&(code, f)| Candidate { plan: p.name, code, hz: f, off: (f - hz).abs() }))
         .filter(|c| c.off <= tol)
@@ -136,11 +126,11 @@ pub fn identify_pair(a: f32, b: f32, from_frame: bool, timed_as: Option<&str>) -
         let y: Vec<&str> = p.tones.iter().filter(|t| fits(t.1, b, from_frame)).map(|t| t.0).collect();
         x.iter().flat_map(|ka| y.iter().map(move |kb| format!("{} {ka}/{kb}", p.name))).collect()
     };
-    let timed: Vec<String> = PLANS.iter().filter(|p| p.name != "QC2" && Some(p.name) == timed_as).flat_map(plan_pairs).collect();
+    let timed: Vec<String> = plans().iter().filter(|p| p.name != "QC2" && Some(p.name) == timed_as).flat_map(plan_pairs).collect();
     let mut out = timed;
     out.extend(qc2_pairs(a, b, from_frame));
     if out.is_empty() {
-        out = PLANS.iter().skip(1).flat_map(plan_pairs).collect();
+        out = plans().iter().skip(1).flat_map(plan_pairs).collect();
     }
     out
 }
@@ -166,7 +156,7 @@ pub fn identify_one(f: f32, from_frame: bool) -> Vec<String> {
     if !qc2.is_empty() {
         return qc2;
     }
-    PLANS.iter().skip(1).flat_map(|p| p.tones.iter().filter(|t| fits(t.1, f, from_frame)).map(|t| format!("{} {}", p.name, t.0)).collect::<Vec<_>>()).collect()
+    plans().iter().skip(1).flat_map(|p| p.tones.iter().filter(|t| fits(t.1, f, from_frame)).map(|t| format!("{} {}", p.name, t.0)).collect::<Vec<_>>()).collect()
 }
 
 #[cfg(test)]
@@ -177,7 +167,6 @@ mod tests {
     fn a_tone_is_matched_to_its_codes() {
         let c = candidates(788.5, 1.0);
         assert_eq!((c[0].plan, c[0].code), ("QC2", "126"));
-        assert!(QC2_GROUPS.iter().all(|(_, t)| t.iter().all(|x| QC2.contains(x))));
     }
 
     /// Pages heard on CLMRN's Phase 2 dispatch talkgroups (tone frames), 2026-10-21.
@@ -203,7 +192,7 @@ mod tests {
 
     #[test]
     fn codes_are_unique_within_a_plan() {
-        for p in PLANS {
+        for p in plans() {
             let mut codes: Vec<&str> = p.tones.iter().map(|t| t.0).collect();
             codes.sort();
             codes.dedup();

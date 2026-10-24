@@ -69,7 +69,7 @@ pub struct Pattern {
 /// A two-tone paging format's timing (Midian's paging timings table).
 pub struct Format {
     pub name: &'static str,
-    /// The tone plan its pages use ([`super::tables::PLANS`]), when one does.
+    /// The tone plan its pages use ([`super::tables::plans`]), when one does.
     pub plan: Option<&'static str>,
     /// A, the gap, and B, s.
     pub a: f32,
@@ -338,6 +338,64 @@ fn sequence(run: &[ToneSeg]) -> Option<(Pattern, usize)> {
     Some((p, n))
 }
 
+/// One step of a pattern played back: its tones together (none: silence), for `s` seconds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    pub hz: Vec<f32>,
+    pub s: f32,
+}
+
+/// Longest a played tone runs, s (an 8 s group call is heard well enough in 4).
+const MAX_PLAY_S: f32 = 4.0;
+
+/// What a pattern sounds like, step by step: its tones at their lengths, s
+/// (one not known: the usual, a 1 s + 3 s page, 0.1 s digits); `digits` a
+/// digit string's keys (on KNOX's pad when `knox`) or Morse's text.
+pub fn steps(kind: PatternKind, hz: &[f32], lengths: &[f32], digits: &str, knox: bool, cycles: u32) -> Vec<Step> {
+    let len = |k: usize, usual: f32| lengths.get(k).copied().filter(|&l| l > 0.0).unwrap_or(usual).min(MAX_PLAY_S);
+    let tone = |f: f32, s: f32| Step { hz: vec![f], s };
+    let quiet = |s: f32| Step { hz: Vec::new(), s };
+    let (a, b) = (hz.first().copied().unwrap_or(0.0), hz.get(1).copied().unwrap_or(0.0));
+    let times = |usual: u32, most: u32| if cycles > 0 { cycles } else { usual }.min(most);
+    match kind {
+        PatternKind::TwoTone => vec![tone(a, len(0, 1.0)), tone(b, len(1, 3.0))],
+        PatternKind::Long => vec![tone(a, len(0, 3.0))],
+        PatternKind::Beep => vec![tone(a, len(0, 0.2))],
+        PatternKind::HiLow => (0..times(12, 24)).map(|i| if i % 2 == 0 { tone(a, len(0, 0.25)) } else { tone(b, len(1, 0.25)) }).collect(),
+        PatternKind::Pulsed => (0..times(6, 12)).flat_map(|_| [tone(a, len(0, 0.3)), quiet(len(1, 0.2))]).collect(),
+        PatternKind::Sequence => hz.iter().enumerate().map(|(i, &f)| tone(f, len(i, 0.07))).collect(),
+        PatternKind::Morse => morse_steps(digits, if a > 0.0 { a } else { 1000.0 }, len(0, 0.06)),
+        PatternKind::Digits => {
+            let grid = if knox { &super::KNOX_HZ } else { &super::DTMF_HZ };
+            let key = |c: char| super::key_hz(grid, c).map_or_else(Vec::new, |(lo, hi)| vec![lo, hi]);
+            digits.chars().enumerate().flat_map(|(i, c)| [Step { hz: key(c), s: len(i, 0.1) }, quiet(0.1)]).collect()
+        }
+    }
+}
+
+/// Text keyed as Morse on `hz` with a dot of `dot` s (a dash 3, gaps 1, 3 and 7).
+fn morse_steps(text: &str, hz: f32, dot: f32) -> Vec<Step> {
+    let mut out: Vec<Step> = Vec::new();
+    for word in text.split_whitespace() {
+        if !out.is_empty() {
+            out.push(Step { hz: Vec::new(), s: 7.0 * dot });
+        }
+        for c in word.chars() {
+            let Some((code, _)) = MORSE.iter().find(|m| m.1 == c.to_ascii_uppercase()) else { continue };
+            if out.last().is_some_and(|s| !s.hz.is_empty()) {
+                out.push(Step { hz: Vec::new(), s: 3.0 * dot });
+            }
+            for (i, e) in code.chars().enumerate() {
+                if i > 0 {
+                    out.push(Step { hz: Vec::new(), s: dot });
+                }
+                out.push(Step { hz: vec![hz], s: if e == '-' { 3.0 * dot } else { dot } });
+            }
+        }
+    }
+    out
+}
+
 /// Morse, letters and figures.
 const MORSE: &[(&str, char)] = &[
     (".-", 'A'), ("-...", 'B'), ("-.-.", 'C'), ("-..", 'D'), (".", 'E'), ("..-.", 'F'), ("--.", 'G'), ("....", 'H'), ("..", 'I'), (".---", 'J'),
@@ -465,6 +523,17 @@ mod tests {
     }
 
     /// Woodbridge PW's repeater ID, 992 Hz at ~24 WPM (dot 60 ms as 20 ms blocks see it).
+    #[test]
+    fn patterns_play_as_they_sound() {
+        let page = steps(PatternKind::TwoTone, &[781.25, 875.0], &[0.98], "", false, 0);
+        assert_eq!(page, [Step { hz: vec![781.25], s: 0.98 }, Step { hz: vec![875.0], s: 3.0 }], "B's length not known: the usual 3 s");
+        assert_eq!(steps(PatternKind::Digits, &[], &[], "1#", false, 0)[0].hz, [697.0, 1209.0]);
+        assert_eq!(steps(PatternKind::Digits, &[], &[], "1", true, 0)[0].hz, [606.0, 1052.0], "KNOX's pad");
+        let k = steps(PatternKind::Morse, &[990.0], &[0.06], "K", false, 0);
+        assert_eq!(k.iter().map(|s| (s.hz.len(), (s.s / 0.06).round() as u32)).collect::<Vec<_>>(), [(1, 3), (0, 1), (1, 1), (0, 1), (1, 3)], "-.-");
+        assert_eq!(steps(PatternKind::Long, &[1000.0], &[8.0], "", false, 0)[0].s, 4.0, "held 4 s at most");
+    }
+
     #[test]
     fn morse_ids_read() {
         let (dot, mut at, mut segs) = (0.06f32, 0.5f32, Vec::new());

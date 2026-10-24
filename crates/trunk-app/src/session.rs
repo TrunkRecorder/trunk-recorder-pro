@@ -9,7 +9,7 @@ use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, Mess
 use crate::filename;
 use crate::log::{Body, CallState, CallTag, Level, Record};
 use crate::heard::HeardCodes;
-use trunk_core::dsp::tones::Tone;
+use trunk_core::dsp::inband::subaudible::Tone;
 use trunk_core::Complex32;
 
 use crate::config::{Config, Source};
@@ -101,7 +101,7 @@ pub struct PluginTopics {
     pub calls: bool,
     pub units: bool,
     pub status: bool,
-    pub tones: bool,
+    pub tone_patterns: bool,
 }
 
 /// Local time's offset from UTC at a Unix time, s (east positive) — Trunk
@@ -1065,18 +1065,19 @@ impl Session {
                     out.push(Output::CallSign { short_name: name, freq_hz: freq_hz as f64, call_sign });
                 }
             }
-            Event::Tone(t) => {
+            Event::TonePattern(t) => {
                 let name = self.system_name(t.system).to_string();
+                let pattern = trunk_core::trunk::record::tone_pattern(&t.pattern, t.src, t.signals.clone());
                 let named = t.signals.iter().map(|s| format!("{name}:{s}")).collect::<Vec<_>>().join(", ");
-                let text = format!("TG {}: {}{}", t.talkgroup, t.pattern.describe(), if named.is_empty() { String::new() } else { format!(" = {named}") });
+                let text = format!("TG {}: {}{}", t.talkgroup, pattern.text, if named.is_empty() { String::new() } else { format!(" = {named}") });
                 self.records.push(Record::text(Level::Info, Some(&self.site_label(t.system, t.site)), text.clone()));
-                self.log.push(json!({ "timeS": t.time_s, "kind": "tone", "text": text, "system": name, "site": self.site_name(t.site) }));
-                let alpha = self.tg_names(t.system, [t.talkgroup]).first().and_then(|v| v["alphaTag"].as_str().map(String::from)).unwrap_or_default();
-                let tone = tone_json(&t, &name, &self.site_name(t.site), &alpha, self.wall(t.time_s));
-                if self.plugin_topics.tones {
-                    out.push(Output::Plugin(HostMessage::Tone(plugin_tone(&tone))));
+                self.log.push(json!({ "timeS": t.time_s, "kind": "tonePattern", "text": text, "system": name, "site": self.site_name(t.site) }));
+                if self.plugin_topics.tone_patterns {
+                    let alpha_tag = self.tg_names(t.system, [t.talkgroup]).first().and_then(|v| v["alphaTag"].as_str().map(String::from)).unwrap_or_default();
+                    let time = (self.wall(t.time_s) * 1000.0).round() / 1000.0;
+                    let ev = trunk_recorder_plugin::TonePatternEvent { short_name: name, site: self.site_name(t.site), call_num: t.call_id as u64, talkgroup: t.talkgroup, alpha_tag, decrypted: t.decrypted, time, pattern };
+                    out.push(Output::Plugin(HostMessage::TonePattern(ev)));
                 }
-                out.push(Output::Message(ToClient::Tone { tone }));
             }
             Event::UnitAlias { system, unit, alias, talkgroup } => {
                 let name = self.system_name(system).to_string();
@@ -1156,6 +1157,7 @@ impl Session {
             Event::CallStart(c) | Event::CallEnd(c) | Event::NotSaved(c) => Some(c.system),
             Event::Concluded(k) => Some(k.call.system),
             Event::Duplicate { call, .. } => Some(call.system),
+            Event::TonePattern(t) => Some(t.system),
             _ => None,
         }
     }
@@ -1296,59 +1298,6 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
     })
 }
 
-
-/// A heard tone pattern as browsers (`tone`) and plugins get it:
-/// `{system, site, callId, talkgroup, alphaTag, src, pattern, tones, lengths,
-/// digits, knox, cycles, format, origin, text, signals, time}`; `signals` its
-/// ids among the system's, `time` Unix s.
-pub fn tone_json(t: &trunk_core::trunk::ToneHeard, short_name: &str, site: &str, alpha_tag: &str, time: f64) -> Value {
-    let p = &t.pattern;
-    let r2 = |v: f32| (v as f64 * 100.0).round() / 100.0;
-    json!({
-        "system": short_name,
-        "site": site,
-        "callId": t.call_id,
-        "talkgroup": t.talkgroup,
-        "alphaTag": alpha_tag,
-        "src": t.src,
-        "pattern": p.kind.name(),
-        "tones": p.hz.iter().map(|&f| r2(f)).collect::<Vec<_>>(),
-        "lengths": p.lengths.iter().map(|&l| r2(l)).collect::<Vec<_>>(),
-        "digits": p.digits,
-        "knox": p.knox,
-        "cycles": p.cycles,
-        "format": p.format.unwrap_or(""),
-        "origin": p.origin.name(),
-        "text": p.describe(),
-        "signals": t.signals,
-        "time": (time * 1000.0).round() / 1000.0,
-    })
-}
-
-/// [`tone_json`] as plugins get it ([`trunk_recorder_plugin::ToneEvent`]).
-fn plugin_tone(t: &Value) -> trunk_recorder_plugin::ToneEvent {
-    let s = |k: &str| t[k].as_str().unwrap_or("").to_string();
-    let list = |k: &str| t[k].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
-    trunk_recorder_plugin::ToneEvent {
-        short_name: s("system"),
-        site: s("site"),
-        call_num: t["callId"].as_u64().unwrap_or(0),
-        talkgroup: t["talkgroup"].as_u64().unwrap_or(0) as u32,
-        alpha_tag: s("alphaTag"),
-        src: t["src"].as_u64().unwrap_or(0) as u32,
-        pattern: s("pattern"),
-        tones: list("tones"),
-        lengths: list("lengths"),
-        digits: s("digits"),
-        knox: t["knox"].as_bool().unwrap_or(false),
-        cycles: t["cycles"].as_u64().unwrap_or(0) as u32,
-        format: s("format"),
-        origin: s("origin"),
-        text: s("text"),
-        signals: t["signals"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
-        time: t["time"].as_f64().unwrap_or(0.0),
-    }
-}
 
 /// Talkgroups with their names in system `system`'s talkgroup file.
 fn tg_names(engine: &Engine, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
@@ -1498,26 +1447,5 @@ mod unreported_tests {
         let n = run(180.0, 90.0, 0.02);
         let want = (0.02 * 2_400_000.0) as u64;
         assert!(n.abs_diff(want) < want / 10, "found {n} of {want} lost");
-    }
-}
-
-#[cfg(test)]
-mod tone_tests {
-    use super::*;
-
-    /// A heard page as the interface and plugins get it: the same fields, plugins' named their way.
-    #[test]
-    fn a_tone_for_plugins() {
-        use trunk_core::dsp::inband::pattern::{Pattern, PatternKind};
-        use trunk_core::dsp::inband::Origin;
-        let pattern = Pattern { kind: PatternKind::TwoTone, hz: vec![849.628, 1292.849], lengths: vec![1.0, 3.04], digits: String::new(), knox: false, cycles: 0, format: Some("Quick Call II"), start: 0, len: 0, origin: Origin::Audio };
-        let t = trunk_core::trunk::ToneHeard { system: 0, site: None, call_id: 42, talkgroup: 2, src: 1679001, pattern, signals: vec!["PD_PAGE".into()], time_s: 4.0 };
-        let v = tone_json(&t, "wood", "", "Law Dispatch", 1792679669.0);
-        assert_eq!((v["callId"].as_u64(), v["tones"][0].as_f64(), v["signals"][0].as_str()), (Some(42), Some(849.63), Some("PD_PAGE")));
-        let p = plugin_tone(&v);
-        assert_eq!((p.short_name.as_str(), p.call_num, p.talkgroup, p.alpha_tag.as_str(), p.src), ("wood", 42, 2, "Law Dispatch", 1679001));
-        assert_eq!((p.pattern.as_str(), p.tones.clone(), p.format.as_str(), p.signals.clone()), ("two_tone", vec![849.63, 1292.85], "Quick Call II", vec!["PD_PAGE".to_string()]));
-        let line = serde_json::to_value(trunk_recorder_plugin::HostMessage::Tone(p)).unwrap();
-        assert_eq!((line["type"].as_str(), line["text"].as_str()), (Some("tone"), Some("two-tone 849.63 → 1292.85 Hz, 1 + 3.04 s (Quick Call II)")));
     }
 }

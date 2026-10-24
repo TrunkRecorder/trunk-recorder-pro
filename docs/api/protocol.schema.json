@@ -461,6 +461,9 @@
                   "audio"
                 ]
               },
+              "text": {
+                "type": "string"
+              },
               "signals": {
                 "type": "array",
                 "items": {
@@ -475,7 +478,8 @@
               "pos",
               "len",
               "src",
-              "origin"
+              "origin",
+              "text"
             ],
             "additionalProperties": false
           },
@@ -3029,6 +3033,7 @@
                 "unitActive",
                 "unitAffiliated",
                 "callVolume",
+                "tonePattern",
                 "controlLost",
                 "controlRegained",
                 "sourceDrops",
@@ -3074,6 +3079,16 @@
             },
             "perMin": {
               "type": "number"
+            },
+            "text": {
+              "type": "string",
+              "description": "tonePattern: what was heard (\"two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)\"), and the system's signals it is (their ids)."
+            },
+            "signals": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "freqHz": {
               "type": [
@@ -3445,23 +3460,6 @@
             "type",
             "what"
           ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
-              "const": "tone"
-            },
-            "tone": {
-              "$ref": "#/definitions/ToneEvent"
-            }
-          },
-          "required": [
-            "type",
-            "tone"
-          ],
-          "additionalProperties": false
         },
         {
           "type": "object",
@@ -5467,7 +5465,11 @@
         },
         "digits": {
           "type": "string",
-          "description": "Digits: the string (\"KNOX \" first for KNOX tones); Morse: the text."
+          "description": "Digits: the string; Morse: the text."
+        },
+        "knox": {
+          "type": "boolean",
+          "description": "Digits: KNOX's tones, not DTMF's."
         },
         "lengthsS": {
           "type": "array",
@@ -5493,7 +5495,7 @@
         "pattern"
       ],
       "additionalProperties": false,
-      "description": "A tone signal a system sends: a page (two tones), an alert, a warble, a digit string, a Morse ID. Its `id` is unique within its system (written \"CLMRN:CSP_FIRE\" where the system isn't said): calls carrying it list it (the call JSON's `signals`), and plugins hear it named (topic `tone`)."
+      "description": "A tone signal a system sends: a page (two tones), an alert, a warble, a digit string, a Morse ID. Its `id` is unique within its system (written \"CLMRN:CSP_FIRE\" where the system isn't said): calls carrying it list it (the call JSON's `signals`), and plugins hear it named (topic `tone_pattern`). Start refuses a config with one it can't use (SignalDef::problem)."
     },
     "Site": {
       "type": "object",
@@ -7246,97 +7248,6 @@
       "additionalProperties": false,
       "description": "A talkgroup as heard (radioQuery talkgroups / tg)."
     },
-    "ToneEvent": {
-      "type": "object",
-      "properties": {
-        "system": {
-          "type": "string"
-        },
-        "site": {
-          "type": "string"
-        },
-        "callId": {
-          "type": "number"
-        },
-        "talkgroup": {
-          "type": "number"
-        },
-        "alphaTag": {
-          "type": "string"
-        },
-        "src": {
-          "type": "number"
-        },
-        "pattern": {
-          "$ref": "#/definitions/TonePatternKind"
-        },
-        "tones": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          }
-        },
-        "lengths": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          }
-        },
-        "digits": {
-          "type": "string"
-        },
-        "knox": {
-          "type": "boolean"
-        },
-        "cycles": {
-          "type": "number"
-        },
-        "format": {
-          "type": "string"
-        },
-        "origin": {
-          "type": "string",
-          "enum": [
-            "frame",
-            "audio"
-          ]
-        },
-        "text": {
-          "type": "string",
-          "description": "For a log line: \"two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)\"."
-        },
-        "signals": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "time": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "system",
-        "site",
-        "callId",
-        "talkgroup",
-        "alphaTag",
-        "src",
-        "pattern",
-        "tones",
-        "lengths",
-        "digits",
-        "knox",
-        "cycles",
-        "format",
-        "origin",
-        "text",
-        "signals",
-        "time"
-      ],
-      "additionalProperties": false,
-      "description": "A call's tones made a pattern (a page, an alert, digits, a Morse ID), sent as soon as nothing can add to it (a second after its last tone). `signals`: the ids of the system's signals it is; `time` Unix s."
-    },
     "TonePatternKind": {
       "type": "string",
       "enum": [
@@ -7379,11 +7290,23 @@
         },
         "digits": {
           "type": "string",
-          "description": "Digits: the string (\"KNOX \" first for KNOX); Morse: the text."
+          "description": "Digits: the string; Morse: the text."
+        },
+        "knox": {
+          "type": "boolean",
+          "description": "Digits: KNOX's tones, not DTMF's."
+        },
+        "cycles": {
+          "type": "number",
+          "description": "Hi-low: its tones; pulsed: its pulses."
         },
         "format": {
           "type": "string",
           "description": "A two-tone page's format by its timing (\"Quick Call II\"), or \"\"."
+        },
+        "text": {
+          "type": "string",
+          "description": "What was heard, for a person: \"two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)\", \"DTMF 072864\"."
         },
         "count": {
           "type": "number"
@@ -7438,7 +7361,7 @@
           "items": {
             "type": "string"
           },
-          "description": "The system's signals it was when last heard (their ids)."
+          "description": "The system's signals it is (their ids), as the system's signals are now."
         }
       },
       "required": [
@@ -7448,13 +7371,17 @@
         "tones",
         "lengths",
         "digits",
+        "knox",
+        "cycles",
         "format",
+        "text",
         "count",
         "first",
         "last",
         "radios",
         "frame",
-        "ids"
+        "ids",
+        "signals"
       ],
       "additionalProperties": false,
       "description": "The tones log (`radioQuery` \"tones\"): one tone pattern as heard on one talkgroup over the span, every time it was (the same pattern, digits and tones) counted together."
