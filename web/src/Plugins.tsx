@@ -9,12 +9,13 @@
 // The settings forms are drawn from the schemas plugins describe themselves
 // with (trunk-recorder-plugin's schema.rs lists the subset).
 
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import {
   addPlugin,
   addSystemPluginCopy,
   installFromGitHub,
   installFromStore,
+  pluginAction,
   pluginOn,
   removePlugin,
   removeSystemPluginCopy,
@@ -38,9 +39,12 @@ import { showTodo } from "./Setup.tsx";
 import { DraftInput, Toggle } from "./inputs.tsx";
 import { numberList, textList } from "./fieldText.ts";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
+import { Card } from "./charts.tsx";
+import { ToneList } from "./ToneList.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
 import { fieldsOf } from "./pluginSettings.ts";
+import { applies, followRenames, refOptions, summarize, type KeyMemory } from "./pluginForm.ts";
 import type { Config, InstallProgress, PluginInfo, PluginListing, PluginManifest, PluginSchema, PluginValues, PluginsList } from "./protocol.ts";
 import { Author, InstallStage, newer, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
 
@@ -138,17 +142,164 @@ function isUrl(s: string): boolean {
   }
 }
 
+/** The settings a form shows, whole (the lists `x-ref` names are in them), and whose they are (for its buttons). */
+const FormRoot = createContext<{ plugin: string; values: PluginValues }>({ plugin: "", values: {} });
+
+/** Choices to tick, as chips; ticked ones no longer offered stay, marked. */
+function Ticks(props: { id: string; options: { value: string; label: string }[]; value: string[]; onChange: (v: string[]) => void; none: string }) {
+  const { options, value } = props;
+  const gone = value.filter((v) => !options.some((o) => o.value === v)).map((v) => ({ value: v, label: `${v} (gone)` }));
+  const all = [...options, ...gone];
+  if (!all.length) return <span className="muted small">{props.none}</span>;
+  return (
+    <div className="ticks" id={props.id} role="group">
+      {all.map((o) => {
+        const on = value.includes(o.value);
+        return (
+          <button
+            type="button"
+            key={o.value}
+            className={`chip tick${on ? " on" : ""}`}
+            aria-pressed={on}
+            onClick={() => props.onChange(on ? value.filter((v) => v !== o.value) : [...value, o.value])}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** An object's buttons (`x-actions`): each sends the plugin the object as it is now, and shows how it went. `at`: which object. */
+function ActionButtons(props: { schema: PluginSchema | undefined; value: unknown; at: string }) {
+  const root = useContext(FormRoot);
+  const pressed = useApp().actions;
+  const defs = props.schema?.["x-actions"] ?? [];
+  if (!defs.length || !root.plugin) return null;
+  return (
+    <div className="row plugin-buttons">
+      {defs.map((d) => {
+        const st = Object.values(pressed).find((a) => a.plugin === root.plugin && a.action === d.id && a.key === props.at);
+        return (
+          <span key={d.id} className="row">
+            <button type="button" className="btn small" disabled={st?.pending} title={d.hint} onClick={() => pluginAction(root.plugin, d.id, props.at, props.value ?? {})}>
+              {d.label}
+            </button>
+            {st && (
+              <span className={`small ${st.pending ? "muted" : st.ok ? "tone-ok" : "bad-text"}`} role="status">
+                {st.pending ? "Sending…" : `${st.ok ? "✓" : "✗"} ${st.message || (st.ok ? "Done" : "Failed")}`}
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * A list's items, each its own group: titled by a field (`x-title`) with a line saying what it is (`x-summary`), an
+ * on/off switch (an `enabled` field) and opened to edit one at a time; or numbered and always open. `panel`: the list is
+ * a card of its own (a plugin's page), its fields laid out in a grid.
+ */
+function ObjectList(props: { f: PluginSchema; label: string; hint?: string; value: unknown; onChange: (v: unknown) => void; id: string; panel?: boolean }) {
+  const { f, id } = props;
+  const items = (Array.isArray(props.value) ? props.value : []) as PluginValues[];
+  const itemLabel = f.items?.title ?? "Item";
+  const titled = f.items?.["x-title"];
+  const switched = f.items?.properties?.enabled?.type === "boolean";
+  const [open, setOpen] = useState<number | null>(null);
+  const set = (next: PluginValues[]) => props.onChange(next.length ? next : undefined);
+  const setItem = (i: number, v: PluginValues) => set(items.map((x, j) => (j === i ? v : x)));
+  const remove = (i: number) => {
+    set(items.filter((_, j) => j !== i));
+    setOpen(null);
+  };
+  const add = () => {
+    set([...items, {}]);
+    setOpen(items.length);
+  };
+  const addButton = (
+    <button type="button" className={`btn small${props.panel ? " primary" : ""}`} onClick={add}>
+      Add {itemLabel.toLowerCase()}
+    </button>
+  );
+  const list = items.map((item, i) => {
+    const body = (
+      <>
+        <SchemaFields schema={f.items} values={item ?? {}} onChange={(v) => setItem(i, v)} id={`${id}-${i}`} grid={props.panel} omit={titled && switched ? ["enabled"] : []} />
+        <div className="row">
+          <ActionButtons schema={f.items} value={item} at={`${id}-${i}`} />
+          <span className="spacer" />
+          <button type="button" className="btn ghost small" onClick={() => remove(i)}>
+            Remove {itemLabel.toLowerCase()}
+          </button>
+        </div>
+      </>
+    );
+    if (!titled)
+      return (
+        <fieldset className="plugin-group" key={i}>
+          <legend>
+            {itemLabel} {i + 1}
+          </legend>
+          {body}
+        </fieldset>
+      );
+    const name = typeof item?.[titled] === "string" && item[titled] ? String(item[titled]) : `New ${itemLabel.toLowerCase()}`;
+    const on = item?.enabled !== false;
+    const line = summarize(f.items, item ?? {});
+    return (
+      <div className={`plugin-item${open === i ? " open" : ""}${on ? "" : " off"}`} key={i}>
+        <div className="plugin-item-head">
+          <button type="button" className="plugin-item-title" aria-expanded={open === i} onClick={() => setOpen(open === i ? null : i)}>
+            <span className="plugin-item-name">{name}</span>
+            {line && <span className="plugin-item-line">{line}</span>}
+          </button>
+          {switched && <Switch label={on ? "On" : "Off"} checked={on} onChange={(v) => setItem(i, { ...item, enabled: v })} />}
+          <button type="button" className="btn ghost small" aria-expanded={open === i} onClick={() => setOpen(open === i ? null : i)}>
+            {open === i ? "Close" : "Edit"}
+          </button>
+        </div>
+        {open === i && <div className="plugin-item-body">{body}</div>}
+      </div>
+    );
+  });
+  if (props.panel)
+    return (
+      <Card title={props.label} actions={addButton}>
+        {props.hint && <p className="muted small plugin-panel-hint">{props.hint}</p>}
+        <div className="stack">
+          {list}
+          {items.length === 0 && <p className="empty">None yet.</p>}
+        </div>
+      </Card>
+    );
+  return (
+    <fieldset className="plugin-group">
+      <legend>{props.label}</legend>
+      {props.hint && <p className="field-hint">{props.hint}</p>}
+      <div className="stack">
+        {list}
+        <div>{addButton}</div>
+      </div>
+    </fieldset>
+  );
+}
+
 /** One setting. Empty text means "not set": the value for every system
  * (`inherited`), else the plugin's default, applies — shown as the placeholder. */
 const textByComma = textList(/,/);
 const numbersByComma = numberList(/,/);
 
-function SchemaField(props: { name: string; schema: PluginSchema; value: unknown; onChange: (v: unknown) => void; id: string; inherited?: unknown; required?: boolean }) {
+function SchemaField(props: { name: string; schema: PluginSchema; value: unknown; onChange: (v: unknown) => void; id: string; inherited?: unknown; required?: boolean; panel?: boolean }) {
   const { schema: f, value, onChange, id, inherited } = props;
   const label = f.title ?? spell(props.name);
   const hint = f.description;
   const [shown, setShown] = useState(false);
   const c = useApp().config;
+  const root = useContext(FormRoot);
   const fallback = emptyValue(inherited) ? f.default : inherited;
   const needed = !!props.required && emptyValue(value) && emptyValue(inherited);
 
@@ -162,35 +313,15 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
       </fieldset>
     );
   }
-  if (f.type === "array" && f.items?.type === "object") {
-    const items = (Array.isArray(value) ? value : []) as PluginValues[];
-    const itemLabel = f.items.title ?? "Item";
-    const set = (next: PluginValues[]) => onChange(next.length ? next : undefined);
+  if (f.type === "array" && f["x-tones"])
     return (
-      <fieldset className="plugin-group">
-        <legend>{label}</legend>
-        {hint && <p className="field-hint">{hint}</p>}
-        <div className="stack">
-          {items.map((item, i) => (
-            <fieldset className="plugin-group" key={i}>
-              <legend>
-                {itemLabel} {i + 1}
-              </legend>
-              <SchemaFields schema={f.items} values={item ?? {}} onChange={(v) => set(items.map((x, j) => (j === i ? v : x)))} id={`${id}-${i}`} />
-              <button type="button" className="btn ghost small" onClick={() => set(items.filter((_, j) => j !== i))}>
-                Remove {itemLabel.toLowerCase()} {i + 1}
-              </button>
-            </fieldset>
-          ))}
-          <div>
-            <button type="button" className="btn small" onClick={() => set([...items, {}])}>
-              Add {itemLabel.toLowerCase()}
-            </button>
-          </div>
-        </div>
-      </fieldset>
+      <div className="field">
+        <span className="field-label">{label}</span>
+        {hint && <span className="field-hint">{hint}</span>}
+        <ToneList value={value} onChange={onChange} id={id} />
+      </div>
     );
-  }
+  if (f.type === "array" && f.items?.type === "object") return <ObjectList f={f} label={label} hint={hint} value={value} onChange={onChange} id={id} panel={props.panel} />;
   if (f.type === "boolean") {
     const on = typeof value === "boolean" ? value : fallback === true;
     return (
@@ -200,7 +331,36 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
 
   let control: React.ReactNode;
   let problem: string | null = null;
-  if (f["x-system"]) {
+  const list = (Array.isArray(value) ? value : []).map(String);
+  const setList = (v: string[]) => onChange(v.length ? v : undefined);
+  if (f.type === "array" && f.items?.enum) {
+    // A list of choices: each to tick.
+    const labels = f.items["x-enum-labels"];
+    control = <Ticks id={id} options={f.items.enum.map((x, i) => ({ value: String(x), label: labels?.[i] ?? String(x) }))} value={list} onChange={setList} none="" />;
+  } else if (f.type === "array" && f["x-systems"]) {
+    control = <Ticks id={id} options={(c ? systemsOf(c) : []).map((x) => ({ value: x.name, label: x.name }))} value={list} onChange={setList} none="No systems yet" />;
+  } else if (f.type === "array" && f["x-signals"]) {
+    const options = c
+      ? [...c.systems, ...c.conventional].flatMap((x) => (x.signals ?? []).filter((d) => d.id).map((d) => ({ value: `${x.shortName}:${d.id}`, label: d.name ? `${d.name} (${x.shortName}:${d.id})` : `${x.shortName}:${d.id}` })))
+      : [];
+    control = <Ticks id={id} options={options} value={list} onChange={setList} none="No signals yet: name them on a system's Tones card (Radio system)" />;
+  } else if (f["x-ref"] && f.type === "array") {
+    control = <Ticks id={id} options={refOptions(root.values, f["x-ref"])} value={list} onChange={setList} none={`None yet: add them under ${spell(f["x-ref"])}`} />;
+  } else if (f["x-ref"]) {
+    const options = refOptions(root.values, f["x-ref"]);
+    const cur = typeof value === "string" ? value : "";
+    control = (
+      <select id={id} value={cur} onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value)}>
+        <option value="">None</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+        {cur && !options.some((o) => o.value === cur) && <option value={cur}>{cur} (gone)</option>}
+      </select>
+    );
+  } else if (f["x-system"]) {
     // A menu of the systems (and one no longer there, if it names one).
     const names = c ? systemsOf(c).map((x) => x.name) : [];
     const cur = typeof value === "string" ? value : "";
@@ -301,6 +461,11 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
   );
 }
 
+/** A field that wants a whole row of a grid: a group, a list of groups, choices to tick, a text area. */
+function wide(f: PluginSchema): boolean {
+  return f.type === "object" || (f.type === "array" && (f.items?.type === "object" || !!f["x-tones"] || !!f.items?.enum || !!f["x-systems"] || !!f["x-signals"] || !!f["x-ref"])) || !!f["x-multiline"];
+}
+
 function SchemaFields(props: {
   schema: PluginSchema | undefined;
   values: PluginValues;
@@ -309,27 +474,41 @@ function SchemaFields(props: {
   inherited?: PluginValues;
   /** The fields to mark as needed (by default, those the schema requires). */
   required?: string[];
+  /** Laid out in a grid (a plugin's page), rather than one under another. */
+  grid?: boolean;
+  /** Fields drawn elsewhere (an item's switch). */
+  omit?: string[];
 }) {
   const required = props.required ?? requiredOf(props.schema);
+  const fields = fieldsOf(props.schema).filter(([k, f]) => !props.omit?.includes(k) && applies(props.schema, props.values, f));
   return (
-    <div className="stack plugin-fields">
-      {fieldsOf(props.schema).map(([k, f]) => (
-        <SchemaField
-          key={k}
-          name={k}
-          schema={f}
-          id={`${props.id}-${k}`}
-          value={props.values[k]}
-          inherited={props.inherited?.[k]}
-          required={required.includes(k)}
-          onChange={(v) => {
-            const next = { ...props.values };
-            if (v === undefined) delete next[k];
-            else next[k] = v;
-            props.onChange(next);
-          }}
-        />
-      ))}
+    <div className={props.grid ? "plugin-grid" : "stack plugin-fields"}>
+      {fields.map(([k, f]) => {
+        const field = (
+          <SchemaField
+            key={k}
+            name={k}
+            schema={f}
+            id={`${props.id}-${k}`}
+            value={props.values[k]}
+            inherited={props.inherited?.[k]}
+            required={required.includes(k)}
+            onChange={(v) => {
+              const next = { ...props.values };
+              if (v === undefined) delete next[k];
+              else next[k] = v;
+              props.onChange(next);
+            }}
+          />
+        );
+        return props.grid ? (
+          <div key={k} className={wide(f) ? "wide" : ""}>
+            {field}
+          </div>
+        ) : (
+          field
+        );
+      })}
     </div>
   );
 }
@@ -506,10 +685,19 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
       <PluginHead p={p} on={on} tone={st.tone} state={needs.length && on ? "Needs setting up" : st.text} titleId={`ps-${p.id}`} />
       {m?.description && <p className="plugin-desc">{m.description}</p>}
       {p.problem && <p className="small bad-text">{p.problem}</p>}
-      {m && hasFields(m.config) && (
-        <div className="plugin-settings stack">
-          <SchemaFields schema={m.config} values={settings ?? {}} onChange={(v) => setPluginSettings(p.id, v)} id={`pg-${p.id}`} required={needs} />
+      {m?.page ? (
+        <div className="row">
+          <button className="btn" onClick={() => setView("plugin", p.id)}>
+            Open {m.page.title || m.name}
+          </button>
+          <span className="muted small">Its settings have a page of their own.</span>
         </div>
+      ) : (
+        m && hasFields(m.config) && (
+          <div className="plugin-settings stack">
+            <PluginSettingsForm p={p} m={m} settings={settings} needs={needs} />
+          </div>
+        )
       )}
       {m && perSystem && (
         <div className="plugin-systems small">
@@ -544,8 +732,98 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
         />
       )}
       {on && (m?.subscribe.includes("audio") || m?.subscribe.includes("call.concluded")) && <PluginDelay p={p} c={c} />}
-      {recording && on && <p className="small muted">Changes restart it (delays don't).</p>}
+      {recording && on && <p className="small muted">{m?.live_settings ? "It takes changes as they're made." : "Changes restart it (delays don't)."}</p>}
     </article>
+  );
+}
+
+/**
+ * A plugin's own settings (`config`), its buttons, and lists that name others' items kept in step. `page`: on its own
+ * page, each list of items is a card of its own and the rest a card of settings.
+ */
+function PluginSettingsForm(props: { p: PluginInfo; m: PluginManifest; settings: PluginValues | undefined; needs: string[]; page?: boolean }) {
+  const { p, m, settings } = props;
+  const values = settings ?? {};
+  const keys = useRef<KeyMemory>({});
+  const change = (v: PluginValues) => setPluginSettings(p.id, followRenames(m.config, settings, v, keys.current));
+  if (!props.page)
+    return (
+      <FormRoot.Provider value={{ plugin: p.id, values }}>
+        <SchemaFields schema={m.config} values={values} onChange={change} id={`pg-${p.id}`} required={props.needs} />
+        <ActionButtons schema={m.config} value={values} at={`pg-${p.id}`} />
+      </FormRoot.Provider>
+    );
+  const fields = fieldsOf(m.config);
+  const isList = (f: PluginSchema) => f.type === "array" && f.items?.type === "object";
+  const rest = fields.filter(([, f]) => !isList(f));
+  const restSchema: PluginSchema = { ...m.config, properties: Object.fromEntries(rest), "x-order": rest.map(([k]) => k) };
+  const setField = (k: string, v: unknown) => {
+    const next = { ...values };
+    if (v === undefined) delete next[k];
+    else next[k] = v;
+    change(next);
+  };
+  return (
+    <FormRoot.Provider value={{ plugin: p.id, values }}>
+      {fields
+        .filter(([, f]) => isList(f))
+        .map(([k, f]) => (
+          <ObjectList key={k} panel f={f} label={f.title ?? spell(k)} hint={f.description} value={values[k]} onChange={(v) => setField(k, v)} id={`pg-${p.id}-${k}`} />
+        ))}
+      {(rest.length > 0 || m.config?.["x-actions"]?.length) && (
+        <Card title="Settings">
+          <SchemaFields schema={restSchema} values={values} onChange={change} id={`pg-${p.id}`} required={props.needs.filter((k) => rest.some(([r]) => r === k))} grid />
+          <ActionButtons schema={m.config} value={values} at={`pg-${p.id}`} />
+        </Card>
+      )}
+    </FormRoot.Provider>
+  );
+}
+
+/** The plugins (installed, on) that have a page of their own, for the navigation. */
+export function pluginPages(s: AppState): { id: string; title: string }[] {
+  return (s.plugins?.plugins ?? [])
+    .filter((p) => p.manifest?.page && pluginOn(s.config, p.id))
+    .map((p) => ({ id: p.id, title: p.manifest!.page!.title || p.manifest!.name }))
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+/** A plugin's own page: all its settings, room to work in, its log. */
+export function PluginPage(props: { id: string }) {
+  const s = useApp();
+  const c = s.config;
+  const p = s.plugins?.plugins.find((x) => x.id === props.id);
+  if (!c || !s.plugins) return <p className="muted">Loading…</p>;
+  if (!p?.manifest) return <p className="empty">No plugin {props.id} is installed.</p>;
+  const m = p.manifest;
+  const on = pluginOn(c, p.id);
+  const recording = s.phase === "running" || s.phase === "starting";
+  const st = stateOf(p, on, recording);
+  const needs = pluginNeeds(m, c, p.id);
+  const message = p.problem ?? (on && p.runtime.message && p.runtime.message !== "running" ? p.runtime.message : "");
+  return (
+    <div className="plugin-page stack">
+      <section className="panel" aria-labelledby={`pp-${p.id}`}>
+        <PluginHead p={p} on={on} tone={st.tone} state={needs.length && on ? "Needs setting up" : st.text} titleId={`pp-${p.id}`} />
+        {m.description && <p className="plugin-desc">{m.description}</p>}
+        {message && <p className={`small ${st.tone === "bad" ? "bad-text" : st.tone === "warn" ? "warn-text" : "muted"}`}>{message}</p>}
+        {recording && on && <p className="small muted">{m.live_settings ? "It takes changes as they're made." : "Changes restart it."}</p>}
+      </section>
+      {hasFields(m.config) && <PluginSettingsForm p={p} m={m} settings={c.plugins?.[p.id]?.settings} needs={needs} page />}
+      <Card title="Log">
+        {p.runtime.log.length ? (
+          <pre className="log-lines plugin-log">
+            {[...p.runtime.log].reverse().map((l, i) => (
+              <div key={i} className={l.level === "info" ? "" : "bad-text"}>
+                {new Date(l.time * 1000).toLocaleTimeString()} {l.text}
+              </div>
+            ))}
+          </pre>
+        ) : (
+          <p className="empty">Nothing yet{recording ? "" : ": it runs while the recorder records"}.</p>
+        )}
+      </Card>
+    </div>
   );
 }
 
@@ -795,8 +1073,8 @@ const TOPIC_NAMES: Record<string, string> = {
   tone: "tones heard",
 };
 
-function PluginLog(props: { p: PluginInfo }) {
-  const [open, setOpen] = useState(false);
+function PluginLog(props: { p: PluginInfo; open?: boolean }) {
+  const [open, setOpen] = useState(!!props.open);
   const lines = props.p.runtime.log;
   return (
     <>

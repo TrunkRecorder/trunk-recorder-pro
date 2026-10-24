@@ -333,6 +333,9 @@ fn print_note(n: Note) {
         Note::Metrics { plugin, metrics } => {
             eprintln!("[{plugin}] metrics: {}", serde_json::to_string(&metrics).unwrap_or_default());
         }
+        Note::ActionResult { plugin, request, ok, message } => {
+            eprintln!("[{plugin}] action {request}: {} {message}", if ok { "ok" } else { "failed" });
+        }
     }
 }
 

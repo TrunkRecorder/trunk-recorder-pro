@@ -5,6 +5,19 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Plugins can have a page of their own, buttons, and settings that change without a restart.**
+  A plugin's manifest can ask for a page (`page`), listed under Plugins in the navigation, where its
+  lists of settings are cards of their own, each item one line until opened, beside its log; for buttons elsewhere, such as a **Notify** on each signal of a system's
+  Tones card that adds an item to its settings (`contribute`); and to be sent new settings as they
+  change (`live_settings`) rather than every plugin restarting. Settings forms can tick systems,
+  signals and lists of choices, name another list's items (`x-ref`, following renames), title and
+  fold list items (`x-title`), and have buttons (`x-actions`) that ask the running plugin to do
+  something, such as send a test, and show how it went; items can sum themselves up (`x-summary`),
+  fields show only when they apply (`x-when`), and tones can be typed in with ▶ (`x-tones`). SDK
+  0.6.0: `Plugin::action`, `Plugin::settings`.
+- **Plugins hear radios' and talkgroups' names** in their live events, looked up as each event is
+  sent (as a call's JSON has them): a call's radios (`sources[].tag`), radio activity (`tag`, and
+  the talkgroup's `alpha_tag`) and tones (`src_tag`). No need to remember them from calls.
 - **Pages, alert tones, DTMF and Morse IDs as call metadata.** Every call's voice is searched for
   in-band tones: P25 Phase 2, DMR and NXDN tone frames name them exactly, and P25 Phase 1 and analog
   calls are measured. The call JSON lists them (`tones`) and what they make up (`tone_patterns`: a

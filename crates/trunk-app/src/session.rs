@@ -931,7 +931,8 @@ impl Session {
                 .iter()
                 .map(|s| {
                     let f = s.flags;
-                    trunk_recorder_plugin::CallSource { unit: s.src, time: self.wall(s.time_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
+                    let tag = self.engine.unit_name(c.system, s.src).unwrap_or_default();
+                    trunk_recorder_plugin::CallSource { unit: s.src, tag, time: self.wall(s.time_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
                 })
                 .collect(),
             patched_talkgroups: c.patched_talkgroups.clone(),
@@ -992,7 +993,10 @@ impl Session {
                     if let Some(kind) = unit_kind(m.kind) {
                         let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert" | "emergency_alarm").then_some(m.talkgroup);
                         if m.source >= 0 {
-                            let e = UnitEvent { system, short_name: name.clone(), site: self.site_name(Some(site)), kind: kind.into(), unit: m.source as u32, talkgroup, emergency: m.emergency, time: self.wall(m.time_s) };
+                            let unit = m.source as u32;
+                            let tag = self.engine.unit_name(system, unit).unwrap_or_default();
+                            let alpha_tag = talkgroup.and_then(|tg| self.tg_names(system, [tg]).first().and_then(|v| v["alphaTag"].as_str().map(String::from))).unwrap_or_default();
+                            let e = UnitEvent { system, short_name: name.clone(), site: self.site_name(Some(site)), kind: kind.into(), unit, tag, talkgroup, alpha_tag, emergency: m.emergency, time: self.wall(m.time_s) };
                             out.push(Output::Plugin(HostMessage::Unit(e)));
                         }
                     }
@@ -1072,7 +1076,8 @@ impl Session {
                 self.records.push(Record::text(Level::Info, Some(&self.site_label(t.system, t.site)), text.clone()));
                 self.log.push(json!({ "timeS": t.time_s, "kind": "tone", "text": text, "system": name, "site": self.site_name(t.site) }));
                 let alpha = self.tg_names(t.system, [t.talkgroup]).first().and_then(|v| v["alphaTag"].as_str().map(String::from)).unwrap_or_default();
-                let tone = tone_json(&t, &name, &self.site_name(t.site), &alpha, self.wall(t.time_s));
+                let src_tag = self.engine.unit_name(t.system, t.src).unwrap_or_default();
+                let tone = tone_json(&t, &name, &self.site_name(t.site), &alpha, &src_tag, self.wall(t.time_s));
                 if self.plugin_topics.tones {
                     out.push(Output::Plugin(HostMessage::Tone(plugin_tone(&tone))));
                 }
@@ -1298,10 +1303,10 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
 
 
 /// A heard tone pattern as browsers (`tone`) and plugins get it:
-/// `{system, site, callId, talkgroup, alphaTag, src, pattern, tones, lengths,
+/// `{system, site, callId, talkgroup, alphaTag, src, srcTag, pattern, tones, lengths,
 /// digits, knox, cycles, format, origin, text, signals, time}`; `signals` its
 /// ids among the system's, `time` Unix s.
-pub fn tone_json(t: &trunk_core::trunk::ToneHeard, short_name: &str, site: &str, alpha_tag: &str, time: f64) -> Value {
+pub fn tone_json(t: &trunk_core::trunk::ToneHeard, short_name: &str, site: &str, alpha_tag: &str, src_tag: &str, time: f64) -> Value {
     let p = &t.pattern;
     let r2 = |v: f32| (v as f64 * 100.0).round() / 100.0;
     json!({
@@ -1311,6 +1316,7 @@ pub fn tone_json(t: &trunk_core::trunk::ToneHeard, short_name: &str, site: &str,
         "talkgroup": t.talkgroup,
         "alphaTag": alpha_tag,
         "src": t.src,
+        "srcTag": src_tag,
         "pattern": p.kind.name(),
         "tones": p.hz.iter().map(|&f| r2(f)).collect::<Vec<_>>(),
         "lengths": p.lengths.iter().map(|&l| r2(l)).collect::<Vec<_>>(),
@@ -1336,6 +1342,7 @@ fn plugin_tone(t: &Value) -> trunk_recorder_plugin::ToneEvent {
         talkgroup: t["talkgroup"].as_u64().unwrap_or(0) as u32,
         alpha_tag: s("alphaTag"),
         src: t["src"].as_u64().unwrap_or(0) as u32,
+        src_tag: s("srcTag"),
         pattern: s("pattern"),
         tones: list("tones"),
         lengths: list("lengths"),
@@ -1512,10 +1519,10 @@ mod tone_tests {
         use trunk_core::dsp::inband::Origin;
         let pattern = Pattern { kind: PatternKind::TwoTone, hz: vec![849.628, 1292.849], lengths: vec![1.0, 3.04], digits: String::new(), knox: false, cycles: 0, format: Some("Quick Call II"), start: 0, len: 0, origin: Origin::Audio };
         let t = trunk_core::trunk::ToneHeard { system: 0, site: None, call_id: 42, talkgroup: 2, src: 1679001, pattern, signals: vec!["PD_PAGE".into()], time_s: 4.0 };
-        let v = tone_json(&t, "wood", "", "Law Dispatch", 1792679669.0);
+        let v = tone_json(&t, "wood", "", "Law Dispatch", "PD 12", 1792679669.0);
         assert_eq!((v["callId"].as_u64(), v["tones"][0].as_f64(), v["signals"][0].as_str()), (Some(42), Some(849.63), Some("PD_PAGE")));
         let p = plugin_tone(&v);
-        assert_eq!((p.short_name.as_str(), p.call_num, p.talkgroup, p.alpha_tag.as_str(), p.src), ("wood", 42, 2, "Law Dispatch", 1679001));
+        assert_eq!((p.short_name.as_str(), p.call_num, p.talkgroup, p.alpha_tag.as_str(), p.src, p.src_tag.as_str()), ("wood", 42, 2, "Law Dispatch", 1679001, "PD 12"));
         assert_eq!((p.pattern.as_str(), p.tones.clone(), p.format.as_str(), p.signals.clone()), ("two_tone", vec![849.63, 1292.85], "Quick Call II", vec!["PD_PAGE".to_string()]));
         let line = serde_json::to_value(trunk_recorder_plugin::HostMessage::Tone(p)).unwrap();
         assert_eq!((line["type"].as_str(), line["text"].as_str()), (Some("tone"), Some("two-tone 849.63 → 1292.85 Hz, 1 + 3.04 s (Quick Call II)")));

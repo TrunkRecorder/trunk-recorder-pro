@@ -115,6 +115,7 @@ entry per site, with its `site_name`. A call heard on several sites of a system 
 | `status` | Its health (`ok`, `warning`, `error`) and a message, shown on its card until the next one |
 | `call.result` | What became of a concluded call: `ok`, `skipped` or `failed`, a message, optionally a URL, and optionally `took_ms`, how long your work on it took (an upload's last try) |
 | `metrics` | Figures for the Health tab: queue depth, retries, in flight, bytes sent, latency, the services it talks to (up, degraded, down), and any of its own |
+| `action.result` | How one of its buttons went (an `action`, below): `ok`, and a message shown beside the button |
 
 Lines on stdout that aren't protocol messages become log lines, and so does everything on stderr.
 
@@ -226,11 +227,37 @@ The form understands:
 | `object` | A group of the above |
 | `"x-system": true` on a string | A menu of the recorder's systems; follows renames |
 | `"x-required": true` | Must be filled in; until it is, the plugin (or that system) shows as not set up. Mark it with `#[schemars(extend("x-required" = true))]` |
+| array whose items are an `enum` | The choices, to tick |
+| `"x-systems": true` on an array of strings | The recorder's systems, to tick |
+| `"x-signals": true` on an array of strings | Every system's [signals](../guides/signals.md), to tick, as `system:ID` |
+| `"x-ref": "<list>"` | Items of the top-level array `<list>` (by their `id`, else their `name`): a menu on a string, items to tick on an array. Renaming an item renames what names it |
+| `"x-tones": true` on an array of objects | Tones to type in, each `pattern`, `tonesHz`, `digits`, `lengthsS` and `extraTolerancePct` (a [signal](../configuration/systems.md#signals)'s fields), with ▶ and a note of what the recorder would match within |
+| `"x-summary": ["{field}", "{field\|fallback}", …]` on an object in an array | Its line in the list: each segment with its fields read as the form shows them (a choice by its label), left out when a field in it is empty (and has no fallback) or doesn't apply |
+| `"x-title": "<field>"` on an object in an array | Each item is titled by that field and opened to edit, one at a time, rather than all shown at once |
+| `"x-when": {"<field>": <value or [values]>}` | Shown only while the object's other fields are so (a webhook's URL only for `"type": "webhook"`); hidden, it keeps its value |
+| `"x-actions": [{"id", "label", "hint"}]` on an object | Buttons under it (an array's item, or the whole settings): pressed, the plugin is sent `action` with the object as edited |
 
 `Option<T>` becomes `T` (empty means not set), unit-variant enums become menus, and nested structs
-are inlined. The template's [Settings](https://github.com/TrunkRecorder/trunk-plugin-template/blob/main/docs/settings.md)
+are inlined. Extensions go on a field with `#[schemars(extend("x-ref" = "destinations"))]`, or on a
+struct used as an array's items with the same attribute on the struct. The template's [Settings](https://github.com/TrunkRecorder/trunk-plugin-template/blob/main/docs/settings.md)
 page has examples, and advice on changing settings in later versions without breaking existing
 installs. Mark API keys and passwords `x-secret`, and never log them.
+
+### More room, buttons, and live settings
+
+A plugin whose settings are more than a few fields (rules and where they send, say) can ask for
+more of the interface in its manifest:
+
+| Manifest | What it gets |
+|---|---|
+| `page: { title }` | A page of its own, in the navigation under the radio pages (`#/plugin/<id>`): its settings full width, its state and its log. Its card in Setup links to it |
+| `contribute: [{ on, label, hint, append, item }]` | Buttons elsewhere in the interface. `on: "signal"` puts one on each signal on a system's Tones card; pressed, it adds `item` to the settings array `append` (with `{system}`, `{signal}` (`system:ID`), `{id}` and `{name}` filled in) and opens the plugin's page |
+| `live_settings: true` | Its own settings, changed, are sent to it as `settings` (the hello it would start with now) instead of every plugin being restarted. The SDK calls `Plugin::settings` |
+
+An `x-actions` button sends the running plugin `action` (`request`, `action`: the button's `id`,
+`value`: the object it's under, as edited, saved or not). It answers with `action.result`; the
+SDK's `Plugin::action` gets a `Reply` to answer with, from any thread. Plugins only run while the
+recorder records: pressed while it doesn't, the button says so.
 
 ## Testing
 

@@ -86,6 +86,53 @@ pub struct Manifest {
     pub authors: Vec<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub license: String,
+    /// A page of its own in the interface, in the navigation, for settings
+    /// too many for its card (rules, destinations, …). None: its card in
+    /// Setup is enough.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<Page>,
+    /// Buttons it adds elsewhere in the interface, each adding an item to
+    /// its settings from what it's on ([`Contribution`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub contribute: Vec<Contribution>,
+    /// It takes new settings while it runs ([`HostMessage::Settings`]):
+    /// changing its own settings doesn't restart it, or anything else.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub live_settings: bool,
+}
+
+/// A plugin's own page ([`Manifest::page`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Page {
+    /// Its name in the navigation ("Notifications"); empty: the plugin's name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
+}
+
+/// A button a plugin adds where the interface shows something it can act on
+/// ([`Manifest::contribute`]). Pressed, it adds `item` to the plugin's
+/// settings array `append`, with `{placeholders}` in its strings filled in
+/// from what it was pressed on, and opens the plugin's page (or card) there.
+///
+/// On `signal` (a system's signal, on the system's Tones card): `{system}`
+/// (its short name), `{signal}` (`system:ID`), `{id}` and `{name}` (its
+/// name, else its id). A string that is just one placeholder inside an array
+/// (`["{signal}"]`) becomes that value.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Contribution {
+    /// Where the button goes: `signal`.
+    pub on: String,
+    /// What it says ("Notify").
+    pub label: String,
+    /// A tooltip.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+    /// The settings array (a top-level key of the plugin's settings) it adds to.
+    pub append: String,
+    /// The item it adds.
+    pub item: Value,
 }
 
 impl Manifest {
@@ -121,6 +168,15 @@ pub enum HostMessage {
     Status(Status),
     #[serde(rename = "tone")]
     Tone(ToneEvent),
+    /// Someone pressed one of the plugin's buttons (`x-actions` in its
+    /// settings schema): answer with [`PluginMessage::ActionResult`]. Only
+    /// a plugin that has actions is sent one.
+    #[serde(rename = "action")]
+    Action(Action),
+    /// Its settings changed: the hello it would start with now. Only a
+    /// plugin with [`Manifest::live_settings`] is sent one; others restart.
+    #[serde(rename = "settings")]
+    Settings(Hello),
     /// The recorder is stopping: finish what's queued, then exit. stdin closes
     /// after this, and the process is killed if it hasn't exited within
     /// [`Shutdown::grace_s`].
@@ -282,6 +338,10 @@ pub struct CallInfo {
 #[serde(default)]
 pub struct CallSource {
     pub unit: u32,
+    /// Its name, as the call JSON's `srcList` `tag` will have it (the
+    /// system's units file, or its talker alias). Empty: none known yet.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tag: String,
     /// Unix seconds it was first heard on the call.
     pub time: f64,
     pub emergency: bool,
@@ -738,6 +798,9 @@ pub struct ToneEvent {
     pub alpha_tag: String,
     /// The radio talking (0: not known).
     pub src: u32,
+    /// Its name, as a call's would be. Empty: none known.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub src_tag: String,
     /// As [`TonePattern::pattern`]: `two_tone`, `long`, `hi_low`, `pulsed`,
     /// `digits`, `morse` or `sequence`; and its `tones`, `lengths`, `digits`,
     /// `knox`, `cycles`, `format` and `origin` as there.
@@ -778,9 +841,15 @@ pub struct UnitEvent {
     pub kind: String,
     /// Radio ID.
     pub unit: u32,
+    /// Its name, as a call's would be (the units file, its talker alias). Empty: none known.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tag: String,
     /// The talkgroup involved (affiliation, location, answer request, call
     /// alert, emergency alarm).
     pub talkgroup: Option<u32>,
+    /// The talkgroup's name, from the system's talkgroup file. Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub alpha_tag: String,
     /// The message said it is an emergency (an emergency alarm, a data
     /// grant's options).
     pub emergency: bool,
@@ -857,6 +926,19 @@ pub struct Shutdown {
     pub grace_s: f64,
 }
 
+/// A button of the plugin's was pressed ([`HostMessage::Action`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Action {
+    /// Echo it in the [`PluginMessage::ActionResult`].
+    pub request: u64,
+    /// The action's `id`, as its `x-actions` entry names it.
+    pub action: String,
+    /// The settings object the button is on, as edited (saved or not): an
+    /// item of an array (a destination, to test it), or the whole settings.
+    pub value: Value,
+}
+
 // ─── Plugin → recorder ────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -896,6 +978,14 @@ pub enum PluginMessage {
     /// every few seconds ([`crate::CallQueue`] does it for you).
     #[serde(rename = "metrics")]
     Metrics(Metrics),
+    /// How an [`Action`] went: shown by the button that was pressed.
+    #[serde(rename = "action.result")]
+    ActionResult {
+        request: u64,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        message: String,
+    },
     #[serde(other)]
     Unknown,
 }

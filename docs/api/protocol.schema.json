@@ -2704,6 +2704,30 @@
         },
         {
           "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pluginActionResult"
+            },
+            "request": {
+              "type": "number"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request",
+            "ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
           "additionalProperties": false,
           "properties": {
             "kind": {
@@ -4447,6 +4471,54 @@
       "additionalProperties": false,
       "description": "The computer, as last sampled (desktop app). Missing values are listed in `unavailable`."
     },
+    "PluginActionDef": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "hint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "additionalProperties": false,
+      "description": "A plugin's button (`x-actions`): the plugin is sent `action` and answers how it went."
+    },
+    "PluginContribution": {
+      "type": "object",
+      "properties": {
+        "on": {
+          "type": "string",
+          "const": "signal",
+          "description": "Where: `signal` (each signal on a system's Tones card: `{system}`, `{signal}` = system:ID, `{id}`, `{name}`)."
+        },
+        "label": {
+          "type": "string"
+        },
+        "hint": {
+          "type": "string"
+        },
+        "append": {
+          "type": "string"
+        },
+        "item": {}
+      },
+      "required": [
+        "on",
+        "label",
+        "append",
+        "item"
+      ],
+      "additionalProperties": false,
+      "description": "A button a plugin adds elsewhere (`contribute`): it adds `item` (its `{placeholders}` filled in) to the settings list `append`."
+    },
     "PluginEndpoint": {
       "type": "object",
       "properties": {
@@ -4668,6 +4740,26 @@
         },
         "license": {
           "type": "string"
+        },
+        "page": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "description": "A page of its own in the navigation, for settings too many for its card."
+        },
+        "contribute": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginContribution"
+          }
+        },
+        "live_settings": {
+          "type": "boolean",
+          "description": "It takes changes to its settings as they're made, without restarting."
         }
       },
       "required": [
@@ -4944,6 +5036,45 @@
         "x-system": {
           "type": "boolean",
           "description": "A system's short name: drawn as a menu of the systems."
+        },
+        "x-systems": {
+          "type": "boolean",
+          "description": "A list of systems' short names: drawn as the systems to tick."
+        },
+        "x-tones": {
+          "type": "boolean",
+          "description": "A list of tones typed in (each `{pattern, tonesHz, digits, lengthsS, toleranceHz}`, as a signal's): drawn as tones to build, with ▶."
+        },
+        "x-signals": {
+          "type": "boolean",
+          "description": "A list of signals, as `system:ID`: drawn as every system's signals to tick."
+        },
+        "x-ref": {
+          "type": "string",
+          "description": "Names items of the top-level list it names (`\"destinations\"`), by their `id`, else their `name`: drawn as a menu (a string) or the items to tick (a list). Renaming an item renames what names it."
+        },
+        "x-title": {
+          "type": "string",
+          "description": "An object in a list: the field whose value titles it (\"name\")."
+        },
+        "x-summary": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "An object in a list: its line in the list, as segments (\"{event}\", \"{systems|any system}\", \"→ {to}\")."
+        },
+        "x-when": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "Shown only when the object's other fields are so: `{\"type\": \"command\"}`, `{\"event\": [\"signal\", \"tone\"]}`."
+        },
+        "x-actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginActionDef"
+          },
+          "description": "Buttons on this object (an item of a list, or the whole settings): each sends the plugin the object as edited."
         }
       },
       "additionalProperties": false,
@@ -7267,6 +7398,10 @@
         "src": {
           "type": "number"
         },
+        "srcTag": {
+          "type": "string",
+          "description": "The radio's name (\"\" when none is known)."
+        },
         "pattern": {
           "$ref": "#/definitions/TonePatternKind"
         },
@@ -7322,6 +7457,7 @@
         "talkgroup",
         "alphaTag",
         "src",
+        "srcTag",
         "pattern",
         "tones",
         "lengths",
@@ -8087,6 +8223,33 @@
             "type",
             "before",
             "limit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pluginAction"
+            },
+            "plugin": {
+              "type": "string"
+            },
+            "action": {
+              "type": "string"
+            },
+            "value": {},
+            "request": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "plugin",
+            "action",
+            "value",
+            "request"
           ],
           "additionalProperties": false
         },

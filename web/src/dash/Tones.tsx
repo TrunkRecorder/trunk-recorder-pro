@@ -4,10 +4,12 @@
 // the system (its config's `signals`), by an id the call JSON and plugins use.
 
 import { useState } from "react";
-import { radioQuery, systemAt, updateConfig, usePolled, type AppState, type SystemRef } from "../controller.ts";
+import { pluginOn, radioQuery, setPluginSettings, setView, systemAt, updateConfig, useApp, usePolled, type AppState, type SystemRef } from "../controller.ts";
 import { Card, Choice } from "../charts.tsx";
 import { ago, num } from "../fmt.ts";
-import type { Conventional, SignalDef, System, TonePatternKind, ToneRow } from "../protocol.ts";
+import type { Conventional, PluginInfo, PluginContribution, PluginValues, SignalDef, System, TonePatternKind, ToneRow } from "../protocol.ts";
+import { fillTemplate } from "../pluginForm.ts";
+import { showTodo } from "../Setup.tsx";
 import { type ToneSpec } from "../tonePlayer.ts";
 import { defSpec, PATTERN, plain, signalId, toneMatches, tonesText, toneTolerance } from "../inband.ts";
 import { PlayButton } from "../PlayButton.tsx";
@@ -117,6 +119,43 @@ function AddRow({ r, at, ids, onDone }: { r: ToneRow; at: SystemRef; ids: string
   );
 }
 
+/** Plugins' buttons for a signal (`contribute` on `signal`): each adds an item to its settings, then shows them. */
+function SignalButtons({ system, d }: { system: string; d: SignalDef }) {
+  const s = useApp();
+  const signal = `${system}:${d.id}`;
+  const all = (s.plugins?.plugins ?? []).filter((p) => p.manifest && pluginOn(s.config, p.id));
+  const show = (p: PluginInfo) => (p.manifest!.page ? setView("plugin", p.id) : showTodo(`plugin-${p.id}`));
+  const add = (p: PluginInfo, k: PluginContribution) => {
+    const settings: PluginValues = s.config?.plugins?.[p.id]?.settings ?? {};
+    const list = Array.isArray(settings[k.append]) ? (settings[k.append] as unknown[]) : [];
+    const item = fillTemplate(k.item, { system, signal, id: d.id, name: d.name || d.id });
+    setPluginSettings(p.id, { ...settings, [k.append]: [...list, item] });
+    show(p);
+  };
+  return (
+    <>
+      {all.flatMap((p) =>
+        (p.manifest!.contribute ?? [])
+          .filter((k) => k.on === "signal" && d.id)
+          .map((k) => {
+            // Already named in what it would add to: say so, and go there.
+            const list = s.config?.plugins?.[p.id]?.settings?.[k.append];
+            const named = JSON.stringify(list ?? []).includes(JSON.stringify(signal));
+            return named ? (
+              <button key={`${p.id}-${k.label}`} className="btn ghost small" title={`${p.manifest!.name} has it already`} onClick={() => show(p)}>
+                ✓ {k.label}
+              </button>
+            ) : (
+              <button key={`${p.id}-${k.label}`} className="btn ghost small" title={k.hint || `${k.label} (${p.manifest!.name})`} onClick={() => add(p, k)}>
+                {k.label}
+              </button>
+            );
+          }),
+      )}
+    </>
+  );
+}
+
 function Configured({ defs, rows, at, system }: { defs: SignalDef[]; rows: ToneRow[]; at: SystemRef; system: string }) {
   const [editing, setEditing] = useState<number | null>(null);
   const add = () => {
@@ -168,6 +207,7 @@ function Configured({ defs, rows, at, system }: { defs: SignalDef[]; rows: ToneR
                 <td className="mono small">{d.talkgroups?.join(", ") || "any"}</td>
                 <td className="small">{n ? `${n}× · ${ago(last)}` : "not in this span"}</td>
                 <td className="nowrap">
+                  <SignalButtons system={system} d={d} />
                   <PlayButton spec={defSpec(d)} />
                   <button className="btn ghost small" onClick={() => setEditing(editing === i ? null : i)}>
                     {editing === i ? "Close" : "Edit"}
