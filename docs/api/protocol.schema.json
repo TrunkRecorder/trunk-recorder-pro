@@ -1676,7 +1676,7 @@
         "hourly"
       ],
       "additionalProperties": false,
-      "description": "A frequency's voice decoding (radioQuery freqs)."
+      "description": "A frequency's voice decoding (radioQuery freqs: one with a call recorded)."
     },
     "FromRecorder": {
       "anyOf": [
@@ -3123,6 +3123,13 @@
                 ]
               }
             },
+            "outOfBand": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/OutOfBandRow"
+              },
+              "description": "freqs: the frequencies out of band, the most calls first."
+            },
             "tg": {
               "type": "number",
               "description": "tg / unit: the one asked about (null: never heard)."
@@ -4061,6 +4068,41 @@
         "carriers"
       ],
       "additionalProperties": false
+    },
+    "OutOfBandRow": {
+      "type": "object",
+      "properties": {
+        "freqHz": {
+          "type": "number"
+        },
+        "calls": {
+          "type": "number",
+          "description": "Calls on it, in the query's hours; all time."
+        },
+        "totalCalls": {
+          "type": "number"
+        },
+        "last": {
+          "type": "number",
+          "description": "The last, Unix s."
+        },
+        "hourly": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Calls by hour, oldest first."
+        }
+      },
+      "required": [
+        "freqHz",
+        "calls",
+        "totalCalls",
+        "last",
+        "hourly"
+      ],
+      "additionalProperties": false,
+      "description": "A frequency granted that no source covered (radioQuery freqs: out of band in the query's hours)."
     },
     "Patch": {
       "type": "object",

@@ -4,7 +4,7 @@
 // everything works the same without it. The recorder (or the browser build's
 // worker) asks the trunkrecorder.pro API (POST /api/v1/fcc/identify).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fccKey, trpBase } from "./config.ts";
 import { editFcc, findPlaces, identifySurvey, lookupCallSigns, lookupLicenses, lookupLicensesByFreq, mergeLookup, nameCallSigns, useApp, type FccTarget, type LicenseLookup, type Place } from "./controller.ts";
 import { LocationMap } from "./LocationMap.tsx";
@@ -188,8 +188,11 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
 
 /** A dialog over the page: Escape or a click outside closes it. */
 export function Modal(props: { title: string; onClose: () => void; children: React.ReactNode }) {
+  // Focus once on open: an inline ref callback runs again on every render and would pull focus out of the fields.
+  const back = useRef<HTMLDivElement>(null);
+  useEffect(() => back.current?.focus(), []);
   return (
-    <div className="modal-back" role="dialog" aria-modal="true" aria-label={props.title} onClick={props.onClose} onKeyDown={(e) => e.key === "Escape" && props.onClose()} tabIndex={-1} ref={(el) => el?.focus()}>
+    <div className="modal-back" role="dialog" aria-modal="true" aria-label={props.title} onClick={props.onClose} onKeyDown={(e) => e.key === "Escape" && props.onClose()} tabIndex={-1} ref={back}>
       <div className="modal stack" onClick={(e) => e.stopPropagation()}>
         <h3>{props.title}</h3>
         {props.children}

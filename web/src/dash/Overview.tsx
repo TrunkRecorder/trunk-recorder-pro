@@ -7,7 +7,7 @@ import { can, pluginOn, radioQuery, statsSince, setView, start, usePolled, useAp
 import { Card, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
-import { change, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
+import { change, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
 import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
@@ -119,6 +119,7 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
       }
       level={h.level}
       why={h.why}
+      onWhy={goTo(h)}
       className="sys-card"
       onTitle={() => setView("decode", x.name)}
       actions={<span className="badge-kind">{st?.modulation ? `${KIND_LABEL[x.kind]} · ${st.modulation}` : KIND_LABEL[x.kind]}</span>}

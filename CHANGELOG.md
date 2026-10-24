@@ -12,6 +12,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   talkgroups, its short name, and, if you already have the system, updating it instead
   (nothing of yours is replaced). It keeps its directory link, so sharing it adds to the
   same record. See docs/guides/from-the-directory.md.
+- **Which frequencies were out of band.** A system's Radio system page lists the frequencies of
+  calls no source covered, in the span: how many calls, by hour, the last, and the nearest source
+  with how far past its usable edge each is. **Out of band** in **What happened to calls**, and a
+  warning of calls out of band (the Overview's system card too), open it. A warning that says
+  where what it's about is listed links there. Kept between runs, in the radio registry.
+- **Sharing says which voice channels were out of band**: each voice channel shared carries
+  `outOfBand`, how many of its grants no source here covered.
+- `radioQuery` `freqs`: `rows` are the frequencies with a call recorded (the Decode page's);
+  `outOfBand` is new.
 - **DMR calls have their frequency error** (`freq_error` in the call JSON), conventional and
   trunked: it was always 0. A conventional DMR channel's `autoTune` now corrects its source,
   as the docs said it did.

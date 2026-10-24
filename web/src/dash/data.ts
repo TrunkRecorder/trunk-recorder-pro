@@ -3,8 +3,8 @@
 // health rules — plain functions returning a level and why, the why worded as
 // a hint (what it means, what to try).
 
-import { activeSystems, siteActive, siteNameOf } from "../config.ts";
-import { snapshot, statsQuery, usePolled, type AppState, type StatsRange } from "../controller.ts";
+import { activeSystems, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
+import { setView, snapshot, statsQuery, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
 import { keyPart, num, pct } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
 import type { Level } from "../charts.tsx";
@@ -163,9 +163,20 @@ export function change(now: number | null, usual: Usual | null | undefined): num
 
 // ── health ───────────────────────────────────────────────────────────────────
 
+/** A page, and what in it: what `setView` takes. */
+export type Place = [View, ...(string | number)[]];
+
 export interface Health {
   level: Level;
   why: string;
+  /** Where what it's about is listed (its warning links there). */
+  at?: Place;
+}
+
+/** Going to where a health's warning is about, if it says. */
+export function goTo(h: Health): (() => void) | undefined {
+  const at = h.at;
+  return at && (() => setView(...at));
 }
 
 const OK = (why: string): Health => ({ level: "ok", why });
@@ -223,6 +234,24 @@ export function siteHealth(s: AppState, site: DashSite, usualRate?: Usual | null
 /** A running source's guardHz, from the config (undefined = the default): its usable band is usableHalfWidth(rate, guard) each side. */
 export function sourceGuard(s: AppState, src: SourceStatus): number | undefined {
   return s.config?.sources[src.index]?.guardHz;
+}
+
+/**
+ * Where `hz` falls among the sources: the one it's deepest in, `depth` how
+ * far inside the usable part of its band (half the band less the source's
+ * guard) — 1 at the centre, 0 at the usable edge or past it — and `beyondHz`
+ * how far past that edge (0: inside). Outside every source: the nearest.
+ * Null: no sources.
+ */
+export function coverage(s: AppState, hz: number): { src: SourceStatus; depth: number; beyondHz: number } | null {
+  let best: { src: SourceStatus; d: number; beyondHz: number } | null = null;
+  for (const src of s.sources) {
+    const half = usableHalfWidth(src.rateHz, sourceGuard(s, src));
+    const off = Math.abs(hz - src.centerHz);
+    const d = 1 - off / half;
+    if (!best || d > best.d) best = { src, d, beyondHz: Math.max(0, off - half) };
+  }
+  return best && { src: best.src, depth: Math.max(0, best.d), beyondHz: best.beyondHz };
 }
 
 export function sourceHealth(s: AppState, src: SourceStatus, autoTune: boolean): Health {
@@ -304,14 +333,18 @@ export function pluginsHealth(s: AppState): Health {
   return ons.length ? worstOf(ons, (p) => p.manifest?.name ?? p.id, (p) => pluginHealth(p, true)) : { level: "idle", why: "No plugins on" };
 }
 
+/** A system's Radio system page, at its frequencies out of band: `radio/<system>/outOfBand`. */
+export const OUT_OF_BAND = "outOfBand";
+
 /** A system's calls lost for want of a recorder or a source, last few minutes: which of the two. */
 export function systemRadioHealth(s: AppState, x: DashSystem): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   const busy = (recentAvg(K.sys(x.name, "why/no_recorder"), 300) ?? 0) > 0;
   const outside = (recentAvg(K.sys(x.name, "why/no_source"), 300) ?? 0) > 0;
-  if (busy && outside) return { level: "warn", why: "Calls are being missed: no free recorder for some, others outside every source's band" };
+  const at: Place = ["radio", x.name, OUT_OF_BAND];
+  if (busy && outside) return { level: "warn", why: "Calls are being missed: no free recorder for some, others outside every source's band", at };
   if (busy) return { level: "warn", why: "Calls are being missed: no free recorder. Add recorders, or a source" };
-  if (outside) return { level: "warn", why: "Calls are being missed: their frequencies are outside every source's band (Out of band)" };
+  if (outside) return { level: "warn", why: "Calls are being missed: their frequencies are outside every source's band (Out of band)", at };
   return OK("Recording what it hears");
 }
 
