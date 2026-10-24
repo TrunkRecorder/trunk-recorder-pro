@@ -5,7 +5,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **Pages, alert tones, DTMF and Morse IDs as call metadata** (#82, by taclane). Every call's
+- **Pages, alert tones, DTMF and Morse IDs as call metadata** (#82, by taclane; #86). Every call's
   voice is searched for in-band tones: P25 Phase 2, DMR and NXDN tone frames name them exactly (as
   the vocoder plays them), and P25 Phase 1 and analog calls are measured. The call JSON lists them
   (`tones`) and what they make up (`tone_patterns`, each with `text` in words: a two-tone page with
