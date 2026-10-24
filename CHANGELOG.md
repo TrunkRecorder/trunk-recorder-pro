@@ -5,6 +5,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Setup's FCC licenses fold.** A system's (or conventional system's) **FCC licenses** section
+  folds to its name and a line ("20 frequencies, 5 call signs: …"); it starts folded once it has
+  more than six, and remembers being opened or folded in this browser, as the cards do.
 - **On the air counts while calls are on the air.** A call's air time (`airMs`) was counted
   when it ended, all in that minute: a channel held open an hour drew a spike of 3600 s/min.
   It now counts a second at a time. The Decode page's **Calls** chart (conventional) reads

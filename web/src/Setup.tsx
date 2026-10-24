@@ -1396,6 +1396,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
       <FccLicensesGroup
         target={{ kind: "conventional", index: k }}
         fcc={conv.fcc}
+        foldKey={`fcc:conv:${name}`}
         hint="Optional: who is licensed on each channel's frequency (they can be different licensees'). Identify looks them up; Motorola P25 channels say theirs on the air."
       />
       {chans.some((c) => c.mode !== "fm" && c.mode !== "am") && (
@@ -2255,10 +2256,16 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
 }
 
 /** A system's or a conventional system's FCC licenses: only once a frequency has one (Identify, the air, or the config fills it). */
-function FccLicensesGroup(props: { target: FccTarget; fcc: FccLicenses | undefined; hint: string }) {
-  if (!Object.keys(props.fcc ?? {}).length) return null;
+/** Licenses open at first up to this many; more fold to a line (a statewide system can have dozens). */
+const FCC_OPEN_UP_TO = 6;
+
+function FccLicensesGroup(props: { target: FccTarget; fcc: FccLicenses | undefined; hint: string; foldKey: string }) {
+  const rows = Object.values(props.fcc ?? {});
+  if (!rows.length) return null;
+  const calls = [...new Set(rows.map((l) => l.callSign).filter(Boolean))];
+  const summary = `${rows.length} frequenc${rows.length === 1 ? "y" : "ies"}${calls.length ? `, ${calls.length === 1 ? "call sign" : `${calls.length} call signs`}: ${calls.slice(0, 4).join(", ")}${calls.length > 4 ? "…" : ""}` : ""}`;
   return (
-    <Group title="FCC licenses" hint={props.hint} cols={1}>
+    <Group title="FCC licenses" hint={props.hint} cols={1} fold={{ key: props.foldKey, open: rows.length <= FCC_OPEN_UP_TO, summary }}>
       <FccTable target={props.target} fcc={props.fcc} />
     </Group>
   );
@@ -2449,6 +2456,7 @@ export function SystemCard(props: { c: Config; i: number }) {
       <FccLicensesGroup
         target={{ kind: "system", index: i }}
         fcc={sys.fcc}
+        foldKey={`fcc:${sysKey(sys, i, c.systems)}`}
         hint="Optional: who is licensed on each frequency. Motorola P25 sites say their call signs on the air; Identify looks licensees up. Plugins are told them."
       />
       <Group title="Talkgroups and units" hint="Names for what is heard, and which talkgroups are recorded.">

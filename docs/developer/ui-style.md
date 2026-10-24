@@ -184,6 +184,12 @@ query) they stack. Groups in a card are separated by a 1 px rule.
 - `full` puts the title above and lets the body use the card's whole width,
   for a table (a conventional system's channels). Its `actions` (Import,
   Export, Add a channel) go on the right of the title.
+- `fold={{ key, open, summary }}` makes a group that can grow long (a list
+  that comes from a lookup, like FCC licenses) fold to its title, with a
+  chevron like a card's. `key` remembers it per browser, as cards are;
+  `open` is how it starts (open while short); `summary` replaces the body
+  while folded ("20 frequencies, 5 call signs: …"). Settings someone must
+  see never fold.
 - 2–6 fields make a good group. More than that is usually two groups; one
   field on its own usually belongs in a neighbour (unless it's the only
   thing of its kind, like "Units").
