@@ -387,12 +387,16 @@ learned and left out (`LineWatch`).
   frame.
 - Profiles: `fixed` (Pavel Yazev's fixed-point IMBE, the app default for Phase 1), `enhanced`,
   `mbelib`. AMBE always uses `enhanced`.
-- AMBE+2 tone frames (`û0(11..6)` all ones, `û3(3..0)` zero; BABA-A §2.10): the tone ID (sent four
-  times, bitwise majority) indexes Annex T (`mbe/tone_table.rs`) for the fundamental and the one or
-  two harmonics; those are voiced at `16384·10^(0.03555·(level−127))` and the rest silent, through
-  the ordinary voiced synthesis. A damaged one (> 3 errors) goes on with the playing tone if its ID
-  names it, else repeats it up to 3 times. Checked in `Decoder::ambe` before mbelib's parameter
-  decode, so the `mbelib` profile reads them as mbelib does.
+- AMBE+2 tone frames (`û0(11..6)` all ones, Golay-protected; BABA-A §16.1, §16.2): the tone ID
+  (sent four times, bitwise majority) indexes Annex T (`mbe/tone_table.rs`) for the fundamental and
+  the one or two harmonics; those are voiced at `16384·10^(0.03555·(level−127))` and the rest
+  silent, through the ordinary voiced synthesis. The sender's four zeros at the end of `û3` aren't
+  checked: `û3` has no protection. Checked in `Decoder::ambe` before mbelib's parameter decode, so
+  the `mbelib` profile reads them as mbelib does.
+- AMBE concealment (`Decoder::conceal`, BABA-A §14.6, §14.7): a frame with more than 3 errors is
+  invalid and repeats the frame before, the voice or the tone playing, up to 3 in a row; past that
+  it fades, and keeps fading until a valid frame. A damaged tone frame whose ID names the tone
+  playing isn't invalid: the tone goes on at its level. Erasures fade without counting.
 - Scaling: ×7/32768, then a tanh soft limiter above −3 dBFS.
 - `record::save_call`: drops transmissions shorter than `minTransmissionS` and encrypted ones
   that weren't decrypted,
