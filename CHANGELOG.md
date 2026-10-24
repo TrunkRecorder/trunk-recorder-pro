@@ -21,6 +21,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   `outOfBand`, how many of its grants no source here covered.
 - `radioQuery` `freqs`: `rows` are the frequencies with a call recorded (the Decode page's);
   `outOfBand` is new.
+- **Sharing no longer rewrites the config.** A system's `directory` link is just its record's ID
+  (and each site's `directoryId`), written once, by its first share. The record's version and
+  when it was last shared are kept beside the config in `sharing.json` (the browser version keeps
+  its own), so a config in git doesn't change every hour, and an edit in Setup isn't refused
+  because a share saved the config meanwhile.
 - **DMR calls have their frequency error** (`freq_error` in the call JSON), conventional and
   trunked: it was always 0. A conventional DMR channel's `autoTune` now corrects its source,
   as the docs said it did.

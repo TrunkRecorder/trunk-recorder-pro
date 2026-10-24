@@ -17,7 +17,7 @@ const bundle = (): Bundle => ({
   v: 1,
   source: { directory: "https://trunkrecorder.pro/directory", id: "sys_dcfd", rev: 12, url: "https://trunkrecorder.pro/directory/systems/sys_dcfd" },
   system: {
-    shortName: "dc-fire-and-ems", name: "DC Fire and EMS", type: "p25", enabled: true, directory: { id: "sys_dcfd", rev: 12 },
+    shortName: "dc-fire-and-ems", name: "DC Fire and EMS", type: "p25", enabled: true, directory: { id: "sys_dcfd" },
     fcc: { "857987500": { callSign: "WPXT459", from: "air" } },
     sites: [
       { enabled: true, controlChannelsHz: [857_987_500, 855_462_500], modulation: "auto", expect: { nac: 0x443, wacn: 0xbee00, sysId: 0x445, rfss: 1, site: 3 }, voiceChannelsHz: [], directoryId: "site_13" },
@@ -73,7 +73,7 @@ test("the system the config already has: by its directory record, its identity, 
   assert.equal(findExisting(c, bundle()), 1, "a control channel");
   c.systems[1] = normalizeSystem({ shortName: "dcfd", type: "p25", controlChannelsHz: [860_000_000], expect: { wacn: 0xbee00, sysId: 0x445 } });
   assert.equal(findExisting(c, bundle()), 1, "its identity");
-  c.systems[0].directory = { id: "sys_dcfd", rev: 3 };
+  c.systems[0].directory = { id: "sys_dcfd" };
   assert.equal(findExisting(c, bundle()), 0, "its directory record first");
   assert.equal(findExisting({ ...c, systems: [normalizeSystem({ shortName: "x", type: "smartnet", controlChannelsHz: [855_462_500] })] }, bundle()), -1, "another type isn't it");
 });
@@ -104,7 +104,7 @@ test("added: the sites chosen, its licenses and link, and its talkgroups as its 
   const s = snapshot().config!.systems.find((x) => x.shortName === "dcfd")!;
   assert.equal(s.sites.length, 1);
   assert.equal(s.sites[0].directoryId, "site_13");
-  assert.deepEqual(s.directory, { id: "sys_dcfd", rev: 12 });
+  assert.deepEqual(s.directory, { id: "sys_dcfd" }, "the link only: the version is sharing's (sharing.json)");
   assert.equal(s.fcc?.["857987500"].callSign, "WPXT459");
   const tg = sent.find((m) => m.type === "setTalkgroups");
   assert.ok(tg && tg.type === "setTalkgroups" && tg.system === "dcfd" && tg.csv.includes("Engine 16 Tac"));
@@ -119,7 +119,7 @@ test("updated: the link, a site it has gets its directory ID and channels, the o
   const added = updateSystem(bundle(), 0, [0, 1], snapshot().talkgroups);
   const s = snapshot().config!.systems[0];
   assert.equal(s.name, "My DCFD");
-  assert.deepEqual(s.directory, { id: "sys_dcfd", rev: 12 });
+  assert.deepEqual(s.directory, { id: "sys_dcfd" }, "the link only: the version is sharing's (sharing.json)");
   assert.equal(s.sites.length, 2);
   assert.equal(s.sites[0].directoryId, "site_13");
   assert.deepEqual(s.sites[0].controlChannelsHz, [855_462_500, 857_987_500]);

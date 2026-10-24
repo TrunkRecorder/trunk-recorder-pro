@@ -768,8 +768,18 @@ impl Session {
     }
 
     /// How system `short_name`'s share went.
-    pub fn share_done(&mut self, short_name: &str, now_ms: f64, result: Result<(), String>) {
+    pub fn share_done(&mut self, short_name: &str, now_ms: f64, result: Result<Option<crate::share::Linked>, String>) {
         self.share.done(short_name, now_ms, result);
+    }
+
+    /// What sharing did before (what [`Session::sharing_unsaved`] gave, kept as `sharing.json` beside the config).
+    pub fn load_sharing(&mut self, json: &str) {
+        self.share.load(json);
+    }
+
+    /// What sharing did, as JSON to keep beside the config, when it changed since the last call (not in the config: sharing never changes it but to link a system).
+    pub fn sharing_unsaved(&mut self) -> Option<String> {
+        self.share.unsaved()
     }
 
     /// Each shared system: decoded now? due? its share, then.

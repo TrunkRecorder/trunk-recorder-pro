@@ -87,7 +87,7 @@ export function updateSystem(b: Bundle, i: number, sites: number[], talkgroups: 
   updateConfig((x) => {
     const s = x.systems[i];
     shortName = s.shortName;
-    s.directory = b.system.directory ?? { id: b.source.id, rev: b.source.rev };
+    s.directory = { id: b.system.directory?.id ?? b.source.id };
     if (!s.name && b.system.name) s.name = b.system.name;
     for (const k of sites) {
       const n = b.system.sites[k];

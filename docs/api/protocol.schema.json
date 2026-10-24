@@ -1308,20 +1308,13 @@
       "properties": {
         "id": {
           "type": "string"
-        },
-        "rev": {
-          "type": "number"
-        },
-        "sharedAt": {
-          "type": "number"
         }
       },
       "required": [
-        "id",
-        "rev"
+        "id"
       ],
       "additionalProperties": false,
-      "description": "A system's record in the community directory: its ID, its version when last shared, and when (Unix ms)."
+      "description": "A system's record in the community directory: its ID. (Its version and when it was last shared are kept beside the config, not in it.)"
     },
     "DmrSiteStatus": {
       "type": "object",
