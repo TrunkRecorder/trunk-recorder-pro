@@ -941,7 +941,8 @@ impl Session {
                 .iter()
                 .map(|s| {
                     let f = s.flags;
-                    trunk_recorder_plugin::CallSource { unit: s.src, time: self.wall(s.time_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
+                    let tag = self.engine.unit_name(c.system, s.src).unwrap_or_default();
+                    trunk_recorder_plugin::CallSource { unit: s.src, tag, time: self.wall(s.time_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
                 })
                 .collect(),
             patched_talkgroups: c.patched_talkgroups.clone(),
@@ -1002,7 +1003,10 @@ impl Session {
                     if let Some(kind) = unit_kind(m.kind) {
                         let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert" | "emergency_alarm").then_some(m.talkgroup);
                         if m.source >= 0 {
-                            let e = UnitEvent { system, short_name: name.clone(), site: self.site_name(Some(site)), kind: kind.into(), unit: m.source as u32, talkgroup, emergency: m.emergency, time: self.wall(m.time_s) };
+                            let unit = m.source as u32;
+                            let tag = self.engine.unit_name(system, unit).unwrap_or_default();
+                            let alpha_tag = talkgroup.and_then(|tg| self.tg_names(system, [tg]).first().and_then(|v| v["alphaTag"].as_str().map(String::from))).unwrap_or_default();
+                            let e = UnitEvent { system, short_name: name.clone(), site: self.site_name(Some(site)), kind: kind.into(), unit, tag, talkgroup, alpha_tag, emergency: m.emergency, time: self.wall(m.time_s) };
                             out.push(Output::Plugin(HostMessage::Unit(e)));
                         }
                     }
@@ -1085,7 +1089,8 @@ impl Session {
                 if self.plugin_topics.tone_patterns {
                     let alpha_tag = self.tg_names(t.system, [t.talkgroup]).first().and_then(|v| v["alphaTag"].as_str().map(String::from)).unwrap_or_default();
                     let time = (self.wall(t.time_s) * 1000.0).round() / 1000.0;
-                    let ev = trunk_recorder_plugin::TonePatternEvent { short_name: name, site: self.site_name(t.site), call_num: t.call_id as u64, talkgroup: t.talkgroup, alpha_tag, decrypted: t.decrypted, time, pattern };
+                    let src_tag = self.engine.unit_name(t.system, t.src).unwrap_or_default();
+                    let ev = trunk_recorder_plugin::TonePatternEvent { short_name: name, site: self.site_name(t.site), call_num: t.call_id as u64, talkgroup: t.talkgroup, alpha_tag, src_tag, decrypted: t.decrypted, time, pattern };
                     out.push(Output::Plugin(HostMessage::TonePattern(ev)));
                 }
             }

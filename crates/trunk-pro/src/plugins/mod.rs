@@ -133,6 +133,20 @@ pub fn changed(a: &Config, b: &Config) -> bool {
     a.plugins != b.plugins || a.recording.m4a != b.recording.m4a || per_system(a) != per_system(b)
 }
 
+/// When all that changed of plugins is their own settings: each changed
+/// plugin's id and new settings. (None: something else changed too.)
+pub fn settings_only(a: &Config, b: &Config) -> Option<Vec<(String, Value)>> {
+    let bare = |c: &Config| -> BTreeMap<String, PluginSetup> { c.plugins.iter().map(|(k, p)| (k.clone(), PluginSetup { settings: Value::Null, ..p.clone() })).collect() };
+    if bare(a) != bare(b) || a.recording.m4a != b.recording.m4a {
+        return None;
+    }
+    let per_system = |c: &Config| -> Vec<BTreeMap<String, Value>> { c.systems.iter().map(|s| s.plugins.clone()).chain(c.conventional.iter().map(|x| x.plugins.clone())).collect() };
+    if per_system(a) != per_system(b) {
+        return None;
+    }
+    Some(b.plugins.iter().filter(|(k, p)| a.plugins.get(*k).map(|o| &o.settings) != Some(&p.settings)).map(|(k, p)| (k.clone(), p.settings.clone())).collect())
+}
+
 pub fn plugins_dir() -> PathBuf {
     crate::paths::data_dir().join("plugins")
 }
@@ -266,8 +280,8 @@ pub fn notes_to_log() -> host::Notes {
                 log(&plugin, true, &format!("{path}: {message}"));
             }
         }
-        // (In the plugin's pluginRuntime.)
-        Note::Metrics { .. } => {}
+        // (In the plugin's pluginRuntime; to the browser that asked.)
+        Note::Metrics { .. } | Note::ActionResult { .. } => {}
     })
 }
 

@@ -10,6 +10,7 @@ import { editList, systemAt, useApp, type SystemRef } from "./controller.ts";
 import { numberList, talkgroupList, type TextCodec } from "./fieldText.ts";
 import { DraftInput, Field, NumberInput } from "./inputs.tsx";
 import { PlayButton } from "./PlayButton.tsx";
+import { SignalButtons } from "./Plugins.tsx";
 import type { SignalDef } from "./protocol.ts";
 import { signalId, signalNote, signalProblem } from "./rules.ts";
 import type { ToneSpec } from "./tonePlayer.ts";
@@ -70,8 +71,12 @@ function tidy(x: SignalDef): SignalDef {
   return d;
 }
 
-/** One signal's fields, as its kind has them; what's wrong with it and what the recorder counts as it under them. `taken`: an id another signal has. */
-function SignalFields(props: { d: SignalDef; taken: (id: string) => boolean; onChange: (d: SignalDef) => void }) {
+/**
+ * One signal's fields, as its kind has them; what's wrong with it and what the recorder counts as it under them. `taken`:
+ * an id another signal has. `bare`: its tones alone (a tone typed into a plugin's settings), without an id, name or
+ * talkgroups.
+ */
+export function SignalFields(props: { d: SignalDef; taken: (id: string) => boolean; onChange: (d: SignalDef) => void; bare?: boolean }) {
   const { d } = props;
   const [clash, setClash] = useState<string | null>(null);
   const k = kindOf(d);
@@ -90,10 +95,12 @@ function SignalFields(props: { d: SignalDef; taken: (id: string) => boolean; onC
       <NumberInput label={label} narrow value={d.lengthsS?.[i] || undefined} onChange={(v) => set((x) => void (x.lengthsS![i] = v ?? 0))} />
     </Field>
   );
-  const problem = clash ? `This system has a signal ${clash} already.` : signalProblem(d);
+  // (Bare, it has no id: only its tones can be wrong.)
+  const problem = clash ? `This system has a signal ${clash} already.` : signalProblem(props.bare ? { ...d, id: d.id || "TONE" } : d);
   return (
     <>
       <div className="row-editor">
+        {!props.bare && (
         <Field label="Id" hint="What the call JSON and plugins name it by">
           <DraftInput
             className="mono"
@@ -108,9 +115,12 @@ function SignalFields(props: { d: SignalDef; taken: (id: string) => boolean; onC
             onBlur={() => setClash(null)}
           />
         </Field>
-        <Field label="Name">
-          <input value={d.name ?? ""} placeholder={d.id} onChange={(e) => set((x) => void (x.name = e.target.value))} />
-        </Field>
+        )}
+        {!props.bare && (
+          <Field label="Name">
+            <input value={d.name ?? ""} placeholder={d.id} onChange={(e) => set((x) => void (x.name = e.target.value))} />
+          </Field>
+        )}
         <Field label="Kind">
           <select aria-label="Kind" value={k} onChange={(e) => props.onChange(asKind(d, e.target.value as Kind))}>
             {KINDS.map((o) => (
@@ -168,9 +178,11 @@ function SignalFields(props: { d: SignalDef; taken: (id: string) => boolean; onC
             <NumberInput label="Extra tolerance, %" narrow value={d.extraTolerancePct} onChange={(v) => set((x) => void (x.extraTolerancePct = v))} />
           </Field>
         )}
-        <Field label="Talkgroups" hint="Numbers, ranges (1000-1099), patterns (507*); empty: any">
-          <DraftInput className="mono" aria-label="Talkgroups" placeholder="any" codec={talkgroupList} value={d.talkgroups ?? []} onChange={(v) => set((x) => void (x.talkgroups = v))} />
-        </Field>
+        {!props.bare && (
+          <Field label="Talkgroups" hint="Numbers, ranges (1000-1099), patterns (507*); empty: any">
+            <DraftInput className="mono" aria-label="Talkgroups" placeholder="any" codec={talkgroupList} value={d.talkgroups ?? []} onChange={(v) => set((x) => void (x.talkgroups = v))} />
+          </Field>
+        )}
       </div>
       {problem && <span className="field-hint warn-text">{problem}</span>}
       <span className="field-hint">{signalNote(d)}</span>
@@ -235,6 +247,7 @@ export function SystemSignals(props: { system: SystemRef }) {
                     <td className="mono">{sends(d)}</td>
                     <td className="mono small">{d.talkgroups?.join(", ") || "any"}</td>
                     <td className="nowrap">
+                      <SignalButtons system={sys.shortName} d={d} />
                       <PlayButton spec={defSpec(d)} />
                       <button type="button" className="btn ghost small" onClick={() => setEditing(editing === i ? null : i)}>
                         {editing === i ? "Done" : "Edit"}

@@ -1059,6 +1059,42 @@ export interface PluginSchema {
   "x-required"?: boolean;
   /** A system's short name: drawn as a menu of the systems. */
   "x-system"?: boolean;
+  /** A list of systems' short names: drawn as the systems to tick. */
+  "x-systems"?: boolean;
+  /** A list of tones typed in (each `{pattern, tonesHz, digits, lengthsS, toleranceHz}`, as a signal's): drawn as tones to build, with ▶. */
+  "x-tones"?: boolean;
+  /** A list of signals, as `system:ID`: drawn as every system's signals to tick. */
+  "x-signals"?: boolean;
+  /**
+   * Names items of the top-level list it names (`"destinations"`), by their `id`, else their `name`: drawn as a menu
+   * (a string) or the items to tick (a list). Renaming an item renames what names it.
+   */
+  "x-ref"?: string;
+  /** An object in a list: the field whose value titles it ("name"). */
+  "x-title"?: string;
+  /** An object in a list: its line in the list, as segments ("{event}", "{systems|any system}", "→ {to}"). */
+  "x-summary"?: string[];
+  /** Shown only when the object's other fields are so: `{"type": "command"}`, `{"event": ["signal", "tone"]}`. */
+  "x-when"?: Record<string, unknown>;
+  /** Buttons on this object (an item of a list, or the whole settings): each sends the plugin the object as edited. */
+  "x-actions"?: PluginActionDef[];
+}
+
+/** A plugin's button (`x-actions`): the plugin is sent `action` and answers how it went. */
+export interface PluginActionDef {
+  id: string;
+  label: string;
+  hint?: string;
+}
+
+/** A button a plugin adds elsewhere (`contribute`): it adds `item` (its `{placeholders}` filled in) to the settings list `append`. */
+export interface PluginContribution {
+  /** Where: `signal` (each of a system's signals in Setup: `{system}`, `{signal}` = system:ID, `{id}`, `{name}`). */
+  on: "signal";
+  label: string;
+  hint?: string;
+  append: string;
+  item: unknown;
 }
 
 /** What a plugin says it is (`<plugin> --describe`). */
@@ -1076,6 +1112,11 @@ export interface PluginManifest {
   repository?: string;
   authors?: string[];
   license?: string;
+  /** A page of its own in the navigation, for settings too many for its card. */
+  page?: { title?: string };
+  contribute?: PluginContribution[];
+  /** It takes changes to its settings as they're made, without restarting. */
+  live_settings?: boolean;
 }
 
 /** A service a plugin talks to, as the plugin reports it. */
@@ -1682,6 +1723,8 @@ export type FromRecorder =
   | { type: "notice"; message: string }
   | ({ type: "plugins" } & PluginsList)
   | { type: "pluginRuntime"; id: string; runtime: PluginRuntime }
+  /** How a plugin's button went (`pluginAction`'s `request`). */
+  | { type: "pluginActionResult"; request: number; ok: boolean; message?: string }
   /** A store's list (answers `store`). */
   | ({ type: "store" } & Store)
   /** An install from a store or a GitHub release as it goes, to every connection with control access. */
@@ -1763,6 +1806,8 @@ export type ToRecorder =
   /** Calls that started before `before` (Unix ms), newest first, from the last 24 hours (the Listen page's "Load older"). */
   | { type: "olderCalls"; before: number; limit: number }
   /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
+  /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited). */
+  | { type: "pluginAction"; plugin: string; action: string; value: unknown; request: number }
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths" | "tones"; system?: string; key?: number; hours?: number; limit?: number }
   | { type: "quit" };
 

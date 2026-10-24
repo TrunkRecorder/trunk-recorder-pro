@@ -783,6 +783,11 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || stats_query(&ctx2, &q)).await.ok()
         }
+        Command::PluginAction { plugin, action, value, request } => {
+            let a = trunk_recorder_plugin::Action { request, action, value };
+            let sent = ctx.plugins.host().is_some_and(|h| h.action(&plugin, a));
+            (!sent).then(|| ToClient::PluginActionResult { request, ok: false, message: "It isn't running: plugins run while recording".into() })
+        }
         Command::RadioQuery(q) => {
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || radio_query(&ctx2, &q)).await.ok()
@@ -838,8 +843,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 if old.server.interfaces != c.server.interfaces {
                     tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));
                 }
-                // Plugins' settings changed while recording: they restart with them.
-                if crate::plugins::changed(&old, &c) {
+                // Plugins' settings changed while recording: they restart with them, unless
+                // all that changed is those of plugins that take new settings as they run.
+                let settled = crate::plugins::settings_only(&old, &c).zip(ctx.plugins.host()).is_some_and(|(all, h)| all.iter().all(|(id, v)| h.settle(id, v)));
+                if !settled && crate::plugins::changed(&old, &c) {
                     let ctx2 = ctx.clone();
                     let _ = tokio::task::spawn_blocking(move || ctx2.plugins.reload(&c)).await;
                 }

@@ -155,12 +155,24 @@ export interface AppState {
   todo: ImportTodo[];
   /** The setup page's tab. */
   setupTab: SetupTab;
+  /** Plugins' buttons pressed (`pluginAction`), by request: which, and how it went. */
+  actions: Record<number, ActionState>;
 }
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
 
-export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "plugins" | "interfaces" | "platform" | "setup";
-const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "plugins", "interfaces", "platform", "setup"];
+export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "plugin" | "plugins" | "interfaces" | "platform" | "setup";
+const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "plugin", "plugins", "interfaces", "platform", "setup"];
+
+/** A plugin's button pressed: on what (`plugin`, `action`, `key`: the object it's on), and how it went. */
+export interface ActionState {
+  plugin: string;
+  action: string;
+  key: string;
+  pending: boolean;
+  ok: boolean;
+  message: string;
+}
 
 /** `#/radio/dcfd/tg/101` → ["radio", ["dcfd", "tg", "101"]]; the old `#plugins` too. */
 function routeFromHash(): { view: View; path: string[] } {
@@ -227,6 +239,7 @@ let state: AppState = {
   guide: null,
   todo: loadTodo(),
   setupTab: loadSetupTab(),
+  actions: {},
 };
 
 const listeners = new Set<() => void>();
@@ -468,6 +481,9 @@ function take(m: FromRecorder): void {
       r?.(m);
       break;
     }
+    case "pluginActionResult":
+      if (state.actions[m.request]) set({ actions: { ...state.actions, [m.request]: { ...state.actions[m.request], pending: false, ok: m.ok, message: m.message ?? "" } } });
+      break;
     case "pluginRuntime":
       if (state.plugins) set({ plugins: { ...state.plugins, plugins: state.plugins.plugins.map((p) => (p.id === m.id ? { ...p, runtime: m.runtime } : p)) } });
       break;
@@ -909,6 +925,23 @@ export function setPluginShareDecrypted(id: string, share: boolean): void {
   });
 }
 /** A plugin's settings for the whole recorder. */
+// Answers go to every browser with control access: a request number of its own (not 1, 2, 3 in each) keeps another's apart.
+let actionRequest = Math.floor(Math.random() * 2 ** 40) * 1000;
+
+/** Press plugin `plugin`'s button `action` on `value` (`key` says which object, for showing the answer by its button). */
+export function pluginAction(plugin: string, action: string, key: string, value: unknown): void {
+  const request = ++actionRequest;
+  // (Earlier presses of the same button make way.)
+  const actions = Object.fromEntries(Object.entries(state.actions).filter(([, a]) => !(a.plugin === plugin && a.action === action && a.key === key)));
+  set({ actions: { ...actions, [request]: { plugin, action, key, pending: true, ok: false, message: "" } } });
+  transport.send({ type: "pluginAction", plugin, action, value, request });
+  // A plugin that never answers (one from before buttons, say).
+  setTimeout(() => {
+    const a = state.actions[request];
+    if (a?.pending) set({ actions: { ...state.actions, [request]: { ...a, pending: false, message: "No answer from the plugin" } } });
+  }, 30_000);
+}
+
 export function setPluginSettings(id: string, settings: PluginValues): void {
   updateConfig((x) => {
     const all = (x.plugins ??= {});
