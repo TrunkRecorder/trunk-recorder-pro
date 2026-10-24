@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, resolvedCenters, restartKey, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { activeSites, airspyRates, defaultConfig, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, rateFor, resolvedCenters, restartKey, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -108,4 +108,24 @@ test("restartKey: a radio's gain doesn't need a restart on the desktop recorder;
   const blade = c({ type: "bladerf", gainDb: 30 });
   assert.equal(restartKey(c({ type: "bladerf", gainDb: 42 }), true), restartKey(blade, true), "a bladeRF's gain");
   assert.notEqual(restartKey(c({ type: "bladerf", gainDb: 30, agc: true }), true), restartKey(blade, true), "a bladeRF's AGC waits for the start");
+});
+
+test("airspyRates: what the picked Airspy runs at, when its driver could ask it; a new source starts at one of them", () => {
+  const r2 = { serial: "735863DC2F650AE3", label: "Airspy R2 · SN 735863DC2F650AE3", model: "R2", rates: [10_000_000, 2_500_000] };
+  const mini = { serial: "B", label: "Airspy Mini · SN B", model: "Mini", rates: [6_000_000, 3_000_000] };
+  const busy = { serial: "C", label: "Airspy · SN C" };
+  const airspy = { available: true, detail: "libairspy 1.0.12", devices: [r2, mini, busy] };
+  assert.deepEqual(airspyRates(airspy, r2.serial), [10_000_000, 2_500_000]);
+  assert.deepEqual(airspyRates(airspy, ""), [10_000_000, 2_500_000], "the first available is the first found");
+  assert.equal(airspyRates(airspy, "C"), null, "one that couldn't be opened");
+  assert.equal(airspyRates(airspy, "Z"), null, "one not connected");
+  assert.equal(airspyRates({ ...airspy, devices: null }, r2.serial), null);
+  assert.equal(airspyRates(undefined, r2.serial), null);
+  assert.equal(rateFor(6_000_000, [10_000_000, 2_500_000]), 10_000_000, "a rate it can't do: its first");
+  assert.equal(rateFor(2_500_000, [10_000_000, 2_500_000]), 2_500_000, "one it can: kept");
+  assert.equal(rateFor(6_000_000, null), 6_000_000, "unknown: kept");
+  assert.equal(sourceFor("airspy", r2.serial, r2).rateHz, 10_000_000);
+  assert.equal(sourceFor("airspy", mini.serial, mini).rateHz, 6_000_000);
+  assert.equal(sourceFor("airspy", "C", busy).rateHz, 6_000_000, "not asked: the default");
+  assert.equal(sourceFor("bladerf", "f12ce103", { label: "bladeRF", rates: [1] }).rateHz, 10_000_000, "only an Airspy says its rates");
 });

@@ -5,6 +5,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Airspy R2 and Mini told apart.** An Airspy R2 runs at 10 or 2.5 MSPS, a Mini at 6 or 3;
+  a new Airspy source started at 6 MSPS whichever it was, and an R2 refused to start with
+  "this Airspy runs at 10 / 2.5 MSPS, not 6" in the log. Now each Airspy found is asked its
+  model and rates (**Setup → Radios** lists "Airspy R2 · SN …", and `trunk-pro devices` its
+  rates): a source added for one starts at a rate it runs at, picking a different Airspy moves
+  the rate to one it does, the rate list offers what it does, and a rate it can't do is flagged
+  on the page. The log's refusal names the model and points at Setup.
+- **Two Airspys starting at once no longer lose each other.** libairspy finds a radio by
+  opening every Airspy to read its serial; with two sources opening at the same moment one
+  scan missed the other's radio ("Airspy open: AIRSPY_ERROR_NOT_FOUND") until the retry.
+  Opens are now one at a time.
+
 ## [0.2.9] — 2026-10-24
 
 - **Add a system from the directory.** A system's page in the systems directory opens it in

@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, DirectoryLink, FccLicense, FccLicenses, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, DirectoryLink, DriverState, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
 
@@ -177,10 +177,32 @@ export function deviceId(x: Source): string {
 export const deviceKey = (type: Source["type"], id: string) => `${type}:${id}`;
 export const sourceKey = (x: Source) => deviceKey(x.type, deviceId(x));
 
-/** A new source of `type` for device `id`. */
-export function sourceFor(type: Source["type"], id: string): Source {
+/** A new source of `type` for device `id` (`found`: as its driver listed it — an Airspy starts at a rate it runs at). */
+export function sourceFor(type: Source["type"], id: string, found?: FoundRadio): Source {
   const k = SOURCE_KINDS[type];
-  return (k.device ? { ...k.fresh(), [k.device]: id } : k.fresh()) as Source;
+  const s = (k.device ? { ...k.fresh(), [k.device]: id } : k.fresh()) as Source;
+  if (s.type === "airspy") s.rateHz = rateFor(s.rateHz, found?.rates ?? null);
+  return s;
+}
+
+/**
+ * The IQ rates the Airspy `serial` ("" = the first found) runs at, when libairspy could open
+ * it to ask (an R2: 10 / 2.5 MSPS; a Mini: 6 / 3); null when it isn't known.
+ */
+export function airspyRates(airspy: DriverState | undefined, serial: string): number[] | null {
+  const d = airspyFound(airspy, serial);
+  return d?.rates?.length ? d.rates : null;
+}
+
+/** The Airspy `serial` ("" = the first found) as libairspy listed it, if it's connected. */
+export function airspyFound(airspy: DriverState | undefined, serial: string): FoundRadio | undefined {
+  const devices = airspy?.devices ?? [];
+  return serial ? devices.find((x) => x.serial === serial) : devices[0];
+}
+
+/** `hz` if the radio runs at it (or its rates aren't known), else the first it does. */
+export function rateFor(hz: number, rates: number[] | null): number {
+  return !rates?.length || rates.includes(hz) ? hz : rates[0];
 }
 
 /** A capture's sample format from its name (as the recorder guesses it). */

@@ -102,8 +102,12 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
 
 ### Airspy
 
-- **Airspy**: pick it from the list (blank is the first one found).
-- **Sample rate**: 10 or 2.5 MSPS on the R2, 6 or 3 MSPS on the Mini.
+- **Airspy**: pick it from the list (blank is the first one found). Each is listed with its model
+  ("Airspy R2 · SN …") when libairspy could open it to ask; one that's recording shows its serial only.
+- **Sample rate**: 10 or 2.5 MSPS on the R2, 6 or 3 MSPS on the Mini. The list offers what the
+  Airspy picked runs at, and moves to one of its rates when you pick a different Airspy; a rate it
+  can't do is flagged here, and the source won't start at it ("this Airspy R2 runs at 10 / 2.5
+  MSPS, not 6" in the log).
 - **Gain**: **Linearity** (best near transmitters) or **Sensitivity** (best for weak signals),
   each a single step from 0 to 21, or **Each stage** to set the LNA (0–14), mixer (0–15) and VGA
   (0–15) yourself. With **Each stage**, **AGC** hands the LNA and mixer to the Airspy's AGC.
