@@ -5,6 +5,22 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Add a system from the directory.** A system's page in the systems directory opens it in
+  Trunk Recorder Pro (the web version, or the desktop app at its address), or downloads it
+  for **Setup → Systems → Import…** (formerly "Import Trunk Recorder config…", which still
+  takes those). Either way you see what comes first: its sites, licenses and named
+  talkgroups, its short name, and, if you already have the system, updating it instead
+  (nothing of yours is replaced). It keeps its directory link, so sharing it adds to the
+  same record. See docs/guides/from-the-directory.md.
+- **Which frequencies were out of band.** A system's Radio system page lists the frequencies of
+  calls no source covered, in the span: how many calls, by hour, the last, and the nearest source
+  with how far past its usable edge each is. **Out of band** in **What happened to calls**, and a
+  warning of calls out of band (the Overview's system card too), open it. A warning that says
+  where what it's about is listed links there. Kept between runs, in the radio registry.
+- **Sharing says which voice channels were out of band**: each voice channel shared carries
+  `outOfBand`, how many of its grants no source here covered.
+- `radioQuery` `freqs`: `rows` are the frequencies with a call recorded (the Decode page's);
+  `outOfBand` is new.
 - **Sharing no longer rewrites the config.** A system's `directory` link is just its record's ID
   (and each site's `directoryId`), written once, by its first share. The record's version and
   when it was last shared are kept beside the config in `sharing.json` (the browser version keeps

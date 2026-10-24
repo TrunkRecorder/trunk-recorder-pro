@@ -132,6 +132,12 @@ clicking a system's card goes to it. The **Span** is 24 hours or 7 days.
 only**, **Ignored**, **Encrypted**, **Not in the file**, **No recorder** and **Out of band**. The
 last two are calls you missed; see the reasons table under [Active calls](#active-calls).
 
+**Out of band** lists the frequencies those calls were granted on, in the span: how many calls,
+by hour, when the last was, and the nearest source with how far past the edge of its usable
+range each is (guard band left out). Move that source's centre toward them, widen its sample
+rate, or add a source. It shows when there are some; **Out of band** in **What happened to
+calls**, and a warning of calls out of band (on the Overview too), open it.
+
 Below the numbers: **Active calls** (see below), **What happened to calls** and **Call lengths**,
 **Busiest … by hour**, **Who talks on what** (talkgroups and the busiest radios, linked by how
 often each radio talks on each), the **Talkgroups** table, the **Radios** table, and at the

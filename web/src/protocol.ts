@@ -1440,7 +1440,7 @@ export interface UnitRow {
   new: boolean;
 }
 
-/** A frequency's voice decoding (radioQuery freqs). */
+/** A frequency's voice decoding (radioQuery freqs: one with a call recorded). */
 export interface FreqRow {
   freqHz: number;
   calls: number;
@@ -1458,6 +1458,18 @@ export interface FreqRow {
   last: number;
   /** Bad frames % by hour, oldest first. */
   hourly: (number | null)[];
+}
+
+/** A frequency granted that no source covered (radioQuery freqs: out of band in the query's hours). */
+export interface OutOfBandRow {
+  freqHz: number;
+  /** Calls on it, in the query's hours; all time. */
+  calls: number;
+  totalCalls: number;
+  /** The last, Unix s. */
+  last: number;
+  /** Calls by hour, oldest first. */
+  hourly: number[];
 }
 
 export interface LengthHistogram {
@@ -1494,6 +1506,8 @@ export interface RadioResultBody {
   hours?: number;
   total?: number;
   rows?: (TgRow | UnitRow | FreqRow)[];
+  /** freqs: the frequencies out of band, the most calls first. */
+  outOfBand?: OutOfBandRow[];
   /** tg / unit: the one asked about (null: never heard). */
   tg?: number;
   unit?: number;

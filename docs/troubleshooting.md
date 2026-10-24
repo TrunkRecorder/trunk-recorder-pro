@@ -218,7 +218,7 @@ or the expected identity is wrong (fix or clear it). See [Multiple sites](guides
   band edge (move the centre), or all of them (gain, antenna, ppm).
 - **Calls you know happened aren't there.** The Radio system page's **What happened to calls**
   shows where they went: **No recorder** (raise **Recorders**), **Out of band** (a voice channel no
-  source covers), **Not in the file** (unknown talkgroups are off), **Ignored**.
+  source covers: click it for which frequencies, and how far each is past the nearest source's edge), **Not in the file** (unknown talkgroups are off), **Ignored**.
 
 ## Nothing is recorded on a conventional channel
 

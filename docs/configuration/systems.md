@@ -84,7 +84,8 @@ the file waits for one.
 What it sends is what the radio heard of the system:
 - each site that's decoded: its identity, control channels, modulation, band plan, and the neighbours it
   announces;
-- the voice channels granted there, with how many grants;
+- the voice channels granted there, with how many grants, and of those how many no source here covered
+  (out of band);
 - the talkgroups granted: their numbers, how many grants, at which sites, whether encrypted;
 - call signs heard on the air (the `fcc` entries `from` the air).
 

@@ -1098,7 +1098,7 @@ impl Session {
             }
             Event::CallStart(c) => {
                 let short = self.system_name(c.system).to_string();
-                self.share.call(&short, c.site, c.talkgroup, c.freq_hz, c.encrypted, c.twin);
+                self.share.call(&short, &c);
                 let r = match c.reason {
                     _ if c.recording => {
                         use trunk_core::trunk::Voice;
