@@ -3180,7 +3180,7 @@
             },
             "spool": {
               "type": "string",
-              "description": "spoolRemoved: the spool's kind (\"tmpfs\", \"RAM disk\", \"folder\"), and whether it was made again."
+              "description": "spoolRemoved: the spool's kind (\"tmpfs\", \"service\", \"RAM disk\", \"folder\"), and whether it was made again."
             },
             "remade": {
               "type": "boolean"

@@ -77,7 +77,7 @@ pub enum MonitorEvent {
     SpoolRecovered { free_pct: f64 },
     /// Its folder went while the app ran (Linux: systemd's RemoveIPC at
     /// logout; macOS: the RAM disk ejected); `spool`: its kind ("tmpfs",
-    /// "RAM disk", "folder"); `remade`: made again (else calls go to disk).
+    /// "service", "RAM disk", "folder"); `remade`: made again (else calls go to disk).
     #[serde(rename_all = "camelCase")]
     SpoolRemoved { spool: String, remade: bool },
     /// The clock is off, or not synchronized (`why`); `bad`: badly off.

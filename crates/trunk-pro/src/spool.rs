@@ -2,9 +2,11 @@
 //! upload plugins when nothing keeps them afterwards, so a call that's only
 //! uploaded never touches the disk. macOS: a RAM disk the app makes
 //! (`hdiutil`, no administrator needed), mounted out of sight at
-//! `<data>/spool`; Linux: a folder in /dev/shm (tmpfs). Either outlives the
-//! app — after a restart the plugins still find the calls they had queued —
-//! but not the computer.
+//! `<data>/spool`; Linux: a folder in /dev/shm (tmpfs), or, run as a systemd
+//! service with a `RuntimeDirectory=`, in that (`$RUNTIME_DIRECTORY`, under
+//! /run: the service's own, which `RemoveIPC` leaves alone). Each outlives
+//! the app — after a restart the plugins still find the calls they had
+//! queued — but not the computer.
 //!
 //! What's kept goes to the recordings folder: a call whose upload failed is
 //! moved there ([`crate::plugins::Archive`]), and so is anything left here
@@ -34,7 +36,7 @@ const RETRY: Duration = Duration::from_secs(60);
 
 pub struct Spool {
     pub dir: PathBuf,
-    /// "RAM disk" | "tmpfs" | "folder"
+    /// "RAM disk" | "tmpfs" (/dev/shm) | "service" (systemd's runtime folder) | "folder"
     pub kind: &'static str,
     /// The most it may hold, bytes.
     cap: u64,
@@ -57,7 +59,7 @@ impl Spool {
             fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             (dir, "folder")
         } else {
-            (sys::open(data, cap)?, sys::KIND)
+            sys::open(data, cap)?
         };
         Ok(Spool { dir, kind, cap, overflowed: AtomicU64::new(0), data: data.to_path_buf(), removed: AtomicU64::new(0), lost: Mutex::new(None) })
     }
@@ -112,8 +114,9 @@ impl Spool {
         if self.kind == "RAM disk" {
             return Some((total, free));
         }
-        // A share of a filesystem others use too: its cap, less what's here.
-        let total = total.min(self.cap);
+        // A share of a filesystem others use too: its cap, less what's here. (Half of /run at
+        // most: the system keeps its own there.)
+        let total = total.min(self.cap).min(if self.kind == "service" { total / 2 } else { u64::MAX });
         Some((total, total.saturating_sub(du(&self.dir)).min(free)))
     }
 
@@ -304,14 +307,14 @@ mod sys {
     }
 
     /// The RAM disk at `<data>/spool`: the one already there (kept from an
-    /// earlier run, with what it holds), or a new one of `cap` bytes.
-    pub fn open(data: &Path, cap: u64) -> Result<PathBuf, String> {
+    /// earlier run, with what it holds), or a new one of `cap` bytes; and its kind.
+    pub fn open(data: &Path, cap: u64) -> Result<(PathBuf, &'static str), String> {
         let dir = mount_point(data);
         if mounted(&dir) {
             let total = super::statvfs(&dir).map_or(0, |u| u.0);
             // Resized in the config: made again, unless calls are waiting in it.
             if total.abs_diff(cap) <= cap / 10 || super::has_files(&dir) {
-                return Ok(dir);
+                return Ok((dir, KIND));
             }
             remove(&dir)?;
         }
@@ -329,7 +332,7 @@ mod sys {
         let _ = std::fs::write(dir.join(".metadata_never_index"), b"");
         let _ = std::fs::create_dir(dir.join(".fseventsd")).and_then(|_| std::fs::write(dir.join(".fseventsd/no_log"), b""));
         log::info!("RAM spool: {} MB RAM disk ({dev}) at {}", cap >> 20, dir.display());
-        Ok(dir)
+        Ok((dir, KIND))
     }
 }
 
@@ -341,10 +344,24 @@ mod sys {
     const SHM: &str = "/dev/shm";
     const TMPFS_MAGIC: u64 = 0x0102_1994;
 
-    /// One per user and data folder (two instances don't share it).
-    fn folder(data: &Path) -> PathBuf {
+    /// systemd's runtime folder for the service (`RuntimeDirectory=`, the
+    /// first of `$RUNTIME_DIRECTORY`'s), when it's RAM-backed.
+    fn runtime_dir() -> Option<PathBuf> {
+        runtime_dir_of(&std::env::var("RUNTIME_DIRECTORY").ok()?).filter(|d| is_tmpfs(d))
+    }
+
+    pub(super) fn runtime_dir_of(var: &str) -> Option<PathBuf> {
+        var.split(':').map(str::trim).find(|d| !d.is_empty()).map(PathBuf::from)
+    }
+
+    /// The service's runtime folder's `spool`; else one in /dev/shm per user
+    /// and data folder (two instances don't share it). And its kind.
+    fn folder(data: &Path) -> (PathBuf, &'static str) {
+        if let Some(d) = runtime_dir() {
+            return (d.join("spool"), "service");
+        }
         let h = data.to_string_lossy().bytes().fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193));
-        Path::new(SHM).join(format!("trunk-pro-{}-{h:08x}", unsafe { libc::getuid() }))
+        (Path::new(SHM).join(format!("trunk-pro-{}-{h:08x}", unsafe { libc::getuid() })), KIND)
     }
 
     fn is_tmpfs(p: &Path) -> bool {
@@ -355,7 +372,7 @@ mod sys {
     }
 
     pub fn existing(data: &Path) -> Option<PathBuf> {
-        Some(folder(data)).filter(|d| d.is_dir())
+        Some(folder(data).0).filter(|d| d.is_dir())
     }
 
     pub fn here(dir: &Path) -> bool {
@@ -366,23 +383,21 @@ mod sys {
         std::fs::remove_dir_all(dir).map_err(|e| e.to_string())
     }
 
-    pub fn open(data: &Path, _cap: u64) -> Result<PathBuf, String> {
-        if !is_tmpfs(Path::new(SHM)) {
+    pub fn open(data: &Path, _cap: u64) -> Result<(PathBuf, &'static str), String> {
+        let (dir, kind) = folder(data);
+        if kind == KIND && !is_tmpfs(Path::new(SHM)) {
             return Err(format!("{SHM} isn't a RAM filesystem here: set ramSpool.dir to one (a tmpfs mount)"));
         }
-        let dir = folder(data);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-        Ok(dir)
+        Ok((dir, kind))
     }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod sys {
     use std::path::{Path, PathBuf};
-
-    pub const KIND: &str = "folder";
 
     pub fn existing(_: &Path) -> Option<PathBuf> {
         None
@@ -396,7 +411,7 @@ mod sys {
         Ok(())
     }
 
-    pub fn open(_: &Path, _: u64) -> Result<PathBuf, String> {
+    pub fn open(_: &Path, _: u64) -> Result<(PathBuf, &'static str), String> {
         Err("a RAM spool is made on macOS and Linux only: set ramSpool.dir to a RAM-backed folder".into())
     }
 }
@@ -435,6 +450,28 @@ mod tests {
         assert!(s.room_for(1 << 20) && !s.room_for(15 << 20));
         assert_eq!(s.overflowed(), 1);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Run as a systemd service with a `RuntimeDirectory=` (`$RUNTIME_DIRECTORY`,
+    /// the first of its folders), the spool is in that, not /dev/shm; using at
+    /// most half of the filesystem, which the system shares.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_services_spool_is_in_its_runtime_folder() {
+        assert_eq!(sys::runtime_dir_of("/run/trunk-pro:/run/other"), Some(PathBuf::from("/run/trunk-pro")));
+        assert_eq!(sys::runtime_dir_of(""), None);
+        // (A RAM-backed folder standing in for /run/trunk-pro.)
+        let run = PathBuf::from(format!("/dev/shm/trunk-pro-runtime-test-{}", std::process::id()));
+        fs::create_dir_all(&run).unwrap();
+        // SAFETY: the only test reading this variable.
+        unsafe { std::env::set_var("RUNTIME_DIRECTORY", &run) };
+        let s = Spool::open(&RamSpool { enabled: true, size_mb: 65536, dir: String::new() }, Path::new("/data"));
+        unsafe { std::env::remove_var("RUNTIME_DIRECTORY") };
+        let s = s.unwrap();
+        assert_eq!((s.dir.clone(), s.kind), (run.join("spool"), "service"));
+        let (total, _) = s.usage().unwrap();
+        assert!(total <= statvfs(&run).unwrap().0 / 2, "half of it at most");
+        let _ = fs::remove_dir_all(&run);
     }
 
     /// Deleted while the app runs (systemd's RemoveIPC, at logout): made

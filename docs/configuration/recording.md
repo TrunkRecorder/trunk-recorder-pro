@@ -80,7 +80,7 @@ deleted right after (see [The archive](../guides/recordings.md#the-archive-whats
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `enabled` | | `false` | bool | Use the spool. macOS: a RAM disk the app makes (no administrator needed, hidden from the Finder and Spotlight). Linux: a folder in `/dev/shm` |
+| `enabled` | | `false` | bool | Use the spool. macOS: a RAM disk the app makes (no administrator needed, hidden from the Finder and Spotlight). Linux: a folder in `/dev/shm`, or, run as a systemd service with `RuntimeDirectory=` (the shipped `trunk-pro.service` has it), `spool` in that folder under `/run`, using at most half of it |
 | `sizeMb` | | `256` | integer | Its size, MB (Linux: the most it may hold). Read as 16–65536; the interface allows 16–8192 |
 | `dir` | | `""` | string | A RAM-backed folder of your own (a tmpfs mount) instead. Config only |
 

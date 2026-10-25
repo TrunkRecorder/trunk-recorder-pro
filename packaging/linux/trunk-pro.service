@@ -19,6 +19,10 @@ After=network.target
 ExecStart=/usr/local/bin/trunk-pro serve --no-open
 Restart=on-failure
 RestartSec=5
+# The RAM spool's home (in RAM, the service's own: systemd's RemoveIPC leaves
+# it alone at logout), kept through restarts for the uploads queued in it.
+RuntimeDirectory=trunk-pro
+RuntimeDirectoryPreserve=yes
 
 [Install]
 WantedBy=default.target
