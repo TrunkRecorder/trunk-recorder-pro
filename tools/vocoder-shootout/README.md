@@ -48,7 +48,7 @@ count as error-free unless a `.hex` line gives the counts.
 | Key | Decoder |
 |---|---|
 | `trunk-pro` | trunk-pro's enhanced profile (`trunk-pro tool revoice`) |
-| `trunk-pro-fixed` | trunk-pro's fixed-point profile, its default; sample-identical to `tr-fixed` (not run by default) |
+| `trunk-pro-fixed` | trunk-pro's fixed-point profile (recording's default vocoder; `tool revoice` defaults to enhanced); sample-identical to `tr-fixed` (not run by default) |
 | `tr-float` | Trunk Recorder's float decoder, `softVocoder: true`, current settings |
 | `tr-fixed` | Trunk Recorder's fixed-point decoder (Pavel Yazev), `softVocoder: false` |
 | `mbelib` | mbelib, as in DSD (trunk-pro's mbelib profile) |

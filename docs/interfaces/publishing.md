@@ -166,10 +166,27 @@ an earlier recorder may need a new version. The API guide has the messages; what
 - **A site's identity is one shape** everywhere, and a field not heard yet is left out rather than
   `null`: test with `!= null`.
 
+Since 0.2.0 (still `api` 1), what an interface may notice:
+
+- **Conventional systems are in `status.systems`** too, after the trunked ones, with `sites: []`
+  (and `conventionalOpen`): a table of sites should still give them a row.
+- **A conventional channel's code** is `code` (the CTCSS/DCS code, NAC, colour code or RAN),
+  `slot` and `matchTalkgroup`; its old `tone` is gone. A digital channel with no `talkgroup` files
+  its calls under the talkgroup the air names.
+- **`CallRecord.nac` is text**, in hex as everywhere else (`"293"`; `""` for none), not a number.
+- **EDACS** is a system `type` and `system_type`, beside P25, SmartNet, DMR and NXDN.
+- **A call may be one transmission**: a system with `recording.conversationMode` false makes each
+  transmission a call. Copies of one transmission saved from a system's sites share
+  `CallRecord.transmission_id`.
+- **A shared system's `share.state`** can be `needsCallSign`.
+- **New, nothing removed**: `pluginAction` / `pluginActionResult` (by `id`), `licenseQuery` /
+  `callSignQuery`, `radioQuery`'s `tones`, more `monitorEvent` kinds, `host.platform.clock` and the
+  RAM spool's `removed` / `missing`.
+
 The JavaScript client does most of this for you (`rec.configVersion`, `rec.talkgroupFiles`,
-`rec.setTalkgroups()`, `rec.capabilities`, `systemName(status, system)`), so an interface that
-uses it and none of the above directly needs no change. Say in your README which recorder version
-it is made for.
+`rec.setTalkgroups()`, `rec.capabilities`, `systemName(status, system)`, `rec.talkgroups()`), so an
+interface that uses it and none of the above directly needs no change. Say in your README which
+recorder version it is made for.
 
 ## What review looks at
 

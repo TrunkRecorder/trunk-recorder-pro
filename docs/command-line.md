@@ -348,6 +348,8 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool p25synth` | Make a synthetic P25 Phase 1 capture, encrypted with a key of yours or clear |
 | `tool snr` | Weak-signal curves: decode a strong channel again with noise added |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
+| `tool sdr` | A saved `.sdr` call's metadata, or its frames |
+| `tool tones` | The in-band tones in saved calls, or the patterns they make up |
 
 ### tool cc, voice, frames
 
@@ -363,6 +365,7 @@ trunk-pro tool voice|frames <capture.cu8> --center Hz --rate Hz --freq Hz [optio
 | `--eq n` `--mu x` | 9, 0.02 | The equaliser's taps and step size |
 | `--trellis greedy` | Viterbi | `cc`: the trellis decoder |
 | `--soft none` | soft | Hard decisions only |
+| `--detect 0` | on | With both receivers (`--demod auto`), run both always instead of finding which the channel needs |
 | `--softfec 0` | on | `voice`: hard-decision voice FEC |
 | `--flywheel 0` `--nidrecover 0` | on | Turn off the framer's flywheel or NID recovery |
 | `--audio out.f32` | | `voice`: write the decoded audio (8 kHz, 32-bit float) |
@@ -450,7 +453,7 @@ Replay it with a different key and it's noise.
 ```bash
 trunk-pro tool snr <capture.cu8> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet|p2
                    [--seconds N] [--snr 40,20,16,14,12,10,8,6] [--variant base,…] [--cutoff Hz]
-                   [--trials 1] [--nac --sysid --wacn] [--repeat]
+                   [--trials 1] [--nac --sysid --wacn] [--repeat] [--kinds]
 ```
 
 Takes one strong channel from a capture and decodes it again and again with noise added at each
@@ -459,7 +462,8 @@ changes are compared. `--kind p2` needs `--nac`, `--sysid` and `--wacn` (hex). `
 (with `--kind p2`) reports a real channel as it is, and `--separation` the C4FM receiver's level
 separation at each SNR. `--repeat` (with `--kind p25`) scores the vocoder's frame-repeat rules,
 on soft- and hard-decision error counts: wrong frames played, good frames repeated, and how far
-the audio is from the clean run's.
+the audio is from the clean run's. `--kinds` (with `--kind p25`) counts the voice channel's
+signalling per kind of word (link control, encryption sync, TDULC) rather than together.
 
 ### tool revoice
 
@@ -469,7 +473,7 @@ trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile enhan
 ```
 
 Runs a call's saved vocoder frames through the vocoder again, for example to hear it with another
-vocoder. The frames are saved when **Save vocoder frames** is on in Setup → Recording (or with
+vocoder (`enhanced` unless `--profile` says otherwise; recording's own default is `fixed`). The frames are saved when **Save vocoder frames** is on in Setup → Recording (or with
 `replay --capture-frames`). `--hard-fec` uses the standard's repeat rule; `--s16` writes raw
 16-bit samples instead of a WAV.
 
@@ -482,6 +486,17 @@ trunk-pro tool sdr <call.sdr> [--frames]
 Prints a saved `.sdr` call's metadata as JSON, as MimoSDR reads it, or with `--frames` its vocoder
 frames as JSON lines (one frame per line: `codec`, `bits` in hex, `e0`, `errs`, `erased`, and `out`,
 what the vocoder made of it).
+
+### tool tones
+
+```bash
+trunk-pro tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]
+```
+
+Finds the in-band tones in saved calls as a call's are found while recording: DTMF, KNOX, call
+progress and single tones, from a digital call's vocoder frames or an analog call's audio. With
+`--patterns`, the pages, alert tones and digit strings they make up instead, as the call JSON's
+`tone_patterns` (JSON lines). See [Signals](guides/signals.md).
 
 ## plugin
 

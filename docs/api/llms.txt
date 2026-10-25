@@ -1,8 +1,8 @@
 # Trunk Recorder Pro — building an interface (guide for an LLM)
 
 You are building an interface for Trunk Recorder Pro, a program that records
-public-safety radio (P25, SmartNet and DMR trunked systems, and conventional
-FM / P25 / DMR channels) from software-defined radios. It runs a web server
+public-safety radio (P25, SmartNet, DMR, NXDN and EDACS trunked systems, and
+conventional FM / AM / P25 / DMR / NXDN channels) from software-defined radios. It runs a web server
 (default http://localhost:8080). Everything its built-in interface does goes
 through the API below, so you can build anything a user asks for: a
 listening page, a wall display, a dashboard, a phone view, a program that
@@ -159,8 +159,8 @@ Helpers: escapeHtml(s), duration(seconds) → "1:05", mhz(hz) → "155.2000 MHz"
 
 CallView: a call on the air (rec.calls, from the "status" message)
   id, system (number), systemName (short name), site? (its site's name), talkgroup, alphaTag ("" if
-  not in the talkgroup file), freqHz, slot, analog, tone, encrypted,
-  emergency, startS (engine seconds), sources (unit numbers that talked,
+  not in the talkgroup file), talkgroupOta? (conventional: the talkgroup the air named), freqHz,
+  slot, analog, tone, encrypted, decrypted, emergency, startS (engine seconds), sources (unit numbers that talked,
   in order), state ("recording" | "monitoring"), reason (why it's only
   monitored: "ignored" | "unknown_tg" | "encrypted" | "no_source" |
   "no_recorder" | null), patched?, alsoOn? (names of the system's other
@@ -180,11 +180,20 @@ CallEntry: a recorded call (rec.history, the "concluded" message)
     "conventional"), voice_mode? ("p25" | "p25_phase2" | "dmr" | "nxdn48" |
     "nxdn96" | "provoice" | "fm" | "am"), nac? (P25's NAC in hex, "293"; "" none), srcList [{ src (unit), tag (its name or ""), tag_ota,
     time (Unix s), pos (s into the audio), emergency, lat? lon? (GPS) }], signal / noise
-    (dBFS) / snr (dB) (or null), tone_detected, patched_talkgroups?
+    (dBFS) / snr (dB) (or null), clean_voice_pct (null for analog), tone_detected, patched_talkgroups?,
+    transmission_id (the same on every copy of one transmission saved from a system's sites),
+    decrypted / algid / key_id, color_code / ran (-1 none), clock_off,
+    tones [the in-band tones heard], tone_patterns [{ pattern, text (in words), signals, … }],
+    signals [ids of the system's named signals it carried]
+  A call is usually a talkgroup's conversation (its transmissions until it's quiet); a system whose
+  recording rules have conversationMode false makes each transmission a call. With several sites,
+  a copy the saved one doesn't hold all of is saved too: copies of one transmission share transmission_id.
 
-SystemStatus: one running trunked system (rec.status.systems)
+SystemStatus: one running system (rec.status.systems): the trunked ones, then the conventional
+  ones (sites: [], conventionalOpen: channels open now)
   index (the `system` its calls carry), shortName, activeCalls, recording,
-  callsConcluded, sites: SiteStatus[]
+  callsConcluded, sites: SiteStatus[], share (shared with the directory: { state: "needsCallSign" |
+  "waiting" | "shared" | "error", … }, else null)
   (patches are in decodeDetail)
 
 SiteStatus: one of its sites, each following its own control channel
@@ -193,14 +202,15 @@ SiteStatus: one of its sites, each following its own control channel
   rfss?, site? } (SiteIdentity, as a config site's `expect`: a field not
   heard yet is absent, so test with `!= null`), good / bad (control messages decoded / failed: decode
   rate = good / (good + bad)), modulation, activeCalls, recording,
-  callsConcluded, mismatch
+  callsConcluded, mismatch, radioClock? (the system's clock against ours), callsigns (FCC call signs
+  a Motorola control channel sends)
   (adjacent sites, dmr and nxdn are in decodeDetail)
 
 Systems and numbering
   config.systems[]: trunked systems ({ shortName, name?, type: "p25" |
-    "smartnet" | "dmr" | "nxdn", enabled, …, sites: [{ name?,
+    "smartnet" | "dmr" | "nxdn" | "edacs", enabled, …, sites: [{ name?,
     enabled, controlChannelsHz, … }] }). A call heard on several sites of
-    a system is one call, saved once.
+    a system is recorded on each and the best copy saved.
   config.conventional[k]: conventional systems. Systems are numbered
     from 0, the trunked ones being recorded then the conventional ones;
     status.systemNames[n] is system n's short name.
@@ -247,6 +257,12 @@ From the recorder:
   concluded    { entry }: a call was recorded
   log          { lines }: topic log (warnings and errors always); { timeS, kind, text, time?, level?, system?, site? }
   olderCalls   { before, entries, more }: answers the olderCalls command
+  monitorEvent { t, level ("info" | "ok" | "warn" | "bad"), kind, … }: something notable (a control
+               channel lost / regained, a talkgroup or radio first seen, a radio dropping samples, a disk or
+               the RAM spool filling, a tone pattern heard, the clock off…): the kinds are MonitorEvent in
+               protocol.ts
+  host         every 2 s (desktop app): { t, values (series → value now), platform (os, cores, disks[],
+               probes[], clock, …) }
   keys         { sources: [{ name, systems, unlocked }] }: key containers waiting for a password (control access)
   unitAlias    { system (short name), unit, alias }
   error / notice  { message }: about your command
@@ -258,6 +274,9 @@ To the recorder:
   { type: "setConfig", config: <the whole config>, version: <the last config message's> }
   { type: "setTalkgroups", system: <short name>, csv: <Trunk Recorder talkgroup CSV, "" for none> }
   { type: "olderCalls", before: <Unix ms>, limit: <≤ 500> }   recorded calls before that, from the last 24 hours (listen access may send it)
+  { type: "statsQuery", id, series: ["sys/<short>/calls", …], range: "1h" }   history (→ statsResult; listen may send it)
+  { type: "radioQuery", id, what: "talkgroups" | "units" | "tones" | …, system: <short name> }   what the
+    recorder has heard (→ radioResult; listen may send it)
   { type: "subscribe", topics: ["log", "spectrum:0", "rf:0", "decode:<shortName>", "platform"] }
   A command it can't read (unknown type, a missing field) is answered with an error message.
   (more in protocol.ts: devices, survey, plugins, …)

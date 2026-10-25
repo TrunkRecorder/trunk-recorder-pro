@@ -113,16 +113,18 @@ function setPhase(p) {
 }
 $("startStop").onclick = () => send({ type: phase === "idle" ? "start" : "stop" });
 
-// A row per site: each follows its own control channel.
+// A row per site, each following its own control channel; a conventional system (no sites) one row.
 function renderSystems(systems) {
   $("systems").innerHTML = systems
     .flatMap((sys) =>
-      sys.sites.map((s) => {
-        const total = s.good + s.bad;
-        const decode = total ? `${Math.round((100 * s.good) / total)} %` : "—";
-        const name = sys.sites.length > 1 ? `${sys.shortName} · ${s.name}` : sys.shortName;
-        return `<tr><td>${esc(name)}</td><td>${s.controlChannelHz ? mhz(s.controlChannelHz) : "searching"}</td><td>${decode}</td><td>${s.callsConcluded}</td></tr>`;
-      }),
+      sys.sites.length
+        ? sys.sites.map((s) => {
+            const total = s.good + s.bad;
+            const decode = total ? `${Math.round((100 * s.good) / total)} %` : "—";
+            const name = sys.sites.length > 1 ? `${sys.shortName} · ${s.name}` : sys.shortName;
+            return `<tr><td>${esc(name)}</td><td>${s.controlChannelHz ? mhz(s.controlChannelHz) : "searching"}</td><td>${decode}</td><td>${s.callsConcluded}</td></tr>`;
+          })
+        : [`<tr><td>${esc(sys.shortName)}</td><td>conventional</td><td>—</td><td>${sys.callsConcluded}</td></tr>`],
     )
     .join("");
 }

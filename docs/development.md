@@ -18,8 +18,9 @@ rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.129 --locked
 (cd web && npm ci && npm run wasm && npm run build)   # the interface → web/dist, embedded in the binary
 cargo build --release                                 # target/release/trunk-pro
-cargo test --release
+cargo test --release --workspace                      # as CI runs it
 (cd web && npm test)
+(cd web && npm run schema)                            # after changing web/src/protocol.ts: docs/api/protocol.schema.json
 cargo build --profile dist                            # stripped, as released
 ```
 
@@ -116,13 +117,15 @@ threads and how the pieces connect.
 | `…/dsp/channelizer.rs` | Overlap-save multi-head channelizer (after CyberEther's `filter_engine`), pre-roll, waterfall spectrum |
 | `…/dsp/cqpsk.rs`, `c4fm.rs`, `msd.rs` | Streaming receivers with soft bits; optional CMA equaliser; multi-symbol detector |
 | `…/dsp/fm.rs` | Narrowband FM: channel filter / carrier meter, discriminator, de-emphasis, 8 kHz audio, CTCSS high-pass, squelch gate |
-| `…/dsp/tones.rs`, `signalling.rs` | Analog calls: which CTCSS tone / DCS code they carry; MDC1200 / FleetSync unit IDs |
+| `…/dsp/inband/` | In-band signalling, one path for every call: tones and the patterns they make up (pages, alert tones, DTMF / KNOX, Morse IDs), CTCSS / DCS (`subaudible.rs`), MDC1200 / FleetSync unit IDs (`units.rs`) |
+| `…/dsp/am.rs`, `squelch.rs`, `rolloff.rs` | AM (airband), the carrier squelch, a radio's band-edge roll-off |
 | `…/p25/frame.rs` | Framer with flywheel sync and NID recovery |
 | `…/p25/tsbk.rs` | Viterbi (soft) trellis decoder + CRC — 98–99 % of TSBKs on simulcast, vs 62 % for op25's greedy decoder |
 | `…/p25/fec.rs`, `voice.rs` | Golay / Hamming (hard and soft), Reed–Solomon, IMBE framing, LC / ES / HDU / TDULC |
 | `…/p25/diversity.rs` | Receiver diversity: per-frame best of several receivers |
 | `…/p25/phase2.rs` | Phase 2 TDMA: slot framer, scrambler, ISCH / DUID, AMBE codeword FEC, ESS, MAC PDUs |
 | `…/smartnet/` | SmartNet: 3600 baud receiver, OSW framing and decoding, band plans |
+| `…/edacs/` | EDACS: control channel framing (BCH), messages, sites, ProVoice |
 | `…/dmr/` | DMR: burst framing, slots, FEC, link control, CSBKs, trunking (Capacity Plus / Max, Connect Plus, Tier III) |
 | `…/nxdn/` | NXDN: frame sync and scrambler, LICH, the convolutional / CRC channel coding (SACCH, FACCH1, UDCH, CAC, SCCH), layer 3 messages, voice, Type-C and Type-D trunking, a synthesizer for tests |
 | `…/mbe/` | IMBE and AMBE+2 vocoders (mbelib + Trunk Recorder's enhanced synthesis) |

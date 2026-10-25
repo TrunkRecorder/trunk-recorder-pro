@@ -375,8 +375,9 @@ origin listed (e.g. `"https://radio.example.com"`).
    doesn't compute them.
 5. **Send commands** as JSON text whenever you like. Answers to your own
    commands (`error`, `notice`, `dir`, `trConfig`, `devices`, `radios`,
-   `store`, `configSaved`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`, and
-   `plugins` when you sent `plugins`) come to your connection only. A command the recorder can't
+   `store`, `configSaved`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`,
+   `licenseResult`, `callSignResult`, `pluginActionResult`, and `plugins` when you sent
+   `plugins`) come to your connection only. A command the recorder can't
    read (a field missing or of the wrong kind, an unknown `type`) is answered with an `error`. Everything else goes to every client: after
    `addPlugin`, `removePlugin` or a plugin's `install` everyone gets `plugins`,
    and after `setConfig` or `channelFile` everyone gets `config`; every
@@ -397,8 +398,8 @@ Unknown message types should be ignored: new ones may be added.
 The `state` message carries it, with `error` (why it stopped
 or couldn't start) and `ended` (a capture file played to its end).
 
-**Systems.** `config.systems` are trunked systems: P25, SmartNet, DMR and
-NXDN. Each has its own `shortName`, which is also the folder its calls are
+**Systems.** `config.systems` are trunked systems: P25, SmartNet, DMR,
+NXDN and EDACS. Each has its own `shortName`, which is also the folder its calls are
 saved in, and its `sites`, each a control channel it is recorded from. A call
 heard on several sites of a system is one call, saved once; a call's `site`
 (and `alsoOn`, the other sites carrying it) are site names. While running,
@@ -411,8 +412,20 @@ match on `shortName` rather than on positions in the config.
 
 **Conventional systems.** `config.conventional[k]` are groups of fixed
 frequencies. Their calls are numbered after the trunked systems' (and
-`status.systemNames` names every number). Each frequency acts as a talkgroup: the channel's
-`talkgroup`, or by default the frequency in kHz.
+`status.systemNames` names every number); while running they're in
+`status.systems` too, after the trunked ones, with `sites: []` and
+`conventionalOpen` (channels open now). Each channel's calls are filed under
+a talkgroup: the channel's `talkgroup` (TG Number); without one, a digital
+channel's (P25, DMR, NXDN) the talkgroup the air names, an analog channel's
+its frequency in kHz (a later row on one frequency adds a digit: 1543251).
+
+**Calls and transmissions.** A call is usually a talkgroup's conversation, its
+transmissions until it has been quiet for the call timeout. A system with
+`recording.conversationMode` false (its own `recording` rules) makes each
+transmission a call of its own. On a system with several sites every copy is
+recorded and the best saved; a copy is dropped only when the saved one holds
+all of it, so a few may be saved twice. Copies of one transmission saved share
+their `CallRecord.transmission_id`.
 
 **Calls on the air vs. recorded calls.**
 - `status.calls` (`CallView[]`) are the calls happening right now. That
@@ -448,21 +461,22 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `talkgroups` | On connecting, for each system; whenever one changes | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |
 | `plugins` | On connecting (control access); after plugin changes; answers `plugins` | `plugins` (`PluginInfo[]`), `encoderFound` |
 | `state` | Recording starts / stops | `phase`, `error`, `ended` |
-| `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systemNames`: every system's short name by its number, `systems[]` with `share` (a system shared with the directory: `{ state: "waiting" | "shared" | "error", lastShared, error }`, else null), and each site's control channel, decode counts `good`/`bad`, site identity, `callsigns` (the FCC call signs a Motorola control channel sends, each with its `freqHz`); neighbours, patches and the like are in `decodeDetail`), `sources[]` (each radio: rate, drops, errors, frequency error), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
+| `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systemNames`: every system's short name by its number, `systems[]` (trunked, then conventional) with `share` (a system shared with the directory: `{ state: "needsCallSign" | "waiting" | "shared" | "error", lastShared, error }`, else null), and each site's control channel, decode counts `good`/`bad`, site identity, `callsigns` (the FCC call signs a Motorola control channel sends, each with its `freqHz`); neighbours, patches and the like are in `decodeDetail`), `sources[]` (each radio: its rate as set and `rateMeasured`, drops, errors and the last (`lastError`, `lastErrorS`), frequency error measured `errorPpm` and the correction `tunePpm`), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
 | `spectrum` | Topic `spectrum:<source>`: ~7/s while running | `source`, `centerHz`, `rateHz`, `bins`: 512 levels in dBFS, lowest frequency first, spanning `centerHz ± rateHz/2` |
 | `stats` | 1/s while running | `t` (Unix s), `values`: series name → value now ([Statistics and history](#statistics-and-history)) |
-| `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, disks (the RAM spool's too, as `spool`), connectivity checks, `spotlight` (macOS: whether Spotlight indexes the recordings folder), `unavailable`: what this platform can't tell and why) |
+| `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, `disks[]` (`{ name, path, mount, totalBytes, freeBytes }`; the RAM spool's as `spool`, with `kind` (`"RAM disk"`, `"tmpfs"` (/dev/shm), `"service"` (systemd's runtime folder) or `"folder"`), calls `overflowed` to disk, times it was `removed` while running, and `missing`: gone and not made again), `probes[]` (connectivity checks), `clock` (the clock's health: the operating system's sync and time service, a measured offset from `server`, the recording's drift, the radio systems' clocks, and `problem`: the recorder's verdict), `spotlight` (macOS: whether Spotlight indexes the recordings folder), `unavailable`: what this platform can't tell and why) |
 | `rfDetail` | Topic `rf:<source>`: 1/s | `source`, `profile` (the noise floor in 64 slices across the band, dBFS per FFT bin), `channels` (each channel on it: power, floor, SNR, carrier offset, the receiver's eye opening or CQPSK phase error) |
 | `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now, each with its `site`), `sites` (each running site's `index`, `name`, and what its control channel announces: `adjacent` sites, `dmr`, `nxdn`), `patches` (the patches standing now, each once: `supergroup` and `members`) |
-| `monitorEvent` | Something notable happened | `t`, `level`, `kind` (`controlLost`, `tgFirstSeen`, `sourceDrops`, `pluginHealth`, `linkDown`, `diskLow`, `spoolLow`, `spoolFull`, `spoolRemoved`, …) and its fields |
+| `monitorEvent` | Something notable happened | `t`, `level` (`info`, `ok`, `warn`, `bad`), `kind` and its fields: control channels (`controlLost`, `controlRegained`; `system`, `site`), talkgroups and radios (`tgFirstSeen`, `tgActive`, `unitFirstSeen`, `unitActive`, `unitAffiliated`, `callVolume`), tones (`tonePattern`: `text`, `signals`), radios (`sourceDrops`, `sourceClipping`, `sourceRecovered`), plugins (`pluginHealth`), the computer (`linkDown`, `linkUp`, `diskLow`), the RAM spool (`spoolLow` with `critical`, `spoolFull` with `calls`, `spoolRecovered`, `spoolRemoved` with `spool` (its kind) and `remade`), the clock (`clockOff` with `why` and `bad`, `clockOk`, `clockStep` with `byMs`). The event feed's kinds are listed in protocol.ts (`MonitorEvent`) |
 | `subscribed` | Answers `subscribe` | `topics` |
 | `olderCalls` | Answers `olderCalls` | `before` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still) |
 | `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
-| `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `outOfBand` (freqs), `row` and its detail, `systems` (summary), `histogram` |
+| `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies / tone patterns heard), `outOfBand` (freqs), `row` and its detail, `systems` (summary), `histogram` |
+| `pluginActionResult` | Answers `pluginAction`, to its sender | `id`, `ok`, `message`: what the plugin said of it (or why there's no answer: it isn't running, or didn't answer within 15 s) |
 | `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the plugins are done (`audio`: some audio, .wav or .m4a, stays: **Keep .wav** / **Keep .m4a**; `json`: **Keep call JSON**; false: deleted then) |
 | `callFiles` | A call's upload plugins are done, and it kept other than its entry said (an upload failed and its files stay) | `path`, `audio`, `json` |
-| `log` | Topic `log` (warnings and errors always) | `lines[]`: `{ timeS, kind, text, system?, time?, level? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, `"info"`, or a control-message kind; the decoder's lines have `timeS` (seconds into the recording), the recorder's own `time` (Unix seconds) and `level` |
+| `log` | Topic `log` (warnings and errors always) | `lines[]`: `{ timeS, kind, text, system?, site?, time?, level? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, `"info"`, or a control-message kind; the decoder's lines have `timeS` (seconds into the recording), the recorder's own `time` (Unix seconds) and `level` |
 | `unitAlias` | A talker alias was heard | `system` (short name), `unit`, `alias` |
 | `heard` | On connecting; conventional codes heard changed | `heard`: frequency (Hz, as a string) → `HeardCode[]` |
 | `config` | On connecting; the config changed (anyone's `setConfig`, a plugin added…) | `config`, `version` (what an edit is sent with) |
@@ -518,7 +532,8 @@ too.
 | `removeInterface` | `id` | Stop serving it and forget it; an installed copy is deleted. |
 | `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform` (→ `subscribed`). |
 | `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d`) or `from` / `to` (Unix s), `points?` | The minute history of series, averaged down to about `points` steps (→ `statsResult`). |
-| `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths` (→ `radioResult`). |
+| `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths`, `tones` (→ `radioResult`). |
+| `pluginAction` | `id`, `plugin`, `action`, `value` | Press one of a plugin's buttons (its settings schema's `x-actions`) on `value`, the settings object it's on as edited (→ `pluginActionResult`, once the plugin answers). Control access; plugins run only while recording. |
 | `olderCalls` | `before?` (Unix ms), `limit?` (≤ 500, default 100) | Recorded calls that started before `before`, newest first, from the last 24 hours (→ `olderCalls`). Listen-only connections may send it. |
 | `unlockKeys` | `source`, `password` | Open a key container that has no password file; the password is kept in memory only. `keys` follows. |
 | `lockKeys` | `source` | Forget a container's keys: its systems stop decrypting at once. |
@@ -584,6 +599,13 @@ Recorder's files read it too. The fields you'll want most: `talkgroup`,
 `talkgroup_tag`, `short_name`, `start_time` (Unix s), `call_length` (s),
 `freq`, `emergency`, `encrypted`, `srcList` (the radios that talked, with
 names in `tag`), and the reception fields `signal` / `noise` / `snr` (dB).
+Beyond Trunk Recorder's: `transmission_id` (the same on every copy of one
+transmission saved, [above](#concepts)), `site`, `system_type` and
+`voice_mode`, `clean_voice_pct`, `nac` (hex), `color_code` / `ran`,
+`talkgroup_ota` (a conventional call's talkgroup as the air named it),
+`decrypted` with `algid` / `key_id`, `clock_off`, and the call's in-band
+`tones`, the `tone_patterns` they make up (each with `text` in words) and the
+system's `signals` it carried. docs/guides/recordings.md lists every field.
 
 ## Recipes
 
@@ -700,8 +722,9 @@ the day). The live values come in `stats` (and `host`); the history answers
 | `sys/<short>/why/<reason>` | Calls starting a second by what happened to them: `recorded`, `monitored`, `ignored`, `encrypted`, `unknown_tg`, `no_source`, `no_recorder` |
 | `sys/<short>/voice/frames`, `errors`, `bad` | Voice frames decoded, bit errors corrected, frames lost (a second) |
 | `all/…`, `day/…`, `eng/…` | Every system together; this run's totals today; the decoder's load and recorders |
-| `plat/cpu`, `proCpu`, `mem`, `memPsi`, `memLevel`, `temp`, `disk/<name>/freePct`, … | The computer (desktop app) |
-| `net/up`, `rtt`, `dns`, `rx`, `tx` | Connectivity checks (share answering, connect time), name lookup time, traffic |
+| `plat/cpu`, `proCpu`, `mem`, `memAvail`, `swap`, `memPsi`, `memLevel`, `temp`, `disk/<name>/free`, `freePct` (the RAM spool's as `disk/spool/…`), … | The computer (desktop app) |
+| `net/up`, `rtt`, `dns`, `rx`, `tx`, `errors`, `probe/<target>` | Connectivity checks (share answering, connect time, each target's), name lookup time, traffic |
+| `clock/synced`, `maxErrMs`, `offsetMs`, `delayMs`, `driftMs`, `radioMs` | The clock: synchronized (1/0) and the OS's error bound, the offset measured from the time server and its round trip, the recording's drift, the radio systems' clocks against it |
 | `plg/<id>/ok`, `failed`, `queued`, `latency`, `state` | Each plugin |
 
 Running totals arrive as rates (per second); everything else as it is.

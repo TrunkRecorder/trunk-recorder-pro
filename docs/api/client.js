@@ -374,17 +374,21 @@ function userUnitName(cache, csv, unit) {
 }
 
 /**
- * A conventional system's channels → Map talkgroup → { talkgroup, alphaTag, … }.
- * A channel's talkgroup: its own, else a DMR row's in its tone ("TG 1234"),
- * else its frequency in kHz (with a digit for a second row on one frequency: 1543251 …).
+ * A conventional system's channels → Map talkgroup → { talkgroup, alphaTag, … },
+ * for the rows whose number is known before a call is heard (the recorder's
+ * rule): its TG Number (`talkgroup`), else an analog (FM, AM) row's
+ * frequency in kHz, with a digit for a later row on one frequency (1543251 …).
+ * A digital row with no TG Number files its calls under the talkgroup the air
+ * names, which a call's `talkgroup` and `alphaTag` carry.
  */
 function channelTalkgroups(channels) {
   const map = new Map();
   channels.forEach((c, i) => {
+    const analog = c.mode === "fm" || c.mode === "am";
+    if (c.talkgroup === undefined && !analog) return;
     const kHz = Math.round(c.freqHz / 1000);
     const k = channels.slice(0, i).filter((o) => Math.abs(o.freqHz - c.freqHz) < 1).length;
-    const air = c.mode === "dmr" ? /\bTG (\d+)/.exec(c.tone ?? "")?.[1] : undefined;
-    const talkgroup = c.talkgroup ?? (air !== undefined ? Number(air) : k === 0 ? kHz : kHz * 10 + k);
+    const talkgroup = c.talkgroup ?? (k === 0 ? kHz : kHz * 10 + k);
     map.set(talkgroup, { talkgroup, alphaTag: c.name ?? "", description: c.description ?? "", tag: c.tag ?? "", group: c.group ?? "", mode: c.mode });
   });
   return map;

@@ -691,7 +691,8 @@ site, recording and call once, then:
 
 With `conversationMode` off (`CallConfig::conversation`), the same split happens at each new
 transmission: `Core::apply_pending`, taking a recorded call's audio after more than
-`TRANSMISSION_GAP_S` (0.5 s) of none, asks `CallManager::next_transmission`, and the audio (and
+`TRANSMISSION_GAP_S` (0.5 s) of none, or a new talker after the last had talked that long, asks
+`CallManager::next_transmission`, and the audio (and
 what's queued after it in that pass) goes to the new call. The talkers announced since the last
 audio (a grant before its voice) move with it.
 

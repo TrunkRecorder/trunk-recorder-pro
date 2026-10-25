@@ -272,7 +272,7 @@ is saved and carries on as a new call on the same channel and recorder).
 |---|---|
 | `Fdma` | `Bank` → `VoiceTracker` (`tracker.rs`) → IMBE |
 | `Tdma` | `Cqpsk` (6000 Bd) → `phase2::Framer` → `TdmaTracker` (`tdma.rs`), both slots on one head |
-| `Analog` | `Nbfm`, squelched; MDC1200 / FleetSync IDs via `dsp::signalling` |
+| `Analog` | `Nbfm`, squelched; MDC1200 / FleetSync IDs via `dsp::inband` |
 | `Am` | `Am` (conventional only) |
 | `Dmr` | `C4fm` → `DmrVoice` (both slots) |
 | `Nxdn(rate)` | `C4fm` at its rate → `NxdnVoice` |
