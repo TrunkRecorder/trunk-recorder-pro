@@ -3039,6 +3039,7 @@
                 "spoolLow",
                 "spoolFull",
                 "spoolRecovered",
+                "spoolRemoved",
                 "clockOff",
                 "clockOk",
                 "clockStep"
@@ -3127,6 +3128,13 @@
             "calls": {
               "type": "number",
               "description": "spoolFull: calls that went to the recordings folder for want of room."
+            },
+            "spool": {
+              "type": "string",
+              "description": "spoolRemoved: the spool's kind (\"tmpfs\", \"RAM disk\", \"folder\"), and whether it was made again."
+            },
+            "remade": {
+              "type": "boolean"
             },
             "why": {
               "type": "string",
@@ -4338,6 +4346,12 @@
               },
               "overflowed": {
                 "type": "number"
+              },
+              "removed": {
+                "type": "number"
+              },
+              "missing": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -4349,7 +4363,7 @@
             ],
             "additionalProperties": false
           },
-          "description": "\"recordings\", \"data\", and \"spool\" (the RAM spool, with its `kind` and calls `overflowed` to the disk)."
+          "description": "\"recordings\", \"data\", and \"spool\" (the RAM spool, with its `kind`, calls `overflowed` to the disk, times it was `removed` while running, and `missing`: gone and not made again)."
         },
         "spotlight": {
           "anyOf": [
