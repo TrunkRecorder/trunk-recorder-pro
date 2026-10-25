@@ -1601,22 +1601,7 @@
             {
               "type": "array",
               "items": {
-                "type": "object",
-                "properties": {
-                  "args": {
-                    "type": "string"
-                  },
-                  "serial": {
-                    "type": "string"
-                  },
-                  "label": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "label"
-                ],
-                "additionalProperties": false
+                "$ref": "#/definitions/FoundRadio"
               }
             },
             {
@@ -1711,6 +1696,42 @@
         "$ref": "#/definitions/FccLicense"
       },
       "description": "A system's FCC licenses by frequency (Hz on the 6.25 kHz raster, as a string). Optional, for reference; plugins are told them."
+    },
+    "FoundRadio": {
+      "type": "object",
+      "properties": {
+        "args": {
+          "type": "string"
+        },
+        "serial": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "rates": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "rateRange": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "additionalProperties": false,
+      "description": "A radio its driver found. Once it has been opened in this run (by a source, or to ask it — an Airspy is), it also says its `model` (\"R2\", \"Mini\", \"bladeRF 2.0\") and the sample rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`)."
     },
     "FreqRow": {
       "type": "object",
@@ -6083,23 +6104,43 @@
               "type": "array",
               "items": {
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                   "args": {
+                    "type": "string"
+                  },
+                  "driver": {
+                    "type": "string"
+                  },
+                  "serial": {
                     "type": "string"
                   },
                   "label": {
                     "type": "string"
                   },
-                  "driver": {
+                  "model": {
                     "type": "string"
+                  },
+                  "rates": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
+                  },
+                  "rateRange": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
                   }
                 },
                 "required": [
                   "args",
-                  "label",
-                  "driver"
-                ],
-                "additionalProperties": false
+                  "driver",
+                  "label"
+                ]
               }
             },
             {

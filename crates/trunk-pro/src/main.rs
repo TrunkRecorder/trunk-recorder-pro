@@ -309,12 +309,12 @@ fn devices(a: &Args) {
     let ai = radio::airspy::info();
     println!("Airspy: {}", ai.detail);
     for d in radio::airspy::devices() {
-        println!("  {}", d["label"].as_str().unwrap_or(""));
+        println!("  {}{}", d["label"].as_str().unwrap_or(""), radio::rates_shown(&d));
     }
     let bi = radio::bladerf::info();
     println!("bladeRF: {}", bi.detail);
     for d in radio::bladerf::devices() {
-        println!("  {} · serial {}", d["label"].as_str().unwrap_or(""), d["serial"].as_str().unwrap_or(""));
+        println!("  {} · serial {}{}", d["label"].as_str().unwrap_or(""), d["serial"].as_str().unwrap_or(""), radio::rates_shown(&d));
     }
     let ui = radio::uhd::info();
     println!("USRP: {}", ui.detail);

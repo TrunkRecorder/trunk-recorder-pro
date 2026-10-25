@@ -19,6 +19,24 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Plugins hear radios' and talkgroups' names** in their live events, looked up as each event is
   sent (as a call's JSON has them): a call's radios (`sources[].tag`), radio activity (`tag`, and
   the talkgroup's `alpha_tag`) and tone patterns (`src_tag`). No need to remember them from calls.
+- **Airspy sample rate fixed** (#74, by photounit). The rate is now set by its IQ value even though
+  real samples are streamed, so libairspy sends it as an index, which every firmware takes. Before,
+  the doubled rate was sent by value, which firmware before v1.0.0-rc7 refuses. Worse, a Mini at
+  3 MSPS asked for 6 (its first rate), so it ran at twice the rate it was set to.
+- **Each radio says what it is and the rates it runs at** (#90, by auggiesoft). Setup lists an
+  Airspy as "Airspy R2 · SN …" or "Airspy Mini · SN …" (from its firmware string: both report the
+  same board id) and offers the rates that Airspy runs at. A bladeRF and a SoapySDR device say so
+  once a source has opened them. Picking a different radio moves the rate to one it runs at, and a
+  rate it can't do is flagged in Setup. A source refuses such a rate with one message for every
+  kind of radio: "this Airspy R2 runs at 10 / 2.5 MSPS, not 6: pick one of those in Setup →
+  Radios". A new Airspy source found by the setup guide starts at one of its rates.
+- **Radios open one at a time.** libairspy (and librtlsdr, libhackrf) find a radio by opening every
+  one of theirs, and skip any they can't open, so two sources starting together, or a device search
+  beside one, could miss a radio (`AIRSPY_ERROR_NOT_FOUND` until the retry). Opens and searches
+  for Airspy, bladeRF, RTL-SDR and SoapySDR radios now share one lock (the one SDRplay radios
+  already used). An Airspy is opened to ask its model once per run, not on every page load.
+- `trunk-pro devices` shows each Airspy's model and rates (and a bladeRF's once known).
+
 - **Setup's FCC licenses fold.** A system's (or conventional system's) **FCC licenses** section
   folds to its name and a line ("20 frequencies, 5 call signs: …"); it starts folded once it has
   more than six, and remembers being opened or folded in this browser, as the cards do.
