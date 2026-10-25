@@ -302,7 +302,7 @@ function detectRadios(s: AppState): Detected[] {
     if (devices.length && k.soapyDriver) native.add(k.soapyDriver);
     for (const d of devices) {
       const id = (k.device === "serial" ? d.serial : d.args) ?? "";
-      out.push({ key: deviceKey(kind, id), kind, name: k.label, detail: d.label, source: sourceFor(kind, id), busy: null });
+      out.push({ key: deviceKey(kind, id), kind, name: k.label, detail: d.label, source: sourceFor(kind, id, d), busy: null });
     }
   }
   // SoapySDR also lists radios with a driver of their own here; those are shown once, natively.

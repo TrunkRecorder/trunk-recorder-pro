@@ -383,6 +383,36 @@ impl Runner {
     }
 }
 
+/// An Airspy source set to a rate its radio doesn't run at (an R2 at a Mini's 6 MSPS, say)
+/// runs at the radio's first rate instead, in `cfg` and in the config saved and shown, with a
+/// warning. A radio that can't be asked (not attached, in use) is left alone: starting it says why.
+fn fix_airspy_rates(ctx: &Ctx, cfg: &mut Config) {
+    let mut fixed = Vec::new();
+    for (i, src) in cfg.sources.iter_mut().enumerate() {
+        let Source::Airspy { serial, rate_hz, .. } = src else { continue };
+        let Some((model, rates)) = airspy::ask(serial) else { continue };
+        let Some(instead) = airspy::rate_instead(*rate_hz, &rates) else { continue };
+        let what = if model.is_empty() { "Airspy".to_string() } else { format!("Airspy {model}") };
+        let list: Vec<String> = rates.iter().map(|r| format!("{}", *r as f64 / 1e6)).collect();
+        log::warn!("Source {i}: this {what} runs at {} MSPS, not {}: running at {} MSPS, and the config now says so", list.join(" / "), *rate_hz / 1e6, instead as f64 / 1e6);
+        *rate_hz = instead as f64;
+        fixed.push((i, instead as f64));
+    }
+    if fixed.is_empty() {
+        return;
+    }
+    let mut shared = ctx.config.lock().unwrap();
+    for (i, hz) in fixed {
+        if let Some(Source::Airspy { rate_hz, .. }) = shared.sources.get_mut(i) {
+            *rate_hz = hz;
+        }
+    }
+    if let Err(e) = shared.save(&ctx.config_path) {
+        log::warn!("Couldn't save the config: {e}");
+    }
+    ctx.config_changed(&shared);
+}
+
 /// Start recording with `cfg`. The engine thread reports the phase.
 pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     // Linked channel files are read afresh, so a spreadsheet's edits apply.
@@ -400,6 +430,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             return Err(e);
         }
     }
+    fix_airspy_rates(&ctx, &mut cfg);
     if let Some(p) = cfg.problem() {
         return Err(p);
     }

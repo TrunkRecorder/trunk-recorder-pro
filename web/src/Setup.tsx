@@ -35,6 +35,9 @@ import {
   deviceKey,
   needsDriver,
   sourceKey,
+  airspyFound,
+  airspyRates,
+  rateFor,
   SOURCE_KINDS,
 } from "./config.ts";
 import {
@@ -861,6 +864,9 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
   const src = c.sources[i];
   const center = resolvedCenters(c)[i];
   const auto = src.centerHz ? null : center;
+  // The Airspy picked, as libairspy found it: an R2 runs at 10 / 2.5 MSPS, a Mini at 6 / 3.
+  const airspy = src.type === "airspy" ? airspyFound(s.radios?.airspy, src.serial) : undefined;
+  const airspyMsps = airspy?.rates?.length ? airspy.rates.map((r) => r / 1e6).join(" or ") : null;
   const edit = (fn: (x: Source) => void) => updateConfig((x) => fn(x.sources[i]));
   const setKind = (kind: Source["type"]) =>
     updateConfig((x) => {
@@ -990,7 +996,19 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
           </Field>
         )}
         {(src.type === "airspy" || src.type === "bladerf") && !missing && (
-          <SerialPicker kind={src.type} serial={src.serial} used={used} onChange={(v) => edit((x) => (x.type === "airspy" || x.type === "bladerf") && void (x.serial = v))} />
+          <SerialPicker
+            kind={src.type}
+            serial={src.serial}
+            used={used}
+            onChange={(v) =>
+              edit((x) => {
+                if (x.type !== "airspy" && x.type !== "bladerf") return;
+                x.serial = v;
+                // An R2 and a Mini run at different rates: the one picked starts at a rate it does.
+                if (x.type === "airspy") x.rateHz = rateFor(x.rateHz, airspyRates(s.radios?.airspy, v));
+              })
+            }
+          />
         )}
         {src.type === "airspy" && (
           <>
@@ -1102,13 +1120,23 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         </Field>
         <Field
           label="Sample rate"
-          hint={SOURCE_KINDS[src.type].rateHint}
+          hint={
+            airspyMsps && airspy?.rates && !airspy.rates.includes(src.rateHz) ? (
+              <span className="warn-text">
+                This Airspy{airspy.model ? ` ${airspy.model}` : ""} runs at {airspyMsps} MSPS, not {src.rateHz / 1e6}: starting it sets {airspy.rates[0] / 1e6}
+              </span>
+            ) : airspyMsps ? (
+              `This Airspy${airspy?.model ? ` ${airspy.model}` : ""}: ${airspyMsps}`
+            ) : (
+              SOURCE_KINDS[src.type].rateHint
+            )
+          }
         >
           <RateInput
             key={src.type}
             hz={src.rateHz}
             free={!!SOURCE_KINDS[src.type].freeRate || (src.type === "file" && can("service"))}
-            options={SOURCE_KINDS[src.type].rates}
+            options={airspy?.rates?.length ? airspy.rates : SOURCE_KINDS[src.type].rates}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>

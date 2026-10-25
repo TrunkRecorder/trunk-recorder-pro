@@ -65,7 +65,15 @@ export type AirspyGainMode = "linearity" | "sensitivity" | "manual";
 export interface DriverState {
   available: boolean;
   detail: string;
-  devices: { args?: string; serial?: string; label: string }[] | null;
+  devices: FoundRadio[] | null;
+}
+/** A radio its driver found. An Airspy that could be opened to ask also says its `model` ("R2" / "Mini") and the IQ `rates` it runs at, Hz. */
+export interface FoundRadio {
+  args?: string;
+  serial?: string;
+  label: string;
+  model?: string;
+  rates?: number[];
 }
 /** A SoapySDR module (one per device family): the drivers it registered, or why it didn't load. */
 export interface SoapyModule {
