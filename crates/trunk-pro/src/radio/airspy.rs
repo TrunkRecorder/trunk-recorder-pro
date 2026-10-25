@@ -442,7 +442,12 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
         }
         let real = !library_iq();
         check(a, "sample type", (a.set_sample_type)(d.dev, if real { SAMPLE_INT16_REAL } else { SAMPLE_FLOAT32_IQ }))?;
-        check(a, "sample rate", (a.set_samplerate)(d.dev, if real { want_iq * 2 } else { want_iq }))?;
+        // By the IQ rate even for real samples: libairspy looks rates up in its own
+        // (IQ) list and sends the one found as its index, which every firmware takes.
+        // A doubled rate isn't in that list (libairspy would send it by value, which
+        // firmware before v1.0.0-rc7 refuses), or worse, is: a Mini's 3 MSPS doubled
+        // is 6, its first rate, and it would run at twice the rate asked for.
+        check(a, "sample rate", (a.set_samplerate)(d.dev, want_iq))?;
         d.tune(cfg.center_hz)?;
         // (As a gain set while running is: a reopened radio comes back the same.)
         d.set_gain(Gain::Airspy(cfg.gain))?;
