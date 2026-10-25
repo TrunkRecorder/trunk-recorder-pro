@@ -132,10 +132,10 @@ the same settings and recordings folder as when you run `trunk-pro` yourself.
    sudo loginctl enable-linger "$USER"
    ```
 
-   Lingering also keeps the RAM spool (in /dev/shm) when you log out: without it systemd deletes
-   your files there as your last session ends (`RemoveIPC`). Running `trunk-pro` some other way
-   that outlives your login (tmux, screen, nohup), set `RemoveIPC=no` in
-   /etc/systemd/logind.conf instead.
+   The service keeps the RAM spool in its own runtime folder (`RuntimeDirectory=trunk-pro`, in
+   RAM under `/run`). Run `trunk-pro` some other way that outlives your login (tmux, screen,
+   nohup), and the spool is in `/dev/shm` instead, where systemd deletes your files as your last
+   login session ends (`RemoveIPC`): set `RemoveIPC=no` in /etc/systemd/logind.conf.
 
 4. Reach the interface from another computer: see [Remote access](#remote-access).
 
@@ -158,6 +158,31 @@ calls in progress before it exits.
 If you prefer to start recording from the service file rather than the setting, add `--start` to
 its `ExecStart` line. If you installed with a different `PREFIX`, change the path in `ExecStart`
 to match.
+
+### As a system service, under an account of its own
+
+You can run it as a system service instead (`/etc/systemd/system/trunk-pro.service`, started
+with `sudo systemctl enable --now trunk-pro`), as an account kept for it (`User=` and `Group=`).
+The settings and recordings are then that account's (`~/.config/trunk-pro`, `~/TrunkRecorderPro`
+in its home). Add the account to `plugdev` for the dongles (see [Dongle access](#dongle-access-udev)).
+
+Give it a runtime folder, as the user service has:
+
+```ini
+[Service]
+User=truser
+Group=truser
+ExecStart=/usr/local/bin/trunk-pro serve --no-open
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=trunk-pro
+RuntimeDirectoryPreserve=yes
+```
+
+Without one the RAM spool is in `/dev/shm`, and a system service isn't a login session: whenever
+someone logs in as that account (SSH, `su`, `sudo -iu`) and out again, systemd's `RemoveIPC`
+deletes its files there, the spool with the calls waiting in it for their uploads, while the
+service runs on. The app makes the spool again, and the dashboard says what happened.
 
 ## Remote access
 

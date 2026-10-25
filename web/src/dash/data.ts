@@ -287,7 +287,8 @@ export function pluginHealth(p: PluginInfo, on: boolean): Health {
 /** What to do about a RAM spool that went while the app ran, by its kind. */
 export function spoolRemovedFix(kind?: string): string {
   if (kind === "tmpfs")
-    return "systemd deletes a user's files in /dev/shm when they log out (RemoveIPC). Run `sudo loginctl enable-linger $USER` (and start trunk-pro as the user service), or set RemoveIPC=no in /etc/systemd/logind.conf";
+    return "systemd deletes a user's files in /dev/shm when they log out (RemoveIPC). Run `sudo loginctl enable-linger $USER` (and start trunk-pro as the user service), or set RemoveIPC=no in /etc/systemd/logind.conf; a system service of your own can give it RuntimeDirectory=trunk-pro (see Running it headless)";
+  if (kind === "service") return "Something deleted the service's runtime folder: systemd does when the service stops, unless it has RuntimeDirectoryPreserve=yes";
   if (kind === "RAM disk") return "Something ejected the RAM disk (the Finder, or hdiutil detach)";
   return "Something deleted the folder set in ramSpool.dir";
 }

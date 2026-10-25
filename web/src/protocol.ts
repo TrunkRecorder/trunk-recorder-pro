@@ -1418,7 +1418,7 @@ export interface MonitorEventBody {
   critical?: boolean;
   /** spoolFull: calls that went to the recordings folder for want of room. */
   calls?: number;
-  /** spoolRemoved: the spool's kind ("tmpfs", "RAM disk", "folder"), and whether it was made again. */
+  /** spoolRemoved: the spool's kind ("tmpfs", "service", "RAM disk", "folder"), and whether it was made again. */
   spool?: string;
   remade?: boolean;
   /** clockOff: what's wrong, and whether it's badly off. */

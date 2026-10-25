@@ -151,7 +151,7 @@ export function PlatformPage() {
                     )}
                     {spool ? (
                       <span title="Held in memory until plugins upload; overflows to disk.">
-                        {d.kind === "RAM disk" ? "a RAM disk" : d.kind === "tmpfs" ? "in /dev/shm" : "a folder of yours"} · calls waiting for upload
+                        {d.kind === "RAM disk" ? "a RAM disk" : d.kind === "tmpfs" ? "in /dev/shm" : d.kind === "service" ? "in the service's runtime folder" : "a folder of yours"} · calls waiting for upload
                       </span>
                     ) : (
                       <span>on {d.mount}</span>

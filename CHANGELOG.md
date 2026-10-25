@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The RAM spool in the service's own folder** (#88). Run as a systemd service with
+  `RuntimeDirectory=` (the shipped `trunk-pro.service` now has it, with
+  `RuntimeDirectoryPreserve=yes`), the Linux spool is `spool` in that folder under `/run` (using
+  at most half of it) instead of `/dev/shm`, where systemd's `RemoveIPC` deleted it whenever
+  someone logged out of the account it runs as, with the calls waiting in it for their uploads.
+  docs/install/linux.md has a section on running it as a system service of your own.
 - **Plugins can have a page of their own, buttons, and settings that change without a restart.** A
   plugin's manifest can ask for a page (`page`), listed under Plugins in the navigation, where its
   lists of settings are cards of their own, each item one line until opened, beside its log; for

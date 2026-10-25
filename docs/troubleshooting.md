@@ -313,10 +313,13 @@ recordings folder instead. See [Recordings](guides/recordings.md).
 
 **The RAM spool was deleted while running** (Linux): systemd deletes a user's files in /dev/shm
 when their last login session ends (`RemoveIPC`, on by default), as when the SSH session that
-started `trunk-pro` closes. The app makes the spool again, but each logout deletes it again. Run
-it as the [user service with lingering](install/linux.md#running-it-headless)
-(`sudo loginctl enable-linger "$USER"`), or set `RemoveIPC=no` in /etc/systemd/logind.conf and
-restart (or `sudo systemctl restart systemd-logind`).
+started `trunk-pro` closes, or someone logs in and out as the account a system service runs as.
+The app makes the spool again, but calls waiting in it for their uploads are lost, and each
+logout deletes it again. Run it as the [user service](install/linux.md#running-it-headless) or a
+[system service](install/linux.md#as-a-system-service-under-an-account-of-its-own) with
+`RuntimeDirectory=trunk-pro`, which keeps the spool in the service's own folder; or set
+`RemoveIPC=no` in /etc/systemd/logind.conf and restart (or `sudo systemctl restart
+systemd-logind`).
 
 ## Spotlight
 
