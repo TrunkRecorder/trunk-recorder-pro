@@ -112,6 +112,7 @@ struct SpoolWatch {
     /// 0 fine, 1 low, 2 nearly full: as last told.
     level: u8,
     overflowed: u64,
+    removed: u64,
     swept: Option<Instant>,
 }
 
@@ -126,19 +127,31 @@ impl SpoolWatch {
                 log::warn!("{n} file(s) left in the RAM spool by calls no plugin finished: moved to {}", capture.display());
             }
         }
+        // Gone (deleted, unmounted): made again, and said, with how to stop it.
+        let here = s.revive();
+        let removed = s.removed();
+        if removed > self.removed {
+            ctx.event(MonitorEvent::SpoolRemoved { spool: s.kind.to_string(), remade: here });
+            self.removed = removed;
+        }
         let n = s.overflowed();
         if n > self.overflowed {
             ctx.event(MonitorEvent::SpoolFull { calls: n - self.overflowed });
             self.overflowed = n;
         }
-        let Some((total, free)) = s.usage().filter(|u| u.0 > 0) else { return };
-        let pct = 100.0 * free as f64 / total as f64;
-        sink.gauge("plat/disk/spool/free", free as f64);
-        sink.gauge("plat/disk/spool/freePct", pct);
-        let row = json!({ "name": "spool", "path": s.dir.display().to_string(), "mount": s.dir.display().to_string(), "kind": s.kind, "totalBytes": total, "freeBytes": free, "overflowed": n });
+        // Its row stays while it's missing, so the dashboard says so.
+        let usage = s.usage().filter(|u| here && u.0 > 0);
+        let (total, free) = usage.unwrap_or_default();
+        let row = json!({ "name": "spool", "path": s.dir.display().to_string(), "mount": s.dir.display().to_string(), "kind": s.kind, "totalBytes": total, "freeBytes": free, "overflowed": n, "removed": removed, "missing": usage.is_none() });
         if let Some(d) = p["disks"].as_array_mut() {
             d.push(row);
         }
+        if usage.is_none() {
+            return;
+        }
+        let pct = 100.0 * free as f64 / total as f64;
+        sink.gauge("plat/disk/spool/free", free as f64);
+        sink.gauge("plat/disk/spool/freePct", pct);
         let level = if pct < SPOOL_CRITICAL_PCT { 2 } else if pct < SPOOL_LOW_PCT { 1 } else { 0 };
         let free_pct = (pct * 10.0).round() / 10.0;
         if level > self.level {

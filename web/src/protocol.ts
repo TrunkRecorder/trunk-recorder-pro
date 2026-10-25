@@ -1331,6 +1331,7 @@ export interface MonitorEventBody {
     | "spoolLow"
     | "spoolFull"
     | "spoolRecovered"
+    | "spoolRemoved"
     | "clockOff"
     | "clockOk"
     | "clockStep";
@@ -1363,6 +1364,9 @@ export interface MonitorEventBody {
   critical?: boolean;
   /** spoolFull: calls that went to the recordings folder for want of room. */
   calls?: number;
+  /** spoolRemoved: the spool's kind ("tmpfs", "RAM disk", "folder"), and whether it was made again. */
+  spool?: string;
+  remade?: boolean;
   /** clockOff: what's wrong, and whether it's badly off. */
   why?: string;
   bad?: boolean;
@@ -1381,8 +1385,8 @@ export interface PlatformInfo {
   cpuLimitCores: number | null;
   memTotal: number;
   uptimeS: number;
-  /** "recordings", "data", and "spool" (the RAM spool, with its `kind` and calls `overflowed` to the disk). */
-  disks: { name: string; path: string; mount: string; totalBytes: number; freeBytes: number; kind?: string; overflowed?: number }[];
+  /** "recordings", "data", and "spool" (the RAM spool, with its `kind`, calls `overflowed` to the disk, times it was `removed` while running, and `missing`: gone and not made again). */
+  disks: { name: string; path: string; mount: string; totalBytes: number; freeBytes: number; kind?: string; overflowed?: number; removed?: number; missing?: boolean }[];
   /** macOS: whether Spotlight indexes the recordings folder (null: not checked yet, or not macOS). */
   spotlight?: { path: string; state: "indexed" | "excluded" | "unknown"; why: string } | null;
   probes: ProbeRow[];

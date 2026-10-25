@@ -140,11 +140,15 @@ export function PlatformPage() {
                     <b>{spool ? "RAM spool" : d.name === "recordings" ? "Recordings" : "App data"}</b>
                     <span className="muted small mono">{d.path}</span>
                   </div>
-                  <Meter value={used} max={100} zones={spool ? [75, 90] : [90, 95]} label={`${d.name} disk used`} />
+                  <Meter value={d.missing ? null : used} max={100} zones={spool ? [75, 90] : [90, 95]} label={`${d.name} disk used`} />
                   <div className="kv small">
-                    <span>
-                      <b>{bytes(d.freeBytes)}</b> free of {bytes(d.totalBytes)}
-                    </span>
+                    {d.missing ? (
+                      <span className="bad">Gone: calls go to the recordings folder</span>
+                    ) : (
+                      <span>
+                        <b>{bytes(d.freeBytes)}</b> free of {bytes(d.totalBytes)}
+                      </span>
+                    )}
                     {spool ? (
                       <span title="Held in memory until plugins upload; overflows to disk.">
                         {d.kind === "RAM disk" ? "a RAM disk" : d.kind === "tmpfs" ? "in /dev/shm" : "a folder of yours"} · calls waiting for upload
@@ -153,6 +157,7 @@ export function PlatformPage() {
                       <span>on {d.mount}</span>
                     )}
                     {spool && !!d.overflowed && <span className="warn">{d.overflowed} call{d.overflowed === 1 ? "" : "s"} overflowed to disk</span>}
+                    {spool && !!d.removed && <span className="warn">deleted {d.removed === 1 ? "once" : `${d.removed} times`} while running</span>}
                     {days !== null && (
                       <span className={days < 7 ? "warn" : ""} title="At last week's average, before M4A or clean-up">
                         About <b>{days > 365 ? "a year or more" : dur(days * 86400)}</b> of recordings left at {bytes(audioPerDay)} a day

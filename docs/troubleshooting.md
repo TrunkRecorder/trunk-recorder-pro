@@ -311,6 +311,13 @@ carries on, writing to disk. Spool warnings in the event feed (filling, full) me
 aren't uploading as fast as calls arrive. Nothing is lost when it's full: calls go to the
 recordings folder instead. See [Recordings](guides/recordings.md).
 
+**The RAM spool was deleted while running** (Linux): systemd deletes a user's files in /dev/shm
+when their last login session ends (`RemoveIPC`, on by default), as when the SSH session that
+started `trunk-pro` closes. The app makes the spool again, but each logout deletes it again. Run
+it as the [user service with lingering](install/linux.md#running-it-headless)
+(`sudo loginctl enable-linger "$USER"`), or set `RemoveIPC=no` in /etc/systemd/logind.conf and
+restart (or `sudo systemctl restart systemd-logind`).
+
 ## Spotlight
 
 On macOS, the Platform page may say **Spotlight indexes the recordings folder**. Spotlight reads
