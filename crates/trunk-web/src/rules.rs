@@ -123,6 +123,19 @@ pub fn signal_note(json: &str) -> String {
     tolerance_note(kind, &d.tones_hz.iter().map(|&f| f as f32).collect::<Vec<_>>(), d.knox, d.extra_tolerance_pct as f32)
 }
 
+/// A signal (JSON) in words, as the recorder logs a pattern heard: "two-tone
+/// 313 → 1642 Hz", "KNOX 0123", "Morse WRV713 (990 Hz)"; without `kind`,
+/// less the kind ("313 → 1642 Hz"). "": not a pattern.
+#[wasm_bindgen(js_name = signalText)]
+pub fn signal_text(json: &str, kind: bool) -> String {
+    use trunk_core::dsp::inband::pattern::{describe, describe_detail, PatternKind};
+    let Ok(d) = serde_json::from_str::<trunk_app::config::SignalDef>(json) else { return String::new() };
+    let Some(k) = PatternKind::from_name(&d.pattern) else { return String::new() };
+    let f32s = |v: &[f64]| v.iter().map(|&x| x as f32).collect::<Vec<_>>();
+    let (hz, lengths) = (f32s(&d.tones_hz), f32s(&d.lengths_s));
+    if kind { describe(k, &hz, &lengths, &d.digits, d.knox, 0, None) } else { describe_detail(k, &hz, &lengths, &d.digits, 0, None) }
+}
+
 /// A signal's id made from what people call it ("Norwalk EMS page" → NORWALK_EMS_PAGE).
 #[wasm_bindgen(js_name = signalId)]
 pub fn signal_id(text: &str) -> String {

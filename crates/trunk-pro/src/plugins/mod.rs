@@ -123,14 +123,31 @@ pub fn forget(cfg: &mut Config, id: &str) {
     }
 }
 
-/// Whether going from `a` to `b` changes what plugins run with.
-pub fn changed(a: &Config, b: &Config) -> bool {
+/// What going from one config to another changes for plugins ([`change`]).
+#[derive(Debug, PartialEq)]
+pub enum Change {
+    None,
+    /// Only plugins' own settings: each changed plugin's id and new settings
+    /// (a plugin that takes them as it runs needn't restart).
+    Settings(Vec<(String, Value)>),
+    /// What they run with: they restart.
+    Restart,
+}
+
+/// What going from `a` to `b` changes for plugins.
+pub fn change(a: &Config, b: &Config) -> Change {
     let per_system = |c: &Config| -> Vec<(String, BTreeMap<String, Value>)> {
         let mut v: Vec<_> = c.systems.iter().map(|s| (s.short_name.clone(), s.plugins.clone())).collect();
         v.extend(c.conventional.iter().map(|x| (x.short_name.clone(), x.plugins.clone())));
         v
     };
-    a.plugins != b.plugins || a.recording.m4a != b.recording.m4a || per_system(a) != per_system(b)
+    // Each plugin's entry, but for its settings.
+    let bare = |c: &Config| -> BTreeMap<String, PluginSetup> { c.plugins.iter().map(|(k, p)| (k.clone(), PluginSetup { settings: Value::Null, ..p.clone() })).collect() };
+    if a.recording.m4a != b.recording.m4a || per_system(a) != per_system(b) || bare(a) != bare(b) {
+        return Change::Restart;
+    }
+    let settings: Vec<_> = b.plugins.iter().filter(|(k, p)| a.plugins.get(*k).map(|o| &o.settings) != Some(&p.settings)).map(|(k, p)| (k.clone(), p.settings.clone())).collect();
+    if settings.is_empty() { Change::None } else { Change::Settings(settings) }
 }
 
 pub fn plugins_dir() -> PathBuf {
@@ -282,7 +299,20 @@ mod tests {
         let a: Config = serde_json::from_value(json!({ "plugins": { "openmhz": { "enabled": true } } })).unwrap();
         let mut b = a.clone();
         b.plugins.get_mut("openmhz").unwrap().share_decrypted = true;
-        assert!(changed(&a, &b) && changed(&b, &a));
+        assert_eq!((change(&a, &b), change(&b, &a)), (Change::Restart, Change::Restart));
+    }
+
+    /// A plugin's own settings alone changed: they may be sent to it as it
+    /// runs; with anything more (a system's settings of it, turned off), a restart.
+    #[test]
+    fn its_own_settings_alone_are_a_settings_change() {
+        let a: Config = serde_json::from_value(json!({ "plugins": { "notify": { "enabled": true, "settings": { "rules": [] } }, "openmhz": { "enabled": true } } })).unwrap();
+        assert_eq!(change(&a, &a.clone()), Change::None);
+        let mut b = a.clone();
+        b.plugins.get_mut("notify").unwrap().settings = json!({ "rules": [{ "name": "Station 1" }] });
+        assert_eq!(change(&a, &b), Change::Settings(vec![("notify".into(), json!({ "rules": [{ "name": "Station 1" }] }))]));
+        b.plugins.get_mut("openmhz").unwrap().enabled = false;
+        assert_eq!(change(&a, &b), Change::Restart);
     }
 
     /// A system's name, FCC licenses (and the one that names it) and sites are told to plugins, a
@@ -339,7 +369,7 @@ mod tests {
         let mut gone = c.clone();
         forget(&mut gone, "openmhz");
         assert!(!gone.plugins.contains_key("openmhz") && gone.systems[0].plugins.is_empty() && gone.conventional[0].plugins.is_empty());
-        assert!(changed(&c, &gone) && !changed(&c, &c.clone()));
+        assert_eq!((change(&c, &gone), change(&c, &c.clone())), (Change::Restart, Change::None));
     }
 
     /// Plugins know systems by short name; the number events carry is the

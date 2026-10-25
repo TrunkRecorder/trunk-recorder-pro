@@ -10,8 +10,9 @@ import { editList, systemAt, useApp, type SystemRef } from "./controller.ts";
 import { numberList, talkgroupList, type TextCodec } from "./fieldText.ts";
 import { DraftInput, Field, NumberInput } from "./inputs.tsx";
 import { PlayButton } from "./PlayButton.tsx";
-import type { SignalDef } from "./protocol.ts";
-import { signalId, signalNote, signalProblem } from "./rules.ts";
+import { SignalButtons } from "./Plugins.tsx";
+import type { Config, SignalDef } from "./protocol.ts";
+import { signalId, signalNote, signalProblem, signalText } from "./rules.ts";
 import type { ToneSpec } from "./tonePlayer.ts";
 
 /** What ▶ plays for a signal. */
@@ -44,8 +45,15 @@ function asKind(d: SignalDef, k: Kind): SignalDef {
   return { ...keep, pattern: k, ...(tones?.length ? { tonesHz: tones } : {}), ...(d.extraTolerancePct ? { extraTolerancePct: d.extraTolerancePct } : {}) };
 }
 
-/** What a signal sends, for its row: its digits or text, or its tones. */
-const sends = (d: SignalDef) => (d.pattern === "digits" || d.pattern === "morse" ? d.digits ?? "" : d.tonesHz?.length ? `${d.tonesHz.join(", ")} Hz` : "");
+/** How plugins' settings name system `system`'s signal `id`: "system:ID". */
+export const signalRef = (system: string, id: string) => `${system}:${id}`;
+
+/** Every system's named signals, as choices (a plugin's `x-signals`). */
+export function signalChoices(c: Config): { value: string; label: string }[] {
+  return [...c.systems, ...c.conventional].flatMap((x) =>
+    (x.signals ?? []).filter((d) => d.id).map((d) => ({ value: signalRef(x.shortName, d.id), label: d.name ? `${d.name} (${signalRef(x.shortName, d.id)})` : signalRef(x.shortName, d.id) })),
+  );
+}
 
 /** An id as typed ("Town fire"), kept as one (TOWN_FIRE). */
 const idCodec: TextCodec<string> = { format: (v) => v, parse: signalId };
@@ -70,8 +78,12 @@ function tidy(x: SignalDef): SignalDef {
   return d;
 }
 
-/** One signal's fields, as its kind has them; what's wrong with it and what the recorder counts as it under them. `taken`: an id another signal has. */
-function SignalFields(props: { d: SignalDef; taken: (id: string) => boolean; onChange: (d: SignalDef) => void }) {
+/**
+ * One signal's fields, as its kind has them; what's wrong with it and what the recorder counts as it under them. `taken`:
+ * an id another signal has. `bare`: its tones alone (a tone typed into a plugin's settings), without an id, name or
+ * talkgroups.
+ */
+export function SignalFields(props: { d: SignalDef; taken: (id: string) => boolean; onChange: (d: SignalDef) => void; bare?: boolean }) {
   const { d } = props;
   const [clash, setClash] = useState<string | null>(null);
   const k = kindOf(d);
@@ -90,10 +102,12 @@ function SignalFields(props: { d: SignalDef; taken: (id: string) => boolean; onC
       <NumberInput label={label} narrow value={d.lengthsS?.[i] || undefined} onChange={(v) => set((x) => void (x.lengthsS![i] = v ?? 0))} />
     </Field>
   );
-  const problem = clash ? `This system has a signal ${clash} already.` : signalProblem(d);
+  // (Bare, it has no id: only its tones can be wrong.)
+  const problem = clash ? `This system has a signal ${clash} already.` : signalProblem(props.bare ? { ...d, id: d.id || "TONE" } : d);
   return (
     <>
       <div className="row-editor">
+        {!props.bare && (
         <Field label="Id" hint="What the call JSON and plugins name it by">
           <DraftInput
             className="mono"
@@ -108,9 +122,12 @@ function SignalFields(props: { d: SignalDef; taken: (id: string) => boolean; onC
             onBlur={() => setClash(null)}
           />
         </Field>
-        <Field label="Name">
-          <input value={d.name ?? ""} placeholder={d.id} onChange={(e) => set((x) => void (x.name = e.target.value))} />
-        </Field>
+        )}
+        {!props.bare && (
+          <Field label="Name">
+            <input value={d.name ?? ""} placeholder={d.id} onChange={(e) => set((x) => void (x.name = e.target.value))} />
+          </Field>
+        )}
         <Field label="Kind">
           <select aria-label="Kind" value={k} onChange={(e) => props.onChange(asKind(d, e.target.value as Kind))}>
             {KINDS.map((o) => (
@@ -168,9 +185,11 @@ function SignalFields(props: { d: SignalDef; taken: (id: string) => boolean; onC
             <NumberInput label="Extra tolerance, %" narrow value={d.extraTolerancePct} onChange={(v) => set((x) => void (x.extraTolerancePct = v))} />
           </Field>
         )}
-        <Field label="Talkgroups" hint="Numbers, ranges (1000-1099), patterns (507*); empty: any">
-          <DraftInput className="mono" aria-label="Talkgroups" placeholder="any" codec={talkgroupList} value={d.talkgroups ?? []} onChange={(v) => set((x) => void (x.talkgroups = v))} />
-        </Field>
+        {!props.bare && (
+          <Field label="Talkgroups" hint="Numbers, ranges (1000-1099), patterns (507*); empty: any">
+            <DraftInput className="mono" aria-label="Talkgroups" placeholder="any" codec={talkgroupList} value={d.talkgroups ?? []} onChange={(v) => set((x) => void (x.talkgroups = v))} />
+          </Field>
+        )}
       </div>
       {problem && <span className="field-hint warn-text">{problem}</span>}
       <span className="field-hint">{signalNote(d)}</span>
@@ -232,9 +251,10 @@ export function SystemSignals(props: { system: SystemRef }) {
                       {bad && <div className="warn-text small">{bad}</div>}
                     </td>
                     <td className="small">{kindLabel(d)}</td>
-                    <td className="mono">{sends(d)}</td>
+                    <td className="mono">{signalText(d, false)}</td>
                     <td className="mono small">{d.talkgroups?.join(", ") || "any"}</td>
                     <td className="nowrap">
+                      <SignalButtons system={sys.shortName} d={d} />
                       <PlayButton spec={defSpec(d)} />
                       <button type="button" className="btn ghost small" onClick={() => setEditing(editing === i ? null : i)}>
                         {editing === i ? "Done" : "Edit"}

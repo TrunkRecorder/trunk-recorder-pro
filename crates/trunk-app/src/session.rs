@@ -836,6 +836,16 @@ impl Session {
         tg_names(&self.engine, system, tgs)
     }
 
+    /// Talkgroup `tg`'s name in system `system`'s file ("": none), as plugins' events give it (`alpha_tag`).
+    fn alpha_tag(&self, system: u16, tg: u32) -> String {
+        alpha_tag(&self.engine, system, tg)
+    }
+
+    /// Radio `unit`'s name ("": none), as a call's JSON gives it (`tag`).
+    fn unit_tag(&self, system: u16, unit: u32) -> String {
+        self.engine.unit_name(system, unit).unwrap_or_default()
+    }
+
     /// Unix seconds of engine time `s`.
     fn wall(&self, s: f64) -> f64 {
         self.epoch_ms / 1000.0 + s
@@ -941,7 +951,7 @@ impl Session {
                 .iter()
                 .map(|s| {
                     let f = s.flags;
-                    trunk_recorder_plugin::CallSource { unit: s.src, time: self.wall(s.time_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
+                    trunk_recorder_plugin::CallSource { unit: s.src, tag: self.unit_tag(c.system, s.src), time: self.wall(s.time_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
                 })
                 .collect(),
             patched_talkgroups: c.patched_talkgroups.clone(),
@@ -1002,7 +1012,9 @@ impl Session {
                     if let Some(kind) = unit_kind(m.kind) {
                         let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert" | "emergency_alarm").then_some(m.talkgroup);
                         if m.source >= 0 {
-                            let e = UnitEvent { system, short_name: name.clone(), site: self.site_name(Some(site)), kind: kind.into(), unit: m.source as u32, talkgroup, emergency: m.emergency, time: self.wall(m.time_s) };
+                            let unit = m.source as u32;
+                            let (tag, alpha_tag) = (self.unit_tag(system, unit), talkgroup.map(|tg| self.alpha_tag(system, tg)).unwrap_or_default());
+                            let e = UnitEvent { system, short_name: name.clone(), site: self.site_name(Some(site)), kind: kind.into(), unit, tag, talkgroup, alpha_tag, emergency: m.emergency, time: self.wall(m.time_s) };
                             out.push(Output::Plugin(HostMessage::Unit(e)));
                         }
                     }
@@ -1083,9 +1095,9 @@ impl Session {
                 self.records.push(Record::text(Level::Info, Some(&self.site_label(t.system, t.site)), text.clone()));
                 self.log.push(json!({ "timeS": t.time_s, "kind": "tonePattern", "text": text, "system": name, "site": self.site_name(t.site) }));
                 if self.plugin_topics.tone_patterns {
-                    let alpha_tag = self.tg_names(t.system, [t.talkgroup]).first().and_then(|v| v["alphaTag"].as_str().map(String::from)).unwrap_or_default();
+                    let alpha_tag = self.alpha_tag(t.system, t.talkgroup);
                     let time = (self.wall(t.time_s) * 1000.0).round() / 1000.0;
-                    let ev = trunk_recorder_plugin::TonePatternEvent { short_name: name, site: self.site_name(t.site), call_num: t.call_id as u64, talkgroup: t.talkgroup, alpha_tag, decrypted: t.decrypted, time, pattern };
+                    let ev = trunk_recorder_plugin::TonePatternEvent { short_name: name, site: self.site_name(t.site), call_num: t.call_id as u64, talkgroup: t.talkgroup, alpha_tag, src_tag: self.unit_tag(t.system, t.src), decrypted: t.decrypted, time, pattern };
                     out.push(Output::Plugin(HostMessage::TonePattern(ev)));
                 }
             }
@@ -1311,9 +1323,12 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
 
 /// Talkgroups with their names in system `system`'s talkgroup file.
 fn tg_names(engine: &Engine, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-    let systems = engine.systems();
-    let file = systems.get(system as usize).map(|s| &s.talkgroups);
-    tgs.into_iter().map(|tg| json!({ "talkgroup": tg, "alphaTag": file.and_then(|f| f.get(&tg)).map_or("", |t| t.alpha_tag.as_str()) })).collect()
+    tgs.into_iter().map(|tg| json!({ "talkgroup": tg, "alphaTag": alpha_tag(engine, system, tg) })).collect()
+}
+
+/// Talkgroup `tg`'s name in system `system`'s talkgroup file ("": not in it).
+fn alpha_tag(engine: &Engine, system: u16, tg: u32) -> String {
+    engine.systems().get(system as usize).and_then(|s| s.talkgroups.get(&tg)).map_or(String::new(), |t| t.alpha_tag.clone())
 }
 
 /// A system's `decodeDetail` beyond its channels: each running site's

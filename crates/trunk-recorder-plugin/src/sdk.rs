@@ -42,6 +42,18 @@ pub trait Plugin: Sized {
     fn status(&mut self, _status: Status) {}
     /// A call's tones made a pattern: every one heard (subscribe to `tone_pattern`).
     fn tone_pattern(&mut self, _t: TonePatternEvent) {}
+    /// One of the plugin's buttons was pressed (`x-actions` in its settings
+    /// schema). Answer through `reply`, now or from another thread once the
+    /// work is done; a reply dropped unsent answers that it failed.
+    fn action(&mut self, _a: Action, reply: Reply) {
+        reply.fail("This plugin has no such action");
+    }
+    /// Its settings changed while it runs (set [`Manifest::live_settings`]
+    /// for this to be called rather than the plugin restarted). An `Err` is
+    /// shown as its status, and the settings it had stay.
+    fn settings(&mut self, _setup: Setup<Self::Config, Self::SystemConfig>) -> Result<(), String> {
+        Err("it can't take new settings while it runs".into())
+    }
 
     /// The recorder is stopping (or the plugin's stdin closed): finish or save
     /// what's in flight within `grace` — the process exits when this returns.
@@ -170,6 +182,35 @@ impl Host {
     }
 }
 
+/// The answer to an [`Action`]: send it once, with [`Reply::ok`] or
+/// [`Reply::fail`]. It can be moved to another thread.
+pub struct Reply {
+    host: Host,
+    request: u64,
+    sent: bool,
+}
+
+impl Reply {
+    pub fn ok(mut self, message: impl Into<String>) {
+        self.send(true, message.into());
+    }
+    pub fn fail(mut self, message: impl Into<String>) {
+        self.send(false, message.into());
+    }
+    fn send(&mut self, ok: bool, message: String) {
+        self.sent = true;
+        self.host.send(&PluginMessage::ActionResult { request: self.request, ok, message });
+    }
+}
+
+impl Drop for Reply {
+    fn drop(&mut self) {
+        if !self.sent {
+            self.send(false, "The plugin didn't answer".into());
+        }
+    }
+}
+
 /// The manifest with the settings schemas filled in.
 pub fn describe<P: Plugin>() -> Manifest {
     let mut m = P::manifest();
@@ -257,6 +298,14 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
             HostMessage::Audio(a) => p.audio(a),
             HostMessage::Status(s) => p.status(s),
             HostMessage::TonePattern(t) => p.tone_pattern(t),
+            HostMessage::Action(a) => {
+                let reply = Reply { host: host.clone(), request: a.request, sent: false };
+                p.action(a, reply)
+            }
+            HostMessage::Settings(h) => match setup::<P>(h).and_then(|s| p.settings(s)) {
+                Ok(()) => host.status(State::Ok, ""),
+                Err(e) => host.status(State::Error, format!("new settings not taken: {e}")),
+            },
             HostMessage::Shutdown(s) => {
                 grace = std::time::Duration::from_secs_f64(s.grace_s.max(0.0));
                 break;
@@ -271,6 +320,11 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
 }
 
 fn start<P: Plugin>(host: Host, hello: Hello) -> Result<P, String> {
+    P::start(host, setup::<P>(hello)?)
+}
+
+/// What `hello` sets the plugin up with.
+fn setup<P: Plugin>(hello: Hello) -> Result<Setup<P::Config, P::SystemConfig>, String> {
     if hello.api != 0 && hello.api < API_VERSION {
         return Err(format!("this plugin needs a newer recorder (plugin API {API_VERSION}, the recorder has {})", hello.api));
     }
@@ -287,8 +341,7 @@ fn start<P: Plugin>(host: Host, hello: Hello) -> Result<P, String> {
         };
         systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, name: s.name, fcc: s.fcc, fcc_call_sign: s.fcc_call_sign, fcc_name: s.fcc_name, sites: s.sites, config, settings });
     }
-    let setup = Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, audio_formats: hello.audio_formats };
-    P::start(host, setup)
+    Ok(Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, audio_formats: hello.audio_formats })
 }
 
 /// Settings left out entirely count as `{}`, so `#[serde(default)]` applies.

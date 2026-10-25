@@ -347,6 +347,17 @@ impl Plugins {
         self.publish_all_runtime();
     }
 
+    /// The config went from `old` to `new`: plugins that take new settings
+    /// as they run are sent theirs ([`PluginHost::settle`]); anything more
+    /// changed, and they restart with it ([`Plugins::reload`]).
+    pub fn apply(&self, old: &Config, new: &Config) {
+        match super::change(old, new) {
+            super::Change::None => {}
+            super::Change::Settings(all) if self.host().is_some_and(|h| all.iter().all(|(id, v)| h.settle(id, v))) => {}
+            _ => self.reload(new),
+        }
+    }
+
     /// While recording: restart the plugins with `cfg`'s settings. The old
     /// ones finish in the background; the new ones start once they have
     /// exited (each plugin's data folder, its saved queue, is theirs until

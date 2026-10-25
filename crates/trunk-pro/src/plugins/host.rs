@@ -9,7 +9,7 @@
 //! late (its delays) goes to the [`Hold`] instead, which gives it to the
 //! plugin when it's due.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
-    format, topic, AudioChunk, CallFiles, CallRecord, ConcludedCall, Hello, HostInfo, HostMessage, Level, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
+    format, topic, Action, AudioChunk, CallFiles, CallRecord, ConcludedCall, Hello, HostInfo, HostMessage, Level, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
     SystemInfo, API_VERSION, EXIT_CONFIG,
 };
 
@@ -63,7 +63,8 @@ struct Plugin {
     manifest: Manifest,
     exe: PathBuf,
     data_dir: PathBuf,
-    hello: Arc<str>,
+    /// What it starts with (changed by new settings it took live).
+    hello: Mutex<Hello>,
     tx: Mutex<Option<SyncSender<Arc<str>>>>,
     child: Mutex<Option<Child>>,
     dropped: AtomicU64,
@@ -87,6 +88,10 @@ struct Shared {
     notes: Notes,
     /// Where what's delayed waits (None: nothing is).
     hold: Option<Arc<Hold>>,
+    /// Buttons pressed ([`PluginHost::action`]) waiting for the plugin's
+    /// answer, by the request number it was given.
+    answers: Mutex<HashMap<u64, mpsc::Sender<(bool, String)>>>,
+    requests: AtomicU64,
 }
 
 /// How long `shutdown` waits for a plugin to read what was queued before
@@ -275,7 +280,7 @@ impl PluginHost {
                 manifest: m,
                 exe: s.exe,
                 data_dir,
-                hello: line(&HostMessage::Hello(hello)),
+                hello: Mutex::new(hello),
                 tx: Mutex::new(Some(tx)),
                 child: Mutex::new(None),
                 dropped: AtomicU64::new(0),
@@ -288,7 +293,7 @@ impl PluginHost {
                 audio_held_said: AtomicBool::new(false),
             });
         }
-        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold });
+        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold, answers: Default::default(), requests: AtomicU64::new(0) });
         let supervisors = queues
             .into_iter()
             .enumerate()
@@ -348,6 +353,47 @@ impl PluginHost {
         if self.shared.plugins.iter().any(|p| p.manifest.subscribes(t)) {
             self.shared.dispatch(t, &line(m), &about, None);
         }
+    }
+
+    /// Plugin `id` takes `config` as its settings while it runs, if it can
+    /// (`live_settings`, one copy, no system's overrides of them, every
+    /// setting it needs set). False: it has to be restarted for them, as one
+    /// that stopped over its settings (exit 78) waits to be.
+    pub fn settle(&self, id: &str, config: &Value) -> bool {
+        let copies: Vec<&Plugin> = self.shared.plugins.iter().filter(|p| super::parse_label(&p.id).0 == id).collect();
+        let [p] = copies[..] else { return false };
+        if !p.manifest.live_settings || !unset_required(p.manifest.config.as_ref(), config).is_empty() {
+            return false;
+        }
+        let mut hello = p.hello.lock().unwrap();
+        if hello.systems.iter().any(|s| !s.settings.is_null() || !s.config.is_null()) {
+            return false;
+        }
+        let h = Hello { config: config.clone(), ..hello.clone() };
+        if self.shared.give(p, &line(&HostMessage::Settings(h.clone()))) != Offer::Sent {
+            return false;
+        }
+        // (Restarted after a crash, it starts with them.)
+        *hello = h;
+        true
+    }
+
+    /// Someone pressed one of plugin `id`'s buttons (its first copy's):
+    /// hand it `action` on `value`, and wait (`wait` at most) for its
+    /// answer, ok or not and what it said. Err: there's none to give.
+    pub fn action(&self, id: &str, action: String, value: Value, wait: Duration) -> Result<(bool, String), String> {
+        let sh = &self.shared;
+        let p = sh.plugins.iter().find(|p| p.id == id).ok_or("It isn't running: plugins run while recording")?;
+        let request = sh.requests.fetch_add(1, Ordering::Relaxed) + 1;
+        let (tx, rx) = mpsc::channel();
+        sh.answers.lock().unwrap().insert(request, tx);
+        let answer = match sh.give(p, &line(&HostMessage::Action(Action { request, action, value }))) {
+            Offer::Sent => rx.recv_timeout(wait).map_err(|_| "No answer from the plugin".to_string()),
+            Offer::Full => Err("It's too far behind to take that now".into()),
+            Offer::Gone => Err("It isn't running".into()),
+        };
+        sh.answers.lock().unwrap().remove(&request);
+        answer
     }
 
     /// A live audio frame (the session's `[2][u16 system][u32 call][u32 tg][i16…]`).
@@ -697,7 +743,7 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
     *p.child.lock().unwrap() = Some(child);
     *p.started.lock().unwrap() = Some(Instant::now());
     let dead = Arc::new(AtomicBool::new(false));
-    let hello = p.hello.clone();
+    let hello = line(&HostMessage::Hello(p.hello.lock().unwrap().clone()));
     let dead2 = dead.clone();
     let drained_at = p.drained_at.clone();
     let writer = std::thread::spawn(move || {
@@ -735,6 +781,13 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
             Ok(PluginMessage::Status { state, message }) => Note::State { plugin: p.id.clone(), state, message },
             Ok(PluginMessage::CallResult { path, outcome, message, url, took_ms }) => Note::Result { plugin: p.id.clone(), path, outcome, message, url, took_ms },
             Ok(PluginMessage::Metrics(metrics)) => Note::Metrics { plugin: p.id.clone(), metrics },
+            // (To the button that was pressed, waiting in `action`.)
+            Ok(PluginMessage::ActionResult { request, ok, message }) => {
+                if let Some(tx) = sh.answers.lock().unwrap().remove(&request) {
+                    let _ = tx.send((ok, message));
+                }
+                continue;
+            }
             Ok(PluginMessage::Unknown) => continue,
             // Not the protocol (a stray print): keep it as a log line.
             Err(_) => Note::Log { plugin: p.id.clone(), level: Level::Info, text: l },
@@ -795,7 +848,7 @@ mod tests {
             manifest,
             exe: PathBuf::new(),
             data_dir: PathBuf::new(),
-            hello: "".into(),
+            hello: Mutex::new(Hello::default()),
             tx: Mutex::new(Some(tx)),
             child: Mutex::new(None),
             dropped: AtomicU64::new(0),
@@ -827,6 +880,8 @@ mod tests {
                 }
             }),
             hold: None,
+            answers: Default::default(),
+            requests: AtomicU64::new(0),
         };
         let msg: Arc<str> = "x\n".into();
         let (clear, decrypted) = (About { system: "dcfd".into(), ..Default::default() }, About { system: "dcfd".into(), decrypted: true, ..Default::default() });
@@ -967,6 +1022,88 @@ mod tests {
         assert!(host.is_empty());
         let said = notes_seen.lock().unwrap().iter().rev().find_map(|n| if let Note::State { message, .. } = n { Some(message.clone()) } else { None });
         assert_eq!(said.as_deref(), Some("not started: Server (for b) isn't set"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A plugin that takes new settings as it runs is sent them (and starts
+    /// with them after a crash); settings leaving one it needs empty, or a
+    /// plugin that stopped over its settings, take a restart instead.
+    #[cfg(unix)]
+    #[test]
+    fn live_settings_reach_a_running_plugin() {
+        use serde_json::json;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-host-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // It keeps every line after its hello; with "stop" for a server, it stops over its settings.
+        let exe = dir.join("live");
+        let manifest = r#"{"id":"live","name":"Live","version":"1.0.0","api":1,"subscribe":["tone_pattern"],"live_settings":true,
+            "config":{"type":"object","properties":{"server":{"type":"string","title":"Server","x-required":true}}}}"#.replace('\n', " ");
+        std::fs::write(
+            &exe,
+            format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\ncase \"$line\" in *stop*) exit 78;; esac\necho '{{\"type\":\"ready\"}}'\nwhile read l; do echo \"$l\" >> lines.jsonl; done\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let notes: Notes = Arc::new(|_| {});
+        let audio = super::super::AudioSettings::default();
+        let spec = |server: &str, data: &str| Spec {
+            id: "live".into(),
+            copy: 0,
+            exe: exe.clone(),
+            config: json!({ "server": server }),
+            systems: BTreeMap::new(),
+            data_dir: Some(dir.join(data)),
+            share_decrypted: false,
+        };
+        let wait = |cond: &dyn Fn() -> bool| {
+            let t0 = Instant::now();
+            while !cond() && t0.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+
+        let mut host = PluginHost::start(vec![spec("https://a", "on")], &audio, &[], &dir, notes.clone());
+        let lines = dir.join("on/lines.jsonl");
+        assert!(host.settle("live", &json!({ "server": "https://b" })));
+        wait(&|| std::fs::read_to_string(&lines).is_ok_and(|t| t.contains("https://b")));
+        let sent: Value = serde_json::from_str(std::fs::read_to_string(&lines).unwrap().lines().next().unwrap()).unwrap();
+        assert_eq!((sent["type"].as_str(), sent["config"]["server"].as_str()), (Some("settings"), Some("https://b")));
+        assert!(!host.settle("live", &json!({ "server": "" })), "a setting it needs left empty: restarted, to say so");
+        host.shutdown(Duration::from_secs(1));
+
+        // Stopped over its settings: only a restart starts it again.
+        let host = PluginHost::start(vec![spec("stop", "stopped")], &audio, &[], &dir, notes);
+        wait(&|| host.shared.plugins[0].tx.lock().unwrap().is_none());
+        assert!(!host.settle("live", &json!({ "server": "https://c" })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A button pressed: the plugin is handed it and its answer comes back to
+    /// whoever pressed it; one that isn't running, or doesn't answer, says so.
+    #[cfg(unix)]
+    #[test]
+    fn a_button_pressed_waits_for_the_plugins_answer() {
+        use serde_json::json;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-host-action-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // It answers "test" with what it was given, and nothing else at all.
+        let exe = dir.join("act");
+        let manifest = r#"{"id":"act","name":"Act","version":"1.0.0","api":1,"subscribe":["tone_pattern"]}"#;
+        let answer = r#"r=$(echo "$l" | sed 's/.*"request":\([0-9]*\).*/\1/'); echo "{\"type\":\"action.result\",\"request\":$r,\"ok\":true,\"message\":\"sent to $(echo "$l" | sed 's/.*"to":"\([^"]*\)".*/\1/')\"}""#;
+        std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\nwhile read l; do case \"$l\" in *'\"action\":\"test\"'*) {answer};; esac; done\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let spec = Spec { id: "act".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
+        let mut host = PluginHost::start(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}));
+        let wait = Duration::from_secs(5);
+        assert_eq!(host.action("act", "test".into(), json!({ "to": "discord" }), wait), Ok((true, "sent to discord".into())));
+        assert_eq!(host.action("act", "other".into(), json!({}), Duration::from_millis(200)), Err("No answer from the plugin".into()));
+        assert!(host.action("nope", "test".into(), json!({}), wait).is_err());
+        assert!(host.shared.answers.lock().unwrap().is_empty(), "nothing left waiting");
+        host.shutdown(Duration::from_secs(1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

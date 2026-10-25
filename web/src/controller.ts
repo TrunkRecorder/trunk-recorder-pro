@@ -159,8 +159,8 @@ export interface AppState {
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
 
-export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "plugins" | "interfaces" | "platform" | "setup";
-const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "plugins", "interfaces", "platform", "setup"];
+export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "plugin" | "plugins" | "interfaces" | "platform" | "setup";
+const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "plugin", "plugins", "interfaces", "platform", "setup"];
 
 /** `#/radio/dcfd/tg/101` → ["radio", ["dcfd", "tg", "101"]]; the old `#plugins` too. */
 function routeFromHash(): { view: View; path: string[] } {
@@ -462,7 +462,8 @@ function take(m: FromRecorder): void {
     case "subscribed":
       break;
     case "statsResult":
-    case "radioResult": {
+    case "radioResult":
+    case "pluginActionResult": {
       const r = pending.get(m.id);
       pending.delete(m.id);
       r?.(m);
@@ -577,6 +578,13 @@ export type RadioQuery = Omit<Extract<ToRecorder, { type: "radioQuery" }>, "type
 
 export function radioQuery(q: RadioQuery): Promise<RadioResult> {
   return ask<RadioResult>({ type: "radioQuery", id: nextId++, ...q });
+}
+
+export type PluginActionResult = Extract<FromRecorder, { type: "pluginActionResult" }>;
+
+/** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited): how it went, as the plugin says. */
+export function pluginAction(plugin: string, action: string, value: unknown): Promise<PluginActionResult> {
+  return ask<PluginActionResult>({ type: "pluginAction", id: nextId++, plugin, action, value });
 }
 
 /**

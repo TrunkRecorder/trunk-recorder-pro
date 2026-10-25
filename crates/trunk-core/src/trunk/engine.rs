@@ -1636,6 +1636,12 @@ impl Core {
     pub fn unit_alias(&self, system: u16, unit: u32) -> Option<&str> {
         self.systems.get(system as usize)?.aliases.get(unit)
     }
+    /// A radio's name on system `system`, as a call's JSON gives it (its
+    /// `tag`): the units file's or its talker alias, as the system says.
+    pub fn unit_name(&self, system: u16, unit: u32) -> Option<String> {
+        let s = self.systems.get(system as usize)?;
+        UnitTags::name(Some(&s.cfg.unit_tags), Some(&s.aliases), unit)
+    }
 
     /// A key decrypted voice to noise on `system` (on its site `site`): say so, once a key and system.
     fn wrong_key(told: &mut BTreeSet<(u16, u8, u16)>, events: &mut Vec<Event>, system: u16, site: Option<u16>, c: CipherId, talkgroup: Option<u32>) {
@@ -2243,6 +2249,10 @@ impl Engine {
     /// A radio's talker alias on system `system` (a call's).
     pub fn unit_alias(&self, system: u16, unit: u32) -> Option<String> {
         self.core().unit_alias(system, unit).map(str::to_string)
+    }
+    /// A radio's name on system `system`, as a call's JSON gives it.
+    pub fn unit_name(&self, system: u16, unit: u32) -> Option<String> {
+        self.core().unit_name(system, unit)
     }
 
     pub fn sources(&self) -> &[SourceConfig] {
