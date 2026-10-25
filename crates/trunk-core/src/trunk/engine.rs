@@ -35,16 +35,20 @@ use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Po
 use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
 use super::message::{Message, MessageType};
 use super::multisite::{Held, MultiSite};
-use super::record::{save_call, Reception, SaveContext, Transmissions};
+use super::record::{save_call, SaveContext};
+use super::recorded::Recorded;
+use super::inband::InBandSpec;
 use super::record::{Concluded, SaveRules};
 use super::talkgroups::Talkgroups;
-use super::frames::CallFrames;
+
 use super::voice::TrackerOut;
 use super::units::{UnitAlias, UnitAliases, UnitTags};
 use super::identity::{IdField, Identity};
 use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus, Step};
 use super::voice::{self, ChannelQuality, CipherId, VoiceDecoder, VoiceParams, VoiceSpec};
 use crate::alias::Alias;
+use crate::dsp::inband::pattern::{Pattern, PatternKind};
+use crate::dsp::inband::signal::{matching, Signal};
 use crate::dsp::channelizer::{floor_slice, floor_slices};
 use crate::dsp::{AnalogTuning, Channelizer, HeadId};
 use crate::mbe;
@@ -116,6 +120,8 @@ pub struct SystemConfig {
     pub keys: Option<Arc<Keyring>>,
     /// Trunked: its sites (one at least). Conventional: none.
     pub sites: Vec<SiteConfig>,
+    /// The tone signals it sends, by id.
+    pub signals: Vec<Signal>,
 }
 
 impl SystemConfig {
@@ -134,6 +140,7 @@ impl SystemConfig {
             unit_tags: UnitTags::default(),
             keys: None,
             sites: Vec::new(),
+            signals: Vec::new(),
         }
     }
 
@@ -304,6 +311,28 @@ pub enum Event {
     /// A conventional transmission no channel row took (it had another
     /// code, or none where every row has one): its frequency and code.
     ConvSkipped { freq_hz: u64, code: String },
+    /// A call's tones made a pattern (a page, an alert, digits, a Morse ID),
+    /// as soon as nothing can add to it: a second after its last tone.
+    TonePattern(PatternHeard),
+}
+
+/// A tone pattern heard on a call, and the system's signals it is.
+#[derive(Clone, Debug)]
+pub struct PatternHeard {
+    pub system: u16,
+    /// Trunked: the site whose copy of the call it was heard on.
+    pub site: Option<u16>,
+    pub call_id: CallId,
+    pub talkgroup: u32,
+    /// The radio talking where it starts (0: not known).
+    pub src: u32,
+    pub pattern: Pattern,
+    /// The ids of the system's signals it is ([`SystemConfig::signals`]).
+    pub signals: Vec<String>,
+    /// Heard in voice decrypted with the system's keys.
+    pub decrypted: bool,
+    /// Sample-clock seconds.
+    pub time_s: f64,
 }
 
 /// A neighbouring site a control channel announces.
@@ -603,18 +632,13 @@ impl OnSlot {
     }
 }
 
+/// A call taking a recorder of the pool.
 struct Recording {
-    audio: Vec<f32>,
-    frames: CallFrames,
+    rec: Recorded,
     /// Its slot in the recorder pool (reused once free): the call JSON's `recorder_num`.
     recorder_num: u32,
-    tx: Transmissions,
-    /// How far off its channel the voice came in, Hz from the nominal
-    /// frequency: the sum of the measurements and their number.
-    freq_error: (f64, u32),
     /// The source it is on (AutoTune).
     source: usize,
-    reception: Reception,
     /// Some of its voice was decrypted: kept here as well as on the call, which may be gone by the time the voice
     /// arrives (a call that expires in the same block), so the audio and the saved call are still known for what they are.
     decrypted: bool,
@@ -834,15 +858,14 @@ impl Radio {
     fn take(&mut self, v: VoiceResult) {
         for (id, sig, noise) in v.reception {
             if let Some(r) = self.recordings.get_mut(&id) {
-                r.reception.signal(sig);
-                r.reception.noise(noise);
+                r.rec.reception.signal(sig);
+                r.rec.reception.noise(noise);
             }
         }
         self.pending.extend(v.routed);
         for (id, err) in v.freq_error {
             if let Some(r) = self.recordings.get_mut(&id) {
-                r.freq_error.0 += err;
-                r.freq_error.1 += 1;
+                r.rec.freq_error(err);
             }
         }
     }
@@ -957,13 +980,11 @@ impl SysHost<'_> {
         r.recordings.insert(
             call.id,
             Recording {
-                audio: Vec::new(),
-                frames: CallFrames::new(r.capture_frames),
+                // Analog: who is talking, by the unit IDs it sends (no sub-audible tone: a SmartNet
+                // channel's connect tone would read as one).
+                rec: Recorded::new(r.capture_frames, InBandSpec { units: call.voice.analog().then_some(self.analog.deemph_tau_s), subaudible: false }),
                 recorder_num,
-                tx: Transmissions::default(),
-                freq_error: (0.0, 0),
                 source: src,
-                reception: Reception::default(),
                 decrypted: false,
             },
         );
@@ -1854,14 +1875,15 @@ impl Core {
         for o in out.drain(..) {
             match o {
                 ConvOut::Event(e) => self.events.push(e),
-                ConvOut::End { call, audio, frames, recorder_num, tx, reception, freq_error_hz, tune_source } => {
+                ConvOut::End { call, rec, recorder_num, tune_source } => {
                     if let Some(src) = tune_source {
-                        self.radio.score_call(src, &call, freq_error_hz);
+                        self.radio.score_call(src, &call, rec.freq_error_hz());
                     }
-                    self.write_call(Held { call: call.clone(), audio, frames, recorder_num, tx, reception, freq_error_hz });
+                    self.write_call(Held { call: call.clone(), rec, recorder_num });
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
+                ConvOut::Patterns { call, heard, decrypted, now_s } => self.tone_patterns(&call, heard, decrypted, now_s),
                 ConvOut::WrongKey(system, c) => Self::wrong_key(&mut self.wrong_keys, &mut self.events, system, None, c, None),
             }
         }
@@ -1903,6 +1925,7 @@ impl Core {
 
     /// Route what the voice trackers produced to their calls.
     fn apply_pending(&mut self) {
+        let mut heard = Vec::new();
         for (site, id, o) in std::mem::take(&mut self.radio.pending) {
             let Some(t) = self.trunks.get_mut(site as usize) else { continue };
             let system = t.system;
@@ -1911,49 +1934,45 @@ impl Core {
             let call = t.calls.calls.iter_mut().find(|c| c.id == id);
             let rec = self.radio.recordings.get_mut(&id);
             match o {
-                TrackerOut::Audio(samples, frame) => {
+                o @ (TrackerOut::Audio(..) | TrackerOut::AnalogAudio(_)) => {
                     let Some(rec) = rec else { continue };
-                    rec.tx.note(rec.audio.len(), now);
-                    rec.audio.extend_from_slice(&samples);
-                    rec.frames.push(frame);
-                    // Fail closed: a call that is gone already is not known to be clear, and its
-                    // voice is not given to a plugin as if it were.
+                    let (samples, frame) = match o {
+                        TrackerOut::Audio(samples, frame) => (samples, Some(frame)),
+                        TrackerOut::AnalogAudio(samples) => (samples, None),
+                        _ => unreachable!(),
+                    };
+                    let digital = frame.is_some();
+                    let news = rec.rec.push(&samples, frame, now);
+                    // Fail closed: a digital call that is gone already is not known to be clear, and
+                    // its voice is not given to a plugin as if it were.
                     let (tg, decrypted) = match call {
                         Some(c) => {
                             c.note_audio(now);
-                            (c.talkgroup, c.encrypted || c.decrypted || rec.decrypted)
+                            if CallManager::note_units(c, &mut rec.rec.tx, &news.units, now) {
+                                self.call_events.push(CallEvent::Update(c.clone()));
+                            }
+                            let decrypted = digital && (c.encrypted || c.decrypted || rec.decrypted);
+                            if !news.patterns.is_empty() {
+                                heard.push((c.clone(), rec.rec.talkers(&c.sources, news.patterns), decrypted, now));
+                            }
+                            (c.talkgroup, decrypted)
                         }
-                        None => (0, true),
+                        None => (0, digital),
                     };
                     if self.multisite.audio_lead(id, now) {
                         self.events.push(Event::Audio { call_id: id, system, talkgroup: tg, samples, decrypted });
                     }
                 }
-                TrackerOut::AnalogAudio(samples) => {
-                    let Some(rec) = rec else { continue };
-                    rec.tx.note(rec.audio.len(), now);
-                    rec.audio.extend_from_slice(&samples);
-                    let tg = match call {
-                        Some(c) => {
-                            c.note_audio(now);
-                            c.talkgroup
-                        }
-                        None => 0,
-                    };
-                    if self.multisite.audio_lead(id, now) {
-                        self.events.push(Event::Audio { call_id: id, system, talkgroup: tg, samples, decrypted: false });
-                    }
-                }
                 TrackerOut::Info { source, flags } => match call {
                     Some(c) => {
-                        if CallManager::note_info(c, rec.map(|r| &mut r.tx), source, flags, now) {
+                        if CallManager::note_info(c, rec.map(|r| &mut r.rec.tx), source, flags, now) {
                             self.call_events.push(CallEvent::Update(c.clone()));
                         }
                     }
                     // (Gone already: its recording still drops an encrypted transmission.)
                     None if flags.encrypted => {
                         if let Some(rec) = rec {
-                            rec.tx.mark_encrypted(now);
+                            rec.rec.tx.mark_encrypted(now);
                         }
                     }
                     None => {}
@@ -1971,7 +1990,7 @@ impl Core {
                 TrackerOut::Decrypted => {
                     let tx = rec.map(|r| {
                         r.decrypted = true;
-                        &mut r.tx
+                        &mut r.rec.tx
                     });
                     match call {
                         Some(c) => {
@@ -2014,6 +2033,24 @@ impl Core {
                     }
                 }
             }
+        }
+        for (call, patterns, decrypted, now) in heard {
+            self.tone_patterns(&call, patterns, decrypted, now);
+        }
+    }
+
+    /// Patterns a call's tones made, as news (each with who sent it, and
+    /// the system's signals it is): from the copy of a multi-site call its
+    /// live audio comes from. A lone beep is no news (speech taken for a
+    /// tone, a tone in the background).
+    fn tone_patterns(&mut self, call: &Call, heard: Vec<(Pattern, u32)>, decrypted: bool, now: f64) {
+        if !self.multisite.leads(call.id) {
+            return;
+        }
+        let signals: &[Signal] = self.systems.get(call.system as usize).map_or(&[], |s| &s.cfg.signals);
+        for (pattern, src) in heard.into_iter().filter(|(p, _)| p.kind != PatternKind::Beep) {
+            let signals = matching(signals, &pattern, call.talkgroup).map(String::from).collect();
+            self.events.push(Event::TonePattern(PatternHeard { system: call.system, site: call.site, call_id: call.id, talkgroup: call.talkgroup, src, pattern, signals, decrypted, time_s: now }));
         }
     }
 
@@ -2066,23 +2103,28 @@ impl Core {
 
     /// A call ended: save it, or (multi-site) the best of its copies once the last one ends.
     fn conclude(&mut self, call: &Call) {
-        let held = self.radio.recordings.remove(&call.id).map(|rec| {
-            self.radio.free_nums.push(rec.recorder_num);
-            let freq_error_hz = (rec.freq_error.1 > 0).then(|| rec.freq_error.0 / rec.freq_error.1 as f64);
+        let mut rest = Vec::new();
+        let held = self.radio.recordings.remove(&call.id).map(|mut r| {
+            // What it ended on: news now, before the call is trimmed.
+            let news = r.rec.finish();
+            rest = r.rec.talkers(&call.sources, news.patterns);
+            self.radio.free_nums.push(r.recorder_num);
             // AutoTune: every call (each site's copy, encrypted ones too).
-            self.radio.score_call(rec.source, call, freq_error_hz);
+            self.radio.score_call(r.source, call, r.rec.freq_error_hz());
             // (A call whose record never learned it was decrypted, because it was already gone when the news came, is saved
             // as the decrypted call it is.)
             let mut call = call.clone();
-            if rec.decrypted {
+            if r.decrypted {
                 call.encrypted = true;
                 call.decrypted = true;
             }
-            let mut h = Held { call, audio: rec.audio, frames: rec.frames, recorder_num: rec.recorder_num, tx: rec.tx, reception: rec.reception, freq_error_hz };
+            let mut h = Held { call, rec: r.rec, recorder_num: r.recorder_num };
             // Now, so copies of a multi-site call are ranked by the audio they'd be saved with.
             h.trim(self.systems.get(h.call.system as usize).map_or(0.0, |s| s.cfg.save.min_transmission_s));
             h
         });
+        let decrypted = call.encrypted || call.decrypted;
+        self.tone_patterns(call, rest, decrypted, call.last_audio_s);
         let trunks = &self.trunks;
         let Some(copies) = self.multisite.conclude(call.id, held, |site, tg| site.and_then(|s| trunks.get(s as usize)).is_some_and(|t| t.preferred_for(tg))) else { return };
         // The best copy its site's rules keep is saved; the rest are its duplicates.
@@ -2120,6 +2162,7 @@ impl Core {
                 wacn: trunk.and_then(|t| t.identity.wacn()),
                 sys_id: trunk.and_then(|t| t.identity.sys_id()),
                 nac: trunk.and_then(|t| t.identity.nac()),
+                signals: &sys.cfg.signals,
             },
         );
         match saved {
@@ -2725,9 +2768,9 @@ mod tests {
             let rec = e.radio.recordings.get_mut(&ids[i]).unwrap();
             for k in 0..100 {
                 let kind = if k < good { mbe::Kind::Voice } else { mbe::Kind::Repeat };
-                rec.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind });
+                rec.rec.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind, tone: None });
                 if k < audio {
-                    rec.audio.extend_from_slice(&[0.1; mbe::FRAME_SAMPLES]);
+                    rec.rec.audio.extend_from_slice(&[0.1; mbe::FRAME_SAMPLES]);
                 }
             }
         }
@@ -2774,7 +2817,7 @@ mod tests {
         handle(&mut e, 0, &[Message { kind: MessageType::Grant, time_s: 0.0, talkgroup: 101, freq_hz: 851_500_000, ..Default::default() }]);
         let call = e.trunks[0].calls.calls[0].clone();
         let id = call.id;
-        let frame = || VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: crate::mbe::Kind::Voice };
+        let frame = || VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: crate::mbe::Kind::Voice, tone: None };
         // The call is removed (by the control-channel tick) before the voice output is applied.
         e.trunks[0].calls.calls.clear();
         e.radio.pending.push((0, id, TrackerOut::Decrypted));

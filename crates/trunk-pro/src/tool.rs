@@ -45,7 +45,7 @@ use crate::toolkit::{hex, AudioOut, Capture};
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
-    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr … (trunk-pro --help)"));
+    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr|tones … (trunk-pro --help)"));
     match mode {
         "cc" | "voice" | "frames" => run_p25(a, mode),
         "p2" => run_p2(a),
@@ -59,7 +59,8 @@ pub fn run(a: &Args) {
         "snr" => crate::snrtool::run(a),
         "revoice" => run_revoice(a),
         "sdr" => run_sdr(a),
-        _ => die(&format!("tool {mode}: no such tool (cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr)")),
+        "tones" => run_tones(a),
+        _ => die(&format!("tool {mode}: no such tool (cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr|tones)")),
     }
 }
 
@@ -305,7 +306,7 @@ pub(crate) fn load_frames(path: &str) -> Vec<VoiceFrame> {
             _ => Kind::Voice,
         };
         let e0 = if codec == Codec::Imbe { int("e0") } else { 0 };
-        frames.push(VoiceFrame { codec, bits, e0, errs: int("errs"), erased: f["erased"].as_bool().unwrap_or(false), kind });
+        frames.push(VoiceFrame { codec, bits, e0, errs: int("errs"), erased: f["erased"].as_bool().unwrap_or(false), kind, tone: None });
     }
     frames
 }
@@ -322,9 +323,80 @@ fn run_sdr(a: &Args) {
     println!("{}", trunk_core::trunk::sdr::sdr_sidecar_json(&bytes).unwrap_or_else(|| die(&format!("{path}: no call header"))));
 }
 
+/// A saved frame back through the vocoder, as a tracker vocodes it: its
+/// samples in `buf` (at the vocoder's own scale), and the frame with what
+/// the vocoder made of it (its kind, and the tone it played).
+fn vocode(dec: &mut mbe::Decoder, f: &VoiceFrame, buf: &mut [f32; FRAME_SAMPLES]) -> VoiceFrame {
+    use trunk_core::trunk::frames::Codec;
+    let kind = match f.codec {
+        Codec::Imbe => dec.imbe(&f.bits[..].try_into().unwrap(), f.e0, if f.erased { 0 } else { f.errs }, f.erased, buf),
+        Codec::Ambe => dec.ambe(&f.bits[..].try_into().unwrap(), f.errs, buf),
+    };
+    VoiceFrame { kind, tone: dec.tone_played(kind), ..f.clone() }
+}
+
+/// `tool tones`: the in-band tones in saved calls, found as a call's are
+/// ([`trunk_core::trunk::recorded::Recorded`]): an `.sdr` or `.frames.jsonl`
+/// capture's frames vocoded again (its tone frames, and its audio), or a
+/// `.wav`'s audio.
+fn run_tones(a: &Args) {
+    use trunk_core::trunk::inband::InBandSpec;
+    use trunk_core::trunk::recorded::Recorded;
+    let paths = &a.positional[1..];
+    if paths.is_empty() {
+        die("tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]");
+    }
+    let secs = |n: usize| n as f64 / mbe::SAMPLE_RATE as f64;
+    let (mut frames, mut tone_frames, mut calls) = (0usize, 0usize, 0usize);
+    let mut kinds = BTreeMap::<&str, u32>::new();
+    for path in paths {
+        let mut rec = Recorded::new(false, InBandSpec::default());
+        if path.ends_with(".wav") {
+            let b = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+            let (rate, audio) = trunk_core::wav::decode(&b).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+            if rate != mbe::SAMPLE_RATE {
+                die(&format!("{path}: {rate} Hz; 8000 Hz audio only"));
+            }
+            rec.push(&audio, [], 0.0);
+        } else {
+            let mut dec = mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced);
+            for (k, f) in load_frames(path).iter().enumerate() {
+                let mut buf = [0f32; FRAME_SAMPLES];
+                let f = vocode(&mut dec, f, &mut buf);
+                frames += 1;
+                tone_frames += (f.kind == mbe::Kind::Tone) as usize;
+                mbe::to_limited(&mut buf);
+                rec.push(&buf, [f], k as f64 * 0.02);
+            }
+        }
+        rec.finish();
+        if rec.inband.segs().is_empty() {
+            continue;
+        }
+        calls += 1;
+        // --patterns: what they make up, as the call JSON has them (JSON lines).
+        if a.flag("patterns") {
+            let list: Vec<_> = rec.inband.patterns().iter().map(|p| trunk_core::trunk::record::tone_pattern(p, 0, Vec::new())).collect();
+            println!("{}", serde_json::json!({ "path": path, "tone_patterns": list }));
+            continue;
+        }
+        let list: Vec<String> = rec
+            .inband
+            .segs()
+            .iter()
+            .map(|t| {
+                *kinds.entry(t.kind.name()).or_default() += 1;
+                let level = t.level.map_or(String::new(), |l| format!(" {:.1} dBm0", trunk_core::dsp::inband::level_dbm0(l)));
+                format!("{} {} @{:.2}s {:.2}s{level} ({})", t.kind.name(), t.kind, secs(t.start), secs(t.len), t.origin.name())
+            })
+            .collect();
+        println!("{path}: {}", list.join(", "));
+    }
+    eprintln!("{} files: {frames} frames ({tone_frames} played as tones); {calls} with tones: {kinds:?}", paths.len());
+}
+
 /// `tool revoice`: a frame capture back through the vocoder.
 fn run_revoice(a: &Args) {
-    use trunk_core::trunk::frames::Codec;
     let path = a.positional.get(1).unwrap_or_else(|| die("tool revoice <call.sdr | call.frames.jsonl> <out.wav>"));
     let out = a.positional.get(2).unwrap_or_else(|| die("tool revoice: no output .wav"));
     let profile = a.get("profile").map_or(mbe::Profile::Enhanced, |p| mbe::Profile::from_name(p).unwrap_or_else(|| die("tool revoice: --profile enhanced|fixed|mbelib")));
@@ -339,16 +411,7 @@ fn run_revoice(a: &Args) {
     let (mut audio, mut kinds, mut differ) = (Vec::new(), BTreeMap::<String, u32>::new(), 0u32);
     for f in load_frames(path) {
         let mut buf = [0f32; FRAME_SAMPLES];
-        let kind = match f.codec {
-            Codec::Imbe => {
-                let bits: [u8; 88] = f.bits[..].try_into().unwrap();
-                dec.imbe(&bits, f.e0, if f.erased { 0 } else { f.errs }, f.erased, &mut buf)
-            }
-            Codec::Ambe => {
-                let bits: [u8; 49] = f.bits[..].try_into().unwrap();
-                dec.ambe(&bits, f.errs, &mut buf)
-            }
-        };
+        let kind = vocode(&mut dec, &f, &mut buf).kind;
         differ += (kind != f.kind) as u32;
         *kinds.entry(format!("{kind:?}").to_lowercase()).or_default() += 1;
         if s16 {

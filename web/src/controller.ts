@@ -773,6 +773,25 @@ export function systemAt(c: Config, at: SystemRef): System | Conventional | unde
   return typeof at === "number" ? c.systems[at] : c.conventional[at.conv];
 }
 
+/** The lists a system keeps in the config, each edited as a whole (editList). */
+type SystemList = "pluginDelays" | "signals";
+type ListOf<K extends SystemList> = NonNullable<System[K]>;
+
+/**
+ * Edit a system's list (`pluginDelays`, `signals`), or with "every" the
+ * config's own `pluginDelays` (every system's): `fn` gets a copy and returns
+ * the list as it is to be; an empty one goes from the config.
+ */
+export function editList<K extends SystemList>(at: SystemRef | (K extends "pluginDelays" ? "every" : never), key: K, fn: (items: ListOf<K>) => ListOf<K>): void {
+  updateConfig((x) => {
+    const owner = (at === "every" ? x : systemAt(x, at)) as { [k in K]?: ListOf<K> } | undefined;
+    if (!owner) return;
+    const next = fn([...(owner[key] ?? [])] as ListOf<K>);
+    if (next.length) owner[key] = next;
+    else delete owner[key];
+  });
+}
+
 /** Save text as a file through the browser. */
 export function downloadText(name: string, text: string, type = "text/csv"): void {
   const url = URL.createObjectURL(new Blob([text], { type }));

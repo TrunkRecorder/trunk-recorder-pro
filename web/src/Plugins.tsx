@@ -792,6 +792,7 @@ const TOPIC_NAMES: Record<string, string> = {
   unit: "radio activity",
   audio: "live audio",
   status: "system status",
+  tone_pattern: "tone patterns heard",
 };
 
 function PluginLog(props: { p: PluginInfo }) {

@@ -2,13 +2,16 @@
 //! create_call_json) so existing tooling reads it, and TR's file base name.
 
 
-pub use trunk_recorder_plugin::{CallRecord, ErrorInterval, FreqEntry, SrcEntry};
+pub use trunk_recorder_plugin::{CallRecord, ErrorInterval, FreqEntry, SrcEntry, ToneEntry, TonePattern};
 
 use super::calls::{Call, Voice};
-use crate::dsp::tones::Tone;
+use crate::dsp::inband::signal::{matching, Signal};
+use crate::dsp::inband::{self, ToneSeg};
+use crate::dsp::inband::subaudible::Tone;
 use super::frames::FrameErrors;
 use super::frames::{frames_jsonl, VoiceFrame};
 use super::multisite::Held;
+use super::recorded::Recorded;
 use super::sdr::{call_sdr, SdrInfo, SdrMode};
 use super::units::{UnitAliases, UnitTags};
 use crate::{loudness, mbe};
@@ -23,6 +26,11 @@ pub struct ConcludeInfo<'a> {
     pub epoch_ms_at_zero: f64,
     pub audio_seconds: f64,
     pub errors: &'a FrameErrors,
+    /// Its in-band tones, and the patterns they made (as told live), placed in the saved audio.
+    pub tones: &'a [ToneSeg],
+    pub patterns: &'a [inband::pattern::Pattern],
+    /// The system's signals, which name its tones' patterns.
+    pub signals: &'a [Signal],
     /// Written as `recorder_num`: the recorder pool slot of a trunked call;
     /// for a conventional call, the index of the channel (frequency) it came on.
     pub recorder_num: u32,
@@ -269,6 +277,19 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
                 extra: Default::default(),
             })
             .collect(),
+        tones: info.tones.iter().map(|t| tone_entry(t, &call.sources)).collect(),
+        tone_patterns: info.patterns.iter().map(|p| tone_pattern(p, talking_at(&call.sources, p.start), matching(info.signals, p, call.talkgroup).map(String::from).collect())).collect(),
+        signals: {
+            let mut ids: Vec<String> = Vec::new();
+            for p in info.patterns {
+                for id in matching(info.signals, p, call.talkgroup) {
+                    if !ids.iter().any(|i| i == id) {
+                        ids.push(id.into());
+                    }
+                }
+            }
+            ids
+        },
         extra: Default::default(),
     };
     let base = format!(
@@ -281,9 +302,79 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
     (record, base)
 }
 
+/// Seconds, to a hundredth.
+fn hundredths(s: f64) -> f64 {
+    (s * 100.0).round() / 100.0
+}
+
+fn secs(n: usize) -> f64 {
+    hundredths(n as f64 / mbe::SAMPLE_RATE as f64)
+}
+
+/// The source talking at sample `at` of the audio, its sources placed in it
+/// ([`Transmissions::place`]) (0: none known).
+pub fn talking_at(sources: &[super::calls::CallSource], at: usize) -> u32 {
+    sources.iter().filter(|s| s.audio_pos.is_some_and(|p| p <= at)).max_by_key(|s| s.audio_pos).map_or(0, |s| s.src)
+}
+
+/// A tone as the call JSON has it: its sender is the source talking where it starts.
+fn tone_entry(t: &ToneSeg, sources: &[super::calls::CallSource]) -> ToneEntry {
+    ToneEntry {
+        kind: t.kind.name().into(),
+        value: t.kind.to_string(),
+        pos: secs(t.start),
+        len: secs(t.len),
+        src: talking_at(sources, t.start) as i64,
+        origin: t.origin.name().into(),
+        level: t.level.map(inband::level_dbm0),
+        extra: Default::default(),
+    }
+}
+
+/// A pattern as the call JSON and plugins have it: `src` its sender, `signals` the system's it is.
+pub fn tone_pattern(p: &inband::pattern::Pattern, src: u32, signals: Vec<String>) -> TonePattern {
+    TonePattern {
+        signals,
+        pattern: p.kind.name().into(),
+        tones: p.hz.iter().map(|&f| hundredths(f as f64)).collect(),
+        lengths: p.lengths.iter().map(|&l| hundredths(l as f64)).collect(),
+        digits: p.digits.clone(),
+        knox: p.knox,
+        cycles: p.cycles,
+        format: p.format.unwrap_or("").into(),
+        pos: secs(p.start),
+        len: secs(p.len),
+        src: src as i64,
+        origin: p.origin.name().into(),
+        text: p.describe(),
+        extra: Default::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tones_are_written_with_their_sender() {
+        use super::super::calls::CallSource;
+        use crate::dsp::inband::{Origin, ToneKind};
+        let src = |src, audio_pos| CallSource { src, time_s: 0.0, audio_pos, flags: Default::default(), position: None };
+        let sources = [src(7, Some(0)), src(9, Some(16000)), src(11, None)];
+        let t = ToneSeg { kind: ToneKind::Dtmf('#'), start: 20000, len: 800, level: Some(127), origin: Origin::Frame };
+        let e = tone_entry(&t, &sources);
+        assert_eq!((e.kind.as_str(), e.value.as_str(), e.pos, e.len, e.src, e.origin.as_str()), ("dtmf", "#", 2.5, 0.1, 9, "frame"));
+        let r = CallRecord { tones: vec![e], ..Default::default() };
+        let json = r.to_json();
+        assert!(json.contains(r##""tones":[{"type":"dtmf","value":"#","pos":2.5,"len":0.1,"src":9,"origin":"frame","level":3.2}]"##), "{json}");
+        assert!(!CallRecord::default().to_json().contains("tones"), "none: no field");
+        // Its pattern: a page, written with its format.
+        let page = [ToneSeg { kind: ToneKind::Single(781.25), start: 16000, len: 7840, level: None, origin: Origin::Frame }, ToneSeg { kind: ToneKind::Single(875.0), start: 24000, len: 23840, level: None, origin: Origin::Frame }];
+        let p: Vec<TonePattern> = inband::pattern::patterns(&page).iter().map(|p| tone_pattern(p, talking_at(&sources, p.start), vec!["NORWALK_EMS".into()])).collect();
+        let r = CallRecord { tone_patterns: p, ..Default::default() };
+        let json = r.to_json();
+        assert!(json.contains(r#""tone_patterns":[{"pattern":"two_tone","tones":[781.25,875.0],"lengths":[0.98,2.98],"format":"Quick Call II","pos":2,"len":3.98,"src":9,"origin":"frame","text":"two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)","signals":["NORWALK_EMS"]}]"#), "{json}");
+    }
 
     #[test]
     fn short_transmissions_are_dropped() {
@@ -337,6 +428,9 @@ mod tests {
             epoch_ms_at_zero: 0.0,
             audio_seconds: 1.0,
             errors: &errors,
+            tones: &[],
+            patterns: &[],
+            signals: &[],
             recorder_num: 0,
             end_s: 1.0,
             units: None,
@@ -437,6 +531,8 @@ pub struct SaveContext<'a> {
     pub wacn: Option<u32>,
     pub sys_id: Option<u32>,
     pub nac: Option<u16>,
+    /// The system's signals: its calls' tone patterns are named by them.
+    pub signals: &'a [Signal],
 }
 
 /// The frames as an `.sdr` file when the call's mode has a layout there, else JSON lines.
@@ -487,7 +583,9 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
     // Short transmissions and encrypted ones left out (an encrypted one's
     // "audio" is a few frames vocoded before the cipher was known: noise).
     h.trim(rules.min_transmission_s);
-    let Held { call, mut audio, frames, recorder_num, reception, freq_error_hz, .. } = h;
+    let freq_error_hz = h.rec.freq_error_hz();
+    let Held { call, rec, recorder_num } = h;
+    let Recorded { mut audio, frames, inband, reception, .. } = rec;
     let short = (audio.len() as f64) < rules.min_call_s * mbe::SAMPLE_RATE as f64 && !audio.is_empty();
     if (audio.is_empty() && !(rules.keep_silent || call.encrypted && rules.keep_encrypted)) || short {
         return Err(call);
@@ -507,6 +605,9 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
             epoch_ms_at_zero: cx.epoch_ms_at_zero,
             audio_seconds: audio.len() as f64 / mbe::SAMPLE_RATE as f64,
             errors: &frames.errors,
+            tones: inband.segs(),
+            patterns: inband.patterns(),
+            signals: cx.signals,
             recorder_num,
             end_s: call.last_audio_s,
             units: cx.units,

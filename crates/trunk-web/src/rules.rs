@@ -106,3 +106,47 @@ pub fn channels_write(json: &str) -> String {
 pub fn bandplan_problem(name: &str, base_hz: f64, spacing_hz: f64, offset: u16, high_hz: f64) -> Option<String> {
     trunk_core::smartnet::Bandplan::from_config(name, base_hz, spacing_hz, offset, high_hz).err()
 }
+
+/// What's wrong with a signal (JSON, the config's `signals` entry), or none.
+#[wasm_bindgen(js_name = signalProblem)]
+pub fn signal_problem(json: &str) -> Option<String> {
+    serde_json::from_str::<trunk_app::config::SignalDef>(json).map_or_else(|e| Some(e.to_string()), |d| d.problem())
+}
+
+/// What the recorder counts as a signal (JSON): how near its tones have to
+/// be, and what other paging codes that takes in.
+#[wasm_bindgen(js_name = signalNote)]
+pub fn signal_note(json: &str) -> String {
+    use trunk_core::dsp::inband::{pattern::PatternKind, signal::tolerance_note};
+    let Ok(d) = serde_json::from_str::<trunk_app::config::SignalDef>(json) else { return String::new() };
+    let Some(kind) = PatternKind::from_name(&d.pattern) else { return String::new() };
+    tolerance_note(kind, &d.tones_hz.iter().map(|&f| f as f32).collect::<Vec<_>>(), d.knox, d.extra_tolerance_pct as f32)
+}
+
+/// A signal's id made from what people call it ("Norwalk EMS page" → NORWALK_EMS_PAGE).
+#[wasm_bindgen(js_name = signalId)]
+pub fn signal_id(text: &str) -> String {
+    trunk_app::config::SignalDef::id_from(text)
+}
+
+/// What a tone pattern sounds like (JSON `{ pattern, tones, lengths, digits,
+/// knox, cycles }`, as the call JSON's `tone_patterns` and the tones log have
+/// it), step by step: JSON `[{ hz: [..], s }]`.
+#[wasm_bindgen(js_name = toneSteps)]
+pub fn tone_steps(json: &str) -> String {
+    use trunk_core::dsp::inband::pattern::{steps, PatternKind};
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct Spec {
+        pattern: String,
+        tones: Vec<f32>,
+        lengths: Vec<f32>,
+        digits: String,
+        knox: bool,
+        cycles: u32,
+    }
+    let Ok(p) = serde_json::from_str::<Spec>(json) else { return "[]".into() };
+    let Some(kind) = PatternKind::from_name(&p.pattern) else { return "[]".into() };
+    let out: Vec<serde_json::Value> = steps(kind, &p.tones, &p.lengths, &p.digits, p.knox, p.cycles).into_iter().map(|s| serde_json::json!({ "hz": s.hz, "s": s.s })).collect();
+    serde_json::Value::from(out).to_string()
+}

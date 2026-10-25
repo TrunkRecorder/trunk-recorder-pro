@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use trunk_core::metrics::{key_part, Scoped, Sink};
+use trunk_core::dsp::inband::signal::{Heard, Signal};
 use trunk_core::trunk::{CallId, Engine, Event, MessageType};
 
 use crate::config::Config;
@@ -73,7 +74,8 @@ impl Shared {
         let book = self.names.lock().unwrap();
         let tg = |sys: &str, t: u32| book.tg(sys, t);
         let unit = |sys: &str, u: u32| book.units.get(sys).and_then(|a| a.get(u)).map(str::to_string);
-        let mut out = self.radio.lock().unwrap().query(q, now, &Names { tg: &tg, unit: &unit });
+        let signals = |sys: &str, h: &Heard, tg: u32| book.signals(sys, h, tg);
+        let mut out = self.radio.lock().unwrap().query(q, now, &Names { tg: &tg, unit: &unit, signals: &signals });
         out["id"] = q["id"].clone();
         ToClient::RadioResult(crate::protocol::body(out))
     }
@@ -90,6 +92,7 @@ pub struct NameBook {
     /// Conventional rows' names for the numbers they file under ([`Config::row_talkgroups`]).
     rows: HashMap<String, trunk_core::trunk::Talkgroups>,
     units: HashMap<String, trunk_core::trunk::UnitAliases>,
+    signals: HashMap<String, Vec<Signal>>,
 }
 
 impl NameBook {
@@ -114,9 +117,15 @@ impl NameBook {
         }
     }
 
-    /// Each system's talkgroups, from an engine's systems.
+    /// Each system's talkgroups and signals, from an engine's systems.
     pub fn set_systems(&mut self, systems: &[trunk_core::trunk::SystemConfig]) {
         self.talkgroups = systems.iter().map(|s| (s.short_name.clone(), s.talkgroups.clone())).collect();
+        self.signals = systems.iter().map(|s| (s.short_name.clone(), s.signals.clone())).collect();
+    }
+
+    /// The signals of `system` a pattern heard on talkgroup `tg` is (their ids).
+    pub fn signals(&self, system: &str, h: &Heard, tg: u32) -> Vec<String> {
+        self.signals.get(system).map_or_else(Vec::new, |v| v.iter().filter(|s| s.matches_heard(h, tg)).map(|s| s.id.clone()).collect())
     }
 
     /// System `short_name`'s talker aliases, from their CSV (as saved).
@@ -341,6 +350,14 @@ impl Stats {
                     if self.shared.monitor.lock().unwrap().wants_frequent() {
                         self.emit(MonitorEvent::UnitAffiliated { system: name.to_string(), unit, talkgroup }, out);
                     }
+                }
+            }
+            Event::TonePattern(h) => {
+                let p = trunk_core::trunk::record::tone_pattern(&h.pattern, h.src, h.signals.clone());
+                self.shared.radio.lock().unwrap().tone_pattern(name, h.talkgroup, &p, t);
+                // One of the system's signals always; any other pattern only when a watcher wants it.
+                if !h.signals.is_empty() || self.shared.monitor.lock().unwrap().wants_frequent() {
+                    self.emit(MonitorEvent::TonePattern { system: name.to_string(), talkgroup: h.talkgroup, text: p.text, signals: h.signals.clone() }, out);
                 }
             }
             Event::Concluded(k) => {

@@ -2,10 +2,11 @@
 //! trunked systems (sites) and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use trunk_core::dsp::inband::pattern::PatternKind;
 use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
@@ -350,12 +351,129 @@ pub struct System {
     /// plugins'): see [`DelayRule`]. These come before the whole recorder's.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugin_delays: Vec<DelayRule>,
+    /// The tone signals it sends (pages, alerts, digit strings, Morse IDs): see [`SignalDef`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<SignalDef>,
     /// Where it is recorded from: one site, or several of one system.
     pub sites: Vec<Site>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
     pub other: BTreeMap<String, serde_json::Value>,
+}
+
+/// A tone signal a system sends: a page (two tones), an alert, a warble, a
+/// digit string, a Morse ID. Its `id` is unique within its system (written
+/// `CLMRN:CSP_FIRE` where the system isn't said): calls carrying it list it
+/// (the call JSON's `signals`), and plugins hear it named (topic `tone_pattern`).
+///
+/// ```json
+/// { "id": "NORWALK_EMS", "name": "Norwalk EMS page", "pattern": "two_tone", "tonesHz": [788.5, 879.0], "talkgroups": ["20341"] }
+/// ```
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SignalDef {
+    pub id: String,
+    /// What people call it (empty: its id).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The call JSON's `pattern`: `two_tone`, `long`, `hi_low`, `pulsed`,
+    /// `digits`, `morse`, `sequence` or `beep`.
+    pub pattern: String,
+    /// Its tones, Hz, in order (as the call JSON's `tones`; digits: none).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tones_hz: Vec<f64>,
+    /// Digits: the string; Morse: the text.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub digits: String,
+    /// Digits: KNOX's tones, not DTMF's.
+    #[serde(skip_serializing_if = "is_default")]
+    pub knox: bool,
+    /// How long each tone is, s, as the call JSON's `lengths` (for playing
+    /// it back; not matched on).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lengths_s: Vec<f64>,
+    /// How much further a heard tone may be than the recorder allows by
+    /// itself, % of the tone (1.5 % in audio; 15.7 Hz + 0.5 % from P25 Phase
+    /// 2's tone frames). 0: no further.
+    #[serde(skip_serializing_if = "is_default")]
+    pub extra_tolerance_pct: f64,
+    /// The talkgroups it's sent on: numbers, ranges (`1000-1099`) and
+    /// patterns (`507*`), as [`DelayRule::talkgroups`]. Empty: any.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "trunk_recorder_plugin::filter::patterns")]
+    pub talkgroups: Vec<String>,
+    /// Keys this version doesn't know (a newer version's, a hand edit's):
+    /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
+}
+
+impl SignalDef {
+    /// The engine's matcher; none when it isn't one ([`SignalDef::problem`]).
+    pub fn engine(&self) -> Option<trunk_core::dsp::inband::signal::Signal> {
+        if self.problem().is_some() {
+            return None;
+        }
+        Some(trunk_core::dsp::inband::signal::Signal {
+            id: self.id.trim().to_string(),
+            pattern: PatternKind::from_name(&self.pattern)?,
+            hz: self.tones_hz.iter().map(|&f| f as f32).collect(),
+            digits: self.digits.trim().to_string(),
+            knox: self.knox,
+            extra_pct: self.extra_tolerance_pct as f32,
+            talkgroups: self.talkgroups.clone(),
+        })
+    }
+
+    /// An id made from what people call a signal: letters and digits, upper
+    /// case, runs of anything else one `_` ("Norwalk EMS page" → NORWALK_EMS_PAGE).
+    pub fn id_from(text: &str) -> String {
+        let mut id = String::new();
+        for c in text.chars() {
+            if c.is_ascii_alphanumeric() {
+                id.push(c.to_ascii_uppercase());
+            } else if !id.is_empty() && !id.ends_with('_') {
+                id.push('_');
+            }
+        }
+        id.trim_end_matches('_').chars().take(40).collect()
+    }
+
+    /// What's wrong with it, as Setup and Start say it.
+    pub fn problem(&self) -> Option<String> {
+        let id = self.id.trim();
+        let name = if id.is_empty() { "A signal" } else { id };
+        if id.is_empty() {
+            return Some("A signal needs an id (calls and plugins name it by that).".into());
+        }
+        if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            return Some(format!("Signal {id}: an id is letters, digits, _ and - (it is written SYSTEM:{id} where the system isn't said)."));
+        }
+        let Some(kind) = PatternKind::from_name(&self.pattern) else {
+            return Some(format!("Signal {name}: no such pattern as \"{}\".", self.pattern));
+        };
+        match kind {
+            PatternKind::Digits | PatternKind::Morse if self.digits.trim().is_empty() => Some(format!("Signal {name}: which {} does it send?", if kind == PatternKind::Morse { "text" } else { "digits" })),
+            PatternKind::Digits | PatternKind::Morse => None,
+            _ if self.tones_hz.is_empty() || self.tones_hz.iter().any(|&f| !(100.0..=4000.0).contains(&f)) => Some(format!("Signal {name}: its tones, Hz (100–4000).")),
+            PatternKind::TwoTone | PatternKind::HiLow if self.tones_hz.len() != 2 => Some(format!("Signal {name}: a {} has two tones.", if kind == PatternKind::TwoTone { "two-tone page" } else { "hi-low warble" })),
+            _ => None,
+        }
+    }
+}
+
+/// A system's signals for the engine.
+fn engine_signals(defs: &[SignalDef]) -> Vec<trunk_core::dsp::inband::signal::Signal> {
+    defs.iter().filter_map(SignalDef::engine).collect()
+}
+
+/// What's wrong with a system's signals: one's own problem, or an id used twice.
+fn signals_problem(system: &str, defs: &[SignalDef]) -> Option<String> {
+    if let Some(p) = defs.iter().find_map(SignalDef::problem) {
+        return Some(format!("{system}: {p}"));
+    }
+    let mut seen = BTreeSet::new();
+    defs.iter().map(|d| d.id.trim()).find(|id| !seen.insert(*id)).map(|id| format!("{system}: two signals are called {id} (an id is the system's own)."))
 }
 
 /// One site of a [`System`]: a control channel to follow, and how.
@@ -770,6 +888,7 @@ impl Default for System {
             nxdn_type: NxdnType::default(),
             plugins: BTreeMap::new(),
             plugin_delays: vec![],
+            signals: vec![],
             sites: vec![],
         }
     }
@@ -894,6 +1013,9 @@ pub struct Conventional {
     /// How long plugins wait for their calls, as a trunked system's ([`System::plugin_delays`]).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugin_delays: Vec<DelayRule>,
+    /// The tone signals they send, as a trunked system's ([`System::signals`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<SignalDef>,
     /// Their own recording rules; what's left out is as in [`Config::recording`].
     #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
     pub recording: RecordingOverride,
@@ -950,6 +1072,7 @@ impl Default for Conventional {
             channel_file_status: String::new(),
             plugins: BTreeMap::new(),
             plugin_delays: vec![],
+            signals: vec![],
             recording: RecordingOverride::default(),
             unit_names: UnitNames::default(),
         }
@@ -2228,6 +2351,10 @@ impl Config {
         if let Some(p) = self.name_problem() {
             return Some(p);
         }
+        let signals = self.systems.iter().map(|s| (&s.short_name, &s.signals)).chain(self.conventional.iter().map(|c| (&c.short_name, &c.signals)));
+        if let Some(p) = signals.filter_map(|(n, d)| signals_problem(n, d)).next() {
+            return Some(p);
+        }
         let centers = self.resolved_centers();
         if let Some(i) = centers.iter().position(|&c| c <= 0.0) {
             return Some(format!(
@@ -2343,6 +2470,7 @@ impl Config {
                     save: rules.save_rules(),
                     talkgroups: tg(&sys.short_name),
                     unit_tags: sys.unit_names.engine(),
+                    signals: engine_signals(&sys.signals),
                     ..SystemConfig::trunked(&sys.short_name, sites)
                 }
             })
@@ -2357,6 +2485,7 @@ impl Config {
                 save: r.save_rules(),
                 talkgroups: tg(&v.short_name),
                 unit_tags: v.unit_names.engine(),
+                signals: engine_signals(&v.signals),
                 ..SystemConfig::conventional(&v.short_name)
             });
         }
@@ -2529,6 +2658,34 @@ mod tests {
         let sys: System = serde_json::from_value(serde_json::json!({ "shortName": "x", "fcc": { "857987500": { "callSign": "WPXT459" } } })).unwrap();
         assert_eq!(sys.fcc["857987500"].from, FccFrom::User);
         assert_eq!(serde_json::to_value(&sys).unwrap()["fcc"], serde_json::json!({ "857987500": { "callSign": "WPXT459" } }));
+    }
+
+    /// A system's signals are saved as written, a newer version's keys kept; none, no field.
+    #[test]
+    fn signals_round_trip() {
+        assert!(serde_json::to_value(System::default()).unwrap().get("signals").is_none());
+        let page = serde_json::json!({ "id": "NORWALK_EMS", "name": "Norwalk EMS page", "pattern": "two_tone", "tonesHz": [781.25, 875.0], "lengthsS": [0.98, 2.98], "talkgroups": ["20341"], "color": "red" });
+        let sys: System = serde_json::from_value(serde_json::json!({ "shortName": "x", "signals": [page.clone(), { "id": "SIREN_SIGNAL_1", "pattern": "digits", "digits": "091363" }, { "id": "NEWER", "pattern": "chirp" }] })).unwrap();
+        assert_eq!((sys.signals[0].tones_hz.clone(), sys.signals[1].digits.as_str()), (vec![781.25, 875.0], "091363"));
+        let back = serde_json::to_value(&sys).unwrap();
+        assert_eq!(back["signals"][0], page);
+        assert_eq!(back["signals"][1], serde_json::json!({ "id": "SIREN_SIGNAL_1", "pattern": "digits", "digits": "091363" }), "defaults left out");
+        // A pattern this version doesn't know is a problem, which Start says; the engine leaves it out.
+        assert_eq!(engine_signals(&sys.signals).iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["NORWALK_EMS", "SIREN_SIGNAL_1"]);
+        assert_eq!(signals_problem("x", &sys.signals).unwrap(), "x: Signal NEWER: no such pattern as \"chirp\".");
+    }
+
+    #[test]
+    fn signals_say_whats_wrong() {
+        assert_eq!(SignalDef::id_from(" Norwalk EMS 1 page! "), "NORWALK_EMS_1_PAGE");
+        let def = |v: serde_json::Value| -> SignalDef { serde_json::from_value(v).unwrap() };
+        assert_eq!(def(serde_json::json!({ "id": "A", "pattern": "two_tone", "tonesHz": [400.0, 500.0] })).problem(), None);
+        assert!(def(serde_json::json!({ "pattern": "two_tone", "tonesHz": [400.0, 500.0] })).problem().unwrap().contains("needs an id"));
+        assert!(def(serde_json::json!({ "id": "A B", "pattern": "long", "tonesHz": [400.0] })).problem().unwrap().contains("letters, digits"));
+        assert!(def(serde_json::json!({ "id": "A", "pattern": "two_tone", "tonesHz": [400.0] })).problem().unwrap().contains("two tones"));
+        assert!(def(serde_json::json!({ "id": "A", "pattern": "digits" })).problem().unwrap().contains("which digits"));
+        let two = [def(serde_json::json!({ "id": "A", "pattern": "morse", "digits": "W1AW" })), def(serde_json::json!({ "id": "A", "pattern": "long", "tonesHz": [1000.0] }))];
+        assert!(signals_problem("x", &two).unwrap().contains("two signals are called A"));
     }
 
     /// A system's `keys` that named a file (before key sources) becomes a source named after the file;
@@ -2914,7 +3071,7 @@ mod tests {
         assert_eq!(c.problem(), None);
         let e = c.engine_channels();
         assert_eq!(e.iter().map(|x| x.talkgroup.unwrap_or(x.default_talkgroup)).collect::<Vec<_>>(), vec![154325, 1543251, 500, 1543253]);
-        assert_eq!(e[1].access, Some(Access::Tone(trunk_core::dsp::tones::Tone::Dcs(23, false))));
+        assert_eq!(e[1].access, Some(Access::Tone(trunk_core::dsp::inband::subaudible::Tone::Dcs(23, false))));
         c.conventional[0].channels.push(row("D047I", None));
         assert_eq!(c.problem().as_deref(), Some("Conventional channel 154.32500 MHz has two rows for D023N and D047I (the same signal)."));
         c.conventional[0].channels.pop();

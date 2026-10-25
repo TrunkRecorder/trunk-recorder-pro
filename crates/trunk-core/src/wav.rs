@@ -23,3 +23,40 @@ pub fn encode(samples: &[f32], rate: u32) -> Vec<u8> {
     }
     b
 }
+
+/// A 16-bit PCM WAV's rate, and its samples in [−1, 1] (the first channel).
+pub fn decode(b: &[u8]) -> Result<(u32, Vec<f32>), String> {
+    let bad = || "not a 16-bit PCM WAV".to_string();
+    if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        return Err(bad());
+    }
+    let (mut rate, mut channels, mut at) = (0u32, 0usize, 12);
+    while at + 8 <= b.len() {
+        let id = &b[at..at + 4];
+        let len = u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap()) as usize;
+        let body = &b[at + 8..(at + 8).saturating_add(len).min(b.len())];
+        if id == b"fmt " && body.len() >= 16 {
+            if u16::from_le_bytes([body[14], body[15]]) != 16 {
+                return Err(bad());
+            }
+            channels = u16::from_le_bytes([body[2], body[3]]) as usize;
+            rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
+        } else if id == b"data" && channels > 0 {
+            return Ok((rate, body.chunks_exact(2 * channels).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect()));
+        }
+        at = at.saturating_add(8 + len + (len & 1));
+    }
+    Err(bad())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn decodes_what_it_encodes() {
+        let x = [0.0f32, 0.5, -0.5, 1.0];
+        let (rate, y) = super::decode(&super::encode(&x, 8000)).unwrap();
+        assert_eq!(rate, 8000);
+        assert!(x.iter().zip(&y).all(|(a, b)| (a - b).abs() < 1e-4), "{y:?}");
+        assert!(super::decode(b"RIFF....WAVE").is_err());
+    }
+}

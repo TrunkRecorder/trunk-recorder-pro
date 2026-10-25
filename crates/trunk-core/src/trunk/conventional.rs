@@ -56,8 +56,8 @@ use num_complex::Complex32;
 
 use super::calls::{Call, CallIds, CallManager, Flags, Voice, STUCK_CALL_S};
 use super::engine::{Event, SystemConfig, Tuning};
-use super::frames::CallFrames;
-use super::record::{Reception, Transmissions};
+use super::inband::InBandSpec;
+use super::recorded::Recorded;
 use super::voice::CipherId;
 use super::talkgroups::{Talkgroup, Talkgroups};
 use super::voice::TrackerOut;
@@ -65,7 +65,7 @@ use super::voice::{self, VoiceDecoder, VoiceKind, VoiceSpec};
 use super::frames::VoiceFrame;
 use crate::dsp::am;
 use crate::dsp::fm::{self, ChannelFilter};
-use crate::dsp::tones::{Tone, ToneDetector};
+use crate::dsp::inband::subaudible::{Tone, ToneDetector};
 use crate::dsp::channelizer::{floor_slice, floor_slices};
 use crate::dsp::{AnalogTuning, Channelizer, HeadId};
 use crate::mbe;
@@ -430,11 +430,14 @@ pub enum ConvOut {
     /// A call is over: the engine saves it. `recorder_num`: the index of the
     /// channel (frequency) it came on.
     /// `tune_source`: its frequency scores this source's AutoTune ([`ConvChannel::tune_ref`]).
-    End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception, freq_error_hz: Option<f64>, tune_source: Option<usize> },
+    End { call: Call, rec: Recorded, recorder_num: u32, tune_source: Option<usize> },
     /// A radio's talker alias, heard on a P25 channel of system `.0` ([`Call::system`]).
     Alias(u16, Alias),
     /// A key of system `.0` that decrypts its voice to noise.
     WrongKey(u16, CipherId),
+    /// Tone patterns a call's tones made, each with who sent it
+    /// ([`super::inband::News::patterns`]): the engine names them by the system's signals.
+    Patterns { call: Call, heard: Vec<(crate::dsp::inband::pattern::Pattern, u32)>, decrypted: bool, now_s: f64 },
 }
 
 /// What a conventional call carried, as a row's code would say it: the
@@ -508,22 +511,11 @@ struct Tx {
 
 struct Live {
     call: Call,
-    audio: Vec<f32>,
-    /// P25: the vocoder frames behind `audio`.
-    frames: CallFrames,
-    /// Where each transmission starts in `audio`.
-    tx: Transmissions,
-    /// How strong it came in.
-    reception: Reception,
-    /// How far off its channel its carrier came in, Hz: the sum of the
-    /// measurements and their number (as a trunked call's).
-    freq_error: (f64, u32),
+    rec: Recorded,
     /// The talkgroup the air named, once it has ([`Call::talkgroup_ota`]).
     air_tg: Option<u32>,
     /// The row it is filed by.
     row: usize,
-    /// FM: what tone the call carries.
-    tones: Option<Box<ToneDetector>>,
 }
 
 struct Open {
@@ -886,8 +878,8 @@ impl Conventional {
                 let (sig, noise) = (chz.noise_in_band(ch.power, bw), chz.noise_in_band(floor, bw));
                 for l in ch.open.as_mut().unwrap().live.iter_mut().flatten() {
                     if now_s - l.call.last_audio_s < 0.5 {
-                        l.reception.signal(sig);
-                        l.reception.noise(noise);
+                        l.rec.reception.signal(sig);
+                        l.rec.reception.noise(noise);
                     }
                 }
             }
@@ -956,8 +948,7 @@ impl Conventional {
         // Its calls' frequency error, while the carrier is up and the receiver can tell.
         if let Some(off) = o.voice.offset_hz().filter(|_| carrier) {
             for l in o.live.iter_mut().flatten() {
-                l.freq_error.0 += ch.tuning.error_hz(ch.freq_hz, off as f64);
-                l.freq_error.1 += 1;
+                l.rec.freq_error(ch.tuning.error_hz(ch.freq_hz, off as f64));
             }
         }
         for v in vout {
@@ -1189,20 +1180,16 @@ impl Conventional {
                 },
             };
             out.push(ConvOut::Event(Event::CallStart(call.clone())));
-            o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tx: Transmissions::default(), reception: Reception::default(), freq_error: (0.0, 0), air_tg, row: r, tones: (ch.mode == ConvMode::Fm).then(Box::default) });
+            // FM: who is talking by its unit IDs, and its CTCSS tone or DCS code.
+            let fm = (ch.mode == ConvMode::Fm).then_some(ch.analog.deemph_tau_s);
+            let rec = Recorded::new(rules.capture_frames, InBandSpec { units: fm, subaudible: fm.is_some() });
+            o.live[slot] = Some(Live { call, rec, air_tg, row: r });
         }
         let l = o.live[slot].as_mut().unwrap();
         l.call.last_update_s = now_s;
         l.call.heard_s = now_s;
         l.call.last_audio_s = h.air.map_or(now_s, |a| a.1);
         let mut changed = false;
-        if let Some(t) = &mut l.tones {
-            t.push(&h.low);
-            let heard = t.heard();
-            // A new tone is news; a firmer reading of the same one isn't.
-            changed |= heard.map(|h| h.tone) != l.call.tone.map(|h| h.tone);
-            l.call.tone = heard;
-        }
         if l.call.nac.is_none() && h.nac.is_some() {
             l.call.nac = h.nac;
         }
@@ -1219,10 +1206,10 @@ impl Conventional {
             changed = true;
         }
         for (src, flags) in h.infos {
-            changed |= CallManager::note_info(&mut l.call, Some(&mut l.tx), src, flags, now_s);
+            changed |= CallManager::note_info(&mut l.call, Some(&mut l.rec.tx), src, flags, now_s);
         }
         if h.decrypted {
-            changed |= CallManager::note_decrypted(&mut l.call, Some(&mut l.tx), now_s);
+            changed |= CallManager::note_decrypted(&mut l.call, Some(&mut l.rec.tx), now_s);
         }
         for p in h.positions {
             if CallManager::note_position(&mut l.call, &p) {
@@ -1230,20 +1217,27 @@ impl Conventional {
                 changed = true;
             }
         }
+        // Its voice, and what that carried besides speech: who is talking, its tone or code, tone patterns.
+        let mut patterns = Vec::new();
+        if !h.audio.is_empty() {
+            let news = l.rec.push(&h.audio, h.frames, now_s);
+            changed |= CallManager::note_units(&mut l.call, &mut l.rec.tx, &news.units, now_s);
+            // A new tone or code is news; a firmer reading of the same one isn't.
+            changed |= l.rec.subaudible(&h.low).code.is_some();
+            l.call.tone = l.rec.inband.code();
+            patterns = news.patterns;
+        }
         if changed {
             out.push(ConvOut::Event(Event::CallUpdate(l.call.clone())));
         }
+        if !patterns.is_empty() {
+            let heard = l.rec.talkers(&l.call.sources, patterns);
+            out.push(ConvOut::Patterns { call: l.call.clone(), heard, decrypted: l.call.encrypted || l.call.decrypted, now_s });
+        }
         // (An encrypted transmission's audio, unless decrypted, is left out
         // when the call is saved, as a trunked call's is; it isn't played live.)
-        if !h.audio.is_empty() {
-            l.tx.note(l.audio.len(), now_s);
-            l.audio.extend_from_slice(&h.audio);
-            for f in h.frames {
-                l.frames.push(f);
-            }
-            if !l.tx.current_dropped() {
-                out.push(ConvOut::Event(Event::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio, decrypted: l.call.encrypted || l.call.decrypted }));
-            }
+        if !h.audio.is_empty() && !l.rec.tx.current_dropped() {
+            out.push(ConvOut::Event(Event::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio, decrypted: l.call.encrypted || l.call.decrypted }));
         }
     }
 
@@ -1253,9 +1247,14 @@ impl Conventional {
         row.info.clone().map(|t| Talkgroup { number: tg, ..t }).or_else(|| talkgroups.get(&tg).cloned())
     }
 
-    fn end(l: Live, num: u32, tune_source: Option<usize>, out: &mut Vec<ConvOut>) {
-        let freq_error_hz = (l.freq_error.1 > 0).then(|| l.freq_error.0 / l.freq_error.1 as f64);
-        out.push(ConvOut::End { call: l.call, audio: l.audio, frames: l.frames, recorder_num: num, tx: l.tx, reception: l.reception, freq_error_hz, tune_source });
+    fn end(mut l: Live, num: u32, tune_source: Option<usize>, out: &mut Vec<ConvOut>) {
+        // What it ended on.
+        let patterns = l.rec.finish().patterns;
+        if !patterns.is_empty() {
+            let heard = l.rec.talkers(&l.call.sources, patterns);
+            out.push(ConvOut::Patterns { call: l.call.clone(), heard, decrypted: l.call.encrypted || l.call.decrypted, now_s: l.call.last_audio_s });
+        }
+        out.push(ConvOut::End { call: l.call, rec: l.rec, recorder_num: num, tune_source });
     }
 
     /// End of input: flush the receivers and end every call.
@@ -1267,8 +1266,11 @@ impl Conventional {
             for v in vout {
                 let Some(l) = o.live[v.slot as usize & 1].as_mut() else { continue };
                 if let TrackerOut::Audio(a, f) = v.out {
-                    l.audio.extend_from_slice(&a);
-                    l.frames.push(f);
+                    let patterns = l.rec.push(&a, [f], l.call.last_audio_s).patterns;
+                    if !patterns.is_empty() {
+                        let heard = l.rec.talkers(&l.call.sources, patterns);
+                        out.push(ConvOut::Patterns { call: l.call.clone(), heard, decrypted: l.call.encrypted || l.call.decrypted, now_s: l.call.last_audio_s });
+                    }
                 }
             }
             let o = ch.open.take().unwrap();
@@ -1370,6 +1372,7 @@ mod tests {
                     Event::Concluded(k) => out.push((k.call, k.audio.len(), k.record.to_json())),
                     Event::CallStart(_) => starts += 1,
                     Event::ConvSkipped { freq_hz, code } => skipped.push((freq_hz, code)),
+                    Event::TonePattern(t) => TONES.with(|v| v.borrow_mut().push(t)),
                     _ => {}
                 }
             }
@@ -1607,7 +1610,7 @@ mod tests {
 
     #[test]
     fn fm_unit_ids_from_signalling() {
-        use crate::dsp::signalling::tests::{ffsk, fs_bits, mdc_bits, mdc_tones};
+        use crate::dsp::inband::units::tests::{ffsk, fs_bits, mdc_bits, mdc_tones};
         // MDC1200 emergency at key-up, voice, a FleetSync 2400 ID at unkey.
         let mut audio = vec![0.0f32; 400];
         audio.extend(ffsk(&mdc_tones(&mdc_bits(0x00, 0x80, 0x1234)), 1200.0, 1800.0, 1200.0, 0.5));
@@ -1624,9 +1627,44 @@ mod tests {
         assert!(calls[0].2.contains("\"src\":4660"), "{}", calls[0].2);
     }
 
+    thread_local! {
+        /// The [`Event::TonePattern`]s of this thread's last [`run_gapped`]s.
+        static TONES: std::cell::RefCell<Vec<crate::trunk::PatternHeard>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Woodbridge FD's page as an FM channel carries it: told live, named
+    /// by the system's signal (the chart's Quick Call II 147 / 131), and in
+    /// the call JSON.
+    #[test]
+    fn fm_page_is_a_signal() {
+        use crate::dsp::inband::pattern::PatternKind;
+        use crate::dsp::inband::signal::Signal;
+        TONES.with(|v| v.borrow_mut().clear());
+        let mut audio = vec![0.0f32; 4000];
+        for (f, secs) in [(467.2f64, 1.0f64), (1032.3, 3.0)] {
+            let n0 = audio.len();
+            audio.extend((0..(secs * 8000.0) as usize).map(|n| (0.4 * (2.0 * PI * f * (n0 + n) as f64 / 8000.0).sin()) as f32));
+        }
+        audio.extend(vec![0.0f32; 12000]);
+        let secs = audio.len() as f64 / 8000.0;
+        let c = 155_000_000.0;
+        let mut txs = vec![Tx { offset_hz: 200_000.0, snr_db: 25.0, on: vec![(0.5, 0.5 + secs)], ph: 0.0, am: false, audio }];
+        let page = Signal { id: "FD_PAGE".into(), pattern: PatternKind::TwoTone, hz: vec![470.5, 1034.7], digits: String::new(), knox: false, extra_pct: 0.0, talkgroups: vec!["1".into()] };
+        let sys = SystemConfig { signals: vec![page], ..conv_system("wood") };
+        let (calls, _, _) = run_systems(2_400_000.0, secs + 3.0, &mut txs, vec![fm(c + 200_000.0, 1)], vec![sys]);
+        let tones = TONES.with(|v| v.borrow().clone());
+        let pages: Vec<_> = tones.iter().filter(|t| t.pattern.kind == PatternKind::TwoTone).collect();
+        assert_eq!(pages.len(), 1, "{tones:?}");
+        assert_eq!((pages[0].signals.clone(), pages[0].talkgroup), (vec!["FD_PAGE".to_string()], 1));
+        assert_eq!(pages[0].pattern.format, Some("Quick Call II"));
+        assert!((pages[0].pattern.hz[0] - 467.2).abs() < 3.0 && (pages[0].pattern.hz[1] - 1032.3).abs() < 5.0, "{:?}", pages[0].pattern);
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].2.contains("\"signals\":[\"FD_PAGE\"]"), "{}", calls[0].2);
+    }
+
     #[test]
     fn fm_tone_heard() {
-        use crate::dsp::tones::{tests::dcs_dev, Tone};
+        use crate::dsp::inband::subaudible::{tests::dcs_dev, Tone};
         let c = 155_000_000.0;
         // 2 s of voice over a 151.4 Hz tone (500 Hz deviation), and over D023N (700 Hz).
         let voice = |i: usize| (2.0 * PI * 1000.0 * i as f64 / 8000.0).sin() * 0.5;
@@ -1646,7 +1684,7 @@ mod tests {
 
     /// 8 kHz modulation: `secs` of a 1 kHz voice over `tone`.
     fn voice_over(tone: Option<Tone>, secs: f64) -> Vec<f32> {
-        use crate::dsp::tones::tests::dcs_dev;
+        use crate::dsp::inband::subaudible::tests::dcs_dev;
         let n = (secs * 8000.0) as usize;
         let sub: Vec<f64> = match tone {
             Some(Tone::Ctcss(t)) => (0..n).map(|i| 500.0 * (2.0 * PI * t as f64 / 10.0 * i as f64 / 8000.0).sin()).collect(),

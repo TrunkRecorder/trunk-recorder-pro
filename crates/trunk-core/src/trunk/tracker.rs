@@ -465,7 +465,7 @@ impl VoiceTracker {
             self.bad_frames += 1;
         }
         mbe::to_limited(&mut buf);
-        let frame = VoiceFrame { codec: Codec::Imbe, bits: bits.to_vec(), e0, errs, erased, kind };
+        let frame = VoiceFrame { codec: Codec::Imbe, bits: bits.to_vec(), e0, errs, erased, kind, tone: None };
         out.push(TrackerOut::Audio(buf.to_vec(), frame));
     }
 

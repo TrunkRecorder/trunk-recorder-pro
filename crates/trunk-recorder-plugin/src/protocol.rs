@@ -36,8 +36,11 @@ pub mod topic {
     pub const AUDIO: &str = "audio";
     /// Every system's state, every few seconds ([`super::Status`]).
     pub const STATUS: &str = "status";
+    /// A call's tones made a pattern ([`super::TonePatternEvent`]): every page,
+    /// alert tone, DTMF string and Morse ID heard, named by the system's signals or not.
+    pub const TONE_PATTERN: &str = "tone_pattern";
 
-    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS];
+    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE_PATTERN];
 }
 
 /// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
@@ -116,6 +119,8 @@ pub enum HostMessage {
     Audio(AudioChunk),
     #[serde(rename = "status")]
     Status(Status),
+    #[serde(rename = "tone_pattern")]
+    TonePattern(TonePatternEvent),
     /// The recorder is stopping: finish what's queued, then exit. stdin closes
     /// after this, and the process is killed if it hasn't exited within
     /// [`Shutdown::grace_s`].
@@ -431,6 +436,16 @@ pub struct CallRecord {
     pub error_list: Vec<ErrorInterval>,
     #[serde(rename = "srcList")]
     pub src_list: Vec<SrcEntry>,
+    /// In-band tones sent in its voice (DTMF, KNOX, call progress, single
+    /// tones), in order. This recorder's: Trunk Recorder has none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tones: Vec<ToneEntry>,
+    /// What its tones make up: pages, alerts, digit strings, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tone_patterns: Vec<TonePattern>,
+    /// The system's signals it carried (their ids), in the order first heard.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -485,6 +500,9 @@ impl Default for CallRecord {
             freq_list: Vec::new(),
             error_list: Vec::new(),
             src_list: Vec::new(),
+            tones: Vec::new(),
+            tone_patterns: Vec::new(),
+            signals: Vec::new(),
             extra: Map::new(),
         }
     }
@@ -578,6 +596,85 @@ pub struct SrcEntry {
     pub extra: Map<String, Value>,
 }
 
+/// An in-band tone sent in the call's voice.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToneEntry {
+    /// `dtmf`, `knox`, `call_progress` or `tone` (a single tone).
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The digit (`0`–`9`, `A`–`D`, `*`, `#`); call progress, its two
+    /// frequencies (`350+440`); a single tone, its frequency in Hz.
+    pub value: String,
+    /// Seconds into the audio.
+    #[serde(serialize_with = "plain")]
+    pub pos: f64,
+    /// Seconds.
+    #[serde(serialize_with = "plain")]
+    pub len: f64,
+    /// The radio talking when it was sent (0: not known).
+    pub src: i64,
+    /// `frame`: named by the vocoder's tone frames (half-rate digital
+    /// voice: P25 Phase 2, DMR, NXDN); `audio`: found in the audio (P25
+    /// Phase 1, analog, half-rate voice sent without tone frames).
+    pub origin: String,
+    /// Tone frames: the level they named, dBm0.
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "tenth_or_null")]
+    pub level: Option<f64>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A signal the call's tones make up.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TonePattern {
+    /// `two_tone` (a page: tone A then B), `long` (one tone, a second or
+    /// more), `hi_low` (a warble), `pulsed`, `digits` (DTMF / KNOX), `morse`
+    /// (a CW ID), `sequence` (a run of short tones: selective calling, a
+    /// chirp) or `beep`.
+    pub pattern: String,
+    /// Its tones, Hz: two-tone A then B; hi-low its two, lower first; a
+    /// sequence each in turn; otherwise its one.
+    pub tones: Vec<f64>,
+    /// Seconds: two-tone A and B; hi-low each tone's; pulsed on then off;
+    /// Morse its dot; a sequence each in turn; otherwise its one.
+    pub lengths: Vec<f64>,
+    /// Digits: the string, and `knox` when they're KNOX tones (DTMF
+    /// otherwise); Morse: the text.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub digits: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub knox: bool,
+    /// Hi-low: its tones; pulsed: its pulses.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cycles: u32,
+    /// A two-tone page's format, by its timing (`Quick Call II`, …).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub format: String,
+    /// Seconds into the audio.
+    #[serde(serialize_with = "plain")]
+    pub pos: f64,
+    /// Seconds.
+    #[serde(serialize_with = "plain")]
+    pub len: f64,
+    /// The radio talking when it began (0: not known).
+    pub src: i64,
+    /// `frame` or `audio`, as its tones' ([`ToneEntry::origin`]).
+    pub origin: String,
+    /// For a person: "two-tone 849.63 → 1292.85 Hz, 1 + 3.04 s (Quick Call II)".
+    pub text: String,
+    /// The system's signals it is (their ids).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
 // How the call JSON writes its numbers (as Trunk Recorder's files have
 // them): a flag as 0/1, a level to a tenth, a confidence to a thousandth, a
 // position to a millionth, seconds as Rust prints them ("4", not "4.0").
@@ -625,6 +722,31 @@ fn flag<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
         Value::String(s) => s == "true" || s == "1",
         _ => false,
     })
+}
+
+/// A call's tones made a pattern — a page, an alert tone, a warble, a DTMF
+/// or KNOX string, a Morse ID — told as soon as nothing can add to it (a
+/// second after its last tone), whether or not it's one of the system's
+/// signals. The call's JSON (`tone_patterns`) has the same pattern once it's
+/// saved (its `pos` there in the saved audio, here in the call's so far).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TonePatternEvent {
+    pub short_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub site: String,
+    /// The call it's on (its `call_num`).
+    pub call_num: u64,
+    pub talkgroup: u32,
+    pub alpha_tag: String,
+    /// Heard in voice decrypted with the system's keys: only plugins allowed
+    /// decrypted calls get it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub decrypted: bool,
+    /// Unix seconds.
+    pub time: f64,
+    #[serde(flatten)]
+    pub pattern: TonePattern,
 }
 
 /// Something a radio did on the control channel.
