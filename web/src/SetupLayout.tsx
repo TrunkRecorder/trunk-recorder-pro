@@ -24,19 +24,44 @@ export function Section(props: { title: string; hint?: ReactNode; actions?: Reac
 /**
  * Related settings in a card. `cols`: fields per row (toggles, hints and
  * wide fields take the whole row); `full`: the name above, the settings the
- * card's whole width (a table); `actions`: buttons beside the name.
+ * card's whole width (a table); `actions`: buttons beside the name. `fold`:
+ * it folds to its name (a long list): remembered by `key`, as cards are;
+ * open at first if `open`; `summary` says what is in it while folded.
  */
-export function Group(props: { title: string; hint?: ReactNode; actions?: ReactNode; children: ReactNode; cols?: 1 | 2 | 3; full?: boolean }) {
+export function Group(props: {
+  title: string;
+  hint?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+  cols?: 1 | 2 | 3;
+  full?: boolean;
+  fold?: { key: string; open: boolean; summary?: ReactNode };
+}) {
+  const o = useOpened();
+  const body = useId();
+  const open = props.fold ? (o[props.fold.key] ?? props.fold.open) : true;
   return (
-    <div className={`set-group${props.full ? " full" : ""}`}>
+    <div className={`set-group${props.full ? " full" : ""}${open ? "" : " folded"}`}>
       <div className="set-group-head">
         <div>
-          <h4>{props.title}</h4>
+          {props.fold ? (
+            <button type="button" className="set-group-toggle" aria-expanded={open} aria-controls={body} onClick={() => setCardOpen(props.fold!.key, !open)}>
+              <svg className="set-card-chevron" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <h4>{props.title}</h4>
+            </button>
+          ) : (
+            <h4>{props.title}</h4>
+          )}
           {props.hint && <p>{props.hint}</p>}
+          {!open && props.fold?.summary && <p className="set-group-summary">{props.fold.summary}</p>}
         </div>
-        {props.actions && <div className="row">{props.actions}</div>}
+        {open && props.actions && <div className="row">{props.actions}</div>}
       </div>
-      <div className={`set-group-body cols-${props.cols ?? 2}`}>{props.children}</div>
+      <div className={`set-group-body cols-${props.cols ?? 2}`} id={body} hidden={!open}>
+        {props.children}
+      </div>
     </div>
   );
 }
