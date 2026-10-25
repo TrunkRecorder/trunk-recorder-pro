@@ -5,19 +5,49 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **Airspy R2 and Mini told apart.** An Airspy R2 runs at 10 or 2.5 MSPS, a Mini at 6 or 3;
-  a new Airspy source started at 6 MSPS whichever it was, and an R2 refused to start with
-  "this Airspy runs at 10 / 2.5 MSPS, not 6" in the log. Now each Airspy found is asked its
-  model and rates (**Setup → Radios** lists "Airspy R2 · SN …", and `trunk-pro devices` its
-  rates): a source added for one starts at a rate it runs at, picking a different Airspy moves
-  the rate to one it does, the rate list offers what it does, and a rate it can't do is flagged
-  on the page. Starting the recorder with an Airspy set to a rate it doesn't do runs it at its
-  first rate instead and saves that in the config, with a warning in the log; one that can't be
-  asked still refuses, naming the model and pointing at Setup.
-- **Two Airspys starting at once no longer lose each other.** libairspy finds a radio by
-  opening every Airspy to read its serial; with two sources opening at the same moment one
-  scan missed the other's radio ("Airspy open: AIRSPY_ERROR_NOT_FOUND") until the retry.
-  Opens are now one at a time.
+- **Pages, alert tones, DTMF and Morse IDs as call metadata** (#82, by taclane; #86). Every call's
+  voice is searched for in-band tones: P25 Phase 2, DMR and NXDN tone frames name them exactly (as
+  the vocoder plays them), and P25 Phase 1 and analog calls are measured. The call JSON lists them
+  (`tones`) and what they make up (`tone_patterns`, each with `text` in words: a two-tone page with
+  its timing format and likely paging codes, a long tone, a warble, a DTMF or KNOX string, a Morse
+  ID). Each system's page has a **Tones** card listing what was heard, with ▶ to play it in the
+  browser (again to stop) and **Add** to name a pattern as one of the system's **signals** (`signals`
+  in its config, edited in Setup under the system's **Signals**). A tone counts as a signal's within
+  ±1.5 % when measured in the audio and ±(15.7 Hz + 0.5 %) from tone frames, widened by its
+  `extraTolerancePct`; the editor says what that comes to and which paging tones (any plan's) it would
+  take in too. Calls that carry a signal list it (`signals`), the dashboard's event feed shows it, and
+  plugins subscribed to `tone_pattern` hear every pattern as it ends, with the signals it is (one heard
+  in decrypted voice only by plugins with `shareDecrypted`). Start refuses a signal it can't use.
+  `trunk-pro tool tones` reads them out of saved calls (`.sdr`, `.frames.jsonl` or `.wav`).
+- **In-band signalling is one path.** Analog unit IDs (MDC1200, FleetSync), CTCSS/DCS and the new
+  tones are each a detector a call runs over its audio, and a call's recording is one type,
+  trunked or conventional. Talkgroup lists everywhere (delay rules, signals, plugin filters) take
+  numbers, ranges either way round and patterns alike: plugin filters now take ranges too.
+- **Breaking, plugins:** SDK 0.7.0. The topic is `tone_pattern` (`TonePatternEvent`, the call JSON's
+  `TonePattern` with the call's context); `TonePattern` gained `text`. KNOX signals are `knox: true`
+  (no `KNOX ` prefix in `digits`).
+- **A chart's values on hover sit beside the crosshair, not on the line** (#79). They covered
+  the very peak you were trying to read; now they're to one side of it (the left past the
+  middle), in the half of the chart away from the line. The activity-by-hour heatmap's tooltip
+  likewise opens toward the middle instead of running off the card's edge.
+- **A RAM spool deleted while running is made again, and said** (#88). On Linux, systemd's
+  `RemoveIPC` (on by default, Raspberry Pi OS included) deletes a user's files in /dev/shm when
+  their last login ends, so a recorder started over SSH lost its spool when that session closed:
+  every call after was reported as **The RAM spool was full** and the spool's meter and charts
+  went. It's now made again (a try a minute while that fails); calls turned away meanwhile
+  aren't counted as full; a `spoolRemoved` event, and the Computer card and Platform page say
+  how to stop it: `sudo loginctl enable-linger $USER` with the user service, or `RemoveIPC=no`
+  in /etc/systemd/logind.conf.
+- **On the air counts while calls are on the air.** A call's air time (`airMs`) was counted
+  when it ended, all in that minute: a channel held open an hour drew a spike of 3600 s/min.
+  It now counts a second at a time. The Decode page's **Calls** chart (conventional) reads
+  On the air, s/min (every channel's together: 60 is one channel busy the whole minute) off
+  its own scale on the right, and a chart's scale no longer stretches to a line's highest a
+  minute when it doesn't draw that band. A talkgroup's airtime by hour is likewise spread over
+  the hours its calls were on, not all in the hour each ended.
+- **Charts in two units read each off its own scale**: Signal and demodulation's eye opening or
+  phase error is on the right, beside SNR in dB. Dropped samples, Clipping, Lost /s and a
+  plugin's Failed a minute show their band, so a short burst isn't averaged away.
 
 ## [0.2.9] — 2026-10-24
 

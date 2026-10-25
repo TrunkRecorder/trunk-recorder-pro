@@ -454,7 +454,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, disks (the RAM spool's too, as `spool`), connectivity checks, `spotlight` (macOS: whether Spotlight indexes the recordings folder), `unavailable`: what this platform can't tell and why) |
 | `rfDetail` | Topic `rf:<source>`: 1/s | `source`, `profile` (the noise floor in 64 slices across the band, dBFS per FFT bin), `channels` (each channel on it: power, floor, SNR, carrier offset, the receiver's eye opening or CQPSK phase error) |
 | `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now, each with its `site`), `sites` (each running site's `index`, `name`, and what its control channel announces: `adjacent` sites, `dmr`, `nxdn`), `patches` (the patches standing now, each once: `supergroup` and `members`) |
-| `monitorEvent` | Something notable happened | `t`, `level`, `kind` (`controlLost`, `tgFirstSeen`, `sourceDrops`, `pluginHealth`, `linkDown`, `diskLow`, `spoolLow`, `spoolFull`, …) and its fields |
+| `monitorEvent` | Something notable happened | `t`, `level`, `kind` (`controlLost`, `tgFirstSeen`, `sourceDrops`, `pluginHealth`, `linkDown`, `diskLow`, `spoolLow`, `spoolFull`, `spoolRemoved`, …) and its fields |
 | `subscribed` | Answers `subscribe` | `topics` |
 | `olderCalls` | Answers `olderCalls` | `before` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still) |
 | `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
@@ -696,7 +696,7 @@ the day). The live values come in `stats` (and `host`); the history answers
 | `sys/<short>/cc/locked`, `snr`, `signal`, `noise`, `offset`, `sep`, `phaseErr` | Decoding (1/0), the channel's SNR and levels, its carrier offset (Hz), the C4FM receiver's eye opening, the CQPSK receiver's phase error (RMS degrees: under 10 clean, ~25 noise) |
 | `sys/<short>/cc/syncs`, `nidFails`, `flywheels`, `eqResets` | P25 framing: syncs found, headers failed, frames carried over a missed sync, equaliser resets (a second) |
 | `sys/<short>/cc/airSym` | P25: symbols of control channel air decoded a second; over 4800, the coverage |
-| `sys/<short>/calls`, `airMs`, `audioBytes`, `active`, `recording` | Calls ending a second, airtime (ms a second), audio written, calls on the air and being recorded now |
+| `sys/<short>/calls`, `airMs`, `audioBytes`, `active`, `recording` | Calls ending a second, airtime (ms a second, counted while the calls are on the air), audio written, calls on the air and being recorded now |
 | `sys/<short>/why/<reason>` | Calls starting a second by what happened to them: `recorded`, `monitored`, `ignored`, `encrypted`, `unknown_tg`, `no_source`, `no_recorder` |
 | `sys/<short>/voice/frames`, `errors`, `bad` | Voice frames decoded, bit errors corrected, frames lost (a second) |
 | `all/…`, `day/…`, `eng/…` | Every system together; this run's totals today; the decoder's load and recorders |

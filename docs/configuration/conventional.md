@@ -39,6 +39,7 @@ anywhere a source covers, including alongside a trunked system. Analog channels 
 | `keys` | | `""` | string | The encryption keys its P25 channels decrypt with, a key source's name. See [systems.md](systems.md#encryption-keys-keys) |
 | `plugins` | | `{}` | object | Its plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
 | `pluginDelays` | | `[]` | array | How long plugins wait for its calls. See [plugins.md](plugins.md#delays) |
+| `signals` | | `[]` | array | The tone signals its channels carry (pages, DTMF, Morse IDs), as a trunked system's. See [Signals](systems.md#signals) |
 
 A frequency belongs to only one conventional system.
 

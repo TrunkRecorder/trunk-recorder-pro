@@ -31,6 +31,10 @@ pub enum MonitorEvent {
     /// Calls in the last minute (once a minute: watchers only).
     #[serde(rename_all = "camelCase")]
     CallVolume { system: String, per_min: u32 },
+    /// A call's tones made a pattern: one of the system's signals (always),
+    /// or any other (watchers only).
+    #[serde(rename_all = "camelCase")]
+    TonePattern { system: String, talkgroup: u32, text: String, signals: Vec<String> },
     /// A site's control channel stopped decoding (`site`: its own name, if it has one).
     #[serde(rename_all = "camelCase")]
     ControlLost {
@@ -71,6 +75,11 @@ pub enum MonitorEvent {
     SpoolFull { calls: u64 },
     #[serde(rename_all = "camelCase")]
     SpoolRecovered { free_pct: f64 },
+    /// Its folder went while the app ran (Linux: systemd's RemoveIPC at
+    /// logout; macOS: the RAM disk ejected); `spool`: its kind ("tmpfs",
+    /// "RAM disk", "folder"); `remade`: made again (else calls go to disk).
+    #[serde(rename_all = "camelCase")]
+    SpoolRemoved { spool: String, remade: bool },
     /// The clock is off, or not synchronized (`why`); `bad`: badly off.
     #[serde(rename_all = "camelCase")]
     ClockOff { why: String, bad: bool },
@@ -94,6 +103,7 @@ impl MonitorEvent {
         match self {
             MonitorEvent::ControlLost { .. } | MonitorEvent::LinkDown { .. } | MonitorEvent::DiskLow { .. } | MonitorEvent::SpoolFull { .. } => "bad",
             MonitorEvent::SpoolLow { critical, .. } | MonitorEvent::ClockOff { bad: critical, .. } => if *critical { "bad" } else { "warn" },
+            MonitorEvent::SpoolRemoved { remade, .. } => if *remade { "warn" } else { "bad" },
             MonitorEvent::SourceDrops { .. } | MonitorEvent::SourceClipping { .. } | MonitorEvent::ClockStep { .. } => "warn",
             MonitorEvent::PluginHealth { state, .. } => match state.as_str() {
                 "error" => "bad",

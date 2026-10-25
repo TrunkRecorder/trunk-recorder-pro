@@ -8,10 +8,11 @@ import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { coverage, pageHealth } from "./data.ts";
-import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SourceStatus, SystemStatus } from "../protocol.ts";
+import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
-import { Overview } from "./Overview.tsx";
+import { eventText, Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
+import { ToneTable } from "./Tones.tsx";
 import { PlatformPage } from "./Platform.tsx";
 import { PluginHealthPage } from "./PluginHealth.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
@@ -168,6 +169,26 @@ test("Radio: calls missed on one of several systems name it, in the navigation's
   assert.equal((overview.match(/class="card card-warn[^"]*"/g) ?? []).length, 1, "and only other's card warns");
 });
 
+test("Radio: a system's Tones card names its signals and goes to them in Setup; heard rows show what the recorder made of them", () => {
+  twoSites();
+  const c = snapshot().config!;
+  c.systems[0].signals = [{ id: "NORWALK_EMS", pattern: "two_tone", tonesHz: [788.5, 879], talkgroups: ["20341"] }];
+  transport.onMessage({ type: "config", config: c, version: 2 });
+  setView("radio", "dcfd");
+  const page = text(renderToString(<RadioPage />));
+  assert.match(page, /Tones Signals of dcfd: NORWALK_EMS\. Signals in Setup/);
+  const row = (r: Partial<ToneRow>): ToneRow => ({
+    tg: 20341, alphaTag: "Norwalk EMS 1", pattern: "two_tone", tones: [781.25, 875], lengths: [0.98, 2.98], digits: "", knox: false, cycles: 0, format: "Quick Call II",
+    text: "two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)", count: 3, first: 0, last: 0, radios: [{ unit: 7, name: "E7", n: 3 }], frame: true, ids: ["QC2 126/128"], signals: ["NORWALK_EMS"], ...r,
+  });
+  const rows = [row({}), row({ tg: 20342, alphaTag: "", pattern: "digits", tones: [], digits: "12#", text: "DTMF 12#", ids: [], signals: [] })];
+  const html = renderToString(<ToneTable rows={rows} system="dcfd" at={0} />);
+  const lines = [...html.matchAll(/<tr>(.*?)<\/tr>/g)].slice(1).map((m) => text(m[1]).trim());
+  assert.match(lines[0], /^Norwalk EMS 1 20341 two-tone 781\.25 → 875 Hz, 0\.98 \+ 2\.98 s \(Quick Call II\) QC2 126\/128 3 .* E7 ▶ NORWALK_EMS$/, "the recorder's text and its signal");
+  assert.match(lines[1], /^20342 DTMF 12# — 3 .* ▶ Add$/, "not a signal yet: Add");
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "info", kind: "tonePattern", system: "dcfd", talkgroup: 20341, text: "two-tone 781.25 → 875 Hz", signals: ["NORWALK_EMS"] }), "dcfd: NORWALK_EMS (two-tone 781.25 → 875 Hz) on talkgroup 20341");
+});
+
 test("Radio: a warning of calls out of band links to the frequencies, on the Overview and the system's page", () => {
   twoSites();
   feedSeries(Date.now() / 1000, { "sys/other/why/no_source": 1 });
@@ -201,10 +222,10 @@ test("A frequency out of band: the nearest source, and how far past its usable e
 });
 
 /** The computer as the recorder samples it, its clock as given (the rest as nothing known). */
-function host(given: Partial<ClockInfo>): void {
+function host(given: Partial<ClockInfo>, disks: PlatformInfo["disks"] = []): void {
   const clock: ClockInfo = { warnMs: 250, os: null, service: null, driftMs: null, radio: [], server: null, measured: null, error: null, problem: null, check: null, ...given };
   const platform: PlatformInfo = {
-    os: "Linux", arch: "aarch64", host: "pi", cores: 4, container: null, cpuLimitCores: null, memTotal: 8e9, uptimeS: 3600, disks: [], probes: [], clock,
+    os: "Linux", arch: "aarch64", host: "pi", cores: 4, container: null, cpuLimitCores: null, memTotal: 8e9, uptimeS: 3600, disks, probes: [], clock,
     perCore: null, interfaces: null, unavailable: [],
   };
   transport.onMessage({ type: "host", t: Date.now() / 1000, values: {}, platform });
@@ -252,6 +273,24 @@ test("Platform: the time service, the recording's clock and the radio systems' c
   assert.match(page, /other set to another time \(its local time\?\): not compared/);
   assert.match(page, /A warning at 500 ms off/);
   assert.equal(pageHealth(snapshot()).platform.level, "warn");
+});
+
+test("Platform: a RAM spool deleted while running (systemd's RemoveIPC at logout) says how to stop it, not that it's full", () => {
+  twoSites();
+  setView("platform");
+  const spool = { name: "spool", path: "/dev/shm/trunk-pro-1000-abc", mount: "/dev/shm/trunk-pro-1000-abc", kind: "tmpfs", totalBytes: 256 << 20, freeBytes: 250 << 20, overflowed: 0 };
+  host({ os: synced }, [{ ...spool, removed: 2, missing: false }]);
+  let h = pageHealth(snapshot()).platform;
+  assert.equal(h.level, "warn");
+  assert.match(h.why, /deleted 2 times while running \(made again\)\. systemd deletes .*loginctl enable-linger .*RemoveIPC=no/);
+  assert.match(text(renderToString(<PlatformPage />)), /deleted 2 times while running/);
+  // Gone and not made again: calls go to the disk.
+  host({ os: synced }, [{ ...spool, totalBytes: 0, freeBytes: 0, removed: 3, missing: true }]);
+  h = pageHealth(snapshot()).platform;
+  assert.equal(h.level, "bad");
+  assert.match(h.why, /The RAM spool is gone, calls go to the recordings folder\. systemd deletes/);
+  assert.doesNotMatch(h.why, /full/);
+  assert.match(text(renderToString(<PlatformPage />)), /Gone: calls go to the recordings folder/);
 });
 
 /** A plugin that's on and running, with what it said of its work. */

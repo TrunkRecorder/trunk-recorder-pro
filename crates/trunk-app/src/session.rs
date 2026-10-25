@@ -9,7 +9,7 @@ use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, Mess
 use crate::filename;
 use crate::log::{Body, CallState, CallTag, Level, Record};
 use crate::heard::HeardCodes;
-use trunk_core::dsp::tones::Tone;
+use trunk_core::dsp::inband::subaudible::Tone;
 use trunk_core::Complex32;
 
 use crate::config::{Config, Source};
@@ -101,6 +101,7 @@ pub struct PluginTopics {
     pub calls: bool,
     pub units: bool,
     pub status: bool,
+    pub tone_patterns: bool,
 }
 
 /// Local time's offset from UTC at a Unix time, s (east positive) — Trunk
@@ -1074,6 +1075,20 @@ impl Session {
                     out.push(Output::CallSign { short_name: name, freq_hz: freq_hz as f64, call_sign });
                 }
             }
+            Event::TonePattern(t) => {
+                let name = self.system_name(t.system).to_string();
+                let pattern = trunk_core::trunk::record::tone_pattern(&t.pattern, t.src, t.signals.clone());
+                let named = t.signals.iter().map(|s| format!("{name}:{s}")).collect::<Vec<_>>().join(", ");
+                let text = format!("TG {}: {}{}", t.talkgroup, pattern.text, if named.is_empty() { String::new() } else { format!(" = {named}") });
+                self.records.push(Record::text(Level::Info, Some(&self.site_label(t.system, t.site)), text.clone()));
+                self.log.push(json!({ "timeS": t.time_s, "kind": "tonePattern", "text": text, "system": name, "site": self.site_name(t.site) }));
+                if self.plugin_topics.tone_patterns {
+                    let alpha_tag = self.tg_names(t.system, [t.talkgroup]).first().and_then(|v| v["alphaTag"].as_str().map(String::from)).unwrap_or_default();
+                    let time = (self.wall(t.time_s) * 1000.0).round() / 1000.0;
+                    let ev = trunk_recorder_plugin::TonePatternEvent { short_name: name, site: self.site_name(t.site), call_num: t.call_id as u64, talkgroup: t.talkgroup, alpha_tag, decrypted: t.decrypted, time, pattern };
+                    out.push(Output::Plugin(HostMessage::TonePattern(ev)));
+                }
+            }
             Event::UnitAlias { system, unit, alias, talkgroup } => {
                 let name = self.system_name(system).to_string();
                 self.records.push(Record::text(Level::Info, Some(&name), format!("Unit {unit} is \"{alias}\" (TG {talkgroup})")));
@@ -1152,6 +1167,7 @@ impl Session {
             Event::CallStart(c) | Event::CallEnd(c) | Event::NotSaved(c) => Some(c.system),
             Event::Concluded(k) => Some(k.call.system),
             Event::Duplicate { call, .. } => Some(call.system),
+            Event::TonePattern(t) => Some(t.system),
             _ => None,
         }
     }

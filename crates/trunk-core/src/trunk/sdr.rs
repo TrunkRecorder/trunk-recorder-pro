@@ -331,6 +331,7 @@ pub fn sdr_frames(bytes: &[u8]) -> Vec<VoiceFrame> {
                     errs: if erased { 0 } else { l.errors[s] as u32 },
                     erased,
                     kind: tb.map_or(Kind::Voice, |b| code_kind(b >> 5)),
+                    tone: None,
                 });
             }
         } else if let Some(v) = P2VchFrame::from_raw(&r) {
@@ -361,6 +362,8 @@ fn ambe_frame(d: &[u8; 36], tail: Option<u8>) -> VoiceFrame {
         errs: tail.map_or(f.errs, |b| (b & 31) as u32),
         erased: false,
         kind: tail.map_or(Kind::Voice, |b| code_kind(b >> 5)),
+        // (Read back, not vocoded: which tone isn't kept.)
+        tone: None,
     }
 }
 
@@ -392,12 +395,12 @@ mod tests {
         }
         u[7] <<= 1;
         let kind = if k % 7 == 3 { Kind::Repeat } else { Kind::Voice };
-        VoiceFrame { codec: Codec::Imbe, bits: imbe_params_to_bits(&u).to_vec(), e0: (k % 3) as u32, errs: (k % 5) as u32, erased: k == 12, kind }
+        VoiceFrame { codec: Codec::Imbe, bits: imbe_params_to_bits(&u).to_vec(), e0: (k % 3) as u32, errs: (k % 5) as u32, erased: k == 12, kind, tone: None }
     }
 
     fn ambe_frame_rand(seed: &mut u32, k: usize) -> VoiceFrame {
         let bits = (0..49).map(|_| (lcg(seed) & 1) as u8).collect();
-        VoiceFrame { codec: Codec::Ambe, bits, e0: 0, errs: (k % 4) as u32, erased: false, kind: if k == 5 { Kind::Tone } else { Kind::Voice } }
+        VoiceFrame { codec: Codec::Ambe, bits, e0: 0, errs: (k % 4) as u32, erased: false, kind: if k == 5 { Kind::Tone } else { Kind::Voice }, tone: None }
     }
 
     fn info() -> SdrInfo {

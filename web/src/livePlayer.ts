@@ -7,9 +7,10 @@
 // buffers (each 20 ms chunk resampled on its own clicks at the seams), and its
 // context can drop out of "running" (tab switches, output device changes) and
 // only resume on a user gesture. So audio is resampled here, continuously
-// across chunks, to the context's own rate; chunks are dropped rather than
-// piled up while the context isn't running; and any click or key press on the
-// page resumes it.
+// across chunks, to the context's own rate; and chunks are dropped rather
+// than piled up while the context isn't running (audioOut.ts wakes it).
+
+import { audioOut } from "./audioOut.ts";
 
 const LEAD_S = 0.4;
 
@@ -20,20 +21,10 @@ export class LivePlayer {
   private resampler: Resampler | null = null;
   private inRate = 0;
 
-  constructor() {
-    const wake = () => {
-      if (this.ctx && this.ctx.state !== "running") void this.ctx.resume().catch(() => {});
-    };
-    if (typeof document !== "undefined") {
-      document.addEventListener("pointerdown", wake, true);
-      document.addEventListener("keydown", wake, true);
-      document.addEventListener("visibilitychange", wake);
-    }
-  }
-
   resume(): void {
+    // (The context is the page's, shared: stopping lets go of this player's part of it.)
     if (!this.ctx) {
-      this.ctx = new AudioContext();
+      this.ctx = audioOut();
       this.gain = this.ctx.createGain();
       this.gain.gain.value = 2; // the vocoder's output is quiet
       this.gain.connect(this.ctx.destination);
@@ -42,7 +33,7 @@ export class LivePlayer {
   }
 
   stop(): void {
-    void this.ctx?.close().catch(() => {});
+    this.gain?.disconnect();
     this.ctx = null;
     this.gain = null;
     this.resampler = null;

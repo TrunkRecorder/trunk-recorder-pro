@@ -271,7 +271,7 @@ const SITE_KEYS = [
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
 const SYSTEM_KEYS: (keyof System)[] = [
-  "shortName", "name", "fcc", "share", "directory", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
+  "shortName", "name", "fcc", "share", "directory", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "signals", "sites",
 ];
 
 /** Every key of Site this version knows. */
@@ -395,6 +395,7 @@ export function normalizeSystem(x: SystemInput): System {
     ...(x.keys?.trim() ? { keys: x.keys } : {}),
     ...(plain(x.plugins) && Object.keys(x.plugins!).length ? { plugins: x.plugins } : {}),
     ...(x.pluginDelays?.length ? { pluginDelays: x.pluginDelays } : {}),
+    ...(x.signals?.length ? { signals: x.signals } : {}),
     sites: sites.map((s) => normalizeSite(s, { type })),
   };
 }

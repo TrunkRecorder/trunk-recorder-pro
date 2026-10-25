@@ -7,7 +7,7 @@ import { can, pluginOn, radioQuery, statsSince, setView, start, usePolled, useAp
 import { Card, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
-import { change, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
+import { change, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
 import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
@@ -217,6 +217,8 @@ export function eventText(e: MonitorEvent): string {
       return `${e.system}: talkgroup ${e.alphaTag || e.talkgroup} heard for the first time`;
     case "unitFirstSeen":
       return `${e.system}: radio ${e.alias || e.unit} heard for the first time`;
+    case "tonePattern":
+      return `${e.system}: ${e.signals?.length ? `${e.signals.join(", ")} (${e.text})` : e.text} on talkgroup ${e.talkgroup}`;
     case "controlLost":
       return `${e.system}${e.site ? ` site ${e.site}` : ""}: lost its control channel${e.freqHz ? ` (${mhz(e.freqHz)} MHz)` : ""}`;
     case "controlRegained":
@@ -241,6 +243,8 @@ export function eventText(e: MonitorEvent): string {
       return `The RAM spool was full: ${e.calls} call${e.calls === 1 ? "" : "s"} written to the recordings folder instead`;
     case "spoolRecovered":
       return `The RAM spool has room again (${e.freePct}% free)`;
+    case "spoolRemoved":
+      return `The RAM spool was deleted while running${e.remade ? " (made again)" : ": calls go to the recordings folder"}. ${spoolRemovedFix(e.spool)}`;
     case "clockOff":
       return e.why ?? "The clock is off";
     case "clockOk":
@@ -258,6 +262,8 @@ function eventPlace(e: MonitorEvent): () => void {
       return () => setView("radio", e.system ?? "", "tg", e.talkgroup ?? 0);
     case "unitFirstSeen":
       return () => setView("radio", e.system ?? "", "unit", e.unit ?? 0);
+    case "tonePattern":
+      return () => setView("radio", e.system ?? "");
     case "controlLost":
     case "controlRegained":
       return () => setView("decode", e.system ?? "");
@@ -352,8 +358,8 @@ function PlatformLine({ s }: { s: AppState }) {
         {spool && (
           <label>
             <span>RAM spool</span>
-            <Meter value={100 - (100 * spool.freeBytes) / Math.max(1, spool.totalBytes)} max={100} zones={[75, 90]} label="RAM spool" />
-            <b>{bytes(spool.freeBytes)} free</b>
+            <Meter value={spool.missing ? null : 100 - (100 * spool.freeBytes) / Math.max(1, spool.totalBytes)} max={100} zones={[75, 90]} label="RAM spool" />
+            <b>{spool.missing ? "gone" : `${bytes(spool.freeBytes)} free`}</b>
           </label>
         )}
         {v["net/up"] !== undefined && (

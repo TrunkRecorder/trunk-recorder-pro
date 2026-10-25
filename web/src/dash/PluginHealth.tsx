@@ -191,14 +191,14 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
               <TimeSeries
                 lines={[
                   { label: "Sent a minute", color: "var(--good)", data: hist?.[K.plg(p.id, "ok")] ?? null, mul: 60 },
-                  { label: "Failed a minute", color: "var(--critical)", data: hist?.[K.plg(p.id, "failed")] ?? null, mul: 60 },
+                  { label: "Failed a minute", color: "var(--critical)", data: hist?.[K.plg(p.id, "failed")] ?? null, mul: 60, band: true },
                 ]}
                 zero
                 height={130}
               />
               {hist?.[K.plg(p.id, "queued")] && <TimeSeries lines={[{ label: "Waiting", color: "var(--series-4)", data: hist[K.plg(p.id, "queued")], band: true }]} zero height={110} />}
               {hist?.[K.plg(p.id, "age")] && (
-                <TimeSeries lines={[{ label: "Age at delivery, s (longest each step)", color: "var(--series-1)", data: hist[K.plg(p.id, "age")], band: true, mul: 0.001 }]} zero height={110} fmt={(x) => x.toFixed(1)} />
+                <TimeSeries lines={[{ label: "Age at delivery, s", color: "var(--series-1)", data: hist[K.plg(p.id, "age")], band: true, mul: 0.001 }]} zero height={110} fmt={(x) => x.toFixed(1)} />
               )}
               <pre className="log-lines">
                 {[...r.log].reverse().map((l, i) => (

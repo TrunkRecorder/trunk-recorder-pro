@@ -26,7 +26,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use trunk_core::metrics::{key_part, Scoped, Sink};
-use trunk_core::trunk::{Engine, Event, MessageType};
+use trunk_core::dsp::inband::signal::{Heard, Signal};
+use trunk_core::trunk::{CallId, Engine, Event, MessageType};
 
 use crate::config::Config;
 use crate::protocol::ToClient;
@@ -73,7 +74,8 @@ impl Shared {
         let book = self.names.lock().unwrap();
         let tg = |sys: &str, t: u32| book.tg(sys, t);
         let unit = |sys: &str, u: u32| book.units.get(sys).and_then(|a| a.get(u)).map(str::to_string);
-        let mut out = self.radio.lock().unwrap().query(q, now, &Names { tg: &tg, unit: &unit });
+        let signals = |sys: &str, h: &Heard, tg: u32| book.signals(sys, h, tg);
+        let mut out = self.radio.lock().unwrap().query(q, now, &Names { tg: &tg, unit: &unit, signals: &signals });
         out["id"] = q["id"].clone();
         ToClient::RadioResult(crate::protocol::body(out))
     }
@@ -90,6 +92,7 @@ pub struct NameBook {
     /// Conventional rows' names for the numbers they file under ([`Config::row_talkgroups`]).
     rows: HashMap<String, trunk_core::trunk::Talkgroups>,
     units: HashMap<String, trunk_core::trunk::UnitAliases>,
+    signals: HashMap<String, Vec<Signal>>,
 }
 
 impl NameBook {
@@ -114,9 +117,15 @@ impl NameBook {
         }
     }
 
-    /// Each system's talkgroups, from an engine's systems.
+    /// Each system's talkgroups and signals, from an engine's systems.
     pub fn set_systems(&mut self, systems: &[trunk_core::trunk::SystemConfig]) {
         self.talkgroups = systems.iter().map(|s| (s.short_name.clone(), s.talkgroups.clone())).collect();
+        self.signals = systems.iter().map(|s| (s.short_name.clone(), s.signals.clone())).collect();
+    }
+
+    /// The signals of `system` a pattern heard on talkgroup `tg` is (their ids).
+    pub fn signals(&self, system: &str, h: &Heard, tg: u32) -> Vec<String> {
+        self.signals.get(system).map_or_else(Vec::new, |v| v.iter().filter(|s| s.matches_heard(h, tg)).map(|s| s.id.clone()).collect())
     }
 
     /// System `short_name`'s talker aliases, from their CSV (as saved).
@@ -172,6 +181,23 @@ impl Tally {
     }
 }
 
+/// Each call in progress's air time (id, system key, ms so far) not yet
+/// counted, by `air` (which it updates). A call gone from them whose end
+/// hasn't come in a few ticks is forgotten.
+fn air_since(air: &mut HashMap<CallId, (u64, u8)>, on: impl Iterator<Item = (CallId, String, u64)>) -> Vec<(String, u64)> {
+    for (_, missed) in air.values_mut() {
+        *missed += 1;
+    }
+    let mut out = Vec::new();
+    for (id, sys, ms) in on {
+        let (counted, _) = air.get(&id).copied().unwrap_or_default();
+        out.push((sys, ms.saturating_sub(counted)));
+        air.insert(id, (ms.max(counted), 0));
+    }
+    air.retain(|_, (_, missed)| *missed <= 5);
+    out
+}
+
 /// Today's totals (local day), for the big numbers.
 #[derive(Default, Clone, Copy)]
 struct Day {
@@ -201,6 +227,11 @@ pub struct Stats {
     trouble: Vec<(bool, bool)>,
     /// Calls this minute, per system (CallVolume for watchers).
     minute_calls: BTreeMap<String, u32>,
+    /// Air time counted so far of each call in progress, ms (counted as it
+    /// goes, so a long call's minutes land in the minutes they were on the
+    /// air, not all in the minute it ended), and the ticks since it was last
+    /// seen in progress.
+    air: HashMap<CallId, (u64, u8)>,
     local_offset: crate::session::LocalOffset,
 }
 
@@ -221,6 +252,7 @@ impl Stats {
             busy_mark: 0.0,
             locked: HashMap::new(),
             minute_calls: BTreeMap::new(),
+            air: HashMap::new(),
             local_offset,
         }
     }
@@ -288,9 +320,9 @@ impl Stats {
             Event::CallEnd(c) => {
                 let secs = (c.last_update_s - c.start_s).max(0.0);
                 self.tally.add(format!("{sys}/calls"), 1);
-                self.tally.add(format!("{sys}/airMs"), (secs * 1000.0) as u64);
                 self.tally.add("all/calls".into(), 1);
-                self.tally.add("all/airMs".into(), (secs * 1000.0) as u64);
+                let counted = self.air.remove(&c.id).map_or(0, |(ms, _)| ms);
+                self.add_air(&sys, ((secs * 1000.0) as u64).saturating_sub(counted));
                 *self.minute_calls.entry(name.to_string()).or_default() += 1;
                 self.roll_day();
                 self.day.calls += 1;
@@ -318,6 +350,14 @@ impl Stats {
                     if self.shared.monitor.lock().unwrap().wants_frequent() {
                         self.emit(MonitorEvent::UnitAffiliated { system: name.to_string(), unit, talkgroup }, out);
                     }
+                }
+            }
+            Event::TonePattern(h) => {
+                let p = trunk_core::trunk::record::tone_pattern(&h.pattern, h.src, h.signals.clone());
+                self.shared.radio.lock().unwrap().tone_pattern(name, h.talkgroup, &p, t);
+                // One of the system's signals always; any other pattern only when a watcher wants it.
+                if !h.signals.is_empty() || self.shared.monitor.lock().unwrap().wants_frequent() {
+                    self.emit(MonitorEvent::TonePattern { system: name.to_string(), talkgroup: h.talkgroup, text: p.text, signals: h.signals.clone() }, out);
                 }
             }
             Event::Concluded(k) => {
@@ -365,6 +405,7 @@ impl Stats {
         for (i, m) in self.meters.iter().enumerate() {
             m.lock().unwrap().report(&mut Scoped::new(&mut self.agg, format!("src/{}", self.names[i])));
         }
+        self.count_air(engine, site_names);
         self.tally.report(&mut self.agg);
         if dt > 0.0 {
             self.agg.gauge("eng/load", ((busy_ms - self.busy_mark) / dt).clamp(0.0, 64.0));
@@ -377,6 +418,20 @@ impl Stats {
         self.edges(engine, out);
         out.push(Output::Message(ToClient::Stats { t: (self.now * 10.0).round() / 10.0, values: self.agg.values_json() }));
         self.details(engine, site_names, decode_sites, out);
+    }
+
+    fn add_air(&mut self, sys: &str, ms: u64) {
+        self.tally.add(format!("{sys}/airMs"), ms);
+        self.tally.add("all/airMs".into(), ms);
+    }
+
+    /// The air time of the calls in progress since the last tick.
+    fn count_air(&mut self, engine: &Engine, site_names: &dyn Fn(u16, Option<u16>) -> (String, String)) {
+        let calls = engine.active_calls().into_iter().filter(|c| !c.twin);
+        let on = calls.map(|c| (c.id, format!("sys/{}", key_part(&site_names(c.system, c.site).0)), ((c.last_update_s - c.start_s).max(0.0) * 1000.0) as u64));
+        for (sys, ms) in air_since(&mut self.air, on) {
+            self.add_air(&sys, ms);
+        }
     }
 
     /// Events on a change of state: a control channel lost or regained, a
@@ -458,4 +513,27 @@ pub type DecodeSites = fn(&Engine, &str) -> (Vec<Value>, Vec<Value>);
 /// A talkgroup's name and Ignore flag from parsed tables.
 pub fn tg_info(tables: &HashMap<String, trunk_core::trunk::Talkgroups>, system: &str, tg: u32) -> Option<TgInfo> {
     tables.get(system)?.get(&tg).map(|t| TgInfo { alpha_tag: t.alpha_tag.clone(), ignore: t.ignore })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_long_calls_air_counts_in_the_minutes_it_was_on() {
+        let mut air = HashMap::new();
+        let on = |ms| std::iter::once((7, "sys/a".to_string(), ms));
+        assert_eq!(air_since(&mut air, on(1000)), [("sys/a".to_string(), 1000)]);
+        assert_eq!(air_since(&mut air, on(61_000)), [("sys/a".to_string(), 60_000)]);
+        // Its end counts only what's left.
+        assert_eq!(air.remove(&7).map(|(ms, _)| ms), Some(61_000));
+        // Gone without its end: kept a few ticks (the end may come late), then forgotten.
+        air_since(&mut air, on(5000));
+        for _ in 0..5 {
+            air_since(&mut air, std::iter::empty());
+        }
+        assert!(air.contains_key(&7));
+        air_since(&mut air, std::iter::empty());
+        assert!(air.is_empty());
+    }
 }

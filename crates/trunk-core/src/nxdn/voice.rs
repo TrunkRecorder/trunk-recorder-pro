@@ -267,7 +267,7 @@ impl NxdnVoice {
             self.bad_vch += 1;
         }
         mbe::to_limited(&mut buf);
-        let vf = VoiceFrame { codec: Codec::Ambe, bits: v.bits.to_vec(), e0: 0, errs: v.errs, erased: false, kind };
+        let vf = VoiceFrame { codec: Codec::Ambe, bits: v.bits.to_vec(), e0: 0, errs: v.errs, erased: false, kind, tone: self.dec.tone_played(kind) };
         out.push(Out { t, out: TrackerOut::Audio(buf.to_vec(), vf) });
     }
 

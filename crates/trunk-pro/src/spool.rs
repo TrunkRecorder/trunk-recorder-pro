@@ -10,11 +10,17 @@
 //! moved there ([`crate::plugins::Archive`]), and so is anything left here
 //! long after ([`STALE`]: a plugin that never reported). When the spool is
 //! full, calls are written to the recordings folder as without one.
+//!
+//! And it's made again should it go while the app runs ([`Spool::revive`]):
+//! on Linux, systemd's `RemoveIPC` (on by default) deletes a user's files in
+//! /dev/shm when their last login session ends, so a recorder started over
+//! SSH loses its spool when that SSH session ends.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RamSpool;
 
@@ -23,6 +29,8 @@ use crate::config::RamSpool;
 pub const STALE: Duration = Duration::from_secs(2 * 3600);
 /// Room left free: below this much, calls go to the recordings folder.
 const HEADROOM_PCT: u64 = 5;
+/// A spool that's gone and couldn't be made again: tried again this often.
+const RETRY: Duration = Duration::from_secs(60);
 
 pub struct Spool {
     pub dir: PathBuf,
@@ -32,6 +40,12 @@ pub struct Spool {
     cap: u64,
     /// Calls written to the recordings folder for want of room.
     overflowed: AtomicU64,
+    /// The app's data folder, to make it again.
+    data: PathBuf,
+    /// Times it was found gone (deleted, unmounted) while the app ran.
+    removed: AtomicU64,
+    /// Gone and not made again: when that was last tried.
+    lost: Mutex<Option<Instant>>,
 }
 
 impl Spool {
@@ -45,7 +59,51 @@ impl Spool {
         } else {
             (sys::open(data, cap)?, sys::KIND)
         };
-        Ok(Spool { dir, kind, cap, overflowed: AtomicU64::new(0) })
+        Ok(Spool { dir, kind, cap, overflowed: AtomicU64::new(0), data: data.to_path_buf(), removed: AtomicU64::new(0), lost: Mutex::new(None) })
+    }
+
+    /// Its folder is there (the RAM disk mounted).
+    fn here(&self) -> bool {
+        if self.kind == "folder" { self.dir.is_dir() } else { sys::here(&self.dir) }
+    }
+
+    /// There, or made again if it went (once a [`RETRY`] while that fails);
+    /// false: calls go to the recordings folder meanwhile.
+    pub fn revive(&self) -> bool {
+        let mut lost = self.lost.lock().unwrap();
+        if self.here() {
+            *lost = None;
+            return true;
+        }
+        if lost.is_some_and(|t| t.elapsed() < RETRY) {
+            return false;
+        }
+        if lost.is_none() {
+            self.removed.fetch_add(1, Ordering::Relaxed);
+            log::warn!("The RAM spool at {} is gone (deleted or unmounted while the app ran): making it again", self.dir.display());
+        }
+        *lost = Some(Instant::now());
+        let made = if self.kind == "folder" {
+            fs::create_dir_all(&self.dir).map_err(|e| e.to_string())
+        } else {
+            sys::open(&self.data, self.cap).map(|_| ())
+        };
+        match made {
+            Ok(()) => {
+                *lost = None;
+                log::info!("RAM spool made again at {}", self.dir.display());
+                true
+            }
+            Err(e) => {
+                log::warn!("Couldn't make the RAM spool again ({e}): calls go to the recordings folder");
+                false
+            }
+        }
+    }
+
+    /// Times it was found gone while the app ran.
+    pub fn removed(&self) -> u64 {
+        self.removed.load(Ordering::Relaxed)
     }
 
     /// Size and free space, bytes.
@@ -59,8 +117,12 @@ impl Spool {
         Some((total, total.saturating_sub(du(&self.dir)).min(free)))
     }
 
-    /// Room for `bytes` more, keeping some free. False counts an overflow.
+    /// Room for `bytes` more, keeping some free. False counts an overflow,
+    /// unless it's gone ([`Spool::removed`] says that).
     pub fn room_for(&self, bytes: u64) -> bool {
+        if !self.revive() {
+            return false;
+        }
         let ok = self.usage().is_some_and(|(total, free)| free > bytes + total * HEADROOM_PCT / 100);
         if !ok {
             self.overflowed.fetch_add(1, Ordering::Relaxed);
@@ -222,6 +284,10 @@ mod sys {
         Some(mount_point(data)).filter(|d| mounted(d))
     }
 
+    pub fn here(dir: &Path) -> bool {
+        mounted(dir)
+    }
+
     fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
         let o = Command::new(cmd).args(args).output().map_err(|e| format!("{cmd}: {e}"))?;
         if !o.status.success() {
@@ -292,6 +358,10 @@ mod sys {
         Some(folder(data)).filter(|d| d.is_dir())
     }
 
+    pub fn here(dir: &Path) -> bool {
+        dir.is_dir()
+    }
+
     pub fn remove(dir: &Path) -> Result<(), String> {
         std::fs::remove_dir_all(dir).map_err(|e| e.to_string())
     }
@@ -316,6 +386,10 @@ mod sys {
 
     pub fn existing(_: &Path) -> Option<PathBuf> {
         None
+    }
+
+    pub fn here(dir: &Path) -> bool {
+        dir.is_dir()
     }
 
     pub fn remove(_: &Path) -> Result<(), String> {
@@ -360,6 +434,22 @@ mod tests {
         assert_eq!(s.usage().unwrap().1, free - (1 << 20));
         assert!(s.room_for(1 << 20) && !s.room_for(15 << 20));
         assert_eq!(s.overflowed(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Deleted while the app runs (systemd's RemoveIPC, at logout): made
+    /// again, and counted as that, not as full.
+    #[test]
+    fn a_spool_deleted_while_running_is_made_again() {
+        let root = std::env::temp_dir().join(format!("trunk-pro-spool-gone-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let s = Spool::open(&RamSpool { enabled: true, size_mb: 16, dir: root.display().to_string() }, &root).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(s.room_for(1 << 20) && root.is_dir());
+        assert_eq!((s.removed(), s.overflowed()), (1, 0));
+        // There again: nothing more counted.
+        assert!(s.revive());
+        assert_eq!(s.removed(), 1);
         let _ = fs::remove_dir_all(&root);
     }
 }

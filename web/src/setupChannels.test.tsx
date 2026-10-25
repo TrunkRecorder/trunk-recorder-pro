@@ -83,3 +83,27 @@ test("Setup's channels: a digital row can correct its source's AutoTune; an anal
   assert.doesNotMatch(text(editors[1]), /Correct the source/);
   assert.match(text(html), /AutoTune p25, dmr, nxdn: true lets its calls correct/);
 });
+
+test("Setup's signals: a disclosure on the system's card, a row each with its kind and what's wrong with it, as the recorder says", () => {
+  const c = defaultConfig();
+  c.conventional.push(
+    newConventional(c, {
+      shortName: "town",
+      channels: [row(154_325_000, "fm", { name: "County A Fire" })],
+      signals: [
+        { id: "COUNTY_A", name: "County A page", pattern: "two_tone", tonesHz: [788.5, 879], talkgroups: ["1001"] },
+        { id: "ALERT", pattern: "beep", tonesHz: [1000] },
+        { id: "PW_KNOX", pattern: "digits", knox: true },
+      ],
+    }),
+  );
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const html = renderToString(<ConventionalPanel c={c} k={0} />);
+  const signals = html.slice(html.indexOf(">", html.indexOf('id="need-convsignals-town"')) + 1);
+  assert.match(text(signals), /^ ?Signals — 3/);
+  const lines = [...signals.matchAll(/<tr>(.*?)<\/tr>/g)].slice(1, 4).map((m) => text(m[1]).trim());
+  assert.match(lines[0], /^COUNTY_A County A page Two-tone page 788\.5, 879 Hz 1001 ▶ Edit Remove$/);
+  assert.match(lines[1], /^ALERT Beep 1000 Hz any/, "a beep isn't a long tone");
+  assert.match(lines[2], /^PW_KNOX Signal PW_KNOX: which digits does it send\? KNOX digits/, "the recorder's problem");
+  assert.match(text(signals), /\+ Add a signal/);
+});

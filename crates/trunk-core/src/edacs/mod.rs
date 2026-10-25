@@ -106,7 +106,7 @@ impl ProVoice {
                 self.bad_vc += 1;
             }
             mbe::to_limited(&mut buf);
-            let vf = VoiceFrame { codec: Codec::Imbe, bits: d.to_vec(), e0, errs: et, erased: false, kind };
+            let vf = VoiceFrame { codec: Codec::Imbe, bits: d.to_vec(), e0, errs: et, erased: false, kind, tone: None };
             out.push(PvOut { t: self.sync.t + header_s + f as f64 * 0.02, out: TrackerOut::Audio(buf.to_vec(), vf) });
         }
     }

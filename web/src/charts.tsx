@@ -187,6 +187,8 @@ export interface Line {
   band?: boolean;
   dashed?: boolean;
   mul?: number;
+  /** On a scale of its own, read off the right edge (a line in other units, or of another size). */
+  right?: boolean;
 }
 
 /** (t, v) points of a line, scaled. */
@@ -260,28 +262,38 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
   const H = props.height ?? 160;
   // (Drawn in the width it's shown at: text and dots keep their shape.)
   const [measure, W] = useWidth(640);
+  const twoScales = props.lines.some((l) => l.right) && props.lines.some((l) => !l.right);
   const L = 44;
-  const R = 8;
+  const R = twoScales ? 44 : 8;
   const T = 8;
   const B = 20;
   const fmt = props.fmt ?? ((v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1)));
   const pts = useMemo(() => props.lines.map(points), [props.lines]);
   const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<SVGSVGElement>(null);
-  const all = pts.flatMap((p) => [...p.v, ...p.lo, ...p.hi]).filter((x): x is number => x !== null && Number.isFinite(x));
+  // (A line's band counts toward its scale only when drawn: a spike's highest a minute, unshown, would squash the rest flat.)
+  const valuesOf = (right: boolean) =>
+    pts.flatMap((p, k) => (!!props.lines[k].right === right || !twoScales ? [...p.v, ...(props.lines[k].band ? [...p.lo, ...p.hi] : [])] : [])).filter((x): x is number => x !== null && Number.isFinite(x));
+  const all = valuesOf(false);
   // The span with data (a week's chart of a new install shows its hours, not six empty days).
   const ts = pts.flatMap((p) => p.t.filter((_, i) => p.v[i] !== null));
   if (!all.length || ts.length < 1) return <div ref={measure} className="chart-empty" style={{ height: H }}>{props.empty ?? "Collecting data…"}</div>;
-  let lo = props.lo ?? Math.min(...all, ...(props.marks ?? []).map((m) => m.v));
-  let hi = props.hi ?? Math.max(...all, ...(props.marks ?? []).map((m) => m.v));
-  if (props.zero) lo = Math.min(0, lo);
-  if (hi === lo) {
-    hi += 1;
-    lo -= props.zero ? 0 : 1;
-  }
-  const yt = axisTicks(lo, hi, fmt);
-  lo = Math.min(lo, yt[0] ?? lo);
-  hi = Math.max(hi, yt[yt.length - 1] ?? hi);
+  // A side's ticks and range: the left's takes the marks and the fixed ends, the right's starts at 0 when the left's does.
+  const scale = (vs: number[], left: boolean) => {
+    const marks = left ? (props.marks ?? []).map((m) => m.v) : [];
+    let lo = (left ? props.lo : undefined) ?? Math.min(...vs, ...marks);
+    let hi = (left ? props.hi : undefined) ?? Math.max(...vs, ...marks);
+    if (props.zero) lo = Math.min(0, lo);
+    if (hi === lo) {
+      hi += 1;
+      lo -= props.zero ? 0 : 1;
+    }
+    const yt = axisTicks(lo, hi, fmt);
+    return { yt, lo: Math.min(lo, yt[0] ?? lo), hi: Math.max(hi, yt[yt.length - 1] ?? hi) };
+  };
+  const { yt, lo, hi } = scale(all, true);
+  const rightVs = twoScales ? valuesOf(true) : [];
+  const rs = rightVs.length ? scale(rightVs, false) : { yt: [] as number[], lo, hi };
   let t0 = Math.min(...ts);
   let t1 = Math.max(...ts);
   if (t1 - t0 < 120) {
@@ -291,6 +303,10 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
   }
   const x = (t: number) => L + unit(t, t0, t1) * (W - L - R);
   const y = (v: number) => T + (1 - unit(v, lo, hi)) * (H - T - B);
+  const yr = (v: number) => T + (1 - unit(v, rs.lo, rs.hi)) * (H - T - B);
+  const yOf = (k: number) => (twoScales && props.lines[k].right ? yr : y);
+  // With two scales, each side's numbers in its line's colour.
+  const sideColor = (right: boolean) => (twoScales ? props.lines.find((l) => !!l.right === right)?.color : undefined);
   const span = t1 - t0;
   const xt = [0, 0.25, 0.5, 0.75, 1].map((f) => t0 + f * span);
   const onMove = (e: React.MouseEvent) => {
@@ -306,6 +322,15 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
     return best;
   });
   const ht = near && near[0] >= 0 ? pts[0].t[near[0]] : hover;
+  // The values beside the crosshair, not on it: on the side with more room,
+  // and in the half of the plot away from the points it reads (#79).
+  const tipAt = (() => {
+    if (!near || ht === null) return null;
+    const ys = near.flatMap((i, k) => (i >= 0 && pts[k].v[i] !== null ? [yOf(k)(pts[k].v[i]!)] : []));
+    const high = ys.length > 0 && ys.reduce((a, b) => a + b, 0) / ys.length < (T + H - B) / 2;
+    const cx = x(ht);
+    return { cx, flip: cx > (L + W - R) / 2, high };
+  })();
   return (
     <div className="ts" ref={measure}>
       {/* (A single line's too: its label says what it is, and in what unit.) */}
@@ -319,87 +344,98 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
           ))}
         </div>
       )}
-      <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="ts-svg" style={{ height: H }} onMouseMove={onMove} onMouseLeave={() => setHover(null)} role="img" aria-label={props.lines.map((l) => l.label).join(", ")}>
-        {yt.map((v) => (
-          <g key={v}>
-            <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} className="grid" vectorEffect="non-scaling-stroke" />
-            <text x={L - 6} y={y(v) + 4} textAnchor="end" className="axis">
+      <div className="ts-plot">
+        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="ts-svg" style={{ height: H }} onMouseMove={onMove} onMouseLeave={() => setHover(null)} role="img" aria-label={props.lines.map((l) => l.label).join(", ")}>
+          {yt.map((v) => (
+            <g key={v}>
+              <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} className="grid" vectorEffect="non-scaling-stroke" />
+              <text x={L - 6} y={y(v) + 4} textAnchor="end" className="axis" style={{ fill: sideColor(false) }}>
+                {fmt(v)}
+              </text>
+            </g>
+          ))}
+          {rs.yt.map((v) => (
+            <text key={v} x={W - R + 6} y={yr(v) + 4} textAnchor="start" className="axis" style={{ fill: sideColor(true) }}>
               {fmt(v)}
             </text>
-          </g>
-        ))}
-        {xt.map((t, i) => (
-          <text key={i} x={x(t)} y={H - 4} textAnchor={i === 0 ? "start" : i === 4 ? "end" : "middle"} className="axis">
-            {clockAt(t)}
-          </text>
-        ))}
-        {(props.marks ?? []).map((m) => (
-          <g key={m.label}>
-            <line x1={L} x2={W - R} y1={y(m.v)} y2={y(m.v)} className="mark-line" vectorEffect="non-scaling-stroke" />
-            <text x={W - R - 2} y={y(m.v) - 4} textAnchor="end" className="axis">
-              {m.label}
+          ))}
+          {xt.map((t, i) => (
+            <text key={i} x={x(t)} y={H - 4} textAnchor={i === 0 ? "start" : i === 4 ? "end" : "middle"} className="axis">
+              {clockAt(t)}
             </text>
-          </g>
-        ))}
-        {pts.map((p, k) => {
-          const l = props.lines[k];
-          const xs = p.t.map(x);
-          const bandD =
-            l.band && p.lo.length
-              ? (() => {
-                  // A band per run of points (gaps break it).
-                  let d = "";
-                  let run: number[] = [];
-                  const flush = () => {
-                    if (run.length > 1) d += `M${run.map((i) => `${xs[i].toFixed(1)},${y(p.hi[i]!).toFixed(1)}`).join("L")}L${[...run].reverse().map((i) => `${xs[i].toFixed(1)},${y(p.lo[i]!).toFixed(1)}`).join("L")}Z`;
-                    run = [];
-                  };
-                  for (let i = 0; i < p.t.length; i++) {
-                    if (p.lo[i] === null || p.hi[i] === null) flush();
-                    else run.push(i);
-                  }
-                  flush();
-                  return d;
-                })()
-              : "";
-          return (
-            <g key={l.label}>
-              {bandD && <path d={bandD} fill={l.color} opacity={0.12} />}
-              <path d={pathOf(xs, p.v.map((v) => (v === null ? null : y(v))))} fill="none" stroke={l.color} strokeWidth={2} strokeDasharray={l.dashed ? "4 3" : undefined} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-              {/* A point with no neighbour draws no line: a dot instead. */}
-              {p.v.map((v, i) =>
-                v !== null && (i === 0 || p.v[i - 1] === null) && (i === p.v.length - 1 || p.v[i + 1] === null) ? <circle key={i} cx={xs[i]} cy={y(v)} r={3} fill={l.color} /> : null,
-              )}
+          ))}
+          {(props.marks ?? []).map((m) => (
+            <g key={m.label}>
+              <line x1={L} x2={W - R} y1={y(m.v)} y2={y(m.v)} className="mark-line" vectorEffect="non-scaling-stroke" />
+              <text x={W - R - 2} y={y(m.v) - 4} textAnchor="end" className="axis">
+                {m.label}
+              </text>
             </g>
-          );
-        })}
-        {ht !== null && (
-          <line x1={x(ht)} x2={x(ht)} y1={T} y2={H - B} className="crosshair" vectorEffect="non-scaling-stroke" />
+          ))}
+          {pts.map((p, k) => {
+            const l = props.lines[k];
+            const y = yOf(k);
+            const xs = p.t.map(x);
+            const bandD =
+              l.band && p.lo.length
+                ? (() => {
+                    // A band per run of points (gaps break it).
+                    let d = "";
+                    let run: number[] = [];
+                    const flush = () => {
+                      if (run.length > 1) d += `M${run.map((i) => `${xs[i].toFixed(1)},${y(p.hi[i]!).toFixed(1)}`).join("L")}L${[...run].reverse().map((i) => `${xs[i].toFixed(1)},${y(p.lo[i]!).toFixed(1)}`).join("L")}Z`;
+                      run = [];
+                    };
+                    for (let i = 0; i < p.t.length; i++) {
+                      if (p.lo[i] === null || p.hi[i] === null) flush();
+                      else run.push(i);
+                    }
+                    flush();
+                    return d;
+                  })()
+                : "";
+            return (
+              <g key={l.label}>
+                {bandD && <path d={bandD} fill={l.color} opacity={0.12} />}
+                <path d={pathOf(xs, p.v.map((v) => (v === null ? null : y(v))))} fill="none" stroke={l.color} strokeWidth={2} strokeDasharray={l.dashed ? "4 3" : undefined} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+                {/* A point with no neighbour draws no line: a dot instead. */}
+                {p.v.map((v, i) =>
+                  v !== null && (i === 0 || p.v[i - 1] === null) && (i === p.v.length - 1 || p.v[i + 1] === null) ? <circle key={i} cx={xs[i]} cy={y(v)} r={3} fill={l.color} /> : null,
+                )}
+              </g>
+            );
+          })}
+          {ht !== null && (
+            <line x1={x(ht)} x2={x(ht)} y1={T} y2={H - B} className="crosshair" vectorEffect="non-scaling-stroke" />
+          )}
+          {near &&
+            near.map((i, k) =>
+              i >= 0 && pts[k].v[i] !== null ? <circle key={k} cx={x(pts[k].t[i])} cy={yOf(k)(pts[k].v[i]!)} r={4} fill={props.lines[k].color} className="ts-dot" /> : null,
+            )}
+        </svg>
+        {near && ht !== null && tipAt && (
+          <div
+            className={`ts-tip${tipAt.flip ? " flip" : ""}`}
+            style={{ ...(tipAt.flip ? { right: `${(100 - unit(tipAt.cx, 0, W) * 100).toFixed(1)}%` } : { left: `${(unit(tipAt.cx, 0, W) * 100).toFixed(1)}%` }), ...(tipAt.high ? { bottom: B + 4 } : { top: T }) }}
+          >
+            <b>{clockAt(ht, span < 3600)}</b>
+            {near.map((i, k) =>
+              i >= 0 && pts[k].v[i] !== null ? (
+                <div key={k}>
+                  <i style={{ background: props.lines[k].color }} />
+                  {props.lines[k].label}: {fmt(pts[k].v[i]!)}
+                  {pts[k].lo[i] != null && pts[k].hi[i] != null && pts[k].lo[i] !== pts[k].hi[i] ? (
+                    <span className="muted">
+                      {" "}
+                      ({fmt(pts[k].lo[i]!)}–{fmt(pts[k].hi[i]!)})
+                    </span>
+                  ) : null}
+                </div>
+              ) : null,
+            )}
+          </div>
         )}
-        {near &&
-          near.map((i, k) =>
-            i >= 0 && pts[k].v[i] !== null ? <circle key={k} cx={x(pts[k].t[i])} cy={y(pts[k].v[i]!)} r={4} fill={props.lines[k].color} className="ts-dot" /> : null,
-          )}
-      </svg>
-      {near && ht !== null && (
-        <div className="ts-tip" style={{ left: `${(unit(x(ht), 0, W) * 100).toFixed(1)}%` }}>
-          <b>{clockAt(ht, span < 3600)}</b>
-          {near.map((i, k) =>
-            i >= 0 && pts[k].v[i] !== null ? (
-              <div key={k}>
-                <i style={{ background: props.lines[k].color }} />
-                {props.lines[k].label}: {fmt(pts[k].v[i]!)}
-                {pts[k].lo[i] != null && pts[k].hi[i] != null && pts[k].lo[i] !== pts[k].hi[i] ? (
-                  <span className="muted">
-                    {" "}
-                    ({fmt(pts[k].lo[i]!)}–{fmt(pts[k].hi[i]!)})
-                  </span>
-                ) : null}
-              </div>
-            ) : null,
-          )}
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -526,7 +562,7 @@ export function Heatmap(props: { rows: { label: string; sub?: string; v: number[
   const rowH = props.rowH ?? 16;
   const cols = props.rows[0]?.v.length ?? 0;
   const canvas = useRef<HTMLCanvasElement>(null);
-  const [tip, setTip] = useState<{ r: number; c: number; x: number; y: number } | null>(null);
+  const [tip, setTip] = useState<{ r: number; c: number; x: number; y: number; w: number; h: number } | null>(null);
   const max = Math.max(1, ...props.rows.flatMap((r) => r.v));
   useEffect(() => {
     const cv = canvas.current;
@@ -564,7 +600,7 @@ export function Heatmap(props: { rows: { label: string; sub?: string; v: number[
     const r = e.currentTarget.getBoundingClientRect();
     const c = Math.floor(((e.clientX - r.left) / r.width) * cols);
     const ri = Math.floor((e.clientY - r.top) / rowH);
-    if (ri >= 0 && ri < props.rows.length && c >= 0 && c < cols) setTip({ r: ri, c, x: e.clientX - r.left, y: e.clientY - r.top });
+    if (ri >= 0 && ri < props.rows.length && c >= 0 && c < cols) setTip({ r: ri, c, x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height });
     else setTip(null);
   };
   return (
@@ -579,7 +615,8 @@ export function Heatmap(props: { rows: { label: string; sub?: string; v: number[
       <div className="heatmap-plot">
         <canvas ref={canvas} style={{ width: "100%", height: props.rows.length * rowH }} onMouseMove={onMove} onMouseLeave={() => setTip(null)} onClick={() => tip && props.onRow?.(tip.r)} role="img" aria-label="activity by hour" />
         {tip && (
-          <div className="tip" style={{ left: tip.x + 12, top: tip.y + 8 }}>
+          // (Toward the middle: past it, it'd run off the card.)
+          <div className="tip" style={{ ...(tip.x > tip.w / 2 ? { right: tip.w - tip.x + 12 } : { left: tip.x + 12 }), ...(tip.y > tip.h / 2 && tip.h > 120 ? { bottom: tip.h - tip.y + 8 } : { top: tip.y + 8 }) }}>
             <b>{props.rows[tip.r].label}</b>
             <div>{props.colLabel(tip.c)}</div>
             <div>{props.valueText(props.rows[tip.r].v[tip.c])}</div>

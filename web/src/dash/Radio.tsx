@@ -10,6 +10,7 @@ import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light,
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
 import type { CipherSeen, LengthHistogram, OutOfBandRow, RadioResult, TgRow, UnitRow } from "../protocol.ts";
 import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
+import { Tones } from "./Tones.tsx";
 import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
 
 type Hours = "24" | "168";
@@ -382,6 +383,7 @@ function SystemView({ s, sys, focus }: { s: AppState; sys: DashSystem; focus?: s
       <Talkgroups sys={sys} rows={tgs} hours={h} />
       <Units s={s} sys={sys} rows={units} total={unitsR?.total ?? units.length} />
       <Log s={s} system={sys.name} />
+      <Tones s={s} sys={sys} hours={h} />
     </div>
   );
 }
