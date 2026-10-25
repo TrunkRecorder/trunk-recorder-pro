@@ -29,6 +29,12 @@ const NOMINAL_DEV_HZ: f32 = 2400.0;
 const MIN_SPREAD_HZ: f32 = 1200.0;
 /// Level tracker step per decided symbol.
 const LEVEL_ALPHA: f32 = 0.02;
+/// The deciles' step per symbol, a fraction of their spread ([`Fsk2Options::dc`]).
+const DECILE_STEP: f32 = 0.005;
+/// The levels start again from the deciles when their midpoints have been this far
+/// apart (a fraction of the deciles' half spread) for this many symbols more than not.
+const DRIFT_FRACTION: f32 = 0.25;
+const DRIFT_SYMBOLS: u32 = 200;
 /// Symbol clock correction per zero crossing, fraction of the error.
 const CLOCK_GAIN: f64 = 0.06;
 
@@ -54,10 +60,15 @@ pub struct Fsk2Options {
     /// same OSWs on WMATA (`tool snr`). The discriminator still tracks the
     /// tones (carrier offset) and runs the clock's level tracker.
     pub tones: bool,
-    /// Watch for a stuck level: a start-up transient can push one level past
-    /// the far tone, where no symbol reaches it, and the other then follows
-    /// both tones' mean. After 400 symbols on one side (more than any run in
-    /// the data: EDACS, ProVoice), the levels start again around that mean.
+    /// Watch the levels against the discriminator's upper and lower deciles
+    /// (EDACS, ProVoice). At about three samples a symbol its values aren't
+    /// two clean clusters, so levels kept as the mean of the symbols decided
+    /// each side can settle wrong after a start-up transient — one pulled
+    /// most of the way to the other, the midpoint far off the carrier — and
+    /// never recover. The deciles don't depend on the decisions: when the
+    /// levels' midpoint stays well away from theirs, the levels start again
+    /// from them. (Only then: with noise, and more of one bit than the other,
+    /// the deciles' midpoint is the poorer estimate.)
     pub dc: bool,
 }
 
@@ -108,8 +119,10 @@ pub struct Fsk2 {
     rate: f64,
     /// Smallest believable tone separation, Hz.
     min_spread: f32,
-    /// Symbols decided since a level was last updated: (high, low) ([`Fsk2Options::dc`]).
-    since: (u32, u32),
+    /// The discriminator's upper and lower deciles at the symbol instants, Hz,
+    /// and symbols the levels' midpoint has been far from theirs, less those it hasn't ([`Fsk2Options::dc`]).
+    deciles: (f32, f32),
+    drift: u32,
 }
 
 impl Fsk2 {
@@ -145,7 +158,8 @@ impl Fsk2 {
             prev_disc: 0.0,
             rate,
             min_spread: MIN_SPREAD_HZ.min(dev_hz),
-            since: (0, 0),
+            deciles: (dev_hz, -dev_hz),
+            drift: 0,
         }
     }
 
@@ -228,20 +242,21 @@ impl Fsk2 {
         let half = (self.hi - self.lo) / 2.0;
         let a = self.opts.level_alpha;
         if self.opts.dc {
-            // A level no symbol has reached for this long is stuck (a start-up
-            // transient pushed it past the far tone, and the other level now
-            // follows both tones' mean): start again around that mean.
-            const STUCK: u32 = 400;
-            if v > center {
-                self.since = (0, self.since.1 + 1);
+            // Each decile steps up by 0.9 of a step or down by 0.1 (the upper),
+            // or the other way round (the lower): it settles with a tenth of the values beyond it.
+            let (qh, ql) = &mut self.deciles;
+            let step = DECILE_STEP * (*qh - *ql).max(self.min_spread);
+            *qh += step * if level > *qh { 0.9 } else { -0.1 };
+            *ql += step * if level < *ql { -0.9 } else { 0.1 };
+            let (qh, ql) = self.deciles;
+            if (center - (qh + ql) / 2.0).abs() > DRIFT_FRACTION * (qh - ql) / 2.0 {
+                self.drift += 1;
             } else {
-                self.since = (self.since.0 + 1, 0);
+                self.drift = self.drift.saturating_sub(1);
             }
-            if self.since.0 > STUCK || self.since.1 > STUCK {
-                let c = if self.since.1 > STUCK { self.hi } else { self.lo };
-                let d = half.max(self.min_spread / 2.0);
-                (self.hi, self.lo) = (c + d, c - d);
-                self.since = (0, 0);
+            if self.drift > DRIFT_SYMBOLS && qh - ql >= self.min_spread {
+                (self.hi, self.lo) = (qh, ql);
+                self.drift = 0;
             }
         }
         if v > center {

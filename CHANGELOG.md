@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **EDACS control channels lock every time** (#76). At about three samples a symbol, the
+  receiver's tone levels could settle wrong after the first moments of a channel (one tone's level
+  pulled most of the way to the other, the midpoint far off the carrier) and never recover: no
+  messages from a strong control channel, or no ProVoice audio. Which way it went turned on
+  rounding, so the engine tests failed on Linux on aarch64 (Raspberry Pi) and passed elsewhere;
+  with other noise they failed about one time in fourteen anywhere. The levels are now watched
+  against the discriminator's deciles, which don't depend on the decisions, and start again from
+  them when they drift apart. Weak-signal decoding is unchanged (measured from clean to no frames).
+
 - **Multi-site: the best copy of each transmission** (replaces #75; thanks to photounit for
   working out the problem). A system's sites don't always agree on what a call is: one keeps a
   voice channel through a conversation while another grants each transmission its own, so their
