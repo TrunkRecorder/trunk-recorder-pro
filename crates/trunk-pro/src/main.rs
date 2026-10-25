@@ -28,6 +28,7 @@
 //!     ones, leave out short transmissions)  --auto-tune (correct the sources'
 //!     frequency error as measured on the control channels; reported either way)
 //!     --guard Hz (left unused at each edge of a source's band; default 75000)
+//!     --transmissions (conversation mode off: each transmission a call)
 //!     More systems (or sites): --system name[/site]:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3]
 //!     (repeatable; "dcfd/south" is site south of system dcfd, and a call
 //!     heard on several sites of a system is saved once; the identity is
@@ -406,6 +407,7 @@ fn replay(a: &Args) {
         record_unknown: !a.flag("no-unknown"),
         record_encrypted: a.flag("record-encrypted"),
         max_call_s: a.num("max-call", 0.0),
+        conversation: !a.flag("transmissions"),
         ..Default::default()
     };
     let save = SaveRules {
@@ -729,14 +731,16 @@ fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messa
                 // (Appended, not with_extension: a TDMA base name ends in ".<slot>".)
                 let dir = if multi { Path::new(out_dir).join(&k.short_name) } else { Path::new(out_dir).to_path_buf() };
                 let _ = fs::create_dir_all(&dir);
-                let base = dir.join(&k.base_name).display().to_string();
+                // (A call per transmission: named apart, as the app does.)
+                let name = if engine.systems().get(k.call.system as usize).is_some_and(|s| !s.calls.conversation) { trunk_app::filename::numbered(&k.base_name, k.record.call_num) } else { k.base_name.clone() };
+                let base = dir.join(&name).display().to_string();
                 let _ = fs::write(format!("{base}.wav"), trunk_core::wav::encode(&k.audio, 8000));
                 let _ = fs::write(format!("{base}.json"), k.record.to_json());
                 if let Some(c) = &k.frames {
                     let _ = fs::write(format!("{base}.{}", c.ext), &c.bytes);
                 }
                 if !quiet {
-                    println!("         wrote {}.wav  ({:.1} s audio)", k.base_name, k.audio.len() as f64 / 8000.0);
+                    println!("         wrote {name}.wav  ({:.1} s audio)", k.audio.len() as f64 / 8000.0);
                 }
                 written += 1;
             }

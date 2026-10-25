@@ -512,20 +512,29 @@ impl CallManager {
     }
 
     /// Conversation mode off ([`CallConfig::conversation`]): recorded call
-    /// `id` hears a new transmission at `now_s` (audio again after a gap,
-    /// [`super::record::TRANSMISSION_GAP_S`]). It ends with what it had, and
-    /// a new call on its channel takes this transmission, with the talkers
-    /// announced since the last one's audio (a grant comes before its voice).
-    /// The new call's id; None: not a new transmission, or no such call.
+    /// `id`, about to take more audio at `now_s`, has a new transmission —
+    /// audio again after a gap ([`super::record::TRANSMISSION_GAP_S`]), with
+    /// the talkers announced since (a grant comes before its voice); or a new
+    /// talker heard while the audio ran on (analog hang time, a quick
+    /// handover), once the last had talked that long. It ends with what it
+    /// had, and a new call on its channel takes the new transmission. The new
+    /// call's id; None: the same transmission, or no such call.
     pub fn next_transmission(&mut self, id: CallId, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) -> Option<CallId> {
+        const GAP: f64 = super::record::TRANSMISSION_GAP_S;
         if self.cfg.conversation {
             return None;
         }
-        let i = self.calls.iter().position(|c| c.id == id && c.recording && now_s - c.last_audio_s > super::record::TRANSMISSION_GAP_S)?;
-        let since = self.calls[i].last_audio_s;
-        let sources = &mut self.calls[i].sources;
-        let next = sources.iter().position(|s| s.time_s > since).unwrap_or(sources.len());
-        let talking = sources.split_off(next);
+        let i = self.calls.iter().position(|c| c.id == id && c.recording)?;
+        let c = &mut self.calls[i];
+        let next = if now_s - c.last_audio_s > GAP {
+            c.sources.iter().position(|s| s.time_s > c.last_audio_s).unwrap_or(c.sources.len())
+        } else {
+            match c.sources.as_slice() {
+                [.., last, new] if new.time_s - last.time_s > GAP => c.sources.len() - 1,
+                _ => return None,
+            }
+        };
+        let talking = c.sources.split_off(next);
         Some(self.split(i, now_s, talking, host, ev))
     }
 
@@ -850,6 +859,15 @@ mod tests {
             let c = &m.calls[0];
             assert_eq!((c.id, c.start_s, c.recording), (next, 4.5, true));
             assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [9], "the talker announced for it");
+            // Another talker while the audio runs on (analog hang time): a new transmission too.
+            m.note_audio(next, 5.0);
+            assert!(CallManager::note_source(&mut m.m.calls[0], Some(11), 5.2, Flags::default()));
+            m.note_audio(next, 5.3);
+            let third = m.m.next_transmission(next, 5.4, &mut Host, &mut ev).expect("a new talker");
+            assert_eq!((m.calls[0].id, m.calls[0].sources.iter().map(|s| s.src).collect::<Vec<_>>()), (third, vec![11]));
+            // But not one heard right after the last began (the voice channel's word on who the grant's radio was).
+            assert!(CallManager::note_source(&mut m.m.calls[0], Some(12), 5.5, Flags::default()));
+            assert_eq!(m.m.next_transmission(third, 5.6, &mut Host, &mut ev), None);
         }
     }
 

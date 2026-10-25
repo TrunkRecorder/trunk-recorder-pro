@@ -119,7 +119,8 @@ With `filenameFormat` empty, calls are saved as Trunk Recorder saves them, in lo
 ```
 
 Month and day aren't zero-padded (`2026/10/4`). `<freq>` is in Hz. `.<slot>` is added for P25
-Phase 2 and DMR calls. A system's sites share its folder; the call JSON's `site` says which site's
+Phase 2 and DMR calls. With `conversationMode` off, `-call_<call_num>` is added too, as a format's
+names have it: two transmissions of a talkgroup on one channel can begin in the same second. A system's sites share its folder; the call JSON's `site` says which site's
 copy it is. Calls saved by an older version, when each site was a system, stay in each site's old
 folder and are still found.
 

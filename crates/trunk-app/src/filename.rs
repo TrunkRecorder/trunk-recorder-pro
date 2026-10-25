@@ -44,8 +44,14 @@ pub fn render(format: &str, record: &Value, sys_num: u16, utc_offset_s: i32) -> 
     out.push_str(rest);
     // Folders: none empty, none climbing out of the recordings folder.
     let path: Vec<&str> = out.split(['/', '\\']).map(str::trim).filter(|p| !p.is_empty() && *p != "." && *p != "..").collect();
-    let num = record["call_num"].as_u64().unwrap_or(0);
-    format!("{}-call_{num}", if path.is_empty() { "call".to_string() } else { path.join("/") })
+    numbered(&if path.is_empty() { "call".to_string() } else { path.join("/") }, record["call_num"].as_u64().unwrap_or(0))
+}
+
+/// `path` with the call's number added (`-call_<num>`), as Trunk Recorder
+/// does to a format's: two calls of one talkgroup and channel begun in the
+/// same second (a call per transmission) are named apart.
+pub fn numbered(path: &str, call_num: u64) -> String {
+    format!("{path}-call_{call_num}")
 }
 
 /// Why a format can't be used, or None. Unknown tokens are named.
@@ -263,6 +269,12 @@ mod tests {
         json!({ "call_num": 42, "freq": 851012500, "talkgroup": 12345, "talkgroup_tag": "FD Disp", "talkgroup_group_tag": "Fire Dispatch",
                 "talkgroup_description": "Fire / EMS: Main", "talkgroup_group": "Fire", "short_name": "dcsys", "start_time": 1763759979,
                 "start_time_ms": 1763759979250i64, "tdma_slot": 0, "phase2_tdma": 0, "color_code": -1, "audio_type": "digital", "emergency": 0 })
+    }
+
+    /// A call's number names apart two begun in the same second.
+    #[test]
+    fn a_number_names_calls_apart() {
+        assert_eq!(numbered("dc/2026/10/25/101-1792900000_851012500", 42), "dc/2026/10/25/101-1792900000_851012500-call_42");
     }
 
     #[test]
