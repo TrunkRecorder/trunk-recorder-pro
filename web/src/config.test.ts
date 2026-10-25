@@ -2,8 +2,8 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, resolvedCenters, restartKey, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
-import type { Config, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
+import { activeSites, defaultConfig, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, radioName, rateFor, rateOk, ratesText, resolvedCenters, restartKey, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
   const old = normalizeSystem({ shortName: "a", type: "dmr", controlChannelsHz: [452175000], colorCode: 3, modulation: "qpsk", enabled: false, future: 1 } as never);
@@ -108,4 +108,37 @@ test("restartKey: a radio's gain doesn't need a restart on the desktop recorder;
   const blade = c({ type: "bladerf", gainDb: 30 });
   assert.equal(restartKey(c({ type: "bladerf", gainDb: 42 }), true), restartKey(blade, true), "a bladeRF's gain");
   assert.notEqual(restartKey(c({ type: "bladerf", gainDb: 30, agc: true }), true), restartKey(blade, true), "a bladeRF's AGC waits for the start");
+});
+
+test("foundRadio: what the picked radio runs at, once its driver has asked it; a new source starts at one of them", () => {
+  const r2 = { serial: "735863DC2F650AE3", label: "Airspy R2 · SN 735863DC2F650AE3", model: "R2", rates: [10_000_000, 2_500_000] };
+  const mini = { serial: "B", label: "Airspy Mini · SN B", model: "Mini", rates: [6_000_000, 3_000_000] };
+  const busy = { serial: "C", label: "Airspy · SN C" };
+  const blade = { serial: "f12ce1037830a1b27f3ceeba1f521413", label: "bladeRF 2.0 · SN f12ce1037830…", model: "bladeRF 2.0", rateRange: [520_834, 61_440_000] as [number, number] };
+  const driver = (devices: FoundRadio[] | null) => ({ available: true, detail: "", devices });
+  const radios: Radios = { usrp: driver(null), airspy: driver([r2, mini, busy]), bladerf: driver([blade]) };
+  const airspy = (serial: string) => ({ ...(SOURCE_KINDS.airspy.fresh() as Extract<Source, { type: "airspy" }>), serial });
+  assert.equal(foundRadio(radios, airspy(r2.serial)), r2);
+  assert.equal(foundRadio(radios, airspy("")), r2, "the first found");
+  assert.equal(foundRadio(radios, airspy("Z")), undefined, "one not connected");
+  assert.equal(foundRadio(undefined, airspy(r2.serial)), undefined);
+  assert.equal(foundRadio(radios, { ...(SOURCE_KINDS.bladerf.fresh() as Extract<Source, { type: "bladerf" }>), serial: "F12CE103" }), blade, "a bladeRF by the start of its serial");
+  assert.equal(foundRadio(radios, SOURCE_KINDS.rtlsdr.fresh()), undefined, "no driver's");
+
+  assert.ok(!rateOk(6_000_000, r2) && rateOk(2_500_000, r2) && rateOk(6_000_000, busy), "unknown: fine");
+  assert.equal(rateFor(6_000_000, r2), 10_000_000, "a rate it can't do: its first");
+  assert.equal(rateFor(2_500_000, r2), 2_500_000, "one it can: kept");
+  assert.equal(rateFor(6_000_000, busy), 6_000_000, "unknown: kept");
+  assert.equal(rateFor(80_000_000, blade), 61_440_000, "past a range: its end");
+  assert.equal(ratesText(r2), "10 or 2.5");
+  assert.equal(ratesText(blade), "0.52–61.44");
+  assert.equal(ratesText(busy), null);
+  assert.equal(radioName("airspy", r2), "Airspy R2");
+  assert.equal(radioName("bladerf", blade), "bladeRF 2.0");
+  assert.equal(radioName("airspy", busy), "Airspy");
+
+  assert.equal(sourceFor("airspy", r2.serial, r2).rateHz, 10_000_000);
+  assert.equal(sourceFor("airspy", mini.serial, mini).rateHz, 6_000_000);
+  assert.equal(sourceFor("airspy", "C", busy).rateHz, 6_000_000, "not asked: the default");
+  assert.equal(sourceFor("bladerf", blade.serial, blade).rateHz, 10_000_000, "in its range: the default");
 });

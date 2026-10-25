@@ -121,7 +121,8 @@ trunk-pro devices [--usrp [args]]
 
 Lists the RTL-SDRs it can see (model and serial number), then whether the optional Airspy
 (libairspy), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy and
-bladeRF it lists the devices, bladeRFs with their full serials; for
+bladeRF it lists the devices: Airspys with their model (R2 or Mini) and the sample rates they run
+at, bladeRFs with their full serials; for
 SoapySDR it lists the installed modules (and any that failed to load, with why) and the devices
 found. USRPs are only searched for with `--usrp`, optionally with UHD device arguments
 (`--usrp type=b200`), because a search can be slow.

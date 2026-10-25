@@ -11,6 +11,105 @@ mod sdrplay;
 pub mod soapy;
 pub mod uhd;
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, MutexGuard};
+
+/// Held while a radio opens, and while a driver searches for radios. libairspy,
+/// librtlsdr and libhackrf find a radio by opening every one of theirs to read its
+/// serial and skip any they can't open (on macOS an open is exclusive), so a
+/// search or an open beside another radio's open could miss it: "not found" until
+/// the retry. The SDRplay API wants its device selection kept apart too. UHD keeps
+/// its own lock, so a USRP opens without this one.
+pub fn opening() -> MutexGuard<'static, ()> {
+    static OPENING: Mutex<()> = Mutex::new(());
+    OPENING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The sample rates a radio runs at, as it said when opened.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Rates {
+    /// Only these (an Airspy's), widest first.
+    List(Vec<u32>),
+    /// Any from `min` to `max` (a bladeRF's).
+    Range { min: f64, max: f64 },
+}
+
+impl Rates {
+    pub fn allows(&self, hz: f64) -> bool {
+        match self {
+            Rates::List(v) => v.iter().any(|&r| (r as f64 - hz).abs() < 1.0),
+            Rates::Range { min, max } => hz >= *min - 1.0 && hz <= *max + 1.0,
+        }
+    }
+}
+
+impl std::fmt::Display for Rates {
+    /// "10 / 2.5" or "0.52–61.44" (MSPS).
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let msps = |hz: f64| (hz / 1e4).round() / 100.0;
+        match self {
+            Rates::List(v) => write!(f, "{}", v.iter().map(|&r| format!("{}", msps(r as f64))).collect::<Vec<_>>().join(" / ")),
+            Rates::Range { min, max } => write!(f, "{}–{}", msps(*min), msps(*max)),
+        }
+    }
+}
+
+/// What a radio said it is when it was opened: its model ("R2", "bladeRF 2.0") and rates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Caps {
+    pub model: String,
+    pub rates: Rates,
+}
+
+impl Caps {
+    /// Its part of a found radio's JSON: `model`, and `rates` or `rateRange` (Hz).
+    pub fn add_to(&self, j: &mut serde_json::Value) {
+        if !self.model.is_empty() {
+            j["model"] = self.model.clone().into();
+        }
+        match &self.rates {
+            Rates::List(v) => j["rates"] = serde_json::json!(v),
+            Rates::Range { min, max } => j["rateRange"] = serde_json::json!([min, max]),
+        }
+    }
+}
+
+/// What each radio said when it was last opened in this run, by `"<kind>:<serial or args>"`.
+static KNOWN: LazyLock<Mutex<HashMap<String, Caps>>> = LazyLock::new(Default::default);
+
+/// Remember what the radio `key` ("airspy:<serial>") said when opened: a list of
+/// radios then shows it while it records (when it can't be opened to ask), and
+/// doesn't open it to ask again.
+pub fn remember(key: &str, caps: Caps) {
+    KNOWN.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), caps);
+}
+
+/// What the radio `key` said when it was last opened in this run.
+pub fn known(key: &str) -> Option<Caps> {
+    KNOWN.lock().unwrap_or_else(|e| e.into_inner()).get(key).cloned()
+}
+
+/// " · 10 / 2.5 MSPS" for a found radio's JSON whose rates are known (`trunk-pro devices`), else "".
+pub fn rates_shown(found: &serde_json::Value) -> String {
+    let hz = |v: &serde_json::Value| v.as_array().map(|a| a.iter().filter_map(|r| r.as_f64()).collect::<Vec<f64>>()).unwrap_or_default();
+    let rates = match (hz(&found["rates"]), hz(&found["rateRange"])) {
+        (list, _) if !list.is_empty() => Rates::List(list.iter().map(|&r| r as u32).collect()),
+        (_, range) if range.len() == 2 => Rates::Range { min: range[0], max: range[1] },
+        _ => return String::new(),
+    };
+    format!(" · {rates} MSPS")
+}
+
+/// A source's refusal of a rate its radio doesn't run at, the same for every kind:
+/// "this Airspy R2 runs at 10 / 2.5 MSPS, not 6: pick one of those in Setup → Radios".
+pub fn rate_refusal(what: &str, rates: &Rates, want_hz: f64) -> String {
+    let pick = match rates {
+        Rates::List(_) => "pick one of those",
+        Rates::Range { .. } => "pick one in that range",
+    };
+    format!("this {what} runs at {rates} MSPS, not {}: {pick} in Setup → Radios", want_hz / 1e6)
+}
+
 /// The frequency to ask a radio for: a reference off by `ppm` makes a
 /// requested f come out at f·(1 + ppm).
 pub fn ppm_corrected(hz: f64, ppm: f64) -> f64 {
@@ -169,6 +268,19 @@ impl DriverInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_refusal_names_the_radio_and_the_fix() {
+        let r2 = Rates::List(vec![10_000_000, 2_500_000]);
+        assert!(r2.allows(2.5e6) && !r2.allows(6e6));
+        assert_eq!(rate_refusal("Airspy R2", &r2, 6e6), "this Airspy R2 runs at 10 / 2.5 MSPS, not 6: pick one of those in Setup → Radios");
+        let blade = Rates::Range { min: 520_834.0, max: 61_440_000.0 };
+        assert!(blade.allows(10e6) && !blade.allows(0.5e6) && !blade.allows(80e6));
+        assert_eq!(rate_refusal("bladeRF 2.0", &blade, 80e6), "this bladeRF 2.0 runs at 0.52–61.44 MSPS, not 80: pick one in that range in Setup → Radios");
+        let mut j = serde_json::json!({ "serial": "1" });
+        Caps { model: "bladeRF 2.0".into(), rates: blade }.add_to(&mut j);
+        assert_eq!(j, serde_json::json!({ "serial": "1", "model": "bladeRF 2.0", "rateRange": [520_834.0, 61_440_000.0] }));
+    }
 
     #[test]
     fn usrp_found_strings() {

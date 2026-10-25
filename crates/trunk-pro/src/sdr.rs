@@ -92,6 +92,8 @@ fn busy(info: &nusb::DeviceInfo) -> Option<String> {
         nusb::ErrorKind::PermissionDenied => "no permission to open it".to_string(),
         _ => format!("can't be opened ({e})"),
     };
+    // (Not while a radio opens: this claim could make it look busy.)
+    let _one = crate::radio::opening();
     let dev = match info.open().wait() {
         Ok(d) => d,
         Err(e) => return Some(why(e)),
@@ -338,7 +340,11 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
     if !cfg.serial.is_empty() {
         b = b.serial(cfg.serial.clone());
     }
-    let mut dev = b.open().wait().map_err(|e| {
+    let opened = {
+        let _one = crate::radio::opening();
+        b.open().wait()
+    };
+    let mut dev = opened.map_err(|e| {
         let name = if cfg.serial.is_empty() { "(first)" } else { &cfg.serial };
         if matches!(e, rtlsdr_nusb::Error::UnsupportedTuner) {
             format!("open RTL-SDR {name}: {UNSUPPORTED_TUNER}")
