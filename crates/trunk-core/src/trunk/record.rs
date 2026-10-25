@@ -43,6 +43,8 @@ pub struct ConcludeInfo<'a> {
     pub freq_error_hz: i32,
     /// How strong it came in.
     pub reception: Reception,
+    /// When the first of its copies began (multi-site; None: its own start).
+    pub first_s: Option<f64>,
 }
 
 /// How strong a call came in: its channel's power while it carried the call,
@@ -84,7 +86,7 @@ impl Reception {
 /// A transmission's audio ends when none comes for this long: a unit
 /// unkeying and the next keying up (and its header) take longer than the
 /// gaps between voice frames inside one (P25 delivers 180 ms at a time).
-const TRANSMISSION_GAP_S: f64 = 0.5;
+pub const TRANSMISSION_GAP_S: f64 = 0.5;
 
 /// What the air said of one transmission.
 #[derive(Clone, Copy, Debug, Default)]
@@ -190,8 +192,10 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
     let tg = call.talkgroup_info.as_ref();
     let t = |f: fn(&super::talkgroups::Talkgroup) -> &str| tg.map_or(String::new(), |t| f(t).to_string());
     let secs = info.audio_seconds;
+    let talker = call.sources.iter().map(|s| s.src).find(|&s| s != 0).unwrap_or(0);
     let record = CallRecord {
         call_num: call.id as u64,
+        transmission_id: format!("{}-{}-{talker}-{}", info.short_name, call.talkgroup, ms(info.first_s.unwrap_or(call.start_s))),
         freq: call.freq_hz,
         freq_error: info.freq_error_hz as i64,
         signal: info.reception.signal_db(),
@@ -437,6 +441,7 @@ mod tests {
             unit_tags: None,
             freq_error_hz: 0,
             reception: Reception::default(),
+            first_s: None,
         };
         let json = call_record(&call, &info).0.to_json();
         assert!(json.contains("\"src\":7,") && json.matches("\"lat\"").count() == 1, "{json}");
@@ -533,6 +538,8 @@ pub struct SaveContext<'a> {
     pub nac: Option<u16>,
     /// The system's signals: its calls' tone patterns are named by them.
     pub signals: &'a [Signal],
+    /// When the first of its copies began (multi-site; None: its own start).
+    pub first_s: Option<f64>,
 }
 
 /// The frames as an `.sdr` file when the call's mode has a layout there, else JSON lines.
@@ -614,6 +621,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
             unit_tags: cx.unit_tags,
             reception,
             freq_error_hz: freq_error_hz.map_or(0, |e| e.round() as i32),
+            first_s: cx.first_s,
         },
     );
     let frames = frames.captured.filter(|f| !audio.is_empty() && !f.is_empty()).map(|f| capture(&call, &f, audio.len(), freq_error_hz, &reception, cx));

@@ -105,9 +105,22 @@ On a system with several sites, a call is usually granted on every site that has
 talkgroup. Recording each site, you'd get the same call several times. By default it's saved once.
 
 **How it works.** Calls on two sites of the same system are copies of each other when they're on
-the same talkgroup and granted within 3 seconds of each other. Every copy is recorded. When the
-last one ends, the best copy is saved and the others are dropped. The log says which: "TG 101 FD
-Disp was heard on east and west: saved east's copy".
+the same talkgroup and began within 3 seconds of each other, one from each site. Every copy is
+recorded. When the last one ends, the best copy is saved. Another copy is dropped only when the
+saved one holds all of it: the same time (give or take 3 seconds), the same talkers, and decoded at
+least as well (90% will do for the talkgroup's preferred site). Anything else is saved too: better
+a duplicate than a transmission lost. The log says which was dropped: "TG 101 FD Disp was heard on
+east and west: saved east's copy". Every copy saved carries the same `transmission_id` in its
+call JSON.
+
+**Conversations or transmissions.** A call is usually the talkgroup's conversation: its
+transmissions, one talker after another, until it has been quiet for the call timeout. Sites don't
+always agree on that: one may keep a voice channel through a whole conversation while another
+grants each transmission a channel of its own, so their copies don't line up and one site's long
+call holds several of the other's. Turn **Conversations** off in the system's own **Recording**
+rules (`conversationMode`) and each transmission is a call of its own on every site: the best copy
+of each transmission is kept, whichever site heard it best. Setup suggests it for a system with
+several sites. Each call is then one talker, so there are more, shorter calls.
 
 Recording every copy, rather than only the first (which is what Trunk Recorder does), means a site
 that fades mid-call, or whose voice channel no source covers, doesn't cost you the call.

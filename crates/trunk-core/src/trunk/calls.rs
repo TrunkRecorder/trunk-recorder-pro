@@ -298,11 +298,16 @@ pub struct CallConfig {
     /// A recorded call this long is saved and a new one carries on from
     /// where it ended (Trunk Recorder's maxDuration); 0 = no limit.
     pub max_call_s: f64,
+    /// A call is the talkgroup's conversation, its transmissions until it's
+    /// quiet for `call_timeout_s` (Trunk Recorder's). Off: a call is one
+    /// transmission ([`CallManager::next_transmission`]), so a system's sites'
+    /// copies of each are told apart, and the best of each kept.
+    pub conversation: bool,
 }
 
 impl Default for CallConfig {
     fn default() -> Self {
-        CallConfig { call_timeout_s: 3.0, record_unknown: true, record_encrypted: false, record_unit_to_unit: true, new_call_from_update: true, max_call_s: 0.0 }
+        CallConfig { call_timeout_s: 3.0, record_unknown: true, record_encrypted: false, record_unit_to_unit: true, new_call_from_update: true, max_call_s: 0.0, conversation: true }
     }
 }
 
@@ -498,16 +503,37 @@ impl CallManager {
                 host.release(&c);
                 ev.push(CallEvent::End(c));
             } else if c.recording && now_s - c.start_s >= max {
-                self.split(i, now_s, host, ev);
+                // The one talking now carries on.
+                let talking = c.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect();
+                self.split(i, now_s, talking, host, ev);
             }
         }
         self.patches.expire(now_s);
     }
 
-    /// End call `i` and carry on in a new one on the same channel: the new
-    /// call takes the voice channel over first, so it stays open and nothing
-    /// is lost or replayed between the two.
-    fn split(&mut self, i: usize, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+    /// Conversation mode off ([`CallConfig::conversation`]): recorded call
+    /// `id` hears a new transmission at `now_s` (audio again after a gap,
+    /// [`super::record::TRANSMISSION_GAP_S`]). It ends with what it had, and
+    /// a new call on its channel takes this transmission, with the talkers
+    /// announced since the last one's audio (a grant comes before its voice).
+    /// The new call's id; None: not a new transmission, or no such call.
+    pub fn next_transmission(&mut self, id: CallId, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) -> Option<CallId> {
+        if self.cfg.conversation {
+            return None;
+        }
+        let i = self.calls.iter().position(|c| c.id == id && c.recording && now_s - c.last_audio_s > super::record::TRANSMISSION_GAP_S)?;
+        let since = self.calls[i].last_audio_s;
+        let sources = &mut self.calls[i].sources;
+        let next = sources.iter().position(|s| s.time_s > since).unwrap_or(sources.len());
+        let talking = sources.split_off(next);
+        Some(self.split(i, now_s, talking, host, ev))
+    }
+
+    /// End call `i` and carry on in a new one on the same channel, with
+    /// `sources`: the new call takes the voice channel over first, so it
+    /// stays open and nothing is lost or replayed between the two. The new
+    /// call's id.
+    fn split(&mut self, i: usize, now_s: f64, sources: Vec<CallSource>, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) -> CallId {
         let old = &self.calls[i];
         let mut c = Call {
             id: self.ids.next(),
@@ -518,8 +544,7 @@ impl CallManager {
             last_update_s: old.last_update_s.max(now_s),
             heard_s: now_s,
             last_audio_s: now_s,
-            // The one talking now carries on.
-            sources: old.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect(),
+            sources,
             ..old.clone()
         };
         // (Only a recorded call is split: it carries on recorded.)
@@ -531,7 +556,9 @@ impl CallManager {
         host.release(&old);
         ev.push(CallEvent::End(old));
         ev.push(CallEvent::Start(c.clone()));
+        let id = c.id;
         self.calls.push(c);
+        id
     }
 
     /// End everything (source stopped).
@@ -795,6 +822,37 @@ mod tests {
         assert!(m.calls[0].recording && m.calls[0].sources[0].src == 7);
     }
 
+    /// Conversation mode off: audio after a gap is a new call on the same
+    /// channel, with the talker announced for it; in conversation mode, or
+    /// with no gap, the call goes on.
+    #[test]
+    fn with_conversation_mode_off_each_transmission_is_a_call() {
+        for conversation in [true, false] {
+            let mut m = Sys::new(CallConfig { conversation, ..Default::default() }, Talkgroups::default());
+            let mut ev = Vec::new();
+            m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut ev);
+            let first = m.calls[0].id;
+            m.note_audio(first, 1.0);
+            assert_eq!(m.m.next_transmission(first, 1.2, &mut Host, &mut ev), None, "no gap: the same transmission");
+            m.note_audio(first, 3.0);
+            // The next talker's grant, before its voice.
+            m.handle(&[Message { source: 9, ..msg(MessageType::Grant, 4.0, 101) }], &mut Host, &mut ev);
+            let next = m.m.next_transmission(first, 4.5, &mut Host, &mut ev);
+            if conversation {
+                assert_eq!(next, None);
+                assert_eq!(m.calls[0].sources.iter().map(|s| s.src).collect::<Vec<_>>(), [7, 9]);
+                continue;
+            }
+            let next = next.unwrap();
+            let ended: Vec<&Call> = ev.iter().filter_map(|e| if let CallEvent::End(c) = e { Some(c) } else { None }).collect();
+            assert_eq!((ended.len(), ended[0].id), (1, first));
+            assert_eq!(ended[0].sources.iter().map(|s| s.src).collect::<Vec<_>>(), [7], "its own talker");
+            let c = &m.calls[0];
+            assert_eq!((c.id, c.start_s, c.recording), (next, 4.5, true));
+            assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [9], "the talker announced for it");
+        }
+    }
+
     #[test]
     fn encrypted_calls_are_recorded_when_the_system_may_decrypt_them() {
         let enc = |t: f64, tg: u32, phase2: bool| Message { encrypted: true, voice: if phase2 { Voice::P25Tdma { slot: 0 } } else { Voice::P25 }, ..msg(MessageType::Grant, t, tg) };
@@ -827,7 +885,7 @@ mod tests {
         let mut ev = Vec::new();
         m.handle(&[patch(0.0, 65001, [101, 0, 0]), msg(MessageType::Grant, 0.5, 65001), msg(MessageType::Grant, 0.5, 303)], &mut Host, &mut ev);
         let errors = Default::default();
-        let info = ConcludeInfo { short_name: "s", system_type: "p25", site: "", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, tones: &[], patterns: &[], signals: &[], recorder_num: 0, end_s: 1.0, units: None, unit_tags: None, freq_error_hz: 0, reception: Default::default() };
+        let info = ConcludeInfo { short_name: "s", system_type: "p25", site: "", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, tones: &[], patterns: &[], signals: &[], recorder_num: 0, end_s: 1.0, units: None, unit_tags: None, freq_error_hz: 0, reception: Default::default(), first_s: None };
         assert!(call_record(&m.calls[0], &info).0.to_json().contains("\"short_name\":\"s\",\"patched_talkgroups\":[101,65001],\"freqList\""));
         assert!(!call_record(&m.calls[1], &info).0.to_json().contains("patched"));
     }

@@ -5,6 +5,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Multi-site: the best copy of each transmission** (replaces #75; thanks to photounit for
+  working out the problem). A system's sites don't always agree on what a call is: one keeps a
+  voice channel through a conversation while another grants each transmission its own, so their
+  copies didn't line up: transmissions were uploaded twice, or dropped with a shorter copy. Now:
+  - **Conversations** (`conversationMode`, per system, on by default) can be turned off: each
+    transmission is then a call of its own on every site, and the best copy of each is kept.
+    Setup suggests it for a system with several sites.
+  - A copy is dropped only when the copy saved holds all of it (the same time and talkers,
+    decoded at least as well); anything else is saved too: better a duplicate than a
+    transmission lost. A conversation has one copy from each site, so copies never chain.
+  - Every call JSON has a `transmission_id` (`<shortName>-<talkgroup>-<radio>-<start ms>`), the
+    same on every copy of one transmission saved.
 - **Plugins can have a page of their own, buttons, and settings that change without a restart.** A
   plugin's manifest can ask for a page (`page`), listed under Plugins in the navigation, where its
   lists of settings are cards of their own, each item one line until opened, beside its log; for

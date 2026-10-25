@@ -328,6 +328,8 @@ export interface PluginSetup {
 export interface RecordingRules {
   /** A call ends this long after its last grant or audio, s. */
   callTimeoutS: number;
+  /** A call is the talkgroup's conversation, until it's quiet for `callTimeoutS`. Off: each transmission is a call of its own (trunked systems; for several sites, the best copy of each is kept). */
+  conversationMode: boolean;
   /** Talkgroups not in the talkgroup file. */
   recordUnknown: boolean;
   recordEncrypted: boolean;
@@ -782,6 +784,8 @@ export interface LogLine {
 export interface CallRecord {
   /** The call's number since the recorder started. */
   call_num: number;
+  /** The same on every copy of one transmission saved from a system's sites: `<shortName>-<talkgroup>-<radio>-<start ms>`. */
+  transmission_id?: string;
   short_name?: string;
   /** The site its copy was kept from (a system of one site: its short name). */
   site?: string;

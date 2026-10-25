@@ -1389,6 +1389,11 @@ recording! {
         per_system {
             /// A call ends this long after its last grant or audio.
             pub call_timeout_s: f64,
+            /// A call is the talkgroup's conversation: its transmissions until
+            /// it's quiet for `call_timeout_s`. Off, each transmission is a call
+            /// of its own: on a system with several sites, the best copy of each
+            /// transmission is kept, and none is lost with another's duplicates.
+            pub conversation_mode: bool,
             /// Talkgroups not in the talkgroup file.
             pub record_unknown: bool,
             pub record_encrypted: bool,
@@ -1541,6 +1546,7 @@ impl Default for Recording {
             preroll_s: 1.0,
             max_recorders: 32,
             call_timeout_s: 3.0,
+            conversation_mode: true,
             record_unknown: true,
             record_encrypted: false,
             record_unit_to_unit: true,
@@ -1593,6 +1599,7 @@ impl Recording {
             record_unit_to_unit: self.record_unit_to_unit,
             new_call_from_update: true,
             max_call_s: self.max_call_s.max(0.0),
+            conversation: self.conversation_mode,
         }
     }
 }
