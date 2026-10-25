@@ -37,7 +37,7 @@ const NOMINAL_DEV_HZ: f32 = 2400.0;
 /// The 2FSK receiver both use. At 9600 baud the tones are too close for the
 /// tone detectors (modulation index about 0.5): the discriminator decides.
 fn receiver(rate: f64) -> Fsk2 {
-    Fsk2::with_baud(rate, BAUD, NOMINAL_DEV_HZ, Fsk2Options { tones: false, dc: true, ..Default::default() })
+    Fsk2::with_baud(rate, BAUD, NOMINAL_DEV_HZ, Fsk2Options { tones: false, ..Default::default() })
 }
 
 /// What [`ProVoice`] heard, at air time `t`.
@@ -207,8 +207,8 @@ pub(crate) mod tests {
 
     /// Wideband IQ: an EDACS control channel granting a call on LCN 3, and
     /// the call's voice there — ProVoice, or analog FM (a 1 kHz tone) — makes
-    /// a recorded call of that kind.
-    fn engine_call(digital: bool) -> crate::trunk::Concluded {
+    /// a recorded call of that kind. `seed`: the noise's.
+    fn engine_call(digital: bool, seed: u64) -> crate::trunk::Concluded {
         use crate::trunk::{Engine, EngineConfig, Event, SiteConfig, SourceConfig, SystemConfig};
         let (fs, center) = (240_000.0, 857_025_000.0);
         let (cc_hz, vc_hz) = (857_000_000.0, 857_062_500.0);
@@ -246,7 +246,7 @@ pub(crate) mod tests {
                 .collect()
         };
         let mut iq: Vec<Complex32> = (0..n).map(|i| cc[i] * 0.3 + if (v0..v1).contains(&i) { vc[(i - v0) % vc.len()] * 0.3 } else { Complex32::default() }).collect();
-        noise(&mut iq, 0.02, 11);
+        noise(&mut iq, 0.02, seed);
         let ecfg = EngineConfig {
             systems: vec![SystemConfig::trunked("nycomco", vec![SiteConfig { control_channels: vec![cc_hz], protocol: crate::trunk::Protocol::Edacs(cfg), ..Default::default() }])],
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
@@ -263,20 +263,30 @@ pub(crate) mod tests {
         (*done[0]).clone()
     }
 
+    /// Noise seeds for the engine tests. 3 to 197 each left the control
+    /// channel's receiver stuck after the start-up transient (one level pulled
+    /// most of the way to the other) before the levels were watched against
+    /// the deciles; 11 did too, with Linux on aarch64's libm (#76).
+    const SEEDS: [u64; 8] = [11, 3, 15, 45, 103, 139, 167, 197];
+
     #[test]
     fn engine_records_a_provoice_call() {
-        let k = engine_call(true);
-        assert!(k.call.voice == crate::trunk::Voice::ProVoice && k.call.talkgroup == 457 && k.call.freq_hz == 857_062_500, "{:?}", k.call);
-        assert_eq!(k.call.sources.first().map(|s| s.src), Some(4321));
-        let secs = k.audio.len() as f64 / 8000.0;
-        assert!(secs > 1.0, "{secs:.2} s of audio");
+        for seed in SEEDS {
+            let k = engine_call(true, seed);
+            assert!(k.call.voice == crate::trunk::Voice::ProVoice && k.call.talkgroup == 457 && k.call.freq_hz == 857_062_500, "seed {seed}: {:?}", k.call);
+            assert_eq!(k.call.sources.first().map(|s| s.src), Some(4321), "seed {seed}");
+            let secs = k.audio.len() as f64 / 8000.0;
+            assert!(secs > 1.0, "seed {seed}: {secs:.2} s of audio");
+        }
     }
 
     #[test]
     fn engine_records_an_analog_call() {
-        let k = engine_call(false);
-        assert!(k.call.voice == crate::trunk::Voice::Fm && k.call.talkgroup == 457, "{:?}", k.call);
-        let secs = k.audio.len() as f64 / 8000.0;
-        assert!(secs > 1.0, "{secs:.2} s of audio");
+        for seed in SEEDS {
+            let k = engine_call(false, seed);
+            assert!(k.call.voice == crate::trunk::Voice::Fm && k.call.talkgroup == 457, "seed {seed}: {:?}", k.call);
+            let secs = k.audio.len() as f64 / 8000.0;
+            assert!(secs > 1.0, "seed {seed}: {secs:.2} s of audio");
+        }
     }
 }
