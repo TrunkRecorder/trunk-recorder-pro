@@ -347,6 +347,17 @@ impl Plugins {
         self.publish_all_runtime();
     }
 
+    /// The config went from `old` to `new`: plugins that take new settings
+    /// as they run are sent theirs ([`PluginHost::settle`]); anything more
+    /// changed, and they restart with it ([`Plugins::reload`]).
+    pub fn apply(&self, old: &Config, new: &Config) {
+        match super::change(old, new) {
+            super::Change::None => {}
+            super::Change::Settings(all) if self.host().is_some_and(|h| all.iter().all(|(id, v)| h.settle(id, v))) => {}
+            _ => self.reload(new),
+        }
+    }
+
     /// While recording: restart the plugins with `cfg`'s settings. The old
     /// ones finish in the background; the new ones start once they have
     /// exited (each plugin's data folder, its saved queue, is theirs until
@@ -478,15 +489,11 @@ impl Plugins {
         let (hub, runtime, archive, monitor) = (self.hub.clone(), self.runtime.clone(), self.archive.clone(), self.monitor.clone());
         let log = super::notes_to_log();
         Arc::new(move |n: Note| {
-            if let Note::ActionResult { request, ok, message, .. } = n {
-                publish(&hub, ToClient::PluginActionResult { request, ok, message });
-                return;
-            }
             if let Note::Result { plugin, path, outcome, took_ms, .. } = &n {
                 archive.result(path, plugin, *outcome, *took_ms);
             }
             let label = match &n {
-                Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Result { plugin, .. } | Note::Metrics { plugin, .. } | Note::ActionResult { plugin, .. } => plugin.clone(),
+                Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Result { plugin, .. } | Note::Metrics { plugin, .. } => plugin.clone(),
             };
             // A copy's notes are its plugin's, said to be the copy's.
             let (id, copy) = super::parse_label(&label);
@@ -539,8 +546,6 @@ impl Plugins {
                         }
                     }
                     Note::Metrics { metrics, .. } => r.set_metrics(copy, metrics.clone()),
-                    // (Handled above.)
-                    Note::ActionResult { .. } => {}
                 }
                 publish(&hub, ToClient::PluginRuntime { id: id.clone(), runtime: json!(r) });
             }

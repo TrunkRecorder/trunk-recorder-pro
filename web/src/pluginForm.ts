@@ -4,14 +4,7 @@
 
 import { fieldsOf } from "./pluginSettings.ts";
 import type { PluginSchema, PluginValues, SignalDef } from "./protocol.ts";
-
-/** A tone typed in, as text: its digits (KNOX ones said so) or text, or its tones ("313 → 1642 Hz"). */
-function toneText(t: Partial<SignalDef>): string {
-  if (t.pattern === "digits") return `${t.knox ? "KNOX " : ""}${t.digits ?? ""}`;
-  if (t.pattern === "morse") return t.digits ?? "";
-  const sep = t.pattern === "hi_low" ? " / " : t.pattern === "sequence" ? " · " : " → ";
-  return `${(t.tonesHz ?? []).filter((f) => f > 0).join(sep)} Hz`;
-}
+import { signalText } from "./rules.ts";
 
 /** How other settings name an item of a list: its `id`, else its `name`. */
 export function refKey(item: unknown): string {
@@ -98,6 +91,13 @@ export function fillTemplate(item: unknown, vars: Record<string, string>): unkno
   return item;
 }
 
+/** Whether `v` (settings, or part of them) has the string `s` anywhere in it: an item that names it. */
+export function mentions(v: unknown, s: string): boolean {
+  if (v === s) return true;
+  if (Array.isArray(v)) return v.some((x) => mentions(x, s));
+  return !!v && typeof v === "object" && Object.values(v).some((x) => mentions(x, s));
+}
+
 /** Whether field `f` applies, given its object's `values` (`x-when`: {field: value or [values]}; `schema`: the object's). */
 export function applies(schema: PluginSchema | undefined, values: PluginValues, f: PluginSchema): boolean {
   const siblings = schema?.properties ?? {};
@@ -117,7 +117,7 @@ export function summaryValue(f: PluginSchema, v: unknown): string {
   if (f["x-tones"] && Array.isArray(v))
     return v
       .filter((t: Partial<SignalDef>) => t.tonesHz?.some((f) => f > 0) || t.digits)
-      .map((t: Partial<SignalDef>) => toneText({ pattern: "two_tone", ...t }))
+      .map((t: Partial<SignalDef>) => signalText({ pattern: "two_tone", ...t, tonesHz: t.tonesHz?.filter((f) => f > 0) }))
       .join(", ");
   if (Array.isArray(v)) {
     const items = v.filter((x) => x !== "" && x !== null && x !== undefined).map((x) => label(f.items, x));

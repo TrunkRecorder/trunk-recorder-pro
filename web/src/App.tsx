@@ -7,7 +7,7 @@ import { ARRIVED_TO_IMPORT, DirectoryImport } from "./directoryImport.tsx";
 import { can, closeGuide, dismissError, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
-import { PluginPage, PluginsPage, pluginPages } from "./Plugins.tsx";
+import { PluginPage, PluginsPage, usePluginPages } from "./Plugins.tsx";
 import { Setup } from "./Setup.tsx";
 import { Light } from "./charts.tsx";
 import { ListenPage } from "./dash/Listen.tsx";
@@ -49,7 +49,8 @@ const LABEL: Record<View, string> = {
 function Nav({ view, health }: { view: View; health: Record<string, Health> }) {
   const pages: View[] = ["overview", "listen", "rf", "decode", "radio", ...((["platform", "plugins", "interfaces"] as const).filter((v) => can(v === "platform" ? "host" : v)) as View[]), "setup"];
   // Plugins with a page of their own go under Plugins (in a row: between two thin rules).
-  const own = useSelect((x) => (can("plugins") ? pluginPages(x) : []), (a, b) => a.length === b.length && a.every((p, i) => p.id === b[i].id && p.title === b[i].title));
+  const plugins = usePluginPages();
+  const own = can("plugins") ? plugins : [];
   const at = useSelect((x) => (x.view === "plugin" ? (x.path[0] ?? "") : ""));
   const item = (key: string, on: boolean, icon: ReactNode, label: string, go: () => void, h?: Health, extra = "") => (
     <button key={key} className={`${on ? "on" : ""}${extra}`} aria-current={on ? "page" : undefined} onClick={go} title={h && h.level !== "ok" && h.level !== "idle" ? h.why : label}>
@@ -117,7 +118,7 @@ export function App() {
     view: x.view,
     path: x.path,
   }));
-  const own = useSelect((x) => pluginPages(x), (a, b) => a.length === b.length && a.every((p, i) => p.id === b[i].id && p.title === b[i].title));
+  const own = usePluginPages();
   // The lights: recomputed with what they depend on, a few times a second at most.
   const health = useSelect((x) => pageHealth(x), (a, b) => Object.keys(a).every((k) => a[k].level === b[k].level && a[k].why === b[k].why));
   const running = s.phase === "running" || s.phase === "starting";

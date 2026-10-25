@@ -2706,7 +2706,7 @@
               "type": "string",
               "const": "pluginActionResult"
             },
-            "request": {
+            "id": {
               "type": "number"
             },
             "ok": {
@@ -2718,7 +2718,7 @@
           },
           "required": [
             "type",
-            "request",
+            "id",
             "ok"
           ],
           "additionalProperties": false
@@ -8204,23 +8204,23 @@
               "type": "string",
               "const": "pluginAction"
             },
+            "id": {
+              "type": "number"
+            },
             "plugin": {
               "type": "string"
             },
             "action": {
               "type": "string"
             },
-            "value": {},
-            "request": {
-              "type": "number"
-            }
+            "value": {}
           },
           "required": [
             "type",
+            "id",
             "plugin",
             "action",
-            "value",
-            "request"
+            "value"
           ],
           "additionalProperties": false
         },

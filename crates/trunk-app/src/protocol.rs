@@ -94,8 +94,8 @@ pub enum ToClient {
     Notice { message: String },
     Plugins(Body),
     PluginRuntime { id: String, runtime: Value },
-    /// How a plugin's button went (`pluginAction`'s `request`).
-    PluginActionResult { request: u64, ok: bool, #[serde(skip_serializing_if = "String::is_empty")] message: String },
+    /// How a plugin's button went: the answer to `pluginAction` `id`, to the connection that asked.
+    PluginActionResult { id: u64, ok: bool, #[serde(skip_serializing_if = "String::is_empty")] message: String },
     Interfaces(Body),
     /// A store's list (plugins' or interfaces'): `{ source, fetched, problem, listings, … }`.
     Store { kind: StoreKind, #[serde(flatten)] list: Body },
@@ -165,7 +165,7 @@ impl ToClient {
     pub fn audience(&self) -> Audience {
         use ToClient::*;
         match self {
-            Plugins(_) | PluginRuntime { .. } | PluginActionResult { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } => Audience::Control,
+            Plugins(_) | PluginRuntime { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } => Audience::Control,
             _ => Audience::Everyone,
         }
     }
@@ -263,8 +263,9 @@ pub enum Command {
     OlderCalls { #[serde(default = "i64_max")] before: i64, #[serde(default = "hundred")] limit: usize },
     RadioQuery(Body),
     /// Press plugin `plugin`'s button `action` on `value` (the settings
-    /// object it's on, as edited): answered with `pluginActionResult`.
-    PluginAction { plugin: String, action: String, #[serde(default)] value: Value, request: u64 },
+    /// object it's on, as edited): answered with `pluginActionResult` `id`
+    /// once the plugin says how it went.
+    PluginAction { id: u64, plugin: String, action: String, #[serde(default)] value: Value },
     Quit,
 }
 

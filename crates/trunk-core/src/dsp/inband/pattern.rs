@@ -203,20 +203,41 @@ impl Pattern {
     /// For a log line: "two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)",
     /// "DTMF 072864", "Morse WRV713 (990 Hz)".
     pub fn describe(&self) -> String {
-        let hz = |sep: &str| self.hz.iter().map(|f| format!("{}", (f * 100.0).round() / 100.0)).collect::<Vec<_>>().join(sep);
-        let s = |l: &f32| format!("{}", (l * 100.0).round() / 100.0);
-        match self.kind {
-            PatternKind::Digits => format!("{} {}", if self.knox { "KNOX" } else { "DTMF" }, self.digits),
-            PatternKind::Morse => format!("Morse {} ({} Hz)", self.digits, hz("")),
-            PatternKind::TwoTone => {
-                let format = self.format.map_or(String::new(), |f| format!(" ({f})"));
-                format!("two-tone {} Hz, {} s{format}", hz(" → "), self.lengths.iter().map(s).collect::<Vec<_>>().join(" + "))
-            }
-            PatternKind::HiLow => format!("hi-low {} Hz", hz(" / ")),
-            PatternKind::Pulsed => format!("pulsed {} Hz ×{}", hz(""), self.cycles),
-            PatternKind::Sequence => format!("sequence {} Hz", hz(" · ")),
-            PatternKind::Long | PatternKind::Beep => format!("{} {} Hz, {} s", if self.kind == PatternKind::Long { "long tone" } else { "beep" }, hz(""), self.lengths.first().map(s).unwrap_or_default()),
-        }
+        describe(self.kind, &self.hz, &self.lengths, &self.digits, self.knox, self.cycles, self.format)
+    }
+}
+
+/// A pattern in words, heard ([`Pattern::describe`]) or typed in (a system's
+/// signal: lengths, cycles and format left out when it has none): its kind
+/// ("two-tone", "KNOX") and the rest ([`describe_detail`]).
+pub fn describe(kind: PatternKind, hz: &[f32], lengths: &[f32], digits: &str, knox: bool, cycles: u32, format: Option<&str>) -> String {
+    let label = match kind {
+        PatternKind::Digits => if knox { "KNOX" } else { "DTMF" },
+        PatternKind::Morse => "Morse",
+        PatternKind::TwoTone => "two-tone",
+        PatternKind::HiLow => "hi-low",
+        PatternKind::Pulsed => "pulsed",
+        PatternKind::Sequence => "sequence",
+        PatternKind::Long => "long tone",
+        PatternKind::Beep => "beep",
+    };
+    format!("{label} {}", describe_detail(kind, hz, lengths, digits, cycles, format))
+}
+
+/// [`describe`] less its kind: "781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call
+/// II)", "072864", "WRV713 (990 Hz)" (where the kind is said already).
+pub fn describe_detail(kind: PatternKind, hz: &[f32], lengths: &[f32], digits: &str, cycles: u32, format: Option<&str>) -> String {
+    let tones = |sep: &str| hz.iter().map(|f| format!("{}", (f * 100.0).round() / 100.0)).collect::<Vec<_>>().join(sep);
+    let s = |l: &f32| format!("{}", (l * 100.0).round() / 100.0);
+    let secs = |ls: &[f32]| if ls.is_empty() { String::new() } else { format!(", {} s", ls.iter().map(s).collect::<Vec<_>>().join(" + ")) };
+    match kind {
+        PatternKind::Digits => digits.to_string(),
+        PatternKind::Morse => format!("{digits} ({} Hz)", tones("")),
+        PatternKind::TwoTone => format!("{} Hz{}{}", tones(" → "), secs(lengths), format.map_or(String::new(), |f| format!(" ({f})"))),
+        PatternKind::HiLow => format!("{} Hz", tones(" / ")),
+        PatternKind::Pulsed => format!("{} Hz{}", tones(""), if cycles > 0 { format!(" ×{cycles}") } else { String::new() }),
+        PatternKind::Sequence => format!("{} Hz", tones(" · ")),
+        PatternKind::Long | PatternKind::Beep => format!("{} Hz{}", tones(""), secs(&lengths[..lengths.len().min(1)])),
     }
 }
 

@@ -29,7 +29,9 @@ import {
   setView,
   systemAt,
   useApp,
+  useSelect,
   type AppState,
+  type PluginActionResult,
   type SystemRef,
 } from "./controller.ts";
 import { activeSystems } from "./config.ts";
@@ -44,7 +46,8 @@ import { ToneList } from "./ToneList.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
 import { fieldsOf } from "./pluginSettings.ts";
-import { applies, fillTemplate, followRenames, refOptions, summarize, type KeyMemory } from "./pluginForm.ts";
+import { applies, fillTemplate, followRenames, mentions, refOptions, summarize, type KeyMemory } from "./pluginForm.ts";
+import { signalChoices, signalRef } from "./Signals.tsx";
 import type { Config, InstallProgress, PluginContribution, PluginInfo, PluginListing, PluginManifest, PluginSchema, PluginValues, PluginsList, SignalDef } from "./protocol.ts";
 import { Author, InstallStage, newer, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
 
@@ -171,19 +174,25 @@ function Ticks(props: { id: string; options: { value: string; label: string }[];
   );
 }
 
-/** An object's buttons (`x-actions`): each sends the plugin the object as it is now, and shows how it went. `at`: which object. */
-function ActionButtons(props: { schema: PluginSchema | undefined; value: unknown; at: string }) {
+/** An object's buttons (`x-actions`): each sends the plugin the object as it is now, and shows how it went (the plugin's answer, to this browser). */
+function ActionButtons(props: { schema: PluginSchema | undefined; value: unknown }) {
   const root = useContext(FormRoot);
-  const pressed = useApp().actions;
+  const [said, setSaid] = useState<Record<string, { pending: boolean; ok: boolean; message: string }>>({});
   const defs = props.schema?.["x-actions"] ?? [];
   if (!defs.length || !root.plugin) return null;
+  const press = async (id: string) => {
+    setSaid((x) => ({ ...x, [id]: { pending: true, ok: false, message: "" } }));
+    // (Not answered at all: `ask` gives up with no `ok`.)
+    const r: Partial<PluginActionResult> = await pluginAction(root.plugin, id, props.value ?? {});
+    setSaid((x) => ({ ...x, [id]: { pending: false, ok: r.ok === true, message: r.message ?? "" } }));
+  };
   return (
     <div className="row plugin-buttons">
       {defs.map((d) => {
-        const st = Object.values(pressed).find((a) => a.plugin === root.plugin && a.action === d.id && a.key === props.at);
+        const st = said[d.id];
         return (
           <span key={d.id} className="row">
-            <button type="button" className="btn small" disabled={st?.pending} title={d.hint} onClick={() => pluginAction(root.plugin, d.id, props.at, props.value ?? {})}>
+            <button type="button" className="btn small" disabled={st?.pending} title={d.hint} onClick={() => void press(d.id)}>
               {d.label}
             </button>
             {st && (
@@ -230,7 +239,7 @@ function ObjectList(props: { f: PluginSchema; label: string; hint?: string; valu
       <>
         <SchemaFields schema={f.items} values={item ?? {}} onChange={(v) => setItem(i, v)} id={`${id}-${i}`} grid={props.panel} omit={titled && switched ? ["enabled"] : []} />
         <div className="row">
-          <ActionButtons schema={f.items} value={item} at={`${id}-${i}`} />
+          <ActionButtons schema={f.items} value={item} />
           <span className="spacer" />
           <button type="button" className="btn ghost small" onClick={() => remove(i)}>
             Remove {itemLabel.toLowerCase()}
@@ -288,6 +297,39 @@ function ObjectList(props: { f: PluginSchema; label: string; hint?: string; valu
   );
 }
 
+/** An object in a list (a group of fields each): drawn as [`ObjectList`]. */
+const isList = (f: PluginSchema) => f.type === "array" && f.items?.type === "object";
+
+/** Its value is picked from choices ([`choicesOf`]): ticked (a list) or from a menu. */
+const choosesFrom = (f: PluginSchema) => !!(f.items?.enum || f["x-systems"] || f["x-signals"] || f["x-ref"] || f["x-system"]);
+
+/**
+ * The choices field `f` is picked from: its items' `enum`, the systems (`x-system`, `x-systems`), the signals
+ * (`x-signals`), another list's items (`x-ref`, in `root`). `none`: said when there are none to pick.
+ */
+function choicesOf(f: PluginSchema, c: Config | null, root: PluginValues): { options: { value: string; label: string }[]; none: string } {
+  if (f.items?.enum) return { options: f.items.enum.map((x, i) => ({ value: String(x), label: f.items?.["x-enum-labels"]?.[i] ?? String(x) })), none: "" };
+  if (f["x-signals"]) return { options: c ? signalChoices(c) : [], none: "No signals yet: name them in Setup (each system's Signals), or Add one from its Tones card" };
+  if (f["x-ref"]) return { options: refOptions(root, f["x-ref"]), none: `None yet: add them under ${spell(f["x-ref"])}` };
+  return { options: (c ? systemsOf(c) : []).map((x) => ({ value: x.name, label: x.name })), none: "No systems yet" };
+}
+
+/** A menu of choices, `blank` first (not set); one picked that's no longer offered stays, marked. */
+function Menu(props: { id: string; options: { value: string; label: string }[]; value: string; blank: string; onChange: (v: string | undefined) => void }) {
+  const { options, value } = props;
+  return (
+    <select id={props.id} value={value} onChange={(e) => props.onChange(e.target.value === "" ? undefined : e.target.value)}>
+      <option value="">{props.blank}</option>
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+      {value && !options.some((o) => o.value === value) && <option value={value}>{value} (gone)</option>}
+    </select>
+  );
+}
+
 /** One setting. Empty text means "not set": the value for every system
  * (`inherited`), else the plugin's default, applies — shown as the placeholder. */
 const textByComma = textList(/,/);
@@ -321,7 +363,7 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
         <ToneList value={value} onChange={onChange} id={id} />
       </div>
     );
-  if (f.type === "array" && f.items?.type === "object") return <ObjectList f={f} label={label} hint={hint} value={value} onChange={onChange} id={id} panel={props.panel} />;
+  if (isList(f)) return <ObjectList f={f} label={label} hint={hint} value={value} onChange={onChange} id={id} panel={props.panel} />;
   if (f.type === "boolean") {
     const on = typeof value === "boolean" ? value : fallback === true;
     return (
@@ -331,51 +373,18 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
 
   let control: React.ReactNode;
   let problem: string | null = null;
-  const list = (Array.isArray(value) ? value : []).map(String);
-  const setList = (v: string[]) => onChange(v.length ? v : undefined);
-  if (f.type === "array" && f.items?.enum) {
-    // A list of choices: each to tick.
-    const labels = f.items["x-enum-labels"];
-    control = <Ticks id={id} options={f.items.enum.map((x, i) => ({ value: String(x), label: labels?.[i] ?? String(x) }))} value={list} onChange={setList} none="" />;
-  } else if (f.type === "array" && f["x-systems"]) {
-    control = <Ticks id={id} options={(c ? systemsOf(c) : []).map((x) => ({ value: x.name, label: x.name }))} value={list} onChange={setList} none="No systems yet" />;
-  } else if (f.type === "array" && f["x-signals"]) {
-    const options = c
-      ? [...c.systems, ...c.conventional].flatMap((x) => (x.signals ?? []).filter((d) => d.id).map((d) => ({ value: `${x.shortName}:${d.id}`, label: d.name ? `${d.name} (${x.shortName}:${d.id})` : `${x.shortName}:${d.id}` })))
-      : [];
-    control = <Ticks id={id} options={options} value={list} onChange={setList} none="No signals yet: name them in Setup (each system's Signals), or Add one from its Tones card" />;
-  } else if (f["x-ref"] && f.type === "array") {
-    control = <Ticks id={id} options={refOptions(root.values, f["x-ref"])} value={list} onChange={setList} none={`None yet: add them under ${spell(f["x-ref"])}`} />;
-  } else if (f["x-ref"]) {
-    const options = refOptions(root.values, f["x-ref"]);
-    const cur = typeof value === "string" ? value : "";
-    control = (
-      <select id={id} value={cur} onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value)}>
-        <option value="">None</option>
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-        {cur && !options.some((o) => o.value === cur) && <option value={cur}>{cur} (gone)</option>}
-      </select>
-    );
-  } else if (f["x-system"]) {
-    // A menu of the systems (and one no longer there, if it names one).
-    const names = c ? systemsOf(c).map((x) => x.name) : [];
-    const cur = typeof value === "string" ? value : "";
-    control = (
-      <select id={id} value={cur} onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value)}>
-        <option value="">{typeof fallback === "string" && fallback ? `As for every system (${fallback})` : props.required ? "Choose a system" : "Every system"}</option>
-        {names.map((n) => (
-          <option key={n} value={n}>
-            {n}
-          </option>
-        ))}
-        {cur && !names.includes(cur) && <option value={cur}>{cur} (no such system)</option>}
-      </select>
-    );
-    if (cur && !names.includes(cur)) problem = "No system has this name any more";
+  if (choosesFrom(f)) {
+    const { options, none } = choicesOf(f, c, root.values);
+    if (f.type === "array") {
+      const list = (Array.isArray(value) ? value : []).map(String);
+      control = <Ticks id={id} options={options} value={list} onChange={(v) => onChange(v.length ? v : undefined)} none={none} />;
+    } else {
+      // A menu (with one no longer there, if it names one).
+      const cur = typeof value === "string" ? value : "";
+      const blank = !f["x-system"] ? "None" : typeof fallback === "string" && fallback ? `As for every system (${fallback})` : props.required ? "Choose a system" : "Every system";
+      control = <Menu id={id} options={options} value={cur} blank={blank} onChange={onChange} />;
+      if (cur && !options.some((o) => o.value === cur)) problem = f["x-system"] ? "No system has this name any more" : "No longer there";
+    }
   } else if (f.enum) {
     const labels = f["x-enum-labels"];
     const cur = value ?? fallback ?? f.enum[0];
@@ -461,9 +470,9 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
   );
 }
 
-/** A field that wants a whole row of a grid: a group, a list of groups, choices to tick, a text area. */
+/** A field that wants a whole row of a grid: a group, a list of groups, tones, choices to tick, a text area. */
 function wide(f: PluginSchema): boolean {
-  return f.type === "object" || (f.type === "array" && (f.items?.type === "object" || !!f["x-tones"] || !!f.items?.enum || !!f["x-systems"] || !!f["x-signals"] || !!f["x-ref"])) || !!f["x-multiline"];
+  return f.type === "object" || isList(f) || (f.type === "array" && (!!f["x-tones"] || choosesFrom(f))) || !!f["x-multiline"];
 }
 
 function SchemaFields(props: {
@@ -671,18 +680,15 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
   const { p, c } = props;
   const s = useApp();
   const m = p.manifest;
-  const on = pluginOn(c, p.id);
+  const { on, recording, st, needs, state } = usePluginStatus(p, c);
   const settings = c.plugins?.[p.id]?.settings;
-  const recording = s.phase === "running" || s.phase === "starting";
-  const st = stateOf(p, on, recording);
   const imported = openTodos(s).find((t) => t.target === `plugin-${p.id}`);
-  const needs = m ? pluginNeeds(m, c, p.id) : [];
   const systems = systemsOf(c);
   const perSystem = !!m && hasFields(m.system_config);
   return (
     <article className={`plugin-card${on ? "" : " off"}${imported ? " needs" : ""}`} aria-labelledby={`ps-${p.id}`} id={`need-plugin-${p.id}`}>
       {imported && <div className="field-needs">{imported.text}</div>}
-      <PluginHead p={p} on={on} tone={st.tone} state={needs.length && on ? "Needs setting up" : st.text} titleId={`ps-${p.id}`} />
+      <PluginHead p={p} on={on} tone={st.tone} state={state} titleId={`ps-${p.id}`} />
       {m?.description && <p className="plugin-desc">{m.description}</p>}
       {p.problem && <p className="small bad-text">{p.problem}</p>}
       {m?.page ? (
@@ -732,7 +738,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
         />
       )}
       {on && (m?.subscribe.includes("audio") || m?.subscribe.includes("call.concluded")) && <PluginDelay p={p} c={c} />}
-      {recording && on && <p className="small muted">{m?.live_settings ? "It takes changes as they're made." : "Changes restart it (delays don't)."}</p>}
+      {recording && on && <ChangesNote m={m} />}
     </article>
   );
 }
@@ -750,11 +756,10 @@ function PluginSettingsForm(props: { p: PluginInfo; m: PluginManifest; settings:
     return (
       <FormRoot.Provider value={{ plugin: p.id, values }}>
         <SchemaFields schema={m.config} values={values} onChange={change} id={`pg-${p.id}`} required={props.needs} />
-        <ActionButtons schema={m.config} value={values} at={`pg-${p.id}`} />
+        <ActionButtons schema={m.config} value={values} />
       </FormRoot.Provider>
     );
   const fields = fieldsOf(m.config);
-  const isList = (f: PluginSchema) => f.type === "array" && f.items?.type === "object";
   const rest = fields.filter(([, f]) => !isList(f));
   const restSchema: PluginSchema = { ...m.config, properties: Object.fromEntries(rest), "x-order": rest.map(([k]) => k) };
   const setField = (k: string, v: unknown) => {
@@ -773,7 +778,7 @@ function PluginSettingsForm(props: { p: PluginInfo; m: PluginManifest; settings:
       {(rest.length > 0 || m.config?.["x-actions"]?.length) && (
         <Card title="Settings">
           <SchemaFields schema={restSchema} values={values} onChange={change} id={`pg-${p.id}`} required={props.needs.filter((k) => rest.some(([r]) => r === k))} grid />
-          <ActionButtons schema={m.config} value={values} at={`pg-${p.id}`} />
+          <ActionButtons schema={m.config} value={values} />
         </Card>
       )}
     </FormRoot.Provider>
@@ -781,11 +786,45 @@ function PluginSettingsForm(props: { p: PluginInfo; m: PluginManifest; settings:
 }
 
 /** The plugins (installed, on) that have a page of their own, for the navigation. */
-export function pluginPages(s: AppState): { id: string; title: string }[] {
+function pluginPages(s: AppState): { id: string; title: string }[] {
   return (s.plugins?.plugins ?? [])
     .filter((p) => p.manifest?.page && pluginOn(s.config, p.id))
     .map((p) => ({ id: p.id, title: p.manifest!.page!.title || p.manifest!.name }))
     .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+/** [`pluginPages`], drawn again only when they change. */
+export function usePluginPages(): { id: string; title: string }[] {
+  return useSelect(pluginPages, (a, b) => a.length === b.length && a.every((p, i) => p.id === b[i].id && p.title === b[i].title));
+}
+
+/** A plugin as its card in Setup and its own page show it: on, recording, what it needs set, its state in words. */
+function usePluginStatus(p: PluginInfo, c: Config) {
+  const s = useApp();
+  const on = pluginOn(c, p.id);
+  const recording = s.phase === "running" || s.phase === "starting";
+  const st = stateOf(p, on, recording);
+  const needs = p.manifest ? pluginNeeds(p.manifest, c, p.id) : [];
+  return { on, recording, st, needs, state: needs.length && on ? "Needs setting up" : st.text };
+}
+
+/** What changing its settings does while it runs. */
+function ChangesNote(props: { m: PluginManifest | null | undefined }) {
+  return <p className="small muted">{props.m?.live_settings ? "It takes changes as they're made." : "Changes restart it (delays don't)."}</p>;
+}
+
+/** A plugin's log, newest last (`newestFirst`: first). */
+function LogLines(props: { p: PluginInfo; newestFirst?: boolean }) {
+  const lines = props.newestFirst ? [...props.p.runtime.log].reverse() : props.p.runtime.log;
+  return (
+    <pre className="log-lines plugin-log">
+      {lines.map((l, i) => (
+        <div key={i} className={l.level === "info" ? "" : "bad-text"}>
+          {new Date(l.time * 1000).toLocaleTimeString()} {l.text}
+        </div>
+      ))}
+    </pre>
+  );
 }
 
 /** A plugin's own page: all its settings, room to work in, its log. */
@@ -795,30 +834,25 @@ export function PluginPage(props: { id: string }) {
   const p = s.plugins?.plugins.find((x) => x.id === props.id);
   if (!c || !s.plugins) return <p className="muted">Loading…</p>;
   if (!p?.manifest) return <p className="empty">No plugin {props.id} is installed.</p>;
-  const m = p.manifest;
-  const on = pluginOn(c, p.id);
-  const recording = s.phase === "running" || s.phase === "starting";
-  const st = stateOf(p, on, recording);
-  const needs = pluginNeeds(m, c, p.id);
+  return <PluginPageOf p={p} m={p.manifest} c={c} />;
+}
+
+function PluginPageOf(props: { p: PluginInfo; m: PluginManifest; c: Config }) {
+  const { p, m, c } = props;
+  const { on, recording, st, needs, state } = usePluginStatus(p, c);
   const message = p.problem ?? (on && p.runtime.message && p.runtime.message !== "running" ? p.runtime.message : "");
   return (
     <div className="plugin-page stack">
       <section className="panel" aria-labelledby={`pp-${p.id}`}>
-        <PluginHead p={p} on={on} tone={st.tone} state={needs.length && on ? "Needs setting up" : st.text} titleId={`pp-${p.id}`} />
+        <PluginHead p={p} on={on} tone={st.tone} state={state} titleId={`pp-${p.id}`} />
         {m.description && <p className="plugin-desc">{m.description}</p>}
         {message && <p className={`small ${st.tone === "bad" ? "bad-text" : st.tone === "warn" ? "warn-text" : "muted"}`}>{message}</p>}
-        {recording && on && <p className="small muted">{m.live_settings ? "It takes changes as they're made." : "Changes restart it."}</p>}
+        {recording && on && <ChangesNote m={m} />}
       </section>
       {hasFields(m.config) && <PluginSettingsForm p={p} m={m} settings={c.plugins?.[p.id]?.settings} needs={needs} page />}
       <Card title="Log">
         {p.runtime.log.length ? (
-          <pre className="log-lines plugin-log">
-            {[...p.runtime.log].reverse().map((l, i) => (
-              <div key={i} className={l.level === "info" ? "" : "bad-text"}>
-                {new Date(l.time * 1000).toLocaleTimeString()} {l.text}
-              </div>
-            ))}
-          </pre>
+          <LogLines p={p} newestFirst />
         ) : (
           <p className="empty">Nothing yet{recording ? "" : ": it runs while the recorder records"}.</p>
         )}
@@ -1073,23 +1107,14 @@ const TOPIC_NAMES: Record<string, string> = {
   tone_pattern: "tone patterns heard",
 };
 
-function PluginLog(props: { p: PluginInfo; open?: boolean }) {
-  const [open, setOpen] = useState(!!props.open);
-  const lines = props.p.runtime.log;
+function PluginLog(props: { p: PluginInfo }) {
+  const [open, setOpen] = useState(false);
   return (
     <>
       <button className="btn ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {open ? "Hide log" : `Log (${lines.length})`}
+        {open ? "Hide log" : `Log (${props.p.runtime.log.length})`}
       </button>
-      {open && (
-        <pre className="log-lines plugin-log">
-          {lines.map((l, i) => (
-            <div key={i} className={l.level === "info" ? "" : "bad-text"}>
-              {new Date(l.time * 1000).toLocaleTimeString()} {l.text}
-            </div>
-          ))}
-        </pre>
-      )}
+      {open && <LogLines p={props.p} />}
     </>
   );
 }
@@ -1201,7 +1226,7 @@ export function PluginsPage() {
 /** Plugins' buttons for a signal (`contribute` on `signal`): each adds an item to its settings, then shows them. */
 export function SignalButtons({ system, d }: { system: string; d: SignalDef }) {
   const s = useApp();
-  const signal = `${system}:${d.id}`;
+  const signal = signalRef(system, d.id);
   const all = (s.plugins?.plugins ?? []).filter((p) => p.manifest && pluginOn(s.config, p.id));
   const show = (p: PluginInfo) => (p.manifest!.page ? setView("plugin", p.id) : showTodo(`plugin-${p.id}`));
   const add = (p: PluginInfo, k: PluginContribution) => {
@@ -1218,8 +1243,7 @@ export function SignalButtons({ system, d }: { system: string; d: SignalDef }) {
           .filter((k) => k.on === "signal" && d.id)
           .map((k) => {
             // Already named in what it would add to: say so, and go there.
-            const list = s.config?.plugins?.[p.id]?.settings?.[k.append];
-            const named = JSON.stringify(list ?? []).includes(JSON.stringify(signal));
+            const named = mentions(s.config?.plugins?.[p.id]?.settings?.[k.append], signal);
             return named ? (
               <button key={`${p.id}-${k.label}`} className="btn ghost small" title={`${p.manifest!.name} has it already`} onClick={() => show(p)}>
                 ✓ {k.label}

@@ -255,9 +255,11 @@ more of the interface in its manifest:
 | `live_settings: true` | Its own settings, changed, are sent to it as `settings` (the hello it would start with now) instead of every plugin being restarted. The SDK calls `Plugin::settings` |
 
 An `x-actions` button sends the running plugin `action` (`request`, `action`: the button's `id`,
-`value`: the object it's under, as edited, saved or not). It answers with `action.result`; the
-SDK's `Plugin::action` gets a `Reply` to answer with, from any thread. Plugins only run while the
-recorder records: pressed while it doesn't, the button says so.
+`value`: the object it's under, as edited, saved or not). It answers with `action.result` (the
+same `request`) within 15 seconds, else the button says there was no answer; the answer is shown
+only in the browser that pressed it. The SDK's `Plugin::action` gets a `Reply` to answer with,
+from any thread. Plugins only run while the recorder records: pressed while it doesn't, the
+button says so.
 
 ## Testing
 

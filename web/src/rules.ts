@@ -144,6 +144,11 @@ export function signalNote(d: SignalDef): string {
   return rules().signalNote(JSON.stringify(d));
 }
 
+/** Signal `d` in words, as the recorder logs a pattern heard ("two-tone 313 → 1642 Hz", "KNOX 0123"); `kind: false`: less its kind ("313 → 1642 Hz"), where that's said already. */
+export function signalText(d: Partial<SignalDef>, kind = true): string {
+  return rules().signalText(JSON.stringify(d), kind);
+}
+
 /** A signal's id made from what people call it ("Norwalk EMS page" → NORWALK_EMS_PAGE). */
 export function signalId(text: string): string {
   return rules().signalId(text);

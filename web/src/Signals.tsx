@@ -11,8 +11,8 @@ import { numberList, talkgroupList, type TextCodec } from "./fieldText.ts";
 import { DraftInput, Field, NumberInput } from "./inputs.tsx";
 import { PlayButton } from "./PlayButton.tsx";
 import { SignalButtons } from "./Plugins.tsx";
-import type { SignalDef } from "./protocol.ts";
-import { signalId, signalNote, signalProblem } from "./rules.ts";
+import type { Config, SignalDef } from "./protocol.ts";
+import { signalId, signalNote, signalProblem, signalText } from "./rules.ts";
 import type { ToneSpec } from "./tonePlayer.ts";
 
 /** What ▶ plays for a signal. */
@@ -45,8 +45,15 @@ function asKind(d: SignalDef, k: Kind): SignalDef {
   return { ...keep, pattern: k, ...(tones?.length ? { tonesHz: tones } : {}), ...(d.extraTolerancePct ? { extraTolerancePct: d.extraTolerancePct } : {}) };
 }
 
-/** What a signal sends, for its row: its digits or text, or its tones. */
-const sends = (d: SignalDef) => (d.pattern === "digits" || d.pattern === "morse" ? d.digits ?? "" : d.tonesHz?.length ? `${d.tonesHz.join(", ")} Hz` : "");
+/** How plugins' settings name system `system`'s signal `id`: "system:ID". */
+export const signalRef = (system: string, id: string) => `${system}:${id}`;
+
+/** Every system's named signals, as choices (a plugin's `x-signals`). */
+export function signalChoices(c: Config): { value: string; label: string }[] {
+  return [...c.systems, ...c.conventional].flatMap((x) =>
+    (x.signals ?? []).filter((d) => d.id).map((d) => ({ value: signalRef(x.shortName, d.id), label: d.name ? `${d.name} (${signalRef(x.shortName, d.id)})` : signalRef(x.shortName, d.id) })),
+  );
+}
 
 /** An id as typed ("Town fire"), kept as one (TOWN_FIRE). */
 const idCodec: TextCodec<string> = { format: (v) => v, parse: signalId };
@@ -244,7 +251,7 @@ export function SystemSignals(props: { system: SystemRef }) {
                       {bad && <div className="warn-text small">{bad}</div>}
                     </td>
                     <td className="small">{kindLabel(d)}</td>
-                    <td className="mono">{sends(d)}</td>
+                    <td className="mono">{signalText(d, false)}</td>
                     <td className="mono small">{d.talkgroups?.join(", ") || "any"}</td>
                     <td className="nowrap">
                       <SignalButtons system={sys.shortName} d={d} />

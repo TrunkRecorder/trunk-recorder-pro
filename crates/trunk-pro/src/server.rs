@@ -622,6 +622,8 @@ pub(crate) fn radio_query(ctx: &Ctx, q: &Body) -> ToClient {
 /// read (a tab frozen in the background) is closed rather than waited on, and
 /// gets everything afresh when it reconnects.
 const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// A plugin's button waits this long for its answer (the browser's `ask` gives up at 20 s).
+const PLUGIN_ACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// One message to a connection, within [`SEND_TIMEOUT`]: false when it's
 /// gone or isn't reading, and is to be dropped.
@@ -732,9 +734,7 @@ pub(crate) fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config))
     let c = cfg.clone();
     drop(cfg);
     ctx.plugins.set_delays(&c);
-    if crate::plugins::changed(&old, &c) {
-        ctx.plugins.reload(&c);
-    }
+    ctx.plugins.apply(&old, &c);
     Ok(())
 }
 
@@ -783,10 +783,14 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || stats_query(&ctx2, &q)).await.ok()
         }
-        Command::PluginAction { plugin, action, value, request } => {
-            let a = trunk_recorder_plugin::Action { request, action, value };
-            let sent = ctx.plugins.host().is_some_and(|h| h.action(&plugin, a));
-            (!sent).then(|| ToClient::PluginActionResult { request, ok: false, message: "It isn't running: plugins run while recording".into() })
+        // (Answered to this connection alone, once the plugin says how it went.)
+        Command::PluginAction { id, plugin, action, value } => {
+            let host = ctx.plugins.host();
+            let answer = tokio::task::spawn_blocking(move || host.ok_or("It isn't running: plugins run while recording".to_string())?.action(&plugin, action, value, PLUGIN_ACTION_WAIT))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            let (ok, message) = answer.unwrap_or_else(|e| (false, e));
+            Some(ToClient::PluginActionResult { id, ok, message })
         }
         Command::RadioQuery(q) => {
             let ctx2 = ctx.clone();
@@ -843,13 +847,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 if old.server.interfaces != c.server.interfaces {
                     tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));
                 }
-                // Plugins' settings changed while recording: they restart with them, unless
-                // all that changed is those of plugins that take new settings as they run.
-                let settled = crate::plugins::settings_only(&old, &c).zip(ctx.plugins.host()).is_some_and(|(all, h)| all.iter().all(|(id, v)| h.settle(id, v)));
-                if !settled && crate::plugins::changed(&old, &c) {
-                    let ctx2 = ctx.clone();
-                    let _ = tokio::task::spawn_blocking(move || ctx2.plugins.reload(&c)).await;
-                }
+                // Plugins' settings changed while recording: sent to those that take them as
+                // they run, else they restart with them.
+                let ctx2 = ctx.clone();
+                let _ = tokio::task::spawn_blocking(move || ctx2.plugins.apply(&old, &c)).await;
                 Some(ToClient::ConfigSaved { version: now, error: saved.err().map(|e| format!("Couldn't save the config: {e}")) })
             }
             Err(e) => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: Some(format!("Bad config: {e}")) }),

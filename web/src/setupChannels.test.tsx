@@ -102,7 +102,7 @@ test("Setup's signals: a disclosure on the system's card, a row each with its ki
   const signals = html.slice(html.indexOf(">", html.indexOf('id="need-convsignals-town"')) + 1);
   assert.match(text(signals), /^ ?Signals — 3/);
   const lines = [...signals.matchAll(/<tr>(.*?)<\/tr>/g)].slice(1, 4).map((m) => text(m[1]).trim());
-  assert.match(lines[0], /^COUNTY_A County A page Two-tone page 788\.5, 879 Hz 1001 ▶ Edit Remove$/);
+  assert.match(lines[0], /^COUNTY_A County A page Two-tone page 788\.5 → 879 Hz 1001 ▶ Edit Remove$/);
   assert.match(lines[1], /^ALERT Beep 1000 Hz any/, "a beep isn't a long tone");
   assert.match(lines[2], /^PW_KNOX Signal PW_KNOX: which digits does it send\? KNOX digits/, "the recorder's problem");
   assert.match(text(signals), /\+ Add a signal/);

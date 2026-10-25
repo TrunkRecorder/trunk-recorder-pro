@@ -19,18 +19,6 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Plugins hear radios' and talkgroups' names** in their live events, looked up as each event is
   sent (as a call's JSON has them): a call's radios (`sources[].tag`), radio activity (`tag`, and
   the talkgroup's `alpha_tag`) and tone patterns (`src_tag`). No need to remember them from calls.
-- **Pages, alert tones, DTMF and Morse IDs as call metadata.** Every call's voice is searched for
-  in-band tones: P25 Phase 2, DMR and NXDN tone frames name them exactly, and P25 Phase 1 and analog
-  calls are measured. The call JSON lists them (`tones`) and what they make up (`tone_patterns`: a
-  two-tone page with its timing format and likely paging codes, a long tone, a warble, a DTMF or KNOX
-  string, a Morse ID). Each system's page has a **Tones** card listing what was heard, with ▶ to play
-  it in the browser (again to stop); **Add** names a pattern as one of the system's **signals**
-  (`signals` in its config), and **New signal** types one in from a paging list, each kind with its
-  own fields (DTMF and KNOX apart). A tone counts as a signal's within ±1.5 % when measured in the
-  audio and ±(15.7 Hz + 0.5 %) from tone frames, widened by its `extraTolerancePct`; the editor says
-  what that comes to and which paging tones it would take in too. Calls that carry a signal list it
-  (`signals`). Plugins can subscribe to `tone` to hear every pattern as it ends, with the signals it
-  is. `trunk-pro tool tones` reads them out of saved calls.
 - **Setup's FCC licenses fold.** A system's (or conventional system's) **FCC licenses** section
   folds to its name and a line ("20 frequencies, 5 call signs: …"); it starts folded once it has
   more than six, and remembers being opened or folded in this browser, as the cards do.

@@ -1723,8 +1723,8 @@ export type FromRecorder =
   | { type: "notice"; message: string }
   | ({ type: "plugins" } & PluginsList)
   | { type: "pluginRuntime"; id: string; runtime: PluginRuntime }
-  /** How a plugin's button went (`pluginAction`'s `request`). */
-  | { type: "pluginActionResult"; request: number; ok: boolean; message?: string }
+  /** How a plugin's button went, as the plugin says (answers `pluginAction` `id`). */
+  | { type: "pluginActionResult"; id: number; ok: boolean; message?: string }
   /** A store's list (answers `store`). */
   | ({ type: "store" } & Store)
   /** An install from a store or a GitHub release as it goes, to every connection with control access. */
@@ -1805,9 +1805,9 @@ export type ToRecorder =
   | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d"; from?: number; to?: number; points?: number }
   /** Calls that started before `before` (Unix ms), newest first, from the last 24 hours (the Listen page's "Load older"). */
   | { type: "olderCalls"; before: number; limit: number }
-  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
   /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited). */
-  | { type: "pluginAction"; plugin: string; action: string; value: unknown; request: number }
+  | { type: "pluginAction"; id: number; plugin: string; action: string; value: unknown }
+  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths" | "tones"; system?: string; key?: number; hours?: number; limit?: number }
   | { type: "quit" };
 

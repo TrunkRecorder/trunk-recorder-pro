@@ -68,3 +68,11 @@ test("an item's summary line", () => {
   assert.equal(summarize(rule, { event: "call", signals: ["wood:FD_PAGE"], talkgroups: ["401"] }), "A call begins · any system · TG 401 · → nowhere yet");
   assert.equal(summarize({ type: "object" }, {}), "");
 });
+
+test("tones typed in read as the recorder writes a pattern heard; what names a signal is found anywhere", async () => {
+  const { summaryValue, mentions } = await import("./pluginForm.ts");
+  const tones: PluginSchema = { type: "array", "x-tones": true, items: { type: "object" } };
+  assert.equal(summaryValue(tones, [{ tonesHz: [313, 1642] }, { pattern: "digits", digits: "0123", knox: true }, { tonesHz: [0, 0] }]), "two-tone 313 → 1642 Hz, KNOX 0123");
+  assert.ok(mentions([{ name: "Fire", signals: ["wood:FD_PAGE"] }], "wood:FD_PAGE"));
+  assert.ok(!mentions([{ name: "wood:FD_PAGE_2" }], "wood:FD_PAGE"), "the whole string, not part of one");
+});
