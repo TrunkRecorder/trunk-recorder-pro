@@ -4,32 +4,32 @@
     {
       "id": "trunk-city-2000",
       "name": "Trunk City 2000",
-      "description": "A pixel-art city for each radio system, built from its talkgroups. Every call sends someone out: fire trucks, ambulances, buses, plows. Now and then, a flying saucer comes for a cow.",
+      "description": "An isometric city for each radio system, built from its talkgroups. Every call sends someone out: fire trucks, ambulances, buses, plows. Now and then, a flying saucer comes for a cow.",
       "repository": "https://github.com/TrunkRecorder/trunk-city-2000",
       "license": "MIT",
       "tier": "official",
-      "version": "0.4.0",
+      "version": "0.5.1",
       "api": 1,
       "access": "listen",
-      "tag": "v0.4.0",
-      "commit": "d6ee7958fa9f9c630fc2f581cff5afa3f50d7dc6",
+      "tag": "v0.5.1",
+      "commit": "3ac0712079c8ec99b1f0126b94578fcc2b096ef6",
       "asset": {
-        "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0.zip",
-        "sha256": "e59d0de54159f0287f4a67bf9db47f410f74567ca8c7cc22d7947d1686c521e1"
+        "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.5.1/trunk-city-2000-0.5.1.zip",
+        "sha256": "c7e55a7be698807e550ac34ac864d9168e60975008e537b61a9a481129a673f7"
       },
       "screenshots": [
         {
-          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0-main.png",
-          "sha256": "2288a20258a874e0f300e3efb6fe2010e2019bcdd2e7d86b2ba617f3451cd451",
+          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.5.1/trunk-city-2000-0.5.1-main.png",
+          "sha256": "a192378310c9ababab14ead4f0de7ab5f08f7b61ecc980f75bfd4e6a1f4d7f4e",
           "caption": "Radios on the air as vehicles and buildings, glowing with their names while they talk"
         },
         {
-          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0-quad.png",
-          "sha256": "82c94e83627b608112376aa08909a5062efecfcbaf34c6b48d0692212b50325d",
+          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.5.1/trunk-city-2000-0.5.1-quad.png",
+          "sha256": "76285d646e5599bbbebc63ad2edc435eae0042cee5e5bf1adb5f5a567a5d808f",
           "caption": "Four systems at once, each with its own headlines"
         },
         {
-          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0-planning.png",
+          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.5.1/trunk-city-2000-0.5.1-planning.png",
           "sha256": "bec1316b54ee22aa6f4f28380f205777120382ca0414ef8dda17a04714a19eed",
           "caption": "City Planning: which systems and talkgroups count, and what each one is"
         }
@@ -42,33 +42,33 @@
       "repository": "https://github.com/TrunkRecorder/trunk-tris",
       "license": "MIT",
       "tier": "official",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "api": 1,
       "access": "listen",
-      "tag": "v0.2.0",
-      "commit": "d21cfe3d5d8522819e5aa0f092962319352bcae2",
+      "tag": "v0.3.0",
+      "commit": "ea0740fc5261da2ce13e7c585198031ece3132f3",
       "asset": {
-        "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.2.0/trunk-tris-0.2.0.zip",
-        "sha256": "709757c1ae52d6d933634f7cba7415c263b3e0d00f1c8e56316e02f3731215af"
+        "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.3.0/trunk-tris-0.3.0.zip",
+        "sha256": "543e3802e7b770e3c9442594677fe5f6945e9594d1b3ac06134cfc38bb9e9c3e"
       },
       "screenshots": [
         {
-          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.2.0/trunk-tris-0.2.0-main.png",
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.3.0/trunk-tris-0.3.0-main.png",
           "sha256": "f98f6162cffd803008e5c8d13d9281eddecd4b958906aae0d4a72e9df60130f7",
           "caption": "Two systems' games side by side, each piece made by a message on that system's control channel"
         },
         {
-          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.2.0/trunk-tris-0.2.0-gameboy.png",
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.3.0/trunk-tris-0.3.0-gameboy.png",
           "sha256": "13150c575dc9ada8453bb197667e1af6554c771db37bfda1cf6789ee44cd7535",
           "caption": "The Game Boy look: the LCD's dot matrix, its shadows and its slow pixels, in the green of the first Game Boy"
         },
         {
-          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.2.0/trunk-tris-0.2.0-four.png",
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.3.0/trunk-tris-0.3.0-four.png",
           "sha256": "3f564727a0756b173e4c1018eb409198d80a47590d243fe05fed344c76d658b1",
           "caption": "As many games as the screen fits; with more systems than that, they take turns"
         },
         {
-          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.2.0/trunk-tris-0.2.0-scores.png",
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.3.0/trunk-tris-0.3.0-scores.png",
           "sha256": "0f321816597603fd2b7aa7d4d86de68d09bedbe07fe87395f1c2594e30b87177",
           "caption": "Game over, and one high score table for every system"
         }

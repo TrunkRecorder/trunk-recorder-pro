@@ -33,6 +33,36 @@
       }
     },
     {
+      "id": "icecast-endpoint",
+      "name": "Icecast Endpoint",
+      "description": "Allows for an Icecast mount, such as Broadcastify, to be used as an audio endpoint.",
+      "repository": "https://github.com/jschmall/icecast-endpoint",
+      "license": "MIT",
+      "tier": "community",
+      "version": "0.4.0",
+      "api": 1,
+      "tag": "v0.4.0",
+      "commit": "5aca69253f5f5556c7a29f19fe4a74b1cb581d67",
+      "assets": {
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.4.0/icecast-endpoint-0.4.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "2d0e299010f7ced429e5ab37b69b800a1e61775e2f6eebb5de37938fa1bdc212"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.4.0/icecast-endpoint-0.4.0-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "14dc41a80935f99d80f1fd4601aa23a8032a7ef14783613e84597ecd3027ffaf"
+        },
+        "universal-apple-darwin": {
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.4.0/icecast-endpoint-0.4.0-universal-apple-darwin.tar.gz",
+          "sha256": "5ab47082999794a84d1ed7f5ead18a3d23c0ce8339bfccc30bb98741dc75bcc7"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.4.0/icecast-endpoint-0.4.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "9d285820111a5aeb2ade0c922d8e75b6b4a99d076b1cb63159a500582208e959"
+        }
+      }
+    },
+    {
       "id": "mqtt",
       "name": "MQTT",
       "description": "Publishes calls, unit activity and system status to an MQTT broker.",
