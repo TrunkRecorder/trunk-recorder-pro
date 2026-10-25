@@ -3,7 +3,8 @@
 //! ```text
 //! channel IQ → discriminator (Hz) → one-symbol moving average
 //!   → level tracker (the two tones' mean frequencies; their midpoint is the
-//!     carrier offset, so no separate AFC)
+//!     carrier offset, so no separate AFC), watched against the levels'
+//!     quantiles over the last symbols ([`crate::dsp::levels`])
 //! channel IQ → each tone's energy over a symbol (noncoherent matched filters,
 //!   at the tracked tone frequencies) → (E_hi − E_lo) / (E_hi + E_lo)
 //!   → symbol clock (zero-crossing DPLL: crossings belong halfway between
@@ -18,9 +19,12 @@
 //! the tones symmetric under a carrier offset, and the level tracker removes
 //! the offset.
 
+use std::collections::VecDeque;
 use std::f64::consts::PI;
 
 use num_complex::Complex32;
+
+use crate::dsp::levels;
 
 pub const SYMBOL_RATE: f64 = 3600.0;
 /// Nominal deviation of each tone, Hz (the level tracker's starting point).
@@ -29,12 +33,15 @@ const NOMINAL_DEV_HZ: f32 = 2400.0;
 const MIN_SPREAD_HZ: f32 = 1200.0;
 /// Level tracker step per decided symbol.
 const LEVEL_ALPHA: f32 = 0.02;
-/// The deciles' step per symbol, a fraction of their spread ([`Fsk2Options::dc`]).
-const DECILE_STEP: f32 = 0.005;
-/// The levels start again from the deciles when their midpoints have been this far
-/// apart (a fraction of the deciles' half spread) for this many symbols more than not.
-const DRIFT_FRACTION: f32 = 0.25;
-const DRIFT_SYMBOLS: u32 = 200;
+/// The levels are watched against the quantiles' fit ([`levels::fit`]) to the
+/// last `WATCH_WINDOW` symbols (50 ms of EDACS, 133 ms of SmartNet), every
+/// `WATCH_EVERY` symbols. When their midpoint has been more than `WATCH_WALK`
+/// of the outer level from the quantiles' for `WATCH_FITS` fits more than not
+/// (about 200 symbols), they start again from the quantiles'.
+const WATCH_WINDOW: usize = 480;
+const WATCH_EVERY: usize = 60;
+const WATCH_WALK: f32 = 0.25;
+const WATCH_FITS: u32 = 3;
 /// Symbol clock correction per zero crossing, fraction of the error.
 const CLOCK_GAIN: f64 = 0.06;
 
@@ -60,21 +67,11 @@ pub struct Fsk2Options {
     /// same OSWs on WMATA (`tool snr`). The discriminator still tracks the
     /// tones (carrier offset) and runs the clock's level tracker.
     pub tones: bool,
-    /// Watch the levels against the discriminator's upper and lower deciles
-    /// (EDACS, ProVoice). At about three samples a symbol its values aren't
-    /// two clean clusters, so levels kept as the mean of the symbols decided
-    /// each side can settle wrong after a start-up transient — one pulled
-    /// most of the way to the other, the midpoint far off the carrier — and
-    /// never recover. The deciles don't depend on the decisions: when the
-    /// levels' midpoint stays well away from theirs, the levels start again
-    /// from them. (Only then: with noise, and more of one bit than the other,
-    /// the deciles' midpoint is the poorer estimate.)
-    pub dc: bool,
 }
 
 impl Default for Fsk2Options {
     fn default() -> Self {
-        Fsk2Options { ma_symbols: 1.0, clock_gain: CLOCK_GAIN, level_alpha: LEVEL_ALPHA, tones: true, dc: false }
+        Fsk2Options { ma_symbols: 1.0, clock_gain: CLOCK_GAIN, level_alpha: LEVEL_ALPHA, tones: true }
     }
 }
 
@@ -119,10 +116,13 @@ pub struct Fsk2 {
     rate: f64,
     /// Smallest believable tone separation, Hz.
     min_spread: f32,
-    /// The discriminator's upper and lower deciles at the symbol instants, Hz,
-    /// and symbols the levels' midpoint has been far from theirs, less those it hasn't ([`Fsk2Options::dc`]).
-    deciles: (f32, f32),
-    drift: u32,
+    /// The discriminator at the last symbol instants (the levels are watched
+    /// against its quantiles), symbols since the last fit, room for a fit, and
+    /// fits the levels' midpoint has been far from the quantiles', less those it hasn't.
+    recent: VecDeque<f32>,
+    since_fit: usize,
+    fit_buf: Vec<f32>,
+    walked: u32,
 }
 
 impl Fsk2 {
@@ -158,8 +158,10 @@ impl Fsk2 {
             prev_disc: 0.0,
             rate,
             min_spread: MIN_SPREAD_HZ.min(dev_hz),
-            deciles: (dev_hz, -dev_hz),
-            drift: 0,
+            recent: VecDeque::new(),
+            since_fit: 0,
+            fit_buf: Vec::new(),
+            walked: 0,
         }
     }
 
@@ -237,32 +239,45 @@ impl Fsk2 {
     }
 
     /// `v` decides the bit; `level` (the discriminator's value) tracks the tones.
+    ///
+    /// Levels kept as the mean of the symbols decided each side follow a
+    /// signal quickly, but can settle wrong after a strong transient (a
+    /// channel's first moments, a burst of interference several kHz off) and
+    /// never recover: one pulled most of the way to the other, or one past the
+    /// far tone where no symbol reaches it, the midpoint far off the carrier.
+    /// At EDACS's three samples a symbol the values aren't two clean clusters,
+    /// and a midpoint off moves the clock's zero crossings, so the sampling
+    /// instants, toward the transitions, which keeps it there (#76). The
+    /// quantiles don't depend on the decisions (runs of one bit reach the full
+    /// deviation wherever the clock samples): the levels are watched against them.
     fn decide(&mut self, v: f32, level: f32, sample: f64, out: &mut Vec<Bit>) {
         let center = self.offset_hz();
         let half = (self.hi - self.lo) / 2.0;
         let a = self.opts.level_alpha;
-        if self.opts.dc {
-            // Each decile steps up by 0.9 of a step or down by 0.1 (the upper),
-            // or the other way round (the lower): it settles with a tenth of the values beyond it.
-            let (qh, ql) = &mut self.deciles;
-            let step = DECILE_STEP * (*qh - *ql).max(self.min_spread);
-            *qh += step * if level > *qh { 0.9 } else { -0.1 };
-            *ql += step * if level < *ql { -0.9 } else { 0.1 };
-            let (qh, ql) = self.deciles;
-            if (center - (qh + ql) / 2.0).abs() > DRIFT_FRACTION * (qh - ql) / 2.0 {
-                self.drift += 1;
-            } else {
-                self.drift = self.drift.saturating_sub(1);
-            }
-            if self.drift > DRIFT_SYMBOLS && qh - ql >= self.min_spread {
-                (self.hi, self.lo) = (qh, ql);
-                self.drift = 0;
-            }
-        }
         if v > center {
             self.hi += a * (level - self.hi);
         } else {
             self.lo += a * (level - self.lo);
+        }
+        self.recent.push_back(level);
+        if self.recent.len() > WATCH_WINDOW {
+            self.recent.pop_front();
+        }
+        self.since_fit += 1;
+        if self.since_fit >= WATCH_EVERY {
+            self.since_fit = 0;
+            self.fit_buf.clear();
+            self.fit_buf.extend(&self.recent);
+            let q = levels::fit::<2>(&mut self.fit_buf, levels::FitOptions { min_outer: self.min_spread / 2.0, default_outer: half, means: false });
+            if q.believed && (center - q.center).abs() > WATCH_WALK * q.outer {
+                self.walked += 1;
+            } else {
+                self.walked = self.walked.saturating_sub(1);
+            }
+            if self.walked > WATCH_FITS {
+                (self.hi, self.lo) = (q.center + q.outer, q.center - q.outer);
+                self.walked = 0;
+            }
         }
         if self.hi - self.lo < self.min_spread {
             let c = self.offset_hz();
@@ -324,6 +339,40 @@ pub(crate) mod tests {
                 .unwrap();
             assert_eq!(best.1, 0, "rate {rate} offset {offset}: {} errors at lag {}", best.1, best.0);
             assert!((rx.offset_hz() - offset as f32).abs() < 100.0, "offset estimate {}", rx.offset_hz());
+        }
+    }
+
+    /// A strong burst several kHz off before the signal (a channel's first
+    /// moments, interference) left the levels wrong for good: 25 % to 50 % of
+    /// the bits wrong a second later, the offset estimate 0.5–3 kHz off. Each
+    /// case here did, before the levels were watched against the quantiles.
+    #[test]
+    fn recovers_from_a_burst_off_frequency() {
+        let disc = Fsk2Options { tones: false, ..Default::default() };
+        for (opts, burst_hz, offset, rate) in [
+            (Fsk2Options::default(), -9000.0, 0.0, 24_000.0),
+            (Fsk2Options::default(), 9000.0, -300.0, 37_500.0),
+            (disc, -9000.0, 400.0, 30_000.0),
+            (disc, 9000.0, -300.0, 24_000.0),
+        ] {
+            let bits = prbs(4000, 0x5eed_0001);
+            let mut ph = 0.0f64;
+            let burst = (0.015 * rate) as usize;
+            let mut iq: Vec<Complex32> = (0..burst)
+                .map(|_| {
+                    ph += 2.0 * PI * burst_hz / rate;
+                    Complex32::from_polar(1.0, ph as f32)
+                })
+                .collect();
+            iq.extend(modulate(&bits, rate, 2400.0, offset, 0.37));
+            let mut rx = Fsk2::with_options(rate, opts);
+            let mut out = Vec::new();
+            rx.push(&iq, &mut out);
+            let got: Vec<u8> = out.iter().filter(|b| b.sample >= burst as f64).map(|b| (b.soft > 0.0) as u8).collect();
+            // From 0.5 s in, at the best alignment (the clock can slip a bit in the burst).
+            let from = (SYMBOL_RATE * 0.5) as usize;
+            let errs = (-4i64..=4).map(|lag| (from..got.len()).filter(|&i| bits.get((i as i64 - lag) as usize).is_some_and(|&b| b != got[i])).count()).min().unwrap();
+            assert_eq!(errs, 0, "burst {burst_hz} Hz, offset {offset}, rate {rate}, tones {}: offset estimate {:.0}, deviation {:.0}", opts.tones, rx.offset_hz(), rx.deviation_hz());
         }
     }
 }

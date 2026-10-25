@@ -5,14 +5,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **EDACS control channels lock every time** (#76). At about three samples a symbol, the
-  receiver's tone levels could settle wrong after the first moments of a channel (one tone's level
-  pulled most of the way to the other, the midpoint far off the carrier) and never recover: no
-  messages from a strong control channel, or no ProVoice audio. Which way it went turned on
-  rounding, so the engine tests failed on Linux on aarch64 (Raspberry Pi) and passed elsewhere;
-  with other noise they failed about one time in fourteen anywhere. The levels are now watched
-  against the discriminator's deciles, which don't depend on the decisions, and start again from
-  them when they drift apart. Weak-signal decoding is unchanged (measured from clean to no frames).
+- **EDACS and SmartNet control channels lock every time** (#76). The 2FSK receiver (SmartNet,
+  EDACS, ProVoice) keeps each tone's level as the mean of the symbols decided on its side. After a
+  strong transient (a channel's first moments, a burst of interference several kHz off) those levels
+  could settle wrong and never recover: one pulled most of the way to the other, or one past the far
+  tone, the midpoint far off the carrier, a quarter to half of the bits wrong. EDACS (three samples a
+  symbol) got there from its own start-up: no messages from a strong control channel, or no ProVoice
+  audio, about one channel in fourteen, and the engine tests failed on Linux on aarch64 (Raspberry
+  Pi). SmartNet got there after a strong burst off frequency. The levels are now watched against
+  the quantiles of the last symbols, which don't depend on the decisions, and start again from them
+  when they've walked away. On healthy signals nothing changes: the reference captures replay
+  identically and weak-signal decoding is the same. The level fit is shared with the C4FM receiver
+  (P25, DMR, NXDN), whose levels already start again from the quantiles every block.
 
 - **Multi-site: the best copy of each transmission** (replaces #75; thanks to photounit for
   working out the problem). A system's sites don't always agree on what a call is: one keeps a

@@ -24,6 +24,7 @@ use std::f64::consts::PI;
 use num_complex::Complex32;
 
 use super::filters;
+use super::levels;
 use super::msd::{Msd, Pulse};
 use super::{Receiver, Symbol};
 
@@ -469,40 +470,10 @@ impl C4fm {
                 self.tmp.clear();
                 self.tmp.extend(self.soft.iter());
             }
-            let n = self.tmp.len();
-            let (lo, hi) = (n * 2 / 100, (n * 98 / 100).min(n - 1));
-            let q_lo = *self.tmp.select_nth_unstable_by(lo, f32::total_cmp).1;
-            let q_hi = *self.tmp.select_nth_unstable_by(hi, f32::total_cmp).1;
-            self.center = (q_hi + q_lo) / 2.0;
-            let outer = (q_hi - q_lo) / 2.0;
-            self.thr = if outer > 300.0 { outer * 2.0 / 3.0 } else { self.opts.outer_hz * 2.0 / 3.0 };
-            if self.opts.rail_means && outer > 300.0 {
-                // Refine from the clusters: a few rounds of assigning symbols to
-                // the nearest level and taking each level's mean.
-                for _ in 0..3 {
-                    let (mut s, mut n) = ([0.0f64; 4], [0u32; 4]);
-                    for &v in &self.tmp {
-                        let x = v - self.center;
-                        let k = if x >= self.thr { 3 } else if x >= 0.0 { 2 } else if x >= -self.thr { 1 } else { 0 };
-                        s[k] += v as f64;
-                        n[k] += 1;
-                    }
-                    if n.iter().any(|&c| c < 8) {
-                        break;
-                    }
-                    let m: Vec<f32> = (0..4).map(|k| (s[k] / n[k] as f64) as f32).collect();
-                    // Spread of the symbols about their levels, against the level step.
-                    let mut var = 0f64;
-                    for &v in &self.tmp {
-                        let k = (0..4).min_by(|&a, &b| (v - m[a]).abs().total_cmp(&(v - m[b]).abs())).unwrap();
-                        var += ((v - m[k]) as f64).powi(2);
-                    }
-                    let sd = (var / self.tmp.len() as f64).sqrt() as f32;
-                    self.separation = (m[3] - m[0]) / 3.0 / sd.max(1e-3);
-                    self.center = (m[0] + m[3]) / 2.0;
-                    // Thresholds halfway between the inner and outer levels.
-                    self.thr = ((m[2] + m[3]) / 2.0 - self.center + self.center - (m[0] + m[1]) / 2.0) / 2.0;
-                }
+            let f = levels::fit::<4>(&mut self.tmp, levels::FitOptions { min_outer: 300.0, default_outer: self.opts.outer_hz, means: self.opts.rail_means });
+            (self.center, self.thr) = (f.center, f.thr);
+            if let Some(sep) = f.separation {
+                self.separation = sep;
             }
         }
         let x = v - self.center;

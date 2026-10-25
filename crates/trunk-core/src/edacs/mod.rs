@@ -37,7 +37,7 @@ const NOMINAL_DEV_HZ: f32 = 2400.0;
 /// The 2FSK receiver both use. At 9600 baud the tones are too close for the
 /// tone detectors (modulation index about 0.5): the discriminator decides.
 fn receiver(rate: f64) -> Fsk2 {
-    Fsk2::with_baud(rate, BAUD, NOMINAL_DEV_HZ, Fsk2Options { tones: false, dc: true, ..Default::default() })
+    Fsk2::with_baud(rate, BAUD, NOMINAL_DEV_HZ, Fsk2Options { tones: false, ..Default::default() })
 }
 
 /// What [`ProVoice`] heard, at air time `t`.
