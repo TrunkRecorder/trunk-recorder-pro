@@ -284,6 +284,14 @@ export function pluginHealth(p: PluginInfo, on: boolean): Health {
   return OK(r.message || "Working");
 }
 
+/** What to do about a RAM spool that went while the app ran, by its kind. */
+export function spoolRemovedFix(kind?: string): string {
+  if (kind === "tmpfs")
+    return "systemd deletes a user's files in /dev/shm when they log out (RemoveIPC). Run `sudo loginctl enable-linger $USER` (and start trunk-pro as the user service), or set RemoveIPC=no in /etc/systemd/logind.conf";
+  if (kind === "RAM disk") return "Something ejected the RAM disk (the Finder, or hdiutil detach)";
+  return "Something deleted the folder set in ramSpool.dir";
+}
+
 export function platformHealth(s: AppState): Health {
   const h = s.host;
   if (!h) return { level: "idle", why: "Waiting for the first sample" };
@@ -292,6 +300,10 @@ export function platformHealth(s: AppState): Health {
   for (const d of h.platform.disks) {
     const free = (100 * d.freeBytes) / Math.max(1, d.totalBytes);
     if (d.name === "spool") {
+      // Deleted while running (systemd at logout): made again, or calls go to the disk.
+      if (d.missing) hs.push({ level: "bad", why: `The RAM spool is gone, calls go to the recordings folder. ${spoolRemovedFix(d.kind)}` });
+      else if (d.removed) hs.push({ level: "warn", why: `The RAM spool was deleted ${d.removed === 1 ? "once" : `${d.removed} times`} while running (made again). ${spoolRemovedFix(d.kind)}` });
+      if (d.missing) continue;
       // It fills when uploads fall behind; full, calls go to the disk.
       if (free < 10) hs.push({ level: "bad", why: `The RAM spool is ${pct(100 - free)} full: calls will soon go to the disk` });
       else if (free < 25) hs.push({ level: "warn", why: `The RAM spool is ${pct(100 - free)} full: uploads aren't keeping up` });

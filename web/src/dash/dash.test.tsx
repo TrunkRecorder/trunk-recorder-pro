@@ -201,10 +201,10 @@ test("A frequency out of band: the nearest source, and how far past its usable e
 });
 
 /** The computer as the recorder samples it, its clock as given (the rest as nothing known). */
-function host(given: Partial<ClockInfo>): void {
+function host(given: Partial<ClockInfo>, disks: PlatformInfo["disks"] = []): void {
   const clock: ClockInfo = { warnMs: 250, os: null, service: null, driftMs: null, radio: [], server: null, measured: null, error: null, problem: null, check: null, ...given };
   const platform: PlatformInfo = {
-    os: "Linux", arch: "aarch64", host: "pi", cores: 4, container: null, cpuLimitCores: null, memTotal: 8e9, uptimeS: 3600, disks: [], probes: [], clock,
+    os: "Linux", arch: "aarch64", host: "pi", cores: 4, container: null, cpuLimitCores: null, memTotal: 8e9, uptimeS: 3600, disks, probes: [], clock,
     perCore: null, interfaces: null, unavailable: [],
   };
   transport.onMessage({ type: "host", t: Date.now() / 1000, values: {}, platform });
@@ -252,6 +252,24 @@ test("Platform: the time service, the recording's clock and the radio systems' c
   assert.match(page, /other set to another time \(its local time\?\): not compared/);
   assert.match(page, /A warning at 500 ms off/);
   assert.equal(pageHealth(snapshot()).platform.level, "warn");
+});
+
+test("Platform: a RAM spool deleted while running (systemd's RemoveIPC at logout) says how to stop it, not that it's full", () => {
+  twoSites();
+  setView("platform");
+  const spool = { name: "spool", path: "/dev/shm/trunk-pro-1000-abc", mount: "/dev/shm/trunk-pro-1000-abc", kind: "tmpfs", totalBytes: 256 << 20, freeBytes: 250 << 20, overflowed: 0 };
+  host({ os: synced }, [{ ...spool, removed: 2, missing: false }]);
+  let h = pageHealth(snapshot()).platform;
+  assert.equal(h.level, "warn");
+  assert.match(h.why, /deleted 2 times while running \(made again\)\. systemd deletes .*loginctl enable-linger .*RemoveIPC=no/);
+  assert.match(text(renderToString(<PlatformPage />)), /deleted 2 times while running/);
+  // Gone and not made again: calls go to the disk.
+  host({ os: synced }, [{ ...spool, totalBytes: 0, freeBytes: 0, removed: 3, missing: true }]);
+  h = pageHealth(snapshot()).platform;
+  assert.equal(h.level, "bad");
+  assert.match(h.why, /The RAM spool is gone, calls go to the recordings folder\. systemd deletes/);
+  assert.doesNotMatch(h.why, /full/);
+  assert.match(text(renderToString(<PlatformPage />)), /Gone: calls go to the recordings folder/);
 });
 
 /** A plugin that's on and running, with what it said of its work. */

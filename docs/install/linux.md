@@ -132,6 +132,11 @@ the same settings and recordings folder as when you run `trunk-pro` yourself.
    sudo loginctl enable-linger "$USER"
    ```
 
+   Lingering also keeps the RAM spool (in /dev/shm) when you log out: without it systemd deletes
+   your files there as your last session ends (`RemoveIPC`). Running `trunk-pro` some other way
+   that outlives your login (tmux, screen, nohup), set `RemoveIPC=no` in
+   /etc/systemd/logind.conf instead.
+
 4. Reach the interface from another computer: see [Remote access](#remote-access).
 
 The service runs `/usr/local/bin/trunk-pro serve --no-open` and restarts it 5 seconds after it

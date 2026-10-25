@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A RAM spool deleted while running is made again, and said** (#88). On Linux, systemd's
+  `RemoveIPC` (on by default, Raspberry Pi OS included) deletes a user's files in /dev/shm when
+  their last login ends, so a recorder started over SSH lost its spool when that session closed:
+  every call after was reported as **The RAM spool was full** and the spool's meter and charts
+  went. It's now made again (a try a minute while that fails); calls turned away meanwhile
+  aren't counted as full; a `spoolRemoved` event, and the Computer card and Platform page say
+  how to stop it: `sudo loginctl enable-linger $USER` with the user service, or `RemoveIPC=no`
+  in /etc/systemd/logind.conf.
 - **On the air counts while calls are on the air.** A call's air time (`airMs`) was counted
   when it ended, all in that minute: a channel held open an hour drew a spike of 3600 s/min.
   It now counts a second at a time. The Decode page's **Calls** chart (conventional) reads
