@@ -726,6 +726,9 @@ changes what is recorded.
   files there; the monitor moves anything older than 2 h there too, and
   reports the spool's room (a `spool` disk row, `spoolLow` / `spoolFull` /
   `spoolRecovered` events). With no room, calls go to the recordings folder.
+  Gone while running (Linux: systemd's `RemoveIPC` at logout) it's made
+  again (`Spool::revive`), with a `spoolRemoved` event and the row's
+  `removed` / `missing`.
   Turned off, the spool is emptied into the recordings folder and removed.
 - **Store** (`trunk-pro/src/store.rs`, shared with the interfaces' store:
   `plugins/store.rs`, `interfaces/store.rs`).
