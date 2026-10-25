@@ -689,6 +689,12 @@ site, recording and call once, then:
   a new call with a new id carries on with the same channel and recorder
   (`record_continued`, which skips the `maxRecorders` check).
 
+With `conversationMode` off (`CallConfig::conversation`), the same split happens at each new
+transmission: `Core::apply_pending`, taking a recorded call's audio after more than
+`TRANSMISSION_GAP_S` (0.5 s) of none, asks `CallManager::next_transmission`, and the audio (and
+what's queued after it in that pass) goes to the new call. The talkers announced since the last
+audio (a grant before its voice) move with it.
+
 The recorder is freed in `Core::conclude`, at the end of the block, when the recording is
 removed and its number returned to `free_nums`.
 
@@ -696,12 +702,16 @@ removed and its number returned to `free_nums`.
 
 `trunk/multisite.rs`. Sites are twins when they are sites of one system (one `SystemConfig`'s
 `sites`); nothing is grouped from what the control channels announce. A call that starts on a twin
-site with the same talkgroup (or, unit to unit, the same radio called) within 3 s is linked into one
-conversation, from the first grant (`Call::twin` marks the later copies). **Every copy is
-recorded.** Live audio comes from one copy until it has been quiet 0.5 s. When the last copy ends,
-one is kept: the talkgroup's preferred site if its clean voice is at least 90 % of the best,
-otherwise the most clean voice, then fewest FEC errors, then earliest start. The others become
-`Duplicate` events.
+site with the same talkgroup (or, unit to unit, the same radio called) within 3 s
+(`Span::starts_with`) is linked into one conversation, from the first grant (`Call::twin` marks
+the later copies). A conversation has one copy from each site (`MultiSite::link`), so copies never
+chain one into the next. **Every copy is recorded.** Live audio comes from one copy until it has
+been quiet 0.5 s. When the last copy ends, they're tried best first: the talkgroup's preferred site
+if its clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC
+errors, then earliest start. Each is saved unless one saved holds it (`Kept::holds`: another site,
+its whole `Span`, the same talkers where known, at least as much clean voice give or take 90 %);
+those become `Duplicate` events. Every copy saved gets the same `transmission_id`, from the first
+copy's start (`SaveContext::first_s`).
 
 ---
 
@@ -1286,6 +1296,7 @@ frequency).
 | `prerollS` | 1.0 | | pre-roll for trunked calls |
 | `maxRecorders` | 32 | | recorder pool size |
 | `callTimeoutS` | 3 | yes | silence before a call ends |
+| `conversationMode` | true | yes | off: a call per transmission (§6.5) |
 | `recordUnknown` | true | yes | record talkgroups not in the file |
 | `recordEncrypted` | false | yes | |
 | `recordUnitToUnit` | true | yes | |

@@ -1064,9 +1064,12 @@ impl Session {
                 // Trunk Recorder's layout: <shortName>/<year>/<month>/<day>/, local time; or the system's filename format.
                 let r = &k.record;
                 let offset = (self.local_offset)(r.start_time);
-                let format = self.recordings.get(k.call.system as usize).map_or("", |r| r.filename_format.as_str());
+                let rules = self.recordings.get(k.call.system as usize);
+                let format = rules.map_or("", |r| r.filename_format.as_str());
                 let rel = if format.trim().is_empty() {
-                    filename::default_path(&k.short_name, &k.base_name, r.start_time, offset)
+                    let path = filename::default_path(&k.short_name, &k.base_name, r.start_time, offset);
+                    // A call per transmission: two may begin in the same second on one channel.
+                    if rules.is_some_and(|r| !r.conversation_mode) { filename::numbered(&path, r.call_num) } else { path }
                 } else {
                     // (A format's tokens are the record's field names.)
                     filename::render(format, &serde_json::to_value(r).unwrap_or_default(), k.call.system, offset)

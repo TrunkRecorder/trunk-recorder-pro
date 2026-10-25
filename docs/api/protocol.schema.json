@@ -50,6 +50,10 @@
           "type": "number",
           "description": "The call's number since the recorder started."
         },
+        "transmission_id": {
+          "type": "string",
+          "description": "The same on every copy of one transmission saved from a system's sites: `<shortName>-<talkgroup>-<radio>-<start ms>`."
+        },
         "short_name": {
           "type": "string"
         },
@@ -5332,6 +5336,10 @@
           "type": "number",
           "description": "A call ends this long after its last grant or audio, s."
         },
+        "conversationMode": {
+          "type": "boolean",
+          "description": "A call is the talkgroup's conversation, until it's quiet for `callTimeoutS`. Off: each transmission is a call of its own (trunked systems; for several sites, the best copy of each is kept)."
+        },
         "recordUnknown": {
           "type": "boolean",
           "description": "Talkgroups not in the talkgroup file."
@@ -5462,6 +5470,7 @@
         "callTimeoutS",
         "captureDir",
         "captureFrames",
+        "conversationMode",
         "digitalLevelDb",
         "dropDuplicateCalls",
         "filenameFormat",
@@ -5485,6 +5494,10 @@
         "callTimeoutS": {
           "type": "number",
           "description": "A call ends this long after its last grant or audio, s."
+        },
+        "conversationMode": {
+          "type": "boolean",
+          "description": "A call is the talkgroup's conversation, until it's quiet for `callTimeoutS`. Off: each transmission is a call of its own (trunked systems; for several sites, the best copy of each is kept)."
         },
         "recordUnknown": {
           "type": "boolean",

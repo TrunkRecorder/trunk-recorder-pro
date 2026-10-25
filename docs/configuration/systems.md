@@ -258,8 +258,10 @@ Only the fields a protocol announces are compared:
 
 A system with several sites usually hears a call granted on more than one of them at once. Each
 copy is recorded; when the last one ends, only the best copy is saved (the one decoded most
-cleanly, or the talkgroup's Preferred Site). Turn that off with `recording.dropDuplicateCalls` to
-keep every copy.
+cleanly, or the talkgroup's Preferred Site); another copy is dropped only when the saved one holds
+all of it. Turn that off with `recording.dropDuplicateCalls` to keep every copy. With the system's
+`recording.conversationMode` off, each transmission is a call, and its copies are matched
+transmission by transmission (suggested for a system with several sites).
 
 Only the sites listed under one system are copies of each other. Two systems are never joined while
 recording, whatever their control channels announce; when two systems announce the same system on

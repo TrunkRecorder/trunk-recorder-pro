@@ -5,10 +5,10 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { renderToString } from "react-dom/server";
-import { defaultConfig, newConventional } from "./config.ts";
+import { defaultConfig, newConventional, normalizeSystem } from "./config.ts";
 import { transport } from "./controller.ts";
 import type { Channel } from "./protocol.ts";
-import { ConventionalPanel } from "./Setup.tsx";
+import { ConventionalPanel, SystemCard } from "./Setup.tsx";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
 const row = (freqHz: number, mode: Channel["mode"], more: Partial<Channel> = {}): Channel => ({ freqHz, mode, name: "", enabled: true, ...more });
@@ -106,4 +106,21 @@ test("Setup's signals: a disclosure on the system's card, a row each with its ki
   assert.match(lines[1], /^ALERT Beep 1000 Hz any/, "a beep isn't a long tone");
   assert.match(lines[2], /^PW_KNOX Signal PW_KNOX: which digits does it send\? KNOX digits/, "the recorder's problem");
   assert.match(text(signals), /\+ Add a signal/);
+});
+
+test("a system with several sites: Conversations suggested off, in its own Recording rules; not for one site or conventional channels", () => {
+  const c = defaultConfig();
+  const site = (name: string, hz: number) => ({ name, controlChannelsHz: [hz] });
+  c.systems = [normalizeSystem({ shortName: "dc", type: "p25", sites: [site("east", 851_012_500), site("west", 851_212_500)] } as never), normalizeSystem({ shortName: "md", type: "p25", controlChannelsHz: [852_000_000] })];
+  c.conventional.push(newConventional(c, { shortName: "town", channels: [row(154_325_000, "fm", { name: "Town" })] }));
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const two = text(renderToString(<SystemCard c={c} i={0} />));
+  assert.match(two, /Recording — defaults — 1 suggested/);
+  assert.match(two, /Suggested: Off, for a system with several sites/);
+  assert.doesNotMatch(text(renderToString(<SystemCard c={c} i={1} />)), /suggested|Suggested/, "one site");
+  // Turned off for it: nothing more to suggest.
+  c.systems[0].recording = { conversationMode: false };
+  transport.onMessage({ type: "config", config: c, version: 2 } as never);
+  assert.doesNotMatch(text(renderToString(<SystemCard c={c} i={0} />)), /suggested/);
+  assert.doesNotMatch(text(renderToString(<ConventionalPanel c={c} k={0} />)), /Conversations/, "conventional channels: not theirs");
 });

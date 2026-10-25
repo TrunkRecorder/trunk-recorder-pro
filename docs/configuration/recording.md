@@ -27,6 +27,7 @@ plugin fails**).
 | `prerollS` | | `1` | number | Seconds of air from before each grant added to the start of a trunked call. The interface allows 0–3 |
 | `maxRecorders` | | `32` | integer | Calls recorded at once, across all trunked systems. The interface allows 1–64 |
 | `callTimeoutS` | | `3` | number | Per system. A call ends this long after its last grant or update came in (or its last audio), s. Trunk Recorder checks once a second, so the same value there ends calls up to 2 s later. The interface allows 1–30 |
+| `conversationMode` | | `true` | bool | Per system (trunked). **Conversations**: a call holds a talkgroup's transmissions until it's quiet for `callTimeoutS`. `false`: each transmission is a call of its own, so on a system with several sites the best copy of each transmission is kept. Setup suggests `false` for a system with several sites. See [multi-site](../guides/multi-site.md#calls-heard-on-several-sites) |
 | `recordUnknown` | | `true` | bool | Per system. Record talkgroups that aren't in the talkgroup file. Only matters when there is a talkgroup file; a talkgroup patched with a listed one is recorded anyway |
 | `recordEncrypted` | | `false` | bool | Per system. Keep calls flagged encrypted (by the grant or the talkgroup's `Mode`), with their radios, even with no audio. Encrypted transmissions are always left out of the audio, unless decrypted (see [systems.md](systems.md#encryption-keys-keys)). Config only: not in the interface |
 | `recordUnitToUnit` | | `true` | bool | Per system. Record P25 individual calls: unit-to-unit (private) and telephone interconnect |
@@ -118,7 +119,8 @@ With `filenameFormat` empty, calls are saved as Trunk Recorder saves them, in lo
 ```
 
 Month and day aren't zero-padded (`2026/10/4`). `<freq>` is in Hz. `.<slot>` is added for P25
-Phase 2 and DMR calls. A system's sites share its folder; the call JSON's `site` says which site's
+Phase 2 and DMR calls. With `conversationMode` off, `-call_<call_num>` is added too, as a format's
+names have it: two transmissions of a talkgroup on one channel can begin in the same second. A system's sites share its folder; the call JSON's `site` says which site's
 copy it is. Calls saved by an older version, when each site was a system, stay in each site's old
 folder and are still found.
 

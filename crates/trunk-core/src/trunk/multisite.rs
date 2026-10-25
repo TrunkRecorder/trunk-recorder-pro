@@ -11,6 +11,13 @@
 //! doesn't cost the call. Best: the most cleanly decoded audio; a site the
 //! talkgroup prefers (talkgroup file) wins while its copy holds
 //! [`PREFERRED_SHARE`] of that. Live audio comes from one copy at a time.
+//!
+//! A copy is dropped only when one saved holds all of it ([`Kept::holds`]);
+//! anything else is saved too: better a duplicate than a transmission lost.
+//! With conversation mode off ([`super::calls::CallConfig::conversation`]) a
+//! call is one transmission, so that's decided transmission by transmission:
+//! sites that keep a channel through a conversation and sites that give
+//! each transmission its own are matched alike.
 
 use std::collections::HashMap;
 
@@ -25,6 +32,55 @@ pub const TWIN_WINDOW_S: f64 = 3.0;
 pub const PREFERRED_SHARE: f64 = 0.9;
 /// Live audio stays with one copy until it has been quiet this long.
 const LEAD_HOLD_S: f64 = 0.5;
+
+/// When a copy was heard: from its grant to its last audio or update.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Span {
+    pub start_s: f64,
+    pub end_s: f64,
+}
+
+impl Span {
+    pub fn of(c: &Call) -> Span {
+        Span { start_s: c.start_s, end_s: c.last_update_s.max(c.last_audio_s).max(c.start_s) }
+    }
+
+    /// Begun at nearly the same time: grants reach each site at once.
+    pub fn starts_with(self, o: Span) -> bool {
+        (self.start_s - o.start_s).abs() <= TWIN_WINDOW_S
+    }
+
+    /// Takes in all of `o` (give or take [`TWIN_WINDOW_S`] at either end).
+    pub fn holds(self, o: Span) -> bool {
+        o.start_s >= self.start_s - TWIN_WINDOW_S && o.end_s <= self.end_s + TWIN_WINDOW_S
+    }
+}
+
+/// A copy saved, as the others are weighed against it.
+pub struct Kept {
+    pub call: Call,
+    clean_s: f64,
+}
+
+impl Kept {
+    pub fn of(h: &Held) -> Kept {
+        Kept { call: h.call.clone(), clean_s: h.clean_s() }
+    }
+
+    /// `h` is a duplicate of this: another site's copy of the same time, the
+    /// same talkers (those known on both), decoded no better (but for
+    /// [`PREFERRED_SHARE`], as [`pick`] has it). A copy of what this missed
+    /// (a transmission it didn't have, a talker it didn't hear, a part it
+    /// lost to a fade) isn't.
+    pub fn holds(&self, h: &Held) -> bool {
+        let talkers = |c: &Call| c.sources.iter().map(|s| s.src).filter(|&s| s != 0).collect::<Vec<_>>();
+        let (mine, theirs) = (talkers(&self.call), talkers(&h.call));
+        self.call.site != h.call.site
+            && Span::of(&self.call).holds(Span::of(&h.call))
+            && (mine.is_empty() || theirs.iter().all(|t| mine.contains(t)))
+            && self.clean_s >= h.clean_s() * PREFERRED_SHARE
+    }
+}
 
 /// A copy's recording, held until its twins end.
 #[derive(Clone, Debug)]
@@ -76,15 +132,34 @@ pub struct MultiSite {
 }
 
 impl MultiSite {
-    /// `call` (on `site`) is a copy of `twins` (calls still going, with their sites).
+    /// `call` (on `site`) is a copy of `twins` (calls still going, with their
+    /// sites). A conversation has one copy from each site: a twin whose
+    /// conversation has one from a site already taken is another
+    /// transmission's (or conversation's), left out — so a talkgroup's
+    /// copies never chain one into the next.
     pub fn link(&mut self, call: CallId, site: u16, twins: &[(CallId, u16)]) {
-        if twins.is_empty() {
+        // The twins' conversations (or the twins themselves, in none yet) taken, each with sites not taken yet.
+        let (mut sites, mut ids, mut alone) = (vec![site], Vec::<u32>::new(), Vec::<(CallId, u16)>::new());
+        for &t in twins {
+            let conv = self.of.get(&t.0).copied();
+            if conv.is_some_and(|id| ids.contains(&id)) {
+                continue;
+            }
+            let theirs: Vec<u16> = conv.map_or(vec![t.1], |id| self.convs[&id].members.iter().map(|m| m.1).collect());
+            if theirs.iter().any(|s| sites.contains(s)) {
+                continue;
+            }
+            sites.extend(theirs);
+            match conv {
+                Some(id) => ids.push(id),
+                None => alone.push(t),
+            }
+        }
+        if ids.is_empty() && alone.is_empty() {
             return;
         }
         // Join the twins' conversation(s) — merging, should they be in different ones.
-        let mut ids: Vec<u32> = twins.iter().filter_map(|t| self.of.get(&t.0).copied()).collect();
         ids.sort_unstable();
-        ids.dedup();
         let id = match ids.first() {
             Some(&id) => id,
             None => {
@@ -104,7 +179,7 @@ impl MultiSite {
             conv.held.extend(c.held);
         }
         let conv = self.convs.get_mut(&id).unwrap();
-        for &(c, at) in twins.iter().chain([&(call, site)]) {
+        for &(c, at) in alone.iter().chain([&(call, site)]) {
             if !conv.members.iter().any(|m| m.0 == c) {
                 conv.members.push((c, at));
                 conv.open.push(c);
@@ -155,15 +230,16 @@ impl MultiSite {
 }
 
 impl MultiSite {
-    /// Link call `c`, just granted on `site`, with the copies of it already
+    /// Link call `c`, just begun on `site`, with the copies of it already
     /// going on the other sites of its system (`others`: their calls) — the
-    /// same talkgroup, granted within [`TWIN_WINDOW_S`]. (A unit-to-unit
-    /// call's "talkgroup" is the radio called: never a copy of a talkgroup's call.)
+    /// same talkgroup, begun within [`TWIN_WINDOW_S`] ([`Span::starts_with`]).
+    /// (A unit-to-unit call's "talkgroup" is the radio called: never a copy
+    /// of a talkgroup's call.)
     pub fn link_new<'a>(&mut self, c: &Call, site: u16, others: impl IntoIterator<Item = &'a [Call]>) {
         let twins: Vec<(CallId, u16)> = others
             .into_iter()
             .flatten()
-            .filter(|o| o.talkgroup == c.talkgroup && o.unit_to_unit == c.unit_to_unit && (o.start_s - c.start_s).abs() <= TWIN_WINDOW_S)
+            .filter(|o| o.talkgroup == c.talkgroup && o.unit_to_unit == c.unit_to_unit && Span::of(o).starts_with(Span::of(c)))
             .filter_map(|o| Some((o.id, o.site?)))
             .collect();
         self.link(c.id, site, &twins);
@@ -209,6 +285,7 @@ pub fn pick(copies: &[Held], preferred: &[bool]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trunk::calls::CallSource;
     use crate::mbe::{Kind, FRAME_SAMPLES, SAMPLE_RATE};
     use crate::trunk::frames::{Codec, VoiceFrame};
     use crate::trunk::inband::InBandSpec;
@@ -239,6 +316,40 @@ mod tests {
         assert!(m.twins(7).is_empty());
         m.link_new(&tg(9, 1, 1234, 0.0, true), 1, [&[tg(8, 0, 1234, 0.0, true)][..]]);
         assert_eq!(m.twins(9), [(8, 0)]);
+    }
+
+    /// One copy from each site: a talkgroup's next transmission on a site
+    /// isn't drawn into the last one's conversation through another site's
+    /// copy begun in between (copies never chain one into the next).
+    #[test]
+    fn a_conversation_has_one_copy_from_each_site() {
+        let tg = |id, site, start_s| Call { talkgroup: 145, ..call(id, site, start_s) };
+        let mut m = MultiSite::default();
+        m.link_new(&tg(2, 1, 0.2), 1, [&[tg(1, 0, 0.0)][..]]);
+        // Site 1's next transmission, 1.5 s on: site 0's copy already has a site 1 copy.
+        m.link_new(&tg(3, 1, 1.5), 1, [&[tg(1, 0, 0.0)][..]]);
+        assert!(m.twins(3).is_empty());
+        // Site 0's next, 2.5 s on, goes with it, not with the first.
+        m.link_new(&tg(4, 0, 2.5), 0, [&[tg(2, 1, 0.2), tg(3, 1, 1.5)][..]]);
+        assert_eq!((m.twins(4), m.twins(1)), (vec![(3, 1)], vec![(2, 1)]));
+    }
+
+    /// A copy is a duplicate of one saved only when that holds all of it:
+    /// anything it missed is saved too.
+    #[test]
+    fn a_copy_is_a_duplicate_only_of_one_that_holds_it() {
+        let copy = |id, site: u16, start_s: f64, until_s: f64, talkers: &[u32], good: usize| {
+            let mut h = held(id, site, good, 0, 0);
+            h.call = Call { start_s, last_audio_s: until_s, sources: talkers.iter().map(|&src| CallSource { src, ..Default::default() }).collect(), ..h.call };
+            h
+        };
+        let kept = Kept::of(&copy(1, 0, 0.0, 5.0, &[7], 100));
+        assert!(kept.holds(&copy(2, 1, 0.3, 5.1, &[7], 100)), "the same transmission, decoded as well");
+        assert!(kept.holds(&copy(3, 1, 0.3, 5.1, &[], 100)), "no talker known on it");
+        assert!(!kept.holds(&copy(4, 0, 0.3, 5.1, &[7], 100)), "the same site: another transmission");
+        assert!(!kept.holds(&copy(5, 1, 0.3, 12.0, &[7], 100)), "it went on after this one ended");
+        assert!(!kept.holds(&copy(6, 1, 0.3, 5.1, &[9], 100)), "another talker");
+        assert!(!kept.holds(&copy(7, 1, 0.3, 5.1, &[7], 120)), "it decoded more: a part this lost");
     }
 
     #[test]

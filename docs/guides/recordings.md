@@ -125,6 +125,7 @@ It is written on a single line.
 | Field | Meaning |
 |---|---|
 | `call_num` | The call's number |
+| `transmission_id` | The same on every copy of one transmission saved from a system's sites: `<shortName>-<talkgroup>-<radio>-<start ms>` (the first radio known to talk, `0` for none; the first copy's start). With conversations on, the call's first transmission names it |
 | `freq` | Frequency, Hz |
 | `freq_error` | How far off the channel the voice was, Hz (0 when not measured). Conventional P25, DMR and NXDN calls have it too; conventional analog receivers don't measure one |
 | `signal`, `noise` | The channel's power during the call and the noise floor under it, dBFS, one decimal; `null` if not measured |
@@ -166,8 +167,9 @@ It is written on a single line.
 
 Compared with Trunk Recorder's JSON:
 
-- `snr`, `clean_voice_pct`, `nac`, `ran`, `talkgroup_ota`, `system_type`, `voice_mode`, `errorList`,
-  `tones`, `tone_patterns`, `signals` and the three tone fields are additions.
+- `transmission_id`, `snr`, `clean_voice_pct`, `nac`, `ran`, `talkgroup_ota`, `system_type`,
+  `voice_mode`, `errorList`, `tones`, `tone_patterns`, `signals` and the three tone fields are
+  additions.
 - `signal` and `noise` are in dBFS with a decimal, not whole numbers.
 - `freqList` has one entry for the whole call rather than one per transmission.
 - Trunk Recorder pretty-prints its JSON; this is one line. JSON readers don't mind.

@@ -2514,6 +2514,7 @@ export function SystemCard(props: { c: Config; i: number }) {
       <Group title="Recording" hint="This system's own call rules and what it keeps. Anything left at Default follows the Recording tab." cols={1}>
         <RecordingOverrides
           c={c}
+          sites={sys.sites.length}
           value={sys.recording}
           onChange={(fn) =>
             edit((x) => {
@@ -2672,6 +2673,10 @@ type Rule =
       inactive?: (r: RecordingRules) => string | undefined;
       /** What the plugins on (those taking an .m4a, by name) make of it, if anything. */
       note?: (m4aPlugins: string[]) => string | undefined;
+      /** Trunked systems' only (not the conventional channels'). */
+      trunked?: boolean;
+      /** A change suggested for a system of `sites` sites with these settings, if any. */
+      suggest?: (sites: number, r: RecordingRules) => string | undefined;
     }
   | { key: NumRule; kind: "num"; label: string; hint?: string; min: number; max: number; zero?: string }
   | { key: "filenameFormat"; kind: "text"; label: string };
@@ -2684,6 +2689,15 @@ const RULE_GROUPS: { title: string; hint?: string; rules: Rule[] }[] = [
       { key: "recordUnknown", kind: "bool", label: "Talkgroups not in the talkgroup file" },
       { key: "recordUnitToUnit", kind: "bool", label: "Unit-to-unit calls", hint: "private calls between two radios" },
       { key: "callTimeoutS", kind: "num", label: "Call timeout, s", hint: "Silence that ends a call", min: 1, max: 30 },
+      {
+        key: "conversationMode",
+        kind: "bool",
+        label: "Conversations",
+        hint: "A call holds a talkgroup's transmissions until it's quiet; off, each transmission is a call",
+        trunked: true,
+        suggest: (sites, r) =>
+          sites > 1 && r.conversationMode ? "Suggested: Off, for a system with several sites. The best copy of each transmission is kept, and none is lost with another's duplicates" : undefined,
+      },
     ],
   },
   {
@@ -2808,7 +2822,8 @@ function CallRules(props: { c: Config }) {
 /** The Recording tab's groups a system's own rules are in, by its card's two overrides. */
 const ARCHIVE_GROUPS = ["Files", "Archive"];
 
-type OverrideProps = { c: Config; value: RecordingOverride | undefined; onChange: (fn: (o: RecordingOverride) => void) => void };
+/** `sites`: a trunked system's (its rules' suggestions); none for the conventional channels. */
+type OverrideProps = { c: Config; value: RecordingOverride | undefined; onChange: (fn: (o: RecordingOverride) => void) => void; sites?: number };
 
 /**
  * A system's own call rules (or the conventional channels'), in two: what's
@@ -2833,16 +2848,19 @@ function RecordingOverridePanel(props: OverrideProps & { title: string; groups: 
       if (v === undefined) delete o[k];
       else (o as Record<string, unknown>)[k] = v;
     });
-  const rules = props.groups.flatMap((g) => g.rules).filter(ruleShown);
+  const rules = props.groups.flatMap((g) => g.rules).filter((r) => ruleShown(r) && !(r.kind === "bool" && r.trunked && props.sites === undefined));
   const m4a = useM4aPlugins().map((p) => p.manifest!.name);
   const mine = rules.filter((r) => own[r.key] !== undefined);
   // The settings this system ends up with (its own, else the Recording tab's).
   const effective = { ...base, ...own } as RecordingRules;
+  const suggested = (r: Rule) => (r.kind === "bool" && props.sites !== undefined ? r.suggest?.(props.sites, effective) : undefined);
+  const suggestions = rules.filter(suggested).length;
   return (
     <details className="help override">
       <summary>
         {props.title}
         <span className="muted">{mine.length ? ` — ${mine.length} changed` : " — defaults"}</span>
+        {suggestions > 0 && <span className="warn-text">{` — ${suggestions} suggested`}</span>}
       </summary>
       <div className="grid3">
         {rules.map((rule) => {
@@ -2864,6 +2882,7 @@ function RecordingOverridePanel(props: OverrideProps & { title: string; groups: 
               key={rule.key}
               label={rule.label}
               hint={
+                suggested(rule) ||
                 (rule.kind === "bool" && rule.inactive?.(effective)) ||
                 [rule.kind === "bool" && rule.note?.(m4a), mineNow && `Default: ${ruleValue(rule, base[rule.key])}`].filter(Boolean).join(" · ") ||
                 undefined

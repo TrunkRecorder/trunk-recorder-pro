@@ -257,6 +257,7 @@ called `conv`.
 | `--keep-silent` | off | Keep calls with no audio |
 | `--min-call s` | 0 | Drop calls shorter than this |
 | `--max-call s` | 0 (no limit) | Split calls longer than this |
+| `--transmissions` | off | Conversation mode off: each transmission is a call of its own (`conversationMode`) |
 | `--min-transmission s` | 0 | Leave out transmissions shorter than this |
 | `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
 | `--messages` | off | Print every control channel message |

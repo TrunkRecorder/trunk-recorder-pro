@@ -34,7 +34,7 @@ use num_complex::Complex32;
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Policy, Reason, RecorderHost};
 use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
 use super::message::{Message, MessageType};
-use super::multisite::{Held, MultiSite};
+use super::multisite::{Held, Kept, MultiSite};
 use super::record::{save_call, SaveContext};
 use super::recorded::Recorded;
 use super::inband::InBandSpec;
@@ -1885,7 +1885,7 @@ impl Core {
                     if let Some(src) = tune_source {
                         self.radio.score_call(src, &call, rec.freq_error_hz());
                     }
-                    self.write_call(Held { call: call.clone(), rec, recorder_num });
+                    self.write_call(Held { call: call.clone(), rec, recorder_num }, None);
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
@@ -1932,10 +1932,21 @@ impl Core {
     /// Route what the voice trackers produced to their calls.
     fn apply_pending(&mut self) {
         let mut heard = Vec::new();
+        // Calls that went on as new ones in this pass (what's queued for them is the new ones').
+        let mut went_on: Vec<(CallId, CallId)> = Vec::new();
         for (site, id, o) in std::mem::take(&mut self.radio.pending) {
+            let mut id = went_on.iter().find(|w| w.0 == id).map_or(id, |w| w.1);
             let Some(t) = self.trunks.get_mut(site as usize) else { continue };
             let system = t.system;
             let now = t.now_s;
+            // Conversation mode off: audio again after a gap is a new transmission, and a call of its own.
+            if matches!(o, TrackerOut::Audio(..) | TrackerOut::AnalogAudio(_)) && self.radio.recordings.get(&id).is_some_and(|r| !r.rec.audio.is_empty()) {
+                let mut host = t.host(&mut self.radio, &self.systems[system as usize].cfg);
+                if let Some(next) = t.calls.next_transmission(id, now, &mut host, &mut self.call_events) {
+                    went_on.push((id, next));
+                    id = next;
+                }
+            }
             // The call it's for, found once (gone already: it expired in this same block).
             let call = t.calls.calls.iter_mut().find(|c| c.id == id);
             let rec = self.radio.recordings.get_mut(&id);
@@ -2133,16 +2144,17 @@ impl Core {
         self.tone_patterns(call, rest, decrypted, call.last_audio_s);
         let trunks = &self.trunks;
         let Some(copies) = self.multisite.conclude(call.id, held, |site, tg| site.and_then(|s| trunks.get(s as usize)).is_some_and(|t| t.preferred_for(tg))) else { return };
-        // The best copy its site's rules keep is saved; the rest are its duplicates.
-        // (None kept: each was reported not saved.)
-        let mut kept: Option<Call> = None;
+        // Best first, each saved unless one saved holds it (Kept::holds); those are its duplicates.
+        // (None kept: each was reported not saved.) The copies share the first's start, in their transmission_id.
+        let first_s = copies.iter().map(|h| h.call.start_s).fold(f64::INFINITY, f64::min);
+        let mut kept: Vec<Kept> = Vec::new();
         for h in copies {
-            match &kept {
-                Some(k) => self.events.push(Event::Duplicate { call: h.call, kept: k.clone() }),
+            match kept.iter().find(|k| k.holds(&h)) {
+                Some(k) => self.events.push(Event::Duplicate { call: h.call, kept: k.call.clone() }),
                 None => {
-                    let c = h.call.clone();
-                    if self.write_call(h) {
-                        kept = Some(c);
+                    let k = Kept::of(&h);
+                    if self.write_call(h, Some(first_s)) {
+                        kept.push(k);
                     }
                 }
             }
@@ -2151,7 +2163,8 @@ impl Core {
 
     /// A finished call's record and audio, as [`Event::Concluded`]; false
     /// when not kept (silent, or shorter than its system's minimum).
-    fn write_call(&mut self, h: Held) -> bool {
+    /// `first_s`: when the first of its copies began (multi-site).
+    fn write_call(&mut self, h: Held, first_s: Option<f64>) -> bool {
         let (site, system) = (h.call.site, h.call.system);
         let Some(sys) = self.systems.get(system as usize) else { return false };
         let trunk = site.and_then(|s| self.trunks.get(s as usize));
@@ -2169,6 +2182,7 @@ impl Core {
                 sys_id: trunk.and_then(|t| t.identity.sys_id()),
                 nac: trunk.and_then(|t| t.identity.nac()),
                 signals: &sys.cfg.signals,
+                first_s,
             },
         );
         match saved {
@@ -2844,6 +2858,61 @@ mod tests {
 
     fn saved(ev: &[Event]) -> Vec<CallId> {
         ev.iter().filter_map(|x| if let Event::Concluded(k) = x { Some(k.call.id) } else { None }).collect()
+    }
+
+    /// Conversation mode off, on a system whose sites differ: east keeps one
+    /// channel through two talkers, west gives each its own. Each
+    /// transmission is a call on both, saved once, its copies named alike.
+    #[test]
+    fn with_conversation_mode_off_each_transmission_is_saved_once() {
+        use super::super::frames::{Codec, VoiceFrame};
+        let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], ..Default::default() };
+        let mut sys = SystemConfig { save: SaveRules { normalize: false, ..Default::default() }, ..SystemConfig::trunked("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6)]) };
+        sys.calls.conversation = false;
+        let cfg = EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() };
+        let mut e = Core::new(cfg).unwrap();
+        let grant = |e: &mut Core, i: usize, t: f64, f: u64, src: i64| handle(e, i, &[Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: f, source: src, ..Default::default() }]);
+        // Voice on site `i`'s call on `f`, at `t`.
+        let voice = |e: &mut Core, i: usize, f: u64, t: f64| {
+            let id = e.trunks[i].calls.calls.iter().find(|c| c.freq_hz == f).unwrap().id;
+            let frame = VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: mbe::Kind::Voice, tone: None };
+            e.trunks[i].now_s = t;
+            e.radio.pending.push((i as u16, id, TrackerOut::Audio(vec![0.1; mbe::FRAME_SAMPLES * 5], frame)));
+            e.apply_pending();
+            e.emit_call_events();
+        };
+        let (east, west, west2) = (851_500_000, 851_600_000, 851_700_000);
+        grant(&mut e, 0, 0.0, east, 7);
+        grant(&mut e, 1, 0.2, west, 7);
+        e.emit_call_events();
+        for t in [0.5, 0.7, 0.9, 1.1] {
+            voice(&mut e, 0, east, t);
+            voice(&mut e, 1, west, t + 0.1);
+        }
+        // The next talker: east's channel carries on, west grants another.
+        grant(&mut e, 0, 3.0, east, 9);
+        grant(&mut e, 1, 3.1, west2, 9);
+        e.emit_call_events();
+        for t in [3.5, 3.7, 3.9] {
+            voice(&mut e, 0, east, t);
+            voice(&mut e, 1, west2, t + 0.1);
+        }
+        for i in [0, 1] {
+            tick(&mut e, i, 20.0);
+            e.emit_call_events();
+        }
+        let ev = e.drain_events();
+        let mut saved: Vec<&Concluded> = ev.iter().filter_map(|x| if let Event::Concluded(k) = x { Some(k) } else { None }).collect();
+        saved.sort_by(|a, b| a.call.start_s.total_cmp(&b.call.start_s));
+        let dups: Vec<(&Call, &Call)> = ev.iter().filter_map(|x| if let Event::Duplicate { call, kept } = x { Some((call, kept)) } else { None }).collect();
+        assert_eq!(saved.len(), 2, "one per transmission");
+        assert_eq!(dups.len(), 2);
+        let talkers = |k: &Concluded| k.call.sources.iter().map(|s| s.src).collect::<Vec<_>>();
+        assert_eq!(saved.iter().map(|k| talkers(k)).collect::<Vec<_>>(), [vec![7], vec![9]]);
+        assert_eq!(saved.iter().map(|k| k.record.transmission_id.as_str()).collect::<Vec<_>>(), ["dc-101-7-0", "dc-101-9-3100"], "the first copy's start");
+        for (call, kept) in dups {
+            assert!(call.site != kept.site && call.sources[0].src == kept.sources[0].src, "a copy of the same talker's, from the other site");
+        }
     }
 
     #[test]

@@ -395,6 +395,12 @@ pub struct CallFiles {
 #[serde(default)]
 pub struct CallRecord {
     pub call_num: u64,
+    /// The same on every copy of one transmission (a system's sites, each
+    /// recording it): `<system>-<talkgroup>-<radio>-<start ms>`, the radio
+    /// the first known to talk (0: none), the start the first copy's. With
+    /// conversation mode on, a call's first transmission names it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub transmission_id: String,
     /// Hz.
     pub freq: u64,
     /// How far off its channel the voice carrier came in, Hz (the mean over the call).
@@ -514,6 +520,7 @@ impl Default for CallRecord {
     fn default() -> Self {
         CallRecord {
             call_num: 0,
+            transmission_id: String::new(),
             freq: 0,
             freq_error: 0,
             signal: None,
