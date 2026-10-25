@@ -1286,6 +1286,14 @@ table.calls tr.ignored td { opacity: 0.55; }
 .set-card-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .set-card-chevron { flex: none; width: 16px; height: 16px; margin-right: -4px; color: var(--muted); transition: transform 0.15s, color 0.15s; }
 .set-card-toggle[aria-expanded="true"] .set-card-chevron { transform: rotate(90deg); }
+/* A group that folds to its name (Group's `fold`): the chevron left of the name, in its column. */
+.set-group-toggle { display: flex; align-items: center; gap: 6px; margin: 0 0 0 -18px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.set-group-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.set-group-toggle[aria-expanded="true"] .set-card-chevron { transform: rotate(90deg); }
+.set-group-toggle:hover h4, .set-group-toggle:hover .set-card-chevron { color: var(--accent); }
+.set-group.folded { row-gap: 0; }
+.set-group-body[hidden] { display: none; }
+.set-group-summary { color: var(--text-2) !important; }
 .set-card-toggle:hover .set-card-chevron { color: var(--text); }
 .set-card-toggle:hover h3 { color: var(--accent); }
 .set-card-actions { flex: none; gap: 12px; flex-wrap: nowrap; }
@@ -1293,6 +1301,7 @@ table.calls tr.ignored td { opacity: 0.55; }
 .setup .set-card.collapsed:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
 .setup .system-card.set-card.collapsed:hover { border-left-color: var(--sys-color, var(--line)); }
 @media (prefers-reduced-motion: reduce) { .set-card-chevron { transition: none; } }
+@container (max-width: 760px) { .set-group-toggle { margin-left: 0; } }
 @container (max-width: 760px) { .set-card-head.foldable { padding: 0 18px 0 0; } .set-card-toggle { padding: 14px 0 14px 12px; } }
 
 /* A system's sites (Setup's SiteCard): smaller cards inside its Sites group. */

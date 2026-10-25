@@ -31,6 +31,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   what that comes to and which paging tones it would take in too. Calls that carry a signal list it
   (`signals`). Plugins can subscribe to `tone` to hear every pattern as it ends, with the signals it
   is. `trunk-pro tool tones` reads them out of saved calls.
+- **Setup's FCC licenses fold.** A system's (or conventional system's) **FCC licenses** section
+  folds to its name and a line ("20 frequencies, 5 call signs: …"); it starts folded once it has
+  more than six, and remembers being opened or folded in this browser, as the cards do.
 - **Pages, alert tones, DTMF and Morse IDs as call metadata** (#82, by taclane; #86). Every call's
   voice is searched for in-band tones: P25 Phase 2, DMR and NXDN tone frames name them exactly (as
   the vocoder plays them), and P25 Phase 1 and analog calls are measured. The call JSON lists them
