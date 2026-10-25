@@ -230,7 +230,7 @@ channels in the overlap.
 
 A call whose frequency no source covers isn't recorded; a system's page under **Radio system** says *outside tuned
 range*, and the **Radio system** page counts these as *Out of band* (*No source covers the
-frequency*). A system with no control channel inside any source can't start: *no control channel
+frequency*) and lists their frequencies, with the nearest source and how far past its usable edge each is. A system with no control channel inside any source can't start: *no control channel
 falls inside a source's bandwidth — move the center frequency*.
 
 ### Placing several radios

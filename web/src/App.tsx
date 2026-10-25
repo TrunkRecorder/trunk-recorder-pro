@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { startProblem } from "./config.ts";
+import { ARRIVED_TO_IMPORT, DirectoryImport } from "./directoryImport.tsx";
 import { can, closeGuide, dismissError, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
@@ -113,7 +114,8 @@ export function App() {
   useEffect(() => {
     if (offered.current || !s.config || !s.connected) return;
     offered.current = true;
-    if (s.phase === "idle" && guideWanted(s.config)) openGuide("start");
+    // (Not over a system being imported from the directory: that's what they came for.)
+    if (s.phase === "idle" && guideWanted(s.config) && !ARRIVED_TO_IMPORT) openGuide("start");
   }, [s.config, s.connected]);
 
   if (s.quit) {
@@ -131,6 +133,7 @@ export function App() {
   return (
     <div className="shell">
       {s.guide && <SetupGuide key={s.guide} mode={s.guide} onClose={closeGuide} />}
+      <DirectoryImport />
       <aside className="rail">
         <div className="brand">
           <span className="logo" aria-hidden="true" />

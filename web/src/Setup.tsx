@@ -2931,8 +2931,8 @@ export function Setup() {
             actions={
               <>
                 <ExpandAll keys={c.systems.map(sysKey)} />
-                <button className="btn ghost" onClick={() => openGuide("import")}>
-                  Import Trunk Recorder config…
+                <button className="btn ghost" onClick={() => openGuide("import")} title="A Trunk Recorder config, or a system downloaded from the directory">
+                  Import…
                 </button>
                 <button
                   className="btn"

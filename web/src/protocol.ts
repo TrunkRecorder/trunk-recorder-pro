@@ -138,11 +138,9 @@ export interface FccLicense {
 /** A system's FCC licenses by frequency (Hz on the 6.25 kHz raster, as a string). Optional, for reference; plugins are told them. */
 export type FccLicenses = Record<string, FccLicense>;
 
-/** A system's record in the community directory: its ID, its version when last shared, and when (Unix ms). */
+/** A system's record in the community directory: its ID. (Its version and when it was last shared are kept beside the config, not in it.) */
 export interface DirectoryLink {
   id: string;
-  rev: number;
-  sharedAt?: number;
 }
 
 /** A shared system's sharing: no FCC call sign yet (not shared until it has one), waiting (to decode it a while first), shared (when last), or its last error. */
@@ -1523,7 +1521,7 @@ export interface UnitRow {
   new: boolean;
 }
 
-/** A frequency's voice decoding (radioQuery freqs). */
+/** A frequency's voice decoding (radioQuery freqs: one with a call recorded). */
 export interface FreqRow {
   freqHz: number;
   calls: number;
@@ -1541,6 +1539,18 @@ export interface FreqRow {
   last: number;
   /** Bad frames % by hour, oldest first. */
   hourly: (number | null)[];
+}
+
+/** A frequency granted that no source covered (radioQuery freqs: out of band in the query's hours). */
+export interface OutOfBandRow {
+  freqHz: number;
+  /** Calls on it, in the query's hours; all time. */
+  calls: number;
+  totalCalls: number;
+  /** The last, Unix s. */
+  last: number;
+  /** Calls by hour, oldest first. */
+  hourly: number[];
 }
 
 export interface LengthHistogram {
@@ -1577,6 +1587,8 @@ export interface RadioResultBody {
   hours?: number;
   total?: number;
   rows?: (TgRow | UnitRow | FreqRow | ToneRow)[];
+  /** freqs: the frequencies out of band, the most calls first. */
+  outOfBand?: OutOfBandRow[];
   /** tg / unit: the one asked about (null: never heard). */
   tg?: number;
   unit?: number;

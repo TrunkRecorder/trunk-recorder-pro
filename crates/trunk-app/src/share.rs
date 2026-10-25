@@ -3,7 +3,8 @@
 //! long as the system's `share` is on.
 //!
 //! What's shared is what the radio heard: the sites' identities and control
-//! channels, the voice channels granted, the talkgroups granted (their numbers,
+//! channels, the voice channels granted (and of those grants, how many no
+//! source here covered: out of band), the talkgroups granted (their numbers,
 //! how often, where, whether encrypted), the neighbours announced, the call
 //! signs sent on the air. Not what people typed: talkgroups' names,
 //! descriptions, tags and groups are built (see [`talkgroup_rows`]) but left
@@ -18,8 +19,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use trunk_core::trunk::{SiteStatus, Talkgroup, Talkgroups};
+use trunk_core::trunk::calls::Reason;
+use trunk_core::trunk::{Call, SiteStatus, Talkgroup, Talkgroups};
 
 use crate::config::{FccFrom, System, SystemKind};
 
@@ -65,14 +68,36 @@ struct Heard {
     encrypted: bool,
 }
 
+/// What the directory made of a share: its record, at this version.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Linked {
+    pub id: String,
+    pub rev: u64,
+}
+
+/// A directory record's sharing, as kept beside the config: the version this
+/// recorder last had of it, and when it last shared it (Unix ms).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Shared {
+    pub rev: u64,
+    pub shared_at: f64,
+}
+
+/// A voice channel's grants, and those no source covered.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Voice {
+    grants: u32,
+    out_of_band: u32,
+}
+
 /// What this run has heard of one shared system, since its last share.
 #[derive(Clone, Debug, Default)]
 pub struct Evidence {
     /// When it was first decoded this run (Unix ms).
     since_ms: Option<f64>,
     talkgroups: BTreeMap<u32, Heard>,
-    /// (engine site, Hz) → grants.
-    voice: BTreeMap<(u16, u64), u32>,
+    voice: BTreeMap<(u16, u64), Voice>,
     /// Hz → call sign.
     call_signs: BTreeMap<u64, String>,
     known_talkgroups: BTreeSet<u32>,
@@ -83,6 +108,8 @@ pub struct Evidence {
     last_ms: f64,
     /// A share on its way.
     pending: bool,
+    /// Its directory record and the version this recorder last had of it (none: not shared yet).
+    link: Option<(String, u64)>,
     /// Its config has an FCC call sign (or one is in [`Evidence::call_signs`]; neither: not shared yet).
     fcc_call_sign: bool,
     failures: u32,
@@ -101,12 +128,17 @@ impl Evidence {
 #[derive(Clone, Debug, Default)]
 pub struct Ledger {
     systems: BTreeMap<String, Evidence>,
+    /// What sharing has done, by directory ID: kept beside the config (the
+    /// platform saves [`Ledger::unsaved`], `sharing.json`), so sharing never
+    /// rewrites the config itself.
+    state: BTreeMap<String, Shared>,
+    dirty: bool,
     /// In place of [`FIRST_AFTER_MS`] (testing against a short capture).
     first_after_ms: Option<f64>,
 }
 
 impl Ledger {
-    /// The systems shared in `systems`, each from its last share (its directory link's `sharedAt`).
+    /// The systems shared in `systems` (their last shares: [`Ledger::load`]).
     pub fn new<'a>(systems: impl IntoIterator<Item = &'a System>) -> Ledger {
         let mut l = Ledger::default();
         for s in systems {
@@ -119,11 +151,37 @@ impl Ledger {
     pub fn set(&mut self, sys: &System) {
         if shareable(sys) {
             let e = self.systems.entry(sys.short_name.clone()).or_default();
-            e.last_ms = e.last_ms.max(sys.directory.as_ref().map_or(0.0, |d| d.shared_at as f64));
+            if let Some(d) = sys.directory.as_ref().filter(|d| !d.id.is_empty()) {
+                let st = self.state.get(&d.id).cloned().unwrap_or_default();
+                e.link = Some((d.id.clone(), st.rev));
+                e.last_ms = e.last_ms.max(st.shared_at);
+            }
             e.fcc_call_sign = has_call_sign(sys);
         } else {
             self.systems.remove(&sys.short_name);
         }
+    }
+
+    /// What sharing did in earlier runs ([`Ledger::unsaved`] gave): each
+    /// directory record's version and last share. Systems already set take it.
+    pub fn load(&mut self, json: &str) {
+        self.state = serde_json::from_str(json).unwrap_or_default();
+        for e in self.systems.values_mut() {
+            if let Some((id, rev)) = &mut e.link
+                && let Some(st) = self.state.get(id.as_str())
+            {
+                *rev = st.rev;
+                e.last_ms = e.last_ms.max(st.shared_at);
+            }
+        }
+    }
+
+    /// What sharing did, as JSON to keep beside the config, when it changed since the last call.
+    pub fn unsaved(&mut self) -> Option<String> {
+        if !std::mem::take(&mut self.dirty) {
+            return None;
+        }
+        serde_json::to_string_pretty(&self.state).ok()
     }
 
     /// Share first after `ms` of decoding, not [`FIRST_AFTER_MS`] (testing).
@@ -135,20 +193,22 @@ impl Ledger {
         self.systems.contains_key(short_name)
     }
 
-    /// A call was granted on the system (on engine site `site`; `twin`: another site's copy of one already counted).
-    pub fn call(&mut self, short_name: &str, site: Option<u16>, talkgroup: u32, freq_hz: u64, encrypted: bool, twin: bool) {
+    /// A call was granted on the system (a twin, another site's copy of one, counts for its site's voice channel only).
+    pub fn call(&mut self, short_name: &str, c: &Call) {
         let Some(e) = self.systems.get_mut(short_name) else { return };
-        let h = e.talkgroups.entry(talkgroup).or_default();
-        if !twin {
+        let h = e.talkgroups.entry(c.talkgroup).or_default();
+        if !c.twin {
             h.grants += 1;
         }
-        h.encrypted |= encrypted;
-        if let Some(s) = site {
+        h.encrypted |= c.encrypted;
+        if let Some(s) = c.site {
             h.sites.insert(s);
-            *e.voice.entry((s, freq_hz)).or_default() += 1;
-            e.changed |= e.known_voice.insert((s, freq_hz));
+            let v = e.voice.entry((s, c.freq_hz)).or_default();
+            v.grants += 1;
+            v.out_of_band += (c.reason == Some(Reason::NoSource)) as u32;
+            e.changed |= e.known_voice.insert((s, c.freq_hz));
         }
-        e.changed |= e.known_talkgroups.insert(talkgroup);
+        e.changed |= e.known_talkgroups.insert(c.talkgroup);
     }
 
     /// A call sign heard on the air for one of the system's frequencies.
@@ -185,11 +245,17 @@ impl Ledger {
     }
 
     /// How its share went: taken (its counts start again), or why not (tried again later).
-    pub fn done(&mut self, short_name: &str, now_ms: f64, result: Result<(), String>) {
+    pub fn done(&mut self, short_name: &str, now_ms: f64, result: Result<Option<Linked>, String>) {
         let Some(e) = self.systems.get_mut(short_name) else { return };
         e.pending = false;
         match result {
-            Ok(()) => {
+            Ok(linked) => {
+                // (None: taken, but not linked to a record: a quarantined recorder's.)
+                if let Some(l) = linked {
+                    self.state.insert(l.id.clone(), Shared { rev: l.rev, shared_at: now_ms });
+                    self.dirty = true;
+                    e.link = Some((l.id, l.rev));
+                }
                 e.last_ms = now_ms;
                 e.changed = false;
                 e.failures = 0;
@@ -273,7 +339,7 @@ pub fn observation(recorder: &str, app: &str, sys: &System, sites: &[&SiteStatus
                 "heard": {
                     "identity": id,
                     "controlChannelHz": st.control_channel_hz,
-                    "voice": ev.voice.iter().filter(|((s, _), _)| *s == st.site).map(|((_, hz), n)| json!({ "freqHz": hz, "grants": n })).collect::<Vec<_>>(),
+                    "voice": ev.voice.iter().filter(|((s, _), _)| *s == st.site).map(|((_, hz), v)| json!({ "freqHz": hz, "grants": v.grants, "outOfBand": v.out_of_band })).collect::<Vec<_>>(),
                     "neighbours": st.adjacent.iter().filter(|a| a.freq_hz > 0).map(|a| json!({ "sysId": a.sys_id, "rfss": a.rfss, "site": a.site, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
                     "callSigns": call_signs.iter().filter(|(hz, _)| **hz > 0).map(|(hz, c)| json!({ "freqHz": hz, "callSign": c })).collect::<Vec<_>>(),
                     "good": st.good,
@@ -303,8 +369,8 @@ pub fn observation(recorder: &str, app: &str, sys: &System, sites: &[&SiteStatus
         "system": { "type": kind, "sites": site_json, "fcc": fcc },
         "heardTalkgroups": heard_tgs,
     });
-    if let Some(d) = &sys.directory {
-        o["directory"] = json!({ "id": d.id, "rev": d.rev });
+    if let Some((id, rev)) = &ev.link {
+        o["directory"] = json!({ "id": id, "rev": rev });
     }
     if SHARE_TALKGROUP_TEXT {
         if let Some(t) = talkgroups {
@@ -346,6 +412,11 @@ mod tests {
         Config::from_json(&json!({ "systems": [sys] }).to_string()).unwrap()
     }
 
+    /// A grant on engine site `site`.
+    fn grant(site: Option<u16>, talkgroup: u32, freq_hz: u64, encrypted: bool, twin: bool) -> Call {
+        Call { site, talkgroup, freq_hz, encrypted, twin, ..Call::default() }
+    }
+
     fn site(n: u16, name: &str, good: u64) -> SiteStatus {
         SiteStatus { site: n, short_name: "dcfd".into(), site_name: name.into(), control_channel_hz: Some(857_987_500), good, modulation: "fsk4", ..SiteStatus::default() }
     }
@@ -367,24 +438,24 @@ mod tests {
         let t0 = NOW;
         assert!(!l.due("dcfd", t0), "not decoded yet");
         l.decoding("dcfd", t0);
-        l.call("dcfd", Some(0), 101, 851_000_000, false, false);
+        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
         assert!(!l.due("dcfd", t0 + 4.0 * MIN));
         assert!(l.due("dcfd", t0 + 5.0 * MIN));
         l.sent("dcfd");
         assert!(!l.due("dcfd", t0 + 6.0 * MIN), "one on its way");
         let t1 = t0 + 6.0 * MIN;
-        l.done("dcfd", t1, Ok(()));
+        l.done("dcfd", t1, Ok(Some(Linked { id: "sys_1".into(), rev: 1 })));
         assert_eq!(l.status_json("dcfd")["state"], "shared");
         // The same talkgroup on the same channel again: nothing new.
-        l.call("dcfd", Some(0), 101, 851_000_000, false, false);
+        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
         assert!(!l.due("dcfd", t1 + 2.0 * 60.0 * MIN));
         // A new one: but not within the hour.
-        l.call("dcfd", Some(0), 102, 851_000_000, true, false);
+        l.call("dcfd", &grant(Some(0), 102, 851_000_000, true, false));
         assert!(!l.due("dcfd", t1 + 30.0 * MIN));
         assert!(l.due("dcfd", t1 + 60.0 * MIN));
         // Shared, then nothing new: daily.
         let t2 = t1 + 60.0 * MIN;
-        l.done("dcfd", t2, Ok(()));
+        l.done("dcfd", t2, Ok(Some(Linked { id: "sys_1".into(), rev: 2 })));
         assert!(!l.due("dcfd", t2 + 23.0 * 60.0 * MIN));
         assert!(l.due("dcfd", t2 + 24.0 * 60.0 * MIN));
     }
@@ -395,7 +466,7 @@ mod tests {
         c.systems[0].fcc.clear();
         let mut l = Ledger::new(&c.systems);
         l.decoding("dcfd", NOW);
-        l.call("dcfd", Some(0), 101, 851_000_000, false, false);
+        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
         assert!(!l.due("dcfd", NOW + 10.0 * MIN), "no call sign: not shared");
         assert_eq!(l.status_json("dcfd")["state"], "needsCallSign");
         // One heard on the air (a Motorola base station ID): shared.
@@ -404,7 +475,7 @@ mod tests {
         // Or one looked up (Identify), told while recording.
         let mut l = Ledger::new(&c.systems);
         l.decoding("dcfd", NOW);
-        l.call("dcfd", Some(0), 101, 851_000_000, false, false);
+        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
         assert!(!l.due("dcfd", NOW + 10.0 * MIN));
         c.systems[0].fcc.insert("857987500".into(), crate::config::FccLicense { call_sign: "WPXT459".into(), name: "DISTRICT OF COLUMBIA".into(), from: FccFrom::Lookup });
         l.set(&c.systems[0]);
@@ -422,7 +493,7 @@ mod tests {
         let c = config(true);
         let mut l = Ledger::new(&c.systems);
         l.decoding("dcfd", NOW);
-        l.call("dcfd", Some(0), 101, 851_000_000, false, false);
+        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
         let t = NOW + 10.0 * MIN;
         l.sent("dcfd");
         l.done("dcfd", t, Err("down".into()));
@@ -439,26 +510,43 @@ mod tests {
     }
 
     #[test]
-    fn last_share_survives_a_restart() {
+    fn what_sharing_did_is_kept_beside_the_config_and_survives_a_restart() {
         let mut c = config(true);
-        assert!(c.link_shared("dcfd", "sys_1", 3, &["south".into()], &["site_s".into()], NOW));
         let mut l = Ledger::new(&c.systems);
         l.decoding("dcfd", NOW);
-        l.call("dcfd", Some(0), 101, 851_000_000, false, false);
+        l.sent("dcfd");
+        l.done("dcfd", NOW, Ok(Some(Linked { id: "sys_1".into(), rev: 3 })));
+        // Kept: the record's version and when, by its ID (once: unsaved again only after a change).
+        let saved = l.unsaved().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&saved).unwrap(), json!({ "sys_1": { "rev": 3, "sharedAt": NOW } }));
+        assert_eq!(l.unsaved(), None);
+        // The config gets the link once (its ID and its sites'), never the version or the time.
+        assert!(c.link_shared("dcfd", "sys_1", &["south".into()], &["site_s".into()]));
+        assert!(!c.link_shared("dcfd", "sys_1", &["south".into()], &["site_s".into()]), "the next share changes nothing in it");
+        let json = serde_json::to_value(&c.systems[0]).unwrap();
+        assert_eq!(json["directory"], json!({ "id": "sys_1" }));
+        // After a restart: half an hour since that share, so not yet; and its next share names the version it had.
+        let mut l = Ledger::new(&c.systems);
+        l.load(&saved);
+        l.decoding("dcfd", NOW);
+        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
         assert!(!l.due("dcfd", NOW + 30.0 * MIN), "shared half an hour ago, before the restart");
         assert!(l.due("dcfd", NOW + 60.0 * MIN));
+        assert_eq!(l.evidence("dcfd").unwrap().link, Some(("sys_1".into(), 3)));
     }
 
     #[test]
     fn what_is_shared_is_what_was_heard() {
         let mut c = config(true);
-        c.link_shared("dcfd", "sys_1", 3, &["north".into()], &["site_n".into()], 1.0);
+        c.link_shared("dcfd", "sys_1", &["north".into()], &["site_n".into()]);
         let sys = &c.systems[0];
         let mut l = Ledger::new(&c.systems);
-        l.call("dcfd", Some(0), 101, 851_000_000, false, false);
-        l.call("dcfd", Some(0), 101, 851_000_000, false, true);
-        l.call("dcfd", Some(1), 101, 852_000_000, false, true);
-        l.call("dcfd", Some(1), 202, 852_000_000, true, false);
+        l.load(r#"{ "sys_1": { "rev": 3, "sharedAt": 1 } }"#);
+        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
+        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, true));
+        l.call("dcfd", &grant(Some(1), 101, 852_000_000, false, true));
+        l.call("dcfd", &grant(Some(1), 202, 852_000_000, true, false));
+        l.call("dcfd", &Call { reason: Some(Reason::NoSource), ..grant(Some(1), 202, 869_000_000, true, false) });
         let mut tgs = Talkgroups::default();
         tgs.insert(101, Talkgroup { number: 101, alpha_tag: "Dispatch".into(), description: "From a website".into(), ..Talkgroup::default() });
         let (north, south, unheard) = (site(0, "north", 50), site(1, "south", 9), site(2, "east", 0));
@@ -471,11 +559,12 @@ mod tests {
         assert_eq!(s["sites"].as_array().unwrap().len(), 2);
         assert_eq!(s["sites"][0]["directoryId"], "site_n");
         assert_eq!(s["sites"][1].get("directoryId"), None);
-        assert_eq!(s["sites"][0]["heard"]["voice"], json!([{ "freqHz": 851_000_000u64, "grants": 2 }]));
+        assert_eq!(s["sites"][0]["heard"]["voice"], json!([{ "freqHz": 851_000_000u64, "grants": 2, "outOfBand": 0 }]));
+        assert_eq!(s["sites"][1]["heard"]["voice"][1], json!({ "freqHz": 869_000_000u64, "grants": 1, "outOfBand": 1 }), "a voice channel no source here covered");
         assert_eq!(s["fcc"], json!({ "857987500": { "callSign": "WPXT459", "from": "air" } }), "call signs from the air only");
         assert_eq!(o["heardTalkgroups"], json!([
             { "number": 101, "grants": 1, "sites": [0, 1], "encrypted": false },
-            { "number": 202, "grants": 1, "sites": [1], "encrypted": true },
+            { "number": 202, "grants": 2, "sites": [1], "encrypted": true },
         ]));
         // Nothing anyone typed.
         assert!(!SHARE_TALKGROUP_TEXT);
@@ -509,11 +598,11 @@ mod tests {
     #[test]
     fn linking_names_sites_by_name() {
         let mut c = config(true);
-        assert!(c.link_shared("dcfd", "sys_1", 3, &["south".into(), "north".into()], &["site_s".into(), "site_n".into()], 7.0));
+        assert!(c.link_shared("dcfd", "sys_1", &["south".into(), "north".into()], &["site_s".into(), "site_n".into()]));
         let s = &c.systems[0];
-        assert_eq!(s.directory.as_ref().map(|d| (d.id.as_str(), d.rev)), Some(("sys_1", 3)));
+        assert_eq!(s.directory.as_ref().map(|d| d.id.as_str()), Some("sys_1"));
         assert_eq!((s.sites[0].directory_id.as_str(), s.sites[1].directory_id.as_str()), ("site_n", "site_s"));
-        assert!(!c.link_shared("dcfd", "sys_1", 3, &[], &[], 7.0), "nothing changed");
+        assert!(!c.link_shared("dcfd", "sys_1", &[], &[]), "nothing changed");
         // Kept in the config file, read back.
         let back = Config::from_json(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back.systems[0], c.systems[0]);

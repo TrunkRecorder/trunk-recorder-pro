@@ -207,22 +207,28 @@ async function recorderId(): Promise<string> {
 async function share(shortName: string, observation: string, siteNames: string): Promise<void> {
   const base = trpBase(config);
   let error: string | null = null;
+  let id: string | undefined;
+  let rev = 0;
   try {
     const r = await fetch(`${base}/directory/api/v1/observations`, { method: "POST", headers: { "content-type": "application/json" }, body: observation });
     const v = (await r.json().catch(() => null)) as { system?: string; rev?: number; sites?: string[]; error?: string } | null;
     if (r.status === 429) error = "Too many shares from this address for now: it tries again later.";
     else if (r.status !== 201 && r.status !== 202) error = `The directory didn't take it: ${v?.error ?? `HTTP ${r.status}`}`;
     else if (v?.system && config) {
-      const linked = link_shared(JSON.stringify(config), shortName, v.system, v.rev ?? 0, siteNames, JSON.stringify(v.sites ?? []), Date.now());
+      // The config gets the link only when it's new (a first share, a new site); the version and time are kept apart.
+      const linked = link_shared(JSON.stringify(config), shortName, v.system, siteNames, JSON.stringify(v.sites ?? []));
       if (linked) {
         config = JSON.parse(linked) as Config;
         post({ type: "config", config, version: ++configVersion });
       }
+      id = v.system;
+      rev = v.rev ?? 0;
     }
   } catch (e) {
     error = `Couldn't reach ${base} (${e instanceof Error ? e.message : String(e)}).`;
   }
-  session?.share_done(shortName, wallMs(), error ?? undefined);
+  session?.share_done(shortName, wallMs(), id, rev, error ?? undefined);
+  if (session) await saveSharing(session);
 }
 
 async function callSignQuery(m: Extract<ToRecorder, { type: "callSignQuery" }>): Promise<void> {
@@ -304,6 +310,14 @@ async function savedHeard(cfg: Config): Promise<Record<string, HeardCode[]>> {
   }
 }
 
+/** What sharing with the directory did (each record's version, the last share): kept apart from the config. */
+const SHARING_FILE = "sharing.json";
+
+async function saveSharing(s: WebSession): Promise<void> {
+  const json = s.sharing_unsaved();
+  if (json) await writeText(SHARING_FILE, json).catch(() => {});
+}
+
 async function saveHeard(s: WebSession, cfg: Config): Promise<void> {
   const json = s.heard_unsaved();
   if (json) await writeText(heardFile(cfg), json).catch(() => {});
@@ -350,6 +364,7 @@ async function start(): Promise<void> {
     session = new WebSession(JSON.stringify(cfg), JSON.stringify(talkgroups), wallMs(), JSON.stringify(plans));
     session.load_units(JSON.stringify(await savedUnits(cfg)));
     session.load_heard((await readText(heardFile(cfg))) ?? "");
+    session.load_sharing((await readText(SHARING_FILE)) ?? "");
     session.load_tune((await readText(TUNE_FILE)) ?? "");
     session.load_registry((await readText(REGISTRY_FILE)) ?? "{}");
     session.set_topics(JSON.stringify(topics));

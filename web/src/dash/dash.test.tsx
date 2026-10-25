@@ -7,8 +7,8 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
-import { pageHealth } from "./data.ts";
-import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SystemStatus, ToneRow } from "../protocol.ts";
+import { coverage, pageHealth } from "./data.ts";
+import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
@@ -187,6 +187,38 @@ test("Radio: a system's Tones card names its signals and goes to them in Setup; 
   assert.match(lines[0], /^Norwalk EMS 1 20341 two-tone 781\.25 → 875 Hz, 0\.98 \+ 2\.98 s \(Quick Call II\) QC2 126\/128 3 .* E7 ▶ NORWALK_EMS$/, "the recorder's text and its signal");
   assert.match(lines[1], /^20342 DTMF 12# — 3 .* ▶ Add$/, "not a signal yet: Add");
   assert.equal(eventText({ type: "monitorEvent", t: 0, level: "info", kind: "tonePattern", system: "dcfd", talkgroup: 20341, text: "two-tone 781.25 → 875 Hz", signals: ["NORWALK_EMS"] }), "dcfd: NORWALK_EMS (two-tone 781.25 → 875 Hz) on talkgroup 20341");
+});
+
+test("Radio: a warning of calls out of band links to the frequencies, on the Overview and the system's page", () => {
+  twoSites();
+  feedSeries(Date.now() / 1000, { "sys/other/why/no_source": 1 });
+  setView("overview");
+  assert.match(renderToString(<Overview />), /<button class="linkish why-link">Calls are being missed: their frequencies are outside every source(?:'|&#x27;)s band \(Out of band\)(?:<!-- -->)? <span aria-hidden="true">→/);
+  setView("radio", "other");
+  const page = renderToString(<RadioPage />);
+  assert.match(page, /why-link/, "What happened to calls links there too");
+  assert.doesNotMatch(text(page), /Out of band \(/, "no list until there's one, or it's asked for");
+  // Where the link goes: the system's page, with the list (empty until the recorder answers).
+  setView("radio", "other", "outOfBand");
+  const at = text(renderToString(<RadioPage />));
+  assert.match(at, /Out of band \(0\) None in the last 24 hours/);
+  assert.match(at, /What happened to calls/, "on the system's page, not a page of its own");
+});
+
+test("A frequency out of band: the nearest source, and how far past its usable edge", () => {
+  twoSites();
+  const src = (index: number, label: string, centerHz: number): SourceStatus => ({ index, label, centerHz, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false });
+  const s = { ...snapshot(), sources: [src(0, "rtl0", 851_000_000), src(1, "rtl1", 855_000_000)] };
+  // (2.4 MS/s less the 75 kHz guard each side: 1.125 MHz either side is usable.)
+  const inside = coverage(s, 851_200_000)!;
+  assert.equal(inside.src.label, "rtl0");
+  assert.equal(inside.beyondHz, 0);
+  assert.ok(inside.depth > 0.8);
+  const past = coverage(s, 853_500_000)!;
+  assert.equal(past.src.label, "rtl1", "the nearer edge");
+  assert.equal(past.beyondHz, 375_000);
+  assert.equal(past.depth, 0);
+  assert.equal(coverage({ ...s, sources: [] }, 851_000_000), null);
 });
 
 /** The computer as the recorder samples it, its clock as given (the rest as nothing known). */

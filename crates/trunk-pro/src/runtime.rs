@@ -138,7 +138,7 @@ pub enum EngineCmd {
     /// A system's config changed: what sharing uses of it, its switch, directory link and licenses ([`trunk_app::share::sync`]).
     ShareSystem(trunk_app::config::System),
     /// How a system's share went.
-    Shared { short_name: String, result: Result<(), String> },
+    Shared { short_name: String, result: Result<Option<trunk_app::share::Linked>, String> },
 }
 
 impl Ctx {
@@ -440,6 +440,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     }
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
+    session.load_sharing(&fs::read_to_string(sharing_path()).unwrap_or_default());
     session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
     ctx.plugins.start(&cfg);
     if cfg.sources.iter().any(|s| matches!(s, Source::Rtlsdr { .. })) {
@@ -624,9 +625,19 @@ fn save_tune(session: &mut Session) {
     }
 }
 
-/// Save the talker aliases systems learned, and the codes conventional
-/// frequencies carried, since the last save.
+/// What sharing with the directory did (each record's version, the last
+/// share): beside the config, so sharing never rewrites the config itself.
+fn sharing_path() -> PathBuf {
+    crate::paths::data_dir().join("sharing.json")
+}
+
+/// Save the talker aliases systems learned, the codes conventional
+/// frequencies carried, and what sharing did, since the last save.
 fn save_units(session: &mut Session) {
+    if let Some(json) = session.sharing_unsaved() {
+        let _ = fs::create_dir_all(crate::paths::data_dir());
+        let _ = trunk_app::config::write_atomic(&sharing_path(), json);
+    }
     for (name, csv) in session.units_changed() {
         let _ = fs::create_dir_all(crate::paths::data_dir());
         let _ = trunk_app::config::write_atomic(&units_path(&name), csv);
@@ -1102,18 +1113,20 @@ fn m4a_failed(rel: &str, err: &str) {
 /// Share a system with the directory; tell the engine how it went.
 fn share(ctx: &Arc<Ctx>, short_name: String, observation: serde_json::Value, site_names: Vec<String>) {
     let base = ctx.config.lock().unwrap().server.trp_api_base().to_string();
+    // The config gets the link only when it's new (a first share, a site new to
+    // the directory): edit_config leaves it alone when nothing changed.
     let result = crate::directory::share(&base, &observation).and_then(|d| {
         if d.system.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
-        let at = crate::clock::unix_ms() as f64;
         crate::server::edit_config(ctx, |c| {
-            c.link_shared(&short_name, &d.system, d.rev, &site_names, &d.sites, at);
+            c.link_shared(&short_name, &d.system, &site_names, &d.sites);
         })
-        .map_err(|e| format!("Shared, but the directory link couldn't be kept: {e}"))
+        .map_err(|e| format!("Shared, but the directory link couldn't be kept: {e}"))?;
+        Ok(Some(trunk_app::share::Linked { id: d.system, rev: d.rev }))
     });
     match &result {
-        Ok(()) => log::info!("{short_name}: shared with the directory"),
+        Ok(_) => log::info!("{short_name}: shared with the directory"),
         Err(e) => log::warn!("{short_name}: not shared with the directory: {e}"),
     }
     ctx.tell_engine(EngineCmd::Shared { short_name, result });

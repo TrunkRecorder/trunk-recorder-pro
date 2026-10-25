@@ -32,7 +32,7 @@ a system of its own.)
 | `name` | | `""` | string | What people call it ("County Public Safety"), for display |
 | `fcc` | | `{}` | object | Optional: who is licensed on each of its frequencies. See [FCC licenses](#fcc-licenses) |
 | `share` | | `false` | bool | Share it with the community directory while it records. See [Sharing with the directory](#sharing-with-the-directory) |
-| `directory` | | none | object | Set by sharing: the directory's record of it, `{ id, rev, sharedAt }` (its ID, its version when last shared, when, Unix ms). Shares land on that record |
+| `directory` | | none | object | Set by its first share (or an import from the directory): the directory's record of it, `{ id }`. Shares land on that record. What changes as it's shared (the record's version, when it was last shared) is kept beside the config in `sharing.json`, so sharing doesn't change the config again |
 | `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"`, `"nxdn"` or `"edacs"` (any case). Anything else is refused when the config is read |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
@@ -119,7 +119,8 @@ the file waits for one.
 What it sends is what the radio heard of the system:
 - each site that's decoded: its identity, control channels, modulation, band plan, and the neighbours it
   announces;
-- the voice channels granted there, with how many grants;
+- the voice channels granted there, with how many grants, and of those how many no source here covered
+  (out of band);
 - the talkgroups granted: their numbers, how many grants, at which sites, whether encrypted;
 - call signs heard on the air (the `fcc` entries `from` the air).
 

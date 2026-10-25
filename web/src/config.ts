@@ -17,7 +17,7 @@ export { autoCenter, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUAR
 export function restartKey(c: Config, liveGain: boolean): string {
   return JSON.stringify({
     sources: liveGain ? c.sources.map(withoutLiveGain) : c.sources,
-    // (Sharing and the directory's link apply live: a share saves the link.)
+    // (Sharing and the directory's link apply live: a first share saves the link.)
     systems: c.systems.map(({ plugins: _a, pluginDelays: _d, share: _s, directory: _l, ...s }) => ({ ...s, sites: s.sites.map(({ directoryId: _i, ...x }) => x) })),
     conventional: c.conventional.map(({ plugins: _a, pluginDelays: _d, channelFileStatus: _f, ...s }) => s),
     recording: c.recording,
@@ -363,7 +363,7 @@ export function normalizeSystem(x: SystemInput): System {
     ...(x.name?.trim() ? { name: x.name } : {}),
     ...fccMap(x.fcc),
     ...(x.share ? { share: true } : {}),
-    ...(plain<DirectoryLink>(x.directory)?.id ? { directory: x.directory } : {}),
+    ...(plain<DirectoryLink>(x.directory)?.id ? { directory: { id: x.directory!.id } } : {}),
     type,
     ...(type === "nxdn" && x.nxdnType === "typeD" ? { nxdnType: "typeD" as const } : {}),
     ...(type === "smartnet" && x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),

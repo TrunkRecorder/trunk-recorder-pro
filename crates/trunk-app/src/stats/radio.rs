@@ -1,7 +1,7 @@
 //! The radio system as heard: talkgroups (first and last heard, calls and
 //! airtime by hour), radios (when they transmitted, what they're affiliated
-//! with, which talkgroups they use, who they talk with), and how well each
-//! frequency's voice decodes. Fed by the session's events ([`Registry`]'s
+//! with, which talkgroups they use, who they talk with), and each frequency:
+//! how well its voice decodes, and the calls on it no source covered. Fed by the session's events ([`Registry`]'s
 //! `call_*` / `message` / `concluded`); kept per system across runs (saved as
 //! JSON); asked by the dashboard ([`Registry::query`]).
 //!
@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use trunk_core::p25::crypt::algid_name;
 use trunk_core::dsp::inband::signal::Heard;
+use trunk_core::trunk::calls::Reason;
 use trunk_core::trunk::{Call, Message, MessageType};
 
 /// Caps per system.
@@ -118,6 +119,18 @@ pub struct Freq {
     pub last: i64,
     /// (hour, (calls, frames, errors, bad frames)), last week.
     pub hours: VecDeque<(i64, (u32, u64, u64, u64))>,
+    /// Calls granted on it that no source covered (out of band): how many,
+    /// the last (Unix s), and by hour, last week.
+    pub out_of_band: u32,
+    pub out_of_band_last: i64,
+    pub out_of_band_hours: VecDeque<(i64, u32)>,
+}
+
+impl Freq {
+    /// When it was last heard: a call decoded, or one out of band.
+    fn heard(&self) -> i64 {
+        self.last.max(self.out_of_band_last)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -187,15 +200,18 @@ fn pair_key(a: u32, b: u32) -> u64 {
 }
 
 fn bump_hour<T>(hours: &mut VecDeque<(i64, T)>, h: i64, f: impl FnOnce(&mut T), new: impl FnOnce() -> T) {
-    match hours.back_mut() {
-        Some((hh, v)) if *hh == h => f(v),
+    // (Usually the last hour; a long call's air reaches back into earlier ones.)
+    let at = hours.iter().rposition(|(hh, _)| *hh <= h);
+    match at {
+        Some(i) if hours[i].0 == h => f(&mut hours[i].1),
         _ => {
             let mut v = new();
             f(&mut v);
-            hours.push_back((h, v));
+            hours.insert(at.map_or(0, |i| i + 1), (h, v));
         }
     }
-    while hours.front().is_some_and(|(hh, _)| *hh <= h - HOURS) {
+    let last = hours.back().map_or(h, |(hh, _)| *hh);
+    while hours.front().is_some_and(|(hh, _)| *hh <= last - HOURS) {
         hours.pop_front();
     }
 }
@@ -241,7 +257,7 @@ impl SystemRadio {
         evict(&mut self.tgs, MAX_TGS, |v| v.last);
         evict(&mut self.units, MAX_UNITS, |v| v.last);
         evict(&mut self.pairs, MAX_PAIRS, |v| v.last);
-        evict(&mut self.freqs, MAX_FREQS, |v| v.last);
+        evict(&mut self.freqs, MAX_FREQS, Freq::heard);
     }
 }
 
@@ -271,6 +287,13 @@ impl Registry {
             g.note_name(c);
             firsts.tg = new && base;
         }
+        if c.reason == Some(Reason::NoSource) {
+            let f = s.freqs.entry(c.freq_hz).or_default();
+            f.out_of_band += 1;
+            f.out_of_band_last = t;
+            bump_hour(&mut f.out_of_band_hours, t.div_euclid(3600), |n: &mut u32| *n += 1, || 0);
+            s.evict();
+        }
         for src in &c.sources {
             if src.src != 0 && s.unit(src.src, t).1 && base {
                 firsts.units.push(src.src);
@@ -297,10 +320,15 @@ impl Registry {
             if let Some(cp) = c.cipher {
                 note_cipher(&mut g.ciphers, cp.algid, cp.keyid, t);
             }
-            bump_hour(&mut g.hours, h, |v: &mut (u32, f32)| {
-                v.0 += 1;
-                v.1 += secs;
-            }, || (0, 0.0));
+            // Its air in the hours it was on (a channel held open past the hour isn't all the last one's); the call in the last.
+            for hh in start.div_euclid(3600).max(h - HOURS + 1)..=h {
+                let on = (t.min((hh + 1) * 3600) - start.max(hh * 3600)).max(0) as f32;
+                let air = if t > start { secs * on / (t - start) as f32 } else { secs };
+                bump_hour(&mut g.hours, hh, |v: &mut (u32, f32)| {
+                    v.0 += (hh == h) as u32;
+                    v.1 += air;
+                }, || (0, 0.0));
+            }
             s.lengths.push_back((t, c.talkgroup, secs));
             while s.lengths.len() > MAX_LENGTHS {
                 s.lengths.pop_front();
@@ -512,16 +540,20 @@ fn is_new(s: &SystemRadio, first: i64, now: i64) -> bool {
     first > now - NEW_S && first - s.created >= BASELINE_S
 }
 
-/// A talkgroup's per-hour activity over the last `hours`, oldest first: (calls, seconds).
-fn hourly(g: &Tg, now: i64, hours: i64) -> (Vec<u32>, Vec<f32>) {
+/// The hours of `per_hour` in the last `hours` to `now`, each with its place
+/// among them (0: the oldest).
+fn window<T>(per_hour: &VecDeque<(i64, T)>, now: i64, hours: i64) -> impl Iterator<Item = (usize, &T)> {
     let h1 = now.div_euclid(3600);
     let h0 = h1 - hours + 1;
+    per_hour.iter().filter(move |(h, _)| *h >= h0 && *h <= h1).map(move |(h, v)| ((h - h0) as usize, v))
+}
+
+/// A talkgroup's per-hour activity over the last `hours`, oldest first: (calls, seconds).
+fn hourly(g: &Tg, now: i64, hours: i64) -> (Vec<u32>, Vec<f32>) {
     let (mut c, mut sec) = (vec![0u32; hours as usize], vec![0f32; hours as usize]);
-    for &(h, (n, x)) in &g.hours {
-        if h >= h0 && h <= h1 {
-            c[(h - h0) as usize] = n;
-            sec[(h - h0) as usize] = (x * 10.0).round() / 10.0;
-        }
+    for (i, &(n, x)) in window(&g.hours, now, hours) {
+        c[i] = n;
+        sec[i] = (x * 10.0).round() / 10.0;
     }
     (c, sec)
 }
@@ -630,25 +662,25 @@ fn unit_detail(name: &str, s: &SystemRadio, id: u32, now: i64, names: &Names) ->
     })
 }
 
+/// Each frequency: how its voice decoded (`rows`: those with a call
+/// recorded), and the calls on it out of band in the last `hours`
+/// (`outOfBand`, the most first).
 fn freqs(s: &SystemRadio, now: i64, hours: i64) -> Value {
-    let h1 = now.div_euclid(3600);
-    let h0 = h1 - hours + 1;
     let mut rows: Vec<Value> = s
         .freqs
         .iter()
+        .filter(|(_, f)| f.calls > 0)
         .map(|(hz, f)| {
             let (mut c, mut fr, mut er, mut bd) = (0u32, 0u64, 0u64, 0u64);
             // Each hour's share of voice frames that couldn't be decoded, %.
             let mut spark = vec![Value::Null; hours as usize];
-            for &(h, (n, frames, errors, bad)) in &f.hours {
-                if h >= h0 && h <= h1 {
-                    c += n;
-                    fr += frames;
-                    er += errors;
-                    bd += bad;
-                    if frames > 0 {
-                        spark[(h - h0) as usize] = json!((bad as f64 * 1000.0 / frames as f64).round() / 10.0);
-                    }
+            for (i, &(n, frames, errors, bad)) in window(&f.hours, now, hours) {
+                c += n;
+                fr += frames;
+                er += errors;
+                bd += bad;
+                if frames > 0 {
+                    spark[i] = json!((bad as f64 * 1000.0 / frames as f64).round() / 10.0);
                 }
             }
             json!({
@@ -667,7 +699,20 @@ fn freqs(s: &SystemRadio, now: i64, hours: i64) -> Value {
         })
         .collect();
     rows.sort_by_key(|r| r["freqHz"].as_u64());
-    json!({ "hours": hours, "rows": rows })
+    let mut out_of_band: Vec<(u32, Value)> = s
+        .freqs
+        .iter()
+        .filter_map(|(hz, f)| {
+            let mut spark = vec![0u32; hours as usize];
+            for (i, &n) in window(&f.out_of_band_hours, now, hours) {
+                spark[i] = n;
+            }
+            let n: u32 = spark.iter().sum();
+            (n > 0).then(|| (n, json!({ "freqHz": hz, "calls": n, "totalCalls": f.out_of_band, "last": f.out_of_band_last, "hourly": spark })))
+        })
+        .collect();
+    out_of_band.sort_by(|a, b| b.0.cmp(&a.0).then(a.1["freqHz"].as_u64().cmp(&b.1["freqHz"].as_u64())));
+    json!({ "hours": hours, "rows": rows, "outOfBand": out_of_band.into_iter().map(|x| x.1).collect::<Vec<_>>() })
 }
 
 /// The tones log: the patterns heard over the last `hours`, alike ones
@@ -811,6 +856,18 @@ mod tests {
     }
 
     #[test]
+    fn a_long_calls_air_is_in_the_hours_it_was_on() {
+        let mut r = Registry::default();
+        let t0 = 1_700_000_000 / 3600 * 3600 + 1800;
+        // 2½ hours held open, from half past: half an hour, an hour, an hour.
+        r.call_end("x", &call(100, &[], 0.0, 9000.0), t0 + 9000);
+        r.call_end("x", &call(100, &[], 0.0, 10.0), t0 + 9010);
+        let (calls, secs) = hourly(&r.systems["x"].tgs[&100], t0 + 9010, 4);
+        assert_eq!(calls, [0, 0, 0, 2], "a call counts in the hour it ended");
+        assert_eq!(secs, [1800.0, 3600.0, 3600.0, 10.0]);
+    }
+
+    #[test]
     fn calls_make_talkgroups_units_and_pairs() {
         let mut r = Registry::default();
         let t0 = 1_700_000_000;
@@ -917,6 +974,36 @@ mod tests {
         assert_eq!(norwalk["signals"][0], "NORWALK_EMS");
         assert_eq!(rows[1]["ids"][0], "QC2 173/170");
         assert_eq!(rows[0]["signals"].as_array().map(Vec::len), Some(0), "another talkgroup");
+    }
+
+    #[test]
+    fn frequencies_no_source_covered_are_listed_apart_from_decoding() {
+        let mut r = Registry::default();
+        let t0 = 1_700_000_000;
+        let oob = |hz| Call { freq_hz: hz, reason: Some(Reason::NoSource), ..call(100, &[], 0.0, 1.0) };
+        for (hz, at) in [(860_000_000, t0), (860_000_000, t0 + 60), (861_000_000, t0 + 7200)] {
+            r.call_start("x", &oob(hz), at);
+        }
+        // Another reason isn't out of band.
+        r.call_start("x", &Call { freq_hz: 862_000_000, reason: Some(Reason::NoRecorder), ..call(100, &[], 0.0, 1.0) }, t0);
+        r.concluded("x", &trunk_recorder_plugin::CallRecord { freq: 851_000_000, ..Default::default() }, t0);
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let q = r.query(&json!({ "what": "freqs", "system": "x", "hours": 24 }), t0 + 7300, &n);
+        assert_eq!(q["rows"].as_array().unwrap().len(), 1, "decoding: only frequencies with a call recorded");
+        assert_eq!(q["rows"][0]["freqHz"], 851_000_000u64);
+        let o = &q["outOfBand"];
+        assert_eq!((o[0]["freqHz"].as_u64(), o[0]["calls"].as_u64(), o[0]["last"].as_i64()), (Some(860_000_000), Some(2), Some(t0 + 60)), "the most first");
+        assert_eq!(o[1]["freqHz"], 861_000_000u64);
+        assert_eq!(o[0]["hourly"].as_array().unwrap().len(), 24);
+        assert_eq!(o.as_array().unwrap().len(), 2);
+        // Out of the range asked: not listed (all time still counted).
+        let q = r.query(&json!({ "what": "freqs", "system": "x", "hours": 1 }), t0 + 7300, &n);
+        assert_eq!(q["outOfBand"], json!([{ "freqHz": 861_000_000u64, "calls": 1, "totalCalls": 1, "last": t0 + 7200, "hourly": [1] }]));
+        // Kept across runs.
+        let mut back = Registry::default();
+        back.load("x", &r.take_dirty()[0].1);
+        assert_eq!(back.systems["x"].freqs[&860_000_000].out_of_band, 2);
     }
 
     #[test]

@@ -26,6 +26,40 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Breaking, plugins:** SDK 0.7.0. The topic is `tone_pattern` (`TonePatternEvent`, the call JSON's
   `TonePattern` with the call's context); `TonePattern` gained `text`. KNOX signals are `knox: true`
   (no `KNOX ` prefix in `digits`).
+- **On the air counts while calls are on the air.** A call's air time (`airMs`) was counted
+  when it ended, all in that minute: a channel held open an hour drew a spike of 3600 s/min.
+  It now counts a second at a time. The Decode page's **Calls** chart (conventional) reads
+  On the air, s/min (every channel's together: 60 is one channel busy the whole minute) off
+  its own scale on the right, and a chart's scale no longer stretches to a line's highest a
+  minute when it doesn't draw that band. A talkgroup's airtime by hour is likewise spread over
+  the hours its calls were on, not all in the hour each ended.
+- **Charts in two units read each off its own scale**: Signal and demodulation's eye opening or
+  phase error is on the right, beside SNR in dB. Dropped samples, Clipping, Lost /s and a
+  plugin's Failed a minute show their band, so a short burst isn't averaged away.
+
+## [0.2.9] — 2026-10-24
+
+- **Add a system from the directory.** A system's page in the systems directory opens it in
+  Trunk Recorder Pro (the web version, or the desktop app at its address), or downloads it
+  for **Setup → Systems → Import…** (formerly "Import Trunk Recorder config…", which still
+  takes those). Either way you see what comes first: its sites, licenses and named
+  talkgroups, its short name, and, if you already have the system, updating it instead
+  (nothing of yours is replaced). It keeps its directory link, so sharing it adds to the
+  same record. See docs/guides/from-the-directory.md.
+- **Which frequencies were out of band.** A system's Radio system page lists the frequencies of
+  calls no source covered, in the span: how many calls, by hour, the last, and the nearest source
+  with how far past its usable edge each is. **Out of band** in **What happened to calls**, and a
+  warning of calls out of band (the Overview's system card too), open it. A warning that says
+  where what it's about is listed links there. Kept between runs, in the radio registry.
+- **Sharing says which voice channels were out of band**: each voice channel shared carries
+  `outOfBand`, how many of its grants no source here covered.
+- `radioQuery` `freqs`: `rows` are the frequencies with a call recorded (the Decode page's);
+  `outOfBand` is new.
+- **Sharing no longer rewrites the config.** A system's `directory` link is just its record's ID
+  (and each site's `directoryId`), written once, by its first share. The record's version and
+  when it was last shared are kept beside the config in `sharing.json` (the browser version keeps
+  its own), so a config in git doesn't change every hour, and an edit in Setup isn't refused
+  because a share saved the config meanwhile.
 - **DMR calls have their frequency error** (`freq_error` in the call JSON), conventional and
   trunked: it was always 0. A conventional DMR channel's `autoTune` now corrects its source,
   as the docs said it did.
