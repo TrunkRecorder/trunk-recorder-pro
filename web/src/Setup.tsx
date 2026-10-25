@@ -35,9 +35,11 @@ import {
   deviceKey,
   needsDriver,
   sourceKey,
-  airspyFound,
-  airspyRates,
+  foundRadio,
+  radioName,
   rateFor,
+  rateOk,
+  ratesText,
   SOURCE_KINDS,
 } from "./config.ts";
 import {
@@ -864,9 +866,9 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
   const src = c.sources[i];
   const center = resolvedCenters(c)[i];
   const auto = src.centerHz ? null : center;
-  // The Airspy picked, as libairspy found it: an R2 runs at 10 / 2.5 MSPS, a Mini at 6 / 3.
-  const airspy = src.type === "airspy" ? airspyFound(s.radios?.airspy, src.serial) : undefined;
-  const airspyMsps = airspy?.rates?.length ? airspy.rates.map((r) => r / 1e6).join(" or ") : null;
+  // The radio picked, as its driver found it: an Airspy R2 runs at 10 / 2.5 MSPS, a Mini at 6 / 3.
+  const found = foundRadio(s.radios, src);
+  const foundRates = ratesText(found);
   const edit = (fn: (x: Source) => void) => updateConfig((x) => fn(x.sources[i]));
   const setKind = (kind: Source["type"]) =>
     updateConfig((x) => {
@@ -1004,8 +1006,8 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
               edit((x) => {
                 if (x.type !== "airspy" && x.type !== "bladerf") return;
                 x.serial = v;
-                // An R2 and a Mini run at different rates: the one picked starts at a rate it does.
-                if (x.type === "airspy") x.rateHz = rateFor(x.rateHz, airspyRates(s.radios?.airspy, v));
+                // Radios of one kind can run at different rates (an Airspy R2 and a Mini): start at one the picked radio does.
+                x.rateHz = rateFor(x.rateHz, foundRadio(s.radios, x));
               })
             }
           />
@@ -1121,12 +1123,12 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         <Field
           label="Sample rate"
           hint={
-            airspyMsps && airspy?.rates && !airspy.rates.includes(src.rateHz) ? (
+            foundRates && !rateOk(src.rateHz, found) ? (
               <span className="warn-text">
-                This Airspy{airspy.model ? ` ${airspy.model}` : ""} runs at {airspyMsps} MSPS, not {src.rateHz / 1e6}: starting it sets {airspy.rates[0] / 1e6}
+                This {radioName(src.type, found)} runs at {foundRates} MSPS, not {src.rateHz / 1e6}: it won&apos;t start at that
               </span>
-            ) : airspyMsps ? (
-              `This Airspy${airspy?.model ? ` ${airspy.model}` : ""}: ${airspyMsps}`
+            ) : foundRates ? (
+              `This ${radioName(src.type, found)}: ${foundRates}`
             ) : (
               SOURCE_KINDS[src.type].rateHint
             )
@@ -1136,7 +1138,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             key={src.type}
             hz={src.rateHz}
             free={!!SOURCE_KINDS[src.type].freeRate || (src.type === "file" && can("service"))}
-            options={airspy?.rates?.length ? airspy.rates : SOURCE_KINDS[src.type].rates}
+            options={found?.rates?.length ? found.rates : SOURCE_KINDS[src.type].rates.filter((r) => rateOk(r, found))}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>

@@ -15,7 +15,7 @@ use std::time::Duration;
 use libloading::Library;
 use num_complex::Complex32;
 
-use super::{cstr, ppm_corrected, DriverInfo};
+use super::{cstr, ppm_corrected, Caps, DriverInfo, Rates};
 use crate::sdr::{Applied, Control, Gain, SourceMsg, Tunable};
 
 type Dev = *mut c_void;
@@ -32,6 +32,15 @@ struct DevInfo {
     instance: c_uint,
     manufacturer: [c_char; DESC_LEN],
     product: [c_char; DESC_LEN],
+}
+
+/// struct bladerf_range: each value is `field * scale`.
+#[repr(C)]
+struct Range {
+    min: i64,
+    max: i64,
+    step: i64,
+    scale: f32,
 }
 
 #[repr(C)]
@@ -73,6 +82,8 @@ struct Api {
     open: unsafe extern "C" fn(*mut Dev, *const c_char) -> c_int,
     close: unsafe extern "C" fn(Dev),
     get_board_name: unsafe extern "C" fn(Dev) -> *const c_char,
+    get_devinfo: unsafe extern "C" fn(Dev, *mut DevInfo) -> c_int,
+    get_sample_rate_range: unsafe extern "C" fn(Dev, c_int, *mut *const Range) -> c_int,
     set_sample_rate: unsafe extern "C" fn(Dev, c_int, c_uint, *mut c_uint) -> c_int,
     set_bandwidth: unsafe extern "C" fn(Dev, c_int, c_uint, *mut c_uint) -> c_int,
     set_frequency: unsafe extern "C" fn(Dev, c_int, u64) -> c_int,
@@ -116,6 +127,8 @@ fn api() -> Result<&'static Api, String> {
                 open: f!("bladerf_open"),
                 close: f!("bladerf_close"),
                 get_board_name: f!("bladerf_get_board_name"),
+                get_devinfo: f!("bladerf_get_devinfo"),
+                get_sample_rate_range: f!("bladerf_get_sample_rate_range"),
                 set_sample_rate: f!("bladerf_set_sample_rate"),
                 set_bandwidth: f!("bladerf_set_bandwidth"),
                 set_frequency: f!("bladerf_set_frequency"),
@@ -198,10 +211,17 @@ fn check(a: &Api, what: &str, r: c_int) -> Result<(), String> {
     Err(format!("bladeRF {what}: {}", unsafe { cstr((a.strerror)(r)) }))
 }
 
-/// Attached bladeRFs: [{serial, label}].
+/// Its key among the radios [`super::known`].
+fn key(serial: &str) -> String {
+    format!("bladerf:{serial}")
+}
+
+/// Attached bladeRFs: [{serial, label}], and the rates one runs at once it has opened in this
+/// run (a bladeRF 2.0 runs at 0.52–61.44 MSPS, the original at up to 40).
 pub fn devices() -> Vec<serde_json::Value> {
     let Ok(a) = api() else { return vec![] };
     let mut list: *mut DevInfo = std::ptr::null_mut();
+    let _one = super::opening();
     // SAFETY: libbladeRF allocates `n` entries, freed below.
     let n = unsafe { (a.get_device_list)(&mut list) };
     if n <= 0 || list.is_null() {
@@ -215,7 +235,11 @@ pub fn devices() -> Vec<serde_json::Value> {
             let product = carr(&d.product);
             let product = if product.is_empty() { "bladeRF".to_string() } else { product };
             let short = if serial.len() > 12 { &serial[..12] } else { &serial };
-            serde_json::json!({ "serial": serial, "label": format!("{product} · SN {short}…"), "bus": d.usb_bus, "address": d.usb_addr })
+            let mut j = serde_json::json!({ "serial": serial, "label": format!("{product} · SN {short}…"), "bus": d.usb_bus, "address": d.usb_addr });
+            if let Some(c) = super::known(&key(&serial)) {
+                c.add_to(&mut j);
+            }
+            j
         })
         .collect();
     // SAFETY: the list get_device_list returned.
@@ -315,10 +339,26 @@ fn stream_once(source: usize, cfg: &BladerfConfig, tx: &SyncSender<SourceMsg>, s
     let mut dev: Dev = std::ptr::null_mut();
     // SAFETY: libbladeRF calls on the device this function opens.
     unsafe {
-        let r = (a.open)(&mut dev, if cfg.serial.trim().is_empty() { std::ptr::null() } else { id.as_ptr() });
+        let r = {
+            let _one = super::opening();
+            (a.open)(&mut dev, if cfg.serial.trim().is_empty() { std::ptr::null() } else { id.as_ptr() })
+        };
         check(a, &format!("open {}", if cfg.serial.is_empty() { "(first)" } else { &cfg.serial }), r)?;
         let mut d = Device { a, dev, enabled: false, ppm: cfg.ppm };
         let board = cstr((a.get_board_name)(d.dev));
+
+        // What it is and the rates it runs at, for the list of radios and the refusal.
+        let mut info: DevInfo = std::mem::zeroed();
+        let mut range: *const Range = std::ptr::null();
+        if (a.get_devinfo)(d.dev, &mut info) == 0 && (a.get_sample_rate_range)(d.dev, RX0, &mut range) == 0 && !range.is_null() {
+            let r = &*range;
+            let caps = Caps { model: carr(&info.product), rates: Rates::Range { min: r.min as f64 * r.scale as f64, max: r.max as f64 * r.scale as f64 } };
+            super::remember(&key(&carr(&info.serial)), caps.clone());
+            if !caps.rates.allows(cfg.rate_hz) {
+                let what = if caps.model.is_empty() { "bladeRF".to_string() } else { caps.model.clone() };
+                return Err(super::rate_refusal(&what, &caps.rates, cfg.rate_hz));
+            }
+        }
 
         let want = cfg.rate_hz.round() as c_uint;
         let mut actual: c_uint = 0;

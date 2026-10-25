@@ -309,13 +309,12 @@ fn devices(a: &Args) {
     let ai = radio::airspy::info();
     println!("Airspy: {}", ai.detail);
     for d in radio::airspy::devices() {
-        let rates: Vec<String> = d["rates"].as_array().map(|v| v.iter().filter_map(|r| r.as_f64()).map(|r| format!("{}", r / 1e6)).collect()).unwrap_or_default();
-        println!("  {}{}", d["label"].as_str().unwrap_or(""), if rates.is_empty() { String::new() } else { format!(" · {} MSPS", rates.join(" / ")) });
+        println!("  {}{}", d["label"].as_str().unwrap_or(""), radio::rates_shown(&d));
     }
     let bi = radio::bladerf::info();
     println!("bladeRF: {}", bi.detail);
     for d in radio::bladerf::devices() {
-        println!("  {} · serial {}", d["label"].as_str().unwrap_or(""), d["serial"].as_str().unwrap_or(""));
+        println!("  {} · serial {}{}", d["label"].as_str().unwrap_or(""), d["serial"].as_str().unwrap_or(""), radio::rates_shown(&d));
     }
     let ui = radio::uhd::info();
     println!("USRP: {}", ui.detail);

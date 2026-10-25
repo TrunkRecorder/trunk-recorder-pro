@@ -103,12 +103,12 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
 ### Airspy
 
 - **Airspy**: pick it from the list (blank is the first one found). Each is listed with its model
-  ("Airspy R2 · SN …") when libairspy could open it to ask. One that's recording may be missing
-  from the list until recording stops (the source keeps its serial either way).
+  ("Airspy R2 · SN …"), asked once per run. One another program has open may be missing from the
+  list, and on some systems so may one that's recording (the source keeps its serial either way).
 - **Sample rate**: 10 or 2.5 MSPS on the R2, 6 or 3 MSPS on the Mini. The list offers what the
-  Airspy picked runs at, and moves to one of its rates when you pick a different Airspy; a rate it
-  can't do is flagged here, and starting the recorder sets it to the first rate the Airspy does
-  (saved in the config, with a warning in the log).
+  Airspy picked runs at, and moves to one of its rates when you pick a different Airspy. A rate it
+  can't do is flagged here, and the source won't start at it ("this Airspy R2 runs at 10 / 2.5
+  MSPS, not 6" in the log).
 - **Gain**: **Linearity** (best near transmitters) or **Sensitivity** (best for weak signals),
   each a single step from 0 to 21, or **Each stage** to set the LNA (0–14), mixer (0–15) and VGA
   (0–15) yourself. With **Each stage**, **AGC** hands the LNA and mixer to the Airspy's AGC.
@@ -118,7 +118,9 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
 
 - **bladeRF**: pick it from the list by serial (blank is the first one found). Boards another
   program already has open are marked; name the serial whenever more than one is plugged in.
-- **Sample rate**: any rate from 0.52 to 61.44 MSPS. Over about 40 MSPS needs USB 3 and a fast CPU.
+- **Sample rate**: any rate from 0.52 to 61.44 MSPS on a bladeRF 2.0, up to 40 on the original.
+  Over about 40 MSPS needs USB 3 and a fast CPU. Once a source has opened the board, Setup shows
+  its range and flags a rate outside it.
 - **Gain, dB**: one overall RX gain (bladeRF 2.0: about −15 to 60), or **AGC** for the board's own.
 - **Bandwidth**: the analog low-pass filter; blank follows the sample rate.
 - **Bias-T**: powers an LNA through the antenna cable (bladeRF 2.0 only).

@@ -8,13 +8,13 @@
 use std::ffi::{c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use libloading::Library;
 use num_complex::Complex32;
 
-use super::{ppm_corrected, DriverInfo};
+use super::{ppm_corrected, Caps, DriverInfo, Rates};
 use crate::sdr::{Applied, Control, Gain, Pool, SourceMsg, Tunable};
 
 type Dev = *mut c_void;
@@ -59,6 +59,7 @@ struct Api {
     open: unsafe extern "C" fn(*mut Dev) -> c_int,
     close: unsafe extern "C" fn(Dev) -> c_int,
     version_string_read: unsafe extern "C" fn(Dev, *mut std::ffi::c_char, u8) -> c_int,
+    board_partid_serialno_read: unsafe extern "C" fn(Dev, *mut SerialRead) -> c_int,
     get_samplerates: unsafe extern "C" fn(Dev, *mut u32, u32) -> c_int,
     set_samplerate: unsafe extern "C" fn(Dev, u32) -> c_int,
     set_sample_type: unsafe extern "C" fn(Dev, c_int) -> c_int,
@@ -105,6 +106,7 @@ fn api() -> Result<&'static Api, String> {
                 open: f!("airspy_open"),
                 close: f!("airspy_close"),
                 version_string_read: f!("airspy_version_string_read"),
+                board_partid_serialno_read: f!("airspy_board_partid_serialno_read"),
                 get_samplerates: f!("airspy_get_samplerates"),
                 set_samplerate: f!("airspy_set_samplerate"),
                 set_sample_type: f!("airspy_set_sample_type"),
@@ -151,17 +153,11 @@ fn check(a: &Api, what: &str, r: c_int) -> Result<(), String> {
     Err(format!("Airspy {what}: {name}"))
 }
 
-/// One Airspy opens at a time. libairspy finds a radio by opening every
-/// Airspy to read its serial, and skips any it can't open: two sources
-/// starting at once (or a device search during one) made one scan miss the
-/// radio the other had open — AIRSPY_ERROR_NOT_FOUND until the retry.
-static OPEN: Mutex<()> = Mutex::new(());
-
-/// Open the Airspy `serial` (hex; "" = the first).
+/// Open the Airspy `serial` (hex; "" = the first), one radio at a time ([`super::opening`]).
 ///
 /// SAFETY (callers): the device returned is closed with `a.close`.
 unsafe fn open(a: &Api, serial: &str) -> Result<Dev, String> {
-    let _one = OPEN.lock().unwrap_or_else(|e| e.into_inner());
+    let _one = super::opening();
     let mut dev: Dev = std::ptr::null_mut();
     // SAFETY: libairspy fills `dev`.
     unsafe {
@@ -175,11 +171,13 @@ unsafe fn open(a: &Api, serial: &str) -> Result<Dev, String> {
     Ok(dev)
 }
 
-/// What an open Airspy says it is: its firmware string ("AirSpy NOS v1.0.0-rc10…" / "AirSpy MINI …")
-/// and the IQ rates it runs at (as it lists them for IQ samples: the sample type is left as opened).
+/// What an open Airspy says it is — its model, from its firmware string ("AirSpy NOS
+/// v1.0.0-rc10…" / "AirSpy MINI …"), and the IQ rates it lists (as opened, for IQ samples) —
+/// remembered by its serial for the list of radios. Its board id can't tell an R2 from a
+/// Mini: both say "AIRSPY".
 ///
 /// SAFETY (callers): `dev` is open, its sample type as opened (IQ).
-unsafe fn identify(a: &Api, dev: Dev) -> (String, Vec<u32>) {
+unsafe fn identify(a: &Api, dev: Dev) -> Caps {
     unsafe {
         let mut v = [0 as std::ffi::c_char; 128];
         let version = if (a.version_string_read)(dev, v.as_mut_ptr(), v.len() as u8) == 0 { super::cstr(v.as_ptr()) } else { String::new() };
@@ -189,8 +187,33 @@ unsafe fn identify(a: &Api, dev: Dev) -> (String, Vec<u32>) {
         if !rates.is_empty() && (a.get_samplerates)(dev, rates.as_mut_ptr(), rates.len() as u32) != 0 {
             rates.clear();
         }
-        (version, rates)
+        let caps = Caps { model: model_of(&version, &rates).to_string(), rates: Rates::List(rates) };
+        let mut sn = SerialRead::default();
+        if (a.board_partid_serialno_read)(dev, &mut sn) == 0 {
+            super::remember(&key(sn.serial()), caps.clone());
+        }
+        caps
     }
+}
+
+/// libairspy's airspy_read_partid_serialno_t.
+#[repr(C)]
+#[derive(Default)]
+struct SerialRead {
+    part_id: [u32; 2],
+    serial_no: [u32; 4],
+}
+
+impl SerialRead {
+    /// The 64-bit serial airspy_open_sn takes (as airspy_info prints it).
+    fn serial(&self) -> u64 {
+        ((self.serial_no[2] as u64) << 32) | self.serial_no[3] as u64
+    }
+}
+
+/// Its key among the radios [`super::known`].
+fn key(serial: u64) -> String {
+    format!("airspy:{serial:016X}")
 }
 
 /// "R2" or "Mini", from the firmware string, else from the rates (an R2 does 2.5 MSPS,
@@ -208,71 +231,47 @@ fn model_of(version: &str, rates_iq: &[u32]) -> &'static str {
     }
 }
 
-fn msps(rates_iq: &[u32]) -> String {
-    rates_iq.iter().map(|r| format!("{}", *r as f64 / 1e6)).collect::<Vec<_>>().join(" / ")
+/// "Airspy R2", or "Airspy" when the model isn't known.
+fn name(model: &str) -> String {
+    if model.is_empty() { "Airspy".to_string() } else { format!("Airspy {model}") }
 }
 
-/// Why `want_hz` can't be set: the model and its rates, and where to pick one.
-fn rate_error(model: &str, rates_iq: &[u32], want_hz: f64) -> String {
-    let what = if model.is_empty() { "Airspy".to_string() } else { format!("Airspy {model}") };
-    format!("this {what} runs at {} MSPS, not {}: pick one of those in Setup → Radios", msps(rates_iq), want_hz / 1e6)
-}
-
-/// A found Airspy for the interface: serial and label; model and rates when it could be
-/// opened to ask (`identified`: firmware string, IQ rates).
-fn describe(serial: u64, identified: Option<(&str, Vec<u32>)>) -> serde_json::Value {
-    let serial = format!("{serial:016X}");
-    match identified {
-        Some((version, rates)) => {
-            let model = model_of(version, &rates);
-            let name = if model.is_empty() { "Airspy".to_string() } else { format!("Airspy {model}") };
-            serde_json::json!({ "serial": serial, "label": format!("{name} · SN {serial}"), "model": model, "rates": rates })
-        }
-        None => serde_json::json!({ "serial": serial, "label": format!("Airspy · SN {serial}") }),
+/// A found Airspy for the interface: serial and label; model and rates once known.
+fn describe(serial: u64, caps: Option<&Caps>) -> serde_json::Value {
+    let sn = format!("{serial:016X}");
+    let mut j = serde_json::json!({ "serial": sn, "label": format!("{} · SN {sn}", name(caps.map_or("", |c| c.model.as_str()))) });
+    if let Some(c) = caps {
+        c.add_to(&mut j);
     }
+    j
 }
 
-/// What the Airspy `serial` ("" = the first) is — (model, IQ rates in Hz) — asked by opening it
-/// for a moment; None when libairspy isn't there or it can't be opened (not attached, streaming).
-pub fn ask(serial: &str) -> Option<(&'static str, Vec<u32>)> {
-    let a = api().ok()?;
-    // SAFETY: opened here, closed here, nothing else uses the handle.
-    unsafe {
-        let dev = open(a, serial).ok()?;
-        let (version, rates) = identify(a, dev);
-        (a.close)(dev);
-        Some((model_of(&version, &rates), rates))
-    }
-}
-
-/// The rate to run at instead of `rate_hz` when the Airspy doesn't do it: its first (widest)
-/// rate. None when it does `rate_hz` — or its rates aren't known.
-pub fn rate_instead(rate_hz: f64, rates: &[u32]) -> Option<u32> {
-    let want = rate_hz.round() as u32;
-    (!rates.is_empty() && !rates.contains(&want)).then(|| rates[0])
-}
-
-/// Attached Airspys: [{serial (hex), label, model ("R2" / "Mini"), rates (IQ, Hz)}]. Each is
-/// opened for a moment to ask its model and rates (as airspy_info does). One streaming for a
-/// source is listed by serial alone if it can't be opened — or not at all: libairspy's own
-/// listing opens each Airspy to read its serial, and on Windows an open one is exclusive.
+/// Attached Airspys: [{serial (hex), label, model ("R2" / "Mini"), rates (IQ, Hz)}]. One not
+/// opened yet in this run is opened for a moment to ask (as airspy_info does), once. One
+/// streaming for a source is shown as it said when it opened — or isn't listed at all: on
+/// Windows libairspy's own listing can't open it to read its serial.
 pub fn devices() -> Vec<serde_json::Value> {
     let Ok(a) = api() else { return vec![] };
     let mut sn = [0u64; 16];
-    // SAFETY: buffer and its length.
-    let n = unsafe { (a.list_devices)(sn.as_mut_ptr(), sn.len() as c_int) };
+    let n = {
+        let _one = super::opening();
+        // SAFETY: buffer and its length.
+        unsafe { (a.list_devices)(sn.as_mut_ptr(), sn.len() as c_int) }
+    };
     sn[..n.clamp(0, 16) as usize]
         .iter()
-        .map(|s| {
-            // SAFETY: opened here, closed here, nothing else uses the handle.
-            let identified = unsafe {
-                open(a, &format!("{s:016X}")).ok().map(|dev| {
-                    let id = identify(a, dev);
-                    (a.close)(dev);
-                    id
-                })
-            };
-            describe(*s, identified.as_ref().map(|(v, r)| (v.as_str(), r.clone())))
+        .map(|&s| {
+            let caps = super::known(&key(s)).or_else(|| {
+                // SAFETY: opened here, closed here, nothing else uses the handle.
+                unsafe {
+                    open(a, &format!("{s:016X}")).ok().map(|dev| {
+                        let caps = identify(a, dev);
+                        (a.close)(dev);
+                        caps
+                    })
+                }
+            });
+            describe(s, caps.as_ref())
         })
         .collect()
 }
@@ -434,11 +433,11 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
     unsafe {
         let dev = open(a, &cfg.serial)?;
         let mut d = Device { a, dev, streaming: false, ppm: cfg.ppm };
-        // (Asked as opened, for IQ samples: for real samples libairspy lists and takes rates doubled.)
-        let (version, rates) = identify(a, d.dev);
+        // (Asked as opened, for IQ samples: for real samples libairspy lists rates doubled.)
+        let caps = identify(a, d.dev);
         let want_iq = cfg.rate_hz.round() as u32;
-        if !rates.contains(&want_iq) {
-            return Err(rate_error(model_of(&version, &rates), &rates, cfg.rate_hz));
+        if !caps.rates.allows(cfg.rate_hz) {
+            return Err(super::rate_refusal(&name(&caps.model), &caps.rates, cfg.rate_hz));
         }
         let real = !library_iq();
         check(a, "sample type", (a.set_sample_type)(d.dev, if real { SAMPLE_INT16_REAL } else { SAMPLE_FLOAT32_IQ }))?;
@@ -498,28 +497,21 @@ mod tests {
 
     #[test]
     fn device_json_carries_model_and_rates() {
-        let d = describe(0x735863DC2F650AE3, Some(("AirSpy NOS v1.0.0-rc10", vec![10_000_000, 2_500_000])));
+        let r2 = Caps { model: "R2".into(), rates: Rates::List(vec![10_000_000, 2_500_000]) };
+        let d = describe(0x735863DC2F650AE3, Some(&r2));
         assert_eq!(d["serial"], "735863DC2F650AE3");
         assert_eq!(d["label"], "Airspy R2 · SN 735863DC2F650AE3");
         assert_eq!(d["model"], "R2");
         assert_eq!(d["rates"], serde_json::json!([10_000_000, 2_500_000]));
-        // One that couldn't be opened (in use): known by serial only, as before.
+        // One not asked yet that couldn't be opened (another program has it): by serial only.
         let d = describe(1, None);
         assert_eq!(d["label"], "Airspy · SN 0000000000000001");
         assert!(d.get("model").is_none() && d.get("rates").is_none());
     }
 
     #[test]
-    fn a_rate_the_airspy_does_not_do_becomes_its_first() {
-        assert_eq!(rate_instead(6e6, &[10_000_000, 2_500_000]), Some(10_000_000));
-        assert_eq!(rate_instead(2.5e6, &[10_000_000, 2_500_000]), None);
-        assert_eq!(rate_instead(10e6, &[6_000_000, 3_000_000]), Some(6_000_000));
-        assert_eq!(rate_instead(6e6, &[]), None, "rates not known: left alone");
-    }
-
-    #[test]
-    fn rate_refusal_names_the_model_and_the_fix() {
-        assert_eq!(rate_error("R2", &[10_000_000, 2_500_000], 6e6), "this Airspy R2 runs at 10 / 2.5 MSPS, not 6: pick one of those in Setup → Radios");
-        assert_eq!(rate_error("", &[6_000_000, 3_000_000], 2.5e6), "this Airspy runs at 6 / 3 MSPS, not 2.5: pick one of those in Setup → Radios");
+    fn serial_as_airspy_info_prints_it() {
+        let r = SerialRead { part_id: [0; 2], serial_no: [0, 0, 0x735863DC, 0x2F650AE3] };
+        assert_eq!(key(r.serial()), "airspy:735863DC2F650AE3");
     }
 }

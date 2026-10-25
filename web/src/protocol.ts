@@ -67,13 +67,18 @@ export interface DriverState {
   detail: string;
   devices: FoundRadio[] | null;
 }
-/** A radio its driver found. An Airspy that could be opened to ask also says its `model` ("R2" / "Mini") and the IQ `rates` it runs at, Hz. */
+/**
+ * A radio its driver found. Once it has been opened in this run (by a source, or to ask
+ * it — an Airspy is), it also says its `model` ("R2", "Mini", "bladeRF 2.0") and the sample
+ * rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`).
+ */
 export interface FoundRadio {
   args?: string;
   serial?: string;
   label: string;
   model?: string;
   rates?: number[];
+  rateRange?: [number, number];
 }
 /** A SoapySDR module (one per device family): the drivers it registered, or why it didn't load. */
 export interface SoapyModule {
@@ -87,7 +92,7 @@ export interface SoapyModule {
 export interface SoapyState extends DriverState {
   modules?: SoapyModule[] | null;
   searchPaths?: string[];
-  devices: { args: string; label: string; driver: string }[] | null;
+  devices: (FoundRadio & { args: string; driver: string })[] | null;
 }
 export interface Radios {
   usrp: DriverState;

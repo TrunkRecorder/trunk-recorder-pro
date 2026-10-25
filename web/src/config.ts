@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, DirectoryLink, DriverState, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
 
@@ -141,7 +141,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     fresh: newBladerf,
     rates: BLADERF_RATES,
     freeRate: true,
-    rateHint: "MSPS, 0.52–61.44",
+    rateHint: "MSPS, 0.52–61.44 (the original bladeRF: up to 40)",
     device: "serial",
     driver: { name: "libbladeRF 2.x", macos: "brew install libbladerf", linux: "sudo apt install libbladerf2 bladerf-fpga-hostedxa4", windows: "Nuand's bladeRF installer" },
     soapyDriver: "bladerf",
@@ -177,32 +177,55 @@ export function deviceId(x: Source): string {
 export const deviceKey = (type: Source["type"], id: string) => `${type}:${id}`;
 export const sourceKey = (x: Source) => deviceKey(x.type, deviceId(x));
 
-/** A new source of `type` for device `id` (`found`: as its driver listed it — an Airspy starts at a rate it runs at). */
+/** A new source of `type` for device `id` (`found`: as its driver listed it — it starts at a rate the radio runs at). */
 export function sourceFor(type: Source["type"], id: string, found?: FoundRadio): Source {
   const k = SOURCE_KINDS[type];
   const s = (k.device ? { ...k.fresh(), [k.device]: id } : k.fresh()) as Source;
-  if (s.type === "airspy") s.rateHz = rateFor(s.rateHz, found?.rates ?? null);
+  s.rateHz = rateFor(s.rateHz, found);
   return s;
 }
 
 /**
- * The IQ rates the Airspy `serial` ("" = the first found) runs at, when libairspy could open
- * it to ask (an R2: 10 / 2.5 MSPS; a Mini: 6 / 3); null when it isn't known.
+ * The radio a source names ("" = the first found), as its driver listed it; undefined when
+ * it isn't listed (not attached, not searched for, or not a driver's).
  */
-export function airspyRates(airspy: DriverState | undefined, serial: string): number[] | null {
-  const d = airspyFound(airspy, serial);
-  return d?.rates?.length ? d.rates : null;
+export function foundRadio(radios: Radios | null | undefined, x: Source): FoundRadio | undefined {
+  if (!needsDriver(x) || !radios) return undefined;
+  const devices: FoundRadio[] = radios[x.type]?.devices ?? [];
+  const id = deviceId(x).trim();
+  if (!id) return devices[0];
+  // (A bladeRF may be named by the start of its serial.)
+  return devices.find((d) => (x.type === "bladerf" ? !!d.serial?.toLowerCase().startsWith(id.toLowerCase()) : (d.serial ?? d.args) === id));
 }
 
-/** The Airspy `serial` ("" = the first found) as libairspy listed it, if it's connected. */
-export function airspyFound(airspy: DriverState | undefined, serial: string): FoundRadio | undefined {
-  const devices = airspy?.devices ?? [];
-  return serial ? devices.find((x) => x.serial === serial) : devices[0];
+/** Whether the radio runs at `hz`, as it said when opened (true when that isn't known). */
+export function rateOk(hz: number, found: FoundRadio | undefined): boolean {
+  if (found?.rates?.length) return found.rates.includes(hz);
+  if (found?.rateRange) return hz >= found.rateRange[0] && hz <= found.rateRange[1];
+  return true;
 }
 
-/** `hz` if the radio runs at it (or its rates aren't known), else the first it does. */
-export function rateFor(hz: number, rates: number[] | null): number {
-  return !rates?.length || rates.includes(hz) ? hz : rates[0];
+/** `hz` if the radio runs at it (or that isn't known), else the nearest it does: its first rate, or the end of its range. */
+export function rateFor(hz: number, found: FoundRadio | undefined): number {
+  if (rateOk(hz, found)) return hz;
+  if (found?.rates?.length) return found.rates[0];
+  const [lo, hi] = found!.rateRange!;
+  return Math.min(Math.max(hz, lo), hi);
+}
+
+/** What the radio runs at, MSPS ("10 or 2.5", "0.52–61.44"), when it said; null when not. */
+export function ratesText(found: FoundRadio | undefined): string | null {
+  const m = (hz: number) => Math.round(hz / 1e4) / 100;
+  if (found?.rates?.length) return found.rates.map(m).join(" or ");
+  if (found?.rateRange) return `${m(found.rateRange[0])}–${m(found.rateRange[1])}`;
+  return null;
+}
+
+/** "Airspy R2", "bladeRF 2.0": the kind with the model its driver found, if it said. */
+export function radioName(type: Source["type"], found: FoundRadio | undefined): string {
+  const kind = SOURCE_KINDS[type].label;
+  const model = found?.model;
+  return !model ? kind : model.toLowerCase().startsWith(kind.toLowerCase()) ? model : `${kind} ${model}`;
 }
 
 /** A capture's sample format from its name (as the recorder guesses it). */
