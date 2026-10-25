@@ -26,6 +26,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Breaking, plugins:** SDK 0.7.0. The topic is `tone_pattern` (`TonePatternEvent`, the call JSON's
   `TonePattern` with the call's context); `TonePattern` gained `text`. KNOX signals are `knox: true`
   (no `KNOX ` prefix in `digits`).
+- **A chart's values on hover sit beside the crosshair, not on the line** (#79). They covered
+  the very peak you were trying to read; now they're to one side of it (the left past the
+  middle), in the half of the chart away from the line. The activity-by-hour heatmap's tooltip
+  likewise opens toward the middle instead of running off the card's edge.
 - **A RAM spool deleted while running is made again, and said** (#88). On Linux, systemd's
   `RemoveIPC` (on by default, Raspberry Pi OS included) deletes a user's files in /dev/shm when
   their last login ends, so a recorder started over SSH lost its spool when that session closed:

@@ -961,7 +961,10 @@ h2.big { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: 
 .ts .mark-line { stroke: var(--muted); stroke-width: 1; opacity: 0.6; }
 .ts .crosshair { stroke: var(--muted); stroke-width: 1; }
 .ts-dot, .ring { stroke: var(--panel); stroke-width: 2; }
-.ts-tip { position: absolute; top: 4px; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 12px; pointer-events: none; white-space: nowrap; z-index: 2; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25); }
+.ts-plot { position: relative; }
+/* Beside the crosshair (12px off it), never on the line it reads: .flip, to its left. */
+.ts-tip { position: absolute; margin-left: 12px; width: max-content; max-width: calc(50% - 12px); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 12px; pointer-events: none; z-index: 2; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25); }
+.ts-tip.flip { margin-left: 0; margin-right: 12px; }
 .ts-tip i, .legend i, .legend-list i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 .legend i.dashed { background: repeating-linear-gradient(90deg, currentColor 0 4px, transparent 4px 7px) !important; height: 2px; vertical-align: 3px; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
