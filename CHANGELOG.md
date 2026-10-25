@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.10] — 2026-10-25
+
 - **EDACS and SmartNet control channels lock every time** (#76). The 2FSK receiver (SmartNet,
   EDACS, ProVoice) keeps each tone's level as the mean of the symbols decided on its side. After a
   strong transient (a channel's first moments, a burst of interference several kHz off) those levels
