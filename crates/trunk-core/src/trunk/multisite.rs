@@ -15,9 +15,9 @@
 use std::collections::HashMap;
 
 use super::calls::{Call, CallId};
-use super::frames::CallFrames;
+use super::recorded::Recorded;
 use super::talkgroups::Talkgroup;
-use crate::mbe::{FRAME_SAMPLES, SAMPLE_RATE};
+
 
 /// Grants for one call reach each site's control channel at nearly the same time.
 pub const TWIN_WINDOW_S: f64 = 3.0;
@@ -30,49 +30,20 @@ const LEAD_HOLD_S: f64 = 0.5;
 #[derive(Clone, Debug)]
 pub struct Held {
     pub call: Call,
-    pub audio: Vec<f32>,
-    pub frames: CallFrames,
+    pub rec: Recorded,
     /// The call JSON's `recorder_num` ([`super::record::ConcludeInfo::recorder_num`]).
     pub recorder_num: u32,
-    /// Where each transmission starts in `audio`.
-    pub tx: super::record::Transmissions,
-    /// How far off its channel the voice came in, Hz.
-    pub freq_error_hz: Option<f64>,
-    /// How strong it came in.
-    pub reception: super::record::Reception,
 }
 
 impl Held {
-    /// Leave out what the saved call won't have: transmissions shorter than
-    /// `min_tx_s` and encrypted ones not decrypted ([`super::record::Transmissions::kept`]),
-    /// their frames and the error summary with them.
-    /// Each source is placed in the audio first, and moves with it.
+    /// Leave out what the saved call won't have ([`Recorded::trim`]).
     pub fn trim(&mut self, min_tx_s: f64) {
-        self.tx.place(&mut self.call.sources, self.audio.len());
-        if let Some(ranges) = self.tx.kept(self.audio.len(), min_tx_s, SAMPLE_RATE) {
-            // Kept audio before it (a source in a part left out starts where the next kept part does).
-            let moved = |p: usize| ranges.iter().map(|r| p.clamp(r.start, r.end) - r.start).sum::<usize>();
-            for s in &mut self.call.sources {
-                s.audio_pos = s.audio_pos.map(moved);
-            }
-            self.frames.keep(&ranges, self.audio.len());
-            self.audio = ranges.iter().flat_map(|r| self.audio[r.clone()].iter().copied()).collect();
-            self.tx = Default::default();
-        }
+        self.rec.trim(&mut self.call.sources, min_tx_s);
     }
 
-    /// Seconds of audio decoded cleanly: the vocoder frames not repeated,
-    /// muted or lost (analog: all of it). Encrypted: none.
+    /// Seconds of audio decoded cleanly ([`Recorded::clean_s`]).
     pub fn clean_s(&self) -> f64 {
-        if self.audio.is_empty() {
-            return 0.0;
-        }
-        let iv = &self.frames.errors.intervals;
-        if iv.is_empty() {
-            return self.audio.len() as f64 / SAMPLE_RATE as f64;
-        }
-        let good: u32 = iv.iter().map(|i| i.frames - i.bad_frames).sum();
-        good as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64
+        self.rec.clean_s()
     }
 }
 
@@ -145,6 +116,11 @@ impl MultiSite {
     /// The other copies of `call` (ended ones too, while it's going): (call, site).
     pub fn twins(&self, call: CallId) -> Vec<(CallId, u16)> {
         self.of.get(&call).and_then(|i| self.convs.get(i)).map_or_else(Vec::new, |c| c.members.iter().copied().filter(|m| m.0 != call).collect())
+    }
+
+    /// Whether `call` is the copy live audio comes from now (or the only one).
+    pub fn leads(&self, call: CallId) -> bool {
+        self.of.get(&call).and_then(|i| self.convs.get(i)).is_none_or(|c| c.lead.is_none_or(|(lead, _)| lead == call))
     }
 
     /// Should `call`'s live audio at `now_s` be passed on? One copy at a
@@ -223,7 +199,7 @@ pub fn pick(copies: &[Held], preferred: &[bool]) -> Option<usize> {
     let best = copies.iter().map(Held::clean_s).fold(0.0, f64::max);
     let rank = |i: &usize| {
         let h = &copies[*i];
-        (h.clean_s(), std::cmp::Reverse(h.frames.errors.total_errors()), -h.call.start_s)
+        (h.clean_s(), std::cmp::Reverse(h.rec.frames.errors.total_errors()), -h.call.start_s)
     };
     let cmp = |a: &usize, b: &usize| rank(a).partial_cmp(&rank(b)).unwrap_or(std::cmp::Ordering::Equal);
     let pref = (0..copies.len()).filter(|&i| preferred.get(i) == Some(&true) && copies[i].clean_s() >= best * PREFERRED_SHARE).max_by(cmp);
@@ -233,8 +209,9 @@ pub fn pick(copies: &[Held], preferred: &[bool]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mbe::Kind;
+    use crate::mbe::{Kind, FRAME_SAMPLES, SAMPLE_RATE};
     use crate::trunk::frames::{Codec, VoiceFrame};
+    use crate::trunk::inband::InBandSpec;
 
     fn call(id: CallId, site: u16, start_s: f64) -> Call {
         Call { id, site: Some(site), start_s, ..Default::default() }
@@ -242,12 +219,13 @@ mod tests {
 
     /// `good` clean frames then `bad` repeated ones, `errs` bit errors each.
     fn held(id: CallId, site: u16, good: usize, bad: usize, errs: u32) -> Held {
-        let mut frames = CallFrames::new(false);
+        let mut rec = Recorded::new(false, InBandSpec::default());
         for k in 0..good + bad {
             let kind = if k < good { Kind::Voice } else { Kind::Repeat };
-            frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind });
+            rec.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind, tone: None });
         }
-        Held { call: call(id, site, id as f64 * 0.1), audio: vec![0.1; (good + bad) * FRAME_SAMPLES], frames, recorder_num: 0, tx: Default::default(), freq_error_hz: None, reception: Default::default() }
+        rec.audio = vec![0.1; (good + bad) * FRAME_SAMPLES];
+        Held { call: call(id, site, id as f64 * 0.1), rec, recorder_num: 0 }
     }
 
     #[test]
@@ -332,35 +310,35 @@ mod tests {
         let mut h = held(1, 0, 0, 0, 0);
         for k in 0..100 {
             let kind = if k < 50 { Kind::Repeat } else { Kind::Voice };
-            h.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind });
+            h.rec.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind, tone: None });
         }
-        h.audio = vec![0.1; 100 * FRAME_SAMPLES];
-        h.tx.note(0, 0.0);
-        h.tx.note(50 * FRAME_SAMPLES, 5.0);
-        h.tx.mark_encrypted(5.0);
+        h.rec.audio = vec![0.1; 100 * FRAME_SAMPLES];
+        h.rec.tx.note(0, 0.0);
+        h.rec.tx.note(50 * FRAME_SAMPLES, 5.0);
+        h.rec.tx.mark_encrypted(5.0);
         h.trim(0.0);
         assert_eq!(h.clean_s(), 0.0);
         // Decrypted from its second transmission only: half of it, which loses to a whole clear copy even preferred.
         let mut late = held(1, 0, 100, 0, 0);
-        late.tx.note(0, 0.0);
-        late.tx.mark_encrypted(0.0);
-        late.tx.note(50 * FRAME_SAMPLES, 5.0);
-        late.tx.mark_encrypted(5.0);
-        late.tx.mark_decrypted(5.0);
+        late.rec.tx.note(0, 0.0);
+        late.rec.tx.mark_encrypted(0.0);
+        late.rec.tx.note(50 * FRAME_SAMPLES, 5.0);
+        late.rec.tx.mark_encrypted(5.0);
+        late.rec.tx.mark_decrypted(5.0);
         late.trim(0.0);
         assert!((late.clean_s() - 50.0 * frame_s).abs() < 1e-9);
         assert_eq!(pick(&[late.clone(), held(2, 1, 100, 0, 0)], &[true, false]), Some(1));
         // A burst under the site's minimum isn't counted.
         let mut burst = held(1, 0, 10, 50, 0);
-        burst.tx.note(0, 0.0);
-        burst.tx.note(10 * FRAME_SAMPLES, 5.0);
+        burst.rec.tx.note(0, 0.0);
+        burst.rec.tx.note(10 * FRAME_SAMPLES, 5.0);
         burst.trim(20.0 * frame_s);
         assert_eq!(burst.clean_s(), 0.0);
-        assert_eq!(burst.audio.len(), 50 * FRAME_SAMPLES);
+        assert_eq!(burst.rec.audio.len(), 50 * FRAME_SAMPLES);
         // Trimmed once: saving it again changes nothing.
-        let before = burst.audio.len();
+        let before = burst.rec.audio.len();
         burst.trim(20.0 * frame_s);
-        assert_eq!(burst.audio.len(), before);
+        assert_eq!(burst.rec.audio.len(), before);
     }
 
     #[test]
@@ -370,10 +348,10 @@ mod tests {
         let mut h = held(1, 0, 0, 0, 0);
         for (t0, secs) in [(0.0, 2.0), (10.0, 0.4), (20.0, 3.0)] {
             let mut t = t0;
-            let end = h.audio.len() + (secs * SAMPLE_RATE as f64) as usize;
-            while h.audio.len() < end {
-                h.tx.note(h.audio.len(), t);
-                h.audio.extend(std::iter::repeat_n(0.1, FRAME_SAMPLES * 9));
+            let end = h.rec.audio.len() + (secs * SAMPLE_RATE as f64) as usize;
+            while h.rec.audio.len() < end {
+                h.rec.tx.note(h.rec.audio.len(), t);
+                h.rec.audio.extend(std::iter::repeat_n(0.1, FRAME_SAMPLES * 9));
                 t += 0.18;
             }
         }
@@ -391,6 +369,6 @@ mod tests {
         h.trim(1.0);
         let at: Vec<_> = h.call.sources.iter().map(|s| s.audio_pos.unwrap()).collect();
         assert_eq!(at, [0, 6 * chunk, 12 * chunk, 12 * chunk]);
-        assert_eq!(h.audio.len(), 12 * chunk + 17 * chunk);
+        assert_eq!(h.rec.audio.len(), 12 * chunk + 17 * chunk);
     }
 }

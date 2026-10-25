@@ -29,7 +29,7 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use trunk_recorder_plugin::filter::glob;
+use trunk_recorder_plugin::filter::talkgroup_matches;
 
 use crate::config::{Config, DelayRule};
 
@@ -92,16 +92,6 @@ impl Rule {
 /// copy's: the same, or its plugin.
 fn covers(p: &str, label: &str) -> bool {
     p == label || super::parse_label(label).0 == p
-}
-
-/// `1000-1099` (a range), or a pattern: `507*`, `12?45`, `8001`.
-fn talkgroup_matches(p: &str, tg: u32) -> bool {
-    if let Some((a, b)) = p.split_once('-') {
-        if let (Ok(a), Ok(b)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
-            return (a.min(b)..=a.max(b)).contains(&tg);
-        }
-    }
-    glob(p, &tg.to_string())
 }
 
 /// The config's delay rules, ready to ask.
@@ -231,13 +221,5 @@ mod tests {
         assert!(delays(json!({})).is_empty());
         assert!(delays(json!({ "pluginDelays": [{ "delayS": 0 }, { "delayS": -5 }] })).is_empty());
         assert!(!d.is_empty());
-    }
-
-    #[test]
-    fn talkgroup_patterns() {
-        assert!(talkgroup_matches("1000-1099", 1000) && talkgroup_matches("1000-1099", 1099) && !talkgroup_matches("1000-1099", 1100));
-        assert!(talkgroup_matches("1099 - 1000", 1050), "either way round");
-        assert!(talkgroup_matches("507*", 50712) && !talkgroup_matches("507*", 5170));
-        assert!(talkgroup_matches("8001", 8001) && !talkgroup_matches("8001", 80011));
     }
 }

@@ -40,6 +40,8 @@ pub trait Plugin: Sized {
     fn unit(&mut self, _event: UnitEvent) {}
     fn audio(&mut self, _chunk: AudioChunk) {}
     fn status(&mut self, _status: Status) {}
+    /// A call's tones made a pattern: every one heard (subscribe to `tone_pattern`).
+    fn tone_pattern(&mut self, _t: TonePatternEvent) {}
 
     /// The recorder is stopping (or the plugin's stdin closed): finish or save
     /// what's in flight within `grace` — the process exits when this returns.
@@ -254,6 +256,7 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
             HostMessage::Unit(u) => p.unit(u),
             HostMessage::Audio(a) => p.audio(a),
             HostMessage::Status(s) => p.status(s),
+            HostMessage::TonePattern(t) => p.tone_pattern(t),
             HostMessage::Shutdown(s) => {
                 grace = std::time::Duration::from_secs_f64(s.grace_s.max(0.0));
                 break;

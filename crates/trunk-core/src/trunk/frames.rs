@@ -29,6 +29,9 @@ pub struct VoiceFrame {
     pub erased: bool,
     /// What the vocoder made of it.
     pub kind: Kind,
+    /// AMBE+2: the tone the vocoder played for it, (ID, level): a tone
+    /// frame's, or the one a damaged frame repeated ([`crate::mbe::Decoder::tone_played`]).
+    pub tone: Option<(u8, u8)>,
 }
 
 impl VoiceFrame {
@@ -200,6 +203,11 @@ impl CallFrames {
         }
     }
 
+    /// Frames so far.
+    pub fn count(&self) -> usize {
+        self.stats.len()
+    }
+
     /// Keep only the frames whose audio is in `ranges` (sample ranges of the
     /// call's `audio_len` samples), the error summary redone for them. A
     /// call's digital audio is its frames one after another; when it isn't
@@ -227,7 +235,7 @@ mod tests {
     use super::*;
 
     fn frame(errs: u32, kind: Kind) -> VoiceFrame {
-        VoiceFrame { codec: Codec::Imbe, bits: vec![1; 88], e0: 0, errs, erased: false, kind }
+        VoiceFrame { codec: Codec::Imbe, bits: vec![1; 88], e0: 0, errs, erased: false, kind, tone: None }
     }
 
     #[test]

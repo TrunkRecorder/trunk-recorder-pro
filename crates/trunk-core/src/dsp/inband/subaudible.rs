@@ -33,8 +33,9 @@ use std::sync::OnceLock;
 
 use num_complex::Complex32;
 
-use super::filters::lowpass;
-use super::fm::AUDIO_RATE;
+use super::{Chunk, Detector, Found, Tap};
+use crate::dsp::filters::lowpass;
+use crate::dsp::fm::AUDIO_RATE;
 
 /// The CTCSS tones, tenths of a hertz.
 pub const CTCSS: [u16; 51] = [
@@ -244,6 +245,8 @@ pub struct ToneDetector {
     slicers: [Slicer; NPHASE],
     /// Per code index: frames counted, and the sample of the last.
     frames: Vec<(u32, u32)>,
+    /// The reading last told ([`Detector`]).
+    told: Option<ToneHeard>,
 }
 
 impl Default for ToneDetector {
@@ -274,6 +277,22 @@ impl Default for ToneDetector {
             dc: 0.0,
             slicers: std::array::from_fn(|k| Slicer { clock: k as f32 / NPHASE as f32, ..Default::default() }),
             frames: vec![(0, 0); 2 * DCS.len()],
+            told: None,
+        }
+    }
+}
+
+/// A call's sub-audible tone or code: each new reading.
+impl Detector for ToneDetector {
+    fn tap(&self) -> Tap {
+        Tap::Subaudible
+    }
+    fn push(&mut self, c: &Chunk, out: &mut Vec<Found>) {
+        ToneDetector::push(self, c.audio);
+        let now = self.heard();
+        if now.is_some() && now != self.told {
+            self.told = now;
+            out.extend(now.map(Found::Code));
         }
     }
 }

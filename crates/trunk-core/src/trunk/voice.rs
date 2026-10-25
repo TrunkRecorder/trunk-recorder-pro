@@ -31,7 +31,6 @@ use crate::dsp::c4fm::C4fm;
 use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::am::Am;
 use crate::dsp::fm::Nbfm;
-use crate::dsp::signalling::Signalling;
 use crate::dsp::{AnalogTuning, Receiver, Symbol};
 use crate::mbe;
 use crate::nxdn::voice::{NxdnVoice, VCH_S};
@@ -279,13 +278,12 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
         VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
         VoiceKind::Analog => Box::new(Analog {
             demod: Demod::Fm(Nbfm::with(spec.rate, &spec.analog)),
-            ids: Some(Signalling::with_deemphasis(spec.analog.deemph_tau_s)),
             squelch: spec.squelch,
             subaudible: spec.subaudible,
             carrier: false,
         }),
         VoiceKind::ProVoice => Box::new(ProVoice { pv: crate::edacs::ProVoice::new(spec.rate, spec.seed, spec.vocoder), t0: spec.t0, air: None }),
-        VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), ids: None, squelch: spec.squelch, subaudible: false, carrier: false }),
+        VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, carrier: false }),
     }
 }
 
@@ -544,10 +542,10 @@ enum Demod {
     Am(Am),
 }
 
-/// Analog FM or AM, squelched; FM's unit IDs from MDC1200 / FleetSync bursts.
+/// Analog FM or AM, squelched. (The unit IDs and tones in its audio are
+/// found with the call's: [`super::inband`].)
 struct Analog {
     demod: Demod,
-    ids: Option<Signalling>,
     squelch: f32,
     subaudible: bool,
     carrier: bool,
@@ -567,13 +565,6 @@ impl VoiceDecoder for Analog {
             Demod::Fm(fm) => fm.push_low(iq, self.squelch, &mut audio, self.subaudible.then_some(&mut low)),
             Demod::Am(am) => am.push(iq, self.squelch, &mut audio),
         };
-        let mut found = Vec::new();
-        if let Some(ids) = &mut self.ids {
-            ids.push(&audio, &mut found);
-        }
-        for u in found {
-            out.push(VoiceOut { slot: 0, out: TrackerOut::Info { source: Some(u.unit), flags: Flags::emergency(u.emergency) } });
-        }
         if !audio.is_empty() {
             out.push(VoiceOut { slot: 0, out: TrackerOut::AnalogAudio(audio) });
         }

@@ -170,7 +170,7 @@ impl Slot {
         let mut buf = [0f32; FRAME_SAMPLES];
         let kind = self.dec.ambe(&bits, errs, &mut buf);
         mbe::to_limited(&mut buf);
-        let frame = VoiceFrame { codec: Codec::Ambe, bits: bits.to_vec(), e0: 0, errs, erased, kind };
+        let frame = VoiceFrame { codec: Codec::Ambe, bits: bits.to_vec(), e0: 0, errs, erased, kind, tone: self.dec.tone_played(kind) };
         out.push((c, TrackerOut::Audio(buf.to_vec(), frame)));
         kind != Kind::Voice
     }

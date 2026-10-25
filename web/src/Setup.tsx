@@ -63,6 +63,7 @@ import {
 import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } from "./Plugins.tsx";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
+import { SystemSignals } from "./Signals.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
@@ -101,7 +102,7 @@ function useTodosAt(kinds: string[], name: string): number {
 function tabOf(target: string): SetupTab {
   if (target.startsWith("plugin")) return "plugins";
   if (target.startsWith("src-")) return "radios";
-  return /^(channels|squelch|convplug|convunits|conv)-/.test(target) ? "conventional" : "systems";
+  return /^(channels|squelch|convplug|convunits|convsignals|conv)-/.test(target) ? "conventional" : "systems";
 }
 
 /** Show a setup field (`need-<target>`): switch to its page and tab, scroll to it and flash it. */
@@ -1784,9 +1785,10 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
         </Group>
       )}
       {chans.length > 0 && (
-        <Group title="Plugins" hint="This system's own plugin settings and delays. Anything left at Default follows the Plugins tab." cols={1}>
+        <Group title="Plugins" hint="This system's own plugin settings and delays, and the signals its calls and plugins name. Anything left at Default follows the Plugins tab." cols={1}>
           <SystemPluginSettings system={{ conv: k }} />
           <SystemDelays system={{ conv: k }} />
+          <SystemSignals system={{ conv: k }} />
         </Group>
       )}
       {chans.length > 0 && (
@@ -2084,6 +2086,7 @@ const SYSTEM_OWN: [keyof System, string][] = [
   ["recording", "recording rules"],
   ["plugins", "plugin settings"],
   ["pluginDelays", "plugin delays"],
+  ["signals", "signals"],
   ["keys", "keys"],
   ["defaultMode", "default mode"],
 ];
@@ -2473,9 +2476,10 @@ export function SystemCard(props: { c: Config; i: number }) {
           }
         />
       </Group>
-      <Group title="Plugins" hint="This system's own plugin settings and delays. Anything left at Default follows the Plugins tab." cols={1}>
+      <Group title="Plugins" hint="This system's own plugin settings and delays, and the signals its calls and plugins name. Anything left at Default follows the Plugins tab." cols={1}>
         <SystemPluginSettings system={i} />
         <SystemDelays system={i} />
+        <SystemSignals system={i} />
       </Group>
       <Group title="Recording" hint="This system's own call rules and what it keeps. Anything left at Default follows the Recording tab." cols={1}>
         <RecordingOverrides

@@ -9,6 +9,8 @@ pub mod fixed;
 mod fixed_tables;
 mod tone_table;
 
+pub use tone_table::annex_t;
+
 use std::f64::consts::{E, PI};
 use std::sync::Arc;
 
@@ -1025,6 +1027,12 @@ impl Decoder {
             Kind::Repeat => Kind::Erasure,
             kind => kind,
         }
+    }
+
+    /// The tone a frame played, `kind` being what [`Decoder::ambe`] made of
+    /// it: a tone frame's, or the tone a damaged frame repeated (ID, level).
+    pub fn tone_played(&self, kind: Kind) -> Option<(u8, u8)> {
+        if matches!(kind, Kind::Tone | Kind::Repeat) { self.tone } else { None }
     }
 
     /// The mbelib profile: its repeat count rides in the frame parameters,

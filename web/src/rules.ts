@@ -12,7 +12,7 @@
 // each time.
 
 import init, * as wasm from "./web/pkg/trunk_web.js";
-import type { Channel, Config, Site } from "./protocol.ts";
+import type { Channel, Config, SignalDef, Site, TonePatternKind } from "./protocol.ts";
 
 let ready = false;
 
@@ -132,4 +132,27 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
 /** The channels as CSV, which parseChannelCsv and the recorder read back unchanged. */
 export function channelsToCsv(channels: Channel[]): string {
   return rules().channelsWrite(JSON.stringify(channels));
+}
+
+/** What's wrong with a signal (a system's `signals` entry), or null (SignalDef::problem: Start says the same). */
+export function signalProblem(d: SignalDef): string | null {
+  return rules().signalProblem(JSON.stringify(d)) ?? null;
+}
+
+/** What the recorder counts as signal `d`: how near its tones have to be, and the other paging codes that takes in. */
+export function signalNote(d: SignalDef): string {
+  return rules().signalNote(JSON.stringify(d));
+}
+
+/** A signal's id made from what people call it ("Norwalk EMS page" → NORWALK_EMS_PAGE). */
+export function signalId(text: string): string {
+  return rules().signalId(text);
+}
+
+/** One step of a tone pattern: these frequencies together (none: silence), for `s` seconds. */
+export type Step = { hz: number[]; s: number };
+
+/** What a tone pattern (as the call JSON's `tone_patterns` and the tones log have it) sounds like, step by step. */
+export function toneSteps(p: { pattern: TonePatternKind; tones: number[]; lengths: number[]; digits?: string; knox?: boolean; cycles?: number }): Step[] {
+  return JSON.parse(rules().toneSteps(JSON.stringify(p)));
 }

@@ -37,7 +37,8 @@
 
 use num_complex::Complex32;
 
-use super::fm::{AUDIO_RATE, DEEMPH_TAU};
+use super::{Chunk, Detector, Found};
+use crate::dsp::fm::{AUDIO_RATE, DEEMPH_TAU};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -308,6 +309,15 @@ pub struct Signalling {
 impl Default for Signalling {
     fn default() -> Self {
         Self::with_deemphasis(DEEMPH_TAU)
+    }
+}
+
+/// Who is talking: each unit ID burst.
+impl Detector for Signalling {
+    fn push(&mut self, c: &Chunk, out: &mut Vec<Found>) {
+        let mut ids = Vec::new();
+        Signalling::push(self, c.audio, &mut ids);
+        out.extend(ids.into_iter().map(Found::Unit));
     }
 }
 
