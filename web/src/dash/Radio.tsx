@@ -3,7 +3,7 @@
 // affiliated with and who they talk with — and, for one talkgroup or one
 // radio, its week and its connections.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { formatMhz, systemColor } from "../config.ts";
 import { radioQuery, setTalkgroupFields, setTalkgroupIgnore, setUnitName, setView, usePolled, useApp, type AppState } from "../controller.ts";
 import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
@@ -416,56 +416,70 @@ function SystemView({ s, sys, focus }: { s: AppState; sys: DashSystem; focus?: s
 
 // ── one talkgroup ────────────────────────────────────────────────────────────
 
-/** Alpha Tag / Description / Tag / Category, editable in place — only ever
- * from the talkgroup file itself: `TgRow` carries none of these beyond the
- * alpha tag, so there's nothing to fall back to while `live` hasn't loaded. */
+type TgText = "alphaTag" | "description" | "tag" | "group";
+const TG_FIELDS: [TgText, string][] = [
+  ["alphaTag", "Alpha Tag"],
+  ["description", "Description"],
+  ["tag", "Tag"],
+  ["group", "Category"],
+];
+
+/** Alpha Tag / Description / Tag / Category, shown — and edited once Edit is
+ * pressed, saved together on Save — only ever from the talkgroup file itself:
+ * `TgRow` carries none of these beyond the alpha tag, so there's nothing to
+ * fall back to while `live` hasn't loaded. */
 function TgFields({ sys, tg, live, onDraftTag }: { sys: DashSystem; tg: number; live: Map<number, Talkgroup> | null; onDraftTag: (text: string | null) => void }) {
   const t = live?.get(tg);
-  const loading = live === null;
-  return (
-    <Card title="Talkgroup file">
-      <div className="row">
-        <TgTextField sys={sys} tg={tg} field="alphaTag" label="Alpha Tag" value={t?.alphaTag ?? ""} disabled={loading} onDraft={onDraftTag} />
-        <TgTextField sys={sys} tg={tg} field="description" label="Description" value={t?.description ?? ""} disabled={loading} />
-        <TgTextField sys={sys} tg={tg} field="tag" label="Tag" value={t?.tag ?? ""} disabled={loading} />
-        <TgTextField sys={sys} tg={tg} field="group" label="Category" value={t?.group ?? ""} disabled={loading} />
-      </div>
-    </Card>
-  );
-}
-
-function TgTextField({
-  sys,
-  tg,
-  field,
-  label,
-  value,
-  disabled,
-  onDraft,
-}: {
-  sys: DashSystem;
-  tg: number;
-  field: "alphaTag" | "description" | "tag" | "group";
-  label: string;
-  value: string;
-  disabled?: boolean;
-  /** The text as it's typed (`null` once it's saved), for what shows it meanwhile. */
-  onDraft?: (text: string | null) => void;
-}) {
-  const [text, setText] = useState(value);
-  useEffect(() => setText(value), [value]);
+  const value = (k: TgText) => t?.[k] ?? "";
+  // What's being typed, while editing; null when not.
+  const [draft, setDraft] = useState<Record<TgText, string> | null>(null);
+  useEffect(() => setDraft(null), [sys.name, tg]);
+  useEffect(() => onDraftTag(draft ? draft.alphaTag : null), [draft?.alphaTag]);
+  const changed = draft ? TG_FIELDS.filter(([k]) => draft[k] !== value(k)).map(([k]) => k) : [];
+  const edit = () => setDraft(Object.fromEntries(TG_FIELDS.map(([k]) => [k, value(k)])) as Record<TgText, string>);
   const save = () => {
-    if (text !== value) setTalkgroupFields(sys.name, tg, { [field]: text } as Partial<Pick<Talkgroup, "alphaTag" | "description" | "tag" | "group">>);
-    onDraft?.(null);
+    if (draft && changed.length) setTalkgroupFields(sys.name, tg, Object.fromEntries(changed.map((k) => [k, draft[k]])));
+    setDraft(null);
   };
-  const change = (t: string) => {
-    setText(t);
-    onDraft?.(t);
-  };
+  const keys = (e: KeyboardEvent) => (e.key === "Enter" ? save() : e.key === "Escape" ? setDraft(null) : undefined);
   return (
-    <Field label={label}>
-      <input value={text} disabled={disabled} onChange={(e) => change(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
-    </Field>
+    <Card
+      title="Talkgroup file"
+      actions={
+        draft ? (
+          <>
+            <button className="btn small primary" disabled={!changed.length} onClick={save}>
+              Save
+            </button>
+            <button className="btn ghost small" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button className="btn ghost small" disabled={live === null} onClick={edit}>
+            Edit
+          </button>
+        )
+      }
+    >
+      {draft ? (
+        <div className="row">
+          {TG_FIELDS.map(([k, label], i) => (
+            <Field key={k} label={label}>
+              <input value={draft[k]} autoFocus={i === 0} onChange={(e) => setDraft({ ...draft, [k]: e.target.value })} onKeyDown={keys} />
+            </Field>
+          ))}
+        </div>
+      ) : (
+        <div className="kv">
+          {TG_FIELDS.map(([k, label]) => (
+            <span key={k}>
+              {label} <b>{value(k) || "—"}</b>
+            </span>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -595,31 +609,58 @@ function Ciphers({ ciphers }: { ciphers: CipherSeen[] }) {
 // ── one radio ────────────────────────────────────────────────────────────────
 
 /**
- * The radio's name, editable in place — adds or updates a literal row in
- * the system's unit names file (ahead of every pattern, so it always wins).
- * Saving always writes the name; if the system's current "Unit names" mode
- * would hide a name set here (it prefers aliases heard over the air, or
- * shows none), a note says so and links to the Setup field that controls it.
+ * The radio's name, shown — and edited once Edit is pressed — as its
+ * system's unit names file has it: saved as a literal row there (ahead of
+ * every pattern, so it always wins). If the system's current "Unit names"
+ * mode would hide a name set here (it prefers aliases heard over the air,
+ * or shows none), a note says so and links to the Setup field for it.
  */
 function UnitNameField({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number }) {
   const conventional = sys.kind === "conventional";
   const names = s.config?.systems.find((x) => x.shortName === sys.name)?.unitNames ?? s.config?.conventional.find((x) => x.shortName === sys.name)?.unitNames;
   // The file's name for it, not the name shown (which, by the mode, may be the alias heard).
   const saved = (names?.csv ? unitName(names.csv, unit) : undefined) ?? "";
-  const [text, setText] = useState(saved);
-  useEffect(() => setText(saved), [saved]);
+  const [draft, setDraft] = useState<string | null>(null);
+  useEffect(() => setDraft(null), [sys.name, unit]);
   const mode = names?.mode || "user";
   const heard = s.units[sys.name]?.[unit];
   // "Aliases heard first" only hides it from a radio that's been heard with one.
   const hidden = mode === "none" || (mode === "ota" && !!heard);
   const save = () => {
-    if (text !== saved) setUnitName(sys.name, conventional, unit, text);
+    if (draft !== null && draft !== saved) setUnitName(sys.name, conventional, unit, draft);
+    setDraft(null);
   };
   return (
-    <Card title="Name">
-      <Field label="Name">
-        <input value={text} onChange={(e) => setText(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
-      </Field>
+    <Card
+      title="Name"
+      actions={
+        draft !== null ? (
+          <>
+            <button className="btn small primary" disabled={draft === saved} onClick={save}>
+              Save
+            </button>
+            <button className="btn ghost small" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button className="btn ghost small" onClick={() => setDraft(saved)}>
+            Edit
+          </button>
+        )
+      }
+    >
+      {draft !== null ? (
+        <Field label="Name">
+          <input value={draft} autoFocus onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => (e.key === "Enter" ? save() : e.key === "Escape" ? setDraft(null) : undefined)} />
+        </Field>
+      ) : (
+        <div className="kv">
+          <span>
+            In the unit names file <b>{saved || "—"}</b>
+          </span>
+        </div>
+      )}
       {hidden && (
         <p className="muted small">
           {mode === "ota" ? `This system's "Unit names" mode (aliases heard first) shows the alias this radio is heard with, "${heard}", in place of a name set here.` : `This system's "Unit names" mode (no names) means a name set here won't show until that's changed.`}{" "}
