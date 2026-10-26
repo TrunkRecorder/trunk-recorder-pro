@@ -234,7 +234,7 @@ then Start). A few apply at once:
 |---|---|---|
 | A trunked system's talkgroup file (`<shortName>.talkgroups.csv`): an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
 | Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them | Recording rules, `filenameFormat`, `captureDir` | `monitor.probeHosts` |
-| `log` settings | `recording.ramSpool` (the interface says "from the next start") | |
+| `log` settings, `monitor.networkChecks` | `recording.ramSpool` (the interface says "from the next start") | |
 | `server.allowedOrigins`, `server.interfaces` (an interface moves to its new port at once) | A linked `channelFile` is re-read at every Start | |
 
 ## Files kept beside the config

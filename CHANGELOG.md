@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A switch for the network checks** (#37). The Platform page's Network card has a **Checks**
+  switch (`monitor.networkChecks`, on by default): off, the recorder stops connecting to the
+  internet check hosts every 15 s and asking the time server every 15 minutes, for a computer whose
+  connection something else already watches. `probeHosts` and `timeServer` are kept for when it's
+  turned back on. Applies at once.
+
 ## [0.2.10] — 2026-10-25
 
 - **EDACS and SmartNet control channels lock every time** (#76). The 2FSK receiver (SmartNet,

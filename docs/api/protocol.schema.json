@@ -4071,6 +4071,10 @@
           },
           "description": "Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks."
         },
+        "networkChecks": {
+          "type": "boolean",
+          "description": "Off: neither the internet checks nor the time server are asked, whatever's set. Applies at once."
+        },
         "timeServer": {
           "type": "string",
           "description": "The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked."
@@ -4082,6 +4086,7 @@
       },
       "required": [
         "probeHosts",
+        "networkChecks",
         "timeServer",
         "clockWarnMs"
       ],

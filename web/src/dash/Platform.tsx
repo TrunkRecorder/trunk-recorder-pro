@@ -6,10 +6,11 @@
 
 import { useState } from "react";
 import type { ClockInfo, PlatformInfo, SeriesData } from "../protocol.ts";
-import { useApp, useTopic, type StatsRange } from "../controller.ts";
+import { updateConfig, useApp, useTopic, type StatsRange } from "../controller.ts";
 import { Card, Choice, HeatStrip, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
 import { ago, bytes, clockAt, dur, ms, num, pct } from "../fmt.ts";
 import { platformHealth, total, useHistory } from "./data.ts";
+import { Switch } from "../SetupLayout.tsx";
 
 const RANGES: { v: StatsRange; label: string }[] = [
   { v: "1h", label: "1 h" },
@@ -30,6 +31,7 @@ export function PlatformPage() {
   const v = h.values;
   const p = h.platform;
   const health = platformHealth(s);
+  const checks = s.config?.monitor?.networkChecks ?? true;
   const missing = (field: string) => p.unavailable.find((u) => u.field === field)?.why;
   const audioPerDay = (() => {
     const t = total(week?.["all/audioBytes"]);
@@ -170,8 +172,22 @@ export function PlatformPage() {
           </div>
         )}
       </Card>
-      <Card title="Network">
-        {upCells.length > 0 ? (
+      <Card
+        title="Network"
+        actions={
+          s.config && (
+            <Switch
+              label="Checks"
+              title="The internet checks (monitor.probeHosts) and the clock's time server (monitor.timeServer). Off: neither is asked."
+              checked={checks}
+              onChange={(on) => updateConfig((x) => void (x.monitor && (x.monitor.networkChecks = on)))}
+            />
+          )
+        }
+      >
+        {!checks ? (
+          <p className="empty">Checks off: the internet and the time server aren't asked (monitor.networkChecks).</p>
+        ) : upCells.length > 0 ? (
           <>
             <Ribbon cells={upCells} titles={(up?.v ?? []).map((x, i) => `${clockAt(up!.t0 + i * up!.stepS)}: ${x === null ? "no data" : x >= 1 ? "up" : `${Math.round((x ?? 0) * 100)}% of checks answered`}`)} h={18} label="internet reachability" />
             <p className="muted small">
@@ -223,7 +239,7 @@ export function PlatformPage() {
         )}
         {v["net/dns"] !== undefined && <p className="muted small">Name lookups take {num(v["net/dns"], 0)} ms.</p>}
       </Card>
-      <ClockCard c={p.clock} offsets={hist?.["clock/offsetMs"] ?? null} osMissing={missing("clockSynced")} />
+      <ClockCard c={p.clock} offsets={hist?.["clock/offsetMs"] ?? null} osMissing={missing("clockSynced")} checksOff={!checks} />
       <Card title="This computer">
         <div className="kv">
           <span>
@@ -308,7 +324,7 @@ function offsetText(v: number): { by: string; way: string } {
  * The clock: what the operating system says of it, and what the time server measured. The
  * recorder decides what's wrong (`problem`); this only shows it.
  */
-function ClockCard({ c, offsets, osMissing }: { c: ClockInfo; offsets: SeriesData | null; osMissing?: string }) {
+function ClockCard({ c, offsets, osMissing, checksOff }: { c: ClockInfo; offsets: SeriesData | null; osMissing?: string; checksOff?: boolean }) {
   const m = c.measured;
   const level: Level | undefined = c.problem?.level ?? (m?.current || c.os ? "ok" : undefined);
   const off = m && offsetText(m.offsetMs);
@@ -323,7 +339,9 @@ function ClockCard({ c, offsets, osMissing }: { c: ClockInfo; offsets: SeriesDat
               ? `${off!.way} ${c.server}, ${ago(m.at)}${m.current ? "" : " (too long ago to go by)"}`
               : c.server
                 ? c.error ?? `asking ${c.server}…`
-                : "no time server set (monitor.timeServer)"
+                : checksOff
+                  ? "not asked: network checks are off"
+                  : "no time server set (monitor.timeServer)"
           }
           hint="This computer's clock less the time server's, from one SNTP query every 15 minutes. Measured here: no service reports it."
         />
