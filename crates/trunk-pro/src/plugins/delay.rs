@@ -4,7 +4,8 @@
 //!
 //! A rule picks what it's for by its fields: the system it's in (or every
 //! system, at the top of the config), `plugins` and `talkgroups`, each left
-//! out picking everything. Of the rules that pick something:
+//! out picking everything, less its `exceptTalkgroups`. Of the rules that
+//! pick something:
 //!
 //! 1. one that narrows another replaces it: it picks only what the other
 //!    does, and isn't the same (a system's narrows every system's; one for
@@ -22,6 +23,13 @@
 //! | dcfd: talkgroups 1000-1099 30 min; dcfd: OpenMHz 0 | 30 min for 1000–1099, else none |
 //! | dcfd: 10 min; dcfd: talkgroup 1001 0 | none for 1001 |
 //! | every system: OpenMHz 10 min; dcfd: talkgroup 1001 0 | 10 min (the talkgroup's rule isn't OpenMHz's) |
+//! | dcfd: all but 1001 30 min | 30 min, but none for 1001 |
+//! | dcfd: 10 min; dcfd: all but 1000-1099 0 | 10 min for 1000–1099, else none |
+//!
+//! Whether one rule's talkgroups are within another's is read as written: a
+//! rule's are within one that excepts some only when it excepts those too.
+//! When that can't tell (only 1001, against all but 2000), neither narrows,
+//! and the longer delay wins.
 //!
 //! Another way to pick (a talkgroup's tag, emergencies, the hour) is a field
 //! of [`About`], one of [`Rule`], and its part of `picks` and `within`.
@@ -29,7 +37,7 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use trunk_recorder_plugin::filter::talkgroup_matches;
+use trunk_recorder_plugin::filter::{talkgroup_list, talkgroup_matches};
 
 use crate::config::{Config, DelayRule};
 
@@ -54,6 +62,8 @@ struct Rule {
     plugins: Vec<String>,
     /// Patterns; empty: all.
     talkgroups: Vec<String>,
+    /// Patterns not picked, of those.
+    except: Vec<String>,
     delay: Duration,
 }
 
@@ -65,14 +75,18 @@ impl Rule {
             v.dedup();
             v
         };
+        // Talkgroups as typed: "101 102" is two, "1000 - 1099" one range. One that
+        // isn't a talkgroup is kept as it is, and matches none (the form flags it).
+        let tgs = |v: &[String]| -> Vec<String> { clean(&v.iter().flat_map(|e| talkgroup_list(std::slice::from_ref(e)).unwrap_or_else(|_| vec![e.clone()])).collect::<Vec<_>>()) };
         let delay = if r.delay_s.is_finite() && r.delay_s > 0.0 { Duration::from_secs_f64(r.delay_s) } else { Duration::ZERO };
-        Rule { system: system.map(str::to_string), plugins: clean(&r.plugins), talkgroups: clean(&r.talkgroups), delay }
+        Rule { system: system.map(str::to_string), plugins: clean(&r.plugins), talkgroups: tgs(&r.talkgroups), except: tgs(&r.except_talkgroups), delay }
     }
 
     fn picks(&self, label: &str, about: &About) -> bool {
         self.system.as_ref().is_none_or(|s| *s == about.system)
             && (self.plugins.is_empty() || self.plugins.iter().any(|p| covers(p, label)))
             && (self.talkgroups.is_empty() || about.talkgroup.is_some_and(|tg| self.talkgroups.iter().any(|p| talkgroup_matches(p, tg))))
+            && !about.talkgroup.is_some_and(|tg| self.except.iter().any(|p| talkgroup_matches(p, tg)))
     }
 
     /// It picks only what `other` picks (as written: a pattern is only within
@@ -81,6 +95,7 @@ impl Rule {
         (other.system.is_none() || self.system == other.system)
             && (other.plugins.is_empty() || (!self.plugins.is_empty() && self.plugins.iter().all(|p| other.plugins.iter().any(|o| covers(o, p)))))
             && (other.talkgroups.is_empty() || (!self.talkgroups.is_empty() && self.talkgroups.iter().all(|t| other.talkgroups.contains(t))))
+            && other.except.iter().all(|t| self.except.contains(t))
     }
 
     fn narrows(&self, other: &Rule) -> bool {
@@ -182,6 +197,31 @@ mod tests {
             "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "talkgroups": [1001], "delayS": 0 }] }]
         }));
         assert_eq!(mins(&d, "openmhz", &on("dcfd", Some(1001))), 10, "the talkgroup's rule isn't OpenMHz's");
+    }
+
+    /// All but some talkgroups: those excepted aren't picked, and a rule for
+    /// all but some narrows one for all of them.
+    #[test]
+    fn all_but_some_talkgroups() {
+        let d = delays(json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "exceptTalkgroups": ["1001"], "delayS": 30 * MIN }] }] }));
+        assert_eq!(mins(&d, "openmhz", &on("dcfd", Some(1002))), 30);
+        assert_eq!(mins(&d, "openmhz", &on("dcfd", Some(1001))), 0, "excepted");
+        assert_eq!(mins(&d, "openmhz", &on("dcfd", None)), 30, "a unit's event with no talkgroup isn't excepted");
+
+        let d = delays(json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "delayS": 10 * MIN }, { "exceptTalkgroups": ["1000 - 1099"], "delayS": 0 }] }] }));
+        assert_eq!(mins(&d, "openmhz", &on("dcfd", Some(1050))), 10, "only the system's rule picks it");
+        assert_eq!(mins(&d, "openmhz", &on("dcfd", Some(2000))), 0, "all but 1000-1099 narrows the system's");
+
+        // Only some, except some of those.
+        let d = delays(json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "talkgroups": ["1000-1099"], "exceptTalkgroups": [1050], "delayS": 5 * MIN }] }] }));
+        assert_eq!([1001, 1050, 2000].map(|tg| mins(&d, "x", &on("dcfd", Some(tg)))), [5, 0, 0]);
+
+        // Can't tell (only 1001, against all but 2000): neither narrows, the longer wins.
+        let d = delays(json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "talkgroups": [1001], "delayS": 0 }, { "exceptTalkgroups": [2000], "delayS": 20 * MIN }] }] }));
+        assert_eq!(mins(&d, "x", &on("dcfd", Some(1001))), 20);
+        // As typed, as the form keeps it: two talkgroups in one entry.
+        let d = delays(json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "talkgroups": ["1001 1002"], "delayS": 60 }] }] }));
+        assert_eq!(d.delay("x", &on("dcfd", Some(1002))).as_secs(), 60);
     }
 
     /// The narrowest rule for a talkgroup and a plugin together: a private

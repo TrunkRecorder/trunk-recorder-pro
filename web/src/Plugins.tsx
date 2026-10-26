@@ -39,7 +39,7 @@ import { EveryDelays, PluginDelay } from "./Delays.tsx";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
 import { showTodo } from "./Setup.tsx";
 import { DraftInput, Toggle } from "./inputs.tsx";
-import { numberList, textList } from "./fieldText.ts";
+import { numberList, talkgroupList, talkgroupProblem, textList } from "./fieldText.ts";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { Card } from "./charts.tsx";
 import { ToneList } from "./ToneList.tsx";
@@ -420,17 +420,19 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
   } else if (f.type === "array") {
     const items = Array.isArray(value) ? value : [];
     const numeric = f.items?.type === "integer" || f.items?.type === "number";
+    const tgs = !!f["x-talkgroups"];
     control = (
       <DraftInput
         id={id}
-        className={numeric ? "mono" : ""}
-        codec={numeric ? numbersByComma : textByComma}
-        value={items}
-        placeholder={Array.isArray(fallback) && fallback.length ? fallback.join(", ") : "Separate with commas"}
+        className={numeric || tgs ? "mono" : ""}
+        codec={numeric ? numbersByComma : tgs ? talkgroupList : textByComma}
+        value={tgs ? items.map(String) : items}
+        placeholder={Array.isArray(fallback) && fallback.length ? fallback.join(", ") : tgs ? "1001, 1000-1099, 507*" : "Separate with commas"}
         onChange={(vals) => onChange(vals.length ? vals : undefined)}
       />
     );
     if (numeric && items.some((x) => typeof x === "number" && Number.isNaN(x))) problem = "Numbers, separated with commas";
+    if (tgs) problem = talkgroupProblem(items);
   } else {
     const text = typeof value === "string" ? value : "";
     const placeholder = typeof fallback === "string" ? fallback : "";

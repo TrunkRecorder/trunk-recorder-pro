@@ -1550,6 +1550,11 @@ pub struct DelayRule {
     /// (`507*`, `12?45`). Empty: every talkgroup (and a system's events that have none).
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "trunk_recorder_plugin::filter::patterns")]
     pub talkgroups: Vec<String>,
+    /// Talkgroups it isn't for, of those `talkgroups` picks (all of them, when
+    /// it's empty): the same kinds of entry. "All but 1001" is `talkgroups`
+    /// empty and this `["1001"]`.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "trunk_recorder_plugin::filter::patterns")]
+    pub except_talkgroups: Vec<String>,
     /// How long, s (0: none, as for something it narrows).
     pub delay_s: f64,
     /// Keys this version doesn't know (a newer version's, a hand edit's):

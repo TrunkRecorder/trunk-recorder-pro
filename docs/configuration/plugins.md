@@ -83,6 +83,39 @@ The second copy (and any after it) runs as a process of its own, `rdioscanner#2`
 folder (`plugin-data/rdioscanner#2/`), for the systems that have a second copy. In Setup, **Add
 plugin** on a system's card adds one.
 
+## Choosing talkgroups
+
+Everywhere the recorder takes a list of talkgroups (an uploader's talkgroups for a system, a
+delay, a signal) it reads the entries the same way:
+
+| Entry | Means |
+|---|---|
+| `8001` | That talkgroup |
+| `1000-1099` | Every talkgroup from 1000 to 1099, both included (`1099-1000` works too; spaces around the dash are fine) |
+| `507*` | Every talkgroup whose number starts with 507: `*` stands for any digits, any number of them |
+| `12???` | Every five-digit talkgroup starting with 12: `?` stands for one digit |
+
+Separate entries with commas, spaces or semicolons: `1001 1000-1099, 507*`. The form says when an
+entry is none of these, and a plugin with such an entry won't start, naming it (*dcfd's
+talkgroups: "10O1" isn't a talkgroup…*).
+
+The uploaders (OpenMHz, Broadcastify, Rdio Scanner) have a **Talkgroups** menu on each system's
+card:
+
+| Choice | `talkgroupMode` | Uploads |
+|---|---|---|
+| **Every talkgroup** | `"all"` | Every talkgroup |
+| **Only some** | `"only"` | The talkgroups in **Only these** (`talkgroupAllow`), less any in **Except these** (`talkgroupDeny`) |
+| **All but some** | `"allBut"` | Every talkgroup but those in **Except these** (`talkgroupDeny`) |
+
+A list the choice doesn't use is kept, hidden, for when it's chosen again. With no
+`talkgroupMode`, the plugin takes every talkgroup, whatever the lists say.
+
+```json
+"plugins": { "broadcastify": { "apiKey": "…", "systemId": 1234,
+  "talkgroupMode": "only", "talkgroupAllow": ["1000-1099", "507*"], "talkgroupDeny": ["1050"] } }
+```
+
 ## Delays
 
 Plugins can be given calls late: a while after they end, for talkgroups that are sensitive, or for a
@@ -93,7 +126,8 @@ keys, and a key left out picks everything:
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `plugins` | | every plugin | array | Plugin ids. One copy of a plugin is `id#2`, `id#3`… |
-| `talkgroups` | | every talkgroup | array | Numbers, ranges (`"1000-1099"`) and patterns (`"507*"`, `"12?45"`), as strings or numbers |
+| `talkgroups` | | every talkgroup | array | Only these talkgroups: numbers, ranges (`"1000-1099"`) and patterns (`"507*"`, `"12?45"`), as strings or numbers ([Choosing talkgroups](#choosing-talkgroups)) |
+| `exceptTalkgroups` | | none | array | Not these, of those `talkgroups` picks: the same kinds of entry. With `talkgroups` left out, the rule is for every talkgroup but these |
 | `delayS` | | `0` | number | How long, in seconds. `0` is no delay, to let something through that a broader rule delays |
 
 ```json
@@ -115,7 +149,9 @@ When several rules pick the same call for a plugin:
 1. A rule that **narrows** another replaces it. A rule narrows another when it picks only calls the
    other picks: a system's rule narrows a top-level one, a rule naming talkgroups narrows one that
    doesn't, and a rule naming plugins narrows one for every plugin. (Talkgroups are compared as
-   written: `["1001"]` is inside `["1001", "1002"]`, but not inside `["1000-1099"]`.)
+   written: `["1001"]` is inside `["1001", "1002"]`, but not inside `["1000-1099"]`. A rule is
+   inside one with `exceptTalkgroups` only when it excepts those too, so "all but 1001" narrows a
+   rule for every talkgroup, but "only 1001" and "all but 2000" are compared by length.)
 2. Of the rules left, the **longest** delay wins.
 
 So a sensitive system's or talkgroup's delay is never cut short by a plugin's own delay, while a
@@ -123,6 +159,15 @@ system can still change one plugin's delay for itself. With the example above, B
 dcfd's talkgroups 1000–1099 after 30 minutes and dcfd's other calls at once (its own `0` narrows
 the top-level 2 minutes), and other systems' calls after 2 minutes. Rdio Scanner gets everything at
 once. Every other plugin gets 1000–1099 after 30 minutes.
+
+In the app, each delay's **Talkgroups** is a menu: **Every talkgroup**, **Only** (with a list,
+and another of those to leave out) or **All but** (with the list to leave out). To delay
+everything on dcfd for 30 minutes but its talkgroup 1001, add one delay of 30 for **All but**
+`1001`:
+
+```json
+"pluginDelays": [{ "exceptTalkgroups": ["1001"], "delayS": 1800 }]
+```
 
 What a delay holds back, for each plugin it applies to:
 

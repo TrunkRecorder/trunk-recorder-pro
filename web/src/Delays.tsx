@@ -6,8 +6,9 @@
 // `inEffect` here follows the same rules, to show what they come to.
 
 import { editList, systemAt, useApp, type SystemRef } from "./controller.ts";
+import { useState } from "react";
 import { minutes, talkgroupList } from "./fieldText.ts";
-import { DraftInput, Field } from "./inputs.tsx";
+import { DraftInput, Field, TalkgroupHint } from "./inputs.tsx";
 import type { Config, DelayRule, PluginInfo } from "./protocol.ts";
 
 /** Where a list of rules is: every system's (the top of the config), or one system's. */
@@ -34,11 +35,19 @@ interface Rule {
   system: string | null;
   plugins: string[];
   talkgroups: string[];
+  /** Not picked, of those. */
+  except: string[];
   delayS: number;
 }
 
 const clean = (v: string[] | undefined) => [...new Set((v ?? []).map((x) => x.trim()).filter(Boolean))].sort();
-const rule = (system: string | null, r: DelayRule): Rule => ({ system, plugins: clean(r.plugins), talkgroups: clean(r.talkgroups), delayS: r.delayS > 0 ? r.delayS : 0 });
+const rule = (system: string | null, r: DelayRule): Rule => ({
+  system,
+  plugins: clean(r.plugins),
+  talkgroups: clean(r.talkgroups),
+  except: clean(r.exceptTalkgroups),
+  delayS: r.delayS > 0 ? r.delayS : 0,
+});
 
 function allRules(c: Config): Rule[] {
   return [
@@ -50,12 +59,13 @@ function allRules(c: Config): Rule[] {
 /** A rule's plugin `p` (an id, or a copy's label) covers `label`. */
 const covers = (p: string, label: string) => p === label || label.replace(/#\d+$/, "") === p;
 
-/** `a` picks only what `b` picks. */
+/** `a` picks only what `b` picks (talkgroups as written: within one that excepts some only when excepting those too). */
 function within(a: Rule, b: Rule): boolean {
   return (
     (b.system === null || a.system === b.system) &&
     (!b.plugins.length || (a.plugins.length > 0 && a.plugins.every((p) => b.plugins.some((o) => covers(o, p))))) &&
-    (!b.talkgroups.length || (a.talkgroups.length > 0 && a.talkgroups.every((t) => b.talkgroups.includes(t))))
+    (!b.talkgroups.length || (a.talkgroups.length > 0 && a.talkgroups.every((t) => b.talkgroups.includes(t)))) &&
+    b.except.every((t) => a.except.includes(t))
   );
 }
 
@@ -69,7 +79,8 @@ export function inEffect(c: Config, id: string, system: string, tgs: string[] | 
     (r) =>
       (r.system === null || r.system === system) &&
       (!r.plugins.length || r.plugins.some((p) => covers(p, id))) &&
-      (!r.talkgroups.length || (tgs !== null && tgs.every((t) => r.talkgroups.includes(t)))),
+      (!r.talkgroups.length || (tgs !== null && tgs.every((t) => r.talkgroups.includes(t)))) &&
+      !(tgs !== null && tgs.some((t) => r.except.includes(t))),
   );
   const narrows = (a: Rule, b: Rule) => within(a, b) && !within(b, a);
   return Math.max(0, ...picked.filter((r) => !picked.some((o) => narrows(o, r))).map((r) => r.delayS));
@@ -84,6 +95,55 @@ const nameOf = (list: PluginInfo[], id: string) => list.find((p) => p.id === id.
 
 // ── inputs ───────────────────────────────────────────────────────────────────
 
+/** Which talkgroups a rule is for, as a plugin's settings pick them: every one, only some (less any excepted), or all but some. */
+type TalkgroupMode = "all" | "only" | "allBut";
+
+const modeOf = (r: DelayRule): TalkgroupMode => (r.talkgroups?.length ? "only" : r.exceptTalkgroups?.length ? "allBut" : "all");
+
+/** A rule's talkgroups: the menu, and the lists it asks for. */
+function TalkgroupsCell(props: { r: DelayRule; edit: (fn: (r: DelayRule) => void) => void }) {
+  const { r, edit } = props;
+  // A choice made before its list is typed in: the lists say which it is once they have something.
+  const [chosen, setChosen] = useState<TalkgroupMode>("all");
+  const listed = modeOf(r);
+  const mode = listed === "all" ? chosen : listed;
+  const choose = (m: TalkgroupMode) => {
+    setChosen(m);
+    // What was typed carries over: only 1001 becomes all but 1001, and back.
+    const [only, except] = [r.talkgroups ?? [], r.exceptTalkgroups ?? []];
+    const [a, b] = m === "all" ? [[], []] : m === "only" ? (mode === "allBut" ? [except, []] : [only, except]) : mode === "only" ? [[], only] : [[], except];
+    edit((x) => {
+      x.talkgroups = a;
+      x.exceptTalkgroups = b;
+    });
+  };
+  return (
+    <div className="delay-tgs">
+      <select aria-label="Talkgroups" value={mode} onChange={(e) => choose(e.target.value as TalkgroupMode)}>
+        <option value="all">Every talkgroup</option>
+        <option value="only">Only</option>
+        <option value="allBut">All but</option>
+      </select>
+      {mode === "only" && (
+        <DraftInput className="mono" aria-label="Only these talkgroups" placeholder="1001, 1000-1099" codec={talkgroupList} value={r.talkgroups ?? []} onChange={(v) => edit((x) => void (x.talkgroups = v))} />
+      )}
+      {mode !== "all" && (
+        <DraftInput
+          className="mono"
+          aria-label="Except these talkgroups"
+          placeholder={mode === "only" ? "except: none" : "1001, 507*"}
+          codec={talkgroupList}
+          value={r.exceptTalkgroups ?? []}
+          onChange={(v) => edit((x) => void (x.exceptTalkgroups = v))}
+        />
+      )}
+      <span className="field-hint">
+        <TalkgroupHint list={[...(r.talkgroups ?? []), ...(r.exceptTalkgroups ?? [])]} />
+      </span>
+    </div>
+  );
+}
+
 /** A list of rules: talkgroups, plugin and delay each. */
 function RuleTable(props: { at: Scope; rules: DelayRule[]; plugins: PluginInfo[] }) {
   const { at, rules, plugins } = props;
@@ -93,6 +153,7 @@ function RuleTable(props: { at: Scope; rules: DelayRule[]; plugins: PluginInfo[]
       fn(r);
       if (!r.plugins?.length) delete r.plugins;
       if (!r.talkgroups?.length) delete r.talkgroups;
+      if (!r.exceptTalkgroups?.length) delete r.exceptTalkgroups;
       rs[i] = r;
       return rs;
     });
@@ -105,7 +166,7 @@ function RuleTable(props: { at: Scope; rules: DelayRule[]; plugins: PluginInfo[]
           <table className="calls channels delays">
             <thead>
               <tr>
-                <th title="Numbers, ranges (1000-1099) and patterns (507*); empty: all">Talkgroups</th>
+                <th title="Every talkgroup, only some, or all but some: numbers, ranges (1000-1099) and patterns (507*)">Talkgroups</th>
                 <th>Plugin</th>
                 <th>Delay, min</th>
                 <th />
@@ -117,7 +178,7 @@ function RuleTable(props: { at: Scope; rules: DelayRule[]; plugins: PluginInfo[]
                 return (
                   <tr key={i}>
                     <td>
-                      <DraftInput className="mono" aria-label="Talkgroups" placeholder="all" codec={talkgroupList} value={r.talkgroups ?? []} onChange={(v) => edit(i, (x) => void (x.talkgroups = v))} />
+                      <TalkgroupsCell r={r} edit={(fn) => edit(i, fn)} />
                     </td>
                     <td>
                       <select
@@ -162,12 +223,13 @@ function RuleTable(props: { at: Scope; rules: DelayRule[]; plugins: PluginInfo[]
 /** What the rules come to on one system, for each plugin that takes calls. */
 function InEffect(props: { c: Config; system: string; plugins: PluginInfo[] }) {
   const { c, system, plugins } = props;
-  // Each list of talkgroups a rule for this system (or every system) names.
+  // Each list of talkgroups a rule for this system (or every system) names, or excepts.
   const lists = [
     ...new Map(
       allRules(c)
-        .filter((r) => (r.system === null || r.system === system) && r.talkgroups.length)
-        .map((r) => [r.talkgroups.join(","), r.talkgroups]),
+        .filter((r) => r.system === null || r.system === system)
+        .flatMap((r) => [r.talkgroups, r.except].filter((l) => l.length))
+        .map((l) => [l.join(","), l]),
     ).values(),
   ];
   const rows = plugins.map((p) => {
@@ -227,7 +289,7 @@ export function SystemDelays(props: { system: SystemRef }) {
 export function PluginDelay(props: { p: PluginInfo; c: Config }) {
   const { p, c } = props;
   const rules = c.pluginDelays ?? [];
-  const mine = rules.findIndex((r) => r.plugins?.length === 1 && r.plugins[0] === p.id && !r.talkgroups?.length);
+  const mine = rules.findIndex((r) => r.plugins?.length === 1 && r.plugins[0] === p.id && !r.talkgroups?.length && !r.exceptTalkgroups?.length);
   const s = mine < 0 ? 0 : rules[mine].delayS;
   const set = (v: number) =>
     editRules("every", (rs) => {

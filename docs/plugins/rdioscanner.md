@@ -30,7 +30,8 @@ plugin does.
    open Rdio Scanner with in a browser, like `http://192.168.1.20:3000`.
 3. On the card of each system you upload, under **Plugins** > **Rdio Scanner**, fill in the
    **API key** and the system's **System ID** in Rdio Scanner.
-4. Optionally limit the talkgroups with **Only these talkgroups** or **Not these talkgroups**.
+4. Optionally limit the talkgroups: under **Talkgroups**, choose **Only some** or **All but some**,
+   and list them (see [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups)).
 5. Start recording, or if you're recording already, the plugin restarts with the new settings. Its
    log lists what it uploads (`uploading dcfd as system 1`), and **Plugins** > **Health** shows the
    server as **Rdio Scanner at 192.168.1.20:3000**, up or down.
@@ -49,8 +50,9 @@ For each system (the system's card, or its `plugins.rdioscanner` in `config.json
 |---|---|---|---|---|
 | `apiKey` | ✓ | | string | **API key.** A key from Rdio Scanner's administration page. A system without one isn't uploaded. |
 | `systemId` | ✓ | | integer | **System ID.** The system's ID in Rdio Scanner. Needed whenever the system has an API key. |
-| `talkgroupAllow` | | (all) | list | **Only these talkgroups.** Upload these and no others. |
-| `talkgroupDeny` | | (none) | list | **Not these talkgroups.** Never upload these. |
+| `talkgroupMode` | | `"all"` | `"all"`, `"only"` or `"allBut"` | **Talkgroups.** Every talkgroup, only some, or all but some. See [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups). |
+| `talkgroupAllow` | | (none) | list | **Only these.** With `"only"`: upload these and no others. |
+| `talkgroupDeny` | | (none) | list | **Except these.** With `"only"` or `"allBut"`: never upload these. |
 
 ```json
 {
@@ -65,12 +67,9 @@ For each system (the system's card, or its `plugins.rdioscanner` in `config.json
 }
 ```
 
-Talkgroup list entries are numbers or patterns: `*` stands for any digits and `?` for one, so
-`507*` is every talkgroup starting with 507. In the form, separate them with commas. When both
-lists are set, a talkgroup has to be in the first and not in the second.
-
-The plugin won't start without a server, without at least one system with an API key, or with a
-system that has a key but no system ID.
+The plugin won't start without a server, without at least one system with an API key, with a
+system that has a key but no system ID, or with a talkgroup list entry that isn't a talkgroup, a
+range or a pattern. Ranges (`1000-1099`) and the menu are plugin 0.1.6 and later.
 
 ## What it sends
 
@@ -108,4 +107,4 @@ fails**): see
 
 **Import Trunk Recorder config…** brings over Trunk Recorder's `rdioscanner` plugin entry: its
 `server`, and each system's `apiKey`, `systemId`, `talkgroupAllow` and `talkgroupDeny` (matched
-by short name).
+by short name), with the **Talkgroups** menu set to match.
