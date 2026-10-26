@@ -230,13 +230,17 @@ impl Default for Clock {
 
 impl Clock {
     /// Ask `server` (SNTP, when there's one) and the OS's time service, each
-    /// as often as it should be, on a thread of their own.
-    pub fn start(self: &Arc<Self>, server: Option<String>) {
+    /// as often as it should be, on a thread of their own; the server only
+    /// while `on()` (turned off, its answers are forgotten).
+    pub fn start(self: &Arc<Self>, server: Option<String>, on: impl Fn() -> bool + Send + 'static) {
         let me = self.clone();
         let _ = std::thread::Builder::new().name("clock".into()).spawn(move || {
             let (mut next_time, mut next_service) = (Instant::now(), Instant::now());
             loop {
-                if let Some(s) = server.as_deref().filter(|_| Instant::now() >= next_time) {
+                if server.is_some() && !on() {
+                    me.forget_server();
+                    next_time = Instant::now();
+                } else if let Some(s) = server.as_deref().filter(|_| Instant::now() >= next_time) {
                     let ok = me.measure(s);
                     next_time = Instant::now() + if ok { TIME_EVERY } else { TIME_RETRY };
                 }
@@ -248,6 +252,13 @@ impl Clock {
                 std::thread::sleep(Duration::from_secs(1));
             }
         });
+    }
+
+    /// The time server's answers dropped: not asked any more.
+    fn forget_server(&self) {
+        let mut x = self.inner.lock().unwrap();
+        (x.health.server, x.health.measured, x.health.error) = (None, None, None);
+        x.answers = Default::default();
     }
 
     /// Query `server` ([`sntp`]) and keep its answer, or why there's none.

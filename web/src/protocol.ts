@@ -494,6 +494,8 @@ export interface Config {
 export interface MonitorSettings {
   /** Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks. */
   probeHosts: string[];
+  /** Off: neither the internet checks nor the time server are asked, whatever's set. Applies at once. */
+  networkChecks: boolean;
   /** The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked. */
   timeServer: string;
   /** The clock off by this much or more, ms: a warning, and calls marked clock_off (a problem at 5 s, or 4 times this). */

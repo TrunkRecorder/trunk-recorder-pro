@@ -163,14 +163,21 @@ pub type Transition = (String, bool, f64);
 
 impl Probes {
     /// Probe `targets` (`host:port`) every [`PROBE_EVERY`] on a thread of its
-    /// own; `changed(target, up, down_for_s)` hears each up/down change.
-    pub fn start(targets: Vec<String>, changed: impl Fn(Transition) + Send + 'static) -> Arc<Probes> {
+    /// own, while `on()`; `changed(target, up, down_for_s)` hears each
+    /// up/down change. Turned off, what they'd heard is forgotten.
+    pub fn start(targets: Vec<String>, on: impl Fn() -> bool + Send + 'static, changed: impl Fn(Transition) + Send + 'static) -> Arc<Probes> {
         let p = Arc::new(Probes { probes: Mutex::new(targets.iter().map(|t| (t.clone(), Answers::default())).collect()), dns_ms: Mutex::new(None) });
         if targets.is_empty() {
             return p;
         }
         let p2 = p.clone();
         let _ = std::thread::Builder::new().name("net-probe".into()).spawn(move || loop {
+            if !on() {
+                p2.probes.lock().unwrap().iter_mut().for_each(|(_, a)| *a = Answers::default());
+                *p2.dns_ms.lock().unwrap() = None;
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
             for (i, t) in targets.iter().enumerate() {
                 let (ok, rtt, dns) = probe(t);
                 if let Some(d) = dns {

@@ -1894,6 +1894,9 @@ pub struct MonitorSettings {
     /// Where to check the internet answers (`host:port`, a TCP connect every
     /// 15 s): the uplink's history. Empty: no checks.
     pub probe_hosts: Vec<String>,
+    /// Off: neither the internet checks nor the time server are asked,
+    /// whatever's set (the dashboard's Network switch). Applies at once.
+    pub network_checks: bool,
     /// The time server asked how far off the clock is (SNTP, every 15
     /// minutes; a name or address, port 123 unless given). It only measures:
     /// the operating system's time service keeps the clock. Empty: not asked.
@@ -1905,7 +1908,7 @@ pub struct MonitorSettings {
 
 impl Default for MonitorSettings {
     fn default() -> Self {
-        MonitorSettings { probe_hosts: vec!["1.1.1.1:443".into(), "dns.google:443".into()], time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0 }
+        MonitorSettings { probe_hosts: vec!["1.1.1.1:443".into(), "dns.google:443".into()], network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0 }
     }
 }
 

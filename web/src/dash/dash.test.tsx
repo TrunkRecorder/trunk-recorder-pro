@@ -255,6 +255,21 @@ test("Platform: the clock as measured and as the OS says, and the light goes by 
   assert.match(page, /3 of 3 queries unanswered .*UDP port 123/);
 });
 
+test("Platform: the Network card's Checks switch turns the internet checks and the time server off (#37)", () => {
+  twoSites();
+  setView("platform");
+  host({ os: synced, server: "pool.ntp.org", measured: null, error: null, problem: null, check: null });
+  assert.equal(snapshot().config!.monitor!.networkChecks, true, "on by default");
+  assert.match(renderToString(<PlatformPage />), /role="switch" checked=""/);
+  const c = snapshot().config!;
+  c.monitor!.networkChecks = false;
+  transport.onMessage({ type: "config", config: c, version: 2 });
+  host({ os: synced, server: null, measured: null, error: null, problem: null, check: null });
+  const page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Checks off: the internet and the time server aren(?:'|&#x27;)t asked/);
+  assert.match(page, /Offset, measured — not asked: network checks are off/);
+});
+
 test("Platform: the time service, the recording's clock and the radio systems' clocks", () => {
   twoSites();
   setView("platform");
