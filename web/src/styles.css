@@ -168,6 +168,9 @@ table.calls tr.emergency td:first-child { box-shadow: inset 3px 0 0 var(--bad); 
 td.actions { text-align: right; }
 .tg { font-family: var(--mono); font-weight: 600; }
 .tag { margin-left: 8px; color: var(--muted); }
+/* The system the survey looks for: its signals. */
+.tag.sought { color: var(--accent); }
+table.calls tr.sought td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .tg-name { font-weight: 600; cursor: help; }
 .badge { margin-left: 6px; font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 700; letter-spacing: 0.04em; }
 .badge.bad { background: var(--bad); color: #fff; }
