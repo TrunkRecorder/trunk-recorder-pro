@@ -56,6 +56,21 @@ test("importTrunkRecorderConfig: multiSite systems of one multiSiteSystemName ar
   assert.ok(todo.some((t) => t.kind === "siteLock" && t.system === "county" && t.site === 1), JSON.stringify(todo));
 });
 
+test("importTrunkRecorderConfig: talkgroup allow / deny lists come with the plugins' talkgroup menu set", () => {
+  const tr = {
+    sources: [{ center: 851e6, rate: 2.4e6, driver: "osmosdr", device: "rtl=0" }],
+    systems: [
+      { shortName: "a", type: "p25", control_channels: [851012500], broadcastifyApiKey: "k", broadcastifySystemId: 4, broadcastifyWhitelist: ["10*", 205], broadcastifyDeny: [109] },
+      { shortName: "b", type: "p25", control_channels: [852012500] },
+    ],
+    plugins: [{ name: "rdioscanner", library: "librdioscanner_uploader.so", server: "http://rdio", systems: [{ shortName: "b", apiKey: "r", systemId: 2, talkgroupDeny: ["300-399"] }] }],
+  };
+  const { plugins } = importTrunkRecorderConfig(JSON.stringify(tr), defaultConfig());
+  const sys = (id: string, s: string) => plugins.find((p) => p.id === id)?.systems[s];
+  assert.deepEqual(sys("broadcastify", "a"), { apiKey: "k", systemId: 4, talkgroupMode: "only", talkgroupAllow: ["10*", "205"], talkgroupDeny: ["109"] });
+  assert.deepEqual(sys("rdioscanner", "b"), { apiKey: "r", systemId: 2, talkgroupMode: "allBut", talkgroupDeny: ["300-399"] });
+});
+
 test("startProblem and resolvedCenters are the recorder's own (rules.ts)", () => {
   const c = defaultConfig();
   assert.match(startProblem(c) ?? "", /Add a system with a control channel, or a conventional channel/);

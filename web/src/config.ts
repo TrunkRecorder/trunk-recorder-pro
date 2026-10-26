@@ -727,6 +727,12 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
   const firstList = (x: Record<string, unknown>, keys: string[]) => keys.map((k) => patterns(x[k])).find((v) => v);
   const bcfyAllow = (x: Record<string, unknown>) => firstList(x, ["broadcastifyAllow", "broadcastifyWhitelist", "talkgroupWhitelist"]);
   const bcfyDeny = (x: Record<string, unknown>) => firstList(x, ["broadcastifyDeny", "broadcastifyBlacklist", "talkgroupBlacklist"]);
+  /** Allow / deny lists as the plugins' talkgroup menu has them: only some (less those denied), or all but some. */
+  const talkgroups = (allow: string[] | undefined, deny: string[] | undefined) => ({
+    talkgroupMode: allow ? "only" : deny ? "allBut" : undefined,
+    talkgroupAllow: allow,
+    talkgroupDeny: deny,
+  });
   // Built in to Trunk Recorder: keys on each system, servers at the top.
   for (const sys of list<Record<string, unknown>>(j.systems)) {
     const here = imported.get(sys);
@@ -736,7 +742,7 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
       forSystem(
         plugin("broadcastify", "Broadcastify Calls"),
         null,
-        { apiKey: str(sys.broadcastifyApiKey), systemId: num(sys.broadcastifySystemId), talkgroupAllow: bcfyAllow(sys), talkgroupDeny: bcfyDeny(sys) },
+        { apiKey: str(sys.broadcastifyApiKey), systemId: num(sys.broadcastifySystemId), ...talkgroups(bcfyAllow(sys), bcfyDeny(sys)) },
         here,
       );
     if (str(sys.uploadScript)) forSystem(plugin("upload-script", "Upload script"), null, { script: str(sys.uploadScript) }, here);
@@ -755,7 +761,7 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
     if (/rdio/.test(what)) {
       const p = plugin("rdioscanner", "Rdio Scanner");
       if (str(pl.server)) p.config.server = str(pl.server);
-      for (const x of systems) forSystem(p, x.shortName, { apiKey: str(x.apiKey), systemId: num(x.systemId), talkgroupAllow: patterns(x.talkgroupAllow), talkgroupDeny: patterns(x.talkgroupDeny) });
+      for (const x of systems) forSystem(p, x.shortName, { apiKey: str(x.apiKey), systemId: num(x.systemId), ...talkgroups(patterns(x.talkgroupAllow), patterns(x.talkgroupDeny)) });
     } else if (/openmhz/.test(what)) {
       const p = plugin("openmhz", "OpenMHz");
       if (str(pl.server ?? pl.uploadServer)) p.config.server = str(pl.server ?? pl.uploadServer);

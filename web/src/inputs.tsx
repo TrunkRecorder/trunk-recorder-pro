@@ -7,7 +7,7 @@
 // The rules for using them: docs/developer/ui-style.md.
 
 import { useState, type InputHTMLAttributes, type ReactNode, type RefObject } from "react";
-import { decimal, gain, hex, type TextCodec } from "./fieldText.ts";
+import { decimal, gain, hex, talkgroupProblem, type TextCodec } from "./fieldText.ts";
 
 /** A labelled setting. `needs`: what an import left to fill in here (highlighted); `anchor`: its place, for the to-do list's Show. */
 export function Field(props: { label: string; hint?: ReactNode; children: ReactNode; wide?: boolean; needs?: string; anchor?: string; className?: string }) {
@@ -19,6 +19,12 @@ export function Field(props: { label: string; hint?: ReactNode; children: ReactN
       {props.hint && <span className="field-hint">{props.hint}</span>}
     </label>
   );
+}
+
+/** A talkgroup list's hint: what's wrong with it (an entry that isn't a talkgroup), else `text`. */
+export function TalkgroupHint(props: { list: readonly unknown[] | undefined; text?: ReactNode }) {
+  const problem = talkgroupProblem(props.list ?? []);
+  return problem ? <span className="bad-text">{problem}</span> : <>{props.text}</>;
 }
 
 /** A checkbox with its label and hint. */

@@ -55,7 +55,10 @@ On **Plugins** > **Install & settings**, find **OpenMHz** under **Find plugins**
    there) and, under **Plugins** > **OpenMHz**, paste the **API key**.
 3. If the system's short name in the recorder isn't the same as its Short Name on OpenMHz, put the
    OpenMHz one in **Name on OpenMHz**. (Or rename the system here to match.)
-4. Repeat for any other system you upload. Systems without an API key aren't uploaded.
+4. To upload only some of the system's talkgroups, choose **Only some** or **All but some** under
+   **Talkgroups** and list them (see [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups)).
+   (Plugin 0.1.7 and later. OpenMHz's own **Ignore Unknown Talkgroups** drops the rest on its side.)
+5. Repeat for any other system you upload. Systems without an API key aren't uploaded.
 
 ### 4. Check it
 
@@ -92,6 +95,9 @@ For each system (the system's card, or its `plugins.openmhz` in `config.json`):
 |---|---|---|---|---|
 | `apiKey` | ✓ | | string | **API key.** The system's upload key from OpenMHz. Needed for each system you upload; a system without one isn't uploaded. |
 | `systemName` | | the system's short name | string | **Name on OpenMHz.** The system's Short Name on OpenMHz, when it differs from its short name here. |
+| `talkgroupMode` | | `"all"` | `"all"`, `"only"` or `"allBut"` | **Talkgroups.** Every talkgroup, only some, or all but some. See [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups). |
+| `talkgroupAllow` | | (none) | list | **Only these.** With `"only"`: upload these and no others. |
+| `talkgroupDeny` | | (none) | list | **Except these.** With `"only"` or `"allBut"`: never upload these. |
 | `sites` | | (none) | list | **Sites of their own.** A site of the system that is a system of its own on OpenMHz: `site` (its name, as under Sites in Setup), `apiKey`, and `systemName` if not the site's name. Its calls go there; the other sites' to the system's. (Plugin 0.1.5 and later.) |
 
 ```json
@@ -108,7 +114,8 @@ For each system (the system's card, or its `plugins.openmhz` in `config.json`):
 ```
 
 The plugin won't start without at least one system with an API key
-(*Add your OpenMHz API key to the systems you want to upload.*).
+(*Add your OpenMHz API key to the systems you want to upload.*), or with a talkgroup list entry
+that isn't a talkgroup, a range or a pattern.
 
 ## What it sends
 

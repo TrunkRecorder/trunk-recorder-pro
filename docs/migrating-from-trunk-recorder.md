@@ -138,7 +138,7 @@ turned on, and one that isn't is left as a to-do to install.
 |---|---|
 | A system's `apiKey`, `openmhzSystemId`; top-level `uploadServer` | `openmhz`: per system `apiKey`, `systemName`; `server` |
 | A system's `broadcastifyApiKey`, `broadcastifySystemId`; `broadcastifyCallsServer`, `broadcastifySslVerifyDisable`, `broadcastifyOTA` | `broadcastify`: per system `apiKey`, `systemId`; `server`, `skipCertificateCheck`, `talkerAliases` |
-| A system's `broadcastifyAllow` / `broadcastifyDeny` (or `…Whitelist` / `…Blacklist`, `talkgroupWhitelist` / `talkgroupBlacklist`) | `broadcastify`: per system `talkgroupAllow` / `talkgroupDeny` |
+| A system's `broadcastifyAllow` / `broadcastifyDeny` (or `…Whitelist` / `…Blacklist`, `talkgroupWhitelist` / `talkgroupBlacklist`) | `broadcastify`: per system `talkgroupAllow` / `talkgroupDeny`, with `talkgroupMode` set to match ([Choosing talkgroups](configuration/plugins.md#choosing-talkgroups)) |
 | A system's `uploadScript` | `upload-script`: per system `script` |
 | The rdio-scanner plugin (`server`, each system's `apiKey`, `systemId`, `talkgroupAllow`, `talkgroupDeny`) | `rdioscanner` |
 | The openmhz or broadcastify plugin entry | `openmhz` / `broadcastify`, as above |

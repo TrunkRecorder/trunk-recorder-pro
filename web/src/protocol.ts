@@ -309,6 +309,8 @@ export interface DelayRule {
   plugins?: string[];
   /** Numbers, ranges ("1000-1099") and patterns ("507*"). Absent: every talkgroup. */
   talkgroups?: string[];
+  /** Talkgroups it isn't for, of those `talkgroups` picks (every one, when absent): the same kinds of entry. All but 1001 is `["1001"]` here alone. */
+  exceptTalkgroups?: string[];
   /** Seconds (0: none, as for what it narrows). */
   delayS: number;
 }
@@ -1095,6 +1097,8 @@ export interface PluginSchema {
   "x-summary"?: string[];
   /** Shown only when the object's other fields are so: `{"type": "command"}`, `{"event": ["signal", "tone"]}`. */
   "x-when"?: Record<string, unknown>;
+  /** On a list of strings: talkgroups, typed as everywhere else in the app ("1001 1000-1099; 507*") and checked. */
+  "x-talkgroups"?: boolean;
   /** Buttons on this object (an item of a list, or the whole settings): each sends the plugin the object as edited. */
   "x-actions"?: PluginActionDef[];
 }

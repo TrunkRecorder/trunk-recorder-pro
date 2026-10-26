@@ -42,7 +42,7 @@ pub mod schema;
 mod sdk;
 #[cfg(feature = "sdk")]
 pub mod testing;
-pub use filter::TalkgroupFilter;
+pub use filter::{TalkgroupFilter, Talkgroups};
 #[cfg(feature = "sdk")]
 pub use queue::{Attempt, CallQueue, QueueOptions};
 
