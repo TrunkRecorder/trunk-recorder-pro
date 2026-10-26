@@ -28,3 +28,9 @@ test("withUnitName: comment lines and blank lines are left alone", () => {
   const out = withUnitName(csv, 7, "Engine Seven");
   assert.equal(out, "# radios\n\n7,Engine Seven\n");
 });
+
+test("withUnitName: a name with a comma or a quote is quoted, and read back whole", () => {
+  const out = withUnitName("", 7, 'Engine 5, Station "2"');
+  assert.equal(out, '7,"Engine 5, Station ""2"""\n');
+  assert.equal(unitName(out, 7), 'Engine 5, Station "2"');
+});

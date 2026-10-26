@@ -334,10 +334,22 @@ transport.onConnection = (connected) => {
   // collects (events, files by system) starts over, an edit awaiting an
   // answer won't get one.
   saving = queued = false;
-  for (const t of tgSaving.values()) clearTimeout(t);
+  // Except a talkgroup edit not yet acked: it may never have reached the
+  // recorder, so it's kept here (the greeting's older file doesn't replace
+  // it) and sent again — after anything the transport held while closed
+  // goes out, so it's the one the recorder ends up with.
+  const pending = [...new Set([...tgSaving.keys(), ...tgQueued])];
+  const kept: Record<string, string> = {};
+  for (const sys of pending) if (state.talkgroups[sys] !== undefined) kept[sys] = state.talkgroups[sys];
+  for (const s of tgSaving.values()) clearTimeout(s.timer);
   tgSaving.clear();
   tgQueued.clear();
-  set({ events: [], talkgroups: {}, units: {} });
+  for (const sys of pending) tgQueued.add(sys);
+  set({ events: [], talkgroups: kept, units: {} });
+  if (pending.length)
+    setTimeout(() => {
+      for (const sys of pending) if (tgQueued.delete(sys)) sendTalkgroups(sys);
+    }, 0);
 };
 transport.onAudio = onAudio;
 transport.onMessage = (m: FromRecorder) => {
@@ -370,10 +382,13 @@ function take(m: FromRecorder): void {
       configSaved(m.version, m.error);
       break;
     case "talkgroups":
-      // Our own echo: local state is already at least this new (maybe
-      // newer, if another edit queued meanwhile) — just take it as the ack.
-      if (tgSaving.has(m.system)) ackTalkgroups(m.system);
-      else set({ talkgroups: withFile(state.talkgroups, m.system, m.csv) });
+      // Our own echo (the very text sent): local state is already at least
+      // this new (maybe newer, if another edit queued meanwhile) — just
+      // take it as the ack. Anything else while an edit of ours is in
+      // flight or queued (a greeting, another browser's) is older than
+      // ours, which the recorder gets next: local state stays.
+      if (tgSaving.get(m.system)?.csv === m.csv) ackTalkgroups(m.system);
+      else if (!tgSaving.has(m.system) && !tgQueued.has(m.system)) set({ talkgroups: withFile(state.talkgroups, m.system, m.csv) });
       break;
     case "units":
       set({ units: { ...state.units, [m.system]: parseUnitsCsv(m.csv) } });
@@ -656,9 +671,10 @@ function withFile(files: Record<string, string>, system: string, csv: string): R
  * it to — so without this, a rejected edit would wedge the system's gate
  * open forever. And whether another edit came in while one was in flight,
  * to send once it's acked — so stacked edits to the same system are
- * serialized instead of racing their own echoes.
+ * serialized instead of racing their own echoes. The text sent is kept to
+ * know its echo by: the recorder sends back exactly what it was given.
  */
-const tgSaving = new Map<string, ReturnType<typeof setTimeout>>();
+const tgSaving = new Map<string, { csv: string; timer: ReturnType<typeof setTimeout> }>();
 const tgQueued = new Set<string>();
 
 /** System `system`'s talkgroup file is now `csv` ("": none), kept locally at
@@ -673,14 +689,16 @@ function sendTalkgroups(system: string): void {
     tgQueued.add(system);
     return;
   }
-  transport.send({ type: "setTalkgroups", system, csv: state.talkgroups[system] ?? "" });
-  tgSaving.set(system, setTimeout(() => ackTalkgroups(system), 10_000));
+  const csv = state.talkgroups[system] ?? "";
+  // (Before sending: a transport may answer at once.)
+  tgSaving.set(system, { csv, timer: setTimeout(() => ackTalkgroups(system), 10_000) });
+  transport.send({ type: "setTalkgroups", system, csv });
 }
 
 /** `system`'s edit is the recorder's now (its echo arrived, or the safety net fired). */
 function ackTalkgroups(system: string): void {
-  const t = tgSaving.get(system);
-  if (t) clearTimeout(t);
+  const s = tgSaving.get(system);
+  if (s) clearTimeout(s.timer);
   tgSaving.delete(system);
   if (tgQueued.delete(system)) sendTalkgroups(system);
 }

@@ -2,7 +2,7 @@
 // unitTagsOTA CSV (crates/trunk-core/src/trunk/units.rs): headerless,
 // unitID,alias,source,timestamp,WACN,SYS,talkgroup; the newest line wins.
 
-import { splitCsvLine } from "./talkgroups.ts";
+import { cellIn, splitCsvLine } from "./talkgroups.ts";
 
 /** Unit ID → alias. */
 export type UnitAliases = Record<number, string>;
@@ -62,9 +62,9 @@ export function withUnitName(csv: string, id: number, name: string): string {
     const [pat] = splitCsvLine(t);
     if ((pat ?? "").trim() !== key) return line;
     found = true;
-    return `${key},${name}`;
+    return `${key},${cellIn(",")(name)}`;
   });
-  if (!found) next.unshift(`${key},${name}`);
+  if (!found) next.unshift(`${key},${cellIn(",")(name)}`);
   while (next.length && !next[next.length - 1].trim()) next.pop();
   return next.join("\n") + "\n";
 }

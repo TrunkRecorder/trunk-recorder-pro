@@ -11,6 +11,7 @@ import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
 import { Field } from "../inputs.tsx";
 import { showTodo } from "../Setup.tsx";
 import { parseTalkgroupCsv, type Talkgroup } from "../talkgroups.ts";
+import { unitName } from "../units.ts";
 import type { CipherSeen, LengthHistogram, OutOfBandRow, RadioResult, TgRow, UnitRow } from "../protocol.ts";
 import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
 import { Tones } from "./Tones.tsx";
@@ -55,7 +56,7 @@ function useLiveTalkgroups(s: AppState, sys: DashSystem): Map<number, Talkgroup>
 function withLiveTag(row: TgRow, live: Map<number, Talkgroup> | null): TgRow {
   if (!live) return row;
   const e = live.get(row.tg);
-  return { ...row, known: live.has(row.tg), ignore: e?.ignore ?? false, alphaTag: e?.alphaTag || row.alphaTag };
+  return { ...row, known: live.has(row.tg), ignore: e?.ignore ?? false, alphaTag: e ? e.alphaTag : row.alphaTag };
 }
 const withLiveTags = (rows: TgRow[], live: Map<number, Talkgroup> | null) => (live ? rows.map((r) => withLiveTag(r, live)) : rows);
 
@@ -418,13 +419,13 @@ function SystemView({ s, sys, focus }: { s: AppState; sys: DashSystem; focus?: s
 /** Alpha Tag / Description / Tag / Category, editable in place — only ever
  * from the talkgroup file itself: `TgRow` carries none of these beyond the
  * alpha tag, so there's nothing to fall back to while `live` hasn't loaded. */
-function TgFields({ sys, tg, live }: { sys: DashSystem; tg: number; live: Map<number, Talkgroup> | null }) {
+function TgFields({ sys, tg, live, onDraftTag }: { sys: DashSystem; tg: number; live: Map<number, Talkgroup> | null; onDraftTag: (text: string | null) => void }) {
   const t = live?.get(tg);
   const loading = live === null;
   return (
     <Card title="Talkgroup file">
       <div className="row">
-        <TgTextField sys={sys} tg={tg} field="alphaTag" label="Alpha Tag" value={t?.alphaTag ?? ""} disabled={loading} />
+        <TgTextField sys={sys} tg={tg} field="alphaTag" label="Alpha Tag" value={t?.alphaTag ?? ""} disabled={loading} onDraft={onDraftTag} />
         <TgTextField sys={sys} tg={tg} field="description" label="Description" value={t?.description ?? ""} disabled={loading} />
         <TgTextField sys={sys} tg={tg} field="tag" label="Tag" value={t?.tag ?? ""} disabled={loading} />
         <TgTextField sys={sys} tg={tg} field="group" label="Category" value={t?.group ?? ""} disabled={loading} />
@@ -440,6 +441,7 @@ function TgTextField({
   label,
   value,
   disabled,
+  onDraft,
 }: {
   sys: DashSystem;
   tg: number;
@@ -447,15 +449,22 @@ function TgTextField({
   label: string;
   value: string;
   disabled?: boolean;
+  /** The text as it's typed (`null` once it's saved), for what shows it meanwhile. */
+  onDraft?: (text: string | null) => void;
 }) {
   const [text, setText] = useState(value);
   useEffect(() => setText(value), [value]);
   const save = () => {
     if (text !== value) setTalkgroupFields(sys.name, tg, { [field]: text } as Partial<Pick<Talkgroup, "alphaTag" | "description" | "tag" | "group">>);
+    onDraft?.(null);
+  };
+  const change = (t: string) => {
+    setText(t);
+    onDraft?.(t);
   };
   return (
     <Field label={label}>
-      <input value={text} disabled={disabled} onChange={(e) => setText(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
+      <input value={text} disabled={disabled} onChange={(e) => change(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
     </Field>
   );
 }
@@ -463,6 +472,9 @@ function TgTextField({
 function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
   const r = usePolled(`tg:${sys.name}:${tg}`, () => radioQuery({ what: "tg", system: sys.name, key: tg, hours: 168 }), running(s) ? 30_000 : 0);
   const live = useLiveTalkgroups(s, sys);
+  // The Alpha Tag as it's being typed, so the heading follows it key by key.
+  const [draftTag, setDraftTag] = useState<string | null>(null);
+  useEffect(() => setDraftTag(null), [sys.name, tg]);
   const rawRow = r?.row as TgRow | null | undefined;
   const row = rawRow ? withLiveTag(rawRow, live) : rawRow;
   if (!r) return <p className="empty">Loading…</p>;
@@ -484,7 +496,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
     <div className="stack">
       <section className="hero">
         <div>
-          <h2 className="big">{row.alphaTag || `Talkgroup ${tg}`}</h2>
+          <h2 className="big">{(draftTag ?? row.alphaTag) || `Talkgroup ${tg}`}</h2>
           <p className="muted">
             TG {tg} · {sys.name} · first heard {clockAt(row.first)} · last {ago(row.last)}
             {!row.known && " · not in the talkgroup file"}
@@ -495,7 +507,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
           <IgnoreToggle sys={sys} r={row} />
         </div>
       </section>
-      <TgFields sys={sys} tg={tg} live={live} />
+      <TgFields sys={sys} tg={tg} live={live} onDraftTag={setDraftTag} />
       <div className="kpis">
         <Stat label="Calls, 7 days" value={compact(row.calls)} sub={`${row.totalCalls} since first heard`} />
         <Stat label="Airtime, 7 days" value={hmm(row.secs)} />
@@ -589,15 +601,19 @@ function Ciphers({ ciphers }: { ciphers: CipherSeen[] }) {
  * would hide a name set here (it prefers aliases heard over the air, or
  * shows none), a note says so and links to the Setup field that controls it.
  */
-function UnitNameField({ s, sys, unit, alias }: { s: AppState; sys: DashSystem; unit: number; alias: string | undefined }) {
-  const [text, setText] = useState(alias ?? "");
-  useEffect(() => setText(alias ?? ""), [alias]);
+function UnitNameField({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number }) {
   const conventional = sys.kind === "conventional";
   const names = s.config?.systems.find((x) => x.shortName === sys.name)?.unitNames ?? s.config?.conventional.find((x) => x.shortName === sys.name)?.unitNames;
+  // The file's name for it, not the name shown (which, by the mode, may be the alias heard).
+  const saved = (names?.csv ? unitName(names.csv, unit) : undefined) ?? "";
+  const [text, setText] = useState(saved);
+  useEffect(() => setText(saved), [saved]);
   const mode = names?.mode || "user";
-  const hidden = mode === "ota" || mode === "none";
+  const heard = s.units[sys.name]?.[unit];
+  // "Aliases heard first" only hides it from a radio that's been heard with one.
+  const hidden = mode === "none" || (mode === "ota" && !!heard);
   const save = () => {
-    if (text !== (alias ?? "")) setUnitName(sys.name, conventional, unit, text);
+    if (text !== saved) setUnitName(sys.name, conventional, unit, text);
   };
   return (
     <Card title="Name">
@@ -606,7 +622,7 @@ function UnitNameField({ s, sys, unit, alias }: { s: AppState; sys: DashSystem; 
       </Field>
       {hidden && (
         <p className="muted small">
-          This system's "Unit names" mode ({mode === "ota" ? "aliases heard first" : "no names"}) means a name set here won't show until that's changed.{" "}
+          {mode === "ota" ? `This system's "Unit names" mode (aliases heard first) shows the alias this radio is heard with, "${heard}", in place of a name set here.` : `This system's "Unit names" mode (no names) means a name set here won't show until that's changed.`}{" "}
           <button className="btn ghost small" onClick={() => showTodo(conventional ? `convunits-${sys.name}` : `units-${sys.name}`)}>
             Open in Setup
           </button>
@@ -637,7 +653,7 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
         </div>
         {row.new && <span className="badge new">NEW</span>}
       </section>
-      <UnitNameField s={s} sys={sys} unit={unit} alias={alias} />
+      <UnitNameField s={s} sys={sys} unit={unit} />
       <div className="kpis">
         <Stat label="Transmissions" value={compact(row.tx)} sub={dur(row.txSecs) + " on the air"} />
         <Stat label="Last keyed up" value={row.lastTx ? ago(row.lastTx) : "never"} />

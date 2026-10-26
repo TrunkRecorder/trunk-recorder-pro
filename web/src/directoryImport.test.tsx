@@ -41,6 +41,8 @@ function connected(c: Config, talkgroups: Record<string, string> = {}): ToRecord
       transport.onMessage({ type: "configSaved", version } as never);
       transport.onMessage({ type: "config", config: m.config, version } as never);
     }
+    // (And a talkgroup file: sent back as given.)
+    if (m.type === "setTalkgroups") transport.onMessage({ type: "talkgroups", system: m.system, csv: m.csv });
   };
   transport.onConnection(true);
   transport.onMessage({ type: "config", config: c, version: (version += 100) });

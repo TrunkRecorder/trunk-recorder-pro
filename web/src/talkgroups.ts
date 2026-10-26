@@ -311,8 +311,8 @@ function openFile(csv: string): TalkgroupFile {
   return { lines, hi, header, cols: header.map(canonical), delim };
 }
 
-/** A cell in the file's delimiter. */
-const cellIn = (delim: string) => (v: string) => (v.includes(delim) || /["\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+/** A cell in the file's delimiter (quoted when it holds it, a quote or a line break). */
+export const cellIn = (delim: string) => (v: string) => (v.includes(delim) || /["\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
 
 /** Add column `name` to the file (when it has none); its index. */
 function ensureColumn(f: TalkgroupFile, name: string): number {

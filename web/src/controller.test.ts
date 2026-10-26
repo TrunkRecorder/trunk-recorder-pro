@@ -6,7 +6,7 @@ import "./testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultConfig, newSystem } from "./config.ts";
-import { renameSystem, snapshot, transport, updateConfig } from "./controller.ts";
+import { renameSystem, setTalkgroups, snapshot, transport, updateConfig } from "./controller.ts";
 import type { FromRecorder, ToRecorder } from "./protocol.ts";
 
 /** A recorder with systems alpha and beta, each with a talkgroup file, its config at version 1. */
@@ -85,4 +85,37 @@ test("a talkgroup file follows its system's name once the edit is saved, not ont
     ],
     "saved: the file moves on the recorder",
   );
+});
+
+const tgSends = (out: ToRecorder[]) => out.filter((m) => m.type === "setTalkgroups");
+
+test("a talkgroup edit queued behind one in flight outlives a reconnect: the greeting's older file doesn't replace it, and it's sent again", async () => {
+  connect();
+  const out = await sent(() => {
+    setTalkgroups("alpha", "1,a\n2,x");
+    setTalkgroups("alpha", "1,a\n2,y");
+    // The connection drops before either is acked; the greeting has the recorder's older file.
+    transport.onConnection(true);
+    transport.onMessage({ type: "talkgroups", system: "alpha", csv: "1,a" });
+  });
+  assert.equal(snapshot().talkgroups.alpha, "1,a\n2,y", "the greeting didn't undo the edit");
+  assert.deepEqual(tgSends(out).at(-1), { type: "setTalkgroups", system: "alpha", csv: "1,a\n2,y" }, "the latest edit is the last sent");
+  transport.onMessage({ type: "talkgroups", system: "alpha", csv: "1,a\n2,y" });
+  transport.onMessage({ type: "talkgroups", system: "alpha", csv: "1,a\n2,z" });
+  assert.equal(snapshot().talkgroups.alpha, "1,a\n2,z", "acked: another browser's edit is taken again");
+});
+
+test("another browser's talkgroup file arriving while an edit is in flight isn't taken as its ack", async () => {
+  connect();
+  const out = await sent(() => {
+    setTalkgroups("beta", "2,b\n3,c");
+    setTalkgroups("beta", "2,b\n3,d");
+    transport.onMessage({ type: "talkgroups", system: "beta", csv: "2,b\n9,other" });
+  });
+  assert.equal(tgSends(out).length, 1, "the queued edit waits for the real echo");
+  assert.equal(snapshot().talkgroups.beta, "2,b\n3,d");
+  const next = await sent(() => transport.onMessage({ type: "talkgroups", system: "beta", csv: "2,b\n3,c" }));
+  assert.deepEqual(tgSends(next), [{ type: "setTalkgroups", system: "beta", csv: "2,b\n3,d" }]);
+  transport.onMessage({ type: "talkgroups", system: "beta", csv: "2,b\n3,d" });
+  assert.equal(snapshot().talkgroups.beta, "2,b\n3,d");
 });
