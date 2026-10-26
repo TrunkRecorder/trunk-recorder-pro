@@ -939,7 +939,7 @@ export interface SurveyCandidate {
   band: string;
   snrDb: number;
   widthHz: number;
-  kind: "control" | "smartnet" | "p25" | "dmrControl" | "dmr" | "nxdnControl" | "nxdn" | "other";
+  kind: "control" | "smartnet" | "edacs" | "p25" | "dmrControl" | "dmr" | "nxdnControl" | "nxdn" | "other";
   frames: number;
   good: number;
   bad: number;
@@ -949,6 +949,32 @@ export interface SurveyCandidate {
   dmr?: { variant: string | null; colorCode: number | null } | null;
   /** NXDN: its rate and RAN, and (a control channel) its system and site codes. */
   nxdn?: { rate: "nxdn48" | "nxdn96"; ran: number | null; system: number | null; site: number | null } | null;
+  /** The frequency looked for it was probed for (surveyStart's lookFor), if one. */
+  targetHz?: number | null;
+  /** A frequency looked for: the share of the time its carrier was up. */
+  up?: number | null;
+}
+
+/** What a site looked for showed: heard (`active`), another site's, something not confirmed as it, nothing, or not listened to. */
+export type SiteVerdict = "active" | "otherSite" | "unconfirmed" | "inactive" | "notChecked";
+
+/** A site looked for, judged by what its frequencies showed (the recorder's sitecheck). */
+export interface SurveySite {
+  label: string;
+  verdict: SiteVerdict;
+  why: string;
+  /** The frequency it rests on, how well that decoded, and its level (dB over the floor). */
+  freqHz: number | null;
+  quality: "good" | "marginal" | "poor" | null;
+  snrDb: number | null;
+}
+
+/** What the survey looks for (surveyStart's lookFor): its sites' frequencies (or, none, licensed ones), each listened to `listenS`. */
+export interface SurveyLookFor {
+  freqsHz: number[];
+  sites: { label: string; freqsHz: number[]; expect: SiteIdentity; colorCode?: number }[];
+  type?: System["type"];
+  listenS?: number;
 }
 
 export interface SurveyMonitor {
@@ -1044,8 +1070,14 @@ export type SurveyState =
   | { stage: "idle" }
   | {
       stage: "scanning" | "monitoring" | "done";
-      source: number;
+      /** The source it scans with; null: a spare radio (`radio` names it), beside the recording. */
+      source: number | null;
+      radio?: string | null;
       bands: string[];
+      /** Looking for a system: how many of its frequencies, how many listened to so far, for how long each. */
+      lookFor?: { freqs: number; probed: number; listenS: number; type: System["type"] | null } | null;
+      /** Its sites, judged so far. */
+      sites?: SurveySite[];
       message: string;
       error: string | null;
       progress: { hop: number; hops: number; band: string; centerHz: number } | null;
@@ -1789,8 +1821,8 @@ export type ToRecorder =
   | { type: "lockKeys"; source: string }
   /** Link the conventional channels to a CSV (created from the list if new), reload it (same path), or unlink (""). */
   | { type: "channelFile"; index: number; path: string }
-  /** Find a system: scan `bands` with source `source`, then monitor the best control channel. */
-  | { type: "surveyStart"; source: number; bands: string[]; findGain: boolean }
+  /** Find a system: scan `bands` with source `source` (or `radio`, a spare no source uses, beside the recording), then monitor the best control channel. `lookFor`: just its frequencies, its sites judged. */
+  | { type: "surveyStart"; source: number; radio?: Source; bands: string[]; findGain: boolean; lookFor?: SurveyLookFor }
   /** Stop scanning and monitor this signal (as heard). */
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }

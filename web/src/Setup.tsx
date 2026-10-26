@@ -76,7 +76,8 @@ import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
 import { FccTable, IdentifyFcc } from "./Identify.tsx";
 import { ShareSystem } from "./ShareSystem.tsx";
-import { siteFrequencies, type FccTarget } from "./controller.ts";
+import { findOnAir, siteFrequencies, type FccTarget } from "./controller.ts";
+import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
 import { readTalkgroupCsv } from "./talkgroups.ts";
@@ -2304,6 +2305,12 @@ function FccLicensesGroup(props: { target: FccTarget; fcc: FccLicenses | undefin
   );
 }
 
+/** Which of a system's sites can be heard here: Find my system, looking for it. */
+function checkSites(sys: System): void {
+  const why = findOnAir(lookForSystem(sys));
+  if (why) setNotice(`${why} Find my system, below, is looking for ${sys.shortName}'s sites when you scan.`);
+}
+
 export function SystemCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
@@ -2391,6 +2398,11 @@ export function SystemCard(props: { c: Config; i: number }) {
         <>
           <Switch label="Record" checked={sys.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
           <IdentifyFcc target={{ kind: "system", index: i }} what={sys.name || sys.shortName} freqs={siteFrequencies(sys.sites).map((x) => x.freqHz)} fcc={sys.fcc} />
+          {lookForSystem(sys).sites.length > 0 && (
+            <button className="btn ghost small" onClick={() => checkSites(sys)} title="Which of its sites can be heard here: the survey listens to each one's control channels">
+              Check sites
+            </button>
+          )}
           <button className="btn ghost small" onClick={() => remove()}>
             Remove
           </button>

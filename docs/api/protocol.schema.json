@@ -2254,13 +2254,77 @@
               ]
             },
             "source": {
-              "type": "number"
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "The source it scans with; null: a spare radio (`radio` names it), beside the recording."
+            },
+            "radio": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "bands": {
               "type": "array",
               "items": {
                 "type": "string"
               }
+            },
+            "lookFor": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "freqs": {
+                      "type": "number"
+                    },
+                    "probed": {
+                      "type": "number"
+                    },
+                    "listenS": {
+                      "type": "number"
+                    },
+                    "type": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "p25",
+                            "smartnet",
+                            "dmr",
+                            "nxdn",
+                            "edacs"
+                          ],
+                          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "freqs",
+                    "probed",
+                    "listenS",
+                    "type"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Looking for a system: how many of its frequencies, how many listened to so far, for how long each."
+            },
+            "sites": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SurveySite"
+              },
+              "description": "Its sites, judged so far."
             },
             "message": {
               "type": "string"
@@ -6049,6 +6113,17 @@
       "additionalProperties": false,
       "description": "One running site, as its control channel describes it. `index` is what calls carry as `site`."
     },
+    "SiteVerdict": {
+      "type": "string",
+      "enum": [
+        "active",
+        "otherSite",
+        "unconfirmed",
+        "inactive",
+        "notChecked"
+      ],
+      "description": "What a site looked for showed: heard (`active`), another site's, something not confirmed as it, nothing, or not listened to."
+    },
     "SmartnetBandplan": {
       "type": "object",
       "properties": {
@@ -6646,6 +6721,7 @@
           "enum": [
             "control",
             "smartnet",
+            "edacs",
             "p25",
             "dmrControl",
             "dmr",
@@ -6743,6 +6819,20 @@
             }
           ],
           "description": "NXDN: its rate and RAN, and (a control channel) its system and site codes."
+        },
+        "targetHz": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The frequency looked for it was probed for (surveyStart's lookFor), if one."
+        },
+        "up": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "A frequency looked for: the share of the time its carrier was up."
         }
       },
       "required": [
@@ -6861,6 +6951,66 @@
       ],
       "additionalProperties": false,
       "description": "An FCC license near the user on a frequency the survey heard (the trunkrecorder.pro API's)."
+    },
+    "SurveyLookFor": {
+      "type": "object",
+      "properties": {
+        "freqsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "sites": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "freqsHz": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "expect": {
+                "$ref": "#/definitions/SiteIdentity"
+              },
+              "colorCode": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "label",
+              "freqsHz",
+              "expect"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "p25",
+            "smartnet",
+            "dmr",
+            "nxdn",
+            "edacs"
+          ],
+          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list."
+        },
+        "listenS": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "freqsHz",
+        "sites"
+      ],
+      "additionalProperties": false,
+      "description": "What the survey looks for (surveyStart's lookFor): its sites' frequencies (or, none, licensed ones), each listened to `listenS`."
     },
     "SurveyMonitor": {
       "type": "object",
@@ -7142,6 +7292,55 @@
         "smartnet"
       ],
       "additionalProperties": false
+    },
+    "SurveySite": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/definitions/SiteVerdict"
+        },
+        "why": {
+          "type": "string"
+        },
+        "freqHz": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The frequency it rests on, how well that decoded, and its level (dB over the floor)."
+        },
+        "quality": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "good",
+            "marginal",
+            "poor",
+            null
+          ]
+        },
+        "snrDb": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "label",
+        "verdict",
+        "why",
+        "freqHz",
+        "quality",
+        "snrDb"
+      ],
+      "additionalProperties": false,
+      "description": "A site looked for, judged by what its frequencies showed (the recorder's sitecheck)."
     },
     "SurveySuggestion": {
       "type": "object",
@@ -7859,6 +8058,9 @@
             "source": {
               "type": "number"
             },
+            "radio": {
+              "$ref": "#/definitions/Source"
+            },
             "bands": {
               "type": "array",
               "items": {
@@ -7867,6 +8069,9 @@
             },
             "findGain": {
               "type": "boolean"
+            },
+            "lookFor": {
+              "$ref": "#/definitions/SurveyLookFor"
             }
           },
           "required": [

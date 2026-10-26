@@ -7,11 +7,17 @@
 // identity, control channels or licenses), updating that one instead of adding
 // it again. A system no one has shared comes known only by its licenses (no
 // site to follow yet): the survey looks for it, marking the signals it finds
-// on its licensed frequencies, and adding what it finds gives it them.
+// on its licensed frequencies, and adding what it finds gives it them. A
+// system with sites can be checked first: which of them can be heard here
+// (the survey listens to their frequencies), the ones that can kept ticked.
+// A RadioReference sites export (trs_sites_NNNN.csv) imports the same way,
+// its kind of system chosen here, the sites far away left out.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { fccPrimary, newSiteName, normalizeSite, normalizeSystem, sameSystem, trpBase, type SystemInput } from "./config.ts";
-import { findOnAir, setTalkgroups, snapshot, updateConfig, useSelect } from "./controller.ts";
+import { findOnAir, findPlaces, setTalkgroups, snapshot, updateConfig, useSelect } from "./controller.ts";
+import { bundleSiteName, lookForBundle } from "./lookFor.ts";
+import { splitCsvLine } from "./talkgroups.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { Modal } from "./Identify.tsx";
 import type { Config, Site, System } from "./protocol.ts";
@@ -23,6 +29,8 @@ export interface Bundle {
   source: { directory: string; id: string; rev: number; url?: string; licensee?: string };
   system: SystemInput & { sites: Partial<Site>[] };
   talkgroupsCsv: string;
+  /** Where each site is (lat, lon), where known (a sites file says). */
+  locations?: ([number, number] | null)[];
 }
 
 /** The page was opened to import a system (#import=…): the first-run guide waits. (Read as it loads: the import takes the link off.) */
@@ -34,6 +42,62 @@ export function parseBundle(x: unknown): Bundle | null {
   if (!b || typeof b !== "object" || b.format !== "trp-system" || b.v !== 1) return null;
   if (!b.system || typeof b.system !== "object" || !Array.isArray(b.system.sites) || !b.source?.id) return null;
   return { ...(b as Bundle), talkgroupsCsv: typeof b.talkgroupsCsv === "string" ? b.talkgroupsCsv : "" };
+}
+
+/**
+ * A RadioReference sites export (trs_sites_NNNN.csv: a site a row, its
+ * frequencies, MHz, from the Frequencies column to the row's end, a `c`
+ * marking a control channel) as a bundle: its sites, their control
+ * channels (none marked: all of them; the rest as voice channels), RFSS,
+ * site and NAC, and where they are. Its kind of system isn't in it: the
+ * import asks. Null when `text` isn't one.
+ */
+export function sitesFileBundle(text: string, fileName: string): Bundle | null {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return null;
+  const head = splitCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
+  const col = (...names: string[]) => head.findIndex((h) => names.includes(h));
+  const fcol = col("frequencies", "frequency", "freqs");
+  if (fcol < 0) return null;
+  const [cSite, cRfss, cNac, cName, cLat, cLon] = [col("site dec", "site", "site number"), col("rfss"), col("site nac", "nac"), col("description", "name", "site name"), col("lat", "latitude"), col("lon", "long", "longitude")];
+  const sites: Partial<Site>[] = [];
+  const locations: ([number, number] | null)[] = [];
+  for (const line of lines.slice(1)) {
+    const f = splitCsvLine(line).map((x) => x.trim());
+    const get = (c: number) => (c >= 0 && f[c] ? f[c] : undefined);
+    const freqs = f.slice(fcol).flatMap((v) => {
+      const mhz = parseFloat(v.replace(/[ca]$/i, ""));
+      return mhz > 1 && /^\d+(\.\d+)?[ca]?$/i.test(v) ? [{ hz: Math.round((mhz * 1e6) / 50) * 50, control: /c$/i.test(v) }] : [];
+    });
+    if (!freqs.length) continue;
+    const control = freqs.filter((x) => x.control).map((x) => x.hz);
+    const num = (c: number, radix = 10) => (get(c) && !isNaN(parseInt(get(c)!, radix)) ? parseInt(get(c)!, radix) : undefined);
+    const expect = Object.fromEntries(Object.entries({ rfss: num(cRfss), site: num(cSite), nac: num(cNac, 16) }).filter(([, v]) => v !== undefined));
+    sites.push({
+      name: [get(cSite), get(cName)].filter(Boolean).join(" ") || undefined,
+      controlChannelsHz: control.length ? control : freqs.map((x) => x.hz),
+      voiceChannelsHz: control.length ? freqs.filter((x) => !x.control).map((x) => x.hz) : [],
+      expect,
+    });
+    const [lat, lon] = [parseFloat(get(cLat) ?? ""), parseFloat(get(cLon) ?? "")];
+    locations.push(isFinite(lat) && isFinite(lon) && (lat !== 0 || lon !== 0) ? [lat, lon] : null);
+  }
+  if (!sites.length) return null;
+  const id = fileName.replace(/\.csv$/i, "");
+  return { format: "trp-system", v: 1, source: { directory: "", id, rev: 0 }, system: { shortName: id.replace(/^trs_sites_/, "rr-"), sites }, talkgroupsCsv: "", locations };
+}
+
+/** A bundle's system as `type`: a sites file's sites keep their site lock only as P25 (its other kinds' numbers aren't what their air says). */
+export function asType(b: Bundle, type: NonNullable<SystemInput["type"]>): Bundle {
+  if (b.system.type) return b;
+  return { ...b, system: { ...b.system, type, sites: b.system.sites.map((x) => (type === "p25" ? x : { ...x, expect: {} })) } };
+}
+
+/** How far apart two places are, miles (haversine). */
+export function miles(a: [number, number], b: [number, number]): number {
+  const r = Math.PI / 180;
+  const h = Math.sin(((b[0] - a[0]) * r) / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(((b[1] - a[1]) * r) / 2) ** 2;
+  return 2 * 3958.8 * Math.asin(Math.sqrt(h));
 }
 
 /** A system known only by its licenses (no one has shared it): no site to follow yet, its licensed frequencies to find it by. */
@@ -97,7 +161,7 @@ export function updateSystem(b: Bundle, i: number, sites: number[], talkgroups: 
   updateConfig((x) => {
     const s = x.systems[i];
     shortName = s.shortName;
-    s.directory = { id: b.system.directory?.id ?? b.source.id };
+    if (b.source.directory) s.directory = { id: b.system.directory?.id ?? b.source.id };
     if (!s.name && b.system.name) s.name = b.system.name;
     for (const k of sites) {
       const n = b.system.sites[k];
@@ -126,14 +190,14 @@ export function updateSystem(b: Bundle, i: number, sites: number[], talkgroups: 
 
 // ── what's being imported (one at a time), for the dialog ──────────────────────
 
-type Pending = { state: "loading"; url: string } | { state: "ready"; bundle: Bundle } | { state: "failed"; why: string } | null;
+type Pending = { state: "loading"; url: string } | { state: "ready"; bundle: Bundle; sites?: number[] } | { state: "failed"; why: string } | null;
 let pending: Pending = null;
 const listeners = new Set<() => void>();
 const setPending = (p: Pending) => ((pending = p), listeners.forEach((f) => f()));
 
-/** Show the bundle's import. */
-export function openImport(bundle: Bundle): void {
-  setPending({ state: "ready", bundle });
+/** Show the bundle's import (`sites`: these of its sites ticked; absent: all). */
+export function openImport(bundle: Bundle, sites?: number[]): void {
+  setPending({ state: "ready", bundle, sites });
 }
 
 /** Fetch a bundle from `url`, then show its import. */
@@ -185,7 +249,7 @@ export function DirectoryImport() {
         </div>
       </Modal>
     );
-  return <ImportDialog bundle={p.bundle} onClose={close} />;
+  return <ImportDialog bundle={p.bundle} sites={p.sites} onClose={close} />;
 }
 
 /** FCC licensees are in capitals: "DISTRICT OF COLUMBIA" → "District of Columbia". */
@@ -195,11 +259,13 @@ const TYPES: Record<string, string> = { p25: "P25", smartnet: "SmartNet", dmr: "
 /** What a bundle's system is called: its name, else who holds its licenses. */
 export const nameOf = (b: Bundle) => b.system.name || (b.source.licensee ? titleCase(b.source.licensee) : "") || b.system.shortName || "a system";
 
-export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
-  const b = props.bundle;
+export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose: () => void }) {
   const s = useSelect((x) => ({ config: x.config, talkgroups: x.talkgroups }));
   const c = s.config;
-  const [sites, setSites] = useState<number[]>(() => b.system.sites.map((_, k) => k));
+  // A sites file doesn't say what kind of system it is.
+  const [kind, setKind] = useState<NonNullable<SystemInput["type"]>>(props.bundle.system.type ?? "p25");
+  const b = asType(props.bundle, kind);
+  const [sites, setSites] = useState<number[]>(() => props.sites ?? b.system.sites.map((_, k) => k));
   const same = c ? findExisting(c, b) : -1;
   const [mode, setMode] = useState<"update" | "add">(same >= 0 ? "update" : "add");
   const [name, setName] = useState(() => (c ? freeShortName(c, b.system.shortName ?? b.system.name ?? "system") : "system"));
@@ -210,21 +276,30 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
   const licenses = Object.keys(b.system.fcc ?? {}).length;
   const taken = [...c.systems, ...c.conventional].some((x) => x.shortName === name);
   const existing: System | undefined = same >= 0 ? c.systems[same] : undefined;
+  const fromFile = !props.bundle.source.directory;
+  const look = (only?: number[]) => {
+    const why = findOnAir(lookForBundle(b, nameOf(b), only));
+    return why ? setDone(`${why} The survey is in Setup → Systems, looking for it when you scan.`) : props.onClose();
+  };
   const go = () => {
-    if (find && mode === "add") {
-      const why = findOnAir(b);
-      return why ? setDone(`${why} The survey is in Setup → Systems, looking for it when you scan.`) : props.onClose();
-    }
+    if (find && mode === "add") return look();
     if (mode === "update" && existing) {
       const added = updateSystem(b, same, sites, s.talkgroups);
-      setDone(`Updated ${existing.shortName}: its directory link, the sites and licenses it lacked, and ${added} talkgroup${added === 1 ? "" : "s"} it didn't have.`);
+      setDone(`Updated ${existing.shortName}: its ${fromFile ? "" : "directory link, the "}sites and licenses it lacked, and ${added} talkgroup${added === 1 ? "" : "s"} it didn't have.`);
     } else {
       addSystem(b, name, sites, s.talkgroups);
       setDone(`Added ${name}${tgCount ? `, with ${tgCount} talkgroup${tgCount === 1 ? "" : "s"}` : ""}. Setup → Systems has it; the to-do list says if no radio covers its frequencies yet.`);
     }
   };
+  const source = fromFile ? (
+    <>{`${props.bundle.source.id}.csv`}</>
+  ) : (
+    <a href={b.source.url ?? `${b.source.directory}/systems/${b.source.id}`} target="_blank" rel="noreferrer">
+      the directory
+    </a>
+  );
   return (
-    <Modal title={`${find ? "Find" : "Import"} ${nameOf(b)}`} onClose={props.onClose}>
+    <Modal title={`${find ? "Find" : "Import"} ${fromFile ? `${props.bundle.source.id}.csv` : nameOf(b)}`} onClose={props.onClose}>
       {done ? (
         <>
           <p>{done}</p>
@@ -241,24 +316,34 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
             <>
               <p className="small muted">
                 {`${fccPrimary(b.system.fcc, [])?.callSign ?? ""} · ${licenses} licensed frequenc${licenses === 1 ? "y" : "ies"} · from `}
-                <a href={b.source.url ?? `${b.source.directory}/systems/${b.source.id}`} target="_blank" rel="noreferrer">
-                  the directory
-                </a>
+                {source}
               </p>
               <p>
-                No one has shared it yet, so all that's known is its licenses. They don't say which frequency is its control channel, so the survey looks for it: the signals it finds on these frequencies are marked as its own, and the control channel it
-                listens to sets it up.
+                No one has shared it yet, so all that's known is its licenses. They don't say which frequency is its control channel, so the survey looks for it: it listens to these frequencies, the signals on them are marked as its own, and the
+                control channel it listens to sets it up.
               </p>
             </>
           ) : (
           <p className="small muted">
-            {`${TYPES[b.system.type ?? ""] ?? b.system.type} · ${b.system.sites.length} site${b.system.sites.length === 1 ? "" : "s"} · ${tgCount} named talkgroup${tgCount === 1 ? "" : "s"}${licenses ? ` · ${licenses} FCC license${licenses === 1 ? "" : "s"}` : ""} · from `}
-            <a href={b.source.url ?? `${b.source.directory}/systems/${b.source.id}`} target="_blank" rel="noreferrer">
-              the directory
-            </a>
-            {` (version ${b.source.rev})`}
+            {`${fromFile ? "RadioReference sites" : (TYPES[b.system.type ?? ""] ?? b.system.type)} · ${b.system.sites.length} site${b.system.sites.length === 1 ? "" : "s"}${fromFile ? "" : ` · ${tgCount} named talkgroup${tgCount === 1 ? "" : "s"}`}${licenses ? ` · ${licenses} FCC license${licenses === 1 ? "" : "s"}` : ""} · from `}
+            {source}
+            {!fromFile && ` (version ${b.source.rev})`}
           </p>
           )}
+          {!props.bundle.system.type && (
+            <label className="field">
+              <span className="field-label">Kind of system</span>
+              <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+                {Object.entries(TYPES).map(([k, label]) => (
+                  <option key={k} value={k}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <span className="field-hint">A sites file doesn't say: as RadioReference lists the system.</span>
+            </label>
+          )}
+          {!find && b.locations?.some(Boolean) && <Near b={b} onPick={setSites} />}
           {!find && (
           <fieldset className="stack">
             <legend className="small">Sites</legend>
@@ -266,7 +351,7 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
               <label key={k} className="toggle small">
                 <input type="checkbox" checked={sites.includes(k)} onChange={(e) => setSites(e.target.checked ? [...sites, k] : sites.filter((y) => y !== k))} />
                 <span>
-                  {x.name || (x.expect?.rfss != null ? `Site ${x.expect.rfss}-${x.expect.site}` : `Site ${k + 1}`)} · <span className="mono">{(x.controlChannelsHz ?? []).map(mhz).join(", ")}</span> MHz
+                  {bundleSiteName(x, k)} · <span className="mono">{(x.controlChannelsHz ?? []).map(mhz).join(", ")}</span> MHz
                 </span>
               </label>
             ))}
@@ -289,14 +374,22 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
             <label className="field">
               <span className="field-label">Short name</span>
               <input className="search" value={name} onChange={(e) => setName(cleanShortName(e.target.value))} />
-              <span className="field-hint">{taken ? "Already used: each system needs its own." : "Its folder for calls, and how plugins know it."}</span>
+              <span className="field-hint">{taken ? "Already used: each needs its own." : "Its folder for calls, and how plugins know it."}</span>
             </label>
+          )}
+          {!find && (
+            <p className="small muted">Not sure which sites reach you? Check them on the air first: the survey listens to each one's control channels and keeps the ones it hears ticked.</p>
           )}
           <div className="row">
             <span className="spacer" />
             <button className="btn ghost" onClick={props.onClose}>
               Cancel
             </button>
+            {!find && (
+              <button className="btn" disabled={!sites.length} onClick={() => look(sites)} title="Listen to each ticked site's control channels">
+                Check which I can hear
+              </button>
+            )}
             <button className="btn primary" disabled={!find && (!sites.length || (mode === "add" && (!name || taken)))} onClick={go}>
               {mode === "update" && existing ? `Update ${existing.shortName}` : find ? "Start the survey" : "Add it"}
             </button>
@@ -304,5 +397,36 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
         </>
       )}
     </Modal>
+  );
+}
+
+/** Only the sites within some miles of a place (a city, a ZIP code: the directory's place search). */
+function Near(props: { b: Bundle; onPick: (sites: number[]) => void }) {
+  const [q, setQ] = useState("");
+  const [within, setWithin] = useState(40);
+  const [note, setNote] = useState<string | null>(null);
+  const pick = async () => {
+    const at = (await findPlaces(q.trim()))[0];
+    if (!at) return setNote("No such place found (or the directory couldn't be reached).");
+    const locs = props.b.locations ?? [];
+    const near = props.b.system.sites.map((_, k) => k).filter((k) => locs[k] && miles([at.lat, at.lon], locs[k]!) <= within);
+    props.onPick(near);
+    setNote(`${near.length} of ${props.b.system.sites.length} sites within ${within} miles of ${at.name}, ${at.state}.`);
+  };
+  return (
+    <div className="stack">
+      <div className="row">
+        <input className="search" placeholder="Near: a city or ZIP code" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void pick()} aria-label="Near" />
+        <label className="row small">
+          within
+          <input type="number" min={1} max={500} value={within} onChange={(e) => setWithin(Math.max(1, Number(e.target.value) || 40))} style={{ width: "5em" }} aria-label="Miles" />
+          miles
+        </label>
+        <button className="btn small" disabled={!q.trim()} onClick={() => void pick()}>
+          Tick those
+        </button>
+      </div>
+      {note && <span className="small muted">{note}</span>}
+    </div>
   );
 }

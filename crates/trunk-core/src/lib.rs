@@ -21,6 +21,7 @@ pub mod position;
 pub mod metrics;
 pub mod p25;
 pub mod smartnet;
+pub mod sitecheck;
 pub mod survey;
 pub mod tables;
 pub mod trunk;

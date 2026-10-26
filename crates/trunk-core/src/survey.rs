@@ -110,6 +110,17 @@ pub struct SurveyConfig {
     pub settle_s: f64,
     /// The receivers the monitored control channel runs.
     pub bank: BankConfig,
+    /// Frequencies to look for (Hz, as licensed or listed): the scan covers
+    /// these instead of the bands, and probes each, whether or not a carrier
+    /// stands out there.
+    pub targets: Vec<f64>,
+    /// How long each hop's signals are probed, s.
+    pub probe_s: f64,
+    /// The receivers a probe runs (a system of a known kind: its own).
+    pub receivers: Receivers,
+    /// CPU cores a hop's probes may be shared out over (1: this thread
+    /// only). A wide radio's hop holds dozens of them.
+    pub threads: usize,
 }
 
 impl Default for SurveyConfig {
@@ -123,6 +134,10 @@ impl Default for SurveyConfig {
             gains: vec![],
             settle_s: 0.05,
             bank: BankConfig::default(),
+            targets: Vec::new(),
+            probe_s: DECODE_S,
+            receivers: Receivers::ALL,
+            threads: 1,
         }
     }
 }
@@ -150,6 +165,8 @@ pub enum Kind {
     DmrControl,
     /// An NXDN Type-C control channel (CRC-valid CAC; [`Candidate::nxdn`]).
     NxdnControl,
+    /// An EDACS control channel (BCH-valid messages; its site ID in the identity).
+    Edacs,
     /// A SmartNet / SmartZone control channel (CRC-valid OSWs).
     SmartNet,
     /// A P25 control channel.
@@ -165,6 +182,7 @@ impl Kind {
             Kind::NxdnControl => "nxdnControl",
             Kind::P25 => "p25",
             Kind::DmrControl => "dmrControl",
+            Kind::Edacs => "edacs",
             Kind::SmartNet => "smartnet",
             Kind::Control => "control",
         }
@@ -190,6 +208,10 @@ pub struct Candidate {
     pub dmr: Option<DmrFound>,
     /// NXDN: its rate, RAN, and (a control channel) its system and site.
     pub nxdn: Option<NxdnFound>,
+    /// The frequency looked for it was probed for ([`SurveyConfig::targets`]), if one.
+    pub target: Option<f64>,
+    /// A target's carrier: the share of the time it was up.
+    pub up: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -529,6 +551,34 @@ fn bank_labels(cfg: &BankConfig) -> Vec<&'static str> {
     v
 }
 
+/// Which of a probe's receivers run: each costs CPU on every signal probed,
+/// so a system of a known kind runs just its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Receivers {
+    pub p25: bool,
+    pub smartnet: bool,
+    pub edacs: bool,
+    pub dmr: bool,
+    pub nxdn: bool,
+}
+
+impl Receivers {
+    pub const ALL: Receivers = Receivers { p25: true, smartnet: true, edacs: true, dmr: true, nxdn: true };
+
+    /// Just the receivers of a system type ("p25", "smartnet", "edacs", "dmr", "nxdn"); every one for another.
+    pub fn of_type(t: &str) -> Receivers {
+        let none = Receivers { p25: false, smartnet: false, edacs: false, dmr: false, nxdn: false };
+        match t {
+            "p25" => Receivers { p25: true, ..none },
+            "smartnet" => Receivers { smartnet: true, ..none },
+            "edacs" => Receivers { edacs: true, ..none },
+            "dmr" => Receivers { dmr: true, ..none },
+            "nxdn" => Receivers { nxdn: true, ..none },
+            _ => Receivers::ALL,
+        }
+    }
+}
+
 struct Probe {
     peak: Peak,
     head: HeadId,
@@ -536,11 +586,201 @@ struct Probe {
     est: FreqEst,
     dec: Decode,
     sn: SnRx,
+    edacs: EdacsRx,
     /// The DMR side: one carrier's site decoder (what trunking it is, if any).
     dmr: crate::dmr::Site,
     dmr_samples: u64,
     /// The NXDN side: a receiver per rate.
     nxdn: [NxdnProbe; 2],
+    runs: Receivers,
+    /// The frequency looked for that it probes ([`SurveyConfig::targets`]), if one.
+    target: Option<f64>,
+    /// A target's carrier meter: looks it was up, and its strongest over the band's floor (dB).
+    up: u64,
+    looks: u64,
+    peak_db: f64,
+}
+
+impl Probe {
+    /// A probe of the signal `peak.offset_hz` from `center`: a head on `chz`, and the receivers `runs`.
+    fn new(chz: &mut Channelizer, center: f64, peak: Peak, runs: Receivers, target: Option<f64>) -> Self {
+        let rate = chz.output_rate();
+        let (head, _, _) = chz.add_head(peak.offset_hz, CUTOFF_HZ, 0.0);
+        let dmr = crate::dmr::Site::new(&[center + peak.offset_hz], rate, Default::default());
+        let nxdn = [NxdnProbe::new(crate::nxdn::Rate::N48, rate), NxdnProbe::new(crate::nxdn::Rate::N96, rate)];
+        Probe {
+            peak,
+            head,
+            bank: Bank::new(rate, PROBE_BANK),
+            est: FreqEst::default(),
+            dec: Decode::default(),
+            sn: SnRx::new(rate),
+            edacs: EdacsRx::new(rate),
+            dmr,
+            dmr_samples: 0,
+            nxdn,
+            runs,
+            target,
+            up: 0,
+            looks: 0,
+            peak_db: f64::NEG_INFINITY,
+        }
+    }
+
+    /// The head's samples of the block `chz` just ran, through the receivers
+    /// (`flush`: the last block, so the P25 receivers give up what they hold).
+    fn feed(&mut self, chz: &Channelizer, rate: f64, groups: &mut Vec<Group>, msgs: &mut Vec<Message>, flush: bool) {
+        let iq = chz.output(self.head).unwrap_or(&[]);
+        let r = self.runs;
+        if r.p25 || r.smartnet {
+            self.est.push(iq);
+        }
+        if r.smartnet {
+            self.sn.push(iq, |_, _| {});
+        }
+        if r.edacs {
+            self.edacs.push(iq, rate);
+        }
+        if r.dmr {
+            let mut dm = Vec::new();
+            self.dmr.push(0, iq, 0.0, rate, &mut dm);
+            self.dmr_samples += iq.len() as u64;
+        }
+        if r.nxdn {
+            for n in self.nxdn.iter_mut() {
+                n.push(iq);
+            }
+        }
+        if !r.p25 {
+            return;
+        }
+        groups.clear();
+        self.bank.push(iq, groups);
+        if flush {
+            self.bank.flush(groups);
+        }
+        for g in groups.iter() {
+            msgs.clear();
+            self.dec.group(g, best_frame(g).sample / rate, msgs);
+        }
+    }
+
+    /// What the receivers made of it, `center` the hop's.
+    fn candidate(&self, center: f64, band: &'static str, rate: f64) -> Candidate {
+        let p = self;
+        // DMR: a continuous carrier frames ~33 bursts a second, most with a sync.
+        let dmr_syncs = p.dmr.syncs(0);
+        // NXDN: the rate whose receiver framed more (a 9600 signal
+        // frames as noise at 2400 and the other way round).
+        let nx = p.nxdn.iter().max_by_key(|n| (n.cac, n.lich)).unwrap();
+        let kind = if p.dec.good >= 2 {
+            Kind::Control
+        } else if p.sn.framer.good >= 3 {
+            Kind::SmartNet
+        } else if p.edacs.framer.good >= 3 {
+            Kind::Edacs
+        } else if p.dmr.variant.is_some() && dmr_syncs >= 6 {
+            Kind::DmrControl
+        } else if nx.cac >= 2 {
+            Kind::NxdnControl
+        } else if p.dec.frames >= 3 {
+            Kind::P25
+        } else if dmr_syncs >= 6 {
+            Kind::Dmr
+        } else if nx.lich >= 4 {
+            Kind::Nxdn
+        } else {
+            Kind::Other
+        };
+        // A target's level: where a peak stood out, the peak's; else what the meter saw.
+        let snr_db = if p.peak.width_hz > 0.0 || p.looks == 0 { p.peak.snr_db } else { p.peak_db.max(0.0) };
+        let base = Candidate {
+            freq_hz: center + p.peak.offset_hz,
+            band,
+            snr_db,
+            width_hz: p.peak.width_hz,
+            kind,
+            frames: 0,
+            good: 0,
+            bad: 0,
+            modulation: "",
+            identity: Identity::default(),
+            dmr: None,
+            nxdn: None,
+            target: p.target,
+            up: (p.looks > 0).then(|| p.up as f64 / p.looks as f64),
+        };
+        match kind {
+            Kind::Nxdn | Kind::NxdnControl => Candidate {
+                frames: nx.lich,
+                good: nx.cac,
+                modulation: if nx.rate == crate::nxdn::Rate::N48 { "NXDN48" } else { "NXDN96" },
+                nxdn: Some(nx.found()),
+                ..base
+            },
+            Kind::Dmr | Kind::DmrControl => {
+                let cc = p.dmr.color_code.or(p.dmr.carriers[0].chan.slots.iter().find_map(|s| s.color_code));
+                Candidate { frames: dmr_syncs as u32, modulation: "4FSK", dmr: Some(DmrFound { variant: p.dmr.variant, color_code: cc }), ..base }
+            }
+            Kind::Edacs => {
+                let e = &p.edacs;
+                let mut identity = Identity::default();
+                identity.set_opt(IdField::Site, e.parser.site);
+                Candidate { freq_hz: base.freq_hz + e.rx.offset_hz() as f64, frames: (e.framer.good + e.framer.bad) as u32, good: e.framer.good as u32, bad: e.framer.bad as u32, modulation: "2FSK", identity, ..base }
+            }
+            // The midpoint of the two tones.
+            Kind::SmartNet => Candidate {
+                freq_hz: base.freq_hz + p.sn.rx.offset_hz() as f64,
+                frames: p.sn.framer.good as u32,
+                good: p.sn.framer.good as u32,
+                bad: p.sn.framer.bad as u32,
+                modulation: "2FSK",
+                ..base
+            },
+            _ => {
+                // A decoding signal's own carrier beats the spectrum's centroid.
+                let fine = if kind == Kind::Other { 0.0 } else { p.est.hz(rate).filter(|r| r.abs() < 3000.0).unwrap_or(0.0) };
+                Candidate {
+                    freq_hz: base.freq_hz + fine,
+                    frames: p.dec.frames,
+                    good: p.dec.good as u32,
+                    bad: p.dec.bad as u32,
+                    modulation: modulation(&bank_labels(&PROBE_BANK), &p.bank.frames_per_rx()),
+                    identity: p.dec.id.clone(),
+                    ..base
+                }
+            }
+        }
+    }
+}
+
+/// An EDACS control channel receiver: 9600 baud 2FSK, the framer, and the
+/// parser for the site ID it broadcasts.
+struct EdacsRx {
+    rx: sn::Fsk2,
+    framer: crate::edacs::framer::Framer,
+    parser: crate::edacs::Parser,
+    bits: Vec<sn::Bit>,
+}
+
+impl EdacsRx {
+    fn new(rate: f64) -> Self {
+        let cfg = crate::edacs::EdacsConfig { lcns: Default::default(), esk: false };
+        EdacsRx { rx: crate::edacs::receiver(rate), framer: Default::default(), parser: crate::edacs::Parser::new(cfg), bits: Vec::new() }
+    }
+
+    fn push(&mut self, iq: &[Complex32], rate: f64) {
+        self.bits.clear();
+        self.rx.push(iq, &mut self.bits);
+        let mut out = Vec::new();
+        for b in &self.bits {
+            // (The receiver counts its samples from the first.)
+            if let Some(f) = self.framer.push(b.soft, b.sample / rate) {
+                out.clear();
+                self.parser.frame(f.msgs[0], f.msgs[1], f.t, &mut out);
+            }
+        }
+    }
 }
 
 /// An NXDN receiver and framer at one rate: frames with a valid LICH, CRC-valid CACs, the RAN and the site.
@@ -649,25 +889,95 @@ const PROBE_BANK: BankConfig = BankConfig {
     detect: false,
 };
 
-/// One hop of the scan.
+/// One hop of the scan: the spectrum, then a probe on each carrier that
+/// stands out and each frequency looked for. The probes may be shared out
+/// over several cores ([`SurveyConfig::threads`]), each share on its own
+/// channelizer fed the same samples.
 struct HopScan {
     center: f64,
     band: &'static str,
-    chz: Channelizer,
+    /// The first share's channelizer makes the spectrum.
+    parts: Vec<ProbePart>,
     row: Vec<f32>,
     rows: Vec<f32>,
     blocks: u64,
     stride: u64,
     spectrum_blocks: u64,
     decode_blocks: u64,
-    decode_from: Option<u64>,
+    decoding: bool,
+    targets: Vec<f64>,
+    runs: Receivers,
+    threads: usize,
+    /// Samples waiting to be handed to the shares together (with more than one).
+    held: Vec<Complex32>,
+    batch: usize,
+}
+
+/// Some of a hop's probes, on a channelizer of their own.
+struct ProbePart {
+    chz: Channelizer,
     probes: Vec<Probe>,
+    blocks: u64,
+    /// Blocks between looks at the targets' carriers (~20 ms).
+    meter_stride: u64,
+    cells: Vec<f32>,
+    sorted: Vec<f32>,
     groups: Vec<Group>,
     msgs: Vec<Message>,
 }
 
+/// A target's carrier is up when its band is this much over the floor (power ratio, 6 dB).
+const UP_RATIO: f64 = 4.0;
+/// Half the width a target's carrier is measured over, Hz.
+const METER_HALF_HZ: f64 = 5_000.0;
+/// A peak this close to a target is its signal, Hz.
+const SAME_SIGNAL_HZ: f64 = 6_000.0;
+
+impl ProbePart {
+    fn new(chz: Channelizer, cells: usize) -> Self {
+        let meter_stride = ((0.02 / chz.block_seconds()).round() as u64).max(1);
+        ProbePart { chz, probes: Vec::new(), blocks: 0, meter_stride, cells: vec![0.0; cells], sorted: Vec::with_capacity(cells), groups: Vec::new(), msgs: Vec::new() }
+    }
+
+    /// Samples through the probes, until `until` blocks have run (the rest dropped).
+    fn push(&mut self, mut iq: &[Complex32], until: u64) {
+        while !iq.is_empty() && self.blocks < until {
+            let (used, ran) = self.chz.feed(iq);
+            iq = &iq[used..];
+            if ran {
+                self.blocks += 1;
+                self.on_block(self.blocks >= until);
+            }
+        }
+    }
+
+    fn on_block(&mut self, last: bool) {
+        let rate = self.chz.output_rate();
+        for p in &mut self.probes {
+            p.feed(&self.chz, rate, &mut self.groups, &mut self.msgs, last);
+        }
+        if !self.blocks.is_multiple_of(self.meter_stride) || !self.probes.iter().any(|p| p.target.is_some()) {
+            return;
+        }
+        // The floor: the median cell of the band's middle (its edges roll off).
+        self.chz.cell_powers(&mut self.cells);
+        let n = self.cells.len();
+        self.sorted.clear();
+        self.sorted.extend_from_slice(&self.cells[n / 10..n - n / 10]);
+        let mid = self.sorted.len() / 2;
+        let floor = (*self.sorted.select_nth_unstable_by(mid, f32::total_cmp).1 as f64).max(1e-30);
+        for p in self.probes.iter_mut().filter(|p| p.target.is_some()) {
+            let r = self.chz.band_power(p.peak.offset_hz, METER_HALF_HZ) / floor;
+            p.looks += 1;
+            p.up += (r >= UP_RATIO) as u64;
+            p.peak_db = p.peak_db.max(10.0 * r.max(1e-9).log10());
+        }
+    }
+}
+
 impl HopScan {
-    fn new(center: f64, band: &'static str, rate: f64) -> Self {
+    fn new(center: f64, band: &'static str, cfg: &SurveyConfig, targets: Vec<f64>) -> Self {
+        let rate = cfg.rate_hz;
         let chz = Channelizer::new(rate, MIN_CHANNEL_RATE, 0.01);
         // Cells of ~1 kHz or wider (a power of two dividing the FFT).
         let mut cells = chz.fft_size();
@@ -684,166 +994,106 @@ impl HopScan {
             // At most ~100 spectra: one per ≥ 3.5 ms of air.
             stride: ((0.0035 / bs).ceil() as u64).max(1),
             spectrum_blocks: (SPECTRUM_S / bs).ceil() as u64,
-            decode_blocks: (DECODE_S / bs).ceil() as u64,
-            decode_from: None,
-            probes: Vec::new(),
-            groups: Vec::new(),
-            msgs: Vec::new(),
-            chz,
+            decode_blocks: (cfg.probe_s / bs).ceil().max(1.0) as u64,
+            decoding: false,
+            targets,
+            runs: cfg.receivers,
+            threads: cfg.threads.max(1),
+            held: Vec::new(),
+            // Handed over every 50 ms of samples: starting the threads is nothing beside that.
+            batch: ((rate * 0.05) as usize).max(4096),
+            parts: vec![ProbePart::new(chz, cells)],
         }
     }
 
-    /// After a block ran; the hop's findings once it is over.
-    fn on_block(&mut self) -> Option<Vec<Candidate>> {
-        self.blocks += 1;
-        let Some(from) = self.decode_from else {
-            if self.blocks % self.stride == 0 {
-                self.chz.cell_powers(&mut self.row);
-                self.rows.extend_from_slice(&self.row);
+    /// Samples of the hop; its findings once it is over (the rest of `iq` dropped).
+    fn push(&mut self, mut iq: &[Complex32]) -> Option<Vec<Candidate>> {
+        if !self.decoding {
+            while !iq.is_empty() {
+                let chz = &mut self.parts[0].chz;
+                let (used, ran) = chz.feed(iq);
+                iq = &iq[used..];
+                if !ran {
+                    continue;
+                }
+                self.blocks += 1;
+                if self.blocks.is_multiple_of(self.stride) {
+                    chz.cell_powers(&mut self.row);
+                    self.rows.extend_from_slice(&self.row);
+                }
+                if self.blocks >= self.spectrum_blocks {
+                    if !self.start_probes() {
+                        return Some(vec![]);
+                    }
+                    break;
+                }
             }
-            if self.blocks < self.spectrum_blocks {
+            if !self.decoding {
                 return None;
             }
-            let fs = self.chz.fs();
-            let peaks = find_peaks(&self.rows, self.row.len(), fs, self.chz.fft_size(), fs / 2.0 * USABLE);
-            if peaks.is_empty() {
-                return Some(vec![]);
-            }
-            let rate = self.chz.output_rate();
-            for p in peaks {
-                let (head, _, _) = self.chz.add_head(p.offset_hz, CUTOFF_HZ, 0.0);
-                let dmr = crate::dmr::Site::new(&[self.center + p.offset_hz], rate, Default::default());
-                let nxdn = [NxdnProbe::new(crate::nxdn::Rate::N48, rate), NxdnProbe::new(crate::nxdn::Rate::N96, rate)];
-                self.probes.push(Probe { peak: p, head, bank: Bank::new(rate, PROBE_BANK), est: FreqEst::default(), dec: Decode::default(), sn: SnRx::new(rate), dmr, dmr_samples: 0, nxdn });
-            }
-            self.decode_from = Some(self.blocks);
-            return None;
-        };
-        let rate = self.chz.output_rate();
-        let done = self.blocks - from >= self.decode_blocks;
-        for p in &mut self.probes {
-            let iq = self.chz.output(p.head).unwrap_or(&[]);
-            p.est.push(iq);
-            p.sn.push(iq, |_, _| {});
-            let mut dm = Vec::new();
-            p.dmr.push(0, iq, 0.0, rate, &mut dm);
-            p.dmr_samples += iq.len() as u64;
-            for n in p.nxdn.iter_mut() {
-                n.push(iq);
-            }
-            self.groups.clear();
-            p.bank.push(iq, &mut self.groups);
-            if done {
-                p.bank.flush(&mut self.groups);
-            }
-            for g in &self.groups {
-                self.msgs.clear();
-                p.dec.group(g, best_frame(g).sample / rate, &mut self.msgs);
+        }
+        let until = self.decode_blocks;
+        if self.parts.len() == 1 {
+            self.parts[0].push(iq, until);
+        } else {
+            self.held.extend_from_slice(iq);
+            if self.held.len() >= self.batch {
+                let held = std::mem::take(&mut self.held);
+                std::thread::scope(|s| {
+                    for p in self.parts.iter_mut() {
+                        let h = &held;
+                        s.spawn(move || p.push(h, until));
+                    }
+                });
+                self.held = held;
+                self.held.clear();
             }
         }
-        if !done {
+        if self.parts.iter().any(|p| p.blocks < until) {
             return None;
         }
-        let labels = bank_labels(&PROBE_BANK);
-        Some(
-            self.probes
-                .iter()
-                .map(|p| {
-                    // DMR: a continuous carrier frames ~33 bursts a second, most with a sync.
-                    let dmr_syncs = p.dmr.syncs(0);
-                    // NXDN: the rate whose receiver framed more (a 9600 signal
-                    // frames as noise at 2400 and the other way round).
-                    let nx = p.nxdn.iter().max_by_key(|n| (n.cac, n.lich)).unwrap();
-                    let kind = if p.dec.good >= 2 {
-                        Kind::Control
-                    } else if p.sn.framer.good >= 3 {
-                        Kind::SmartNet
-                    } else if p.dmr.variant.is_some() && dmr_syncs >= 6 {
-                        Kind::DmrControl
-                    } else if nx.cac >= 2 {
-                        Kind::NxdnControl
-                    } else if p.dec.frames >= 3 {
-                        Kind::P25
-                    } else if dmr_syncs >= 6 {
-                        Kind::Dmr
-                    } else if nx.lich >= 4 {
-                        Kind::Nxdn
-                    } else {
-                        Kind::Other
-                    };
-                    if matches!(kind, Kind::Nxdn | Kind::NxdnControl) {
-                        return Candidate {
-                            freq_hz: self.center + p.peak.offset_hz,
-                            band: self.band,
-                            snr_db: p.peak.snr_db,
-                            width_hz: p.peak.width_hz,
-                            kind,
-                            frames: nx.lich,
-                            good: nx.cac,
-                            bad: 0,
-                            modulation: if nx.rate == crate::nxdn::Rate::N48 { "NXDN48" } else { "NXDN96" },
-                            identity: Identity::default(),
-                            dmr: None,
-                            nxdn: Some(nx.found()),
-                        };
-                    }
-                    if matches!(kind, Kind::Dmr | Kind::DmrControl) {
-                        let cc = p.dmr.color_code.or(p.dmr.carriers[0].chan.slots.iter().find_map(|s| s.color_code));
-                        return Candidate {
-                            freq_hz: self.center + p.peak.offset_hz,
-                            band: self.band,
-                            snr_db: p.peak.snr_db,
-                            width_hz: p.peak.width_hz,
-                            kind,
-                            frames: dmr_syncs as u32,
-                            good: 0,
-                            bad: 0,
-                            modulation: "4FSK",
-                            identity: Identity::default(),
-                            dmr: Some(DmrFound { variant: p.dmr.variant, color_code: cc }),
-                            nxdn: None,
-                        };
-                    }
-                    // A decoding signal's own carrier beats the spectrum's centroid.
-                    let fine = match kind {
-                        Kind::Other => 0.0,
-                        // The midpoint of the two tones.
-                        Kind::SmartNet => p.sn.rx.offset_hz() as f64,
-                        _ => p.est.hz(rate).filter(|r| r.abs() < 3000.0).unwrap_or(0.0),
-                    };
-                    if kind == Kind::SmartNet {
-                        return Candidate {
-                            freq_hz: self.center + p.peak.offset_hz + fine,
-                            band: self.band,
-                            snr_db: p.peak.snr_db,
-                            width_hz: p.peak.width_hz,
-                            kind,
-                            frames: p.sn.framer.good as u32,
-                            good: p.sn.framer.good as u32,
-                            bad: p.sn.framer.bad as u32,
-                            modulation: "2FSK",
-                            identity: Identity::default(),
-                            dmr: None,
-                            nxdn: None,
-                        };
-                    }
-                    Candidate {
-                        freq_hz: self.center + p.peak.offset_hz + fine,
-                        band: self.band,
-                        snr_db: p.peak.snr_db,
-                        width_hz: p.peak.width_hz,
-                        kind,
-                        frames: p.dec.frames,
-                        good: p.dec.good as u32,
-                        bad: p.dec.bad as u32,
-                        modulation: modulation(&labels, &p.bank.frames_per_rx()),
-                        identity: p.dec.id.clone(),
-                        dmr: None,
-                        nxdn: None,
-                    }
-                })
-                .collect(),
-        )
+        let rate = self.parts[0].chz.output_rate();
+        let mut found: Vec<Candidate> = self.parts.iter().flat_map(|p| p.probes.iter().map(|x| x.candidate(self.center, self.band, rate))).collect();
+        found.sort_by(|a, b| a.freq_hz.total_cmp(&b.freq_hz));
+        Some(found)
+    }
+
+    /// After the spectrum: a probe on each carrier and each target, shared
+    /// out; false when there is nothing to probe.
+    fn start_probes(&mut self) -> bool {
+        let fs = self.parts[0].chz.fs();
+        let mut peaks: Vec<(Peak, Option<f64>)> = find_peaks(&self.rows, self.row.len(), fs, self.parts[0].chz.fft_size(), fs / 2.0 * USABLE).into_iter().map(|p| (p, None)).collect();
+        // Each target is the carrier standing out there, else gets a probe of its own.
+        for &t in &self.targets {
+            let off = t - self.center;
+            match peaks.iter_mut().filter(|(p, x)| x.is_none() && (p.offset_hz - off).abs() < SAME_SIGNAL_HZ).min_by(|a, b| (a.0.offset_hz - off).abs().total_cmp(&(b.0.offset_hz - off).abs())) {
+                Some(x) => x.1 = Some(t),
+                None => peaks.push((Peak { offset_hz: off, snr_db: 0.0, width_hz: 0.0, score: 0.0 }, Some(t))),
+            }
+        }
+        if peaks.is_empty() {
+            return false;
+        }
+        let n = self.threads.clamp(1, peaks.len());
+        let per = peaks.len().div_ceil(n);
+        let cells = self.row.len();
+        let rate = self.parts[0].chz.fs();
+        for (k, share) in peaks.chunks(per).enumerate() {
+            if k > 0 {
+                self.parts.push(ProbePart::new(Channelizer::new(rate, MIN_CHANNEL_RATE, 0.01), cells));
+            }
+            let part = &mut self.parts[k];
+            for &(p, target) in share {
+                let probe = Probe::new(&mut part.chz, self.center, p, self.runs, target);
+                part.probes.push(probe);
+            }
+        }
+        self.decoding = true;
+        true
+    }
+
+    fn spectrum(&self, bins: usize) -> Vec<f32> {
+        self.parts[0].chz.power_spectrum(bins)
     }
 }
 
@@ -1281,10 +1531,12 @@ pub fn best_gain(steps: &[GainStep]) -> Option<f32> {
     ok.first().map(|s| s.gain_db)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Hop {
     center: f64,
     band: &'static str,
+    /// The targets it covers.
+    targets: Vec<f64>,
 }
 
 /// Hop centres covering the chosen bands (in [`BANDS`] order), each hop's
@@ -1312,17 +1564,48 @@ fn plan(bands: &[String], rate: f64, range: (f64, f64)) -> Vec<Hop> {
             continue;
         }
         if hi - lo <= span - 25_000.0 {
-            hops.push(Hop { center: round((lo + hi) / 2.0), band: b.id });
+            hops.push(Hop { center: round((lo + hi) / 2.0), band: b.id, targets: vec![] });
             continue;
         }
         let mut c = lo + span / 2.0 - 12_500.0;
         loop {
-            hops.push(Hop { center: round(c), band: b.id });
+            hops.push(Hop { center: round(c), band: b.id, targets: vec![] });
             if c + span / 2.0 >= hi {
                 break;
             }
             c += step;
         }
+    }
+    hops
+}
+
+/// Kept clear of the radio's DC offset, Hz.
+const DC_CLEAR_HZ: f64 = 20_000.0;
+
+/// Hops covering `targets` (each in one, none on the radio's DC, the ones
+/// out of `range` left out), as few as fit.
+fn target_plan(targets: &[f64], rate: f64, range: (f64, f64)) -> Vec<Hop> {
+    let mut f: Vec<f64> = targets.iter().copied().filter(|&t| t >= range.0 && t <= range.1).collect();
+    f.sort_by(f64::total_cmp);
+    f.dedup();
+    let half = rate * USABLE / 2.0 - METER_HALF_HZ - DC_CLEAR_HZ;
+    let mut hops = Vec::new();
+    let mut i = 0;
+    while i < f.len() {
+        let mut j = i;
+        while j + 1 < f.len() && f[j + 1] - f[i] <= 2.0 * half {
+            j += 1;
+        }
+        let span = &f[i..=j];
+        let mid = (span[0] + span[span.len() - 1]) / 2.0;
+        // A centre clear of every frequency, still covering them all.
+        let center = [0.0, DC_CLEAR_HZ, -DC_CLEAR_HZ, 2.0 * DC_CLEAR_HZ, -2.0 * DC_CLEAR_HZ]
+            .into_iter()
+            .map(|d| mid + d)
+            .find(|c| span.iter().all(|x| (x - c).abs() >= DC_CLEAR_HZ && (x - c).abs() <= half + DC_CLEAR_HZ))
+            .unwrap_or(mid);
+        hops.push(Hop { center: (center / 1000.0).round() * 1000.0, band: band_of(center), targets: span.to_vec() });
+        i = j + 1;
     }
     hops
 }
@@ -1356,6 +1639,8 @@ pub struct Survey {
     clip: (u64, u64),
     /// The ppm the monitor measured, kept for correcting the scan's findings.
     ppm: Option<f64>,
+    /// The targets the scan has probed so far.
+    probed: Vec<f64>,
 }
 
 impl Survey {
@@ -1374,6 +1659,7 @@ impl Survey {
             iq: Vec::new(),
             clip: (0, 0),
             ppm: None,
+            probed: Vec::new(),
             cfg,
         };
         s.rescan();
@@ -1383,15 +1669,20 @@ impl Survey {
     /// Start (again) from the first hop, forgetting what was found.
     pub fn rescan(&mut self) {
         self.candidates.clear();
+        self.probed.clear();
         self.message.clear();
         self.stage = Stage::Scanning;
-        self.hops = match self.cfg.fixed_center_hz {
-            Some(c) => vec![Hop { center: c, band: band_of(c) }],
-            None => plan(&self.cfg.bands, self.cfg.rate_hz, self.cfg.tune_range_hz),
+        let looking = !self.cfg.targets.is_empty();
+        let half = self.cfg.rate_hz / 2.0 * USABLE;
+        self.hops = match (self.cfg.fixed_center_hz, looking) {
+            (Some(c), true) => target_plan(&self.cfg.targets, self.cfg.rate_hz, (c - half, c + half)).into_iter().take(1).map(|h| Hop { center: c, band: band_of(c), targets: h.targets }).collect(),
+            (Some(c), false) => vec![Hop { center: c, band: band_of(c), targets: vec![] }],
+            (None, true) => target_plan(&self.cfg.targets, self.cfg.rate_hz, self.cfg.tune_range_hz),
+            (None, false) => plan(&self.cfg.bands, self.cfg.rate_hz, self.cfg.tune_range_hz),
         };
         if self.hops.is_empty() {
             self.stage = Stage::Done;
-            self.message = "None of the chosen bands is in this radio's tuning range.".into();
+            self.message = if looking { "None of the frequencies looked for is in this radio's tuning range (or the capture)." } else { "None of the chosen bands is in this radio's tuning range." }.into();
             self.work = Work::None;
             return;
         }
@@ -1400,9 +1691,9 @@ impl Survey {
 
     fn go_hop(&mut self, i: usize) {
         self.hop = i;
-        let h = self.hops[i];
+        let h = &self.hops[i];
         if self.cfg.fixed_center_hz.is_some() {
-            self.work = Work::Hop(Box::new(HopScan::new(self.center_hz, h.band, self.cfg.rate_hz)));
+            self.work = Work::Hop(Box::new(HopScan::new(self.center_hz, h.band, &self.cfg, h.targets.clone())));
         } else {
             self.work = Work::None;
             self.pending = Some(Command::Tune(h.center));
@@ -1448,7 +1739,7 @@ impl Survey {
         self.center_hz = center_hz;
         self.skip = (self.cfg.settle_s * self.cfg.rate_hz) as u64;
         self.work = match after {
-            AfterTune::Hop(i) => Work::Hop(Box::new(HopScan::new(center_hz, self.hops[i].band, self.cfg.rate_hz))),
+            AfterTune::Hop(i) => Work::Hop(Box::new(HopScan::new(center_hz, self.hops[i].band, &self.cfg, self.hops[i].targets.clone()))),
             AfterTune::Monitor(f) => Work::Monitor(Box::new(Monitor::new(center_hz, f, &self.cfg))),
         };
     }
@@ -1483,9 +1774,13 @@ impl Survey {
             }
             let ran = match &mut self.work {
                 Work::Hop(h) => {
-                    let (used, ran) = h.chz.feed(iq);
-                    iq = &iq[used..];
-                    ran
+                    if let Some(found) = h.push(iq) {
+                        let targets = std::mem::take(&mut h.targets);
+                        self.probed.extend(targets);
+                        self.merge(found);
+                        self.next_hop();
+                    }
+                    return;
                 }
                 Work::Monitor(m) => {
                     let (used, ran) = m.chz.feed(iq);
@@ -1519,12 +1814,6 @@ impl Survey {
 
     fn on_block(&mut self, flush: bool) {
         match &mut self.work {
-            Work::Hop(h) => {
-                if let Some(found) = h.on_block() {
-                    self.merge(found);
-                    self.next_hop();
-                }
-            }
             Work::Monitor(m) => {
                 m.on_block(self.clip, flush);
                 if let Some(c) = m.pending.take() {
@@ -1534,17 +1823,20 @@ impl Survey {
                     self.ppm = m.info.ppm;
                 }
             }
-            Work::None => {}
+            Work::Hop(_) | Work::None => {}
         }
     }
 
     fn merge(&mut self, found: Vec<Candidate>) {
         for c in found {
-            match self.candidates.iter_mut().find(|x| (x.freq_hz - c.freq_hz).abs() < 6000.0) {
+            // (Two targets close together are kept apart.)
+            match self.candidates.iter_mut().find(|x| (x.freq_hz - c.freq_hz).abs() < SAME_SIGNAL_HZ && (x.target.is_none() || c.target.is_none() || x.target == c.target)) {
                 Some(x) => {
+                    let (target, up) = (x.target.or(c.target), match (x.up, c.up) { (Some(a), Some(b)) => Some(a.max(b)), (a, b) => a.or(b) });
                     if (c.kind, c.score()) > (x.kind, x.score()) {
                         *x = c;
                     }
+                    (x.target, x.up) = (target, up);
                 }
                 None => self.candidates.push(c),
             }
@@ -1565,7 +1857,12 @@ impl Survey {
                 let dmr = self.candidates.iter().filter(|c| c.kind == Kind::DmrControl).count();
                 let nxdn = self.candidates.iter().filter(|c| c.kind == Kind::NxdnControl).count();
                 let found: Vec<String> = [(dmr, "trunked DMR control / rest"), (nxdn, "NXDN control")].iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what} channel(s)")).collect();
-                self.message = if !found.is_empty() {
+                let looked = self.cfg.targets.len();
+                self.message = if looked > 0 && !found.is_empty() {
+                    format!("Found {} on the {looked} frequencies looked for: no P25 or SmartNet control channel to listen to.", found.join(" and "))
+                } else if looked > 0 {
+                    format!("No P25 or SmartNet control channel on the {looked} frequencies looked for.")
+                } else if !found.is_empty() {
                     format!("Found {} — add one below. No P25 or SmartNet control channel.", found.join(" and "))
                 } else if self.candidates.iter().any(|c| c.kind != Kind::Other) {
                     "P25, DMR or NXDN signals were found, but no control channel. Scan again, or add more bands.".into()
@@ -1576,9 +1873,20 @@ impl Survey {
         }
     }
 
-    /// The control channel worth monitoring: the best SNR among those decoding.
+    /// The control channel worth monitoring: one looked for first, then the
+    /// best SNR among those decoding.
     pub fn best(&self) -> Option<f64> {
-        self.candidates.iter().filter(|c| matches!(c.kind, Kind::Control | Kind::SmartNet)).max_by(|a, b| a.score().total_cmp(&b.score())).map(|c| c.freq_hz)
+        let rank = |c: &Candidate| (c.target.is_some(), c.score());
+        self.candidates.iter().filter(|c| matches!(c.kind, Kind::Control | Kind::SmartNet)).max_by(|a, b| rank(a).0.cmp(&rank(b).0).then(rank(a).1.total_cmp(&rank(b).1))).map(|c| c.freq_hz)
+    }
+
+    /// The targets probed so far ([`SurveyConfig::targets`]; one out of the radio's range never is).
+    pub fn probed(&self) -> &[f64] {
+        &self.probed
+    }
+    /// The targets looked for.
+    pub fn targets(&self) -> &[f64] {
+        &self.cfg.targets
     }
 
     pub fn stage(&self) -> Stage {
@@ -1593,7 +1901,7 @@ impl Survey {
     /// (hop, hops, band id, centre) while scanning: hop counts from 1.
     pub fn progress(&self) -> Option<(usize, usize, &'static str, f64)> {
         (self.stage == Stage::Scanning && !self.hops.is_empty()).then(|| {
-            let h = self.hops[self.hop];
+            let h = &self.hops[self.hop];
             (self.hop + 1, self.hops.len(), h.band, h.center)
         })
     }
@@ -1617,12 +1925,12 @@ impl Survey {
     }
     /// The current centre and power spectrum (dBFS, `bins`), if tuned.
     pub fn spectrum(&self, bins: usize) -> Option<(f64, Vec<f32>)> {
-        let chz = match &self.work {
-            Work::Hop(h) => &h.chz,
-            Work::Monitor(m) => &m.chz,
+        let bins = match &self.work {
+            Work::Hop(h) => h.spectrum(bins),
+            Work::Monitor(m) => m.chz.power_spectrum(bins),
             Work::None => return None,
         };
-        Some((self.center_hz, chz.power_spectrum(bins)))
+        Some((self.center_hz, bins))
     }
     pub fn rate_hz(&self) -> f64 {
         self.cfg.rate_hz
@@ -1735,6 +2043,91 @@ mod tests {
         // The intermittent one is below the continuity threshold; the spur too narrow.
         assert!(peaks.iter().all(|p| (p.offset_hz + 500_000.0).abs() > 20_000.0), "voice counted: {peaks:?}");
         assert!(peaks.iter().all(|p| (p.offset_hz - 100_000.0).abs() > 20_000.0), "spur counted: {peaks:?}");
+    }
+
+    /// A capture of a DMR repeater 150 kHz above the centre, with a little noise.
+    fn dmr_air(fs: f64) -> Vec<Complex32> {
+        use crate::dmr::synth::{dibits, modulate, Tx};
+        let tx = Tx { cc: 3, slot: 1, talkgroup: 101, source: 2001, superframes: 8, idle_before: 4, idle_after: 4, csbks: vec![], mobile: false };
+        let mut ph = 0.0;
+        let mut iq = modulate(&dibits(&tx), fs, 150_000.0, 0.3, &mut ph);
+        let mut u = rng(0x1234_5678);
+        for x in iq.iter_mut() {
+            let n = (u() as f32 - 0.5) * 0.02;
+            *x += Complex32::new(n, -n);
+        }
+        iq
+    }
+
+    /// Looking for frequencies: each is probed, the repeater's heard and the
+    /// quiet ones beside it not, whether on one core or shared out over three.
+    #[test]
+    fn targets_are_probed_on_one_core_or_several() {
+        let fs = 1_200_000.0;
+        let iq = dmr_air(fs);
+        let secs = iq.len() as f64 / fs;
+        let targets = vec![850_800_000.0, 851_150_000.0, 851_300_000.0];
+        for threads in [1, 3] {
+            let cfg = SurveyConfig {
+                rate_hz: fs,
+                fixed_center_hz: Some(851_000_000.0),
+                targets: targets.clone(),
+                probe_s: secs - SPECTRUM_S - 0.15,
+                receivers: Receivers::of_type("dmr"),
+                threads,
+                ..Default::default()
+            };
+            let mut s = Survey::new(cfg);
+            for chunk in iq.chunks(10_000) {
+                s.push_iq(chunk);
+            }
+            assert_eq!(s.stage(), Stage::Done, "{threads} threads: {}", s.message());
+            assert_eq!(s.probed(), &targets[..]);
+            let on = |t: f64| s.candidates().iter().find(|c| c.target == Some(t)).unwrap_or_else(|| panic!("{t} not probed"));
+            assert!(matches!(on(851_150_000.0).kind, Kind::Dmr | Kind::DmrControl), "{threads} threads: {:?}", on(851_150_000.0).kind);
+            assert!(on(851_150_000.0).up.unwrap() > 0.5);
+            // (The synthetic repeater is unfiltered: its splatter reaches 851.3.)
+            assert_eq!(on(851_300_000.0).kind, Kind::Other);
+            assert_eq!(on(850_800_000.0).kind, Kind::Other);
+            assert!(on(850_800_000.0).up.unwrap() < 0.02, "up {:?}", on(850_800_000.0).up);
+        }
+    }
+
+    #[test]
+    fn an_edacs_control_channel_is_recognised() {
+        use crate::edacs::{framer, parser};
+        let fs = 1_200_000.0;
+        let mut bits = Vec::new();
+        for _ in 0..60 {
+            let (m1, m2) = parser::site_id(5, 1);
+            bits.extend(framer::encode(m1, m2));
+        }
+        let mut iq = crate::edacs::tests::modulate(&bits, fs, 2600.0, -200_000.0);
+        crate::edacs::tests::noise(&mut iq, 0.1, 9);
+        let secs = iq.len() as f64 / fs;
+        let cfg = SurveyConfig { rate_hz: fs, fixed_center_hz: Some(851_000_000.0), targets: vec![850_800_000.0], probe_s: secs - SPECTRUM_S - 0.1, receivers: Receivers::of_type("edacs"), ..Default::default() };
+        let mut s = Survey::new(cfg);
+        s.push_iq(&iq);
+        let c = s.candidates().iter().find(|c| c.target.is_some()).expect("probed");
+        assert_eq!(c.kind, Kind::Edacs);
+        assert_eq!(c.identity.site(), Some(5));
+    }
+
+    #[test]
+    fn hops_cover_the_targets_clear_of_dc() {
+        let rate = 2_400_000.0;
+        let f = [769_406_250.0, 769_931_250.0, 770_156_250.0, 773_293_750.0, 851_000_000.0, 2_000_000_000.0];
+        let hops = target_plan(&f, rate, (24e6, 1766e6));
+        let half = rate * USABLE / 2.0 - METER_HALF_HZ;
+        for &x in &f[..5] {
+            let h: Vec<&Hop> = hops.iter().filter(|h| h.targets.contains(&x)).collect();
+            assert_eq!(h.len(), 1, "{x} in {} hops", h.len());
+            let d = (x - h[0].center).abs();
+            assert!(d <= half && d >= DC_CLEAR_HZ - 500.0, "{x} at {d:.0} from the centre");
+        }
+        // (Out of the radio's range: not probed.)
+        assert!(!hops.iter().any(|h| h.targets.contains(&2e9)));
+        assert_eq!(hops.len(), 3);
     }
 
     #[test]

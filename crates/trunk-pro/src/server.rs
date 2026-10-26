@@ -834,7 +834,7 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 }
                 // A radio's gain changed while recording: it takes it now (the ones that can), the
                 // rest at the next start, which the log says.
-                if let crate::runtime::Lifecycle::Recording(r) = &*ctx.lifecycle.lock().unwrap() {
+                if let Some(r) = &ctx.lifecycle.lock().unwrap().recording {
                     for (i, g) in r.live_sources(&old.sources, &c.sources) {
                         if let Some(g) = g {
                             log::info!("Source {}: gain changed while recording, applied now: {g}", i + 1);

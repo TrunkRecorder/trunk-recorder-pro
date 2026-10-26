@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
 
@@ -226,6 +226,47 @@ export function radioName(type: Source["type"], found: FoundRadio | undefined): 
   const kind = SOURCE_KINDS[type].label;
   const model = found?.model;
   return !model ? kind : model.toLowerCase().startsWith(kind.toLowerCase()) ? model : `${kind} ${model}`;
+}
+
+export interface Detected {
+  key: string;
+  kind: Source["type"];
+  name: string;
+  detail: string;
+  source: Source;
+  /** Why it can't be used now (another program has it), or null. */
+  busy: string | null;
+}
+
+/** Every radio the recorder can see (its RTL-SDRs, what the drivers found), as a source each. */
+export function detectRadios(devices: Device[], r: Radios | null): Detected[] {
+  const out: Detected[] = devices.map((d) => ({
+    key: deviceKey("rtlsdr", d.serial),
+    kind: "rtlsdr",
+    name: d.product || "RTL-SDR",
+    detail: d.serial ? `Serial ${d.serial}` : "RTL-SDR",
+    source: { ...newDongle(), serial: d.serial },
+    busy: d.busy ?? null,
+  }));
+  // Each radio with a driver of its own, as its driver found them.
+  const native = new Set(devices.length ? ["rtlsdr"] : []);
+  for (const kind of DRIVER_KINDS) {
+    const k = SOURCE_KINDS[kind];
+    if (kind === "soapy") continue;
+    const found = r?.[kind].devices ?? [];
+    if (found.length && k.soapyDriver) native.add(k.soapyDriver);
+    for (const d of found) {
+      const id = (k.device === "serial" ? d.serial : d.args) ?? "";
+      out.push({ key: deviceKey(kind, id), kind, name: k.label, detail: d.label, source: sourceFor(kind, id, d), busy: null });
+    }
+  }
+  // SoapySDR also lists radios with a driver of their own here; those are shown once, natively.
+  for (const d of r?.soapy?.devices ?? []) {
+    if (native.has(d.driver)) continue;
+    out.push({ key: deviceKey("soapy", d.args), kind: "soapy", name: d.label || d.driver, detail: `SoapySDR · ${d.driver}`, source: sourceFor("soapy", d.args), busy: null });
+  }
+  // Two dongles with no serial can't be told apart; keep one.
+  return out.filter((d, i) => out.findIndex((o) => o.key === d.key) === i);
 }
 
 /** A capture's sample format from its name (as the recorder guesses it). */

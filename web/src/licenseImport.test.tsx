@@ -9,6 +9,7 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, normalizeSystem } from "./config.ts";
 import { applySurvey, bandsHolding, findOnAir, lookFor, snapshot, transport } from "./controller.ts";
 import { findExisting, ImportDialog, parseBundle, toFind, type Bundle } from "./directoryImport.tsx";
+import { lookForBundle } from "./lookFor.ts";
 import type { Config, FromRecorder, SurveyBand, SurveySuggestion, ToRecorder } from "./protocol.ts";
 import { SurveyPanel } from "./Survey.tsx";
 
@@ -21,6 +22,9 @@ const bundle = (): Bundle => ({
   system: { shortName: "district-of-columbia", type: "p25", enabled: true, fcc: { "855462500": lic, "857987500": lic, "858987500": lic, "859987500": lic }, sites: [] },
   talkgroupsCsv: "",
 });
+
+/** Looking for it, as its import does. */
+const looking = () => lookForBundle(bundle(), "District of Columbia");
 
 const BANDS: SurveyBand[] = [
   { id: "700", label: "700 MHz", loHz: 769e6, hiHz: 775e6, defaultOn: true },
@@ -54,13 +58,16 @@ test("the dialog says what's known, and starting the survey scans its bands from
   assert.ok(html.includes("Find District of Columbia") && html.includes("WPXT459") && html.includes("4 licensed frequencies"), html);
   assert.ok(html.includes("Start the survey") && !html.includes("Short name"));
   // Its button: the survey, looking for it, on the 800 MHz band only.
-  assert.equal(findOnAir(bundle()), null);
+  assert.equal(findOnAir(looking()), null);
   const start = sent.findLast((m) => m.type === "surveyStart");
   assert.ok(start && start.type === "surveyStart");
   assert.deepEqual(start.bands, ["800"]);
+  // Just its licensed frequencies, with every receiver (its kind is P25, but a license doesn't say which frequency is what).
+  assert.deepEqual(start.lookFor?.freqsHz, [855_462_500, 857_987_500, 858_987_500, 859_987_500]);
+  assert.deepEqual(start.lookFor?.sites, []);
   assert.equal(snapshot().view, "setup");
   assert.equal(snapshot().setupTab, "systems");
-  assert.equal(snapshot().surveyFor?.source.id, "fcc_wpxt459");
+  assert.equal(snapshot().surveyFor?.bundle?.source.id, "fcc_wpxt459");
   lookFor(null);
 });
 
@@ -81,7 +88,7 @@ test("the survey marks its signals, first; a system added from one of its contro
       { freqHz: 857_987_000, correctedHz: 857_987_500, band: "800", snrDb: 25, widthHz: 12_500, kind: "control", frames: 10, good: 10, bad: 0, modulation: "", identity: { nac: 0x443 } },
     ],
   });
-  lookFor(bundle());
+  lookFor(looking());
   const html = text(renderToString(<SurveyPanel c={snapshot().config!} />));
   assert.ok(html.includes("Looking for") && html.includes("4 licensed frequencies"), html);
   assert.match(html, /<tr class="[^"]*\bsought\b/);
@@ -103,7 +110,7 @@ test("the survey marks its signals, first; a system added from one of its contro
 
 test("another system's control channel, added while looking: not given its licenses", () => {
   connected();
-  lookFor(bundle());
+  lookFor(looking());
   const sug: SurveySuggestion = {
     type: "p25", bandplan: null, controlChannels: [851_012_500], ppm: null, ppmApply: null, gainDb: null, centerHz: 851_500_000,
     voiceCovered: 0, voiceTotal: 0, spanHz: 0, identity: { nac: 0x123 }, voiceChannels: [858_987_500],

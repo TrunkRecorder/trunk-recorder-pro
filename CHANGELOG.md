@@ -5,6 +5,33 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Which sites of a system can be heard here** (from #95, by Bill Johnson). Find my system can look
+  for a system you know of instead of sweeping the bands. It listens to just that system's
+  frequencies and says, site by site, which it heard: **Heard**, **Another site**,
+  **Unconfirmed**, **Not heard** or **Not checked**, with why, coloured by how well each decoded.
+  - **Check sites** on a system in Setup → Systems. Afterwards, **Turn off the sites not heard**.
+  - **Check which I can hear** in the directory import. Afterwards, **Import the sites heard…**.
+  - **RadioReference sites exports** (`trs_sites_NNNN.csv`) import through Setup → Systems →
+    **Import…**: choose the kind of system, and optionally tick only the sites within some miles of
+    a city or ZIP code.
+  - **Licensed systems no one has shared** are now found by listening to their licensed frequencies
+    rather than sweeping whole bands.
+
+  Every frequency checked is probed, whether or not a carrier stands out there, with only the
+  system's kind of receivers (about a third of the CPU), and its carrier is metered. A wide radio's
+  probes are shared out over half the computer's cores. **Listen to each frequency for** sets how
+  long: 5 s by default, 1 minute for DMR. The sites are judged together: a frequency several sites
+  list confirms none by itself, and a DMR site of another kind of trunking than the rest is a
+  neighbour, not the site. Command line: `trunk-pro survey --freqs 451.175,452.175 --type dmr`.
+
+- **Scanning on a spare radio while recording.** Find my system can scan with a radio that's plugged
+  in but no source uses, while the others keep recording. It's listed under **Radio** as *(spare)*,
+  and a check started while recording uses one. A radio a source names is refused. `trunk-pro
+  survey --radio '{…}'` scans with any radio, written as a source in `config.json`.
+
+- **The survey recognises EDACS control channels**, and their site ID, alongside P25, SmartNet, DMR
+  and NXDN.
+
 - **The waterfall reads the frequency under the pointer.** Hover over a source's spectrum or
   waterfall to see the frequency there. Near a signal, the readout snaps to its peak and says how
   far over the noise floor it is. It works on the waterfall's history too, so a conventional

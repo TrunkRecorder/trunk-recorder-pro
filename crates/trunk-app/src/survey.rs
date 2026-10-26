@@ -5,13 +5,20 @@
 //! channels, the ppm to set, the gain, and a centre that covers the most
 //! voice channels seen.
 //!
+//! Looking for a system ([`LookFor`]: a directory system known by its
+//! licenses or its sites, a sites file, a system set up already) it scans
+//! just their frequencies, and judges each of its sites by what they showed
+//! ([`trunk_core::sitecheck`]): which can be heard here. On a spare radio
+//! (one that isn't a source) it runs beside the recording.
+//!
 //! The platform drives it: [`SurveySession::survey`]'s commands tune the
 //! radio; samples and tune confirmations go back in.
 
 use serde_json::{json, Value};
-use trunk_core::survey::{Command, GainState, Kind, Stage, Survey, SurveyConfig, BANDS};
+use trunk_core::sitecheck::{self, Site};
+use trunk_core::survey::{Command, GainState, Kind, Receivers, Stage, Survey, SurveyConfig, BANDS};
 
-use crate::config::{auto_center, usable_half_width, Config, Source};
+use crate::config::{auto_center, usable_half_width, Config, SiteIdentity, Source};
 use crate::protocol::ToClient;
 #[cfg(test)]
 use crate::config::DEFAULT_GUARD_HZ;
@@ -29,9 +36,68 @@ pub fn bands_json() -> Value {
 #[derive(Clone, Debug)]
 pub struct Request {
     pub source: usize,
+    /// A radio that isn't one of the sources (a spare: it may scan while the
+    /// others record), in place of `source`.
+    pub radio: Option<Source>,
     pub bands: Vec<String>,
     /// Step the gain while monitoring (RTL-SDR).
     pub find_gain: bool,
+    pub look_for: Option<LookFor>,
+    /// CPU cores the probes may use (the platform's to say).
+    pub threads: usize,
+}
+
+/// A system the survey looks for: the frequencies to scan (its licensed
+/// ones, its sites'), and its sites, each judged by what its showed.
+#[derive(Clone, Debug, Default)]
+pub struct LookFor {
+    pub freqs_hz: Vec<f64>,
+    pub sites: Vec<Site>,
+    /// "p25", "smartnet", "edacs", "dmr", "nxdn"; None: not known (every receiver runs).
+    pub system_type: Option<String>,
+    /// How long each frequency is listened to, s.
+    pub listen_s: f64,
+}
+
+/// Each frequency's listen when none is asked for, s: long enough for a
+/// control channel to say who it is; a DMR site without one (Capacity Plus)
+/// may only key up for a call.
+fn default_listen_s(system_type: Option<&str>) -> f64 {
+    match system_type {
+        Some("dmr") => 60.0,
+        Some(_) => 5.0,
+        None => 2.0,
+    }
+}
+
+impl LookFor {
+    /// `lookFor`: { freqsHz, sites: [{ label, freqsHz, expect, colorCode }], type, listenS }.
+    pub fn from_json(v: &Value) -> Option<LookFor> {
+        let hz = |v: &Value| -> Vec<f64> { v.as_array().map(|a| a.iter().filter_map(Value::as_f64).filter(|&f| f > 0.0).collect()).unwrap_or_default() };
+        let sites: Vec<Site> = v["sites"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|s| Site {
+                        label: s["label"].as_str().unwrap_or("").to_string(),
+                        freqs_hz: hz(&s["freqsHz"]),
+                        expect: serde_json::from_value::<SiteIdentity>(s["expect"].clone()).unwrap_or_default().engine(),
+                        color_code: s["colorCode"].as_u64().map(|c| c as u8),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut freqs_hz = hz(&v["freqsHz"]);
+        freqs_hz.extend(sites.iter().flat_map(|s| s.freqs_hz.iter().copied()));
+        freqs_hz.sort_by(f64::total_cmp);
+        freqs_hz.dedup();
+        if freqs_hz.is_empty() {
+            return None;
+        }
+        let system_type = v["type"].as_str().filter(|t| ["p25", "smartnet", "edacs", "dmr", "nxdn"].contains(t)).map(str::to_string);
+        let listen_s = v["listenS"].as_f64().filter(|&s| s > 0.0).unwrap_or_else(|| default_listen_s(system_type.as_deref())).clamp(0.5, 600.0);
+        Some(LookFor { freqs_hz, sites, system_type, listen_s })
+    }
 }
 
 impl Request {
@@ -39,16 +105,32 @@ impl Request {
         let bands = v["bands"].as_array().map(|a| a.iter().filter_map(|b| b.as_str().map(str::to_string)).collect::<Vec<_>>());
         Request {
             source: v["source"].as_u64().unwrap_or(0) as usize,
+            radio: v.get("radio").filter(|r| r.is_object()).and_then(|r| serde_json::from_value(r.clone()).ok()),
             bands: bands.filter(|b| !b.is_empty()).unwrap_or_else(|| BANDS.iter().filter(|b| b.default_on).map(|b| b.id.to_string()).collect()),
             find_gain: v["findGain"].as_bool().unwrap_or(true),
+            look_for: LookFor::from_json(&v["lookFor"]),
+            threads: 1,
+        }
+    }
+
+    /// The radio it scans with: the spare, else source `source`.
+    pub fn radio<'a>(&'a self, cfg: &'a Config) -> Result<&'a Source, String> {
+        match &self.radio {
+            Some(r) => Ok(r),
+            None => cfg.sources.get(self.source).ok_or_else(|| "No such source.".into()),
         }
     }
 }
 
-/// The survey settings for source `i` of `cfg`.
+/// The survey settings for the request's radio.
 pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String> {
-    let src = cfg.sources.get(req.source).ok_or("No such source.")?;
-    let mut sc = SurveyConfig { rate_hz: src.rate_hz(), bands: req.bands.clone(), ..Default::default() };
+    let src = req.radio(cfg)?;
+    let mut sc = SurveyConfig { rate_hz: src.rate_hz(), bands: req.bands.clone(), threads: req.threads.max(1), ..Default::default() };
+    if let Some(l) = &req.look_for {
+        sc.targets = l.freqs_hz.clone();
+        sc.probe_s = l.listen_s;
+        sc.receivers = l.system_type.as_deref().map_or(Receivers::ALL, Receivers::of_type);
+    }
     match src {
         Source::Rtlsdr { ppm, .. } => {
             sc.ppm = *ppm as f64;
@@ -81,8 +163,8 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
             sc.tune_range_hz = (1e6, 6e9);
             sc.settle_s = 0.2;
         }
-        Source::File { .. } => {
-            let c = cfg.resolved_centers().get(req.source).copied().unwrap_or(0.0);
+        Source::File { center_hz, .. } => {
+            let c = if req.radio.is_some() { *center_hz } else { cfg.resolved_centers().get(req.source).copied().unwrap_or(0.0) };
             if c <= 0.0 {
                 return Err("Set the capture's center frequency first.".into());
             }
@@ -102,6 +184,9 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
 pub struct SurveySession {
     survey: Survey,
     source: usize,
+    /// The spare radio scanned with, for the interface ("RTL-SDR SN 200"); None: source `source`.
+    spare: Option<String>,
+    look_for: Option<LookFor>,
     rtl: bool,
     /// The source's guard band at each edge, Hz.
     guard_hz: f64,
@@ -115,11 +200,14 @@ pub struct SurveySession {
 impl SurveySession {
     pub fn new(cfg: &Config, req: &Request) -> Result<SurveySession, String> {
         let sc = survey_config(cfg, req)?;
+        let src = req.radio(cfg)?;
         Ok(SurveySession {
             survey: Survey::new(sc),
             source: req.source,
-            rtl: matches!(cfg.sources[req.source], Source::Rtlsdr { .. }),
-            guard_hz: cfg.sources[req.source].guard_hz(),
+            spare: req.radio.as_ref().map(Source::label),
+            look_for: req.look_for.clone(),
+            rtl: matches!(src, Source::Rtlsdr { .. }),
+            guard_hz: src.guard_hz(),
             bands: req.bands.clone(),
             error: None,
             last_ms: f64::NEG_INFINITY,
@@ -182,7 +270,8 @@ impl SurveySession {
         let candidates: Vec<Value> = s
             .candidates()
             .iter()
-            .filter(|c| c.kind != Kind::Other || c.snr_db >= 6.0)
+            // (A frequency looked for is shown whatever it showed: a site check needs its quiet ones.)
+            .filter(|c| c.target.is_some() || c.kind != Kind::Other || c.snr_db >= 6.0)
             .map(|c| {
                 json!({
                     "freqHz": c.freq_hz.round(), "correctedHz": s.corrected(c.freq_hz).map(f64::round), "band": c.band, "snrDb": (c.snr_db * 10.0).round() / 10.0,
@@ -190,6 +279,7 @@ impl SurveySession {
                     "modulation": c.modulation, "identity": id(&c.identity),
                     "dmr": c.dmr.map(|d| json!({ "variant": d.variant.map(|v| v.name()), "colorCode": d.color_code })),
                     "nxdn": c.nxdn.map(|n| json!({ "rate": n.rate.name(), "ran": n.ran, "system": n.location.map(|l| l.0), "site": n.location.map(|l| l.1) })),
+                    "targetHz": c.target, "up": c.up.map(|u| (u * 100.0).round() / 100.0),
                 })
             })
             .collect();
@@ -218,7 +308,10 @@ impl SurveySession {
         json!({
             "type": "survey",
             "stage": match s.stage() { Stage::Scanning => "scanning", Stage::Monitoring => "monitoring", Stage::Done => "done" },
-            "source": self.source,
+            "source": if self.spare.is_some() { Value::Null } else { json!(self.source) },
+            "radio": self.spare,
+            "lookFor": self.look_for.as_ref().map(|l| json!({ "freqs": l.freqs_hz.len(), "probed": s.probed().len(), "listenS": l.listen_s, "type": l.system_type })),
+            "sites": self.sites(),
             "bands": self.bands,
             "message": s.message(),
             "error": self.error,
@@ -227,6 +320,25 @@ impl SurveySession {
             "monitor": monitor,
             "suggest": self.suggest(),
         })
+    }
+
+    /// Each site looked for, judged by what its frequencies showed so far.
+    fn sites(&self) -> Vec<Value> {
+        let Some(l) = &self.look_for else { return vec![] };
+        let s = &self.survey;
+        let ty = l.system_type.as_deref().unwrap_or("");
+        let judged = sitecheck::judge_all(ty, &l.sites, s.candidates(), s.probed());
+        let scanning = s.stage() == Stage::Scanning;
+        l.sites
+            .iter()
+            .zip(judged)
+            .map(|(site, j)| {
+                // Not listened to: not yet, or out of the radio's range.
+                let why = if j.verdict == sitecheck::Verdict::NotChecked && !scanning { "outside what this radio tunes".to_string() } else if j.verdict == sitecheck::Verdict::NotChecked { "not listened to yet".to_string() } else { j.why };
+                let c = j.freq_hz.and_then(|f| s.candidates().iter().find(|c| c.target == Some(f)));
+                json!({ "label": site.label, "verdict": j.verdict.as_str(), "why": why, "freqHz": j.freq_hz, "quality": j.quality.map(|q| q.as_str()), "snrDb": c.map(|c| (c.snr_db * 10.0).round() / 10.0) })
+            })
+            .collect()
     }
 
     /// The setup to apply, once the monitored channel announced itself.
