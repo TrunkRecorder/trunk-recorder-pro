@@ -4,8 +4,8 @@ Find my system scans the air for trunked control channels, listens to the best o
 system up from what it hears. This page explains how the scan works, what it reports, the buttons
 in the interface, and the `trunk-pro survey` command.
 
-You don't need to know any frequencies to use it. It finds P25, SmartNet, trunked DMR and NXDN
-control channels. For P25 and SmartNet it goes further: it listens to the control channel and
+You don't need to know any frequencies to use it. It finds P25, SmartNet, EDACS, trunked DMR and
+NXDN control channels. For P25 and SmartNet it goes further: it listens to the control channel and
 learns the system's identity, band plan, alternate control channels, neighbouring sites and voice
 channels, and measures your radio's frequency error (and on an RTL-SDR, the best gain).
 
@@ -16,14 +16,18 @@ channels, and measures your radio's frequency error (and on an RTL-SDR, the best
 - In the setup guide's **Find a system** step, which runs the same scan with fewer choices. See
   [Getting started](../getting-started.md#first-launch-the-setup-guide).
 
-Recording has to be stopped to scan (*Stop recording to scan.*): the scan needs the radio to
-itself, to retune it.
+A scan needs its radio to itself, to retune it. With a source, recording has to be stopped
+(*Stop recording to scan, or plug in a spare radio…*). A **spare radio** (one plugged in that no
+source uses) scans while the others keep recording: it's listed under **Radio** as *(spare)*.
+
+It can also look for a system you know of, to tell which of its sites can be heard where you
+are. See [Which sites can be heard here](#which-sites-can-be-heard-here).
 
 ## Running a scan
 
 The panel's options:
 
-- **Radio**: which source scans, when you have more than one.
+- **Radio**: which source scans, when you have more than one, or a spare radio.
 - **Find the best gain** (RTL-SDR only; adds about 15 seconds): try a range of gains once the
   control channel is found. See [Gain](#gain).
 - **Bands to scan**: tick the bands to sweep. See [Bands](#bands).
@@ -292,6 +296,69 @@ replaced. A system added from the survey gets the licensees of its control and v
 the control channel's as its name if it has none. Edit them in its **FCC licenses**; they are
 optional, and plugins are told them.
 
+## Which sites can be heard here
+
+A system with many sites (a statewide P25 system, a DMR Connect Plus network, a RadioReference
+sites list with eighty rows) usually has only a few within reach. Find my system can check them on
+the air: it listens to each site's control channels and says which it heard. The check scans only
+those frequencies, not the bands.
+
+### Starting a check
+
+- **A system you have**: **Check sites** on its card in Setup → Systems. When the check is done,
+  **Turn off the sites not heard** switches those sites off. They're not removed, so you can turn
+  them back on in the site's settings. **Turn on the sites heard** does the opposite, for sites that
+  are off.
+- **A system from the directory**: **Check which I can hear** in its import dialog. When the check
+  is done, **Import the sites heard…** opens the import again with only those sites ticked.
+- **A RadioReference sites export** (`trs_sites_NNNN.csv`, from a system's page): Setup →
+  Systems → **Import…** takes the file. RadioReference doesn't say what kind of system it is, so
+  choose under **Kind of system**. **Near** ticks only the sites within some miles of a city or ZIP
+  code (found with the directory's place search). Then **Check which I can hear**, or **Add it**.
+- **A licensed system no one has shared**: its import starts the check on its licensed frequencies.
+  See [Adding a system from the directory](from-the-directory.md#a-licensed-system-no-one-has-shared-yet).
+
+While recording, a check starts on a spare radio if there is one. Otherwise it waits in the panel
+for you to stop recording, or to plug one in.
+
+### How it checks
+
+Each site is checked on its control channels. A site without one (DMR Capacity Plus, an EDACS site
+known by its channel list) is checked on its channels. The frequencies are grouped into as few
+tunings of the radio as cover them all, each one off the radio's DC spike. An RTL-SDR covers about
+2 MHz at a time, so it may need several. A bladeRF or USRP at a high sample rate may cover them
+all at once.
+
+At each tuning, every frequency gets a probe, whether or not a carrier stands out there. Only the
+receivers for the system's kind run, which costs about a third of the CPU of running all of them.
+On a wide radio the probes are shared out over half the computer's cores, so a check beside the
+recording leaves the rest for the recorder. A carrier meter also records how much of the time each
+frequency's carrier was up.
+
+**Listen to each frequency for** sets how long each tuning is listened to. The default is 5
+seconds, which is enough for a control channel to say who it is. DMR defaults to 1 minute, because
+a site without a control channel may only key up for a call. Listen longer to be surer.
+
+### What it says about each site
+
+| Here | Means |
+|---|---|
+| **Heard** | Its control channel decodes as the system's kind: P25, SmartNet, EDACS or NXDN control, or DMR on any of its frequencies. Where the site's lock gives them, the identity it announces matches: P25's NAC, RFSS and site; EDACS's site; NXDN's system and site; DMR's colour code. |
+| **Another site** | A control channel decodes on its frequency, but announces another site. |
+| **Unconfirmed** | Something is there that doesn't confirm the site: a carrier that didn't decode, a decode only on a frequency other sites list too, or a different kind of DMR trunking than the rest of the system's sites (a neighbour on the frequency). |
+| **Not heard** | Nothing on its frequencies. |
+| **Not checked** | Not listened to yet, or outside what the radio tunes. |
+
+The sites are judged together. A frequency several sites list confirms none of them unless the air
+says which site it is. A DMR system's kind of trunking is the one most of its sites decode as.
+Rows are edged green, yellow or red by how well the site decoded. Green is a clean decode on a
+signal at least 12 dB over the noise. Yellow is a decode with errors, a weak signal, or not as a
+control channel. Red is mostly failures.
+
+When the check is done, Find my system goes on as after a scan: it listens to the best control
+channel it found among the frequencies checked, so the radio's frequency error, the band plan and
+the rest are measured too.
+
 ## From the command line
 
 `trunk-pro survey` runs the same scan with an RTL-SDR, or looks at a capture file, and prints
@@ -315,14 +382,20 @@ trunk-pro survey capture.cu8 --center 858300000 --rate 2400000
 | `--seconds N` | `30` | How long to listen once a control channel is found |
 | `--center Hz` | | A capture's center frequency (required for a capture) |
 | `--format cu8\|cs16\|cf32` | from the extension | A capture's sample format |
+| `--radio JSON` | | Any radio, written as a source in `config.json` (`'{"type":"bladerf","serial":"","centerHz":0,"rateHz":30000000,…}'`), in place of `--serial` |
+| `--freqs list` | | Scan just these frequencies, MHz (`451.175,452.175`), each probed, instead of the bands |
+| `--type T` | every kind | With `--freqs`: run only this kind's receivers (`p25`, `smartnet`, `edacs`, `dmr`, `nxdn`) |
+| `--listen S` | by `--type` | With `--freqs`: listen to each tuning this many seconds (5; DMR 60; no type 2) |
 
 Without `--gain`, the dongle scans with its AGC on, then the gain search tries fixed gains while
 listening. Values can also be written `--rate=2048000`.
 
 Progress goes to stderr (`survey: scanning`, `survey: monitoring`, source errors). Stdout gets one
 `{"found": {...}}` line per signal as it's found, with its `freqHz`, `correctedHz`, `band`,
-`snrDb`, `widthHz`, `kind` (`control`, `smartnet`, `dmrControl`, `nxdnControl`, `p25`, `dmr`,
-`nxdn`, `other`), `modulation`, `identity` and decode counts. The last line holds the system:
+`snrDb`, `widthHz`, `kind` (`control`, `smartnet`, `edacs`, `dmrControl`, `nxdnControl`, `p25`,
+`dmr`, `nxdn`, `other`), `modulation`, `identity` and decode counts. With `--freqs`, each
+frequency's line has `targetHz` (the frequency asked for) and `up` (the share of the time its
+carrier was up). The last line holds the system:
 
 ```json
 {"monitor": {...}, "suggest": {...}, "message": "", "wallS": 94.2}

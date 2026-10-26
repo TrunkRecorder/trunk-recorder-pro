@@ -201,16 +201,22 @@ impl Ctx {
 
     /// Start recording with `cfg`, in place of whatever the radios were
     /// doing (nothing once quitting). The engine thread reports the phase.
+    /// A survey goes on only on a spare radio the new config doesn't use.
     pub fn begin_recording(self: &Arc<Self>, cfg: Config) -> Result<(), String> {
         let mut l = self.lifecycle.lock().unwrap();
-        if matches!(*l, Lifecycle::Quitting) {
+        if l.quitting {
             return Ok(());
         }
-        self.end(&mut l);
+        if let Some(r) = l.recording.take() {
+            r.stop();
+        }
+        if l.survey.as_ref().is_some_and(|s| s.uses_any(&cfg.sources)) {
+            self.end_survey(&mut l);
+        }
         self.set_phase("starting", None, false);
         match start(self.clone(), cfg) {
             Ok(r) => {
-                *l = Lifecycle::Recording(r);
+                l.recording = Some(r);
                 Ok(())
             }
             Err(e) => {
@@ -220,14 +226,26 @@ impl Ctx {
         }
     }
 
-    /// Start a survey (`survey`, once the radios are free: [`Ctx::free_radios`]).
-    pub fn begin_survey(self: &Arc<Self>, cfg: Config, req: trunk_app::survey::Request) -> Result<(), String> {
+    /// Start a survey, in place of one running: on a source once the radios
+    /// are free ([`Ctx::free_radios`]), on a spare radio (one no source
+    /// names) beside the recording.
+    pub fn begin_survey(self: &Arc<Self>, cfg: Config, mut req: trunk_app::survey::Request) -> Result<(), String> {
         let mut l = self.lifecycle.lock().unwrap();
-        if matches!(*l, Lifecycle::Quitting) {
+        if l.quitting {
             return Ok(());
         }
-        self.free_radios(&mut l, "the scan")?;
-        *l = Lifecycle::Surveying(crate::survey::start(self.clone(), cfg, req)?);
+        self.end_survey(&mut l);
+        match &req.radio {
+            Some(r) => {
+                if let Some(i) = cfg.sources.iter().position(|s| s.may_be(r)) {
+                    return Err(format!("{} is source {} of the recorder: scan with that source, or pick a radio no source uses.", r.label(), i + 1));
+                }
+            }
+            None => self.free_radios(&mut l, "the scan")?,
+        }
+        // Half the computer's cores (the recorder needs the rest), 1–8.
+        req.threads = std::thread::available_parallelism().map_or(1, |n| n.get() / 2).clamp(1, 8);
+        l.survey = Some(crate::survey::start(self.clone(), cfg, req)?);
         Ok(())
     }
 
@@ -235,43 +253,45 @@ impl Ctx {
     /// meanwhile. None once quitting; Err while recording.
     pub fn with_radios<T>(&self, what: &str, f: impl FnOnce() -> T) -> Option<Result<T, String>> {
         let mut l = self.lifecycle.lock().unwrap();
-        if matches!(*l, Lifecycle::Quitting) {
+        if l.quitting {
             return None;
         }
-        Some(self.free_radios(&mut l, what).map(|()| f()))
+        Some(self.free_radios(&mut l, what).map(|()| {
+            self.end_survey(&mut l);
+            f()
+        }))
     }
 
-    /// The radios free for `what`: a survey ends, a recording whose capture
-    /// files ended too, but one still recording isn't stopped for it.
+    /// The sources free for `what`: a survey on one ends, a recording whose
+    /// capture files ended too, but one still recording isn't stopped for it.
     fn free_radios(&self, l: &mut Lifecycle, what: &str) -> Result<(), String> {
-        if let Lifecycle::Recording(r) = l {
-            if !r.finished() {
-                return Err(format!("Stop recording first — {what} needs the radio to itself."));
-            }
+        if l.recording.as_ref().is_some_and(|r| !r.finished()) {
+            return Err(format!("Stop recording first — {what} needs the radio to itself (or scan with a spare radio)."));
         }
-        self.end(l);
+        if let Some(r) = l.recording.take() {
+            r.stop();
+        }
+        if l.survey.as_ref().is_some_and(|s| !s.spare()) {
+            self.end_survey(l);
+        }
         Ok(())
     }
 
-    /// Stop recording, if it is.
+    /// Stop recording, if it is (a survey on a spare radio goes on).
     pub fn stop_recording(&self) {
-        let mut l = self.lifecycle.lock().unwrap();
-        if matches!(*l, Lifecycle::Recording(_)) {
-            self.end(&mut l);
+        if let Some(r) = self.lifecycle.lock().unwrap().recording.take() {
+            r.stop();
         }
     }
 
     /// End a running survey (frees its radio) and tell the browsers.
     pub fn stop_survey(&self) {
-        let mut l = self.lifecycle.lock().unwrap();
-        if matches!(*l, Lifecycle::Surveying(_)) {
-            self.end(&mut l);
-        }
+        self.end_survey(&mut self.lifecycle.lock().unwrap());
     }
 
     /// Something for the running survey (a frequency to monitor, a rescan).
     pub fn survey_send(&self, c: crate::survey::UserCmd) {
-        if let Lifecycle::Surveying(r) = &*self.lifecycle.lock().unwrap() {
+        if let Some(r) = &self.lifecycle.lock().unwrap().survey {
             r.send(c);
         }
     }
@@ -279,35 +299,31 @@ impl Ctx {
     /// Stop everything, for good: nothing starts once quitting.
     pub fn quit(&self) {
         let mut l = self.lifecycle.lock().unwrap();
-        self.end(&mut l);
-        *l = Lifecycle::Quitting;
+        if let Some(r) = l.recording.take() {
+            r.stop();
+        }
+        self.end_survey(&mut l);
+        l.quitting = true;
     }
 
-    /// Whatever the radios are doing stops (the lock held).
-    fn end(&self, l: &mut Lifecycle) {
-        match std::mem::replace(l, Lifecycle::Idle) {
-            Lifecycle::Recording(r) => r.stop(),
-            Lifecycle::Surveying(r) => {
-                r.stop();
-                *self.survey_last.lock().unwrap() = None;
-                publish(&self.hub, crate::survey::idle());
-            }
-            Lifecycle::Quitting => *l = Lifecycle::Quitting,
-            Lifecycle::Idle => {}
+    /// The survey stops, if one is running (the lock held).
+    fn end_survey(&self, l: &mut Lifecycle) {
+        if let Some(r) = l.survey.take() {
+            r.stop();
+            *self.survey_last.lock().unwrap() = None;
+            publish(&self.hub, crate::survey::idle());
         }
     }
 }
 
-/// What the radios are doing: one thing at a time.
+/// What the radios are doing: recording, a survey, or both (the survey on a
+/// spare radio no source uses).
 #[derive(Default)]
-pub enum Lifecycle {
-    #[default]
-    Idle,
-    Recording(Runner),
-    /// The first-run survey (never with recording).
-    Surveying(crate::survey::SurveyRunner),
+pub struct Lifecycle {
+    pub recording: Option<Runner>,
+    pub survey: Option<crate::survey::SurveyRunner>,
     /// The recorder is exiting: nothing starts any more.
-    Quitting,
+    quitting: bool,
 }
 
 pub struct Runner {

@@ -46,11 +46,14 @@ import type {
   FccLicenses,
   SurveySuggestion,
   Site,
+  Source,
   System,
 } from "./protocol.ts";
 import {
   type ImportTodo,
   activeSites,
+  detectRadios,
+  deviceId,
   fccKey,
   fccPrimary,
   newConventional,
@@ -64,6 +67,7 @@ import {
   shortNameFor,
   siteNameOf,
   sourceCovering,
+  sourceKey,
   trpBase,
   usableHalfWidth,
 } from "./config.ts";
@@ -71,7 +75,7 @@ import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
 import { withIgnore } from "./talkgroups.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
-import type { Bundle } from "./directoryImport.tsx";
+import { lookedFreqs, lookForMessage, type LookingFor } from "./lookFor.ts";
 
 export interface AppState {
   connected: boolean;
@@ -120,8 +124,8 @@ export interface AppState {
   surveySpectrum: Spectrum | null;
   /** The licenses looked up for the survey's signals ("Identify surveyed sites"); null: none asked for since it started. */
   surveyLicenses: LicenseLookup | null;
-  /** A system from the directory the survey looks for: one known only by its licenses (directoryImport.tsx toFind); null: none. */
-  surveyFor: Bundle | null;
+  /** What the survey looks for (lookFor.ts): a system from the directory or a sites file, or one set up already, to tell which of its sites can be heard here; null: nothing. */
+  surveyFor: LookingFor | null;
   /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
   profile: SourceProfile | null;
   profiling: number | null;
@@ -1109,10 +1113,29 @@ export function listDir(path: string): void {
 
 // ── first-run survey ─────────────────────────────────────────────────────────
 
-export function startSurvey(source: number, bands: string[], findGain: boolean): void {
+/**
+ * Scan with source `radio` (or a spare radio no source uses, beside the
+ * recording): `bands`, or, looking for a system (`surveyFor`), just its
+ * frequencies, each listened to `listenS` (absent: the recorder's default).
+ */
+export function startSurvey(radio: number | Source, bands: string[], findGain: boolean, listenS?: number): void {
   flushConfig();
   set({ error: null, surveySpectrum: null, surveyLicenses: null });
-  transport.send({ type: "surveyStart", source, bands, findGain });
+  const lookFor = state.surveyFor ? lookForMessage(state.surveyFor, listenS) : undefined;
+  transport.send({ type: "surveyStart", ...(typeof radio === "number" ? { source: radio } : { source: 0, radio }), bands, findGain, ...(lookFor ? { lookFor } : {}) });
+}
+
+/**
+ * The radios the recorder sees that no source uses (and no other program
+ * has): spare ones, to scan with while recording. The desktop app's only (the
+ * browser version opens its sources' dongles).
+ */
+export function spareRadios(s: Pick<AppState, "devices" | "radios" | "config">): Source[] {
+  if (!can("drivers")) return [];
+  const used = new Set((s.config?.sources ?? []).map(sourceKey));
+  return detectRadios(s.devices, s.radios)
+    .filter((d) => !d.busy && !used.has(d.key) && !(s.config?.sources ?? []).some((x) => x.type === d.kind && deviceId(x).trim() === ""))
+    .map((d) => d.source);
 }
 /** The survey's bands that hold any of these frequencies (none: the usual ones). */
 export function bandsHolding(freqs: number[], bands: SurveyBand[]): string[] {
@@ -1120,27 +1143,31 @@ export function bandsHolding(freqs: number[], bands: SurveyBand[]): string[] {
   return on.length ? on : bands.filter((b) => b.defaultOn).map((b) => b.id);
 }
 
-/** Look for a system from the directory with the survey (null: stop looking). */
-export function lookFor(b: Bundle | null): void {
-  set({ surveyFor: b });
+/** Look for a system with the survey (null: stop looking). */
+export function lookFor(l: LookingFor | null): void {
+  set({ surveyFor: l });
 }
 
 /**
- * Find a system known only by its licenses on the air: Setup's systems, and
- * the survey looking for it, started with the first radio on the bands its
- * licensed frequencies are in. Why it couldn't start (the survey waits, to
- * start by hand), or null.
+ * Find a system on the air: Setup's systems, and the survey looking for it
+ * (just its frequencies), started with the first source, or while recording
+ * a spare radio. Why it couldn't start (the survey waits, to start by hand),
+ * or null.
  */
-export function findOnAir(b: Bundle): string | null {
-  lookFor(b);
+export function findOnAir(l: LookingFor): string | null {
+  if (state.survey.stage !== "idle") stopSurvey();
+  lookFor(l);
   setSetupTab("systems");
   setView("setup");
   const src = state.config?.sources[0];
+  // (Idle, a source; recording, or none set up yet, a spare radio.)
+  const spare = state.phase === "idle" && src ? undefined : spareRadios(state)[0];
   if (!state.connected) return "Not connected to the recorder.";
-  if (state.phase !== "idle") return "Stop recording to scan.";
-  if (!src) return "Add a radio first (Setup → Radios).";
-  if (needsDriver(src) && !can("drivers")) return "Its radio needs the desktop app.";
-  if (state.survey.stage === "idle") startSurvey(0, bandsHolding(Object.keys(b.system.fcc ?? {}).map(Number), state.surveyBands), src.type === "rtlsdr");
+  if (state.phase !== "idle" && !spare) return "Recording has the radios: stop recording to scan, or plug in a spare radio to scan with meanwhile.";
+  if (!src && !spare) return "Add a radio first (Setup → Radios).";
+  const radio = spare ?? src!;
+  if (needsDriver(radio) && !can("drivers")) return "Its radio needs the desktop app.";
+  startSurvey(spare ?? 0, bandsHolding(lookedFreqs(l), state.surveyBands), radio.type === "rtlsdr");
   return null;
 }
 
@@ -1349,7 +1376,7 @@ function withLicenses(sys: System, site: Site, isNew: boolean): void {
   const l = state.surveyLicenses;
   const freqs = [...site.controlChannelsHz, ...site.voiceChannelsHz].map(fccKey);
   const found = l?.stage === "done" ? Object.fromEntries(Object.entries(lookupLicensesByFreq(l.results)).filter(([k]) => freqs.includes(k))) : {};
-  const sought = state.surveyFor?.system.fcc;
+  const sought = state.surveyFor?.fcc;
   if (sought && site.controlChannelsHz.some((hz) => sought[fccKey(hz)])) for (const k of freqs) if (sought[k]) found[k] = sought[k];
   if (!Object.keys(found).length) return;
   const fcc = { ...(sys.fcc ?? {}) };

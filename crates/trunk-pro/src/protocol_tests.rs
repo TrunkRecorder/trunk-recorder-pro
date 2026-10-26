@@ -286,7 +286,35 @@ fn a_surveys_messages() {
     msgs.push(ToClient::Survey(body(s.snapshot())).to_value());
     msgs.push(crate::survey::idle().to_value());
     assert!(msgs.iter().any(|m| m["type"] == "surveySpectrum"));
+    // Looking for a system's sites, on a spare radio (a capture here): its sites judged as it goes.
+    let req = json!({
+        "source": 0, "radio": { "type": "file", "path": "y.cu8", "centerHz": 452000000, "rateHz": 2400000, "realtime": false },
+        "lookFor": { "sites": [{ "label": "a", "freqsHz": [452100000], "expect": {} }, { "label": "far", "freqsHz": [470500000], "expect": {} }], "type": "dmr", "listenS": 0.5 },
+    });
+    let mut s = SurveySession::new(&cfg, &Request::from_json(&req)).unwrap();
+    air(2_400_000.0, 1.0, |iq, _| s.survey().push_iq(iq));
+    let snap = s.snapshot();
+    assert_eq!(snap["source"], Value::Null);
+    assert_eq!(snap["radio"], "file y.cu8");
+    assert_eq!(snap["lookFor"]["freqs"], 2);
+    assert_eq!(snap["sites"][0]["verdict"], "inactive", "{}", snap["sites"]);
+    assert_eq!(snap["sites"][1]["verdict"], "notChecked");
+    assert_eq!(snap["sites"][1]["why"], "outside what this radio tunes");
+    msgs.push(ToClient::Survey(body(snap)).to_value());
     check_all("FromRecorder", &msgs);
+}
+
+/// A spare radio scans beside the recording; one a source names is refused (two can't open it).
+#[test]
+fn a_spare_radio_is_one_no_source_names() {
+    let dir = std::env::temp_dir().join(format!("trunk-pro-spare-{}", std::process::id()));
+    let cfg: Config = serde_json::from_value(json!({ "sources": [{ "type": "rtlsdr", "serial": "1", "centerHz": 851000000, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 }] })).unwrap();
+    let ctx = ctx(cfg.clone(), &dir);
+    let req = Request::from_json(&json!({ "source": 0, "radio": { "type": "rtlsdr", "serial": "1", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 } }));
+    let e = ctx.begin_survey(cfg, req).unwrap_err();
+    assert!(e.contains("is source 1 of the recorder"), "{e}");
+    let rtl = |serial: &str| -> trunk_app::config::Source { serde_json::from_value(json!({ "type": "rtlsdr", "serial": serial, "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 })).unwrap() };
+    assert!(rtl("1").may_be(&rtl("1")) && rtl("").may_be(&rtl("2")) && !rtl("1").may_be(&rtl("2")));
 }
 
 pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
@@ -299,7 +327,7 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         config_version: std::sync::atomic::AtomicU64::new(1),
         talkgroups: Mutex::new(Default::default()),
         hub: hub.clone(),
-        lifecycle: Mutex::new(crate::runtime::Lifecycle::Idle),
+        lifecycle: Mutex::new(crate::runtime::Lifecycle::default()),
         phase: Mutex::new(crate::runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         history: Mutex::new(VecDeque::new()),
         quit: tokio::sync::Notify::new(),
@@ -516,6 +544,10 @@ fn messages_to_the_recorder() {
         json!({ "type": "listen", "on": true, "system": null, "talkgroup": 101 }),
         json!({ "type": "listDir", "path": "" }),
         json!({ "type": "surveyStart", "source": 0, "bands": ["800"], "findGain": true }),
+        json!({
+            "type": "surveyStart", "source": 0, "radio": { "type": "rtlsdr", "serial": "2", "centerHz": 0, "rateHz": 2_400_000, "gainDb": 30, "agc": false, "ppm": 0 }, "bands": ["uhf"], "findGain": false,
+            "lookFor": { "freqsHz": [], "sites": [{ "label": "1 Walker Tower", "freqsHz": [451_175_000], "expect": { "rfss": 1, "site": 1, "nac": 0x212 } }, { "label": "2", "freqsHz": [452_175_000], "expect": {}, "colorCode": 3 }], "type": "dmr", "listenS": 60 },
+        }),
         json!({ "type": "profileSource", "source": 0, "centerHz": 460_000_000 }),
         json!({ "type": "install", "kind": "plugin", "id": "openmhz" }),
         json!({ "type": "install", "kind": "interface", "repository": "someone/ui", "tag": "v1.0.0" }),

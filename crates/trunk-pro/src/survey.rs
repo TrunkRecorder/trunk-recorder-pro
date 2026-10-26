@@ -29,9 +29,20 @@ pub struct SurveyRunner {
     stop: Arc<AtomicBool>,
     cmd: mpsc::Sender<UserCmd>,
     threads: Vec<JoinHandle<()>>,
+    /// The radio it scans with, and whether that is a spare (no source).
+    radio: Source,
+    spare: bool,
 }
 
 impl SurveyRunner {
+    /// On a spare radio: it may go on while recording.
+    pub fn spare(&self) -> bool {
+        self.spare
+    }
+    /// Whether its radio is (or may be) one of `sources`.
+    pub fn uses_any(&self, sources: &[Source]) -> bool {
+        !self.spare || sources.iter().any(|s| s.may_be(&self.radio))
+    }
     pub fn send(&self, c: UserCmd) {
         let _ = self.cmd.send(c);
     }
@@ -71,25 +82,31 @@ fn feed(session: &mut SurveySession, msg: SourceMsg) -> bool {
     true
 }
 
-fn file_center(cfg: &Config, i: usize) -> Option<f64> {
-    matches!(cfg.sources[i], Source::File { .. }).then(|| cfg.resolved_centers()[i])
+/// A capture's centre (it can't be tuned); None for a radio.
+fn file_center(cfg: &Config, req: &Request) -> Option<f64> {
+    match (&req.radio, req.radio(cfg).ok()?) {
+        (_, s) if !matches!(s, Source::File { .. }) => None,
+        (Some(_), s) => Some(s.center_hz()),
+        (None, _) => Some(cfg.resolved_centers()[req.source]),
+    }
 }
 
 pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, String> {
     let mut session = SurveySession::new(&cfg, &req)?;
     let stop = Arc::new(AtomicBool::new(false));
     let ctl = Arc::new(Control::default());
-    let fixed = file_center(&cfg, req.source);
+    let fixed = file_center(&cfg, &req);
+    let radio = req.radio(&cfg)?.clone();
     // The first hop is the source's opening frequency.
     let first = match session.command() {
         Some(Command::Tune(f)) => f,
-        _ => fixed.unwrap_or(cfg.sources[req.source].center_hz()),
+        _ => fixed.unwrap_or(radio.center_hz()),
     };
     if fixed.is_none() {
         *ctl.current_hz.lock().unwrap() = Some(first);
     }
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
-    let mut threads = vec![runtime::spawn_source(&cfg.sources[req.source], req.source, first, tx, stop.clone(), Some(ctl.clone()), &format!("survey-source-{}", req.source)).map_err(|e| e.to_string())?];
+    let mut threads = vec![runtime::spawn_source(&radio, req.source, first, tx, stop.clone(), Some(ctl.clone()), &format!("survey-source-{}", req.source)).map_err(|e| e.to_string())?];
     // The opening tune is confirmed by the first samples.
     let mut opened = fixed.is_some();
     let (cmd_tx, cmd_rx) = mpsc::channel::<UserCmd>();
@@ -139,7 +156,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
             })
             .map_err(|e| e.to_string())?,
     );
-    Ok(SurveyRunner { stop, cmd: cmd_tx, threads })
+    Ok(SurveyRunner { stop, cmd: cmd_tx, threads, spare: req.radio.is_some(), radio })
 }
 
 /// The message a browser gets when no survey is running.
@@ -147,12 +164,17 @@ pub fn idle() -> ToClient {
     ToClient::Survey(body(json!({ "stage": "idle" })))
 }
 
-/// `trunk-pro survey`: scan with a dongle (or look at a capture) and print
-/// what is found, then the monitored system, as JSON lines.
+/// `trunk-pro survey`: scan with a dongle (`--radio '{…}'`: any radio, as
+/// a source in config.json; or look at a capture) and print what is found,
+/// then the monitored system, as JSON lines. `--freqs 851.0125,852.5` (MHz):
+/// just these frequencies, each probed (`--type p25`: with its receivers
+/// only; `--listen 5`: for so many seconds).
 pub fn cli(a: &crate::Args) {
     let mut cfg = Config::default();
     let rate = a.num("rate", 2_400_000.0);
-    if let Some(path) = a.positional.first() {
+    if let Some(r) = a.get("radio") {
+        cfg.sources = vec![serde_json::from_str(r).unwrap_or_else(|e| crate::die(&format!("--radio: {e}")))];
+    } else if let Some(path) = a.positional.first() {
         let format = crate::sample_format(path, a.get("format"));
         cfg.sources = vec![Source::File { path: path.clone(), center_hz: a.num("center", 0.0), rate_hz: rate, realtime: false, format: Some(format), auto_tune: false, guard_hz: crate::config::DEFAULT_GUARD_HZ }];
     } else {
@@ -170,9 +192,12 @@ pub fn cli(a: &crate::Args) {
         }];
     }
     let bands = a.get("bands").map(|b| json!(b.split(',').collect::<Vec<_>>())).unwrap_or(Value::Null);
-    let req = Request::from_json(&json!({ "source": 0, "bands": bands, "findGain": a.get("gain").is_none() && !a.flag("no-gain") }));
+    let freqs: Vec<f64> = a.get("freqs").map(|f| f.split(',').filter_map(|x| x.trim().parse::<f64>().ok()).map(|m| (m * 1e6).round()).collect()).unwrap_or_default();
+    let look_for = (!freqs.is_empty()).then(|| json!({ "freqsHz": freqs, "type": a.get("type"), "listenS": a.get("listen").and_then(|s| s.parse::<f64>().ok()) }));
+    let mut req = Request::from_json(&json!({ "source": 0, "bands": bands, "findGain": a.get("gain").is_none() && !a.flag("no-gain"), "lookFor": look_for }));
+    req.threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
     let mut session = SurveySession::new(&cfg, &req).unwrap_or_else(|e| crate::die(&e));
-    let fixed = file_center(&cfg, 0);
+    let fixed = file_center(&cfg, &req);
     let ctl = Arc::new(Control::default());
     let stop = Arc::new(AtomicBool::new(false));
     let first = match session.command() {

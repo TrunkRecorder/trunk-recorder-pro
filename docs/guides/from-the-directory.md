@@ -41,7 +41,9 @@ frequencies. It has no talkgroups or history, since no one has recorded it yet.
 license doesn't say which frequency is the control channel, or the system's identity. So instead of
 adding it, Trunk Recorder Pro looks for it with [Find my system](find-my-system.md):
 
-- **Start the survey** opens Setup → Systems and scans the bands its licensed frequencies are in.
+- **Start the survey** opens Setup → Systems and listens to its licensed frequencies, each probed
+  whether or not a carrier stands out there. While recording, it uses a spare radio if there is
+  one.
 - The signals it finds on those frequencies are marked as the system's, and listed first.
 - Once the radio's frequency error is known, if the survey is listening to another system's control
   channel, it switches to the strongest one on the system's licenses.
@@ -50,6 +52,12 @@ adding it, Trunk Recorder Pro looks for it with [Find my system](find-my-system.
 
 If you already have a system with its call sign, the import offers to update that one with the licenses
 it lacks instead.
+
+## Which of its sites can be heard here
+
+A shared system with many sites can be checked before importing: **Check which I can hear** listens
+to each ticked site's control channels, and **Import the sites heard…** brings back the import with
+only those ticked. See [Which sites can be heard here](find-my-system.md#which-sites-can-be-heard-here).
 
 The file is the same `trp-system` bundle as a shared system's (`GET /directory/api/v1/systems/fcc_<call
 sign>/config`), with no sites (`system.sites` is empty) and its licensed frequencies in `system.fcc`.

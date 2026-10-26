@@ -56,6 +56,7 @@
 //!
 //! trunk-pro survey [--serial S] [--bands 800,700,…] [--gain dB | --no-gain] [--ppm 0] [--rate Hz] [--seconds 30]
 //! trunk-pro survey <capture> --center Hz --rate Hz [--format cu8|cs16|cf32]
+//! trunk-pro survey [--radio '{"type":"bladerf",…}'] --freqs 851.0125,852.5 [--type p25|smartnet|edacs|dmr|nxdn] [--listen s]
 //!     either: [--identify lat,lon[,km]] [--api URL] (FCC licenses near there, from trunkrecorder.pro)
 //!     Find P25, SmartNet, trunked DMR and NXDN systems: scan the bands (800,
 //!     700, 900, uhf, vhf, uhf-fed, biz-uhf, biz-vhf, t-band; or look at a
@@ -236,6 +237,8 @@ usage:
       (print every control channel message), --quiet.
   trunk-pro survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,biz-uhf,biz-vhf,t-band] [--gain dB | --no-gain] [--ppm 0] [--rate Hz] [--seconds 30]
   trunk-pro survey <capture> --center Hz --rate Hz [--format cu8|cs16|cf32]
+  trunk-pro survey [--radio '{\"type\":\"bladerf\",…}'] --freqs 851.0125,852.5 [--type p25|smartnet|edacs|dmr|nxdn] [--listen s]
+                   (just these frequencies, MHz: which of a system's sites are heard here)
       either: [--identify lat,lon[,km]] [--api URL]
       Find P25, SmartNet, trunked DMR and NXDN systems from scratch: scan for
       control channels, then listen to the best one and report its IDs,
@@ -882,7 +885,7 @@ fn serve(a: &Args) {
         config_version: std::sync::atomic::AtomicU64::new(1),
         talkgroups: Mutex::new(talkgroups),
         hub: hub.clone(),
-        lifecycle: Mutex::new(runtime::Lifecycle::Idle),
+        lifecycle: Mutex::new(runtime::Lifecycle::default()),
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         history: Mutex::new(VecDeque::new()),
         quit: tokio::sync::Notify::new(),

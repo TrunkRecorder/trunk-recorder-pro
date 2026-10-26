@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { autoCenter, deviceId, deviceKey, DRIVER_KINDS, type DriverKind, enabledChannels, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newDongle, newSystem, parseFreqList, planCenters, SOURCE_KINDS, sourceFor, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
+import { autoCenter, detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newSystem, parseFreqList, planCenters, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -33,7 +33,7 @@ import {
   type AppState,
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
-import { openImport, parseBundle, type Bundle } from "./directoryImport.tsx";
+import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
 import { FileInput } from "./inputs.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
@@ -272,48 +272,6 @@ function Welcome(props: { onStart: () => void; onImport: () => void; onSkip: () 
 
 // ── radios ───────────────────────────────────────────────────────────────────
 
-interface Detected {
-  key: string;
-  kind: Source["type"];
-  name: string;
-  detail: string;
-  source: Source;
-  /** Why it can't be used now (another program has it), or null. */
-  busy: string | null;
-}
-
-/** Every radio the recorder can see, as a source each. */
-function detectRadios(s: AppState): Detected[] {
-  const out: Detected[] = s.devices.map((d) => ({
-    key: deviceKey("rtlsdr", d.serial),
-    kind: "rtlsdr",
-    name: d.product || "RTL-SDR",
-    detail: d.serial ? `Serial ${d.serial}` : "RTL-SDR",
-    source: { ...newDongle(), serial: d.serial },
-    busy: d.busy ?? null,
-  }));
-  const r = s.radios;
-  // Each radio with a driver of its own, as its driver found them.
-  const native = new Set(s.devices.length ? ["rtlsdr"] : []);
-  for (const kind of DRIVER_KINDS) {
-    const k = SOURCE_KINDS[kind];
-    if (kind === "soapy") continue;
-    const devices = r?.[kind].devices ?? [];
-    if (devices.length && k.soapyDriver) native.add(k.soapyDriver);
-    for (const d of devices) {
-      const id = (k.device === "serial" ? d.serial : d.args) ?? "";
-      out.push({ key: deviceKey(kind, id), kind, name: k.label, detail: d.label, source: sourceFor(kind, id, d), busy: null });
-    }
-  }
-  // SoapySDR also lists radios with a driver of their own here; those are shown once, natively.
-  for (const d of r?.soapy?.devices ?? []) {
-    if (native.has(d.driver)) continue;
-    out.push({ key: deviceKey("soapy", d.args), kind: "soapy", name: d.label || d.driver, detail: `SoapySDR · ${d.driver}`, source: sourceFor("soapy", d.args), busy: null });
-  }
-  // Two dongles with no serial can't be told apart; keep one.
-  return out.filter((d, i) => out.findIndex((o) => o.key === d.key) === i);
-}
-
 async function connectWebDongle(): Promise<void> {
   try {
     await web?.requestUsb();
@@ -324,7 +282,7 @@ async function connectWebDongle(): Promise<void> {
 
 function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack: () => void }) {
   const { s } = props;
-  const detected = useMemo(() => detectRadios(s), [s.devices, s.radios]);
+  const detected = useMemo(() => detectRadios(s.devices, s.radios), [s.devices, s.radios]);
   const [picked, setPicked] = useState<Set<string> | null>(null);
   const [helping, setHelping] = useState(false);
   const free = detected.filter((d) => !d.busy);
@@ -736,9 +694,9 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
 
   const useIt = (sug: SurveySuggestion, m: SurveyMonitor) => {
     const system = target === "new" ? c.systems.length : target;
-    applySurvey(sv.stage === "idle" ? source : sv.source, sug, target === "new" ? "new" : { system: target, site: 0 });
+    applySurvey(sv.stage === "idle" ? source : (sv.source ?? source), sug, target === "new" ? "new" : { system: target, site: 0 });
     stopSurvey();
-    props.onFound({ system, source: sv.stage === "idle" ? source : sv.source, sug, voice: m.voice });
+    props.onFound({ system, source: sv.stage === "idle" ? source : (sv.source ?? source), sug, voice: m.voice });
   };
   const useDmr = (cand: SurveyCandidate) => {
     const system = c.systems.length;
@@ -1723,6 +1681,9 @@ function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBundl
   const upload = async (f: File | undefined) => {
     if (!f) return;
     const text = await f.text();
+    // A RadioReference sites export: its sites, to import (and check on the air).
+    const sites = /\.csv$/i.test(f.name) ? sitesFileBundle(text, f.name) : null;
+    if (sites) return props.onBundle(sites);
     try {
       // A system from the systems directory: its own import.
       const bundle = parseBundle(JSON.parse(text));
@@ -1753,10 +1714,10 @@ function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBundl
           </button>
         ) : (
           <button className="ob-link" onClick={() => fileRef.current?.click()}>
-            Or upload a config.json, or a system from the directory
+            Or upload a config.json, a system from the directory, or a RadioReference sites file
           </button>
         )}
-        <FileInput inputRef={fileRef} accept=".json,application/json" onFile={(f) => void upload(f)} />
+        <FileInput inputRef={fileRef} accept=".json,application/json,.csv,text/csv" onFile={(f) => void upload(f)} />
       </div>
       <Nav onBack={props.onBack} />
     </section>

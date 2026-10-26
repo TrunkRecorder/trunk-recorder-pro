@@ -277,6 +277,26 @@ impl Source {
     pub fn usable_half_width(&self) -> f64 {
         usable_half_width(self.rate_hz(), self.guard_hz())
     }
+    /// Whether the two may open the same radio (one program at a time can):
+    /// of a kind and naming one device, or either "the first found". (A
+    /// bladeRF may be named by the start of its serial.)
+    pub fn may_be(&self, other: &Source) -> bool {
+        let id = |s: &Source| -> Option<(u8, String)> {
+            match s {
+                Source::Rtlsdr { serial, .. } => Some((0, serial.trim().to_string())),
+                Source::Usrp { args, .. } => Some((1, args.trim().to_string())),
+                Source::Airspy { serial, .. } => Some((2, serial.trim().to_lowercase())),
+                Source::Bladerf { serial, .. } => Some((3, serial.trim().to_lowercase())),
+                Source::Soapy { args, .. } => Some((4, args.trim().to_string())),
+                Source::File { .. } => None,
+            }
+        };
+        match (id(self), id(other)) {
+            (Some((k, a)), Some((j, b))) if k == j => a.is_empty() || b.is_empty() || a == b || (k == 3 && (a.starts_with(&b) || b.starts_with(&a))),
+            _ => false,
+        }
+    }
+
     /// For the interface: "RTL-SDR SN 200", "USRP serial=…", "file x.cu8".
     pub fn label(&self) -> String {
         match self {
@@ -952,7 +972,7 @@ impl From<&Identity> for SiteIdentity {
 }
 
 impl SiteIdentity {
-    fn engine(&self) -> Identity {
+    pub(crate) fn engine(&self) -> Identity {
         let mut id = Identity::default();
         id.set_opt(IdField::Nac, self.nac.map(u32::from));
         id.set_opt(IdField::Wacn, self.wacn);
