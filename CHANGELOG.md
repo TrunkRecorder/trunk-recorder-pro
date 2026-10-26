@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The waterfall reads the frequency under the pointer.** Hover over a source's spectrum or
+  waterfall to see the frequency there. Near a signal, the readout snaps to its peak and says how
+  far over the noise floor it is. It works on the waterfall's history too, so a conventional
+  channel that keyed up and went quiet can be identified without taking the recorder offline.
+
 - **A switch for the network checks** (#37). The Platform page's Network card has a **Checks**
   switch (`monitor.networkChecks`, on by default): off, the recorder stops connecting to the
   internet check hosts every 15 s and asking the time server every 15 minutes, for a computer whose

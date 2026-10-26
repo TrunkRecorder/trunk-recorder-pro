@@ -1,9 +1,11 @@
 // Spectrum trace + waterfall of one source's whole bandwidth, drawn from the
 // channelizer's own FFT (no extra DSP). Markers: each system's control channel,
 // and every active call colored by state (with several systems, tagged with
-// its system's color).
+// its system's color). The pointer reads the frequency under it, snapped to
+// a signal's peak when one is near: on the waterfall's history too, for a
+// conventional channel that's already gone quiet.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SystemDot } from "./charts.tsx";
 import type { CallView, Spectrum } from "./protocol.ts";
 
@@ -15,6 +17,33 @@ export interface CcMark {
 }
 
 const ROWS = 160;
+/** How near the pointer (bins either side) a signal's peak is snapped to. */
+const SNAP_BINS = 6;
+/** A peak this far over the floor, dB, is a signal to snap to. */
+const SNAP_DB = 10;
+
+/** What's under the pointer: where (0…1 across), the frequency, and when on a signal, how strong. */
+export interface Readout {
+  x: number;
+  hz: number;
+  overDb: number | null;
+}
+
+/**
+ * The readout at `x` (0…1 across `spec`, a spectrum centred on `centerHz`, `rateHz` wide):
+ * the strongest bin within [`SNAP_BINS`] when it's [`SNAP_DB`] over `floorDb`, else the
+ * frequency under the pointer.
+ */
+export function readout(spec: ArrayLike<number>, centerHz: number, rateHz: number, floorDb: number, x: number): Readout {
+  const n = spec.length;
+  const at = (i: number) => centerHz + (i / (n - 1) - 0.5) * rateHz;
+  const i = Math.round(Math.max(0, Math.min(1, x)) * (n - 1));
+  let best = i;
+  for (let j = Math.max(0, i - SNAP_BINS); j <= Math.min(n - 1, i + SNAP_BINS); j++) if (spec[j] > spec[best]) best = j;
+  const over = spec[best] - floorDb;
+  if (over >= SNAP_DB) return { x: best / (n - 1), hz: at(best), overDb: over };
+  return { x, hz: centerHz + (x - 0.5) * rateHz, overDb: null };
+}
 
 /** The waterfall's colour for `t` (0 = floor … 1 = strong), RGB. */
 export function color(t: number): [number, number, number] {
@@ -40,6 +69,7 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
   const trace = useRef<HTMLCanvasElement>(null);
   const fall = useRef<HTMLCanvasElement>(null);
   const floor = useRef<number | null>(null);
+  const [hover, setHover] = useState<number | null>(null);
   const { radio } = props;
 
   useEffect(() => {
@@ -97,10 +127,18 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
 
   const pos = (hz: number) => (radio ? ((hz - radio.centerHz) / radio.rateHz + 0.5) * 100 : -100);
   const inView = (p: number) => p >= 0 && p <= 100;
+  const read = radio && hover !== null && radio.bins.length > 1 ? readout(radio.bins, radio.centerHz, radio.rateHz, floor.current ?? 0, hover) : null;
 
   return (
     <div className="waterfall">
-      <div className="wf-stack">
+      <div
+        className="wf-stack"
+        onPointerMove={(e) => {
+          const b = e.currentTarget.getBoundingClientRect();
+          setHover(b.width ? (e.clientX - b.left) / b.width : null);
+        }}
+        onPointerLeave={() => setHover(null)}
+      >
         <canvas ref={trace} className="wf-trace" aria-hidden="true" />
         <canvas ref={fall} className="wf-fall" aria-label="Waterfall of the source bandwidth" />
         <div className="wf-markers">
@@ -122,6 +160,13 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
               </span>
             ))}
         </div>
+        {read && (
+          <div className="wf-cursor" style={{ left: `${read.x * 100}%` }}>
+            <i className={`mono${read.x > 0.75 ? " left" : ""}`}>
+              {(read.hz / 1e6).toFixed(4)} MHz{read.overDb !== null && <span className="muted"> · +{read.overDb.toFixed(0)} dB</span>}
+            </i>
+          </div>
+        )}
       </div>
       {radio && (
         <div className="wf-axis mono">
