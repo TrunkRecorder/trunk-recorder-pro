@@ -5,6 +5,28 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Talkgroups, chosen the same way everywhere.** The uploaders (OpenMHz, Broadcastify, Rdio
+  Scanner) have a **Talkgroups** menu on each system's card: **Every talkgroup**, **Only some** (with
+  **Except these**) or **All but some**, with the lists shown only when they apply. Lists take
+  numbers, ranges (`1000-1099`) and patterns (`507*`), with commas, spaces or semicolons between;
+  the form flags an entry that isn't one of them, and the plugin won't start with one. Lists saved
+  before still apply; the plugin's log says to choose the menu to see them. **Import Trunk Recorder
+  config…** sets the menu from the allow / deny lists it brings over. See
+  [Choosing talkgroups](docs/configuration/plugins.md#choosing-talkgroups). OpenMHz 0.1.7 gains
+  talkgroups; Broadcastify 0.1.7 and Rdio Scanner 0.1.6 move to the menu.
+
+- **A delay for all but some talkgroups.** A plugin delay's **Talkgroups** is the same menu: every
+  talkgroup, only some (less any excepted), or all but some (`exceptTalkgroups`). "Thirty minutes
+  for everything on dcfd but 1001" is one rule. An older version keeps `exceptTalkgroups` and
+  ignores it, so it delays those talkgroups too, never less.
+
+- **Fixed: a range typed with spaces** (`1000 - 1099`) in a delay or a signal's talkgroups was saved
+  as three entries, and matched nothing. It's one range now, as the recorder reads it.
+
+- **Plugin SDK 0.7.1** (additive): `Talkgroups` (the menu and its lists, for a `SystemConfig`),
+  `TalkgroupFilter::parse`, `filter::talkgroup_list` and `check_talkgroup`, and the form's
+  `"x-talkgroups"` hint. `TalkgroupFilter::describe` reads "only 507*; except 50799" / "all but 9".
+
 - **The waterfall reads the frequency under the pointer.** Hover over a source's spectrum or
   waterfall to see the frequency there. Near a signal, the readout snaps to its peak and says how
   far over the noise floor it is. It works on the waterfall's history too, so a conventional

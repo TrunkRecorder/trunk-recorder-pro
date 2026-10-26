@@ -32,8 +32,9 @@ your recorder records to it. It does what Trunk Recorder's built-in Broadcastify
    unless Broadcastify tells you otherwise.
 3. On the card of each system you upload, under **Plugins** > **Broadcastify Calls**, fill in the
    **API key** and the **System ID** Broadcastify gave you.
-4. If Broadcastify should only get some talkgroups, list them in **Only these talkgroups**, or
-   list the ones to leave out in **Not these talkgroups** (see [Talkgroup lists](#talkgroup-lists)).
+4. If Broadcastify should only get some talkgroups, choose **Only some** under **Talkgroups** and
+   list them, or **All but some** and list the ones to leave out (see
+   [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups)).
 5. Start recording, or if you're recording already, the plugin restarts with the new settings. Its
    log says what it uploads:
 
@@ -60,8 +61,9 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
 |---|---|---|---|---|
 | `apiKey` | ✓ | | string | **API key.** Your node's upload key. A system without one isn't uploaded. |
 | `systemId` | ✓ | | integer | **System ID.** The system's number on Broadcastify Calls. Needed whenever the system has an API key. |
-| `talkgroupAllow` | | (all) | list | **Only these talkgroups.** Upload these and no others. |
-| `talkgroupDeny` | | (none) | list | **Not these talkgroups.** Never upload these. |
+| `talkgroupMode` | | from the lists | `"all"`, `"only"` or `"allBut"` | **Talkgroups.** Every talkgroup, only some, or all but some. See [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups). |
+| `talkgroupAllow` | | (none) | list | **Only these.** With `"only"`: upload these and no others. |
+| `talkgroupDeny` | | (none) | list | **Except these.** With `"only"` or `"allBut"`: never upload these. |
 | `sites` | | (none) | list | **Sites of their own.** A site of the system that Broadcastify Calls knows as a system of its own: `site` (its name, as under Sites in Setup), `systemId`, and `apiKey` if not the system's. Its calls go there; the other sites' to the system's. (Plugin 0.1.5 and later.) |
 
 ```json
@@ -71,7 +73,7 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
     {
       "shortName": "dcfd",
       "sites": [{ "controlChannelsHz": [857987500] }],
-      "plugins": { "broadcastify": { "apiKey": "your-broadcastify-api-key", "systemId": 1234, "talkgroupDeny": ["99*"] } }
+      "plugins": { "broadcastify": { "apiKey": "your-broadcastify-api-key", "systemId": 1234, "talkgroupMode": "allBut", "talkgroupDeny": ["99*"] } }
     }
   ]
 }
@@ -80,12 +82,9 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
 The plugin won't start if no system has an API key, or if a system has a key but no system ID
 (*Add dcfd's Broadcastify system ID (or clear its API key).*).
 
-### Talkgroup lists
-
-Each entry is a talkgroup number, or a pattern where `*` stands for any digits and `?` for one:
-`507*` is every talkgroup starting with 507, and `12???` every five-digit one starting with 12. In
-the form, separate entries with commas. When both lists are set, a talkgroup has to be in the
-first and not in the second.
+Nor will it start with a talkgroup list entry that isn't a talkgroup, a range or a pattern
+(*dcfd's talkgroups: "10O1" isn't a talkgroup…*). Ranges (`1000-1099`) and the menu are plugin 0.1.7
+and later.
 
 ## What it sends
 
@@ -133,7 +132,7 @@ fails**): see
 The import also brings over `broadcastifyOTA` (as `talkerAliases`) and each system's talkgroup
 lists: `broadcastifyAllow` / `broadcastifyDeny`, or the older `broadcastifyWhitelist` /
 `broadcastifyBlacklist` and `talkgroupWhitelist` / `talkgroupBlacklist`, become `talkgroupAllow` /
-`talkgroupDeny`. The plugin also understands Trunk Recorder's names if
+`talkgroupDeny`, with the **Talkgroups** menu set to match. The plugin also understands Trunk Recorder's names if
 you paste them into `config.json`: `broadcastifyCallsServer`, `broadcastifyOTA` and
 `broadcastifySslVerifyDisable` in its settings, and `broadcastifyApiKey`, `broadcastifySystemId`,
 `broadcastifyAllow` / `broadcastifyDeny` (or the older `…Whitelist` / `…Blacklist`) in a

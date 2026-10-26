@@ -1366,6 +1366,13 @@
           },
           "description": "Numbers, ranges (\"1000-1099\") and patterns (\"507*\"). Absent: every talkgroup."
         },
+        "exceptTalkgroups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Talkgroups it isn't for, of those `talkgroups` picks (every one, when absent): the same kinds of entry. All but 1001 is `[\"1001\"]` here alone."
+        },
         "delayS": {
           "type": "number",
           "description": "Seconds (0: none, as for what it narrows)."
@@ -5145,6 +5152,10 @@
           "type": "object",
           "additionalProperties": {},
           "description": "Shown only when the object's other fields are so: `{\"type\": \"command\"}`, `{\"event\": [\"signal\", \"tone\"]}`."
+        },
+        "x-talkgroups": {
+          "type": "boolean",
+          "description": "On a list of strings: talkgroups, typed as everywhere else in the app (\"1001 1000-1099; 507*\") and checked."
         },
         "x-actions": {
           "type": "array",

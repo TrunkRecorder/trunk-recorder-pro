@@ -24,7 +24,10 @@ protocol, plus an SDK that does the plumbing for you:
 - **`Host::metrics`**: report the same yourself (`Metrics`: queue, timing,
   bytes sent, the services you talk to, and any figures of your own in
   `extra`) when you don't use the queue.
-- **`TalkgroupFilter`**: Trunk Recorder's talkgroup allow and deny patterns.
+- **`Talkgroups`** and **`TalkgroupFilter`**: a system's talkgroups as the
+  uploaders pick them (every one, only some, all but some), its settings form
+  and checks; and the allow and deny lists it comes to: numbers, ranges
+  (`1000-1099`) and patterns (`507*`).
 - **`Multipart`**: a `multipart/form-data` body for any HTTP client.
 - **`testing`**: run a plugin without the recorder, and a mock web server to
   point it at.

@@ -1,7 +1,7 @@
 // What the setup's inputs show and read back (fieldText.ts). `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { asTyped, cleanShortName, decimal, gain, hex, lcnTable, mhz, mhzList, minutes, msps, numberList, talkgroupList, textList, type TextCodec } from "./fieldText.ts";
+import { asTyped, cleanShortName, decimal, gain, hex, lcnTable, mhz, mhzList, minutes, msps, numberList, talkgroupList, talkgroupProblem, textList, type TextCodec } from "./fieldText.ts";
 
 /** Each value shown reads back as itself. */
 function roundTrips<T>(codec: TextCodec<T>, values: T[]) {
@@ -69,6 +69,9 @@ test("lists: a trailing separator or space adds nothing", () => {
   assert.deepEqual(numberList(/,/).parse("1, 2,"), [1, 2]);
   assert.ok(Number.isNaN(numberList(/,/).parse("1, x")[1]));
   assert.deepEqual(talkgroupList.parse("1001 1000-1099; 507*,"), ["1001", "1000-1099", "507*"]);
+  assert.deepEqual(talkgroupList.parse("1000 - 1099 2000 -2099, 5"), ["1000-1099", "2000-2099", "5"], "a range with spaces is one");
+  assert.equal(talkgroupProblem(["1001", "1000-1099", "1099 - 1000", "507*", "12?45", 8001]), null);
+  for (const bad of ["abc", "10-", "-5", "10-20-30", "5a*", "99999999999", "1000-x"]) assert.match(talkgroupProblem(["1", bad]) ?? "", new RegExp(`"${bad.replace(/[*?]/g, "\\$&")}" isn't a talkgroup`), bad);
   roundTrips(talkgroupList, [[], ["1001", "507*"]]);
 });
 

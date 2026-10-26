@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { editList, systemAt, useApp, type SystemRef } from "./controller.ts";
 import { numberList, talkgroupList, type TextCodec } from "./fieldText.ts";
-import { DraftInput, Field, NumberInput } from "./inputs.tsx";
+import { DraftInput, Field, NumberInput, TalkgroupHint } from "./inputs.tsx";
 import { PlayButton } from "./PlayButton.tsx";
 import { SignalButtons } from "./Plugins.tsx";
 import type { Config, SignalDef } from "./protocol.ts";
@@ -186,7 +186,7 @@ export function SignalFields(props: { d: SignalDef; taken: (id: string) => boole
           </Field>
         )}
         {!props.bare && (
-          <Field label="Talkgroups" hint="Numbers, ranges (1000-1099), patterns (507*); empty: any">
+          <Field label="Talkgroups" hint={<TalkgroupHint list={d.talkgroups} text="Numbers, ranges (1000-1099), patterns (507*); empty: any" />}>
             <DraftInput className="mono" aria-label="Talkgroups" placeholder="any" codec={talkgroupList} value={d.talkgroups ?? []} onChange={(v) => set((x) => void (x.talkgroups = v))} />
           </Field>
         )}

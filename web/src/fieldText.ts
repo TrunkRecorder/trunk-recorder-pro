@@ -104,8 +104,26 @@ export function numberList(sep: RegExp): TextCodec<number[]> {
   return { format: (v) => v.join(", "), parse: (text) => items(text, sep).map(Number) };
 }
 
-/** Talkgroups as typed ("1001, 1000-1099, 507*"): commas, semicolons or spaces between. */
-export const talkgroupList = textList(/[\s,;]+/);
+/**
+ * Talkgroups as typed ("1001, 1000-1099, 507*"): commas, semicolons or spaces between, and a range's dash with spaces
+ * around it or not ("1000 - 1099" is one range). As the plugin SDK's `talkgroup_list` reads them.
+ */
+export const talkgroupList: TextCodec<string[]> = {
+  format: (v) => v.join(", "),
+  parse: (text) => items(text.replace(/\s*-\s*/g, "-"), /[\s,;]+/),
+};
+
+/** What's wrong with a talkgroup list, as the SDK's `check_talkgroup` has it: its first entry that isn't a talkgroup, a range or a pattern. null: nothing. */
+export function talkgroupProblem(list: readonly unknown[]): string | null {
+  const number = (s: string) => /^\d+$/.test(s) && Number(s) <= 0xffffffff;
+  const ok = (e: string) => {
+    const dash = e.indexOf("-");
+    if (dash >= 0) return number(e.slice(0, dash).trim()) && number(e.slice(dash + 1).trim());
+    return /[*?]/.test(e) ? /^[\d*?]+$/.test(e) : number(e);
+  };
+  const bad = list.map((x) => String(x).trim()).find((e) => e && !ok(e));
+  return bad === undefined ? null : `"${bad}" isn't a talkgroup: numbers, ranges like 1000-1099, or patterns like 507*`;
+}
 
 /** A short name: it names a folder, so letters, digits, "_", "." and "-" only. */
 export function cleanShortName(text: string): string {

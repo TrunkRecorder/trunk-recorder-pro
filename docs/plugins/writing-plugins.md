@@ -196,7 +196,8 @@ The main pieces:
 | `Host` | The way back, usable from any thread: `info`/`warn`/`error`/`debug`, `status`, `call_result` (and `call_result_took`, with your time on it), `metrics`. Never `println!` in a plugin: stdout belongs to the protocol |
 | `Reply` | The answer to a button (`Plugin::action`): `ok(message)` or `fail(message)`, once, from any thread; dropped unsent, it answers that the plugin didn't. The recorder waits 15 s for it |
 | `CallQueue`, `QueueOptions`, `Attempt` | An upload queue on worker threads (2 by default) with retries after 10 s, 1 min, 5 min and 15 min, a warning status while calls wait, `call.result`s and `metrics` sent for you, and calls still waiting at shutdown saved to the data folder (`QueueOptions::saved_in`) and resumed next start. Your closure returns `Attempt::Done`, `Skip`, `Retry` or `Fail`. `CallQueue::start_by` also takes a closure naming each call's lane (the server it goes to): each lane gets workers, retries and an endpoint status of its own |
-| `TalkgroupFilter` | Trunk Recorder's talkgroup allow and deny patterns (`507*`, `12?45`); `filter::patterns` deserializes a list that mixes numbers and strings |
+| `Talkgroups` | A system's talkgroups, for your `SystemConfig` (`#[serde(flatten)] talkgroups: Talkgroups`): the **Talkgroups** menu (every one, only some, all but some) and its lists, as the uploaders have it, reading their older settings too. `filter_for(&host, short_name)?` in `start` checks every entry and gives a `TalkgroupFilter` (SDK 0.7.1) |
+| `TalkgroupFilter` | Talkgroup allow and deny lists: numbers, ranges (`1000-1099`) and patterns (`507*`, `12?45`); `passes(tg)`. `TalkgroupFilter::parse` and `filter::talkgroup_list` read lists as typed and say which entry isn't a talkgroup; `filter::patterns` deserializes a list that mixes numbers and strings |
 | `Multipart` | A `multipart/form-data` body for any HTTP client |
 | `testing` | Run a plugin without the recorder (below) |
 
@@ -233,6 +234,7 @@ The form understands:
 | `"x-required": true` | Must be filled in; until it is, the plugin (or that system) shows as not set up. Mark it with `#[schemars(extend("x-required" = true))]` |
 | array whose items are an `enum` | The choices, to tick |
 | `"x-systems": true` on an array of strings | The recorder's systems, to tick |
+| `"x-talkgroups": true` on an array of strings | Talkgroups, typed as everywhere in the app (spaces, commas or semicolons between; `1000 - 1099` one range), and each checked. `Talkgroups` sets it |
 | `"x-signals": true` on an array of strings | Every system's [signals](../guides/signals.md), to tick, as `system:ID` |
 | `"x-ref": "<list>"` | Items of the top-level array `<list>` (by their `id`, else their `name`): a menu on a string, items to tick on an array. Renaming an item renames what names it |
 | `"x-tones": true` on an array of objects | Tones to type in, each `pattern`, `tonesHz`, `digits`, `knox`, `lengthsS` and `extraTolerancePct` (a [signal](../configuration/systems.md#signals)'s fields), with ▶ and a note of what the recorder would match within |
