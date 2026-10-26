@@ -55,6 +55,7 @@ import {
   fccPrimary,
   newConventional,
   newSiteName,
+  needsDriver,
   newSystem,
   normalizeSite,
   resolvedCenters,
@@ -70,6 +71,7 @@ import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
 import { withIgnore } from "./talkgroups.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
+import type { Bundle } from "./directoryImport.tsx";
 
 export interface AppState {
   connected: boolean;
@@ -118,6 +120,8 @@ export interface AppState {
   surveySpectrum: Spectrum | null;
   /** The licenses looked up for the survey's signals ("Identify surveyed sites"); null: none asked for since it started. */
   surveyLicenses: LicenseLookup | null;
+  /** A system from the directory the survey looks for: one known only by its licenses (directoryImport.tsx toFind); null: none. */
+  surveyFor: Bundle | null;
   /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
   profile: SourceProfile | null;
   profiling: number | null;
@@ -208,6 +212,7 @@ let state: AppState = {
   capabilities: [],
   surveySpectrum: null,
   surveyLicenses: null,
+  surveyFor: null,
   profile: null,
   profiling: null,
   restartNeeded: false,
@@ -1109,6 +1114,36 @@ export function startSurvey(source: number, bands: string[], findGain: boolean):
   set({ error: null, surveySpectrum: null, surveyLicenses: null });
   transport.send({ type: "surveyStart", source, bands, findGain });
 }
+/** The survey's bands that hold any of these frequencies (none: the usual ones). */
+export function bandsHolding(freqs: number[], bands: SurveyBand[]): string[] {
+  const on = bands.filter((b) => freqs.some((hz) => hz >= b.loHz && hz <= b.hiHz)).map((b) => b.id);
+  return on.length ? on : bands.filter((b) => b.defaultOn).map((b) => b.id);
+}
+
+/** Look for a system from the directory with the survey (null: stop looking). */
+export function lookFor(b: Bundle | null): void {
+  set({ surveyFor: b });
+}
+
+/**
+ * Find a system known only by its licenses on the air: Setup's systems, and
+ * the survey looking for it, started with the first radio on the bands its
+ * licensed frequencies are in. Why it couldn't start (the survey waits, to
+ * start by hand), or null.
+ */
+export function findOnAir(b: Bundle): string | null {
+  lookFor(b);
+  setSetupTab("systems");
+  setView("setup");
+  const src = state.config?.sources[0];
+  if (!state.connected) return "Not connected to the recorder.";
+  if (state.phase !== "idle") return "Stop recording to scan.";
+  if (!src) return "Add a radio first (Setup → Radios).";
+  if (needsDriver(src) && !can("drivers")) return "Its radio needs the desktop app.";
+  if (state.survey.stage === "idle") startSurvey(0, bandsHolding(Object.keys(b.system.fcc ?? {}).map(Number), state.surveyBands), src.type === "rtlsdr");
+  return null;
+}
+
 /** Measure source `source`'s roll-off, tuned to `centerHz` (a capture keeps its own); the answer lands in `profile`. */
 export function profileSource(source: number, centerHz: number): void {
   flushConfig();
@@ -1304,12 +1339,18 @@ export function editFcc(target: FccTarget, f: (fcc: FccLicenses) => void): void 
   });
 }
 
-/** What the survey's license lookup found, into a system just made from it or added to: the licensee on each of the site's control and voice channels, and the system's name (if it has none). */
+/**
+ * What the survey's license lookup found, and the licenses of the system it
+ * looks for (when this is it: a control channel among them), into a system
+ * just made from it or added to: the licensee on each of the site's control
+ * and voice channels, and the system's name (if it has none).
+ */
 function withLicenses(sys: System, site: Site, isNew: boolean): void {
   const l = state.surveyLicenses;
-  if (l?.stage !== "done") return;
   const freqs = [...site.controlChannelsHz, ...site.voiceChannelsHz].map(fccKey);
-  const found = Object.fromEntries(Object.entries(lookupLicensesByFreq(l.results)).filter(([k]) => freqs.includes(k)));
+  const found = l?.stage === "done" ? Object.fromEntries(Object.entries(lookupLicensesByFreq(l.results)).filter(([k]) => freqs.includes(k))) : {};
+  const sought = state.surveyFor?.system.fcc;
+  if (sought && site.controlChannelsHz.some((hz) => sought[fccKey(hz)])) for (const k of freqs) if (sought[k]) found[k] = sought[k];
   if (!Object.keys(found).length) return;
   const fcc = { ...(sys.fcc ?? {}) };
   mergeLookup(fcc, found);

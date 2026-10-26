@@ -4,11 +4,14 @@
 // URL>, from the directory's "Open in Trunk Recorder Pro") or as a file
 // (Setup's Import…). Either way it's shown first: which sites, what to call
 // it, and, if the config already has the system (the same directory record,
-// identity or control channels), updating that one instead of adding it again.
+// identity, control channels or licenses), updating that one instead of adding
+// it again. A system no one has shared comes known only by its licenses (no
+// site to follow yet): the survey looks for it, marking the signals it finds
+// on its licensed frequencies, and adding what it finds gives it them.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { newSiteName, normalizeSite, normalizeSystem, sameSystem, trpBase, type SystemInput } from "./config.ts";
-import { setTalkgroups, snapshot, updateConfig, useSelect } from "./controller.ts";
+import { fccPrimary, newSiteName, normalizeSite, normalizeSystem, sameSystem, trpBase, type SystemInput } from "./config.ts";
+import { findOnAir, setTalkgroups, snapshot, updateConfig, useSelect } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { Modal } from "./Identify.tsx";
 import type { Config, Site, System } from "./protocol.ts";
@@ -33,6 +36,9 @@ export function parseBundle(x: unknown): Bundle | null {
   return { ...(b as Bundle), talkgroupsCsv: typeof b.talkgroupsCsv === "string" ? b.talkgroupsCsv : "" };
 }
 
+/** A system known only by its licenses (no one has shared it): no site to follow yet, its licensed frequencies to find it by. */
+export const toFind = (b: Bundle) => !b.system.sites.length && Object.keys(b.system.fcc ?? {}).length > 0;
+
 /**
  * The bundle's URL a link asks to import (#import=…): the URL itself, or (an
  * older link) a directory system ID and its sites, at `directory`.
@@ -49,14 +55,18 @@ export function importUrl(hash: string, directory: string): string | null {
 /**
  * The system in `c` that is the bundle's (to update, not add again): by its
  * directory record, else by identity (sameSystem: the same WACN and System
- * ID) or a control channel in common, of the same type. -1: none.
+ * ID) or a control channel in common, of the same type; else, known only by
+ * its licenses, one with its call sign. -1: none.
  */
 export function findExisting(c: Config, b: Bundle): number {
   const byLink = c.systems.findIndex((s) => s.directory?.id === b.source.id);
   if (byLink >= 0) return byLink;
   const ids = b.system.sites.map((s) => s.expect ?? {});
   const ccs = new Set(b.system.sites.flatMap((s) => s.controlChannelsHz ?? []));
-  return c.systems.findIndex((s) => s.type === b.system.type && s.sites.some((x) => ids.some((id) => sameSystem(x.expect, id)) || x.controlChannelsHz.some((f) => ccs.has(f))));
+  const same = c.systems.findIndex((s) => s.type === b.system.type && s.sites.some((x) => ids.some((id) => sameSystem(x.expect, id)) || x.controlChannelsHz.some((f) => ccs.has(f))));
+  if (same >= 0 || !toFind(b)) return same;
+  const calls = new Set(Object.values(b.system.fcc ?? {}).map((l) => l.callSign));
+  return c.systems.findIndex((s) => Object.values(s.fcc ?? {}).some((l) => calls.has(l.callSign)));
 }
 
 /** A short name for the bundle's system none in `c` has: its own, else from its name. */
@@ -182,6 +192,8 @@ export function DirectoryImport() {
 const titleCase = (s: string) => (s !== s.toUpperCase() ? s : s.toLowerCase().replace(/\b([a-z])([a-z']*)/g, (w, a: string, r: string, i: number) => (i > 0 && ["of", "and", "the", "for", "in", "on", "at", "to"].includes(w) ? w : a.toUpperCase() + r)));
 const mhz = (hz: number) => (hz / 1e6).toFixed(5).replace(/0{1,2}$/, "");
 const TYPES: Record<string, string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS" };
+/** What a bundle's system is called: its name, else who holds its licenses. */
+export const nameOf = (b: Bundle) => b.system.name || (b.source.licensee ? titleCase(b.source.licensee) : "") || b.system.shortName || "a system";
 
 export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
   const b = props.bundle;
@@ -192,12 +204,17 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
   const [mode, setMode] = useState<"update" | "add">(same >= 0 ? "update" : "add");
   const [name, setName] = useState(() => (c ? freeShortName(c, b.system.shortName ?? b.system.name ?? "system") : "system"));
   const [done, setDone] = useState<string | null>(null);
+  const find = toFind(b);
   if (!c) return null;
   const tgCount = parseTalkgroupCsv(b.talkgroupsCsv).size;
   const licenses = Object.keys(b.system.fcc ?? {}).length;
   const taken = [...c.systems, ...c.conventional].some((x) => x.shortName === name);
   const existing: System | undefined = same >= 0 ? c.systems[same] : undefined;
   const go = () => {
+    if (find && mode === "add") {
+      const why = findOnAir(b);
+      return why ? setDone(`${why} The survey is in Setup → Systems, looking for it when you scan.`) : props.onClose();
+    }
     if (mode === "update" && existing) {
       const added = updateSystem(b, same, sites, s.talkgroups);
       setDone(`Updated ${existing.shortName}: its directory link, the sites and licenses it lacked, and ${added} talkgroup${added === 1 ? "" : "s"} it didn't have.`);
@@ -207,7 +224,7 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
     }
   };
   return (
-    <Modal title={`Import ${b.system.name || (b.source.licensee ? titleCase(b.source.licensee) : "") || b.system.shortName || "a system"}`} onClose={props.onClose}>
+    <Modal title={`${find ? "Find" : "Import"} ${nameOf(b)}`} onClose={props.onClose}>
       {done ? (
         <>
           <p>{done}</p>
@@ -220,6 +237,20 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
         </>
       ) : (
         <>
+          {find ? (
+            <>
+              <p className="small muted">
+                {`${fccPrimary(b.system.fcc, [])?.callSign ?? ""} · ${licenses} licensed frequenc${licenses === 1 ? "y" : "ies"} · from `}
+                <a href={b.source.url ?? `${b.source.directory}/systems/${b.source.id}`} target="_blank" rel="noreferrer">
+                  the directory
+                </a>
+              </p>
+              <p>
+                No one has shared it yet, so all that's known is its licenses. They don't say which frequency is its control channel, so the survey looks for it: the signals it finds on these frequencies are marked as its own, and the control channel it
+                listens to sets it up.
+              </p>
+            </>
+          ) : (
           <p className="small muted">
             {`${TYPES[b.system.type ?? ""] ?? b.system.type} · ${b.system.sites.length} site${b.system.sites.length === 1 ? "" : "s"} · ${tgCount} named talkgroup${tgCount === 1 ? "" : "s"}${licenses ? ` · ${licenses} FCC license${licenses === 1 ? "" : "s"}` : ""} · from `}
             <a href={b.source.url ?? `${b.source.directory}/systems/${b.source.id}`} target="_blank" rel="noreferrer">
@@ -227,6 +258,8 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
             </a>
             {` (version ${b.source.rev})`}
           </p>
+          )}
+          {!find && (
           <fieldset className="stack">
             <legend className="small">Sites</legend>
             {b.system.sites.map((x, k) => (
@@ -238,20 +271,21 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
               </label>
             ))}
           </fieldset>
+          )}
           {existing && (
             <fieldset className="stack">
               <legend className="small">You have it already: {existing.shortName}</legend>
               <label className="toggle small">
                 <input type="radio" name="import-mode" checked={mode === "update"} onChange={() => setMode("update")} />
-                Update {existing.shortName}: add what it lacks (sites, licenses, talkgroups). Nothing of yours is replaced.
+                Update {existing.shortName}: add what it lacks ({find ? "licenses" : "sites, licenses, talkgroups"}). Nothing of yours is replaced.
               </label>
               <label className="toggle small">
                 <input type="radio" name="import-mode" checked={mode === "add"} onChange={() => setMode("add")} />
-                Add it as another system
+                {find ? "Find it on the air as another system" : "Add it as another system"}
               </label>
             </fieldset>
           )}
-          {mode === "add" && (
+          {mode === "add" && !find && (
             <label className="field">
               <span className="field-label">Short name</span>
               <input className="search" value={name} onChange={(e) => setName(cleanShortName(e.target.value))} />
@@ -263,8 +297,8 @@ export function ImportDialog(props: { bundle: Bundle; onClose: () => void }) {
             <button className="btn ghost" onClick={props.onClose}>
               Cancel
             </button>
-            <button className="btn primary" disabled={!sites.length || (mode === "add" && (!name || taken))} onClick={go}>
-              {mode === "update" && existing ? `Update ${existing.shortName}` : "Add it"}
+            <button className="btn primary" disabled={!find && (!sites.length || (mode === "add" && (!name || taken)))} onClick={go}>
+              {mode === "update" && existing ? `Update ${existing.shortName}` : find ? "Start the survey" : "Add it"}
             </button>
           </div>
         </>

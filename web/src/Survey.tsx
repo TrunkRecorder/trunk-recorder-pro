@@ -4,10 +4,13 @@
 // announces. Neighbouring sites it announces can be added as sites of it too.
 // SmartNet doesn't announce its band plan: listening learns it from which
 // carrier comes up when a channel number is granted.
+// Looking for a system from the directory known only by its licenses, the
+// signals found on its licensed frequencies are marked, and once the radio's
+// error is known it listens to one of its control channels.
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
-import { Fragment, useState } from "react";
-import { formatGain, formatMhz, needsDriver, siteNameOf, SOURCE_KINDS, systemWithChannel } from "./config.ts";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { fccKey, fccPrimary, formatGain, formatMhz, needsDriver, siteNameOf, SOURCE_KINDS, systemWithChannel } from "./config.ts";
 import {
   can,
   addDmrSite,
@@ -15,16 +18,21 @@ import {
   addNxdnSite,
   addSite,
   applySurvey,
+  bandsHolding,
+  licenseeName,
+  lookFor,
   setNotice,
   startSurvey,
   stopSurvey,
   surveyListen,
   surveyRescan,
   systemOfSite,
+  updateConfig,
   useApp,
   type SurveyTarget,
 } from "./controller.ts";
-import type { Config, SiteIdentity, SurveyCandidate, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
+import { findExisting, nameOf, type Bundle } from "./directoryImport.tsx";
+import type { Config, FccLicense, FccLicenses, SiteIdentity, SurveyCandidate, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
 import type { LicenseLookup } from "./controller.ts";
 import { IdentifyBar, LicenseCell, licensesOn } from "./Identify.tsx";
 import { Waterfall } from "./Waterfall.tsx";
@@ -50,11 +58,26 @@ const KIND: Record<SurveyCandidate["kind"], string> = {
   other: "Other",
 };
 const isControl = (c: SurveyCandidate) => c.kind === "control" || c.kind === "smartnet";
+/** As heard, corrected once the radio's error is known. */
+const heardHz = (c: SurveyCandidate) => c.correctedHz ?? c.freqHz;
+
+/** The license on `hz` of the system looked for (its licenses: `sought`), or undefined. */
+const soughtOn = (sought: FccLicenses | null, hz: number | null | undefined) => (sought && hz != null ? sought[fccKey(hz)] : undefined);
+
+/** A signal on the licenses of the system looked for: its licensee and call sign. */
+function Sought(props: { l: FccLicense }) {
+  return (
+    <span className="tag sought" title="On the licenses of the system you're looking for">
+      {props.l.name ? `${licenseeName(props.l.name)} · ` : ""}
+      <span className="mono">{props.l.callSign}</span>
+    </span>
+  );
+}
 
 /** The site key of a scanned control channel: its secondaries share it. */
 const siteKey = (id: SiteIdentity) => (id.sysId != null && id.site != null ? `${id.nac}/${id.sysId}/${id.rfss}/${id.site}` : null);
 
-function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void; licenses: LicenseLookup | null }) {
+function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void; licenses: LicenseLookup | null; sought: FccLicenses | null }) {
   // Add a scanned control channel as a system — with its site's other control channels found in the scan.
   const add = (cand: SurveyCandidate) => {
     const key = siteKey(cand.identity);
@@ -95,8 +118,10 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
   };
   const [showOther, setShowOther] = useState(false);
   const others = props.list.filter((c) => c.kind === "other").length;
-  const rows = props.list.filter((c) => showOther || c.kind !== "other");
-  const looked = props.licenses?.stage === "done";
+  const sought = (c: SurveyCandidate) => soughtOn(props.sought, heardHz(c));
+  // (The system looked for: its signals first, even ones not decoded.)
+  const rows = props.list.filter((c) => showOther || c.kind !== "other" || sought(c)).sort((a, b) => Number(!!sought(b)) - Number(!!sought(a)));
+  const looked = props.licenses?.stage === "done" || !!props.sought;
   const decoded = (c: SurveyCandidate) => (c.good + c.bad ? `${Math.round((100 * c.good) / (c.good + c.bad))} %` : "");
   return (
     <div className="stack">
@@ -116,7 +141,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
             </thead>
             <tbody>
               {rows.map((c) => (
-                <tr key={c.freqHz} className={isControl(c) ? "" : "st-monitoring"}>
+                <tr key={c.freqHz} className={`${isControl(c) ? "" : "st-monitoring"}${sought(c) ? " sought" : ""}`}>
                   <td className="mono" title={c.correctedHz ? `${formatMhz(c.freqHz)} MHz uncorrected` : "Uncorrected"}>
                     {formatMhz(c.correctedHz ?? c.freqHz)}
                   </td>
@@ -137,7 +162,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
                   <td className="mono small">{decoded(c)}</td>
                   {looked && (
                     <td>
-                      <LicenseCell found={licensesOn(props.licenses, Math.round((c.correctedHz ?? c.freqHz) / 6250) * 6250)} />
+                      {sought(c) ? <Sought l={sought(c)!} /> : <LicenseCell found={licensesOn(props.licenses, Math.round(heardHz(c) / 6250) * 6250)} />}
                     </td>
                   )}
                   <td className="actions">
@@ -243,8 +268,9 @@ function SmartnetPlan(props: { s: NonNullable<SurveyMonitor["smartnet"]> }) {
   );
 }
 
-function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c: Config; source: number; onDone: () => void }) {
-  const { m, sug, c } = props;
+function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c: Config; source: number; onDone: () => void; sought: FccLicenses | null }) {
+  const { m, sug, c, sought } = props;
+  const mine = soughtOn(sought, m.advertisedHz);
   const total = m.good + m.bad;
   const pct = total ? Math.round((100 * m.good) / total) : 0;
   // Of the air, not of the messages: an MBT takes several TSBKs' worth.
@@ -353,8 +379,34 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
                 : "once decoding is steady"}
           </Check>
         )}
+        {sought && (
+          <Check state={mine ? "ok" : "info"} label="The system you're looking for">
+            {mine ? (
+              <>
+                this control channel is on its licenses (<span className="mono">{mine.callSign}</span>)
+              </>
+            ) : m.advertisedHz === null ? (
+              "waiting for this control channel's frequency, to check it against its licenses…"
+            ) : (
+              "this control channel isn't on its licenses: another system. Listen to a signal marked as its own, if the scan found one."
+            )}
+          </Check>
+        )}
         <Check state="info" label="Alternate control channels">
-          {m.secondary.length ? <span className="mono">{mhzList(m.secondary)} MHz</span> : "none announced (yet)"}
+          {m.secondary.length ? (
+            <span className="mono">
+              {m.secondary.map((hz, i) => (
+                <Fragment key={hz}>
+                  {i > 0 && ", "}
+                  {formatMhz(hz)}
+                  {soughtOn(sought, hz) && <Sought l={soughtOn(sought, hz)!} />}
+                </Fragment>
+              ))}{" "}
+              MHz
+            </span>
+          ) : (
+            "none announced (yet)"
+          )}
         </Check>
         <Check state="info" label="Neighbouring sites">
           {m.adjacent.length ? (
@@ -366,6 +418,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
                     <span className="mono">
                       site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
                     </span>
+                    {soughtOn(sought, a.freqHz) && <Sought l={soughtOn(sought, a.freqHz)!} />}
                     {have ? (
                       <span>· in {have.shortName}</span>
                     ) : (
@@ -483,11 +536,26 @@ export function SurveyPanel(props: { c: Config }) {
   const [source, setSource] = useState(0);
   const [picked, setPicked] = useState<string[] | null>(null);
   const [findGain, setFindGain] = useState(true);
-  const bands = picked ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
+  const lookingFor = s.surveyFor;
+  const sought = lookingFor?.system.fcc ?? null;
+  const bands = picked ?? (sought ? bandsHolding(Object.keys(sought).map(Number), s.surveyBands) : s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id));
   const src = c.sources[Math.min(source, c.sources.length - 1)];
   const active = sv.stage !== "idle";
   const unsupported = !can("drivers") && !!src && needsDriver(src);
   const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
+  // Looking for a system and listening to another's control channel: once the radio's error is known (so the scan's
+  // frequencies can be matched to its licenses), its own strongest control channel instead; once a scan.
+  const switched = useRef(false);
+  const monitor = sv.stage === "idle" ? null : sv.monitor;
+  useEffect(() => {
+    if (sv.stage === "scanning") switched.current = false;
+    if (!sought || sv.stage !== "monitoring" || !monitor || switched.current || monitor.ppm === null) return;
+    if (soughtOn(sought, monitor.advertisedHz ?? monitor.heardHz)) return void (switched.current = true);
+    const own = sv.candidates.filter((x) => isControl(x) && soughtOn(sought, heardHz(x))).sort((a, b) => b.snrDb - a.snrDb)[0];
+    if (!own) return;
+    switched.current = true;
+    surveyListen(own.freqHz);
+  }, [sought, sv.stage, monitor?.ppm, monitor?.advertisedHz]);
 
   if (!s.surveyBands.length) return null;
   return (
@@ -513,7 +581,8 @@ export function SurveyPanel(props: { c: Config }) {
           )}
         </div>
       </header>
-      {!active && open && (
+      {lookingFor && <LookingFor b={lookingFor} c={c} />}
+      {!active && (open || !!lookingFor) && (
         <div className="stack">
           <p className="muted small">Scans for P25, SmartNet, DMR and NXDN control channels and sets up the system.</p>
           {(c.sources.length > 1 || src?.type === "rtlsdr") && (
@@ -598,7 +667,7 @@ export function SurveyPanel(props: { c: Config }) {
                 </span>
               </div>
               {sv.stage === "monitoring" && s.surveySpectrum && <Waterfall radio={s.surveySpectrum} label="Survey" ccs={[{ hz: sv.monitor.heardHz, label: "CC", color: "var(--accent)" }]} calls={[]} />}
-              <MonitorView m={sv.monitor} sug={sv.suggest} c={c} source={sv.source} onDone={() => setOpen(false)} />
+              <MonitorView m={sv.monitor} sug={sv.suggest} c={c} source={sv.source} onDone={() => setOpen(false)} sought={sought} />
             </>
           )}
           {sv.message && <div className="banner subtle">{sv.message}</div>}
@@ -608,12 +677,50 @@ export function SurveyPanel(props: { c: Config }) {
                 Signals found ({sv.candidates.filter(isControl).length} control channel
                 {sv.candidates.filter(isControl).length === 1 ? "" : "s"})
               </summary>
-              <Candidates c={c} list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} licenses={s.surveyLicenses} />
+              <Candidates c={c} list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} licenses={s.surveyLicenses} sought={sought} />
             </details>
           )}
           <IdentifyBar licenses={s.surveyLicenses} canIdentify={s.connected && sv.candidates.length > 0} />
         </div>
       )}
     </section>
+  );
+}
+
+/** The system looked for: what it is; once a system is it (findExisting: its call sign), sharing it. */
+function LookingFor(props: { b: Bundle; c: Config }) {
+  const { b, c } = props;
+  const n = Object.keys(b.system.fcc ?? {}).length;
+  const call = fccPrimary(b.system.fcc, [])?.callSign;
+  const found = findExisting(c, b);
+  const sys = found >= 0 ? c.systems[found] : null;
+  return (
+    <div className="banner">
+      {sys ? (
+        <span>
+          <b>{sys.shortName}</b> is {nameOf(b)} (<span className="mono">{call}</span>).{" "}
+          {sys.share ? "It's shared with the directory once it has decoded a while." : "No one has shared it yet: share it, and it's on the directory's map for others."}
+        </span>
+      ) : (
+        <span>
+          Looking for <b>{nameOf(b)}</b> (<span className="mono">{call}</span>): {n} licensed frequenc{n === 1 ? "y" : "ies"}. Signals found on them are marked as its own.{" "}
+          {b.source.url && (
+            <a href={b.source.url} target="_blank" rel="noreferrer">
+              In the directory
+            </a>
+          )}
+        </span>
+      )}
+      <span className="row">
+        {sys && !sys.share && (
+          <button className="btn small" onClick={() => updateConfig((x) => void (x.systems[found].share = true))}>
+            Share it
+          </button>
+        )}
+        <button className="btn ghost small" onClick={() => lookFor(null)}>
+          {sys ? "Done" : "Stop looking"}
+        </button>
+      </span>
+    </div>
   );
 }
