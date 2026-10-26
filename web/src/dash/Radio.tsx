@@ -5,9 +5,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
-import { radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
+import { radioQuery, setTalkgroupFields, setTalkgroupIgnore, setUnitName, setView, usePolled, useApp, type AppState } from "../controller.ts";
 import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
+import { Field } from "../inputs.tsx";
+import { showTodo } from "../Setup.tsx";
+import { parseTalkgroupCsv, type Talkgroup } from "../talkgroups.ts";
 import type { CipherSeen, LengthHistogram, OutOfBandRow, RadioResult, TgRow, UnitRow } from "../protocol.ts";
 import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
 import { Tones } from "./Tones.tsx";
@@ -34,6 +37,27 @@ const hourLabel = (hours: number) => (i: number) => {
   const t = (Math.floor(Date.now() / 3600_000) - (hours - 1 - i)) * 3600;
   return clockAt(t);
 };
+
+/**
+ * `sys`'s talkgroup file, parsed — `null` only in the brief window before
+ * it's loaded (just after connecting). Kept in sync with every local edit
+ * the moment it's made, unlike the polled talkgroup rows below, which can
+ * lag 30 s (while recording) or indefinitely (while idle/replaying).
+ */
+function useLiveTalkgroups(s: AppState, sys: DashSystem): Map<number, Talkgroup> | null {
+  const csv = s.talkgroups[sys.name];
+  return useMemo(() => (csv === undefined ? null : parseTalkgroupCsv(csv)), [csv]);
+}
+
+/** `row` with `known` / `ignore` / `alphaTag` taken from `live` (the talkgroup
+ * file as it is right now) in place of the polled snapshot's, so a toggle or
+ * an edit shows correctly at once instead of waiting on the next poll. */
+function withLiveTag(row: TgRow, live: Map<number, Talkgroup> | null): TgRow {
+  if (!live) return row;
+  const e = live.get(row.tg);
+  return { ...row, known: live.has(row.tg), ignore: e?.ignore ?? false, alphaTag: e?.alphaTag || row.alphaTag };
+}
+const withLiveTags = (rows: TgRow[], live: Map<number, Talkgroup> | null) => (live ? rows.map((r) => withLiveTag(r, live)) : rows);
 
 function TgName({ r }: { r: { tg: number; alphaTag: string } }) {
   return r.alphaTag ? (
@@ -336,7 +360,8 @@ function SystemView({ s, sys, focus }: { s: AppState; sys: DashSystem; focus?: s
   const sumR = usePolled(`sum:${sys.name}`, () => radioQuery({ what: "summary" }), every * 2);
   const lenR = usePolled(`len:${sys.name}:${hours}`, () => radioQuery({ what: "lengths", system: sys.name, hours: h }), every * 2);
   const freqsR = usePolled(`oob:${sys.name}:${hours}`, () => radioQuery({ what: "freqs", system: sys.name, hours: h }), every * 2);
-  const tgs = (tgsR?.rows ?? []) as TgRow[];
+  const liveTgs = useLiveTalkgroups(s, sys);
+  const tgs = withLiveTags((tgsR?.rows ?? []) as TgRow[], liveTgs);
   const units = (unitsR?.rows ?? []) as UnitRow[];
   const summary = sumR?.systems?.[sys.name];
   const calls = tgs.reduce((a, r) => a + r.calls, 0);
@@ -390,9 +415,56 @@ function SystemView({ s, sys, focus }: { s: AppState; sys: DashSystem; focus?: s
 
 // ── one talkgroup ────────────────────────────────────────────────────────────
 
+/** Alpha Tag / Description / Tag / Category, editable in place — only ever
+ * from the talkgroup file itself: `TgRow` carries none of these beyond the
+ * alpha tag, so there's nothing to fall back to while `live` hasn't loaded. */
+function TgFields({ sys, tg, live }: { sys: DashSystem; tg: number; live: Map<number, Talkgroup> | null }) {
+  const t = live?.get(tg);
+  const loading = live === null;
+  return (
+    <Card title="Talkgroup file">
+      <div className="row">
+        <TgTextField sys={sys} tg={tg} field="alphaTag" label="Alpha Tag" value={t?.alphaTag ?? ""} disabled={loading} />
+        <TgTextField sys={sys} tg={tg} field="description" label="Description" value={t?.description ?? ""} disabled={loading} />
+        <TgTextField sys={sys} tg={tg} field="tag" label="Tag" value={t?.tag ?? ""} disabled={loading} />
+        <TgTextField sys={sys} tg={tg} field="group" label="Category" value={t?.group ?? ""} disabled={loading} />
+      </div>
+    </Card>
+  );
+}
+
+function TgTextField({
+  sys,
+  tg,
+  field,
+  label,
+  value,
+  disabled,
+}: {
+  sys: DashSystem;
+  tg: number;
+  field: "alphaTag" | "description" | "tag" | "group";
+  label: string;
+  value: string;
+  disabled?: boolean;
+}) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  const save = () => {
+    if (text !== value) setTalkgroupFields(sys.name, tg, { [field]: text } as Partial<Pick<Talkgroup, "alphaTag" | "description" | "tag" | "group">>);
+  };
+  return (
+    <Field label={label}>
+      <input value={text} disabled={disabled} onChange={(e) => setText(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
+    </Field>
+  );
+}
+
 function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
   const r = usePolled(`tg:${sys.name}:${tg}`, () => radioQuery({ what: "tg", system: sys.name, key: tg, hours: 168 }), running(s) ? 30_000 : 0);
-  const row = r?.row as TgRow | null | undefined;
+  const live = useLiveTalkgroups(s, sys);
+  const rawRow = r?.row as TgRow | null | undefined;
+  const row = rawRow ? withLiveTag(rawRow, live) : rawRow;
   if (!r) return <p className="empty">Loading…</p>;
   if (!row) return <p className="empty">Talkgroup {tg} hasn't been heard on {sys.name}.</p>;
   // The week's hours laid out by local day (a row each, today at the bottom) and local hour.
@@ -423,6 +495,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
           <IgnoreToggle sys={sys} r={row} />
         </div>
       </section>
+      <TgFields sys={sys} tg={tg} live={live} />
       <div className="kpis">
         <Stat label="Calls, 7 days" value={compact(row.calls)} sub={`${row.totalCalls} since first heard`} />
         <Stat label="Airtime, 7 days" value={hmm(row.secs)} />
@@ -509,6 +582,40 @@ function Ciphers({ ciphers }: { ciphers: CipherSeen[] }) {
 
 // ── one radio ────────────────────────────────────────────────────────────────
 
+/**
+ * The radio's name, editable in place — adds or updates a literal row in
+ * the system's unit names file (ahead of every pattern, so it always wins).
+ * Saving always writes the name; if the system's current "Unit names" mode
+ * would hide a name set here (it prefers aliases heard over the air, or
+ * shows none), a note says so and links to the Setup field that controls it.
+ */
+function UnitNameField({ s, sys, unit, alias }: { s: AppState; sys: DashSystem; unit: number; alias: string | undefined }) {
+  const [text, setText] = useState(alias ?? "");
+  useEffect(() => setText(alias ?? ""), [alias]);
+  const conventional = sys.kind === "conventional";
+  const names = s.config?.systems.find((x) => x.shortName === sys.name)?.unitNames ?? s.config?.conventional.find((x) => x.shortName === sys.name)?.unitNames;
+  const mode = names?.mode || "user";
+  const hidden = mode === "ota" || mode === "none";
+  const save = () => {
+    if (text !== (alias ?? "")) setUnitName(sys.name, conventional, unit, text);
+  };
+  return (
+    <Card title="Name">
+      <Field label="Name">
+        <input value={text} onChange={(e) => setText(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
+      </Field>
+      {hidden && (
+        <p className="muted small">
+          This system's "Unit names" mode ({mode === "ota" ? "aliases heard first" : "no names"}) means a name set here won't show until that's changed.{" "}
+          <button className="btn ghost small" onClick={() => showTodo(conventional ? `convunits-${sys.name}` : `units-${sys.name}`)}>
+            Open in Setup
+          </button>
+        </p>
+      )}
+    </Card>
+  );
+}
+
 function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number }) {
   const r = usePolled(`unit:${sys.name}:${unit}`, () => radioQuery({ what: "unit", system: sys.name, key: unit }), running(s) ? 15_000 : 0) as RadioResult | null;
   const row = r?.row as UnitRow | null | undefined;
@@ -530,6 +637,7 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
         </div>
         {row.new && <span className="badge new">NEW</span>}
       </section>
+      <UnitNameField s={s} sys={sys} unit={unit} alias={alias} />
       <div className="kpis">
         <Stat label="Transmissions" value={compact(row.tx)} sub={dur(row.txSecs) + " on the air"} />
         <Stat label="Last keyed up" value={row.lastTx ? ago(row.lastTx) : "never"} />

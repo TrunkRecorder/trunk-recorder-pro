@@ -336,6 +336,27 @@ function rowFor(f: TalkgroupFile, t: Partial<Talkgroup> & { number: number }, mo
 const closeFile = (f: TalkgroupFile) => f.lines.join("\n") + "\n";
 
 /**
+ * Walk `f`'s data rows (padding each to its column count, so a column
+ * `ensureColumn` just added stays aligned everywhere), calling `mutate(row,
+ * match)` on every one — `match` true for the row whose Decimal is `tg`, if
+ * any. Returns whether that row was found.
+ */
+function forRow(f: TalkgroupFile, tg: number, mutate: (row: string[], match: boolean) => void): boolean {
+  const cell = cellIn(f.delim);
+  let found = false;
+  for (let i = f.hi + 1; i < f.lines.length; i++) {
+    if (!isData(f.lines[i])) continue;
+    const row = splitCsvLine(f.lines[i], f.delim);
+    while (row.length < f.cols.length) row.push("");
+    const match = Number.parseInt(row[0], 10) === tg;
+    found = found || match;
+    mutate(row, match);
+    f.lines[i] = row.map(cell).join(f.delim);
+  }
+  return found;
+}
+
+/**
  * The talkgroup file with talkgroup `tg` marked ignored (never recorded) or
  * not, in its Ignore column — added when the file has none (a headerless,
  * legacy file is given its header). Only that cell changes; a talkgroup not
@@ -346,21 +367,39 @@ export function withIgnore(csv: string, tg: number, ignore: boolean, alphaTag = 
   const f = openFile(csv);
   const ic = ensureColumn(f, "Ignore");
   const pc = f.cols.indexOf("Priority");
-  const cell = cellIn(f.delim);
-  let found = false;
-  for (let i = f.hi + 1; i < f.lines.length; i++) {
-    if (!isData(f.lines[i])) continue;
-    const row = splitCsvLine(f.lines[i], f.delim);
-    while (row.length < f.cols.length) row.push("");
-    if (Number.parseInt(row[0], 10) === tg) {
-      found = true;
-      row[ic] = ignore ? "x" : "";
-      // Trunk Recorder's way of ignoring is a priority of −1: undo that too.
-      if (!ignore && pc >= 0 && Number.parseInt(row[pc], 10) < 0) row[pc] = "1";
-    }
-    f.lines[i] = row.map(cell).join(f.delim);
-  }
+  const found = forRow(f, tg, (row, match) => {
+    if (!match) return;
+    row[ic] = ignore ? "x" : "";
+    // Trunk Recorder's way of ignoring is a priority of −1: undo that too.
+    if (!ignore && pc >= 0 && Number.parseInt(row[pc], 10) < 0) row[pc] = "1";
+  });
   if (!found && ignore) f.lines.push(rowFor(f, { number: tg, alphaTag }, { Ignore: "x" }));
+  return closeFile(f);
+}
+
+/** The talkgroup file column each of {@link Talkgroup}'s editable text fields is. */
+const FIELD_COLUMN: Record<"alphaTag" | "description" | "tag" | "group", string> = {
+  alphaTag: "Alpha Tag",
+  description: "Description",
+  tag: "Tag",
+  group: "Category",
+};
+
+/**
+ * The talkgroup file with talkgroup `tg`'s given cells set — only the keys
+ * `patch` has change (a column is added when the file has none of it yet,
+ * as `withIgnore` does for Ignore). A talkgroup not yet in the file gets a
+ * row, named `alphaTag` when `patch` doesn't set one either. Comment lines,
+ * other columns and the delimiter stay as they are.
+ */
+export function withTalkgroupFields(csv: string, tg: number, patch: Partial<Pick<Talkgroup, "alphaTag" | "description" | "tag" | "group">>, alphaTag = ""): string {
+  const f = openFile(csv);
+  const touched = (Object.keys(patch) as (keyof typeof patch)[]).map((k) => [k, ensureColumn(f, FIELD_COLUMN[k])] as const);
+  const found = forRow(f, tg, (row, match) => {
+    if (!match) return;
+    for (const [k, i] of touched) row[i] = patch[k] ?? "";
+  });
+  if (!found) f.lines.push(rowFor(f, { number: tg, alphaTag: patch.alphaTag ?? alphaTag, description: patch.description, tag: patch.tag, group: patch.group }));
   return closeFile(f);
 }
 

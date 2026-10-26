@@ -68,8 +68,8 @@ import {
   usableHalfWidth,
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
-import { parseUnitsCsv, type UnitAliases } from "./units.ts";
-import { withIgnore } from "./talkgroups.ts";
+import { parseUnitsCsv, withUnitName, type UnitAliases } from "./units.ts";
+import { withIgnore, withTalkgroupFields, type Talkgroup } from "./talkgroups.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 import type { Bundle } from "./directoryImport.tsx";
 
@@ -334,6 +334,9 @@ transport.onConnection = (connected) => {
   // collects (events, files by system) starts over, an edit awaiting an
   // answer won't get one.
   saving = queued = false;
+  for (const t of tgSaving.values()) clearTimeout(t);
+  tgSaving.clear();
+  tgQueued.clear();
   set({ events: [], talkgroups: {}, units: {} });
 };
 transport.onAudio = onAudio;
@@ -367,7 +370,10 @@ function take(m: FromRecorder): void {
       configSaved(m.version, m.error);
       break;
     case "talkgroups":
-      set({ talkgroups: withFile(state.talkgroups, m.system, m.csv) });
+      // Our own echo: local state is already at least this new (maybe
+      // newer, if another edit queued meanwhile) — just take it as the ack.
+      if (tgSaving.has(m.system)) ackTalkgroups(m.system);
+      else set({ talkgroups: withFile(state.talkgroups, m.system, m.csv) });
       break;
     case "units":
       set({ units: { ...state.units, [m.system]: parseUnitsCsv(m.csv) } });
@@ -616,6 +622,24 @@ export function setTalkgroupIgnore(system: string, tg: number, ignore: boolean, 
   setTalkgroups(system, withIgnore(state.talkgroups[system] ?? "", tg, ignore, alphaTag));
 }
 
+/** Set talkgroup `tg` of system `system`'s Alpha Tag / Description / Tag /
+ * Category in its talkgroup file — only the keys `patch` has change. */
+export function setTalkgroupFields(system: string, tg: number, patch: Partial<Pick<Talkgroup, "alphaTag" | "description" | "tag" | "group">>, alphaTag = ""): void {
+  setTalkgroups(system, withTalkgroupFields(state.talkgroups[system] ?? "", tg, patch, alphaTag));
+}
+
+/** Set radio `unit`'s name on system `system` (trunked, or conventional when
+ * `conventional`) in its unit names file: added or updated as a literal
+ * row, ahead of every pattern. Saved with the config, like every other
+ * field `updateConfig` edits (so it's debounced and version-safe for free). */
+export function setUnitName(system: string, conventional: boolean, unit: number, name: string): void {
+  updateConfig((c) => {
+    const sys = (conventional ? c.conventional : c.systems).find((x) => x.shortName === system);
+    if (!sys) return;
+    sys.unitNames = { ...sys.unitNames, csv: withUnitName(sys.unitNames?.csv ?? "", unit, name) };
+  });
+}
+
 // ── talkgroup files ──────────────────────────────────────────────────────────
 
 /** `files` with system `system`'s now `csv` ("" for none). */
@@ -626,10 +650,39 @@ function withFile(files: Record<string, string>, system: string, csv: string): R
   return next;
 }
 
-/** System `system`'s talkgroup file is now `csv` ("": none): saved on the recorder at once. */
+/**
+ * A `setTalkgroups` sent and not acked yet, by system: a safety-net timer,
+ * since a failure comes back as a generic `error` with no system to match
+ * it to — so without this, a rejected edit would wedge the system's gate
+ * open forever. And whether another edit came in while one was in flight,
+ * to send once it's acked — so stacked edits to the same system are
+ * serialized instead of racing their own echoes.
+ */
+const tgSaving = new Map<string, ReturnType<typeof setTimeout>>();
+const tgQueued = new Set<string>();
+
+/** System `system`'s talkgroup file is now `csv` ("": none), kept locally at
+ * once; sent to the recorder once any edit already in flight for it is acked. */
 export function setTalkgroups(system: string, csv: string): void {
   set({ talkgroups: withFile(state.talkgroups, system, csv) });
-  transport.send({ type: "setTalkgroups", system, csv });
+  sendTalkgroups(system);
+}
+
+function sendTalkgroups(system: string): void {
+  if (tgSaving.has(system)) {
+    tgQueued.add(system);
+    return;
+  }
+  transport.send({ type: "setTalkgroups", system, csv: state.talkgroups[system] ?? "" });
+  tgSaving.set(system, setTimeout(() => ackTalkgroups(system), 10_000));
+}
+
+/** `system`'s edit is the recorder's now (its echo arrived, or the safety net fired). */
+function ackTalkgroups(system: string): void {
+  const t = tgSaving.get(system);
+  if (t) clearTimeout(t);
+  tgSaving.delete(system);
+  if (tgQueued.delete(system)) sendTalkgroups(system);
 }
 
 /**

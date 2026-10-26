@@ -42,6 +42,33 @@ export function unitNameCount(csv: string): number {
   return csv.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#") && l.includes(",")).length;
 }
 
+/**
+ * A unit names file (the pattern→name lines `unitName` reads) with a
+ * literal row for `id` set to `name`: updated in place if one already
+ * exists (its first column, trimmed, is exactly `id` — a real literal row,
+ * not merely a pattern that happens to match it today); otherwise added as
+ * a new line at the very top, unconditionally ahead of every existing
+ * pattern, so `unitName`'s first-match-wins always prefers a name just set
+ * here even over a broader pattern that also matches `id`. Comment lines
+ * and every other row stay as they are.
+ */
+export function withUnitName(csv: string, id: number, name: string): string {
+  const key = String(id);
+  const lines = csv.split(/\r?\n/);
+  let found = false;
+  const next = lines.map((line) => {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) return line;
+    const [pat] = splitCsvLine(t);
+    if ((pat ?? "").trim() !== key) return line;
+    found = true;
+    return `${key},${name}`;
+  });
+  if (!found) next.unshift(`${key},${name}`);
+  while (next.length && !next[next.length - 1].trim()) next.pop();
+  return next.join("\n") + "\n";
+}
+
 export function parseUnitsCsv(text: string): UnitAliases {
   const out: UnitAliases = {};
   const when: Record<number, number> = {};
