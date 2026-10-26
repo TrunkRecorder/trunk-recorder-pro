@@ -304,6 +304,8 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         history: Mutex::new(VecDeque::new()),
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
+        sitecheck: Mutex::new(None),
+        sitecheck_last: Mutex::new(None),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: std::net::Ipv4Addr::LOCALHOST.into(),
         interfaces: crate::interfaces::Interfaces::new(None, 8080),
@@ -495,6 +497,25 @@ fn the_servers_messages() {
 
 /// protocol.ts declares the messages [`ToClient`] can be and the commands
 /// [`Command`] reads: no more, no fewer.
+/// A site check's snapshot, as browsers get it while it runs.
+#[test]
+fn a_site_checks_messages() {
+    let csv = "Site Dec,Site Hex,Description,County Name,Lat,Lon,Range,Frequencies\n001,1,\"Near\",\"Dutchess\",41.70,-73.92,20,464.937500c\n002,2,\"Far\",\"Erie\",42.88,-78.87,20,463.100000c\n";
+    let b = json!({ "csv": csv, "name": "trs_sites_7363.csv", "systemType": "dmr", "radio": { "kind": "rtlsdr", "id": "00000009" }, "forS": 3600, "zip": "12601", "withinMiles": 40 });
+    let (plan, name) = crate::sitecheck::plan_from(&b, &[]).unwrap();
+    let mut msgs = vec![crate::sitecheck::idle().to_value()];
+    for (state, err) in [("running", None), ("error", Some("the radio stopped sending samples"))] {
+        let at = crate::sitecheck::At { pass: 0, window: 1, windows: 1, done_windows: 0, listened_s: 30.0, keep_up: Some(0.4) };
+        let snap = crate::sitecheck::snapshot(&plan, &name, state, &Default::default(), Some(&at), 12.0, err, &[]);
+        msgs.push(ToClient::SiteCheck(trunk_app::protocol::body(snap)).to_value());
+    }
+    msgs.push(ToClient::SiteCheckSpectrum { center_hz: 464e6, rate_hz: 2.4e6, bins: vec![-80.0; 512] }.to_value());
+    check_all("FromRecorder", &msgs);
+    // The recorder's own radio is refused.
+    let mine = vec![crate::sitecheck::RadioPick { kind: "rtlsdr".into(), id: "00000009".into(), ..Default::default() }.source(851e6).unwrap().0];
+    assert!(crate::sitecheck::plan_from(&b, &mine).err().unwrap().contains("source 1"));
+}
+
 #[test]
 fn every_message_type_is_declared() {
     let names = |v: &[&str]| v.iter().map(|n| n.to_string()).collect::<BTreeSet<String>>();
@@ -534,6 +555,8 @@ fn messages_to_the_recorder() {
         json!({ "type": "store", "kind": "interface" }),
         json!({ "type": "removeInterface", "id": "trunkamp" }),
         json!({ "type": "setTalkgroups", "system": "dcfd", "csv": "Decimal,Alpha Tag\n101,FD Disp\n" }),
+        json!({ "type": "siteCheckStart", "csv": "Site Dec,Description,Frequencies\n1,\"A\",464.9375c\n", "name": "trs_sites_7363.csv", "systemType": "dmr", "radio": { "kind": "rtlsdr", "id": "00000002" }, "forS": 43200, "zip": "12601", "withinMiles": 40 }),
+        json!({ "type": "siteCheckStop" }),
     ];
     check_all("ToRecorder", &msgs);
     // And the recorder reads each as the docs give it.

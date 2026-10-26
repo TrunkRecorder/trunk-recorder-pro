@@ -111,6 +111,7 @@ mod plugins;
 mod profile;
 mod radio;
 mod runtime;
+mod sitecheck;
 mod sdr;
 mod server;
 mod spool;
@@ -241,6 +242,14 @@ usage:
       control channels, then listen to the best one and report its IDs,
       alternates, neighbours, voice channels and the dongle's frequency
       correction (ppm). --no-gain: don't search for the best gain.
+  trunk-pro check-sites <trs_sites_NNNN.csv> --type p25|smartnet|edacs|dmr|nxdn (--rtl S | --airspy S | --bladerf S | --soapy ARGS | --usrp ARGS | --radio JSON) [--rate Hz] [--gain dB] [--ppm 0] [--seconds S] [--out F] [--report F]
+  trunk-pro check-sites <trs_sites_NNNN.csv> --type … --capture <capture> --center Hz --rate Hz
+      Which sites of a RadioReference sites export can be heard here, with a
+      spare radio (one the recorder isn't using: it keeps recording). Each
+      site's control channels (DMR: every repeater) are listened to for
+      --seconds (4; DMR 120), a window of the radio's band at a time. Writes
+      the export without the sites nothing was heard of (<name>-checked.csv)
+      and what each frequency showed (<name>-report.csv).
   trunk-pro rolloff [--serial S] --center Hz [--rate Hz] [--gain dB] [--full]
   trunk-pro rolloff <capture> --center Hz --rate Hz [--format cu8|cs16|cf32] [--full]
       How far in from each edge of the band the noise floor sags, and the
@@ -295,6 +304,7 @@ fn main() {
         Some("devices") => devices(&Args::parse(&argv[1..])),
         Some("capture") => capture(&Args::parse(&argv[1..])),
         Some("survey") => survey::cli(&Args::parse(&argv[1..])),
+        Some("check-sites") => sitecheck::cli(&Args::parse(&argv[1..])),
         Some("rolloff") => profile::cli(&Args::parse(&argv[1..])),
         Some("plugin") => plugins::cli::run(&Args::parse(&argv[1..])),
         Some("interface") => interfaces::cli::run(&Args::parse(&argv[1..])),
@@ -887,6 +897,8 @@ fn serve(a: &Args) {
         history: Mutex::new(VecDeque::new()),
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
+        sitecheck: Mutex::new(None),
+        sitecheck_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: addr.ip(),
         interfaces: interfaces::Interfaces::new(dev, addr.port()),

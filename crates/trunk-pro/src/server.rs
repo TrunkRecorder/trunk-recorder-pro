@@ -569,6 +569,7 @@ pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value) -> 
         m.push(ToClient::Devices { devices });
         // Key containers waiting for a password, and which are unlocked.
         m.push(crate::unlock::status(ctx));
+        m.push(ctx.sitecheck_last.lock().unwrap().clone().unwrap_or_else(crate::sitecheck::idle));
     }
     m
 }
@@ -948,6 +949,15 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 Ok(v) => ToClient::CallSignResult { id, results: v["results"].as_array().cloned().unwrap_or_default(), error: None },
                 Err(e) => ToClient::CallSignResult { id, results: vec![], error: Some(e) },
             })
+        }
+        Command::SiteCheckStart(b) => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::sitecheck::start(ctx2, Value::Object(b))).await.ok().and_then(Result::err).map(ToClient::error)
+        }
+        Command::SiteCheckStop => {
+            let ctx2 = ctx.clone();
+            let _ = tokio::task::spawn_blocking(move || crate::sitecheck::stop(&ctx2)).await;
+            None
         }
         Command::SurveyStop => {
             let ctx2 = ctx.clone();

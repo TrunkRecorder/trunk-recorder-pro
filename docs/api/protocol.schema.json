@@ -2350,6 +2350,216 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "state": {
+              "type": "string",
+              "const": "idle"
+            },
+            "type": {
+              "type": "string",
+              "const": "siteCheck"
+            }
+          },
+          "required": [
+            "state",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "running",
+                "done",
+                "stopped",
+                "error"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "description": "The sites file's name."
+            },
+            "systemType": {
+              "$ref": "#/definitions/SiteCheckSystemType"
+            },
+            "radio": {
+              "type": "string"
+            },
+            "gain": {
+              "type": "string"
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "listenS": {
+              "type": "number"
+            },
+            "forS": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "summary": {
+              "type": "string"
+            },
+            "pass": {
+              "type": "number",
+              "description": "The pass round the windows (from 0), and the window last done (from 1) of `windows`."
+            },
+            "window": {
+              "type": "number"
+            },
+            "windows": {
+              "type": "number"
+            },
+            "elapsedS": {
+              "type": "number"
+            },
+            "totalS": {
+              "type": "number"
+            },
+            "progress": {
+              "type": "number",
+              "description": "How far along, 0–1 (one pass: by the air listened to; a long run: by the clock), and about how long is left, s."
+            },
+            "leftS": {
+              "type": "number"
+            },
+            "keepUp": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "The share of the radio's samples the computer keeps up with in this window (null: too early to say)."
+            },
+            "behind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why it can't keep up, and what helps, while it can't."
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Something about how it was set up (the rate lowered to what's enough)."
+            },
+            "cores": {
+              "type": "number",
+              "description": "The CPU cores a window is listened with."
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "freqs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SiteCheckFreq"
+              }
+            },
+            "sites": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SiteCheckSite"
+              }
+            },
+            "kept": {
+              "type": "number"
+            },
+            "dropped": {
+              "type": "number"
+            },
+            "checkedCsv": {
+              "type": "string",
+              "description": "The export without the dropped sites, and the report: as of now."
+            },
+            "reportCsv": {
+              "type": "string"
+            },
+            "savedTo": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Where they're saved on the recorder's computer."
+            },
+            "type": {
+              "type": "string",
+              "const": "siteCheck"
+            }
+          },
+          "required": [
+            "behind",
+            "checkedCsv",
+            "cores",
+            "dropped",
+            "elapsedS",
+            "error",
+            "forS",
+            "freqs",
+            "gain",
+            "keepUp",
+            "kept",
+            "leftS",
+            "listenS",
+            "name",
+            "note",
+            "pass",
+            "progress",
+            "radio",
+            "rateHz",
+            "reportCsv",
+            "savedTo",
+            "sites",
+            "state",
+            "summary",
+            "systemType",
+            "totalS",
+            "type",
+            "window",
+            "windows"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "siteCheckSpectrum"
+            },
+            "centerHz": {
+              "type": "number"
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "bins": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "centerHz",
+            "rateHz",
+            "bins"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
             "source": {
               "type": "number"
             },
@@ -5823,6 +6033,177 @@
       "additionalProperties": false,
       "description": "One site of a system: a control channel to follow, and how."
     },
+    "SiteCheckFreq": {
+      "type": "object",
+      "properties": {
+        "freqHz": {
+          "type": "number"
+        },
+        "listenedS": {
+          "type": "number"
+        },
+        "on": {
+          "type": "number",
+          "description": "Share of the time its carrier was up, 0–1."
+        },
+        "peakDb": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "heard": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quality": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SiteDecodeQuality"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How well it decoded: green, yellow, red in the table (null: not listened to yet)."
+        },
+        "decodedShare": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The share of its frames that decoded, 0–1 (P25 and SmartNet; null otherwise)."
+        }
+      },
+      "required": [
+        "freqHz",
+        "listenedS",
+        "on",
+        "peakDb",
+        "heard",
+        "quality",
+        "decodedShare"
+      ],
+      "additionalProperties": false,
+      "description": "What a site check heard on one frequency so far (`heard` null: not listened to yet)."
+    },
+    "SiteCheckRadio": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "rtlsdr",
+            "airspy",
+            "bladerf",
+            "soapy",
+            "usrp"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "description": "Its serial (RTL-SDR, Airspy, bladeRF) or device arguments (SoapySDR, USRP); \"\" = the first found."
+        },
+        "rateHz": {
+          "type": "number"
+        },
+        "gain": {
+          "type": "number",
+          "description": "dB (Airspy: its linearity step, 0–21); absent: AGC or the driver's default."
+        },
+        "ppm": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false,
+      "description": "The spare radio a site check uses: not one of the recorder's sources."
+    },
+    "SiteCheckSite": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/definitions/SiteVerdict"
+        },
+        "keep": {
+          "type": "boolean",
+          "description": "Kept in the checked file."
+        },
+        "why": {
+          "type": "string"
+        },
+        "miles": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "From where the user said they are (null: no place given, or the row has none)."
+        },
+        "peakDb": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Its strongest signal: the highest peak of its frequencies, dB over the band's noise floor (null: none listened to yet)."
+        },
+        "quality": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SiteDecodeQuality"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its best decode among them (null: none listened to yet)."
+        },
+        "freqsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The frequencies listened to for it."
+        }
+      },
+      "required": [
+        "label",
+        "verdict",
+        "keep",
+        "why",
+        "miles",
+        "peakDb",
+        "quality",
+        "freqsHz"
+      ],
+      "additionalProperties": false
+    },
+    "SiteCheckSystemType": {
+      "type": "string",
+      "enum": [
+        "p25",
+        "smartnet",
+        "edacs",
+        "dmr",
+        "nxdn"
+      ]
+    },
+    "SiteDecodeQuality": {
+      "type": "string",
+      "enum": [
+        "good",
+        "marginal",
+        "poor"
+      ],
+      "description": "How well something decoded: cleanly on a good signal; with errors, weakly or only partly; not at all or mostly failing."
+    },
     "SiteDetail": {
       "type": "object",
       "properties": {
@@ -6048,6 +6429,18 @@
       ],
       "additionalProperties": false,
       "description": "One running site, as its control channel describes it. `index` is what calls carry as `site`."
+    },
+    "SiteVerdict": {
+      "type": "string",
+      "enum": [
+        "active",
+        "other site",
+        "unconfirmed",
+        "inactive",
+        "not checked",
+        "out of range"
+      ],
+      "description": "A site's verdict: heard as itself; decoded as a neighbour; something there but not confirmed; nothing; not listened to; farther than asked."
     },
     "SmartnetBandplan": {
       "type": "object",
@@ -7913,6 +8306,63 @@
             "type": {
               "type": "string",
               "const": "surveyStop"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "siteCheckStart"
+            },
+            "csv": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "systemType": {
+              "$ref": "#/definitions/SiteCheckSystemType"
+            },
+            "radio": {
+              "$ref": "#/definitions/SiteCheckRadio"
+            },
+            "seconds": {
+              "type": "number"
+            },
+            "forS": {
+              "type": "number"
+            },
+            "zip": {
+              "type": "string"
+            },
+            "near": {
+              "type": "string"
+            },
+            "withinMiles": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "csv",
+            "name",
+            "systemType",
+            "radio"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "siteCheckStop"
             }
           },
           "required": [

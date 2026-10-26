@@ -99,6 +99,7 @@ code, .mono { font-family: var(--mono); font-size: 0.95em; }
 .banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--panel); margin-bottom: 12px; }
 .banner.bad { border-left-color: var(--bad); }
 .banner.subtle { color: var(--muted); border-left-color: var(--line); }
+.banner.warn { border-left-color: var(--warn); }
 
 main { display: flex; flex-direction: column; gap: 16px; }
 .columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
@@ -1408,3 +1409,21 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .plugin-grid .field input, .plugin-grid .field select, .plugin-grid .field textarea { width: 100%; }
 .plugin-panel-hint { margin: 0 0 10px; }
 .plugin-page .plugin-log { max-height: 360px; overflow: auto; }
+
+/* Check sites: a signal's strength, a bar and its figure. */
+.strength { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.strength-bar { display: inline-block; width: 48px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--muted) 18%, transparent); overflow: hidden; }
+.strength-bar > span { display: block; height: 100%; background: var(--muted); }
+.strength.ok .strength-bar > span { background: var(--ok); }
+.strength.warn .strength-bar > span { background: var(--warn); }
+.strength.bad .strength-bar > span { background: var(--bad); }
+/* Check sites: rows coloured by how well they decoded. */
+.site-check tr.q-good > td { background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.site-check tr.q-marginal > td { background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.site-check tr.q-poor > td { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.site-check tr.q-good > td:first-child { box-shadow: inset 3px 0 0 var(--ok); }
+.site-check tr.q-marginal > td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+.site-check tr.q-poor > td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
+.q-good-text { color: var(--ok); font-weight: 600; }
+.q-marginal-text { color: var(--warn); font-weight: 600; }
+.q-poor-text { color: var(--bad); font-weight: 600; }

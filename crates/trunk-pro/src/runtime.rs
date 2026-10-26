@@ -100,6 +100,10 @@ pub struct Ctx {
     pub quit: tokio::sync::Notify,
     /// The survey's latest snapshot, for browsers that connect meanwhile.
     pub survey_last: Mutex<Option<ToClient>>,
+    /// The site check running beside the recorder, if one is ([`crate::sitecheck`]).
+    pub sitecheck: Mutex<Option<crate::sitecheck::Job>>,
+    /// Its latest snapshot, for browsers that connect meanwhile.
+    pub sitecheck_last: Mutex<Option<ToClient>>,
     pub plugins: plugins::manage::Plugins,
     /// The address every interface listens on (`--bind`, else `server.bind`).
     pub bind: std::net::IpAddr,

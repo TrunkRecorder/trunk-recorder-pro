@@ -74,6 +74,7 @@ import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccL
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
+import { SiteCheckPanel } from "./SiteCheck.tsx";
 import { FccTable, IdentifyFcc } from "./Identify.tsx";
 import { ShareSystem } from "./ShareSystem.tsx";
 import { siteFrequencies, type FccTarget } from "./controller.ts";
@@ -3014,6 +3015,7 @@ export function Setup() {
             {c.systems.length === 0 && <p className="set-empty">No trunked systems yet. Add one, import a Trunk Recorder config, or find one on the air below.</p>}
           </Section>
           <SurveyPanel c={c} />
+          <SiteCheckPanel c={c} />
         </>
       )}
 

@@ -5,6 +5,22 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Check sites** (Setup → Systems, and `trunk-pro check-sites`): which sites of a system can be
+  heard from here, from its RadioReference sites export (`trs_sites_NNNN.csv`), on a spare radio
+  while the recorder keeps recording with the others. Each site's control channels are listened
+  to a window of the radio's band at a time (a wide radio: all at once) with the survey's
+  receivers for the system's kind and a carrier meter, and each site is judged: **active**,
+  **other site** (P25: another NAC or site number), **unconfirmed** (a carrier that didn't decode,
+  another kind of DMR than the system, or a frequency other sites share), **inactive**, **out of
+  range** (farther than a ZIP code's radius, built in from the Census Bureau's ZIP Code
+  Tabulation Areas) or **not checked**. A long run (`--for 12h`) goes round the windows again and
+  again. The page shows a waterfall, progress every second with how well the computer keeps up,
+  each site's signal strength and rows green, yellow or red by how well it decoded, and offers
+  the export without the dropped sites and a report of what each frequency showed (also saved
+  in `site-checks/` beside the config). A window is listened to on several cores, and a bladeRF's
+  or USRP's rate is lowered to the least that sees every frequency at once.
+  See [Check sites](docs/guides/check-sites.md).
+
 - **A switch for the network checks** (#37). The Platform page's Network card has a **Checks**
   switch (`monitor.networkChecks`, on by default): off, the recorder stops connecting to the
   internet check hosts every 15 s and asking the time server every 15 minutes, for a computer whose

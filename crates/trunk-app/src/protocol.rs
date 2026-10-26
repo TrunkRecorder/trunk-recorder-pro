@@ -81,6 +81,10 @@ pub enum ToClient {
     UnitAlias { system: String, unit: u32, alias: String },
     Heard { heard: Value },
     Survey(Body),
+    /// The site check running beside the recorder (`siteCheckStart`): how it's going, to control connections.
+    SiteCheck(Body),
+    /// The site check's radio's band now (dB per bin), a few times a second, for a waterfall.
+    SiteCheckSpectrum { center_hz: f64, rate_hz: f64, bins: Vec<f32> },
     SurveySpectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
     /// Answers `licenseQuery`, to its sender: the API's `results`, or why there are none.
     LicenseResult { id: u64, results: Vec<Value>, error: Option<String> },
@@ -165,7 +169,7 @@ impl ToClient {
     pub fn audience(&self) -> Audience {
         use ToClient::*;
         match self {
-            Plugins(_) | PluginRuntime { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } => Audience::Control,
+            Plugins(_) | PluginRuntime { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } | SiteCheck(_) | SiteCheckSpectrum { .. } => Audience::Control,
             _ => Audience::Everyone,
         }
     }
@@ -241,6 +245,10 @@ pub enum Command {
     SurveyListen { freq_hz: f64 },
     SurveyRescan,
     SurveyStop,
+    /// Check which sites of a RadioReference sites export are heard, on a spare
+    /// radio, beside the recording: answered with `siteCheck` as it goes.
+    SiteCheckStart(Body),
+    SiteCheckStop,
     /// Who is licensed on `signals` within `radius_m` of the location the
     /// user gave (sent to trunkrecorder.pro): answered with `licenseResult`.
     LicenseQuery { id: u64, lat: f64, lon: f64, radius_m: f64, signals: Vec<crate::licenses::Signal> },

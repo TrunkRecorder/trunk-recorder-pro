@@ -13,6 +13,7 @@ import type {
   PlatformInfo,
   RadioResult,
   ToRecorder,
+  SiteCheckState,
   HeardCode,
   AudioChunk,
   CallEntry,
@@ -110,6 +111,10 @@ export interface AppState {
   listenTalkgroup: number | null;
   /** The call playing live; `system` is its system's short name. */
   nowPlaying: { system: string; talkgroup: number; callId: number } | null;
+  /** The site check beside the recorder (Check sites), as it last reported it. */
+  siteCheck: SiteCheckState;
+  /** The site check's radio's band, for its waterfall (null: none yet). */
+  siteCheckSpectrum: Spectrum | null;
   /** The first-run survey, as the recorder last reported it. */
   survey: SurveyState;
   surveyBands: SurveyBand[];
@@ -203,6 +208,8 @@ let state: AppState = {
   listenSystem: null,
   listenTalkgroup: null,
   nowPlaying: null,
+  siteCheck: { state: "idle" },
+  siteCheckSpectrum: null,
   survey: { stage: "idle" },
   surveyBands: [],
   capabilities: [],
@@ -394,6 +401,12 @@ function take(m: FromRecorder): void {
       break;
     case "unitAlias":
       set({ units: { ...state.units, [m.system]: { ...state.units[m.system], [m.unit]: m.alias } } });
+      break;
+    case "siteCheck":
+      set({ siteCheck: m, ...(m.state === "idle" ? { siteCheckSpectrum: null } : {}) });
+      break;
+    case "siteCheckSpectrum":
+      set({ siteCheckSpectrum: { source: -1, centerHz: m.centerHz, rateHz: m.rateHz, bins: m.bins } });
       break;
     case "survey":
       set({ survey: m, ...(m.stage === "idle" ? { surveySpectrum: null } : {}) });
@@ -1100,6 +1113,18 @@ export function dismissTodo(item: ImportTodo): void {
 /** List a folder on the recorder's computer ("" = the home folder); the answer lands in `dir`. */
 export function listDir(path: string): void {
   transport.send({ type: "listDir", path });
+}
+
+// ── site check ───────────────────────────────────────────────────────────────
+
+/** Check which sites of a RadioReference sites export are heard, on a spare radio, beside the recording. */
+export function startSiteCheck(req: Omit<Extract<ToRecorder, { type: "siteCheckStart" }>, "type">): void {
+  set({ error: null, siteCheckSpectrum: null });
+  transport.send({ type: "siteCheckStart", ...req });
+}
+/** Stop it: what it heard is kept and saved. */
+export function stopSiteCheck(): void {
+  transport.send({ type: "siteCheckStop" });
 }
 
 // ── first-run survey ─────────────────────────────────────────────────────────

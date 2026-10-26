@@ -60,6 +60,8 @@ LimeSDR...).
   sites, licenses and named talkgroups, into your recorder.
 - [Find my system](guides/find-my-system.md): let the recorder scan for control channels and set
   itself up
+- [Check sites](guides/check-sites.md): which sites of a RadioReference sites list can be heard here, with a
+  spare radio while the recorder keeps recording; writes the list without the ones heard nothing of.
 
 ### Radio systems
 

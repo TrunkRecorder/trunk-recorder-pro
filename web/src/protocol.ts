@@ -921,6 +921,99 @@ export type SourceProfile =
       suggestedGuardHz: number;
     };
 
+// ── site check (crates/trunk-pro/src/sitecheck.rs) ───────────────────────────
+
+export type SiteCheckSystemType = "p25" | "smartnet" | "edacs" | "dmr" | "nxdn";
+/** A site's verdict: heard as itself; decoded as a neighbour; something there but not confirmed; nothing; not listened to; farther than asked. */
+export type SiteVerdict = "active" | "other site" | "unconfirmed" | "inactive" | "not checked" | "out of range";
+
+/** The spare radio a site check uses: not one of the recorder's sources. */
+export interface SiteCheckRadio {
+  kind: "rtlsdr" | "airspy" | "bladerf" | "soapy" | "usrp";
+  /** Its serial (RTL-SDR, Airspy, bladeRF) or device arguments (SoapySDR, USRP); "" = the first found. */
+  id: string;
+  rateHz?: number;
+  /** dB (Airspy: its linearity step, 0–21); absent: AGC or the driver's default. */
+  gain?: number;
+  ppm?: number;
+}
+
+/** What a site check heard on one frequency so far (`heard` null: not listened to yet). */
+export interface SiteCheckFreq {
+  freqHz: number;
+  listenedS: number;
+  /** Share of the time its carrier was up, 0–1. */
+  on: number;
+  peakDb: number | null;
+  heard: string | null;
+  /** How well it decoded: green, yellow, red in the table (null: not listened to yet). */
+  quality: SiteDecodeQuality | null;
+  /** The share of its frames that decoded, 0–1 (P25 and SmartNet; null otherwise). */
+  decodedShare: number | null;
+}
+
+/** How well something decoded: cleanly on a good signal; with errors, weakly or only partly; not at all or mostly failing. */
+export type SiteDecodeQuality = "good" | "marginal" | "poor";
+
+export interface SiteCheckSite {
+  label: string;
+  verdict: SiteVerdict;
+  /** Kept in the checked file. */
+  keep: boolean;
+  why: string;
+  /** From where the user said they are (null: no place given, or the row has none). */
+  miles: number | null;
+  /** Its strongest signal: the highest peak of its frequencies, dB over the band's noise floor (null: none listened to yet). */
+  peakDb: number | null;
+  /** Its best decode among them (null: none listened to yet). */
+  quality: SiteDecodeQuality | null;
+  /** The frequencies listened to for it. */
+  freqsHz: number[];
+}
+
+/** The site check beside the recorder: "idle" until one runs. */
+export type SiteCheckState =
+  | { state: "idle" }
+  | {
+      state: "running" | "done" | "stopped" | "error";
+      /** The sites file's name. */
+      name: string;
+      systemType: SiteCheckSystemType;
+      radio: string;
+      gain: string;
+      rateHz: number;
+      listenS: number;
+      forS: number | null;
+      summary: string;
+      /** The pass round the windows (from 0), and the window last done (from 1) of `windows`. */
+      pass: number;
+      window: number;
+      windows: number;
+      elapsedS: number;
+      totalS: number;
+      /** How far along, 0–1 (one pass: by the air listened to; a long run: by the clock), and about how long is left, s. */
+      progress: number;
+      leftS: number;
+      /** The share of the radio's samples the computer keeps up with in this window (null: too early to say). */
+      keepUp: number | null;
+      /** Why it can't keep up, and what helps, while it can't. */
+      behind: string | null;
+      /** Something about how it was set up (the rate lowered to what's enough). */
+      note: string | null;
+      /** The CPU cores a window is listened with. */
+      cores: number;
+      error: string | null;
+      freqs: SiteCheckFreq[];
+      sites: SiteCheckSite[];
+      kept: number;
+      dropped: number;
+      /** The export without the dropped sites, and the report: as of now. */
+      checkedCsv: string;
+      reportCsv: string;
+      /** Where they're saved on the recorder's computer. */
+      savedTo: string[];
+    };
+
 // ── first-run survey (crates/trunk-app/src/survey.rs) ────────────────────────
 
 /** A band the survey can scan. */
@@ -1687,7 +1780,7 @@ export type FromRecorder =
    * The last message of a connection's greeting. Every message before it said
    * how the recorder is now, as ordinary messages (state, config, talkgroups,
    * units, heard, history, radios, survey, monitorEvent for each recent event,
-   * host; with control access also devices, keys, plugins and interfaces): the
+   * host; with control access also devices, keys, siteCheck, plugins and interfaces): the
    * interface is caught up. Wait for it before treating what's missing as
    * missing (a system with no talkgroups message has no talkgroup file).
    */
@@ -1727,6 +1820,10 @@ export type FromRecorder =
   | { type: "unitAlias"; system: string; unit: number; alias: string }
   | { type: "heard"; heard: Record<string, HeardCode[]> }
   | ({ type: "survey" } & SurveyState)
+  /** The site check beside the recorder, as it goes (control access). */
+  | ({ type: "siteCheck" } & SiteCheckState)
+  /** The site check's radio's band now (dB per bin), a few times a second (control access). */
+  | { type: "siteCheckSpectrum"; centerHz: number; rateHz: number; bins: number[] }
   | ({ type: "surveySpectrum" } & Spectrum)
   /** Answers licenseQuery: the licenses found on each frequency, or why there are none. */
   | { type: "licenseResult"; id: number; results: LicenseResultRow[]; error: string | null }
@@ -1795,6 +1892,21 @@ export type ToRecorder =
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
   | { type: "surveyStop" }
+  /** Check which sites of a RadioReference sites export (`csv`) are heard, on a spare radio, beside the recording; answered with siteCheck as it goes. `zip` or `near` ("lat,lon") with `withinMiles` leaves out the far sites; `forS` keeps going round them that long. */
+  | {
+      type: "siteCheckStart";
+      csv: string;
+      name: string;
+      systemType: SiteCheckSystemType;
+      radio: SiteCheckRadio;
+      seconds?: number;
+      forS?: number;
+      zip?: string;
+      near?: string;
+      withinMiles?: number;
+    }
+  /** Stop the site check: it keeps and saves what it heard. */
+  | { type: "siteCheckStop" }
   /** Who is licensed on these frequencies within `radiusM` of (lat, lon): sent to trunkrecorder.pro; answered with licenseResult. */
   /** Who holds these call signs (heard on the air): sent to trunkrecorder.pro, no location; answered with callSignResult. */
   | { type: "callSignQuery"; id: number; callSigns: string[] }

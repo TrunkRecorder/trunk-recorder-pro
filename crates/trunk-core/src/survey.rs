@@ -529,8 +529,8 @@ fn bank_labels(cfg: &BankConfig) -> Vec<&'static str> {
     v
 }
 
-struct Probe {
-    peak: Peak,
+pub(crate) struct Probe {
+    pub(crate) peak: Peak,
     head: HeadId,
     bank: Bank,
     est: FreqEst,
@@ -541,6 +541,21 @@ struct Probe {
     dmr_samples: u64,
     /// The NXDN side: a receiver per rate.
     nxdn: [NxdnProbe; 2],
+    /// Which receivers run (the survey: all; a site check: its system's kind's).
+    pub(crate) runs: Receivers,
+}
+
+/// Which of a probe's receivers run: each costs CPU on every frequency listened to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Receivers {
+    pub(crate) p25: bool,
+    pub(crate) smartnet: bool,
+    pub(crate) dmr: bool,
+    pub(crate) nxdn: bool,
+}
+
+impl Receivers {
+    pub(crate) const ALL: Receivers = Receivers { p25: true, smartnet: true, dmr: true, nxdn: true };
 }
 
 /// An NXDN receiver and framer at one rate: frames with a valid LICH, CRC-valid CACs, the RAN and the site.
@@ -709,12 +724,8 @@ impl HopScan {
             if peaks.is_empty() {
                 return Some(vec![]);
             }
-            let rate = self.chz.output_rate();
             for p in peaks {
-                let (head, _, _) = self.chz.add_head(p.offset_hz, CUTOFF_HZ, 0.0);
-                let dmr = crate::dmr::Site::new(&[self.center + p.offset_hz], rate, Default::default());
-                let nxdn = [NxdnProbe::new(crate::nxdn::Rate::N48, rate), NxdnProbe::new(crate::nxdn::Rate::N96, rate)];
-                self.probes.push(Probe { peak: p, head, bank: Bank::new(rate, PROBE_BANK), est: FreqEst::default(), dec: Decode::default(), sn: SnRx::new(rate), dmr, dmr_samples: 0, nxdn });
+                self.probes.push(Probe::new(&mut self.chz, self.center, p));
             }
             self.decode_from = Some(self.blocks);
             return None;
@@ -722,128 +733,157 @@ impl HopScan {
         let rate = self.chz.output_rate();
         let done = self.blocks - from >= self.decode_blocks;
         for p in &mut self.probes {
-            let iq = self.chz.output(p.head).unwrap_or(&[]);
-            p.est.push(iq);
-            p.sn.push(iq, |_, _| {});
-            let mut dm = Vec::new();
-            p.dmr.push(0, iq, 0.0, rate, &mut dm);
-            p.dmr_samples += iq.len() as u64;
-            for n in p.nxdn.iter_mut() {
-                n.push(iq);
-            }
-            self.groups.clear();
-            p.bank.push(iq, &mut self.groups);
-            if done {
-                p.bank.flush(&mut self.groups);
-            }
-            for g in &self.groups {
-                self.msgs.clear();
-                p.dec.group(g, best_frame(g).sample / rate, &mut self.msgs);
-            }
+            p.feed(&self.chz, rate, &mut self.groups, &mut self.msgs, done);
         }
         if !done {
             return None;
         }
+        Some(self.probes.iter().map(|p| p.candidate(self.center, self.band, rate)).collect())
+    }
+}
+
+impl Probe {
+    /// A probe of the carrier `peak.offset_hz` from `center`: a head on `chz` and every receiver.
+    pub(crate) fn new(chz: &mut Channelizer, center: f64, peak: Peak) -> Self {
+        let rate = chz.output_rate();
+        let (head, _, _) = chz.add_head(peak.offset_hz, CUTOFF_HZ, 0.0);
+        let dmr = crate::dmr::Site::new(&[center + peak.offset_hz], rate, Default::default());
+        let nxdn = [NxdnProbe::new(crate::nxdn::Rate::N48, rate), NxdnProbe::new(crate::nxdn::Rate::N96, rate)];
+        Probe { peak, head, bank: Bank::new(rate, PROBE_BANK), est: FreqEst::default(), dec: Decode::default(), sn: SnRx::new(rate), dmr, dmr_samples: 0, nxdn, runs: Receivers::ALL }
+    }
+
+    /// The head's samples of the block `chz` just ran, through every receiver
+    /// (`flush`: the last block, so the P25 receivers give up what they hold).
+    pub(crate) fn feed(&mut self, chz: &Channelizer, rate: f64, groups: &mut Vec<Group>, msgs: &mut Vec<Message>, flush: bool) {
+        let p = self;
+        let iq = chz.output(p.head).unwrap_or(&[]);
+        let r = p.runs;
+        if r.p25 || r.smartnet {
+            p.est.push(iq);
+        }
+        if r.smartnet {
+            p.sn.push(iq, |_, _| {});
+        }
+        if r.dmr {
+            let mut dm = Vec::new();
+            p.dmr.push(0, iq, 0.0, rate, &mut dm);
+            p.dmr_samples += iq.len() as u64;
+        }
+        if r.nxdn {
+            for n in p.nxdn.iter_mut() {
+                n.push(iq);
+            }
+        }
+        groups.clear();
+        if !r.p25 {
+            return;
+        }
+        p.bank.push(iq, groups);
+        if flush {
+            p.bank.flush(groups);
+        }
+        for g in groups.iter() {
+            msgs.clear();
+            p.dec.group(g, best_frame(g).sample / rate, msgs);
+        }
+    }
+
+    /// What the receivers made of it.
+    pub(crate) fn candidate(&self, center: f64, band: &'static str, rate: f64) -> Candidate {
         let labels = bank_labels(&PROBE_BANK);
-        Some(
-            self.probes
-                .iter()
-                .map(|p| {
-                    // DMR: a continuous carrier frames ~33 bursts a second, most with a sync.
-                    let dmr_syncs = p.dmr.syncs(0);
-                    // NXDN: the rate whose receiver framed more (a 9600 signal
-                    // frames as noise at 2400 and the other way round).
-                    let nx = p.nxdn.iter().max_by_key(|n| (n.cac, n.lich)).unwrap();
-                    let kind = if p.dec.good >= 2 {
-                        Kind::Control
-                    } else if p.sn.framer.good >= 3 {
-                        Kind::SmartNet
-                    } else if p.dmr.variant.is_some() && dmr_syncs >= 6 {
-                        Kind::DmrControl
-                    } else if nx.cac >= 2 {
-                        Kind::NxdnControl
-                    } else if p.dec.frames >= 3 {
-                        Kind::P25
-                    } else if dmr_syncs >= 6 {
-                        Kind::Dmr
-                    } else if nx.lich >= 4 {
-                        Kind::Nxdn
-                    } else {
-                        Kind::Other
-                    };
-                    if matches!(kind, Kind::Nxdn | Kind::NxdnControl) {
-                        return Candidate {
-                            freq_hz: self.center + p.peak.offset_hz,
-                            band: self.band,
-                            snr_db: p.peak.snr_db,
-                            width_hz: p.peak.width_hz,
-                            kind,
-                            frames: nx.lich,
-                            good: nx.cac,
-                            bad: 0,
-                            modulation: if nx.rate == crate::nxdn::Rate::N48 { "NXDN48" } else { "NXDN96" },
-                            identity: Identity::default(),
-                            dmr: None,
-                            nxdn: Some(nx.found()),
-                        };
-                    }
-                    if matches!(kind, Kind::Dmr | Kind::DmrControl) {
-                        let cc = p.dmr.color_code.or(p.dmr.carriers[0].chan.slots.iter().find_map(|s| s.color_code));
-                        return Candidate {
-                            freq_hz: self.center + p.peak.offset_hz,
-                            band: self.band,
-                            snr_db: p.peak.snr_db,
-                            width_hz: p.peak.width_hz,
-                            kind,
-                            frames: dmr_syncs as u32,
-                            good: 0,
-                            bad: 0,
-                            modulation: "4FSK",
-                            identity: Identity::default(),
-                            dmr: Some(DmrFound { variant: p.dmr.variant, color_code: cc }),
-                            nxdn: None,
-                        };
-                    }
-                    // A decoding signal's own carrier beats the spectrum's centroid.
-                    let fine = match kind {
-                        Kind::Other => 0.0,
-                        // The midpoint of the two tones.
-                        Kind::SmartNet => p.sn.rx.offset_hz() as f64,
-                        _ => p.est.hz(rate).filter(|r| r.abs() < 3000.0).unwrap_or(0.0),
-                    };
-                    if kind == Kind::SmartNet {
-                        return Candidate {
-                            freq_hz: self.center + p.peak.offset_hz + fine,
-                            band: self.band,
-                            snr_db: p.peak.snr_db,
-                            width_hz: p.peak.width_hz,
-                            kind,
-                            frames: p.sn.framer.good as u32,
-                            good: p.sn.framer.good as u32,
-                            bad: p.sn.framer.bad as u32,
-                            modulation: "2FSK",
-                            identity: Identity::default(),
-                            dmr: None,
-                            nxdn: None,
-                        };
-                    }
-                    Candidate {
-                        freq_hz: self.center + p.peak.offset_hz + fine,
-                        band: self.band,
-                        snr_db: p.peak.snr_db,
-                        width_hz: p.peak.width_hz,
-                        kind,
-                        frames: p.dec.frames,
-                        good: p.dec.good as u32,
-                        bad: p.dec.bad as u32,
-                        modulation: modulation(&labels, &p.bank.frames_per_rx()),
-                        identity: p.dec.id.clone(),
-                        dmr: None,
-                        nxdn: None,
-                    }
-                })
-                .collect(),
-        )
+        let p = self;
+        // DMR: a continuous carrier frames ~33 bursts a second, most with a sync.
+        let dmr_syncs = p.dmr.syncs(0);
+        // NXDN: the rate whose receiver framed more (a 9600 signal
+        // frames as noise at 2400 and the other way round).
+        let nx = p.nxdn.iter().max_by_key(|n| (n.cac, n.lich)).unwrap();
+        let kind = if p.dec.good >= 2 {
+            Kind::Control
+        } else if p.sn.framer.good >= 3 {
+            Kind::SmartNet
+        } else if p.dmr.variant.is_some() && dmr_syncs >= 6 {
+            Kind::DmrControl
+        } else if nx.cac >= 2 {
+            Kind::NxdnControl
+        } else if p.dec.frames >= 3 {
+            Kind::P25
+        } else if dmr_syncs >= 6 {
+            Kind::Dmr
+        } else if nx.lich >= 4 {
+            Kind::Nxdn
+        } else {
+            Kind::Other
+        };
+        if matches!(kind, Kind::Nxdn | Kind::NxdnControl) {
+            return Candidate {
+                freq_hz: center + p.peak.offset_hz,
+                band,
+                snr_db: p.peak.snr_db,
+                width_hz: p.peak.width_hz,
+                kind,
+                frames: nx.lich,
+                good: nx.cac,
+                bad: 0,
+                modulation: if nx.rate == crate::nxdn::Rate::N48 { "NXDN48" } else { "NXDN96" },
+                identity: Identity::default(),
+                dmr: None,
+                nxdn: Some(nx.found()),
+            };
+        }
+        if matches!(kind, Kind::Dmr | Kind::DmrControl) {
+            let cc = p.dmr.color_code.or(p.dmr.carriers[0].chan.slots.iter().find_map(|s| s.color_code));
+            return Candidate {
+                freq_hz: center + p.peak.offset_hz,
+                band,
+                snr_db: p.peak.snr_db,
+                width_hz: p.peak.width_hz,
+                kind,
+                frames: dmr_syncs as u32,
+                good: 0,
+                bad: 0,
+                modulation: "4FSK",
+                identity: Identity::default(),
+                dmr: Some(DmrFound { variant: p.dmr.variant, color_code: cc }),
+                nxdn: None,
+            };
+        }
+        // A decoding signal's own carrier beats the spectrum's centroid.
+        let fine = match kind {
+            Kind::Other => 0.0,
+            // The midpoint of the two tones.
+            Kind::SmartNet => p.sn.rx.offset_hz() as f64,
+            _ => p.est.hz(rate).filter(|r| r.abs() < 3000.0).unwrap_or(0.0),
+        };
+        if kind == Kind::SmartNet {
+            return Candidate {
+                freq_hz: center + p.peak.offset_hz + fine,
+                band,
+                snr_db: p.peak.snr_db,
+                width_hz: p.peak.width_hz,
+                kind,
+                frames: p.sn.framer.good as u32,
+                good: p.sn.framer.good as u32,
+                bad: p.sn.framer.bad as u32,
+                modulation: "2FSK",
+                identity: Identity::default(),
+                dmr: None,
+                nxdn: None,
+            };
+        }
+        Candidate {
+            freq_hz: center + p.peak.offset_hz + fine,
+            band,
+            snr_db: p.peak.snr_db,
+            width_hz: p.peak.width_hz,
+            kind,
+            frames: p.dec.frames,
+            good: p.dec.good as u32,
+            bad: p.dec.bad as u32,
+            modulation: modulation(&labels, &p.bank.frames_per_rx()),
+            identity: p.dec.id.clone(),
+            dmr: None,
+            nxdn: None,
+        }
     }
 }
 
