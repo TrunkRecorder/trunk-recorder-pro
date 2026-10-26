@@ -50,7 +50,7 @@ For each system (the system's card, or its `plugins.rdioscanner` in `config.json
 |---|---|---|---|---|
 | `apiKey` | ✓ | | string | **API key.** A key from Rdio Scanner's administration page. A system without one isn't uploaded. |
 | `systemId` | ✓ | | integer | **System ID.** The system's ID in Rdio Scanner. Needed whenever the system has an API key. |
-| `talkgroupMode` | | from the lists | `"all"`, `"only"` or `"allBut"` | **Talkgroups.** Every talkgroup, only some, or all but some. See [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups). |
+| `talkgroupMode` | | `"all"` | `"all"`, `"only"` or `"allBut"` | **Talkgroups.** Every talkgroup, only some, or all but some. See [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups). |
 | `talkgroupAllow` | | (none) | list | **Only these.** With `"only"`: upload these and no others. |
 | `talkgroupDeny` | | (none) | list | **Except these.** With `"only"` or `"allBut"`: never upload these. |
 

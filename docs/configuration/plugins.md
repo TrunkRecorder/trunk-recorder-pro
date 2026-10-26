@@ -108,11 +108,8 @@ card:
 | **Only some** | `"only"` | The talkgroups in **Only these** (`talkgroupAllow`), less any in **Except these** (`talkgroupDeny`) |
 | **All but some** | `"allBut"` | Every talkgroup but those in **Except these** (`talkgroupDeny`) |
 
-A list the choice doesn't use is kept, hidden, for when it's chosen again. Settings saved before
-the menu (lists alone, no `talkgroupMode`) still apply as they did: a `talkgroupAllow` list is
-**Only some**, a `talkgroupDeny` list alone **All but some**. Until the menu is chosen, though, the
-form shows **Every talkgroup**, so the plugin's log warns (*dcfd's talkgroups are set in older
-settings (only 507*): they still apply…*). Choose the menu once to see the lists again.
+A list the choice doesn't use is kept, hidden, for when it's chosen again. With no
+`talkgroupMode`, the plugin takes every talkgroup, whatever the lists say.
 
 ```json
 "plugins": { "broadcastify": { "apiKey": "…", "systemId": 1234,

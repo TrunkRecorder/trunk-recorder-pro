@@ -106,9 +106,8 @@ pub fn check_talkgroup(entry: &str) -> Result<(), String> {
 }
 
 /// Which talkgroups a system's settings pick: a plugin's own menu and lists,
-/// for a `#[serde(flatten)]` field of its `SystemConfig`. The lists keep the
-/// names plugins have always stored them under (`talkgroupAllow`,
-/// `talkgroupDeny`), and read Trunk Recorder's (`broadcastifyAllow`, …).
+/// for a `#[serde(flatten)]` field of its `SystemConfig`, stored as
+/// `talkgroupMode`, `talkgroupAllow` and `talkgroupDeny`.
 ///
 /// ```
 /// # use trunk_recorder_plugin::filter::Talkgroups;
@@ -125,30 +124,17 @@ pub struct Talkgroups {
     /// Talkgroups
     ///
     /// Which of this system's talkgroups the plugin takes: every one, only some, or all but some.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub talkgroup_mode: Option<TalkgroupMode>,
+    pub talkgroup_mode: TalkgroupMode,
     /// Only these
     ///
     /// Numbers, ranges like 1000-1099, and patterns like 507* (* stands for any digits, ? for one).
-    #[serde(
-        alias = "broadcastifyAllow",
-        alias = "broadcastifyWhitelist",
-        alias = "talkgroupWhitelist",
-        deserialize_with = "patterns",
-        skip_serializing_if = "Vec::is_empty"
-    )]
+    #[serde(deserialize_with = "patterns", skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "sdk", schemars(with = "Vec<String>", extend("x-when" = {"talkgroupMode": "only"}, "x-talkgroups" = true)))]
     pub talkgroup_allow: Vec<String>,
     /// Except these
     ///
     /// Numbers, ranges and patterns, as above.
-    #[serde(
-        alias = "broadcastifyDeny",
-        alias = "broadcastifyBlacklist",
-        alias = "talkgroupBlacklist",
-        deserialize_with = "patterns",
-        skip_serializing_if = "Vec::is_empty"
-    )]
+    #[serde(deserialize_with = "patterns", skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "sdk", schemars(with = "Vec<String>", extend("x-when" = {"talkgroupMode": ["only", "allBut"]}, "x-talkgroups" = true)))]
     pub talkgroup_deny: Vec<String>,
 }
@@ -168,26 +154,11 @@ pub enum TalkgroupMode {
 }
 
 impl Talkgroups {
-    /// The menu's choice; settings from before it (lists alone) are as their lists say.
-    pub fn mode(&self) -> TalkgroupMode {
-        self.talkgroup_mode.unwrap_or(match (self.talkgroup_allow.is_empty(), self.talkgroup_deny.is_empty()) {
-            (false, _) => TalkgroupMode::Only,
-            (true, false) => TalkgroupMode::AllBut,
-            (true, true) => TalkgroupMode::All,
-        })
-    }
-
-    /// Lists from before the menu, with no choice made in it: they still
-    /// apply, but the form shows "Every talkgroup" until one is.
-    pub fn from_lists_alone(&self) -> bool {
-        self.talkgroup_mode.is_none() && self.mode() != TalkgroupMode::All
-    }
-
     /// The filter the choice comes to. A list that doesn't apply to it is
     /// ignored (it's kept, hidden, in case it's chosen again); an entry that
     /// isn't a talkgroup, or "Only some" with none listed, is an error.
     pub fn filter(&self) -> Result<TalkgroupFilter, String> {
-        match self.mode() {
+        match self.talkgroup_mode {
             TalkgroupMode::All => Ok(TalkgroupFilter::default()),
             TalkgroupMode::Only => {
                 let f = TalkgroupFilter::parse(&self.talkgroup_allow, &self.talkgroup_deny)?;
@@ -201,18 +172,9 @@ impl Talkgroups {
     }
 
     /// [`filter`](Self::filter), for system `system` as the plugin starts:
-    /// an error names the system (return it from `start`), and lists from
-    /// before the menu are warned about.
-    #[cfg(feature = "sdk")]
-    pub fn filter_for(&self, host: &crate::Host, system: &str) -> Result<TalkgroupFilter, String> {
-        let f = self.filter().map_err(|e| format!("{system}'s talkgroups: {e}"))?;
-        if self.from_lists_alone() {
-            host.warn(format!(
-                "{system}'s talkgroups are set in older settings ({}): they still apply. Choose Talkgroups on {system}'s card in Setup to see them there",
-                f.describe()
-            ));
-        }
-        Ok(f)
+    /// an error names the system (return it from `start`).
+    pub fn filter_for(&self, system: &str) -> Result<TalkgroupFilter, String> {
+        self.filter().map_err(|e| format!("{system}'s talkgroups: {e}"))
     }
 }
 
@@ -289,7 +251,6 @@ mod tests {
         let only = read(serde_json::json!({ "talkgroupMode": "only", "talkgroupAllow": ["1000-1099"], "talkgroupDeny": [1050] }));
         let f = only.filter().unwrap();
         assert!(f.passes(1001) && !f.passes(1050) && !f.passes(2000));
-        assert!(!only.from_lists_alone());
 
         let but = read(serde_json::json!({ "talkgroupMode": "allBut", "talkgroupAllow": ["1000-1099"], "talkgroupDeny": ["1050"] }));
         let f = but.filter().unwrap();
@@ -298,20 +259,13 @@ mod tests {
         let every = read(serde_json::json!({ "talkgroupMode": "all", "talkgroupAllow": ["1000-1099"], "talkgroupDeny": ["1050"] }));
         assert!(every.filter().unwrap().is_empty(), "chosen: every talkgroup, the lists kept but not applied");
 
-        // Before the menu: the lists alone, under any of their names.
-        let old = read(serde_json::json!({ "broadcastifyAllow": ["10*", 205], "talkgroupBlacklist": "109" }));
-        assert_eq!(old.mode(), TalkgroupMode::Only);
-        assert!(old.from_lists_alone());
-        let f = old.filter().unwrap();
-        assert!(f.passes(101) && f.passes(205) && !f.passes(109) && !f.passes(300));
-        assert_eq!(read(serde_json::json!({ "talkgroupDeny": [9] })).mode(), TalkgroupMode::AllBut);
+        assert!(read(serde_json::json!({ "talkgroupDeny": [9] })).filter().unwrap().is_empty(), "no choice made: every talkgroup");
         assert_eq!(read(serde_json::json!({})), Talkgroups::default());
         assert!(Talkgroups::default().filter().unwrap().is_empty());
 
         assert!(read(serde_json::json!({ "talkgroupMode": "only" })).filter().unwrap_err().contains("Only some"));
         assert!(read(serde_json::json!({ "talkgroupMode": "allBut", "talkgroupDeny": ["x1"] })).filter().unwrap_err().contains("\"x1\""));
-        // Saved back as read: nothing for what's unset.
-        assert_eq!(serde_json::to_value(Talkgroups::default()).unwrap(), serde_json::json!({}));
+        assert_eq!(serde_json::to_value(Talkgroups::default()).unwrap(), serde_json::json!({ "talkgroupMode": "all" }));
         assert_eq!(serde_json::to_value(&only).unwrap(), serde_json::json!({ "talkgroupMode": "only", "talkgroupAllow": ["1000-1099"], "talkgroupDeny": ["1050"] }));
     }
 
@@ -340,8 +294,8 @@ mod tests {
         assert_eq!(p["talkgroupDeny"]["x-when"], serde_json::json!({ "talkgroupMode": ["only", "allBut"] }));
         assert_eq!(p["talkgroupDeny"]["items"]["type"], "string");
         assert_eq!(p["talkgroupDeny"]["x-talkgroups"], true);
-        let c: SystemConfig = serde_json::from_value(serde_json::json!({ "apiKey": "k", "talkgroupAllow": [101], "sites": ["a"] })).unwrap();
-        assert_eq!((c.api_key.as_str(), c.talkgroups.mode(), c.sites.len()), ("k", TalkgroupMode::Only, 1));
+        let c: SystemConfig = serde_json::from_value(serde_json::json!({ "apiKey": "k", "talkgroupMode": "only", "talkgroupAllow": [101], "sites": ["a"] })).unwrap();
+        assert_eq!((c.api_key.as_str(), c.talkgroups.talkgroup_mode, c.sites.len()), ("k", TalkgroupMode::Only, 1));
     }
 
     #[test]

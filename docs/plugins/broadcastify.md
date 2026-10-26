@@ -61,7 +61,7 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
 |---|---|---|---|---|
 | `apiKey` | ✓ | | string | **API key.** Your node's upload key. A system without one isn't uploaded. |
 | `systemId` | ✓ | | integer | **System ID.** The system's number on Broadcastify Calls. Needed whenever the system has an API key. |
-| `talkgroupMode` | | from the lists | `"all"`, `"only"` or `"allBut"` | **Talkgroups.** Every talkgroup, only some, or all but some. See [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups). |
+| `talkgroupMode` | | `"all"` | `"all"`, `"only"` or `"allBut"` | **Talkgroups.** Every talkgroup, only some, or all but some. See [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups). |
 | `talkgroupAllow` | | (none) | list | **Only these.** With `"only"`: upload these and no others. |
 | `talkgroupDeny` | | (none) | list | **Except these.** With `"only"` or `"allBut"`: never upload these. |
 | `sites` | | (none) | list | **Sites of their own.** A site of the system that Broadcastify Calls knows as a system of its own: `site` (its name, as under Sites in Setup), `systemId`, and `apiKey` if not the system's. Its calls go there; the other sites' to the system's. (Plugin 0.1.5 and later.) |
@@ -134,6 +134,5 @@ lists: `broadcastifyAllow` / `broadcastifyDeny`, or the older `broadcastifyWhite
 `broadcastifyBlacklist` and `talkgroupWhitelist` / `talkgroupBlacklist`, become `talkgroupAllow` /
 `talkgroupDeny`, with the **Talkgroups** menu set to match. The plugin also understands Trunk Recorder's names if
 you paste them into `config.json`: `broadcastifyCallsServer`, `broadcastifyOTA` and
-`broadcastifySslVerifyDisable` in its settings, and `broadcastifyApiKey`, `broadcastifySystemId`,
-`broadcastifyAllow` / `broadcastifyDeny` (or the older `…Whitelist` / `…Blacklist`) in a
-system's.
+`broadcastifySslVerifyDisable` in its settings, and `broadcastifyApiKey` and
+`broadcastifySystemId` in a system's.
