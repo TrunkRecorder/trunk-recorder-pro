@@ -1254,6 +1254,10 @@
           "$ref": "#/definitions/LogSettings",
           "description": "The log (desktop app)."
         },
+        "store": {
+          "$ref": "#/definitions/StoreSettings",
+          "description": "The call store (desktop app)."
+        },
         "monitor": {
           "$ref": "#/definitions/MonitorSettings",
           "description": "What the dashboard watches on the computer (desktop app)."
@@ -6701,6 +6705,19 @@
         "interface"
       ],
       "description": "Which store: the plugins' (the registry) or the interfaces'."
+    },
+    "StoreSettings": {
+      "type": "object",
+      "properties": {
+        "retentionDays": {
+          "type": "number",
+          "description": "Days of call records kept in the call store; 0 keeps everything."
+        }
+      },
+      "required": [
+        "retentionDays"
+      ],
+      "additionalProperties": false
     },
     "SurveyBand": {
       "type": "object",

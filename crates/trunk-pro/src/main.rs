@@ -882,6 +882,7 @@ fn serve(a: &Args) {
     runtime::load_names(&shared, &cfg, &talkgroups);
     let db_path = paths::data_dir().join("trunk-pro.sqlite");
     let db = db::Db::open(&db_path, hub.clone()).unwrap_or_else(|e| fatal(&e));
+    db.start_retention(cfg.store.retention_days);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),

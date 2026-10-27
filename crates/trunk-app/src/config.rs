@@ -1824,6 +1824,8 @@ pub struct Config {
     pub keys: BTreeMap<String, KeySource>,
     /// The log: how much, where to, and how lines read.
     pub log: LogSettings,
+    /// The call store (desktop app).
+    pub store: StoreSettings,
     /// The dashboard's watch on the computer (desktop app).
     pub monitor: MonitorSettings,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
@@ -1906,9 +1908,24 @@ impl Default for Config {
             plugin_delays: vec![],
             keys: BTreeMap::new(),
             log: LogSettings::default(),
+            store: StoreSettings::default(),
             monitor: MonitorSettings::default(),
             notes: vec![],
         }
+    }
+}
+
+/// The call store: the index of recorded calls in `trunk-pro.sqlite`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StoreSettings {
+    /// Days of call records kept in the call store; 0 keeps everything.
+    pub retention_days: u32,
+}
+
+impl Default for StoreSettings {
+    fn default() -> Self {
+        StoreSettings { retention_days: 120 }
     }
 }
 
@@ -2651,6 +2668,14 @@ const RTL_BUSY_COUNT: usize = 4;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_store_section_defaults_to_120_days() {
+        let c = Config::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(c.store.retention_days, 120);
+        let c = Config::from_value(serde_json::json!({ "store": { "retentionDays": 0 } })).unwrap();
+        assert_eq!(c.store.retention_days, 0);
+    }
 
     /// A call sign heard on a frequency goes into its system's licenses there (trunked or
     /// conventional, on the raster): over a lookup's (keeping its name only for the same

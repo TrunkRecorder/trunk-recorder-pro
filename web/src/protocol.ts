@@ -489,8 +489,15 @@ export interface Config {
   keys?: Record<string, KeySource>;
   /** The log (desktop app). */
   log?: LogSettings;
+  /** The call store (desktop app). */
+  store?: StoreSettings;
   /** What the dashboard watches on the computer (desktop app). */
   monitor?: MonitorSettings;
+}
+
+export interface StoreSettings {
+  /** Days of call records kept in the call store; 0 keeps everything. */
+  retentionDays: number;
 }
 
 export interface MonitorSettings {

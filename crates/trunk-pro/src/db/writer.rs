@@ -55,6 +55,7 @@ impl Writer {
             let started = Instant::now();
             let mut flushes = Vec::new();
             let mut checkpoint = false;
+            let mut retention: Option<i64> = None;
             let mut announce = Vec::new();
             let mut outcome = Ok(());
             match self.conn.transaction() {
@@ -64,6 +65,7 @@ impl Writer {
                         first,
                         &mut flushes,
                         &mut checkpoint,
+                        &mut retention,
                         &mut announce,
                         &self.queued,
                     );
@@ -73,6 +75,7 @@ impl Writer {
                             next,
                             &mut flushes,
                             &mut checkpoint,
+                            &mut retention,
                             &mut announce,
                             &self.queued,
                         );
@@ -105,6 +108,9 @@ impl Writer {
                     }
                 }
             }
+            if let Some(before_ms) = retention {
+                self.retain(before_ms);
+            }
             if checkpoint {
                 self.checkpoint();
             }
@@ -114,6 +120,39 @@ impl Writer {
             if let Some(rest) = COMMIT_EVERY.checked_sub(started.elapsed()) {
                 std::thread::sleep(rest);
             }
+        }
+    }
+
+    /// Delete the calls that started before `before_ms`, with their
+    /// transmissions and frequencies (they cascade), oldest first, 1,000 to a
+    /// transaction so readers and the next writes are never held up long.
+    /// The audio and JSON files are not touched.
+    fn retain(&mut self, before_ms: i64) {
+        let mut total = 0usize;
+        loop {
+            let batch = self.conn.transaction().and_then(|tx| {
+                let n = tx.execute(
+                    "delete from calls where id in
+                        (select id from calls where start_ms < ?1 order by start_ms limit 1000)",
+                    [before_ms],
+                )?;
+                tx.commit()?;
+                Ok(n)
+            });
+            match batch {
+                Ok(0) => break,
+                Ok(n) => {
+                    total += n;
+                    self.commits.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    log::warn!("db: retention failed: {e}");
+                    break;
+                }
+            }
+        }
+        if total > 0 {
+            log::info!("db: retention removed {total} call records");
         }
     }
 
@@ -134,6 +173,7 @@ fn apply(
     w: Write,
     flushes: &mut Vec<Sender<Result<(), String>>>,
     checkpoint: &mut bool,
+    retention: &mut Option<i64>,
     announce: &mut Vec<ToClient>,
     queued: &AtomicUsize,
 ) {
@@ -149,8 +189,9 @@ fn apply(
             Ok(false) => {}
             Err(e) => log::warn!("db: files write {path} failed: {e}"),
         },
+        // Runs after the batch commits, in transactions of its own.
         Write::Retention { before_ms } => {
-            log::debug!("db: retention before {before_ms} not applied yet")
+            *retention = Some(retention.map_or(before_ms, |b| b.max(before_ms)));
         }
         Write::Meta { key, value } => {
             let r = conn.execute(
@@ -374,5 +415,40 @@ mod tests {
             rx.try_recv().is_err(),
             "no message for the unchanged update"
         );
+    }
+
+    #[test]
+    fn retention_deletes_old_rows_in_batches_and_cascades() {
+        let (db, _) = Db::for_test("retention");
+        for i in 0..2500u32 {
+            let r = record(1, i as i64);
+            db.send(Write::Call {
+                row: call_row(&format!("s/{i}"), &r, &r.to_json(), true, true, None, 0),
+                live: true,
+            });
+        }
+        db.flush().unwrap();
+        let before = db.commits();
+        db.send(Write::Retention { before_ms: 2200 });
+        db.flush().unwrap();
+        let (n, tx): (u32, u32) = db
+            .with_reader(|c| {
+                Ok((
+                    c.query_row("select count(*) from calls", [], |r| r.get(0))?,
+                    c.query_row("select count(*) from call_transmissions", [], |r| r.get(0))?,
+                ))
+            })
+            .unwrap();
+        assert_eq!((n, tx), (300, 600));
+        assert!(
+            db.commits() - before >= 3,
+            "2200 rows in batches of 1000: at least three commits"
+        );
+        db.send(Write::Retention { before_ms: 0 });
+        db.flush().unwrap();
+        let n: u32 = db
+            .with_reader(|c| c.query_row("select count(*) from calls", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(n, 300, "nothing before 0");
     }
 }

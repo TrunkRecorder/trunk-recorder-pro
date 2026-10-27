@@ -38,11 +38,6 @@ pub struct Stats {
     pub aborted: bool,
 }
 
-/// Days of calls the store keeps (`store.retention_days`; 0 keeps all).
-fn retention_days(_cfg: &Config) -> u32 {
-    0 // Task 6: read `store.retention_days` here
-}
-
 /// The day folders of the last two days for every system's short name, every
 /// name its sites were recorded under before, and every conventional system.
 pub fn recent_folders(cfg: &Config, now_s: i64) -> Vec<PathBuf> {
@@ -76,7 +71,7 @@ pub fn start(ctx: Arc<Ctx>) {
         (
             PathBuf::from(&c.recording.capture_dir),
             recent_folders(&c, now_s),
-            retention_days(&c),
+            c.store.retention_days,
         )
     };
     let db = ctx.db.clone();

@@ -42,7 +42,6 @@ pub enum Write {
     /// Set a `meta` value.
     Meta { key: String, value: String },
     /// Delete calls that started before this time.
-    #[allow(dead_code)] // sent by retention (a later task)
     Retention { before_ms: i64 },
     /// Checkpoint the WAL into the database file.
     Checkpoint,
@@ -126,12 +125,39 @@ impl Db {
         self.0.recorder.as_deref()
     }
 
-    /// Queue a write. Blocks only while the queue is full.
-    pub fn send(&self, w: Write) {
+    /// Queue a write. Blocks only while the queue is full. False when the
+    /// writer has stopped and the write was dropped.
+    pub fn send(&self, w: Write) -> bool {
         self.0.queued.fetch_add(1, Ordering::Relaxed);
         if self.0.tx.send(w).is_err() {
             self.0.queued.fetch_sub(1, Ordering::Relaxed);
             log::warn!("db: the writer has stopped; write dropped");
+            return false;
+        }
+        true
+    }
+
+    /// Keep `days` days of calls (0: all of them): delete what is older now,
+    /// and again every hour, until the writer stops.
+    pub fn start_retention(&self, days: u32) {
+        if days == 0 {
+            return;
+        }
+        let db = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("db-retention".into())
+            .spawn(move || {
+                loop {
+                    let now_ms = crate::clock::unix_ms() as i64;
+                    let before_ms = now_ms - i64::from(days) * 86_400_000;
+                    if !db.send(Write::Retention { before_ms }) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                }
+            });
+        if let Err(e) = spawned {
+            log::error!("db: could not start the retention thread: {e}");
         }
     }
 

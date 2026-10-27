@@ -86,8 +86,17 @@ with `--config` files in different folders never share band plans, talker aliase
 | `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
 | `monitor` | | see page | object | The dashboard's internet checks. [server-and-log.md](server-and-log.md#monitor) |
+| `store` | | `{ "retentionDays": 120 }` | object | The call store: how long call records stay in the index. [See below](#the-call-store-store) |
 | `plugins` | | `{}` | object | Which plugins run and their recorder-wide settings, by plugin id. [plugins.md](plugins.md) |
 | `keys` | | `{}` | object | P25 encryption key sources, by name: where each set of keys is read from. [Encryption keys](systems.md#encryption-keys-keys) |
+
+### The call store (`store`)
+
+Finished calls are indexed in `trunk-pro.sqlite`, beside the config, so the interface can list and
+search them. `retentionDays` (default 120) is how long a call's record stays in that index; older
+records are removed when the app starts and every hour after. `0` keeps every record. The setting
+is read when the app starts. It never deletes the audio and JSON files of the calls: they stay
+where they were recorded (deleting recordings is issue #25).
 
 ## A minimal config
 
