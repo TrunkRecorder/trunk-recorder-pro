@@ -43,7 +43,7 @@ const COLUMNS: &str = "path, record, audio, json, id, start_ms";
 
 /// The `limit` newest calls, newest first (`start_ms`, then `id`, descending).
 pub fn newest(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<Value>> {
-    let (rows, _) = fetch(conn, &Where::default(), limit)?;
+    let (rows, _) = fetch(conn, &Where::default(), limit.max(1))?;
     Ok(rows.into_iter().map(|r| r.entry).collect())
 }
 
@@ -143,7 +143,7 @@ impl Where {
         }
         if let Some(unit) = f.unit {
             w.and(
-                "exists (select 1 from call_transmissions t where t.call_id = calls.id and t.unit = ?)",
+                "id in (select call_id from call_transmissions where unit = ?)",
                 Sql::Integer(unit),
             );
         }
