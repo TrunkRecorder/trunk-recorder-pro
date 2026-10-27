@@ -288,9 +288,8 @@ pub fn run(
         log::warn!("Call store: the backfill stopped early: {e}");
     } else if full {
         match not_done_why(&stats) {
-            Some(why) => log::warn!(
-                "Call store: {folder} is not marked as indexed: {why}; it is walked again on the next start"
-            ),
+            // (An empty capture folder, before the first call, is ordinary: not a warning.)
+            Some(why) => log::debug!("Call store: {folder} is not marked as indexed: {why}; it is walked again on the next start"),
             None => {
                 db.send(Write::Meta {
                     key: "backfill_done_at".into(),
