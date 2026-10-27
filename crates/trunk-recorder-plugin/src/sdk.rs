@@ -48,6 +48,9 @@ pub trait Plugin: Sized {
     fn action(&mut self, _a: Action, reply: Reply) {
         reply.fail("This plugin has no such action");
     }
+    /// The answer to [`Host::calls`]: a page of recorded calls, for the
+    /// `request` it gave.
+    fn calls(&mut self, _page: CallsPage) {}
     /// Its settings changed while it runs (set [`Manifest::live_settings`]
     /// for this to be called rather than the plugin restarted). An `Err` is
     /// shown as its status, and the settings it had stay.
@@ -74,11 +77,6 @@ pub struct Setup<C, S> {
     pub capture_dir: PathBuf,
     /// The plugin's own folder, kept across restarts and upgrades.
     pub data_dir: PathBuf,
-    /// The recorder's call store (an SQLite file), when it has one and runs
-    /// on this machine. Open it read-only (`SQLITE_OPEN_READ_ONLY`; it is in
-    /// WAL mode), read `schema_version` first and refuse a version you don't
-    /// know; never write to it.
-    pub store: Option<PathBuf>,
     /// Audio formats `call.concluded` will carry (always "wav").
     pub audio_formats: Vec<String>,
 }
@@ -130,12 +128,22 @@ pub struct System<C, S> {
 #[derive(Clone)]
 pub struct Host {
     out: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// The last [`Host::calls`] request number.
+    requests: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Host {
     /// A host writing to `w` instead of stdout (see [`crate::testing`]).
     pub fn to_writer(w: impl Write + Send + 'static) -> Host {
-        Host { out: Arc::new(Mutex::new(Box::new(w))) }
+        Host { out: Arc::new(Mutex::new(Box::new(w))), requests: Default::default() }
+    }
+
+    /// Ask the recorder for recorded calls ([`CallsQuery`]); the page comes
+    /// to [`Plugin::calls`] with the request number this gives.
+    pub fn calls(&self, mut q: CallsQuery) -> u64 {
+        q.request = self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        self.send(&PluginMessage::CallsQuery(q.clone()));
+        q.request
     }
 
     pub fn send(&self, m: &PluginMessage) {
@@ -256,7 +264,7 @@ pub fn run<P: Plugin>() {
             m.name, m.version
         );
     }
-    let code = serve::<P>(stdin.lock(), Host { out: Arc::new(Mutex::new(Box::new(io::stdout()))) });
+    let code = serve::<P>(stdin.lock(), Host::to_writer(io::stdout()));
     std::process::exit(code);
 }
 
@@ -307,6 +315,7 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
                 let reply = Reply { host: host.clone(), request: a.request, sent: false };
                 p.action(a, reply)
             }
+            HostMessage::Calls(c) => p.calls(c),
             HostMessage::Settings(h) => match setup::<P>(h).and_then(|s| p.settings(s)) {
                 Ok(()) => host.status(State::Ok, ""),
                 Err(e) => host.status(State::Error, format!("new settings not taken: {e}")),
@@ -346,7 +355,7 @@ fn setup<P: Plugin>(hello: Hello) -> Result<Setup<P::Config, P::SystemConfig>, S
         };
         systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, name: s.name, fcc: s.fcc, fcc_call_sign: s.fcc_call_sign, fcc_name: s.fcc_name, sites: s.sites, config, settings });
     }
-    Ok(Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, store: hello.store, audio_formats: hello.audio_formats })
+    Ok(Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, audio_formats: hello.audio_formats })
 }
 
 /// Settings left out entirely count as `{}`, so `#[serde(default)]` applies.
@@ -422,5 +431,39 @@ mod tests {
         assert!(out.ready());
         let said: Vec<String> = out.logs().into_iter().map(|(_, t)| t).collect();
         assert_eq!(said, ["sys1 https://a 3", "sys2 https://b 3"]);
+    }
+
+    /// Asks for a talkgroup's calls as it starts, and says what came back.
+    struct Asker(Host);
+
+    impl Plugin for Asker {
+        type Config = NoConfig;
+        type SystemConfig = NoConfig;
+        fn manifest() -> Manifest {
+            Manifest { id: "asker".into(), ..Default::default() }
+        }
+        fn start(host: Host, _setup: Setup<NoConfig, NoConfig>) -> Result<Self, String> {
+            host.calls(CallsQuery { talkgroup: Some(101), limit: Some(10), ..Default::default() });
+            Ok(Asker(host))
+        }
+        fn calls(&mut self, page: CallsPage) {
+            self.0.info(format!("request {}: {} calls, more {}", page.request, page.entries.len(), page.more));
+        }
+    }
+
+    /// A plugin asks for calls (`calls.query`, numbered), and the answer
+    /// for that number reaches `Plugin::calls`.
+    #[test]
+    fn a_plugin_asks_for_calls_and_gets_the_page() {
+        let dir = testing::temp_dir("sdk-calls");
+        let call = StoredCall { path: "sys1/2026/10/27/101-1".into(), record: CallRecord { talkgroup: 101, ..Default::default() }, audio: true, json: true };
+        let page = CallsPage { request: 1, entries: vec![call], more: true, before: 1000, error: None };
+        let out = testing::run::<Asker>([HostMessage::Hello(testing::hello(&dir, json!({}))), HostMessage::Calls(page)]);
+        let asked = out.messages.iter().find_map(|m| if let PluginMessage::CallsQuery(q) = m { Some(q.clone()) } else { None }).expect("calls.query sent");
+        assert_eq!((asked.request, asked.talkgroup, asked.limit), (1, Some(101), Some(10)));
+        let line = serde_json::to_string(&PluginMessage::CallsQuery(asked)).unwrap();
+        assert_eq!(line, r#"{"type":"calls.query","request":1,"talkgroup":101,"limit":10}"#, "only what was asked goes on the wire");
+        let said: Vec<String> = out.logs().into_iter().map(|(_, t)| t).collect();
+        assert_eq!(said, ["request 1: 1 calls, more true"]);
     }
 }

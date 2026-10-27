@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
-    format, topic, Action, AudioChunk, CallFiles, CallRecord, ConcludedCall, Hello, HostInfo, HostMessage, Level, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
+    format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
     SystemInfo, API_VERSION, EXIT_CONFIG,
 };
 
@@ -54,6 +54,9 @@ pub struct ProcessStats {
 }
 
 pub type Notes = Arc<dyn Fn(Note) + Send + Sync>;
+
+/// Answers a plugin's `calls.query` (the recorder's [`crate::runtime::calls`]).
+pub type Calls = Arc<dyn Fn(&CallsQuery) -> CallsPage + Send + Sync>;
 
 /// Messages waiting for a plugin; beyond this it's behind, and loses them.
 const QUEUE: usize = 1024;
@@ -92,6 +95,8 @@ struct Shared {
     /// answer, by the request number it was given.
     answers: Mutex<HashMap<u64, mpsc::Sender<(bool, String)>>>,
     requests: AtomicU64,
+    /// Answers `calls.query` (None: no recorder to ask, as in `plugin test`).
+    calls: Option<Calls>,
 }
 
 /// How long `shutdown` waits for a plugin to read what was queued before
@@ -152,23 +157,24 @@ impl Spec {
 impl PluginHost {
     /// Start `specs`. `systems`: every system calls come from (their `config` is filled in here).
     /// A plugin that can't start is reported and left out.
-    pub fn start(specs: Vec<Spec>, audio: &super::AudioSettings, systems: &[SystemInfo], capture_dir: &Path, store: Option<&Path>, notes: Notes) -> PluginHost {
-        Self::start_when(specs, audio, systems, capture_dir, store, notes, Arc::new(AtomicBool::new(true)), None)
+    pub fn start(specs: Vec<Spec>, audio: &super::AudioSettings, systems: &[SystemInfo], capture_dir: &Path, notes: Notes) -> PluginHost {
+        Self::start_when(specs, audio, systems, capture_dir, notes, Arc::new(AtomicBool::new(true)), None, None)
     }
 
     /// `start`, with the processes held back until `go` is set (events queue
     /// meanwhile): the plugins they replace share their data folders. What
     /// a plugin is to have late goes to `hold` (None: everything goes now).
+    /// `calls` answers the plugins' `calls.query`.
     #[allow(clippy::too_many_arguments)]
     pub fn start_when(
         specs: Vec<Spec>,
         audio: &super::AudioSettings,
         systems: &[SystemInfo],
         capture_dir: &Path,
-        store: Option<&Path>,
         notes: Notes,
         go: Arc<AtomicBool>,
         hold: Option<Arc<Hold>>,
+        calls: Option<Calls>,
     ) -> PluginHost {
         let mut ready = Vec::new();
         for mut s in specs {
@@ -272,7 +278,6 @@ impl PluginHost {
                     .collect(),
                 capture_dir: capture_dir.to_path_buf(),
                 data_dir: data_dir.clone(),
-                store: store.map(Path::to_path_buf),
                 audio_formats: formats,
             };
             // The queue outlives the process: events wait through a (re)start.
@@ -296,7 +301,7 @@ impl PluginHost {
                 audio_held_said: AtomicBool::new(false),
             });
         }
-        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold, answers: Default::default(), requests: AtomicU64::new(0) });
+        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold, answers: Default::default(), requests: AtomicU64::new(0), calls });
         let supervisors = queues
             .into_iter()
             .enumerate()
@@ -791,6 +796,17 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
                 }
                 continue;
             }
+            // (Answered on its own queue, behind what's already waiting for it.)
+            Ok(PluginMessage::CallsQuery(q)) => {
+                let page = match &sh.calls {
+                    Some(answer) => answer(&q),
+                    None => CallsPage { request: q.request, error: Some("no recorder to ask".into()), ..Default::default() },
+                };
+                if let Some(tx) = p.tx.lock().unwrap().as_ref() {
+                    let _ = tx.send(Arc::from(line(&HostMessage::Calls(page))));
+                }
+                continue;
+            }
             Ok(PluginMessage::Unknown) => continue,
             // Not the protocol (a stray print): keep it as a log line.
             Err(_) => Note::Log { plugin: p.id.clone(), level: Level::Info, text: l },
@@ -885,6 +901,7 @@ mod tests {
             hold: None,
             answers: Default::default(),
             requests: AtomicU64::new(0),
+            calls: None,
         };
         let msg: Arc<str> = "x\n".into();
         let (clear, decrypted) = (About { system: "dcfd".into(), ..Default::default() }, About { system: "dcfd".into(), decrypted: true, ..Default::default() });
@@ -929,34 +946,30 @@ mod tests {
         exe
     }
 
-    /// The hello carries the call store's path when the recorder has one, and no `store` key when not.
+    /// A plugin's `calls.query` is answered on its own queue, for its
+    /// request number, by what the host was given to answer with.
     #[cfg(unix)]
     #[test]
-    fn hello_carries_the_stores_path_only_when_there_is_one() {
-        let dir = std::env::temp_dir().join(format!("trunk-pro-host-store-{}", std::process::id()));
+    fn a_plugins_calls_query_is_answered() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-host-calls-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let exe = hello_keeper(&dir);
-        let audio = super::super::AudioSettings::default();
-        let hello_with = |store: Option<&Path>, data: &str| {
-            // The keeper's manifest requires `server`: without it the plugin isn't started.
-            let config = serde_json::json!({ "server": "https://a" });
-            let spec = Spec { id: "keeper".into(), copy: 0, exe: exe.clone(), config, systems: BTreeMap::new(), data_dir: Some(dir.join(data)), share_decrypted: false };
-            let mut host = PluginHost::start(vec![spec], &audio, &[], &dir, store, Arc::new(|_| {}));
-            assert!(!host.is_empty(), "the keeper wasn't started");
-            let hello = dir.join(data).join("hello.json");
-            let t0 = Instant::now();
-            while !hello.exists() && t0.elapsed() < Duration::from_secs(5) {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            host.shutdown(Duration::from_secs(1));
-            std::fs::read_to_string(&hello).unwrap()
-        };
-        let with = hello_with(Some(&dir.join("trunk-pro.sqlite")), "with");
-        let v: Value = serde_json::from_str(&with).unwrap();
-        assert!(v["store"].as_str().unwrap().ends_with("trunk-pro.sqlite"), "{with}");
-        let without = hello_with(None, "without");
-        assert!(!without.contains("\"store\""), "{without}");
+        let manifest = r#"{"id":"asker","name":"Asker","version":"1.0.0","api":1,"subscribe":["call.concluded"]}"#;
+        let exe = dir.join("asker");
+        std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\necho '{{\"type\":\"calls.query\",\"request\":7,\"talkgroup\":101}}'\nwhile read l; do case \"$l\" in *'\"type\":\"calls\"'*) echo \"$l\" > answer.json;; esac; done\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let spec = Spec { id: "asker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
+        let calls: Calls = Arc::new(|q| CallsPage { request: q.request, more: q.talkgroup == Some(101), before: 42, ..Default::default() });
+        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, Some(calls));
+        let answer = dir.join("data/answer.json");
+        let t0 = Instant::now();
+        while !answer.exists() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        host.shutdown(Duration::from_secs(1));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&answer).expect("answered")).unwrap();
+        assert_eq!((v["request"].as_u64(), v["more"].as_bool(), v["before"].as_i64()), (Some(7), Some(true), Some(42)), "{v}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -981,7 +994,7 @@ mod tests {
         let systems = vec![SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() }];
         let spec = Spec { id: "taker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
         let notes: Notes = Arc::new(|_| {});
-        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, None, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()));
+        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()), None);
         hold.attach(Some(host.outlet()));
         let call = |rel: &str, tg: u32| {
             host.concluded(0, rel, CallRecord { talkgroup: tg, short_name: "dcfd".into(), ..Default::default() }, CallFiles::default(), false);
@@ -1037,7 +1050,7 @@ mod tests {
 
         // No server for the recorder, but each system names one.
         let s = spec(Value::Null, json!({ "k": 1, "override": { "server": "https://a" } }), json!({ "override": { "server": "https://b" } }), "both");
-        let mut host = PluginHost::start(vec![s], &audio, &systems, &dir, None, notes.clone());
+        let mut host = PluginHost::start(vec![s], &audio, &systems, &dir, notes.clone());
         assert!(!host.is_empty(), "{:?}", notes_seen.lock().unwrap());
         let hello = dir.join("both/hello.json");
         let t0 = Instant::now();
@@ -1052,7 +1065,7 @@ mod tests {
 
         // One system without: not started, and it's named.
         let s = spec(Value::Null, json!({ "override": { "server": "https://a" } }), json!({ "k": 2 }), "one");
-        let host = PluginHost::start(vec![s], &audio, &systems, &dir, None, notes.clone());
+        let host = PluginHost::start(vec![s], &audio, &systems, &dir, notes.clone());
         assert!(host.is_empty());
         let said = notes_seen.lock().unwrap().iter().rev().find_map(|n| if let Note::State { message, .. } = n { Some(message.clone()) } else { None });
         assert_eq!(said.as_deref(), Some("not started: Server (for b) isn't set"));
@@ -1098,7 +1111,7 @@ mod tests {
             }
         };
 
-        let mut host = PluginHost::start(vec![spec("https://a", "on")], &audio, &[], &dir, None, notes.clone());
+        let mut host = PluginHost::start(vec![spec("https://a", "on")], &audio, &[], &dir, notes.clone());
         let lines = dir.join("on/lines.jsonl");
         assert!(host.settle("live", &json!({ "server": "https://b" })));
         wait(&|| std::fs::read_to_string(&lines).is_ok_and(|t| t.contains("https://b")));
@@ -1108,7 +1121,7 @@ mod tests {
         host.shutdown(Duration::from_secs(1));
 
         // Stopped over its settings: only a restart starts it again.
-        let host = PluginHost::start(vec![spec("stop", "stopped")], &audio, &[], &dir, None, notes);
+        let host = PluginHost::start(vec![spec("stop", "stopped")], &audio, &[], &dir, notes);
         wait(&|| host.shared.plugins[0].tx.lock().unwrap().is_none());
         assert!(!host.settle("live", &json!({ "server": "https://c" })));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1131,7 +1144,7 @@ mod tests {
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\nwhile read l; do case \"$l\" in *'\"action\":\"test\"'*) {answer};; esac; done\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let spec = Spec { id: "act".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
-        let mut host = PluginHost::start(vec![spec], &super::super::AudioSettings::default(), &[], &dir, None, Arc::new(|_| {}));
+        let mut host = PluginHost::start(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}));
         let wait = Duration::from_secs(5);
         assert_eq!(host.action("act", "test".into(), json!({ "to": "discord" }), wait), Ok((true, "sent to discord".into())));
         assert_eq!(host.action("act", "other".into(), json!({}), Duration::from_millis(200)), Err("No answer from the plugin".into()));

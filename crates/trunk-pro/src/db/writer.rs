@@ -127,6 +127,8 @@ impl Writer {
                 return Err(format!("could not begin a transaction: {e}"));
             }
         };
+        // (Set only by tests' Write::Retention: the writer's own retention runs between batches.)
+        #[allow(unused_mut)]
         let mut retire = None;
         for w in held {
             match w {

@@ -177,6 +177,9 @@ pub enum HostMessage {
     /// plugin with [`Manifest::live_settings`] is sent one; others restart.
     #[serde(rename = "settings")]
     Settings(Hello),
+    /// The answer to a [`PluginMessage::CallsQuery`] (the same `request`).
+    #[serde(rename = "calls")]
+    Calls(CallsPage),
     /// The recorder is stopping: finish what's queued, then exit. stdin closes
     /// after this, and the process is killed if it hasn't exited within
     /// [`Shutdown::grace_s`].
@@ -202,12 +205,6 @@ pub struct Hello {
     pub capture_dir: PathBuf,
     /// A folder of the plugin's own that survives restarts and upgrades (queues, state).
     pub data_dir: PathBuf,
-    /// Where the recorder's call store is (an SQLite file), when it has one.
-    /// Open it read-only (`SQLITE_OPEN_READ_ONLY`); it is in WAL mode; read
-    /// `schema_version` first and refuse a version you don't know; never
-    /// write to it. Plugins on other machines use the HTTP API instead.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub store: Option<PathBuf>,
     /// The audio formats `call.concluded` will carry this run: always "wav",
     /// plus those the plugin asked for that the recorder can encode.
     pub audio_formats: Vec<String>,
@@ -939,6 +936,69 @@ pub struct Action {
     pub value: Value,
 }
 
+/// Recorded calls a plugin asks the recorder for ([`PluginMessage::CallsQuery`]),
+/// newest first: each field given narrows them. Answered with
+/// [`HostMessage::Calls`] for the same `request`. The recorder answers from
+/// its call store (the calls it indexes, `storage.retentionDays` of them),
+/// the latest calls included; without one, from the recent calls alone.
+/// Plugins ask this way rather than open the store's file: its tables are
+/// the recorder's own, free to change.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallsQuery {
+    /// Set by [`crate::Host::calls`]: the answer carries it back.
+    pub request: u64,
+    /// A system's short name (its sites' old names count as it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub talkgroup: Option<u32>,
+    /// Calls this radio talked on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<i64>,
+    /// Calls that started at or after this, Unix ms.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<i64>,
+    /// Calls that started before this, Unix ms.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<i64>,
+    /// The next page: the last page's [`CallsPage::before`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<i64>,
+    /// Calls on a page, 1 to 500 (100). A page never splits calls that
+    /// started in the same millisecond, so it may hold a few more.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// A page of recorded calls, newest first: the answer to a [`CallsQuery`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallsPage {
+    pub request: u64,
+    pub entries: Vec<StoredCall>,
+    /// Calls remain before the oldest on this page: ask again with `before`.
+    pub more: bool,
+    /// Where the next page starts (the next query's `before`).
+    pub before: i64,
+    /// Why the answer is only the recent calls (the call store is off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A recorded call: where its files are, its record, and which files are kept.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StoredCall {
+    /// Its files' path under the capture folder, without an extension.
+    pub path: String,
+    pub record: CallRecord,
+    /// Its audio file is kept.
+    pub audio: bool,
+    /// Its `.json` file is kept.
+    pub json: bool,
+}
+
 // ─── Plugin → recorder ────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -978,6 +1038,9 @@ pub enum PluginMessage {
     /// every few seconds ([`crate::CallQueue`] does it for you).
     #[serde(rename = "metrics")]
     Metrics(Metrics),
+    /// Recorded calls, asked of the recorder: answered with [`HostMessage::Calls`].
+    #[serde(rename = "calls.query")]
+    CallsQuery(CallsQuery),
     /// How an [`Action`] went: shown by the button that was pressed.
     #[serde(rename = "action.result")]
     ActionResult {
@@ -1133,17 +1196,6 @@ pub mod base64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn hello_without_a_store_has_no_store_key() {
-        let h = Hello::default();
-        assert!(!serde_json::to_string(&h).unwrap().contains("\"store\""));
-        let h: Hello = serde_json::from_str(r#"{"api":1}"#).unwrap();
-        assert!(h.store.is_none());
-        let h: Hello = serde_json::from_str(r#"{"api":1,"store":"/x/trunk-pro.sqlite"}"#).unwrap();
-        assert_eq!(h.store.as_deref(), Some(std::path::Path::new("/x/trunk-pro.sqlite")));
-        assert!(serde_json::to_string(&h).unwrap().contains("\"store\""));
-    }
 
     /// A Trunk Recorder file (flags as booleans, a field this crate doesn't
     /// name) reads; written back, flags are 0/1 as the recorder's own files

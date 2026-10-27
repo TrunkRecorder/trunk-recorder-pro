@@ -472,7 +472,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
     session.load_sharing(&fs::read_to_string(sharing_path()).unwrap_or_default());
     session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
-    ctx.plugins.start(&cfg, ctx.db.path().map(Path::to_path_buf));
+    ctx.plugins.start(&cfg, plugin_calls(&ctx));
     if cfg.sources.iter().any(|s| matches!(s, Source::Rtlsdr { .. })) {
         if let Some(hint) = cfg.rtl_buflen_hint(sdr::rtl_most_on_a_bus()) {
             log::warn!("{hint}");
@@ -1322,6 +1322,20 @@ pub fn calls(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> (crate::db::read
             (read::page_of(&live, &filter), Some(format!("{e}: only the recent calls")))
         }
     }
+}
+
+/// The plugins' `calls.query`: [`calls`], the page in the SDK's types. (A
+/// weak hold on the context: the plugins are part of it.)
+fn plugin_calls(ctx: &Arc<Ctx>) -> crate::plugins::Calls {
+    use trunk_recorder_plugin::{CallsPage, StoredCall};
+    let ctx = Arc::downgrade(ctx);
+    Arc::new(move |q| {
+        let Some(ctx) = ctx.upgrade() else { return CallsPage { request: q.request, error: Some("the recorder is stopping".into()), ..Default::default() } };
+        let asked = trunk_app::protocol::CallsQuery { id: Value::Null, system: q.system.clone(), talkgroup: q.talkgroup, unit: q.unit, from: q.from, to: q.to, before: q.before, limit: q.limit };
+        let (page, error) = calls(&ctx, &asked);
+        let entries = page.entries.into_iter().filter_map(|e| serde_json::from_value::<StoredCall>(e).ok()).collect();
+        CallsPage { request: q.request, entries, more: page.more, before: page.before, error }
+    })
 }
 
 /// `olderCalls` (the Listen page's "Load older"): [`calls`] before `before_ms`.

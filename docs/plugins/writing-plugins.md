@@ -71,10 +71,7 @@ The lifecycle, as the recorder (the "host") sees it:
    and macOS), and writes `hello`: the
    plugin's settings, every system (short name, kind, the plugin's settings for it, and, when
    the system overrides some of the plugin's own settings, those settings as they are for it:
-   `settings`), the recordings folder, the data folder, the audio formats calls will carry, and,
-   when the recorder's call store opened, `store`: the store's absolute path. Open it read-only
-   (it is in WAL mode), read `schema_version` first, and never write to it; a plugin on another
-   machine reads the same calls over HTTP (`/api/v1/calls`).
+   `settings`), the recordings folder, the data folder, and the audio formats calls will carry.
 3. **Ready.** The plugin answers `ready` once its settings are good. If they aren't, it sends an
    error `status` saying what to fix and exits with status **78**: the recorder shows the message
    and doesn't restart it until its settings change or recording starts again.
@@ -149,7 +146,7 @@ Add the crate and `schemars` (for the settings form):
 
 ```toml
 [dependencies]
-trunk-recorder-plugin = "0.9"
+trunk-recorder-plugin = "0.7.0"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -195,7 +192,7 @@ The main pieces:
 | `Plugin` | The trait. `Config` and `SystemConfig` are your settings types (`NoConfig` for none). `manifest()`, `start()`, one method per topic (`call_start`, `call_end`, `call_concluded`, `unit`, `audio`, `status`, `tone_pattern`), `action(a, reply)` (one of its buttons pressed: answer with the `Reply`), `settings(setup)` (new settings while it runs, with `live_settings`) and `shutdown(grace)`. Every method runs on the one thread reading the recorder's messages, so return quickly and hand network or disk work to threads of your own |
 | `manifest!()` | A `Manifest` with the id, version, description, homepage, repository, authors and license from `Cargo.toml`; set `name`, `subscribe` and `audio_formats` |
 | `run::<P>()` | Answers `--describe` (and `--version`), parses `hello` and your settings, calls your methods, and exits with 78 when `start` returns `Err` |
-| `Setup` | What `start` gets: `config`, `systems` (each with `index`, `short_name`, `kind`, `name`, `fcc` (its FCC licenses by frequency), `fcc_call_sign` and `fcc_name` (the one that names it), `sites` (each `SiteInfo { name }`), and your `SystemConfig` or `None`), `host` (`HostInfo { name, version }`: the recorder's), `capture_dir`, `data_dir`, `store` (the path of the recorder's call store, an SQLite file, when it has one: open it read-only with `SQLITE_OPEN_READ_ONLY`, it is in WAL mode, read `schema_version` first and refuse a version you don't know, never write to it; plugins on other machines use the HTTP API), `audio_formats`; `system_named()` and `has_format()`. The name and FCC licenses are optional, so often empty |
+| `Setup` | What `start` gets: `config`, `systems` (each with `index`, `short_name`, `kind`, `name`, `fcc` (its FCC licenses by frequency), `fcc_call_sign` and `fcc_name` (the one that names it), `sites` (each `SiteInfo { name }`), and your `SystemConfig` or `None`), `host` (`HostInfo { name, version }`: the recorder's), `capture_dir`, `data_dir`, `audio_formats`; `system_named()` and `has_format()`. The name and FCC licenses are optional, so often empty |
 | `Host` | The way back, usable from any thread: `info`/`warn`/`error`/`debug`, `status`, `call_result` (and `call_result_took`, with your time on it), `metrics`. Never `println!` in a plugin: stdout belongs to the protocol |
 | `Reply` | The answer to a button (`Plugin::action`): `ok(message)` or `fail(message)`, once, from any thread; dropped unsent, it answers that the plugin didn't. The recorder waits 15 s for it |
 | `CallQueue`, `QueueOptions`, `Attempt` | An upload queue on worker threads (2 by default) with retries after 10 s, 1 min, 5 min and 15 min, a warning status while calls wait, `call.result`s and `metrics` sent for you, and calls still waiting at shutdown saved to the data folder (`QueueOptions::saved_in`) and resumed next start. Your closure returns `Attempt::Done`, `Skip`, `Retry` or `Fail`. `CallQueue::start_by` also takes a closure naming each call's lane (the server it goes to): each lane gets workers, retries and an endpoint status of its own |

@@ -201,8 +201,9 @@ fn alone(mut h: Arc<PluginHost>) -> PluginHost {
     }
 }
 
-/// The systems, the capture folder and the call store's file a recording's plugins started with.
-type StartEnv = (Vec<SystemInfo>, PathBuf, Option<PathBuf>);
+/// What a recording's plugins start with: the systems, the capture folder,
+/// and what answers their `calls.query`.
+type StartEnv = (Vec<SystemInfo>, PathBuf, super::Calls);
 
 /// The plugins' part of the app's shared state.
 pub struct Plugins {
@@ -316,9 +317,9 @@ impl Plugins {
     }
 
     /// Start the config's enabled plugins for a recording.
-    /// `store`: the call store's file, if it has one (plugins on this machine may read it).
-    pub fn start(&self, cfg: &Config, store: Option<PathBuf>) {
-        *self.env.lock().unwrap() = Some((super::systems_of(cfg), PathBuf::from(&cfg.recording.capture_dir), store));
+    /// `calls`: answers the plugins' `calls.query`.
+    pub fn start(&self, cfg: &Config, calls: super::Calls) {
+        *self.env.lock().unwrap() = Some((super::systems_of(cfg), PathBuf::from(&cfg.recording.capture_dir), calls));
         self.set_delays(cfg);
         let host = self.new_host(cfg, true, Arc::new(AtomicBool::new(true)));
         self.hold.attach(host.as_ref().map(PluginHost::outlet));
@@ -390,7 +391,7 @@ impl Plugins {
     /// `fresh`: a new recording (counts start over); else a restart within one.
     /// `go`: when the processes may start (`PluginHost::start_when`).
     fn new_host(&self, cfg: &Config, fresh: bool, go: Arc<AtomicBool>) -> Option<PluginHost> {
-        let (systems, capture_dir, store) = self.env.lock().unwrap().clone()?;
+        let (systems, capture_dir, calls) = self.env.lock().unwrap().clone()?;
         let notes = self.notes();
         let specs = Spec::enabled(cfg);
         {
@@ -410,7 +411,7 @@ impl Plugins {
         if specs.is_empty() {
             return None;
         }
-        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, store.as_deref(), notes, go, Some(self.hold.clone()));
+        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, notes, go, Some(self.hold.clone()), Some(calls));
         (!host.is_empty()).then_some(host)
     }
 
