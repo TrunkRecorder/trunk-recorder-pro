@@ -20,7 +20,11 @@ use crate::runtime::Ctx;
 /// Files between looks at the writer's queue.
 const YIELD_EVERY: usize = 200;
 /// Queued writes above which the backfill waits for the writer.
-const QUEUE_HIGH: usize = 2048;
+///
+/// The writer's `MAX_BATCH` is derived from this: held writes count as
+/// queued, so a batch cut above it could never be reached while the
+/// backfill waits.
+pub(super) const QUEUE_HIGH: usize = 2048;
 /// Files between progress lines in the log.
 const LOG_EVERY: usize = 10_000;
 
@@ -521,6 +525,26 @@ mod tests {
         }
         let unique: BTreeSet<_> = folders.iter().collect();
         assert_eq!(unique.len(), folders.len());
+    }
+
+    #[test]
+    fn a_long_batch_interval_does_not_throttle_the_backfill() {
+        let calls: Vec<(String, u32, i64)> = (0..6000).map(|i| (format!("s/{i}"), 1, i)).collect();
+        let refs: Vec<(&str, u32, i64)> =
+            calls.iter().map(|(p, t, s)| (p.as_str(), *t, *s)).collect();
+        let dir = capture("slow-batch", &refs);
+        let (db, _) = Db::for_test_with_batch("backfill-slow-batch", Duration::from_secs(60));
+        let t = std::time::Instant::now();
+        let s = run(&db, &dir, &[], 0, 10_000);
+        assert_eq!(s.indexed, 6000);
+        assert!(
+            t.elapsed() < Duration::from_secs(20),
+            "a 60 s batch interval held the backfill: {:?}",
+            t.elapsed()
+        );
+        assert!(db.commits() >= 3, "{} commits", db.commits());
+        db.flush().unwrap();
+        assert_eq!(count(&db, "select count(*) from calls"), 6000);
     }
 
     #[test]

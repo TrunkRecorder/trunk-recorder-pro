@@ -15,8 +15,14 @@ use super::{Pending, Write};
 use crate::runtime::{Hub, publish};
 
 /// Most writes held back while waiting out the interval; past it the batch
-/// commits early, so the wait never holds more than the channel could.
-const MAX_BATCH: usize = 4096;
+/// commits early. It sits below the backfill's high-water mark
+/// (`QUEUE_HIGH`), because held writes still count as queued: were it
+/// above, the backfill would stall at `QUEUE_HIGH` rows for the whole
+/// interval. This way a backfill commits about a thousand rows per
+/// transaction as fast as the disk allows, while live traffic still batches
+/// per interval.
+const MAX_BATCH: usize = super::backfill::QUEUE_HIGH / 2;
+const _: () = assert!(MAX_BATCH < super::backfill::QUEUE_HIGH);
 
 /// Start the `db-writer` thread. It runs until every sender of `rx` is gone.
 /// `queued` counts the writes sent and not yet taken off the channel.
