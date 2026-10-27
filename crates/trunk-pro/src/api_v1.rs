@@ -51,15 +51,19 @@ fn refused(ctx: &Ctx, door: &Door) -> Option<Response> {
         .then(|| error(StatusCode::SERVICE_UNAVAILABLE, "the call store is off").into_response())
 }
 
+/// Parameter `name`, trimmed; one that is empty is as if not given.
+fn param<'a>(q: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
+    q.get(name).map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
 /// Parameter `name` as a number, if given.
 fn number<T: std::str::FromStr>(
     q: &HashMap<String, String>,
     name: &str,
 ) -> Result<Option<T>, Fail> {
-    match q.get(name) {
+    match param(q, name) {
         None => Ok(None),
         Some(v) => v
-            .trim()
             .parse()
             .map(Some)
             .map_err(|_| error(StatusCode::BAD_REQUEST, &format!("{name} must be a number"))),
@@ -67,7 +71,7 @@ fn number<T: std::str::FromStr>(
 }
 
 fn filter(ctx: &Ctx, q: &HashMap<String, String>) -> Result<CallsFilter, Fail> {
-    let systems = match q.get("system") {
+    let systems = match param(q, "system") {
         Some(name) => runtime::systems_for(&ctx.config.lock().unwrap(), name),
         None => Vec::new(),
     };
@@ -235,7 +239,10 @@ mod tests {
                 .len(),
             0
         );
-        assert_eq!(json_of(&get(&ctx, "/api/v1/calls?system=ohmarcs&from=0&to=1700000001000&before=1700000001000&limit=5").await.1)["entries"].as_array().unwrap().len(), 1);
+        let every = "system=ohmarcs&from=0&to=1700000001000&before=1700000001000&limit=5";
+        let (code, body) = get(&ctx, &format!("/api/v1/calls?{every}")).await;
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(json_of(&body)["entries"].as_array().unwrap().len(), 1);
         let (code, body) = get(&ctx, "/api/v1/calls/ohmarcs/a").await;
         assert_eq!(code, 200);
         assert_eq!(json_of(&body)["record"]["talkgroup"], 9179);
@@ -271,6 +278,66 @@ mod tests {
             (Some(120), Some(60))
         );
         assert!(v["path"].as_str().unwrap().ends_with("trunk-pro.sqlite"));
+    }
+
+    #[tokio::test]
+    async fn an_empty_parameter_is_absent() {
+        let dir = TestDir::new("api-v1-empty");
+        let ctx = runtime::test_ctx(&dir.join("api-v1-empty-cap"));
+        let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
+        runtime::index_call(&ctx, "ohmarcs/a", &r, &r.to_json(), true, true);
+        ctx.db.flush().unwrap();
+        for q in [
+            "talkgroup=",
+            "system=",
+            "system=%20",
+            "unit=",
+            "from=&to=",
+            "before=%20",
+            "limit=",
+            "talkgroup=&system=&unit=&from=&to=&before=&limit=",
+        ] {
+            let (code, body) = get(&ctx, &format!("/api/v1/calls?{q}")).await;
+            assert_eq!(code, 200, "{q}: {body}");
+            assert_eq!(
+                json_of(&body)["entries"].as_array().unwrap().len(),
+                1,
+                "{q}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_interface_door_reads_with_listen_and_is_404_when_disabled() {
+        use trunk_app::config::{ApiAccess, Interface};
+        let dir = TestDir::new("api-v1-iface");
+        let ctx = runtime::test_ctx(&dir.join("api-v1-iface-cap"));
+        let (_tx, stop) = tokio::sync::watch::channel(false);
+        let door = Door::Interface {
+            id: "wall".into(),
+            stop,
+        };
+        let set = |enabled| {
+            ctx.config.lock().unwrap().server.interfaces.insert(
+                "wall".into(),
+                Interface {
+                    port: 8081,
+                    enabled,
+                    access: ApiAccess::Listen,
+                    ..Default::default()
+                },
+            )
+        };
+        set(true);
+        for p in ["/api/v1/calls", "/api/v1/store"] {
+            let (code, body) = get_as(&ctx, door.clone(), p).await;
+            assert_eq!(code, 200, "{p}: {body}");
+        }
+        set(false);
+        for p in ["/api/v1/calls", "/api/v1/calls/ohmarcs/a", "/api/v1/store"] {
+            let (code, body) = get_as(&ctx, door.clone(), p).await;
+            assert_eq!((code, body.as_str()), (404, ""), "{p}");
+        }
     }
 
     #[tokio::test]

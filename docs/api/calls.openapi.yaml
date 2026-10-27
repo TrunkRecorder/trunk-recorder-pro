@@ -1,3 +1,5 @@
+# The `$ref`s to protocol.schema.json point at a JSON Schema (draft-07) the
+# server serves beside this file (/api/protocol.schema.json, also /api/schema).
 openapi: 3.0.3
 info:
   title: Trunk Recorder Pro call store
@@ -7,7 +9,8 @@ info:
     machines. Served on every door that serves the recorder's API, to a
     connection with listen or control access. When the call store could not
     be opened, every route answers 503. Calls finished within the last
-    `batchSeconds` may not be in /calls yet.
+    `batchSeconds` may not be in /calls yet. A parameter given empty is
+    treated as not given.
 servers:
   - url: http://localhost:8080
 paths:
@@ -21,7 +24,7 @@ paths:
         - { name: from, in: query, description: Start time, Unix ms, inclusive., schema: { type: integer, format: int64 } }
         - { name: to, in: query, description: Start time, Unix ms, exclusive., schema: { type: integer, format: int64 } }
         - { name: before, in: query, description: "Start time, Unix ms, exclusive: the previous page's `before`.", schema: { type: integer, format: int64 } }
-        - { name: limit, in: query, description: "1 to 500; larger and smaller values are clamped.", schema: { type: integer, default: 100 } }
+        - { name: limit, in: query, description: "1 to 500; 0 is treated as 1 and a larger value as 500; a negative or non-numeric value is 400.", schema: { type: integer, default: 100 } }
       responses:
         "200":
           description: A page of calls.
@@ -38,6 +41,7 @@ paths:
                   before: { type: integer, format: int64, description: Where the next page starts; pass it as `before`. }
         "400": { $ref: "#/components/responses/Error" }
         "404": { description: The door is off. }
+        "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/calls/{path}:
     get:
@@ -50,7 +54,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "protocol.schema.json#/definitions/CallEntry" }
-        "404": { $ref: "#/components/responses/Error" }
+        "404":
+          description: "Either no such call, with the body `{\"error\": \"no such call\"}`, or the door is off, with no body."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/store:
     get:
@@ -72,15 +81,18 @@ paths:
                   retentionDays: { type: integer, description: "`store.retentionDays`; 0 keeps every call." }
                   batchSeconds: { type: integer, description: "`store.batchSeconds`: how long a finished call may wait before it is committed." }
         "404": { description: The door is off. }
+        "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
 components:
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
   responses:
     Error:
-      description: "An error: a bad parameter (400), no such call (404), or the call store is off (503)."
+      description: "An error: a bad parameter (400), no such call (404), the store could not be read (500), or the call store is off (503)."
       content:
         application/json:
-          schema:
-            type: object
-            required: [error]
-            properties:
-              error: { type: string }
+          schema: { $ref: "#/components/schemas/Error" }

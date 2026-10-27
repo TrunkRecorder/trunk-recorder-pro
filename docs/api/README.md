@@ -625,7 +625,7 @@ opened, each answers 503 `{"error": "the call store is off"}`.
 
 | Route | Answers |
 |---|---|
-| `GET /api/v1/calls` | `{ entries, more, before }` as `callsResult` has them: `CallEntry`s, newest first. Parameters, all optional: `system` (short name; its sites' old names too), `talkgroup`, `unit` (a radio), `from` (start time, Unix ms, inclusive), `to` (exclusive), `before` (Unix ms: pass the last answer's `before` for the next page), `limit` (1 to 500, default 100). A bad number answers 400 `{"error": "<name> must be a number"}`. |
+| `GET /api/v1/calls` | `{ entries, more, before }` as `callsResult` has them: `CallEntry`s, newest first. Parameters, all optional: `system` (short name; its sites' old names too), `talkgroup`, `unit` (a radio), `from` (start time, Unix ms, inclusive), `to` (exclusive), `before` (Unix ms: pass the last answer's `before` for the next page), `limit` (1 to 500, default 100). A parameter given empty counts as not given; a bad number answers 400 `{"error": "<name> must be a number"}`. |
 | `GET /api/v1/calls/<path>` | One `CallEntry`: `{ path, record, audio, json }`, for the `path` its entry has (slashes stay slashes); 404 `{"error": "no such call"}` when there is none. |
 | `GET /api/v1/store` | `{ path, schemaVersion, calls, oldestMs, newestMs, retentionDays, batchSeconds }`: where the store is, how many calls it holds and the start times of the oldest and newest (`null` when empty), and the settings `store.retentionDays` and `store.batchSeconds`. |
 

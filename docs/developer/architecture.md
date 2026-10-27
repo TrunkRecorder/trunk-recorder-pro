@@ -1717,6 +1717,7 @@ hub skips the oldest without notice.
 |---|---|
 | `/api/ws` | the WebSocket |
 | `/api/version`, `/api/schema`, `/api/protocol.ts`, `/api/docs`, `/api/*` | version (and interface API), schema, TypeScript types, API docs and examples |
+| `/api/v1/calls`, `/api/v1/calls/<path>`, `/api/v1/store` | the call store as JSON (`docs/api/calls.openapi.yaml`), with listen or control access; 503 when the store is off |
 | `/calls/<path>` | recordings (folder, then RAM spool), WAV ↔ M4A substitution, Range requests |
 | `/store/screenshots/<sha256>`, `/interfaces/<id>/screenshots/<n>` | store listings' screenshots (built-in port only) |
 | everything else | on `server.port` the embedded interface; on an interface's port, its folder (no hidden files) |
