@@ -3,6 +3,7 @@
 //! (`<captureDir>/<shortName>/<YYYY>/<M>/<D>/<tg>-<epoch>_<freq>.wav|json`, a folder per system) and
 //! publishes what happens to the browser interface through the [`Hub`].
 
+use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -10,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, Offset, TimeZone};
 use serde_json::{json, Value};
@@ -95,7 +96,11 @@ pub struct Ctx {
     pub lifecycle: Mutex<Lifecycle>,
     /// The phase the browsers are told (the engine thread reports it as it goes).
     pub phase: Mutex<PhaseInfo>,
-    /// The call store: every finished call, as the interface lists them.
+    /// The calls concluded lately (newest first), as sent to the browser:
+    /// the live list (`history`, `callFiles`), kept whether or not the call
+    /// store is open. The store keeps the record; queries merge the two.
+    pub recent: Mutex<VecDeque<Value>>,
+    /// The call store: every finished call, indexed (off when it can't be opened).
     pub db: crate::db::Db,
     /// Signalled by a browser's `quit`.
     pub quit: tokio::sync::Notify,
@@ -1172,27 +1177,87 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
     }
 }
 
-/// A finished call, entered in the store (`json` is its record as written,
-/// `audio` and `json_kept` what is kept of it so far). Gives the entry the
-/// interface is sent.
+/// A finished call: put at the front of the live list and handed to the
+/// store (`json` is its record as written, `audio` and `json_kept` what is
+/// kept of it so far). Gives the entry the interface is sent.
 pub fn index_call(ctx: &Ctx, rel: &str, record: &trunk_recorder_plugin::CallRecord, json: &str, audio: bool, json_kept: bool) -> Value {
     let mut entry = trunk_app::session::call_entry(rel, record);
     entry["audio"] = json!(audio);
     entry["json"] = json!(json_kept);
+    {
+        let mut r = ctx.recent.lock().unwrap();
+        r.push_front(entry.clone());
+        r.truncate(RECENT_KEPT);
+    }
     let row = crate::db::row::call_row(rel, record, json, audio, json_kept, ctx.db.recorder(), crate::clock::unix_ms() as i64);
     ctx.db.send(Write::Call { row, live: true });
     entry
 }
 
 /// A call's plugins are done: what of it was kept (`audio`, `json`). The
-/// store settles its row, and tells the interface when that's not what the
-/// entry said (an upload failed and the files were kept after all).
+/// live list follows, and the interface is told at once when that's not what
+/// the entry said (an upload failed and the files were kept after all); the
+/// store's row follows with its next commit.
 pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
-    ctx.db.send(Write::CallFiles { path: rel.replace('\\', "/"), audio, json });
+    let rel = rel.replace('\\', "/");
+    ctx.db.send(Write::CallFiles { path: rel.clone(), audio, json });
+    let mut r = ctx.recent.lock().unwrap();
+    let Some(e) = r.iter_mut().find(|e| e["path"] == rel) else { return };
+    if e["audio"] == json!(audio) && e["json"] == json!(json) {
+        return;
+    }
+    e["audio"] = json!(audio);
+    e["json"] = json!(json);
+    drop(r);
+    publish(&ctx.hub, ToClient::CallFiles { path: rel, audio, json });
 }
 
 /// Calls the interface's history list is given.
 pub const HISTORY: usize = 300;
+/// Calls kept in the live list.
+const RECENT_KEPT: usize = 500;
+
+/// With the call store off: fill the live list with the newest calls already
+/// on disk, in the background (a capture folder with years of calls takes a
+/// while to walk). Calls concluded meanwhile stay in front.
+pub fn load_recent(ctx: Arc<Ctx>) {
+    let dir = PathBuf::from(&ctx.config.lock().unwrap().recording.capture_dir);
+    let _ = std::thread::Builder::new().name("recent".into()).spawn(move || {
+        let found = scan_recent(&dir, HISTORY);
+        let mut r = ctx.recent.lock().unwrap();
+        let known: std::collections::HashSet<String> = r.iter().filter_map(|e| e["path"].as_str().map(String::from)).collect();
+        r.extend(found.into_iter().filter(|e| e["path"].as_str().is_none_or(|p| !known.contains(p))));
+        r.truncate(RECENT_KEPT);
+    });
+}
+
+/// The newest `limit` calls already on disk, by when their records were written.
+fn scan_recent(dir: &Path, limit: usize) -> VecDeque<Value> {
+    let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "json") {
+                found.push((e.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH), p));
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found
+        .into_iter()
+        .take(limit)
+        .filter_map(|(_, p)| {
+            let record: Value = serde_json::from_str(&fs::read_to_string(&p).ok()?).ok()?;
+            let rel = p.strip_prefix(dir).ok()?.with_extension("");
+            let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
+            Some(json!({ "path": rel.to_string_lossy().replace('\\', "/"), "record": record, "audio": audio, "json": true }))
+        })
+        .collect()
+}
 
 /// A read of the call store failed: a warning, but only a debug line when
 /// the store is off (said once, at open), since every connection asks.
@@ -1204,17 +1269,21 @@ fn store_error(ctx: &Ctx, what: &str, e: &str) {
     }
 }
 
-/// The `history` message: the newest calls, the live ones the store has not
-/// yet committed first (they win over a stored copy), by start time.
+/// The `history` message: the newest calls, from the live list and the store
+/// (the live copy wins), by start time.
 pub fn history(ctx: &Ctx) -> ToClient {
-    let stored = ctx.db.with_reader(|c| crate::db::read::newest(c, HISTORY)).unwrap_or_else(|e| {
-        store_error(ctx, "history", &e);
+    // (The live list first: a call committed meanwhile is then in one or the other.)
+    let live: Vec<Value> = ctx.recent.lock().unwrap().iter().cloned().collect();
+    let stored = if ctx.db.is_disabled() {
         Vec::new()
-    });
+    } else {
+        ctx.db.with_reader(|c| crate::db::read::newest(c, HISTORY)).unwrap_or_else(|e| {
+            store_error(ctx, "history", &e);
+            Vec::new()
+        })
+    };
     let mut seen = std::collections::HashSet::new();
-    let mut entries: Vec<Value> = ctx
-        .db
-        .pending()
+    let mut entries: Vec<Value> = live
         .into_iter()
         .chain(stored)
         .filter(|e| seen.insert(e["path"].as_str().unwrap_or_default().to_string()))
@@ -1345,14 +1414,14 @@ pub fn test_ctx(capture_dir: &Path) -> Arc<Ctx> {
 /// it: off if it cannot be opened.
 #[cfg(test)]
 pub fn test_ctx_with_store(capture_dir: &Path, store: &Path) -> Arc<Ctx> {
-    crate::protocol_tests::ctx_with(test_config(capture_dir), capture_dir, |hub| crate::db::Db::open_or_off(store, hub, std::time::Duration::from_secs(1)))
+    crate::protocol_tests::ctx_with(test_config(capture_dir), capture_dir, |_| crate::db::Db::open_or_off(store, std::time::Duration::from_secs(1)))
 }
 
 /// As [`test_ctx`], committing the call store every `batch`.
 #[cfg(test)]
 pub fn test_ctx_with_batch(capture_dir: &Path, batch: std::time::Duration) -> Arc<Ctx> {
     let name = format!("ctx-batch-{}", capture_dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
-    crate::protocol_tests::ctx_with(test_config(capture_dir), capture_dir, |hub| crate::db::Db::for_test_on(&name, hub, batch).0)
+    crate::protocol_tests::ctx_with(test_config(capture_dir), capture_dir, |_| crate::db::Db::for_test_with_batch(&name, batch).0)
 }
 
 #[cfg(test)]
@@ -1393,6 +1462,32 @@ mod finish_tests {
         let text = crate::server::text_for(&out, true).expect("text");
         let m: Value = serde_json::from_str(&text).unwrap();
         assert_eq!((m["type"].as_str(), m["path"].as_str(), m["audio"].as_bool()), (Some("callFiles"), Some(rel), Some(false)));
+    }
+}
+
+#[cfg(test)]
+mod live_list_tests {
+    use super::*;
+
+    /// With the call store off, the live list still answers `history`, and a
+    /// call's kept files are told at once (not at the store's next commit).
+    #[test]
+    fn the_live_list_answers_without_the_store() {
+        let dir = crate::db::TestDir::new("live-off");
+        let store = dir.join("trunk-pro.sqlite");
+        crate::db::seed_newer(&store);
+        let ctx = test_ctx_with_store(&dir.join("capture"), &store);
+        assert!(ctx.db.is_disabled());
+        let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
+        let rel = "ohmarcs/2026/10/26/9179-1700000000_851350000";
+        let entry = index_call(&ctx, rel, &r, &r.to_json(), true, true);
+        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        assert_eq!(entries, [entry]);
+        let mut heard = ctx.hub.subscribe();
+        call_files(&ctx, rel, false, true);
+        assert!(heard.try_recv().is_ok(), "callFiles is sent at once");
+        call_files(&ctx, rel, false, true);
+        assert!(heard.try_recv().is_err(), "and not again when nothing changed");
     }
 }
 

@@ -8,11 +8,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use trunk_app::protocol::ToClient;
 
+use super::Write;
 use super::row::CallRow;
-use super::{Pending, Write};
-use crate::runtime::{Hub, publish};
 
 /// Most writes held back while waiting out the interval; past it the batch
 /// commits early. It sits below the backfill's high-water mark
@@ -34,26 +32,11 @@ const _: () = assert!(MAX_BATCH < super::backfill::QUEUE_HIGH);
 /// `queued` counts the writes sent and not yet taken off the channel.
 /// Under load it commits once per `batch`; a lone write after a quiet spell
 /// commits at once, and a `Flush` forces the commit.
-pub fn spawn(
-    conn: Connection,
-    hub: Hub,
-    rx: Receiver<Write>,
-    commits: Arc<AtomicU64>,
-    queued: Arc<AtomicUsize>,
-    batch: Duration,
-    pending: Pending,
-) -> Option<std::thread::JoinHandle<()>> {
+pub fn spawn(conn: Connection, rx: Receiver<Write>, commits: Arc<AtomicU64>, queued: Arc<AtomicUsize>, batch: Duration) -> Option<std::thread::JoinHandle<()>> {
     let spawned = std::thread::Builder::new()
         .name("db-writer".into())
         .spawn(move || {
-            let mut w = Writer {
-                conn,
-                hub,
-                commits,
-                queued,
-                batch,
-                pending,
-            };
+            let mut w = Writer { conn, commits, queued, batch };
             w.run(rx);
         });
     spawned
@@ -61,16 +44,14 @@ pub fn spawn(
         .ok()
 }
 
+/// The writer persists only: the live list and the interface are told at
+/// once by whoever sends the write (`runtime::index_call`, `call_files`).
 struct Writer {
     conn: Connection,
-    /// For announcing changes to browsers once rows are written.
-    hub: Hub,
     commits: Arc<AtomicU64>,
     queued: Arc<AtomicUsize>,
     /// The least time between the starts of two commits under load.
     batch: Duration,
-    /// Live calls sent and not yet committed; cleared as they commit.
-    pending: Pending,
 }
 
 impl Writer {
@@ -123,10 +104,6 @@ impl Writer {
                     match tx.commit() {
                         Ok(()) => {
                             self.commits.fetch_add(1, Ordering::Relaxed);
-                            settle(&self.pending, &batch.committed);
-                            for m in batch.announce.drain(..) {
-                                publish(&self.hub, m);
-                            }
                         }
                         Err(e) => {
                             log::warn!("Call store: commit failed: {e}");
@@ -209,18 +186,6 @@ impl Writer {
     }
 }
 
-/// The batch is in the file: its live calls are no longer pending.
-fn settle(pending: &Pending, committed: &[String]) {
-    if committed.is_empty() {
-        return;
-    }
-    let done: std::collections::HashSet<&str> = committed.iter().map(String::as_str).collect();
-    pending
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .retain(|(path, _)| !done.contains(path.as_str()));
-}
-
 /// What one transaction collects while its writes are applied.
 #[derive(Default)]
 struct Batch {
@@ -229,10 +194,6 @@ struct Batch {
     checkpoint: bool,
     /// The newest retention cut asked for, run after the commit.
     retention: Option<i64>,
-    /// Changes to tell browsers about once the rows are committed.
-    announce: Vec<ToClient>,
-    /// Paths of live calls written, cleared from `pending` on commit.
-    committed: Vec<String>,
 }
 
 /// Apply one write inside the batch's transaction. Failures are logged; the
@@ -244,17 +205,12 @@ fn apply(conn: &Connection, w: Write, batch: &mut Batch, queued: &AtomicUsize) {
             if let Err(e) = write_call(conn, &row, live) {
                 log::warn!("Call store: call write {} failed: {e}", row.path);
             }
-            if live {
-                batch.committed.push(row.path);
+        }
+        Write::CallFiles { path, audio, json } => {
+            if let Err(e) = set_files(conn, &path, audio, json) {
+                log::warn!("Call store: files write {path} failed: {e}");
             }
         }
-        Write::CallFiles { path, audio, json } => match set_files(conn, &path, audio, json) {
-            Ok(true) => batch
-                .announce
-                .push(ToClient::CallFiles { path, audio, json }),
-            Ok(false) => {}
-            Err(e) => log::warn!("Call store: files write {path} failed: {e}"),
-        },
         // Runs after the batch commits, in transactions of its own.
         Write::Retention { before_ms } => {
             batch.retention = Some(batch.retention.map_or(before_ms, |b| b.max(before_ms)));
@@ -399,7 +355,6 @@ fn set_files(conn: &Connection, path: &str, audio: bool, json: bool) -> rusqlite
 mod tests {
     use super::super::row::{call_row, tests::record};
     use super::super::{Db, Write};
-    use crate::runtime::Out;
 
     #[test]
     fn a_stream_commits_once_per_interval() {
@@ -527,38 +482,14 @@ mod tests {
     }
 
     #[test]
-    fn call_files_updates_the_flags_and_says_so_once() {
-        let (hub, mut rx) = tokio::sync::broadcast::channel(16);
-        let (db, _) = Db::for_test_on("files", hub, std::time::Duration::from_secs(1));
+    fn call_files_updates_the_flags() {
+        let (db, _) = Db::for_test("files");
         let r = record(1, 1000);
-        db.send(Write::Call {
-            row: call_row("ohmarcs/b", &r, &r.to_json(), true, true, None, 1),
-            live: true,
-        });
-        // Same batch: the first update changes nothing, the second does.
-        db.send(Write::CallFiles {
-            path: "ohmarcs/b".into(),
-            audio: true,
-            json: true,
-        });
-        db.send(Write::CallFiles {
-            path: "ohmarcs/b".into(),
-            audio: false,
-            json: true,
-        });
+        db.send(Write::Call { row: call_row("ohmarcs/b", &r, &r.to_json(), true, true, None, 1), live: true });
+        db.send(Write::CallFiles { path: "ohmarcs/b".into(), audio: false, json: true });
         db.flush().unwrap();
-        let m = rx.try_recv().expect("one callFiles");
-        let Out::Text(s) = &*m else {
-            panic!("callFiles goes to every connection")
-        };
-        assert!(
-            s.contains("\"callFiles\"") && s.contains("\"audio\":false"),
-            "{s}"
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "no message for the unchanged update"
-        );
+        let (audio, json): (bool, bool) = db.with_reader(|c| c.query_row("select audio, json from calls where path = 'ohmarcs/b'", [], |r| Ok((r.get(0)?, r.get(1)?)))).unwrap();
+        assert_eq!((audio, json), (false, true));
     }
 
     #[test]

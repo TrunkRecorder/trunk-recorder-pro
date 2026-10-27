@@ -10,7 +10,6 @@ pub mod row;
 pub mod schema;
 pub mod writer;
 
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
@@ -19,21 +18,13 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
-use serde_json::Value;
 
-use crate::runtime::Hub;
 use row::CallRow;
 
 /// Writes the channel holds before `send` blocks.
 const QUEUE_LEN: usize = 4096;
 /// Read-only connections opened up front, and the most the pool keeps.
 const READERS: usize = 4;
-/// Live calls kept as pending entries at most; the oldest are about to be
-/// committed anyway.
-const PENDING_MAX: usize = 5000;
-/// Live calls sent to the writer and not yet committed, as history entries,
-/// newest first.
-pub type Pending = Arc<Mutex<VecDeque<(String, Value)>>>;
 /// A day, in milliseconds.
 const DAY_MS: i64 = 86_400_000;
 
@@ -74,7 +65,6 @@ struct Inner {
     /// The writer thread, waited for when the last handle goes.
     writer: Option<JoinHandle<()>>,
     queued: Arc<AtomicUsize>,
-    pending: Pending,
     backfill_running: AtomicBool,
     #[cfg(test)]
     commits: Arc<AtomicU64>,
@@ -105,7 +95,7 @@ impl Db {
     /// Open (creating if need be) the database at `path`, migrate it and start
     /// its writer. A file that is not a sound database is moved aside and
     /// replaced. The writer commits at most once per `batch` under load.
-    pub fn open(path: &Path, hub: Hub, batch: Duration) -> Result<Db, String> {
+    pub fn open(path: &Path, batch: Duration) -> Result<Db, String> {
         let dir = path
             .parent()
             .filter(|d| !d.as_os_str().is_empty())
@@ -136,23 +126,13 @@ impl Db {
         let (tx, rx) = sync_channel(QUEUE_LEN);
         let queued = Arc::new(AtomicUsize::new(0));
         let commits = Arc::new(AtomicU64::new(0));
-        let pending = Pending::default();
-        let writer = writer::spawn(
-            conn,
-            hub,
-            rx,
-            commits.clone(),
-            queued.clone(),
-            batch,
-            pending.clone(),
-        );
+        let writer = writer::spawn(conn, rx, commits.clone(), queued.clone(), batch);
         Ok(Db(Some(Arc::new(Inner {
             path: path.to_path_buf(),
             recorder,
             tx: Some(tx),
             writer,
             queued,
-            pending,
             backfill_running: AtomicBool::new(false),
             #[cfg(test)]
             commits,
@@ -168,8 +148,8 @@ impl Db {
     /// [`Db::open`], or the store off when it cannot be opened (a newer
     /// schema, a full disk, no permission, another instance holding it): the
     /// one error logged says why, and recording goes on without it.
-    pub fn open_or_off(path: &Path, hub: Hub, batch: Duration) -> Db {
-        Db::open(path, hub, batch).unwrap_or_else(|e| {
+    pub fn open_or_off(path: &Path, batch: Duration) -> Db {
+        Db::open(path, batch).unwrap_or_else(|e| {
             log::error!("Call store: off: {e}");
             Db::disabled()
         })
@@ -206,44 +186,13 @@ impl Db {
         let Some(tx) = &inner.tx else {
             return false;
         };
-        let mut tracked = None;
-        match &w {
-            Write::Call { row, live: true } => {
-                let entry = row::entry(&row.path, &row.record, row.audio, row.json);
-                let mut p = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
-                p.push_front((row.path.clone(), entry));
-                p.truncate(PENDING_MAX);
-                tracked = Some(row.path.clone());
-            }
-            Write::CallFiles { path, audio, json } => {
-                let mut p = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some((_, entry)) = p.iter_mut().find(|(q, _)| q == path) {
-                    entry["audio"] = (*audio).into();
-                    entry["json"] = (*json).into();
-                }
-            }
-            _ => {}
-        }
         inner.queued.fetch_add(1, Ordering::Relaxed);
         if tx.send(w).is_err() {
             inner.queued.fetch_sub(1, Ordering::Relaxed);
-            if let Some(path) = tracked {
-                let mut p = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
-                p.retain(|(q, _)| *q != path);
-            }
             log::warn!("Call store: the writer has stopped; write dropped");
             return false;
         }
         true
-    }
-
-    /// Entries of the live calls sent and not yet committed, newest first.
-    /// Empty when the store is off.
-    pub fn pending(&self) -> Vec<Value> {
-        self.0.as_deref().map_or_else(Vec::new, |i| {
-            let p = i.pending.lock().unwrap_or_else(|e| e.into_inner());
-            p.iter().map(|(_, e)| e.clone()).collect()
-        })
     }
 
     /// The time retention and the backfill count back from: `now_ms`, but at
@@ -396,16 +345,9 @@ impl Db {
     /// As [`Db::for_test`], committing every `batch`.
     #[cfg(test)]
     pub fn for_test_with_batch(name: &str, batch: Duration) -> (Db, PathBuf) {
-        let (hub, _) = tokio::sync::broadcast::channel(16);
-        Db::for_test_on(name, hub, batch)
-    }
-
-    /// As [`Db::for_test_with_batch`], publishing on `hub`.
-    #[cfg(test)]
-    pub fn for_test_on(name: &str, hub: Hub, batch: Duration) -> (Db, PathBuf) {
         let dir = TestDir::new(&format!("db-{name}"));
         let path = dir.join("trunk-pro.sqlite");
-        let mut db = Db::open(&path, hub, batch).expect("open test db");
+        let mut db = Db::open(&path, batch).expect("open test db");
         if let Some(inner) = db.0.as_mut().and_then(Arc::get_mut) {
             inner.dir = Some(dir);
         }
@@ -445,8 +387,7 @@ impl Drop for TestDir {
 /// A database at `path` whose schema version says a newer build wrote it.
 #[cfg(test)]
 pub fn seed_newer(path: &Path) {
-    let (hub, _) = tokio::sync::broadcast::channel(16);
-    drop(Db::open(path, hub, Duration::from_secs(1)).unwrap());
+    drop(Db::open(path, Duration::from_secs(1)).unwrap());
     let conn = Connection::open(path).unwrap();
     conn.execute("update schema_version set version = 99", [])
         .unwrap();
@@ -560,10 +501,6 @@ fn move_aside(path: &Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
-    fn hub() -> Hub {
-        tokio::sync::broadcast::channel(16).0
-    }
-
     #[test]
     fn opening_creates_the_file_and_schema_version_1() {
         let (db, path) = Db::for_test("open");
@@ -607,39 +544,6 @@ mod tests {
             !path.parent().unwrap().exists(),
             "the writer has let go and the folder is gone"
         );
-    }
-
-    #[test]
-    fn a_live_call_is_pending_until_its_commit() {
-        let (db, _) = Db::for_test_with_batch("pending", std::time::Duration::from_secs(60));
-        let r = row::tests::record(1, 1000);
-        let json = r.to_json();
-        // A commit, so the next write waits for the interval.
-        db.send(Write::Meta {
-            key: "warm".into(),
-            value: "1".into(),
-        });
-        db.flush().unwrap();
-        db.send(Write::Call {
-            row: row::call_row("s/p", &r, &json, true, true, None, 0),
-            live: true,
-        });
-        let p = db.pending();
-        assert_eq!(p.len(), 1);
-        assert_eq!(p[0]["path"], "s/p");
-        db.send(Write::CallFiles {
-            path: "s/p".into(),
-            audio: false,
-            json: true,
-        });
-        assert_eq!(
-            db.pending()[0]["audio"],
-            false,
-            "flags settled while pending are reflected"
-        );
-        db.flush().unwrap();
-        assert!(db.pending().is_empty(), "cleared by the commit");
-        assert!(Db::disabled().pending().is_empty());
     }
 
     #[test]
@@ -692,7 +596,7 @@ mod tests {
         let dir = TestDir::new("db-corrupt");
         let path = dir.join("trunk-pro.sqlite");
         std::fs::write(&path, b"this is not a database").unwrap();
-        let db = Db::open(&path, hub(), Duration::from_secs(1)).unwrap();
+        let db = Db::open(&path, Duration::from_secs(1)).unwrap();
         let v: u32 = db
             .with_reader(|c| c.query_row("select version from schema_version", [], |r| r.get(0)))
             .unwrap();
@@ -748,7 +652,7 @@ mod tests {
         let dir = TestDir::new("db-newer");
         let path = dir.join("trunk-pro.sqlite");
         seed_newer(&path);
-        let err = Db::open(&path, hub(), Duration::from_secs(1))
+        let err = Db::open(&path, Duration::from_secs(1))
             .err()
             .expect("a newer schema must be refused");
         assert!(err.contains("99"), "{err}");
@@ -760,7 +664,7 @@ mod tests {
             .count();
         assert_eq!(aside, 0);
         assert!(
-            Db::open_or_off(&path, hub(), Duration::from_secs(1)).is_disabled(),
+            Db::open_or_off(&path, Duration::from_secs(1)).is_disabled(),
             "the recorder carries on with the store off"
         );
     }
@@ -786,11 +690,11 @@ mod tests {
     fn an_empty_recorder_id_is_none() {
         let dir = TestDir::new("db-recorder-id");
         std::fs::write(dir.join("directory-recorder-id"), b" \n").unwrap();
-        let db = Db::open(&dir.join("trunk-pro.sqlite"), hub(), Duration::from_secs(1)).unwrap();
+        let db = Db::open(&dir.join("trunk-pro.sqlite"), Duration::from_secs(1)).unwrap();
         assert_eq!(db.recorder(), None);
         drop(db);
         std::fs::write(dir.join("directory-recorder-id"), b"rec-1\n").unwrap();
-        let db = Db::open(&dir.join("trunk-pro.sqlite"), hub(), Duration::from_secs(1)).unwrap();
+        let db = Db::open(&dir.join("trunk-pro.sqlite"), Duration::from_secs(1)).unwrap();
         assert_eq!(db.recorder(), Some("rec-1"));
     }
 

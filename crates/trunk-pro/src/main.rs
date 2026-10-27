@@ -886,7 +886,7 @@ fn serve(a: &Args) {
     if batch_seconds != cfg.store.batch_seconds {
         log::warn!("store.batchSeconds {} is outside 1 to 3600; using {batch_seconds}", cfg.store.batch_seconds);
     }
-    let db = db::Db::open_or_off(&db_path, hub.clone(), std::time::Duration::from_secs(u64::from(batch_seconds)));
+    let db = db::Db::open_or_off(&db_path, std::time::Duration::from_secs(u64::from(batch_seconds)));
     db.start_retention(cfg.store.retention_days);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
@@ -896,6 +896,7 @@ fn serve(a: &Args) {
         hub: hub.clone(),
         lifecycle: Mutex::new(runtime::Lifecycle::default()),
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
+        recent: Mutex::new(std::collections::VecDeque::new()),
         db,
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
@@ -928,6 +929,10 @@ fn serve(a: &Args) {
     // Calls held back from plugins by the run before (the archive is told of them, so after on_settle).
     let cfg = ctx.config.lock().unwrap().clone();
     ctx.plugins.open_hold(&cfg);
+    // (The live list comes from the store; with it off, from a walk of the capture folder.)
+    if ctx.db.is_disabled() {
+        runtime::load_recent(ctx.clone());
+    }
     db::backfill::start(ctx.clone());
     {
         let c = ctx.config.lock().unwrap();
