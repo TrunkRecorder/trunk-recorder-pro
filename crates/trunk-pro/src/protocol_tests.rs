@@ -338,7 +338,7 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         shared,
         series: series.clone(),
         store: crate::statstore::Store::start(dir.join("stats"), series),
-        saver: crate::saver::Saver::start(),
+        saver: crate::saver::Saver::start(|_| {}),
         heard_last: Mutex::new(None),
         topics: Mutex::new(Default::default()),
         engine: Mutex::new(None),
@@ -515,6 +515,7 @@ fn the_servers_messages() {
         ToClient::CallSignResult { id: 3, results: vec![json!({ "callSign": "KNJA391", "licensee": "DISTRICT OF COLUMBIA", "serviceCode": "YE", "serviceDesc": null, "status": "A", "city": "WASHINGTON", "state": "DC" })], error: None },
         ToClient::LicenseResult { id: 2, results: vec![], error: Some("Couldn't reach https://trunkrecorder.pro".into()) },
         ToClient::Subscribed { topics: vec!["spectrum:0".into(), "log".into()] },
+        ToClient::TalkgroupEdited { system: "dcfd".into(), talkgroup: 101, edit: trunk_app::protocol::TalkgroupEdit { ignore: Some(true), alpha_tag: Some("FD Disp".into()), ..Default::default() } },
         // What the recorder itself logs (logging::to_browsers).
         ToClient::Log { lines: vec![json!({ "timeS": 0, "time": 1_750_000_000.5, "level": "warning", "kind": "error", "text": "No RAM spool" })] },
     ];
@@ -568,6 +569,8 @@ fn messages_to_the_recorder() {
         json!({ "type": "store", "kind": "interface" }),
         json!({ "type": "removeInterface", "id": "trunkamp" }),
         json!({ "type": "setTalkgroups", "system": "dcfd", "csv": "Decimal,Alpha Tag\n101,FD Disp\n" }),
+        json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 101, "edit": { "ignore": true } }),
+        json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 102, "edit": { "alphaTag": "FIRE4A", "description": "", "tag": "Fire Tac", "category": "Fire" } }),
     ];
     check_all("ToRecorder", &msgs);
     // And the recorder reads each as the docs give it.

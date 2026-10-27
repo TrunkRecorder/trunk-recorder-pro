@@ -1,189 +1,206 @@
 # Storage: what's kept on disk, how it's written, and SQLite
 
-Status (2026-10-26): the first steps are in the PR that adds this file:
+Status (2026-10-27).
 
-- a single background writer and one save rule;
-- text settings saved once you finish typing, not per letter.
- The rest is open for discussion before anyone builds it. Several people have
-mentioned SQLite, and this is meant to settle on one plan so we don't end up with competing
-implementations.
+**Done in PR #101:**
+
+- a single background writer and one save schedule;
+- text settings saved once you finish typing;
+- per-row talkgroup edits;
+- a save status in Setup, and Apply for plugin changes that restart a plugin;
+- per-row change tracking in the radio registry;
+- a benchmark of the ways to store the registry, run on the Pi.
+
+**Issue #100** (auggiesoft) proposes a SQLite store for calls, radios and stats. This document
+measures that design next to the alternatives, so one plan can be agreed before anyone builds it.
 
 ## Why
 
 Users with large systems on slow disks (SD cards, USB sticks) reported:
 
 - **Ignore clicks were slow.** One click took 5+ seconds to show, and several clicks in a row
-  could end in the wrong state (#98 works around this in the interface).
+  could end in the wrong state.
 - **Too many whole-file rewrites.** The recorder rewrote whole files to change one small thing.
 
-Both came from the same pattern: state is kept in memory, but every change rewrote its whole file.
-Each write also waited for the disk to confirm it (`write_atomic`, which ends with an fsync), on
-the thread that was handling the change.
+Both came from one pattern: state is kept in memory, but every change rewrote its whole file and
+waited for the disk to confirm (`write_atomic` ends with an fsync), on the thread handling the
+change. The interface added to it: a typed setting was saved whenever typing paused for 300 ms
+("Save 1: F, Save 2: FI, Save 3: FIR…"). See [When the interface saves](#when-the-interface-saves).
 
-The interface added to it. A typed setting was sent whenever typing paused for 300 ms, so a rename
-typed at an ordinary pace was several saves, as a user put it: "Save 1: F, Save 2: FI, Save 3:
-FIR…". See [When the interface saves](#when-the-interface-saves).
-
-## What's kept, and how (after this PR)
+## What's kept, and how (after #101)
 
 | File | What | Who edits it | Written |
 |---|---|---|---|
-| `config.json` | the setup | the user (Setup, or by hand) | on Save (still inline: the user waits to hear it saved) |
-| `<sys>.talkgroups.csv` | talkgroups, Ignore, tags | the user (Setup, Radio pages, by hand); Trunk Recorder's format | in the background, as last edited |
+| `config.json` | the setup | the user (Setup, or by hand) | when a setting is done (left, Enter), inline: the user is told it saved |
+| `<sys>.talkgroups.csv` | talkgroups, Ignore, tags | the user (Setup, Radio pages, by hand); Trunk Recorder's format | in the background; an Ignore or name edit is one row (`setTalkgroup`) |
 | `<sys>.units.csv` | talker aliases learned on the air | the recorder | every 10 s when changed |
 | `sharing.json` | what sharing with the directory did | the recorder | every 10 s when changed |
 | `<site>.bandplan` | learned band plans / DMR channel tables | the recorder | every 10 s when changed |
 | `conventional.heard.json` | codes each conventional frequency carried, counted | the recorder | every 60 s when changed |
 | `tune.json` | AutoTune scores | the recorder | every 60 s when changed |
-| `radio/<sys>.json` | the radio registry (talkgroups, radios, pairs, frequencies heard; a week by hour) | the recorder | every 15 min (browser: 1 min), whole |
+| `radio/<sys>.json` | the radio registry: talkgroups, radios, pairs, frequencies heard, a week by hour | the recorder | every 15 min (browser: 1 min), **whole** |
 | `stats/YYYY-MM-DD.jsonl` | the dashboard's minute history | the recorder | appended every minute (statstore) |
 
-Everything is written on stop. trunk-app's `saving.rs` decides when each file is due, and both
-the desktop recorder and the browser build follow it. trunk-pro's `saver.rs` writes them on one
-thread. If a file is queued several times, only the latest copy is written.
+- **Everything is written when recording stops.**
+- **When each file is due** is decided by trunk-app's `saving.rs`. The desktop recorder and the
+  browser build both follow it.
+- **The writing** is done by trunk-pro's `saver.rs` on one thread. If a file is queued several
+  times, only the latest copy is written. A write that fails is reported to every browser.
 
-Still open:
-
-1. **The talkgroup file is still sent and broadcast whole.** An Ignore click no longer waits for
-   the disk, but the browser still sends the whole CSV. The server re-reads all of it, rebuilds
-   the name lookup from the full config, and sends the whole CSV to every browser.
-2. **The radio registry is rewritten whole.** See the numbers below.
+The one file still rewritten whole is the radio registry.
 
 ## The radio registry's size
 
-The cost is measured by `registry_size` in `trunk-app/src/stats/radio.rs` (ignored test). It
-serializes one system's registry, filled to every cap (5,000 talkgroups with a week of hours,
-20,000 radios with their last 30 transmissions, 50,000 pairs, 512 frequencies) and to about half
-of each. Measured on an Apple M-series Mac, release build:
+`registry_size` (an ignored test in `trunk-app/src/stats/radio.rs`) fills one system's registry
+to every cap: 5,000 talkgroups with a week of hours, 20,000 radios with their last 30
+transmissions, 50,000 pairs. Measured on an M-series Mac:
 
 | | JSON | copy (under the lock) | to JSON | read back |
 |---|---|---|---|---|
 | at the caps | 41 MB | 8 ms | 42 ms | 70 ms |
 | about half | 22 MB | 3 ms | 18 ms | 38 ms |
 
-Most of it is per-hour activity (a talkgroup's week is 168 entries) and each radio's recent
-transmissions. Real systems are sparser than this, because only hours with calls are kept, so
-this is an upper bound. Still, a large statewide system can plausibly reach tens of MB.
+Most of it is per-hour activity and each radio's recent transmissions. Real systems are sparser,
+so these are upper bounds.
 
-What this costs:
+The caps also mean the registry **forgets** (issue #100's point 2). On a busy system the 2,000
+affiliations and 5,000 call lengths fill within days, and past a cap the least recently heard go
+without notice.
 
-- **Disk writes.** Rewritten every 15 minutes, a 20–40 MB file comes to 2–4 GB a day, almost
-  all of it unchanged data. That is bad for an SD card, and the RAM spool exists to avoid
-  exactly this kind of wear.
-- **What a crash loses.** A crash or power cut loses up to 15 minutes of it. Saving more often
-  means writing more.
-- **Startup.** The whole file is parsed when the recorder starts.
+## The ways to store it, measured
 
-Fixing this means writing only what changed. There are two ways to do it.
+`tools/storage-bench` (its own crate, so SQLite stays out of the app's dependencies until one is
+chosen) plays the same activity into each way and counts the bytes the disk was sent
+(`/proc/self/io`).
 
-## Option A: SQLite for runtime state, and talkgroups and units as internal data
+**Setup:**
 
-The first version of this option kept SQLite to runtime state, leaving talkgroup and unit files as
-files because people edit them. The maintainer has since agreed that talkgroups and units can be
-**internal data** too, with **Import** and **Export** in a format people can edit (Trunk Recorder's
-CSV). So:
+- a system's registry at about half its caps (18.6 MB as JSON);
+- one simulated hour of a busy system: a call a second (three talkers among 10,000 radios, 2,500
+  talkgroups) and two affiliations a second;
+- run on the Raspberry Pi CM5 testbed's built-in **eMMC** (flash like an SD card, usually faster
+  and longer-lived; the testbed has no SD card);
+- the whole, log and SQLite runs at 10 s repeated, with the bytes within 2 %. The facts runs were
+  done once at each interval.
 
-| In SQLite | Stays a file |
+**The ways:**
+
+| Way | What it writes |
 |---|---|
-| the radio registry, heard codes, learned aliases, sharing, AutoTune, band plans | `config.json` |
-| talkgroups (Ignore, alpha tags, tags) and unit names, with CSV Import/Export | a conventional system's **linked** channel CSV (re-read from a spreadsheet; or made an explicit Reload) |
-| perhaps the minute history (statstore's appending already works) | |
+| **whole** | the registry rewritten whole every 15 min (as now) |
+| **log** | each changed row (`take_changes`) appended as a JSON line, onto a snapshot |
+| **log-n** | the same, normalized: a talkgroup's current hour and a radio's new transmissions, not the whole row's lists |
+| **sqlite** | each changed row upserted as one JSON value (WAL, `synchronous=NORMAL`) |
+| **sqlite-n** | normalized tables: scalars, hours and transmissions apart |
+| **facts** | issue #100's design: each call (with its record JSON), its transmissions and each affiliation appended with rowid keys; talkgroups' and radios' state upserted; indexes by talkgroup and by radio |
 
-Moving talkgroups and units in does the following:
+**Disk writes, GB per day of such a system** (the row ways save at the interval shown; whole is
+always every 15 min):
 
-- An Ignore click or an alpha-tag edit is one row. It no longer rewrites a 10,000-row CSV or sends
-  the whole file to every browser. The per-row `setTalkgroup` command below is still needed for
-  the interface; SQLite only changes what sits behind it.
-- All runtime state lives in one place, rather than a database for some of it and files for the
-  rest.
-- Little is lost: talkgroup files are only read when recording starts, so editing them by hand
-  while recording doesn't work today anyway. Import and Export keep the spreadsheet and
-  RadioReference workflows working.
+| Saved every | whole | log | log-n | sqlite | sqlite-n | facts (#100) |
+|---|---|---|---|---|---|---|
+| 1 s | — | — | — | — | — | 7.2 |
+| 10 s | 1.81 | 0.86 | **0.28** | 11.3 | 11.0 | 4.2 |
+| 60 s | 1.81 | 0.73 | **0.16** | 9.5 | 11.1 | 1.70 |
+| 5 min | 1.81 | 0.68 | **0.14** | 7.2 | 6.6 | **0.54** |
 
-For talkgroups alone, the speed gain over this PR's in-memory map and background writer is modest,
-because edits come at human pace. The case is strong once the registry moves to SQLite anyway.
+Other figures:
 
-### Benefits
+| | whole | log | sqlite | facts |
+|---|---|---|---|---|
+| a save, median (10 s) | 240 ms | 4 ms | 1.9 ms | 0.9 ms (10 s), 9 ms (5 min) |
+| reading it back at startup | 110 ms | 290 ms (snapshot + an hour of lines) | 180 ms | (queried in place) |
+| first import of an existing registry | — | 170 ms | 0.9 s | — |
 
-- **Writes in proportion to what changed.** A call updates a handful of rows: its talkgroup's
-  hour, a few radios, a pair. One transaction can carry everything from the last few seconds, so
-  saving every 10 s instead of every 15 min becomes cheap, and a crash loses seconds, not minutes.
-- **Crash safety is handled.** WAL mode with `synchronous=NORMAL` gives atomic commits and syncs
-  only at checkpoints. It is well tested.
-- **No large parse at startup.** The registry could even be queried in place rather than held
-  entirely in memory, which matters at 20,000 radios × 30 transmissions.
-- **Readers don't block the writer.** The dashboard, `trunk-pro` tools and a backup can read
-  while recording writes.
-- **One file** for all runtime state, kept consistent across tables.
+What this shows:
 
-### Problems
+- **SQLite writes whole pages, twice.** A batch that touches 200 rows scattered across tables and
+  indexes writes about 200 × 4 kB to the WAL, and again at checkpoint. So when rows are updated
+  in place, SQLite writes several times *more* than rewriting the 18 MB file every 15 minutes.
+  Normalizing the tables doesn't help (sqlite-n), because the page count is the cost, not the row
+  size.
+- **Issue #100's facts design is SQLite's good case.** Appends with rowid keys land on the last
+  page. Its data grows by only about 5 MB an hour (calls with their record JSON, transmissions,
+  affiliations), which is roughly what the recorder already writes as call JSON sidecars. Its
+  cost is all in how often it commits:
+  - **1 s** (as proposed): 7.2 GB a day, four times today's;
+  - **60 s**: about today's;
+  - **5 min**: 0.54 GB, under a third of today's, *with a call index today doesn't have*.
+- **A normalized append-only log writes the least** (0.14–0.28 GB a day), but it only stores the
+  registry. It answers no new questions, and startup has to replay it.
 
-- **A C dependency in every build.** `rusqlite` with `bundled` compiles `sqlite3.c`. Our
-  release targets are macOS universal (two `--target` builds then `lipo`), Linux via `cargo
-  zigbuild` for glibc 2.28 (zig compiles the C), Windows MSVC, and the Docker image. All of them
-  can do it, but each needs checking in CI, and the binary grows by about 1–1.5 MB.
-- **The browser build can't use it as-is.** `trunk-web` targets `wasm32-unknown-unknown`, where
-  rusqlite doesn't build. The options are SQLite's own wasm build with OPFS (driven from JS,
-  async) or a second storage path. Either way, storage has to sit behind an interface with two
-  implementations. This PR's `Session::due()` / `Saved` split is already that seam.
-- **What leaves the filesystem has to be exported.** Talkgroup and unit files are used in
-  Trunk Recorder's formats, kept in git by some users, and visible to plugins through `data_dir`.
-  As internal data they need:
-  - **Import** and **Export** in the interface and on the command line;
-  - perhaps an export written beside the config after changes, for anyone who wants the file;
-  - a one-time import of the existing files.
+## Issue #100: a SQLite store for calls, radios and stats
 
-  `config.json` stays a file.
-- **Schema work.** `SystemRadio` is nested: per-talkgroup hours, ciphers, per-radio talkgroup
-  lists and recent transmissions, a pairs map. That becomes about 8 tables, plus a schema version
-  and a one-time import of existing `radio/*.json`.
-- **Row-level change tracking.** The registry only marks a whole system as changed today. Rows
-  need their own dirty sets, which is needed for Option B too.
-- **It doesn't remove the writer thread.** The registry changes on the recording loop. To keep
-  that loop off the disk, commits still go through a background writer like `saver.rs`, just
-  carrying row changes instead of files.
-- **It doesn't get rid of WAL writes.** SQLite writes pages to the WAL and again at checkpoint,
-  so about 2× the changed data. That is still orders of magnitude less than rewriting 40 MB.
-- **Operational costs:**
-  - not inspectable with a text editor;
-  - backups need `VACUUM INTO` or the backup API rather than a file copy mid-write;
-  - locking on network filesystems (SMB/NFS) is unreliable;
-  - one more thing to explain when a user's data needs recovering.
+**What it proposes:**
 
-## Option B: append-only changes + snapshot (no new dependency)
+- **Step 1, a call index:**
+  - every concluded call is a row;
+  - `history` and `olderCalls` are answered from it, rather than by walking the recordings tree
+    (77 ms for three days today, about 10 s a year, minutes on a cold Pi);
+  - new questions become possible: calls by talkgroup, by radio, by time. Today those read every
+    record (1.2 s for one talkgroup after three days, about 150 s a year). In SQLite they take
+    milliseconds.
+- **Step 2, the registry as facts plus state:** no caps, with a retention setting instead.
+- **Step 3, metrics (optional):** finished stats days imported.
 
-This is how `statstore` already works. Every 10 s, each changed row (a talkgroup, a radio, a pair,
-a frequency) is appended as a JSON line to `radio/<sys>.jsonl`. At startup the snapshot is loaded
-and the lines replayed. When the log grows past the snapshot's size (or once a day), a new snapshot
-is written and the log truncated.
+**What stays the same:** the WAV and JSON files are still written, the minute rollups stay
+append-only, and the wire protocol only gains commands. The browser build is untouched.
 
-- **Benefits:**
-  - writes in proportion to what changed, with no new dependency;
-  - works in the browser (OPFS can append);
-  - text, so a person can read it;
-  - reuses statstore's pattern and the writer from this PR.
-- **Problems:**
-  - compaction and replay logic to write and test;
-  - startup still parses the snapshot;
-  - no queries in place;
-  - consistency across files is our own job.
+**Assessment:**
+
+- **The call index is the strongest reason for SQLite.** No file layout gives it cheaply, and it
+  is what the UI's missing questions need. A log can keep the registry cheaply, but it can't
+  answer "every call on talkgroup 101 last month".
+- **The design suits SQLite:** append-mostly, few indexes, and one writer that batches.
+- **One change is needed: batch for minutes, not a second.** At 1 s it writes four times today's
+  volume on flash, which is the problem we started from. At 1–5 min it writes the same or less,
+  and a crash loses little:
+  - **calls:** the files are on disk, and step 1's backfill indexes any the store missed when
+    it starts;
+  - **affiliations and the like:** a few minutes lost, and they're not kept long anyway;
+  - **live answers:** the dashboard keeps answering from memory meanwhile, as now, so the batch
+    interval only decides how much would need recovering, not how fresh answers are.
+
+  Make it a setting: about 60 s on SSDs, 5 min on SD and eMMC.
+- **State tables (talkgroups, radios) should be upserted once per batch, not once per event.**
+  This is what the registry's new per-row change tracking (`Registry::take_changes`) is for: at
+  each batch it lists the rows that changed, each once. Upserting per event multiplies page
+  writes for busy radios.
+- **Indexes:** each one adds scattered page writes. Keep to the ones a query in the UI uses: calls
+  by talkgroup and time, transmissions by radio.
+- **The C dependency is acceptable.** Every release target already compiles C, and the binary
+  grows by about 1.5 MB. CI builds of all targets are the check.
+- **Talkgroups and unit names as internal data** (agreed by the maintainer) fit in the same file,
+  with CSV Import and Export, once steps 1 and 2 are in. #101's per-row `setTalkgroup` is already
+  the interface's side of that. `config.json` stays a file. A conventional system's linked channel
+  CSV stays a file, or becomes an explicit Reload.
+- **The browser build** keeps files on OPFS, as #100 says. Its saving already follows the same
+  `Session::due()` schedule.
+
+**Suggested answers to #100's questions** (the maintainer's call):
+
+1. **File:** `<data>/trunk-pro.sqlite`, beside the config. The capture folder may be a RAM spool
+   or a network share, and SQLite locking is unreliable on network filesystems.
+2. **Retention:** calls kept as long as their files are, with an option to keep the row after the
+   files go (#25). Facts that aren't calls kept for a set number of days.
+3. **Read access for plugins:** the HTTP API first, since it works for plugins and interfaces on
+   other machines. The file path in `hello` can come later for local plugins.
+4. **`annotations`:** later, once a transcription plugin needs it.
+5. **The record JSON in `calls`:** yes, as proposed. The measurement above included it, and it's
+   most of the 5 MB an hour.
 
 ## Recommendation
 
-1. **Merge this PR's step.** The recording loop and browser requests no longer wait on the disk,
-   and there is one save rule and one writer.
-2. **Row-level change tracking in the registry.** Both A and B need it, and it's useful on its
-   own.
-3. **Per-row talkgroup edits.** Add `setTalkgroup { system, tg, fields }`. The server patches
-   memory, sends only that row to browsers, and hands the file to the writer. The CSV stays the
-   file of record. This is independent of A vs B.
-4. **Then pick A or B**, behind the `Saved` seam, by benchmarking both on a Pi with an SD card
-   against a real large system's registry:
-   - **A** (SQLite, with talkgroups and units as internal data, plus Import/Export) if the registry
-     should be queried in place, memory becomes the limit, or one store for everything is wanted.
-     Only once the browser build's path (OPFS or skip) is decided.
-   - **B** (append-only log) if it keeps writes and startup acceptable and the C dependency isn't
-     wanted. Talkgroup and unit files then stay files, written by the background writer.
+1. **Merge #101.** Nothing waits on the disk any more, there is one save schedule and one writer,
+   talkgroup edits are per row, and the registry tracks changes per row.
+2. **Adopt issue #100's store as the plan**, with saves batched for 1–5 minutes (a setting) and
+   state upserted from `take_changes`. Its step 1 (the call index) goes first, as auggiesoft
+   offers.
+3. **Then step 2 (the registry).** It replaces the 15-minute whole-file rewrite. The caps become a
+   retention setting.
+4. **Then talkgroups and units as internal data**, with CSV Import and Export.
+5. **If #100 isn't adopted:** store the registry as a normalized append-only log (log-n above), the
+   least writing measured and no new dependency.
 
 `config.json` stays a file either way.
 
@@ -193,27 +210,36 @@ The other half of the reports: "the UI lacks a save button, and can be aggressiv
 automatically doing things for you… every single keystroke would restart the plugin… Save 1: F,
 Save 2: FI, Save 3: FIR…".
 
-**What it did.** Setup's text fields passed every change into the config. The only brake was a
-300 ms timer after the last change, so pausing between keys meant a save per pause. Each save:
+**What it did.** Setup's text fields passed every change into the config, with only a 300 ms
+timer after the last change, so each pause in typing was a save. Each save:
 
-- rewrote `config.json`, waiting for the disk, inside the request handler with the config locked;
+- rewrote `config.json`, waiting for the disk;
 - re-read every linked channel CSV;
-- rebuilt the name lookup by re-parsing every talkgroup file;
+- rebuilt the name lookup from every talkgroup file;
 - sent the whole config to every browser;
 - restarted any plugin whose settings changed, if it can't take new settings while running.
 
-Typed into a system's **short name**, it renamed the system with each pause: `f`, `fi`, `fir`…
-Each rename also moved its talkgroup file and the plugin settings that name it.
+Typed into a system's short name, it renamed the system with each pause (`f`, `fi`, `fir`…), each
+time moving its talkgroup file.
 
-**What this PR changes.** Every text setting is now a `DraftInput` (`TextInput`, `TextArea`,
-`NumberInput`). It keeps what's typed and passes it on once:
+**What #101 changes:**
 
-- when the field is left;
-- when Enter is pressed (a `TextArea`: Ctrl/⌘+Enter);
-- when its page goes away.
+- **Settings typed in** are `DraftInput`s (`TextInput`, `TextArea`, `NumberInput`). Each is kept
+  once: when the field is left, when Enter is pressed, or when its page goes away. Escape puts it
+  back. The rule is in `docs/developer/ui-style.md`.
+- **Switches, menus and buttons** still act at once.
+- **The gain sliders** move as you drag them, and the gain is saved and set once you let go.
+- **"Saving… / All changes saved / Couldn't save"** shows at the end of Setup's tabs. It covers
+  config edits, talkgroup edits, and files the recorder couldn't write in the background.
+- **Plugin settings that would restart a running plugin** wait for **Apply** (or **Discard**):
+  - a plugin's own settings, when it doesn't take changes while running;
+  - a system's copy of a plugin, always.
 
-Escape puts it back. Switches, menus and buttons still act at once. The rule is in
-`docs/developer/ui-style.md`.
+  Changes made while not recording save at once. Recording settings that need a restart already
+  had their **Restart** button and banner.
+- **No global Save button, on purpose.** Saving once per finished field means every save is one
+  the user meant. A global Save button brings unsaved-changes state, edits lost on navigating
+  away, and conflicts between browsers.
 
 **Measured** in headless Chrome, with "fire4a" typed into a system's short name, pausing 500 ms
 after each key:
@@ -223,14 +249,3 @@ after each key:
 | before | 6 | 6 |
 | after | 0 | 1 (on leaving the field) |
 | after, then Escape | 0 | 0 (field back to `p25`) |
-
-**Not changed yet:**
-
-- **No Save button, on purpose.** Saving once per finished field means every save is one the user
-  meant. A global Save button brings unsaved-changes state, edits lost on navigating away, and
-  conflicts between browsers.
-- **A visible "Saved" / "Couldn't save"** in Setup would answer "did it take?". Not built yet.
-- **Disruptive changes** should be marked and applied deliberately: plugin settings that restart
-  a plugin, and source changes that need a recording restart. Not built yet.
-- **Sliders** (gain) still save as they're dragged, debounced. That's kept for now, because
-  hearing gain change live while dragging is useful.

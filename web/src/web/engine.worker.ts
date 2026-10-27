@@ -2,6 +2,7 @@
 // RTL-SDR driver (WebUSB), speaking the same protocol as the desktop app's
 // server, so the interface is identical. Calls are stored in OPFS.
 
+import { editCells, withCells } from "../talkgroups.ts";
 import init, { directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
 import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, trpBase } from "../config.ts";
@@ -492,6 +493,14 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       else delete talkgroups[m.system];
       session?.set_talkgroups(m.system, m.csv);
       post({ type: "talkgroups", system: m.system, csv: m.csv });
+      break;
+    }
+    case "setTalkgroup": {
+      // One row, edited as the desktop recorder edits it (talkgroups.ts withCells).
+      const csv = withCells(talkgroups[m.system] ?? "", m.talkgroup, editCells(m.edit));
+      talkgroups[m.system] = csv;
+      session?.set_talkgroups(m.system, csv);
+      post({ type: "talkgroupEdited", system: m.system, talkgroup: m.talkgroup, edit: m.edit });
       break;
     }
     case "subscribe":

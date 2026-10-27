@@ -6,7 +6,8 @@ import "./testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultConfig, newSystem } from "./config.ts";
-import { renameSystem, snapshot, transport, updateConfig } from "./controller.ts";
+import { renameSystem, setTalkgroupIgnore, snapshot, transport, updateConfig } from "./controller.ts";
+import { parseTalkgroupCsv } from "./talkgroups.ts";
 import type { FromRecorder, ToRecorder } from "./protocol.ts";
 
 /** A recorder with systems alpha and beta, each with a talkgroup file, its config at version 1. */
@@ -85,4 +86,55 @@ test("a talkgroup file follows its system's name once the edit is saved, not ont
     ],
     "saved: the file moves on the recorder",
   );
+});
+
+/** Whether talkgroup `tg` of `system` is ignored, as this browser shows it. */
+const ignored = (system: string, tg: number) => parseTalkgroupCsv(snapshot().talkgroups[system] ?? "").get(tg)?.ignore ?? false;
+
+test("Ignore clicked quickly: each click shown at once, sent as its row alone, and the last one stands", async () => {
+  connect();
+  const out = await sent(() => {
+    setTalkgroupIgnore("alpha", 1, true);
+    setTalkgroupIgnore("alpha", 1, false);
+    setTalkgroupIgnore("alpha", 1, true);
+  });
+  assert.deepEqual(out.map((m) => m.type), ["setTalkgroup", "setTalkgroup", "setTalkgroup"], "no whole files");
+  assert.ok(ignored("alpha", 1));
+  assert.equal(snapshot().saveStatus, "saving");
+  // Another browser's edit, made by the recorder before these: made here too, these over it.
+  transport.onMessage({ type: "talkgroupEdited", system: "alpha", talkgroup: 1, edit: { alphaTag: "Dispatch" } });
+  assert.ok(ignored("alpha", 1), "still as last clicked");
+  assert.equal(parseTalkgroupCsv(snapshot().talkgroups.alpha).get(1)?.alphaTag, "Dispatch");
+  // The answers, in order: the state never flips back meanwhile.
+  for (const ignore of [true, false, true]) {
+    transport.onMessage({ type: "talkgroupEdited", system: "alpha", talkgroup: 1, edit: { ignore } });
+    assert.ok(ignored("alpha", 1));
+  }
+  assert.equal(snapshot().saveStatus, "saved");
+});
+
+test("An Ignore not answered before the connection dropped is sent again, and shown meanwhile", async () => {
+  connect();
+  await sent(() => setTalkgroupIgnore("beta", 2, true));
+  const again = await sent(connect);
+  assert.ok(again.some((m) => m.type === "setTalkgroup" && m.system === "beta" && m.talkgroup === 2 && m.edit.ignore === true));
+  assert.ok(ignored("beta", 2), "over the greeting's file");
+  transport.onMessage({ type: "talkgroupEdited", system: "beta", talkgroup: 2, edit: { ignore: true } });
+  assert.equal(snapshot().saveStatus, "saved");
+});
+
+test("Setup's save status: saving until the recorder answers, then saved, or why not", async () => {
+  connect();
+  await sent(() => updateConfig((x) => void (x.systems[0].name = "Alpha County")));
+  assert.equal(snapshot().saveStatus, "saving");
+  transport.onMessage({ type: "configSaved", version: 2 });
+  assert.equal(snapshot().saveStatus, "saved");
+  await sent(() => updateConfig((x) => void (x.systems[0].name = "Alpha")));
+  transport.onMessage({ type: "configSaved", version: 2, error: "The config was changed elsewhere meanwhile" });
+  assert.deepEqual([snapshot().saveStatus, snapshot().saveError], ["failed", "The config was changed elsewhere meanwhile"]);
+  // A file the recorder couldn't write in the background says so too.
+  await sent(() => updateConfig((x) => void (x.systems[0].name = "Alpha 2")));
+  transport.onMessage({ type: "configSaved", version: 3 });
+  transport.onMessage({ type: "error", message: "Couldn't save /data/alpha.talkgroups.csv: disk full" });
+  assert.equal(snapshot().saveStatus, "failed");
 });

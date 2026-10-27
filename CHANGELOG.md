@@ -21,6 +21,20 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
   What's next for storage, including SQLite, is in `research/storage.md`.
 
+- **An Ignore click, or a talkgroup's name edited, changes just that row.** Before, the whole
+  talkgroup file was sent, rewritten and sent to every browser. The new `setTalkgroup` command
+  and `talkgroupEdited` message are in the API docs, and `client.js` handles them. Several clicks
+  in a row end where the last one left it, also with another browser editing at the same time, and
+  an edit made while the connection was down is sent again.
+- **Setup says whether your changes are saved.** "Saving…", "All changes saved" or "Couldn't save"
+  shows beside its tabs. A file the recorder couldn't write in the background is reported too.
+- **Plugin settings that would restart a running plugin wait for Apply.** Discard drops them.
+  Plugins that take settings while running, and anything changed while not recording, save at
+  once.
+- **The Airspy gain sliders are saved once you let go**, not at each step dragged through.
+- **The radio registry tracks what changed per row**, for storing it a row at a time later.
+  `research/storage.md` measures the ways to store it on the Pi, including issue #100's SQLite
+  design (`tools/storage-bench`).
 - **Settings are saved once you finish typing, not per letter.** A text setting in Setup (a name,
   a short name, a path, a plugin's settings…) is saved when you leave the field or press Enter.
   Escape puts it back. Before, each pause in typing was a save: a system's short name typed as

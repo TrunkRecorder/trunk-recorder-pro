@@ -897,7 +897,10 @@ fn serve(a: &Args) {
         shared,
         series,
         store,
-        saver: saver::Saver::start(),
+        saver: {
+            let hub = hub.clone();
+            saver::Saver::start(move |why| runtime::publish(&hub, trunk_app::protocol::ToClient::error(why)))
+        },
         heard_last: Mutex::new(None),
         topics: Mutex::new(Default::default()),
         engine: Mutex::new(None),

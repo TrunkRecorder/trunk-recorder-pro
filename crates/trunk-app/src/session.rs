@@ -481,6 +481,12 @@ impl Session {
         set
     }
 
+    /// One talkgroup of the system named `short_name`, as its file now has it (none: not in it).
+    pub fn set_talkgroup(&mut self, short_name: &str, number: u32, row: Option<trunk_core::trunk::Talkgroup>) -> bool {
+        self.meas.shared().names.lock().unwrap().set_talkgroup(short_name, number, row.clone());
+        self.engine.set_talkgroup(short_name, number, row)
+    }
+
     /// The encryption keys of the system named `short_name` (trunked or
     /// conventional): voice channels opened from now on decrypt with them.
     pub fn set_keys(&mut self, short_name: &str, keys: Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>) -> bool {

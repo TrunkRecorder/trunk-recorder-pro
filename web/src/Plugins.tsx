@@ -9,7 +9,7 @@
 // The settings forms are drawn from the schemas plugins describe themselves
 // with (trunk-recorder-plugin's schema.rs lists the subset).
 
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   addPlugin,
   addSystemPluginCopy,
@@ -568,16 +568,16 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
               {hasFields(m.system_config) && (
                 <>
                   {!copySetUp(m, values, every) && <p className="field-hint warn-text">Not set up for {sys.shortName} yet.</p>}
-                  <SchemaFields
-                    schema={m.system_config}
-                    values={copyOwn(values)}
-                    inherited={every}
-                    onChange={(v) => setSystemPluginSettings(props.system, p.id, v, i)}
-                    id={idOf(i)}
-                  />
+                  <Held id={`copy:${sys.shortName}:${p.id}:${i}`} name={m.name} saved={copyOwn(values)} save={(v) => setSystemPluginSettings(props.system, p.id, v, i)} restarts>
+                    {(own, change) => <SchemaFields schema={m.system_config} values={own} inherited={every} onChange={change} id={idOf(i)} />}
+                  </Held>
                 </>
               )}
-              {hasFields(m.config) && <PluginOverride m={m} over={over} every={every} system={sys.shortName} id={`${idOf(i)}-ov`} onChange={(v) => setSystemPluginOverride(props.system, p.id, v, i)} />}
+              {hasFields(m.config) && (
+                <Held id={`override:${sys.shortName}:${p.id}:${i}`} name={m.name} saved={over} save={(v) => setSystemPluginOverride(props.system, p.id, v, i)} restarts>
+                  {(o, change) => <PluginOverride m={m} over={o} every={every} system={sys.shortName} id={`${idOf(i)}-ov`} onChange={change} />}
+                </Held>
+              )}
             </fieldset>
           );
         });
@@ -746,10 +746,19 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
  * page, each list of items is a card of its own and the rest a card of settings.
  */
 function PluginSettingsForm(props: { p: PluginInfo; m: PluginManifest; settings: PluginValues | undefined; needs: string[]; page?: boolean }) {
-  const { p, m, settings } = props;
-  const values = settings ?? {};
+  const { p, m } = props;
+  return (
+    <Held id={`settings:${p.id}`} name={m.name} saved={props.settings ?? {}} save={(v) => setPluginSettings(p.id, v)} restarts={!m.live_settings}>
+      {(values, set) => <PluginSettingsFields {...props} values={values} set={set} />}
+    </Held>
+  );
+}
+
+/** [`PluginSettingsForm`]'s fields, showing `values` (held or saved), changed with `set`. */
+function PluginSettingsFields(props: { p: PluginInfo; m: PluginManifest; values: PluginValues; set: (v: PluginValues) => void; needs: string[]; page?: boolean }) {
+  const { p, m, values } = props;
   const keys = useRef<KeyMemory>({});
-  const change = (v: PluginValues) => setPluginSettings(p.id, followRenames(m.config, settings, v, keys.current));
+  const change = (v: PluginValues) => props.set(followRenames(m.config, values, v, keys.current));
   if (!props.page)
     return (
       <FormRoot.Provider value={{ plugin: p.id, values }}>
@@ -783,6 +792,55 @@ function PluginSettingsForm(props: { p: PluginInfo; m: PluginManifest; settings:
   );
 }
 
+/**
+ * Plugin settings changed while recording that would restart the plugin
+ * (`restarts`: its own settings when it doesn't take them as it runs; a
+ * system's copy of it, always): held here until Apply, so a restart is one
+ * the user chose, not one per field. Discard drops them. Held by form `id`
+ * while the page changes; changed when not recording, saved at once.
+ */
+const held = new Map<string, PluginValues>();
+const heldViews = new Set<() => void>();
+
+function Held(props: { id: string; name: string; saved: PluginValues; save: (v: PluginValues) => void; restarts: boolean; children: (values: PluginValues, change: (v: PluginValues) => void) => ReactNode }) {
+  const recording = useSelect((x) => x.phase === "running" || x.phase === "starting");
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    const f = () => redraw((n) => n + 1);
+    heldViews.add(f);
+    return () => void heldViews.delete(f);
+  }, []);
+  const tell = () => heldViews.forEach((f) => f());
+  const draft = held.get(props.id);
+  const change = (v: PluginValues) => {
+    if (draft !== undefined || (recording && props.restarts)) {
+      held.set(props.id, v);
+      tell();
+    } else props.save(v);
+  };
+  const done = (apply: boolean) => {
+    if (apply && draft !== undefined) props.save(draft);
+    held.delete(props.id);
+    tell();
+  };
+  return (
+    <>
+      {props.children(draft ?? props.saved, change)}
+      {draft !== undefined && (
+        <div className="held-bar" role="status">
+          <span className="small">Not applied yet: applying restarts {props.name}{recording ? "" : " when recording starts"}.</span>
+          <button type="button" className="btn primary small" onClick={() => done(true)}>
+            Apply
+          </button>
+          <button type="button" className="btn ghost small" onClick={() => done(false)}>
+            Discard
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 /** The plugins (installed, on) that have a page of their own, for the navigation. */
 function pluginPages(s: AppState): { id: string; title: string }[] {
   return (s.plugins?.plugins ?? [])
@@ -808,7 +866,7 @@ function usePluginStatus(p: PluginInfo, c: Config) {
 
 /** What changing its settings does while it runs. */
 function ChangesNote(props: { m: PluginManifest | null | undefined }) {
-  return <p className="small muted">{props.m?.live_settings ? "It takes changes as they're made." : "Changes restart it (delays don't)."}</p>;
+  return <p className="small muted">{props.m?.live_settings ? "It takes changes as they're made." : "While recording, changes wait for Apply: applying restarts it (delays don't)."}</p>;
 }
 
 /** A plugin's log, newest last (`newestFirst`: first). */

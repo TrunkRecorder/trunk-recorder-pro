@@ -1718,6 +1718,16 @@ export interface RadioResultBody {
  */
 export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys";
 
+/** What an edit of one talkgroup sets; what's left out stays as it is. */
+export interface TalkgroupEdit {
+  alphaTag?: string;
+  description?: string;
+  tag?: string;
+  category?: string;
+  /** Never record it. */
+  ignore?: boolean;
+}
+
 export type FromRecorder =
   /**
    * The last message of a connection's greeting. Every message before it said
@@ -1753,6 +1763,8 @@ export type FromRecorder =
   | { type: "configSaved"; version: number; error?: string }
   /** A system's talkgroup file (Trunk Recorder's CSV; "" for none): one for each system on connecting, and again whenever one changes. Kept beside the config, not in it. */
   | { type: "talkgroups"; system: string; csv: string }
+  /** One talkgroup of system `system`'s file edited (setTalkgroup): make the same edit to the file kept (talkgroups.ts withCells). */
+  | { type: "talkgroupEdited"; system: string; talkgroup: number; edit: TalkgroupEdit }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
   | ({ type: "spectrum" } & Spectrum)
   | { type: "log"; lines: LogLine[] }
@@ -1809,6 +1821,8 @@ export type ToRecorder =
   | { type: "setConfig"; config: Config; version: number }
   /** System `system`'s talkgroup file (Trunk Recorder's CSV; "" for none). Everyone gets it back as a `talkgroups` message. */
   | { type: "setTalkgroups"; system: string; csv: string }
+  /** One talkgroup of system `system`'s file: only the cells `edit` sets change (a row added when the file lacks it). Everyone gets it back as a `talkgroupEdited` message. */
+  | { type: "setTalkgroup"; system: string; talkgroup: number; edit: TalkgroupEdit }
   | { type: "start" }
   | { type: "stop" }
   | { type: "devices" }

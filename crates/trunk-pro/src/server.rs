@@ -860,6 +860,7 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         },
         // (Written beside the config; a recording takes it at once.)
         Command::SetTalkgroups { system, csv } => failed(runtime::set_talkgroups(ctx, &system, csv)),
+        Command::SetTalkgroup { system, talkgroup, edit } => failed(runtime::set_talkgroup(ctx, &system, talkgroup, edit)),
         // A key container with no passwordFile, unlocked with a password typed in, or locked again
         // (docs/configuration/systems.md). The password is never kept.
         Command::UnlockKeys { source, password } => {

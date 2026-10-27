@@ -137,8 +137,10 @@ pub enum EngineCmd {
     Source(SourceMsg),
     /// What the connected browsers watch changed.
     Topics(trunk_app::stats::Topics),
-    /// A system's talkgroup file changed (an Ignore flag set from the dashboard).
+    /// A system's talkgroup file changed (loaded, pasted, edited in Setup).
     Talkgroups { short_name: String, csv: String },
+    /// One talkgroup of a system's file changed (an Ignore flag set from the dashboard).
+    Talkgroup { short_name: String, number: u32, row: Option<trunk_core::trunk::Talkgroup> },
     /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
     Keys { short_name: String, ring: Option<Arc<trunk_core::p25::crypt::Keyring>> },
     /// A system's config changed: what sharing uses of it, its switch, directory link and licenses ([`trunk_app::share::sync`]).
@@ -567,6 +569,28 @@ pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String
     Ok(())
 }
 
+/// One talkgroup of system `system`'s file edited: only the cells `edit`
+/// sets change. Kept, taken by the recording and told to every browser at
+/// once (the row alone, not the file); written in the background.
+pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::protocol::TalkgroupEdit) -> Result<(), String> {
+    if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
+        return Err(format!("bad short name {system:?}"));
+    }
+    let row = {
+        // (Edited and handed to the writer with the lock held: edits are written in the order they're kept.)
+        let mut files = ctx.talkgroups.lock().unwrap();
+        let csv = trunk_core::trunk::edit_row(files.get(system).map_or("", String::as_str), number, &edit.cells());
+        let row = trunk_core::trunk::row_of(&csv, number);
+        ctx.saver.text(talkgroups_path(system), csv.clone());
+        files.insert(system.to_string(), csv);
+        row
+    };
+    ctx.shared.names.lock().unwrap().set_talkgroup(system, number, row.clone());
+    ctx.tell_engine(EngineCmd::Talkgroup { short_name: system.to_string(), number, row });
+    publish(&ctx.hub, ToClient::TalkgroupEdited { system: system.to_string(), talkgroup: number, edit });
+    Ok(())
+}
+
 pub(crate) fn units_path(short_name: &str) -> PathBuf {
     crate::paths::data_dir().join(format!("{short_name}.units.csv"))
 }
@@ -928,6 +952,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     if session.set_talkgroups(&short_name, &csv) {
                         log::info!("[{short_name}] Talkgroups updated");
                     }
+                }
+                EngineCmd::Talkgroup { short_name, number, row } => {
+                    session.set_talkgroup(&short_name, number, row);
                 }
                 EngineCmd::Keys { short_name, ring } => {
                     session.set_keys(&short_name, ring);

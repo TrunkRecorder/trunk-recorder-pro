@@ -2,6 +2,7 @@
 // The page keeps the config (localStorage) and the chosen capture files, asks
 // for WebUSB access (it needs a click), and reads recorded calls from OPFS.
 
+import { editCells, withCells } from "../talkgroups.ts";
 import { decodeAudioFrame, type AudioChunk, type Config, type FromRecorder, type ToRecorder } from "../protocol.ts";
 import type { CallExt, Transport } from "../transport.ts";
 import { defaultConfig, storedConfig } from "../config.ts";
@@ -80,8 +81,9 @@ export class WorkerTransport implements Transport {
   }
 
   send(msg: ToRecorder): void {
-    if (msg.type === "setTalkgroups") {
-      if (msg.csv.trim()) this.talkgroups[msg.system] = msg.csv;
+    if (msg.type === "setTalkgroups" || msg.type === "setTalkgroup") {
+      const csv = msg.type === "setTalkgroups" ? msg.csv : withCells(this.talkgroups[msg.system] ?? "", msg.talkgroup, editCells(msg.edit));
+      if (csv.trim()) this.talkgroups[msg.system] = csv;
       else delete this.talkgroups[msg.system];
       try {
         localStorage.setItem(TALKGROUPS_KEY, JSON.stringify(this.talkgroups));

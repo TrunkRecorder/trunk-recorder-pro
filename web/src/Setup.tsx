@@ -62,6 +62,7 @@ import {
   unlockKeys,
   updateConfig,
   useApp,
+  useSelect,
   web,
   type SetupTab,
 } from "./controller.ts";
@@ -771,6 +772,38 @@ function AutoTune(props: { src: Source; i: number; edit: EditSource }) {
   );
 }
 
+/**
+ * A gain slider: moves as it's dragged, saved once it's let go (the pointer
+ * up, a key up, or leaving it) — each save sets the radio's gain while
+ * recording, so one per setting, not one per step dragged through.
+ */
+function ReleaseSlider(props: { max: number; value: number; disabled: boolean; label: string; onChange: (v: number) => void }) {
+  const [draft, setDraft] = useState<number | null>(null);
+  const shown = draft ?? props.value;
+  const done = () => {
+    if (draft !== null && draft !== props.value) props.onChange(draft);
+    setDraft(null);
+  };
+  return (
+    <div className="row">
+      <input
+        type="range"
+        min={0}
+        max={props.max}
+        value={shown}
+        disabled={props.disabled}
+        aria-label={props.label}
+        aria-valuetext={String(shown)}
+        onChange={(e) => setDraft(Number(e.target.value))}
+        onPointerUp={done}
+        onKeyUp={done}
+        onBlur={done}
+      />
+      <span className="mono small">{props.disabled ? "auto" : shown}</span>
+    </div>
+  );
+}
+
 const AIRSPY_MODES: { mode: AirspyGainMode; label: string; hint: string }[] = [
   { mode: "linearity", label: "Linearity", hint: "Best near transmitters" },
   { mode: "sensitivity", label: "Sensitivity", hint: "Best for weak signals" },
@@ -782,10 +815,7 @@ function AirspyGainFields(props: { src: Extract<Source, { type: "airspy" }>; edi
   const set = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", v: number) => edit((x) => x.type === "airspy" && void (x[k] = v));
   const slider = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", label: string, max: number, disabled = false) => (
     <Field label={label}>
-      <div className="row">
-        <input type="range" min={0} max={max} value={src[k]} disabled={disabled} aria-label={label} aria-valuetext={String(src[k])} onChange={(e) => set(k, Number(e.target.value))} />
-        <span className="mono small">{disabled ? "auto" : src[k]}</span>
-      </div>
+      <ReleaseSlider max={max} value={src[k]} disabled={disabled} label={label} onChange={(v) => set(k, v)} />
     </Field>
   );
   return (
@@ -2975,7 +3005,23 @@ function SetupTabs(props: { c: Config; tab: SetupTab }) {
           </button>
         );
       })}
+      <SaveStatus />
     </nav>
+  );
+}
+
+/**
+ * Whether this browser's changes are saved: each setting typed is saved once
+ * it's done (left, or Enter), each switch at once, so this says it took.
+ */
+function SaveStatus() {
+  const s = useSelect((x) => ({ status: x.saveStatus, error: x.saveError }));
+  if (s.status === "idle") return null;
+  const text = { saving: "Saving…", saved: "All changes saved", failed: "Couldn't save" }[s.status];
+  return (
+    <span className={`save-status ${s.status}`} role="status" title={s.error ?? undefined}>
+      {text}
+    </span>
   );
 }
 

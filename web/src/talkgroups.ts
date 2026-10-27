@@ -2,6 +2,7 @@
 // headed format (first column "Decimal"; any of Decimal, Hex, Mode, Alpha Tag,
 // Description, Tag, Category, Priority, Preferred NAC, Comment in any order) or
 // the legacy headerless one: Decimal,Hex,Mode,Alpha Tag,Description,Tag,Group[,Priority].
+import type { TalkgroupEdit } from "./protocol.ts";
 
 export interface Talkgroup {
   number: number;
@@ -335,33 +336,65 @@ function rowFor(f: TalkgroupFile, t: Partial<Talkgroup> & { number: number }, mo
 
 const closeFile = (f: TalkgroupFile) => f.lines.join("\n") + "\n";
 
+/** The cells an edit of one talkgroup sets, by the file's column names (trunk-app's `TalkgroupEdit::cells`). */
+export function editCells(e: TalkgroupEdit): [string, string][] {
+  const text: [string, string | undefined][] = [
+    ["Alpha Tag", e.alphaTag],
+    ["Description", e.description],
+    ["Tag", e.tag],
+    ["Category", e.category],
+  ];
+  const cells = text.filter((c): c is [string, string] => c[1] !== undefined).map(([c, v]): [string, string] => [c, v.trim()]);
+  if (e.ignore !== undefined) cells.push(["Ignore", e.ignore ? "x" : ""]);
+  return cells;
+}
+
 /**
- * The talkgroup file with talkgroup `tg` marked ignored (never recorded) or
- * not, in its Ignore column — added when the file has none (a headerless,
- * legacy file is given its header). Only that cell changes; a talkgroup not
- * in the file gets a row (named `alphaTag`). Comment lines, its columns and
- * its delimiter stay as they are.
+ * Talkgroup `tg`'s row of a talkgroup file with `cells` set, each [column,
+ * value] by Trunk Recorder's column names. Only those cells change, in that
+ * row: the file's other rows, comments, columns and delimiter stay as they
+ * are. A column it lacks is added; a legacy headerless file is given its
+ * header; a talkgroup it lacks gets a row when a value is set. Clearing
+ * Ignore also undoes Trunk Recorder's way of ignoring, a priority of −1.
+ * The same edit as the recorder's (trunk-core's `edit_row`), so this copy of
+ * the file stays the recorder's.
  */
-export function withIgnore(csv: string, tg: number, ignore: boolean, alphaTag = ""): string {
+export function withCells(csv: string, tg: number, cells: [string, string][]): string {
   const f = openFile(csv);
-  const ic = ensureColumn(f, "Ignore");
+  const at = cells.map(([name, v]) => [ensureColumn(f, name), v] as const);
   const pc = f.cols.indexOf("Priority");
+  const unignore = cells.some(([n, v]) => n === "Ignore" && !v);
   const cell = cellIn(f.delim);
   let found = false;
   for (let i = f.hi + 1; i < f.lines.length; i++) {
     if (!isData(f.lines[i])) continue;
     const row = splitCsvLine(f.lines[i], f.delim);
+    if (!/^\d+$/.test(row[0] ?? "") || Number(row[0]) !== tg) continue;
+    found = true;
     while (row.length < f.cols.length) row.push("");
-    if (Number.parseInt(row[0], 10) === tg) {
-      found = true;
-      row[ic] = ignore ? "x" : "";
-      // Trunk Recorder's way of ignoring is a priority of −1: undo that too.
-      if (!ignore && pc >= 0 && Number.parseInt(row[pc], 10) < 0) row[pc] = "1";
-    }
+    for (const [c, v] of at) row[c] = v;
+    if (unignore && pc >= 0 && /^-\d+$/.test(row[pc])) row[pc] = "1";
     f.lines[i] = row.map(cell).join(f.delim);
   }
-  if (!found && ignore) f.lines.push(rowFor(f, { number: tg, alphaTag }, { Ignore: "x" }));
+  if (!found && cells.some(([, v]) => v)) {
+    const v: Record<string, string> = { Decimal: String(tg), Hex: tg.toString(16), Mode: "D" };
+    for (const [c, x] of at) v[f.cols[c]] = x;
+    f.lines.push(f.cols.map((c) => cell(v[c] ?? "")).join(f.delim));
+  }
   return closeFile(f);
+}
+
+/**
+ * The talkgroup file with talkgroup `tg` marked ignored (never recorded) or
+ * not ([`withCells`]); a talkgroup not in the file gets a row, named `alphaTag`.
+ */
+export function withIgnore(csv: string, tg: number, ignore: boolean, alphaTag = ""): string {
+  return withCells(csv, tg, editCells(ignoreEdit(csv, tg, ignore, alphaTag)));
+}
+
+/** The edit that marks talkgroup `tg` ignored or not: named `alphaTag` too when the file lacks it. */
+export function ignoreEdit(csv: string, tg: number, ignore: boolean, alphaTag = ""): TalkgroupEdit {
+  return ignore && alphaTag && !parseTalkgroupCsv(csv).has(tg) ? { alphaTag, ignore } : { ignore };
 }
 
 /**
