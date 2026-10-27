@@ -66,15 +66,30 @@ create index tx_unit_start on call_transmissions(unit, start_ms);
 "];
 
 /// Apply every migration past the database's version, all in one
-/// transaction, so a failure leaves the file as it was.
+/// transaction, so a failure leaves the file as it was. A database written by
+/// a newer build (a higher version than this one knows) is an error.
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    let have: usize = conn
-        .query_row("select version from schema_version", [], |r| {
-            r.get::<_, i64>(0)
-        })
-        .map(|v| v as usize)
-        .unwrap_or(0);
-    if have >= MIGRATIONS.len() {
+    let have = match conn.query_row("select version from schema_version", [], |r| {
+        r.get::<_, i64>(0)
+    }) {
+        Ok(v) => v as usize,
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("no such table: schema_version") =>
+        {
+            0
+        }
+        Err(e) => return Err(e),
+    };
+    if have > MIGRATIONS.len() {
+        return Err(rusqlite::Error::ToSqlConversionFailure(
+            format!(
+                "database is at schema version {have}, newer than this build's {} (written by a newer Trunk Recorder Pro)",
+                MIGRATIONS.len()
+            )
+            .into(),
+        ));
+    }
+    if have == MIGRATIONS.len() {
         return Ok(());
     }
     let tx = conn.unchecked_transaction()?;

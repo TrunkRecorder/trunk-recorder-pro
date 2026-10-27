@@ -42,8 +42,9 @@ pub enum Write {
     Retention { before_ms: i64 },
     /// Checkpoint the WAL into the database file.
     Checkpoint,
-    /// Answered once every write sent before it is committed.
-    Flush(std::sync::mpsc::Sender<()>),
+    /// Answered with the outcome of the commit that took every write sent
+    /// before it.
+    Flush(std::sync::mpsc::Sender<Result<(), String>>),
 }
 
 /// A handle on the call store. Clones share one database and one writer;
@@ -72,7 +73,7 @@ impl Db {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let conn = match open_sound(path) {
             Ok(c) => c,
-            Err(e) if path.exists() => {
+            Err(OpenError::Corrupt(e)) if path.exists() => {
                 let aside = move_aside(path)?;
                 log::warn!(
                     "db: {} is unusable ({e}); moved to {}",
@@ -153,11 +154,13 @@ impl Db {
         out
     }
 
-    /// Return once every write sent before this call is committed.
-    pub fn flush(&self) {
+    /// Return once every write sent before this call has been through a
+    /// commit; `Err` if that commit failed or the writer is gone.
+    pub fn flush(&self) -> Result<(), String> {
         let (done, wait) = std::sync::mpsc::channel();
         self.send(Write::Flush(done));
-        let _ = wait.recv();
+        wait.recv()
+            .map_err(|_| "the writer has stopped".to_string())?
     }
 
     /// Transactions the writer has committed since open.
@@ -178,20 +181,44 @@ impl Db {
     }
 }
 
+/// Why the writer's connection could not be opened.
+enum OpenError {
+    /// The file is not a sound database: it may be moved aside.
+    Corrupt(String),
+    /// Anything else (busy, disk full, a newer schema): the file is left alone.
+    Other(String),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::Corrupt(e) | Self::Other(e)) = self;
+        f.write_str(e)
+    }
+}
+
+impl From<rusqlite::Error> for OpenError {
+    fn from(e: rusqlite::Error) -> Self {
+        use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
+        match e.sqlite_error_code() {
+            Some(NotADatabase | DatabaseCorrupt) => Self::Corrupt(e.to_string()),
+            _ => Self::Other(e.to_string()),
+        }
+    }
+}
+
 /// Open the writer's connection: contents sound, pragmas set, schema current.
-fn open_sound(path: &Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(path)?;
+fn open_sound(path: &Path) -> Result<Connection, OpenError> {
+    let conn = Connection::open(path).map_err(|e| OpenError::Corrupt(e.to_string()))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     let check: String = conn.query_row("pragma quick_check", [], |r| r.get(0))?;
     if check != "ok" {
-        return Err(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
-            Some(check),
-        ));
+        return Err(OpenError::Corrupt(check));
     }
     conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get::<_, String>(0))?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "wal_autocheckpoint", 0)?;
+    conn.pragma_update(None, "wal_autocheckpoint", 16384)?;
+    conn.pragma_update(None, "journal_size_limit", 67108864)?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     schema::migrate(&conn)?;
     Ok(conn)
@@ -205,18 +232,33 @@ fn open_reader(path: &Path) -> rusqlite::Result<Connection> {
 }
 
 /// Rename the database and its `-wal`/`-shm` siblings to `<name>.corrupt-<unix
-/// seconds>`, returning the new name of the database file.
+/// seconds>`, returning the new name of the database file. A sibling that
+/// will not rename is deleted; if that fails too, the move has failed, since a
+/// fresh database must not adopt an old WAL.
 fn move_aside(path: &Path) -> Result<PathBuf, String> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let name = path.display().to_string();
-    let aside = PathBuf::from(format!("{name}.corrupt-{secs}"));
+    let with = |suffix: &str| {
+        let mut s = path.as_os_str().to_owned();
+        s.push(suffix);
+        PathBuf::from(s)
+    };
+    let aside = with(&format!(".corrupt-{secs}"));
     std::fs::rename(path, &aside).map_err(|e| format!("move {} aside: {e}", path.display()))?;
     for suffix in ["-wal", "-shm"] {
-        let from = format!("{name}{suffix}");
-        if Path::new(&from).exists() {
-            let _ = std::fs::rename(&from, format!("{}{suffix}", aside.display()));
+        let from = with(suffix);
+        if !from.exists() {
+            continue;
+        }
+        let to = {
+            let mut s = aside.as_os_str().to_owned();
+            s.push(suffix);
+            PathBuf::from(s)
+        };
+        if let Err(e) = std::fs::rename(&from, &to) {
+            std::fs::remove_file(&from)
+                .map_err(|e2| format!("move {} aside: {e}; delete: {e2}", from.display()))?;
         }
     }
     Ok(aside)
@@ -287,7 +329,7 @@ mod tests {
                 value: "v".into(),
             });
         }
-        db.flush();
+        db.flush().unwrap();
         let n: u32 = db
             .with_reader(|c| c.query_row("select count(*) from meta", [], |r| r.get(0)))
             .unwrap();
@@ -307,11 +349,40 @@ mod tests {
             key: "a".into(),
             value: "1".into(),
         });
-        db.flush();
+        db.flush().unwrap();
         assert!(t.elapsed() < std::time::Duration::from_millis(1500));
         let v: String = db
             .with_reader(|c| c.query_row("select value from meta where key='a'", [], |r| r.get(0)))
             .unwrap();
         assert_eq!(v, "1");
+    }
+
+    #[test]
+    fn a_database_from_a_newer_version_is_refused_not_moved_aside() {
+        let (db, path) = Db::for_test("newer");
+        drop(db);
+        // The writer thread exits once the last handle is gone; wait for it to
+        // let go of the file before changing it from outside.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute("update schema_version set version = 99", [])
+            .unwrap();
+        drop(conn);
+        let (hub, _) = tokio::sync::broadcast::channel(16);
+        let err = Db::open(&path, hub)
+            .err()
+            .expect("a newer schema must be refused");
+        assert!(err.contains("99"), "{err}");
+        assert!(path.exists());
+        let dir = path.parent().unwrap();
+        let aside = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                n.contains("trunk-pro-db-newer") && n.contains(".corrupt-")
+            })
+            .count();
+        assert_eq!(aside, 0);
     }
 }

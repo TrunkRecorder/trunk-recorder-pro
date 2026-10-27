@@ -2,7 +2,6 @@
 //! are applied in batches, one transaction each, so a busy system costs about
 //! one commit a second while a lone write still commits at once.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -15,8 +14,6 @@ use crate::runtime::Hub;
 
 /// At most one commit per this long under load.
 const COMMIT_EVERY: Duration = Duration::from_secs(1);
-/// Past this, the WAL is checkpointed after a commit.
-const WAL_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// Start the `db-writer` thread. It runs until every sender of `rx` is gone.
 /// `queued` counts the writes sent and not yet taken off the channel.
@@ -27,14 +24,12 @@ pub fn spawn(
     commits: Arc<AtomicU64>,
     queued: Arc<AtomicUsize>,
 ) {
-    let wal = conn.path().map(|p| PathBuf::from(format!("{p}-wal")));
     let spawned = std::thread::Builder::new()
         .name("db-writer".into())
         .spawn(move || {
             let mut w = Writer {
                 conn,
                 _hub: hub,
-                wal,
                 commits,
                 queued,
             };
@@ -49,7 +44,6 @@ struct Writer {
     conn: Connection,
     /// For announcing changes to browsers once rows are written.
     _hub: Hub,
-    wal: Option<PathBuf>,
     commits: Arc<AtomicU64>,
     queued: Arc<AtomicUsize>,
 }
@@ -60,6 +54,7 @@ impl Writer {
             let started = Instant::now();
             let mut flushes = Vec::new();
             let mut checkpoint = false;
+            let mut outcome = Ok(());
             match self.conn.transaction() {
                 Ok(tx) => {
                     apply(&tx, first, &mut flushes, &mut checkpoint, &self.queued);
@@ -70,11 +65,15 @@ impl Writer {
                         Ok(()) => {
                             self.commits.fetch_add(1, Ordering::Relaxed);
                         }
-                        Err(e) => log::warn!("db: commit failed: {e}"),
+                        Err(e) => {
+                            log::warn!("db: commit failed: {e}");
+                            outcome = Err(format!("commit failed: {e}"));
+                        }
                     }
                 }
                 Err(e) => {
                     log::warn!("db: could not begin a transaction: {e}");
+                    outcome = Err(format!("could not begin a transaction: {e}"));
                     self.queued.fetch_sub(1, Ordering::Relaxed);
                     while let Ok(next) = rx.try_recv() {
                         self.queued.fetch_sub(1, Ordering::Relaxed);
@@ -88,12 +87,10 @@ impl Writer {
                 }
             }
             if checkpoint {
-                self.checkpoint("truncate");
-            } else if self.wal_size() > WAL_LIMIT {
-                self.checkpoint("passive");
+                self.checkpoint();
             }
             for done in flushes {
-                let _ = done.send(());
+                let _ = done.send(outcome.clone());
             }
             if let Some(rest) = COMMIT_EVERY.checked_sub(started.elapsed()) {
                 std::thread::sleep(rest);
@@ -101,17 +98,10 @@ impl Writer {
         }
     }
 
-    fn wal_size(&self) -> u64 {
-        self.wal
-            .as_ref()
-            .and_then(|p| std::fs::metadata(p).ok())
-            .map_or(0, |m| m.len())
-    }
-
-    fn checkpoint(&self, mode: &str) {
+    fn checkpoint(&self) {
         if let Err(e) = self
             .conn
-            .query_row(&format!("pragma wal_checkpoint({mode})"), [], |_| Ok(()))
+            .query_row("pragma wal_checkpoint(truncate)", [], |_| Ok(()))
         {
             log::warn!("db: checkpoint failed: {e}");
         }
@@ -123,7 +113,7 @@ impl Writer {
 fn apply(
     conn: &Connection,
     w: Write,
-    flushes: &mut Vec<Sender<()>>,
+    flushes: &mut Vec<Sender<Result<(), String>>>,
     checkpoint: &mut bool,
     queued: &AtomicUsize,
 ) {
