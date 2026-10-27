@@ -119,7 +119,7 @@ impl Writer {
     /// (the live list still has its calls, and the next start's reconcile
     /// indexes them from their files).
     fn commit(&mut self, held: Vec<Write>, batch: &mut Batch) -> Result<(), String> {
-        let tx = match self.conn.transaction_with_behavior(TransactionBehavior::Immediate) {
+        let mut tx = match self.conn.transaction_with_behavior(TransactionBehavior::Immediate) {
             Ok(tx) => tx,
             Err(e) => {
                 log::warn!("Call store: could not begin a transaction: {e}");
@@ -130,8 +130,13 @@ impl Writer {
         let mut retire = None;
         for w in held {
             match w {
+                // (A call with its transmissions and frequencies, or none of it.)
                 Write::Call { row, live } => {
-                    if let Err(e) = write_call(&tx, &row, live) {
+                    let written = tx.savepoint().and_then(|sp| {
+                        write_call(&sp, &row, live)?;
+                        sp.commit()
+                    });
+                    if let Err(e) = written {
                         log::warn!("Call store: call write {} failed: {e}", row.path);
                     }
                 }
@@ -460,6 +465,25 @@ mod tests {
             })
             .unwrap();
         assert_eq!(tx, 2, "children replaced, not duplicated");
+    }
+
+    /// A call whose transmissions can't be written leaves nothing behind
+    /// (no row without its children), and the batch's other calls land.
+    #[test]
+    fn a_call_is_written_whole_or_not_at_all() {
+        let (db, path) = Db::for_test("whole");
+        // A trigger that fails the second call's transmissions.
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("create trigger refuse before insert on call_transmissions when new.unit = 666 begin select raise(abort, 'refused'); end;").unwrap();
+        drop(c);
+        let ok = record(1, 1000);
+        let mut bad = record(2, 2000);
+        bad.src_list[1].src = 666;
+        db.send(Write::Call { row: call_row("s/ok", &ok, &ok.to_json(), true, true, None, 0), live: true });
+        db.send(Write::Call { row: call_row("s/bad", &bad, &bad.to_json(), true, true, None, 0), live: true });
+        db.flush().unwrap();
+        let (calls, tx): (u32, u32) = db.with_reader(|c| Ok((c.query_row("select count(*) from calls", [], |r| r.get(0))?, c.query_row("select count(*) from call_transmissions", [], |r| r.get(0))?))).unwrap();
+        assert_eq!((calls, tx), (1, 2), "s/ok and its two transmissions; nothing of s/bad");
     }
 
     #[test]
