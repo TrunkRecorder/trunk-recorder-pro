@@ -55,6 +55,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     cards and eMMC. The call list shows a finished call at once either way.
   - The first start indexes the calls already in the capture folder in the background; the
     recorder is usable meanwhile, and later starts only check the last two days.
+- **The call store over HTTP**, for plugins and interfaces on other machines:
+  `GET /api/v1/calls` (calls by system, talkgroup, radio and time, newest first, a page at a
+  time), `/api/v1/calls/<path>` (one call) and `/api/v1/store` (where the store is, how many
+  calls it holds, and its settings). They answer JSON on the built-in interface's port and each
+  interface's, to listen or control access alike, and 503 when the store is off. They are
+  described in `docs/api/calls.openapi.yaml`.
+- **Plugin SDK 0.9.0:** `Hello::store` / `Setup::store`, the call store's path when it is open
+  (`None` when not). A plugin may only read it: open it read-only (it is in WAL mode), check
+  `schema_version` first, and never write to it. A plugin on another machine uses `/api/v1/calls`.
 
 - **Phase 2 and DMR `.sdr` files play in MimoSDR.** A Phase 2 frame's symbols were stored as the
   dibit rather than its quadrant, so MimoSDR's player (and anyone else's) misread most of them; and
