@@ -11,7 +11,8 @@ use std::time::Duration;
 use rusqlite::OptionalExtension;
 use trunk_recorder_plugin::CallRecord;
 
-use super::{Db, Write, call_row};
+use super::row::call_row;
+use super::{Db, Write};
 use crate::config::Config;
 use crate::runtime::Ctx;
 

@@ -541,9 +541,16 @@ pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
         api: crate::interfaces::API_VERSION,
         config_path: control.then(|| ctx.config_path.display().to_string()),
         survey_bands: trunk_app::survey::bands_json(),
-        capabilities: trunk_app::protocol::Capability::ALL.to_vec(),
+        capabilities: capabilities(ctx),
     });
     m
+}
+
+/// What `hello` says the recorder can do: everything, but `calls` only while
+/// the call store is open.
+fn capabilities(ctx: &Ctx) -> Vec<trunk_app::protocol::Capability> {
+    use trunk_app::protocol::Capability;
+    Capability::ALL.iter().copied().filter(|c| *c != Capability::Calls || !ctx.db.is_disabled()).collect()
 }
 
 /// The greeting's messages that need nothing found or listed: `devices` for control access only.
@@ -1107,6 +1114,28 @@ mod tests {
         let (mime, location) = (h(header::CONTENT_TYPE), h(header::LOCATION));
         let body = String::from_utf8_lossy(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).to_string();
         (status, if location.is_empty() { mime } else { location }, body)
+    }
+
+    /// `hello` lists `calls` while the call store is open, and not when it
+    /// could not be opened.
+    #[tokio::test]
+    async fn hello_lists_calls_only_while_the_store_is_open() {
+        use trunk_app::protocol::{Capability, ToClient};
+        async fn capabilities(ctx: &std::sync::Arc<crate::runtime::Ctx>) -> Vec<Capability> {
+            match super::greeting(ctx, false).await.pop() {
+                Some(ToClient::Hello { capabilities, .. }) => capabilities,
+                _ => panic!("hello comes last"),
+            }
+        }
+        let dir = crate::db::TestDir::new("hello-calls");
+        let open = crate::runtime::test_ctx(&dir.join("open"));
+        assert_eq!(capabilities(&open).await, Capability::ALL);
+        let store = dir.join("trunk-pro.sqlite");
+        crate::db::seed_newer(&store);
+        let off = crate::runtime::test_ctx_with_store(&dir.join("off"), &store);
+        let caps = capabilities(&off).await;
+        assert!(!caps.contains(&Capability::Calls), "{caps:?}");
+        assert_eq!(caps.len(), Capability::ALL.len() - 1);
     }
 
     /// An edit of the config as it was before someone else's change is

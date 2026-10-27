@@ -881,7 +881,7 @@ fn serve(a: &Args) {
     let talkgroups = runtime::load_talkgroups(&cfg);
     runtime::load_names(&shared, &cfg, &talkgroups);
     let db_path = paths::data_dir().join("trunk-pro.sqlite");
-    let db = db::Db::open(&db_path, hub.clone()).unwrap_or_else(|e| fatal(&e));
+    let db = db::Db::open_or_off(&db_path, hub.clone());
     db.start_retention(cfg.store.retention_days);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
@@ -930,7 +930,7 @@ fn serve(a: &Args) {
         log::info!("Trunk Recorder Pro {} — open {url}", env!("CARGO_PKG_VERSION"));
         log::info!("Using Config file: {}", config_path.display());
         log::info!("Capture Directory: {}", c.recording.capture_dir);
-        log::info!("Call store: {}", db_path.display());
+        log::info!("Call store: {}", ctx.db.path().map_or("off".into(), |p| p.display().to_string()));
         let dir = if l.dir.is_empty() { config_path.parent().unwrap_or(Path::new(".")).join("logs") } else { config_path.parent().unwrap_or(Path::new(".")).join(&l.dir) };
         log::info!("Log Level: {} · Log to File: {}{} · System log: {}", level.unwrap_or(l.level).as_str(), l.file, if l.file { format!(" ({})", dir.display()) } else { String::new() }, l.syslog);
     }

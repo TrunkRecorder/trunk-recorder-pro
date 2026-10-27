@@ -1179,7 +1179,7 @@ pub fn index_call(ctx: &Ctx, rel: &str, record: &trunk_recorder_plugin::CallReco
     let mut entry = trunk_app::session::call_entry(rel, record);
     entry["audio"] = json!(audio);
     entry["json"] = json!(json_kept);
-    let row = crate::db::call_row(rel, record, json, audio, json_kept, ctx.db.recorder(), crate::clock::unix_ms() as i64);
+    let row = crate::db::row::call_row(rel, record, json, audio, json_kept, ctx.db.recorder(), crate::clock::unix_ms() as i64);
     ctx.db.send(Write::Call { row, live: true });
     entry
 }
@@ -1194,10 +1194,20 @@ pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
 /// Calls the interface's history list is given.
 pub const HISTORY: usize = 300;
 
+/// A read of the call store failed: a warning, but only a debug line when
+/// the store is off (said once, at open), since every connection asks.
+fn store_error(ctx: &Ctx, what: &str, e: &str) {
+    if ctx.db.is_disabled() {
+        log::debug!("{what}: {e}");
+    } else {
+        log::warn!("{what}: {e}");
+    }
+}
+
 /// The `history` message: the newest calls in the store.
 pub fn history(ctx: &Ctx) -> ToClient {
     let entries = ctx.db.with_reader(|c| crate::db::read::newest(c, HISTORY)).unwrap_or_else(|e| {
-        log::warn!("history: {e}");
+        store_error(ctx, "history", &e);
         Vec::new()
     });
     ToClient::History { entries }
@@ -1209,7 +1219,7 @@ pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
     match ctx.db.with_reader(|c| crate::db::read::older(c, before_ms, limit)) {
         Ok(page) => ToClient::OlderCalls { before: before_ms, entries: page.entries, more: page.more },
         Err(e) => {
-            log::warn!("olderCalls: {e}");
+            store_error(ctx, "olderCalls", &e);
             ToClient::OlderCalls { before: before_ms, entries: vec![], more: false }
         }
     }
@@ -1239,8 +1249,8 @@ pub fn calls_query(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> ToClient {
     match ctx.db.with_reader(|c| crate::db::read::query(c, &filter)) {
         Ok(page) => ToClient::CallsResult { id: q.id.clone(), entries: page.entries, more: page.more, before: page.before },
         Err(e) => {
-            log::warn!("callsQuery: {e}");
-            ToClient::CallsResult { id: q.id.clone(), entries: vec![], more: false, before: q.before.unwrap_or(i64::MAX) }
+            store_error(ctx, "callsQuery", &e);
+            ToClient::CallsResult { id: q.id.clone(), entries: vec![], more: false, before: q.before.unwrap_or(0) }
         }
     }
 }
@@ -1313,13 +1323,25 @@ mod live_tests {
 /// `ohmarcs-butler`, recording under `capture_dir`.
 #[cfg(test)]
 pub fn test_ctx(capture_dir: &Path) -> Arc<Ctx> {
+    crate::protocol_tests::ctx(test_config(capture_dir), capture_dir)
+}
+
+/// As [`test_ctx`], with the call store at `store`, opened as the app opens
+/// it: off if it cannot be opened.
+#[cfg(test)]
+pub fn test_ctx_with_store(capture_dir: &Path, store: &Path) -> Arc<Ctx> {
+    crate::protocol_tests::ctx_with(test_config(capture_dir), capture_dir, |hub| crate::db::Db::open_or_off(store, hub))
+}
+
+#[cfg(test)]
+fn test_config(capture_dir: &Path) -> Config {
     let mut cfg = Config::default();
     cfg.recording.capture_dir = capture_dir.display().to_string();
     cfg.systems = vec![trunk_app::config::System::one_site(
         "ohmarcs",
         trunk_app::config::Site { name: "ohmarcs-butler".into(), ..Default::default() },
     )];
-    crate::protocol_tests::ctx(cfg, capture_dir)
+    cfg
 }
 
 #[cfg(test)]
@@ -1328,8 +1350,7 @@ mod finish_tests {
 
     #[test]
     fn a_finished_call_is_in_history_and_pages() {
-        let dir = std::env::temp_dir().join(format!("trunk-pro-finish-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = crate::db::TestDir::new("finish");
         let ctx = test_ctx(&dir);
         let names = trunk_app::migrate::old_names(&ctx.config.lock().unwrap().systems[0]);
         assert_eq!(names, ["ohmarcs-butler"]);
@@ -1360,8 +1381,7 @@ mod calls_query_tests {
 
     #[test]
     fn calls_query_honours_old_system_names() {
-        let dir = std::env::temp_dir().join(format!("trunk-pro-cq-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = crate::db::TestDir::new("cq");
         let ctx = test_ctx(&dir);
         let mut r = crate::db::row::tests::record(1, 1000);
         r.short_name = "ohmarcs-butler".into();
@@ -1374,11 +1394,47 @@ mod calls_query_tests {
 
     #[test]
     fn calls_query_clamps_the_limit() {
-        let dir = std::env::temp_dir().join(format!("trunk-pro-cq2-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = crate::db::TestDir::new("cq2");
         let ctx = test_ctx(&dir);
+        for i in 0..501 {
+            let r = crate::db::row::tests::record(1, 1000 + i);
+            index_call(&ctx, &format!("ohmarcs/{i}"), &r, &r.to_json(), true, true);
+        }
+        ctx.db.flush().unwrap();
         let q = CallsQuery { limit: Some(9999), ..Default::default() };
         let ToClient::CallsResult { entries, more, .. } = calls_query(&ctx, &q) else { panic!() };
-        assert!(entries.len() <= 500 && !more);
+        assert_eq!((entries.len(), more), (500, true));
+        let q = CallsQuery { limit: Some(0), ..Default::default() };
+        let ToClient::CallsResult { entries, more, .. } = calls_query(&ctx, &q) else { panic!() };
+        assert_eq!((entries.len(), more), (1, true));
+    }
+
+    #[test]
+    fn an_empty_answer_with_no_before_asked_says_0() {
+        let dir = crate::db::TestDir::new("cq3");
+        let ctx = test_ctx(&dir);
+        let ToClient::CallsResult { entries, before, .. } = calls_query(&ctx, &CallsQuery::default()) else { panic!() };
+        assert_eq!((entries.len(), before), (0, 0));
+    }
+
+    /// A store from a newer build is refused: the recorder starts with the
+    /// store off, and every call-store message answers empty.
+    #[test]
+    fn a_store_that_cannot_be_opened_leaves_the_recorder_running() {
+        let dir = crate::db::TestDir::new("store-off");
+        let store = dir.join("trunk-pro.sqlite");
+        crate::db::seed_newer(&store);
+        let ctx = test_ctx_with_store(&dir.join("capture"), &store);
+        assert!(ctx.db.is_disabled());
+        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        assert!(entries.is_empty());
+        let r = crate::db::row::tests::record(1, 1000);
+        index_call(&ctx, "ohmarcs/x", &r, &r.to_json(), true, true);
+        call_files(&ctx, "ohmarcs/x", false, true);
+        ctx.db.flush().unwrap();
+        let ToClient::OlderCalls { entries, more, .. } = older_calls(&ctx, i64::MAX, 100) else { panic!() };
+        assert_eq!((entries.len(), more), (0, false));
+        let ToClient::CallsResult { entries, before, .. } = calls_query(&ctx, &CallsQuery::default()) else { panic!() };
+        assert_eq!((entries.len(), before), (0, 0));
     }
 }

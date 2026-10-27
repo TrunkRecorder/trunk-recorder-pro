@@ -101,7 +101,7 @@ pub fn query(conn: &Connection, f: &CallsFilter) -> rusqlite::Result<Page> {
 }
 
 /// The call filed under `path`.
-#[allow(dead_code)] // the HTTP route for one call (a later task) uses it
+#[cfg(test)]
 pub fn one(conn: &Connection, path: &str) -> rusqlite::Result<Option<Value>> {
     let sql = "select path, record, audio, json from calls where path = ?1";
     let mut stmt = conn.prepare_cached(sql)?;

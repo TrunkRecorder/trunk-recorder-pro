@@ -145,7 +145,7 @@ pub fn call_row(
 /// for a stored call, with its two file flags.
 pub fn entry(path: &str, record: &str, audio: bool, json: bool) -> Value {
     let record = serde_json::from_str(record).unwrap_or_else(|e| {
-        log::warn!("db: stored record for {path} is not JSON: {e}");
+        log::warn!("Call store: stored record for {path} is not JSON: {e}");
         Value::Null
     });
     json!({ "path": path, "record": record, "audio": audio, "json": json })

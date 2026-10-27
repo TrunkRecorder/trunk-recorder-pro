@@ -7,10 +7,11 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use trunk_app::protocol::ToClient;
 
-use super::{CallRow, Write};
+use super::Write;
+use super::row::CallRow;
 use crate::runtime::{Hub, publish};
 
 /// At most one commit per this long under load.
@@ -24,7 +25,7 @@ pub fn spawn(
     rx: Receiver<Write>,
     commits: Arc<AtomicU64>,
     queued: Arc<AtomicUsize>,
-) {
+) -> Option<std::thread::JoinHandle<()>> {
     let spawned = std::thread::Builder::new()
         .name("db-writer".into())
         .spawn(move || {
@@ -36,9 +37,9 @@ pub fn spawn(
             };
             w.run(rx);
         });
-    if let Err(e) = spawned {
-        log::error!("db: could not start the writer thread: {e}");
-    }
+    spawned
+        .inspect_err(|e| log::error!("Call store: could not start the writer thread: {e}"))
+        .ok()
 }
 
 struct Writer {
@@ -58,7 +59,10 @@ impl Writer {
             let mut retention: Option<i64> = None;
             let mut announce = Vec::new();
             let mut outcome = Ok(());
-            match self.conn.transaction() {
+            match self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+            {
                 Ok(tx) => {
                     apply(
                         &tx,
@@ -88,13 +92,13 @@ impl Writer {
                             }
                         }
                         Err(e) => {
-                            log::warn!("db: commit failed: {e}");
+                            log::warn!("Call store: commit failed: {e}");
                             outcome = Err(format!("commit failed: {e}"));
                         }
                     }
                 }
                 Err(e) => {
-                    log::warn!("db: could not begin a transaction: {e}");
+                    log::warn!("Call store: could not begin a transaction: {e}");
                     outcome = Err(format!("could not begin a transaction: {e}"));
                     self.queued.fetch_sub(1, Ordering::Relaxed);
                     while let Ok(next) = rx.try_recv() {
@@ -130,15 +134,18 @@ impl Writer {
     fn retain(&mut self, before_ms: i64) {
         let mut total = 0usize;
         loop {
-            let batch = self.conn.transaction().and_then(|tx| {
-                let n = tx.execute(
-                    "delete from calls where id in
+            let batch = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .and_then(|tx| {
+                    let n = tx.execute(
+                        "delete from calls where id in
                         (select id from calls where start_ms < ?1 order by start_ms limit 1000)",
-                    [before_ms],
-                )?;
-                tx.commit()?;
-                Ok(n)
-            });
+                        [before_ms],
+                    )?;
+                    tx.commit()?;
+                    Ok(n)
+                });
             match batch {
                 Ok(0) => break,
                 Ok(n) => {
@@ -146,13 +153,13 @@ impl Writer {
                     self.commits.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(e) => {
-                    log::warn!("db: retention failed: {e}");
+                    log::warn!("Call store: retention failed: {e}");
                     break;
                 }
             }
         }
         if total > 0 {
-            log::info!("db: retention removed {total} call records");
+            log::info!("Call store: retention removed {total} call records");
         }
     }
 
@@ -161,7 +168,7 @@ impl Writer {
             .conn
             .query_row("pragma wal_checkpoint(truncate)", [], |_| Ok(()))
         {
-            log::warn!("db: checkpoint failed: {e}");
+            log::warn!("Call store: checkpoint failed: {e}");
         }
     }
 }
@@ -181,13 +188,13 @@ fn apply(
     match w {
         Write::Call { row, live } => {
             if let Err(e) = write_call(conn, &row, live) {
-                log::warn!("db: call write {} failed: {e}", row.path);
+                log::warn!("Call store: call write {} failed: {e}", row.path);
             }
         }
         Write::CallFiles { path, audio, json } => match set_files(conn, &path, audio, json) {
             Ok(true) => announce.push(ToClient::CallFiles { path, audio, json }),
             Ok(false) => {}
-            Err(e) => log::warn!("db: files write {path} failed: {e}"),
+            Err(e) => log::warn!("Call store: files write {path} failed: {e}"),
         },
         // Runs after the batch commits, in transactions of its own.
         Write::Retention { before_ms } => {
@@ -200,7 +207,7 @@ fn apply(
                 params![key, value],
             );
             if let Err(e) = r {
-                log::warn!("db: meta write {key} failed: {e}");
+                log::warn!("Call store: meta write {key} failed: {e}");
             }
         }
         Write::Checkpoint => *checkpoint = true,
@@ -383,9 +390,7 @@ mod tests {
     #[test]
     fn call_files_updates_the_flags_and_says_so_once() {
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
-        let dir = std::env::temp_dir().join(format!("trunk-pro-db-files-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let db = Db::open(&dir.join("trunk-pro.sqlite"), hub).unwrap();
+        let (db, _) = Db::for_test_on("files", hub);
         let r = record(1, 1000);
         db.send(Write::Call {
             row: call_row("ohmarcs/b", &r, &r.to_json(), true, true, None, 1),

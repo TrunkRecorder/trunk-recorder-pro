@@ -318,10 +318,16 @@ fn a_spare_radio_is_one_no_source_names() {
 }
 
 pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
+    let name = format!("ctx-{}", dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
+    ctx_with(cfg, dir, |hub| crate::db::Db::for_test_on(&name, hub).0)
+}
+
+/// As [`ctx`], with the call store `db` makes on the hub.
+pub(crate) fn ctx_with(cfg: Config, dir: &Path, db: impl FnOnce(crate::runtime::Hub) -> crate::db::Db) -> Arc<crate::runtime::Ctx> {
     let (hub, _) = tokio::sync::broadcast::channel(16);
     let shared = trunk_app::stats::Shared::new();
     let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
-    Arc::new(crate::runtime::Ctx {
+    let ctx = Arc::new(crate::runtime::Ctx {
         config_path: dir.join("config.json"),
         config: Mutex::new(cfg),
         config_version: std::sync::atomic::AtomicU64::new(1),
@@ -329,7 +335,7 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         hub: hub.clone(),
         lifecycle: Mutex::new(crate::runtime::Lifecycle::default()),
         phase: Mutex::new(crate::runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
-        db: crate::db::Db::for_test_on(&format!("ctx-{}", dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned())), hub.clone()).0,
+        db: db(hub.clone()),
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
@@ -346,7 +352,14 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         spool: Mutex::new(None),
         clock: Default::default(),
         unlocked: Default::default(),
-    })
+    });
+    // The stats thread makes its folder as it starts: wait for that, so a
+    // test that removes `dir` when done does not see it made again after.
+    let t = std::time::Instant::now();
+    while !dir.join("stats").exists() && t.elapsed() < std::time::Duration::from_secs(1) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    ctx
 }
 
 /// A source's roll-off, from a capture of noise; and why it couldn't be had.

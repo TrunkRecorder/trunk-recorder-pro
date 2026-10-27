@@ -1,7 +1,8 @@
 //! The call store: a SQLite index of recorded calls. One writer thread
 //! batches writes into transactions; a small pool of read-only connections
-//! serves queries without ever waiting on it. Nothing here is fatal once the
-//! file is open: errors are logged and the recorder carries on.
+//! serves queries without ever waiting on it. Nothing here is fatal: a store
+//! that cannot be opened is off, and once it is open errors are logged and
+//! the recorder carries on.
 
 pub mod backfill;
 pub mod read;
@@ -13,20 +14,19 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use rusqlite::{Connection, OpenFlags};
 
 use crate::runtime::Hub;
-
-#[allow(unused_imports)] // read by later tasks
-pub use read::{CallsFilter, Page, newest, older, one, query};
-#[allow(unused_imports)] // read by later tasks
-pub use row::{CallRow, call_row, entry};
+use row::CallRow;
 
 /// Writes the channel holds before `send` blocks.
 const QUEUE_LEN: usize = 4096;
-/// Read-only connections opened up front.
+/// Read-only connections opened up front, and the most the pool keeps.
 const READERS: usize = 4;
+/// A day, in milliseconds.
+const DAY_MS: i64 = 86_400_000;
 
 /// A change for the writer thread to make.
 #[allow(clippy::large_enum_variant)] // one row per call; boxing it would only add a hop
@@ -51,14 +51,19 @@ pub enum Write {
 }
 
 /// A handle on the call store. Clones share one database and one writer;
-/// the writer stops when the last clone is dropped.
+/// the writer stops when the last clone is dropped. A store that could not be
+/// opened is off ([`Db::disabled`]): it drops every write and answers every
+/// read with an error, and the recorder records as ever without it.
 #[derive(Clone)]
-pub struct Db(Arc<Inner>);
+pub struct Db(Option<Arc<Inner>>);
 
 struct Inner {
     path: PathBuf,
     recorder: Option<String>,
-    tx: SyncSender<Write>,
+    /// Taken when the last handle goes, which closes the writer's channel.
+    tx: Option<SyncSender<Write>>,
+    /// The writer thread, waited for when the last handle goes.
+    writer: Option<JoinHandle<()>>,
     queued: Arc<AtomicUsize>,
     backfill_running: AtomicBool,
     #[cfg(test)]
@@ -70,6 +75,20 @@ struct Inner {
     /// last `Db`, which wakes the thread to exit.
     retention_stop: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     readers: Mutex<Vec<Connection>>,
+    /// The test's folder, removed once the connections above are closed.
+    #[cfg(test)]
+    dir: Option<TestDir>,
+}
+
+impl Drop for Inner {
+    /// Close the writer's channel and wait for its last commit, so the file
+    /// is let go of when the last handle is.
+    fn drop(&mut self) {
+        self.tx.take();
+        if let Some(w) = self.writer.take() {
+            let _ = w.join();
+        }
+    }
 }
 
 impl Db {
@@ -82,13 +101,13 @@ impl Db {
             .filter(|d| !d.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-        log::debug!("db: schema version {}", schema::SCHEMA_VERSION);
+        log::debug!("Call store: schema version {}", schema::SCHEMA_VERSION);
         let conn = match open_sound(path) {
             Ok(c) => c,
             Err(OpenError::Corrupt(e)) if path.exists() => {
                 let aside = move_aside(path)?;
                 log::warn!(
-                    "db: {} is unusable ({e}); moved to {}",
+                    "Call store: {} is unusable ({e}); moved to {}",
                     path.display(),
                     aside.display()
                 );
@@ -98,7 +117,8 @@ impl Db {
         };
         let recorder = std::fs::read_to_string(dir.join("directory-recorder-id"))
             .ok()
-            .map(|s| s.trim().to_string());
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let readers = (0..READERS)
             .map(|_| open_reader(path))
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -106,11 +126,12 @@ impl Db {
         let (tx, rx) = sync_channel(QUEUE_LEN);
         let queued = Arc::new(AtomicUsize::new(0));
         let commits = Arc::new(AtomicU64::new(0));
-        writer::spawn(conn, hub, rx, commits.clone(), queued.clone());
-        Ok(Db(Arc::new(Inner {
+        let writer = writer::spawn(conn, hub, rx, commits.clone(), queued.clone());
+        Ok(Db(Some(Arc::new(Inner {
             path: path.to_path_buf(),
             recorder,
-            tx,
+            tx: Some(tx),
+            writer,
             queued,
             backfill_running: AtomicBool::new(false),
             #[cfg(test)]
@@ -119,61 +140,111 @@ impl Db {
             retention_done: Arc::new(AtomicBool::new(false)),
             retention_stop: Mutex::new(None),
             readers: Mutex::new(readers),
-        })))
+            #[cfg(test)]
+            dir: None,
+        }))))
     }
 
-    /// The database file.
-    #[allow(dead_code)] // used by later tasks
-    pub fn path(&self) -> &Path {
-        &self.0.path
+    /// [`Db::open`], or the store off when it cannot be opened (a newer
+    /// schema, a full disk, no permission, another instance holding it): the
+    /// one error logged says why, and recording goes on without it.
+    pub fn open_or_off(path: &Path, hub: Hub) -> Db {
+        Db::open(path, hub).unwrap_or_else(|e| {
+            log::error!("Call store: off: {e}");
+            Db::disabled()
+        })
+    }
+
+    /// The store off: writes are dropped without a word, reads are errors,
+    /// and nothing runs in the background.
+    pub fn disabled() -> Db {
+        Db(None)
+    }
+
+    /// The store could not be opened and is off.
+    pub fn is_disabled(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// The database file; `None` when the store is off.
+    pub fn path(&self) -> Option<&Path> {
+        self.0.as_deref().map(|i| i.path.as_path())
     }
 
     /// The directory recorder's id, if `directory-recorder-id` sits beside the
-    /// database. Read once, at open.
+    /// database and is not empty. Read once, at open.
     pub fn recorder(&self) -> Option<&str> {
-        self.0.recorder.as_deref()
+        self.0.as_deref()?.recorder.as_deref()
     }
 
     /// Queue a write. Blocks only while the queue is full. False when the
-    /// writer has stopped and the write was dropped.
+    /// write was dropped: the writer has stopped, or the store is off.
     pub fn send(&self, w: Write) -> bool {
-        self.0.queued.fetch_add(1, Ordering::Relaxed);
-        if self.0.tx.send(w).is_err() {
-            self.0.queued.fetch_sub(1, Ordering::Relaxed);
-            log::warn!("db: the writer has stopped; write dropped");
+        let Some(inner) = self.0.as_deref() else {
+            return false;
+        };
+        let Some(tx) = &inner.tx else {
+            return false;
+        };
+        inner.queued.fetch_add(1, Ordering::Relaxed);
+        if tx.send(w).is_err() {
+            inner.queued.fetch_sub(1, Ordering::Relaxed);
+            log::warn!("Call store: the writer has stopped; write dropped");
             return false;
         }
         true
     }
 
+    /// The time retention and the backfill count back from: `now_ms`, but at
+    /// most a day past the newest call in the store, so a clock that
+    /// jumps forward neither empties the store nor leaves the archive out.
+    pub fn now_ms(&self, now_ms: i64) -> i64 {
+        let newest = self.with_reader(|c| {
+            c.query_row("select max(start_ms) from calls", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })
+        });
+        match newest {
+            Ok(Some(newest)) => now_ms.min(newest.saturating_add(DAY_MS)),
+            _ => now_ms,
+        }
+    }
+
+    /// Where keeping `days` days of calls cuts at `now_ms`: calls that
+    /// started before it go.
+    pub fn retention_cutoff(&self, days: u32, now_ms: i64) -> i64 {
+        self.now_ms(now_ms) - i64::from(days) * DAY_MS
+    }
+
     /// Keep `days` days of calls (0: all of them): delete what is older now,
     /// and again every hour. The thread holds only a weak handle and waits on
     /// a channel whose sender lives in the database, so it exits as soon as
-    /// the last `Db` is dropped.
+    /// the last `Db` is dropped. Nothing starts when the store is off.
     pub fn start_retention(&self, days: u32) {
+        let Some(this) = &self.0 else {
+            return;
+        };
         if days == 0 {
             return;
         }
         let (stop, wake) = std::sync::mpsc::channel::<()>();
-        *self
-            .0
+        *this
             .retention_stop
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(stop);
-        let inner = Arc::downgrade(&self.0);
+        let inner = Arc::downgrade(this);
         #[cfg(test)]
-        let done = self.0.retention_done.clone();
+        let done = this.retention_done.clone();
         let spawned = std::thread::Builder::new()
             .name("db-retention".into())
             .spawn(move || {
                 loop {
                     // The handle lives only for the send: holding it while
                     // waiting would keep the writer alive for ever.
-                    let Some(db) = inner.upgrade().map(Db) else {
+                    let Some(db) = inner.upgrade().map(|i| Db(Some(i))) else {
                         break;
                     };
-                    let now_ms = crate::clock::unix_ms() as i64;
-                    let before_ms = now_ms - i64::from(days) * 86_400_000;
+                    let before_ms = db.retention_cutoff(days, crate::clock::unix_ms() as i64);
                     let sent = db.send(Write::Retention { before_ms });
                     drop(db);
                     if !sent {
@@ -189,55 +260,67 @@ impl Db {
                 done.store(true, Ordering::Release);
             });
         if let Err(e) = spawned {
-            log::error!("db: could not start the retention thread: {e}");
+            log::error!("Call store: could not start the retention thread: {e}");
         }
     }
 
     /// Writes queued and not yet taken up by the writer.
     pub fn queued(&self) -> usize {
-        self.0.queued.load(Ordering::Relaxed)
+        self.0
+            .as_deref()
+            .map_or(0, |i| i.queued.load(Ordering::Relaxed))
     }
 
-    /// Claim the right to run a backfill: false when one is already running.
+    /// Claim the right to run a backfill: false when one is already running
+    /// or the store is off.
     pub fn try_begin_backfill(&self) -> bool {
-        self.0
-            .backfill_running
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+        self.0.as_deref().is_some_and(|i| {
+            i.backfill_running
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        })
     }
 
     /// Give the right to run a backfill back.
     pub fn end_backfill(&self) {
-        self.0.backfill_running.store(false, Ordering::Release);
+        if let Some(i) = self.0.as_deref() {
+            i.backfill_running.store(false, Ordering::Release);
+        }
     }
 
-    /// Run `f` on a read-only connection.
+    /// Run `f` on a read-only connection; an error when the store is off.
     pub fn with_reader<T>(
         &self,
         f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
     ) -> Result<T, String> {
-        let pooled = self
-            .0
+        let Some(inner) = self.0.as_deref() else {
+            return Err("the call store is off".into());
+        };
+        let pooled = inner
             .readers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .pop();
         let conn = match pooled {
             Some(c) => c,
-            None => open_reader(&self.0.path).map_err(|e| format!("open reader: {e}"))?,
+            None => open_reader(&inner.path).map_err(|e| format!("open reader: {e}"))?,
         };
         let out = f(&conn).map_err(|e| e.to_string());
-        self.0
-            .readers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(conn);
+        let mut pool = inner.readers.lock().unwrap_or_else(|e| e.into_inner());
+        // A connection opened while the pool was empty is closed, not kept.
+        if pool.len() < READERS {
+            pool.push(conn);
+        }
         out
     }
 
     /// Return once every write sent before this call has been through a
-    /// commit; `Err` if that commit failed or the writer is gone.
+    /// commit; `Err` if that commit failed or the writer is gone. At once
+    /// when the store is off.
     pub fn flush(&self) -> Result<(), String> {
+        if self.is_disabled() {
+            return Ok(());
+        }
         let (done, wait) = std::sync::mpsc::channel();
         self.send(Write::Flush(done));
         wait.recv()
@@ -247,10 +330,13 @@ impl Db {
     /// Transactions the writer has committed since open.
     #[cfg(test)]
     pub fn commits(&self) -> u64 {
-        self.0.commits.load(Ordering::Relaxed)
+        self.0
+            .as_deref()
+            .map_or(0, |i| i.commits.load(Ordering::Relaxed))
     }
 
-    /// A fresh database under the temp folder, named for the test.
+    /// A fresh database in a folder of its own under the temp folder, named
+    /// for the test; the folder is removed with the last handle.
     #[cfg(test)]
     pub fn for_test(name: &str) -> (Db, PathBuf) {
         let (hub, _) = tokio::sync::broadcast::channel(16);
@@ -260,13 +346,53 @@ impl Db {
     /// As [`Db::for_test`], publishing on `hub`.
     #[cfg(test)]
     pub fn for_test_on(name: &str, hub: Hub) -> (Db, PathBuf) {
-        let path =
-            std::env::temp_dir().join(format!("trunk-pro-db-{name}-{}.sqlite", std::process::id()));
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        let dir = TestDir::new(&format!("db-{name}"));
+        let path = dir.join("trunk-pro.sqlite");
+        let mut db = Db::open(&path, hub).expect("open test db");
+        if let Some(inner) = db.0.as_mut().and_then(Arc::get_mut) {
+            inner.dir = Some(dir);
         }
-        (Db::open(&path, hub).expect("open test db"), path)
+        (db, path)
     }
+}
+
+/// A test's folder under the temp folder: made empty, removed on drop.
+#[cfg(test)]
+pub struct TestDir(PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    pub fn new(name: &str) -> TestDir {
+        let p = std::env::temp_dir().join(format!("trunk-pro-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("make the test folder");
+        TestDir(p)
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TestDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A database at `path` whose schema version says a newer build wrote it.
+#[cfg(test)]
+pub fn seed_newer(path: &Path) {
+    let (hub, _) = tokio::sync::broadcast::channel(16);
+    drop(Db::open(path, hub).unwrap());
+    let conn = Connection::open(path).unwrap();
+    conn.execute("update schema_version set version = 99", [])
+        .unwrap();
 }
 
 /// Why the writer's connection could not be opened.
@@ -312,11 +438,15 @@ fn open_sound(path: &Path) -> Result<Connection, OpenError> {
     Ok(conn)
 }
 
+/// A read-only connection. It waits up to a second for a lock (a checkpoint
+/// resetting the WAL) rather than failing at once.
 fn open_reader(path: &Path) -> rusqlite::Result<Connection> {
-    Connection::open_with_flags(
+    let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(1))?;
+    Ok(conn)
 }
 
 /// Rename the database and its `-wal`/`-shm` siblings to `<name>.corrupt-<unix
@@ -339,7 +469,7 @@ fn move_aside(path: &Path) -> Result<PathBuf, String> {
     let undo = |moved: &[(PathBuf, PathBuf)]| {
         for (from, to) in moved.iter().rev() {
             if let Err(e) = std::fs::rename(to, from) {
-                log::warn!("db: could not put {} back: {e}", from.display());
+                log::warn!("Call store: could not put {} back: {e}", from.display());
             }
         }
     };
@@ -373,6 +503,10 @@ fn move_aside(path: &Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
+    fn hub() -> Hub {
+        tokio::sync::broadcast::channel(16).0
+    }
+
     #[test]
     fn opening_creates_the_file_and_schema_version_1() {
         let (db, path) = Db::for_test("open");
@@ -405,10 +539,24 @@ mod tests {
     }
 
     #[test]
+    fn the_last_handle_removes_a_test_folder() {
+        let (db, path) = Db::for_test("cleanup");
+        db.send(Write::Meta {
+            key: "a".into(),
+            value: "1".into(),
+        });
+        drop(db);
+        assert!(
+            !path.parent().unwrap().exists(),
+            "the writer has let go and the folder is gone"
+        );
+    }
+
+    #[test]
     fn the_retention_thread_exits_when_the_last_db_is_dropped() {
         let (db, _) = Db::for_test("retention-exit");
         db.start_retention(1);
-        let done = db.0.retention_done.clone();
+        let done = db.0.as_ref().unwrap().retention_done.clone();
         let clone = db.clone();
         drop(db);
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -425,24 +573,47 @@ mod tests {
     }
 
     #[test]
+    fn retention_counts_back_from_the_newest_call_when_the_clock_is_ahead() {
+        let (db, _) = Db::for_test("retention-clock");
+        assert_eq!(
+            db.retention_cutoff(120, 1000 * DAY_MS),
+            880 * DAY_MS,
+            "an empty store counts back from now"
+        );
+        let r = row::tests::record(1, 10 * DAY_MS);
+        db.send(Write::Call {
+            row: row::call_row("s/a", &r, &r.to_json(), true, true, None, 0),
+            live: true,
+        });
+        db.flush().unwrap();
+        // The clock jumped 990 days ahead of the newest call.
+        let cut = db.retention_cutoff(120, 1000 * DAY_MS);
+        assert_eq!(cut, 11 * DAY_MS - 120 * DAY_MS);
+        assert!(cut < 10 * DAY_MS, "the call is kept");
+        assert_eq!(
+            db.retention_cutoff(120, 10 * DAY_MS),
+            -110 * DAY_MS,
+            "a clock that is right counts from now"
+        );
+    }
+
+    #[test]
     fn a_corrupt_file_is_moved_aside_and_a_fresh_one_opened() {
-        let dir = std::env::temp_dir().join(format!("trunk-pro-db-corrupt-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("db-corrupt");
         let path = dir.join("trunk-pro.sqlite");
         std::fs::write(&path, b"this is not a database").unwrap();
-        let (hub, _) = tokio::sync::broadcast::channel(16);
-        let db = Db::open(&path, hub).unwrap();
+        let db = Db::open(&path, hub()).unwrap();
         let v: u32 = db
             .with_reader(|c| c.query_row("select version from schema_version", [], |r| r.get(0)))
             .unwrap();
         assert_eq!(v, 1);
-        let aside = std::fs::read_dir(&dir)
+        let aside = std::fs::read_dir(&*dir)
             .unwrap()
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
             .count();
         assert_eq!(aside, 1);
+        drop(db);
     }
 
     #[test]
@@ -484,43 +655,83 @@ mod tests {
 
     #[test]
     fn a_database_from_a_newer_version_is_refused_not_moved_aside() {
-        let (db, path) = Db::for_test("newer");
-        drop(db);
-        // The writer thread exits once the last handle is gone; wait for it to
-        // let go of the file before changing it from outside.
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let conn = Connection::open(&path).unwrap();
-        conn.execute("update schema_version set version = 99", [])
-            .unwrap();
-        drop(conn);
-        let (hub, _) = tokio::sync::broadcast::channel(16);
-        let err = Db::open(&path, hub)
+        let dir = TestDir::new("db-newer");
+        let path = dir.join("trunk-pro.sqlite");
+        seed_newer(&path);
+        let err = Db::open(&path, hub())
             .err()
             .expect("a newer schema must be refused");
         assert!(err.contains("99"), "{err}");
         assert!(path.exists());
-        let dir = path.parent().unwrap();
-        let aside = std::fs::read_dir(dir)
+        let aside = std::fs::read_dir(&*dir)
             .unwrap()
             .flatten()
-            .filter(|e| {
-                let n = e.file_name().to_string_lossy().into_owned();
-                n.contains("trunk-pro-db-newer") && n.contains(".corrupt-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
             .count();
         assert_eq!(aside, 0);
+        assert!(
+            Db::open_or_off(&path, hub()).is_disabled(),
+            "the recorder carries on with the store off"
+        );
+    }
+
+    #[test]
+    fn a_store_that_is_off_takes_writes_and_answers_reads_with_an_error() {
+        let db = Db::disabled();
+        assert!(db.is_disabled());
+        assert!(!db.send(Write::Checkpoint));
+        assert_eq!(
+            db.with_reader(|_| Ok(())).unwrap_err(),
+            "the call store is off"
+        );
+        assert_eq!(db.queued(), 0);
+        assert!(db.flush().is_ok());
+        assert_eq!((db.recorder(), db.path()), (None, None));
+        assert!(!db.try_begin_backfill());
+        db.start_retention(1);
+        assert_eq!(db.now_ms(5), 5);
+    }
+
+    #[test]
+    fn an_empty_recorder_id_is_none() {
+        let dir = TestDir::new("db-recorder-id");
+        std::fs::write(dir.join("directory-recorder-id"), b" \n").unwrap();
+        let db = Db::open(&dir.join("trunk-pro.sqlite"), hub()).unwrap();
+        assert_eq!(db.recorder(), None);
+        drop(db);
+        std::fs::write(dir.join("directory-recorder-id"), b"rec-1\n").unwrap();
+        let db = Db::open(&dir.join("trunk-pro.sqlite"), hub()).unwrap();
+        assert_eq!(db.recorder(), Some("rec-1"));
+    }
+
+    #[test]
+    fn the_reader_pool_keeps_no_more_than_it_opened() {
+        let (db, _) = Db::for_test("pool");
+        // Five at once: the fifth is opened for the occasion.
+        fn nest(db: &Db, depth: usize) -> rusqlite::Result<()> {
+            if depth == 0 {
+                return Ok(());
+            }
+            db.with_reader(|_| nest(db, depth - 1))
+                .map_err(rusqlite::Error::InvalidParameterName)
+        }
+        nest(&db, READERS + 1).unwrap();
+        let pooled = db.0.as_ref().unwrap().readers.lock().unwrap().len();
+        assert_eq!(pooled, READERS);
+        let wait: i64 = db
+            .with_reader(|c| c.query_row("pragma busy_timeout", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(wait, 1000, "a reader waits a second for a lock");
     }
 
     #[test]
     fn a_path_that_cannot_be_opened_is_not_called_corrupt() {
-        let dir = std::env::temp_dir().join(format!("trunk-pro-db-notdir-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("db-notdir");
         let file = dir.join("a-file");
         std::fs::write(&file, b"x").unwrap();
         let path = file.join("trunk-pro.sqlite");
         assert!(matches!(open_sound(&path), Err(OpenError::Other(_))));
-        let aside = std::fs::read_dir(&dir)
+        let aside = std::fs::read_dir(&*dir)
             .unwrap()
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
@@ -530,9 +741,7 @@ mod tests {
 
     #[test]
     fn move_aside_keeps_the_wal_and_puts_everything_back_on_failure() {
-        let dir = std::env::temp_dir().join(format!("trunk-pro-db-aside-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("db-aside");
         let path = dir.join("x.sqlite");
         std::fs::write(&path, b"db").unwrap();
         std::fs::write(dir.join("x.sqlite-wal"), b"wal").unwrap();
