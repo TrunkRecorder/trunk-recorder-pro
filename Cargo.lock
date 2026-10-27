@@ -912,6 +912,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1536,9 +1542,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sdr-decode"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f2d378e51fab588100b72a43be6ee046754e234303708e40eca8e6a5ab1420e"
+dependencies = [
+ "sdr-fec",
+ "sdr-p25",
+ "sdr-stream",
+]
+
+[[package]]
+name = "sdr-fec"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bc43d9a9b1960269ee645d282087cf612c71d7d4e3c5bc8b547111532cc0213"
+
+[[package]]
+name = "sdr-p25"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ab770d6d0fb4b42fee86518a2a972428bebcd381ecd92bffca73dc3904b15da"
+dependencies = [
+ "libm",
+ "sdr-fec",
+ "sdr-stream",
+]
+
+[[package]]
 name = "sdr-stream"
 version = "1.9.0"
-source = "git+https://github.com/MimoCAD/sdr-stream.git?rev=8c4d293bc5b27732252faea5112dd5a37a2ed0bd#8c4d293bc5b27732252faea5112dd5a37a2ed0bd"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2448fee5c54f439a028ffd98da1b5834291738f6144a76412d36a3ec94639c07"
 
 [[package]]
 name = "serde"
@@ -1964,6 +1999,7 @@ dependencies = [
  "num-complex",
  "regex-lite",
  "rustfft",
+ "sdr-decode",
  "sdr-stream",
  "trunk-recorder-plugin",
  "zeroize",

@@ -77,7 +77,7 @@ research a system on RadioReference and set gain and frequency correction.
 
 ## Building from source
 
-Rust 1.95+, Node 20+, the WebAssembly target and `wasm-bindgen-cli` at the version in
+Rust 1.99+, Node 20+, the WebAssembly target and `wasm-bindgen-cli` at the version in
 `Cargo.lock` (0.2.129). The interface runs the recorder's own config rules as WebAssembly, so that
 is built first: `npm run wasm` makes `web/src/web/pkg`, which isn't in the repository.
 

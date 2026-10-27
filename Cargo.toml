@@ -5,9 +5,9 @@ members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-pro", "crates/
 [workspace.package]
 version = "0.2.10"
 edition = "2024"
-# The oldest Rust that builds the app (sysinfo needs 1.95). The plugin SDK
+# The oldest Rust that builds the app (sdr-stream declares 1.99). The plugin SDK
 # sets its own, lower one.
-rust-version = "1.95"
+rust-version = "1.99"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/TrunkRecorder/trunk-recorder-pro"
 

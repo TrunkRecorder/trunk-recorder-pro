@@ -41,6 +41,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   "fire4a" renamed it to f, fi, fir… on the way, moving its talkgroup file each time, and a
   plugin's settings restarted it on each pause. Switches and menus still act at once.
 
+- **Phase 2 and DMR `.sdr` files play in MimoSDR.** A Phase 2 frame's symbols were stored as the
+  dibit rather than its quadrant, so MimoSDR's player (and anyone else's) misread most of them; and
+  frames our vocoder repeated or muted were stored as heard, so other players played them. They're
+  now marked unheard, for the player to conceal: Phase 2 frame by frame, DMR a burst (three frames)
+  at a time. Phase 1 files were already right. `.sdr` files saved before this keep the old Phase 2
+  layout; `trunk-pro tool` still reads only the new one.
+- `sdr-stream` (the `.sdr` container) now comes from crates.io instead of a pinned git commit, the
+  same code. It declares Rust 1.99, so **building from source needs Rust 1.99 or newer**.
+- A test plays our `.sdr` files through MimoSDR's own player (`sdr-decode`) and checks each call's
+  loudness follows ours: synthetic Phase 1, Phase 2 and DMR calls always, and with
+  `TRP_SDR_DIR=<dir>` every recorded call in a directory (`cargo test -p trunk-core --test mimosdr`).
+
 - **Which sites of a system can be heard here** (from #95, by Bill Johnson). Find my system can look
   for a system you know of instead of sweeping the bands. It listens to just that system's
   frequencies and says, site by site, which it heard: **Heard**, **Another site**,

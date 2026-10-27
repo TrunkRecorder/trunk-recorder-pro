@@ -18,5 +18,9 @@ des = { version = "0.9", features = ["zeroize"] }
 aes = { version = "0.9", features = ["zeroize"] }
 # Key bytes are wiped when dropped.
 zeroize = "1"
-# MimoSDR's .sdr call container (frame capture). Zero dependencies; not on crates.io.
-sdr_stream = { package = "sdr-stream", git = "https://github.com/MimoCAD/sdr-stream.git", rev = "8c4d293bc5b27732252faea5112dd5a37a2ed0bd" }
+# MimoSDR's .sdr call container (frame capture). Zero dependencies.
+sdr_stream = { package = "sdr-stream", version = "1.9" }
+
+[dev-dependencies]
+# MimoSDR's own .sdr player (tests/mimosdr.rs): our files must play there as they do here.
+sdr_decode = { package = "sdr-decode", version = "0.10" }

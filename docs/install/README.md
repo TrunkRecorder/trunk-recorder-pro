@@ -97,7 +97,7 @@ frequency correction, and pressing **Start**.
 You only need this if you want to change the code or run a version that hasn't been released.
 You need:
 
-- **Rust 1.95 or newer** (the `rust-version` in `Cargo.toml`), from [rustup](https://rustup.rs).
+- **Rust 1.99 or newer** (the `rust-version` in `Cargo.toml`), from [rustup](https://rustup.rs).
 - **Node.js 20 or newer** for the web interface (the release builds use Node 22).
 
 Since 0.2.0 the interface runs the recorder's own rules as WebAssembly, so the WebAssembly engine is
