@@ -33,19 +33,25 @@ pub struct Page {
     pub entries: Vec<Value>,
     /// Calls remain that started before the oldest on this page.
     pub more: bool,
-    /// Where the next page starts: the oldest start on this page, or the
-    /// `before` that was asked when the page is empty.
-    #[allow(dead_code)] // the next page's start, for later tasks
+    /// Where the next page starts: the oldest start on this page; when the
+    /// page is empty, the `before` that was asked, or 0 when none was.
     pub before: i64,
 }
 
 /// The columns a call entry is made from, then `id` and `start_ms` for paging.
 const COLUMNS: &str = "path, record, audio, json, id, start_ms";
 
-/// The `limit` newest calls, newest first (`start_ms`, then `id`, descending).
+/// The `limit` newest calls, newest first (`start_ms`, then `id`,
+/// descending), plus every further call sharing the oldest one's start.
 pub fn newest(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<Value>> {
-    let (rows, _) = fetch(conn, &Where::default(), limit.max(1))?;
-    Ok(rows.into_iter().map(|r| r.entry).collect())
+    let page = query(
+        conn,
+        &CallsFilter {
+            limit,
+            ..Default::default()
+        },
+    )?;
+    Ok(page.entries)
 }
 
 /// Up to `limit` calls that started before `before_ms`, newest first, plus
@@ -66,7 +72,7 @@ pub fn query(conn: &Connection, f: &CallsFilter) -> rusqlite::Result<Page> {
     let limit = f.limit.max(1);
     let w = Where::of(f);
     let (mut rows, extra) = fetch(conn, &w, limit)?;
-    let asked = f.before_ms.unwrap_or(i64::MAX);
+    let asked = f.before_ms.unwrap_or(0);
     let Some(last) = rows.last().map(|r| (r.id, r.start_ms)) else {
         return Ok(Page {
             entries: Vec::new(),
@@ -242,22 +248,78 @@ mod tests {
     }
 
     #[test]
-    fn paging_returns_every_call_exactly_once() {
-        let db = seeded("paging");
+    fn newest_takes_equal_starts_whole() {
+        let db = seeded("newest-whole");
+        // The sixth newest is s/6 at 5000, which s/5 shares.
+        let v = db.with_reader(|c| newest(c, 6)).unwrap();
+        assert_eq!(
+            paths(&v),
+            ["s/11", "s/10", "s/9", "s/8", "s/7", "s/6", "s/5"]
+        );
+    }
+
+    /// Every page of `f` from the start, the paths in the order they came.
+    fn every_page(db: &Db, f: CallsFilter) -> Vec<String> {
         let mut seen = Vec::new();
-        let mut before = i64::MAX;
+        let mut f = f;
         loop {
-            let p = db.with_reader(|c| older(c, before, 4)).unwrap();
+            let p = db.with_reader(|c| query(c, &f)).unwrap();
+            assert!(
+                !p.entries.is_empty() || !p.more,
+                "an empty page says no more"
+            );
             seen.extend(paths(&p.entries).into_iter().map(str::to_string));
             if !p.more {
                 break;
             }
-            before = p.before;
+            f.before_ms = Some(p.before);
         }
+        seen
+    }
+
+    #[test]
+    fn paging_returns_every_call_exactly_once() {
+        let db = seeded("paging");
         let mut want: Vec<String> = (1..=12).map(|i| format!("s/{i}")).collect();
+        want.sort();
+        for limit in 1..=12 {
+            let mut seen = every_page(
+                &db,
+                CallsFilter {
+                    limit,
+                    ..Default::default()
+                },
+            );
+            seen.sort();
+            assert_eq!(seen, want, "limit {limit}");
+        }
+        // Talkgroup 2 (the odd calls), two to a page.
+        let mut seen = every_page(
+            &db,
+            CallsFilter {
+                talkgroup: Some(2),
+                limit: 2,
+                ..Default::default()
+            },
+        );
         seen.sort();
+        let mut want: Vec<String> = (1..=12)
+            .filter(|i| i % 2 == 1)
+            .map(|i| format!("s/{i}"))
+            .collect();
         want.sort();
         assert_eq!(seen, want);
+    }
+
+    #[test]
+    fn an_empty_page_with_no_before_asked_says_0() {
+        let (db, _) = Db::for_test("empty-before");
+        let p = db
+            .with_reader(|c| query(c, &CallsFilter::default()))
+            .unwrap();
+        assert_eq!((p.entries.len(), p.more, p.before), (0, false, 0));
+        let p = db.with_reader(|c| older(c, 1234, 10)).unwrap();
+        assert_eq!(p.before, 1234, "the before asked");
     }
 
     #[test]
