@@ -102,11 +102,7 @@ impl Writer {
                 }
             }
             last_commit = Some(Instant::now());
-            let mut flushes = Vec::new();
-            let mut checkpoint = false;
-            let mut retention: Option<i64> = None;
-            let mut announce = Vec::new();
-            let mut committed = Vec::new();
+            let mut batch = Batch::default();
             let mut outcome = Ok(());
             match self
                 .conn
@@ -115,38 +111,20 @@ impl Writer {
                 Ok(tx) => {
                     let mut taken = held.len();
                     for w in held {
-                        apply(
-                            &tx,
-                            w,
-                            &mut flushes,
-                            &mut checkpoint,
-                            &mut retention,
-                            &mut announce,
-                            &mut committed,
-                            &self.queued,
-                        );
+                        apply(&tx, w, &mut batch, &self.queued);
                     }
                     while taken < MAX_BATCH {
                         let Ok(next) = rx.try_recv() else {
                             break;
                         };
                         taken += 1;
-                        apply(
-                            &tx,
-                            next,
-                            &mut flushes,
-                            &mut checkpoint,
-                            &mut retention,
-                            &mut announce,
-                            &mut committed,
-                            &self.queued,
-                        );
+                        apply(&tx, next, &mut batch, &self.queued);
                     }
                     match tx.commit() {
                         Ok(()) => {
                             self.commits.fetch_add(1, Ordering::Relaxed);
-                            settle(&self.pending, &committed);
-                            for m in announce.drain(..) {
+                            settle(&self.pending, &batch.committed);
+                            for m in batch.announce.drain(..) {
                                 publish(&self.hub, m);
                             }
                         }
@@ -165,18 +143,18 @@ impl Writer {
                     {
                         self.queued.fetch_sub(1, Ordering::Relaxed);
                         if let Write::Flush(done) = next {
-                            flushes.push(done);
+                            batch.flushes.push(done);
                         }
                     }
                 }
             }
-            if let Some(before_ms) = retention {
+            if let Some(before_ms) = batch.retention {
                 self.retain(before_ms);
             }
-            if checkpoint {
+            if batch.checkpoint {
                 self.checkpoint();
             }
-            for done in flushes {
+            for done in batch.flushes {
                 let _ = done.send(outcome.clone());
             }
             if disconnected {
@@ -243,18 +221,23 @@ fn settle(pending: &Pending, committed: &[String]) {
         .retain(|(path, _)| !done.contains(path.as_str()));
 }
 
+/// What one transaction collects while its writes are applied.
+#[derive(Default)]
+struct Batch {
+    /// Waiting `flush` callers, answered once the batch is done.
+    flushes: Vec<Sender<Result<(), String>>>,
+    checkpoint: bool,
+    /// The newest retention cut asked for, run after the commit.
+    retention: Option<i64>,
+    /// Changes to tell browsers about once the rows are committed.
+    announce: Vec<ToClient>,
+    /// Paths of live calls written, cleared from `pending` on commit.
+    committed: Vec<String>,
+}
+
 /// Apply one write inside the batch's transaction. Failures are logged; the
 /// batch carries on.
-fn apply(
-    conn: &Connection,
-    w: Write,
-    flushes: &mut Vec<Sender<Result<(), String>>>,
-    checkpoint: &mut bool,
-    retention: &mut Option<i64>,
-    announce: &mut Vec<ToClient>,
-    committed: &mut Vec<String>,
-    queued: &AtomicUsize,
-) {
+fn apply(conn: &Connection, w: Write, batch: &mut Batch, queued: &AtomicUsize) {
     queued.fetch_sub(1, Ordering::Relaxed);
     match w {
         Write::Call { row, live } => {
@@ -262,17 +245,19 @@ fn apply(
                 log::warn!("Call store: call write {} failed: {e}", row.path);
             }
             if live {
-                committed.push(row.path);
+                batch.committed.push(row.path);
             }
         }
         Write::CallFiles { path, audio, json } => match set_files(conn, &path, audio, json) {
-            Ok(true) => announce.push(ToClient::CallFiles { path, audio, json }),
+            Ok(true) => batch
+                .announce
+                .push(ToClient::CallFiles { path, audio, json }),
             Ok(false) => {}
             Err(e) => log::warn!("Call store: files write {path} failed: {e}"),
         },
         // Runs after the batch commits, in transactions of its own.
         Write::Retention { before_ms } => {
-            *retention = Some(retention.map_or(before_ms, |b| b.max(before_ms)));
+            batch.retention = Some(batch.retention.map_or(before_ms, |b| b.max(before_ms)));
         }
         Write::Meta { key, value } => {
             let r = conn.execute(
@@ -284,8 +269,8 @@ fn apply(
                 log::warn!("Call store: meta write {key} failed: {e}");
             }
         }
-        Write::Checkpoint => *checkpoint = true,
-        Write::Flush(done) => flushes.push(done),
+        Write::Checkpoint => batch.checkpoint = true,
+        Write::Flush(done) => batch.flushes.push(done),
     }
 }
 
