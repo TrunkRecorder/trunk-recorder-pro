@@ -209,7 +209,7 @@ impl From<rusqlite::Error> for OpenError {
 
 /// Open the writer's connection: contents sound, pragmas set, schema current.
 fn open_sound(path: &Path) -> Result<Connection, OpenError> {
-    let conn = Connection::open(path).map_err(|e| OpenError::Corrupt(e.to_string()))?;
+    let conn = Connection::open(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     let check: String = conn.query_row("pragma quick_check", [], |r| r.get(0))?;
     if check != "ok" {
@@ -233,34 +233,51 @@ fn open_reader(path: &Path) -> rusqlite::Result<Connection> {
 }
 
 /// Rename the database and its `-wal`/`-shm` siblings to `<name>.corrupt-<unix
-/// seconds>`, returning the new name of the database file. A sibling that
-/// will not rename is deleted; if that fails too, the move has failed, since a
-/// fresh database must not adopt an old WAL.
+/// seconds>`, returning the new name of the database file. The siblings move
+/// first and the database last; if any rename fails, what already moved is put
+/// back and the move has failed, so a fresh database never adopts an old WAL
+/// and a WAL's committed data is never deleted. Only a `-shm` that will not
+/// rename is removed: it is an index that SQLite rebuilds.
 fn move_aside(path: &Path) -> Result<PathBuf, String> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let with = |suffix: &str| {
-        let mut s = path.as_os_str().to_owned();
+    let with = |base: &Path, suffix: &str| {
+        let mut s = base.as_os_str().to_owned();
         s.push(suffix);
         PathBuf::from(s)
     };
-    let aside = with(&format!(".corrupt-{secs}"));
-    std::fs::rename(path, &aside).map_err(|e| format!("move {} aside: {e}", path.display()))?;
+    let aside = with(path, &format!(".corrupt-{secs}"));
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let undo = |moved: &[(PathBuf, PathBuf)]| {
+        for (from, to) in moved.iter().rev() {
+            if let Err(e) = std::fs::rename(to, from) {
+                log::warn!("db: could not put {} back: {e}", from.display());
+            }
+        }
+    };
     for suffix in ["-wal", "-shm"] {
-        let from = with(suffix);
+        let from = with(path, suffix);
         if !from.exists() {
             continue;
         }
-        let to = {
-            let mut s = aside.as_os_str().to_owned();
-            s.push(suffix);
-            PathBuf::from(s)
-        };
-        if let Err(e) = std::fs::rename(&from, &to) {
-            std::fs::remove_file(&from)
-                .map_err(|e2| format!("move {} aside: {e}; delete: {e2}", from.display()))?;
+        let to = with(&aside, suffix);
+        match std::fs::rename(&from, &to) {
+            Ok(()) => moved.push((from, to)),
+            Err(_) if suffix == "-shm" => {
+                std::fs::remove_file(&from)
+                    .map_err(|e| format!("move {} aside: {e}", from.display()))
+                    .inspect_err(|_| undo(&moved))?;
+            }
+            Err(e) => {
+                undo(&moved);
+                return Err(format!("move {} aside: {e}", from.display()));
+            }
         }
+    }
+    if let Err(e) = std::fs::rename(path, &aside) {
+        undo(&moved);
+        return Err(format!("move {} aside: {e}", path.display()));
     }
     Ok(aside)
 }
@@ -385,5 +402,43 @@ mod tests {
             })
             .count();
         assert_eq!(aside, 0);
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_opened_is_not_called_corrupt() {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-db-notdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        let path = file.join("trunk-pro.sqlite");
+        assert!(matches!(open_sound(&path), Err(OpenError::Other(_))));
+        let aside = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .count();
+        assert_eq!(aside, 0);
+    }
+
+    #[test]
+    fn move_aside_keeps_the_wal_and_puts_everything_back_on_failure() {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-db-aside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("x.sqlite");
+        std::fs::write(&path, b"db").unwrap();
+        std::fs::write(dir.join("x.sqlite-wal"), b"wal").unwrap();
+        let aside = move_aside(&path).unwrap();
+        assert!(!path.exists());
+        let mut wal = aside.as_os_str().to_owned();
+        wal.push("-wal");
+        assert_eq!(std::fs::read(PathBuf::from(wal)).unwrap(), b"wal");
+        // The database file is missing, so the final rename fails: the WAL
+        // must be back where it was.
+        let path2 = dir.join("y.sqlite");
+        std::fs::write(dir.join("y.sqlite-wal"), b"wal2").unwrap();
+        assert!(move_aside(&path2).is_err());
+        assert_eq!(std::fs::read(dir.join("y.sqlite-wal")).unwrap(), b"wal2");
     }
 }
