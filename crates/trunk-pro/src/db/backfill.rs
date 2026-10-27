@@ -4,6 +4,7 @@
 //! on its own thread and gives way to live writes.
 
 use std::collections::BTreeSet;
+use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,6 +35,8 @@ pub struct Stats {
     pub skipped: usize,
     /// Folders that could not be read.
     pub unreadable: usize,
+    /// Recent day folders that are not there (a reconcile only).
+    pub missing: usize,
     /// The capture folder itself could not be read, so nothing was recorded
     /// as done and the next start walks it again.
     pub aborted: bool,
@@ -60,8 +63,12 @@ pub fn recent_folders(cfg: &Config, now_s: i64) -> Vec<PathBuf> {
 }
 
 /// Index the capture folder in the background. A walk already going is left
-/// to finish: starting another would only read every file twice.
+/// to finish: starting another would only read every file twice. Nothing
+/// runs when the store is off.
 pub fn start(ctx: Arc<Ctx>) {
+    if ctx.db.is_disabled() {
+        return;
+    }
     if !ctx.db.try_begin_backfill() {
         log::debug!("Call store: a backfill is already running");
         return;
@@ -111,38 +118,80 @@ fn meta(db: &Db, key: &str) -> Option<String> {
     })
 }
 
-/// Every `.json` file under `roots`, sorted by path, and the folders that
-/// could not be read (a folder that does not exist is not one).
-fn json_files(roots: &[&Path]) -> (Vec<PathBuf>, Vec<(PathBuf, std::io::Error)>) {
-    let mut found = Vec::new();
-    let mut failed = Vec::new();
-    let mut stack: Vec<PathBuf> = roots.iter().map(|p| p.to_path_buf()).collect();
+/// What a walk comes across.
+enum Found<'a> {
+    /// A `.json` file.
+    Record(&'a Path),
+    /// A folder that could not be listed.
+    Unreadable(&'a Path, std::io::Error),
+}
+
+/// Walk `roots` depth first, each folder's entries in name order: a folder's
+/// `.json` files go to `f` before the folders under it are walked, so
+/// indexing starts at once and only the folders still to walk are held.
+fn walk(
+    roots: &[&Path],
+    f: &mut impl FnMut(Found<'_>) -> rusqlite::Result<()>,
+) -> rusqlite::Result<()> {
+    let mut stack: Vec<PathBuf> = roots.iter().rev().map(|p| p.to_path_buf()).collect();
     while let Some(d) = stack.pop() {
         let rd = match std::fs::read_dir(&d) {
             Ok(rd) => rd,
             Err(e) => {
-                failed.push((d, e));
+                f(Found::Unreadable(&d, e))?;
                 continue;
             }
         };
+        let mut files = Vec::new();
+        let mut dirs = Vec::new();
         for e in rd.flatten() {
             let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
+            if is_dir(&e) {
+                dirs.push(p);
             } else if p.extension().is_some_and(|x| x == "json") {
-                found.push(p);
+                files.push(p);
             }
         }
+        files.sort();
+        dirs.sort();
+        for p in &files {
+            f(Found::Record(p))?;
+        }
+        stack.extend(dirs.into_iter().rev());
     }
-    found.sort();
-    found.dedup();
-    (found, failed)
+    Ok(())
+}
+
+/// Whether an entry is a folder: its type as the listing gives it, and for a
+/// link, what the link points at.
+fn is_dir(e: &DirEntry) -> bool {
+    match e.file_type() {
+        Ok(t) if !t.is_symlink() => t.is_dir(),
+        _ => e.path().is_dir(),
+    }
+}
+
+/// Why a full walk is not recorded as done, if it is not: one that found no
+/// call records (a drive not mounted yet) or could not read a folder would
+/// otherwise leave calls out for good.
+fn not_done_why(stats: &Stats) -> Option<String> {
+    if stats.walked == 0 {
+        Some("no call records were found in it".into())
+    } else if stats.unreadable > 0 {
+        Some(format!(
+            "{} folder(s) in it could not be read",
+            stats.unreadable
+        ))
+    } else {
+        None
+    }
 }
 
 /// Bring the store up to date with `capture_dir`: all of it when the store
 /// has not indexed this folder before, else only `recent_folders`. Records
-/// that started more than `retention_days` (when not 0) before `now_ms` are
-/// left out.
+/// that started more than `retention_days` (when not 0) before now are left
+/// out, where now is `now_ms` but at most a day past the newest call in the
+/// store ([`Db::now_ms`]).
 pub fn run(
     db: &Db,
     capture_dir: &Path,
@@ -153,30 +202,33 @@ pub fn run(
     let folder = capture_dir.display().to_string();
     let full = meta(db, "backfill_done_at").is_none()
         || meta(db, "capture_dir").as_deref() != Some(folder.as_str());
-    let (files, failed) = if full {
-        json_files(&[capture_dir])
+    let roots: Vec<&Path> = if full {
+        vec![capture_dir]
     } else {
-        let roots: Vec<&Path> = recent_folders.iter().map(PathBuf::as_path).collect();
-        json_files(&roots)
+        recent_folders.iter().map(PathBuf::as_path).collect()
     };
+    let floor_ms = (retention_days > 0).then(|| db.retention_cutoff(retention_days, now_ms));
     let mut stats = Stats::default();
-    for (d, e) in &failed {
-        // A recent day's folder that is not there yet is ordinary.
-        if !full && e.kind() == std::io::ErrorKind::NotFound {
-            continue;
-        }
-        stats.unreadable += 1;
-        log::warn!("Call store: could not read {}: {e}", d.display());
-    }
-    if full && failed.iter().any(|(d, _)| d == capture_dir) {
-        log::warn!("Call store: {folder} cannot be read; it will be indexed on a later start");
-        stats.aborted = true;
-        return stats;
-    }
-    let floor_ms = (retention_days > 0).then(|| now_ms - i64::from(retention_days) * 86_400_000);
-    let walk = db.with_reader(|c| {
+    let walked = db.with_reader(|c| {
         let mut known = c.prepare("select 1 from calls where path = ?")?;
-        for p in &files {
+        walk(&roots, &mut |found| {
+            let p = match found {
+                Found::Record(p) => p,
+                Found::Unreadable(d, e) => {
+                    if full && d == capture_dir {
+                        stats.aborted = true;
+                    } else if !full && e.kind() == std::io::ErrorKind::NotFound {
+                        // A recent day's folder that is not there yet is ordinary.
+                        if roots.contains(&d) {
+                            stats.missing += 1;
+                        }
+                    } else {
+                        stats.unreadable += 1;
+                        log::warn!("Call store: could not read {}: {e}", d.display());
+                    }
+                    return Ok(());
+                }
+            };
             stats.walked += 1;
             if stats.walked % YIELD_EVERY == 0 {
                 while db.queued() > QUEUE_HIGH {
@@ -188,47 +240,70 @@ pub fn run(
             }
             let Ok(rel) = p.strip_prefix(capture_dir) else {
                 stats.skipped += 1;
-                continue;
+                return Ok(());
             };
             let rel = rel.with_extension("").to_string_lossy().replace('\\', "/");
             if known.exists([&rel])? {
                 stats.skipped += 1;
-                continue;
+                return Ok(());
             }
-            let text = std::fs::read_to_string(p).unwrap_or_default();
+            let text = match std::fs::read_to_string(p) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::warn!("Call store: could not read {}: {e}", p.display());
+                    stats.skipped += 1;
+                    return Ok(());
+                }
+            };
             let record: CallRecord = match serde_json::from_str(&text) {
                 Ok(r) => r,
                 Err(e) => {
                     log::debug!("Call store: {} is not a call record: {e}", p.display());
                     stats.skipped += 1;
-                    continue;
+                    return Ok(());
                 }
             };
             if floor_ms.is_some_and(|f| record.start_time_ms < f) {
                 stats.skipped += 1;
-                continue;
+                return Ok(());
             }
             let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
             let row = call_row(&rel, &record, &text, audio, true, db.recorder(), now_ms);
             db.send(Write::Call { row, live: false });
             stats.indexed += 1;
-        }
-        Ok(())
+            Ok(())
+        })
     });
-    if let Err(e) = walk {
+    if stats.aborted {
+        log::warn!("Call store: {folder} cannot be read; it will be indexed on the next start");
+        return stats;
+    }
+    if let Err(e) = walked {
         log::warn!("Call store: the backfill stopped early: {e}");
     } else if full {
-        db.send(Write::Meta {
-            key: "backfill_done_at".into(),
-            value: now_ms.to_string(),
-        });
-        db.send(Write::Meta {
-            key: "capture_dir".into(),
-            value: folder,
-        });
-        if let Err(e) = db.flush() {
-            log::warn!("Call store: {e}");
+        match not_done_why(&stats) {
+            Some(why) => log::warn!(
+                "Call store: {folder} is not marked as indexed: {why}; it is walked again on the next start"
+            ),
+            None => {
+                db.send(Write::Meta {
+                    key: "backfill_done_at".into(),
+                    value: now_ms.to_string(),
+                });
+                db.send(Write::Meta {
+                    key: "capture_dir".into(),
+                    value: folder,
+                });
+                if let Err(e) = db.flush() {
+                    log::warn!("Call store: {e}");
+                }
+            }
         }
+    } else if !roots.is_empty() && stats.missing == roots.len() {
+        log::info!(
+            "Call store: none of the last two days' {} folders under {folder} are there",
+            roots.len()
+        );
     }
     log::info!(
         "Call store: indexed {} of {} call records ({} skipped)",
@@ -242,12 +317,11 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::TestDir;
     use crate::db::row::tests::record;
 
-    fn capture(name: &str, calls: &[(&str, u32, i64)]) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("trunk-pro-backfill-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn capture(name: &str, calls: &[(&str, u32, i64)]) -> TestDir {
+        let dir = TestDir::new(&format!("backfill-{name}"));
         for (rel, tg, start) in calls {
             let p = dir.join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -316,6 +390,23 @@ mod tests {
     }
 
     #[test]
+    fn a_clock_ahead_does_not_leave_the_archive_out() {
+        let day = 86_400_000;
+        let newest = 1000 * day;
+        let dir = capture("clock-ahead", &[("s/a", 1, newest - 10 * day)]);
+        let (db, _) = Db::for_test("backfill-clock-ahead");
+        let r = record(1, newest);
+        db.send(Write::Call {
+            row: call_row("live/1", &r, &r.to_json(), true, true, None, 0),
+            live: true,
+        });
+        db.flush().unwrap();
+        // The clock says 500 days past the newest call in the store.
+        let s = run(&db, &dir, &[], 120, newest + 500 * day);
+        assert_eq!((s.indexed, s.skipped), (1, 0));
+    }
+
+    #[test]
     fn an_unreadable_record_is_skipped() {
         let dir = capture("bad", &[("s/good", 1, 1000)]);
         std::fs::write(dir.join("s/bad.json"), b"{ not json").unwrap();
@@ -351,8 +442,68 @@ mod tests {
     }
 
     #[test]
+    fn a_reconcile_whose_recent_folders_are_all_missing_counts_them() {
+        let dir = capture("all-missing", &[("s/2026/10/20/1-1_1", 1, 1000)]);
+        let (db, _) = Db::for_test("backfill-all-missing");
+        run(&db, &dir, &[], 0, 10_000); // full walk
+        let recent = [dir.join("s/2026/10/26"), dir.join("s/2026/10/25")];
+        let s = run(&db, &dir, &recent, 0, 10_000);
+        assert_eq!((s.missing, s.unreadable, s.walked), (2, 0, 0));
+        std::fs::create_dir_all(&recent[0]).unwrap();
+        let s = run(&db, &dir, &recent, 0, 10_000);
+        assert_eq!(s.missing, 1, "one is there now");
+    }
+
+    #[test]
+    fn a_full_walk_that_finds_no_records_is_not_marked_done() {
+        let dir = TestDir::new("backfill-empty");
+        let (db, _) = Db::for_test("backfill-empty");
+        let s = run(&db, &dir, &[], 0, 10_000);
+        db.flush().unwrap();
+        assert_eq!((s.aborted, s.walked), (false, 0));
+        assert_eq!(meta(&db, "backfill_done_at"), None, "a late mount re-walks");
+        assert_eq!(meta(&db, "capture_dir"), None);
+        std::fs::create_dir_all(dir.join("s")).unwrap();
+        std::fs::write(dir.join("s/1.json"), record(1, 1000).to_json()).unwrap();
+        let s = run(&db, &dir, &[], 0, 10_000);
+        assert_eq!(s.indexed, 1);
+        assert!(meta(&db, "backfill_done_at").is_some());
+    }
+
+    #[test]
+    fn a_walk_that_could_not_read_a_folder_is_not_marked_done() {
+        let stats = |walked, unreadable| Stats {
+            walked,
+            unreadable,
+            ..Default::default()
+        };
+        assert!(not_done_why(&stats(10, 1)).is_some_and(|w| w.contains("could not be read")));
+        assert!(not_done_why(&stats(0, 0)).is_some_and(|w| w.contains("no call records")));
+        assert_eq!(not_done_why(&stats(10, 0)), None);
+    }
+
+    #[test]
+    fn the_walk_hands_each_folders_records_over_before_going_deeper() {
+        let dir = capture(
+            "order",
+            &[("b/2", 1, 1), ("a/z/3", 1, 1), ("a/1", 1, 1), ("0", 1, 1)],
+        );
+        let mut seen = Vec::new();
+        walk(&[&*dir], &mut |f| {
+            if let Found::Record(p) = f {
+                let rel = p.strip_prefix(&*dir).unwrap().with_extension("");
+                seen.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen, ["0", "a/1", "a/z/3", "b/2"]);
+    }
+
+    #[test]
     fn recent_folders_cover_two_days_and_every_name() {
-        let ctx = crate::runtime::test_ctx(&std::env::temp_dir().join("trunk-pro-backfill-names"));
+        let dir = TestDir::new("backfill-names");
+        let ctx = crate::runtime::test_ctx(&dir);
         let cfg = ctx.config.lock().unwrap().clone();
         let folders = recent_folders(&cfg, 1_700_000_000);
         let want = |n: &str, t: i64| {
@@ -383,7 +534,7 @@ mod tests {
         let (db, _) = Db::for_test("backfill-yield");
         let t = std::thread::spawn({
             let db = db.clone();
-            let dir = dir.clone();
+            let dir = dir.to_path_buf();
             move || run(&db, &dir, &[], 0, 10_000)
         });
         while db.queued() == 0 && !t.is_finished() {
@@ -414,9 +565,8 @@ mod tests {
 
     #[test]
     fn a_capture_folder_that_cannot_be_read_is_not_marked_done() {
-        let dir =
-            std::env::temp_dir().join(format!("trunk-pro-backfill-missing-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let base = TestDir::new("backfill-missing");
+        let dir = base.join("capture");
         let (db, _) = Db::for_test("backfill-missing");
         let s = run(&db, &dir, &[], 0, 10_000);
         db.flush().unwrap();
@@ -437,8 +587,8 @@ mod tests {
         assert!(db.try_begin_backfill());
         assert!(!db.try_begin_backfill(), "a second walk while one is going");
         // `start` leaves without a thread while the flag is held.
-        let dir =
-            std::env::temp_dir().join(format!("trunk-pro-backfill-single-{}", std::process::id()));
+        let base = TestDir::new("backfill-single");
+        let dir = base.join("capture");
         let ctx = crate::runtime::test_ctx(&dir);
         assert!(ctx.db.try_begin_backfill());
         start(ctx.clone());
@@ -457,5 +607,16 @@ mod tests {
         }
         db.end_backfill();
         assert!(db.try_begin_backfill());
+    }
+
+    #[test]
+    fn a_store_that_is_off_starts_no_backfill() {
+        let base = TestDir::new("backfill-off");
+        let store = base.join("trunk-pro.sqlite");
+        crate::db::seed_newer(&store);
+        let ctx = crate::runtime::test_ctx_with_store(&base.join("capture"), &store);
+        assert!(ctx.db.is_disabled());
+        start(ctx.clone());
+        assert!(!ctx.db.try_begin_backfill(), "off: nothing to claim");
     }
 }
