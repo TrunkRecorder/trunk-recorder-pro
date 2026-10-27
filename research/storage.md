@@ -204,6 +204,8 @@ append-only, and the wire protocol only gains commands. The browser build is unt
 
 `config.json` stays a file either way.
 
+The plan for building it, phase by phase, is in [sqlite-plan.md](sqlite-plan.md).
+
 ## When the interface saves
 
 The other half of the reports: "the UI lacks a save button, and can be aggressive about
