@@ -68,6 +68,8 @@ export class TrunkClient {
     this.history = [];
     /** Each system's talkgroup file (Trunk Recorder's CSV), by short name. */
     this.talkgroupFiles = {};
+    /** Edits of single talkgroups since each file came (`talkgroupEdited`): talkgroups() includes them. */
+    this.talkgroupEdits = {};
     this.log = [];
     /** Talker aliases heard on the air (saved ones, then live): short name → { unit: alias }. */
     this.aliases = {};
@@ -170,25 +172,37 @@ export class TrunkClient {
 
   /**
    * System `shortName`'s talkgroups: Map talkgroup → { talkgroup, alphaTag,
-   * description, tag, group, mode }. A trunked system's from its talkgroup
-   * file (Trunk Recorder's CSV: `talkgroups` messages); a conventional
-   * system's from its channels (alphaTag the channel's name).
+   * description, tag, group, mode, ignore }. A trunked system's from its
+   * talkgroup file (Trunk Recorder's CSV: `talkgroups` messages) with the
+   * edits made since (`talkgroupEdited`); a conventional system's from its
+   * channels (alphaTag the channel's name).
    */
   talkgroups(shortName) {
     const conv = this.config?.conventional?.find((s) => s.shortName === shortName);
     if (conv) return channelTalkgroups(conv.channels ?? []);
     const csv = this.talkgroupFiles[shortName] ?? "";
+    const edits = this.talkgroupEdits[shortName] ?? [];
     this._tgCache ??= new Map();
     const hit = this._tgCache.get(shortName);
-    if (hit?.csv === csv) return hit.map;
+    if (hit?.csv === csv && hit.edits === edits) return hit.map;
     const map = parseTalkgroups(csv);
-    this._tgCache.set(shortName, { csv, map });
+    for (const { talkgroup, edit } of edits) {
+      const t = map.get(talkgroup) ?? { talkgroup, alphaTag: "", description: "", tag: "", group: "", mode: "D", ignore: false };
+      const { category, ...rest } = edit;
+      map.set(talkgroup, { ...t, ...rest, ...(category !== undefined ? { group: category } : {}) });
+    }
+    this._tgCache.set(shortName, { csv, edits, map });
     return map;
   }
 
   /** Replace system `shortName`'s talkgroup file (Trunk Recorder's CSV; "" for none). Needs control access. */
   setTalkgroups(shortName, csv) {
     this.send({ type: "setTalkgroups", system: shortName, csv });
+  }
+
+  /** Change one talkgroup of system `shortName`: `edit` sets any of alphaTag, description, tag, category, ignore. Needs control access. */
+  setTalkgroup(shortName, talkgroup, edit) {
+    this.send({ type: "setTalkgroup", system: shortName, talkgroup, edit });
   }
 
   /** A recorded call's file: entry (or its path), "wav" | "json" | "m4a". */
@@ -222,7 +236,7 @@ export class TrunkClient {
       this._retryMs = 500;
       // The greeting says how things are, from nothing; "change" waits for its end (hello).
       this._greeting = true;
-      Object.assign(this, { talkgroupFiles: {}, aliases: {}, error: null, exited: false });
+      Object.assign(this, { talkgroupFiles: {}, talkgroupEdits: {}, aliases: {}, error: null, exited: false });
       for (const m of this._queue.splice(0)) ws.send(JSON.stringify(m));
     };
     ws.onmessage = (ev) => {
@@ -286,6 +300,10 @@ export class TrunkClient {
           const { [m.system]: _, ...rest } = this.talkgroupFiles;
           this.talkgroupFiles = rest;
         }
+        this.talkgroupEdits = { ...this.talkgroupEdits, [m.system]: [] };
+        break;
+      case "talkgroupEdited":
+        this.talkgroupEdits = { ...this.talkgroupEdits, [m.system]: [...(this.talkgroupEdits[m.system] ?? []), { talkgroup: m.talkgroup, edit: m.edit }] };
         break;
       case "history":
         this.history = m.entries.slice(0, this.historyLimit);
@@ -407,7 +425,8 @@ export function parseTalkgroups(csv) {
     const f = splitCsv(line);
     const talkgroup = parseInt(f[0], 10);
     if (!Number.isFinite(talkgroup)) continue;
-    map.set(talkgroup, { talkgroup, alphaTag: at(f, "Alpha Tag", 3), description: at(f, "Description", 4), tag: at(f, "Tag", 5), group: at(f, "Category", 6), mode: at(f, "Mode", 2) });
+    const ignore = /^(true|yes|y|1|x|ignore)$/i.test(headed ? at(f, "Ignore", 99).trim() : "") || parseInt(at(f, "Priority", 7), 10) < 0;
+    map.set(talkgroup, { talkgroup, alphaTag: at(f, "Alpha Tag", 3), description: at(f, "Description", 4), tag: at(f, "Tag", 5), group: at(f, "Category", 6), mode: at(f, "Mode", 2), ignore });
   }
   return map;
 }

@@ -8,6 +8,23 @@ export interface TextCodec<T> {
   parse: (text: string) => T;
 }
 
+/**
+ * A field being typed in is done (left, Enter, or gone with its page): the
+ * value to keep, or null when there's nothing to keep (not being edited, or
+ * the text is what the field showed). A setting is kept once it's typed, not
+ * once per letter: a rename isn't F, FI, FIR…, each a save, a plugin restart.
+ */
+export function finishDraft<T>(text: string | null, value: T, codec: TextCodec<T>): { value: T } | null {
+  if (text === null || text === codec.format(value)) return null;
+  return { value: codec.parse(text) };
+}
+
+/** Text exactly as typed (spaces kept): a file name's pieces. */
+export const verbatim: TextCodec<string> = {
+  format: (v) => v,
+  parse: (text) => text,
+};
+
 /** Text, kept trimmed (a space typed at the end stays in the field until it's left). */
 export const asTyped: TextCodec<string> = {
   format: (v) => v,

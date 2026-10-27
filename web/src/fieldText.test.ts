@@ -1,7 +1,7 @@
 // What the setup's inputs show and read back (fieldText.ts). `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { asTyped, cleanShortName, decimal, gain, hex, lcnTable, mhz, mhzList, minutes, msps, numberList, talkgroupList, talkgroupProblem, textList, type TextCodec } from "./fieldText.ts";
+import { asTyped, cleanShortName, decimal, finishDraft, verbatim, gain, hex, lcnTable, mhz, mhzList, minutes, msps, numberList, talkgroupList, talkgroupProblem, textList, type TextCodec } from "./fieldText.ts";
 
 /** Each value shown reads back as itself. */
 function roundTrips<T>(codec: TextCodec<T>, values: T[]) {
@@ -79,4 +79,13 @@ test("asTyped and cleanShortName", () => {
   assert.equal(asTyped.parse(" NAC 293 "), "NAC 293");
   assert.equal(cleanShortName("county fire/2"), "countyfire2");
   assert.equal(cleanShortName("dcfd_p25.v-2"), "dcfd_p25.v-2");
+});
+
+test("a field typed in is kept once, when it's done", () => {
+  assert.equal(finishDraft(null, "FIREGROUND 04", asTyped), null, "not being edited: nothing");
+  assert.equal(finishDraft("FIREGROUND 04", "FIREGROUND 04", asTyped), null, "focused and left as it was: no save");
+  assert.deepEqual(finishDraft("FIRE4A ", "FIREGROUND 04", asTyped), { value: "FIRE4A" }, "the word typed, tidied");
+  assert.deepEqual(finishDraft("", 12, decimal), { value: undefined }, "cleared");
+  assert.equal(finishDraft("12", 12, decimal), null);
+  assert.deepEqual(finishDraft(" - ", "", verbatim), { value: " - " }, "verbatim keeps spaces");
 });

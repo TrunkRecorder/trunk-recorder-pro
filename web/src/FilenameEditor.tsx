@@ -5,6 +5,8 @@
 
 import { useMemo, useState } from "react";
 import { useApp } from "./controller.ts";
+import { verbatim } from "./fieldText.ts";
+import { DraftInput, TextInput } from "./inputs.tsx";
 import { formatToString, parseFormat, pieceProblem, pieceSample, samplePath, TEXT_NOT_ALLOWED, type Piece } from "./filenameFormat.ts";
 
 /** Trunk Recorder's layout, as near as a format gets (its file name has `.<slot>` on TDMA calls). */
@@ -274,13 +276,14 @@ function Builder(props: { pieces: Piece[]; own: boolean; when: Date; value: stri
                 }}
               >
                 {p.kind === "text" ? (
-                  <input
+                  <DraftInput
                     className="fname-text-input"
+                    codec={verbatim}
                     value={p.text}
-                    size={Math.max(1, p.text.length)}
+                    sizeToText
                     aria-label="Text"
-                    onChange={(e) => {
-                      const c = cleanText(e.target.value, true);
+                    onChange={(typed) => {
+                      const c = cleanText(typed, true);
                       if (c.dropped) setNote('Not allowed: : * ? " < > |');
                       // A / or \ typed here makes a folder.
                       const next = [...pieces];
@@ -383,13 +386,7 @@ function Builder(props: { pieces: Piece[]; own: boolean; when: Date; value: stri
         )}
       </div>
       {raw && (
-        <input
-          className="mono"
-          aria-label="The format as text"
-          value={props.value}
-          placeholder="{short_name}/{time:%Y}/…"
-          onChange={(e) => props.onChange(e.target.value)}
-        />
+        <TextInput className="mono" aria-label="The format as text" value={props.value} placeholder="{short_name}/{time:%Y}/…" onChange={props.onChange} />
       )}
     </div>
   );

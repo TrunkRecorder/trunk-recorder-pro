@@ -34,7 +34,7 @@ import {
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
-import { FileInput } from "./inputs.tsx";
+import { FileInput, TextInput } from "./inputs.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
@@ -1270,13 +1270,12 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
       <div className="ob-form">
         <label className="ob-field">
           <span className="ob-label">System name</span>
-          <input
+          <TextInput
             className="ob-input"
             value={sys.name ?? ""}
             placeholder="Metro County Public Safety"
             autoFocus
-            onChange={(e) => {
-              const name = e.target.value;
+            onChange={(name) => {
               updateConfig((x) => {
                 x.systems[index].name = name;
                 if (!touched && slug(name)) rename(x, uniqueShortName(c, slug(name), c.systems[index]));
@@ -1286,12 +1285,12 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
         </label>
         <label className="ob-field">
           <span className="ob-label">Short name</span>
-          <input
+          <TextInput
             className="ob-input ob-mono"
             value={sys.shortName}
-            onChange={(e) => {
+            onChange={(v) => {
               setTouched(true);
-              updateConfig((x) => rename(x, cleanShortName(e.target.value)));
+              updateConfig((x) => rename(x, cleanShortName(v)));
             }}
           />
           <span className={`ob-hint${dup || !sys.shortName ? " bad" : ""}`}>

@@ -138,9 +138,152 @@ pub fn parse_csv(text: &str) -> Talkgroups {
     out
 }
 
+/// A column's name as Trunk Recorder spells it, from any case and the names
+/// RadioReference's export uses.
+fn canonical(h: &str) -> String {
+    match h.trim().to_ascii_lowercase().as_str() {
+        "decimal" | "dec" => "Decimal",
+        "hex" => "Hex",
+        "mode" => "Mode",
+        "alpha tag" | "alphatag" => "Alpha Tag",
+        "description" => "Description",
+        "tag" => "Tag",
+        "category" | "group" => "Category",
+        "priority" => "Priority",
+        "preferred nac" => "Preferred NAC",
+        "preferred site" => "Preferred Site",
+        "ignore" => "Ignore",
+        "comment" => "Comment",
+        _ => return h.trim().to_string(),
+    }
+    .to_string()
+}
+
+/// A legacy, headerless file's columns (7, or 8 with Priority).
+const LEGACY: [&str; 8] = ["Decimal", "Hex", "Mode", "Alpha Tag", "Description", "Tag", "Category", "Priority"];
+/// A new file's header.
+const NEW_HEADER: &str = "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category";
+
+fn is_data(l: &str) -> bool {
+    !l.trim().is_empty() && !l.trim_start().starts_with('#')
+}
+
+/// A cell in the file's delimiter: quoted when it holds the delimiter, a quote or a newline.
+fn cell(v: &str, delim: char) -> String {
+    if v.contains(delim) || v.contains('"') || v.contains('\n') {
+        format!("\"{}\"", v.replace('"', "\"\""))
+    } else {
+        v.to_string()
+    }
+}
+
+/// Talkgroup `number`'s row of a talkgroup file (`csv`) with `cells` set,
+/// each (column, value), the column named as Trunk Recorder names it
+/// ("Alpha Tag", "Ignore"…). Only those cells change, in that row: the
+/// file's other rows, comments, columns and delimiter stay as they are. A
+/// column it lacks is added; a legacy headerless file is given its header;
+/// a talkgroup it lacks gets a row when a value is set. Clearing Ignore
+/// also undoes Trunk Recorder's way of ignoring, a priority of −1.
+/// (web/src/talkgroups.ts `withCells` is the same edit, made in the browser.)
+pub fn edit_row(csv: &str, number: u32, cells: &[(&str, &str)]) -> String {
+    let text = csv.strip_prefix('\u{feff}').unwrap_or(csv);
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    let hi = match lines.iter().position(|l| is_data(l)) {
+        Some(hi) => hi,
+        None => {
+            lines.push(NEW_HEADER.to_string());
+            lines.len() - 1
+        }
+    };
+    let delim = csv_delimiter(&lines[hi]);
+    if canonical(split_csv_on(&lines[hi], delim).first().map_or("", |s| s.as_str())) != "Decimal" {
+        let width = lines.iter().filter(|l| is_data(l)).map(|l| split_csv_on(l, delim).len()).max().unwrap_or(7);
+        lines.insert(hi, LEGACY[..width.clamp(7, 8)].join(&delim.to_string()));
+    }
+    let mut header = split_csv_on(&lines[hi], delim);
+    let mut cols: Vec<String> = header.iter().map(|h| canonical(h)).collect();
+    let mut at = Vec::new();
+    for (name, value) in cells {
+        let i = cols.iter().position(|c| c == name).unwrap_or_else(|| {
+            header.push(name.to_string());
+            cols.push(name.to_string());
+            cols.len() - 1
+        });
+        at.push((i, *value));
+    }
+    lines[hi] = header.iter().map(|h| cell(h, delim)).collect::<Vec<_>>().join(&delim.to_string());
+    let priority = cols.iter().position(|c| c == "Priority");
+    let unignore = cells.iter().any(|&(n, v)| n == "Ignore" && v.is_empty());
+    let mut found = false;
+    for line in lines.iter_mut().skip(hi + 1).filter(|l| is_data(l)) {
+        let mut row = split_csv_on(line, delim);
+        if row.first().and_then(|d| d.parse::<u32>().ok()) != Some(number) {
+            continue;
+        }
+        found = true;
+        row.resize(row.len().max(cols.len()), String::new());
+        for &(i, v) in &at {
+            row[i] = v.to_string();
+        }
+        if let Some(p) = priority.filter(|_| unignore) {
+            if row[p].parse::<i32>().is_ok_and(|v| v < 0) {
+                row[p] = "1".into();
+            }
+        }
+        *line = row.iter().map(|c| cell(c, delim)).collect::<Vec<_>>().join(&delim.to_string());
+    }
+    if !found && cells.iter().any(|(_, v)| !v.is_empty()) {
+        let row: Vec<String> = cols
+            .iter()
+            .map(|c| match c.as_str() {
+                "Decimal" => number.to_string(),
+                "Hex" => format!("{number:x}"),
+                "Mode" => "D".to_string(),
+                c => at.iter().find(|&&(i, _)| cols[i] == c).map_or(String::new(), |&(_, v)| v.to_string()),
+            })
+            .collect();
+        lines.push(row.iter().map(|c| cell(c, delim)).collect::<Vec<_>>().join(&delim.to_string()));
+    }
+    lines.join("\n") + "\n"
+}
+
+/// Talkgroup `number` as file `csv` has it (its header and that row read alone).
+pub fn row_of(csv: &str, number: u32) -> Option<Talkgroup> {
+    let mut lines = csv_lines(csv);
+    let head = lines.next()?;
+    let delim = csv_delimiter(head);
+    let line = std::iter::once(head).chain(lines).find(|l| split_csv_on(l, delim).first().and_then(|d| d.parse::<u32>().ok()) == Some(number))?;
+    let one = if line == head { line.to_string() } else { format!("{head}\n{line}") };
+    parse_csv(&one).remove(&number)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_row_edited_in_place() {
+        let csv = "# county\nDecimal;Alpha Tag;Description\n101;Fire Disp;Main\n102;\"Tac; 2\";\n";
+        let out = edit_row(csv, 102, &[("Ignore", "x")]);
+        assert_eq!(out, "# county\nDecimal;Alpha Tag;Description;Ignore\n101;Fire Disp;Main\n102;\"Tac; 2\";;x\n", "only that row; the comment, delimiter and column kept");
+        assert!(row_of(&out, 102).unwrap().ignore && !row_of(&out, 101).unwrap().ignore);
+        let named = edit_row(&out, 101, &[("Alpha Tag", "FIRE4A"), ("Tag", "Fire, Tac")]);
+        assert_eq!(row_of(&named, 101).map(|t| (t.alpha_tag, t.tag)), Some(("FIRE4A".into(), "Fire, Tac".into())));
+        assert_eq!(row_of(&named, 102).unwrap().alpha_tag, "Tac; 2");
+        // A talkgroup the file lacks: a row, when something is set; none to un-ignore it.
+        let added = edit_row("Decimal,Alpha Tag\n101,A\n", 205, &[("Ignore", "x"), ("Alpha Tag", "Data")]);
+        assert_eq!(added, "Decimal,Alpha Tag,Ignore\n101,A\n205,Data,x\n");
+        assert_eq!(edit_row("Decimal,Alpha Tag\n101,A\n", 205, &[("Ignore", "")]), "Decimal,Alpha Tag,Ignore\n101,A\n");
+        // Trunk Recorder's priority −1, undone with Ignore; a legacy file given its header; none at all.
+        let tr = edit_row("Decimal,Alpha Tag,Priority\n104,Old,-1\n", 104, &[("Ignore", "")]);
+        assert!(!row_of(&tr, 104).unwrap().ignore);
+        let legacy = edit_row("202,ca,E,Police,Tac 2,Law,City\n", 202, &[("Alpha Tag", "PD Tac")]);
+        assert_eq!(legacy, "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n202,ca,E,PD Tac,Tac 2,Law,City\n");
+        assert_eq!(edit_row("", 7, &[("Ignore", "x")]), "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category,Ignore\n7,7,,D,,,,x\n");
+    }
 
     #[test]
     fn headed_and_legacy() {

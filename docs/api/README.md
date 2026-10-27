@@ -254,6 +254,7 @@ whenever `change` fires.
 | `subscribe(topics)` | the costly messages to receive: `["log"]` fills `log`; `"spectrum:0"` a waterfall's `spectrum`. Kept across reconnects. |
 | `setConfig(edit)` | `edit(copy)` changes a copy of the latest config, and the whole config is sent with `configVersion`. If the config changed elsewhere meanwhile it's refused, and `error` says so |
 | `setTalkgroups(shortName, csv)` | replace a system's talkgroup file (`""` for none) |
+| `setTalkgroup(shortName, talkgroup, edit)` | change one talkgroup's cells (`{ alphaTag, description, tag, category, ignore }`, any of them) |
 | `callUrl(entry, "wav" \| "json" \| "m4a")` | a recorded call's file URL |
 | `talkgroups(shortName)` | the system's talkgroup file, parsed from `talkgroupFiles`: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }`; a conventional system's channels (`alphaTag` the channel's name) |
 | `unitName(shortName, unit)` | a radio's name, as the system's `unitNames.mode` says: its unit names (`unitNames.csv`, regular-expression rows too) and the alias heard; else `""` |
@@ -458,7 +459,8 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host` and `keys` (the desktop app has all; the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
 | `history` | On connecting | `entries`: the latest calls (≤ 300 `CallEntry`), newest first. Then `concluded` for each new one |
 | `units` | On connecting, for each system with some | `system` (short name), `csv`: the talker aliases saved, as CSV: `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins. Then `unitAlias` for each new one |
-| `talkgroups` | On connecting, for each system; whenever one changes | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |
+| `talkgroups` | On connecting, for each system; whenever one is replaced | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |
+| `talkgroupEdited` | One talkgroup of a system's file was edited (`setTalkgroup`) | `system`, `talkgroup`, `edit`: the cells it set. Make the same edit to the file you keep: only that row changes, a column or row is added when missing (`client.js` does this) |
 | `plugins` | On connecting (control access); after plugin changes; answers `plugins` | `plugins` (`PluginInfo[]`), `encoderFound` |
 | `state` | Recording starts / stops | `phase`, `error`, `ended` |
 | `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systemNames`: every system's short name by its number, `systems[]` (trunked, then conventional) with `share` (a system shared with the directory: `{ state: "needsCallSign" | "waiting" | "shared" | "error", lastShared, error }`, else null), and each site's control channel, decode counts `good`/`bad`, site identity, `callsigns` (the FCC call signs a Motorola control channel sends, each with its `freqHz`); neighbours, patches and the like are in `decodeDetail`), `sources[]` (each radio: its rate as set and `rateMeasured`, drops, errors and the last (`lastError`, `lastErrorS`), frequency error measured `errorPpm` and the correction `tunePpm`), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
@@ -511,6 +513,7 @@ too.
 | `listen` | `on`, `system` (a short name, or null), `talkgroup` (number or null) | Live audio on this connection: every call (both null), one system's, one talkgroup's, or both. `on: false` stops it. |
 | `setConfig` | `config`, `version` | Replace the whole config, edited from `version` (the last `config` message's): saved, and sent to everyone as `config`. Refused if the config has changed since (another browser saved). Always answered with `configSaved`. Takes effect at the next `start` (plugin settings at once). |
 | `setTalkgroups` | `system` (short name), `csv` | Replace a system's talkgroup file (`""` removes it). Everyone gets it as `talkgroups`; a recording takes it at once. |
+| `setTalkgroup` | `system`, `talkgroup`, `edit`: any of `alphaTag`, `description`, `tag`, `category` (text), `ignore` (true/false) | Change one talkgroup's row: only the cells given (a row added when the file lacks it and something is set). Everyone gets it as `talkgroupEdited`; a recording takes it at once. For an Ignore button or a name edit, rather than sending the whole file. |
 | `channelFile` | `index`, `path` | Link conventional system `index`'s channels to a CSV, reload it (same path), or unlink (`""`). |
 | `devices` | — | List RTL-SDR dongles (→ `devices`). |
 | `findRadios` | — | Look for USRP / Airspy / SoapySDR devices (→ `radios`; takes a few seconds). |

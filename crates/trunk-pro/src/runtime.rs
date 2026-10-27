@@ -17,6 +17,7 @@ use chrono::{Local, Offset, TimeZone};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use trunk_app::protocol::{body, Audience, ToClient};
+use trunk_app::saving::Saved;
 use trunk_app::{Feeder, Output, Session};
 
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
@@ -110,6 +111,11 @@ pub struct Ctx {
     /// The dashboard's minute history (a week), and where new minutes go.
     pub series: Arc<Mutex<trunk_app::stats::History>>,
     pub store: crate::statstore::Store,
+    /// Writes the files kept beside the config, in the background.
+    pub saver: crate::saver::Saver,
+    /// The codes conventional frequencies carried, as last told: for browsers
+    /// that connect (the file is written only every so often).
+    pub heard_last: Mutex<Option<ToClient>>,
     /// How many connected browsers watch each topic (the recording is told as it changes).
     pub topics: Mutex<std::collections::BTreeMap<String, usize>>,
     /// The recording's engine thread, while there is one: everything it's told comes this way ([`Ctx::tell_engine`]).
@@ -131,8 +137,10 @@ pub enum EngineCmd {
     Source(SourceMsg),
     /// What the connected browsers watch changed.
     Topics(trunk_app::stats::Topics),
-    /// A system's talkgroup file changed (an Ignore flag set from the dashboard).
+    /// A system's talkgroup file changed (loaded, pasted, edited in Setup).
     Talkgroups { short_name: String, csv: String },
+    /// One talkgroup of a system's file changed (an Ignore flag set from the dashboard).
+    Talkgroup { short_name: String, number: u32, row: Option<trunk_core::trunk::Talkgroup> },
     /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
     Keys { short_name: String, ring: Option<Arc<trunk_core::p25::crypt::Keyring>> },
     /// A system's config changed: what sharing uses of it, its switch, directory link and licenses ([`trunk_app::share::sync`]).
@@ -536,20 +544,22 @@ pub fn load_talkgroups(cfg: &Config) -> trunk_app::config::TalkgroupFiles {
 }
 
 /// System `system`'s talkgroup file is now `csv` ("": none): kept, told to
-/// every browser, and taken by the recording at once.
+/// every browser, and taken by the recording at once; written in the
+/// background ([`crate::saver`]).
 pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String> {
     if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
         return Err(format!("bad short name {system:?}"));
     }
-    let path = talkgroups_path(system);
-    if csv.trim().is_empty() {
-        if path.exists() {
-            fs::remove_file(&path).map_err(|e| format!("Couldn't delete {}: {e}", path.display()))?;
+    // (Handed to the writer with the lock held: two browsers' edits are written in the order they're kept.)
+    {
+        let mut files = ctx.talkgroups.lock().unwrap();
+        if csv.trim().is_empty() {
+            files.remove(system);
+            ctx.saver.remove(talkgroups_path(system));
+        } else {
+            files.insert(system.to_string(), csv.clone());
+            ctx.saver.text(talkgroups_path(system), csv.clone());
         }
-        ctx.talkgroups.lock().unwrap().remove(system);
-    } else {
-        trunk_app::config::write_atomic(&path, &csv).map_err(|e| format!("Couldn't save {}: {e}", path.display()))?;
-        ctx.talkgroups.lock().unwrap().insert(system.to_string(), csv.clone());
     }
     ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
     // (The config first, then the names: as config_changed takes them.)
@@ -559,17 +569,45 @@ pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String
     Ok(())
 }
 
+/// One talkgroup of system `system`'s file edited: only the cells `edit`
+/// sets change. Kept, taken by the recording and told to every browser at
+/// once (the row alone, not the file); written in the background.
+pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::protocol::TalkgroupEdit) -> Result<(), String> {
+    if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
+        return Err(format!("bad short name {system:?}"));
+    }
+    let row = {
+        // (Edited and handed to the writer with the lock held: edits are written in the order they're kept.)
+        let mut files = ctx.talkgroups.lock().unwrap();
+        let csv = trunk_core::trunk::edit_row(files.get(system).map_or("", String::as_str), number, &edit.cells());
+        let row = trunk_core::trunk::row_of(&csv, number);
+        ctx.saver.text(talkgroups_path(system), csv.clone());
+        files.insert(system.to_string(), csv);
+        row
+    };
+    ctx.shared.names.lock().unwrap().set_talkgroup(system, number, row.clone());
+    ctx.tell_engine(EngineCmd::Talkgroup { short_name: system.to_string(), number, row });
+    publish(&ctx.hub, ToClient::TalkgroupEdited { system: system.to_string(), talkgroup: number, edit });
+    Ok(())
+}
+
 pub(crate) fn units_path(short_name: &str) -> PathBuf {
     crate::paths::data_dir().join(format!("{short_name}.units.csv"))
 }
 
-/// Save the band plans that changed since `saved` (what was last written).
-fn save_bandplans(session: &Session, saved: &mut std::collections::HashMap<String, String>) {
-    for (name, plan) in session.bandplans() {
-        if !plan.is_empty() && saved.get(&name) != Some(&plan) {
-            let _ = fs::create_dir_all(crate::paths::data_dir());
-            let _ = trunk_app::config::write_atomic(&bandplan_path(&name), &plan);
-            saved.insert(name, plan);
+/// Hand what's due to be kept between runs ([`Session::due`]: it says when
+/// each is) to the writer; `all`: everything that changed (the recording's end).
+fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
+    let heard = heard_path(session.config());
+    for saved in session.due(now_ms, all) {
+        match saved {
+            Saved::Units { system, csv } => ctx.saver.text(units_path(&system), csv),
+            Saved::Sharing(json) => ctx.saver.text(sharing_path(), json),
+            Saved::Bandplan { key, plan } => ctx.saver.text(bandplan_path(&key), plan),
+            Saved::Heard(json) => ctx.saver.text(heard.clone(), json),
+            Saved::Tune(json) => ctx.saver.text(tune_path(), json),
+            // (Turned into JSON by the writer: it can be megabytes.)
+            Saved::Registry { system, radio } => ctx.saver.later(registry_path(&system), move || serde_json::to_string(&radio).ok()),
         }
     }
 }
@@ -605,63 +643,25 @@ pub fn load_registry(shared: &trunk_app::stats::Shared) {
     }
 }
 
-/// Save the systems whose registry changed since the last save.
-pub fn save_registry(shared: &trunk_app::stats::Shared) {
-    let changed = shared.radio.lock().unwrap().take_dirty();
-    if changed.is_empty() {
-        return;
-    }
-    let _ = fs::create_dir_all(radio_dir());
-    for (name, json) in changed {
-        let file = radio_dir().join(format!("{}.json", trunk_core::metrics::key_part(&name)));
-        if let Err(e) = trunk_app::config::write_atomic(&file, &json) {
-            log::warn!("Couldn't save {}: {e}", file.display());
-        }
-    }
+/// A system's radio registry file.
+fn registry_path(short_name: &str) -> PathBuf {
+    radio_dir().join(format!("{}.json", trunk_core::metrics::key_part(short_name)))
 }
-
-/// How often the radio registry is saved while recording (it's rewritten whole).
-const REGISTRY_EVERY: Duration = Duration::from_secs(15 * 60);
 
 /// Where the codes conventional frequencies carried are kept ([`trunk_app::heard`]).
 pub(crate) fn heard_path(cfg: &trunk_app::Config) -> PathBuf {
     crate::paths::data_dir().join(Session::heard_file(cfg))
 }
 
-/// AutoTune's scores from earlier runs ([`Session::tune_unsaved`]).
+/// AutoTune's scores from earlier runs ([`Saved::Tune`]).
 fn tune_path() -> PathBuf {
     crate::paths::data_dir().join("tune.json")
-}
-
-/// Keep the sources' AutoTune scores for the next run, when they changed.
-fn save_tune(session: &mut Session) {
-    if let Some(json) = session.tune_unsaved() {
-        let _ = fs::create_dir_all(crate::paths::data_dir());
-        let _ = trunk_app::config::write_atomic(&tune_path(), &json);
-    }
 }
 
 /// What sharing with the directory did (each record's version, the last
 /// share): beside the config, so sharing never rewrites the config itself.
 fn sharing_path() -> PathBuf {
     crate::paths::data_dir().join("sharing.json")
-}
-
-/// Save the talker aliases systems learned, the codes conventional
-/// frequencies carried, and what sharing did, since the last save.
-fn save_units(session: &mut Session) {
-    if let Some(json) = session.sharing_unsaved() {
-        let _ = fs::create_dir_all(crate::paths::data_dir());
-        let _ = trunk_app::config::write_atomic(&sharing_path(), json);
-    }
-    for (name, csv) in session.units_changed() {
-        let _ = fs::create_dir_all(crate::paths::data_dir());
-        let _ = trunk_app::config::write_atomic(&units_path(&name), csv);
-    }
-    if let Some(json) = session.heard_unsaved() {
-        let _ = fs::create_dir_all(crate::paths::data_dir());
-        let _ = trunk_app::config::write_atomic(&heard_path(session.config()), json);
-    }
 }
 
 /// Replay a capture file as a source, paced to real time or as fast as possible.
@@ -930,11 +930,6 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     let mut out = Vec::new();
     let mut ended_all = false;
-    // Band plans (and DMR channel tables) as last saved: learned ones survive a crash or kill too.
-    let mut saved_plans: std::collections::HashMap<String, String> = Default::default();
-    let mut plans_at = Instant::now();
-    let mut tune_at = Instant::now();
-    let mut registry_at = Instant::now();
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -957,6 +952,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     if session.set_talkgroups(&short_name, &csv) {
                         log::info!("[{short_name}] Talkgroups updated");
                     }
+                }
+                EngineCmd::Talkgroup { short_name, number, row } => {
+                    session.set_talkgroup(&short_name, number, row);
                 }
                 EngineCmd::Keys { short_name, ring } => {
                     session.set_keys(&short_name, ring);
@@ -981,22 +979,11 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         session.poll(now_ms(), &mut out);
         deliver(&ctx, &mut out, plugins.as_deref(), &rules, &fin);
         drop(plugins);
-        save_units(&mut session);
-        if tune_at.elapsed() >= Duration::from_secs(60) {
-            tune_at = Instant::now();
-            save_tune(&mut session);
-        }
+        // (Learned band plans and DMR channel tables, talker aliases, …: a crash or kill loses little.)
+        save_due(&ctx, &mut session, now_ms(), false);
         if radio_at.elapsed() >= Duration::from_secs(5) {
             radio_at = Instant::now();
             ctx.clock.set_radio(session.radio_clocks());
-        }
-        if plans_at.elapsed() >= Duration::from_secs(10) {
-            plans_at = Instant::now();
-            save_bandplans(&session, &mut saved_plans);
-        }
-        if registry_at.elapsed() >= REGISTRY_EVERY {
-            registry_at = Instant::now();
-            save_registry(&ctx.shared);
         }
     }
     *ctx.engine.lock().unwrap() = None;
@@ -1015,13 +1002,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     }
     // Uploads in flight get a moment to finish.
     ctx.plugins.stop(Duration::from_secs(10));
-    let _ = fs::create_dir_all(crate::paths::data_dir());
-    for (name, plan) in session.bandplans() {
-        let _ = trunk_app::config::write_atomic(&bandplan_path(&name), plan);
-    }
-    save_units(&mut session);
-    save_tune(&mut session);
-    save_registry(&ctx.shared);
+    save_due(&ctx, &mut session, now_ms(), true);
+    // (All of it on disk before recording is said to have stopped.)
+    ctx.saver.flush();
     ctx.clock.recording(None);
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
@@ -1152,7 +1135,12 @@ fn share(ctx: &Arc<Ctx>, short_name: String, observation: serde_json::Value, sit
 fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish)) {
     for o in out.drain(..) {
         match o {
-            Output::Message(m) => publish(&ctx.hub, m),
+            Output::Message(m) => {
+                if matches!(m, ToClient::Heard { .. }) {
+                    *ctx.heard_last.lock().unwrap() = Some(m.clone());
+                }
+                publish(&ctx.hub, m)
+            }
             Output::Audio { short_name, tg, frame, decrypted, .. } => {
                 if let Some(p) = plugins {
                     p.audio_frame(&frame, decrypted);

@@ -117,6 +117,15 @@ impl NameBook {
         }
     }
 
+    /// One talkgroup of `system`, as its file now has it (none: not in it).
+    pub fn set_talkgroup(&mut self, system: &str, number: u32, row: Option<trunk_core::trunk::Talkgroup>) {
+        let table = self.talkgroups.entry(system.to_string()).or_default();
+        match row {
+            Some(t) => table.insert(number, t),
+            None => table.remove(&number),
+        };
+    }
+
     /// Each system's talkgroups and signals, from an engine's systems.
     pub fn set_systems(&mut self, systems: &[trunk_core::trunk::SystemConfig]) {
         self.talkgroups = systems.iter().map(|s| (s.short_name.clone(), s.talkgroups.clone())).collect();

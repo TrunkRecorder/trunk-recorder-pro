@@ -556,9 +556,12 @@ pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value) -> 
             m.push(ToClient::Units { system: n.clone(), csv });
         }
     }
-    // The codes conventional frequencies carried, as saved.
-    let heard = std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
-    m.push(ToClient::Heard { heard: heard.unwrap_or(json!({})) });
+    // The codes conventional frequencies carried: as last told, else as saved.
+    let heard = ctx.heard_last.lock().unwrap().clone().unwrap_or_else(|| {
+        let saved = std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        ToClient::Heard { heard: saved.unwrap_or(json!({})) }
+    });
+    m.push(heard);
     m.push(ToClient::History { entries: ctx.history.lock().unwrap().iter().take(runtime::HISTORY).cloned().collect() });
     m.push(ToClient::Radios { radios });
     m.push(ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle));
@@ -857,6 +860,7 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         },
         // (Written beside the config; a recording takes it at once.)
         Command::SetTalkgroups { system, csv } => failed(runtime::set_talkgroups(ctx, &system, csv)),
+        Command::SetTalkgroup { system, talkgroup, edit } => failed(runtime::set_talkgroup(ctx, &system, talkgroup, edit)),
         // A key container with no passwordFile, unlocked with a password typed in, or locked again
         // (docs/configuration/systems.md). The password is never kept.
         Command::UnlockKeys { source, password } => {

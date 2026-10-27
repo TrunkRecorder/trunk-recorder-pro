@@ -5,6 +5,42 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Saving never holds up recording or a click.** Large systems on slow disks (SD cards) waited on
+  whole-file writes: an Ignore click could take seconds, and the recording paused while talker
+  aliases, heard codes or the radio registry were written.
+  - Everything kept beside the config is now written on a thread of its own. If a file is
+    queued several times, only the latest copy is written.
+  - A talkgroup edit is told to every browser right away, and its file is written afterwards.
+  - The conventional codes heard (`conventional.heard.json`) are written once a minute instead
+    of after every call.
+  - Talker aliases, sharing and band plans are written within 10 s of a change. The radio
+    registry is still written every 15 minutes.
+  - Everything is written when recording stops.
+  - The browser version saves on the same schedule.
+  - A page that connects gets the latest heard codes from memory, not from the file.
+
+  What's next for storage, including SQLite, is in `research/storage.md`.
+
+- **An Ignore click, or a talkgroup's name edited, changes just that row.** Before, the whole
+  talkgroup file was sent, rewritten and sent to every browser. The new `setTalkgroup` command
+  and `talkgroupEdited` message are in the API docs, and `client.js` handles them. Several clicks
+  in a row end where the last one left it, also with another browser editing at the same time, and
+  an edit made while the connection was down is sent again.
+- **Setup says whether your changes are saved.** "Saving…", "All changes saved" or "Couldn't save"
+  shows beside its tabs. A file the recorder couldn't write in the background is reported too.
+- **Plugin settings that would restart a running plugin wait for Apply.** Discard drops them.
+  Plugins that take settings while running, and anything changed while not recording, save at
+  once.
+- **The Airspy gain sliders are saved once you let go**, not at each step dragged through.
+- **The radio registry tracks what changed per row**, for storing it a row at a time later.
+  `research/storage.md` measures the ways to store it on the Pi, including issue #100's SQLite
+  design (`tools/storage-bench`).
+- **Settings are saved once you finish typing, not per letter.** A text setting in Setup (a name,
+  a short name, a path, a plugin's settings…) is saved when you leave the field or press Enter.
+  Escape puts it back. Before, each pause in typing was a save: a system's short name typed as
+  "fire4a" renamed it to f, fi, fir… on the way, moving its talkgroup file each time, and a
+  plugin's settings restarted it on each pause. Switches and menus still act at once.
+
 - **Phase 2 and DMR `.sdr` files play in MimoSDR.** A Phase 2 frame's symbols were stored as the
   dibit rather than its quadrant, so MimoSDR's player (and anyone else's) misread most of them; and
   frames our vocoder repeated or muted were stored as heard, so other players played them. They're

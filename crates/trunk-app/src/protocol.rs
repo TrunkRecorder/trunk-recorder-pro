@@ -71,6 +71,9 @@ pub enum ToClient {
     /// A system's talkgroup file (Trunk Recorder's CSV; "" for none): one for
     /// each on connecting, and again whenever one changes.
     Talkgroups { system: String, csv: String },
+    /// One talkgroup of system `system`'s file edited ([`Command::SetTalkgroup`]):
+    /// each interface makes the same edit to its copy (`withCells`).
+    TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit },
     Status { status: Value, sources: Vec<Value>, load: f64, calls: Vec<Value> },
     Spectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
     Log { lines: Vec<Value> },
@@ -189,6 +192,33 @@ impl ToClient {
     }
 }
 
+/// What an edit of one talkgroup sets (what's left out stays as it is).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TalkgroupEdit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpha_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Never record it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<bool>,
+}
+
+impl TalkgroupEdit {
+    /// The cells it sets, by the talkgroup file's column names ([`trunk_core::trunk::edit_row`]).
+    pub fn cells(&self) -> Vec<(&'static str, &str)> {
+        let text = [("Alpha Tag", &self.alpha_tag), ("Description", &self.description), ("Tag", &self.tag), ("Category", &self.category)];
+        let mut cells: Vec<(&'static str, &str)> = text.into_iter().filter_map(|(c, v)| v.as_deref().map(|v| (c, v.trim()))).collect();
+        cells.extend(self.ignore.map(|i| ("Ignore", if i { "x" } else { "" })));
+        cells
+    }
+}
+
 /// Which store: the plugins' or the interfaces'.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -227,6 +257,10 @@ pub enum Command {
     SetConfig { config: Value, version: u64 },
     /// System `system`'s talkgroup file (Trunk Recorder's CSV; "" for none).
     SetTalkgroups { system: String, csv: String },
+    /// One talkgroup of system `system`'s file: only its cells that `edit`
+    /// sets change (a row added when the file lacks it). Answered to every
+    /// interface with `talkgroupEdited`.
+    SetTalkgroup { system: String, talkgroup: u32, edit: TalkgroupEdit },
     Start,
     Stop,
     Devices,

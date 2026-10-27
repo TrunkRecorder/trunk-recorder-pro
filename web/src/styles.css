@@ -1424,3 +1424,12 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .plugin-grid .field input, .plugin-grid .field select, .plugin-grid .field textarea { width: 100%; }
 .plugin-panel-hint { margin: 0 0 10px; }
 .plugin-page .plugin-log { max-height: 360px; overflow: auto; }
+
+/* Plugin settings held until Apply (Plugins.tsx Held). */
+.held-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel); }
+.held-bar > span { flex: 1 1 200px; }
+
+/* Setup: whether this browser's changes are saved (controller saveStatus). */
+.setup-tabs .save-status { margin: auto 4px auto auto; }
+.save-status { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.save-status.failed { color: var(--bad); }

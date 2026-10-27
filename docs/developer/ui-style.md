@@ -224,11 +224,20 @@ A label, the input, and an optional hint below.
 
 ### Inputs (`inputs.tsx`, `fieldText.ts`)
 
-An input whose text isn't the value itself (a number, frequencies, a list,
-a channel table, minutes) is a `<DraftInput>` with a codec from
-`fieldText.ts`, or a `<NumberInput>` (`hex`, `gain`, `narrow`). While
-focused it keeps the text as typed and passes each change on, parsed; left,
-it shows the value kept. So:
+Every setting typed in is a `<DraftInput>`: plain text a `<TextInput>` or
+`<TextArea>`, a number a `<NumberInput>` (`hex`, `gain`, `narrow`), anything
+else (frequencies, a list, a channel table, minutes) a `<DraftInput>` with a
+codec from `fieldText.ts`. Never a bare `<input onChange>` that writes the
+config. While focused it keeps the text as typed. It passes the value on,
+parsed, once: when the field is left or Enter pressed (a `<TextArea>`:
+Ctrl/⌘+Enter), or when its page goes away. Escape puts it back. Left, it
+shows the value kept. Each value passed on is a save, and can restart a
+plugin or rename a system and its files, so it's one per word typed, not one
+per letter. So:
+
+- Switches, menus and buttons act at once: each is one deliberate action.
+- A text input that isn't a setting (a search, a filter, a form submitted
+  with a button) can stay a plain `<input>` with its own state.
 
 - Clamp, round or default in the `onChange`, never in the input: a squelch
   of 12 is typed "1" first, -5 is typed "-" first, and the field must not

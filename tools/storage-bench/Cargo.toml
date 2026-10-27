@@ -1,0 +1,16 @@
+[package]
+name = "storage-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "How the radio registry could be kept on disk: whole file, an append-only log of changed rows, or SQLite (research/storage.md)"
+
+# Its own workspace: SQLite stays out of the app's until one is chosen.
+[workspace]
+
+[dependencies]
+trunk-app = { path = "../../crates/trunk-app" }
+trunk-core = { path = "../../crates/trunk-core" }
+serde = "1"
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }

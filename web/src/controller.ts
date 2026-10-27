@@ -31,6 +31,7 @@ import type {
   InterfacesList,
   Store,
   StoreKind,
+  TalkgroupEdit,
   PluginValues,
   LockableKeys,
   Radios,
@@ -73,7 +74,7 @@ import {
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
-import { withIgnore } from "./talkgroups.ts";
+import { editCells, ignoreEdit, withCells } from "./talkgroups.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 import { lookedFreqs, lookForMessage, type LookingFor } from "./lookFor.ts";
 
@@ -131,6 +132,9 @@ export interface AppState {
   profiling: number | null;
   /** Settings changed since this run started that only apply after a restart. */
   restartNeeded: boolean;
+  /** This browser's changes: being saved, all saved, or the last one wasn't (`saveError`: why); idle before any. */
+  saveStatus: "idle" | "saving" | "saved" | "failed";
+  saveError: string | null;
   /** The plugins (desktop app); null until the recorder says. */
   plugins: PluginsList | null;
   /** A plugin this browser just installed: its settings open. */
@@ -220,6 +224,8 @@ let state: AppState = {
   profile: null,
   profiling: null,
   restartNeeded: false,
+  saveStatus: "idle",
+  saveError: null,
   plugins: null,
   pluginJustInstalled: null,
   interfaces: null,
@@ -336,8 +342,9 @@ transport.onConnection = (connected) => {
   if (!connected) return;
   // A new connection's greeting says how things are, from nothing: what
   // collects (events, files by system) starts over, an edit awaiting an
-  // answer won't get one.
+  // answer won't get one (a talkgroup edit's is sent again: "hello").
   saving = queued = false;
+  wholeSent.clear();
   set({ events: [], talkgroups: {}, units: {} });
 };
 transport.onAudio = onAudio;
@@ -354,6 +361,8 @@ function take(m: FromRecorder): void {
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
       sendTopics(true);
+      // Talkgroup edits not answered before the connection dropped: sent again (shown meanwhile).
+      for (const u of unanswered) transport.send({ type: "setTalkgroup", system: u.system, talkgroup: u.tg, edit: u.edit });
       break;
     case "state":
       set({ phase: m.phase, error: m.error ?? state.error, ended: m.ended, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
@@ -371,7 +380,12 @@ function take(m: FromRecorder): void {
       configSaved(m.version, m.error);
       break;
     case "talkgroups":
-      set({ talkgroups: withFile(state.talkgroups, m.system, m.csv) });
+      if (wholeSent.get(m.system)) wholeSent.set(m.system, wholeSent.get(m.system)! - 1);
+      set({ talkgroups: withFile(state.talkgroups, m.system, withUnanswered(m.system, m.csv)) });
+      saveSettled();
+      break;
+    case "talkgroupEdited":
+      talkgroupEdited(m.system, m.talkgroup, m.edit);
       break;
     case "units":
       set({ units: { ...state.units, [m.system]: parseUnitsCsv(m.csv) } });
@@ -441,7 +455,7 @@ function take(m: FromRecorder): void {
       break;
     }
     case "error":
-      set({ error: m.message });
+      set({ error: m.message, ...(/^Couldn't (save|delete) /.test(m.message) ? { saveStatus: "failed" as const, saveError: m.message } : {}) });
       break;
     case "notice":
       set({ notice: m.message });
@@ -617,7 +631,45 @@ export function usePolled<T>(key: string, run: () => Promise<T>, everyMs: number
 
 /** Mark talkgroup `tg` of system `system` ignored (or not) in its talkgroup file. */
 export function setTalkgroupIgnore(system: string, tg: number, ignore: boolean, alphaTag = ""): void {
-  setTalkgroups(system, withIgnore(state.talkgroups[system] ?? "", tg, ignore, alphaTag));
+  editTalkgroup(system, tg, ignoreEdit(state.talkgroups[system] ?? "", tg, ignore, alphaTag));
+}
+
+/**
+ * Edit one talkgroup of system `system`'s file: shown at once, sent as the
+ * row's edit alone (setTalkgroup), the recorder's copy edited the same way.
+ */
+export function editTalkgroup(system: string, tg: number, edit: TalkgroupEdit): void {
+  unanswered.push({ system, tg, edit });
+  set({ talkgroups: withFile(state.talkgroups, system, withCells(state.talkgroups[system] ?? "", tg, editCells(edit))), saveStatus: "saving", saveError: null });
+  transport.send({ type: "setTalkgroup", system, talkgroup: tg, edit });
+}
+
+/** Talkgroup edits this browser sent that the recorder hasn't answered yet, oldest first. */
+let unanswered: { system: string; tg: number; edit: TalkgroupEdit }[] = [];
+/** Whole talkgroup files this browser sent not answered yet, by system. */
+const wholeSent = new Map<string, number>();
+
+/** `csv` (system `system`'s file as the recorder has it) with this browser's edits not answered yet. */
+function withUnanswered(system: string, csv: string): string {
+  return unanswered.filter((u) => u.system === system).reduce((f, u) => withCells(f, u.tg, editCells(u.edit)), csv);
+}
+
+/** A talkgroup edited (by this browser or another): this browser's answered, or another's made here too. */
+function talkgroupEdited(system: string, tg: number, edit: TalkgroupEdit): void {
+  const same = (u: (typeof unanswered)[number]) => u.system === system && u.tg === tg && JSON.stringify(editCells(u.edit)) === JSON.stringify(editCells(edit));
+  if (unanswered.length && same(unanswered[0])) unanswered.shift();
+  else {
+    // Another's, made before this browser's not answered yet: those are made over it again.
+    const csv = withCells(state.talkgroups[system] ?? "", tg, editCells(edit));
+    set({ talkgroups: withFile(state.talkgroups, system, withUnanswered(system, csv)) });
+  }
+  saveSettled();
+}
+
+/** Nothing of this browser's waiting to be saved any more: say it's saved (unless the last one failed). */
+function saveSettled(): void {
+  const waiting = !!pendingConfig || saving || queued || unanswered.length > 0 || [...wholeSent.values()].some((n) => n > 0);
+  if (!waiting && state.saveStatus === "saving") set({ saveStatus: "saved" });
 }
 
 // ── talkgroup files ──────────────────────────────────────────────────────────
@@ -632,7 +684,8 @@ function withFile(files: Record<string, string>, system: string, csv: string): R
 
 /** System `system`'s talkgroup file is now `csv` ("": none): saved on the recorder at once. */
 export function setTalkgroups(system: string, csv: string): void {
-  set({ talkgroups: withFile(state.talkgroups, system, csv) });
+  wholeSent.set(system, (wholeSent.get(system) ?? 0) + 1);
+  set({ talkgroups: withFile(state.talkgroups, system, csv), saveStatus: "saving", saveError: null });
   transport.send({ type: "setTalkgroups", system, csv });
 }
 
@@ -738,6 +791,7 @@ function configSaved(version: number, error: string | undefined): void {
   saving = false;
   server.version = Math.max(server.version, version);
   if (error) {
+    set({ saveStatus: "failed", saveError: error });
     queued = false;
     if (pendingConfig) clearTimeout(pendingConfig);
     pendingConfig = null;
@@ -753,6 +807,7 @@ function configSaved(version: number, error: string | undefined): void {
     queued = false;
     sendConfig();
   }
+  saveSettled();
 }
 
 /** Edit the config; saved on the recorder shortly after the last change. */
@@ -760,7 +815,7 @@ export function updateConfig(fn: (c: Config) => void): void {
   if (!state.config) return;
   const c = structuredClone(state.config);
   fn(c);
-  set({ config: c });
+  set({ config: c, saveStatus: "saving", saveError: null });
   if (pendingConfig) clearTimeout(pendingConfig);
   pendingConfig = setTimeout(() => {
     pendingConfig = null;

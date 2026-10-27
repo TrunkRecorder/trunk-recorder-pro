@@ -1780,6 +1780,16 @@ impl Core {
         true
     }
 
+    /// Talkgroup `number` of the system named `short_name` is now `row` (none: not in its file).
+    pub fn set_talkgroup(&mut self, short_name: &str, number: u32, row: Option<super::Talkgroup>) -> bool {
+        let Some(s) = self.systems.iter_mut().find(|s| s.cfg.short_name == short_name) else { return false };
+        match row {
+            Some(t) => s.cfg.talkgroups.insert(number, t),
+            None => s.cfg.talkgroups.remove(&number),
+        };
+        true
+    }
+
     /// The encryption keys of the system named `short_name`: its voice
     /// channels decrypt with them, those open now from their next encryption
     /// sync (with none, at once). False when there's no such system.
@@ -2392,6 +2402,13 @@ impl Engine {
     pub fn set_talkgroups(&self, short_name: &str, talkgroups: Talkgroups) -> bool {
         let mut c = self.core();
         let ok = c.set_talkgroups(short_name, talkgroups);
+        *self.shared.systems.lock().unwrap() = Arc::new(c.system_configs());
+        ok
+    }
+    /// One talkgroup of the system named `short_name` ([`Engine::set_talkgroups`] for one row).
+    pub fn set_talkgroup(&self, short_name: &str, number: u32, row: Option<super::Talkgroup>) -> bool {
+        let mut c = self.core();
+        let ok = c.set_talkgroup(short_name, number, row);
         *self.shared.systems.lock().unwrap() = Arc::new(c.system_configs());
         ok
     }

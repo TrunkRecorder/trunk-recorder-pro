@@ -2058,6 +2058,31 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "talkgroupEdited"
+            },
+            "system": {
+              "type": "string"
+            },
+            "talkgroup": {
+              "type": "number"
+            },
+            "edit": {
+              "$ref": "#/definitions/TalkgroupEdit"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "talkgroup",
+            "edit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "status"
             },
             "status": {
@@ -7608,6 +7633,29 @@
       "additionalProperties": false,
       "description": "One system being recorded: trunked (with a site running) or conventional. `index` is what calls and audio carry as `system`."
     },
+    "TalkgroupEdit": {
+      "type": "object",
+      "properties": {
+        "alphaTag": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "ignore": {
+          "type": "boolean",
+          "description": "Never record it."
+        }
+      },
+      "additionalProperties": false,
+      "description": "What an edit of one talkgroup sets; what's left out stays as it is."
+    },
     "TalkgroupName": {
       "type": "object",
       "properties": {
@@ -7880,6 +7928,31 @@
             "type",
             "system",
             "csv"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setTalkgroup"
+            },
+            "system": {
+              "type": "string"
+            },
+            "talkgroup": {
+              "type": "number"
+            },
+            "edit": {
+              "$ref": "#/definitions/TalkgroupEdit"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "talkgroup",
+            "edit"
           ],
           "additionalProperties": false
         },
