@@ -614,6 +614,25 @@ transmission saved, [above](#concepts)), `site`, `system_type` and
 `tones`, the `tone_patterns` they make up (each with `text` in words) and the
 system's `signals` it carried. docs/guides/recordings.md lists every field.
 
+### The call store over HTTP
+
+The same store answers plain HTTP `GET`s, for a plugin or an interface on
+another machine that has no WebSocket to keep. Every door that serves the API
+serves these (the built-in interface and each interface's port), to a
+connection with listen or control access, as `callsQuery` is; a door that is
+off answers 404. All answers are JSON. When the call store could not be
+opened, each answers 503 `{"error": "the call store is off"}`.
+
+| Route | Answers |
+|---|---|
+| `GET /api/v1/calls` | `{ entries, more, before }` as `callsResult` has them: `CallEntry`s, newest first. Parameters, all optional: `system` (short name; its sites' old names too), `talkgroup`, `unit` (a radio), `from` (start time, Unix ms, inclusive), `to` (exclusive), `before` (Unix ms: pass the last answer's `before` for the next page), `limit` (1 to 500, default 100). A bad number answers 400 `{"error": "<name> must be a number"}`. |
+| `GET /api/v1/calls/<path>` | One `CallEntry`: `{ path, record, audio, json }`, for the `path` its entry has (slashes stay slashes); 404 `{"error": "no such call"}` when there is none. |
+| `GET /api/v1/store` | `{ path, schemaVersion, calls, oldestMs, newestMs, retentionDays, batchSeconds }`: where the store is, how many calls it holds and the start times of the oldest and newest (`null` when empty), and the settings `store.retentionDays` and `store.batchSeconds`. |
+
+As with `callsQuery`, a call that finished within the last `batchSeconds` may
+not be in `/api/v1/calls` yet. The routes are described in
+[calls.openapi.yaml](calls.openapi.yaml) (OpenAPI 3.0).
+
 ## Recipes
 
 Each recipe shows the raw protocol, then the client.js equivalent.

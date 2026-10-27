@@ -1237,16 +1237,19 @@ pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
     }
 }
 
+/// System `name` and the names its sites had as systems of their own, which
+/// older calls are recorded under.
+pub fn systems_for(cfg: &Config, name: &str) -> Vec<String> {
+    let old = cfg.systems.iter().find(|s| s.short_name == name).map(trunk_app::migrate::old_names).unwrap_or_default();
+    std::iter::once(name.to_string()).chain(old).collect()
+}
+
 /// `callsQuery`: calls from the store by system (and the names its sites had
 /// as systems of their own, which older calls are recorded under), talkgroup,
 /// radio and time, newest first.
 pub fn calls_query(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> ToClient {
     let systems = match &q.system {
-        Some(name) => {
-            let cfg = ctx.config.lock().unwrap();
-            let old = cfg.systems.iter().find(|s| s.short_name == *name).map(trunk_app::migrate::old_names).unwrap_or_default();
-            std::iter::once(name.clone()).chain(old).collect()
-        }
+        Some(name) => systems_for(&ctx.config.lock().unwrap(), name),
         None => Vec::new(),
     };
     let filter = crate::db::read::CallsFilter {

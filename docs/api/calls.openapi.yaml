@@ -1,0 +1,86 @@
+openapi: 3.0.3
+info:
+  title: Trunk Recorder Pro call store
+  version: "1"
+  description: |
+    The recorded calls over HTTP, for plugins and interfaces on other
+    machines. Served on every door that serves the recorder's API, to a
+    connection with listen or control access. When the call store could not
+    be opened, every route answers 503. Calls finished within the last
+    `batchSeconds` may not be in /calls yet.
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/v1/calls:
+    get:
+      summary: Recorded calls, newest first
+      parameters:
+        - { name: system, in: query, description: "A system's short name; calls recorded under its sites' old names too.", schema: { type: string } }
+        - { name: talkgroup, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: unit, in: query, description: A radio that transmitted in the call., schema: { type: integer, format: int64 } }
+        - { name: from, in: query, description: Start time, Unix ms, inclusive., schema: { type: integer, format: int64 } }
+        - { name: to, in: query, description: Start time, Unix ms, exclusive., schema: { type: integer, format: int64 } }
+        - { name: before, in: query, description: "Start time, Unix ms, exclusive: the previous page's `before`.", schema: { type: integer, format: int64 } }
+        - { name: limit, in: query, description: "1 to 500; larger and smaller values are clamped.", schema: { type: integer, default: 100 } }
+      responses:
+        "200":
+          description: A page of calls.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries, more, before]
+                properties:
+                  entries:
+                    type: array
+                    items: { $ref: "protocol.schema.json#/definitions/CallEntry" }
+                  more: { type: boolean, description: Calls remain that started before the oldest on this page. }
+                  before: { type: integer, format: int64, description: Where the next page starts; pass it as `before`. }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { description: The door is off. }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/calls/{path}:
+    get:
+      summary: One recorded call
+      parameters:
+        - { name: path, in: path, required: true, description: "The entry's `path` (no extension); its slashes are slashes.", schema: { type: string } }
+      responses:
+        "200":
+          description: The call.
+          content:
+            application/json:
+              schema: { $ref: "protocol.schema.json#/definitions/CallEntry" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/store:
+    get:
+      summary: The call store itself
+      responses:
+        "200":
+          description: Where it is and what it holds.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, schemaVersion, calls, oldestMs, newestMs, retentionDays, batchSeconds]
+                properties:
+                  path: { type: string, description: The database file. }
+                  schemaVersion: { type: integer }
+                  calls: { type: integer, format: int64 }
+                  oldestMs: { type: integer, format: int64, nullable: true, description: Start time of the oldest call; null when empty. }
+                  newestMs: { type: integer, format: int64, nullable: true, description: Start time of the newest call; null when empty. }
+                  retentionDays: { type: integer, description: "`store.retentionDays`; 0 keeps every call." }
+                  batchSeconds: { type: integer, description: "`store.batchSeconds`: how long a finished call may wait before it is committed." }
+        "404": { description: The door is off. }
+        "503": { $ref: "#/components/responses/Error" }
+components:
+  responses:
+    Error:
+      description: "An error: a bad parameter (400), no such call (404), or the call store is off (503)."
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error: { type: string }

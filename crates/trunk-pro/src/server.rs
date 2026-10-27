@@ -93,12 +93,13 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
 
 /// The recorder's API, served on every interface's port: the WebSocket,
 /// the docs and client beside it, and the recorded calls.
-fn api(r: Router<Arc<Ctx>>) -> Router<Arc<Ctx>> {
+pub(crate) fn api(r: Router<Arc<Ctx>>) -> Router<Arc<Ctx>> {
     r.route("/api/ws", get(ws))
         .route("/api/version", get(|| async { axum::Json(json!({ "app": APP_ID, "version": env!("CARGO_PKG_VERSION"), "api": crate::interfaces::API_VERSION })) }))
         .route("/api/docs", get(|| async { api_file("README.md") }))
         .route("/api/schema", get(|| async { api_file("protocol.schema.json") }))
         .route("/api/protocol.ts", get(|| async { ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], PROTOCOL).into_response() }))
+        .merge(crate::api_v1::router())
         .route("/api/{*path}", get(|UrlPath(p): UrlPath<String>| async move { api_file(&p) }))
         .route("/calls/{*path}", get(call_file))
 }
@@ -425,7 +426,7 @@ async fn ws(State(ctx): State<Arc<Ctx>>, Extension(door): Extension<Door>, up: W
 }
 
 /// What a connection through `door` may do now; None once its interface is gone or off.
-fn access_of(ctx: &Ctx, door: &Door) -> Option<ApiAccess> {
+pub(crate) fn access_of(ctx: &Ctx, door: &Door) -> Option<ApiAccess> {
     match door {
         Door::Builtin => Some(ApiAccess::Control),
         Door::Interface { id, .. } => ctx.interfaces.access(&ctx.config.lock().unwrap(), id),

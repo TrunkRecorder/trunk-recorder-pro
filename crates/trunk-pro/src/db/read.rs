@@ -100,8 +100,7 @@ pub fn query(conn: &Connection, f: &CallsFilter) -> rusqlite::Result<Page> {
     })
 }
 
-/// The call filed under `path`.
-#[cfg(test)]
+/// The call filed under `path` (what the HTTP route `/api/v1/calls/{path}` answers).
 pub fn one(conn: &Connection, path: &str) -> rusqlite::Result<Option<Value>> {
     let sql = "select path, record, audio, json from calls where path = ?1";
     let mut stmt = conn.prepare_cached(sql)?;

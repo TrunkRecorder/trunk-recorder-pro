@@ -96,6 +96,7 @@
 //! ```
 
 mod access;
+mod api_v1;
 mod clock;
 mod directory;
 mod dmrtool;
