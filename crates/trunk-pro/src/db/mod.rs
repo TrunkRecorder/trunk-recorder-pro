@@ -3,6 +3,7 @@
 //! serves queries without ever waiting on it. Nothing here is fatal once the
 //! file is open: errors are logged and the recorder carries on.
 
+pub mod backfill;
 pub mod read;
 pub mod row;
 pub mod schema;
@@ -39,7 +40,6 @@ pub enum Write {
         json: bool,
     },
     /// Set a `meta` value.
-    #[allow(dead_code)] // sent by the backfill (a later task)
     Meta { key: String, value: String },
     /// Delete calls that started before this time.
     #[allow(dead_code)] // sent by retention (a later task)
@@ -134,7 +134,6 @@ impl Db {
     }
 
     /// Writes queued and not yet taken up by the writer.
-    #[allow(dead_code)] // used by later tasks
     pub fn queued(&self) -> usize {
         self.0.queued.load(Ordering::Relaxed)
     }

@@ -3,7 +3,6 @@
 //! (`<captureDir>/<shortName>/<YYYY>/<M>/<D>/<tg>-<epoch>_<freq>.wav|json`, a folder per system) and
 //! publishes what happens to the browser interface through the [`Hub`].
 
-use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use chrono::{Local, Offset, TimeZone};
 use serde_json::{json, Value};
@@ -226,6 +225,7 @@ impl Ctx {
         match start(self.clone(), cfg) {
             Ok(r) => {
                 l.recording = Some(r);
+                crate::db::backfill::start(self.clone());
                 Ok(())
             }
             Err(e) => {
@@ -754,7 +754,7 @@ pub fn airspy_gain(mode: AirspyGain, gain: u8, lna: u8, mixer: u8, vga: u8, agc:
     }
 }
 
-fn local_offset(t: i64) -> i32 {
+pub(crate) fn local_offset(t: i64) -> i32 {
     Local.timestamp_opt(t, 0).single().unwrap_or_else(Local::now).offset().fix().local_minus_utc()
 }
 
@@ -1191,21 +1191,6 @@ pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
     ctx.db.send(Write::CallFiles { path: rel.replace('\\', "/"), audio, json });
 }
 
-/// Enter the newest calls already on disk in the store, in the background:
-/// a capture folder with years of calls takes a while to walk.
-pub fn load_history(ctx: Arc<Ctx>) {
-    let dir = PathBuf::from(&ctx.config.lock().unwrap().recording.capture_dir);
-    let _ = std::thread::Builder::new().name("history".into()).spawn(move || {
-        let now_ms = crate::clock::unix_ms() as i64;
-        for e in scan_history(&dir, HISTORY) {
-            let (Some(rel), Ok(record)) = (e["path"].as_str(), serde_json::from_value::<trunk_recorder_plugin::CallRecord>(e["record"].clone())) else { continue };
-            let json = e["record"].to_string();
-            let row = crate::db::call_row(rel, &record, &json, e["audio"].as_bool().unwrap_or(false), true, ctx.db.recorder(), now_ms);
-            ctx.db.send(Write::Call { row, live: false });
-        }
-    });
-}
-
 /// Calls the interface's history list is given.
 pub const HISTORY: usize = 300;
 
@@ -1228,35 +1213,6 @@ pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
             ToClient::OlderCalls { before: before_ms, entries: vec![], more: false }
         }
     }
-}
-
-/// The newest `limit` calls already on disk (for the history list at startup).
-pub fn scan_history(dir: &Path, limit: usize) -> VecDeque<Value> {
-    let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(rd) = fs::read_dir(&d) else { continue };
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.extension().is_some_and(|x| x == "json") {
-                let t = e.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
-                found.push((t, p));
-            }
-        }
-    }
-    found.sort_by(|a, b| b.0.cmp(&a.0));
-    found
-        .into_iter()
-        .take(limit)
-        .filter_map(|(_, p)| {
-            let record: Value = serde_json::from_str(&fs::read_to_string(&p).ok()?).ok()?;
-            let rel = p.strip_prefix(dir).ok()?.with_extension("");
-            let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
-            Some(json!({ "path": rel.to_string_lossy().replace('\\', "/"), "record": record, "audio": audio, "json": true }))
-        })
-        .collect()
 }
 
 #[cfg(test)]
