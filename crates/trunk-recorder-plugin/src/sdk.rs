@@ -74,6 +74,11 @@ pub struct Setup<C, S> {
     pub capture_dir: PathBuf,
     /// The plugin's own folder, kept across restarts and upgrades.
     pub data_dir: PathBuf,
+    /// The recorder's call store (an SQLite file), when it has one and runs
+    /// on this machine. Open it read-only (`SQLITE_OPEN_READ_ONLY`; it is in
+    /// WAL mode), read `schema_version` first and refuse a version you don't
+    /// know; never write to it.
+    pub store: Option<PathBuf>,
     /// Audio formats `call.concluded` will carry (always "wav").
     pub audio_formats: Vec<String>,
 }
@@ -341,7 +346,7 @@ fn setup<P: Plugin>(hello: Hello) -> Result<Setup<P::Config, P::SystemConfig>, S
         };
         systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, name: s.name, fcc: s.fcc, fcc_call_sign: s.fcc_call_sign, fcc_name: s.fcc_name, sites: s.sites, config, settings });
     }
-    Ok(Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, audio_formats: hello.audio_formats })
+    Ok(Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, store: hello.store, audio_formats: hello.audio_formats })
 }
 
 /// Settings left out entirely count as `{}`, so `#[serde(default)]` applies.

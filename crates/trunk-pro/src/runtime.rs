@@ -467,7 +467,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
     session.load_sharing(&fs::read_to_string(sharing_path()).unwrap_or_default());
     session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
-    ctx.plugins.start(&cfg);
+    ctx.plugins.start(&cfg, ctx.db.path().map(Path::to_path_buf));
     if cfg.sources.iter().any(|s| matches!(s, Source::Rtlsdr { .. })) {
         if let Some(hint) = cfg.rtl_buflen_hint(sdr::rtl_most_on_a_bus()) {
             log::warn!("{hint}");

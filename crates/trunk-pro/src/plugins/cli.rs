@@ -274,7 +274,7 @@ fn run_calls(a: &Args) {
     let notes: super::host::Notes = Arc::new(print_note);
     let encoder = a.get("encoder").map_or(Ok(Default::default()), |e| serde_json::from_value(serde_json::json!(e))).unwrap_or_else(|_| die("--encoder: auto, ffmpeg, afconvert, fdkaac or none"));
     let audio = AudioSettings { encoder, ..Default::default() };
-    let mut host = PluginHost::start(vec![spec], &audio, &systems, &capture_dir, notes);
+    let mut host = PluginHost::start(vec![spec], &audio, &systems, &capture_dir, None, notes);
     if host.is_empty() {
         std::process::exit(1);
     }

@@ -202,6 +202,12 @@ pub struct Hello {
     pub capture_dir: PathBuf,
     /// A folder of the plugin's own that survives restarts and upgrades (queues, state).
     pub data_dir: PathBuf,
+    /// Where the recorder's call store is (an SQLite file), when it has one.
+    /// Open it read-only (`SQLITE_OPEN_READ_ONLY`); it is in WAL mode; read
+    /// `schema_version` first and refuse a version you don't know; never
+    /// write to it. Plugins on other machines use the HTTP API instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<PathBuf>,
     /// The audio formats `call.concluded` will carry this run: always "wav",
     /// plus those the plugin asked for that the recorder can encode.
     pub audio_formats: Vec<String>,
@@ -1127,6 +1133,17 @@ pub mod base64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hello_without_a_store_has_no_store_key() {
+        let h = Hello::default();
+        assert!(!serde_json::to_string(&h).unwrap().contains("\"store\""));
+        let h: Hello = serde_json::from_str(r#"{"api":1}"#).unwrap();
+        assert!(h.store.is_none());
+        let h: Hello = serde_json::from_str(r#"{"api":1,"store":"/x/trunk-pro.sqlite"}"#).unwrap();
+        assert_eq!(h.store.as_deref(), Some(std::path::Path::new("/x/trunk-pro.sqlite")));
+        assert!(serde_json::to_string(&h).unwrap().contains("\"store\""));
+    }
 
     /// A Trunk Recorder file (flags as booleans, a field this crate doesn't
     /// name) reads; written back, flags are 0/1 as the recorder's own files

@@ -81,6 +81,11 @@ uses only the protocol types, with `default-features = false`.
 The crate follows semver. The protocol's `API_VERSION` is separate: it changes
 only when an older recorder can't run a newer plugin.
 
+- 0.9.0: `Hello::store` / `Setup::store`, the path of the recorder's call store
+  (SQLite) when it has one. Open it read-only (`SQLITE_OPEN_READ_ONLY`; it is in
+  WAL mode), read `schema_version` first and refuse a version you don't know,
+  and never write to it. Plugins on other machines use the HTTP API instead.
+
 ## License
 
 Either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option,

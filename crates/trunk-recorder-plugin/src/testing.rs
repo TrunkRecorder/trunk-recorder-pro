@@ -150,6 +150,7 @@ pub fn hello(dir: &Path, config: Value) -> Hello {
         systems: vec![SystemInfo { index: 0, short_name: "sys1".into(), kind: "p25".into(), config: Value::Null, ..Default::default() }],
         capture_dir: dir.to_path_buf(),
         data_dir,
+        store: None,
         audio_formats: vec!["wav".into(), format::M4A.into()],
     }
 }
