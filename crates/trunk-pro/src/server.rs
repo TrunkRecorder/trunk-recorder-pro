@@ -526,9 +526,10 @@ pub(crate) fn tr_config(path: &str) -> ToClient {
 /// access gets (devices, key containers, plugins, interfaces); a listen-only
 /// connection gets the config without secrets ([`Out::of`]).
 pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
-    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(sdr::devices())), crate::radio::radios_json(false))).await;
-    let (devices, radios) = found.unwrap_or((None, Value::Null));
-    let mut m = greeting_now(ctx, devices, radios);
+    let ctx2 = ctx.clone();
+    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(sdr::devices())), crate::radio::radios_json(false), runtime::history(&ctx2))).await;
+    let (devices, radios, history) = found.unwrap_or((None, Value::Null, ToClient::History { entries: Vec::new() }));
+    let mut m = greeting_now(ctx, devices, radios, history);
     if control {
         m.push(plugins_list(ctx).await);
         let cfg = ctx.config.lock().unwrap().clone();
@@ -546,7 +547,7 @@ pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
 }
 
 /// The greeting's messages that need nothing found or listed: `devices` for control access only.
-pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value) -> Vec<ToClient> {
+pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, history: ToClient) -> Vec<ToClient> {
     let config = ctx.config.lock().unwrap().clone();
     let mut m = vec![ctx.phase.lock().unwrap().message(), ToClient::Config { config: Box::new(config.clone()), version: ctx.config_version.load(Ordering::SeqCst) }];
     m.extend(ctx.talkgroups.lock().unwrap().iter().map(|(system, csv)| ToClient::Talkgroups { system: system.clone(), csv: csv.clone() }));
@@ -562,7 +563,7 @@ pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value) -> 
         ToClient::Heard { heard: saved.unwrap_or(json!({})) }
     });
     m.push(heard);
-    m.push(ToClient::History { entries: ctx.history.lock().unwrap().iter().take(runtime::HISTORY).cloned().collect() });
+    m.push(history);
     m.push(ToClient::Radios { radios });
     m.push(ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle));
     // The dashboard: recent notable events (oldest first), the computer as last sampled.

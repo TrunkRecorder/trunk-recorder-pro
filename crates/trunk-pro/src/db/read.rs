@@ -35,6 +35,7 @@ pub struct Page {
     pub more: bool,
     /// Where the next page starts: the oldest start on this page, or the
     /// `before` that was asked when the page is empty.
+    #[allow(dead_code)] // the next page's start, for later tasks
     pub before: i64,
 }
 
@@ -94,6 +95,7 @@ pub fn query(conn: &Connection, f: &CallsFilter) -> rusqlite::Result<Page> {
 }
 
 /// The call filed under `path`.
+#[allow(dead_code)] // used by a later task
 pub fn one(conn: &Connection, path: &str) -> rusqlite::Result<Option<Value>> {
     let sql = "select path, record, audio, json from calls where path = ?1";
     let mut stmt = conn.prepare_cached(sql)?;

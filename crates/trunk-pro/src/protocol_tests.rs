@@ -5,7 +5,7 @@
 //! recording session (a conventional call), a survey, the server's replies;
 //! and protocol.ts's message types against [`ToClient`] and [`Command`].
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 use std::f64::consts::PI;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -329,7 +329,7 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         hub: hub.clone(),
         lifecycle: Mutex::new(crate::runtime::Lifecycle::default()),
         phase: Mutex::new(crate::runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
-        history: Mutex::new(VecDeque::new()),
+        db: crate::db::Db::for_test(&format!("ctx-{}", dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()))).0,
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),

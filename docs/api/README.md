@@ -211,7 +211,6 @@ const rec = new TrunkClient({ server: "radio.local:8080" });
 |---|---|---|
 | `server` | the page's host; Node: `localhost:8080` | `host:port` of the recorder |
 | `secure` | when the page is https | use `wss://` and `https://` |
-| `historyLimit` | 500 | recorded calls kept in `history` |
 
 **State.** Read these properties; don't change them. They are current
 whenever `change` fires.

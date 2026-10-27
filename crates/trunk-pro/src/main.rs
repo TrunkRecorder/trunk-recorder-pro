@@ -117,7 +117,6 @@ mod sdr;
 mod server;
 mod spool;
 mod spotlight;
-#[allow(dead_code)] // wired into the recorder by later tasks
 mod db;
 mod statstore;
 mod store;
@@ -815,7 +814,6 @@ fn fatal(msg: &str) -> ! {
 }
 
 fn serve(a: &Args) {
-    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     let config_path = paths::config_path(a.get("config"));
     paths::init(&config_path);
@@ -882,6 +880,8 @@ fn serve(a: &Args) {
     let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone());
     let talkgroups = runtime::load_talkgroups(&cfg);
     runtime::load_names(&shared, &cfg, &talkgroups);
+    let db_path = paths::data_dir().join("trunk-pro.sqlite");
+    let db = db::Db::open(&db_path, hub.clone()).unwrap_or_else(|e| fatal(&e));
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
@@ -890,7 +890,7 @@ fn serve(a: &Args) {
         hub: hub.clone(),
         lifecycle: Mutex::new(runtime::Lifecycle::default()),
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
-        history: Mutex::new(VecDeque::new()),
+        db,
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
@@ -929,6 +929,7 @@ fn serve(a: &Args) {
         log::info!("Trunk Recorder Pro {} — open {url}", env!("CARGO_PKG_VERSION"));
         log::info!("Using Config file: {}", config_path.display());
         log::info!("Capture Directory: {}", c.recording.capture_dir);
+        log::info!("Call store: {}", db_path.display());
         let dir = if l.dir.is_empty() { config_path.parent().unwrap_or(Path::new(".")).join("logs") } else { config_path.parent().unwrap_or(Path::new(".")).join(&l.dir) };
         log::info!("Log Level: {} · Log to File: {}{} · System log: {}", level.unwrap_or(l.level).as_str(), l.file, if l.file { format!(" ({})", dir.display()) } else { String::new() }, l.syslog);
     }

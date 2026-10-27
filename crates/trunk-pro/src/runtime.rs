@@ -20,6 +20,7 @@ use trunk_app::protocol::{body, Audience, ToClient};
 use trunk_app::saving::Saved;
 use trunk_app::{Feeder, Output, Session};
 
+use crate::db::Write;
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, bladerf, soapy, uhd};
@@ -95,8 +96,8 @@ pub struct Ctx {
     pub lifecycle: Mutex<Lifecycle>,
     /// The phase the browsers are told (the engine thread reports it as it goes).
     pub phase: Mutex<PhaseInfo>,
-    /// Recently concluded calls (newest first), as sent to the browser.
-    pub history: Mutex<VecDeque<Value>>,
+    /// The call store: every finished call, as the interface lists them.
+    pub db: crate::db::Db,
     /// Signalled by a browser's `quit`.
     pub quit: tokio::sync::Notify,
     /// The survey's latest snapshot, for browsers that connect meanwhile.
@@ -1070,15 +1071,8 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
         return;
     }
     // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
-    let mut entry = trunk_app::session::call_entry(&f.rel, &f.record);
-    entry["audio"] = json!(keep_audio);
-    entry["json"] = json!(keep_json);
-    publish(&ctx.hub, ToClient::Concluded { entry: entry.clone() });
-    {
-        let mut h = ctx.history.lock().unwrap();
-        h.push_front(entry);
-        h.truncate(HISTORY_KEPT);
-    }
+    let entry = index_call(ctx, &f.rel, &f.record, &json, keep_audio, keep_json);
+    publish(&ctx.hub, ToClient::Concluded { entry });
     let mut wav_written = p.write_wav;
     let mut m4a = None;
     if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
@@ -1178,108 +1172,62 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
     }
 }
 
-/// A call's plugins are done: what of it was kept (`audio`, `json`). Its
-/// history entry follows, and the interface is told when that's not what
-/// the entry said (an upload failed and the files were kept after all).
-pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
-    let mut h = ctx.history.lock().unwrap();
-    let Some(e) = h.iter_mut().find(|e| e["path"] == rel) else { return };
-    if e["audio"] == json!(audio) && e["json"] == json!(json) {
-        return;
-    }
-    e["audio"] = json!(audio);
-    e["json"] = json!(json);
-    drop(h);
-    publish(&ctx.hub, ToClient::CallFiles { path: rel.to_string(), audio, json });
+/// A finished call, entered in the store (`json` is its record as written,
+/// `audio` and `json_kept` what is kept of it so far). Gives the entry the
+/// interface is sent.
+pub fn index_call(ctx: &Ctx, rel: &str, record: &trunk_recorder_plugin::CallRecord, json: &str, audio: bool, json_kept: bool) -> Value {
+    let mut entry = trunk_app::session::call_entry(rel, record);
+    entry["audio"] = json!(audio);
+    entry["json"] = json!(json_kept);
+    let row = crate::db::call_row(rel, record, json, audio, json_kept, ctx.db.recorder(), crate::clock::unix_ms() as i64);
+    ctx.db.send(Write::Call { row, live: true });
+    entry
 }
 
-/// Fill the history list with the newest calls already on disk, in the
-/// background: a capture folder with years of calls takes a while to walk.
-/// Calls concluded meanwhile stay in front.
+/// A call's plugins are done: what of it was kept (`audio`, `json`). The
+/// store settles its row, and tells the interface when that's not what the
+/// entry said (an upload failed and the files were kept after all).
+pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
+    ctx.db.send(Write::CallFiles { path: rel.replace('\\', "/"), audio, json });
+}
+
+/// Enter the newest calls already on disk in the store, in the background:
+/// a capture folder with years of calls takes a while to walk.
 pub fn load_history(ctx: Arc<Ctx>) {
     let dir = PathBuf::from(&ctx.config.lock().unwrap().recording.capture_dir);
     let _ = std::thread::Builder::new().name("history".into()).spawn(move || {
-        let found = scan_history(&dir, HISTORY);
-        let mut h = ctx.history.lock().unwrap();
-        let known: std::collections::HashSet<String> = h.iter().filter_map(|e| e["path"].as_str().map(String::from)).collect();
-        h.extend(found.into_iter().filter(|e| e["path"].as_str().is_none_or(|p| !known.contains(p))));
-        h.truncate(HISTORY_KEPT);
+        let now_ms = crate::clock::unix_ms() as i64;
+        for e in scan_history(&dir, HISTORY) {
+            let (Some(rel), Ok(record)) = (e["path"].as_str(), serde_json::from_value::<trunk_recorder_plugin::CallRecord>(e["record"].clone())) else { continue };
+            let json = e["record"].to_string();
+            let row = crate::db::call_row(rel, &record, &json, e["audio"].as_bool().unwrap_or(false), true, ctx.db.recorder(), now_ms);
+            ctx.db.send(Write::Call { row, live: false });
+        }
     });
 }
 
 /// Calls the interface's history list is given.
 pub const HISTORY: usize = 300;
-/// Calls kept in memory for it.
-const HISTORY_KEPT: usize = 500;
 
-/// How far back `olderCalls` looks.
-const OLDER_WINDOW_MS: i64 = 24 * 3600 * 1000;
+/// The `history` message: the newest calls in the store.
+pub fn history(ctx: &Ctx) -> ToClient {
+    let entries = ctx.db.with_reader(|c| crate::db::read::newest(c, HISTORY)).unwrap_or_else(|e| {
+        log::warn!("history: {e}");
+        Vec::new()
+    });
+    ToClient::History { entries }
+}
 
 /// `olderCalls` (the Listen page's "Load older"): up to `limit` calls that
-/// started before `before_ms`, newest first, from the last 24 hours. Only the
-/// day folders of Trunk Recorder's layout are read (a system with its own
-/// filename format isn't searched), so this stays cheap without an index.
+/// started before `before_ms`, newest first, from the store.
 pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
-    let (dir, names) = {
-        let c = ctx.config.lock().unwrap();
-        // (And a site's, as a system of its own: its calls from before are under its name.)
-        let mut names: Vec<String> = c.systems.iter().flat_map(|s| std::iter::once(s.short_name.clone()).chain(trunk_app::migrate::old_names(s))).collect();
-        names.extend(c.conventional.iter().map(|v| v.short_name.clone()));
-        (PathBuf::from(&c.recording.capture_dir), names)
-    };
-    let now_ms = crate::clock::unix_ms() as i64;
-    let floor_ms = now_ms - OLDER_WINDOW_MS;
-    let before_ms = before_ms.min(now_ms + 60_000);
-    // Each system's day folders from `before` back to the window's start.
-    let mut folders = std::collections::BTreeSet::new();
-    let mut t = before_ms.div_euclid(1000);
-    while t * 1000 >= floor_ms - 86_400_000 {
-        for n in &names {
-            folders.insert(dir.join(trunk_app::filename::default_path(n, "", t, local_offset(t))));
-        }
-        t -= 86_400;
-    }
-    // A call's start from its name (<talkgroup>-<start>_<freq>), else when the file was written.
-    let start_of = |p: &Path, e: &fs::DirEntry| -> i64 {
-        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let from_name = stem.split_once('-').and_then(|(_, r)| r.split(['_', '.', '-']).next()).and_then(|s| s.parse::<i64>().ok());
-        from_name.unwrap_or_else(|| e.metadata().and_then(|m| m.modified()).map_or(0, |t| crate::clock::unix_s_of(t) as i64))
-    };
-    let mut found: Vec<(i64, PathBuf)> = Vec::new();
-    for f in &folders {
-        let Ok(rd) = fs::read_dir(f) else { continue };
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.extension().is_some_and(|x| x == "json") {
-                let s = start_of(&p, &e);
-                if s * 1000 <= before_ms && (s + 1) * 1000 > floor_ms {
-                    found.push((s, p));
-                }
-            }
+    match ctx.db.with_reader(|c| crate::db::read::older(c, before_ms, limit)) {
+        Ok(page) => ToClient::OlderCalls { before: before_ms, entries: page.entries, more: page.more },
+        Err(e) => {
+            log::warn!("olderCalls: {e}");
+            ToClient::OlderCalls { before: before_ms, entries: vec![], more: false }
         }
     }
-    found.sort_by(|a, b| b.0.cmp(&a.0));
-    // (Names give the second: the last second taken is taken whole, so the
-    // next page, before the oldest call's millisecond, misses none.)
-    let mut entries: Vec<(i64, Value)> = Vec::new();
-    let mut read = 0;
-    for (s, p) in &found {
-        if entries.len() >= limit && found[read - 1].0 != *s {
-            break;
-        }
-        read += 1;
-        let Some(record) = fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
-        let start = record["start_time_ms"].as_i64().or_else(|| record["start_time"].as_i64().map(|s| s * 1000)).unwrap_or(0);
-        if start >= before_ms || start < floor_ms {
-            continue;
-        }
-        let Ok(rel) = p.strip_prefix(&dir) else { continue };
-        let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
-        entries.push((start, json!({ "path": rel.with_extension("").to_string_lossy().replace('\\', "/"), "record": record, "audio": audio, "json": true })));
-    }
-    entries.sort_by(|a, b| b.0.cmp(&a.0));
-    let entries: Vec<Value> = entries.into_iter().map(|(_, e)| e).collect();
-    ToClient::OlderCalls { before: before_ms, entries, more: read < found.len() }
 }
 
 /// The newest `limit` calls already on disk (for the history list at startup).
@@ -1372,5 +1320,41 @@ mod live_tests {
         // One added: everything waits for the start.
         assert!(r.live_sources(&old, &[air("A1", 12), air("B2", 10), air("C3", 10), air("D4", 10)]).is_empty());
         assert!(pending(0).is_none());
+    }
+}
+
+/// A recorder context for tests: one system, `ohmarcs`, with one site named
+/// `ohmarcs-butler`, recording under `capture_dir`.
+#[cfg(test)]
+pub fn test_ctx(capture_dir: &Path) -> Arc<Ctx> {
+    let mut cfg = Config::default();
+    cfg.recording.capture_dir = capture_dir.display().to_string();
+    cfg.systems = vec![trunk_app::config::System::one_site(
+        "ohmarcs",
+        trunk_app::config::Site { name: "ohmarcs-butler".into(), ..Default::default() },
+    )];
+    crate::protocol_tests::ctx(cfg, capture_dir)
+}
+
+#[cfg(test)]
+mod finish_tests {
+    use super::*;
+
+    #[test]
+    fn a_finished_call_is_in_history_and_pages() {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-finish-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let ctx = test_ctx(&dir);
+        let names = trunk_app::migrate::old_names(&ctx.config.lock().unwrap().systems[0]);
+        assert_eq!(names, ["ohmarcs-butler"]);
+        let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
+        let rel = "ohmarcs/2026/10/26/9179-1700000000_851350000";
+        let entry = index_call(&ctx, rel, &r, &r.to_json(), true, true);
+        ctx.db.flush().unwrap();
+        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0], entry, "the entry on the wire is the entry in the store");
+        let ToClient::OlderCalls { entries, more, .. } = older_calls(&ctx, i64::MAX, 100) else { panic!() };
+        assert_eq!((entries.len(), more), (1, false));
     }
 }

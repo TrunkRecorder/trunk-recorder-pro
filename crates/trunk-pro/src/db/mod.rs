@@ -21,8 +21,6 @@ use crate::runtime::Hub;
 pub use read::{CallsFilter, Page, newest, older, one, query};
 #[allow(unused_imports)] // read by later tasks
 pub use row::{CallRow, call_row, entry};
-#[allow(unused_imports)] // read by later tasks
-pub use schema::SCHEMA_VERSION;
 
 /// Writes the channel holds before `send` blocks.
 const QUEUE_LEN: usize = 4096;
@@ -41,13 +39,17 @@ pub enum Write {
         json: bool,
     },
     /// Set a `meta` value.
+    #[allow(dead_code)] // sent by the backfill (a later task)
     Meta { key: String, value: String },
     /// Delete calls that started before this time.
+    #[allow(dead_code)] // sent by retention (a later task)
     Retention { before_ms: i64 },
     /// Checkpoint the WAL into the database file.
+    #[allow(dead_code)] // sent at shutdown (a later task)
     Checkpoint,
     /// Answered with the outcome of the commit that took every write sent
     /// before it.
+    #[allow(dead_code)] // sent by `flush`, which tests and later tasks call
     Flush(std::sync::mpsc::Sender<Result<(), String>>),
 }
 
@@ -61,6 +63,7 @@ struct Inner {
     recorder: Option<String>,
     tx: SyncSender<Write>,
     queued: Arc<AtomicUsize>,
+    #[allow(dead_code)] // read by `commits`, for tests
     commits: Arc<AtomicU64>,
     readers: Mutex<Vec<Connection>>,
 }
@@ -75,6 +78,7 @@ impl Db {
             .filter(|d| !d.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        log::debug!("db: schema version {}", schema::SCHEMA_VERSION);
         let conn = match open_sound(path) {
             Ok(c) => c,
             Err(OpenError::Corrupt(e)) if path.exists() => {
@@ -110,6 +114,7 @@ impl Db {
     }
 
     /// The database file.
+    #[allow(dead_code)] // used by later tasks
     pub fn path(&self) -> &Path {
         &self.0.path
     }
@@ -129,6 +134,7 @@ impl Db {
         }
     }
 
+    #[allow(dead_code)] // used by later tasks
     /// Writes queued and not yet taken up by the writer.
     pub fn queued(&self) -> usize {
         self.0.queued.load(Ordering::Relaxed)
@@ -158,6 +164,7 @@ impl Db {
         out
     }
 
+    #[allow(dead_code)] // used by the backfill (a later task); tests use it now
     /// Return once every write sent before this call has been through a
     /// commit; `Err` if that commit failed or the writer is gone.
     pub fn flush(&self) -> Result<(), String> {
@@ -167,6 +174,7 @@ impl Db {
             .map_err(|_| "the writer has stopped".to_string())?
     }
 
+    #[allow(dead_code)] // tests only
     /// Transactions the writer has committed since open.
     pub fn commits(&self) -> u64 {
         self.0.commits.load(Ordering::Relaxed)
@@ -296,7 +304,7 @@ mod tests {
         let v: u32 = db
             .with_reader(|c| c.query_row("select version from schema_version", [], |r| r.get(0)))
             .unwrap();
-        assert_eq!(v, SCHEMA_VERSION);
+        assert_eq!(v, schema::SCHEMA_VERSION);
         let mode: String = db
             .with_reader(|c| c.query_row("pragma journal_mode", [], |r| r.get(0)))
             .unwrap();
