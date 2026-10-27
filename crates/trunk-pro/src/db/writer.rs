@@ -21,6 +21,12 @@ use crate::runtime::{Hub, publish};
 /// interval. This way a backfill commits about a thousand rows per
 /// transaction as fast as the disk allows, while live traffic still batches
 /// per interval.
+///
+/// It also caps the writes one transaction takes, held and drained together:
+/// it bounds how long a transaction runs, and how far the backfill can get
+/// ahead, since every write the writer takes off the channel frees the
+/// backfill to send another. Without the cap a producer faster than the
+/// writer keeps the channel non-empty and one transaction swallows it all.
 const MAX_BATCH: usize = super::backfill::QUEUE_HIGH / 2;
 const _: () = assert!(MAX_BATCH < super::backfill::QUEUE_HIGH);
 
@@ -107,6 +113,7 @@ impl Writer {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
             {
                 Ok(tx) => {
+                    let mut taken = held.len();
                     for w in held {
                         apply(
                             &tx,
@@ -119,7 +126,11 @@ impl Writer {
                             &self.queued,
                         );
                     }
-                    while let Ok(next) = rx.try_recv() {
+                    while taken < MAX_BATCH {
+                        let Ok(next) = rx.try_recv() else {
+                            break;
+                        };
+                        taken += 1;
                         apply(
                             &tx,
                             next,
@@ -433,6 +444,33 @@ mod tests {
             t.elapsed() < std::time::Duration::from_millis(1500),
             "the first write after a quiet spell commits at once"
         );
+    }
+
+    #[test]
+    fn one_transaction_takes_at_most_a_batch() {
+        let (db, _) = Db::for_test_with_batch("drain-cap", std::time::Duration::from_secs(60));
+        // A producer faster than the writer must not make one transaction
+        // swallow everything, whatever the disk speed.
+        for i in 0..2500 {
+            db.send(Write::Meta {
+                key: format!("k{i}"),
+                value: "v".into(),
+            });
+        }
+        db.flush().unwrap();
+        assert!(
+            db.commits() >= 3,
+            "{} commits for 2,500 writes",
+            db.commits()
+        );
+        let n: u32 = db
+            .with_reader(|c| {
+                c.query_row("select count(*) from meta where key like 'k%'", [], |r| {
+                    r.get(0)
+                })
+            })
+            .unwrap();
+        assert_eq!(n, 2500);
     }
 
     #[test]
