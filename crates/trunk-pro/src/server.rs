@@ -804,6 +804,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || runtime::older_calls(&ctx2, before, limit.clamp(1, 500))).await.ok()
         }
+        Command::CallsQuery(q) => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || runtime::calls_query(&ctx2, &q)).await.ok()
+        }
         Command::SetConfig { config, version } => match Config::from_value(config) {
             Ok(mut c) => {
                 // While linked, a conventional system's channels are its file's

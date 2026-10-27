@@ -871,7 +871,7 @@ export interface CallRecord {
    * The radios that talked: `time` Unix s, `pos` s into the audio. `tag`: the unit's name (the unit names
    * file or the alias heard, by the system's mode); `tag_ota`: the alias heard. `lat`, `lon`: where the radio said it was (GPS, decimal degrees), when it did.
    */
-  srcList: { src: number; time: number; pos: number; emergency: number; signal_system: string; tag: string; tag_ota: string; lat?: number; lon?: number }[];
+  srcList: { src: number; time: number; pos: number; emergency: number; encrypted?: number; duplex?: number; mode?: number; priority?: number; signal_system: string; tag: string; tag_ota: string; lat?: number; lon?: number }[];
   /**
    * In-band tones sent in its voice, in order (only when there were any): `type` "dtmf" | "knox" | "call_progress" | "tone";
    * `value` the digit, "350+440", or a single tone's Hz; `pos` / `len` s into the audio; `src` the radio talking (0: not known);
@@ -1722,8 +1722,9 @@ export interface RadioResultBody {
  * - `interfaces`: other interfaces, served on ports of their own
  * - `host`: the computer's and plugins' figures (`host`)
  * - `keys`: key containers opened with a password
+ * - `calls`: the call store (`callsQuery`)
  */
-export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys";
+export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys" | "calls";
 
 /** What an edit of one talkgroup sets; what's left out stays as it is. */
 export interface TalkgroupEdit {
@@ -1821,6 +1822,8 @@ export type FromRecorder =
   | ({ type: "radioResult" } & RadioResultBody)
   /** Answers olderCalls; `more`: there are older ones still. */
   | { type: "olderCalls"; before: number; entries: CallEntry[]; more: boolean }
+  /** Answers callsQuery; `before` is where the next page starts (the oldest start in `entries`, or the `before` asked when none). */
+  | { type: "callsResult"; id: number; entries: CallEntry[]; more: boolean; before: number }
   | { type: "quit" };
 
 export type ToRecorder =
@@ -1881,6 +1884,8 @@ export type ToRecorder =
   | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d"; from?: number; to?: number; points?: number }
   /** Calls that started before `before` (Unix ms), newest first, from the last 24 hours (the Listen page's "Load older"). */
   | { type: "olderCalls"; before: number; limit: number }
+  /** Recorded calls from the call store, newest first: by system (its short name), talkgroup, radio, and start time (Unix ms, `from` inclusive to `to` exclusive); `before` pages like olderCalls; `limit` 1..500 (100). */
+  | { type: "callsQuery"; id: number; system?: string; talkgroup?: number; unit?: number; from?: number; to?: number; before?: number; limit?: number }
   /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited). */
   | { type: "pluginAction"; id: number; plugin: string; action: string; value: unknown }
   /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */

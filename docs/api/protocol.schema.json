@@ -339,6 +339,18 @@
               "emergency": {
                 "type": "number"
               },
+              "encrypted": {
+                "type": "number"
+              },
+              "duplex": {
+                "type": "number"
+              },
+              "mode": {
+                "type": "number"
+              },
+              "priority": {
+                "type": "number"
+              },
               "signal_system": {
                 "type": "string"
               },
@@ -740,9 +752,10 @@
         "plugins",
         "interfaces",
         "host",
-        "keys"
+        "keys",
+        "calls"
       ],
-      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password"
+      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`)"
     },
     "Channel": {
       "type": "object",
@@ -3643,6 +3656,38 @@
             "before",
             "entries",
             "more"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "callsResult"
+            },
+            "id": {
+              "type": "number"
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CallEntry"
+              }
+            },
+            "more": {
+              "type": "boolean"
+            },
+            "before": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "entries",
+            "more",
+            "before"
           ],
           "additionalProperties": false
         },
@@ -8559,6 +8604,44 @@
             "type",
             "before",
             "limit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "callsQuery"
+            },
+            "id": {
+              "type": "number"
+            },
+            "system": {
+              "type": "string"
+            },
+            "talkgroup": {
+              "type": "number"
+            },
+            "unit": {
+              "type": "number"
+            },
+            "from": {
+              "type": "number"
+            },
+            "to": {
+              "type": "number"
+            },
+            "before": {
+              "type": "number"
+            },
+            "limit": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id"
           ],
           "additionalProperties": false
         },

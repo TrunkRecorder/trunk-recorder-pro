@@ -1215,6 +1215,36 @@ pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
     }
 }
 
+/// `callsQuery`: calls from the store by system (and the names its sites had
+/// as systems of their own, which older calls are recorded under), talkgroup,
+/// radio and time, newest first.
+pub fn calls_query(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> ToClient {
+    let systems = match &q.system {
+        Some(name) => {
+            let cfg = ctx.config.lock().unwrap();
+            let old = cfg.systems.iter().find(|s| s.short_name == *name).map(trunk_app::migrate::old_names).unwrap_or_default();
+            std::iter::once(name.clone()).chain(old).collect()
+        }
+        None => Vec::new(),
+    };
+    let filter = crate::db::read::CallsFilter {
+        systems,
+        talkgroup: q.talkgroup,
+        unit: q.unit,
+        from_ms: q.from,
+        to_ms: q.to,
+        before_ms: q.before,
+        limit: q.limit.unwrap_or(100).clamp(1, 500),
+    };
+    match ctx.db.with_reader(|c| crate::db::read::query(c, &filter)) {
+        Ok(page) => ToClient::CallsResult { id: q.id.clone(), entries: page.entries, more: page.more, before: page.before },
+        Err(e) => {
+            log::warn!("callsQuery: {e}");
+            ToClient::CallsResult { id: q.id.clone(), entries: vec![], more: false, before: q.before.unwrap_or(i64::MAX) }
+        }
+    }
+}
+
 #[cfg(test)]
 mod live_tests {
     use super::*;
@@ -1320,5 +1350,35 @@ mod finish_tests {
         let text = crate::server::text_for(&out, true).expect("text");
         let m: Value = serde_json::from_str(&text).unwrap();
         assert_eq!((m["type"].as_str(), m["path"].as_str(), m["audio"].as_bool()), (Some("callFiles"), Some(rel), Some(false)));
+    }
+}
+
+#[cfg(test)]
+mod calls_query_tests {
+    use super::*;
+    use trunk_app::protocol::CallsQuery;
+
+    #[test]
+    fn calls_query_honours_old_system_names() {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-cq-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let ctx = test_ctx(&dir);
+        let mut r = crate::db::row::tests::record(1, 1000);
+        r.short_name = "ohmarcs-butler".into();
+        index_call(&ctx, "ohmarcs-butler/x", &r, &r.to_json(), true, true);
+        ctx.db.flush().unwrap();
+        let q = CallsQuery { system: Some("ohmarcs".into()), ..Default::default() };
+        let ToClient::CallsResult { entries, .. } = calls_query(&ctx, &q) else { panic!() };
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn calls_query_clamps_the_limit() {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-cq2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let ctx = test_ctx(&dir);
+        let q = CallsQuery { limit: Some(9999), ..Default::default() };
+        let ToClient::CallsResult { entries, more, .. } = calls_query(&ctx, &q) else { panic!() };
+        assert!(entries.len() <= 500 && !more);
     }
 }

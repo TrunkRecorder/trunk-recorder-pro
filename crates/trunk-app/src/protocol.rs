@@ -117,6 +117,8 @@ pub enum ToClient {
     StatsResult(Body),
     RadioResult(Body),
     OlderCalls { before: i64, entries: Vec<Value>, more: bool },
+    /// Answers `callsQuery`: `before` is where the next page starts.
+    CallsResult { id: Value, entries: Vec<Value>, more: bool, before: i64 },
     Quit,
 }
 
@@ -141,6 +143,8 @@ pub enum Capability {
     Host,
     /// Key containers opened with a password.
     Keys,
+    /// The call store: `callsQuery`.
+    Calls,
 }
 
 impl Capability {
@@ -296,6 +300,7 @@ pub enum Command {
     StatsQuery(StatsQuery),
     OlderCalls { #[serde(default = "i64_max")] before: i64, #[serde(default = "hundred")] limit: usize },
     RadioQuery(Body),
+    CallsQuery(CallsQuery),
     /// Press plugin `plugin`'s button `action` on `value` (the settings
     /// object it's on, as edited): answered with `pluginActionResult` `id`
     /// once the plugin says how it went.
@@ -329,8 +334,25 @@ impl Command {
 
     /// What a listen-only connection may send: looking, never changing.
     pub fn listen_may_send(&self) -> bool {
-        matches!(self, Command::Subscribe { .. } | Command::StatsQuery(_) | Command::RadioQuery(_) | Command::OlderCalls { .. } | Command::Listen { .. })
+        matches!(self, Command::Subscribe { .. } | Command::StatsQuery(_) | Command::RadioQuery(_) | Command::OlderCalls { .. } | Command::CallsQuery(_) | Command::Listen { .. })
     }
+}
+
+/// `callsQuery`: recorded calls from the call store, newest first: by system
+/// (its short name), talkgroup, radio, and start time (Unix ms, `from`
+/// inclusive to `to` exclusive); `before` pages like `olderCalls`; `limit`
+/// 1..500 (100).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct CallsQuery {
+    pub id: Value,
+    pub system: Option<String>,
+    pub talkgroup: Option<u32>,
+    pub unit: Option<i64>,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+    pub before: Option<i64>,
+    pub limit: Option<usize>,
 }
 
 /// `statsQuery`: the history of `series` (names, or prefixes ending in `*`)
