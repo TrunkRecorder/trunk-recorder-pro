@@ -7,10 +7,11 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
+use trunk_app::protocol::ToClient;
 
-use super::Write;
-use crate::runtime::Hub;
+use super::{CallRow, Write};
+use crate::runtime::{Hub, publish};
 
 /// At most one commit per this long under load.
 const COMMIT_EVERY: Duration = Duration::from_secs(1);
@@ -29,7 +30,7 @@ pub fn spawn(
         .spawn(move || {
             let mut w = Writer {
                 conn,
-                _hub: hub,
+                hub,
                 commits,
                 queued,
             };
@@ -43,7 +44,7 @@ pub fn spawn(
 struct Writer {
     conn: Connection,
     /// For announcing changes to browsers once rows are written.
-    _hub: Hub,
+    hub: Hub,
     commits: Arc<AtomicU64>,
     queued: Arc<AtomicUsize>,
 }
@@ -54,16 +55,34 @@ impl Writer {
             let started = Instant::now();
             let mut flushes = Vec::new();
             let mut checkpoint = false;
+            let mut announce = Vec::new();
             let mut outcome = Ok(());
             match self.conn.transaction() {
                 Ok(tx) => {
-                    apply(&tx, first, &mut flushes, &mut checkpoint, &self.queued);
+                    apply(
+                        &tx,
+                        first,
+                        &mut flushes,
+                        &mut checkpoint,
+                        &mut announce,
+                        &self.queued,
+                    );
                     while let Ok(next) = rx.try_recv() {
-                        apply(&tx, next, &mut flushes, &mut checkpoint, &self.queued);
+                        apply(
+                            &tx,
+                            next,
+                            &mut flushes,
+                            &mut checkpoint,
+                            &mut announce,
+                            &self.queued,
+                        );
                     }
                     match tx.commit() {
                         Ok(()) => {
                             self.commits.fetch_add(1, Ordering::Relaxed);
+                            for m in announce.drain(..) {
+                                publish(&self.hub, m);
+                            }
                         }
                         Err(e) => {
                             log::warn!("db: commit failed: {e}");
@@ -115,12 +134,21 @@ fn apply(
     w: Write,
     flushes: &mut Vec<Sender<Result<(), String>>>,
     checkpoint: &mut bool,
+    announce: &mut Vec<ToClient>,
     queued: &AtomicUsize,
 ) {
     queued.fetch_sub(1, Ordering::Relaxed);
     match w {
-        Write::Call { live, .. } => log::debug!("db: call write (live: {live}) not applied yet"),
-        Write::CallFiles { path, .. } => log::debug!("db: files write for {path} not applied yet"),
+        Write::Call { row, live } => {
+            if let Err(e) = write_call(conn, &row, live) {
+                log::warn!("db: call write {} failed: {e}", row.path);
+            }
+        }
+        Write::CallFiles { path, audio, json } => match set_files(conn, &path, audio, json) {
+            Ok(true) => announce.push(ToClient::CallFiles { path, audio, json }),
+            Ok(false) => {}
+            Err(e) => log::warn!("db: files write {path} failed: {e}"),
+        },
         Write::Retention { before_ms } => {
             log::debug!("db: retention before {before_ms} not applied yet")
         }
@@ -136,5 +164,215 @@ fn apply(
         }
         Write::Checkpoint => *checkpoint = true,
         Write::Flush(done) => flushes.push(done),
+    }
+}
+
+/// Write a call's row and its children. A live call replaces what is there;
+/// a backfilled one only fills a gap, and brings its children only if it
+/// landed.
+fn write_call(conn: &Connection, row: &CallRow, live: bool) -> rusqlite::Result<()> {
+    let conflict = if live {
+        "on conflict(path) do update set
+            short_name = excluded.short_name, nac = excluded.nac, site = excluded.site,
+            talkgroup = excluded.talkgroup, start_ms = excluded.start_ms,
+            stop_ms = excluded.stop_ms, length_ms = excluded.length_ms,
+            freq_hz = excluded.freq_hz, emergency = excluded.emergency,
+            encrypted = excluded.encrypted, decrypted = excluded.decrypted,
+            duplex = excluded.duplex, priority = excluded.priority,
+            audio_type = excluded.audio_type, signal = excluded.signal,
+            noise = excluded.noise, snr = excluded.snr,
+            clean_voice_pct = excluded.clean_voice_pct, audio = excluded.audio,
+            json = excluded.json, recorder = excluded.recorder,
+            record = excluded.record, indexed_ms = excluded.indexed_ms"
+    } else {
+        "on conflict(path) do nothing"
+    };
+    let landed = conn.execute(
+        &format!(
+            "insert into calls (path, short_name, nac, site, talkgroup, start_ms, stop_ms,
+                length_ms, freq_hz, emergency, encrypted, decrypted, duplex, priority,
+                audio_type, signal, noise, snr, clean_voice_pct, audio, json, recorder,
+                record, indexed_ms)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+             {conflict}"
+        ),
+        params![
+            row.path,
+            row.short_name,
+            row.nac,
+            row.site,
+            row.talkgroup,
+            row.start_ms,
+            row.stop_ms,
+            row.length_ms,
+            row.freq_hz,
+            row.emergency,
+            row.encrypted,
+            row.decrypted,
+            row.duplex,
+            row.priority,
+            row.audio_type,
+            row.signal,
+            row.noise,
+            row.snr,
+            row.clean_voice_pct,
+            row.audio,
+            row.json,
+            row.recorder,
+            row.record,
+            row.indexed_ms,
+        ],
+    )? > 0;
+    if !landed {
+        return Ok(());
+    }
+    let id: i64 = conn.query_row("select id from calls where path = ?1", [&row.path], |r| {
+        r.get(0)
+    })?;
+    conn.execute("delete from call_transmissions where call_id = ?1", [id])?;
+    conn.execute("delete from call_frequencies where call_id = ?1", [id])?;
+    let mut tx = conn.prepare_cached(
+        "insert into call_transmissions
+            (call_id, seq, unit, start_ms, length_ms, emergency, signal_system, tag)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?;
+    for (seq, t) in row.transmissions.iter().enumerate() {
+        tx.execute(params![
+            id,
+            seq as i64,
+            t.unit,
+            t.start_ms,
+            t.length_ms,
+            t.emergency,
+            t.signal_system,
+            t.tag
+        ])?;
+    }
+    let mut freq = conn.prepare_cached(
+        "insert into call_frequencies
+            (call_id, seq, freq_hz, start_ms, length_ms, error_count, spike_count)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+    for (seq, f) in row.frequencies.iter().enumerate() {
+        freq.execute(params![
+            id,
+            seq as i64,
+            f.freq_hz,
+            f.start_ms,
+            f.length_ms,
+            f.error_count,
+            f.spike_count
+        ])?;
+    }
+    Ok(())
+}
+
+/// Set the call's file flags; true if they changed. A call not in the store
+/// is no change.
+fn set_files(conn: &Connection, path: &str, audio: bool, json: bool) -> rusqlite::Result<bool> {
+    let had: Option<(bool, bool)> = conn
+        .query_row(
+            "select audio, json from calls where path = ?1",
+            [path],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if had.is_none_or(|h| h == (audio, json)) {
+        return Ok(false);
+    }
+    conn.execute(
+        "update calls set audio = ?2, json = ?3 where path = ?1",
+        params![path, audio, json],
+    )?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::row::{call_row, tests::record};
+    use super::super::{Db, Write};
+    use crate::runtime::Out;
+
+    #[test]
+    fn a_live_row_wins_over_a_backfilled_one() {
+        let (db, _) = Db::for_test("upsert");
+        let r = record(9179, 1_700_000_000_000);
+        let json = r.to_json();
+        db.send(Write::Call {
+            row: call_row("ohmarcs/a", &r, &json, true, true, None, 1),
+            live: true,
+        });
+        db.send(Write::Call {
+            row: call_row("ohmarcs/a", &r, &json, false, false, None, 2),
+            live: false,
+        });
+        db.flush().unwrap();
+        let (n, audio): (u32, bool) = db
+            .with_reader(|c| {
+                c.query_row(
+                    "select count(*), max(audio) from calls where path='ohmarcs/a'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            })
+            .unwrap();
+        assert_eq!((n, audio), (1, true), "the backfilled copy is ignored");
+        db.send(Write::Call {
+            row: call_row("ohmarcs/a", &r, &json, false, true, None, 3),
+            live: true,
+        });
+        db.flush().unwrap();
+        let audio: bool = db
+            .with_reader(|c| {
+                c.query_row("select audio from calls where path='ohmarcs/a'", [], |r| {
+                    r.get(0)
+                })
+            })
+            .unwrap();
+        assert!(!audio, "a live copy replaces");
+        let tx: u32 = db
+            .with_reader(|c| {
+                c.query_row("select count(*) from call_transmissions", [], |r| r.get(0))
+            })
+            .unwrap();
+        assert_eq!(tx, 2, "children replaced, not duplicated");
+    }
+
+    #[test]
+    fn call_files_updates_the_flags_and_says_so_once() {
+        let (hub, mut rx) = tokio::sync::broadcast::channel(16);
+        let dir = std::env::temp_dir().join(format!("trunk-pro-db-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = Db::open(&dir.join("trunk-pro.sqlite"), hub).unwrap();
+        let r = record(1, 1000);
+        db.send(Write::Call {
+            row: call_row("ohmarcs/b", &r, &r.to_json(), true, true, None, 1),
+            live: true,
+        });
+        // Same batch: the first update changes nothing, the second does.
+        db.send(Write::CallFiles {
+            path: "ohmarcs/b".into(),
+            audio: true,
+            json: true,
+        });
+        db.send(Write::CallFiles {
+            path: "ohmarcs/b".into(),
+            audio: false,
+            json: true,
+        });
+        db.flush().unwrap();
+        let m = rx.try_recv().expect("one callFiles");
+        let Out::Text(s) = &*m else {
+            panic!("callFiles goes to every connection")
+        };
+        assert!(
+            s.contains("\"callFiles\"") && s.contains("\"audio\":false"),
+            "{s}"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no message for the unchanged update"
+        );
     }
 }

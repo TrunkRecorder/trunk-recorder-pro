@@ -3,6 +3,7 @@
 //! serves queries without ever waiting on it. Nothing here is fatal once the
 //! file is open: errors are logged and the recorder carries on.
 
+pub mod row;
 pub mod schema;
 pub mod writer;
 
@@ -16,6 +17,8 @@ use rusqlite::{Connection, OpenFlags};
 use crate::runtime::Hub;
 
 #[allow(unused_imports)] // read by later tasks
+pub use row::{CallRow, call_row, entry};
+#[allow(unused_imports)] // read by later tasks
 pub use schema::SCHEMA_VERSION;
 
 /// Writes the channel holds before `send` blocks.
@@ -23,10 +26,8 @@ const QUEUE_LEN: usize = 4096;
 /// Read-only connections opened up front.
 const READERS: usize = 4;
 
-/// One recorded call, as the store keeps it. Task 2 gives it its fields.
-pub struct CallRow {}
-
 /// A change for the writer thread to make.
+#[allow(clippy::large_enum_variant)] // one row per call; boxing it would only add a hop
 pub enum Write {
     /// Insert or update a call's row.
     Call { row: CallRow, live: bool },
