@@ -31,6 +31,11 @@ pub struct Stats {
     pub indexed: usize,
     /// Records left out: already indexed, unreadable or past retention.
     pub skipped: usize,
+    /// Folders that could not be read.
+    pub unreadable: usize,
+    /// The capture folder itself could not be read, so nothing was recorded
+    /// as done and the next start walks it again.
+    pub aborted: bool,
 }
 
 /// Days of calls the store keeps (`store.retention_days`; 0 keeps all).
@@ -58,8 +63,13 @@ pub fn recent_folders(cfg: &Config, now_s: i64) -> Vec<PathBuf> {
     folders.into_iter().collect()
 }
 
-/// Index the capture folder in the background.
+/// Index the capture folder in the background. A walk already going is left
+/// to finish: starting another would only read every file twice.
 pub fn start(ctx: Arc<Ctx>) {
+    if !ctx.db.try_begin_backfill() {
+        log::debug!("Call store: a backfill is already running");
+        return;
+    }
     let (dir, recent, days) = {
         let c = ctx.config.lock().unwrap();
         let now_s = (crate::clock::unix_ms() / 1000) as i64;
@@ -69,14 +79,26 @@ pub fn start(ctx: Arc<Ctx>) {
             retention_days(&c),
         )
     };
+    let db = ctx.db.clone();
     let spawned = std::thread::Builder::new()
         .name("db-backfill".into())
         .spawn(move || {
+            let _end = EndBackfill(ctx.db.clone());
             let now_ms = crate::clock::unix_ms() as i64;
             run(&ctx.db, &dir, &recent, days, now_ms);
         });
     if let Err(e) = spawned {
+        db.end_backfill();
         log::warn!("Call store: could not start the backfill: {e}");
+    }
+}
+
+/// Clears the single-flight flag when the backfill thread ends, however it ends.
+struct EndBackfill(Db);
+
+impl Drop for EndBackfill {
+    fn drop(&mut self) {
+        self.0.end_backfill();
     }
 }
 
@@ -93,13 +115,19 @@ fn meta(db: &Db, key: &str) -> Option<String> {
     })
 }
 
-/// Every `.json` file under `roots`, sorted by path.
-fn json_files(roots: &[&Path]) -> Vec<PathBuf> {
+/// Every `.json` file under `roots`, sorted by path, and the folders that
+/// could not be read (a folder that does not exist is not one).
+fn json_files(roots: &[&Path]) -> (Vec<PathBuf>, Vec<(PathBuf, std::io::Error)>) {
     let mut found = Vec::new();
+    let mut failed = Vec::new();
     let mut stack: Vec<PathBuf> = roots.iter().map(|p| p.to_path_buf()).collect();
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else {
-            continue;
+        let rd = match std::fs::read_dir(&d) {
+            Ok(rd) => rd,
+            Err(e) => {
+                failed.push((d, e));
+                continue;
+            }
         };
         for e in rd.flatten() {
             let p = e.path();
@@ -112,7 +140,7 @@ fn json_files(roots: &[&Path]) -> Vec<PathBuf> {
     }
     found.sort();
     found.dedup();
-    found
+    (found, failed)
 }
 
 /// Bring the store up to date with `capture_dir`: all of it when the store
@@ -129,14 +157,27 @@ pub fn run(
     let folder = capture_dir.display().to_string();
     let full = meta(db, "backfill_done_at").is_none()
         || meta(db, "capture_dir").as_deref() != Some(folder.as_str());
-    let files = if full {
+    let (files, failed) = if full {
         json_files(&[capture_dir])
     } else {
         let roots: Vec<&Path> = recent_folders.iter().map(PathBuf::as_path).collect();
         json_files(&roots)
     };
-    let floor_ms = (retention_days > 0).then(|| now_ms - i64::from(retention_days) * 86_400_000);
     let mut stats = Stats::default();
+    for (d, e) in &failed {
+        // A recent day's folder that is not there yet is ordinary.
+        if !full && e.kind() == std::io::ErrorKind::NotFound {
+            continue;
+        }
+        stats.unreadable += 1;
+        log::warn!("Call store: could not read {}: {e}", d.display());
+    }
+    if full && failed.iter().any(|(d, _)| d == capture_dir) {
+        log::warn!("Call store: {folder} cannot be read; it will be indexed on a later start");
+        stats.aborted = true;
+        return stats;
+    }
+    let floor_ms = (retention_days > 0).then(|| now_ms - i64::from(retention_days) * 86_400_000);
     let walk = db.with_reader(|c| {
         let mut known = c.prepare("select 1 from calls where path = ?")?;
         for p in &files {
@@ -373,5 +414,52 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn a_capture_folder_that_cannot_be_read_is_not_marked_done() {
+        let dir =
+            std::env::temp_dir().join(format!("trunk-pro-backfill-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (db, _) = Db::for_test("backfill-missing");
+        let s = run(&db, &dir, &[], 0, 10_000);
+        db.flush().unwrap();
+        assert!(s.aborted);
+        assert_eq!(meta(&db, "backfill_done_at"), None);
+        assert_eq!(meta(&db, "capture_dir"), None);
+        // Once the folder is there, the next run walks it.
+        std::fs::create_dir_all(dir.join("s")).unwrap();
+        std::fs::write(dir.join("s/1.json"), record(1, 1000).to_json()).unwrap();
+        let s = run(&db, &dir, &[], 0, 10_000);
+        assert_eq!((s.aborted, s.indexed), (false, 1));
+        assert!(meta(&db, "backfill_done_at").is_some());
+    }
+
+    #[test]
+    fn only_one_backfill_runs_at_a_time() {
+        let (db, _) = Db::for_test("backfill-single");
+        assert!(db.try_begin_backfill());
+        assert!(!db.try_begin_backfill(), "a second walk while one is going");
+        // `start` leaves without a thread while the flag is held.
+        let dir =
+            std::env::temp_dir().join(format!("trunk-pro-backfill-single-{}", std::process::id()));
+        let ctx = crate::runtime::test_ctx(&dir);
+        assert!(ctx.db.try_begin_backfill());
+        start(ctx.clone());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !dir.exists() || meta(&ctx.db, "backfill_done_at").is_none(),
+            "no walk ran"
+        );
+        ctx.db.end_backfill();
+        start(ctx.clone());
+        for _ in 0..200 {
+            if ctx.db.try_begin_backfill() {
+                break; // the walk finished and gave the flag back
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        db.end_backfill();
+        assert!(db.try_begin_backfill());
     }
 }

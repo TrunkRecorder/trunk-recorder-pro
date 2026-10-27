@@ -10,7 +10,7 @@ pub mod schema;
 pub mod writer;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 
@@ -61,6 +61,7 @@ struct Inner {
     recorder: Option<String>,
     tx: SyncSender<Write>,
     queued: Arc<AtomicUsize>,
+    backfill_running: AtomicBool,
     #[cfg(test)]
     commits: Arc<AtomicU64>,
     readers: Mutex<Vec<Connection>>,
@@ -106,6 +107,7 @@ impl Db {
             recorder,
             tx,
             queued,
+            backfill_running: AtomicBool::new(false),
             #[cfg(test)]
             commits,
             readers: Mutex::new(readers),
@@ -136,6 +138,19 @@ impl Db {
     /// Writes queued and not yet taken up by the writer.
     pub fn queued(&self) -> usize {
         self.0.queued.load(Ordering::Relaxed)
+    }
+
+    /// Claim the right to run a backfill: false when one is already running.
+    pub fn try_begin_backfill(&self) -> bool {
+        self.0
+            .backfill_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Give the right to run a backfill back.
+    pub fn end_backfill(&self) {
+        self.0.backfill_running.store(false, Ordering::Release);
     }
 
     /// Run `f` on a read-only connection.
