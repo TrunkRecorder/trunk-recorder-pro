@@ -1,7 +1,8 @@
 # Plan: a SQLite store
 
-Status (2026-10-27): agreed direction, not started. It builds on issue #100's design (auggiesoft)
-and on the measurements in [storage.md](storage.md). PR #101 laid the groundwork:
+Status (2026-10-27): **phase 1 is built** (the call store and its queries: #102 and #103 by
+auggiesoft, with the maintainer's changes, as one PR). It builds on issue #100's design and on the
+measurements in [storage.md](storage.md). PR #101 laid the groundwork:
 
 - a single background writer (`trunk-pro/src/saver.rs`);
 - one save schedule (`Session::due()`);
@@ -117,7 +118,26 @@ Each phase is its own PR, reviewed as contributor PRs are (see the project's rev
 auggiesoft has offered phases 1 and 2. trunk-reporter already has the schema, the backfill and the
 query layer, with tests.
 
-### Phase 1: the store and the call index (#100 step 1)
+### Phase 1: the store and the call index (#100 step 1) — built
+
+As built, against what's below:
+
+- **The live list stayed.** The plan let the startup walk go and answered `history` from the
+  store. Built that way, the call list was empty with the store off, and a call's kept files
+  reached the interface only at the next commit. So `Ctx::recent` (the last 500 calls) is still the
+  live list, and every query merges it with the store (`runtime::calls`). The walk runs only with
+  the store off.
+- **One query** behind `callsQuery`, `olderCalls` (kept as a thin wrapper), `GET /api/v1/calls`
+  and plugins' `calls.query`, with one page type (`CallsPage`).
+- **Gate met.** On the Pi CM5's eMMC, the real write path (`db::tests::write_budget`, a call a
+  second, 1.2 kB records) writes **0.20 GB a day at 300 s** and 0.59 at 60 s, the same on two
+  runs.
+- **Not built yet:**
+  - the "Back up the history" button and `trunk-pro store backup`;
+  - refusing a data folder on a network filesystem;
+  - showing the file's size in Setup.
+
+  These are in Operations below.
 
 - **The store module:**
   - open, migrate and the writer thread;
@@ -185,9 +205,14 @@ imported, so history can be kept longer than eight days. The live path doesn't c
 
 ## Access for plugins and interfaces
 
-- **Read:** the HTTP API under `/api/` first, since it works for plugins and interfaces on other
-  machines. trunk-reporter's OpenAPI spec is the starting point. The file path in `hello`, for
-  local plugins to open read-only, can follow, with the schema version as the contract.
+- **Read, interfaces and tools:** `callsQuery` on the WebSocket and `GET /api/v1/calls` over HTTP.
+- **Read, plugins:** `calls.query` over the plugin's own channel (SDK 0.9.0, `Host::calls`). There
+  are no ports or authentication to set up, it works wherever the plugin runs, and it's the same
+  query.
+- **Not the file.** Handing plugins `trunk-pro.sqlite`'s path makes every table and column public
+  API, and any migration then breaks them. A plugin holding a read open also keeps the WAL from
+  checkpointing. If heavy offline analysis ever needs SQL, offer read-only views (`v1_*`) with a
+  compatibility version that only breaking changes bump, deliberately.
 - **Write:** only TRP writes. Per-call data from plugins (transcription, say) arrives through an
   API into `annotations`, which comes later, when a plugin needs it.
 
@@ -206,9 +231,9 @@ imported, so history can be kept longer than eight days. The live path doesn't c
 These are issue #100's questions, with suggestions:
 
 1. **File:** `<data>/trunk-pro.sqlite`.
-2. **Retention:** call rows as long as their files, with an option to keep the row after the
-   files go (#25). Other facts kept for 90 days.
-3. **Read access:** the HTTP API first, the file path later.
+2. **Retention:** decided: `storage.retentionDays`, 120 days by default in the store; the files
+   stay on disk past that. Other facts (phase 2): 90 days.
+3. **Read access:** decided: the APIs above; no file path.
 4. **`annotations`:** later.
 5. **The call's JSON in `calls`:** yes.
 6. **Commit interval:** 300 s by default.

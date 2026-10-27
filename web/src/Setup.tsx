@@ -3159,6 +3159,20 @@ export function Setup() {
                       />
                     </Field>
                   )}
+                  <Field label="Call history, days" hint="How long calls stay findable by talkgroup and radio; 0 keeps them all. Their files aren't touched. From the next start">
+                    <NumberInput
+                      label="Call history, days"
+                      value={c.storage?.retentionDays ?? 120}
+                      onChange={(v) => updateConfig((x) => void (x.storage = { commitSeconds: 300, ...x.storage, retentionDays: Math.max(0, Math.round(v ?? 120)) }))}
+                    />
+                  </Field>
+                  <Field label="Write call history every, s" hint="Longer writes the SD card or eMMC less; calls show at once either way. From the next start">
+                    <NumberInput
+                      label="Write call history every, s"
+                      value={c.storage?.commitSeconds ?? 300}
+                      onChange={(v) => updateConfig((x) => void (x.storage = { retentionDays: 120, ...x.storage, commitSeconds: Math.max(10, Math.min(3600, Math.round(v ?? 300))) }))}
+                    />
+                  </Field>
                 </>
               )}
             </Group>

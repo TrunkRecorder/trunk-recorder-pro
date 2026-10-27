@@ -5,6 +5,29 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A call store: every recorded call indexed, and found by talkgroup, radio or time** (#100,
+  from #102 and #103 by auggiesoft). Each finished call is a row in `trunk-pro.sqlite`, beside the
+  config.
+  - A talkgroup's and a radio's Radio page list their calls, a page at a time, as far back as the
+    store keeps them, and each plays from there. "Load older" on the Listen page pages back the
+    same way, with no 24-hour limit.
+  - The latest calls are in every answer at once; the store commits them in batches behind.
+  - **`storage.retentionDays`**: how long calls stay in the store, 120 days by default (0: all).
+    The recordings and their JSON files aren't touched.
+  - **`storage.commitSeconds`**: how far apart the store's commits are under load, 300 by
+    default (10 to 3600). Each commit writes whole pages, twice, so fewer is gentler on SD cards
+    and eMMC: on the Pi's eMMC a busy system's store writes 0.2 GB a day at 300, 0.6 at 60
+    (`db::tests::write_budget`).
+  - The first start indexes the calls already in the capture folder, in the background; later
+    starts check the last two days for calls recorded while it was off.
+  - A store that can't be opened (a newer version's, a full disk, another recorder using it)
+    is left off: recording, the call list and every query go on from the recent calls.
+- **Calls by talkgroup, radio and time, for interfaces and plugins:** `callsQuery` on the
+  WebSocket (`client.js`: `rec.calls({ … })`), `GET /api/v1/calls`, `/api/v1/calls/<path>` and
+  `/api/v1/storage` over HTTP (`docs/api/calls.openapi.yaml`), and for plugins `calls.query`
+  (Plugin SDK 0.9.0: `Host::calls`, answered to `Plugin::calls`). One query behind them all.
+  `olderCalls` stays, as `callsQuery` with only `before`.
+
 ## [0.2.11] — 2026-10-27
 
 - **Saving never holds up recording or a click.** Large systems on slow disks (SD cards) waited on
@@ -42,29 +65,6 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Escape puts it back. Before, each pause in typing was a save: a system's short name typed as
   "fire4a" renamed it to f, fi, fir… on the way, moving its talkgroup file each time, and a
   plugin's settings restarted it on each pause. Switches and menus still act at once.
-- **A call store: the call list loads from the store rather than the capture folder** (#100).
-  Every finished call is now a row in a database beside the config, so the call list no longer
-  waits for the capture folder to be read.
-  - Paging back through older calls reaches back to the oldest call the store keeps.
-  - Interfaces can ask for calls by system, talkgroup, radio and time (`callsQuery`; `hello`
-    lists the `calls` capability).
-  - **`store.retentionDays`** sets how long calls are kept in the store: 120 days by default, 0
-    keeps everything. It only trims the list; recordings and their JSON are written exactly as
-    before and are never deleted by it.
-  - **`store.batchSeconds`** is how often the store commits: 60 by default, 300 is gentler on SD
-    cards and eMMC. The call list shows a finished call at once either way.
-  - The first start indexes the calls already in the capture folder in the background; the
-    recorder is usable meanwhile, and later starts only check the last two days.
-- **The call store over HTTP**, for plugins and interfaces on other machines:
-  `GET /api/v1/calls` (calls by system, talkgroup, radio and time, newest first, a page at a
-  time), `/api/v1/calls/<path>` (one call) and `/api/v1/store` (where the store is, how many
-  calls it holds, and its settings). They answer JSON on the built-in interface's port and each
-  interface's, to listen or control access alike, and 503 when the store is off. They are
-  described in `docs/api/calls.openapi.yaml`.
-- **Plugin SDK 0.9.0:** `Hello::store` / `Setup::store`, the call store's path when it is open
-  (`None` when not). A plugin may only read it: open it read-only (it is in WAL mode), check
-  `schema_version` first, and never write to it. A plugin on another machine uses `/api/v1/calls`.
-
 - **Phase 2 and DMR `.sdr` files play in MimoSDR.** A Phase 2 frame's symbols were stored as the
   dibit rather than its quadrant, so MimoSDR's player (and anyone else's) misread most of them; and
   frames our vocoder repeated or muted were stored as heard, so other players played them. They're

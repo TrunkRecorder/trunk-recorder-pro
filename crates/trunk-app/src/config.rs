@@ -1925,8 +1925,8 @@ pub struct StorageSettings {
     pub retention_days: u32,
     /// Seconds between the store's commits under load ([`StorageSettings::COMMIT_SECONDS`]
     /// bounds it). Each commit writes whole pages, twice, so longer is gentler
-    /// on flash: 300 writes less than today's files on a busy system, 60 about
-    /// the same (research/storage.md).
+    /// on flash: on the Pi's eMMC a busy system's store writes 0.2 GB a day at
+    /// 300, 0.6 at 60 (trunk-pro's `db::tests::write_budget`).
     pub commit_seconds: u32,
 }
 

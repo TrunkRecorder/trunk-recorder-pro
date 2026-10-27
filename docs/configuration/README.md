@@ -86,24 +86,29 @@ with `--config` files in different folders never share band plans, talker aliase
 | `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
 | `monitor` | | see page | object | The dashboard's internet checks. [server-and-log.md](server-and-log.md#monitor) |
-| `store` | | `{ "retentionDays": 120, "batchSeconds": 60 }` | object | The call store: how long call records stay in the index, and how often it commits. [See below](#the-call-store-store) |
+| `storage` | | `{ "retentionDays": 120, "commitSeconds": 300 }` | object | The call store: how long calls stay in it, and how far apart it commits. [See below](#the-call-store-storage) |
 | `plugins` | | `{}` | object | Which plugins run and their recorder-wide settings, by plugin id. [plugins.md](plugins.md) |
 | `keys` | | `{}` | object | P25 encryption key sources, by name: where each set of keys is read from. [Encryption keys](systems.md#encryption-keys-keys) |
 
-### The call store (`store`)
+### The call store (`storage`)
 
-Finished calls are indexed in `trunk-pro.sqlite`, beside the config, so the interface can list and
-search them. `retentionDays` (default 120) is how long a call's record stays in that index; older
-records are removed when the app starts and every hour after. `0` keeps every record. Records
-stamped while the clock was off (`clock_off`) are removed at the first retention pass after it is
-fixed. The setting
-is read when the app starts. It never deletes the audio and JSON files of the calls: they stay
-where they were recorded (deleting recordings is issue #25).
+Finished calls are indexed in `trunk-pro.sqlite`, beside the config, so the interface can list
+them by talkgroup, radio and time, as far back as it keeps them. The recordings and their `.json`
+files are written as before; the store is an index over them.
 
-`batchSeconds` (default 60, 1 to 3600) is how often the store commits. Each commit writes whole
-pages, so on SD cards and eMMC 300 is recommended. A crash loses at most one interval of index
-rows; the files are still there, and the next start finds them. A call that has finished shows in
-the call list at once whatever this is set to. Also read when the app starts.
+`retentionDays` (default 120) is how long a call stays in the store; older ones are removed a
+thousand at a time, when the app starts and every hour after. `0` keeps them all. It never deletes
+the calls' audio and JSON files: they stay where they were recorded (deleting recordings is issue
+#25).
+
+`commitSeconds` (default 300, 10 to 3600) is how far apart the store's commits are when calls are
+coming in. Each commit writes whole pages, twice (the log, then the database), so fewer commits
+write far less: on the Pi's eMMC, a busy system (a call a second) writes 0.2 GB a day at 300, 0.6
+GB at 60. A finished call is in the call list and every query at once whatever this
+is; a crash loses at most one interval of the index, and the next start finds those calls again
+from their `.json` files (not where none are kept, as with upload-only settings).
+
+Both are read when the app starts.
 
 ## A minimal config
 

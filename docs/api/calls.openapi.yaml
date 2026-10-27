@@ -5,12 +5,12 @@ info:
   title: Trunk Recorder Pro call store
   version: "1"
   description: |
-    The recorded calls over HTTP, for plugins and interfaces on other
-    machines. Served on every door that serves the recorder's API, to a
+    The recorded calls over HTTP, for interfaces and tools on other
+    machines: the same query as the WebSocket's callsQuery, the latest calls
+    included. Served on every door that serves the recorder's API, to a
     connection with listen or control access. When the call store could not
-    be opened, every route answers 503. Calls finished within the last
-    `batchSeconds` may not be in /calls yet. A parameter given empty is
-    treated as not given.
+    be opened, every route answers 503. A parameter given empty is treated
+    as not given. (Plugins ask over their own channel: calls.query.)
 servers:
   - url: http://localhost:8080
 paths:
@@ -61,7 +61,7 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
-  /api/v1/store:
+  /api/v1/storage:
     get:
       summary: The call store itself
       responses:
@@ -71,15 +71,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [path, schemaVersion, calls, oldestMs, newestMs, retentionDays, batchSeconds]
+                required: [path, schemaVersion, calls, oldestMs, newestMs, retentionDays, commitSeconds]
                 properties:
                   path: { type: string, description: The database file. }
                   schemaVersion: { type: integer }
                   calls: { type: integer, format: int64 }
                   oldestMs: { type: integer, format: int64, nullable: true, description: Start time of the oldest call; null when empty. }
                   newestMs: { type: integer, format: int64, nullable: true, description: Start time of the newest call; null when empty. }
-                  retentionDays: { type: integer, description: "`store.retentionDays`; 0 keeps every call." }
-                  batchSeconds: { type: integer, description: "`store.batchSeconds`: how long a finished call may wait before it is committed." }
+                  retentionDays: { type: integer, description: "`storage.retentionDays`; 0 keeps every call. The calls' files on disk aren't touched." }
+                  commitSeconds: { type: integer, description: "`storage.commitSeconds`: the least time between two commits under load." }
         "404": { description: The door is off. }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }

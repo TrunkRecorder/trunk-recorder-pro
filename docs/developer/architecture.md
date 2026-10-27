@@ -845,11 +845,10 @@ encodes nothing itself. A call decrypted with the recorder's keys goes only to p
 ### 8.3 Conversation
 
 1. Host → `hello` { api, host, config, systems [ {index, short_name, kind, name?, fcc? { "<Hz>": {call_sign, name?} }, fcc_call_sign?, fcc_name?, sites? [ {name} ], config, settings} ],
-   capture_dir, data_dir, store?, audio_formats }. `index` is the system's number this run (from 0,
+   capture_dir, data_dir, audio_formats }. `index` is the system's number this run (from 0,
    trunked then conventional); `kind` says which, `conventional` included; `settings` are the
-   plugin's own settings as a system's `override` changes them. `store` is the call store's
-   absolute path, present only when the store opened: a plugin opens it read-only (WAL), reads
-   `schema_version` first, and never writes; a plugin on another machine uses `/api/v1/*`.
+   plugin's own settings as a system's `override` changes them. A plugin asks for recorded
+   calls with `calls.query` (answered `calls`, by request number), not by opening the store.
 2. Plugin → `ready` (or `status: error` and exit 78 for a config error).
 3. Host → events for subscribed topics: `call.start`, `call.end`, `call.concluded` (with
    json / wav / m4a paths), `unit`, `audio`, `status` (every 5 s).
@@ -1717,7 +1716,7 @@ hub skips the oldest without notice.
 |---|---|
 | `/api/ws` | the WebSocket |
 | `/api/version`, `/api/schema`, `/api/protocol.ts`, `/api/docs`, `/api/*` | version (and interface API), schema, TypeScript types, API docs and examples |
-| `/api/v1/calls`, `/api/v1/calls/<path>`, `/api/v1/store` | the call store as JSON (`docs/api/calls.openapi.yaml`), with listen or control access; 503 when the store is off |
+| `/api/v1/calls`, `/api/v1/calls/<path>`, `/api/v1/storage` | the call store as JSON (`docs/api/calls.openapi.yaml`), with listen or control access; 503 when the store is off |
 | `/calls/<path>` | recordings (folder, then RAM spool), WAV ↔ M4A substitution, Range requests |
 | `/store/screenshots/<sha256>`, `/interfaces/<id>/screenshots/<n>` | store listings' screenshots (built-in port only) |
 | everything else | on `server.port` the embedded interface; on an interface's port, its folder (no hidden files) |

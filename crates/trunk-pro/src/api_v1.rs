@@ -1,7 +1,8 @@
 //! The call store over HTTP: `GET /api/v1/calls`, `/api/v1/calls/{path}` and
-//! `/api/v1/storage`, for plugins and interfaces on other machines. Answers come
-//! from the committed rows, as `callsQuery` does. Every door that serves the
-//! API serves these, with the access the WebSocket there has.
+//! `/api/v1/storage`, for interfaces and tools on other machines. They answer
+//! as `callsQuery` does ([`runtime::calls`]: the store, the latest calls
+//! included). Every door that serves the API serves these, with the access
+//! the WebSocket there has.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -128,6 +129,11 @@ async fn call(
         return r;
     }
     let path = path.replace('\\', "/");
+    // (A call finished lately may not be committed yet: the live list has it.)
+    let live = ctx.recent.lock().unwrap().iter().find(|e| e["path"] == path).cloned();
+    if let Some(e) = live {
+        return Json(e).into_response();
+    }
     match read(&ctx, move |c| read::one(c, &path)).await {
         Ok(Some(entry)) => Json(entry).into_response(),
         Ok(None) => error(StatusCode::NOT_FOUND, "no such call").into_response(),

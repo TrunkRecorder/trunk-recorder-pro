@@ -116,8 +116,17 @@ entry per site, with its `site_name`. A call heard on several sites of a system 
 | `call.result` | What became of a concluded call: `ok`, `skipped` or `failed`, a message, optionally a URL, and optionally `took_ms`, how long your work on it took (an upload's last try) |
 | `metrics` | Figures for the Health tab: queue depth, retries, in flight, bytes sent, latency, the services it talks to (up, degraded, down), and any of its own |
 | `action.result` | How one of its buttons went (an `action`, below): `ok`, and a message shown beside the button |
+| `calls.query` | Recorded calls, asked of the recorder: any of `system`, `talkgroup`, `unit`, `from` / `to` (Unix ms), `before` (the last page's), `limit` (1 to 500), and a `request` number. Answered with `calls` (below) |
 
 Lines on stdout that aren't protocol messages become log lines, and so does everything on stderr.
+
+**Recorded calls.** A plugin that needs calls from before (a talkgroup's last week, a radio's
+history) sends `calls.query`; the recorder answers `calls` with the same `request`: `entries`
+(each `{ path, record, audio, json }`, newest first), `more`, and `before` to send back for the
+next page. It's the recorder's call store, the latest calls included; when the store is off, the
+recent calls alone, and `error` says so. In the Rust SDK, `host.calls(CallsQuery { … })` sends it
+and the page arrives at `Plugin::calls`. Ask this way rather than opening `trunk-pro.sqlite`: its
+tables are the recorder's own and change between versions.
 
 **If you subscribe to `call.concluded`, send a `call.result` for every call.** The recorder keeps
 each call's files until every plugin taking recorded calls has reported on it, then deletes what

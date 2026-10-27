@@ -76,6 +76,13 @@ Complete plugins to learn from:
 `sdk` (on by default) is everything for writing a plugin. The recorder itself
 uses only the protocol types, with `default-features = false`.
 
+## Recorded calls
+
+`host.calls(CallsQuery { talkgroup: Some(101), ..Default::default() })` asks the recorder for
+recorded calls (by system, talkgroup, radio and time, a page at a time); the page arrives at
+`Plugin::calls` with the request number it returned. The recorder answers from its call store, the
+latest calls included. (Since SDK 0.9.0.)
+
 ## Versions
 
 The crate follows semver. The protocol's `API_VERSION` is separate: it changes

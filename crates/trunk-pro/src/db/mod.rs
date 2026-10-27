@@ -690,4 +690,58 @@ mod tests {
         assert!(move_aside(&path2).is_err());
         assert_eq!(std::fs::read(dir.join("y.sqlite-wal")).unwrap(), b"wal2");
     }
+
+    /// What the store sends to disk for an hour of a busy system (a call a
+    /// second, three talkers among 10,000 radios, 2,500 talkgroups),
+    /// committed every 60 s and every 300 s: phase 1's budget is under 1 GB
+    /// a day (research/sqlite-plan.md). Linux only (it reads /proc/self/io);
+    /// run it on the disk to measure: `TRP_BENCH_DIR=<dir> cargo test
+    /// --release -p trunk-pro write_budget -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn write_budget() {
+        let written = || -> u64 {
+            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
+            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+        };
+        let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % u64::from(n)) as u32
+        };
+        for every in [60, 300] {
+            let path = dir.join(format!("trp-write-budget-{every}.sqlite"));
+            for x in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{}{x}", path.display()));
+            }
+            // (Commits as the writer makes them under load: one per interval, here by flushing.)
+            let db = Db::open(&path, Duration::from_secs(3600), 0).unwrap();
+            let (at, before) = (std::time::Instant::now(), written());
+            let mut size = 0;
+            for second in 0..3600i64 {
+                let mut r = row::tests::record(10_000 + next(2500), 1_790_000_000_000 + second * 1000);
+                r.src_list.push(r.src_list[0].clone());
+                for (k, t) in r.src_list.iter_mut().enumerate() {
+                    t.src = 1_000_000 + i64::from(next(10_000));
+                    t.pos = k as f64 * 2.0;
+                }
+                let json = r.to_json();
+                size = json.len();
+                db.send(Write::Call { row: row::call_row(&format!("big/{second}"), &r, &json, true, true, None, 0), live: true });
+                if (second + 1) % every == 0 {
+                    db.flush().unwrap();
+                }
+            }
+            db.flush().unwrap();
+            let bytes = (written() - before) as f64;
+            println!("commit every {every:>3} s: {:6.1} MB an hour, {:.2} GB a day ({size} B records, {:.1?})", bytes / 1e6, bytes * 24.0 / 1e9, at.elapsed());
+            drop(db);
+            for x in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{}{x}", path.display()));
+            }
+        }
+    }
 }

@@ -472,7 +472,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `monitorEvent` | Something notable happened | `t`, `level` (`info`, `ok`, `warn`, `bad`), `kind` and its fields: control channels (`controlLost`, `controlRegained`; `system`, `site`), talkgroups and radios (`tgFirstSeen`, `tgActive`, `unitFirstSeen`, `unitActive`, `unitAffiliated`, `callVolume`), tones (`tonePattern`: `text`, `signals`), radios (`sourceDrops`, `sourceClipping`, `sourceRecovered`), plugins (`pluginHealth`), the computer (`linkDown`, `linkUp`, `diskLow`), the RAM spool (`spoolLow` with `critical`, `spoolFull` with `calls`, `spoolRecovered`, `spoolRemoved` with `spool` (its kind) and `remade`), the clock (`clockOff` with `why` and `bad`, `clockOk`, `clockStep` with `byMs`). The event feed's kinds are listed in protocol.ts (`MonitorEvent`) |
 | `subscribed` | Answers `subscribe` | `topics` |
 | `olderCalls` | Answers `olderCalls` | `before` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still) |
-| `callsResult` | Answers `callsQuery` | `id` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still), `before` (where the next page starts: send it as `before`; with no entries, the `before` asked, or 0 when none was) |
+| `callsResult` | Answers `callsQuery` | `id` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still), `before` (where the next page starts: send it as `before`; with no entries, the `before` asked, or 0 when none was), `error?` (the call store is off or failed: the page is the recent calls alone) |
 | `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies / tone patterns heard), `outOfBand` (freqs), `row` and its detail, `systems` (summary), `histogram` |
@@ -538,8 +538,8 @@ too.
 | `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d`) or `from` / `to` (Unix s), `points?` | The minute history of series, averaged down to about `points` steps (→ `statsResult`). |
 | `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths`, `tones` (→ `radioResult`). |
 | `pluginAction` | `id`, `plugin`, `action`, `value` | Press one of a plugin's buttons (its settings schema's `x-actions`) on `value`, the settings object it's on as edited (→ `pluginActionResult`, once the plugin answers). Control access; plugins run only while recording. |
-| `olderCalls` | `before?` (Unix ms), `limit?` (≤ 500, default 100) | Recorded calls that started before `before`, newest first, from the call store (the desktop app); the browser build: the last 24 hours (→ `olderCalls`). Listen-only connections may send it. |
-| `callsQuery` | `id`, `system?` (short name), `talkgroup?`, `unit?` (a radio), `from?` / `to?` (start time, Unix ms: `from` inclusive, `to` exclusive), `before?` (Unix ms), `limit?` (1 to 500, default 100) | Recorded calls from the call store, newest first (→ `callsResult`); `before` pages like `olderCalls`. Needs the `calls` capability. Listen-only connections may send it. |
+| `olderCalls` | `before?` (Unix ms), `limit?` (≤ 500, default 100) | `callsQuery` with only `before` and `limit`, answered as `olderCalls` (kept for interfaces that use it; new ones send `callsQuery`). Listen-only connections may send it. |
+| `callsQuery` | `id`, `system?` (short name), `talkgroup?`, `unit?` (a radio), `from?` / `to?` (start time, Unix ms: `from` inclusive, `to` exclusive), `before?` (Unix ms: the last page's `before`), `limit?` (1 to 500, default 100) | Recorded calls, newest first (→ `callsResult`). The desktop app answers from its call store with the latest calls included; the browser build from its own list. Listen-only connections may send it. |
 | `unlockKeys` | `source`, `password` | Open a key container that has no password file; the password is kept in memory only. `keys` follows. |
 | `lockKeys` | `source` | Forget a container's keys: its systems stop decrypting at once. |
 | `quit` | — | Stop recording and exit the recorder. |
@@ -585,7 +585,7 @@ after a reconnect, so send `listen` again after `hello`.
 
 ## Recorded calls
 
-The call store is a database of every recorded call, kept beside the config; `history` and `olderCalls` are answered from it. `callsQuery` searches it by system, talkgroup, radio and time, over as long as the recorder keeps calls (`store.retentionDays`). It is available when `hello.capabilities` has `calls`. `history` and `concluded` include calls the store has not yet committed; `olderCalls` and `callsQuery` answer from committed rows, so a call may take up to `store.batchSeconds` to appear in them.
+The call store is a database of every recorded call, kept beside the config (`trunk-pro.sqlite`). `callsQuery` searches it by system, talkgroup, radio and time, as far back as it keeps calls (`storage.retentionDays`); `history`, `olderCalls`, `GET /api/v1/calls` and plugins' `calls.query` are the same query. Every answer includes the latest calls, the store's not-yet-committed ones too. `hello.capabilities` has `calls` while the store is open; when it's off, the same messages answer from the recent calls alone (`callsResult.error` says so).
 
 Each recorded call's files are under the recordings folder at
 `CallEntry.path`:
@@ -621,16 +621,16 @@ another machine that has no WebSocket to keep. Every door that serves the API
 serves these (the built-in interface and each interface's port), to a
 connection with listen or control access, as `callsQuery` is; a door that is
 off answers 404. All answers are JSON. When the call store could not be
-opened, each answers 503 `{"error": "the call store is off"}`.
+opened, each answers 503 `{"error": "the call store is off"}`. (Plugins ask
+over their own channel instead: `calls.query`, in the plugin SDK.)
 
 | Route | Answers |
 |---|---|
-| `GET /api/v1/calls` | `{ entries, more, before }` as `callsResult` has them: `CallEntry`s, newest first. Parameters, all optional: `system` (short name; its sites' old names too), `talkgroup`, `unit` (a radio), `from` (start time, Unix ms, inclusive), `to` (exclusive), `before` (Unix ms: pass the last answer's `before` for the next page), `limit` (1 to 500, default 100). A parameter given empty counts as not given; a bad number answers 400 `{"error": "<name> must be a number"}`. |
+| `GET /api/v1/calls` | `{ entries, more, before }`, the page `callsResult` has: `CallEntry`s, newest first. Parameters, all optional: `system` (short name; its sites' old names too), `talkgroup`, `unit` (a radio), `from` (start time, Unix ms, inclusive), `to` (exclusive), `before` (Unix ms: pass the last answer's `before` for the next page), `limit` (1 to 500, default 100). A parameter given empty counts as not given; a bad number answers 400 `{"error": "<name> must be a number"}`. |
 | `GET /api/v1/calls/<path>` | One `CallEntry`: `{ path, record, audio, json }`, for the `path` its entry has (slashes stay slashes); 404 `{"error": "no such call"}` when there is none. |
-| `GET /api/v1/store` | `{ path, schemaVersion, calls, oldestMs, newestMs, retentionDays, batchSeconds }`: where the store is, how many calls it holds and the start times of the oldest and newest (`null` when empty), and the settings `store.retentionDays` and `store.batchSeconds`. |
+| `GET /api/v1/storage` | `{ path, schemaVersion, calls, oldestMs, newestMs, retentionDays, commitSeconds }`: where the store is, how many calls it holds and the start times of the oldest and newest committed (`null` when empty), and the settings `storage.retentionDays` and `storage.commitSeconds`. |
 
-As with `callsQuery`, a call that finished within the last `batchSeconds` may
-not be in `/api/v1/calls` yet. The routes are described in
+The routes are described in
 [calls.openapi.yaml](calls.openapi.yaml) (OpenAPI 3.0).
 
 ## Recipes

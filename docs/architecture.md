@@ -494,10 +494,9 @@ main ─► serve()
          │                    one task per WebSocket; blocking commands via spawn_blocking
          ├─ monitor thread: the computer and plugins every 2 s (net-probe thread beside it)
          ├─ stats-load / stats-store threads: history files in, rollups out
-         ├─ db-writer thread: the call store's one writer, batching rows once a second
-         │             (readers are a small pool, one connection each, for history, olderCalls, callsQuery)
+         ├─ db-writer thread: the call store's one writer: a commit per storage.commitSeconds under
+         │             load, and retention a chunk at a time between (readers: a pool of two, for runtime::calls)
          ├─ db-backfill thread: indexes the capture folder once, then reconciles the last two days
-         ├─ db-retention thread: hourly, drops calls older than store.retentionDays
          └─ Ctx::begin_recording on "start" (or --start / autoStart) ─► runtime::start(cfg)
                ├─ source-0 … source-N threads (runtime::spawn_source) ─► one SourceMsg queue each (256)
                ├─ dsp-0 … dsp-N threads: each source's samples into the engine (Feeder);
@@ -560,8 +559,11 @@ main ─► serve()
     [Measurements](#measurements)).
   - `trunk-pro.sqlite` (`trunk-pro/src/db/`) is the call store: one row per
     finished call, written in batches by the `db-writer` thread. The
-    recording and its `.json` are still files; the row is how the call list
-    and `callsQuery` find them without reading the folder.
+    recording and its `.json` are still files; the row is how `callsQuery`
+    finds them without reading the folder. The live list (`Ctx::recent`, the
+    last 500 calls) answers what's just happened and is merged into every
+    query (`runtime::calls`), so the store's batching never hides a call and
+    the recorder lists calls with the store off.
   - These companion files, installed plugins and plugin data all live
     beside the config file (`paths::data_dir()`), so recorders with their
     own `--config` don't share them.
