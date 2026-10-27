@@ -881,7 +881,11 @@ fn serve(a: &Args) {
     let talkgroups = runtime::load_talkgroups(&cfg);
     runtime::load_names(&shared, &cfg, &talkgroups);
     let db_path = paths::data_dir().join("trunk-pro.sqlite");
-    let db = db::Db::open_or_off(&db_path, hub.clone());
+    let batch_seconds = cfg.store.batch_seconds.clamp(1, 3600);
+    if batch_seconds != cfg.store.batch_seconds {
+        log::warn!("store.batchSeconds {} is outside 1 to 3600; using {batch_seconds}", cfg.store.batch_seconds);
+    }
+    let db = db::Db::open_or_off(&db_path, hub.clone(), std::time::Duration::from_secs(u64::from(batch_seconds)));
     db.start_retention(cfg.store.retention_days);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),

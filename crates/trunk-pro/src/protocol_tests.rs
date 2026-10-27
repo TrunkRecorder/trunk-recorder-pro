@@ -319,7 +319,7 @@ fn a_spare_radio_is_one_no_source_names() {
 
 pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
     let name = format!("ctx-{}", dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
-    ctx_with(cfg, dir, |hub| crate::db::Db::for_test_on(&name, hub).0)
+    ctx_with(cfg, dir, |hub| crate::db::Db::for_test_on(&name, hub, std::time::Duration::from_secs(1)).0)
 }
 
 /// As [`ctx`], with the call store `db` makes on the hub.

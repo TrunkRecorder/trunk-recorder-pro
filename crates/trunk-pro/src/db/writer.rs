@@ -1,30 +1,35 @@
 //! The one thread that writes the call store. Writes arrive on a channel and
 //! are applied in batches, one transaction each, so a busy system costs about
-//! one commit a second while a lone write still commits at once.
+//! one commit per batch interval while a lone write still commits at once.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use trunk_app::protocol::ToClient;
 
-use super::Write;
 use super::row::CallRow;
+use super::{Pending, Write};
 use crate::runtime::{Hub, publish};
 
-/// At most one commit per this long under load.
-const COMMIT_EVERY: Duration = Duration::from_secs(1);
+/// Most writes held back while waiting out the interval; past it the batch
+/// commits early, so the wait never holds more than the channel could.
+const MAX_BATCH: usize = 4096;
 
 /// Start the `db-writer` thread. It runs until every sender of `rx` is gone.
 /// `queued` counts the writes sent and not yet taken off the channel.
+/// Under load it commits once per `batch`; a lone write after a quiet spell
+/// commits at once, and a `Flush` forces the commit.
 pub fn spawn(
     conn: Connection,
     hub: Hub,
     rx: Receiver<Write>,
     commits: Arc<AtomicU64>,
     queued: Arc<AtomicUsize>,
+    batch: Duration,
+    pending: Pending,
 ) -> Option<std::thread::JoinHandle<()>> {
     let spawned = std::thread::Builder::new()
         .name("db-writer".into())
@@ -34,6 +39,8 @@ pub fn spawn(
                 hub,
                 commits,
                 queued,
+                batch,
+                pending,
             };
             w.run(rx);
         });
@@ -48,31 +55,64 @@ struct Writer {
     hub: Hub,
     commits: Arc<AtomicU64>,
     queued: Arc<AtomicUsize>,
+    /// The least time between the starts of two commits under load.
+    batch: Duration,
+    /// Live calls sent and not yet committed; cleared as they commit.
+    pending: Pending,
 }
 
 impl Writer {
     fn run(&mut self, rx: Receiver<Write>) {
+        let mut last_commit: Option<Instant> = None;
         while let Ok(first) = rx.recv() {
-            let started = Instant::now();
+            let mut held = vec![first];
+            let mut disconnected = false;
+            // Wait out the interval since the last commit, taking writes as
+            // they come. A flush, a full batch or the last handle going ends
+            // the wait at once.
+            if let Some(at) = last_commit {
+                let mut flushing = matches!(held[0], Write::Flush(_));
+                while !flushing && held.len() < MAX_BATCH {
+                    let Some(rest) = self.batch.checked_sub(at.elapsed()) else {
+                        break;
+                    };
+                    match rx.recv_timeout(rest) {
+                        Ok(w) => {
+                            flushing = matches!(w, Write::Flush(_));
+                            held.push(w);
+                        }
+                        Err(RecvTimeoutError::Timeout) => break,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            last_commit = Some(Instant::now());
             let mut flushes = Vec::new();
             let mut checkpoint = false;
             let mut retention: Option<i64> = None;
             let mut announce = Vec::new();
+            let mut committed = Vec::new();
             let mut outcome = Ok(());
             match self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
             {
                 Ok(tx) => {
-                    apply(
-                        &tx,
-                        first,
-                        &mut flushes,
-                        &mut checkpoint,
-                        &mut retention,
-                        &mut announce,
-                        &self.queued,
-                    );
+                    for w in held {
+                        apply(
+                            &tx,
+                            w,
+                            &mut flushes,
+                            &mut checkpoint,
+                            &mut retention,
+                            &mut announce,
+                            &mut committed,
+                            &self.queued,
+                        );
+                    }
                     while let Ok(next) = rx.try_recv() {
                         apply(
                             &tx,
@@ -81,12 +121,14 @@ impl Writer {
                             &mut checkpoint,
                             &mut retention,
                             &mut announce,
+                            &mut committed,
                             &self.queued,
                         );
                     }
                     match tx.commit() {
                         Ok(()) => {
                             self.commits.fetch_add(1, Ordering::Relaxed);
+                            settle(&self.pending, &committed);
                             for m in announce.drain(..) {
                                 publish(&self.hub, m);
                             }
@@ -100,15 +142,14 @@ impl Writer {
                 Err(e) => {
                     log::warn!("Call store: could not begin a transaction: {e}");
                     outcome = Err(format!("could not begin a transaction: {e}"));
-                    self.queued.fetch_sub(1, Ordering::Relaxed);
-                    while let Ok(next) = rx.try_recv() {
+                    for next in held
+                        .into_iter()
+                        .chain(std::iter::from_fn(|| rx.try_recv().ok()))
+                    {
                         self.queued.fetch_sub(1, Ordering::Relaxed);
                         if let Write::Flush(done) = next {
                             flushes.push(done);
                         }
-                    }
-                    if let Write::Flush(done) = first {
-                        flushes.push(done);
                     }
                 }
             }
@@ -121,8 +162,8 @@ impl Writer {
             for done in flushes {
                 let _ = done.send(outcome.clone());
             }
-            if let Some(rest) = COMMIT_EVERY.checked_sub(started.elapsed()) {
-                std::thread::sleep(rest);
+            if disconnected {
+                break;
             }
         }
     }
@@ -173,6 +214,18 @@ impl Writer {
     }
 }
 
+/// The batch is in the file: its live calls are no longer pending.
+fn settle(pending: &Pending, committed: &[String]) {
+    if committed.is_empty() {
+        return;
+    }
+    let done: std::collections::HashSet<&str> = committed.iter().map(String::as_str).collect();
+    pending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(path, _)| !done.contains(path.as_str()));
+}
+
 /// Apply one write inside the batch's transaction. Failures are logged; the
 /// batch carries on.
 fn apply(
@@ -182,6 +235,7 @@ fn apply(
     checkpoint: &mut bool,
     retention: &mut Option<i64>,
     announce: &mut Vec<ToClient>,
+    committed: &mut Vec<String>,
     queued: &AtomicUsize,
 ) {
     queued.fetch_sub(1, Ordering::Relaxed);
@@ -189,6 +243,9 @@ fn apply(
         Write::Call { row, live } => {
             if let Err(e) = write_call(conn, &row, live) {
                 log::warn!("Call store: call write {} failed: {e}", row.path);
+            }
+            if live {
+                committed.push(row.path);
             }
         }
         Write::CallFiles { path, audio, json } => match set_files(conn, &path, audio, json) {
@@ -343,6 +400,59 @@ mod tests {
     use crate::runtime::Out;
 
     #[test]
+    fn a_stream_commits_once_per_interval() {
+        let (db, _) = Db::for_test_with_batch("interval", std::time::Duration::from_secs(2));
+        let t = std::time::Instant::now();
+        while t.elapsed() < std::time::Duration::from_millis(4500) {
+            db.send(Write::Meta {
+                key: format!("k{}", t.elapsed().as_millis()),
+                value: "v".into(),
+            });
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        db.flush().unwrap();
+        assert!(
+            db.commits() <= 4,
+            "{} commits in 4.5 s at a 2 s interval",
+            db.commits()
+        );
+        let (db2, _) = Db::for_test_with_batch("lone", std::time::Duration::from_secs(60));
+        let t = std::time::Instant::now();
+        db2.send(Write::Meta {
+            key: "a".into(),
+            value: "1".into(),
+        });
+        db2.flush().unwrap();
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(1500),
+            "the first write after a quiet spell commits at once"
+        );
+    }
+
+    #[test]
+    fn dropping_the_last_handle_does_not_wait_out_the_interval() {
+        let (db, path) = Db::for_test_with_batch("drop-fast", std::time::Duration::from_secs(60));
+        db.send(Write::Meta {
+            key: "a".into(),
+            value: "1".into(),
+        });
+        db.flush().unwrap();
+        // The next write is held back for the interval.
+        db.send(Write::Meta {
+            key: "b".into(),
+            value: "2".into(),
+        });
+        let t = std::time::Instant::now();
+        drop(db);
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(1500),
+            "the writer leaves at once: {:?}",
+            t.elapsed()
+        );
+        assert!(!path.parent().unwrap().exists());
+    }
+
+    #[test]
     fn a_live_row_wins_over_a_backfilled_one() {
         let (db, _) = Db::for_test("upsert");
         let r = record(9179, 1_700_000_000_000);
@@ -390,7 +500,7 @@ mod tests {
     #[test]
     fn call_files_updates_the_flags_and_says_so_once() {
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
-        let (db, _) = Db::for_test_on("files", hub);
+        let (db, _) = Db::for_test_on("files", hub, std::time::Duration::from_secs(1));
         let r = record(1, 1000);
         db.send(Write::Call {
             row: call_row("ohmarcs/b", &r, &r.to_json(), true, true, None, 1),

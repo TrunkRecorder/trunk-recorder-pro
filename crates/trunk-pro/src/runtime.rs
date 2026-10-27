@@ -1204,12 +1204,24 @@ fn store_error(ctx: &Ctx, what: &str, e: &str) {
     }
 }
 
-/// The `history` message: the newest calls in the store.
+/// The `history` message: the newest calls, the live ones the store has not
+/// yet committed first (they win over a stored copy), by start time.
 pub fn history(ctx: &Ctx) -> ToClient {
-    let entries = ctx.db.with_reader(|c| crate::db::read::newest(c, HISTORY)).unwrap_or_else(|e| {
+    let stored = ctx.db.with_reader(|c| crate::db::read::newest(c, HISTORY)).unwrap_or_else(|e| {
         store_error(ctx, "history", &e);
         Vec::new()
     });
+    let mut seen = std::collections::HashSet::new();
+    let mut entries: Vec<Value> = ctx
+        .db
+        .pending()
+        .into_iter()
+        .chain(stored)
+        .filter(|e| seen.insert(e["path"].as_str().unwrap_or_default().to_string()))
+        .collect();
+    let key = |e: &Value| (e["record"]["start_time_ms"].as_i64().unwrap_or(0), e["path"].as_str().unwrap_or_default().to_string());
+    entries.sort_by_key(|e| std::cmp::Reverse(key(e)));
+    entries.truncate(HISTORY);
     ToClient::History { entries }
 }
 
@@ -1330,7 +1342,14 @@ pub fn test_ctx(capture_dir: &Path) -> Arc<Ctx> {
 /// it: off if it cannot be opened.
 #[cfg(test)]
 pub fn test_ctx_with_store(capture_dir: &Path, store: &Path) -> Arc<Ctx> {
-    crate::protocol_tests::ctx_with(test_config(capture_dir), capture_dir, |hub| crate::db::Db::open_or_off(store, hub))
+    crate::protocol_tests::ctx_with(test_config(capture_dir), capture_dir, |hub| crate::db::Db::open_or_off(store, hub, std::time::Duration::from_secs(1)))
+}
+
+/// As [`test_ctx`], committing the call store every `batch`.
+#[cfg(test)]
+pub fn test_ctx_with_batch(capture_dir: &Path, batch: std::time::Duration) -> Arc<Ctx> {
+    let name = format!("ctx-batch-{}", capture_dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
+    crate::protocol_tests::ctx_with(test_config(capture_dir), capture_dir, |hub| crate::db::Db::for_test_on(&name, hub, batch).0)
 }
 
 #[cfg(test)]
@@ -1371,6 +1390,41 @@ mod finish_tests {
         let text = crate::server::text_for(&out, true).expect("text");
         let m: Value = serde_json::from_str(&text).unwrap();
         assert_eq!((m["type"].as_str(), m["path"].as_str(), m["audio"].as_bool()), (Some("callFiles"), Some(rel), Some(false)));
+    }
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use super::*;
+
+    #[test]
+    fn history_shows_a_call_before_its_batch_commits() {
+        let dir = crate::db::TestDir::new("hist-pending");
+        let ctx = test_ctx_with_batch(&dir, std::time::Duration::from_secs(60));
+        let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
+        ctx.db.send(crate::db::Write::Meta { key: "warm".into(), value: "1".into() });
+        ctx.db.flush().unwrap();
+        let entry = index_call(&ctx, "ohmarcs/pending", &r, &r.to_json(), true, true);
+        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0], entry);
+        ctx.db.flush().unwrap();
+        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        assert_eq!(entries.len(), 1, "no duplicate once committed");
+    }
+
+    #[test]
+    fn history_is_newest_first_across_pending_and_committed() {
+        let dir = crate::db::TestDir::new("hist-merge");
+        let ctx = test_ctx_with_batch(&dir, std::time::Duration::from_secs(60));
+        let old = crate::db::row::tests::record(1, 1000);
+        let new = crate::db::row::tests::record(1, 2000);
+        index_call(&ctx, "ohmarcs/old", &old, &old.to_json(), true, true);
+        ctx.db.flush().unwrap();
+        index_call(&ctx, "ohmarcs/new", &new, &new.to_json(), true, true);
+        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        let paths: Vec<_> = entries.iter().map(|e| e["path"].as_str().unwrap().to_string()).collect();
+        assert_eq!(paths, ["ohmarcs/new", "ohmarcs/old"]);
     }
 }
 

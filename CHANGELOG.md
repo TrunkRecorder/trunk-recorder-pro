@@ -51,6 +51,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   - **`store.retentionDays`** sets how long calls are kept in the store: 120 days by default, 0
     keeps everything. It only trims the list; recordings and their JSON are written exactly as
     before and are never deleted by it.
+  - **`store.batchSeconds`** is how often the store commits: 60 by default, 300 is gentler on SD
+    cards and eMMC. The call list shows a finished call at once either way.
   - The first start indexes the calls already in the capture folder in the background; the
     recorder is usable meanwhile, and later starts only check the last two days.
 

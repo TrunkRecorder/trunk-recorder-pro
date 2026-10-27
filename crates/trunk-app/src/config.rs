@@ -1921,11 +1921,14 @@ impl Default for Config {
 pub struct StoreSettings {
     /// Days of call records kept in the call store; 0 keeps everything.
     pub retention_days: u32,
+    /// Seconds between the store's commits (1 to 3600 when used). Each commit
+    /// writes whole pages, so longer is gentler on flash.
+    pub batch_seconds: u32,
 }
 
 impl Default for StoreSettings {
     fn default() -> Self {
-        StoreSettings { retention_days: 120 }
+        StoreSettings { retention_days: 120, batch_seconds: 60 }
     }
 }
 
@@ -2668,6 +2671,14 @@ const RTL_BUSY_COUNT: usize = 4;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_store_batch_defaults_to_60_seconds() {
+        let c = Config::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(c.store.batch_seconds, 60);
+        let c = Config::from_value(serde_json::json!({ "store": { "batchSeconds": 300 } })).unwrap();
+        assert_eq!(c.store.batch_seconds, 300);
+    }
 
     #[test]
     fn the_store_section_defaults_to_120_days() {

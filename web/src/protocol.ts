@@ -498,6 +498,8 @@ export interface Config {
 export interface StoreSettings {
   /** Days of call records kept in the call store; 0 keeps everything. */
   retentionDays: number;
+  /** Seconds between the call store's commits (1 to 3600 when used; default 60). Each commit writes whole pages, so longer is gentler on flash. */
+  batchSeconds: number;
 }
 
 export interface MonitorSettings {

@@ -585,7 +585,7 @@ after a reconnect, so send `listen` again after `hello`.
 
 ## Recorded calls
 
-The call store is a database of every recorded call, kept beside the config; `history` and `olderCalls` are answered from it. `callsQuery` searches it by system, talkgroup, radio and time, over as long as the recorder keeps calls (`store.retentionDays`). It is available when `hello.capabilities` has `calls`.
+The call store is a database of every recorded call, kept beside the config; `history` and `olderCalls` are answered from it. `callsQuery` searches it by system, talkgroup, radio and time, over as long as the recorder keeps calls (`store.retentionDays`). It is available when `hello.capabilities` has `calls`. `history` and `concluded` include calls the store has not yet committed; `olderCalls` and `callsQuery` answer from committed rows, so a call may take up to `store.batchSeconds` to appear in them.
 
 Each recorded call's files are under the recordings folder at
 `CallEntry.path`:
