@@ -43,7 +43,7 @@ bit-identical calls on the same capture.
 |---|---|
 | `trunk-core` | `trunk::Engine` (everything), `dsp::Channelizer`, `dsp::c4fm::C4fm`, `dsp::cqpsk::Cqpsk`, `dsp::fm::Nbfm`, `dsp::am::Am`, `dsp::filters` (RRC, windowed-sinc), `p25`, `dmr`, `nxdn`, `smartnet`, `ambe` (AMBE+2 codeword, shared by DMR, NXDN and Phase 2), `bits` (bit fields, CRC-CCITT), `mbe` (vocoders, `mbe::Profile`), `metrics`, `loudness`, `survey::Survey` |
 | `trunk-app` | `Config`, `migrate` (older configs upgraded), `Session`, `Feeder`, `Output`, `protocol` (`ToClient`, `Command`), `stats` (dashboard measurements), `survey::SurveySession`, `filename`, `channels` (conventional CSV), `heard` (codes conventional frequencies carried), `keys` (key sources), `samples` (sample formats → IQ), `log::Record` |
-| `trunk-pro` | `main.rs` (CLI; `tool.rs` + `toolkit.rs`, `snrtool.rs`, `dmrtool.rs`, `nxdntool.rs` analysis tools), `runtime.rs` (`Ctx`, threads), `server.rs` (HTTP + WebSocket), `access.rs`, `sdr.rs` + `radio/` (drivers), `plugins/` (host, store, manage, archive, encode, delay, hold, cli), `interfaces/` (other interfaces: store, serve, cli), `store.rs` (what both stores share), `spool.rs`, `unlock.rs` (key containers), `statstore.rs`, `monitor.rs` + `platform.rs` (the computer), `survey.rs`, `paths.rs`, `logging.rs` |
+| `trunk-pro` | `main.rs` (CLI; `tool.rs` + `toolkit.rs`, `snrtool.rs`, `dmrtool.rs`, `nxdntool.rs` analysis tools), `runtime.rs` (`Ctx`, threads), `server.rs` (HTTP + WebSocket), `access.rs`, `sdr.rs` + `radio/` (drivers), `plugins/` (host, store, manage, archive, encode, delay, hold, cli), `interfaces/` (other interfaces: store, serve, cli), `store.rs` (what both stores share), `db/` (the call store: schema, writer, reads, backfill), `spool.rs`, `unlock.rs` (key containers), `statstore.rs`, `monitor.rs` + `platform.rs` (the computer), `survey.rs`, `paths.rs`, `logging.rs` |
 | `trunk-web` | `WebSession`, `WebRtl`, `WebSurvey`, `WebProfiler`; `rules` (the config's rules for the page) |
 | `trunk-recorder-plugin` | `protocol` (`HostMessage`, `PluginMessage`, `Manifest`, `CallRecord`, topics), SDK (`Plugin`, `run`, `CallQueue`) |
 
@@ -364,7 +364,7 @@ dashboard; `Engine::channels()` lists every channel listened to
 - it makes the call's record (`record::call_record`): a `CallRecord`, the
   plugin SDK's type, with Trunk Recorder's fields plus `signal`, `noise`,
   `snr` from `Reception`, `clean_voice_pct`, `errorList`, `freq_error`.
-  The same typed record goes to the file, the history and the plugins; the
+  The same typed record goes to the file, the call store and the plugins; the
   finish thread serialises it once (`CallRecord::to_json`), byte for byte as
   Trunk Recorder's files have it (flags as 0 / 1).
 

@@ -1722,7 +1722,7 @@ export interface RadioResultBody {
  * - `interfaces`: other interfaces, served on ports of their own
  * - `host`: the computer's and plugins' figures (`host`)
  * - `keys`: key containers opened with a password
- * - `calls`: the call store (`callsQuery`)
+ * - `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open
  */
 export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys" | "calls";
 
@@ -1822,7 +1822,7 @@ export type FromRecorder =
   | ({ type: "radioResult" } & RadioResultBody)
   /** Answers olderCalls; `more`: there are older ones still. */
   | { type: "olderCalls"; before: number; entries: CallEntry[]; more: boolean }
-  /** Answers callsQuery; `before` is where the next page starts (the oldest start in `entries`, or the `before` asked when none). */
+  /** Answers callsQuery; `before` is where the next page starts (the oldest start in `entries`; with none, the `before` asked, or 0 when none was). */
   | { type: "callsResult"; id: number; entries: CallEntry[]; more: boolean; before: number }
   | { type: "quit" };
 
@@ -1882,7 +1882,7 @@ export type ToRecorder =
   | { type: "subscribe"; topics: Topic[] }
   /** The history of series (names, or prefixes ending in `*`) over `range` back from now, or `from`–`to` (Unix s), in about `points` points. */
   | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d"; from?: number; to?: number; points?: number }
-  /** Calls that started before `before` (Unix ms), newest first, from the last 24 hours (the Listen page's "Load older"). */
+  /** Calls that started before `before` (Unix ms), newest first (the Listen page's "Load older"): from the call store (the desktop app); the browser build: the last 24 hours. */
   | { type: "olderCalls"; before: number; limit: number }
   /** Recorded calls from the call store, newest first: by system (its short name), talkgroup, radio, and start time (Unix ms, `from` inclusive to `to` exclusive); `before` pages like olderCalls; `limit` 1..500 (100). */
   | { type: "callsQuery"; id: number; system?: string; talkgroup?: number; unit?: number; from?: number; to?: number; before?: number; limit?: number }

@@ -42,10 +42,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Escape puts it back. Before, each pause in typing was a save: a system's short name typed as
   "fire4a" renamed it to f, fi, fir… on the way, moving its talkgroup file each time, and a
   plugin's settings restarted it on each pause. Switches and menus still act at once.
-- **A call store: the call list loads at once, however large the archive** (#100). Every finished
-  call is now a row in a database beside the config, so the call list no longer waits for the
-  capture folder to be read.
-  - Paging back through older calls has no limit.
+- **A call store: the call list loads from the store rather than the capture folder** (#100).
+  Every finished call is now a row in a database beside the config, so the call list no longer
+  waits for the capture folder to be read.
+  - Paging back through older calls reaches back to the oldest call the store keeps.
   - Interfaces can ask for calls by system, talkgroup, radio and time (`callsQuery`; `hello`
     lists the `calls` capability).
   - **`store.retentionDays`** sets how long calls are kept in the store: 120 days by default, 0

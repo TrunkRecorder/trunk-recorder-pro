@@ -123,7 +123,8 @@ pub enum ToClient {
 }
 
 /// Something a recorder can do beyond recording (`hello.capabilities`). The
-/// desktop app can do all of them; the browser build, none.
+/// desktop app can do all of them (`calls` while its call store is open);
+/// the browser build, none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, strum::VariantArray)]
 #[serde(rename_all = "camelCase")]
 pub enum Capability {

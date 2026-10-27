@@ -239,8 +239,9 @@ From the recorder:
   (with control access also devices, keys, plugins, interfaces), then
   hello        { version, platform, api, configPath?, surveyBands, capabilities }
                capabilities: what it can do beyond recording, of "service" (quit, files by path, log,
-               M4A), "drivers" (USRP/Airspy/SoapySDR), "plugins", "interfaces", "host", "keys".
-               The desktop app has all; the browser build none. Show only what works.
+               M4A), "drivers" (USRP/Airspy/SoapySDR), "plugins", "interfaces", "host", "keys",
+               "calls" (the call store: callsQuery). The desktop app has all ("calls" while its
+               call store is open); the browser build none. Show only what works.
   config       { config, version }: on connecting, and when someone changes it
   configSaved  { version, error? }: answers your setConfig; error when the edit wasn't taken
                (the config changed elsewhere meanwhile) or couldn't be saved
@@ -257,6 +258,7 @@ From the recorder:
   concluded    { entry }: a call was recorded
   log          { lines }: topic log (warnings and errors always); { timeS, kind, text, time?, level?, system?, site? }
   olderCalls   { before, entries, more }: answers the olderCalls command
+  callsResult  { id, entries, more, before }: answers callsQuery; send before back for the next page
   monitorEvent { t, level ("info" | "ok" | "warn" | "bad"), kind, … }: something notable (a control
                channel lost / regained, a talkgroup or radio first seen, a radio dropping samples, a disk or
                the RAM spool filling, a tone pattern heard, the clock off…): the kinds are MonitorEvent in
@@ -273,7 +275,11 @@ To the recorder:
   { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required)
   { type: "setConfig", config: <the whole config>, version: <the last config message's> }
   { type: "setTalkgroups", system: <short name>, csv: <Trunk Recorder talkgroup CSV, "" for none> }
-  { type: "olderCalls", before: <Unix ms>, limit: <≤ 500> }   recorded calls before that, from the last 24 hours (listen access may send it)
+  { type: "olderCalls", before: <Unix ms>, limit: <≤ 500> }   recorded calls before that, from the call store (the desktop
+    app); the browser build: the last 24 hours (listen access may send it)
+  { type: "callsQuery", id, system?: <short name>, talkgroup?, unit?, from?, to?, before?, limit?: <1 to 500> }
+    recorded calls from the call store by system, talkgroup, radio and start time (Unix ms, from inclusive, to
+    exclusive), newest first (→ callsResult; needs the "calls" capability; listen access may send it)
   { type: "statsQuery", id, series: ["sys/<short>/calls", …], range: "1h" }   history (→ statsResult; listen may send it)
   { type: "radioQuery", id, what: "talkgroups" | "units" | "tones" | …, system: <short name> }   what the
     recorder has heard (→ radioResult; listen may send it)
@@ -304,10 +310,11 @@ system is a system's short name; you get its audio from whichever of its sites c
    rec.start / rec.stop. Never build a config from scratch: fields left out
    reset to defaults.
 7. History reaches back 300 calls at connect, and grows as calls are
-   recorded. For older ones (the last 24 hours) send olderCalls { before:
-   <Unix ms of the oldest you have>, limit } and read the olderCalls reply
-   (more: false at the end). Before that there's no API to list them. Say so
-   if the user asks for more.
+   recorded. For older ones send olderCalls { before: <Unix ms of the oldest
+   you have>, limit } and read the olderCalls reply (more: false at the end):
+   from the call store (the desktop app); the browser build: the last 24
+   hours, and no API lists calls before that. To search by talkgroup, radio
+   or time, send callsQuery when hello.capabilities has "calls".
 8. One live-audio filter per connection: one talkgroup, or everything. For
    several talkgroups, listen to everything and drop the chunks you don't
    want before player.play.

@@ -456,7 +456,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 
 | `type` | When | What's in it |
 |---|---|---|
-| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host`, `keys` and `calls` (the call store: `callsQuery`) (the desktop app has all; the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
+| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host`, `keys` and `calls` (the call store, for `callsQuery`; the desktop app has all of them, `calls` while its call store is open, and the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
 | `history` | On connecting | `entries`: the latest calls (≤ 300 `CallEntry`), newest first. Then `concluded` for each new one |
 | `units` | On connecting, for each system with some | `system` (short name), `csv`: the talker aliases saved, as CSV: `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins. Then `unitAlias` for each new one |
 | `talkgroups` | On connecting, for each system; whenever one is replaced | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |
@@ -472,7 +472,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `monitorEvent` | Something notable happened | `t`, `level` (`info`, `ok`, `warn`, `bad`), `kind` and its fields: control channels (`controlLost`, `controlRegained`; `system`, `site`), talkgroups and radios (`tgFirstSeen`, `tgActive`, `unitFirstSeen`, `unitActive`, `unitAffiliated`, `callVolume`), tones (`tonePattern`: `text`, `signals`), radios (`sourceDrops`, `sourceClipping`, `sourceRecovered`), plugins (`pluginHealth`), the computer (`linkDown`, `linkUp`, `diskLow`), the RAM spool (`spoolLow` with `critical`, `spoolFull` with `calls`, `spoolRecovered`, `spoolRemoved` with `spool` (its kind) and `remade`), the clock (`clockOff` with `why` and `bad`, `clockOk`, `clockStep` with `byMs`). The event feed's kinds are listed in protocol.ts (`MonitorEvent`) |
 | `subscribed` | Answers `subscribe` | `topics` |
 | `olderCalls` | Answers `olderCalls` | `before` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still) |
-| `callsResult` | Answers `callsQuery` | `id` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still), `before` (where the next page starts: send it as `before`) |
+| `callsResult` | Answers `callsQuery` | `id` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still), `before` (where the next page starts: send it as `before`; with no entries, the `before` asked, or 0 when none was) |
 | `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies / tone patterns heard), `outOfBand` (freqs), `row` and its detail, `systems` (summary), `histogram` |
@@ -538,7 +538,7 @@ too.
 | `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d`) or `from` / `to` (Unix s), `points?` | The minute history of series, averaged down to about `points` steps (→ `statsResult`). |
 | `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths`, `tones` (→ `radioResult`). |
 | `pluginAction` | `id`, `plugin`, `action`, `value` | Press one of a plugin's buttons (its settings schema's `x-actions`) on `value`, the settings object it's on as edited (→ `pluginActionResult`, once the plugin answers). Control access; plugins run only while recording. |
-| `olderCalls` | `before?` (Unix ms), `limit?` (≤ 500, default 100) | Recorded calls that started before `before`, newest first, from the last 24 hours (→ `olderCalls`). Listen-only connections may send it. |
+| `olderCalls` | `before?` (Unix ms), `limit?` (≤ 500, default 100) | Recorded calls that started before `before`, newest first, from the call store (the desktop app); the browser build: the last 24 hours (→ `olderCalls`). Listen-only connections may send it. |
 | `callsQuery` | `id`, `system?` (short name), `talkgroup?`, `unit?` (a radio), `from?` / `to?` (start time, Unix ms: `from` inclusive, `to` exclusive), `before?` (Unix ms), `limit?` (1 to 500, default 100) | Recorded calls from the call store, newest first (→ `callsResult`); `before` pages like `olderCalls`. Needs the `calls` capability. Listen-only connections may send it. |
 | `unlockKeys` | `source`, `password` | Open a key container that has no password file; the password is kept in memory only. `keys` follows. |
 | `lockKeys` | `source` | Forget a container's keys: its systems stop decrypting at once. |
@@ -585,7 +585,7 @@ after a reconnect, so send `listen` again after `hello`.
 
 ## Recorded calls
 
-The call store is a database of every recorded call, kept beside the recordings; `history` and `olderCalls` are answered from it. `callsQuery` searches it by system, talkgroup, radio and time, over as long as the recorder keeps calls (`store.retentionDays`). It is available when `hello.capabilities` has `calls`.
+The call store is a database of every recorded call, kept beside the config; `history` and `olderCalls` are answered from it. `callsQuery` searches it by system, talkgroup, radio and time, over as long as the recorder keeps calls (`store.retentionDays`). It is available when `hello.capabilities` has `calls`.
 
 Each recorded call's files are under the recordings folder at
 `CallEntry.path`:

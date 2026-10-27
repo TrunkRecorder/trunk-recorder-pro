@@ -94,7 +94,9 @@ with `--config` files in different folders never share band plans, talker aliase
 
 Finished calls are indexed in `trunk-pro.sqlite`, beside the config, so the interface can list and
 search them. `retentionDays` (default 120) is how long a call's record stays in that index; older
-records are removed when the app starts and every hour after. `0` keeps every record. The setting
+records are removed when the app starts and every hour after. `0` keeps every record. Records
+stamped while the clock was off (`clock_off`) are removed at the first retention pass after it is
+fixed. The setting
 is read when the app starts. It never deletes the audio and JSON files of the calls: they stay
 where they were recorded (deleting recordings is issue #25).
 

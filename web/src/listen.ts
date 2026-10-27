@@ -353,7 +353,7 @@ function merge(calls: CallEntry[], more: CallEntry[]): CallEntry[] {
   return [...calls, ...add].sort((a, b) => b.record.start_time_ms - a.record.start_time_ms).slice(0, CALLS_MAX);
 }
 
-/** Ask for calls older than the oldest known (the last 24 hours). */
+/** Ask for calls older than the oldest known: from the call store (the desktop app); the browser build: the last 24 hours. */
 export function loadOlder(): void {
   if (state.loadingOlder) return;
   const oldest = state.calls.at(-1)?.record.start_time_ms ?? Date.now();
