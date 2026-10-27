@@ -1,30 +1,23 @@
 //! Bringing the store up to date with the capture folder: one full walk the
 //! first time the store sees a folder, then, on every start, a look at the
 //! last two days' folders for calls recorded while the recorder was off. Runs
-//! on its own thread and gives way to live writes.
+//! on its own thread, a batch at a time: it flushes every [`MAX_BATCH`] rows,
+//! so a live write never queues behind it.
 
 use std::collections::BTreeSet;
 use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use rusqlite::OptionalExtension;
 use trunk_recorder_plugin::CallRecord;
 
 use super::row::call_row;
+use super::writer::MAX_BATCH;
 use super::{Db, Write};
 use crate::config::Config;
 use crate::runtime::Ctx;
 
-/// Files between looks at the writer's queue.
-const YIELD_EVERY: usize = 200;
-/// Queued writes above which the backfill waits for the writer.
-///
-/// The writer's `MAX_BATCH` is derived from this: held writes count as
-/// queued, so a batch cut above it could never be reached while the
-/// backfill waits.
-pub(super) const QUEUE_HIGH: usize = 2048;
 /// Files between progress lines in the log.
 const LOG_EVERY: usize = 10_000;
 
@@ -37,9 +30,12 @@ pub struct Stats {
     pub indexed: usize,
     /// Records left out: already indexed, unreadable or past retention.
     pub skipped: usize,
-    /// Folders that could not be read.
+    /// Folders under it that could not be read (logged; they don't keep the
+    /// walk from being marked done, or a root-owned `lost+found` would make
+    /// every start walk the whole archive again).
     pub unreadable: usize,
-    /// Recent day folders that are not there (a reconcile only).
+    /// Folders asked for that aren't there: the capture folder itself (not
+    /// made yet), or a reconcile's recent day folders.
     pub missing: usize,
     /// The capture folder itself could not be read, so nothing was recorded
     /// as done and the next start walks it again.
@@ -83,7 +79,7 @@ pub fn start(ctx: Arc<Ctx>) {
         (
             PathBuf::from(&c.recording.capture_dir),
             recent_folders(&c, now_s),
-            c.store.retention_days,
+            c.storage.retention_days,
         )
     };
     let db = ctx.db.clone();
@@ -151,7 +147,12 @@ fn walk(
         for e in rd.flatten() {
             let p = e.path();
             if is_dir(&e) {
-                dirs.push(p);
+                // (Not a hidden folder or a file system's lost+found: no calls are there.)
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with('.') && name != "lost+found" {
+                    dirs.push(p);
+                }
             } else if p.extension().is_some_and(|x| x == "json") {
                 files.push(p);
             }
@@ -176,19 +177,10 @@ fn is_dir(e: &DirEntry) -> bool {
 }
 
 /// Why a full walk is not recorded as done, if it is not: one that found no
-/// call records (a drive not mounted yet) or could not read a folder would
-/// otherwise leave calls out for good.
+/// call records (a drive not mounted yet) would otherwise leave calls out for
+/// good.
 fn not_done_why(stats: &Stats) -> Option<String> {
-    if stats.walked == 0 {
-        Some("no call records were found in it".into())
-    } else if stats.unreadable > 0 {
-        Some(format!(
-            "{} folder(s) in it could not be read",
-            stats.unreadable
-        ))
-    } else {
-        None
-    }
+    (stats.walked == 0).then(|| "no call records were found in it".into())
 }
 
 /// Bring the store up to date with `capture_dir`: all of it when the store
@@ -221,6 +213,7 @@ pub fn run(
                 Found::Unreadable(d, e) => {
                     if full && d == capture_dir {
                         stats.aborted = true;
+                        stats.missing += (e.kind() == std::io::ErrorKind::NotFound) as usize;
                     } else if !full && e.kind() == std::io::ErrorKind::NotFound {
                         // A recent day's folder that is not there yet is ordinary.
                         if roots.contains(&d) {
@@ -234,11 +227,6 @@ pub fn run(
                 }
             };
             stats.walked += 1;
-            if stats.walked % YIELD_EVERY == 0 {
-                while db.queued() > QUEUE_HIGH {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
             if stats.walked % LOG_EVERY == 0 {
                 log::info!("Call store: walked {} call records", stats.walked);
             }
@@ -275,12 +263,26 @@ pub fn run(
             let row = call_row(&rel, &record, &text, audio, true, db.recorder(), now_ms);
             db.send(Write::Call { row, live: false });
             stats.indexed += 1;
+            // (A batch at a time: the writer commits it, and live writes go in between.)
+            if stats.indexed % MAX_BATCH == 0 {
+                if let Err(e) = db.flush() {
+                    log::warn!("Call store: {e}");
+                }
+            }
             Ok(())
         })
     });
     if stats.aborted {
-        log::warn!("Call store: {folder} cannot be read; it will be indexed on the next start");
+        // (A capture folder not made yet, before the first call, is ordinary.)
+        if stats.missing > 0 {
+            log::debug!("Call store: {folder} isn't there yet; it will be indexed on the next start");
+        } else {
+            log::warn!("Call store: {folder} cannot be read; it will be indexed on the next start");
+        }
         return stats;
+    }
+    if stats.unreadable > 0 {
+        log::warn!("Call store: {} folder(s) under {folder} could not be read; their calls aren't indexed", stats.unreadable);
     }
     if let Err(e) = walked {
         log::warn!("Call store: the backfill stopped early: {e}");
@@ -475,15 +477,22 @@ mod tests {
     }
 
     #[test]
-    fn a_walk_that_could_not_read_a_folder_is_not_marked_done() {
-        let stats = |walked, unreadable| Stats {
-            walked,
-            unreadable,
-            ..Default::default()
-        };
-        assert!(not_done_why(&stats(10, 1)).is_some_and(|w| w.contains("could not be read")));
+    fn a_walk_that_found_records_is_marked_done_even_past_an_unreadable_folder() {
+        let stats = |walked, unreadable| Stats { walked, unreadable, ..Default::default() };
+        assert_eq!(not_done_why(&stats(10, 1)), None, "logged, not walked again at every start");
         assert!(not_done_why(&stats(0, 0)).is_some_and(|w| w.contains("no call records")));
-        assert_eq!(not_done_why(&stats(10, 0)), None);
+    }
+
+    #[test]
+    fn hidden_folders_and_lost_found_are_not_walked() {
+        let dir = capture("hidden", &[("s/1", 1, 1), (".snapshots/s/2", 1, 2), ("lost+found/3", 1, 3)]);
+        let mut seen = 0;
+        walk(&[&*dir], &mut |f| {
+            seen += matches!(f, Found::Record(_)) as usize;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen, 1);
     }
 
     #[test]
@@ -533,12 +542,12 @@ mod tests {
         let refs: Vec<(&str, u32, i64)> =
             calls.iter().map(|(p, t, s)| (p.as_str(), *t, *s)).collect();
         let dir = capture("slow-batch", &refs);
-        let (db, _) = Db::for_test_with_batch("backfill-slow-batch", Duration::from_secs(60));
+        let (db, _) = Db::for_test_with_batch("backfill-slow-batch", std::time::Duration::from_secs(60));
         let t = std::time::Instant::now();
         let s = run(&db, &dir, &[], 0, 10_000);
         assert_eq!(s.indexed, 6000);
         assert!(
-            t.elapsed() < Duration::from_secs(20),
+            t.elapsed() < std::time::Duration::from_secs(20),
             "a 60 s batch interval held the backfill: {:?}",
             t.elapsed()
         );
@@ -561,8 +570,8 @@ mod tests {
             let dir = dir.to_path_buf();
             move || run(&db, &dir, &[], 0, 10_000)
         });
-        while db.queued() == 0 && !t.is_finished() {
-            std::thread::sleep(Duration::from_millis(1));
+        while db.with_reader(|c| c.query_row("select count(*) from calls", [], |r| r.get::<_, i64>(0))).unwrap() == 0 && !t.is_finished() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let started = std::time::Instant::now();
         let r = record(9, 99);
@@ -571,7 +580,7 @@ mod tests {
             live: true,
         });
         assert!(
-            started.elapsed() < Duration::from_millis(500),
+            started.elapsed() < std::time::Duration::from_millis(500),
             "a live write is never queued behind the backfill"
         );
         assert!(
@@ -616,7 +625,7 @@ mod tests {
         let ctx = crate::runtime::test_ctx(&dir);
         assert!(ctx.db.try_begin_backfill());
         start(ctx.clone());
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(
             !dir.exists() || meta(&ctx.db, "backfill_done_at").is_none(),
             "no walk ran"
@@ -627,7 +636,7 @@ mod tests {
             if ctx.db.try_begin_backfill() {
                 break; // the walk finished and gave the flag back
             }
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
         db.end_backfill();
         assert!(db.try_begin_backfill());

@@ -1009,8 +1009,11 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     // Uploads in flight get a moment to finish.
     ctx.plugins.stop(Duration::from_secs(10));
     save_due(&ctx, &mut session, now_ms(), true);
-    // (All of it on disk before recording is said to have stopped.)
+    // (All of it on disk before recording is said to have stopped: the files, and the calls' index.)
     ctx.saver.flush();
+    if let Err(e) = ctx.db.flush() {
+        log::warn!("Call store: {e}");
+    }
     ctx.clock.recording(None);
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
@@ -1414,7 +1417,7 @@ pub fn test_ctx(capture_dir: &Path) -> Arc<Ctx> {
 /// it: off if it cannot be opened.
 #[cfg(test)]
 pub fn test_ctx_with_store(capture_dir: &Path, store: &Path) -> Arc<Ctx> {
-    crate::protocol_tests::ctx_with(test_config(capture_dir), capture_dir, |_| crate::db::Db::open_or_off(store, std::time::Duration::from_secs(1)))
+    crate::protocol_tests::ctx_with(test_config(capture_dir), capture_dir, |_| crate::db::Db::open_or_off(store, std::time::Duration::from_secs(1), 0))
 }
 
 /// As [`test_ctx`], committing the call store every `batch`.

@@ -11,7 +11,7 @@ pub mod schema;
 pub mod writer;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -24,9 +24,9 @@ use row::CallRow;
 /// Writes the channel holds before `send` blocks.
 const QUEUE_LEN: usize = 4096;
 /// Read-only connections opened up front, and the most the pool keeps.
-const READERS: usize = 4;
+const READERS: usize = 2;
 /// A day, in milliseconds.
-const DAY_MS: i64 = 86_400_000;
+pub(super) const DAY_MS: i64 = 86_400_000;
 
 /// A change for the writer thread to make.
 #[allow(clippy::large_enum_variant)] // one row per call; boxing it would only add a hop
@@ -41,7 +41,8 @@ pub enum Write {
     },
     /// Set a `meta` value.
     Meta { key: String, value: String },
-    /// Delete calls that started before this time.
+    /// Delete calls that started before this time (the writer also does so
+    /// by itself, for `retentionDays`).
     Retention { before_ms: i64 },
     /// Checkpoint the WAL into the database file.
     Checkpoint,
@@ -64,17 +65,13 @@ struct Inner {
     tx: Option<SyncSender<Write>>,
     /// The writer thread, waited for when the last handle goes.
     writer: Option<JoinHandle<()>>,
-    queued: Arc<AtomicUsize>,
     backfill_running: AtomicBool,
     #[cfg(test)]
     commits: Arc<AtomicU64>,
-    /// Set by the retention thread as it exits.
-    #[cfg(test)]
-    retention_done: Arc<AtomicBool>,
-    /// The sending end of the retention thread's timer: dropped with the
-    /// last `Db`, which wakes the thread to exit.
-    retention_stop: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     readers: Mutex<Vec<Connection>>,
+    /// Held while open, so a second recorder on the same data folder runs
+    /// with its store off rather than as a second writer.
+    _lock: std::fs::File,
     /// The test's folder, removed once the connections above are closed.
     #[cfg(test)]
     dir: Option<TestDir>,
@@ -94,13 +91,15 @@ impl Drop for Inner {
 impl Db {
     /// Open (creating if need be) the database at `path`, migrate it and start
     /// its writer. A file that is not a sound database is moved aside and
-    /// replaced. The writer commits at most once per `batch` under load.
-    pub fn open(path: &Path, batch: Duration) -> Result<Db, String> {
+    /// replaced. The writer commits at most once per `batch` under load, and
+    /// keeps `retention_days` of calls (0: all).
+    pub fn open(path: &Path, batch: Duration, retention_days: u32) -> Result<Db, String> {
         let dir = path
             .parent()
             .filter(|d| !d.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        let lock = lock(path)?;
         log::debug!("Call store: schema version {}", schema::SCHEMA_VERSION);
         let conn = match open_sound(path) {
             Ok(c) => c,
@@ -124,22 +123,18 @@ impl Db {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| format!("open reader {}: {e}", path.display()))?;
         let (tx, rx) = sync_channel(QUEUE_LEN);
-        let queued = Arc::new(AtomicUsize::new(0));
         let commits = Arc::new(AtomicU64::new(0));
-        let writer = writer::spawn(conn, rx, commits.clone(), queued.clone(), batch);
+        let writer = writer::spawn(conn, rx, commits.clone(), batch, retention_days);
         Ok(Db(Some(Arc::new(Inner {
             path: path.to_path_buf(),
             recorder,
             tx: Some(tx),
             writer,
-            queued,
             backfill_running: AtomicBool::new(false),
             #[cfg(test)]
             commits,
-            #[cfg(test)]
-            retention_done: Arc::new(AtomicBool::new(false)),
-            retention_stop: Mutex::new(None),
             readers: Mutex::new(readers),
+            _lock: lock,
             #[cfg(test)]
             dir: None,
         }))))
@@ -148,8 +143,8 @@ impl Db {
     /// [`Db::open`], or the store off when it cannot be opened (a newer
     /// schema, a full disk, no permission, another instance holding it): the
     /// one error logged says why, and recording goes on without it.
-    pub fn open_or_off(path: &Path, batch: Duration) -> Db {
-        Db::open(path, batch).unwrap_or_else(|e| {
+    pub fn open_or_off(path: &Path, batch: Duration, retention_days: u32) -> Db {
+        Db::open(path, batch, retention_days).unwrap_or_else(|e| {
             log::error!("Call store: off: {e}");
             Db::disabled()
         })
@@ -186,9 +181,7 @@ impl Db {
         let Some(tx) = &inner.tx else {
             return false;
         };
-        inner.queued.fetch_add(1, Ordering::Relaxed);
         if tx.send(w).is_err() {
-            inner.queued.fetch_sub(1, Ordering::Relaxed);
             log::warn!("Call store: the writer has stopped; write dropped");
             return false;
         }
@@ -214,61 +207,6 @@ impl Db {
     /// started before it go.
     pub fn retention_cutoff(&self, days: u32, now_ms: i64) -> i64 {
         self.now_ms(now_ms) - i64::from(days) * DAY_MS
-    }
-
-    /// Keep `days` days of calls (0: all of them): delete what is older now,
-    /// and again every hour. The thread holds only a weak handle and waits on
-    /// a channel whose sender lives in the database, so it exits as soon as
-    /// the last `Db` is dropped. Nothing starts when the store is off.
-    pub fn start_retention(&self, days: u32) {
-        let Some(this) = &self.0 else {
-            return;
-        };
-        if days == 0 {
-            return;
-        }
-        let (stop, wake) = std::sync::mpsc::channel::<()>();
-        *this
-            .retention_stop
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(stop);
-        let inner = Arc::downgrade(this);
-        #[cfg(test)]
-        let done = this.retention_done.clone();
-        let spawned = std::thread::Builder::new()
-            .name("db-retention".into())
-            .spawn(move || {
-                loop {
-                    // The handle lives only for the send: holding it while
-                    // waiting would keep the writer alive for ever.
-                    let Some(db) = inner.upgrade().map(|i| Db(Some(i))) else {
-                        break;
-                    };
-                    let before_ms = db.retention_cutoff(days, crate::clock::unix_ms() as i64);
-                    let sent = db.send(Write::Retention { before_ms });
-                    drop(db);
-                    if !sent {
-                        break;
-                    }
-                    if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) =
-                        wake.recv_timeout(std::time::Duration::from_secs(3600))
-                    {
-                        break;
-                    }
-                }
-                #[cfg(test)]
-                done.store(true, Ordering::Release);
-            });
-        if let Err(e) = spawned {
-            log::error!("Call store: could not start the retention thread: {e}");
-        }
-    }
-
-    /// Writes queued and not yet taken up by the writer.
-    pub fn queued(&self) -> usize {
-        self.0
-            .as_deref()
-            .map_or(0, |i| i.queued.load(Ordering::Relaxed))
     }
 
     /// Claim the right to run a backfill: false when one is already running
@@ -347,7 +285,7 @@ impl Db {
     pub fn for_test_with_batch(name: &str, batch: Duration) -> (Db, PathBuf) {
         let dir = TestDir::new(&format!("db-{name}"));
         let path = dir.join("trunk-pro.sqlite");
-        let mut db = Db::open(&path, batch).expect("open test db");
+        let mut db = Db::open(&path, batch, 0).expect("open test db");
         if let Some(inner) = db.0.as_mut().and_then(Arc::get_mut) {
             inner.dir = Some(dir);
         }
@@ -387,10 +325,9 @@ impl Drop for TestDir {
 /// A database at `path` whose schema version says a newer build wrote it.
 #[cfg(test)]
 pub fn seed_newer(path: &Path) {
-    drop(Db::open(path, Duration::from_secs(1)).unwrap());
+    drop(Db::open(path, Duration::from_secs(1), 0).unwrap());
     let conn = Connection::open(path).unwrap();
-    conn.execute("update schema_version set version = 99", [])
-        .unwrap();
+    conn.pragma_update(None, "user_version", 99).unwrap();
 }
 
 /// Why the writer's connection could not be opened.
@@ -422,18 +359,32 @@ impl From<rusqlite::Error> for OpenError {
 fn open_sound(path: &Path) -> Result<Connection, OpenError> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    let check: String = conn.query_row("pragma quick_check", [], |r| r.get(0))?;
-    if check != "ok" {
-        return Err(OpenError::Corrupt(check));
-    }
+    // (No integrity check at every start: it reads the whole file, minutes on
+    // an SD card for a big store. A file that isn't a database fails below.)
     conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get::<_, String>(0))?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "wal_autocheckpoint", 16384)?;
-    conn.pragma_update(None, "journal_size_limit", 67108864)?;
+    // Checkpoints by size (16 MB of WAL): periodic sequential bursts.
+    conn.pragma_update(None, "wal_autocheckpoint", 4096)?;
+    conn.pragma_update(None, "journal_size_limit", 16 << 20)?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
-    schema::migrate(&conn)?;
+    if let schema::Migrated::Newer(v) = schema::migrate(&conn)? {
+        return Err(OpenError::Other(format!("its schema is version {v}, newer than this build's {} (written by a newer Trunk Recorder Pro)", schema::SCHEMA_VERSION)));
+    }
     Ok(conn)
+}
+
+/// The lock beside `path` (`<name>.lock`), held exclusively while the store
+/// is open; an error when another process holds it.
+fn lock(path: &Path) -> Result<std::fs::File, String> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&name).map_err(|e| format!("lock {}: {e}", Path::new(&name).display()))?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => Err(format!("another Trunk Recorder Pro is using {}", path.display())),
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("lock {}: {e}", Path::new(&name).display())),
+    }
 }
 
 /// A read-only connection. It waits up to a second for a lock (a checkpoint
@@ -506,7 +457,7 @@ mod tests {
         let (db, path) = Db::for_test("open");
         assert!(path.exists());
         let v: u32 = db
-            .with_reader(|c| c.query_row("select version from schema_version", [], |r| r.get(0)))
+            .with_reader(|c| c.query_row("pragma user_version", [], |r| r.get(0)))
             .unwrap();
         assert_eq!(v, schema::SCHEMA_VERSION);
         let mode: String = db
@@ -522,13 +473,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             tables,
-            [
-                "call_frequencies",
-                "call_transmissions",
-                "calls",
-                "meta",
-                "schema_version"
-            ]
+            ["call_frequencies", "call_transmissions", "calls", "meta"]
         );
     }
 
@@ -543,26 +488,6 @@ mod tests {
         assert!(
             !path.parent().unwrap().exists(),
             "the writer has let go and the folder is gone"
-        );
-    }
-
-    #[test]
-    fn the_retention_thread_exits_when_the_last_db_is_dropped() {
-        let (db, _) = Db::for_test("retention-exit");
-        db.start_retention(1);
-        let done = db.0.as_ref().unwrap().retention_done.clone();
-        let clone = db.clone();
-        drop(db);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        assert!(!done.load(Ordering::Acquire), "a handle is still alive");
-        drop(clone);
-        let t = std::time::Instant::now();
-        while !done.load(Ordering::Acquire) && t.elapsed() < std::time::Duration::from_secs(1) {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(
-            done.load(Ordering::Acquire),
-            "the thread must exit within a second"
         );
     }
 
@@ -591,14 +516,29 @@ mod tests {
         );
     }
 
+    /// A second opener of the same store (another recorder on the same data
+    /// folder) is refused, so there's only ever one writer; once the first
+    /// lets go, it opens.
+    #[test]
+    fn a_second_opener_is_refused_while_the_first_holds_it() {
+        let (db, path) = Db::for_test("lock");
+        let err = Db::open(&path, Duration::from_secs(1), 0).err().expect("refused");
+        assert!(err.contains("another Trunk Recorder Pro"), "{err}");
+        let dir = TestDir::new("db-lock-2");
+        let other = dir.join("trunk-pro.sqlite");
+        std::fs::copy(&path, &other).unwrap();
+        drop(db);
+        assert!(Db::open(&other, Duration::from_secs(1), 0).is_ok());
+    }
+
     #[test]
     fn a_corrupt_file_is_moved_aside_and_a_fresh_one_opened() {
         let dir = TestDir::new("db-corrupt");
         let path = dir.join("trunk-pro.sqlite");
         std::fs::write(&path, b"this is not a database").unwrap();
-        let db = Db::open(&path, Duration::from_secs(1)).unwrap();
+        let db = Db::open(&path, Duration::from_secs(1), 0).unwrap();
         let v: u32 = db
-            .with_reader(|c| c.query_row("select version from schema_version", [], |r| r.get(0)))
+            .with_reader(|c| c.query_row("pragma user_version", [], |r| r.get(0)))
             .unwrap();
         assert_eq!(v, 1);
         let aside = std::fs::read_dir(&*dir)
@@ -652,7 +592,7 @@ mod tests {
         let dir = TestDir::new("db-newer");
         let path = dir.join("trunk-pro.sqlite");
         seed_newer(&path);
-        let err = Db::open(&path, Duration::from_secs(1))
+        let err = Db::open(&path, Duration::from_secs(1), 0)
             .err()
             .expect("a newer schema must be refused");
         assert!(err.contains("99"), "{err}");
@@ -664,7 +604,7 @@ mod tests {
             .count();
         assert_eq!(aside, 0);
         assert!(
-            Db::open_or_off(&path, Duration::from_secs(1)).is_disabled(),
+            Db::open_or_off(&path, Duration::from_secs(1), 0).is_disabled(),
             "the recorder carries on with the store off"
         );
     }
@@ -678,11 +618,9 @@ mod tests {
             db.with_reader(|_| Ok(())).unwrap_err(),
             "the call store is off"
         );
-        assert_eq!(db.queued(), 0);
         assert!(db.flush().is_ok());
         assert_eq!((db.recorder(), db.path()), (None, None));
         assert!(!db.try_begin_backfill());
-        db.start_retention(1);
         assert_eq!(db.now_ms(5), 5);
     }
 
@@ -690,11 +628,11 @@ mod tests {
     fn an_empty_recorder_id_is_none() {
         let dir = TestDir::new("db-recorder-id");
         std::fs::write(dir.join("directory-recorder-id"), b" \n").unwrap();
-        let db = Db::open(&dir.join("trunk-pro.sqlite"), Duration::from_secs(1)).unwrap();
+        let db = Db::open(&dir.join("trunk-pro.sqlite"), Duration::from_secs(1), 0).unwrap();
         assert_eq!(db.recorder(), None);
         drop(db);
         std::fs::write(dir.join("directory-recorder-id"), b"rec-1\n").unwrap();
-        let db = Db::open(&dir.join("trunk-pro.sqlite"), Duration::from_secs(1)).unwrap();
+        let db = Db::open(&dir.join("trunk-pro.sqlite"), Duration::from_secs(1), 0).unwrap();
         assert_eq!(db.recorder(), Some("rec-1"));
     }
 

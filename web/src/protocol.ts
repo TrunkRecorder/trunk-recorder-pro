@@ -489,17 +489,17 @@ export interface Config {
   keys?: Record<string, KeySource>;
   /** The log (desktop app). */
   log?: LogSettings;
-  /** The call store (desktop app). */
-  store?: StoreSettings;
+  /** What's kept on disk beside the config (desktop app): the call store. */
+  storage?: StorageSettings;
   /** What the dashboard watches on the computer (desktop app). */
   monitor?: MonitorSettings;
 }
 
-export interface StoreSettings {
-  /** Days of call records kept in the call store; 0 keeps everything. */
+export interface StorageSettings {
+  /** Days of calls the call store indexes (default 120); 0 keeps them all. The calls' files on disk aren't touched. */
   retentionDays: number;
-  /** Seconds between the call store's commits (1 to 3600 when used; default 60). Each commit writes whole pages, so longer is gentler on flash. */
-  batchSeconds: number;
+  /** Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, twice, so longer is gentler on flash. */
+  commitSeconds: number;
 }
 
 export interface MonitorSettings {

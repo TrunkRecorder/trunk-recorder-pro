@@ -1824,8 +1824,8 @@ pub struct Config {
     pub keys: BTreeMap<String, KeySource>,
     /// The log: how much, where to, and how lines read.
     pub log: LogSettings,
-    /// The call store (desktop app).
-    pub store: StoreSettings,
+    /// What's kept on disk beside the config (desktop app): the call store.
+    pub storage: StorageSettings,
     /// The dashboard's watch on the computer (desktop app).
     pub monitor: MonitorSettings,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
@@ -1908,27 +1908,36 @@ impl Default for Config {
             plugin_delays: vec![],
             keys: BTreeMap::new(),
             log: LogSettings::default(),
-            store: StoreSettings::default(),
+            storage: StorageSettings::default(),
             monitor: MonitorSettings::default(),
             notes: vec![],
         }
     }
 }
 
-/// The call store: the index of recorded calls in `trunk-pro.sqlite`.
+/// The call store: the index of recorded calls in `trunk-pro.sqlite`
+/// (research/sqlite-plan.md).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
-pub struct StoreSettings {
-    /// Days of call records kept in the call store; 0 keeps everything.
+pub struct StorageSettings {
+    /// Days of calls the store indexes; 0 keeps them all. The calls' files on
+    /// disk aren't touched.
     pub retention_days: u32,
-    /// Seconds between the store's commits (1 to 3600 when used). Each commit
-    /// writes whole pages, so longer is gentler on flash.
-    pub batch_seconds: u32,
+    /// Seconds between the store's commits under load ([`StorageSettings::COMMIT_SECONDS`]
+    /// bounds it). Each commit writes whole pages, twice, so longer is gentler
+    /// on flash: 300 writes less than today's files on a busy system, 60 about
+    /// the same (research/storage.md).
+    pub commit_seconds: u32,
 }
 
-impl Default for StoreSettings {
+impl StorageSettings {
+    /// What `commitSeconds` may be.
+    pub const COMMIT_SECONDS: std::ops::RangeInclusive<u32> = 10..=3600;
+}
+
+impl Default for StorageSettings {
     fn default() -> Self {
-        StoreSettings { retention_days: 120, batch_seconds: 60 }
+        StorageSettings { retention_days: 120, commit_seconds: 300 }
     }
 }
 
@@ -2673,19 +2682,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_store_batch_defaults_to_60_seconds() {
+    fn storage_defaults_to_300_second_commits_and_120_days() {
         let c = Config::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(c.store.batch_seconds, 60);
-        let c = Config::from_value(serde_json::json!({ "store": { "batchSeconds": 300 } })).unwrap();
-        assert_eq!(c.store.batch_seconds, 300);
-    }
-
-    #[test]
-    fn the_store_section_defaults_to_120_days() {
-        let c = Config::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(c.store.retention_days, 120);
-        let c = Config::from_value(serde_json::json!({ "store": { "retentionDays": 0 } })).unwrap();
-        assert_eq!(c.store.retention_days, 0);
+        assert_eq!((c.storage.commit_seconds, c.storage.retention_days), (300, 120));
+        let c = Config::from_value(serde_json::json!({ "storage": { "commitSeconds": 60, "retentionDays": 0 } })).unwrap();
+        assert_eq!((c.storage.commit_seconds, c.storage.retention_days), (60, 0));
     }
 
     /// A call sign heard on a frequency goes into its system's licenses there (trunked or

@@ -1267,9 +1267,9 @@
           "$ref": "#/definitions/LogSettings",
           "description": "The log (desktop app)."
         },
-        "store": {
-          "$ref": "#/definitions/StoreSettings",
-          "description": "The call store (desktop app)."
+        "storage": {
+          "$ref": "#/definitions/StorageSettings",
+          "description": "What's kept on disk beside the config (desktop app): the call store."
         },
         "monitor": {
           "$ref": "#/definitions/MonitorSettings",
@@ -6743,6 +6743,24 @@
       ],
       "additionalProperties": false
     },
+    "StorageSettings": {
+      "type": "object",
+      "properties": {
+        "retentionDays": {
+          "type": "number",
+          "description": "Days of calls the call store indexes (default 120); 0 keeps them all. The calls' files on disk aren't touched."
+        },
+        "commitSeconds": {
+          "type": "number",
+          "description": "Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, twice, so longer is gentler on flash."
+        }
+      },
+      "required": [
+        "retentionDays",
+        "commitSeconds"
+      ],
+      "additionalProperties": false
+    },
     "StoreKind": {
       "type": "string",
       "enum": [
@@ -6750,24 +6768,6 @@
         "interface"
       ],
       "description": "Which store: the plugins' (the registry) or the interfaces'."
-    },
-    "StoreSettings": {
-      "type": "object",
-      "properties": {
-        "retentionDays": {
-          "type": "number",
-          "description": "Days of call records kept in the call store; 0 keeps everything."
-        },
-        "batchSeconds": {
-          "type": "number",
-          "description": "Seconds between the call store's commits (1 to 3600 when used; default 60). Each commit writes whole pages, so longer is gentler on flash."
-        }
-      },
-      "required": [
-        "retentionDays",
-        "batchSeconds"
-      ],
-      "additionalProperties": false
     },
     "SurveyBand": {
       "type": "object",

@@ -1,5 +1,5 @@
 //! The call store over HTTP: `GET /api/v1/calls`, `/api/v1/calls/{path}` and
-//! `/api/v1/store`, for plugins and interfaces on other machines. Answers come
+//! `/api/v1/storage`, for plugins and interfaces on other machines. Answers come
 //! from the committed rows, as `callsQuery` does. Every door that serves the
 //! API serves these, with the access the WebSocket there has.
 
@@ -24,7 +24,7 @@ pub fn router() -> Router<Arc<Ctx>> {
         Router::new()
             .route("/calls", get(calls))
             .route("/calls/{*path}", get(call))
-            .route("/store", get(store)),
+            .route("/storage", get(storage)),
     )
 }
 
@@ -136,13 +136,13 @@ async fn call(
     }
 }
 
-async fn store(State(ctx): State<Arc<Ctx>>, Extension(door): Extension<Door>) -> Response {
+async fn storage(State(ctx): State<Arc<Ctx>>, Extension(door): Extension<Door>) -> Response {
     if let Some(r) = refused(&ctx, &door) {
         return r;
     }
-    let (retention_days, batch_seconds) = {
+    let (retention_days, commit_seconds) = {
         let cfg = ctx.config.lock().unwrap();
-        (cfg.store.retention_days, cfg.store.batch_seconds)
+        (cfg.storage.retention_days, cfg.storage.commit_seconds)
     };
     let stats = read(&ctx, |c| {
         c.query_row(
@@ -168,7 +168,7 @@ async fn store(State(ctx): State<Arc<Ctx>>, Extension(door): Extension<Door>) ->
                 "oldestMs": oldest,
                 "newestMs": newest,
                 "retentionDays": retention_days,
-                "batchSeconds": batch_seconds,
+                "commitSeconds": commit_seconds,
             }))
             .into_response()
         }
@@ -213,7 +213,7 @@ mod tests {
     async fn calls_routes_answer_from_the_store() {
         let dir = TestDir::new("api-v1");
         let ctx = runtime::test_ctx(&dir.join("api-v1-cap"));
-        let store = get(&ctx, "/api/v1/store").await;
+        let store = get(&ctx, "/api/v1/storage").await;
         assert_eq!(store.0, 200, "{}", store.1);
         let v = json_of(&store.1);
         assert_eq!(
@@ -262,7 +262,7 @@ mod tests {
             (400, Some("limit must be a number"))
         );
         assert_eq!(get(&ctx, "/api/v1/calls?talkgroup=-1").await.0, 400);
-        let (code, body) = get(&ctx, "/api/v1/store").await;
+        let (code, body) = get(&ctx, "/api/v1/storage").await;
         assert_eq!(code, 200);
         let v = json_of(&body);
         assert_eq!(
@@ -274,8 +274,8 @@ mod tests {
             (Some(1_700_000_000_000), Some(1_700_000_000_000))
         );
         assert_eq!(
-            (v["retentionDays"].as_u64(), v["batchSeconds"].as_u64()),
-            (Some(120), Some(60))
+            (v["retentionDays"].as_u64(), v["commitSeconds"].as_u64()),
+            (Some(120), Some(300))
         );
         assert!(v["path"].as_str().unwrap().ends_with("trunk-pro.sqlite"));
     }
@@ -329,12 +329,12 @@ mod tests {
             )
         };
         set(true);
-        for p in ["/api/v1/calls", "/api/v1/store"] {
+        for p in ["/api/v1/calls", "/api/v1/storage"] {
             let (code, body) = get_as(&ctx, door.clone(), p).await;
             assert_eq!(code, 200, "{p}: {body}");
         }
         set(false);
-        for p in ["/api/v1/calls", "/api/v1/calls/ohmarcs/a", "/api/v1/store"] {
+        for p in ["/api/v1/calls", "/api/v1/calls/ohmarcs/a", "/api/v1/storage"] {
             let (code, body) = get_as(&ctx, door.clone(), p).await;
             assert_eq!((code, body.as_str()), (404, ""), "{p}");
         }
@@ -346,7 +346,7 @@ mod tests {
         let store = dir.join("trunk-pro.sqlite");
         crate::db::seed_newer(&store);
         let ctx = runtime::test_ctx_with_store(&dir.join("cap"), &store);
-        for p in ["/api/v1/calls", "/api/v1/calls/ohmarcs/a", "/api/v1/store"] {
+        for p in ["/api/v1/calls", "/api/v1/calls/ohmarcs/a", "/api/v1/storage"] {
             let (code, body) = get(&ctx, p).await;
             assert_eq!(
                 (code, json_of(&body)["error"].as_str()),
@@ -365,7 +365,7 @@ mod tests {
             id: "gone".into(),
             stop,
         };
-        for p in ["/api/v1/calls", "/api/v1/calls/ohmarcs/a", "/api/v1/store"] {
+        for p in ["/api/v1/calls", "/api/v1/calls/ohmarcs/a", "/api/v1/storage"] {
             assert_eq!(get_as(&ctx, door.clone(), p).await.0, 404, "{p}");
         }
     }

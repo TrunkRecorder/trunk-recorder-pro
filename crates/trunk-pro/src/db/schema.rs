@@ -1,16 +1,22 @@
 //! The call store's schema, as numbered migration scripts. `migrate` brings
-//! any database, new or old, up to the last one.
+//! any database, new or old, up to the last one. The version is SQLite's own
+//! `user_version`, which changes in the same transaction as the tables.
+//!
+//! Indexes cost page writes on every commit (research/storage.md), so there
+//! are only those a query needs: calls by start (every page), by talkgroup
+//! and start (a talkgroup's calls; a system is filtered on top), and
+//! transmissions by radio. The child tables are `without rowid`: their
+//! primary key is the table, not a second index beside it.
 
 use rusqlite::Connection;
 
 /// The version a fully migrated database reports.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
 /// One script per version; entry `n` takes a database from version `n` to
 /// `n + 1`. Never edit a shipped script: add the next one.
 pub const MIGRATIONS: &[&str] = &["
-create table schema_version (version integer not null);
-create table meta (key text primary key, value text not null);
+create table meta (key text primary key, value text not null) without rowid;
 create table calls (
     id integer primary key,
     path text not null unique,
@@ -48,7 +54,7 @@ create table call_transmissions (
     signal_system text,
     tag text,
     primary key (call_id, seq)
-);
+) without rowid;
 create table call_frequencies (
     call_id integer not null references calls(id) on delete cascade,
     seq integer not null,
@@ -58,48 +64,60 @@ create table call_frequencies (
     error_count integer not null,
     spike_count integer not null,
     primary key (call_id, seq)
-);
+) without rowid;
 create index calls_start on calls(start_ms);
-create index calls_system_tg_start on calls(short_name, talkgroup, start_ms);
 create index calls_tg_start on calls(talkgroup, start_ms);
 create index tx_unit_start on call_transmissions(unit, start_ms);
 "];
 
+/// How a database stands after [`migrate`].
+pub enum Migrated {
+    Current,
+    /// A newer build wrote it (this version): it's left as it is.
+    Newer(u32),
+}
+
 /// Apply every migration past the database's version, all in one
-/// transaction, so a failure leaves the file as it was. A database written by
-/// a newer build (a higher version than this one knows) is an error.
-pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    let have = match conn.query_row("select version from schema_version", [], |r| {
-        r.get::<_, i64>(0)
-    }) {
-        Ok(v) => v as usize,
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-            if msg.contains("no such table: schema_version") =>
-        {
-            0
+/// transaction, so a failure leaves the file as it was.
+pub fn migrate(conn: &Connection) -> rusqlite::Result<Migrated> {
+    let have: u32 = conn.query_row("pragma user_version", [], |r| r.get(0))?;
+    if have > SCHEMA_VERSION {
+        return Ok(Migrated::Newer(have));
+    }
+    if have < SCHEMA_VERSION {
+        let tx = conn.unchecked_transaction()?;
+        for script in &MIGRATIONS[have as usize..] {
+            tx.execute_batch(script)?;
         }
-        Err(e) => return Err(e),
-    };
-    if have > MIGRATIONS.len() {
-        return Err(rusqlite::Error::ToSqlConversionFailure(
-            format!(
-                "database is at schema version {have}, newer than this build's {} (written by a newer Trunk Recorder Pro)",
-                MIGRATIONS.len()
-            )
-            .into(),
-        ));
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()?;
     }
-    if have == MIGRATIONS.len() {
-        return Ok(());
+    Ok(Migrated::Current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The queries' plans use the indexes the schema keeps: a page of every
+    /// call, of a talkgroup (in a system), and of a radio, without sorting
+    /// the whole table.
+    #[test]
+    fn the_queries_use_the_indexes() {
+        let c = Connection::open_in_memory().unwrap();
+        migrate(&c).unwrap();
+        let plan = |sql: &str| -> String {
+            let mut st = c.prepare(&format!("explain query plan {sql}")).unwrap();
+            let rows: Vec<String> = st.query_map([], |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
+            rows.join(" | ")
+        };
+        let order = "order by start_ms desc, id desc limit 101";
+        assert!(plan(&format!("select path from calls where start_ms < 5 {order}")).contains("calls_start"));
+        let tg = plan(&format!("select path from calls where short_name in ('a') and talkgroup = 1 {order}"));
+        assert!(tg.contains("calls_tg_start"), "{tg}");
+        let unit = plan("select call_id from call_transmissions where unit = 7");
+        assert!(unit.contains("tx_unit_start"), "{unit}");
+        let sys = plan(&format!("select path from calls where short_name in ('a') {order}"));
+        assert!(sys.contains("calls_start") && !sys.contains("TEMP B-TREE"), "a system's page walks the start index: {sys}");
     }
-    let tx = conn.unchecked_transaction()?;
-    for script in &MIGRATIONS[have..] {
-        tx.execute_batch(script)?;
-    }
-    tx.execute("delete from schema_version", [])?;
-    tx.execute(
-        "insert into schema_version (version) values (?1)",
-        [MIGRATIONS.len() as i64],
-    )?;
-    tx.commit()
 }

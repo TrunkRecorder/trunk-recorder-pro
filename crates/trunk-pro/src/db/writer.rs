@@ -1,74 +1,82 @@
 //! The one thread that writes the call store. Writes arrive on a channel and
-//! are applied in batches, one transaction each, so a busy system costs about
-//! one commit per batch interval while a lone write still commits at once.
+//! are applied in batches, one transaction each: under load one commit per
+//! `storage.commitSeconds`, while a lone write after a quiet spell commits at
+//! once. Each commit writes whole pages, twice (the WAL, then the checkpoint),
+//! so fewer commits are gentler on flash (research/storage.md). It persists
+//! only: the live list and the interface are told by whoever sends the write.
+//! Retention runs here too, a chunk at a time between batches.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use super::Write;
 use super::row::CallRow;
+use super::{DAY_MS, Write};
 
-/// Most writes held back while waiting out the interval; past it the batch
-/// commits early. It sits below the backfill's high-water mark
-/// (`QUEUE_HIGH`), because held writes still count as queued: were it
-/// above, the backfill would stall at `QUEUE_HIGH` rows for the whole
-/// interval. This way a backfill commits about a thousand rows per
-/// transaction as fast as the disk allows, while live traffic still batches
-/// per interval.
-///
-/// It also caps the writes one transaction takes, held and drained together:
-/// it bounds how long a transaction runs, and how far the backfill can get
-/// ahead, since every write the writer takes off the channel frees the
-/// backfill to send another. Without the cap a producer faster than the
-/// writer keeps the channel non-empty and one transaction swallows it all.
-const MAX_BATCH: usize = super::backfill::QUEUE_HIGH / 2;
-const _: () = assert!(MAX_BATCH < super::backfill::QUEUE_HIGH);
+/// Most writes one transaction takes: it bounds how long one runs (a
+/// backfill sends this many, then flushes, so live writes never queue
+/// behind it).
+pub(super) const MAX_BATCH: usize = 1000;
+/// Calls retention deletes in one transaction.
+const RETAIN_CHUNK: i64 = 1000;
+/// How often retention looks for calls past `retentionDays`.
+const RETAIN_EVERY: Duration = Duration::from_secs(3600);
 
-/// Start the `db-writer` thread. It runs until every sender of `rx` is gone.
-/// `queued` counts the writes sent and not yet taken off the channel.
-/// Under load it commits once per `batch`; a lone write after a quiet spell
-/// commits at once, and a `Flush` forces the commit.
-pub fn spawn(conn: Connection, rx: Receiver<Write>, commits: Arc<AtomicU64>, queued: Arc<AtomicUsize>, batch: Duration) -> Option<std::thread::JoinHandle<()>> {
-    let spawned = std::thread::Builder::new()
-        .name("db-writer".into())
-        .spawn(move || {
-            let mut w = Writer { conn, commits, queued, batch };
-            w.run(rx);
-        });
-    spawned
-        .inspect_err(|e| log::error!("Call store: could not start the writer thread: {e}"))
-        .ok()
+/// Start the `db-writer` thread; it runs until every sender of `rx` is gone.
+/// `batch`: the least time between two commits under load. `retention_days`:
+/// calls kept (0: all).
+pub fn spawn(conn: Connection, rx: Receiver<Write>, commits: Arc<AtomicU64>, batch: Duration, retention_days: u32) -> Option<std::thread::JoinHandle<()>> {
+    let spawned = std::thread::Builder::new().name("db-writer".into()).spawn(move || {
+        let mut w = Writer { conn, commits, batch, retention_days, retiring: None, retain_at: Instant::now() };
+        w.run(rx);
+    });
+    spawned.inspect_err(|e| log::error!("Call store: could not start the writer thread: {e}")).ok()
 }
 
-/// The writer persists only: the live list and the interface are told at
-/// once by whoever sends the write (`runtime::index_call`, `call_files`).
 struct Writer {
     conn: Connection,
     commits: Arc<AtomicU64>,
-    queued: Arc<AtomicUsize>,
-    /// The least time between the starts of two commits under load.
     batch: Duration,
+    retention_days: u32,
+    /// Retention under way: calls that started before this go, a chunk per pass.
+    retiring: Option<i64>,
+    /// When retention next looks.
+    retain_at: Instant,
+}
+
+/// What one transaction collects while its writes are applied.
+#[derive(Default)]
+struct Batch {
+    /// Waiting `flush` callers, answered once the batch is done.
+    flushes: Vec<Sender<Result<(), String>>>,
+    checkpoint: bool,
 }
 
 impl Writer {
     fn run(&mut self, rx: Receiver<Write>) {
         let mut last_commit: Option<Instant> = None;
-        while let Ok(first) = rx.recv() {
+        loop {
+            // Idle: a write, or retention's next chunk (at once) or next look.
+            let idle = if self.retiring.is_some() { Duration::ZERO } else { self.retain_at.saturating_duration_since(Instant::now()) };
+            let first = match rx.recv_timeout(idle) {
+                Ok(w) => w,
+                Err(RecvTimeoutError::Timeout) => {
+                    self.retain_step();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
             let mut held = vec![first];
             let mut disconnected = false;
-            // Wait out the interval since the last commit, taking writes as
-            // they come. A flush, a full batch or the last handle going ends
-            // the wait at once.
+            // Wait out the interval since the last commit, taking writes as they come;
+            // a flush, a full batch or the last handle going ends the wait at once.
             if let Some(at) = last_commit {
                 let mut flushing = matches!(held[0], Write::Flush(_));
                 while !flushing && held.len() < MAX_BATCH {
-                    let Some(rest) = self.batch.checked_sub(at.elapsed()) else {
-                        break;
-                    };
+                    let Some(rest) = self.batch.checked_sub(at.elapsed()) else { break };
                     match rx.recv_timeout(rest) {
                         Ok(w) => {
                             flushing = matches!(w, Write::Flush(_));
@@ -84,50 +92,12 @@ impl Writer {
             }
             last_commit = Some(Instant::now());
             let mut batch = Batch::default();
-            let mut outcome = Ok(());
-            match self
-                .conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-            {
-                Ok(tx) => {
-                    let mut taken = held.len();
-                    for w in held {
-                        apply(&tx, w, &mut batch, &self.queued);
-                    }
-                    while taken < MAX_BATCH {
-                        let Ok(next) = rx.try_recv() else {
-                            break;
-                        };
-                        taken += 1;
-                        apply(&tx, next, &mut batch, &self.queued);
-                    }
-                    match tx.commit() {
-                        Ok(()) => {
-                            self.commits.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(e) => {
-                            log::warn!("Call store: commit failed: {e}");
-                            outcome = Err(format!("commit failed: {e}"));
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Call store: could not begin a transaction: {e}");
-                    outcome = Err(format!("could not begin a transaction: {e}"));
-                    for next in held
-                        .into_iter()
-                        .chain(std::iter::from_fn(|| rx.try_recv().ok()))
-                    {
-                        self.queued.fetch_sub(1, Ordering::Relaxed);
-                        if let Write::Flush(done) = next {
-                            batch.flushes.push(done);
-                        }
-                    }
-                }
+            // (What else is waiting joins the batch, up to its size.)
+            while held.len() < MAX_BATCH {
+                let Ok(next) = rx.try_recv() else { break };
+                held.push(next);
             }
-            if let Some(before_ms) = batch.retention {
-                self.retain(before_ms);
-            }
+            let outcome = self.commit(held, &mut batch);
             if batch.checkpoint {
                 self.checkpoint();
             }
@@ -138,95 +108,106 @@ impl Writer {
                 break;
             }
         }
+        // (The planner's statistics, kept current as SQLite advises, on the way out.)
+        if let Err(e) = self.conn.execute_batch("pragma optimize") {
+            log::debug!("Call store: optimize: {e}");
+        }
     }
 
-    /// Delete the calls that started before `before_ms`, with their
-    /// transmissions and frequencies (they cascade), oldest first, 1,000 to a
-    /// transaction so readers and the next writes are never held up long.
-    /// The audio and JSON files are not touched.
-    fn retain(&mut self, before_ms: i64) {
-        let mut total = 0usize;
-        loop {
-            let batch = self
-                .conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .and_then(|tx| {
-                    let n = tx.execute(
-                        "delete from calls where id in
-                        (select id from calls where start_ms < ?1 order by start_ms limit 1000)",
-                        [before_ms],
-                    )?;
-                    tx.commit()?;
-                    Ok(n)
-                });
-            match batch {
-                Ok(0) => break,
-                Ok(n) => {
-                    total += n;
-                    self.commits.fetch_add(1, Ordering::Relaxed);
+    /// Apply `held` in one transaction. A write that fails is logged and the
+    /// rest go on; a transaction that can't begin or commit loses the batch
+    /// (the live list still has its calls, and the next start's reconcile
+    /// indexes them from their files).
+    fn commit(&mut self, held: Vec<Write>, batch: &mut Batch) -> Result<(), String> {
+        let tx = match self.conn.transaction_with_behavior(TransactionBehavior::Immediate) {
+            Ok(tx) => tx,
+            Err(e) => {
+                log::warn!("Call store: could not begin a transaction: {e}");
+                batch.flushes.extend(held.into_iter().filter_map(|w| if let Write::Flush(done) = w { Some(done) } else { None }));
+                return Err(format!("could not begin a transaction: {e}"));
+            }
+        };
+        let mut retire = None;
+        for w in held {
+            match w {
+                Write::Call { row, live } => {
+                    if let Err(e) = write_call(&tx, &row, live) {
+                        log::warn!("Call store: call write {} failed: {e}", row.path);
+                    }
                 }
-                Err(e) => {
-                    log::warn!("Call store: retention failed: {e}");
-                    break;
+                Write::CallFiles { path, audio, json } => {
+                    if let Err(e) = set_files(&tx, &path, audio, json) {
+                        log::warn!("Call store: files write {path} failed: {e}");
+                    }
                 }
+                Write::Meta { key, value } => {
+                    if let Err(e) = tx.execute("insert into meta (key, value) values (?1, ?2) on conflict(key) do update set value = excluded.value", params![key, value]) {
+                        log::warn!("Call store: meta write {key} failed: {e}");
+                    }
+                }
+                Write::Retention { before_ms } => retire = Some(retire.map_or(before_ms, |b: i64| b.max(before_ms))),
+                Write::Checkpoint => batch.checkpoint = true,
+                Write::Flush(done) => batch.flushes.push(done),
             }
         }
-        if total > 0 {
-            log::info!("Call store: retention removed {total} call records");
+        match tx.commit() {
+            Ok(()) => {
+                self.commits.fetch_add(1, Ordering::Relaxed);
+                if let Some(b) = retire {
+                    self.retiring = Some(self.retiring.map_or(b, |r| r.max(b)));
+                }
+                Ok(())
+            }
+            Err(e) => {
+                log::warn!("Call store: commit failed: {e}");
+                Err(format!("commit failed: {e}"))
+            }
+        }
+    }
+
+    /// Retention's next step: when it's time to look, where `retentionDays`
+    /// cuts (counted back from now, but at most a day past the newest call,
+    /// so a clock jumping ahead can't empty the store); then one chunk of the
+    /// oldest calls past the cut, with their transmissions and frequencies.
+    /// The files on disk aren't touched.
+    fn retain_step(&mut self) {
+        if self.retiring.is_none() {
+            self.retain_at = Instant::now() + RETAIN_EVERY;
+            if self.retention_days == 0 {
+                return;
+            }
+            let newest: Option<i64> = self.conn.query_row("select max(start_ms) from calls", [], |r| r.get(0)).unwrap_or(None);
+            let now = crate::clock::unix_ms() as i64;
+            let now = newest.map_or(now, |n| now.min(n.saturating_add(DAY_MS)));
+            self.retiring = Some(now - i64::from(self.retention_days) * DAY_MS);
+        }
+        let Some(before_ms) = self.retiring else { return };
+        let gone = self.conn.transaction_with_behavior(TransactionBehavior::Immediate).and_then(|tx| {
+            let n = tx.execute("delete from calls where id in (select id from calls where start_ms < ?1 order by start_ms limit ?2)", params![before_ms, RETAIN_CHUNK])?;
+            tx.commit()?;
+            Ok(n)
+        });
+        match gone {
+            Ok(n) => {
+                if n > 0 {
+                    self.commits.fetch_add(1, Ordering::Relaxed);
+                    log::debug!("Call store: retention removed {n} call records");
+                }
+                if (n as i64) < RETAIN_CHUNK {
+                    self.retiring = None;
+                }
+            }
+            Err(e) => {
+                log::warn!("Call store: retention failed: {e}");
+                self.retiring = None;
+            }
         }
     }
 
     fn checkpoint(&self) {
-        if let Err(e) = self
-            .conn
-            .query_row("pragma wal_checkpoint(truncate)", [], |_| Ok(()))
-        {
+        if let Err(e) = self.conn.query_row("pragma wal_checkpoint(truncate)", [], |_| Ok(())) {
             log::warn!("Call store: checkpoint failed: {e}");
         }
-    }
-}
-
-/// What one transaction collects while its writes are applied.
-#[derive(Default)]
-struct Batch {
-    /// Waiting `flush` callers, answered once the batch is done.
-    flushes: Vec<Sender<Result<(), String>>>,
-    checkpoint: bool,
-    /// The newest retention cut asked for, run after the commit.
-    retention: Option<i64>,
-}
-
-/// Apply one write inside the batch's transaction. Failures are logged; the
-/// batch carries on.
-fn apply(conn: &Connection, w: Write, batch: &mut Batch, queued: &AtomicUsize) {
-    queued.fetch_sub(1, Ordering::Relaxed);
-    match w {
-        Write::Call { row, live } => {
-            if let Err(e) = write_call(conn, &row, live) {
-                log::warn!("Call store: call write {} failed: {e}", row.path);
-            }
-        }
-        Write::CallFiles { path, audio, json } => {
-            if let Err(e) = set_files(conn, &path, audio, json) {
-                log::warn!("Call store: files write {path} failed: {e}");
-            }
-        }
-        // Runs after the batch commits, in transactions of its own.
-        Write::Retention { before_ms } => {
-            batch.retention = Some(batch.retention.map_or(before_ms, |b| b.max(before_ms)));
-        }
-        Write::Meta { key, value } => {
-            let r = conn.execute(
-                "insert into meta (key, value) values (?1, ?2)
-                 on conflict(key) do update set value = excluded.value",
-                params![key, value],
-            );
-            if let Err(e) = r {
-                log::warn!("Call store: meta write {key} failed: {e}");
-            }
-        }
-        Write::Checkpoint => batch.checkpoint = true,
-        Write::Flush(done) => batch.flushes.push(done),
     }
 }
 
@@ -492,38 +473,38 @@ mod tests {
         assert_eq!((audio, json), (false, true));
     }
 
+    /// Calls until `count` says `want`, or two seconds.
+    fn wait_for(db: &Db, want: u32) -> (u32, u32) {
+        let t = std::time::Instant::now();
+        loop {
+            let n: (u32, u32) = db.with_reader(|c| Ok((c.query_row("select count(*) from calls", [], |r| r.get(0))?, c.query_row("select count(*) from call_transmissions", [], |r| r.get(0))?))).unwrap();
+            if n.0 == want || t.elapsed() > std::time::Duration::from_secs(2) {
+                return n;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Retention deletes a chunk at a time between batches, with the calls'
+    /// transmissions, and a live write isn't held up meanwhile.
     #[test]
-    fn retention_deletes_old_rows_in_batches_and_cascades() {
+    fn retention_deletes_old_rows_a_chunk_at_a_time_and_cascades() {
         let (db, _) = Db::for_test("retention");
         for i in 0..2500u32 {
             let r = record(1, i as i64);
-            db.send(Write::Call {
-                row: call_row(&format!("s/{i}"), &r, &r.to_json(), true, true, None, 0),
-                live: true,
-            });
+            db.send(Write::Call { row: call_row(&format!("s/{i}"), &r, &r.to_json(), true, true, None, 0), live: true });
         }
         db.flush().unwrap();
         let before = db.commits();
         db.send(Write::Retention { before_ms: 2200 });
         db.flush().unwrap();
-        let (n, tx): (u32, u32) = db
-            .with_reader(|c| {
-                Ok((
-                    c.query_row("select count(*) from calls", [], |r| r.get(0))?,
-                    c.query_row("select count(*) from call_transmissions", [], |r| r.get(0))?,
-                ))
-            })
-            .unwrap();
-        assert_eq!((n, tx), (300, 600));
-        assert!(
-            db.commits() - before >= 3,
-            "2200 rows in batches of 1000: at least three commits"
-        );
+        let r = record(1, 9999);
+        db.send(Write::Call { row: call_row("live", &r, &r.to_json(), true, true, None, 0), live: true });
+        db.flush().unwrap();
+        assert_eq!(wait_for(&db, 301), (301, 602));
+        assert!(db.commits() - before >= 4, "2200 rows in chunks of 1000, and the live write's own");
         db.send(Write::Retention { before_ms: 0 });
         db.flush().unwrap();
-        let n: u32 = db
-            .with_reader(|c| c.query_row("select count(*) from calls", [], |r| r.get(0)))
-            .unwrap();
-        assert_eq!(n, 300, "nothing before 0");
+        assert_eq!(wait_for(&db, 301).0, 301, "nothing before 0");
     }
 }
