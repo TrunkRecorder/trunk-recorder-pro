@@ -274,7 +274,9 @@ fn run_calls(a: &Args) {
     let notes: super::host::Notes = Arc::new(print_note);
     let encoder = a.get("encoder").map_or(Ok(Default::default()), |e| serde_json::from_value(serde_json::json!(e))).unwrap_or_else(|_| die("--encoder: auto, ffmpeg, afconvert, fdkaac or none"));
     let audio = AudioSettings { encoder, ..Default::default() };
-    let mut host = PluginHost::start(vec![spec], &audio, &systems, &capture_dir, None, notes);
+    // The recorder's call store, if there is one, as a recording's plugins are given it.
+    let store = Some(crate::paths::data_dir().join("trunk-pro.sqlite")).filter(|p| p.is_file());
+    let mut host = PluginHost::start(vec![spec], &audio, &systems, &capture_dir, store.as_deref(), notes);
     if host.is_empty() {
         std::process::exit(1);
     }

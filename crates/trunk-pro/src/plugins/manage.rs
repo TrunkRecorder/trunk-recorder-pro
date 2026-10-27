@@ -201,10 +201,10 @@ fn alone(mut h: Arc<PluginHost>) -> PluginHost {
     }
 }
 
-/// The plugins' part of the app's shared state.
 /// The systems, the capture folder and the call store's file a recording's plugins started with.
 type StartEnv = (Vec<SystemInfo>, PathBuf, Option<PathBuf>);
 
+/// The plugins' part of the app's shared state.
 pub struct Plugins {
     /// The plugins running while recording ([`Plugins::host`]: a clone, used without the lock).
     host: Mutex<Option<Arc<PluginHost>>>,

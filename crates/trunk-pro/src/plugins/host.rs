@@ -939,8 +939,11 @@ mod tests {
         let exe = hello_keeper(&dir);
         let audio = super::super::AudioSettings::default();
         let hello_with = |store: Option<&Path>, data: &str| {
-            let spec = Spec { id: "keeper".into(), copy: 0, exe: exe.clone(), config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join(data)), share_decrypted: false };
+            // The keeper's manifest requires `server`: without it the plugin isn't started.
+            let config = serde_json::json!({ "server": "https://a" });
+            let spec = Spec { id: "keeper".into(), copy: 0, exe: exe.clone(), config, systems: BTreeMap::new(), data_dir: Some(dir.join(data)), share_decrypted: false };
             let mut host = PluginHost::start(vec![spec], &audio, &[], &dir, store, Arc::new(|_| {}));
+            assert!(!host.is_empty(), "the keeper wasn't started");
             let hello = dir.join(data).join("hello.json");
             let t0 = Instant::now();
             while !hello.exists() && t0.elapsed() < Duration::from_secs(5) {

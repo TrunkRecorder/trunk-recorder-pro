@@ -76,15 +76,20 @@ Complete plugins to learn from:
 `sdk` (on by default) is everything for writing a plugin. The recorder itself
 uses only the protocol types, with `default-features = false`.
 
+## The call store
+
+The recorder keeps every call it has recorded in an SQLite file, its call
+store. When the store is open, `Setup::store` (`Hello::store` on the wire) is
+its path; otherwise it is `None`. A plugin may read it, and only read it: open
+it read-only (`SQLITE_OPEN_READ_ONLY`; it is in WAL mode), read the
+`schema_version` table first and refuse a version you don't know, and never
+write to it. A plugin on another machine reads the same calls over HTTP
+(`/api/v1/calls`) instead. (Since SDK 0.9.0.)
+
 ## Versions
 
 The crate follows semver. The protocol's `API_VERSION` is separate: it changes
 only when an older recorder can't run a newer plugin.
-
-- 0.9.0: `Hello::store` / `Setup::store`, the path of the recorder's call store
-  (SQLite) when it has one. Open it read-only (`SQLITE_OPEN_READ_ONLY`; it is in
-  WAL mode), read `schema_version` first and refuse a version you don't know,
-  and never write to it. Plugins on other machines use the HTTP API instead.
 
 ## License
 

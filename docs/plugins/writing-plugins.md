@@ -71,7 +71,10 @@ The lifecycle, as the recorder (the "host") sees it:
    and macOS), and writes `hello`: the
    plugin's settings, every system (short name, kind, the plugin's settings for it, and, when
    the system overrides some of the plugin's own settings, those settings as they are for it:
-   `settings`), the recordings folder, the data folder, and the audio formats calls will carry.
+   `settings`), the recordings folder, the data folder, the audio formats calls will carry, and,
+   when the recorder's call store opened, `store`: the store's absolute path. Open it read-only
+   (it is in WAL mode), read `schema_version` first, and never write to it; a plugin on another
+   machine reads the same calls over HTTP (`/api/v1/calls`).
 3. **Ready.** The plugin answers `ready` once its settings are good. If they aren't, it sends an
    error `status` saying what to fix and exits with status **78**: the recorder shows the message
    and doesn't restart it until its settings change or recording starts again.
@@ -146,7 +149,7 @@ Add the crate and `schemars` (for the settings form):
 
 ```toml
 [dependencies]
-trunk-recorder-plugin = "0.7.0"
+trunk-recorder-plugin = "0.9"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
