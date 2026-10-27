@@ -32,21 +32,8 @@ let listen: { on: boolean; system: string | null; talkgroup: number | null } = {
 let phase: FromRecorder & { type: "state" } = { type: "state", phase: "idle", error: null, ended: false };
 /** What the page watches (applied to each new session). */
 let topics: string[] = [];
-/** The radio registry, saved between runs. */
+/** The radio registry, saved between runs: one file, `{shortName: registry}`. */
 const REGISTRY_FILE = "radio-registry.json";
-let registrySaved = 0;
-
-async function saveRegistry(s: WebSession): Promise<void> {
-  const changed = JSON.parse(s.registry_unsaved()) as Record<string, string>;
-  if (!Object.keys(changed).length) return;
-  let all: Record<string, string> = {};
-  try {
-    all = JSON.parse((await readText(REGISTRY_FILE)) ?? "{}");
-  } catch {
-    // Start afresh.
-  }
-  await writeText(REGISTRY_FILE, JSON.stringify({ ...all, ...changed })).catch(() => {});
-}
 const ready = init();
 
 function setPhase(p: "idle" | "starting" | "running" | "stopping", error: string | null = null, ended = false): void {
@@ -227,8 +214,8 @@ async function share(shortName: string, observation: string, siteNames: string):
   } catch (e) {
     error = `Couldn't reach ${base} (${e instanceof Error ? e.message : String(e)}).`;
   }
+  // (Kept with the rest of what's due: saveDue.)
   session?.share_done(shortName, wallMs(), id, rev, error ?? undefined);
-  if (session) await saveSharing(session);
 }
 
 async function callSignQuery(m: Extract<ToRecorder, { type: "callSignQuery" }>): Promise<void> {
@@ -313,29 +300,29 @@ async function savedHeard(cfg: Config): Promise<Record<string, HeardCode[]>> {
 /** What sharing with the directory did (each record's version, the last share): kept apart from the config. */
 const SHARING_FILE = "sharing.json";
 
-async function saveSharing(s: WebSession): Promise<void> {
-  const json = s.sharing_unsaved();
-  if (json) await writeText(SHARING_FILE, json).catch(() => {});
-}
-
-async function saveHeard(s: WebSession, cfg: Config): Promise<void> {
-  const json = s.heard_unsaved();
-  if (json) await writeText(heardFile(cfg), json).catch(() => {});
-}
-
 /** AutoTune's scores, for the next run. */
 const TUNE_FILE = "tune.json";
 
-async function saveTune(s: WebSession): Promise<void> {
-  const json = s.tune_unsaved();
-  if (json) await writeText(TUNE_FILE, json).catch(() => {});
-}
-
-async function saveUnits(changed: string): Promise<void> {
-  if (changed === "{}") return;
-  for (const [name, csv] of Object.entries(JSON.parse(changed) as Record<string, string>)) {
-    await writeText(`units-${name}.csv`, csv).catch(() => {});
+/**
+ * Write what the session says is due to be kept between runs (trunk-app's
+ * saving.rs says when each is); `all`: everything that changed (the end).
+ */
+async function saveDue(s: WebSession, cfg: Config, all: boolean): Promise<void> {
+  const due = JSON.parse(s.due(wallMs(), all)) as { kind: string; name: string; text: string }[];
+  const registry: Record<string, string> = {};
+  for (const d of due) {
+    const file = { units: `units-${d.name}.csv`, sharing: SHARING_FILE, bandplan: `bandplan-${d.name}.txt`, heard: heardFile(cfg), tune: TUNE_FILE }[d.kind];
+    if (file) await writeText(file, d.text).catch(() => {});
+    else if (d.kind === "registry") registry[d.name] = d.text;
   }
+  if (!Object.keys(registry).length) return;
+  let kept: Record<string, string> = {};
+  try {
+    kept = JSON.parse((await readText(REGISTRY_FILE)) ?? "{}");
+  } catch {
+    // Start afresh.
+  }
+  await writeText(REGISTRY_FILE, JSON.stringify({ ...kept, ...registry })).catch(() => {});
 }
 
 /** Start and stop requests run one at a time: a Restart (or a double click) waits for the whole of the one before it. */
@@ -367,6 +354,8 @@ async function start(): Promise<void> {
     session.load_sharing((await readText(SHARING_FILE)) ?? "");
     session.load_tune((await readText(TUNE_FILE)) ?? "");
     session.load_registry((await readText(REGISTRY_FILE)) ?? "{}");
+    // (A tab can be closed without the recording's end: the registry more often than the desktop's.)
+    session.save_registry_every(60_000);
     session.set_topics(JSON.stringify(topics));
     if (cfg.systems.some((x) => x.share)) session.set_recorder(await recorderId());
     session.set_want_audio(listen.on);
@@ -391,14 +380,7 @@ async function start(): Promise<void> {
     timer = setInterval(() => {
       if (!session) return;
       deliver(session.poll(wallMs()));
-      void saveUnits(session.units_changed());
-      void saveHeard(session, cfg);
-      // The registry is rewritten whole: once a minute at most (AutoTune's scores with it).
-      if (performance.now() - registrySaved > 60_000) {
-        registrySaved = performance.now();
-        void saveTune(session);
-        void saveRegistry(session);
-      }
+      void saveDue(session, cfg, false);
     }, 50);
     setPhase("running");
   } catch (e) {
@@ -459,13 +441,7 @@ async function stop(ended = false): Promise<void> {
   const s = session;
   session = null;
   deliver(s.finish());
-  await saveUnits(s.units_changed());
-  await saveRegistry(s);
-  if (config) await saveHeard(s, config);
-  await saveTune(s);
-  for (const [name, plan] of Object.entries(JSON.parse(s.bandplans()) as Record<string, string>)) {
-    await writeText(`bandplan-${name}.txt`, plan).catch(() => {});
-  }
+  if (config) await saveDue(s, config, true);
   s.free();
   setPhase("idle", null, ended);
 }

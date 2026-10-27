@@ -9,6 +9,7 @@ use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, Mess
 use crate::filename;
 use crate::log::{Body, CallState, CallTag, Level, Record};
 use crate::heard::HeardCodes;
+use crate::saving::Saved;
 use trunk_core::dsp::inband::subaudible::Tone;
 use trunk_core::Complex32;
 
@@ -370,6 +371,8 @@ pub struct Session {
     /// AutoTune scores by source label, as loaded and as last given to save.
     tune: serde_json::Map<String, Value>,
     tune_saved: String,
+    /// When what's kept between runs is next due ([`Session::due`]).
+    saving: crate::saving::Clock,
     /// Each system's control messages counted at (its time, the count), for the decode rate.
     rate_at: Vec<(f64, u64)>,
     next_status_s: f64,
@@ -436,6 +439,7 @@ impl Session {
             heard: HeardCodes::default(),
             tune: Default::default(),
             tune_saved: String::new(),
+            saving: Default::default(),
             rate_at: Vec::new(),
             next_status_s: STATUS_EVERY_S,
             call_signs: Default::default(),
@@ -670,7 +674,7 @@ impl Session {
     }
 
     /// Preload each system's talker aliases: `units` gives the CSV saved
-    /// for a short name ([`Session::units_changed`]).
+    /// for a short name ([`Saved::Units`]).
     pub fn load_units(&mut self, units: &dyn Fn(&str) -> Option<String>) {
         for n in self.engine.systems().iter().map(|s| s.short_name.clone()) {
             // A system's (and what its sites learned as systems of their own: newest wins).
@@ -685,8 +689,8 @@ impl Session {
     }
 
     /// (short name, talker alias CSV) of each system that learned an alias
-    /// since the last call, to save.
-    pub fn units_changed(&mut self) -> Vec<(String, String)> {
+    /// since the last call, to save; the names the dashboard shows take them.
+    fn units_changed(&mut self) -> Vec<(String, String)> {
         let changed = self.engine.units_changed();
         let mut book = self.meas.shared().names.lock().unwrap();
         for (name, csv) in &changed {
@@ -696,7 +700,7 @@ impl Session {
     }
 
     /// Start each AutoTune source from the score an earlier run kept (what
-    /// [`Session::tune_unsaved`] gave), shifted by any change to its ppm since.
+    /// [`Saved::Tune`] gave), shifted by any change to its ppm since.
     pub fn load_tune(&mut self, json: &str) {
         self.tune = serde_json::from_str(json).unwrap_or_default();
         self.tune_saved = serde_json::to_string_pretty(&self.tune).unwrap_or_default();
@@ -712,7 +716,7 @@ impl Session {
     /// Each source's AutoTune score, to keep for the next run, as JSON
     /// `{label: {errorPpm, atPpm}}` (`atPpm`: the ppm set then), when it
     /// changed since the last call. Sources not measured keep what was loaded.
-    pub fn tune_unsaved(&mut self) -> Option<String> {
+    fn tune_unsaved(&mut self) -> Option<String> {
         let st = self.engine.status();
         for (c, t) in self.cfg.sources.iter().zip(&st.sources) {
             if let Some(e) = t.error_ppm {
@@ -727,15 +731,41 @@ impl Session {
     }
 
     /// Preload the codes conventional frequencies carried before (what
-    /// [`Session::heard_unsaved`] gave, saved as [`Session::heard_file`]).
+    /// [`Saved::Heard`] gave, saved as [`Session::heard_file`]).
     pub fn load_heard(&mut self, json: &str) {
         self.heard = HeardCodes::load(json);
     }
 
-    /// The codes conventional frequencies carried, as JSON to save, when
-    /// they changed since the last call.
-    pub fn heard_unsaved(&mut self) -> Option<String> {
-        self.heard.take_unsaved()
+    /// What's kept between runs that is due to be written now ([`crate::saving`]
+    /// says when each is); `all`: everything that changed (the recording's end).
+    pub fn due(&mut self, now_ms: f64, all: bool) -> Vec<Saved> {
+        let due = self.saving.tick(now_ms, all);
+        let mut out = Vec::new();
+        if due.soon {
+            out.extend(self.units_changed().into_iter().map(|(system, csv)| Saved::Units { system, csv }));
+            out.extend(self.share.unsaved().map(Saved::Sharing));
+            for (key, plan) in self.bandplans() {
+                if !plan.is_empty() && self.saving.plans.get(&key) != Some(&plan) {
+                    self.saving.plans.insert(key.clone(), plan.clone());
+                    out.push(Saved::Bandplan { key, plan });
+                }
+            }
+        }
+        if due.minute {
+            out.extend(self.heard.take_unsaved().map(Saved::Heard));
+            out.extend(self.tune_unsaved().map(Saved::Tune));
+        }
+        if due.registry {
+            let changed = self.meas.shared().radio.lock().unwrap().take_dirty_copies();
+            out.extend(changed.into_iter().map(|(system, radio)| Saved::Registry { system, radio }));
+        }
+        out
+    }
+
+    /// Write the radio registry every `ms` rather than [`crate::saving::REGISTRY_MS`]
+    /// (the browser: a tab can be closed without the recording's end).
+    pub fn save_registry_every(&mut self, ms: f64) {
+        self.saving.registry_every_ms = Some(ms);
     }
 
     /// The file name (beside the config) the codes are kept in.
@@ -744,7 +774,7 @@ impl Session {
     }
 
     /// Each site's (band plan key, band plan), to keep for the next run.
-    pub fn bandplans(&self) -> Vec<(String, String)> {
+    fn bandplans(&self) -> Vec<(String, String)> {
         let systems = self.engine.systems();
         trunk_core::trunk::sites(&systems).enumerate().map(|(i, (system, s))| (bandplan_key(&systems[system as usize], s), self.engine.bandplan(i))).collect()
     }
@@ -773,14 +803,9 @@ impl Session {
         self.share.done(short_name, now_ms, result);
     }
 
-    /// What sharing did before (what [`Session::sharing_unsaved`] gave, kept as `sharing.json` beside the config).
+    /// What sharing did before (what [`Saved::Sharing`] gave, kept as `sharing.json` beside the config).
     pub fn load_sharing(&mut self, json: &str) {
         self.share.load(json);
-    }
-
-    /// What sharing did, as JSON to keep beside the config, when it changed since the last call (not in the config: sharing never changes it but to link a system).
-    pub fn sharing_unsaved(&mut self) -> Option<String> {
-        self.share.unsaved()
     }
 
     /// Each shared system: decoded now? due? its share, then.

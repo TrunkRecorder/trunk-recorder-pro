@@ -466,10 +466,13 @@ impl Registry {
 
     /// Systems changed since the last call, as (short name, JSON) to save.
     pub fn take_dirty(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.dirty)
-            .into_iter()
-            .filter_map(|n| self.systems.get(&n).and_then(|s| serde_json::to_string(s).ok()).map(|j| (n, j)))
-            .collect()
+        self.take_dirty_copies().into_iter().filter_map(|(n, s)| serde_json::to_string(&s).ok().map(|j| (n, j))).collect()
+    }
+
+    /// Systems changed since the last call, copied: to turn into JSON
+    /// without holding the registry's lock meanwhile.
+    pub fn take_dirty_copies(&mut self) -> Vec<(String, SystemRadio)> {
+        std::mem::take(&mut self.dirty).into_iter().filter_map(|n| self.systems.get(&n).cloned().map(|s| (n, s))).collect()
     }
 
     /// Load a system saved by [`Registry::take_dirty`] (a bad file is ignored).
@@ -1028,5 +1031,46 @@ mod tests {
         let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
         let q = r.query(&json!({ "what": "tg", "system": "dcfd", "key": 100, "hours": 24 }), t0 + 40, &n);
         assert_eq!(q["row"]["ciphers"][1], json!({ "algid": 0xAA, "keyId": 0x1B50, "name": "ADP", "calls": 2, "last": t0 + 20 }));
+    }
+
+    /// How big a system's registry file gets, and how long turning it into
+    /// JSON and copying it take: at every cap (a week of a very large
+    /// system), and at about half. `cargo test --release -p trunk-app --lib
+    /// registry_size -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn registry_size() {
+        for (label, tgs, units, pairs) in [("at the caps", MAX_TGS, MAX_UNITS, MAX_PAIRS), ("about half", MAX_TGS / 2, MAX_UNITS / 2, MAX_PAIRS / 2)] {
+            let t = 1_790_000_000i64;
+            let mut s = SystemRadio::new(t);
+            let hours = |n: usize| (0..n as i64).map(|h| (t / 3600 - h, (12u32, 95.5f32))).collect::<VecDeque<_>>();
+            for g in 0..tgs as u32 {
+                s.tgs.insert(10_000 + g, Tg { first: t, last: t + 600_000, name: format!("TG {g} Dispatch"), calls: 4321, secs: 98_765.5, enc: 12, ciphers: vec![(0x84, 0x1234, 40, t)], hours: hours(HOURS as usize) });
+            }
+            for u in 0..units as u32 {
+                let recent = (0..MAX_RECENT_TX as i64).map(|k| (t + k * 60, 10_000 + u % 500, 4.25f32)).collect();
+                s.units.insert(1_000_000 + u, Unit { first: t, last: t + 600_000, last_tx: t + 599_000, tx: 321, tx_secs: 1234.5, aff: Some(10_001), aff_t: t, reg: Some(true), tgs: (0..TOP_TGS as u32).map(|k| (10_000 + k, 40 - k)).collect(), recent });
+            }
+            for p in 0..pairs as u64 {
+                s.pairs.insert(pair_key(1_000_000 + (p % 20_000) as u32, 1_020_000 + p as u32), Pair { n: 17, last: t });
+            }
+            for f in 0..MAX_FREQS as u64 {
+                let hours = (0..HOURS).map(|h| (t / 3600 - h, (40u32, 100_000u64, 2_000u64, 30u64))).collect();
+                s.freqs.insert(851_000_000 + f * 12_500, Freq { calls: 5000, frames: 9_000_000, errors: 12_345, bad: 678, snr: Some(18.5), ferr: Some(0.2), clean: Some(0.97), last: t, hours, ..Default::default() });
+            }
+            s.affiliations = (0..MAX_AFFILIATIONS as i64).map(|k| (t + k, 1_000_000 + k as u32, 10_001)).collect();
+            s.lengths = (0..MAX_LENGTHS as i64).map(|k| (t + k, 10_001, 5.5f32)).collect();
+            let at = std::time::Instant::now();
+            let copy = s.clone();
+            let cloned = at.elapsed();
+            let at = std::time::Instant::now();
+            let json = serde_json::to_string(&copy).unwrap();
+            let made = at.elapsed();
+            let at = std::time::Instant::now();
+            let back: SystemRadio = serde_json::from_str(&json).unwrap();
+            let read = at.elapsed();
+            assert_eq!(back.units.len(), units);
+            println!("{label}: {tgs} talkgroups, {units} radios, {pairs} pairs: {:.1} MB; copied in {cloned:.1?}, JSON in {made:.1?}, read back in {read:.1?}", json.len() as f64 / 1e6);
+        }
     }
 }

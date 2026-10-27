@@ -112,6 +112,7 @@ mod plugins;
 mod profile;
 mod radio;
 mod runtime;
+mod saver;
 mod sdr;
 mod server;
 mod spool;
@@ -896,6 +897,8 @@ fn serve(a: &Args) {
         shared,
         series,
         store,
+        saver: saver::Saver::start(),
+        heard_last: Mutex::new(None),
         topics: Mutex::new(Default::default()),
         engine: Mutex::new(None),
         host_last: Mutex::new(None),
@@ -941,7 +944,7 @@ fn serve(a: &Args) {
     if let Err(e) = rt.block_on(server::serve(ctx.clone(), listener)) {
         fatal(&format!("web server on {addr}: {e}"));
     }
-    runtime::save_registry(&ctx.shared);
+    ctx.saver.flush();
     log::info!("Cleaning up & Exiting...");
 }
 

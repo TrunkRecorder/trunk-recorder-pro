@@ -241,7 +241,7 @@ fn autotune_starts_from_the_saved_score() {
     cfg.sources[0] = serde_json::from_value(json!({ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 2, "autoTune": true })).unwrap();
     let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
     s.load_tune(r#"{"RTL-SDR (first)": {"errorPpm": 3.0, "atPpm": 1}, "Airspy SN 1": {"errorPpm": -1.0, "atPpm": 0}}"#);
-    assert_eq!(s.tune_unsaved(), None, "nothing new to save");
+    assert!(!s.due(1.75e12, true).iter().any(|x| matches!(x, trunk_app::saving::Saved::Tune(_))), "nothing new to save");
     let (mut out, mut msgs) = (Vec::new(), Vec::new());
     s.poll(1.75e12, &mut out);
     texts(&mut out, &mut msgs);
@@ -338,6 +338,8 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         shared,
         series: series.clone(),
         store: crate::statstore::Store::start(dir.join("stats"), series),
+        saver: crate::saver::Saver::start(),
+        heard_last: Mutex::new(None),
         topics: Mutex::new(Default::default()),
         engine: Mutex::new(None),
         host_last: Mutex::new(None),

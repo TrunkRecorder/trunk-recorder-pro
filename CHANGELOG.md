@@ -5,6 +5,22 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Saving never holds up recording or a click.** Large systems on slow disks (SD cards) waited on
+  whole-file writes: an Ignore click could take seconds, and the recording paused while talker
+  aliases, heard codes or the radio registry were written.
+  - Everything kept beside the config is now written on a thread of its own. If a file is
+    queued several times, only the latest copy is written.
+  - A talkgroup edit is told to every browser right away, and its file is written afterwards.
+  - The conventional codes heard (`conventional.heard.json`) are written once a minute instead
+    of after every call.
+  - Talker aliases, sharing and band plans are written within 10 s of a change. The radio
+    registry is still written every 15 minutes.
+  - Everything is written when recording stops.
+  - The browser version saves on the same schedule.
+  - A page that connects gets the latest heard codes from memory, not from the file.
+
+  What's next for storage, including SQLite, is in `research/storage.md`.
+
 - **Which sites of a system can be heard here** (from #95, by Bill Johnson). Find my system can look
   for a system you know of instead of sweeping the bands. It listens to just that system's
   frequencies and says, site by site, which it heard: **Heard**, **Another site**,

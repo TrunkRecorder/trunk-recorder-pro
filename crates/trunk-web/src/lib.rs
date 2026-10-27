@@ -121,7 +121,7 @@ pub struct WebSession {
 impl WebSession {
     /// `config_json`: the interface's Config. `talkgroups_json`: each system's talkgroup file, `{shortName: csv}`.
     /// `bandplans_json`: `{key: plan}` (a site's key: [`trunk_app::session::bandplan_key`]) saved from a previous run
-    /// ([`WebSession::bandplans`]).
+    /// ([`WebSession::due`]).
     #[wasm_bindgen(constructor)]
     pub fn new(config_json: &str, talkgroups_json: &str, epoch_ms: f64, bandplans_json: Option<String>) -> Result<WebSession, JsError> {
         let cfg = Config::from_json(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
@@ -166,15 +166,11 @@ impl WebSession {
         let linked = id.map(|id| trunk_app::share::Linked { id, rev: rev.max(0.0) as u64 });
         self.s.share_done(short_name, now_ms, error.map_or(Ok(linked), Err));
     }
-    /// What sharing did before ([`WebSession::sharing_unsaved`] gave): each directory record's version and last share.
+    /// What sharing did before ([`WebSession::due`] gave): each directory record's version and last share.
     pub fn load_sharing(&mut self, json: &str) {
         self.s.load_sharing(json);
     }
-    /// What sharing did, as JSON to keep (not in the config), when it changed since the last call.
-    pub fn sharing_unsaved(&mut self) -> Option<String> {
-        self.s.sharing_unsaved()
-    }
-    /// Preload the radio registry: JSON `{shortName: registry}` ([`WebSession::registry_unsaved`]).
+    /// Preload the radio registry: JSON `{shortName: registry}` (each as [`WebSession::due`] gave it).
     pub fn load_registry(&mut self, json: &str) {
         let m: serde_json::Map<String, serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
         let shared = self.s.shared();
@@ -184,11 +180,6 @@ impl WebSession {
                 r.load(&name, text);
             }
         }
-    }
-    /// The registry's systems that changed since the last call, JSON `{shortName: registry}`.
-    pub fn registry_unsaved(&mut self) -> String {
-        let changed = self.s.shared().radio.lock().unwrap().take_dirty();
-        serde_json::Value::Object(changed.into_iter().map(|(n, j)| (n, serde_json::Value::String(j))).collect()).to_string()
     }
     /// `at_ms`: when the samples arrived, on `poll`'s clock.
     pub fn push(&mut self, source: usize, bytes: &[u8], dropped: f64, at_ms: f64) {
@@ -217,35 +208,47 @@ impl WebSession {
         to_js(&mut self.out, &mut self.history)
     }
     /// Preload talker aliases: JSON `{shortName: csv}` saved from a previous
-    /// run ([`WebSession::units_changed`]).
+    /// run ([`WebSession::due`]).
     pub fn load_units(&mut self, units_json: &str) {
         let units: serde_json::Map<String, serde_json::Value> = serde_json::from_str(units_json).unwrap_or_default();
         self.s.load_units(&|name| units.get(name).and_then(|v| v.as_str()).map(str::to_string));
     }
-    /// Talker aliases of the systems that learned any since the last call, as JSON `{shortName: csv}`.
-    pub fn units_changed(&mut self) -> String {
-        serde_json::Value::Object(self.s.units_changed().into_iter().map(|(n, c)| (n, serde_json::Value::String(c))).collect()).to_string()
-    }
     /// Preload the codes conventional frequencies carried (what
-    /// [`WebSession::heard_unsaved`] gave on an earlier run).
+    /// [`WebSession::due`] gave on an earlier run).
     pub fn load_heard(&mut self, json: &str) {
         self.s.load_heard(json);
     }
-    /// Those codes as JSON to save, when they changed since the last call.
-    pub fn heard_unsaved(&mut self) -> Option<String> {
-        self.s.heard_unsaved()
-    }
-    /// Start AutoTune sources from the scores [`WebSession::tune_unsaved`] gave on an earlier run.
+    /// Start AutoTune sources from the scores [`WebSession::due`] gave on an earlier run.
     pub fn load_tune(&mut self, json: &str) {
         self.s.load_tune(json);
     }
-    /// The sources' AutoTune scores as JSON to save, when they changed since the last call.
-    pub fn tune_unsaved(&mut self) -> Option<String> {
-        self.s.tune_unsaved()
+    /// What's due to be kept between runs ([`trunk_app::saving`] says when),
+    /// as JSON `[{kind, name, text}]`: `kind` units (`name`: the system),
+    /// sharing, bandplan (`name`: the site's key), heard, tune or registry
+    /// (`name`: the system). `all`: everything that changed (the recording's end).
+    pub fn due(&mut self, now_ms: f64, all: bool) -> String {
+        use trunk_app::saving::Saved;
+        let item = |kind: &str, name: &str, text: String| serde_json::json!({ "kind": kind, "name": name, "text": text });
+        let items: Vec<serde_json::Value> = self
+            .s
+            .due(now_ms, all)
+            .into_iter()
+            .filter_map(|saved| {
+                Some(match saved {
+                    Saved::Units { system, csv } => item("units", &system, csv),
+                    Saved::Sharing(json) => item("sharing", "", json),
+                    Saved::Bandplan { key, plan } => item("bandplan", &key, plan),
+                    Saved::Heard(json) => item("heard", "", json),
+                    Saved::Tune(json) => item("tune", "", json),
+                    Saved::Registry { system, radio } => item("registry", &system, serde_json::to_string(&radio).ok()?),
+                })
+            })
+            .collect();
+        serde_json::Value::Array(items).to_string()
     }
-    /// Each site's band plan, as JSON `{key: plan}`.
-    pub fn bandplans(&self) -> String {
-        serde_json::Value::Object(self.s.bandplans().into_iter().map(|(n, p)| (n, serde_json::Value::String(p))).collect()).to_string()
+    /// Keep the radio registry every `ms` (a tab can be closed without the recording's end).
+    pub fn save_registry_every(&mut self, ms: f64) {
+        self.s.save_registry_every(ms);
     }
 }
 
