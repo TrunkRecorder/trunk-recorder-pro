@@ -951,6 +951,10 @@ fn serve(a: &Args) {
         fatal(&format!("web server on {addr}: {e}"));
     }
     ctx.saver.flush();
+    ctx.db.send(db::Write::Checkpoint);
+    if let Err(e) = ctx.db.flush() {
+        log::warn!("Call store: {e}");
+    }
     log::info!("Cleaning up & Exiting...");
 }
 

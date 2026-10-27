@@ -45,11 +45,9 @@ pub enum Write {
     #[allow(dead_code)] // sent by retention (a later task)
     Retention { before_ms: i64 },
     /// Checkpoint the WAL into the database file.
-    #[allow(dead_code)] // sent at shutdown (a later task)
     Checkpoint,
     /// Answered with the outcome of the commit that took every write sent
     /// before it.
-    #[allow(dead_code)] // sent by `flush`, which tests and later tasks call
     Flush(std::sync::mpsc::Sender<Result<(), String>>),
 }
 
@@ -63,7 +61,7 @@ struct Inner {
     recorder: Option<String>,
     tx: SyncSender<Write>,
     queued: Arc<AtomicUsize>,
-    #[allow(dead_code)] // read by `commits`, for tests
+    #[cfg(test)]
     commits: Arc<AtomicU64>,
     readers: Mutex<Vec<Connection>>,
 }
@@ -108,6 +106,7 @@ impl Db {
             recorder,
             tx,
             queued,
+            #[cfg(test)]
             commits,
             readers: Mutex::new(readers),
         })))
@@ -134,8 +133,8 @@ impl Db {
         }
     }
 
-    #[allow(dead_code)] // used by later tasks
     /// Writes queued and not yet taken up by the writer.
+    #[allow(dead_code)] // used by later tasks
     pub fn queued(&self) -> usize {
         self.0.queued.load(Ordering::Relaxed)
     }
@@ -164,7 +163,6 @@ impl Db {
         out
     }
 
-    #[allow(dead_code)] // used by the backfill (a later task); tests use it now
     /// Return once every write sent before this call has been through a
     /// commit; `Err` if that commit failed or the writer is gone.
     pub fn flush(&self) -> Result<(), String> {
@@ -174,8 +172,8 @@ impl Db {
             .map_err(|_| "the writer has stopped".to_string())?
     }
 
-    #[allow(dead_code)] // tests only
     /// Transactions the writer has committed since open.
+    #[cfg(test)]
     pub fn commits(&self) -> u64 {
         self.0.commits.load(Ordering::Relaxed)
     }
@@ -183,12 +181,18 @@ impl Db {
     /// A fresh database under the temp folder, named for the test.
     #[cfg(test)]
     pub fn for_test(name: &str) -> (Db, PathBuf) {
+        let (hub, _) = tokio::sync::broadcast::channel(16);
+        Db::for_test_on(name, hub)
+    }
+
+    /// As [`Db::for_test`], publishing on `hub`.
+    #[cfg(test)]
+    pub fn for_test_on(name: &str, hub: Hub) -> (Db, PathBuf) {
         let path =
             std::env::temp_dir().join(format!("trunk-pro-db-{name}-{}.sqlite", std::process::id()));
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
-        let (hub, _) = tokio::sync::broadcast::channel(16);
         (Db::open(&path, hub).expect("open test db"), path)
     }
 }

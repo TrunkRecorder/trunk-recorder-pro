@@ -1356,5 +1356,13 @@ mod finish_tests {
         assert_eq!(entries[0], entry, "the entry on the wire is the entry in the store");
         let ToClient::OlderCalls { entries, more, .. } = older_calls(&ctx, i64::MAX, 100) else { panic!() };
         assert_eq!((entries.len(), more), (1, false));
+        // The writer tells the interface when the files kept are not what the entry said.
+        let mut heard = ctx.hub.subscribe();
+        call_files(&ctx, rel, false, true);
+        ctx.db.flush().unwrap();
+        let out = heard.try_recv().expect("a callFiles message");
+        let text = crate::server::text_for(&out, true).expect("text");
+        let m: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((m["type"].as_str(), m["path"].as_str(), m["audio"].as_bool()), (Some("callFiles"), Some(rel), Some(false)));
     }
 }
