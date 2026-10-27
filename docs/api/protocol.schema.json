@@ -3680,6 +3680,9 @@
             },
             "before": {
               "type": "number"
+            },
+            "error": {
+              "type": "string"
             }
           },
           "required": [

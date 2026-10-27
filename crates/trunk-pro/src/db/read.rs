@@ -7,6 +7,8 @@ use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, params_from_iter};
 use serde_json::Value;
 
+pub use trunk_app::protocol::CallsPage as Page;
+
 use super::row::entry;
 
 /// Which calls a [`query`] wants. Every field narrows the result; the default
@@ -27,17 +29,6 @@ pub struct CallsFilter {
     pub limit: usize,
 }
 
-/// One page of calls, newest first.
-#[derive(Debug)]
-pub struct Page {
-    pub entries: Vec<Value>,
-    /// Calls remain that started before the oldest on this page.
-    pub more: bool,
-    /// Where the next page starts: the oldest start on this page; when the
-    /// page is empty, the `before` that was asked, or 0 when none was.
-    pub before: i64,
-}
-
 /// The columns a call entry is made from, then `id` and `start_ms` for paging.
 const COLUMNS: &str = "path, record, audio, json, id, start_ms";
 
@@ -56,6 +47,7 @@ pub fn newest(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<Value>> {
 
 /// Up to `limit` calls that started before `before_ms`, newest first, plus
 /// every further call sharing the oldest one's start.
+#[cfg(test)]
 pub fn older(conn: &Connection, before_ms: i64, limit: usize) -> rusqlite::Result<Page> {
     query(
         conn,
@@ -98,6 +90,65 @@ pub fn query(conn: &Connection, f: &CallsFilter) -> rusqlite::Result<Page> {
         more,
         before,
     })
+}
+
+/// Whether call entry `e` is one `f` wants (its time, system, talkgroup,
+/// radio): the same filter as [`query`]'s, for calls held in memory.
+pub fn matches(e: &Value, f: &CallsFilter) -> bool {
+    let r = &e["record"];
+    let start = start_of(e);
+    let system = r["short_name"].as_str().unwrap_or_default();
+    (f.systems.is_empty() || f.systems.iter().any(|s| s == system))
+        && f.talkgroup.is_none_or(|tg| r["talkgroup"].as_u64() == Some(u64::from(tg)))
+        && f.unit.is_none_or(|u| r["srcList"].as_array().is_some_and(|l| l.iter().any(|t| t["src"].as_i64() == Some(u))))
+        && f.from_ms.is_none_or(|t| start >= t)
+        && f.to_ms.is_none_or(|t| start < t)
+        && f.before_ms.is_none_or(|t| start < t)
+}
+
+fn start_of(e: &Value) -> i64 {
+    e["record"]["start_time_ms"].as_i64().unwrap_or(0)
+}
+
+/// Newest first, then by path: the order every page is in.
+fn newest_first(v: &mut [Value]) {
+    v.sort_by_key(|e| std::cmp::Reverse((start_of(e), e["path"].as_str().unwrap_or_default().to_string())));
+}
+
+/// A page of `f` from calls held in memory (the live list, with the store
+/// off): paged as [`query`] pages, equal starts taken whole.
+pub fn page_of(calls: &[Value], f: &CallsFilter) -> Page {
+    let mut v: Vec<Value> = calls.iter().filter(|e| matches(e, f)).cloned().collect();
+    newest_first(&mut v);
+    let limit = f.limit.max(1);
+    let mut take = v.len().min(limit);
+    while take > 0 && take < v.len() && start_of(&v[take]) == start_of(&v[take - 1]) {
+        take += 1;
+    }
+    let more = take < v.len();
+    v.truncate(take);
+    let before = v.last().map_or(f.before_ms.unwrap_or(0), start_of);
+    Page { entries: v, more, before }
+}
+
+/// `stored` (a page from the store) with the live list's calls that belong
+/// on it merged in: those `f` wants that the store hasn't committed yet,
+/// within the page's span (from its oldest start when more remain). A call
+/// in both is the live copy. The cursor is the stored page's, so paging on
+/// loses and repeats nothing.
+pub fn with_live(stored: Page, live: &[Value], f: &CallsFilter) -> Page {
+    let floor = if stored.more { Some(stored.before) } else { None };
+    let mut seen = std::collections::HashSet::new();
+    let mut v: Vec<Value> = live
+        .iter()
+        .filter(|e| matches(e, f) && floor.is_none_or(|b| start_of(e) >= b))
+        .cloned()
+        .chain(stored.entries)
+        .filter(|e| seen.insert(e["path"].as_str().unwrap_or_default().to_string()))
+        .collect();
+    newest_first(&mut v);
+    let before = if stored.more { stored.before } else { v.last().map_or(stored.before, start_of) };
+    Page { entries: v, more: stored.more, before }
 }
 
 /// The call filed under `path` (what the HTTP route `/api/v1/calls/{path}` answers).
@@ -377,6 +428,39 @@ mod tests {
             .unwrap();
         assert!(p.more);
         assert_eq!(p.entries.len(), 5);
+    }
+
+    /// The live list's calls not committed yet join the page they belong
+    /// on, and paging on from it still loses and repeats nothing.
+    #[test]
+    fn live_calls_join_the_page_they_belong_on() {
+        let db = seeded("live");
+        let live_entry = |path: &str, tg: u32, start: i64| {
+            let r = crate::db::row::tests::record(tg, start);
+            entry(path, &r.to_json(), true, true)
+        };
+        // A call newer than all, one in the middle (a long call finished late), one stored already.
+        let live = [live_entry("live/new", 1, 20_000), live_entry("live/mid", 2, 6500), live_entry("s/11", 2, 11_000)];
+        let mut seen = Vec::new();
+        let mut f = CallsFilter { limit: 4, ..Default::default() };
+        loop {
+            let stored = db.with_reader(|c| query(c, &f)).unwrap();
+            let p = with_live(stored, &live, &f);
+            seen.extend(paths(&p.entries).into_iter().map(str::to_string));
+            if !p.more {
+                break;
+            }
+            f.before_ms = Some(p.before);
+        }
+        let mut want: Vec<String> = (1..=12).map(|i| format!("s/{i}")).chain(["live/new".into(), "live/mid".into()]).collect();
+        let mut got = seen.clone();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "every call once: {seen:?}");
+        assert_eq!(seen[0], "live/new", "newest first");
+        // The live list alone (the store off), paged the same way, by talkgroup.
+        let p = page_of(&live, &CallsFilter { talkgroup: Some(2), limit: 1, ..Default::default() });
+        assert_eq!((paths(&p.entries), p.more, p.before), (vec!["s/11"], true, 11_000));
     }
 
     #[test]

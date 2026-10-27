@@ -1297,35 +1297,15 @@ pub fn history(ctx: &Ctx) -> ToClient {
     ToClient::History { entries }
 }
 
-/// `olderCalls` (the Listen page's "Load older"): up to `limit` calls that
-/// started before `before_ms`, newest first, from the store.
-pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
-    match ctx.db.with_reader(|c| crate::db::read::older(c, before_ms, limit)) {
-        Ok(page) => ToClient::OlderCalls { before: before_ms, entries: page.entries, more: page.more },
-        Err(e) => {
-            store_error(ctx, "olderCalls", &e);
-            ToClient::OlderCalls { before: before_ms, entries: vec![], more: false }
-        }
-    }
-}
-
-/// System `name` and the names its sites had as systems of their own, which
-/// older calls are recorded under.
-pub fn systems_for(cfg: &Config, name: &str) -> Vec<String> {
-    let old = cfg.systems.iter().find(|s| s.short_name == name).map(trunk_app::migrate::old_names).unwrap_or_default();
-    std::iter::once(name.to_string()).chain(old).collect()
-}
-
-/// `callsQuery`: calls from the store by system (and the names its sites had
-/// as systems of their own, which older calls are recorded under), talkgroup,
-/// radio and time, newest first.
-pub fn calls_query(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> ToClient {
-    let systems = match &q.system {
-        Some(name) => systems_for(&ctx.config.lock().unwrap(), name),
-        None => Vec::new(),
-    };
-    let filter = crate::db::read::CallsFilter {
-        systems,
+/// Calls by `q` (system, talkgroup, radio, time; paged by `before`), newest
+/// first: the one query behind `callsQuery`, `olderCalls`, `/api/v1/calls`
+/// and the plugins'. From the store, with the live list's calls it hasn't
+/// committed yet merged in; with the store off (or failing), from the live
+/// list alone, and why it's only that.
+pub fn calls(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> (crate::db::read::Page, Option<String>) {
+    use crate::db::read;
+    let filter = read::CallsFilter {
+        systems: q.system.as_deref().map_or_else(Vec::new, |name| systems_for(&ctx.config.lock().unwrap(), name)),
         talkgroup: q.talkgroup,
         unit: q.unit,
         from_ms: q.from,
@@ -1333,13 +1313,35 @@ pub fn calls_query(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> ToClient {
         before_ms: q.before,
         limit: q.limit.unwrap_or(100).clamp(1, 500),
     };
-    match ctx.db.with_reader(|c| crate::db::read::query(c, &filter)) {
-        Ok(page) => ToClient::CallsResult { id: q.id.clone(), entries: page.entries, more: page.more, before: page.before },
+    // (The live list first: a call committed meanwhile is then in one or the other.)
+    let live: Vec<Value> = ctx.recent.lock().unwrap().iter().cloned().collect();
+    match ctx.db.with_reader(|c| read::query(c, &filter)) {
+        Ok(stored) => (read::with_live(stored, &live, &filter), None),
         Err(e) => {
-            store_error(ctx, "callsQuery", &e);
-            ToClient::CallsResult { id: q.id.clone(), entries: vec![], more: false, before: q.before.unwrap_or(0) }
+            store_error(ctx, "calls", &e);
+            (read::page_of(&live, &filter), Some(format!("{e}: only the recent calls")))
         }
     }
+}
+
+/// `olderCalls` (the Listen page's "Load older"): [`calls`] before `before_ms`.
+pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
+    let q = trunk_app::protocol::CallsQuery { before: Some(before_ms), limit: Some(limit), ..Default::default() };
+    let (page, _) = calls(ctx, &q);
+    ToClient::OlderCalls { before: before_ms, entries: page.entries, more: page.more }
+}
+
+/// `callsQuery`: [`calls`].
+pub fn calls_query(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> ToClient {
+    let (page, error) = calls(ctx, q);
+    ToClient::CallsResult { id: q.id.clone(), page, error }
+}
+
+/// System `name` and the names its sites had as systems of their own, which
+/// older calls are recorded under.
+pub fn systems_for(cfg: &Config, name: &str) -> Vec<String> {
+    let old = cfg.systems.iter().find(|s| s.short_name == name).map(trunk_app::migrate::old_names).unwrap_or_default();
+    std::iter::once(name.to_string()).chain(old).collect()
 }
 
 #[cfg(test)]
@@ -1532,7 +1534,7 @@ mod pending_tests {
 #[cfg(test)]
 mod calls_query_tests {
     use super::*;
-    use trunk_app::protocol::CallsQuery;
+    use trunk_app::protocol::{CallsPage, CallsQuery};
 
     #[test]
     fn calls_query_honours_old_system_names() {
@@ -1543,7 +1545,7 @@ mod calls_query_tests {
         index_call(&ctx, "ohmarcs-butler/x", &r, &r.to_json(), true, true);
         ctx.db.flush().unwrap();
         let q = CallsQuery { system: Some("ohmarcs".into()), ..Default::default() };
-        let ToClient::CallsResult { entries, .. } = calls_query(&ctx, &q) else { panic!() };
+        let ToClient::CallsResult { page: CallsPage { entries, .. }, .. } = calls_query(&ctx, &q) else { panic!() };
         assert_eq!(entries.len(), 1);
     }
 
@@ -1557,10 +1559,10 @@ mod calls_query_tests {
         }
         ctx.db.flush().unwrap();
         let q = CallsQuery { limit: Some(9999), ..Default::default() };
-        let ToClient::CallsResult { entries, more, .. } = calls_query(&ctx, &q) else { panic!() };
+        let ToClient::CallsResult { page: CallsPage { entries, more, .. }, .. } = calls_query(&ctx, &q) else { panic!() };
         assert_eq!((entries.len(), more), (500, true));
         let q = CallsQuery { limit: Some(0), ..Default::default() };
-        let ToClient::CallsResult { entries, more, .. } = calls_query(&ctx, &q) else { panic!() };
+        let ToClient::CallsResult { page: CallsPage { entries, more, .. }, .. } = calls_query(&ctx, &q) else { panic!() };
         assert_eq!((entries.len(), more), (1, true));
     }
 
@@ -1568,12 +1570,12 @@ mod calls_query_tests {
     fn an_empty_answer_with_no_before_asked_says_0() {
         let dir = crate::db::TestDir::new("cq3");
         let ctx = test_ctx(&dir);
-        let ToClient::CallsResult { entries, before, .. } = calls_query(&ctx, &CallsQuery::default()) else { panic!() };
+        let ToClient::CallsResult { page: CallsPage { entries, before, .. }, .. } = calls_query(&ctx, &CallsQuery::default()) else { panic!() };
         assert_eq!((entries.len(), before), (0, 0));
     }
 
     /// A store from a newer build is refused: the recorder starts with the
-    /// store off, and every call-store message answers empty.
+    /// store off, and every call-store message answers from the live list.
     #[test]
     fn a_store_that_cannot_be_opened_leaves_the_recorder_running() {
         let dir = crate::db::TestDir::new("store-off");
@@ -1587,9 +1589,11 @@ mod calls_query_tests {
         index_call(&ctx, "ohmarcs/x", &r, &r.to_json(), true, true);
         call_files(&ctx, "ohmarcs/x", false, true);
         ctx.db.flush().unwrap();
+        // (The live list answers: the calls since the recorder started.)
         let ToClient::OlderCalls { entries, more, .. } = older_calls(&ctx, i64::MAX, 100) else { panic!() };
-        assert_eq!((entries.len(), more), (0, false));
-        let ToClient::CallsResult { entries, before, .. } = calls_query(&ctx, &CallsQuery::default()) else { panic!() };
-        assert_eq!((entries.len(), before), (0, 0));
+        assert_eq!((entries.len(), more), (1, false));
+        let ToClient::CallsResult { page: CallsPage { entries, before, .. }, error, .. } = calls_query(&ctx, &CallsQuery::default()) else { panic!() };
+        assert_eq!((entries.len(), before), (1, 1000));
+        assert!(error.is_some_and(|e| e.contains("only the recent calls")), "and says why it's only those");
     }
 }

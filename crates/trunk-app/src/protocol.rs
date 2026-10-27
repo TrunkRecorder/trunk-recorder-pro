@@ -117,8 +117,15 @@ pub enum ToClient {
     StatsResult(Body),
     RadioResult(Body),
     OlderCalls { before: i64, entries: Vec<Value>, more: bool },
-    /// Answers `callsQuery`: `before` is where the next page starts.
-    CallsResult { id: Value, entries: Vec<Value>, more: bool, before: i64 },
+    /// Answers `callsQuery`: a page of calls ([`CallsPage`]); `error` when the
+    /// call store couldn't answer (off: the page is the recent calls alone).
+    CallsResult {
+        id: Value,
+        #[serde(flatten)]
+        page: CallsPage,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     Quit,
 }
 
@@ -343,6 +350,19 @@ impl Command {
 /// (its short name), talkgroup, radio, and start time (Unix ms, `from`
 /// inclusive to `to` exclusive); `before` pages like `olderCalls`; `limit`
 /// 1..500 (100).
+/// A page of recorded calls, newest first: what `callsQuery`, `olderCalls`
+/// and `GET /api/v1/calls` answer with. Equal start times are never split
+/// between pages, so `before` loses and repeats nothing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct CallsPage {
+    pub entries: Vec<Value>,
+    /// Calls remain that started before the oldest on this page.
+    pub more: bool,
+    /// Where the next page starts (the next query's `before`): the oldest
+    /// start on this page; with none, the `before` asked, or 0.
+    pub before: i64,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CallsQuery {

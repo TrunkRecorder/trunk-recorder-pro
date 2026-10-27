@@ -7,7 +7,7 @@
 // was kept.
 
 import { useRef, useSyncExternalStore } from "react";
-import { onRecorderMessage, setListen, shallowEqual, snapshot, subscribe, transport } from "./controller.ts";
+import { callsQuery, onRecorderMessage, setListen, shallowEqual, snapshot, subscribe, transport } from "./controller.ts";
 import { migrateSelection } from "./migrate.ts";
 import type { CallEntry } from "./protocol.ts";
 
@@ -353,12 +353,14 @@ function merge(calls: CallEntry[], more: CallEntry[]): CallEntry[] {
   return [...calls, ...add].sort((a, b) => b.record.start_time_ms - a.record.start_time_ms).slice(0, CALLS_MAX);
 }
 
-/** Ask for calls older than the oldest known: from the call store (the desktop app); the browser build: the last 24 hours. */
+/** Ask for calls older than the oldest known: a page of `callsQuery`, as every list of calls asks. */
 export function loadOlder(): void {
   if (state.loadingOlder) return;
   const oldest = state.calls.at(-1)?.record.start_time_ms ?? Date.now();
   set({ loadingOlder: true });
-  transport.send({ type: "olderCalls", before: oldest, limit: OLDER_PAGE });
+  void callsQuery({ before: oldest, limit: OLDER_PAGE }).then((m) => {
+    set({ calls: merge(state.calls, m.entries ?? []), loadingOlder: false, moreOlder: !!m.more });
+  });
 }
 
 onRecorderMessage((m) => {
@@ -374,9 +376,6 @@ onRecorderMessage((m) => {
       set({ calls: state.calls.map(fix), queue: state.queue.map(fix).filter(playable) });
       break;
     }
-    case "olderCalls":
-      set({ calls: merge(state.calls, m.entries), loadingOlder: false, moreOlder: m.more });
-      break;
   }
 });
 

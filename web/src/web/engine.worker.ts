@@ -2,6 +2,7 @@
 // RTL-SDR driver (WebUSB), speaking the same protocol as the desktop app's
 // server, so the interface is identical. Calls are stored in OPFS.
 
+import { callsPage } from "../calls.ts";
 import { editCells, withCells } from "../talkgroups.ts";
 import init, { directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
@@ -516,11 +517,15 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
     case "radioQuery":
       post(session ? (JSON.parse(session.radio_query(JSON.stringify(m))) as FromRecorder) : ({ type: "radioResult", id: m.id, what: m.what as "summary", error: "Start recording to see the radio system." } as FromRecorder));
       break;
+    // The whole index is small (one line a call): read it, and page it as the recorder's call store does.
     case "olderCalls": {
-      // The whole index is small (one line a call): read it, as the recorder reads its day folders.
-      const floor = Date.now() - 24 * 3600 * 1000;
-      const older = (await listCalls(Number.MAX_SAFE_INTEGER)).filter((e) => e.record.start_time_ms < m.before && e.record.start_time_ms >= floor);
-      post({ type: "olderCalls", before: m.before, entries: older.slice(0, m.limit), more: older.length > m.limit });
+      const p = callsPage(await listCalls(Number.MAX_SAFE_INTEGER), { before: m.before, limit: m.limit });
+      post({ type: "olderCalls", before: m.before, entries: p.entries, more: p.more });
+      break;
+    }
+    case "callsQuery": {
+      const { type: _, id, ...q } = m;
+      post({ type: "callsResult", id, ...callsPage(await listCalls(Number.MAX_SAFE_INTEGER), q) });
       break;
     }
     case "files":

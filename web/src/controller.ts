@@ -486,6 +486,7 @@ function take(m: FromRecorder): void {
       break;
     case "statsResult":
     case "radioResult":
+    case "callsResult":
     case "pluginActionResult": {
       const r = pending.get(m.id);
       pending.delete(m.id);
@@ -601,6 +602,13 @@ export type RadioQuery = Omit<Extract<ToRecorder, { type: "radioQuery" }>, "type
 
 export function radioQuery(q: RadioQuery): Promise<RadioResult> {
   return ask<RadioResult>({ type: "radioQuery", id: nextId++, ...q });
+}
+
+export type CallsResult = Extract<FromRecorder, { type: "callsResult" }>;
+
+/** Recorded calls by system, talkgroup, radio and time, newest first: a page, and `before` for the next. */
+export function callsQuery(q: Omit<Extract<ToRecorder, { type: "callsQuery" }>, "type" | "id">): Promise<CallsResult> {
+  return ask<CallsResult>({ type: "callsQuery", id: nextId++, ...q });
 }
 
 export type PluginActionResult = Extract<FromRecorder, { type: "pluginActionResult" }>;

@@ -1825,7 +1825,7 @@ export type FromRecorder =
   /** Answers olderCalls; `more`: there are older ones still. */
   | { type: "olderCalls"; before: number; entries: CallEntry[]; more: boolean }
   /** Answers callsQuery; `before` is where the next page starts (the oldest start in `entries`; with none, the `before` asked, or 0 when none was). */
-  | { type: "callsResult"; id: number; entries: CallEntry[]; more: boolean; before: number }
+  | { type: "callsResult"; id: number; entries: CallEntry[]; more: boolean; before: number; error?: string }
   | { type: "quit" };
 
 export type ToRecorder =

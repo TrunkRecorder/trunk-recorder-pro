@@ -41,8 +41,9 @@ pub enum Write {
     },
     /// Set a `meta` value.
     Meta { key: String, value: String },
-    /// Delete calls that started before this time (the writer also does so
-    /// by itself, for `retentionDays`).
+    /// Delete calls that started before this time, as the writer does by
+    /// itself for `retentionDays` (tests).
+    #[cfg(test)]
     Retention { before_ms: i64 },
     /// Checkpoint the WAL into the database file.
     Checkpoint,

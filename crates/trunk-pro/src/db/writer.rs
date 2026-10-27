@@ -150,6 +150,7 @@ impl Writer {
                         log::warn!("Call store: meta write {key} failed: {e}");
                     }
                 }
+                #[cfg(test)]
                 Write::Retention { before_ms } => retire = Some(retire.map_or(before_ms, |b: i64| b.max(before_ms))),
                 Write::Checkpoint => batch.checkpoint = true,
                 Write::Flush(done) => batch.flushes.push(done),

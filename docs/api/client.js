@@ -71,6 +71,9 @@ export class TrunkClient {
     /** Edits of single talkgroups since each file came (`talkgroupEdited`): talkgroups() includes them. */
     this.talkgroupEdits = {};
     this.log = [];
+    /** `calls` asked and not answered yet: id → resolve. */
+    this._asked = new Map();
+    this._nextId = 1;
     /** Talker aliases heard on the air (saved ones, then live): short name → { unit: alias }. */
     this.aliases = {};
     this._unitCache = new Map();
@@ -105,6 +108,21 @@ export class TrunkClient {
   send(msg) {
     if (this._ws?.readyState === 1) this._ws.send(JSON.stringify(msg));
     else this._queue.push(msg);
+  }
+
+  /**
+   * Recorded calls, newest first: `query` has any of system (short name),
+   * talkgroup, unit (a radio), from / to (start time, Unix ms), before (the
+   * previous page's `before`) and limit (1 to 500, 100). Answers
+   * `{ entries, more, before, error? }`; page on with `before`. Needs the
+   * `calls` capability; the desktop app answers from its call store.
+   */
+  calls(query = {}) {
+    const id = this._nextId++;
+    return new Promise((resolve) => {
+      this._asked.set(id, resolve);
+      this.send({ type: "callsQuery", id, ...query });
+    });
   }
 
   start() {
@@ -320,6 +338,12 @@ export class TrunkClient {
       case "unitAlias":
         this.aliases[m.system] = { ...this.aliases[m.system], [m.unit]: m.alias };
         break;
+      case "callsResult": {
+        const resolve = this._asked.get(m.id);
+        this._asked.delete(m.id);
+        resolve?.({ entries: m.entries, more: m.more, before: m.before, ...(m.error ? { error: m.error } : {}) });
+        break;
+      }
       case "error":
         this.error = m.message;
         break;

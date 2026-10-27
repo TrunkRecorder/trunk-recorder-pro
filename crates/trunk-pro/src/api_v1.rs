@@ -14,7 +14,8 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::access::Door;
-use crate::db::read::{self, CallsFilter};
+use crate::db::read;
+use trunk_app::protocol::CallsQuery;
 use crate::runtime::{self, Ctx};
 
 /// The routes, to be mounted ahead of the `/api/{*path}` docs catch-all.
@@ -70,19 +71,17 @@ fn number<T: std::str::FromStr>(
     }
 }
 
-fn filter(ctx: &Ctx, q: &HashMap<String, String>) -> Result<CallsFilter, Fail> {
-    let systems = match param(q, "system") {
-        Some(name) => runtime::systems_for(&ctx.config.lock().unwrap(), name),
-        None => Vec::new(),
-    };
-    Ok(CallsFilter {
-        systems,
+/// The query the parameters ask: `callsQuery`'s, by its names.
+fn query(q: &HashMap<String, String>) -> Result<CallsQuery, Fail> {
+    Ok(CallsQuery {
+        id: Value::Null,
+        system: param(q, "system").map(str::to_string),
         talkgroup: number(q, "talkgroup")?,
         unit: number(q, "unit")?,
-        from_ms: number(q, "from")?,
-        to_ms: number(q, "to")?,
-        before_ms: number(q, "before")?,
-        limit: number::<usize>(q, "limit")?.unwrap_or(100).clamp(1, 500),
+        from: number(q, "from")?,
+        to: number(q, "to")?,
+        before: number(q, "before")?,
+        limit: number(q, "limit")?,
     })
 }
 
@@ -107,16 +106,16 @@ async fn calls(
     if let Some(r) = refused(&ctx, &door) {
         return r;
     }
-    let f = match filter(&ctx, &q) {
-        Ok(f) => f,
+    let q = match query(&q) {
+        Ok(q) => q,
         Err(r) => return r.into_response(),
     };
-    match read(&ctx, move |c| read::query(c, &f)).await {
-        Ok(page) => {
-            Json(json!({ "entries": page.entries, "more": page.more, "before": page.before }))
-                .into_response()
-        }
-        Err(r) => r.into_response(),
+    // (The same query as callsQuery: the store, with calls not committed yet.)
+    let ctx2 = ctx.clone();
+    match tokio::task::spawn_blocking(move || runtime::calls(&ctx2, &q)).await {
+        Ok((page, None)) => Json(page).into_response(),
+        Ok((_, Some(e))) => error(StatusCode::INTERNAL_SERVER_ERROR, &e).into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
 }
 
