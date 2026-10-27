@@ -3,6 +3,7 @@
 //! serves queries without ever waiting on it. Nothing here is fatal once the
 //! file is open: errors are logged and the recorder carries on.
 
+pub mod read;
 pub mod row;
 pub mod schema;
 pub mod writer;
@@ -16,6 +17,8 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::runtime::Hub;
 
+#[allow(unused_imports)] // read by later tasks
+pub use read::{CallsFilter, Page, newest, older, one, query};
 #[allow(unused_imports)] // read by later tasks
 pub use row::{CallRow, call_row, entry};
 #[allow(unused_imports)] // read by later tasks
