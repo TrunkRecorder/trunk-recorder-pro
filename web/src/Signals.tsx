@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { editList, systemAt, useApp, type SystemRef } from "./controller.ts";
 import { numberList, talkgroupList, type TextCodec } from "./fieldText.ts";
-import { DraftInput, Field, NumberInput, TalkgroupHint } from "./inputs.tsx";
+import { DraftInput, Field, NumberInput, TalkgroupHint, TextInput } from "./inputs.tsx";
 import { PlayButton } from "./PlayButton.tsx";
 import { SignalButtons } from "./Plugins.tsx";
 import type { Config, SignalDef } from "./protocol.ts";
@@ -125,7 +125,7 @@ export function SignalFields(props: { d: SignalDef; taken: (id: string) => boole
         )}
         {!props.bare && (
           <Field label="Name">
-            <input value={d.name ?? ""} placeholder={d.id} onChange={(e) => set((x) => void (x.name = e.target.value))} />
+            <TextInput value={d.name ?? ""} placeholder={d.id} onChange={(v) => set((x) => void (x.name = v))} />
           </Field>
         )}
         <Field label="Kind">
@@ -172,12 +172,12 @@ export function SignalFields(props: { d: SignalDef; taken: (id: string) => boole
         )}
         {(k === "dtmf" || k === "knox") && (
           <Field label="Digits" hint="0–9, A–D, * and #">
-            <input className="mono" aria-label="Digits" value={d.digits ?? ""} onChange={(e) => set((x) => void (x.digits = e.target.value.toUpperCase().replace(/[^0-9A-D*#]/g, "")))} />
+            <TextInput className="mono" aria-label="Digits" value={d.digits ?? ""} onChange={(v) => set((x) => void (x.digits = v.toUpperCase().replace(/[^0-9A-D*#]/g, "")))} />
           </Field>
         )}
         {k === "morse" && (
           <Field label="Text" hint="The ID it sends (a call sign)">
-            <input className="mono" aria-label="Text" value={d.digits ?? ""} onChange={(e) => set((x) => void (x.digits = e.target.value.toUpperCase()))} />
+            <TextInput className="mono" aria-label="Text" value={d.digits ?? ""} onChange={(v) => set((x) => void (x.digits = v.toUpperCase()))} />
           </Field>
         )}
         {d.pattern !== "digits" && d.pattern !== "morse" && (

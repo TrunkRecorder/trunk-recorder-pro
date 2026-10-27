@@ -21,6 +21,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
   What's next for storage, including SQLite, is in `research/storage.md`.
 
+- **Settings are saved once you finish typing, not per letter.** A text setting in Setup (a name,
+  a short name, a path, a plugin's settings…) is saved when you leave the field or press Enter.
+  Escape puts it back. Before, each pause in typing was a save: a system's short name typed as
+  "fire4a" renamed it to f, fi, fir… on the way, moving its talkgroup file each time, and a
+  plugin's settings restarted it on each pause. Switches and menus still act at once.
+
 - **Which sites of a system can be heard here** (from #95, by Bill Johnson). Find my system can look
   for a system you know of instead of sweeping the bands. It listens to just that system's
   frequencies and says, site by site, which it heard: **Heard**, **Another site**,

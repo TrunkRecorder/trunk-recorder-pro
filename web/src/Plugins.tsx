@@ -38,7 +38,7 @@ import { activeSystems } from "./config.ts";
 import { EveryDelays, PluginDelay } from "./Delays.tsx";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
 import { showTodo } from "./Setup.tsx";
-import { DraftInput, Toggle } from "./inputs.tsx";
+import { DraftInput, NumberInput, TextArea, TextInput, Toggle } from "./inputs.tsx";
 import { numberList, talkgroupList, talkgroupProblem, textList } from "./fieldText.ts";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { Card } from "./charts.tsx";
@@ -398,18 +398,14 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
       </select>
     );
   } else if (f.type === "integer" || f.type === "number") {
-    const text = typeof value === "number" ? String(value) : "";
     control = (
-      <input
+      <NumberInput
         id={id}
-        className="mono"
-        type="number"
-        min={f.minimum}
-        max={f.maximum}
-        step={f.type === "integer" ? 1 : "any"}
-        value={text}
+        label={label}
+        inputMode={f.type === "integer" ? "numeric" : "decimal"}
+        value={typeof value === "number" ? value : undefined}
         placeholder={fallback !== undefined && fallback !== null ? String(fallback) : ""}
-        onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+        onChange={onChange}
       />
     );
     if (typeof value === "number") {
@@ -438,18 +434,18 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
     const placeholder = typeof fallback === "string" ? fallback : "";
     const set = (v: string) => onChange(v === "" ? undefined : v);
     if (f["x-multiline"]) {
-      control = <textarea id={id} rows={4} value={text} placeholder={placeholder} onChange={(e) => set(e.target.value)} />;
+      control = <TextArea id={id} rows={4} value={text} placeholder={placeholder} onChange={set} />;
     } else if (f["x-secret"]) {
       control = (
         <span className="secret">
-          <input id={id} className="mono" type={shown ? "text" : "password"} autoComplete="off" value={text} placeholder={placeholder} onChange={(e) => set(e.target.value)} />
+          <TextInput id={id} className="mono" type={shown ? "text" : "password"} autoComplete="off" value={text} placeholder={placeholder} onChange={set} />
           <button type="button" className="btn ghost small" onClick={() => setShown(!shown)} aria-label={shown ? `Hide ${label}` : `Show ${label}`}>
             {shown ? "Hide" : "Show"}
           </button>
         </span>
       );
     } else {
-      control = <input id={id} type={f.format === "uri" ? "url" : "text"} value={text} placeholder={placeholder} onChange={(e) => set(e.target.value)} />;
+      control = <TextInput id={id} type={f.format === "uri" ? "url" : "text"} value={text} placeholder={placeholder} onChange={set} />;
     }
     if (f.format === "uri" && text && !isUrl(text)) problem = "A web address, like https://example.com";
   }

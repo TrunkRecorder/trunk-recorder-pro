@@ -1,13 +1,15 @@
 // The setup's form controls: a labelled field, a checkbox toggle, a hidden
 // file picker, and text inputs that keep what is typed. Each text input is a
-// DraftInput with a codec from fieldText.ts, so typing never fights a value
-// being clamped, defaulted or tidied (a squelch of 12 typed as "1", then "12";
-// "-" on the way to -5; a trailing comma in a list). Left, the field shows the
-// value kept, tidied.
+// DraftInput with a codec from fieldText.ts (TextInput, TextArea and
+// NumberInput are ones), so typing never fights a value being clamped,
+// defaulted or tidied (a squelch of 12 typed as "1", then "12"; "-" on the way
+// to -5; a trailing comma in a list), and what's typed is kept once, when the
+// field is left or Enter pressed (Escape: back as it was), not per letter.
+// Left, the field shows the value kept, tidied.
 // The rules for using them: docs/developer/ui-style.md.
 
-import { useState, type InputHTMLAttributes, type ReactNode, type RefObject } from "react";
-import { decimal, gain, hex, talkgroupProblem, type TextCodec } from "./fieldText.ts";
+import { useEffect, useRef, useState, type InputHTMLAttributes, type KeyboardEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
+import { asTyped, decimal, finishDraft, gain, hex, talkgroupProblem, type TextCodec } from "./fieldText.ts";
 
 /** A labelled setting. `needs`: what an import left to fill in here (highlighted); `anchor`: its place, for the to-do list's Show. */
 export function Field(props: { label: string; hint?: ReactNode; children: ReactNode; wide?: boolean; needs?: string; anchor?: string; className?: string }) {
@@ -63,27 +65,98 @@ export function FileInput(props: { inputRef: RefObject<HTMLInputElement>; accept
 type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "defaultValue" | "onChange">;
 
 /**
- * A text input for a value: shows `codec.format(value)`; while focused, the
- * text as typed, each change read with `codec.parse` and passed on.
+ * A field's text while it's being typed in, and keeping it when it's done:
+ * left, Enter (`enter`), or gone with its page. Escape: back as it was.
  */
-export function DraftInput<T>(props: InputProps & { value: T; codec: TextCodec<T>; onChange: (v: T) => void }) {
-  const { value, codec, onChange, onFocus, onBlur, ...rest } = props;
+function useDraft<T>(value: T, codec: TextCodec<T>, onChange: (v: T) => void) {
   const [text, setText] = useState<string | null>(null);
+  // (The latest of each, for the handlers and the page going away.)
+  const at = useRef({ text: null as string | null, value, codec, onChange });
+  Object.assign(at.current, { value, codec, onChange });
+  const edit = (t: string | null) => {
+    at.current.text = t;
+    setText(t);
+  };
+  const finish = () => {
+    const { text, value, codec, onChange } = at.current;
+    at.current.text = null;
+    const kept = finishDraft(text, value, codec);
+    if (kept) onChange(kept.value);
+  };
+  useEffect(() => finish, []);
+  return {
+    shown: text ?? codec.format(value),
+    focus: () => edit(codec.format(value)),
+    type: (t: string) => edit(t),
+    blur: () => {
+      finish();
+      setText(null);
+    },
+    key: (e: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>, enter: boolean) => {
+      if (e.key === "Escape") {
+        edit(null);
+        e.currentTarget.blur();
+      } else if (e.key === "Enter" && enter) e.currentTarget.blur();
+    },
+  };
+}
+
+/**
+ * A text input for a value: shows `codec.format(value)`; while focused, the
+ * text as typed, read with `codec.parse` and passed on once the field is left
+ * or Enter pressed. `sizeToText`: as wide as its text.
+ */
+export function DraftInput<T>(props: InputProps & { value: T; codec: TextCodec<T>; onChange: (v: T) => void; sizeToText?: boolean }) {
+  const { value, codec, onChange, onFocus, onBlur, onKeyDown, sizeToText, ...rest } = props;
+  const d = useDraft(value, codec, onChange);
   return (
     <input
       {...rest}
-      value={text ?? codec.format(value)}
+      size={sizeToText ? Math.max(1, d.shown.length) : rest.size}
+      value={d.shown}
       onFocus={(e) => {
-        setText(codec.format(value));
+        d.focus();
         onFocus?.(e);
       }}
       onBlur={(e) => {
-        setText(null);
+        d.blur();
         onBlur?.(e);
       }}
-      onChange={(e) => {
-        setText(e.target.value);
-        onChange(codec.parse(e.target.value));
+      onChange={(e) => d.type(e.target.value)}
+      onKeyDown={(e) => {
+        d.key(e, true);
+        onKeyDown?.(e);
+      }}
+    />
+  );
+}
+
+/** A setting's text (kept trimmed), as DraftInput keeps it. */
+export function TextInput(props: InputProps & { value: string; onChange: (v: string) => void }) {
+  return <DraftInput {...props} codec={asTyped} />;
+}
+
+/** A setting's lines of text (kept trimmed): kept once the box is left, or Ctrl/⌘+Enter. */
+export function TextArea(props: Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "defaultValue" | "onChange"> & { value: string; onChange: (v: string) => void }) {
+  const { value, onChange, onFocus, onBlur, onKeyDown, ...rest } = props;
+  const d = useDraft(value, asTyped, onChange);
+  return (
+    <textarea
+      {...rest}
+      value={d.shown}
+      onFocus={(e) => {
+        d.focus();
+        onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        d.blur();
+        onBlur?.(e);
+      }}
+      onChange={(e) => d.type(e.target.value)}
+      onKeyDown={(e) => {
+        d.key(e, false);
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) e.currentTarget.blur();
+        onKeyDown?.(e);
       }}
     />
   );

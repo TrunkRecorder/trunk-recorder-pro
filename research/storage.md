@@ -1,7 +1,10 @@
 # Storage: what's kept on disk, how it's written, and SQLite
 
-Status (2026-10-26): the first step (a single background writer and one save rule) is in the PR
-that adds this file. The rest is open for discussion before anyone builds it. Several people have
+Status (2026-10-26): the first steps are in the PR that adds this file:
+
+- a single background writer and one save rule;
+- text settings saved once you finish typing, not per letter.
+ The rest is open for discussion before anyone builds it. Several people have
 mentioned SQLite, and this is meant to settle on one plan so we don't end up with competing
 implementations.
 
@@ -16,6 +19,10 @@ Users with large systems on slow disks (SD cards, USB sticks) reported:
 Both came from the same pattern: state is kept in memory, but every change rewrote its whole file.
 Each write also waited for the disk to confirm it (`write_atomic`, which ends with an fsync), on
 the thread that was handling the change.
+
+The interface added to it. A typed setting was sent whenever typing paused for 300 ms, so a rename
+typed at an ordinary pace was several saves, as a user put it: "Save 1: F, Save 2: FI, Save 3:
+FIR…". See [When the interface saves](#when-the-interface-saves).
 
 ## What's kept, and how (after this PR)
 
@@ -69,7 +76,32 @@ What this costs:
 
 Fixing this means writing only what changed. There are two ways to do it.
 
-## Option A: SQLite (runtime state only)
+## Option A: SQLite for runtime state, and talkgroups and units as internal data
+
+The first version of this option kept SQLite to runtime state, leaving talkgroup and unit files as
+files because people edit them. The maintainer has since agreed that talkgroups and units can be
+**internal data** too, with **Import** and **Export** in a format people can edit (Trunk Recorder's
+CSV). So:
+
+| In SQLite | Stays a file |
+|---|---|
+| the radio registry, heard codes, learned aliases, sharing, AutoTune, band plans | `config.json` |
+| talkgroups (Ignore, alpha tags, tags) and unit names, with CSV Import/Export | a conventional system's **linked** channel CSV (re-read from a spreadsheet; or made an explicit Reload) |
+| perhaps the minute history (statstore's appending already works) | |
+
+Moving talkgroups and units in does the following:
+
+- An Ignore click or an alpha-tag edit is one row. It no longer rewrites a 10,000-row CSV or sends
+  the whole file to every browser. The per-row `setTalkgroup` command below is still needed for
+  the interface; SQLite only changes what sits behind it.
+- All runtime state lives in one place, rather than a database for some of it and files for the
+  rest.
+- Little is lost: talkgroup files are only read when recording starts, so editing them by hand
+  while recording doesn't work today anyway. Import and Export keep the spreadsheet and
+  RadioReference workflows working.
+
+For talkgroups alone, the speed gain over this PR's in-memory map and background writer is modest,
+because edits come at human pace. The case is strong once the registry moves to SQLite anyway.
 
 ### Benefits
 
@@ -94,15 +126,14 @@ Fixing this means writing only what changed. There are two ways to do it.
   rusqlite doesn't build. The options are SQLite's own wasm build with OPFS (driven from JS,
   async) or a second storage path. Either way, storage has to sit behind an interface with two
   implementations. This PR's `Session::due()` / `Saved` split is already that seam.
-- **User-edited files must stay files.** `config.json`, talkgroup files and unit names are
-  edited by hand, imported and exported in Trunk Recorder's formats, kept in git by some users,
-  and visible to plugins through `data_dir`. Moving them into a database breaks all of that, and
-  needs a rule for which wins when the file is edited while recording. Taclane's suggestion fits:
-  configuration exportable, day-to-day state in a database. So SQLite would hold:
-  - the registry
-  - heard codes
-  - learned aliases (perhaps, with the CSV exported)
-  - the history (perhaps; statstore's appending already works well)
+- **What leaves the filesystem has to be exported.** Talkgroup and unit files are used in
+  Trunk Recorder's formats, kept in git by some users, and visible to plugins through `data_dir`.
+  As internal data they need:
+  - **Import** and **Export** in the interface and on the command line;
+  - perhaps an export written beside the config after changes, for anyone who wants the file;
+  - a one-time import of the existing files.
+
+  `config.json` stays a file.
 - **Schema work.** `SystemRadio` is nested: per-talkgroup hours, ciphers, per-radio talkgroup
   lists and recent transmissions, a pairs map. That becomes about 8 tables, plus a schema version
   and a one-time import of existing `radio/*.json`.
@@ -146,10 +177,60 @@ is written and the log truncated.
 3. **Per-row talkgroup edits.** Add `setTalkgroup { system, tg, fields }`. The server patches
    memory, sends only that row to browsers, and hands the file to the writer. The CSV stays the
    file of record. This is independent of A vs B.
-4. **Then pick A or B for the registry only**, behind the `Saved` seam, by benchmarking both on a
-   Pi with an SD card against a real large system's registry:
-   - choose **B** if it keeps writes and startup acceptable;
-   - choose **A** if the registry should be queried in place or memory becomes the limit, and
-     only once the browser build's path (OPFS or skip) is decided.
+4. **Then pick A or B**, behind the `Saved` seam, by benchmarking both on a Pi with an SD card
+   against a real large system's registry:
+   - **A** (SQLite, with talkgroups and units as internal data, plus Import/Export) if the registry
+     should be queried in place, memory becomes the limit, or one store for everything is wanted.
+     Only once the browser build's path (OPFS or skip) is decided.
+   - **B** (append-only log) if it keeps writes and startup acceptable and the C dependency isn't
+     wanted. Talkgroup and unit files then stay files, written by the background writer.
 
-Configuration and talkgroup/unit files stay as files either way.
+`config.json` stays a file either way.
+
+## When the interface saves
+
+The other half of the reports: "the UI lacks a save button, and can be aggressive about
+automatically doing things for you… every single keystroke would restart the plugin… Save 1: F,
+Save 2: FI, Save 3: FIR…".
+
+**What it did.** Setup's text fields passed every change into the config. The only brake was a
+300 ms timer after the last change, so pausing between keys meant a save per pause. Each save:
+
+- rewrote `config.json`, waiting for the disk, inside the request handler with the config locked;
+- re-read every linked channel CSV;
+- rebuilt the name lookup by re-parsing every talkgroup file;
+- sent the whole config to every browser;
+- restarted any plugin whose settings changed, if it can't take new settings while running.
+
+Typed into a system's **short name**, it renamed the system with each pause: `f`, `fi`, `fir`…
+Each rename also moved its talkgroup file and the plugin settings that name it.
+
+**What this PR changes.** Every text setting is now a `DraftInput` (`TextInput`, `TextArea`,
+`NumberInput`). It keeps what's typed and passes it on once:
+
+- when the field is left;
+- when Enter is pressed (a `TextArea`: Ctrl/⌘+Enter);
+- when its page goes away.
+
+Escape puts it back. Switches, menus and buttons still act at once. The rule is in
+`docs/developer/ui-style.md`.
+
+**Measured** in headless Chrome, with "fire4a" typed into a system's short name, pausing 500 ms
+after each key:
+
+| | saves while typing | saves in all |
+|---|---|---|
+| before | 6 | 6 |
+| after | 0 | 1 (on leaving the field) |
+| after, then Escape | 0 | 0 (field back to `p25`) |
+
+**Not changed yet:**
+
+- **No Save button, on purpose.** Saving once per finished field means every save is one the user
+  meant. A global Save button brings unsaved-changes state, edits lost on navigating away, and
+  conflicts between browsers.
+- **A visible "Saved" / "Couldn't save"** in Setup would answer "did it take?". Not built yet.
+- **Disruptive changes** should be marked and applied deliberately: plugin settings that restart
+  a plugin, and source changes that need a recording restart. Not built yet.
+- **Sliders** (gain) still save as they're dragged, debounced. That's kept for now, because
+  hearing gain change live while dragging is useful.

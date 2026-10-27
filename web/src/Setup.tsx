@@ -81,7 +81,7 @@ import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
 import { readTalkgroupCsv } from "./talkgroups.ts";
-import { DraftInput, Field, FileInput, NumberInput, Toggle } from "./inputs.tsx";
+import { DraftInput, Field, FileInput, NumberInput, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
 import { openTodos } from "./todo.ts";
@@ -463,12 +463,12 @@ function RowEditor(props: {
             {NAME_FIELDS.map(([field, label, placeholder]) => (
               <label key={field} className="row-name">
                 <span className="small muted">{label}</span>
-                <input
+                <TextInput
                   value={ch[field] ?? ""}
                   disabled={props.disabled}
                   placeholder={placeholder}
                   list={field === "description" ? undefined : props.lists[field]}
-                  onChange={(e) => props.onName(field, e.target.value)}
+                  onChange={(v) => props.onName(field, v)}
                 />
               </label>
             ))}
@@ -973,12 +973,12 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
               }
             >
               <div className="row">
-                <input
+                <TextInput
                   className="mono grow"
                   list={`usrp-${i}`}
                   value={src.args}
                   placeholder="first found"
-                  onChange={(e) => edit((x) => x.type === "usrp" && void (x.args = e.target.value))}
+                  onChange={(v) => edit((x) => x.type === "usrp" && void (x.args = v))}
                 />
                 <datalist id={`usrp-${i}`}>
                   {(radios?.usrp.devices ?? []).map((d) => (
@@ -995,7 +995,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         )}
         {src.type === "usrp" && (
           <Field label="Antenna" hint="e.g. RX2, TX/RX">
-            <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.type === "usrp" && void (x.antenna = e.target.value.trim()))} />
+            <TextInput className="mono" value={src.antenna} placeholder="default" onChange={(v) => edit((x) => x.type === "usrp" && void (x.antenna = v))} />
           </Field>
         )}
         {(src.type === "airspy" || src.type === "bladerf") && !missing && (
@@ -1041,12 +1041,12 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
                 }
               >
                 <div className="row">
-                  <input
+                  <TextInput
                     className="mono grow"
                     list={`soapy-${i}`}
                     value={src.args}
                     placeholder="first found"
-                    onChange={(e) => edit((x) => x.type === "soapy" && void (x.args = e.target.value))}
+                    onChange={(v) => edit((x) => x.type === "soapy" && void (x.args = v))}
                   />
                   <datalist id={`soapy-${i}`}>
                     {(radios?.soapy?.devices ?? []).map((d) => (
@@ -1062,10 +1062,10 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
                 </div>
               </Field>
               <Field label="Antenna">
-                <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.type === "soapy" && void (x.antenna = e.target.value.trim()))} />
+                <TextInput className="mono" value={src.antenna} placeholder="default" onChange={(v) => edit((x) => x.type === "soapy" && void (x.antenna = v))} />
               </Field>
               <Field label="Device settings" hint="key=value, e.g. biastee=true (see SoapySDRUtil --probe)" wide>
-                <input className="mono" value={src.settings} placeholder="none" onChange={(e) => edit((x) => x.type === "soapy" && void (x.settings = e.target.value))} />
+                <TextInput className="mono" value={src.settings} placeholder="none" onChange={(v) => edit((x) => x.type === "soapy" && void (x.settings = v))} />
               </Field>
               {radios?.soapy && <SoapyModules soapy={radios.soapy} />}
             </>
@@ -1089,14 +1089,14 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             </Field>
           ) : (
             <Field label="Capture file" wide>
-              <input
+              <TextInput
                 className="mono"
                 value={src.path}
                 placeholder="/path/to/capture.cu8"
-                onChange={(e) =>
+                onChange={(v) =>
                   edit((x) => {
                     if (x.type !== "file") return;
-                    x.path = e.target.value;
+                    x.path = v;
                     x.format = formatFromPath(x.path);
                   })
                 }
@@ -1410,16 +1410,16 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
     >
       <Group title="Basics" hint="The short name is its calls' folder." cols={3}>
         <Field label="Short name" hint={dupName ? "Already used — each needs its own folder" : undefined}>
-          <input
+          <TextInput
             value={conv.shortName}
-            onChange={(e) => {
-              const to = cleanShortName(e.target.value);
+            onChange={(v) => {
+              const to = cleanShortName(v);
               updateConfig((x) => renameSystem(x, x.conventional[k], to));
             }}
           />
         </Field>
         <Field label="Name">
-          <input value={conv.name ?? ""} placeholder="County Fire" onChange={(e) => edit((x) => void (e.target.value ? (x.name = e.target.value) : delete x.name))} />
+          <TextInput value={conv.name ?? ""} placeholder="County Fire" onChange={(v) => edit((x) => void (v ? (x.name = v) : delete x.name))} />
         </Field>
         <Field needs={need(`squelch-${name}`)} anchor={`squelch-${name}`} label="Squelch, dB above noise" hint="For channels without their own">
           <NumberInput label="Squelch, dB above noise" value={conv.squelchDb} onChange={(v) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, v ?? 8))))} />
@@ -1604,7 +1604,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                         />
                       </td>
                       <td>
-                        <input value={ch.name} disabled={linked} placeholder="Name" aria-label="Name (alpha tag)" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
+                        <TextInput value={ch.name} disabled={linked} placeholder="Name" aria-label="Name (alpha tag)" onChange={(v) => editRow(i, (x) => void (x.name = v))} />
                         {(ch.tag || ch.group || ch.description) && (
                           <button type="button" className="row-meta small" title={ch.description || "Its description, tag and category — click to edit"} onClick={() => toggleEdit(ids.current[i])}>
                             {[ch.tag, ch.group].filter(Boolean).join(" · ") || ch.description}
@@ -2209,12 +2209,12 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
     >
       <div className="set-group-body cols-2 site-body">
         <Field label="Site name" hint={dupName ? "Another site has it — each needs its own" : "As the talkgroup file's Preferred Site names it"}>
-          <input
+          <TextInput
             value={site.name ?? ""}
             placeholder={sys.shortName}
-            onChange={(e) =>
+            onChange={(v) =>
               edit((x) => {
-                if (e.target.value.trim()) x.name = e.target.value;
+                if (v) x.name = v;
                 else delete x.name;
               })
             }
@@ -2427,16 +2427,16 @@ export function SystemCard(props: { c: Config; i: number }) {
     >
       <Group title="Basics" hint="The short name is its calls' folder.">
         <Field label="Short name" hint={dupName ? "Already used — each needs its own folder" : undefined}>
-          <input
+          <TextInput
             value={sys.shortName}
-            onChange={(e) => {
-              const to = cleanShortName(e.target.value);
+            onChange={(v) => {
+              const to = cleanShortName(v);
               updateConfig((x) => renameSystem(x, x.systems[i], to));
             }}
           />
         </Field>
         <Field label="Name">
-          <input value={sys.name ?? ""} placeholder="County Public Safety" onChange={(e) => edit((x) => void (x.name = e.target.value))} />
+          <TextInput value={sys.name ?? ""} placeholder="County Public Safety" onChange={(v) => edit((x) => void (x.name = v))} />
         </Field>
         <Field label="Type">
           <select
@@ -2606,7 +2606,7 @@ function LogPanel(props: { c: Config }) {
         {l.file && (
           <>
             <Field label="Folder" hint="Relative to the config file">
-              <input className="mono" value={l.dir} placeholder="logs" onChange={(e) => set({ dir: e.target.value })} />
+              <TextInput className="mono" value={l.dir} placeholder="logs" onChange={(v) => set({ dir: v })} />
             </Field>
             <Toggle
               label="One file, for logrotate"
@@ -3096,7 +3096,7 @@ export function Setup() {
               ) : (
                 <>
                   <Field label="Recordings folder" wide>
-                    <input className="mono" value={c.recording.captureDir} onChange={(e) => updateConfig((x) => void (x.recording.captureDir = e.target.value))} />
+                    <TextInput className="mono" value={c.recording.captureDir} onChange={(v) => updateConfig((x) => void (x.recording.captureDir = v))} />
                   </Field>
                   <Toggle
                     label="Keep calls waiting to upload in memory"
