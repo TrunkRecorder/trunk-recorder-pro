@@ -22,8 +22,15 @@
 //! repeat / mute rules use; AMBE the frame's, which the format has no
 //! field for). Records are rebuilt, not what the air sent: an LDU's link
 //! control / encryption sync are zero (flag RS_OK clear: untrusted), a
-//! Phase 2 frame's "measured phase" is its dibit, and time runs on the
-//! call's audio clock.
+//! Phase 2 frame's "measured phase" is the centre of its symbol's quadrant,
+//! and time runs on the call's audio clock.
+//!
+//! The AMBE layouts have no error counts, and their codewords are clean
+//! again, so a frame our vocoder didn't play as sent (repeated, muted) is
+//! written as unheard for another reader to conceal: a Phase 2 frame's
+//! `frame_valid` bit, a DMR burst's `burst_valid` bit (a burst is three
+//! frames, so one bad frame makes all three a hole). Our own reader reads
+//! them back from the tail, which lists every frame.
 
 use sdr_stream::dmr::{self as sdr_dmr, DmrVoice};
 use sdr_stream::p25::{LduFrame, P2VchFrame};
@@ -35,6 +42,13 @@ use crate::mbe::Kind;
 use crate::p25::fec::{golay23_encode, hamming15_encode};
 use crate::p25::voice::imbe_header_decode;
 use crate::tables::VOICE_CODEWORD_BITS;
+
+/// A Phase 2 phase octet's top two bits are its symbol's quadrant, which
+/// holds dibit `QUADRANT_DIBIT[q]` (the H-DQPSK constellation, TIA-102.BBAB;
+/// MimoSDR's `p25::phase2::QUADRANT_DIBIT`).
+const QUADRANT_DIBIT: [u8; 4] = [3, 2, 0, 1];
+/// The quadrant of each dibit (the inverse of [`QUADRANT_DIBIT`]).
+const DIBIT_QUADRANT: [u8; 4] = [2, 3, 1, 0];
 
 /// The call-level facts the header and trailer carry.
 #[derive(Clone, Debug, Default)]
@@ -218,9 +232,11 @@ fn p2vch(frames: &[VoiceFrame], head: MsgHead, slot: u8) -> Vec<u8> {
     let mut phase = [[0u8; 36]; 18];
     let mut frame_valid = 0u32;
     for (k, f) in frames.iter().enumerate() {
-        // The dibit in the top two bits, mid-bucket.
-        phase[k] = encode_vcw(&ambe_bits(f)).map(|d| d << 6 | 0x20);
-        frame_valid |= 1 << k;
+        // Its quadrant in the top two bits, mid-quadrant.
+        phase[k] = encode_vcw(&ambe_bits(f)).map(|d| DIBIT_QUADRANT[d as usize] << 6 | 0x20);
+        if !f.bad() {
+            frame_valid |= 1 << k;
+        }
     }
     let mut rec = Vec::with_capacity(P2VchFrame::BYTES + 24);
     P2VchFrame { head, slot, frame_valid, phase, flush_cause: 0, gap_fragments: 0 }.encode_into(&mut rec);
@@ -236,7 +252,8 @@ fn dmr_voice(frames: &[VoiceFrame], head: MsgHead, slot: u8) -> Vec<u8> {
     }
     // A burst is three frames; the last record may cover fewer bursts.
     let slots = frames.len().div_ceil(3) as u8;
-    let burst_valid = (0..6).filter(|b| (b + 1) * 3 <= frames.len()).fold(0u8, |m, b| m | 1 << b);
+    let heard = |b: usize| frames.get(b * 3..b * 3 + 3).is_some_and(|fs| !fs.iter().any(VoiceFrame::bad));
+    let burst_valid = (0..6).filter(|&b| heard(b)).fold(0u8, |m, b| m | 1 << b);
     let mut rec = Vec::with_capacity(DmrVoice::BYTES + 24);
     DmrVoice { head, slot, burst_valid, slots, frames: out }.encode_into(&mut rec);
     with_tail(rec, frames)
@@ -336,8 +353,9 @@ pub fn sdr_frames(bytes: &[u8]) -> Vec<VoiceFrame> {
             }
         } else if let Some(v) = P2VchFrame::from_raw(&r) {
             let t = tail(&r, P2VchFrame::BYTES);
-            for k in (0..18).filter(|&k| v.frame_valid >> k & 1 == 1) {
-                let d = v.phase[k].map(|p| p >> 6);
+            let n = t.map_or(18, |t| t.len()).min(18);
+            for k in (0..n).filter(|&k| t.is_some() || v.frame_valid >> k & 1 == 1) {
+                let d = v.phase[k].map(|p| QUADRANT_DIBIT[(p >> 6) as usize]);
                 out.push(ambe_frame(&d, t.and_then(|t| t.get(k).copied())));
             }
         } else if let Some(v) = DmrVoice::from_raw(&r) {
@@ -400,7 +418,13 @@ mod tests {
 
     fn ambe_frame_rand(seed: &mut u32, k: usize) -> VoiceFrame {
         let bits = (0..49).map(|_| (lcg(seed) & 1) as u8).collect();
-        VoiceFrame { codec: Codec::Ambe, bits, e0: 0, errs: (k % 4) as u32, erased: false, kind: if k == 5 { Kind::Tone } else { Kind::Voice }, tone: None }
+        let kind = match k {
+            5 => Kind::Tone,
+            22 => Kind::Repeat,
+            23 => Kind::Muted,
+            _ => Kind::Voice,
+        };
+        VoiceFrame { codec: Codec::Ambe, bits, e0: 0, errs: (k % 4) as u32, erased: false, kind, tone: None }
     }
 
     fn info() -> SdrInfo {
@@ -485,6 +509,17 @@ mod tests {
             assert_eq!(back.len(), 40, "{mode:?}");
             for (a, b) in frames.iter().zip(&back) {
                 assert_eq!((&a.bits, a.errs, a.kind), (&b.bits, b.errs, b.kind), "{mode:?}");
+            }
+            // Frames 22 and 23 (the second record's 4th and 5th: DMR's 2nd
+            // burst) were repeated / muted: unheard to another reader. The
+            // last record's 4 frames: a whole burst and part of one.
+            let recs: Vec<Raw> = sdr_stream::records(&bytes).filter_map(|r| if let Record::Raw(r) = r { Some(r) } else { None }).collect();
+            if mode == SdrMode::P25Tdma {
+                let v: Vec<P2VchFrame> = recs.iter().filter_map(P2VchFrame::from_raw).collect();
+                assert_eq!(v.iter().map(|v| v.frame_valid).collect::<Vec<_>>(), [0x3FFFF, 0x3FFFF & !(0b11 << 4), 0xF]);
+            } else {
+                let v: Vec<DmrVoice> = recs.iter().filter_map(DmrVoice::from_raw).collect();
+                assert_eq!(v.iter().map(|v| (v.burst_valid, v.slots)).collect::<Vec<_>>(), [(0x3F, 6), (0x3F & !0b10, 6), (0b1, 2)]);
             }
         }
         assert_eq!(call_sdr(SdrMode::Dmr, &[imbe_frame(&mut 1, 0)], &info()), None, "the wrong codec");

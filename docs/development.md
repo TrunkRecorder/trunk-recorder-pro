@@ -6,7 +6,7 @@ For how the recorder works inside, see [Architecture](architecture.md); for the 
 
 ## Building
 
-Needs Rust 1.95+, Node 22+ (for the interface), the `wasm32-unknown-unknown`
+Needs Rust 1.99+, Node 22+ (for the interface), the `wasm32-unknown-unknown`
 target and `wasm-bindgen-cli` at the version in `Cargo.lock` (0.2.129). The
 interface uses the recorder's own config rules — why Start would refuse, where
 sources go, how a config is read — compiled to WebAssembly from
