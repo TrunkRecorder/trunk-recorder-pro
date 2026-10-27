@@ -63,6 +63,12 @@ struct Inner {
     backfill_running: AtomicBool,
     #[cfg(test)]
     commits: Arc<AtomicU64>,
+    /// Set by the retention thread as it exits.
+    #[cfg(test)]
+    retention_done: Arc<AtomicBool>,
+    /// The sending end of the retention thread's timer: dropped with the
+    /// last `Db`, which wakes the thread to exit.
+    retention_stop: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     readers: Mutex<Vec<Connection>>,
 }
 
@@ -109,6 +115,9 @@ impl Db {
             backfill_running: AtomicBool::new(false),
             #[cfg(test)]
             commits,
+            #[cfg(test)]
+            retention_done: Arc::new(AtomicBool::new(false)),
+            retention_stop: Mutex::new(None),
             readers: Mutex::new(readers),
         })))
     }
@@ -138,23 +147,46 @@ impl Db {
     }
 
     /// Keep `days` days of calls (0: all of them): delete what is older now,
-    /// and again every hour, until the writer stops.
+    /// and again every hour. The thread holds only a weak handle and waits on
+    /// a channel whose sender lives in the database, so it exits as soon as
+    /// the last `Db` is dropped.
     pub fn start_retention(&self, days: u32) {
         if days == 0 {
             return;
         }
-        let db = self.clone();
+        let (stop, wake) = std::sync::mpsc::channel::<()>();
+        *self
+            .0
+            .retention_stop
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(stop);
+        let inner = Arc::downgrade(&self.0);
+        #[cfg(test)]
+        let done = self.0.retention_done.clone();
         let spawned = std::thread::Builder::new()
             .name("db-retention".into())
             .spawn(move || {
                 loop {
+                    // The handle lives only for the send: holding it while
+                    // waiting would keep the writer alive for ever.
+                    let Some(db) = inner.upgrade().map(Db) else {
+                        break;
+                    };
                     let now_ms = crate::clock::unix_ms() as i64;
                     let before_ms = now_ms - i64::from(days) * 86_400_000;
-                    if !db.send(Write::Retention { before_ms }) {
+                    let sent = db.send(Write::Retention { before_ms });
+                    drop(db);
+                    if !sent {
                         break;
                     }
-                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                    if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) =
+                        wake.recv_timeout(std::time::Duration::from_secs(3600))
+                    {
+                        break;
+                    }
                 }
+                #[cfg(test)]
+                done.store(true, Ordering::Release);
             });
         if let Err(e) = spawned {
             log::error!("db: could not start the retention thread: {e}");
@@ -369,6 +401,26 @@ mod tests {
                 "meta",
                 "schema_version"
             ]
+        );
+    }
+
+    #[test]
+    fn the_retention_thread_exits_when_the_last_db_is_dropped() {
+        let (db, _) = Db::for_test("retention-exit");
+        db.start_retention(1);
+        let done = db.0.retention_done.clone();
+        let clone = db.clone();
+        drop(db);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!done.load(Ordering::Acquire), "a handle is still alive");
+        drop(clone);
+        let t = std::time::Instant::now();
+        while !done.load(Ordering::Acquire) && t.elapsed() < std::time::Duration::from_secs(1) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            done.load(Ordering::Acquire),
+            "the thread must exit within a second"
         );
     }
 
