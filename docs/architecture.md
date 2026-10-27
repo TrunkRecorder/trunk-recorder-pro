@@ -485,7 +485,7 @@ VoiceDecoder::quality, ControlChannel::quality (ChannelQuality) ─► Engine::c
 ```text
 main ─► serve()
          ├─ Ctx (Arc): config (Mutex) + its version, talkgroup files, lifecycle (Lifecycle), phase,
-         │             history, plugins, interfaces, hub, shared (registry + monitor + names),
+         │             db (the call store), plugins, interfaces, hub, shared (registry + monitor + names),
          │             series + store (stats history), topics, engine (the engine thread's commands)
          ├─ logging (log facade): stderr, files, syslog, and the browsers (warnings and errors
          │             to every connection, the rest only while someone watches the `log` topic)
@@ -494,7 +494,10 @@ main ─► serve()
          │                    one task per WebSocket; blocking commands via spawn_blocking
          ├─ monitor thread: the computer and plugins every 2 s (net-probe thread beside it)
          ├─ stats-load / stats-store threads: history files in, rollups out
-         ├─ history thread: fills the call list from disk in the background
+         ├─ db-writer thread: the call store's one writer, batching rows once a second
+         │             (readers are a small pool, one connection each, for history, olderCalls, callsQuery)
+         ├─ db-backfill thread: indexes the capture folder once, then reconciles the last two days
+         ├─ db-retention thread: hourly, drops calls older than store.retentionDays
          └─ Ctx::begin_recording on "start" (or --start / autoStart) ─► runtime::start(cfg)
                ├─ source-0 … source-N threads (runtime::spawn_source) ─► one SourceMsg queue each (256)
                ├─ dsp-0 … dsp-N threads: each source's samples into the engine (Feeder);
@@ -514,7 +517,7 @@ main ─► serve()
                │     (plugins::plan: the system's file rules, what the plugins take, whether
                │     there's an encoder) says which files to write; they write .json + .wav +
                │     .m4a (WAV piped to the encoder; the WAV instead should that fail), send
-               │     `concluded` + history, hand PluginHost::concluded the files as they are,
+               │     `concluded` + a row in the call store, hand PluginHost::concluded the files as they are,
                │     and tell the Archive; files only the plugins need go to the RAM spool
                │     (spool.rs) if on
                └─ PluginHost: per enabled plugin a supervisor thread (plugin-<id>) and its
@@ -555,6 +558,10 @@ main ─► serve()
     at stop.
   - `stats/YYYY-MM-DD.jsonl` gets each minute's rollup appended (see
     [Measurements](#measurements)).
+  - `trunk-pro.sqlite` (`trunk-pro/src/db/`) is the call store: one row per
+    finished call, written in batches by the `db-writer` thread. The
+    recording and its `.json` are still files; the row is how the call list
+    and `callsQuery` find them without reading the folder.
   - These companion files, installed plugins and plugin data all live
     beside the config file (`paths::data_dir()`), so recorders with their
     own `--config` don't share them.

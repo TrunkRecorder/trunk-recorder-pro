@@ -42,6 +42,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Escape puts it back. Before, each pause in typing was a save: a system's short name typed as
   "fire4a" renamed it to f, fi, fir… on the way, moving its talkgroup file each time, and a
   plugin's settings restarted it on each pause. Switches and menus still act at once.
+- **A call store: the call list loads at once, however large the archive** (#100). Every finished
+  call is now a row in a database beside the config, so the call list no longer waits for the
+  capture folder to be read.
+  - Paging back through older calls has no limit.
+  - Interfaces can ask for calls by system, talkgroup, radio and time (`callsQuery`; `hello`
+    lists the `calls` capability).
+  - **`store.retentionDays`** sets how long calls are kept in the store: 120 days by default, 0
+    keeps everything. It only trims the list; recordings and their JSON are written exactly as
+    before and are never deleted by it.
+  - The first start indexes the calls already in the capture folder in the background; the
+    recorder is usable meanwhile, and later starts only check the last two days.
 
 - **Phase 2 and DMR `.sdr` files play in MimoSDR.** A Phase 2 frame's symbols were stored as the
   dibit rather than its quadrant, so MimoSDR's player (and anyone else's) misread most of them; and
