@@ -1972,7 +1972,7 @@ dependencies = [
 
 [[package]]
 name = "trunk-app"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "trunk-core"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "aes",
  "des",
@@ -2007,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "trunk-pro"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "axum",
  "chrono",
@@ -2050,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "trunk-web"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "js-sys",
  "rtlsdr-nusb",

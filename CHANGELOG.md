@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.11] — 2026-10-27
+
 - **Saving never holds up recording or a click.** Large systems on slow disks (SD cards) waited on
   whole-file writes: an Ignore click could take seconds, and the recording paused while talker
   aliases, heard codes or the radio registry were written.
