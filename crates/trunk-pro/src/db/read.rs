@@ -215,6 +215,61 @@ mod tests {
         }
     }
 
+    /// Every page walks an index on PostgreSQL too (SQLite's plans:
+    /// `schema::tests::every_page_walks_an_index_without_sorting`), with 50,000
+    /// calls analysed: no table read whole, no sort but of what's cut to the
+    /// limit.
+    #[test]
+    fn every_page_walks_an_index_on_postgres() {
+        for db in seeded("pg-plans").into_iter().filter(|db| db.kind() == "postgres") {
+            let store = db.store().unwrap();
+            // (Copies of call s/1 a second apart, one in ten system a's, the rest
+            // another's; a's over 40 talkgroups, each with one of 500 radios.)
+            let (a, b) = (db.system_id("ohmarcs").unwrap(), db.system_id("other").unwrap());
+            db.flush().unwrap();
+            let exprs: Vec<String> = CALL_COLS.iter().map(|c| match *c {
+                "path" => "'g/' || g".to_string(),
+                "start_ms" => "c.start_ms + g * 1000".to_string(),
+                "system_id" => format!("case when g % 10 = 0 then {a} else {b} end"),
+                "talkgroup" => "(g / 10) % 40".to_string(),
+                c => format!("c.{c}"),
+            }).collect();
+            store.batch_for_test(&format!(
+                "insert into calls ({}) select {} from calls c cross join generate_series(1, 50000) g where c.path = 's/1';
+                 insert into call_transmissions (call_id, seq, system_id, call_start_ms, unit, first, time, pos, emergency, encrypted, duplex, mode, priority, signal_system, tag, tag_ota)
+                 select n.id, 0, n.system_id, n.start_ms, ((n.start_ms / 1000 - 1) / 10) % 500, true, 0, 0, false, false, false, false, 0, '', '', '' from calls n where n.path like 'g/%';
+                 analyze",
+                CALL_COLS.join(", "),
+                exprs.join(", ")
+            ));
+            let f = |systems: &[i64], tg: Option<u32>, unit: Option<i64>| (CallsQuery { talkgroup: tg, unit, cursor: Some("40000000:g/9".into()), ..Default::default() }, systems.to_vec());
+            // (A system's calls: by its index, or by every call's with the others
+            // passed over, as the planner costs it; a tenth of them, either is cheap.)
+            let system = &["calls_system_start", "calls_start"][..];
+            for (what, (q, systems), index) in [
+                ("every call", f(&[], None, None), &["calls_start"][..]),
+                ("a system", f(&[a], None, None), system),
+                ("two systems", f(&[a, b], None, None), system),
+                ("a talkgroup", f(&[a], Some(1), None), &["calls_system_tg_start"][..]),
+                ("a radio", f(&[a], None, Some(7)), &["transmissions_radio"][..]),
+                ("a radio on two", f(&[a, b], None, Some(7)), &["transmissions_radio"][..]),
+            ] {
+                let (sql, ps) = Where::of(&q, &systems).query(&columns(), 101);
+                let plan = store.plan(&sql, &ps);
+                let p = plan.join("\n");
+                assert!(index.iter().any(|i| p.contains(&format!("Backward using {i} "))), "{what}:\n{p}");
+                assert!(!p.contains("Seq Scan on calls") && !p.contains("Seq Scan on call_transmissions") && !p.contains("Bitmap Heap Scan"), "{what} reads a table whole:\n{p}");
+                // (A full sort only ever right under a limit, of the arms cut to it; an
+                // incremental one, of the path within a start, as the index is walked.)
+                for (i, line) in plan.iter().enumerate() {
+                    if line.trim_start().trim_start_matches("->").trim_start().starts_with("Sort  (") {
+                        assert!(i > 0 && plan[i - 1].contains("Limit"), "{what} sorts what it matched:\n{p}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn parameters_are_numbered_as_written() {
         let q = CallsQuery { talkgroup: Some(1), ..Default::default() };

@@ -48,8 +48,8 @@ pub fn open(url: &str) -> Result<Store, String> {
 /// (tests: each its own).
 #[cfg(test)]
 pub fn open_fresh_schema(url: &str, schema: &str) -> Result<Store, String> {
-    let mut c = Client::connect(url, NoTls).map_err(|e| e.to_string())?;
-    c.batch_execute(&format!("drop schema if exists {schema} cascade; create schema {schema}")).map_err(|e| e.to_string())?;
+    let mut c = Client::connect(url, NoTls).map_err(said)?;
+    c.batch_execute(&format!("drop schema if exists {schema} cascade; create schema {schema}")).map_err(said)?;
     PostgresBackend::open_in(url, Some(schema.to_string())).map(|b| Store::new(Box::new(b)))
 }
 
@@ -61,10 +61,10 @@ impl PostgresBackend {
             return Err("storage.url is empty: say which PostgreSQL database".into());
         }
         let location = redacted(url);
-        let mut writer = connect(url, schema.as_deref()).map_err(|e| format!("{location}: {e}"))?;
+        let mut writer = connect(url, schema.as_deref()).map_err(|e| format!("{location}: {}", said(e)))?;
         take(&mut writer.client).map_err(|e| format!("{location}: {e}"))?;
         prepare(&mut writer.client, &location).map_err(|e| format!("{location}: {e}"))?;
-        let readers = (0..READERS).map(|_| connect(url, schema.as_deref())).collect::<Result<Vec<_>, _>>().map_err(|e| format!("{location}: {e}"))?;
+        let readers = (0..READERS).map(|_| connect(url, schema.as_deref())).collect::<Result<Vec<_>, _>>().map_err(|e| format!("{location}: {}", said(e)))?;
         Ok(PostgresBackend { url: url.to_string(), schema, location, writer: Mutex::new(writer), readers: Mutex::new(readers) })
     }
 }
@@ -84,14 +84,14 @@ impl Backend for PostgresBackend {
         let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         if w.client.is_closed() {
             log::warn!("Call store: {}: the connection dropped; connecting again", self.location);
-            let mut c = connect(&self.url, self.schema.as_deref()).map_err(|e| e.to_string())?;
+            let mut c = connect(&self.url, self.schema.as_deref()).map_err(said)?;
             take(&mut c.client)?;
             *w = c;
         }
         let Conn { client, prepared } = &mut *w;
-        let mut tx = client.transaction().map_err(|e| format!("could not begin a transaction: {e}"))?;
+        let mut tx = client.transaction().map_err(|e| format!("could not begin a transaction: {}", said(e)))?;
         f(&mut Pg { c: &mut tx, prepared })?;
-        tx.commit().map_err(|e| format!("commit failed: {e}"))
+        tx.commit().map_err(|e| format!("commit failed: {}", said(e)))
     }
 
     /// `f` on a read connection from the pool (a new one when all are out,
@@ -100,7 +100,7 @@ impl Backend for PostgresBackend {
         let pooled = self.readers.lock().unwrap_or_else(|e| e.into_inner()).pop().filter(|c| !c.client.is_closed());
         let mut c = match pooled {
             Some(c) => c,
-            None => connect(&self.url, self.schema.as_deref()).map_err(|e| e.to_string())?,
+            None => connect(&self.url, self.schema.as_deref()).map_err(said)?,
         };
         let out = f(&mut Pg { c: &mut c.client, prepared: &mut c.prepared });
         let mut pool = self.readers.lock().unwrap_or_else(|e| e.into_inner());
@@ -123,7 +123,7 @@ impl<C: GenericClient> Pg<'_, C> {
         let st = match self.prepared.get(sql) {
             Some(st) => st.clone(),
             None => {
-                let st = self.c.prepare(sql).map_err(|e| e.to_string())?;
+                let st = self.c.prepare(sql).map_err(said)?;
                 self.prepared.insert(sql.to_string(), st.clone());
                 st
             }
@@ -141,17 +141,17 @@ impl<C: GenericClient> Exec for Pg<'_, C> {
     fn execute(&mut self, sql: &str, ps: &[V]) -> Result<u64, String> {
         let (st, args) = self.statement(sql, ps)?;
         let refs: Vec<&(dyn ToSql + Sync)> = args.iter().map(|a| &**a).collect();
-        self.c.execute(&st, &refs).map_err(|e| e.to_string())
+        self.c.execute(&st, &refs).map_err(said)
     }
 
     fn query(&mut self, sql: &str, ps: &[V]) -> Result<Vec<Row>, String> {
         let (st, args) = self.statement(sql, ps)?;
         let refs: Vec<&(dyn ToSql + Sync)> = args.iter().map(|a| &**a).collect();
-        Ok(self.c.query(&st, &refs).map_err(|e| e.to_string())?.iter().map(row).collect())
+        Ok(self.c.query(&st, &refs).map_err(said)?.iter().map(row).collect())
     }
 
     fn batch(&mut self, sql: &str) -> Result<(), String> {
-        self.c.batch_execute(sql).map_err(|e| e.to_string())
+        self.c.batch_execute(sql).map_err(said)
     }
 }
 
@@ -229,28 +229,37 @@ fn connect(url: &str, schema: Option<&str>) -> Result<Conn, postgres::Error> {
 /// Take the database (its schema) for this recorder: a session advisory
 /// lock, let go when the connection closes.
 fn take(c: &mut Client) -> Result<(), String> {
-    let got: bool = c.query_one("select pg_try_advisory_lock(hashtext('trunk-pro:' || current_schema()))", &[]).map_err(|e| e.to_string())?.get(0);
+    let got: bool = c.query_one("select pg_try_advisory_lock(hashtext('trunk-pro:' || current_schema()))", &[]).map_err(said)?.get(0);
     if got { Ok(()) } else { Err("another Trunk Recorder Pro is using this database".into()) }
 }
 
 /// The tables at this build's schema, in one transaction: kept if they are,
 /// otherwise (nothing migrated while in development) dropped and made afresh.
 fn prepare(c: &mut Client, location: &str) -> Result<(), String> {
-    let mut tx = c.transaction().map_err(|e| e.to_string())?;
-    tx.batch_execute("create table if not exists schema_version (version integer not null)").map_err(|e| e.to_string())?;
-    let have: Option<i32> = tx.query_opt("select version from schema_version", &[]).map_err(|e| e.to_string())?.map(|r| r.get(0));
+    let mut tx = c.transaction().map_err(said)?;
+    tx.batch_execute("create table if not exists schema_version (version integer not null)").map_err(said)?;
+    let have: Option<i32> = tx.query_opt("select version from schema_version", &[]).map_err(said)?.map(|r| r.get(0));
     let want = SCHEMA_VERSION as i32;
     if have == Some(want) {
-        return tx.commit().map_err(|e| e.to_string());
+        return tx.commit().map_err(said);
     }
     if let Some(v) = have {
         log::warn!("Call store: {location} has schema version {v}, not this build's {want}; its tables are made afresh");
     }
-    tx.batch_execute(&format!("drop table if exists {} cascade", schema::tables_to_drop())).map_err(|e| e.to_string())?;
-    tx.batch_execute(&schema::ddl(Dialect::Postgres)).map_err(|e| e.to_string())?;
-    tx.execute("delete from schema_version", &[]).map_err(|e| e.to_string())?;
-    tx.execute("insert into schema_version (version) values ($1)", &[&want]).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+    tx.batch_execute(&format!("drop table if exists {} cascade", schema::tables_to_drop())).map_err(said)?;
+    tx.batch_execute(&schema::ddl(Dialect::Postgres)).map_err(said)?;
+    tx.execute("delete from schema_version", &[]).map_err(said)?;
+    tx.execute("insert into schema_version (version) values ($1)", &[&want]).map_err(said)?;
+    tx.commit().map_err(said)
+}
+
+/// What went wrong, as the server said it (the driver's own words for a
+/// server's error are just "db error").
+fn said(e: postgres::Error) -> String {
+    match e.as_db_error() {
+        Some(d) => format!("{} ({})", d.message(), d.code().code()),
+        None => e.to_string(),
+    }
 }
 
 /// `url` without its password, to show and log.

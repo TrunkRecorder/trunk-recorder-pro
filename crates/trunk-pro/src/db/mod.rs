@@ -487,6 +487,12 @@ impl Db {
     /// named for the test). What every backend must do is tested on each.
     #[cfg(test)]
     pub fn for_each_backend(name: &str, batch: Duration) -> Vec<Db> {
+        // (Two tests of one name would share a PostgreSQL schema, each dropping the other's tables.)
+        static NAMES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let mut names = NAMES.lock().unwrap();
+        assert!(!names.iter().any(|n| n == name), "two tests' stores are named {name:?}");
+        names.push(name.to_string());
+        drop(names);
         let mut v = vec![Db::for_test_with_batch(name, batch).0];
         if let Ok(url) = std::env::var("TRP_PG_URL") {
             let store = postgres::open_fresh_schema(&url, &format!("t_{name}").replace('-', "_")).expect("open the test PostgreSQL schema");
@@ -657,7 +663,7 @@ mod tests {
     fn kept_documents_and_the_registry_come_back() {
         use trunk_app::stats::radio::{Registry, SystemRadio, MAX_AFFILIATIONS};
         use trunk_core::trunk::{Message, MessageType};
-        for db in Db::for_each_backend("kept", std::time::Duration::from_millis(10)) {
+        for db in Db::for_each_backend("kept-docs", std::time::Duration::from_millis(10)) {
             db.send(Change::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 1".into()) });
             db.send(Change::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 2".into()) });
             db.send(Change::Kept { kind: "tune".into(), key: "".into(), value: Some("{}".into()) });

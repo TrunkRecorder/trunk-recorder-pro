@@ -279,6 +279,20 @@ impl Store {
         self.read(|x| Ok(x.query(sql, &[])?.iter().map(|r| r.text(0)).collect())).unwrap()
     }
 
+    /// `sql`'s query plan with `ps`, a line each (tests).
+    #[cfg(test)]
+    pub fn plan(&self, sql: &str, ps: &[V]) -> Vec<String> {
+        self.read(|x| {
+            let prefix = if x.dialect() == Dialect::Postgres { "explain " } else { "explain query plan " };
+            let rows = x.query(&format!("{prefix}{sql}"), ps)?;
+            Ok(rows.iter().map(|r| r.0.iter().map(|v| match v {
+                V::Text(t) => t.clone(),
+                v => format!("{v:?}"),
+            }).collect::<Vec<_>>().join(" ")).collect())
+        })
+        .unwrap()
+    }
+
     /// Make system `system_id`'s registry changes over its whole copy now (tests).
     #[cfg(test)]
     pub fn compact_registry(&self, system_id: i64) {
