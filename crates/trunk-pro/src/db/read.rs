@@ -26,8 +26,9 @@ pub struct CallsFilter {
     pub limit: usize,
 }
 
-/// The columns a call entry is made from, then `id` and `start_ms` for paging.
-pub const COLUMNS: &str = "path, record, audio, json, id, start_ms";
+/// The columns a call entry is made from (of `calls c`), then `id` and
+/// `start_ms` for paging.
+pub const COLUMNS: &str = "c.path, c.record, c.audio, c.json, c.id, c.start_ms";
 
 /// A parameter of a query, in either dialect.
 #[derive(Clone, Debug)]
@@ -36,52 +37,101 @@ pub enum Param {
     Text(String),
 }
 
-/// A query's conditions and their parameters. Clauses mark each parameter
-/// with `?`; [`Where::select`] numbers them `$1, $2…` for PostgreSQL.
+/// A condition on a call's place in the order.
+#[derive(Clone, Copy, Debug)]
+enum Cond {
+    /// Started at or after.
+    From(i64),
+    /// Started before.
+    Before(i64),
+    /// Started in this very millisecond.
+    At(i64),
+    /// Filed before this one (`id`), in the same millisecond.
+    IdBelow(i64),
+}
+
+/// The calls a query wants, as SQL. Every page walks an index in order and
+/// stops at its limit, whatever it asks for:
+/// - several systems: a query each, put together (`union all`) and cut to
+///   the limit again, rather than one that sorts all their calls;
+/// - a talkgroup: `calls_system_tg_start` (talkgroups are a system's own);
+/// - a radio: `call_units`, the call's system, radio and start, walked in
+///   that order and joined to the call.
+///
+/// Parameters are `?`; [`numbered`] makes them PostgreSQL's `$1, $2…`.
 #[derive(Clone, Default)]
 pub struct Where {
-    clauses: Vec<String>,
-    pub params: Vec<Param>,
+    systems: Vec<String>,
+    talkgroup: Option<u32>,
+    unit: Option<i64>,
+    conds: Vec<Cond>,
 }
 
 impl Where {
-    fn and(&mut self, clause: &str, param: Param) {
-        self.clauses.push(clause.to_string());
-        self.params.push(param);
+    pub fn of(f: &CallsFilter) -> Where {
+        let mut conds = Vec::new();
+        conds.extend(f.from_ms.map(Cond::From));
+        conds.extend(f.to_ms.map(Cond::Before));
+        conds.extend(f.before_ms.map(Cond::Before));
+        Where { systems: f.systems.clone(), talkgroup: f.talkgroup, unit: f.unit, conds }
     }
 
-    pub fn of(f: &CallsFilter) -> Where {
-        let mut w = Where::default();
-        if !f.systems.is_empty() {
-            let marks = vec!["?"; f.systems.len()].join(",");
-            w.clauses.push(format!("short_name in ({marks})"));
-            w.params.extend(f.systems.iter().map(|s| Param::Text(s.clone())));
-        }
-        if let Some(tg) = f.talkgroup {
-            w.and("talkgroup = ?", Param::Int(i64::from(tg)));
-        }
-        if let Some(unit) = f.unit {
-            w.and("id in (select call_id from call_transmissions where unit = ?)", Param::Int(unit));
-        }
-        if let Some(from) = f.from_ms {
-            w.and("start_ms >= ?", Param::Int(from));
-        }
-        if let Some(to) = f.to_ms {
-            w.and("start_ms < ?", Param::Int(to));
-        }
-        if let Some(before) = f.before_ms {
-            w.and("start_ms < ?", Param::Int(before));
-        }
+    fn and(&self, c: Cond) -> Where {
+        let mut w = self.clone();
+        w.conds.push(c);
         w
     }
 
-    /// The select of a page: `columns` of the calls wanted, newest first,
-    /// and a last parameter for the limit. `dollar`: PostgreSQL's numbered
-    /// placeholders.
-    pub fn select(&self, columns: &str, dollar: bool) -> String {
-        let cond = if self.clauses.is_empty() { String::new() } else { format!(" where {}", self.clauses.join(" and ")) };
-        let sql = format!("select {columns} from calls{cond} order by start_ms desc, id desc limit ?");
-        if dollar { numbered(&sql) } else { sql }
+    /// One system's (or, with `system` none, every system's) part: the
+    /// newest `limit` of `columns` (of `calls c`).
+    fn arm(&self, system: Option<&str>, columns: &str, limit: i64, ps: &mut Vec<Param>) -> String {
+        // (The table the index walk is on: a radio's call_units, else calls.)
+        let (from, start, id, sys) = match self.unit {
+            Some(_) => ("call_units u join calls c on c.id = u.call_id", "u.start_ms", "u.call_id", "u.short_name"),
+            None => ("calls c", "c.start_ms", "c.id", "c.short_name"),
+        };
+        let mut w: Vec<String> = Vec::new();
+        if let Some(s) = system {
+            w.push(format!("{sys} = ?"));
+            ps.push(Param::Text(s.to_string()));
+        }
+        if let Some(u) = self.unit {
+            w.push("u.unit = ?".into());
+            ps.push(Param::Int(u));
+        }
+        if let Some(tg) = self.talkgroup {
+            w.push("c.talkgroup = ?".into());
+            ps.push(Param::Int(i64::from(tg)));
+        }
+        for c in &self.conds {
+            let (op, col, v) = match *c {
+                Cond::From(t) => (">=", start, t),
+                Cond::Before(t) => ("<", start, t),
+                Cond::At(t) => ("=", start, t),
+                Cond::IdBelow(i) => ("<", id, i),
+            };
+            w.push(format!("{col} {op} ?"));
+            ps.push(Param::Int(v));
+        }
+        let cond = if w.is_empty() { String::new() } else { format!(" where {}", w.join(" and ")) };
+        ps.push(Param::Int(limit));
+        format!("select {columns} from {from}{cond} order by {start} desc, {id} desc limit ?")
+    }
+
+    /// The query of a page: up to `limit` of `columns` (of `calls c`), newest
+    /// first, and its parameters. `dollar`: PostgreSQL's numbered placeholders.
+    pub fn query(&self, columns: &str, limit: i64, dollar: bool) -> (String, Vec<Param>) {
+        let mut ps = Vec::new();
+        let sql = match self.systems.as_slice() {
+            [] => self.arm(None, columns, limit, &mut ps),
+            [one] => self.arm(Some(one), columns, limit, &mut ps),
+            many => {
+                let arms: Vec<String> = many.iter().enumerate().map(|(i, s)| format!("select * from ({}) a{i}", self.arm(Some(s), columns, limit, &mut ps))).collect();
+                ps.push(Param::Int(limit));
+                format!("{} order by start_ms desc, id desc limit ?", arms.join(" union all "))
+            }
+        };
+        (if dollar { numbered(&sql) } else { sql }, ps)
     }
 }
 
@@ -124,13 +174,9 @@ pub fn paged(f: &CallsFilter, fetch: &mut Fetch) -> Result<Page, String> {
     let mut more = false;
     if extra {
         // The oldest start is shared with rows not yet taken: take them all.
-        let mut tail = w.clone();
-        tail.and("start_ms = ?", Param::Int(oldest));
-        tail.and("id < ?", Param::Int(id));
+        let tail = w.and(Cond::At(oldest)).and(Cond::IdBelow(id));
         rows.extend(fetch(&tail, usize::MAX / 2)?.0);
-        let mut below = w.clone();
-        below.and("start_ms < ?", Param::Int(oldest));
-        more = !fetch(&below, 1)?.0.is_empty();
+        more = !fetch(&w.and(Cond::Before(oldest)), 1)?.0.is_empty();
     }
     let before = rows.last().map_or(asked, |r| r.start_ms);
     Ok(Page { entries: rows.into_iter().map(|r| r.entry).collect(), more, before })
@@ -367,8 +413,10 @@ mod tests {
     #[test]
     fn placeholders_are_numbered_for_postgres() {
         let w = Where::of(&CallsFilter { systems: vec!["a".into(), "b".into()], talkgroup: Some(1), ..Default::default() });
-        let sql = w.select("path", true);
-        assert!(sql.contains("short_name in ($1,$2)") && sql.contains("talkgroup = $3") && sql.ends_with("limit $4"), "{sql}");
-        assert!(w.select("path", false).ends_with("limit ?"));
+        let (sql, ps) = w.query("c.path", 10, true);
+        // (Two arms of system, talkgroup and limit, then the union's limit.)
+        assert!(sql.contains("c.short_name = $1") && sql.contains("c.talkgroup = $2") && sql.contains("c.short_name = $4") && sql.ends_with("limit $7"), "{sql}");
+        assert_eq!(ps.len(), 7);
+        assert!(w.query("c.path", 10, false).0.ends_with("limit ?"));
     }
 }

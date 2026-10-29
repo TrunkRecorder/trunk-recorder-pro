@@ -909,8 +909,15 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             Err(e) => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: Some(format!("Bad config: {e}")) }),
         },
         // (Written beside the config; a recording takes it at once.)
-        Command::SetTalkgroups { system, csv } => failed(runtime::set_talkgroups(ctx, &system, csv)),
-        Command::SetTalkgroup { system, talkgroup, edit } => failed(runtime::set_talkgroup(ctx, &system, talkgroup, edit)),
+        // (Off the async workers: the store's queue can be full, and the edit holds the talkgroups' lock while it hands over.)
+        Command::SetTalkgroups { system, csv } => {
+            let ctx2 = ctx.clone();
+            failed(tokio::task::spawn_blocking(move || runtime::set_talkgroups(&ctx2, &system, csv)).await.unwrap_or_else(|e| Err(e.to_string())))
+        }
+        Command::SetTalkgroup { system, talkgroup, edit } => {
+            let ctx2 = ctx.clone();
+            failed(tokio::task::spawn_blocking(move || runtime::set_talkgroup(&ctx2, &system, talkgroup, edit)).await.unwrap_or_else(|e| Err(e.to_string())))
+        }
         // A key container with no passwordFile, unlocked with a password typed in, or locked again
         // (docs/configuration/systems.md). The password is never kept.
         Command::UnlockKeys { source, password } => {

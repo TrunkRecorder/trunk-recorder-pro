@@ -53,6 +53,22 @@ pub struct StoredRegistry {
     pub changes: Vec<String>,
 }
 
+impl Change {
+    /// What it is, for the log when it fails.
+    pub fn what(&self) -> String {
+        match self {
+            Change::Call { row, .. } => format!("call write {}", row.path),
+            Change::CallFiles { path, .. } => format!("files write {path}"),
+            Change::Meta { key, .. } => format!("meta write {key}"),
+            Change::Kept { kind, key, .. } => format!("{kind} {key} write"),
+            Change::RegistryChanges { system, .. } | Change::RegistryWhole { system, .. } => format!("registry write {system}"),
+            Change::StatsMinute { .. } | Change::StatsHours(_) => "stats write".into(),
+            Change::RetireStats { .. } => "stats retention".into(),
+            Change::Talkgroups { system, .. } => format!("talkgroups write {system}"),
+        }
+    }
+}
+
 /// A line of a system's talkgroup file, as the `talkgroups` table keeps it:
 /// the line itself (the file comes back exactly, comments, extra columns
 /// and delimiter too), and the talkgroup it's the row of, read, for queries
@@ -227,10 +243,10 @@ pub trait CallStore: Send + Sync {
     /// A number from a plain SQL query, the same in every dialect (tests).
     #[cfg(test)]
     fn scalar(&self, sql: &str) -> i64;
-    /// A trigger refusing transmissions by radio `unit`, to fail a call
-    /// part-way (tests).
+    /// A trigger refusing rows of `table` whose `column` is `value` (an SQL
+    /// literal), to make a change fail part-way (tests).
     #[cfg(test)]
-    fn refuse_unit(&self, unit: i64);
+    fn refuse(&self, table: &str, column: &str, value: &str);
 }
 
 #[cfg(test)]

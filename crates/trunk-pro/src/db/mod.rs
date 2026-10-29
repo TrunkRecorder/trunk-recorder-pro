@@ -76,7 +76,7 @@ pub enum Write {
 /// opened is off ([`Db::disabled`]): it drops every write and answers every
 /// read with an error, and the recorder records as ever without it.
 #[derive(Clone)]
-pub struct Db(Option<Arc<Inner>>);
+pub struct Db(Option<Arc<Inner>>, Option<Arc<str>>);
 
 struct Inner {
     store: Arc<dyn CallStore>,
@@ -129,8 +129,8 @@ impl Db {
         match opened {
             Ok(store) => Db::with_store(store, batch, storage.retention_days, recorder_id(data)),
             Err(e) => {
-                log::error!("Call store: off: {e}");
-                Db::disabled()
+                log::error!("Call store: off: {e}. Nothing is kept until it opens: not the calls' index, talkgroups, aliases, the radio registry or the dashboard's history");
+                Db::failed(&e)
             }
         }
     }
@@ -141,7 +141,8 @@ impl Db {
         let (tx, rx) = sync_channel(QUEUE_LEN);
         let commits = Arc::new(AtomicU64::new(0));
         let writer = writer::spawn(store.clone(), rx, commits.clone(), batch, retention_days);
-        Db(Some(Arc::new(Inner {
+        Db(
+            Some(Arc::new(Inner {
             store,
             recorder,
             tx: Some(tx),
@@ -151,7 +152,9 @@ impl Db {
             commits,
             #[cfg(test)]
             dir: None,
-        })))
+        })),
+            None,
+        )
     }
 
     /// A SQLite store at `path` (the default backend; tests).
@@ -174,7 +177,24 @@ impl Db {
     /// The store off: writes are dropped without a word, reads are errors,
     /// and nothing runs in the background.
     pub fn disabled() -> Db {
-        Db(None)
+        Db(None, None)
+    }
+
+    /// The store asked for, which could not be opened (`why`): off, and
+    /// nothing kept in its place (not files: what's written then would be
+    /// lost when it opens again).
+    pub fn failed(why: &str) -> Db {
+        Db(None, Some(why.into()))
+    }
+
+    /// `storage.backend` is `files`: what's kept between runs is files.
+    pub fn uses_files(&self) -> bool {
+        self.0.is_none() && self.1.is_none()
+    }
+
+    /// Why the store asked for is off, if it is.
+    pub fn failure(&self) -> Option<&str> {
+        self.1.as_deref()
     }
 
     /// There is no store: it's off, or the backend is `files`.
@@ -314,10 +334,10 @@ impl Db {
         self.store().unwrap().scalar(sql)
     }
 
-    /// Make writing radio `unit`'s transmissions fail (tests).
+    /// Make writing rows of `table` whose `column` is `value` (an SQL literal) fail (tests).
     #[cfg(test)]
-    pub fn refuse_unit_for_test(&self, unit: i64) {
-        self.store().unwrap().refuse_unit(unit)
+    pub fn refuse_for_test(&self, table: &str, column: &str, value: &str) {
+        self.store().unwrap().refuse(table, column, value)
     }
 
     /// A fresh SQLite store in a folder of its own under the temp folder,

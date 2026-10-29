@@ -3,10 +3,10 @@
 //! schema changes, and a store of any other version is set aside and made
 //! afresh (`sqlite.rs`; PostgreSQL's tables dropped and made again).
 //!
-//! Indexes follow the queries: calls by start (every page), by system and
-//! start (a system's page, without scanning the busier systems' calls), by
-//! talkgroup and start (a talkgroup's calls; its system is filtered on top),
-//! and transmissions by radio. Each costs page writes on every commit
+//! Indexes follow the queries, each page an index walked in order to its
+//! limit (`read::Where`): calls by start (every page), by system and start
+//! (a system's page), by system, talkgroup and start (a talkgroup's), and
+//! `call_units`, a radio's calls by system and the call's start. Each costs page writes on every commit
 //! (research/storage.md); a setup that must write the least has
 //! `storage.backend: "files"`. The child tables are `without rowid`: their
 //! primary key is the table, not a second index beside it.
@@ -15,7 +15,7 @@ use rusqlite::Connection;
 
 /// This build's schema. Raise it with any change to [`SCHEMA`] (or
 /// PostgreSQL's twin): a store of another version is made afresh.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// The tables, made in a new database.
 pub const SCHEMA: &str = "
@@ -70,8 +70,14 @@ create table call_frequencies (
 ) without rowid;
 create index calls_start on calls(start_ms);
 create index calls_system_start on calls(short_name, start_ms);
-create index calls_tg_start on calls(talkgroup, start_ms);
-create index tx_unit_start on call_transmissions(unit, start_ms);
+create index calls_system_tg_start on calls(short_name, talkgroup, start_ms);
+create table call_units (
+    short_name text not null,
+    unit integer not null,
+    start_ms integer not null,
+    call_id integer not null references calls(id) on delete cascade,
+    primary key (short_name, unit, start_ms, call_id)
+) without rowid;
 create table kept (kind text not null, key text not null, value text not null, primary key (kind, key)) without rowid;
 create table registry (system text primary key, whole text not null);
 create table registry_changes (id integer primary key, system text not null, changes text not null);
@@ -133,25 +139,45 @@ pub fn prepare(conn: &Connection) -> rusqlite::Result<Prepared> {
 mod tests {
     use super::*;
 
-    /// The queries' plans use the indexes the schema keeps: a page of every
-    /// call, of a talkgroup (in a system), and of a radio, without sorting
-    /// the whole table.
+    /// Every page the query builder makes walks an index in order to its
+    /// limit, never sorting all the calls it matches: every call, a system,
+    /// several, a talkgroup, a radio, and the paging cursor's parts.
     #[test]
-    fn the_queries_use_the_indexes() {
+    fn every_page_walks_an_index_without_sorting() {
+        use crate::db::read::{CallsFilter, Where, COLUMNS};
         let c = Connection::open_in_memory().unwrap();
         prepare(&c).unwrap();
-        let plan = |sql: &str| -> String {
+        let plan = |f: CallsFilter| -> String {
+            let (sql, ps) = Where::of(&f).query(COLUMNS, 101, false);
+            let ps: Vec<rusqlite::types::Value> = ps.into_iter().map(|p| match p {
+                crate::db::read::Param::Int(i) => i.into(),
+                crate::db::read::Param::Text(t) => t.into(),
+            }).collect();
             let mut st = c.prepare(&format!("explain query plan {sql}")).unwrap();
-            let rows: Vec<String> = st.query_map([], |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
+            let rows: Vec<String> = st.query_map(rusqlite::params_from_iter(ps), |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
             rows.join(" | ")
         };
-        let order = "order by start_ms desc, id desc limit 101";
-        assert!(plan(&format!("select path from calls where start_ms < 5 {order}")).contains("calls_start"));
-        let tg = plan(&format!("select path from calls where short_name in ('a') and talkgroup = 1 {order}"));
-        assert!(tg.contains("calls_tg_start"), "{tg}");
-        let unit = plan("select call_id from call_transmissions where unit = 7");
-        assert!(unit.contains("tx_unit_start"), "{unit}");
-        let sys = plan(&format!("select path from calls where short_name in ('a') {order}"));
-        assert!(sys.contains("calls_system_start") && !sys.contains("TEMP B-TREE"), "a system's page walks its own index: {sys}");
+        let f = |systems: &[&str], tg: Option<u32>, unit: Option<i64>| CallsFilter { systems: systems.iter().map(|s| s.to_string()).collect(), talkgroup: tg, unit, before_ms: Some(5), limit: 100, ..Default::default() };
+        for (what, filter, index) in [
+            ("every call", f(&[], None, None), "calls_start"),
+            ("a system", f(&["a"], None, None), "calls_system_start"),
+            ("two systems", f(&["a", "b"], None, None), "calls_system_start"),
+            ("a talkgroup", f(&["a"], Some(1), None), "calls_system_tg_start"),
+            ("a talkgroup on two", f(&["a", "b"], Some(1), None), "calls_system_tg_start"),
+            // (call_units, as `u`: its key is system, radio, start.)
+            ("a radio", f(&["a"], None, Some(7)), "SEARCH u USING PRIMARY KEY (short_name=? AND unit=? AND start_ms<?)"),
+            ("a radio on two", f(&["a", "b"], None, Some(7)), "SEARCH u USING PRIMARY KEY (short_name=? AND unit=? AND start_ms<?)"),
+        ] {
+            let p = plan(filter);
+            assert!(p.contains(index), "{what}: {p}");
+            // A sort only ever of a system's part once it's cut to the limit (the union
+            // merging them), right after that part's scan: never of the calls matched.
+            let steps: Vec<&str> = p.split(" | ").collect();
+            for (i, s) in steps.iter().enumerate() {
+                if s.contains("TEMP B-TREE") {
+                    assert!(i > 0 && steps[i - 1].starts_with("SCAN a"), "{what} sorts what it matched: {p}");
+                }
+            }
+        }
     }
 }

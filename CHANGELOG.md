@@ -26,6 +26,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     has the choice.
   - A store that can't be opened (a full disk, a server not reachable, another recorder using
     it) is left off: recording, the call list and every query go on from the recent calls.
+    Nothing else is kept meanwhile (talkgroups, aliases, the radio registry, the dashboard's
+    history), rather than kept in files that would be lost when it opens; the log says so.
   - **Breaking, while in beta: nothing is carried over or migrated.** With the store on (the
     default), the flat files (`<shortName>.talkgroups.csv`, `radio/`, `*.units.csv`,
     `*.bandplan`, `conventional.heard.json`, `tune.json`, `sharing.json`, `stats/`) aren't read;

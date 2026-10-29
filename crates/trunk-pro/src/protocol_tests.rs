@@ -499,7 +499,8 @@ fn the_servers_messages() {
         queries.push(crate::server::radio_query(&ctx, &body(q)).to_value());
     }
     // The call store answers `callsQuery`: a call indexed, then asked for by talkgroup.
-    let record = crate::db::row::tests::record(9179, now * 1000);
+    let mut record = crate::db::row::tests::record(9179, now * 1000);
+    record.short_name = "p25".into();
     crate::runtime::index_call(&ctx, "p25/2026/10/26/9179-1", &record, &record.to_json(), true, true);
     ctx.db.flush().unwrap();
     let Ok(Command::CallsQuery(cq)) = Command::parse(r#"{"type":"callsQuery","id":3,"talkgroup":9179}"#) else { panic!("callsQuery") };

@@ -258,7 +258,7 @@ mod tests {
     fn a_call_is_written_whole_or_not_at_all() {
         for db in Db::for_each_backend("whole", Duration::from_secs(1)) {
             // A trigger that refuses the second call's transmissions.
-            db.refuse_unit_for_test(666);
+            db.refuse_for_test("call_transmissions", "unit", "666");
             let ok = record(1, 1000);
             let mut bad = record(2, 2000);
             bad.src_list[1].src = 666;
@@ -267,6 +267,21 @@ mod tests {
             db.flush().unwrap();
             let got = (db.count("select count(*) from calls"), db.count("select count(*) from call_transmissions"));
             assert_eq!(got, (1, 2), "s/ok and its two transmissions; nothing of s/bad ({})", db.kind());
+        }
+    }
+
+    /// Any change that fails is left out alone: the rest of its batch is
+    /// committed, on PostgreSQL too (where a failed statement would otherwise
+    /// abort the transaction, and its commit quietly roll back).
+    #[test]
+    fn a_failed_change_leaves_the_rest_of_its_batch() {
+        for db in Db::for_each_backend("one-fails", Duration::from_secs(1)) {
+            db.refuse_for_test("meta", "key", "'bad'");
+            db.send(Write::Meta { key: "bad".into(), value: "1".into() });
+            db.send(Write::Meta { key: "good".into(), value: "2".into() });
+            db.send(Write::Kept { kind: "tune".into(), key: String::new(), value: Some("{}".into()) });
+            db.flush().unwrap();
+            assert_eq!((db.count("select count(*) from meta"), db.count("select count(*) from kept")), (1, 1), "{}", db.kind());
         }
     }
 

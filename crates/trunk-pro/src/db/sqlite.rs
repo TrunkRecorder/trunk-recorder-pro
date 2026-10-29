@@ -97,89 +97,14 @@ impl CallStore for SqliteStore {
     fn apply(&self, batch: Vec<Change>) -> Result<(), String> {
         let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| format!("could not begin a transaction: {e}"))?;
-        for change in batch {
-            match change {
-                // (A call with its transmissions and frequencies, or none of it.)
-                Change::Call { row, live } => {
-                    let written = tx.savepoint().and_then(|sp| {
-                        write_call(&sp, &row, live)?;
-                        sp.commit()
-                    });
-                    if let Err(e) = written {
-                        log::warn!("Call store: call write {} failed: {e}", row.path);
-                    }
-                }
-                Change::CallFiles { path, audio, json } => {
-                    if let Err(e) = set_files(&tx, &path, audio, json) {
-                        log::warn!("Call store: files write {path} failed: {e}");
-                    }
-                }
-                Change::Meta { key, value } => {
-                    if let Err(e) = tx.execute("insert into meta (key, value) values (?1, ?2) on conflict(key) do update set value = excluded.value", params![key, value]) {
-                        log::warn!("Call store: meta write {key} failed: {e}");
-                    }
-                }
-                Change::Kept { kind, key, value } => {
-                    let r = match &value {
-                        Some(v) => tx.execute("insert into kept (kind, key, value) values (?1, ?2, ?3) on conflict(kind, key) do update set value = excluded.value", params![kind, key, v]),
-                        None => tx.execute("delete from kept where kind = ?1 and key = ?2", params![kind, key]),
-                    };
-                    if let Err(e) = r {
-                        log::warn!("Call store: {kind} {key} write failed: {e}");
-                    }
-                }
-                Change::RegistryChanges { system, json } => {
-                    if let Err(e) = tx.execute("insert into registry_changes (system, changes) values (?1, ?2)", params![system, json]) {
-                        log::warn!("Call store: registry write {system} failed: {e}");
-                    }
-                }
-                Change::StatsMinute { t, json } => {
-                    if let Err(e) = tx.execute("insert into stats_minutes (t, s) values (?1, ?2)", params![t, json]) {
-                        log::warn!("Call store: stats write failed: {e}");
-                    }
-                }
-                Change::StatsHours(rows) => {
-                    let written = tx.savepoint().and_then(|sp| {
-                        {
-                            let mut up = sp.prepare_cached(
-                                "insert into stats_hours (series, t, avg, lo, hi, n) values (?1, ?2, ?3, ?4, ?5, ?6)
-                                 on conflict(series, t) do update set avg = excluded.avg, lo = excluded.lo, hi = excluded.hi, n = excluded.n",
-                            )?;
-                            for r in &rows {
-                                up.execute(params![r.series, r.t, r.avg, r.lo, r.hi, r.n])?;
-                            }
-                        }
-                        sp.commit()
-                    });
-                    if let Err(e) = written {
-                        log::warn!("Call store: stats hours write failed: {e}");
-                    }
-                }
-                Change::RetireStats { minutes_before, hours_before } => {
-                    let r = tx.execute("delete from stats_minutes where t < ?1", [minutes_before]).and_then(|_| hours_before.map_or(Ok(0), |h| tx.execute("delete from stats_hours where t < ?1", [h])));
-                    if let Err(e) = r {
-                        log::warn!("Call store: stats retention failed: {e}");
-                    }
-                }
-                Change::Talkgroups { system, lines, len } => {
-                    let written = tx.savepoint().and_then(|sp| {
-                        write_talkgroups(&sp, &system, &lines, len)?;
-                        sp.commit()
-                    });
-                    if let Err(e) = written {
-                        log::warn!("Call store: talkgroups write {system} failed: {e}");
-                    }
-                }
-                Change::RegistryWhole { system, json } => {
-                    let written = tx.savepoint().and_then(|sp| {
-                        sp.execute("insert into registry (system, whole) values (?1, ?2) on conflict(system) do update set whole = excluded.whole", params![system, json])?;
-                        sp.execute("delete from registry_changes where system = ?1", [&system])?;
-                        sp.commit()
-                    });
-                    if let Err(e) = written {
-                        log::warn!("Call store: registry write {system} failed: {e}");
-                    }
-                }
+        // Each change whole or not at all, and one that fails doesn't take the batch with it.
+        for change in &batch {
+            let written = tx.savepoint().and_then(|sp| {
+                apply_one(&sp, change)?;
+                sp.commit()
+            });
+            if let Err(e) = written {
+                log::warn!("Call store: {} failed: {e}", change.what());
             }
         }
         tx.commit().map_err(|e| format!("commit failed: {e}"))
@@ -189,10 +114,10 @@ impl CallStore for SqliteStore {
         self.read(|c| {
             let mut fetch = |w: &Where, limit: usize| -> Result<(Vec<Fetched>, bool), String> {
                 let want = i64::try_from(limit).unwrap_or(i64::MAX - 1);
-                let mut ps: Vec<Sql> = w.params.iter().map(sql).collect();
-                ps.push(Sql::Integer(want.saturating_add(1)));
+                let (text, ps) = w.query(COLUMNS, want.saturating_add(1), false);
+                let ps: Vec<Sql> = ps.iter().map(sql).collect();
                 let rows = (|| -> rusqlite::Result<(Vec<Fetched>, bool)> {
-                    let mut stmt = c.prepare_cached(&w.select(COLUMNS, false))?;
+                    let mut stmt = c.prepare_cached(&text)?;
                     let mut rows = stmt.query(params_from_iter(ps))?;
                     let (mut out, mut extra) = (Vec::new(), false);
                     while let Some(r) = rows.next()? {
@@ -286,8 +211,8 @@ impl CallStore for SqliteStore {
     }
 
     #[cfg(test)]
-    fn refuse_unit(&self, unit: i64) {
-        let sql = format!("create trigger refuse before insert on call_transmissions when new.unit = {unit} begin select raise(abort, 'refused'); end;");
+    fn refuse(&self, table: &str, column: &str, value: &str) {
+        let sql = format!("create trigger refuse_{table} before insert on {table} when new.{column} = {value} begin select raise(abort, 'refused'); end;");
         self.writer.lock().unwrap().execute_batch(&sql).unwrap();
     }
 }
@@ -429,6 +354,38 @@ fn write_talkgroups(conn: &Connection, system: &str, lines: &[super::store::Talk
     Ok(())
 }
 
+/// One change, in the savepoint `conn` is.
+fn apply_one(conn: &Connection, change: &Change) -> rusqlite::Result<()> {
+    match change {
+        Change::Call { row, live } => write_call(conn, row, *live),
+        Change::CallFiles { path, audio, json } => set_files(conn, path, *audio, *json).map(drop),
+        Change::Meta { key, value } => conn.execute("insert into meta (key, value) values (?1, ?2) on conflict(key) do update set value = excluded.value", params![key, value]).map(drop),
+        Change::Kept { kind, key, value: Some(v) } => conn.execute("insert into kept (kind, key, value) values (?1, ?2, ?3) on conflict(kind, key) do update set value = excluded.value", params![kind, key, v]).map(drop),
+        Change::Kept { kind, key, value: None } => conn.execute("delete from kept where kind = ?1 and key = ?2", params![kind, key]).map(drop),
+        Change::RegistryChanges { system, json } => conn.execute("insert into registry_changes (system, changes) values (?1, ?2)", params![system, json]).map(drop),
+        Change::RegistryWhole { system, json } => {
+            conn.execute("insert into registry (system, whole) values (?1, ?2) on conflict(system) do update set whole = excluded.whole", params![system, json])?;
+            conn.execute("delete from registry_changes where system = ?1", [system]).map(drop)
+        }
+        Change::StatsMinute { t, json } => conn.execute("insert into stats_minutes (t, s) values (?1, ?2)", params![t, json]).map(drop),
+        Change::StatsHours(rows) => {
+            let mut up = conn.prepare_cached(
+                "insert into stats_hours (series, t, avg, lo, hi, n) values (?1, ?2, ?3, ?4, ?5, ?6)
+                 on conflict(series, t) do update set avg = excluded.avg, lo = excluded.lo, hi = excluded.hi, n = excluded.n",
+            )?;
+            for r in rows {
+                up.execute(params![r.series, r.t, r.avg, r.lo, r.hi, r.n])?;
+            }
+            Ok(())
+        }
+        Change::RetireStats { minutes_before, hours_before } => {
+            conn.execute("delete from stats_minutes where t < ?1", [minutes_before])?;
+            hours_before.map_or(Ok(()), |h| conn.execute("delete from stats_hours where t < ?1", [h]).map(drop))
+        }
+        Change::Talkgroups { system, lines, len } => write_talkgroups(conn, system, lines, *len),
+    }
+}
+
 /// Write a call's row and its children. A live call replaces what is there;
 /// a backfilled one only fills a gap, and brings its children only if it
 /// landed.
@@ -494,6 +451,11 @@ fn write_call(conn: &Connection, row: &CallRow, live: bool) -> rusqlite::Result<
     })?;
     conn.execute("delete from call_transmissions where call_id = ?1", [id])?;
     conn.execute("delete from call_frequencies where call_id = ?1", [id])?;
+    conn.execute("delete from call_units where call_id = ?1", [id])?;
+    let mut unit = conn.prepare_cached("insert into call_units (short_name, unit, start_ms, call_id) values (?1, ?2, ?3, ?4) on conflict do nothing")?;
+    for t in &row.transmissions {
+        unit.execute(params![row.short_name, t.unit, row.start_ms, id])?;
+    }
     let mut tx = conn.prepare_cached(
         "insert into call_transmissions
             (call_id, seq, unit, start_ms, length_ms, emergency, signal_system, tag)
@@ -569,7 +531,7 @@ mod tests {
         let mode: String = store.read(|c| c.query_row("pragma journal_mode", [], |r| r.get(0))).unwrap();
         assert_eq!(mode, "wal");
         let tables: Vec<String> = store.read(|c| c.prepare("select name from sqlite_master where type='table' order by name")?.query_map([], |r| r.get(0))?.collect()).unwrap();
-        assert_eq!(tables, ["call_frequencies", "call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "stats_hours", "stats_minutes", "talkgroups"]);
+        assert_eq!(tables, ["call_frequencies", "call_transmissions", "call_units", "calls", "kept", "meta", "registry", "registry_changes", "stats_hours", "stats_minutes", "talkgroups"]);
     }
 
     /// A second opener of the same store (another recorder on the same data

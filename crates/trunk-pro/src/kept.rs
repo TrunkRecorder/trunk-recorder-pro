@@ -3,8 +3,9 @@
 //! band plans, the codes conventional frequencies carried, AutoTune's
 //! scores, what sharing did, and the radio registry. With the store on
 //! they're its rows, written by its writer; with `storage.backend: "files"`
-//! (or a store that could not open) they're files, written by the saver.
-//! One or the other: nothing is carried between them.
+//! they're files, written by the saver. One or the other: nothing is carried
+//! between them. A store asked for that could not open keeps nothing (files
+//! written then would be lost when it opens again): the log says so.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -64,7 +65,7 @@ pub fn read(db: &Db, doc: Doc) -> Option<String> {
 }
 
 fn read_in(db: &Db, dir: &Path, doc: Doc) -> Option<String> {
-    if db.is_disabled() {
+    if db.uses_files() {
         return fs::read_to_string(doc.file(dir)).ok();
     }
     db.kept(doc.kind(), doc.key()).inspect_err(|e| log::warn!("Call store: {} {} not read ({e})", doc.kind(), doc.key())).ok().flatten()
@@ -72,7 +73,7 @@ fn read_in(db: &Db, dir: &Path, doc: Doc) -> Option<String> {
 
 /// Keep `text` as `doc`.
 pub fn write(db: &Db, saver: &Saver, doc: Doc, text: String) {
-    if db.is_disabled() {
+    if db.uses_files() {
         saver.text(doc.file(&crate::paths::data_dir()), text);
     } else {
         db.send(Write::Kept { kind: doc.kind().into(), key: doc.key().into(), value: Some(text) });
@@ -93,7 +94,7 @@ pub fn load_talkgroups(db: &Db, cfg: &trunk_app::Config) -> trunk_app::config::T
 fn load_talkgroups_in(db: &Db, dir: &Path, cfg: &trunk_app::Config) -> trunk_app::config::TalkgroupFiles {
     let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
     let read = |name: &String| -> Option<String> {
-        if db.is_disabled() {
+        if db.uses_files() {
             return fs::read_to_string(talkgroups_file(dir, name)).ok();
         }
         db.talkgroups(name).inspect_err(|e| log::warn!("Call store: talkgroups of {name} not read ({e})")).ok().flatten()
@@ -105,7 +106,7 @@ fn load_talkgroups_in(db: &Db, dir: &Path, cfg: &trunk_app::Config) -> trunk_app
 /// for `old`: in place of what's kept; "" for `new`: none). The store
 /// writes only the lines that changed, and commits at once.
 pub fn write_talkgroups(db: &Db, saver: &Saver, system: &str, old: &str, new: String) {
-    if !db.is_disabled() {
+    if !db.uses_files() {
         db.send(Write::Talkgroups { system: system.to_string(), old: old.to_string(), new });
     } else if new.trim().is_empty() {
         saver.remove(talkgroups_file(&crate::paths::data_dir(), system));
@@ -122,7 +123,7 @@ fn registry_path(short_name: &str) -> PathBuf {
 /// Keep a system's whole radio registry (turned into JSON by the writer: it
 /// can be megabytes).
 pub fn write_registry(db: &Db, saver: &Saver, system: String, radio: SystemRadio) {
-    if db.is_disabled() {
+    if db.uses_files() {
         saver.later(registry_path(&system), move || serde_json::to_string(&radio).ok());
     } else {
         db.send(Write::RegistryWhole { system, radio: Box::new(radio) });
@@ -154,7 +155,7 @@ pub fn load_registry(db: &Db, shared: &trunk_app::stats::Shared) {
 
 fn load_registry_in(db: &Db, radio_dir: &Path, shared: &trunk_app::stats::Shared) {
     let mut r = shared.radio.lock().unwrap();
-    if db.is_disabled() {
+    if db.uses_files() {
         for p in fs::read_dir(radio_dir).into_iter().flatten().flatten().map(|e| e.path()) {
             if let (Some("json"), Some(name), Ok(text)) = (p.extension().and_then(|x| x.to_str()), p.file_stem().and_then(|n| n.to_str()), fs::read_to_string(&p)) {
                 r.load(name, &text);
@@ -224,5 +225,14 @@ mod tests {
             assert_eq!(serde_json::to_value(&shared.radio.lock().unwrap().systems["x"]).unwrap(), serde_json::to_value(&reg.systems["x"]).unwrap(), "{}", db.kind());
         }
         assert!(Doc::Units("a").file(&dir).exists(), "files are left as they are");
+
+        // A store asked for that couldn't open: nothing kept, the files neither read nor written.
+        let failed = Db::failed("refused");
+        assert_eq!(read_in(&failed, &dir, Doc::Units("a")), None);
+        assert!(load_talkgroups_in(&failed, &dir, &cfg).is_empty());
+        let shared = trunk_app::stats::Shared::new();
+        load_registry_in(&failed, &radio, &shared);
+        assert!(shared.radio.lock().unwrap().systems.is_empty());
+        assert!(failed.is_disabled() && !failed.uses_files() && Db::disabled().uses_files());
     }
 }

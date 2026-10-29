@@ -25,7 +25,7 @@ const READERS: usize = 2;
 
 /// The columns a call entry is made from (the record as text), then `id` and
 /// `start_ms` for paging.
-const COLUMNS: &str = "path, record::text, audio, json, id, start_ms";
+const COLUMNS: &str = "c.path, c.record::text as record, c.audio, c.json, c.id, c.start_ms";
 
 /// The tables, made in a new database: the SQLite schema's twin (keep them
 /// in step, under the one [`SCHEMA_VERSION`]).
@@ -81,8 +81,14 @@ create table call_frequencies (
 );
 create index calls_start on calls(start_ms);
 create index calls_system_start on calls(short_name, start_ms);
-create index calls_tg_start on calls(talkgroup, start_ms);
-create index tx_unit_start on call_transmissions(unit, start_ms);
+create index calls_system_tg_start on calls(short_name, talkgroup, start_ms);
+create table call_units (
+    short_name text not null,
+    unit bigint not null,
+    start_ms bigint not null,
+    call_id bigint not null references calls(id) on delete cascade,
+    primary key (short_name, unit, start_ms, call_id)
+);
 create table kept (kind text not null, key text not null, value text not null, primary key (kind, key));
 create table registry (system text primary key, whole text not null);
 create table registry_changes (id bigserial primary key, system text not null, changes text not null);
@@ -115,7 +121,7 @@ create table stats_hours (
 ";
 
 /// Every table [`SCHEMA`] makes, dropped to make it afresh.
-const TABLES: &str = "stats_hours, stats_minutes, talkgroups, registry_changes, registry, kept, call_frequencies, call_transmissions, calls, meta";
+const TABLES: &str = "stats_hours, stats_minutes, talkgroups, registry_changes, registry, kept, call_units, call_frequencies, call_transmissions, calls, meta";
 
 pub struct PostgresStore {
     url: String,
@@ -252,87 +258,15 @@ impl CallStore for PostgresStore {
     fn apply(&self, batch: Vec<Change>) -> Result<(), String> {
         let mut w = self.writer()?;
         let mut tx = w.transaction().map_err(|e| format!("could not begin a transaction: {e}"))?;
-        for change in batch {
-            match change {
-                // (A call with its transmissions and frequencies, or none of it.)
-                Change::Call { row, live } => {
-                    let written = tx.transaction().and_then(|mut sp| {
-                        write_call(&mut sp, &row, live)?;
-                        sp.commit()
-                    });
-                    if let Err(e) = written {
-                        log::warn!("Call store: call write {} failed: {e}", row.path);
-                    }
-                }
-                Change::CallFiles { path, audio, json } => {
-                    if let Err(e) = tx.execute("update calls set audio = $2, json = $3 where path = $1", &[&path, &audio, &json]) {
-                        log::warn!("Call store: files write {path} failed: {e}");
-                    }
-                }
-                Change::Meta { key, value } => {
-                    if let Err(e) = tx.execute("insert into meta (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value", &[&key, &value]) {
-                        log::warn!("Call store: meta write {key} failed: {e}");
-                    }
-                }
-                Change::Kept { kind, key, value } => {
-                    let r = match &value {
-                        Some(v) => tx.execute("insert into kept (kind, key, value) values ($1, $2, $3) on conflict (kind, key) do update set value = excluded.value", &[&kind, &key, v]),
-                        None => tx.execute("delete from kept where kind = $1 and key = $2", &[&kind, &key]),
-                    };
-                    if let Err(e) = r {
-                        log::warn!("Call store: {kind} {key} write failed: {e}");
-                    }
-                }
-                Change::RegistryChanges { system, json } => {
-                    if let Err(e) = tx.execute("insert into registry_changes (system, changes) values ($1, $2)", &[&system, &json]) {
-                        log::warn!("Call store: registry write {system} failed: {e}");
-                    }
-                }
-                Change::StatsMinute { t, json } => {
-                    if let Err(e) = tx.execute("insert into stats_minutes (t, s) values ($1, $2)", &[&t, &json]) {
-                        log::warn!("Call store: stats write failed: {e}");
-                    }
-                }
-                Change::StatsHours(rows) => {
-                    let written = tx.transaction().and_then(|mut sp| {
-                        let up = sp.prepare(
-                            "insert into stats_hours (series, t, avg, lo, hi, n) values ($1, $2, $3, $4, $5, $6)
-                             on conflict (series, t) do update set avg = excluded.avg, lo = excluded.lo, hi = excluded.hi, n = excluded.n",
-                        )?;
-                        for r in &rows {
-                            sp.execute(&up, &[&r.series, &r.t, &r.avg, &r.lo, &r.hi, &(r.n as i32)])?;
-                        }
-                        sp.commit()
-                    });
-                    if let Err(e) = written {
-                        log::warn!("Call store: stats hours write failed: {e}");
-                    }
-                }
-                Change::RetireStats { minutes_before, hours_before } => {
-                    let r = tx.execute("delete from stats_minutes where t < $1", &[&minutes_before]).and_then(|_| hours_before.map_or(Ok(0), |h| tx.execute("delete from stats_hours where t < $1", &[&h])));
-                    if let Err(e) = r {
-                        log::warn!("Call store: stats retention failed: {e}");
-                    }
-                }
-                Change::Talkgroups { system, lines, len } => {
-                    let written = tx.transaction().and_then(|mut sp| {
-                        write_talkgroups(&mut sp, &system, &lines, len)?;
-                        sp.commit()
-                    });
-                    if let Err(e) = written {
-                        log::warn!("Call store: talkgroups write {system} failed: {e}");
-                    }
-                }
-                Change::RegistryWhole { system, json } => {
-                    let written = tx.transaction().and_then(|mut sp| {
-                        sp.execute("insert into registry (system, whole) values ($1, $2) on conflict (system) do update set whole = excluded.whole", &[&system, &json])?;
-                        sp.execute("delete from registry_changes where system = $1", &[&system])?;
-                        sp.commit()
-                    });
-                    if let Err(e) = written {
-                        log::warn!("Call store: registry write {system} failed: {e}");
-                    }
-                }
+        // Each change in a savepoint: in PostgreSQL a failed statement aborts the whole
+        // transaction (and its commit quietly rolls back) unless rolled back to one.
+        for change in &batch {
+            let written = tx.transaction().and_then(|mut sp| {
+                apply_one(&mut sp, change)?;
+                sp.commit()
+            });
+            if let Err(e) = written {
+                log::warn!("Call store: {} failed: {e}", change.what());
             }
         }
         tx.commit().map_err(|e| format!("commit failed: {e}"))
@@ -342,10 +276,10 @@ impl CallStore for PostgresStore {
         self.read(|c| {
             let mut fetch = |w: &Where, limit: usize| -> Result<(Vec<Fetched>, bool), String> {
                 let want = i64::try_from(limit).unwrap_or(i64::MAX - 1);
-                let mut ps: Vec<Box<dyn ToSql + Sync>> = w.params.iter().map(boxed).collect();
-                ps.push(Box::new(want.saturating_add(1)));
+                let (sql, ps) = w.query(COLUMNS, want.saturating_add(1), true);
+                let ps: Vec<Box<dyn ToSql + Sync>> = ps.iter().map(boxed).collect();
                 let refs: Vec<&(dyn ToSql + Sync)> = ps.iter().map(|p| &**p).collect();
-                let rows = c.query(&w.select(COLUMNS, true), &refs).map_err(|e| e.to_string())?;
+                let rows = c.query(&sql, &refs).map_err(|e| e.to_string())?;
                 let extra = rows.len() as i64 > want;
                 let out = rows
                     .iter()
@@ -421,12 +355,44 @@ impl CallStore for PostgresStore {
     }
 
     #[cfg(test)]
-    fn refuse_unit(&self, unit: i64) {
+    fn refuse(&self, table: &str, column: &str, value: &str) {
         let sql = format!(
-            "create or replace function refuse_unit() returns trigger as $$ begin if new.unit = {unit} then raise exception 'refused'; end if; return new; end $$ language plpgsql;
-             create trigger refuse before insert on call_transmissions for each row execute function refuse_unit();"
+            "create or replace function refuse_{table}() returns trigger as $$ begin if new.{column} = {value} then raise exception 'refused'; end if; return new; end $$ language plpgsql;
+             create trigger refuse_{table} before insert on {table} for each row execute function refuse_{table}();"
         );
         self.writer().unwrap().batch_execute(&sql).unwrap();
+    }
+}
+
+/// One change, in the savepoint `tx` is.
+fn apply_one(tx: &mut postgres::Transaction<'_>, change: &Change) -> Result<(), postgres::Error> {
+    match change {
+        Change::Call { row, live } => write_call(tx, row, *live),
+        Change::CallFiles { path, audio, json } => tx.execute("update calls set audio = $2, json = $3 where path = $1", &[path, audio, json]).map(drop),
+        Change::Meta { key, value } => tx.execute("insert into meta (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value", &[key, value]).map(drop),
+        Change::Kept { kind, key, value: Some(v) } => tx.execute("insert into kept (kind, key, value) values ($1, $2, $3) on conflict (kind, key) do update set value = excluded.value", &[kind, key, v]).map(drop),
+        Change::Kept { kind, key, value: None } => tx.execute("delete from kept where kind = $1 and key = $2", &[kind, key]).map(drop),
+        Change::RegistryChanges { system, json } => tx.execute("insert into registry_changes (system, changes) values ($1, $2)", &[system, json]).map(drop),
+        Change::RegistryWhole { system, json } => {
+            tx.execute("insert into registry (system, whole) values ($1, $2) on conflict (system) do update set whole = excluded.whole", &[system, json])?;
+            tx.execute("delete from registry_changes where system = $1", &[system]).map(drop)
+        }
+        Change::StatsMinute { t, json } => tx.execute("insert into stats_minutes (t, s) values ($1, $2)", &[t, json]).map(drop),
+        Change::StatsHours(rows) => {
+            let up = tx.prepare(
+                "insert into stats_hours (series, t, avg, lo, hi, n) values ($1, $2, $3, $4, $5, $6)
+                 on conflict (series, t) do update set avg = excluded.avg, lo = excluded.lo, hi = excluded.hi, n = excluded.n",
+            )?;
+            for r in rows {
+                tx.execute(&up, &[&r.series, &r.t, &r.avg, &r.lo, &r.hi, &(r.n as i32)])?;
+            }
+            Ok(())
+        }
+        Change::RetireStats { minutes_before, hours_before } => {
+            tx.execute("delete from stats_minutes where t < $1", &[minutes_before])?;
+            hours_before.map_or(Ok(()), |h| tx.execute("delete from stats_hours where t < $1", &[&h]).map(drop))
+        }
+        Change::Talkgroups { system, lines, len } => write_talkgroups(tx, system, lines, *len),
     }
 }
 
@@ -481,6 +447,10 @@ fn write_call(tx: &mut postgres::Transaction<'_>, row: &CallRow, live: bool) -> 
     let id: i64 = landed.get(0);
     tx.execute("delete from call_transmissions where call_id = $1", &[&id])?;
     tx.execute("delete from call_frequencies where call_id = $1", &[&id])?;
+    tx.execute("delete from call_units where call_id = $1", &[&id])?;
+    for t in &row.transmissions {
+        tx.execute("insert into call_units (short_name, unit, start_ms, call_id) values ($1, $2, $3, $4) on conflict do nothing", &[&row.short_name, &t.unit, &row.start_ms, &id])?;
+    }
     for (seq, t) in row.transmissions.iter().enumerate() {
         tx.execute(
             "insert into call_transmissions (call_id, seq, unit, start_ms, length_ms, emergency, signal_system, tag) values ($1, $2, $3, $4, $5, $6, $7, $8)",

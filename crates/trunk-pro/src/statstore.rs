@@ -60,7 +60,7 @@ impl Store {
         let done = Arc::new(AtomicI64::new(NOT_YET));
         let (d2, h2, db2, done2) = (dir.clone(), history.clone(), db.clone(), done.clone());
         let _ = std::thread::Builder::new().name("stats-load".into()).spawn(move || {
-            if db2.is_disabled() {
+            if db2.uses_files() {
                 load(&d2, &h2);
             } else {
                 load_store(&db2, &h2, &done2);
@@ -68,7 +68,7 @@ impl Store {
             h2.lock().unwrap().loading = false;
         });
         let _ = std::thread::Builder::new().name("stats-store".into()).spawn(move || {
-            if db.is_disabled() {
+            if db.uses_files() {
                 write(&dir, &history, rx);
             } else {
                 write_store(&db, &history, rx, &done, stats_days);

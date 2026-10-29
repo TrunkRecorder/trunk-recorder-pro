@@ -1254,7 +1254,17 @@ pub fn history(ctx: &Ctx) -> ToClient {
 pub fn calls(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> (crate::db::read::Page, Option<String>) {
     use crate::db::read;
     let filter = read::CallsFilter {
-        systems: q.system.as_deref().map_or_else(Vec::new, |name| systems_for(&ctx.config.lock().unwrap(), name)),
+        systems: {
+            let cfg = ctx.config.lock().unwrap();
+            match q.system.as_deref() {
+                Some(name) => systems_for(&cfg, name),
+                // (Talkgroup and radio numbers are a system's own: asked without one, each system's.)
+                None if q.talkgroup.is_some() || q.unit.is_some() => {
+                    cfg.systems.iter().flat_map(|s| systems_for(&cfg, &s.short_name)).chain(cfg.conventional.iter().map(|c| c.short_name.clone())).collect()
+                }
+                None => Vec::new(),
+            }
+        },
         talkgroup: q.talkgroup,
         unit: q.unit,
         from_ms: q.from,
