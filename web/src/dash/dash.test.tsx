@@ -15,6 +15,7 @@ import { RadioPage } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
 import { PlatformPage } from "./Platform.tsx";
 import { PluginHealthPage } from "./PluginHealth.tsx";
+import { StorageView, tablesOf } from "./Storage.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
@@ -253,6 +254,27 @@ test("Platform: the clock as measured and as the OS says, and the light goes by 
   page = text(renderToString(<PlatformPage />));
   assert.match(page, /Offset, measured — pool\.ntp\.org: no answer/);
   assert.match(page, /3 of 3 queries unanswered .*UDP port 123/);
+});
+
+test("Platform → Storage: each table with its rows, its indexes under it, biggest first", () => {
+  const sizes = {
+    objects: [
+      { name: "calls", table: "calls", index: false, bytes: 40e6, rows: 120000 },
+      { name: "transmissions_radio", table: "call_transmissions", index: true, bytes: 30e6 },
+      { name: "call_transmissions", table: "call_transmissions", index: false, bytes: 25e6, rows: 300000 },
+      { name: "calls_start", table: "calls", index: true, bytes: 3e6 },
+      { name: "talkgroups", table: "talkgroups", index: false, bytes: 8192, rows: 23 },
+    ],
+    fileBytes: 98e6, walBytes: 2e6, freeBytes: 1e6,
+  };
+  assert.deepEqual(tablesOf(sizes).map((t) => [t.name, t.indexes.map((i) => i.name)]), [["call_transmissions", ["transmissions_radio"]], ["calls", ["calls_start"]], ["talkgroups", []]]);
+  twoSites();
+  const page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, sizes }} />));
+  assert.match(page, /Store\s*100 MB/);
+  assert.match(page, /call_transmissions\s*300,?000\s*25(\.0)? MB\s*↳ transmissions_radio\s*30(\.0)? MB/);
+  assert.match(page, /Calls aren\S{1,6}t indexed by radio/);
+  host({ os: synced, server: "pool.ntp.org", measured: null, error: null, problem: null, check: null });
+  assert.doesNotMatch(text(renderToString(<PlatformPage />)), /Storage/, "no Storage tab until the store is measured");
 });
 
 test("Platform: the span chooser offers what the store keeps", () => {

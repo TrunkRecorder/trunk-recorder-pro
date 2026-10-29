@@ -47,6 +47,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   - **A database always: the `files` backend is gone (breaking).** `storage.backend` is
     `sqlite` (the default) or `postgres`, and talkgroups, aliases, band plans, the registry and
     the dashboard's history are always the store's.
+    - The store's settings have a Setup tab of their own, **Data**. The dashboard's Platform page has
+      a **Storage** view: each table's and index's size, its rows, and how they've grown.
+    - **`storage.radioIndex`** (Setup: "Calls by radio", on by default): off, the store doesn't index
+      calls by radio, and a radio's list is its recent calls. On a busy system it's most of what the
+      store writes (on a Pi's eMMC, a call a second all day: 1.6 GB a day with it, about 0.6 without).
     - **`storage.lowWrite`** (Setup: "Low-write mode") is for SD cards: no call index (the call
       list is the recent calls), the dashboard's history by the hour only, and a commit an hour.
     - A store that can't be opened is said to every connection, and nothing is kept meanwhile.

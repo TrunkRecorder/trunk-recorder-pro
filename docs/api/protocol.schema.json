@@ -4654,6 +4654,31 @@
             ],
             "additionalProperties": false
           }
+        },
+        "store": {
+          "type": "object",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "sqlite",
+                "postgres"
+              ]
+            },
+            "radioIndex": {
+              "type": "boolean"
+            },
+            "sizes": {
+              "$ref": "#/definitions/StoreSizes"
+            }
+          },
+          "required": [
+            "backend",
+            "radioIndex",
+            "sizes"
+          ],
+          "additionalProperties": false,
+          "description": "The store (desktop app): each table's and index's size, measured every 15 minutes; absent until measured, or with the store off."
         }
       },
       "required": [
@@ -6775,6 +6800,61 @@
         "interface"
       ],
       "description": "Which store: the plugins' (the registry) or the interfaces'."
+    },
+    "StoreSizes": {
+      "type": "object",
+      "properties": {
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "table": {
+                "type": "string"
+              },
+              "index": {
+                "type": "boolean"
+              },
+              "bytes": {
+                "type": "number"
+              },
+              "rows": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "name",
+              "table",
+              "index",
+              "bytes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "fileBytes": {
+          "type": "number",
+          "description": "SQLite: the database file; PostgreSQL: its tables and indexes added up."
+        },
+        "walBytes": {
+          "type": "number",
+          "description": "SQLite's write-ahead log."
+        },
+        "freeBytes": {
+          "type": "number",
+          "description": "SQLite: pages free inside the file (used again before it grows)."
+        }
+      },
+      "required": [
+        "objects",
+        "fileBytes",
+        "walBytes",
+        "freeBytes"
+      ],
+      "additionalProperties": false,
+      "description": "The store's tables and indexes, biggest first, and its files."
     },
     "SurveyBand": {
       "type": "object",

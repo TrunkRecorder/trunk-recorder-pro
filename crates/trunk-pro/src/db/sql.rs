@@ -142,8 +142,7 @@ pub enum Dialect {
 /// Running statements: what the store's work needs of a backend. Errors are
 /// strings (logged, or said to whoever asked).
 pub trait Exec {
-    /// (For what differs by dialect beyond the schema: a test's trigger.)
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// (For what differs by dialect beyond the schema: the catalog's sizes, a test's trigger.)
     fn dialect(&self) -> Dialect;
     /// Run `sql` with `ps` for its `$1, $2…`; the rows it changed.
     fn execute(&mut self, sql: &str, ps: &[V]) -> Result<u64, String>;

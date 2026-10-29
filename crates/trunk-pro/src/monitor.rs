@@ -34,6 +34,9 @@ const SPOOL_CRITICAL_PCT: f64 = 10.0;
 const SWEEP_EVERY: Duration = Duration::from_secs(600);
 /// How often Spotlight is asked again (and when the recordings folder changes).
 const SPOTLIGHT_EVERY: Duration = Duration::from_secs(24 * 3600);
+/// How often the store's tables and indexes are measured (SQLite reads
+/// each page's header to, so not every tick).
+const SIZES_EVERY: Duration = Duration::from_secs(15 * 60);
 
 /// The `host` message: the series' values this tick, and the platform's own figures.
 pub fn message(t: f64, agg: &Aggregator, platform: serde_json::Value) -> ToClient {
@@ -69,6 +72,8 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
     let mut spool = SpoolWatch::default();
     let spotlight: Arc<Mutex<Option<Value>>> = Default::default();
     let mut spotlight_for: Option<(String, Instant)> = None;
+    let sizes: Arc<Mutex<Option<crate::db::store::StoreSizes>>> = Default::default();
+    let mut sized: Option<Instant> = None;
     loop {
         let t = crate::clock::unix_s();
         // The clock judged once a tick: the dashboard, the events and the calls go by it.
@@ -92,6 +97,23 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
             let _ = std::thread::Builder::new().name("spotlight".into()).spawn(move || *out.lock().unwrap() = crate::spotlight::check(Path::new(&capture)));
         }
         p["spotlight"] = spotlight.lock().unwrap().clone().unwrap_or(Value::Null);
+        // The store's tables and indexes, measured on a thread of their own:
+        // in the platform message (Platform → Storage) and its history (`store/<name>`).
+        if !ctx.db.is_disabled() && sized.is_none_or(|at| at.elapsed() >= SIZES_EVERY) {
+            sized = Some(Instant::now());
+            let (db, out) = (ctx.db.clone(), sizes.clone());
+            let _ = std::thread::Builder::new().name("store-sizes".into()).spawn(move || match db.sizes() {
+                Ok(s) => *out.lock().unwrap() = Some(s),
+                Err(e) => log::warn!("Store: sizes not measured ({e})"),
+            });
+        }
+        if let Some(s) = sizes.lock().unwrap().as_ref() {
+            for o in &s.objects {
+                agg.gauge(&format!("store/{}", o.name), o.bytes as f64);
+            }
+            agg.gauge("store/total", (s.file_bytes + s.wal_bytes) as f64);
+            p["store"] = json!({ "backend": ctx.db.backend(), "radioIndex": ctx.db.indexes_radios(), "sizes": s });
+        }
         for d in p["disks"].as_array().into_iter().flatten() {
             let (Some(name), Some(total), Some(free)) = (d["name"].as_str(), d["totalBytes"].as_f64(), d["freeBytes"].as_f64()) else { continue };
             if name == "spool" {

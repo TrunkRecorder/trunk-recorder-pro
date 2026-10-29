@@ -1516,6 +1516,19 @@ export interface PlatformInfo {
   perCore: number[] | null;
   interfaces: { name: string; rx: number; tx: number; state: string }[] | null;
   unavailable: { field: string; why: string }[];
+  /** The store (desktop app): each table's and index's size, measured every 15 minutes; absent until measured, or with the store off. */
+  store?: { backend: "sqlite" | "postgres"; radioIndex: boolean; sizes: StoreSizes };
+}
+
+/** The store's tables and indexes, biggest first, and its files. */
+export interface StoreSizes {
+  objects: { name: string; table: string; index: boolean; bytes: number; rows?: number }[];
+  /** SQLite: the database file; PostgreSQL: its tables and indexes added up. */
+  fileBytes: number;
+  /** SQLite's write-ahead log. */
+  walBytes: number;
+  /** SQLite: pages free inside the file (used again before it grows). */
+  freeBytes: number;
 }
 
 /** Something checked again and again and how it's been answering: an internet target, or the time server. */

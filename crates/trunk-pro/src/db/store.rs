@@ -14,9 +14,7 @@ use trunk_core::trunk::{TalkgroupRow, UnitAlias};
 use super::read::{self, Where};
 use super::row::{call_values, src_entry, stored_call, tx_values, CallRow, CALL_COLS, TX_COLS};
 use super::schema::SCHEMA_VERSION;
-#[cfg(test)]
-use super::sql::Dialect;
-use super::sql::{savepoint, Exec, Params, V};
+use super::sql::{savepoint, Dialect, Exec, Params, V};
 use crate::vals;
 
 /// A change for the store, as the writer hands it over in a batch: each is
@@ -246,6 +244,46 @@ impl Store {
             Ok((r.int(0), r.opt_int(1), r.opt_int(2)))
         })?;
         Ok(StoreInfo { location: self.location(), schema_version: SCHEMA_VERSION, calls, oldest_ms, newest_ms })
+    }
+
+    /// How big each table and index is, and how many rows each table has
+    /// (PostgreSQL: its planner's estimate). Reads every page's header in
+    /// SQLite: every few minutes at most, off the async threads.
+    pub fn sizes(&self) -> Result<StoreSizes, String> {
+        let location = self.location();
+        self.read(|x| {
+            let mut out = StoreSizes::default();
+            match x.dialect() {
+                Dialect::Sqlite => {
+                    let master: std::collections::HashMap<String, (String, bool)> =
+                        x.query("select name, tbl_name, type = 'index' from sqlite_master where type in ('table', 'index')", &[])?.iter().map(|r| (r.text(0), (r.text(1), r.bool(2)))).collect();
+                    for r in x.query("select name, sum(pgsize) from dbstat group by name", &[])? {
+                        let name = r.text(0);
+                        let (table, index) = master.get(&name).cloned().unwrap_or_else(|| (name.clone(), false));
+                        let rows = if index || name.starts_with("sqlite_") { None } else { x.query_opt(&format!("select count(*) from \"{name}\""), &[])?.map(|r| r.int(0)) };
+                        out.objects.push(StoreSize { name, table, index, bytes: r.int(1), rows });
+                    }
+                    let page = x.query_opt("pragma page_size", &[])?.map_or(4096, |r| r.int(0));
+                    out.free_bytes = x.query_opt("pragma freelist_count", &[])?.map_or(0, |r| r.int(0)) * page;
+                    out.file_bytes = std::fs::metadata(&location).map_or(0, |m| m.len() as i64);
+                    out.wal_bytes = std::fs::metadata(format!("{location}-wal")).map_or(0, |m| m.len() as i64);
+                }
+                Dialect::Postgres => {
+                    let sql = "select c.relname::text, coalesce(t.relname, c.relname)::text, c.relkind = 'i',
+                                      case when c.relkind = 'i' then pg_relation_size(c.oid) else pg_table_size(c.oid) end,
+                                      case when c.relkind = 'r' and c.reltuples >= 0 then c.reltuples::bigint end
+                               from pg_class c join pg_namespace n on n.oid = c.relnamespace
+                               left join pg_index ix on ix.indexrelid = c.oid left join pg_class t on t.oid = ix.indrelid
+                               where n.nspname = current_schema() and c.relkind in ('r', 'i')";
+                    for r in x.query(sql, &[])? {
+                        out.objects.push(StoreSize { name: r.text(0), table: r.text(1), index: r.bool(2), bytes: r.int(3), rows: r.opt_int(4) });
+                    }
+                    out.file_bytes = out.objects.iter().map(|o| o.bytes).sum();
+                }
+            }
+            out.objects.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.name.cmp(&b.name)));
+            Ok(out)
+        })
     }
 
     pub fn checkpoint(&self) {
@@ -571,6 +609,32 @@ fn after(prefix: &str) -> Option<String> {
     None
 }
 
+
+/// A table's or index's size ([`Store::sizes`]).
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreSize {
+    pub name: String,
+    /// The table it is or indexes.
+    pub table: String,
+    pub index: bool,
+    pub bytes: i64,
+    /// A table's rows (PostgreSQL: estimated; none until it's analysed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<i64>,
+}
+
+/// Every table's and index's size, biggest first, and the files' (SQLite:
+/// the database, its write-ahead log and the free pages in it;
+/// PostgreSQL: the tables and indexes added up).
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreSizes {
+    pub objects: Vec<StoreSize>,
+    pub file_bytes: i64,
+    pub wal_bytes: i64,
+    pub free_bytes: i64,
+}
 
 /// What `GET /api/v1/storage` says of a store.
 pub struct StoreInfo {

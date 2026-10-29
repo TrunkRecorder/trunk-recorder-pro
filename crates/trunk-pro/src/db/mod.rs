@@ -408,6 +408,11 @@ impl Db {
         self.store()?.registry()
     }
 
+    /// Each table's and index's size (blocks: never from async code).
+    pub fn sizes(&self) -> Result<store::StoreSizes, String> {
+        self.store()?.sizes()
+    }
+
     pub fn info(&self) -> Result<StoreInfo, String> {
         self.store()?.info()
     }
@@ -809,6 +814,25 @@ mod tests {
 
     /// Low-write mode: a store, keeping no call index (a call sent is
     /// dropped) and the rest as ever; the backup keeps what can't be rebuilt.
+    /// Each table and index is measured, with its table and rows, in either backend.
+    #[test]
+    fn tables_and_indexes_are_measured() {
+        for db in Db::for_each_backend("sizes", Duration::from_millis(10)) {
+            db.send(Change::Call { row: row::call_row("ohmarcs/s", &row::tests::record(1, 1000), true, true, None, 0), live: true });
+            db.flush().unwrap();
+            let s = db.sizes().unwrap();
+            let get = |n: &str| s.objects.iter().find(|o| o.name == n).unwrap_or_else(|| panic!("{n} in {:?} ({})", s.objects, db.kind())).clone();
+            let calls = get("calls");
+            assert!(!calls.index && calls.bytes > 0, "{}", db.kind());
+            if db.kind() == "sqlite" {
+                assert_eq!(calls.rows, Some(1));
+            }
+            let i = get("calls_start");
+            assert!(i.index && i.table == "calls" && i.bytes > 0);
+            assert!(s.file_bytes > 0);
+        }
+    }
+
     /// Without the radio index (`storage.radioIndex` off) the store drops
     /// it; turned on again, it's made again from the transmissions.
     #[test]

@@ -1,0 +1,120 @@
+// Platform → Storage: what the recorder's store holds and how big each part
+// is — every table, its rows, and each of its indexes — measured by the
+// recorder every 15 minutes, and how each has grown (the `store/<name>`
+// series). Settings for it are in Setup → Data.
+
+import { Fragment, useState } from "react";
+import type { StoreSizes } from "../protocol.ts";
+import { setSetupTab, setView, type StatsRange } from "../controller.ts";
+import { Card, Choice, Stat, TimeSeries } from "../charts.tsx";
+import { bytes, num } from "../fmt.ts";
+import { useHistory, useRanges } from "./data.ts";
+
+/** A table with its indexes, biggest first. */
+interface TableRow {
+  name: string;
+  rows?: number;
+  bytes: number;
+  indexes: { name: string; bytes: number }[];
+}
+
+/** Each table with its indexes (an index is listed under the table it indexes). */
+export function tablesOf(s: StoreSizes): TableRow[] {
+  const t = new Map<string, TableRow>();
+  const at = (name: string) => t.get(name) ?? t.set(name, { name, bytes: 0, indexes: [] }).get(name)!;
+  for (const o of s.objects) {
+    const row = at(o.table);
+    if (o.index) row.indexes.push({ name: o.name, bytes: o.bytes });
+    else {
+      row.bytes += o.bytes;
+      if (o.rows !== undefined) row.rows = o.rows;
+    }
+  }
+  const all = (r: TableRow) => r.bytes + r.indexes.reduce((n, i) => n + i.bytes, 0);
+  return [...t.values()].sort((a, b) => all(b) - all(a));
+}
+
+export function StorageView(props: { store: { backend: string; radioIndex: boolean; sizes: StoreSizes } }) {
+  const { backend, radioIndex, sizes } = props.store;
+  const [range, setRange] = useState<StatsRange>("7d");
+  const ranges = useRanges();
+  const tables = tablesOf(sizes);
+  const indexBytes = sizes.objects.filter((o) => o.index).reduce((n, o) => n + o.bytes, 0);
+  const tableBytes = sizes.objects.filter((o) => !o.index).reduce((n, o) => n + o.bytes, 0);
+  const top = sizes.objects.slice(0, 5).map((o) => o.name);
+  const hist = useHistory(["store/total", ...top.map((n) => `store/${n}`)], range, 360);
+  const max = Math.max(1, ...sizes.objects.map((o) => o.bytes));
+  const colors = ["var(--series-2)", "var(--series-3)", "var(--series-4)", "var(--series-5)", "var(--series-6)"];
+  const toData = () => {
+    setView("setup");
+    setSetupTab("data");
+  };
+  return (
+    <>
+      <div className="kpis">
+        <Stat size="hero" label="Store" value={bytes(sizes.fileBytes + sizes.walBytes)} sub={backend === "postgres" ? "PostgreSQL: its tables and indexes" : "SQLite, with its write-ahead log"} />
+        <Stat label="Tables" value={bytes(tableBytes)} sub={`${tables.length} tables`} />
+        <Stat label="Indexes" value={bytes(indexBytes)} sub={tableBytes ? `${num((100 * indexBytes) / tableBytes, 0)}% of the tables` : undefined} />
+        {backend === "sqlite" && <Stat label="Write-ahead log" value={bytes(sizes.walBytes)} sub={`${bytes(sizes.freeBytes)} free inside the file`} />}
+      </div>
+      {!radioIndex && (
+        <p className="muted small">
+          Calls aren't indexed by radio: a radio's list is its recent calls.{" "}
+          <button className="btn ghost small" onClick={toData}>
+            Setup → Data
+          </button>
+        </p>
+      )}
+      <div className="row">
+        <h2 className="section-title">Growth</h2>
+        <span className="spacer" />
+        <Choice value={range} options={ranges} onChange={setRange} label="Span" />
+      </div>
+      <Card title="Size over time">
+        <TimeSeries
+          lines={[{ label: "Store", color: "var(--series-1)", data: hist?.["store/total"] ?? null }, ...top.map((n, i) => ({ label: n, color: colors[i], data: hist?.[`store/${n}`] ?? null }))]}
+          zero
+          fmt={(x) => bytes(x)}
+          empty="Measured every 15 minutes: its history starts with the first."
+        />
+      </Card>
+      <Card title="Tables and indexes">
+        <table className="calls store-sizes">
+          <thead>
+            <tr>
+              <th>Table / index</th>
+              <th className="num">Rows</th>
+              <th className="num">Size</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {tables.map((t) => (
+              <Fragment key={t.name}>
+                <tr>
+                  <td className="mono">{t.name}</td>
+                  <td className="num">{t.rows === undefined ? "—" : num(t.rows, 0)}</td>
+                  <td className="num">{bytes(t.bytes)}</td>
+                  <td className="bar-cell">
+                    <span className="bar" style={{ width: `${(100 * t.bytes) / max}%` }} />
+                  </td>
+                </tr>
+                {t.indexes.map((i) => (
+                  <tr key={`${t.name}/${i.name}`} className="sub">
+                    <td className="mono muted">↳ {i.name}</td>
+                    <td />
+                    <td className="num">{bytes(i.bytes)}</td>
+                    <td className="bar-cell">
+                      <span className="bar alt" style={{ width: `${(100 * i.bytes) / max}%` }} />
+                    </td>
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+        <p className="muted small">Measured every 15 minutes{backend === "postgres" ? "; rows are PostgreSQL's estimate" : ""}. Settings: Setup → Data.</p>
+      </Card>
+    </>
+  );
+}

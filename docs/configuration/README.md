@@ -113,6 +113,9 @@ mirrors each call once, and a call index lost is rebuilt from them. `backend` sa
 | `"sqlite"` (default) | a Raspberry Pi to a mid-size server | `trunk-pro.sqlite`, beside the config |
 | `"postgres"` | servers: years of history, your own backups and replication | the PostgreSQL database `url` names: `"postgres://user:password@host/database"`. One recorder per database (or schema): a second one pointed at it runs with its store off |
 
+These are in Setup → **Data**. What the store holds, each table's and index's size and how
+they've grown are on the dashboard's Platform → **Storage**.
+
 `lowWrite: true` writes as little as can be, for an SD card:
 
 - no call index (the call list and every query answer from the recent calls, and say so);
@@ -120,6 +123,21 @@ mirrors each call once, and a call index lost is rebuilt from them. `backend` sa
 - a commit an hour.
 
 Everything else is kept as usual.
+
+`radioIndex: false` (Setup: "Calls by radio") keeps the call index but not by radio: a radio's
+call list is then its recent calls. On a busy system that index is most of what the store writes.
+
+What the store writes on a Pi's eMMC in a day, for a busy system (a call a second, 10,000 radios,
+2,500 talkgroups; `db::tests::day_write_budget`):
+
+| | GB a day |
+|---|---|
+| Standard | 1.6 |
+| Standard, `radioIndex: false` | about 0.6 |
+| `lowWrite: true` | 0.4 |
+
+A system like DC Fire and EMS (3,700 calls a day, 23 talkgroups, 500 radios) writes a small
+fraction of that.
 
 A store that can't be opened (a full disk, a PostgreSQL server that can't be reached, another
 recorder using it) is left off. The recorder records anyway, every connection is told, and
@@ -145,13 +163,12 @@ with upload-only settings).
 
 These are read when the app starts.
 
-- **Talkgroups** are kept a line at a time, exactly as loaded, so comments, extra columns and the
-  delimiter come back too.
-  - An edit in Setup (Ignore, a name) writes only the lines it changed, and commits at once.
-  - Each row also has its talkgroup's number, alpha tag, description, tag, category, mode,
-    priority and Ignore in columns of their own (table `talkgroups`), so a call's talkgroup can be
-    looked up by SQL.
-  - Setup's **Download** exports the file; **Load CSV…** replaces it.
+- **Talkgroups** are kept a row each (table `talkgroups`): number, alpha tag, description, tag,
+  category, mode, priority, preferred NAC and site, and Ignore, in the order loaded, with the
+  comment line directly above a row and any columns of the file's own.
+  - An edit in Setup (Ignore, a name) writes only that row, and commits at once.
+  - Setup's **Download** exports a talkgroup file (Trunk Recorder's CSV); **Load CSV…** replaces
+    the list.
 - **The dashboard's history** goes back `statsDays` (default 365; `0` keeps it all).
   - Every series is kept by the hour, and the dashboard's charts offer 30 days, 90 days and a
     year, as far as that goes.

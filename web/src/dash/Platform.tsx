@@ -11,12 +11,14 @@ import { Card, Choice, HeatStrip, LiveSpark, Meter, Ribbon, Stat, TimeSeries, ty
 import { ago, bytes, clockAt, dur, ms, num, pct } from "../fmt.ts";
 import { platformHealth, total, useHistory, useRanges } from "./data.ts";
 import { Switch } from "../SetupLayout.tsx";
+import { StorageView } from "./Storage.tsx";
 
 const PRESSURE = ["normal", "warning", "critical"];
 
 export function PlatformPage() {
   const s = useApp();
   const [range, setRange] = useState<StatsRange>("24h");
+  const [part, setPart] = useState<"computer" | "storage">("computer");
   const ranges = useRanges();
   useTopic("platform");
   const hist = useHistory(["plat/cpu", "plat/proCpu", "plat/mem", "net/up", "net/rtt", "net/rx", "net/tx", "plat/temp", "clock/offsetMs"], range, 360);
@@ -37,8 +39,27 @@ export function PlatformPage() {
   const up = hist?.["net/up"];
   const upCells: (Level | null)[] = (up?.v ?? []).map((x, i) => (x === null ? null : (up!.lo[i] ?? x) >= 1 ? "ok" : x > 0 ? "warn" : "bad"));
   const downSteps = upCells.filter((c) => c === "warn" || c === "bad").length;
+  const store = p.store;
+  const parts = store && (
+    <div className="listen-tabs platform-tabs" role="tablist">
+      <button role="tab" aria-selected={part === "computer"} className={part === "computer" ? "on" : ""} onClick={() => setPart("computer")}>
+        Computer
+      </button>
+      <button role="tab" aria-selected={part === "storage"} className={part === "storage" ? "on" : ""} onClick={() => setPart("storage")}>
+        Storage
+      </button>
+    </div>
+  );
+  if (store && part === "storage")
+    return (
+      <div className="page">
+        {parts}
+        <StorageView store={store} />
+      </div>
+    );
   return (
     <div className="page">
+      {parts}
       {health.level !== "ok" && <p className={`why why-${health.level}`}>{health.why}</p>}
       <SpotlightNote spot={p.spotlight ?? null} />
       <div className="kpis">
