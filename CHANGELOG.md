@@ -86,6 +86,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     Pi's eMMC a busy system writes 0.10 GB a day instead of 0.44 (`db::tests::registry_write_budget`).
     The browser version saves the registry in the same shape, so a registry it saved before
     starts afresh.
+- **Reporting views in the store:** `calls_report`, `transmissions_report` and `stats_report`
+  give calls, radios and the dashboard's hours with names and timestamps, for the `sqlite3` shell,
+  Grafana and the like (docs/configuration: "The store"). PostgreSQL's big tables are vacuumed
+  and analysed sooner.
 - **Calls by talkgroup, radio and time, for interfaces and plugins:** `callsQuery` on the
   WebSocket (`client.js`: `rec.calls({ … })`), `GET /api/v1/calls`, `/api/v1/calls/<path>` and
   `/api/v1/storage` over HTTP (`docs/api/calls.openapi.yaml`), and for plugins `calls.query`

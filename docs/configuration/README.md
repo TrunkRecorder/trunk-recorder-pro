@@ -164,9 +164,27 @@ These are read when the app starts.
   day. On the Pi's eMMC that's 0.10 GB a day for a busy system, against 0.44 GB for the whole file
   every 15 minutes it was before.
 
+To report from the store yourself (the `sqlite3` shell, Grafana, Metabase, Datasette…), use its
+views. They give times as timestamps (UTC; PostgreSQL's `timestamptz`, ISO 8601 text in SQLite),
+systems by short name, and talkgroups and radios by name:
+
+| View | One row per |
+|---|---|
+| `calls_report` | call: system, start and stop, talkgroup with its name and category, frequency, site, signal, path |
+| `transmissions_report` | radio's transmission in a call: its unit, name (talker alias or tag), time, position |
+| `stats_report` | dashboard series' hour: average, low, high, minutes measured |
+
+```sql
+select talkgroup_name, count(*) from calls_report
+where start_at >= '2026-10-01' group by talkgroup_name order by 2 desc;
+```
+
+The tables behind them may change from version to version; the views are what to build on.
+
 While in beta, a store made by another version is set aside and a new one started (nothing is
 migrated): SQLite's file is renamed `trunk-pro.sqlite.v<n>-<time>`, PostgreSQL's tables are made
-afresh. The call index is then rebuilt from the recordings' `.json` files.
+afresh. Views of your own built on PostgreSQL's tables go with them. The call index is then
+rebuilt from the recordings' `.json` files.
 
 ## A minimal config
 

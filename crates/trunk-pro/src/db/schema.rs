@@ -277,6 +277,59 @@ pub fn ddl(d: Dialect) -> String {
         let cond = i.cond.map_or(String::new(), |c| format!(" where {c}"));
         out.push_str(&format!("create index {} on {}({}){cond};\n", i.name, i.table, i.cols.join(", ")));
     }
+    for (name, sql) in VIEWS {
+        out.push_str(&format!("create view {name} as {};\n", timestamps(sql, d)));
+    }
+    if d == Dialect::Postgres {
+        // (The big tables, mostly appended and retired by age: vacuumed and
+        // analysed after 1% changes rather than 20%, so the planner keeps
+        // up with a day's calls.)
+        for t in ["calls", "call_transmissions"] {
+            out.push_str(&format!("alter table {t} set (autovacuum_vacuum_scale_factor = 0.01, autovacuum_analyze_scale_factor = 0.01);\n"));
+        }
+    }
+    out
+}
+
+/// Views to report from, by hand or with a tool (Grafana, Metabase,
+/// Datasette…): times as timestamps (UTC), systems by name, talkgroups and
+/// radios with their names. `AT_MS(x)` / `AT_S(x)`: Unix ms / s as a
+/// timestamp, in the dialect's way. Nothing in the app reads them.
+const VIEWS: &[(&str, &str)] = &[
+    (
+        "calls_report",
+        "select c.id, s.short_name as system, AT_MS(c.start_ms) as start_at, AT_MS(c.stop_ms) as stop_at, c.length_s, c.talkgroup,
+                coalesce(nullif(g.alpha_tag, ''), c.talkgroup_tag) as talkgroup_name, g.description as talkgroup_description, g.category as talkgroup_category,
+                c.freq_hz, c.site, c.emergency, c.encrypted, c.decrypted, c.signal, c.noise, c.snr, c.clean_voice_pct, c.path, c.audio
+         from calls c join systems s on s.id = c.system_id left join talkgroups g on g.system_id = c.system_id and g.number = c.talkgroup",
+    ),
+    (
+        "transmissions_report",
+        "select u.call_id, s.short_name as system, AT_MS(u.call_start_ms) as call_start_at, u.seq, u.unit,
+                coalesce(nullif(a.alias, ''), nullif(u.tag, ''), u.tag_ota) as unit_name, AT_S(u.time) as at, u.pos, c.talkgroup,
+                u.emergency, u.encrypted, u.lat, u.lon
+         from call_transmissions u join systems s on s.id = u.system_id join calls c on c.id = u.call_id left join units a on a.system_id = u.system_id and a.unit = u.unit",
+    ),
+    ("stats_report", "select se.name as series, AT_S(h.t) as hour_at, h.avg, h.lo, h.hi, h.n from stats_hours h join series se on se.id = h.series_id"),
+];
+
+/// `sql` with each `AT_MS(x)` and `AT_S(x)` (x without parentheses) as
+/// a timestamp: PostgreSQL's `timestamptz`, SQLite's ISO 8601 text (UTC).
+fn timestamps(sql: &str, d: Dialect) -> String {
+    let mut out = sql.to_string();
+    for (mark, ms) in [("AT_MS(", true), ("AT_S(", false)] {
+        while let Some(i) = out.find(mark) {
+            let j = i + mark.len() + out[i + mark.len()..].find(')').expect("a closing parenthesis");
+            let x = &out[i + mark.len()..j];
+            let ts = match (d, ms) {
+                (Dialect::Postgres, true) => format!("to_timestamp(0.001 * {x})"),
+                (Dialect::Postgres, false) => format!("to_timestamp({x})"),
+                (Dialect::Sqlite, true) => format!("strftime('%Y-%m-%dT%H:%M:%fZ', 0.001 * {x}, 'unixepoch')"),
+                (Dialect::Sqlite, false) => format!("strftime('%Y-%m-%dT%H:%M:%SZ', {x}, 'unixepoch')"),
+            };
+            out.replace_range(i..=j, &ts);
+        }
+    }
     out
 }
 
@@ -332,6 +385,10 @@ mod tests {
         for t in TABLES {
             let cols: Vec<String> = pg.query("select column_name::text from information_schema.columns where table_schema = 't_schema' and table_name = $1 order by ordinal_position", &[&t.name]).unwrap().iter().map(|r| r.get(0)).collect();
             assert_eq!(cols, sqlite(t.name), "{}", t.name);
+        }
+        for (v, _) in VIEWS {
+            let cols: Vec<String> = pg.query("select column_name::text from information_schema.columns where table_schema = 't_schema' and table_name = $1 order by ordinal_position", &[v]).unwrap().iter().map(|r| r.get(0)).collect();
+            assert_eq!(cols, sqlite(v), "{v}");
         }
     }
 

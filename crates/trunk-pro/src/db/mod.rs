@@ -707,6 +707,28 @@ mod tests {
         }
     }
 
+    /// The reporting views give a call, its radios and the dashboard's
+    /// hours with names and timestamps, on either backend.
+    #[test]
+    fn the_reporting_views_name_things() {
+        for db in Db::for_each_backend("views", Duration::from_millis(10)) {
+            let a = db.system_id("ohmarcs").unwrap();
+            db.send(Change::Talkgroups { system_id: a, rows: trunk_core::trunk::parse_rows("Decimal,Alpha Tag,Category\n9179,FD Disp,Fire\n") });
+            let alias = trunk_core::trunk::UnitAlias { alias: "ENGINE 1".into(), ..Default::default() };
+            db.send(Change::Units { system_id: a, aliases: vec![(9001644, alias)] });
+            // (Noon UTC: the same date in any server's time zone.)
+            db.send(Change::Call { row: row::call_row("ohmarcs/v", &row::tests::record(9179, 1_699_963_200_123), true, true, None, 0), live: true });
+            db.send(Change::StatsHours(vec![trunk_app::stats::HourRow { series: "cpu".into(), t: 1_699_963_200, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 }]));
+            db.flush().unwrap();
+            let store = db.store().unwrap();
+            let one = |sql: &str| store.texts(sql).join("|");
+            assert_eq!(one("select system || ' ' || talkgroup_name || ' ' || talkgroup_category from calls_report"), "ohmarcs FD Disp Fire", "{}", db.kind());
+            assert!(one("select cast(start_at as text) from calls_report").starts_with("2023-11-14") && one("select cast(start_at as text) from calls_report").contains("12:00:00.123"), "{}", one("select cast(start_at as text) from calls_report"));
+            assert_eq!(one("select unit_name from transmissions_report order by seq"), "ENGINE 1|");
+            assert_eq!(one("select series from stats_report"), "cpu");
+        }
+    }
+
     #[test]
     fn the_last_handle_removes_a_test_folder() {
         let (db, path) = Db::for_test("cleanup");

@@ -47,6 +47,12 @@ Status (2026-10-29):
     the browser build alike.
   - Not done: `series.system_id`. Series names carry the short name, so a renamed system's
     series start afresh.
+- phase 7 is done (schema 7, unchanged): reporting views `calls_report`, `transmissions_report`
+  and `stats_report` in both dialects, part of the one DDL. Each has names joined in and times
+  as timestamps (`timestamptz` in PostgreSQL, ISO 8601 text in SQLite). Their columns are the same
+  in both (`both_dialects_make_the_same_tables`), and `the_reporting_views_name_things` checks
+  them on both backends. PostgreSQL's `calls` and `call_transmissions` vacuum and analyse at 1%.
+  Partitioning is still deferred.
 
 Phase 2 as built:
 
