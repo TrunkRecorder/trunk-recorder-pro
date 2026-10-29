@@ -1,5 +1,10 @@
 # Plan: storage backends (files, SQLite, PostgreSQL)
 
+**Superseded in part by [storage-redesign.md](storage-redesign.md) (2026-10-29):** after the PR
+#104 review, `files` goes (a database always, with a low-write mode), systems get ids, the two
+backends become one SQL implementation, and calls, talkgroups, aliases and stats get a proper
+schema. What follows is the history of how the store got here.
+
 Status (2026-10-28):
 
 - **Phase 1 is built** (the call store and its queries: #102 and #103 by auggiesoft, with the
