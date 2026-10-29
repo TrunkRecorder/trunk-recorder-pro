@@ -191,15 +191,18 @@ store's, written by its writer in its batches.
 Built in #104 (`statstore.rs`). The point is a longer look back, not only a new place:
 
 - **Two tiers.**
-  - Minutes, as the files had them: one JSON row per rollup in `stats_minutes`. They're kept 8
-    days, which is what memory holds, and read back at start.
+  - Minutes, as the files had them: one JSON row per rollup in `stats_minutes`. They're kept 2
+    days and read back at start. Memory holds 26 hours of them (a week with no store), so the
+    recorder doesn't keep a week of every series in memory when the store has it.
   - Hours: one row per series per hour in `stats_hours (series, t, avg, lo, hi, n)`. They're
     written as each hour ends, from memory (`History::hour_rows`), and kept `storage.statsDays`
     (365 by default; 0 keeps them all).
 - **Queries.**
-  - Within the week, from memory as before.
-  - Further back, the store's hours before six days ago are summed by bucket in SQL. Memory's
-    minutes since then are added into the same `Span`. The bucket sizes are ones a chart reads:
+  - Within what memory holds (24 h charts, "the usual"), from memory.
+  - Further back (7 days and up), the store's hours before the last day are summed by bucket in
+    SQL. Memory's minutes since then are added into the same `Span`. Every answer is a few
+    hundred points a series whatever the span, so neither the recorder nor the browser tab grows
+    with the look back. The bucket sizes are ones a chart reads:
     1, 2, 3, 6 or 12 hours, a day, two days, a week.
   - Measured on the import of a real week (136 series): a year at 360 points takes 2 ms for 19
     series and 12 ms for all of them.
@@ -209,8 +212,9 @@ Built in #104 (`statstore.rs`). The point is a longer look back, not only a new 
 - **`hello.capabilities` `history`** says longer spans work: the store is open. The browser
   build and `files` keep a week, and the dashboard offers 30 days, 90 days and a year only as far
   as `statsDays` keeps.
-- **Import.** A `stats/` folder is imported once and renamed `stats.imported`. Hours are written
-  for what memory holds (the last week).
+- **Import.** A `stats/` folder is imported once and renamed `stats.imported`. Its hours are
+  written from the files themselves (a temporary history, let go after), so the whole imported
+  week has them.
 
 ### The registry as changes, not rows
 

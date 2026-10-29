@@ -34,9 +34,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     config is imported at the next start.
   - **The dashboard's history goes back a year, not a week** (`storage.statsDays`, 365 by default;
     0 keeps it all). The Platform, RF and Decode pages' charts offer 30 days, 90 days and 1 year,
-    as far as the store keeps. The last week stays by the minute; further back, each series is
-    kept by the hour. The stats files already there are imported at the first start. With
-    `files` it stays a week of files, as before. On the Pi's eMMC the store writes about 17 MB a
+    as far as the store keeps. Each series is kept by the hour, and only the last day by the
+    minute in memory. A longer chart asks the store for its hours and gets a few hundred points a
+    series whatever the span, so neither the recorder nor the browser holds the history. The
+    stats files already there are imported at the first start. With `files` it stays a week of
+    files, as before. On the Pi's eMMC the store writes about 17 MB a
     day for it. `hello.capabilities` has a new `history`; `statsQuery` takes `30d`, `90d` and `1y`.
   - **What a recording learns between runs is kept in the store too:**
     - the radio registry;

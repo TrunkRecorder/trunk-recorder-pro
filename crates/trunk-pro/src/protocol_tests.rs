@@ -326,7 +326,8 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
 pub(crate) fn ctx_with(cfg: Config, dir: &Path, db: impl FnOnce(crate::runtime::Hub) -> crate::db::Db) -> Arc<crate::runtime::Ctx> {
     let (hub, _) = tokio::sync::broadcast::channel(16);
     let shared = trunk_app::stats::Shared::new();
-    let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
+    let db = db(hub.clone());
+    let series = Arc::new(Mutex::new(trunk_app::stats::History::new(crate::statstore::memory_minutes(&db))));
     let ctx = Arc::new(crate::runtime::Ctx {
         config_path: dir.join("config.json"),
         config: Mutex::new(cfg),
@@ -336,7 +337,7 @@ pub(crate) fn ctx_with(cfg: Config, dir: &Path, db: impl FnOnce(crate::runtime::
         lifecycle: Mutex::new(crate::runtime::Lifecycle::default()),
         phase: Mutex::new(crate::runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         recent: Mutex::new(Default::default()),
-        db: db(hub.clone()),
+        db,
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),

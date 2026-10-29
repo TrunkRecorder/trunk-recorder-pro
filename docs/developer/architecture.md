@@ -1549,7 +1549,7 @@ asks.
 | Producer | Feeds | Output |
 |---|---|---|
 | `ControlChannel::report` (per protocol; default nothing), `Engine::report` (levels, ppm, calls), `SampleMeter` (headroom and clipping, 1 sample in 16), `Tally` (calls, airtime, reasons, voice errors, counted from events) | `Aggregator` | `stats` message every 1 s; a `Rollup` every minute |
-| `Rollup` | `History` (a week in memory) and `stats/YYYY-MM-DD.jsonl` | `statsQuery` → `statsResult` |
+| `Rollup` | `History` (in memory: a week, or a day with the store) and `stats/YYYY-MM-DD.jsonl` or the store | `statsQuery` → `statsResult` |
 | Session events → `Stats::observe` | `Registry` | `radioQuery` → `radioResult` (`Shared::radio_query`, names from the `NameBook`); `radio/<short>.json` every 15 min and at stop |
 | Session events → `Stats::observe` | `Monitor` | watchers (the hook for alert rules; none yet) and `monitorEvent` |
 | monitor thread (desktop, every 2 s): the computer and the plugins | its own aggregator | `host` message every 2 s; rollups into the same history |
@@ -1564,13 +1564,15 @@ asks.
   `sys/<shortName>/site/<site>/cc/good`); renaming one loses its history.
 - **`Aggregator`**: rates from counters; each series' value now; per minute its average, lowest
   and highest. A rollup line is `{"t": minute, "s": {key: [avg, min, max]}}`.
-- **`History`**: a minute grid per series, a week in memory. `statsQuery` takes names or prefixes
-  ending in `*`, a range (10m, 1h, 6h, 24h, 7d, 30d, 90d, 1y) or from/to, and is answered
-  downsampled (360 points by default) into a `Span`'s buckets. Within the week, from memory alone.
-  Further back (the store on: `hello.capabilities` has `history`), `server::stats_query` adds the
-  store's hours before six days ago to memory's minutes since, on a grid of whole hours (1, 2, 3,
-  6, 12 h, a day, two, a week).
-- **Kept (`statstore.rs`)**: with the store on, each rollup a row of `stats_minutes` (kept 8 days,
+- **`History`**: a minute grid per series in memory: a week with no store (the browser build,
+  `files`); with one, 26 hours (`statstore::memory_minutes`). `statsQuery` takes names or
+  prefixes ending in `*`, a range (10m, 1h, 6h, 24h, 7d, 30d, 90d, 1y) or from/to, and is
+  answered downsampled (360 points by default) into a `Span`'s buckets. Within what memory keeps,
+  from memory alone. Further back (the store on: `hello.capabilities` has `history`),
+  `server::stats_query` adds the store's hours before the last day to memory's minutes since, on
+  a grid of whole hours (1, 2, 3, 6, 12 h, a day, two, a week): a few hundred points a series
+  whatever the span, so the history lives in the store, not in the recorder or the browser.
+- **Kept (`statstore.rs`)**: with the store on, each rollup a row of `stats_minutes` (kept 2 days,
   read back into `History` at start) and, as each hour ends (two minutes late, for stragglers),
   each series' hour a row of `stats_hours` (`History::hour_rows`: avg, lo, hi, minutes), kept
   `storage.statsDays` (365; 0: all). `meta` `stats.hoursDone` is the last hour written; a start

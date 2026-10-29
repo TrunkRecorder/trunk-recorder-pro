@@ -6773,7 +6773,7 @@
         },
         "statsDays": {
           "type": "number",
-          "description": "Days of the dashboard's history kept, as hours (the last week by the minute too; default 365); 0 keeps it all. \"files\" keeps a week."
+          "description": "Days of the dashboard's history kept, as hours (default 365); 0 keeps it all. \"files\" keeps a week."
         }
       },
       "required": [

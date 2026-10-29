@@ -143,8 +143,10 @@ later (a talkgroup file edited by hand, say) is imported the same way at the nex
   talkgroup can be looked up by SQL. Setup's **Download** exports the file; **Load CSV…** replaces
   it.
 - **The dashboard's history** goes back `statsDays` (default 365; `0` keeps it all), not a week.
-  The last week is kept by the minute and every series by the hour, so the dashboard's charts
-  offer 30 days, 90 days and a year, as far as that goes. On the Pi's eMMC this writes about
+  Every series is kept by the hour, and the dashboard's charts offer 30 days, 90 days and a year,
+  as far as that goes. Only the last day is held in memory, by the minute. Anything longer is
+  asked of the store and comes back as a few hundred points a series, so a long chart doesn't
+  grow the recorder or the browser tab. On the Pi's eMMC this writes about
   17 MB a day, against about 9 MB for the files. A year of hours is about 70 MB on disk for a
   recorder with two systems.
 - **The radio registry** is stored as the changes of each 15 minutes, and written whole once a

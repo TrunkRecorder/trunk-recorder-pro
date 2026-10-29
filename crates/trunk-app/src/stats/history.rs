@@ -1,12 +1,13 @@
 //! The minute history: every series' [`Rollup`]s on a grid of minutes, kept
-//! in memory for a week (about 120 kB a series), so a chart's query of the
-//! last week never reads a file. The desktop app fills it from its store (or
-//! the stats files) at startup and from the live rollups; the browser build
-//! from this session's only.
+//! in memory for the recent span (12 bytes a minute a series), so a chart's
+//! query of it never reads a file. With no store (the browser build, or
+//! `files`) that's a week (about 120 kB a series). The desktop app fills it
+//! from its store (or the stats files) at startup and from the live rollups;
+//! the browser build from this session's only.
 //!
-//! Further back, the desktop app's store keeps each series' hours
-//! ([`HourRow`], made here from the minutes): a longer chart is the store's
-//! hours and this week's minutes added into the same [`Span`]'s buckets.
+//! With a store, memory keeps only a day and a bit, and the store keeps each
+//! series' hours ([`HourRow`], made here from the minutes): a longer chart is
+//! the store's hours and memory's minutes added into the same [`Span`]'s buckets.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -251,6 +252,11 @@ impl History {
             .collect();
         out.sort_by(|a, b| a.series.cmp(&b.series));
         out
+    }
+
+    /// How many minutes of each series it keeps.
+    pub fn cap_minutes(&self) -> usize {
+        self.cap
     }
 
     /// The first minute kept (Unix s), of any series.

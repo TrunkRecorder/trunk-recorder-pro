@@ -2,12 +2,13 @@
 //! have several — the engine's, the platform's, the plugins' — merged when
 //! read), read into the in-memory [`History`] in the background at startup.
 //!
-//! - **The store on** (`storage.backend` `sqlite` or `postgres`): the
-//!   minutes in `stats_minutes`, kept [`KEEP_DAYS`] (what memory holds), and
-//!   each series' hours in `stats_hours`, written as each hour ends and kept
-//!   `storage.statsDays`. A chart further back than memory adds the store's
-//!   hours to memory's minutes (`server::stats_query`). A `stats/` folder
-//!   found at startup is imported and renamed `stats.imported`.
+//! - **The store on** (`storage.backend` `sqlite` or `postgres`): memory
+//!   keeps [`STORE_MEMORY_MINUTES`]; the minutes in `stats_minutes`, kept
+//!   [`STORE_MINUTE_DAYS`] (to fill memory at start), and each series' hours
+//!   in `stats_hours`, written as each hour ends and kept `storage.statsDays`.
+//!   A chart further back than memory adds the store's hours to memory's
+//!   minutes (`server::stats_query`). A `stats/` folder found at startup is
+//!   imported and renamed `stats.imported`.
 //! - **`files`**: JSON lines in `<data>/stats/YYYY-MM-DD.jsonl` (UTC days),
 //!   appended, never rewritten (an SD card's friend); a finished day is
 //!   gzipped, and days past [`KEEP_DAYS`] deleted.
@@ -23,8 +24,20 @@ use trunk_app::stats::{History, Rollup};
 
 use crate::db::{Db, Write as DbWrite};
 
-/// Days of minutes kept (a week, and the day being written).
+/// Days of minutes kept as files (a week, and the day being written).
 pub const KEEP_DAYS: i64 = 8;
+/// Minutes the history keeps in memory with the store on: a day and a bit
+/// (the 24 h charts and "the usual"); anything further back is the store's hours.
+pub const STORE_MEMORY_MINUTES: usize = 26 * 60;
+/// Minutes of each series the in-memory history keeps: a week with no store
+/// to ask; with one, [`STORE_MEMORY_MINUTES`] (the store's hours further back).
+pub fn memory_minutes(db: &Db) -> usize {
+    if db.is_disabled() { trunk_app::stats::history::WEEK_MINUTES } else { STORE_MEMORY_MINUTES }
+}
+
+/// Days of minutes the store keeps: enough to fill memory and write the
+/// hours of a day the recorder was stopped part of.
+const STORE_MINUTE_DAYS: i64 = 2;
 /// An hour is written this long after it ends: a minute's rollups come from several places.
 const HOUR_GRACE_S: i64 = 120;
 /// The `meta` key of the last hour written to the store.
@@ -172,12 +185,19 @@ fn insert_all(history: &Mutex<History>, rollups: impl Iterator<Item = Rollup>) -
 /// hour was the last (`done`) to the writer.
 fn load_store(dir: &Path, db: &Db, history: &Mutex<History>, done: &AtomicI64) {
     let now = crate::clock::unix_s() as i64;
+    let mut imported_to = None;
     if dir.is_dir() {
         let mut first = None;
+        // (The files' days in full, for their hours: memory keeps only the last of them. Let go after.)
+        let mut all = History::new((KEEP_DAYS as usize + 1) * 1440);
         let n = read_files(dir, history, |r| {
             first.get_or_insert(r.t);
+            all.insert(r);
             db.send(DbWrite::StatsMinute { t: r.t, json: r.to_json().to_string() });
         });
+        if let Some(f) = all.first() {
+            imported_to = Some(write_hours(db, &Mutex::new(all), f.div_euclid(3600) * 3600 - 3600, now));
+        }
         let stored = db.flush().is_ok() && first.is_none_or(|t| db.stats_minutes(t).is_ok_and(|v| !v.is_empty()));
         if !stored {
             log::warn!("{}: not imported into the store (the log says why); read again next start", dir.display());
@@ -187,14 +207,15 @@ fn load_store(dir: &Path, db: &Db, history: &Mutex<History>, done: &AtomicI64) {
             log::info!("{}: {n} minutes of history imported into the store", dir.display());
         }
     } else {
-        match db.stats_minutes(now - KEEP_DAYS * 86400) {
+        let keep = history.lock().unwrap().cap_minutes() as i64 * 60;
+        match db.stats_minutes(now - keep) {
             Ok(lines) => {
                 insert_all(history, lines.iter().filter_map(|l| serde_json::from_str(l).ok().as_ref().and_then(Rollup::from_json)));
             }
             Err(e) => log::warn!("Call store: the dashboard's history not read ({e})"),
         }
     }
-    let last = db.meta(HOURS_DONE).ok().flatten().and_then(|v| v.parse::<i64>().ok());
+    let last = imported_to.or_else(|| db.meta(HOURS_DONE).ok().flatten().and_then(|v| v.parse::<i64>().ok()));
     let first = history.lock().unwrap().first().map(|t| t.div_euclid(3600) * 3600 - 3600);
     let from = last.or(first).unwrap_or(now.div_euclid(3600) * 3600 - 3600);
     done.store(write_hours(db, history, from, now), Ordering::SeqCst);
@@ -234,7 +255,7 @@ fn write_store(db: &Db, history: &Mutex<History>, rx: mpsc::Receiver<Rollup>, do
         if last != was {
             done.store(last, Ordering::SeqCst);
             let hours_before = (stats_days > 0).then(|| now - i64::from(stats_days) * 86400);
-            db.send(DbWrite::RetireStats { minutes_before: now - KEEP_DAYS * 86400, hours_before });
+            db.send(DbWrite::RetireStats { minutes_before: now - STORE_MINUTE_DAYS * 86400, hours_before });
         }
     }
 }
@@ -339,8 +360,10 @@ mod tests {
         fs::create_dir_all(&stats).unwrap();
         let now = crate::clock::unix_s() as i64;
         let t0 = now.div_euclid(3600) * 3600 - 4 * 3600;
-        let lines: String = [t0, t0 + 3900, t0 + 7200].iter().map(|t| format!("{}\n", Rollup { t: *t, values: BTreeMap::from([("a".to_string(), [2.0, 1.0, 3.0])]) }.to_json())).collect();
-        fs::write(stats.join(format!("{}.jsonl", day_name(t0.div_euclid(86400)))), &lines).unwrap();
+        // (Three days back: older than memory keeps with the store on, but its hour is written.)
+        let old = t0 - 3 * 86_400;
+        let lines: String = [old, t0, t0 + 3900, t0 + 7200].iter().map(|t| format!("{}\n", Rollup { t: *t, values: BTreeMap::from([("a".to_string(), [2.0, 1.0, 3.0])]) }.to_json())).collect();
+        fs::write(stats.join(format!("{}.jsonl", day_name(old.div_euclid(86400)))), &lines).unwrap();
         let (db, _) = Db::for_test_with_batch("stats-store", std::time::Duration::from_millis(10));
         let wait = |h: &Arc<Mutex<History>>| {
             for _ in 0..200 {
@@ -351,13 +374,14 @@ mod tests {
             }
             panic!("still loading");
         };
-        let h = Arc::new(Mutex::new(History::default()));
+        let h = Arc::new(Mutex::new(History::new(memory_minutes(&db))));
         let store = Store::start(stats.clone(), h.clone(), db.clone(), 30);
         wait(&h);
         db.flush().unwrap();
         assert!(!stats.exists() && dir.join("stats.imported").exists(), "imported, renamed");
-        assert_eq!(db.stats_minutes(0).unwrap().len(), 3);
-        assert_eq!(db.count("select count(*) from stats_hours"), 3, "the three hours with minutes");
+        assert_eq!(db.stats_minutes(0).unwrap().len(), 4);
+        assert_eq!(db.count("select count(*) from stats_hours"), 4, "the four hours with minutes, the one older than memory too");
+        assert!(h.lock().unwrap().query(&["a".into()], old, old, 10).is_empty(), "memory keeps a day and a bit");
         let ended = (now - HOUR_GRACE_S).div_euclid(3600) * 3600 - 3600;
         assert_eq!(db.meta(HOURS_DONE).unwrap(), Some(ended.to_string()), "the last hour that has ended");
         // Live: a minute well into the next hour writes the one before.
@@ -367,15 +391,15 @@ mod tests {
         drop(store);
         std::thread::sleep(std::time::Duration::from_millis(100));
         db.flush().unwrap();
-        assert_eq!(db.count("select count(*) from stats_hours"), 4);
+        assert_eq!(db.count("select count(*) from stats_hours"), 5);
         assert_eq!(db.meta(HOURS_DONE).unwrap(), Some(next.to_string()));
         // The next start: from the store, nothing imported or written twice.
-        let again = Arc::new(Mutex::new(History::default()));
+        let again = Arc::new(Mutex::new(History::new(memory_minutes(&db))));
         let _store = Store::start(stats.clone(), again.clone(), db.clone(), 30);
         wait(&again);
         db.flush().unwrap();
         assert_eq!(again.lock().unwrap().query(&["a".into()], t0, t0, 10)["a"]["v"], serde_json::json!([2.0]));
-        assert_eq!(db.count("select count(*) from stats_minutes"), 5);
-        assert_eq!(db.count("select count(*) from stats_hours"), 4);
+        assert_eq!(db.count("select count(*) from stats_minutes"), 5, "the old minute let go (two days kept), two live ones");
+        assert_eq!(db.count("select count(*) from stats_hours"), 5);
     }
 }

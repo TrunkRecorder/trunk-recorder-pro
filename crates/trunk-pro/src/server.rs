@@ -627,21 +627,24 @@ impl Drop for Subs {
 
 
 /// `statsQuery`: the minute history.
-/// `statsQuery`: within the week kept in memory, from memory; further back
-/// (with the store on), the store's hours before six days ago and memory's
-/// minutes since, added into one grid of whole hours. Blocks: run it under
-/// `spawn_blocking`.
+/// `statsQuery`: within what memory keeps (a week with no store; with one,
+/// a day and a bit), from memory; further back, the store's hours before the
+/// last day and memory's minutes since, added into one grid of whole hours:
+/// each answer a few hundred points a series, whatever the span. Blocks: run
+/// it under `spawn_blocking`.
 pub(crate) fn stats_query(ctx: &Ctx, q: &StatsQuery) -> ToClient {
     use trunk_app::stats::{Bucket, Buckets, Span};
     let now = crate::clock::unix_s() as i64;
     let (from, to) = q.span(now);
     let h = ctx.series.lock().unwrap();
-    if ctx.db.is_disabled() || from >= now - (trunk_app::stats::history::WEEK_MINUTES as i64) * 60 {
+    let kept = h.cap_minutes() as i64 * 60;
+    if ctx.db.is_disabled() || from >= now - kept + 60 {
         return q.answer(&h, now, h.loading);
     }
     let (patterns, loading) = (q.patterns(), h.loading);
     let span = Span::of(from, to, q.points, 60);
-    let split = (now - 6 * 86_400).div_euclid(3600) * 3600;
+    // (On the hour, at least two hours inside what memory keeps.)
+    let split = (now - kept + 2 * 3600).div_euclid(3600) * 3600 + 3600;
     let mut b = Buckets::new();
     h.fill(&patterns, &span, split.div_euclid(60), &mut b);
     drop(h);
@@ -1151,8 +1154,9 @@ mod tests {
         (status, if location.is_empty() { mime } else { location }, body)
     }
 
-    /// A chart further back than the week in memory: the store's hours and
-    /// memory's minutes in one grid of whole hours; within the week, memory alone.
+    /// A chart further back than memory keeps (a day and a bit, with the
+    /// store): the store's hours and memory's minutes in one grid of whole
+    /// hours; within it, memory alone.
     #[test]
     fn a_long_chart_is_the_store_s_hours_and_memory_s_minutes() {
         use trunk_app::stats::{HourRow, Rollup};
@@ -1176,8 +1180,13 @@ mod tests {
         let n: Vec<u64> = a["n"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
         assert_eq!((n.iter().sum::<u64>(), n.iter().filter(|v| **v > 0).count()), (61, 2), "the stored hour and the minute in memory");
         assert_eq!(a["hi"].as_array().unwrap().iter().filter_map(|v| v.as_f64()).fold(0.0, f64::max), 20.0);
+        let day = ask("24h");
+        assert_eq!(day["series"]["a"]["n"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).sum::<u64>(), 1, "a day: memory's");
+        assert_eq!(day["series"]["a"]["stepS"], 17 * 60, "by the minute: memory's grid (a day in 90 points)");
+        assert_eq!(ctx.series.lock().unwrap().cap_minutes(), crate::statstore::STORE_MEMORY_MINUTES, "a day and a bit in memory");
         let week = ask("7d");
-        assert_eq!(week["series"]["a"]["n"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).sum::<u64>(), 1, "the week: memory's");
+        assert_eq!(week["series"]["a"]["stepS"], 2 * 3600, "a week: whole hours, as the store has them (two each, in 90 points)");
+        assert_eq!(week["series"]["a"]["n"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).sum::<u64>(), 1, "memory's minute in it");
     }
 
     /// `hello` lists `calls` and `history` while the call store is open, and not when it

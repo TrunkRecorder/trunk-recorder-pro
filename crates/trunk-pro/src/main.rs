@@ -879,7 +879,7 @@ fn serve(a: &Args) {
     let shared = trunk_app::stats::Shared::new();
     let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
     kept::load_registry(&db, &shared);
-    let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
+    let series = Arc::new(Mutex::new(trunk_app::stats::History::new(statstore::memory_minutes(&db))));
     let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone(), db.clone(), cfg.storage.stats_days);
     let talkgroups = kept::load_talkgroups(&db, &cfg);
     runtime::load_names(&shared, &cfg, &talkgroups, &db);

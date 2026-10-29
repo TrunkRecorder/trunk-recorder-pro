@@ -452,7 +452,7 @@ ControlChannel::report, Engine::report ─────────────�
 stats::SampleMeter (headroom, clipping, on the sample path, 1 in 16) ────┤
 stats Tally (calls, airtime, reasons, voice errors, from events) ────────┴─► stats::Aggregator
                                                                                ├─► `stats` (1/s)
-                                                                               └─► Rollup (1/min) ─► History (a week in memory) + stats/*.jsonl
+                                                                               └─► Rollup (1/min) ─► History (a day in memory; a week with no store) + the store or stats/*.jsonl
 session events ─► Stats::observe ─► stats::Registry (talkgroups, radios, affiliations, pairs, frequencies) ─► radioQuery
                                └─► stats::Monitor ─► Watcher (the hook for alert rules; none registered) + the event feed
 VoiceDecoder::quality, ControlChannel::quality (ChannelQuality) ─► Engine::channels() ─► rfDetail / decodeDetail
@@ -564,7 +564,7 @@ main ─► serve()
     `.imported`.
   - `stats/YYYY-MM-DD.jsonl` gets each minute's rollup appended (see
     [Measurements](#measurements)); with the store on, `stats_minutes`
-    (8 days) and `stats_hours` (each series' hours, `storage.statsDays`)
+    (2 days) and `stats_hours` (each series' hours, `storage.statsDays`)
     instead.
   - `trunk-pro.sqlite` (`trunk-pro/src/db/`) is the call store: one row per
     finished call, written in batches by the `db-writer` thread. The

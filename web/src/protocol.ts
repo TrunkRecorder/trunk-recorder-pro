@@ -504,7 +504,7 @@ export interface StorageSettings {
   retentionDays: number;
   /** Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, twice, so longer is gentler on flash. */
   commitSeconds: number;
-  /** Days of the dashboard's history kept, as hours (the last week by the minute too; default 365); 0 keeps it all. "files" keeps a week. */
+  /** Days of the dashboard's history kept, as hours (default 365); 0 keeps it all. "files" keeps a week. */
   statsDays?: number;
 }
 

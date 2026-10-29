@@ -1936,8 +1936,8 @@ pub struct StorageSettings {
     /// on flash: on the Pi's eMMC a busy system's store writes 0.2 GB a day at
     /// 300, 0.6 at 60 (trunk-pro's `db::tests::write_budget`).
     pub commit_seconds: u32,
-    /// Days of the dashboard's history kept, as hours (the last week is kept
-    /// by the minute too); 0 keeps it all. `files` keeps a week.
+    /// Days of the dashboard's history kept, as hours; 0 keeps it all.
+    /// `files` keeps a week.
     pub stats_days: u32,
 }
 
