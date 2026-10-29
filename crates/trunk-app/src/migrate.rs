@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use trunk_core::trunk::SiteConfig;
 
-use crate::config::{Config, System, TalkgroupFiles};
+use crate::config::{Config, System};
 
 /// A site's keys in a system's config (before sites, a system had them itself).
 const SITE_KEYS: &[&str] = &[
@@ -39,7 +39,7 @@ pub fn config(v: &mut serde_json::Value) -> Vec<String> {
 }
 
 /// Talkgroup files were kept in the config (`talkgroupsCsv`, before
-/// v0.1.16); they are files of their own now ([`TalkgroupFiles`]). Their
+/// v0.1.16); they are files of their own now ([`TalkgroupLists`]). Their
 /// copies leave the config here; [`talkgroups_of`] gives them to the
 /// platform to keep (the desktop app: [`move_talkgroups`]). Returns which
 /// moved, to tell.
@@ -60,7 +60,7 @@ fn talkgroups(v: &mut serde_json::Value) -> Vec<String> {
 /// The talkgroup files an older config (`v`, its JSON) holds, by its
 /// systems' short names once it is upgraded (systems it joins into one keep
 /// the first's file, as [`sites`] says).
-pub fn talkgroups_of(v: &serde_json::Value) -> TalkgroupFiles {
+pub fn talkgroups_of(v: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
     let mut v = v.clone();
     sites(&mut v);
     let systems = v.get("systems").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();

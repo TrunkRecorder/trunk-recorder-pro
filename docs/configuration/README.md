@@ -133,7 +133,7 @@ What the store writes on a Pi's eMMC in a day, for a busy system (a call a secon
 | | GB a day |
 |---|---|
 | Standard | 1.6 |
-| Standard, `radioIndex: false` | about 0.6 |
+| Standard, `radioIndex: false` | 0.8 |
 | `lowWrite: true` | 0.4 |
 
 A system like DC Fire and EMS (3,700 calls a day, 23 talkgroups, 500 radios) writes a small

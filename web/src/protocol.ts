@@ -1757,6 +1757,33 @@ export interface RadioResultBody {
  */
 export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys" | "calls" | "history";
 
+/**
+ * A system's talkgroup: one row of its talkgroup file (Trunk Recorder's
+ * columns), as the recorder keeps it. CSV is only for a file loaded or
+ * downloaded.
+ */
+export interface Talkgroup {
+  number: number;
+  /** "D", "A", "E", "T", "DE", "TE"… (Trunk Recorder's Mode). */
+  mode: string;
+  alphaTag: string;
+  description: string;
+  tag: string;
+  category: string;
+  /** 1 when the file gives none; −1: ignore it (Trunk Recorder's way). */
+  priority: number;
+  /** Multi-site: the site whose copy of a call to keep, by NAC (or RFSS and site, `RRRRssss`); 0: none. */
+  preferredNac: number;
+  /** Multi-site: the same by the site's short name; "": none. */
+  preferredSite: string;
+  /** Never record it (the Ignore column, or priority −1). */
+  ignore: boolean;
+  /** The `#` comment line(s) directly above its row in the file it came from. */
+  comment?: string;
+  /** Columns this app doesn't know, [name, value]: kept for the file it's downloaded as. */
+  extra?: [string, string][];
+}
+
 /** What an edit of one talkgroup sets; what's left out stays as it is. */
 export interface TalkgroupEdit {
   alphaTag?: string;
@@ -1774,7 +1801,7 @@ export type FromRecorder =
    * units, heard, history, radios, survey, monitorEvent for each recent event,
    * host; with control access also devices, keys, plugins and interfaces): the
    * interface is caught up. Wait for it before treating what's missing as
-   * missing (a system with no talkgroups message has no talkgroup file).
+   * missing (a system with no talkgroups message has no talkgroups).
    */
   | {
       type: "hello";
@@ -1800,9 +1827,9 @@ export type FromRecorder =
   | { type: "config"; config: Config; version: number }
   /** Answers setConfig: the config's version now; `error` when the edit wasn't taken (it was of an older version — the config changed elsewhere meanwhile — or bad) or wasn't saved. */
   | { type: "configSaved"; version: number; error?: string }
-  /** A system's talkgroup file (Trunk Recorder's CSV; "" for none): one for each system on connecting, and again whenever one changes. Kept beside the config, not in it. */
-  | { type: "talkgroups"; system: string; csv: string }
-  /** One talkgroup of system `system`'s file edited (setTalkgroup): make the same edit to the file kept (talkgroups.ts withCells). */
+  /** A system's talkgroups: one message for each system with some on connecting, and again whenever they change (setTalkgroups). Kept beside the config, not in it. */
+  | { type: "talkgroups"; system: string; talkgroups: Talkgroup[] }
+  /** One talkgroup of system `system`'s edited (setTalkgroup): make the same edit to the talkgroups kept (talkgroups.ts withEdit). */
   | { type: "talkgroupEdited"; system: string; talkgroup: number; edit: TalkgroupEdit }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
   | ({ type: "spectrum" } & Spectrum)
@@ -1858,9 +1885,9 @@ export type FromRecorder =
 export type ToRecorder =
   /** The whole config, edited from `version` (the last `config` message's): refused when the config has changed since. */
   | { type: "setConfig"; config: Config; version: number }
-  /** System `system`'s talkgroup file (Trunk Recorder's CSV; "" for none). Everyone gets it back as a `talkgroups` message. */
-  | { type: "setTalkgroups"; system: string; csv: string }
-  /** One talkgroup of system `system`'s file: only the cells `edit` sets change (a row added when the file lacks it). Everyone gets it back as a `talkgroupEdited` message. */
+  /** System `system`'s talkgroups, all of them (`[]`: none; a number twice: the later row, in the first's place). Everyone gets them back as a `talkgroups` message. */
+  | { type: "setTalkgroups"; system: string; talkgroups: Talkgroup[] }
+  /** One talkgroup of system `system`'s: only the cells `edit` sets change (a row added when it has none). Everyone gets it back as a `talkgroupEdited` message. */
   | { type: "setTalkgroup"; system: string; talkgroup: number; edit: TalkgroupEdit }
   | { type: "start" }
   | { type: "stop" }

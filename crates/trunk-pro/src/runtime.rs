@@ -4,6 +4,7 @@
 //! publishes what happens to the browser interface through the [`Hub`].
 
 use crate::kept;
+use trunk_core::trunk::TalkgroupRow;
 use trunk_app::saving::Kind;
 use std::collections::VecDeque;
 use std::fs;
@@ -91,7 +92,7 @@ pub struct Ctx {
     /// The config's version: one more each time it changes ([`Ctx::config_changed`]).
     pub config_version: AtomicU64,
     /// Each system's talkgroup file, as kept ([`kept::load_talkgroups`]).
-    pub talkgroups: Mutex<trunk_app::config::TalkgroupFiles>,
+    pub talkgroups: Mutex<trunk_app::config::TalkgroupLists>,
     pub hub: Hub,
     /// What the radios are doing ([`Lifecycle`]): changed only through its
     /// methods on `Ctx`, each holding the lock throughout, so two never
@@ -143,8 +144,8 @@ pub enum EngineCmd {
     Source(SourceMsg),
     /// What the connected browsers watch changed.
     Topics(trunk_app::stats::Topics),
-    /// A system's talkgroup file changed (loaded, pasted, edited in Setup).
-    Talkgroups { short_name: String, csv: String },
+    /// A system's talkgroups changed (loaded, pasted, edited in Setup).
+    Talkgroups { short_name: String, rows: Vec<TalkgroupRow> },
     /// One talkgroup of a system's file changed (an Ignore flag set from the dashboard).
     Talkgroup { short_name: String, number: u32, row: Option<trunk_core::trunk::Talkgroup> },
     /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
@@ -536,31 +537,41 @@ fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
     let _ = (ctx, cfg);
 }
 
-/// System `system`'s talkgroup file is now `csv` ("": none): kept, told to
-/// every browser, and taken by the recording at once; written in the
-/// background ([`kept::write_talkgroups`]).
-pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String> {
+/// System `system`'s talkgroups are now `rows` (none: it has none): kept,
+/// told to every browser, and taken by the recording at once; written in
+/// the background ([`kept::write_talkgroups`]). A talkgroup in two rows:
+/// the later one, where the first was.
+pub fn set_talkgroups(ctx: &Ctx, system: &str, rows: Vec<TalkgroupRow>) -> Result<(), String> {
     if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
         return Err(format!("bad short name {system:?}"));
     }
-    // (As the store keeps it: its rows, each with the comment above it.)
-    let rows = trunk_core::trunk::parse_rows(&csv);
-    let csv = if rows.is_empty() { String::new() } else { trunk_core::trunk::rows_csv(&rows) };
+    let mut at = std::collections::HashMap::new();
+    let mut once: Vec<TalkgroupRow> = Vec::with_capacity(rows.len());
+    for r in rows {
+        match at.get(&r.tg.number) {
+            Some(&i) => once[i] = r,
+            None => {
+                at.insert(r.tg.number, once.len());
+                once.push(r);
+            }
+        }
+    }
+    let rows = once;
     // (Handed to the writer with the lock held: two browsers' edits are written in the order they're kept.)
     {
-        let mut files = ctx.talkgroups.lock().unwrap();
-        if csv.is_empty() {
-            files.remove(system);
+        let mut lists = ctx.talkgroups.lock().unwrap();
+        if rows.is_empty() {
+            lists.remove(system);
         } else {
-            files.insert(system.to_string(), csv.clone());
+            lists.insert(system.to_string(), rows.clone());
         }
-        kept::write_talkgroups(&ctx.db, system, rows);
+        kept::write_talkgroups(&ctx.db, system, rows.clone());
     }
-    ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
+    ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), rows: rows.clone() });
     // (The config first, then the names: as config_changed takes them.)
-    let (cfg, files) = (ctx.config.lock().unwrap().clone(), ctx.talkgroups.lock().unwrap().clone());
-    ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
-    publish(&ctx.hub, ToClient::Talkgroups { system: system.to_string(), csv });
+    let (cfg, lists) = (ctx.config.lock().unwrap().clone(), ctx.talkgroups.lock().unwrap().clone());
+    ctx.shared.names.lock().unwrap().set_config(&cfg, &lists);
+    publish(&ctx.hub, ToClient::Talkgroups { system: system.to_string(), talkgroups: rows });
     Ok(())
 }
 
@@ -573,14 +584,16 @@ pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::prot
     }
     let row = {
         // (Edited and handed to the writer with the lock held: edits are written in the order they're kept.)
-        let mut files = ctx.talkgroups.lock().unwrap();
-        let mut rows = trunk_core::trunk::parse_rows(files.get(system).map_or("", String::as_str));
-        let edited = trunk_core::trunk::edit_rows(&mut rows, number, &edit.cells());
+        let mut lists = ctx.talkgroups.lock().unwrap();
+        let rows = lists.entry(system.to_string()).or_default();
+        let edited = trunk_core::trunk::edit_rows(rows, number, &edit.cells());
         let order = rows.iter().position(|r| r.tg.number == number).unwrap_or(rows.len());
         if let Some(r) = &edited {
             kept::write_talkgroup(&ctx.db, system, r.clone(), order);
         }
-        files.insert(system.to_string(), trunk_core::trunk::rows_csv(&rows));
+        if rows.is_empty() {
+            lists.remove(system);
+        }
         edited.map(|r| r.tg)
     };
     ctx.shared.names.lock().unwrap().set_talkgroup(system, number, row.clone());
@@ -606,7 +619,7 @@ fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
 /// The names the radio registry answers with, as saved: each system's
 /// talkgroups (`cfg` with its talkgroup files) and talker aliases. A
 /// recording keeps them current from then on.
-pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &trunk_app::config::TalkgroupFiles, db: &crate::db::Db) {
+pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &trunk_app::config::TalkgroupLists, db: &crate::db::Db) {
     let mut book = shared.names.lock().unwrap();
     book.set_config(cfg, talkgroups);
     for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
@@ -900,8 +913,8 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 }
                 EngineCmd::Source(_) => {}
                 EngineCmd::Topics(t) => session.set_topics(t),
-                EngineCmd::Talkgroups { short_name, csv } => {
-                    if session.set_talkgroups(&short_name, &csv) {
+                EngineCmd::Talkgroups { short_name, rows } => {
+                    if session.set_talkgroups(&short_name, &rows) {
                         log::info!("[{short_name}] Talkgroups updated");
                     }
                 }

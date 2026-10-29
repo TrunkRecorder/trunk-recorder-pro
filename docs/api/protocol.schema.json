@@ -2071,14 +2071,17 @@
             "system": {
               "type": "string"
             },
-            "csv": {
-              "type": "string"
+            "talkgroups": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Talkgroup"
+              }
             }
           },
           "required": [
             "type",
             "system",
-            "csv"
+            "talkgroups"
           ],
           "additionalProperties": false
         },
@@ -7791,6 +7794,76 @@
       "additionalProperties": false,
       "description": "One system being recorded: trunked (with a site running) or conventional. `index` is what calls and audio carry as `system`."
     },
+    "Talkgroup": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "number"
+        },
+        "mode": {
+          "type": "string",
+          "description": "\"D\", \"A\", \"E\", \"T\", \"DE\", \"TE\"… (Trunk Recorder's Mode)."
+        },
+        "alphaTag": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "number",
+          "description": "1 when the file gives none; −1: ignore it (Trunk Recorder's way)."
+        },
+        "preferredNac": {
+          "type": "number",
+          "description": "Multi-site: the site whose copy of a call to keep, by NAC (or RFSS and site, `RRRRssss`); 0: none."
+        },
+        "preferredSite": {
+          "type": "string",
+          "description": "Multi-site: the same by the site's short name; \"\": none."
+        },
+        "ignore": {
+          "type": "boolean",
+          "description": "Never record it (the Ignore column, or priority −1)."
+        },
+        "comment": {
+          "type": "string",
+          "description": "The `#` comment line(s) directly above its row in the file it came from."
+        },
+        "extra": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Columns this app doesn't know, [name, value]: kept for the file it's downloaded as."
+        }
+      },
+      "required": [
+        "number",
+        "mode",
+        "alphaTag",
+        "description",
+        "tag",
+        "category",
+        "priority",
+        "preferredNac",
+        "preferredSite",
+        "ignore"
+      ],
+      "additionalProperties": false,
+      "description": "A system's talkgroup: one row of its talkgroup file (Trunk Recorder's columns), as the recorder keeps it. CSV is only for a file loaded or downloaded."
+    },
     "TalkgroupEdit": {
       "type": "object",
       "properties": {
@@ -8078,14 +8151,17 @@
             "system": {
               "type": "string"
             },
-            "csv": {
-              "type": "string"
+            "talkgroups": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Talkgroup"
+              }
             }
           },
           "required": [
             "type",
             "system",
-            "csv"
+            "talkgroups"
           ],
           "additionalProperties": false
         },

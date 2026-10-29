@@ -74,11 +74,11 @@ pub enum ToClient {
     /// wasn't taken (it was of an older version, or the config was bad) or
     /// wasn't saved.
     ConfigSaved { version: u64, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
-    /// A system's talkgroup file (Trunk Recorder's CSV; "" for none): one for
-    /// each on connecting, and again whenever one changes.
-    Talkgroups { system: String, csv: String },
-    /// One talkgroup of system `system`'s file edited ([`Command::SetTalkgroup`]):
-    /// each interface makes the same edit to its copy (`withCells`).
+    /// A system's talkgroups, in their order (none: it has none): one for
+    /// each on connecting, and again whenever a system's are set.
+    Talkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
+    /// One talkgroup of system `system` edited ([`Command::SetTalkgroup`]):
+    /// each interface makes the same edit to its copy (`talkgroupsEdit`).
     TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit },
     Status { status: Value, sources: Vec<Value>, load: f64, calls: Vec<Value> },
     Spectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
@@ -273,11 +273,13 @@ pub enum Command {
     /// The whole config (read as [`Config::from_value`] reads a file), edited
     /// from version `version`: refused when the config has changed since.
     SetConfig { config: Value, version: u64 },
-    /// System `system`'s talkgroup file (Trunk Recorder's CSV; "" for none).
-    SetTalkgroups { system: String, csv: String },
-    /// One talkgroup of system `system`'s file: only its cells that `edit`
-    /// sets change (a row added when the file lacks it). Answered to every
-    /// interface with `talkgroupEdited`.
+    /// System `system`'s talkgroups, in their order (none: it has none). A
+    /// talkgroup file is read into them, and written from them, by the
+    /// recorder's own code (the page's `talkgroupsFromCsv` / `talkgroupsToCsv`).
+    SetTalkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
+    /// One talkgroup of system `system`: only the cells `edit` sets change
+    /// (a row added when there's none). Answered to every interface with
+    /// `talkgroupEdited`.
     SetTalkgroup { system: String, talkgroup: u32, edit: TalkgroupEdit },
     Start,
     Stop,

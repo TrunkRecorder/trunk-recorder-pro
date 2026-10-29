@@ -17,11 +17,10 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { fccPrimary, newSiteName, normalizeSite, normalizeSystem, sameSystem, trpBase, type SystemInput } from "./config.ts";
 import { findOnAir, findPlaces, setTalkgroups, snapshot, updateConfig, useSelect } from "./controller.ts";
 import { bundleSiteName, lookForBundle } from "./lookFor.ts";
-import { splitCsvLine } from "./talkgroups.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { Modal } from "./Identify.tsx";
-import type { Config, Site, System } from "./protocol.ts";
-import { mergeTalkgroupCsv, parseTalkgroupCsv } from "./talkgroups.ts";
+import type { Config, Site, System, Talkgroup } from "./protocol.ts";
+import { mergeTalkgroups, readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
 
 export interface Bundle {
   format: "trp-system";
@@ -141,13 +140,17 @@ export function freeShortName(c: Config, wanted: string): string {
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
-/** Add the bundle's system (these sites of it) as `shortName`; its talkgroups become its talkgroup file. */
-export function addSystem(b: Bundle, shortName: string, sites: number[], talkgroups: Record<string, string>): void {
+/** The bundle's talkgroups (its talkgroup file, read). */
+const bundleTalkgroups = (b: Bundle): Talkgroup[] => (b.talkgroupsCsv.trim() ? readTalkgroupFile(b.talkgroupsCsv).talkgroups : []);
+
+/** Add the bundle's system (these sites of it) as `shortName`, with its talkgroups. */
+export function addSystem(b: Bundle, shortName: string, sites: number[], talkgroups: Record<string, Talkgroup[]>): void {
   updateConfig((x) => {
     const sys = normalizeSystem({ ...b.system, shortName, enabled: true, sites: b.system.sites.filter((_, k) => sites.includes(k)) });
     x.systems.push(sys);
   });
-  if (b.talkgroupsCsv.trim()) setTalkgroups(shortName, mergeTalkgroupCsv(talkgroups[shortName] ?? "", b.talkgroupsCsv).csv);
+  const theirs = bundleTalkgroups(b);
+  if (theirs.length) setTalkgroups(shortName, mergeTalkgroups(talkgroups[shortName] ?? [], theirs).talkgroups);
 }
 
 /**
@@ -156,7 +159,7 @@ export function addSystem(b: Bundle, shortName: string, sites: number[], talkgro
  * link and any channels it lacks; others are added), licenses and talkgroups
  * it lacks. Nothing of the user's is replaced. Returns the talkgroups added.
  */
-export function updateSystem(b: Bundle, i: number, sites: number[], talkgroups: Record<string, string>): number {
+export function updateSystem(b: Bundle, i: number, sites: number[], talkgroups: Record<string, Talkgroup[]>): number {
   let shortName = "";
   updateConfig((x) => {
     const s = x.systems[i];
@@ -182,9 +185,8 @@ export function updateSystem(b: Bundle, i: number, sites: number[], talkgroups: 
       s.fcc[k] ??= v;
     }
   });
-  if (!b.talkgroupsCsv.trim()) return 0;
-  const m = mergeTalkgroupCsv(talkgroups[shortName] ?? "", b.talkgroupsCsv);
-  if (m.added) setTalkgroups(shortName, m.csv);
+  const m = mergeTalkgroups(talkgroups[shortName] ?? [], bundleTalkgroups(b));
+  if (m.added) setTalkgroups(shortName, m.talkgroups);
   return m.added;
 }
 
@@ -272,7 +274,7 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
   const [done, setDone] = useState<string | null>(null);
   const find = toFind(b);
   if (!c) return null;
-  const tgCount = parseTalkgroupCsv(b.talkgroupsCsv).size;
+  const tgCount = bundleTalkgroups(b).length;
   const licenses = Object.keys(b.system.fcc ?? {}).length;
   const taken = [...c.systems, ...c.conventional].some((x) => x.shortName === name);
   const existing: System | undefined = same >= 0 ? c.systems[same] : undefined;

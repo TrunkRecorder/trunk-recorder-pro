@@ -10,7 +10,7 @@ use trunk_core::dsp::inband::pattern::PatternKind;
 use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
-    check_channels, Access, parse_csv, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
+    check_channels, Access, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
@@ -1969,7 +1969,7 @@ pub struct StorageSettings {
     /// Index each call by its radios, so a radio's calls page back as far
     /// as the store keeps them; off, a radio's list is its recent calls.
     /// The index is most of what the call index writes on a busy system
-    /// (on the Pi's eMMC, a call a second: 2.3 GB a day with it, 0.9
+    /// (on the Pi's eMMC, a call a second: 1.6 GB a day with it, 0.8
     /// without; `db::tests::day_write_budget`).
     pub radio_index: bool,
 }
@@ -2595,10 +2595,9 @@ impl Config {
         self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|c| c.short_name.as_str())).nth(system as usize)
     }
 
-    /// The engine's config, with each system's talkgroup file (`talkgroups`:
-    /// its CSV by short name; kept beside the config, not in it).
-    pub fn engine_config(&self, epoch_ms: f64, talkgroups: &TalkgroupFiles) -> EngineConfig {
-        let tg = |short: &str| talkgroups.get(short).map_or_else(Default::default, |csv| parse_csv(csv));
+    /// The engine's config, with each system's talkgroups (kept apart from the config).
+    pub fn engine_config(&self, epoch_ms: f64, talkgroups: &TalkgroupLists) -> EngineConfig {
+        let tg = |short: &str| talkgroups.get(short).map_or_else(Default::default, |rows| talkgroups_of(rows));
         let centers = self.resolved_centers();
         // (Keys are read by the app: [`Config::load_keys`].)
         let mut systems: Vec<SystemConfig> = self
@@ -2650,11 +2649,17 @@ impl Config {
 }
 
 
-/// Each system's talkgroup file (Trunk Recorder's talkgroup CSV), by its
-/// short name. Kept apart from the config: the desktop app beside it
-/// (`<short name>.talkgroups.csv`), the browser in its storage; the
-/// interface edits one with `setTalkgroups`.
-pub type TalkgroupFiles = BTreeMap<String, String>;
+/// Each system's talkgroups, by its short name, in their order. Kept apart
+/// from the config: the desktop app's store, the browser's storage; the
+/// interface sets a system's with `setTalkgroups` and edits one with
+/// `setTalkgroup`. A talkgroup file (Trunk Recorder's CSV) is how they come
+/// in and go out (trunk_core::trunk::read_rows / rows_csv).
+pub type TalkgroupLists = BTreeMap<String, Vec<trunk_core::trunk::TalkgroupRow>>;
+
+/// A system's talkgroups as the engine looks them up, by number.
+pub fn talkgroups_of(rows: &[trunk_core::trunk::TalkgroupRow]) -> trunk_core::trunk::Talkgroups {
+    rows.iter().map(|r| (r.tg.number, r.tg.clone())).collect()
+}
 
 /// Where the desktop app keeps system `short_name`'s talkgroup file: beside
 /// the config (in `dir`).
@@ -3009,7 +3014,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let files: TalkgroupFiles = [("county".to_string(), "1,County TG\n".to_string()), ("fire".to_string(), "7,Fire Ops\n".to_string())].into();
+        let files: TalkgroupLists = [("county".to_string(), trunk_core::trunk::parse_rows("1,County TG\n")), ("fire".to_string(), trunk_core::trunk::parse_rows("7,Fire Ops\n"))].into();
         let e = c.engine_config(0.0, &files);
         let fire = e.systems.iter().find(|s| s.short_name == "fire").unwrap();
         assert!(fire.talkgroups.contains_key(&7) && !fire.talkgroups.contains_key(&1), "its own, not county's");
@@ -3040,7 +3045,7 @@ mod tests {
         assert_eq!(town[&46012].tag, "Law Dispatch");
         // Ahead of the talkgroup file, whose Ignore flag stays.
         let mut book = crate::stats::NameBook::default();
-        let files: TalkgroupFiles = [("town".to_string(), "46012,File name\n9,Nine,,,,,,,true\n".to_string())].into();
+        let files: TalkgroupLists = [("town".to_string(), trunk_core::trunk::parse_rows("46012,File name\n9,Nine,,,,,,,true\n"))].into();
         book.set_config(&c, &files);
         assert_eq!(book.tg("town", 46012).map(|t| t.alpha_tag), Some("Townville PD".into()));
         assert_eq!(book.tg("town", 154430).map(|t| t.alpha_tag), Some("Fire Dispatch".into()));

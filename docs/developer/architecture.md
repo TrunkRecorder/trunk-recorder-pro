@@ -1690,7 +1690,7 @@ recorder can do beyond recording (`Capability`: `service`, `drivers`, `plugins`,
 7. Client → `statsQuery {id, series, range}`; recorder → `statsResult {id, …}` to the asker.
 8. Client → `setConfig {config, version}` (always the whole config, edited from that version);
    recorder → `configSaved {version, error?}` to the sender, and `config` to everyone unless the
-   version was stale. Client → `setTalkgroups {system, csv}`; recorder → `talkgroups` to everyone.
+   version was stale. Client → `setTalkgroups {system, talkgroups}`; recorder → `talkgroups` to everyone.
 9. Client → `start` / `stop`; recorder → `state` to everyone.
 
 ### 14.2 Who gets what

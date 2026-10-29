@@ -81,7 +81,6 @@ import { findOnAir, siteFrequencies, type FccTarget } from "./controller.ts";
 import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
-import { readTalkgroupCsv } from "./talkgroups.ts";
 import { DraftInput, Field, FileInput, NumberInput, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
@@ -415,21 +414,20 @@ const NAME_FIELDS: [NameField, string, string][] = [
   ["group", "Category", "Fire"],
 ];
 
-/** The Tag and Category values a conventional system uses already (its rows', its talkgroup file's), most used first: offered as each row's are typed. */
+/** The Tag and Category values a conventional system uses already (its rows', its talkgroups'), most used first: offered as each row's are typed. */
 function useNameSuggestions(conv: Conventional): { tag: string[]; group: string[] } {
-  const csv = useApp().talkgroups[conv.shortName] ?? "";
+  const file = useApp().talkgroups[conv.shortName];
   return useMemo(() => {
-    const file = [...readTalkgroupCsv(csv).talkgroups.values()];
     const ranked = (values: string[]) => {
       const n = new Map<string, number>();
       for (const v of values.map((v) => v.trim()).filter(Boolean)) n.set(v, (n.get(v) ?? 0) + 1);
       return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([v]) => v);
     };
     return {
-      tag: ranked([...conv.channels.map((c) => c.tag ?? ""), ...file.map((t) => t.tag)]),
-      group: ranked([...conv.channels.map((c) => c.group ?? ""), ...file.map((t) => t.group)]),
+      tag: ranked([...conv.channels.map((c) => c.tag ?? ""), ...(file ?? []).map((t) => t.tag)]),
+      group: ranked([...conv.channels.map((c) => c.group ?? ""), ...(file ?? []).map((t) => t.category)]),
     };
-  }, [conv.channels, csv]);
+  }, [conv.channels, file]);
 }
 
 /**
@@ -2373,9 +2371,9 @@ export function SystemCard(props: { c: Config; i: number }) {
   const join = (other: System) => {
     const j = c.systems.indexOf(other);
     const dropped = SYSTEM_OWN.filter(([k]) => other[k] !== undefined && other[k] !== "" && JSON.stringify(other[k]) !== JSON.stringify(sys[k])).map(([, w]) => w);
-    // Its talkgroup file comes along if this one has none.
+    // Its talkgroups come along if this one has none.
     const [theirs, mine] = [app.talkgroups[other.shortName], app.talkgroups[sys.shortName]];
-    if (theirs && mine && theirs !== mine) dropped.push("talkgroup file");
+    if (theirs && mine && JSON.stringify(theirs) !== JSON.stringify(mine)) dropped.push("talkgroups");
     const n = other.sites.length;
     const ask =
       `Make ${other.shortName} a site${n === 1 ? "" : "s"} of ${sys.shortName}? ` +

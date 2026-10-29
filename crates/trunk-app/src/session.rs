@@ -387,8 +387,8 @@ pub struct Session {
 impl Session {
     /// `bandplan`: the band plan saved for a site, by its key
     /// ([`Session::bandplans`], [`bandplan_key`]).
-    /// `talkgroups`: each system's talkgroup file ([`crate::config::TalkgroupFiles`]).
-    pub fn new(cfg: Config, talkgroups: &crate::config::TalkgroupFiles, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
+    /// `talkgroups`: each system's talkgroups ([`crate::config::TalkgroupLists`]).
+    pub fn new(cfg: Config, talkgroups: &crate::config::TalkgroupLists, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
@@ -473,10 +473,9 @@ impl Session {
         self.meas.topics = topics;
     }
 
-    /// A system's talkgroup file changed (an Ignore flag set from the
-    /// dashboard): calls from now on go by it.
-    pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) -> bool {
-        let set = self.engine.set_talkgroups(short_name, trunk_core::trunk::parse_csv(csv));
+    /// A system's talkgroups are now `rows` (a list loaded): calls from now on go by them.
+    pub fn set_talkgroups(&mut self, short_name: &str, rows: &[trunk_core::trunk::TalkgroupRow]) -> bool {
+        let set = self.engine.set_talkgroups(short_name, crate::config::talkgroups_of(rows));
         self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
         set
     }

@@ -661,7 +661,7 @@ schema, and every documented command against `Command::parse`.
     doesn't parse, is answered with an `error`.
 - **Client → recorder.** `setConfig { config, version }` (the whole config,
   and the version it edits: an edit of an older one is refused),
-  `setTalkgroups { system, csv }`, `start`, `stop`, `listen`, `unlockKeys`,
+  `setTalkgroups { system, talkgroups }`, `start`, `stop`, `listen`, `unlockKeys`,
   `lockKeys`, `channelFile`, `devices`, `findRadios`, `listDir`,
   `readTrConfig`, `survey*`, `profileSource`, `plugins`, `addPlugin`,
   `removePlugin`, `interfaces`, `addInterface`, `removeInterface`, `store`

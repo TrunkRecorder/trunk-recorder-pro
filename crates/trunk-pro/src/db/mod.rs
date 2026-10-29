@@ -1003,7 +1003,7 @@ mod tests {
         };
         let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         let cfg = trunk_app::Config::from_json(r#"{"systems":[{"shortName":"ohmarcs","id":1}]}"#).unwrap();
-        for low_write in [false, true] {
+        for (mode, low_write, radio_index) in [("standard", false, true), ("no radio index", false, false), ("low-write", true, true)] {
             let mut seed = 0x2545_f491_4f6c_dd1du64;
             let mut next = |n: u32| {
                 seed ^= seed << 13;
@@ -1011,10 +1011,10 @@ mod tests {
                 seed ^= seed << 17;
                 (seed % u64::from(n)) as u32
             };
-            let here = dir.join(format!("trp-day-{low_write}"));
+            let here = dir.join(format!("trp-day-{}", mode.replace(' ', "-")));
             let _ = std::fs::remove_dir_all(&here);
             std::fs::create_dir_all(&here).unwrap();
-            let db = Db::from_settings(&trunk_app::config::StorageSettings { low_write, ..Default::default() }, &here);
+            let db = Db::from_settings(&trunk_app::config::StorageSettings { low_write, radio_index, ..Default::default() }, &here);
             db.set_systems(&cfg);
             let every = if low_write { LOW_WRITE_COMMIT_S as i64 } else { 300 };
             let mut r = Registry::default();
@@ -1057,7 +1057,7 @@ mod tests {
             }
             db.flush().unwrap();
             let day = (written() - before) as f64;
-            println!("{}: {:.2} GB a day ({:.1?})", if low_write { "low-write" } else { "standard " }, day / 1e9, at.elapsed());
+            println!("{mode:>14}: {:.2} GB a day ({:.1?})", day / 1e9, at.elapsed());
 
             drop(db);
             let _ = std::fs::remove_dir_all(&here);

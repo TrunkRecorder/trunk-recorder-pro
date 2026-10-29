@@ -53,6 +53,26 @@ Status (2026-10-29):
   in both (`both_dialects_make_the_same_tables`), and `the_reporting_views_name_things` checks
   them on both backends. PostgreSQL's `calls` and `call_transmissions` vacuum and analyse at 1%.
   Partitioning is still deferred.
+- phase 8, and what it changed (2026-10-29):
+  - The write budget was measured over a whole simulated day on the Pi's eMMC
+    (`day_write_budget`: a call a second, 10,000 radios, 2,500 talkgroups). The one-hour benches
+    had missed checkpoints and the registry's growth through a day; the PR's first figure,
+    0.20 GB a day, was wrong. Results:
+    - at first: 2.28 GB a day standard, 0.42 low-write;
+    - by index: without the radio index 0.87, without the talkgroup index 1.79, without the
+      radio, talkgroup and per-system indexes 0.55;
+    - checkpoints at 64 MB of WAL: 1.59; at 256 MB: 1.41.
+  - Owner's decisions:
+    - The radio index is optional (`storage.radioIndex`, on by default; off: 0.77 GB a day).
+      Without it, a radio's list is its recent calls.
+    - Checkpoints at 64 MB.
+    - The store's settings get their own Setup tab (Data).
+    - Platform → Storage shows each table's and index's size and growth (`store/<name>` series,
+      measured every 15 minutes).
+    - Talkgroups travel as objects (`Talkgroup` rows), not CSV. CSV only at import and export,
+      through the recorder's parser in wasm. This answers phase 5's open question.
+  - The talkgroup index (`calls_system_tg_start`) stays. Without it, a quiet talkgroup's page
+    walks its system's calls by time (0.5 GB a day of the stress load).
 
 Phase 2 as built:
 

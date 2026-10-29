@@ -2,14 +2,14 @@
 // RTL-SDR driver (WebUSB), speaking the same protocol as the desktop app's
 // server, so the interface is identical. Calls are stored in OPFS.
 
-import { editCells, withCells } from "../talkgroups.ts";
+import { withEdit } from "../talkgroups.ts";
 import init, { calls_page, directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
-import type { CallEntry, Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
+import type { CallEntry, Config, FromRecorder, HeardCode, Talkgroup, ToRecorder } from "../protocol.ts";
 import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, trpBase } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
 /** Page → worker: the protocol's commands (those it can't do get an `error`), and its own setup. */
-export type ToWorker = ToRecorder | { type: "init"; config: Config; talkgroups: Record<string, string> } | { type: "files"; files: (File | null)[] };
+export type ToWorker = ToRecorder | { type: "init"; config: Config; talkgroups: Record<string, Talkgroup[]> } | { type: "files"; files: (File | null)[] };
 
 /** Worker → page: a protocol message, or a live audio frame. */
 export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number };
@@ -21,8 +21,8 @@ const wallMs = () => performance.timeOrigin + performance.now();
 let config: Config | null = null;
 /** The config's version (one page edits it: every edit is taken). */
 let configVersion = 1;
-/** Each system's talkgroup file, by short name (the page keeps them). */
-let talkgroups: Record<string, string> = {};
+/** Each system's talkgroups, by short name (the page keeps them). */
+let talkgroups: Record<string, Talkgroup[]> = {};
 let files: (File | null)[] = [];
 let session: WebSession | null = null;
 let rtls: WebRtl[] = [];
@@ -462,7 +462,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       // The greeting, as the desktop app's (crates/trunk-pro server.rs): how things are, then hello.
       post(phase);
       post({ type: "config", config: m.config, version: configVersion });
-      for (const [system, csv] of Object.entries(m.talkgroups)) post({ type: "talkgroups", system, csv });
+      for (const [system, rows] of Object.entries(m.talkgroups)) post({ type: "talkgroups", system, talkgroups: rows });
       for (const [system, csv] of Object.entries(await savedUnits(m.config))) post({ type: "units", system, csv });
       post({ type: "heard", heard: await savedHeard(m.config) });
       post({ type: "history", ...callsPage(await listCalls(Number.MAX_SAFE_INTEGER), { limit: 300 }) });
@@ -495,17 +495,20 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
     }
     case "setTalkgroups": {
       // (A recording takes it at once: an Ignore flag set, a tag fixed.)
-      if (m.csv.trim()) talkgroups[m.system] = m.csv;
+      // (A number twice: the later row, in the first's place, as the desktop recorder keeps them.)
+      const rows = [...new Map(m.talkgroups.map((t) => [t.number, t])).values()];
+      if (rows.length) talkgroups[m.system] = rows;
       else delete talkgroups[m.system];
-      session?.set_talkgroups(m.system, m.csv);
-      post({ type: "talkgroups", system: m.system, csv: m.csv });
+      session?.set_talkgroups(m.system, JSON.stringify(rows));
+      post({ type: "talkgroups", system: m.system, talkgroups: rows });
       break;
     }
     case "setTalkgroup": {
-      // One row, edited as the desktop recorder edits it (talkgroups.ts withCells).
-      const csv = withCells(talkgroups[m.system] ?? "", m.talkgroup, editCells(m.edit));
-      talkgroups[m.system] = csv;
-      session?.set_talkgroups(m.system, csv);
+      // One row, edited as the desktop recorder edits it (talkgroups.ts withEdit).
+      await ready;
+      const rows = withEdit(talkgroups[m.system] ?? [], m.talkgroup, m.edit);
+      talkgroups[m.system] = rows;
+      session?.set_talkgroups(m.system, JSON.stringify(rows));
       post({ type: "talkgroupEdited", system: m.system, talkgroup: m.talkgroup, edit: m.edit });
       break;
     }

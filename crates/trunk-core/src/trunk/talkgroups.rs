@@ -12,14 +12,18 @@
 
 use std::collections::HashMap;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Talkgroup {
     pub number: u32,
     pub mode: String,
     pub alpha_tag: String,
     pub description: String,
     pub tag: String,
+    /// Trunk Recorder's Category column (its legacy format's Group).
+    #[serde(rename = "category")]
     pub group: String,
+    #[serde(default = "first_priority")]
     pub priority: i32,
     /// Multi-site: the site whose copy of a call to keep, as Trunk Recorder
     /// writes it — its NAC, or RFSS and site as `RRRRssss` (1 and 23: 10023).
@@ -28,6 +32,11 @@ pub struct Talkgroup {
     pub preferred_site: String,
     /// Never record it (the Ignore column, or priority −1).
     pub ignore: bool,
+}
+
+/// Trunk Recorder's priority for a talkgroup that doesn't give one.
+fn first_priority() -> i32 {
+    1
 }
 
 impl Talkgroup {
@@ -138,14 +147,35 @@ pub fn parse_csv(text: &str) -> Talkgroups {
     out
 }
 
-/// A system's talkgroup, as kept: its [`Talkgroup`], the comment written
-/// directly above its row (`#` lines, kept with it), and the columns this
-/// app doesn't know (name, value), kept for the file it's exported to.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// A system's talkgroup, as kept and as the interfaces have it: its
+/// [`Talkgroup`], the comment written directly above its row in the file it
+/// came from (`#` lines), and the columns this app doesn't know ([name,
+/// value]), kept for the file it's exported to.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct TalkgroupRow {
+    #[serde(flatten)]
     pub tg: Talkgroup,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub comment: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra: Vec<(String, String)>,
+}
+
+/// A talkgroup file read ([`read_rows`]): its rows, and what in it was
+/// passed over or would trouble Trunk Recorder.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkgroupFile {
+    pub talkgroups: Vec<TalkgroupRow>,
+    /// No header: Trunk Recorder's old fixed columns.
+    pub legacy: bool,
+    /// Rows without a talkgroup number (their text, the first few).
+    pub skipped: Vec<String>,
+    /// Columns neither Trunk Recorder nor this app knows (kept; Trunk Recorder rejects them).
+    pub unknown_columns: Vec<String>,
+    /// Columns Trunk Recorder needs that the header lacks (Mode, Description).
+    pub missing: Vec<String>,
 }
 
 /// The columns a talkgroup file's rows have a field for (any other is `extra`).
@@ -155,18 +185,31 @@ fn truthy(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "y" | "1" | "x" | "ignore")
 }
 
-/// A talkgroup file's rows, in its order (the headed or the legacy format,
-/// read as [`parse_csv`] reads it). A comment line directly above a row is
-/// that row's; others (before the header, after a blank line) are dropped.
-/// A talkgroup in two rows: the later one, where the first was.
+/// A talkgroup file's rows ([`read_rows`]).
 pub fn parse_rows(text: &str) -> Vec<TalkgroupRow> {
+    read_rows(text).talkgroups
+}
+
+/// A talkgroup file's rows, in its order (the headed or the legacy format,
+/// read as [`parse_csv`] reads it), and what was passed over. A comment
+/// line directly above a row is that row's; others (before the header,
+/// after a blank line) are dropped. A talkgroup in two rows: the later
+/// one, where the first was.
+pub fn read_rows(text: &str) -> TalkgroupFile {
+    let mut out = TalkgroupFile::default();
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let Some(head) = csv_lines(text).next() else { return Vec::new() };
+    let Some(head) = csv_lines(text).next() else { return out };
     let delim = csv_delimiter(head);
     let header: Vec<String> = split_csv_on(head, delim).iter().map(|h| canonical(h)).collect();
     let headed = header.first().map(String::as_str) == Some("Decimal");
+    out.legacy = !headed;
+    if headed {
+        // (Trunk Recorder's Comment column: kept with the row, as any column of a file's own, and no trouble to it.)
+        out.unknown_columns = header.iter().filter(|h| !h.is_empty() && !KNOWN.contains(&h.as_str()) && *h != "Comment").cloned().collect();
+        out.missing = ["Mode", "Description"].iter().filter(|h| !header.iter().any(|c| c == *h)).map(|h| h.to_string()).collect();
+    }
     let cols: Vec<String> = if headed { header } else { LEGACY.iter().map(|s| s.to_string()).collect() };
-    let mut rows: Vec<TalkgroupRow> = Vec::new();
+    let rows = &mut out.talkgroups;
     let mut at: HashMap<u32, usize> = HashMap::new();
     let mut comment: Vec<&str> = Vec::new();
     let mut header_seen = !headed;
@@ -187,7 +230,10 @@ pub fn parse_rows(text: &str) -> Vec<TalkgroupRow> {
         }
         let f = split_csv_on(line, delim);
         let get = |name: &str| cols.iter().position(|c| c == name).and_then(|i| f.get(i)).map(String::as_str);
-        let Some(number) = get("Decimal").and_then(|s| s.parse::<u32>().ok()) else {
+        let Some(number) = get("Decimal").and_then(|s| s.trim().parse::<u32>().ok()) else {
+            if out.skipped.len() < 20 {
+                out.skipped.push(t.to_string());
+            }
             comment.clear();
             continue;
         };
@@ -216,7 +262,7 @@ pub fn parse_rows(text: &str) -> Vec<TalkgroupRow> {
             }
         }
     }
-    rows
+    out
 }
 
 /// `rows` as a talkgroup file (Trunk Recorder's headed CSV): the usual
@@ -386,6 +432,15 @@ mod tests {
         let legacy = parse_rows("202,ca,E,Police,Tac 2,Law,City\n");
         assert_eq!((legacy[0].tg.alpha_tag.as_str(), legacy[0].tg.group.as_str()), ("Police", "City"));
         assert_eq!(rows_csv(&[]), "");
+    }
+
+    /// What a file held and what in it was passed over, as Setup shows it.
+    #[test]
+    fn a_file_read_says_what_it_passed_over() {
+        let f = read_rows("Decimal,Alpha Tag,Agency,Comment\n101,Disp,County,main\nabc,Bad\n");
+        assert_eq!((f.talkgroups.len(), f.legacy, f.skipped.clone(), f.unknown_columns.clone(), f.missing.clone()), (1, false, vec!["abc,Bad".to_string()], vec!["Agency".to_string()], vec!["Mode".to_string(), "Description".to_string()]));
+        assert_eq!(f.talkgroups[0].extra, [("Agency".to_string(), "County".to_string()), ("Comment".to_string(), "main".to_string())], "a Comment column kept with its row");
+        assert!(read_rows("202,ca,E,Police,Tac 2,Law,City\n").legacy);
     }
 
     #[test]

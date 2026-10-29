@@ -25,16 +25,14 @@ pub fn write(db: &Db, kind: Kind, key: &str, text: String) {
     db.send(Change::Kept { kind: kind.as_str().into(), key: key.into(), value: Some(text) });
 }
 
-/// The talkgroups of `cfg`'s systems (trunked and conventional), as kept:
-/// each system's as a talkgroup file ([`trunk_core::trunk::rows_csv`]), as
-/// the recording and browsers take them.
-pub fn load_talkgroups(db: &Db, cfg: &trunk_app::Config) -> trunk_app::config::TalkgroupFiles {
+/// The talkgroups of `cfg`'s systems (trunked and conventional), as kept.
+pub fn load_talkgroups(db: &Db, cfg: &trunk_app::Config) -> trunk_app::config::TalkgroupLists {
     if db.is_disabled() {
         return Default::default();
     }
     let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
     let read = |name: &String| db.talkgroups(name).inspect_err(|e| log::warn!("Store: talkgroups of {name} not read ({e})")).ok().filter(|rows| !rows.is_empty());
-    names.filter_map(|name| read(name).map(|rows| (name.clone(), trunk_core::trunk::rows_csv(&rows)))).collect()
+    names.filter_map(|name| read(name).map(|rows| (name.clone(), rows))).collect()
 }
 
 /// Keep system `system`'s talkgroups (none: it has none now), in place of
@@ -125,7 +123,7 @@ mod tests {
             db.flush().unwrap();
             assert_eq!(read(&db, Kind::Tune, "").as_deref(), Some("{}"));
             assert_eq!(read_units(&db, "a").map(|c| UnitAliases::parse_csv(&c).entries().len()), Some(1));
-            assert_eq!(load_talkgroups(&db, &cfg)["a"], trunk_core::trunk::rows_csv(&trunk_core::trunk::parse_rows("Decimal,Alpha Tag,Ignore\n# the fire one\n101,Fire,\n102,EMS,x\n")), "{}", db.kind());
+            assert_eq!(load_talkgroups(&db, &cfg)["a"], trunk_core::trunk::parse_rows("Decimal,Alpha Tag,Ignore\n# the fire one\n101,Fire,\n102,EMS,x\n"), "{}", db.kind());
             let shared = trunk_app::stats::Shared::new();
             load_registry(&db, &shared);
             assert_eq!(serde_json::to_value(&shared.radio.lock().unwrap().systems["x"]).unwrap(), serde_json::to_value(&reg.systems["x"]).unwrap(), "{}", db.kind());

@@ -51,7 +51,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
       a **Storage** view: each table's and index's size, its rows, and how they've grown.
     - **`storage.radioIndex`** (Setup: "Calls by radio", on by default): off, the store doesn't index
       calls by radio, and a radio's list is its recent calls. On a busy system it's most of what the
-      store writes (on a Pi's eMMC, a call a second all day: 1.6 GB a day with it, about 0.6 without).
+      store writes (on a Pi's eMMC, a call a second all day: 1.6 GB a day with it, 0.8 without).
     - **`storage.lowWrite`** (Setup: "Low-write mode") is for SD cards: no call index (the call
       list is the recent calls), the dashboard's history by the hour only, and a commit an hour.
     - A store that can't be opened is said to every connection, and nothing is kept meanwhile.

@@ -109,7 +109,7 @@ new TrunkClient({ server?, secure?, historyLimit? })
   sources     SourceStatus[]: each radio (centerHz, rateHz, dropped, errors, errorPpm…)
   calls       CallView[]: the calls on the air now; [] when not running
   configVersion  the config's version (setConfig sends it)
-  talkgroupFiles each system's talkgroup file as CSV text: { shortName: csv }
+  talkgroupRows  each system's talkgroups as the recorder sent them: { shortName: Talkgroup[] }
   history     CallEntry[]: recorded calls, newest first (the last 300 at
               connect, plus each one recorded since; up to historyLimit)
   log         LogLine[]: the latest 500 log lines { timeS, kind, text, time?, level?, system?, site? }
@@ -136,7 +136,7 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.setConfig((c) => { … })        change a copy of the config; the whole config is sent
                                      with configVersion. Refused if the config changed elsewhere
                                      meanwhile (rec.error says so)
-  rec.setTalkgroups(shortName, csv)  replace a system's talkgroup file ("" for none)
+  rec.setTalkgroups(shortName, rows) replace a system's talkgroups (Talkgroup rows; [] for none)
   rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL
   rec.talkgroups(shortName)          Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode }
                                      (a conventional system's: its channels, alphaTag the channel's name)
@@ -246,8 +246,10 @@ From the recorder:
   config       { config, version }: on connecting, and when someone changes it
   configSaved  { version, error? }: answers your setConfig; error when the edit wasn't taken
                (the config changed elsewhere meanwhile) or couldn't be saved
-  talkgroups   { system (short name), csv }: a system's talkgroup file (Trunk Recorder's CSV;
-               "" none); one per system on connecting, and when one changes
+  talkgroups   { system (short name), talkgroups: Talkgroup[] }: a system's talkgroups, a row each
+               { number, mode, alphaTag, description, tag, category, priority (1; -1 ignore),
+               preferredNac (0: none), preferredSite, ignore, comment?, extra?: [[column, value]] };
+               one per system with some on connecting, and when they change ([]: none now)
   history      { entries, next? }: the latest calls (≤ 300), newest first; next (a callsQuery cursor) is there when older ones remain
   units        { system, csv }: a system's saved talker aliases (CSV unit,alias,source,time,wacn,sys,tg;
                newest line wins)
@@ -274,7 +276,8 @@ To the recorder:
   { type: "start" }, { type: "stop" }
   { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required)
   { type: "setConfig", config: <the whole config>, version: <the last config message's> }
-  { type: "setTalkgroups", system: <short name>, csv: <Trunk Recorder talkgroup CSV, "" for none> }
+  { type: "setTalkgroups", system: <short name>, talkgroups: <Talkgroup rows, [] for none> }   all of them
+    (a number twice: the later row); CSV is only for files: read one yourself and send its rows
   { type: "callsQuery", id, system?: <short name>, talkgroup?, unit?, from?, to?, cursor?, limit?: <1 to 500> }
     recorded calls by system, talkgroup, radio and start time (Unix ms, from inclusive, to exclusive), newest
     first, the latest included (→ callsResult; listen access may send it). Talkgroup and radio numbers are a

@@ -675,7 +675,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <div class="tablewrap"><table>
     <thead><tr><th>Area</th><th>Client → recorder</th></tr></thead>
     <tbody>
-      <tr><td>Recording</td><td><code>setConfig {config, version}</code> (always the whole config, edited from that version; answered with <code>configSaved {version, error?}</code>), <code>setTalkgroups {system, csv}</code>, <code>start</code>, <code>stop</code>, <code>quit</code>, <code>channelFile</code></td></tr>
+      <tr><td>Recording</td><td><code>setConfig {config, version}</code> (always the whole config, edited from that version; answered with <code>configSaved {version, error?}</code>), <code>setTalkgroups {system, talkgroups}</code>, <code>start</code>, <code>stop</code>, <code>quit</code>, <code>channelFile</code></td></tr>
       <tr><td>Watching</td><td><code>subscribe {topics}</code> (replaces the last; up to 64), <code>listen {on, system, talkgroup}</code>, <code>statsQuery {id, …}</code>, <code>radioQuery {id, what, …}</code>, <code>callsQuery {id, cursor, …}</code></td></tr>
       <tr><td>Setup</td><td><code>devices</code>, <code>findRadios</code>, <code>listDir</code>, <code>readTrConfig</code>, <code>profileSource</code>, <code>surveyStart</code>, <code>surveyListen</code>, <code>surveyRescan</code>, <code>surveyStop</code></td></tr>
       <tr><td>Plugins and interfaces</td><td><code>plugins</code>, <code>addPlugin</code>, <code>removePlugin</code>, <code>interfaces</code>, <code>addInterface</code>, <code>removeInterface</code>; their stores: <code>store {kind, refresh?}</code>, <code>install {kind, id}</code> or <code>{kind, repository, tag?}</code> (progress in <code>installProgress {kind, key, id, stage, message}</code>), <code>kind</code> <code>plugin</code> or <code>interface</code></td></tr>
@@ -2085,8 +2085,8 @@ sequence($("ws-seq"), [
   ["l", "setConfig", "Always the whole config, with the version it was edited from; saved atomically.", `{"type":"setConfig","config":{…},"version":3}`],
   ["r", "configSaved", "To the sender: the config's version now, and an error when the edit wasn't taken (an older version, a bad config) or couldn't be saved.", `{"type":"configSaved","version":4}`],
   ["r", "config", "The new config and its version, to every client (none when the edit was refused).", `{"type":"config","config":{…},"version":4}`],
-  ["l", "setTalkgroups", "A system's talkgroup file (Trunk Recorder's CSV; \"\" for none), kept beside the config; a recording takes it at once.", `{"type":"setTalkgroups","system":"county-p25","csv":"Decimal,Alpha Tag\\n1201,FD Disp"}`],
-  ["r", "talkgroups", "That file, to every client.", `{"type":"talkgroups","system":"county-p25","csv":"…"}`],
+  ["l", "setTalkgroups", "A system's talkgroups, a row each in Trunk Recorder's columns ([] for none), kept beside the config; a recording takes them at once.", `{"type":"setTalkgroups","system":"county-p25","talkgroups":[{"number":1201,"mode":"D","alphaTag":"FD Disp","description":"","tag":"","category":"","priority":1,"preferredNac":0,"preferredSite":"","ignore":false}]}`],
+  ["r", "talkgroups", "Those rows, to every client.", `{"type":"talkgroups","system":"county-p25","talkgroups":[…]}`],
   ["l", "start / stop", "Recording on or off (they never interleave: one lifecycle, behind one lock).", `{"type":"start"}`],
   ["r", "state", "The new phase, to every client.", `{"type":"state","phase":"running","error":null}`]
 ], { left: "browser (client)", right: "recorder", lr: "client → recorder", rl: "recorder → client" });

@@ -2298,6 +2298,7 @@ dependencies = [
  "rustfft",
  "sdr-decode",
  "sdr-stream",
+ "serde",
  "trunk-recorder-plugin",
  "zeroize",
 ]

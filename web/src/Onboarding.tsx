@@ -37,7 +37,7 @@ import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directo
 import { FileInput, TextInput } from "./inputs.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
-import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
+import { parseRadioReferencePaste, readTalkgroupFile, type Talkgroup } from "./talkgroups.ts";
 import { openTodos } from "./todo.ts";
 import { Waterfall } from "./Waterfall.tsx";
 import { savedWhere, takeWhere, WhereFields, WhyLocation, type Where } from "./Identify.tsx";
@@ -1427,16 +1427,15 @@ function FolderPicker(props: { start: string; onPick: (path: string) => void }) 
 
 function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void; onBack: () => void }) {
   const { sys } = props;
-  const csv = useApp().talkgroups[sys.shortName] ?? "";
-  const [how, setHow] = useState<"later" | "paste" | "file">(csv ? "file" : "later");
+  const loaded = useApp().talkgroups[sys.shortName]?.length ?? 0;
+  const [how, setHow] = useState<"later" | "paste" | "file">(loaded ? "file" : "later");
   const [paste, setPaste] = useState("");
   const parsed = useMemo(() => parseRadioReferencePaste(paste), [paste]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const loaded = csv ? parseTalkgroupCsv(csv).size : 0;
-  const setList = (next: string) => setTalkgroups(sys.shortName, next);
+  const setList = (next: Talkgroup[]) => setTalkgroups(sys.shortName, next);
   const onFile = async (f: File | undefined) => {
     if (!f) return;
-    setList(normalizeTalkgroupCsv(await f.text()));
+    setList(readTalkgroupFile(await f.text()).talkgroups);
     props.onNext();
   };
   const id = sys.sites[0]?.expect ?? {};
@@ -1458,7 +1457,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
           <span>
             <b>{loaded} talkgroup names loaded</b>.
           </span>
-          <button className="ob-link" onClick={() => setList("")}>
+          <button className="ob-link" onClick={() => setList([])}>
             Remove
           </button>
         </div>
@@ -1527,7 +1526,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
                       <button
                         className="ob-btn primary"
                         onClick={() => {
-                          setList(talkgroupsToCsv(parsed));
+                          setList(parsed);
                           props.onNext();
                         }}
                       >
@@ -1575,8 +1574,7 @@ function DoneStep(props: { s: AppState; c: Config; sys: System | undefined; onSt
   const { c, sys } = props;
   const problem = startProblem(c);
   const radios = c.sources.length;
-  const tgCsv = sys ? props.s.talkgroups[sys.shortName] : undefined;
-  const tgs = tgCsv ? parseTalkgroupCsv(tgCsv).size : 0;
+  const tgs = sys ? (props.s.talkgroups[sys.shortName]?.length ?? 0) : 0;
   return (
     <section className="ob-step ob-welcome">
       <div className="ob-hero">
@@ -1862,8 +1860,8 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
       }
       x.plugins = plugins;
     });
-    // Each system's talkgroup file, beside the config.
-    for (const [system, csv] of Object.entries(result.talkgroups)) if (brings(system)) setTalkgroups(system, csv);
+    // Each system's talkgroups, beside the config.
+    for (const [system, rows] of Object.entries(result.talkgroups)) if (brings(system)) setTalkgroups(system, rows);
     // Radios that aren't ready yet join what's left to do.
     const radios: ImportTodo[] = cfg.sources.flatMap((src, index): ImportTodo[] => {
       if (!bringsSource(index)) return [];
@@ -1936,7 +1934,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
         <ul className="ob-rows">
           {cfg.systems.filter((x) => brings(x.shortName)).map((x) => {
             const file = named.find((n) => n.kind === "talkgroups" && n.system === x.shortName)?.file;
-            const tgs = result.talkgroups[x.shortName] ? parseTalkgroupCsv(result.talkgroups[x.shortName]).size : 0;
+            const tgs = result.talkgroups[x.shortName]?.length ?? 0;
             return (
               <li key={x.shortName} className={(file && missing(file)) || unheard(x) ? "warn" : "ok"}>
                 <span className="ob-row-main">

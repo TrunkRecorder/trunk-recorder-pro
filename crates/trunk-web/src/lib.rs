@@ -119,13 +119,13 @@ pub struct WebSession {
 
 #[wasm_bindgen]
 impl WebSession {
-    /// `config_json`: the interface's Config. `talkgroups_json`: each system's talkgroup file, `{shortName: csv}`.
+    /// `config_json`: the interface's Config. `talkgroups_json`: each system's talkgroups, `{shortName: [Talkgroup]}`.
     /// `bandplans_json`: `{key: plan}` (a site's key: [`trunk_app::session::bandplan_key`]) saved from a previous run
     /// ([`WebSession::due`]).
     #[wasm_bindgen(constructor)]
     pub fn new(config_json: &str, talkgroups_json: &str, epoch_ms: f64, bandplans_json: Option<String>) -> Result<WebSession, JsError> {
         let cfg = Config::from_json(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
-        let talkgroups: trunk_app::config::TalkgroupFiles = serde_json::from_str(talkgroups_json).unwrap_or_default();
+        let talkgroups: trunk_app::config::TalkgroupLists = serde_json::from_str(talkgroups_json).unwrap_or_default();
         let plans: serde_json::Map<String, serde_json::Value> = bandplans_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         let plan = |name: &str| plans.get(name).and_then(|v| v.as_str()).map(str::to_string);
         let s = Session::new(cfg, &talkgroups, epoch_ms, &plan, local_offset).map_err(|e| JsError::new(&e))?;
@@ -146,9 +146,10 @@ impl WebSession {
         let q: serde_json::Value = serde_json::from_str(query_json).unwrap_or_default();
         self.s.shared().radio_query(&q, (js_sys::Date::now() / 1000.0) as i64).to_json()
     }
-    /// A system's talkgroup file changed (an Ignore flag): calls from now on go by it.
-    pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) {
-        self.s.set_talkgroups(short_name, csv);
+    /// A system's talkgroups changed (JSON `[Talkgroup]`): calls from now on go by them.
+    pub fn set_talkgroups(&mut self, short_name: &str, talkgroups_json: &str) {
+        let rows: Vec<trunk_core::trunk::TalkgroupRow> = serde_json::from_str(talkgroups_json).unwrap_or_default();
+        self.s.set_talkgroups(short_name, &rows);
     }
     /// This browser's directory recorder ID ([`directory_recorder_id`]): shares go under it.
     pub fn set_recorder(&mut self, id: &str) {

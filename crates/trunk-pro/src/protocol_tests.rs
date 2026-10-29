@@ -459,7 +459,7 @@ fn the_servers_messages() {
     agg.begin(now as f64);
     let p = platform.sample(&mut agg, true);
     *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
-    ctx.talkgroups.lock().unwrap().insert("p25".into(), "101,Fire Dispatch\n".into());
+    ctx.talkgroups.lock().unwrap().insert("p25".into(), trunk_core::trunk::parse_rows("101,Fire Dispatch\n"));
     // The greeting: hello last, after how things are now; less of it for listen access.
     let heard = |control| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -512,7 +512,7 @@ fn the_servers_messages() {
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
     // Named from the name book the server keeps (talkgroup files and the config; aliases as saved).
-    let files: trunk_app::config::TalkgroupFiles = [("p25".to_string(), "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n".to_string())].into();
+    let files: trunk_app::config::TalkgroupLists = [("p25".to_string(), trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))].into();
     ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
     ctx.shared.names.lock().unwrap().set_units("p25", "7,Engine 7\n");
     let named = |q: Value| crate::server::radio_query(&ctx, &body(q)).to_value().to_string();
@@ -594,7 +594,7 @@ fn messages_to_the_recorder() {
         json!({ "type": "licenseQuery", "id": 1, "lat": 38.9, "lon": -77.03, "radiusM": 50_000, "signals": [{ "freqHz": 857_987_500 }, { "freqHz": 489_087_500, "widthHz": 12_500 }] }),
         json!({ "type": "store", "kind": "interface" }),
         json!({ "type": "removeInterface", "id": "trunkamp" }),
-        json!({ "type": "setTalkgroups", "system": "dcfd", "csv": "Decimal,Alpha Tag\n101,FD Disp\n" }),
+        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "comment": "# dispatch", "extra": [["Zone", "North"]] }] }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 101, "edit": { "ignore": true } }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 102, "edit": { "alphaTag": "FIRE4A", "description": "", "tag": "Fire Tac", "category": "Fire" } }),
     ];
