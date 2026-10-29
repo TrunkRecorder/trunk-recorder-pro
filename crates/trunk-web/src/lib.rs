@@ -228,22 +228,19 @@ impl WebSession {
     /// (`name`: the system). `all`: everything that changed (the recording's end).
     pub fn due(&mut self, now_ms: f64, all: bool) -> String {
         use trunk_app::saving::Saved;
-        let item = |kind: &str, name: &str, text: String| serde_json::json!({ "kind": kind, "name": name, "text": text });
-        let items: Vec<serde_json::Value> = self
-            .s
-            .due(now_ms, all)
+        let saved = self.s.due(now_ms, all);
+        let shared = self.s.shared();
+        let radio = shared.radio.lock().unwrap();
+        let items: Vec<serde_json::Value> = saved
             .into_iter()
             .filter_map(|saved| {
-                Some(match saved {
-                    Saved::Units { system, csv } => item("units", &system, csv),
-                    Saved::Sharing(json) => item("sharing", "", json),
-                    Saved::Bandplan { key, plan } => item("bandplan", &key, plan),
-                    Saved::Heard(json) => item("heard", "", json),
-                    Saved::Tune(json) => item("tune", "", json),
-                    Saved::Registry { system, radio } => item("registry", &system, serde_json::to_string(&radio).ok()?),
-                    // (The browser keeps the registry whole: it never asks for rows.)
-                    Saved::RegistryChanges { .. } => return None,
-                })
+                let (kind, key) = (saved.kind().as_str(), saved.key().to_string());
+                let text = match saved {
+                    Saved::Units { csv: t, .. } | Saved::Sharing(t) | Saved::Bandplan { plan: t, .. } | Saved::Heard(t) | Saved::Tune(t) => t,
+                    // (The browser keeps each system's registry whole: the systems that changed are written.)
+                    Saved::Registry { system, .. } => serde_json::to_string(&radio.systems.get(&system)?.whole()).ok()?,
+                };
+                Some(serde_json::json!({ "kind": kind, "name": key, "text": text }))
             })
             .collect();
         serde_json::Value::Array(items).to_string()

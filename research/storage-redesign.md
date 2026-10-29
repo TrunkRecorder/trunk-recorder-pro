@@ -32,6 +32,21 @@ Status (2026-10-29):
     editor and the browser build's file handling, so it's left for a yes. The engine and
     `NameBook` still take the CSV too.
   - The greeting reads talker aliases from the store (as before), not from memory.
+- phase 6 is done (schema 7):
+  - The registry has one shape, `RegistryChanges`. trunk-app always tracks changed rows and hands
+    over only `Saved::Registry { changes }` (`Saved::RegistryChanges`, the whole `SystemRadio`
+    copies, `dirty`, `track_rows`, `registry_as_changes` and `REGISTRY_WHOLE_EVERY` are gone).
+  - The store compacts: once `COMPACT_AFTER` (96, a day's) changes of a system have piled up,
+    the writer makes them over the whole copy (`SystemRadio::whole`, in the same shape) and lets
+    them go. A whole copy that can't be read is rebuilt from the changes. The browser build writes
+    each changed system whole, in the same shape.
+  - `series (id, name unique)`. `stats_hours` is keyed (series_id, t). A query joins the series
+    the patterns name to their hours by key (`the_hours_are_read_by_series_key`), and comes back
+    as `Bucket`s (`HoursSum` is gone). The hours past `statsDays` go once a day, series by series.
+  - `Doc` is gone. `Saved` has `kind()`/`key()` (`saving::Kind`), used by trunk-pro's `kept` and
+    the browser build alike.
+  - Not done: `series.system_id`. Series names carry the short name, so a renamed system's
+    series start afresh.
 
 Phase 2 as built:
 

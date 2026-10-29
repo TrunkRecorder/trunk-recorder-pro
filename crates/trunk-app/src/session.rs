@@ -762,26 +762,10 @@ impl Session {
             out.extend(self.tune_unsaved().map(Saved::Tune));
         }
         if due.registry {
-            let mut radio = self.meas.shared().radio.lock().unwrap();
-            if let Some(taken) = self.saving.registry_as_changes.as_mut().filter(|n| **n + 1 < crate::saving::REGISTRY_WHOLE_EVERY) {
-                *taken += 1;
-                out.extend(radio.take_changes().into_iter().map(|(system, changes)| Saved::RegistryChanges { system, changes: Box::new(changes) }));
-            } else if self.saving.registry_as_changes.is_some() {
-                self.saving.registry_as_changes = Some(0);
-                out.extend(radio.take_all_copies().into_iter().map(|(system, radio)| Saved::Registry { system, radio }));
-            } else {
-                out.extend(radio.take_dirty_copies().into_iter().map(|(system, radio)| Saved::Registry { system, radio }));
-            }
+            let changes = self.meas.shared().radio.lock().unwrap().take_changes();
+            out.extend(changes.into_iter().map(|(system, changes)| Saved::Registry { system, changes: Box::new(changes) }));
         }
         out
-    }
-
-    /// Keep the radio registry as changes ([`Saved::RegistryChanges`]): a
-    /// store appends what changed, and writes every system whole only once
-    /// in [`crate::saving::REGISTRY_WHOLE_EVERY`].
-    pub fn keep_registry_as_changes(&mut self) {
-        self.saving.registry_as_changes = Some(0);
-        self.meas.shared().radio.lock().unwrap().track_rows();
     }
 
     /// Write the radio registry every `ms` rather than [`crate::saving::REGISTRY_MS`]

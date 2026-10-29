@@ -372,7 +372,7 @@ impl Db {
     }
 
     /// The dashboard's hours, added up by bucket.
-    pub fn stats_hours(&self, q: &store::HoursQuery) -> Result<Vec<store::HoursSum>, String> {
+    pub fn stats_hours(&self, q: &store::HoursQuery) -> Result<Vec<(String, i64, trunk_app::stats::Bucket)>, String> {
         self.store()?.stats_hours(q)
     }
 
@@ -389,7 +389,7 @@ impl Db {
     }
 
     /// Every system's stored radio registry.
-    pub fn registry(&self) -> Result<Vec<store::StoredRegistry>, String> {
+    pub fn registry(&self) -> Result<Vec<(i64, Option<trunk_app::stats::radio::SystemRadio>)>, String> {
         self.store()?.registry()
     }
 
@@ -448,6 +448,12 @@ impl Db {
     #[cfg(test)]
     pub fn count(&self, sql: &str) -> i64 {
         self.store().unwrap().scalar(sql)
+    }
+
+    /// Make system `system_id`'s registry changes over its whole copy now (tests).
+    #[cfg(test)]
+    pub fn compact_registry_for_test(&self, system_id: i64) {
+        self.store().unwrap().compact_registry(system_id)
     }
 
     /// Make writing rows of `table` whose `column` is `value` (an SQL literal) fail (tests).
@@ -558,7 +564,7 @@ mod tests {
             let span = Span::of(0, 4 * 3600 - 1, 2, 60);
             assert_eq!((span.step, span.n), (120, 2));
             let q = store::HoursQuery { patterns: &["all/*".to_string()], span, from: 0, before: 4 * 3600 };
-            let mut got = db.stats_hours(&q).unwrap();
+            let mut got: Vec<_> = db.stats_hours(&q).unwrap().into_iter().map(|(k, i, h)| (k, i, h.sum, h.n, h.lo, h.hi)).collect();
             got.sort_by(|a, b| (a.0.as_str(), a.1).cmp(&(b.0.as_str(), b.1)));
             assert_eq!(got, [("all/airMs".to_string(), 0, 120.0, 60, 1.0, 3.0), ("all/calls".to_string(), 0, 4.0 * 60.0 + 2.0 * 30.0, 90, 1.0, 5.0)], "{}", db.kind());
             let exact = db.stats_hours(&store::HoursQuery { patterns: &["cpu".to_string()], span, from: 0, before: 4 * 3600 }).unwrap();
@@ -662,7 +668,7 @@ mod tests {
             assert_eq!(db.kept("tune", "").unwrap(), None, "removed");
 
             let mut r = Registry::default();
-            r.track_rows();
+            let x = db.system_id("x").unwrap();
             let save = |r: &mut Registry| {
                 for (system, c) in r.take_changes() {
                     db.send(Change::Registry { system_id: db.system_id(&system).unwrap(), changes: Box::new(c) });
@@ -680,19 +686,24 @@ mod tests {
             save(&mut r);
             db.flush().unwrap();
             let back = db.registry().unwrap();
-            assert_eq!((back.len(), back[0].whole.is_none(), back[0].changes.len()), (1, true, 2));
-            let again = crate::kept::from_stored(&back[0]).unwrap();
+            assert_eq!((back.len(), db.count("select count(*) from registry"), db.count("select count(*) from registry_changes")), (1, 0, 2));
+            let again: &SystemRadio = back[0].1.as_ref().unwrap();
             assert_eq!(again.affiliations.len(), MAX_AFFILIATIONS, "the log kept to its cap ({})", db.kind());
-            assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap(), "{}", db.kind());
+            assert_eq!(serde_json::to_value(again).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap(), "{}", db.kind());
 
-            db.send(Change::RegistryWhole { system_id: db.system_id("x").unwrap(), radio: Box::new(r.systems["x"].clone()) });
-            affiliate(&mut r, MAX_AFFILIATIONS + 10, 3);
+            // A day's changes are made over the whole copy and let go.
+            for i in 2..store::COMPACT_AFTER {
+                affiliate(&mut r, MAX_AFFILIATIONS + 10 + i as usize, 1);
+                save(&mut r);
+            }
+            db.flush().unwrap();
+            assert_eq!((db.count(&format!("select count(*) from registry where system_id = {x}")), db.count("select count(*) from registry_changes")), (1, 0), "{}", db.kind());
+            affiliate(&mut r, 10_000, 3);
             save(&mut r);
             db.flush().unwrap();
             let back = db.registry().unwrap();
-            assert_eq!((back[0].whole.is_some(), back[0].changes.len()), (true, 1), "the changes before the whole copy went ({})", db.kind());
-            let again: SystemRadio = crate::kept::from_stored(&back[0]).unwrap();
-            assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap(), "{}", db.kind());
+            assert_eq!(db.count("select count(*) from registry_changes"), 1);
+            assert_eq!(serde_json::to_value(back[0].1.as_ref().unwrap()).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap(), "{}", db.kind());
         }
     }
 
@@ -928,9 +939,11 @@ mod tests {
         };
         gone();
         let db = Db::open(&path, Duration::from_secs(3600), 0).unwrap();
-        db.send(Change::RegistryWhole { system_id: db.system_id("big").unwrap(), radio: Box::new(r.systems["big"].clone()) });
+        for (system, c) in r.take_changes() {
+            db.send(Change::Registry { system_id: db.system_id(&system).unwrap(), changes: Box::new(c) });
+        }
         db.flush().unwrap();
-        r.track_rows();
+        db.compact_registry_for_test(db.system_id("big").unwrap());
         let (at, before) = (std::time::Instant::now(), written());
         let mut rows = 0;
         for t in 6 * 3600..7 * 3600 {
@@ -946,11 +959,10 @@ mod tests {
         let hour = (written() - before) as f64;
         // (The day's whole copy.)
         let before = written();
-        db.send(Change::RegistryWhole { system_id: db.system_id("big").unwrap(), radio: Box::new(r.systems["big"].clone()) });
-        db.flush().unwrap();
+        db.compact_registry_for_test(db.system_id("big").unwrap());
         let bytes = hour + (written() - before) as f64 / 24.0;
         let stored = db.registry().unwrap();
-        assert_eq!(serde_json::to_value(crate::kept::from_stored(&stored[0]).unwrap()).unwrap(), serde_json::to_value(&r.systems["big"]).unwrap());
+        assert_eq!(serde_json::to_value(stored[0].1.as_ref().unwrap()).unwrap(), serde_json::to_value(&r.systems["big"]).unwrap());
         println!(
             "registry as changes: {:.1} MB an hour, {:.2} GB a day ({rows} rows changed, {:.1?}); whole file every 15 min: {:.1} MB an hour, {:.2} GB a day ({:.1} MB file)",
             bytes / 1e6,

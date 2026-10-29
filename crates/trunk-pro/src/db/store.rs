@@ -8,6 +8,7 @@
 
 use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use trunk_app::stats::radio::{RegistryChanges, SystemRadio};
+use trunk_app::stats::Bucket;
 use trunk_core::trunk::{TalkgroupRow, UnitAlias};
 
 use super::read::{self, Where};
@@ -36,10 +37,9 @@ pub enum Change {
     /// system's talker aliases, AutoTune's scores…: `crate::kept`); `None`
     /// removes it.
     Kept { kind: String, key: String, value: Option<String> },
-    /// What changed in a system's radio registry since the last ([`StoredRegistry`]).
+    /// What changed in a system's radio registry since the last
+    /// ([`COMPACT_AFTER`] says how it's kept).
     Registry { system_id: i64, changes: Box<RegistryChanges> },
-    /// A system's whole radio registry, in place of what's stored.
-    RegistryWhole { system_id: i64, radio: Box<SystemRadio> },
     /// A minute of the dashboard's history: a [`trunk_app::stats::Rollup`]
     /// as its JSON line (a minute may have several, merged when read).
     StatsMinute { t: i64, json: String },
@@ -66,7 +66,7 @@ impl Change {
             Change::CallFiles { path, .. } => format!("files write {path}"),
             Change::Meta { key, .. } => format!("meta write {key}"),
             Change::Kept { kind, key, .. } => format!("{kind} {key} write"),
-            Change::Registry { system_id, .. } | Change::RegistryWhole { system_id, .. } => format!("registry write (system {system_id})"),
+            Change::Registry { system_id, .. } => format!("registry write (system {system_id})"),
             Change::StatsMinute { .. } | Change::StatsHours(_) => "stats write".into(),
             Change::RetireStats { .. } => "stats retention".into(),
             Change::Talkgroups { system_id, .. } | Change::Talkgroup { system_id, .. } => format!("talkgroups (system {system_id})"),
@@ -195,12 +195,13 @@ impl Store {
         self.read(|x| Ok(x.query_opt("select value from kept where kind = $1 and key = $2", vals![kind, key])?.map(|r| r.text(0))))
     }
 
-    /// Every system's radio registry, as stored (at startup).
-    pub fn registry(&self) -> Result<Vec<StoredRegistry>, String> {
+    /// Every system's radio registry, as stored (at startup); none: what's
+    /// stored of it couldn't be read.
+    pub fn registry(&self) -> Result<Vec<(i64, Option<SystemRadio>)>, String> {
         self.read(|x| {
-            let whole = x.query("select system_id, whole from registry", &[])?.iter().map(|r| (r.int(0), r.text(1))).collect();
-            let changes = x.query("select system_id, changes from registry_changes order by id", &[])?.iter().map(|r| (r.int(0), r.text(1))).collect();
-            Ok(stored_registry(whole, changes))
+            let mut ids: Vec<i64> = x.query("select system_id from registry union select system_id from registry_changes", &[])?.iter().map(|r| r.int(0)).collect();
+            ids.sort_unstable();
+            ids.into_iter().map(|id| Ok((id, registry_of(x, id)?))).collect()
         })
     }
 
@@ -220,10 +221,12 @@ impl Store {
         self.read(|x| Ok(x.query("select s from stats_minutes where t >= $1 order by t, id", vals![since])?.iter().map(|r| r.text(0)).collect()))
     }
 
-    /// The dashboard's hours, added up by bucket ([`HoursQuery`]).
-    pub fn stats_hours(&self, q: &HoursQuery) -> Result<Vec<HoursSum>, String> {
+    /// The dashboard's hours, added up by bucket ([`HoursQuery`]): (series,
+    /// bucket, what its hours add up to).
+    pub fn stats_hours(&self, q: &HoursQuery) -> Result<Vec<(String, i64, Bucket)>, String> {
         let (sql, ps) = q.sql();
-        self.read(|x| Ok(x.query(&sql, &ps)?.iter().map(|r| (r.text(0), r.int(1), r.real(2), r.int(3), r.real(4), r.real(5))).collect()))
+        let bucket = |r: &super::sql::Row| Bucket { sum: r.real(2), n: r.int(3) as u32, lo: r.real(4) as f32, hi: r.real(5) as f32 };
+        self.read(|x| Ok(x.query(&sql, &ps)?.iter().map(|r| (r.text(0), r.int(1), bucket(r))).collect()))
     }
 
     /// Delete up to `max` calls that started before `before_ms`, oldest
@@ -276,6 +279,12 @@ impl Store {
         self.read(|x| Ok(x.query(sql, &[])?.iter().map(|r| r.text(0)).collect())).unwrap()
     }
 
+    /// Make system `system_id`'s registry changes over its whole copy now (tests).
+    #[cfg(test)]
+    pub fn compact_registry(&self, system_id: i64) {
+        self.write(|x| compact_registry(x, system_id)).unwrap()
+    }
+
     /// A trigger refusing rows of `table` whose `column` is `value` (an SQL
     /// literal), to make a change fail part-way (tests).
     #[cfg(test)]
@@ -310,27 +319,34 @@ fn apply_one(x: &mut dyn Exec, change: &Change) -> Result<(), String> {
         Change::Kept { kind, key, value: None } => x.execute("delete from kept where kind = $1 and key = $2", vals![kind, key]).map(drop),
         Change::Registry { system_id, changes } => {
             let json = serde_json::to_string(changes).map_err(|e| e.to_string())?;
-            x.execute("insert into registry_changes (system_id, changes) values ($1, $2)", vals![*system_id, json]).map(drop)
-        }
-        Change::RegistryWhole { system_id, radio } => {
-            let json = serde_json::to_string(radio).map_err(|e| e.to_string())?;
-            x.execute("insert into registry (system_id, whole) values ($1, $2) on conflict (system_id) do update set whole = excluded.whole", vals![*system_id, json])?;
-            x.execute("delete from registry_changes where system_id = $1", vals![*system_id]).map(drop)
+            x.execute("insert into registry_changes (system_id, changes) values ($1, $2)", vals![*system_id, json])?;
+            let n = x.query_opt("select count(*) from registry_changes where system_id = $1", vals![*system_id])?.map_or(0, |r| r.int(0));
+            if n >= COMPACT_AFTER {
+                compact_registry(x, *system_id)?;
+            }
+            Ok(())
         }
         Change::StatsMinute { t, json } => x.execute("insert into stats_minutes (t, s) values ($1, $2)", vals![*t, json]).map(drop),
         Change::StatsHours(rows) => {
             for r in rows {
+                let id = series_id(x, &r.series)?;
                 x.execute(
-                    "insert into stats_hours (series, t, avg, lo, hi, n) values ($1, $2, $3, $4, $5, $6)
-                     on conflict (series, t) do update set avg = excluded.avg, lo = excluded.lo, hi = excluded.hi, n = excluded.n",
-                    vals![&r.series, r.t, r.avg, r.lo, r.hi, r.n],
+                    "insert into stats_hours (series_id, t, avg, lo, hi, n) values ($1, $2, $3, $4, $5, $6)
+                     on conflict (series_id, t) do update set avg = excluded.avg, lo = excluded.lo, hi = excluded.hi, n = excluded.n",
+                    vals![id, r.t, r.avg, r.lo, r.hi, r.n],
                 )?;
             }
             Ok(())
         }
         Change::RetireStats { minutes_before, hours_before } => {
             x.execute("delete from stats_minutes where t < $1", vals![*minutes_before])?;
-            hours_before.map_or(Ok(()), |h| x.execute("delete from stats_hours where t < $1", vals![h]).map(drop))
+            if let Some(h) = hours_before {
+                // (Each series by its key: a range of the index, not a scan of every hour.)
+                for id in x.query("select id from series", &[])?.iter().map(|r| r.int(0)) {
+                    x.execute("delete from stats_hours where series_id = $1 and t < $2", vals![id, *h])?;
+                }
+            }
+            Ok(())
         }
         Change::Talkgroups { system_id, rows } => {
             x.execute("delete from talkgroups where system_id = $1", vals![*system_id])?;
@@ -396,16 +412,41 @@ fn write_call(x: &mut dyn Exec, row: &CallRow, live: bool) -> Result<(), String>
     Ok(())
 }
 
-/// A system's radio registry as stored: the last whole copy (the
-/// registry's own JSON, as `files` keeps it) and the changes since, oldest
-/// first (each a [`trunk_app::stats::radio::RegistryChanges`] as JSON).
-/// Changes are appended, not rows updated in place: a busy system changes
-/// thousands of rows every 15 minutes, which as row updates writes more
-/// than the whole file did (research/sqlite-plan.md).
-pub struct StoredRegistry {
-    pub system_id: i64,
-    pub whole: Option<String>,
-    pub changes: Vec<String>,
+/// A system's radio registry is kept in one shape, [`RegistryChanges`]:
+/// each 15 minutes' changes appended to `registry_changes`, and once this
+/// many have piled up (a day's), made over the whole copy in `registry`
+/// ([`SystemRadio::whole`]) and let go. Appended, not rows updated in
+/// place: a busy system changes thousands of rows every 15 minutes, which
+/// as row updates writes several times as much (`registry_write_budget`).
+pub const COMPACT_AFTER: i64 = 96;
+
+/// System `system_id`'s registry as stored (none: nothing stored that could be read).
+fn registry_of(x: &mut dyn Exec, system_id: i64) -> Result<Option<SystemRadio>, String> {
+    let whole = x.query_opt("select whole from registry where system_id = $1", vals![system_id])?.map(|r| r.text(0));
+    let changes: Vec<String> = x.query("select changes from registry_changes where system_id = $1 order by id", vals![system_id])?.iter().map(|r| r.text(0)).collect();
+    // (A change that can't be read: the registry as it was before it.)
+    let mut each = changes.iter().map_while(|j| serde_json::from_str::<RegistryChanges>(j).ok());
+    // (A whole copy that can't be read: the changes since alone, and the next compaction writes it afresh.)
+    let whole = whole.and_then(|j| serde_json::from_str::<RegistryChanges>(&j).inspect_err(|e| log::warn!("Store: radio registry of system {system_id}: its whole copy can't be read ({e})")).ok());
+    let mut radio = match &whole {
+        Some(w) => SystemRadio::from_changes(w),
+        None => match each.next() {
+            Some(c) => SystemRadio::from_changes(&c),
+            None => return Ok(None),
+        },
+    };
+    for c in each {
+        radio.apply(&c);
+    }
+    Ok(Some(radio))
+}
+
+/// Make system `system_id`'s changes over its whole copy, and let them go.
+fn compact_registry(x: &mut dyn Exec, system_id: i64) -> Result<(), String> {
+    let Some(radio) = registry_of(x, system_id)? else { return Ok(()) };
+    let json = serde_json::to_string(&radio.whole()).map_err(|e| e.to_string())?;
+    x.execute("insert into registry (system_id, whole) values ($1, $2) on conflict (system_id) do update set whole = excluded.whole", vals![system_id, json])?;
+    x.execute("delete from registry_changes where system_id = $1", vals![system_id]).map(drop)
 }
 
 /// `talkgroups`' columns, in the order [`write_talkgroup`] gives them and
@@ -456,8 +497,14 @@ pub struct HoursQuery<'a> {
     pub before: i64,
 }
 
-/// A bucket's worth of a series' hours: (series, bucket, Σ avg × n, n, lo, hi).
-pub type HoursSum = (String, i64, f64, i64, f64, f64);
+/// Series `name`'s id, given one if it has none.
+fn series_id(x: &mut dyn Exec, name: &str) -> Result<i64, String> {
+    if let Some(r) = x.query_opt("select id from series where name = $1", vals![name])? {
+        return Ok(r.int(0));
+    }
+    x.execute("insert into series (name) values ($1)", vals![name])?;
+    Ok(x.query_opt("select id from series where name = $1", vals![name])?.map_or(0, |r| r.int(0)))
+}
 
 impl HoursQuery<'_> {
     /// The query and its parameters: each bucket's sum, so a year of hours
@@ -470,18 +517,19 @@ impl HoursQuery<'_> {
             match p.strip_suffix('*') {
                 Some("") => any.push("1 = 1".to_string()),
                 Some(prefix) => match after(prefix) {
-                    Some(end) => any.push(format!("(series >= {} and series < {})", ps.add(prefix), ps.add(end))),
-                    None => any.push(format!("series >= {}", ps.add(prefix))),
+                    Some(end) => any.push(format!("(s.name >= {} and s.name < {})", ps.add(prefix), ps.add(end))),
+                    None => any.push(format!("s.name >= {}", ps.add(prefix))),
                 },
-                None => any.push(format!("series = {}", ps.add(p))),
+                None => any.push(format!("s.name = {}", ps.add(p))),
             }
         }
         if any.is_empty() {
             any.push("1 = 0".into());
         }
+        // (The series the patterns name, then each one's hours by its key.)
         let sql = format!(
-            "select series, (t - {t0}) / {step} as b, cast(sum(avg * n) as double precision), cast(sum(n) as bigint), cast(min(lo) as double precision), cast(max(hi) as double precision)
-             from stats_hours where t >= {from} and t < {before} and ({}) group by series, b",
+            "select s.name, (h.t - {t0}) / {step} as b, cast(sum(h.avg * h.n) as double precision), cast(sum(h.n) as bigint), cast(min(h.lo) as double precision), cast(max(h.hi) as double precision)
+             from series s join stats_hours h on h.series_id = s.id where h.t >= {from} and h.t < {before} and ({}) group by s.name, b",
             any.join(" or ")
         );
         (sql, ps.0)
@@ -501,22 +549,6 @@ fn after(prefix: &str) -> Option<String> {
     None
 }
 
-
-/// Each system's [`StoredRegistry`] from its whole copy (system, JSON) and
-/// changes (system, JSON; oldest first).
-pub fn stored_registry(whole: Vec<(i64, String)>, changes: Vec<(i64, String)>) -> Vec<StoredRegistry> {
-    let mut out: std::collections::BTreeMap<i64, StoredRegistry> = Default::default();
-    fn at(out: &mut std::collections::BTreeMap<i64, StoredRegistry>, system_id: i64) -> &mut StoredRegistry {
-        out.entry(system_id).or_insert_with(|| StoredRegistry { system_id, whole: None, changes: Vec::new() })
-    }
-    for (system, json) in whole {
-        at(&mut out, system).whole = Some(json);
-    }
-    for (system, json) in changes {
-        at(&mut out, system).changes.push(json);
-    }
-    out.into_values().collect()
-}
 
 /// What `GET /api/v1/storage` says of a store.
 pub struct StoreInfo {

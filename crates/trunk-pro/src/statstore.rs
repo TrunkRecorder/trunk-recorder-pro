@@ -136,7 +136,9 @@ fn write_store(db: &Db, history: &Mutex<History>, rx: mpsc::Receiver<Rollup>, do
         let last = write_hours(db, history, was, now);
         if last != was {
             done.store(last, Ordering::SeqCst);
-            let hours_before = (stats_days > 0).then(|| now - i64::from(stats_days) * 86400);
+            // (Hours past keeping once a day, minutes every hour.)
+            let new_day = last.div_euclid(86400) != was.div_euclid(86400);
+            let hours_before = (stats_days > 0 && new_day).then(|| now - i64::from(stats_days) * 86400);
             db.send(Change::RetireStats { minutes_before: now - STORE_MINUTE_DAYS * 86400, hours_before });
         }
     }

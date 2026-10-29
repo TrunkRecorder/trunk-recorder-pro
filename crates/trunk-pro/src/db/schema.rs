@@ -20,7 +20,7 @@ use super::sql::Dialect;
 
 /// This build's schema. Raise it with any change to [`TABLES`] or
 /// [`INDEXES`]: a store of another version is made afresh.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// What a column holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,10 +208,13 @@ pub const TABLES: &[Table] = &[
         key: &["system_id", "unit"],
     },
     Table { name: "stats_minutes", cols: &[col("id", Id), col("t", BigInt), col("s", Json)], key: &[] },
+    // The dashboard's series by name ("sys/<short name>/calls", "cpu"…),
+    // and each one's hours, by its key.
+    Table { name: "series", cols: &[col("id", Id), unique("name", Text)], key: &[] },
     Table {
         name: "stats_hours",
-        cols: &[col("series", Text), col("t", BigInt), col("avg", Real), col("lo", Real), col("hi", Real), col("n", BigInt)],
-        key: &["series", "t"],
+        cols: &[of("series_id", BigInt, "series(id)"), col("t", BigInt), col("avg", Real), col("lo", Real), col("hi", Real), col("n", BigInt)],
+        key: &["series_id", "t"],
     },
 ];
 
@@ -374,6 +377,26 @@ mod tests {
                     assert!(i > 0 && steps[i - 1].starts_with("SCAN a"), "{what} sorts what it matched: {p}");
                 }
             }
+        }
+    }
+
+    /// The dashboard's hours: the series the patterns name, then each one's
+    /// hours by its key, never a scan of every hour.
+    #[test]
+    fn the_hours_are_read_by_series_key() {
+        let c = Connection::open_in_memory().unwrap();
+        prepare(&c).unwrap();
+        let span = trunk_app::stats::Span::of(0, 365 * 86400, 300, 60);
+        for patterns in [vec!["sys/a/*".to_string()], vec!["cpu".to_string(), "sys/*".to_string()]] {
+            let (sql, ps) = crate::db::store::HoursQuery { patterns: &patterns, span, from: 0, before: 365 * 86400 }.sql();
+            let ps: Vec<rusqlite::types::Value> = ps.into_iter().map(|p| match p {
+                crate::db::sql::V::Int(i) => i.into(),
+                crate::db::sql::V::Text(t) => t.into(),
+                v => panic!("{v:?}"),
+            }).collect();
+            let mut st = c.prepare(&format!("explain query plan {}", crate::db::sql::question_marks(&sql))).unwrap();
+            let p: Vec<String> = st.query_map(rusqlite::params_from_iter(ps), |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
+            assert!(p.iter().any(|s| s.starts_with("SEARCH h USING") && s.contains("series_id=? AND t>? AND t<?")) && !p.iter().any(|s| s.starts_with("SCAN h")), "{p:?}");
         }
     }
 }

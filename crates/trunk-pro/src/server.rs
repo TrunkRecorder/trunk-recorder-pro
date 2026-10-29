@@ -566,11 +566,11 @@ fn capabilities(ctx: &Ctx) -> Vec<trunk_app::protocol::Capability> {
 /// files: so it blocks): each system's talker aliases, and the codes
 /// conventional frequencies carried as saved (if not told since).
 fn kept_now(ctx: &Ctx) -> Vec<ToClient> {
-    use crate::kept::{self, Doc};
+    use crate::kept;
     let config = ctx.config.lock().unwrap().clone();
     let mut m: Vec<ToClient> = config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)).filter_map(|n| Some(ToClient::Units { system: n.clone(), csv: kept::read_units(&ctx.db, n)? })).collect();
     if ctx.heard_last.lock().unwrap().is_none() {
-        let saved = kept::read(&ctx.db, Doc::Heard).and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        let saved = kept::read(&ctx.db, trunk_app::saving::Kind::Heard, "").and_then(|t| serde_json::from_str::<Value>(&t).ok());
         m.push(ToClient::Heard { heard: saved.unwrap_or(json!({})) });
     }
     m
@@ -659,9 +659,9 @@ pub(crate) fn stats_query(ctx: &Ctx, q: &StatsQuery) -> ToClient {
     let hours = crate::db::store::HoursQuery { patterns: &patterns, span, from: span.m0 * 60, before: split };
     match ctx.db.stats_hours(&hours) {
         Ok(rows) => {
-            for (k, i, sum, n, lo, hi) in rows {
+            for (k, i, h) in rows {
                 if let Some(i) = usize::try_from(i).ok().filter(|i| *i < span.n) {
-                    b.entry(k).or_insert_with(|| vec![Bucket::default(); span.n])[i].add(sum, n as u32, lo as f32, hi as f32);
+                    b.entry(k).or_insert_with(|| vec![Bucket::default(); span.n])[i].add(h.sum, h.n, h.lo, h.hi);
                 }
             }
         }

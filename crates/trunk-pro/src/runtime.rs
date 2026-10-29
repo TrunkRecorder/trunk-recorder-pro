@@ -3,7 +3,8 @@
 //! (`<captureDir>/<shortName>/<YYYY>/<M>/<D>/<tg>-<epoch>_<freq>.wav|json`, a folder per system) and
 //! publishes what happens to the browser interface through the [`Hub`].
 
-use crate::kept::{self, Doc};
+use crate::kept;
+use trunk_app::saving::Kind;
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
@@ -443,7 +444,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let epoch_ms = crate::clock::unix_ms() as f64;
     let epoch_at = Instant::now();
     let talkgroups = ctx.talkgroups.lock().unwrap().clone();
-    let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| kept::read(&ctx.db, Doc::Bandplan(name)), local_offset)?;
+    let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| kept::read(&ctx.db, Kind::Bandplan, name), local_offset)?;
     session.attach(ctx.shared.clone());
     if cfg.systems.iter().any(|s| s.share) {
         session.set_recorder(&crate::directory::recorder_id());
@@ -470,12 +471,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         }
     }
     session.load_units(&|name| kept::read_units(&ctx.db, name));
-    session.load_heard(&kept::read(&ctx.db, Doc::Heard).unwrap_or_default());
-    session.load_sharing(&kept::read(&ctx.db, Doc::Sharing).unwrap_or_default());
-    session.load_tune(&kept::read(&ctx.db, Doc::Tune).unwrap_or_default());
-    if !ctx.db.is_disabled() {
-        session.keep_registry_as_changes();
-    }
+    session.load_heard(&kept::read(&ctx.db, Kind::Heard, "").unwrap_or_default());
+    session.load_sharing(&kept::read(&ctx.db, Kind::Sharing, "").unwrap_or_default());
+    session.load_tune(&kept::read(&ctx.db, Kind::Tune, "").unwrap_or_default());
     ctx.plugins.start(&cfg, plugin_calls(&ctx));
     if cfg.sources.iter().any(|s| matches!(s, Source::Rtlsdr { .. })) {
         if let Some(hint) = cfg.rtl_buflen_hint(sdr::rtl_most_on_a_bus()) {
@@ -595,20 +593,12 @@ pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::prot
 /// each is) to the store's writer ([`kept`]); `all`:
 /// everything that changed (the recording's end).
 fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
-    let keep = |doc: Doc, text: String| kept::write(&ctx.db, doc, text);
     for saved in session.due(now_ms, all) {
+        let (kind, key) = (saved.kind(), saved.key().to_string());
         match saved {
             Saved::Units { system, csv } => kept::write_units(&ctx.db, &system, &csv),
-            Saved::Sharing(json) => keep(Doc::Sharing, json),
-            Saved::Bandplan { key, plan } => keep(Doc::Bandplan(&key), plan),
-            Saved::Heard(json) => keep(Doc::Heard, json),
-            Saved::Tune(json) => keep(Doc::Tune, json),
-            Saved::Registry { system, radio } => kept::write_registry(&ctx.db, system, radio),
-            Saved::RegistryChanges { system, changes } => {
-                if let Some(system_id) = ctx.db.system_id(&system) {
-                    ctx.db.send(crate::db::Change::Registry { system_id, changes });
-                }
-            }
+            Saved::Registry { system, changes } => kept::write_registry(&ctx.db, &system, changes),
+            Saved::Sharing(text) | Saved::Bandplan { plan: text, .. } | Saved::Heard(text) | Saved::Tune(text) => kept::write(&ctx.db, kind, &key, text),
         }
     }
 }

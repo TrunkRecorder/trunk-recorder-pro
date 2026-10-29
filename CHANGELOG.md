@@ -84,6 +84,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     The radio registry is appended as each
     15 minutes' changes and written whole once a day, instead of whole every 15 minutes. On the
     Pi's eMMC a busy system writes 0.10 GB a day instead of 0.44 (`db::tests::registry_write_budget`).
+    The browser version saves the registry in the same shape, so a registry it saved before
+    starts afresh.
 - **Calls by talkgroup, radio and time, for interfaces and plugins:** `callsQuery` on the
   WebSocket (`client.js`: `rec.calls({ … })`), `GET /api/v1/calls`, `/api/v1/calls/<path>` and
   `/api/v1/storage` over HTTP (`docs/api/calls.openapi.yaml`), and for plugins `calls.query`

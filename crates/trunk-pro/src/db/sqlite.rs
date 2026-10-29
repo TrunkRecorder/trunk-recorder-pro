@@ -320,7 +320,7 @@ mod tests {
         assert_eq!(store.scalar("pragma user_version"), i64::from(schema::SCHEMA_VERSION));
         assert_eq!(store.texts("pragma journal_mode"), ["wal"]);
         let tables = store.texts("select name from sqlite_master where type='table' order by name");
-        assert_eq!(tables, ["call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "stats_hours", "stats_minutes", "systems", "talkgroups", "units"]);
+        assert_eq!(tables, ["call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "series", "stats_hours", "stats_minutes", "systems", "talkgroups", "units"]);
     }
 
     /// A second opener of the same store (another recorder on the same data

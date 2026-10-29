@@ -555,10 +555,14 @@ main ─► serve()
     - talker aliases in `units` (only those that changed are written);
     - band plans, the Heard list, AutoTune's scores and sharing's state in
       `kept`, written within 10 s of a change (`Session::due`) and at stop;
-    - the radio registry as each 15 minutes' changes appended to
-      `registry_changes`, written whole to `registry` once a day;
+    - the radio registry in one shape, `RegistryChanges`: trunk-app hands
+      over each 15 minutes' changes (`Saved::Registry`), appended to
+      `registry_changes`; once a day's have piled up (`COMPACT_AFTER`) the
+      store makes them over the whole copy in `registry` and lets them go
+      (the browser build writes each changed system whole instead);
     - the dashboard's history in `stats_minutes` (2 days) and `stats_hours`
-      (each series' hours, `storage.statsDays`).
+      (each series' hours by its `series` id, kept `storage.statsDays`; the
+      hours past that go once a day, series by series).
   - `trunk-pro.sqlite` (`trunk-pro/src/db/`) is the call store: one row per
     finished call, written in batches by the `db-writer` thread. The
     recording and its `.json` are still files; the row is how `callsQuery`
