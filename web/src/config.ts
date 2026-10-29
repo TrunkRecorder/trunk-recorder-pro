@@ -239,6 +239,11 @@ export interface Detected {
 }
 
 /** Every radio the recorder can see (its RTL-SDRs, what the drivers found), as a source each. */
+/** A radio with a bias-T the recorder can switch: an Airspy, a bladeRF 2.0. */
+export function hasBiasT(src: Source): src is Extract<Source, { biasTee: boolean }> {
+  return src.type === "airspy" || src.type === "bladerf";
+}
+
 export function detectRadios(devices: Device[], r: Radios | null): Detected[] {
   const out: Detected[] = devices.map((d) => ({
     key: deviceKey("rtlsdr", d.serial),
