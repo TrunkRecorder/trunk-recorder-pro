@@ -1772,7 +1772,7 @@ export type FromRecorder =
       capabilities: Capability[];
     }
   /** The latest calls, newest first: on connecting (then `concluded` for each new one). */
-  | { type: "history"; entries: CallEntry[] }
+  | { type: "history"; entries: CallEntry[]; next?: string }
   /** A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV): one for each system with some, on connecting (then `unitAlias` for each new one). */
   | { type: "units"; system: string; csv: string }
   /** Which key containers are unlocked, after an unlock, a lock or a config change. */
@@ -1834,10 +1834,8 @@ export type FromRecorder =
   /** Answers statsQuery: `loading` while the history files are still being read. */
   | { type: "statsResult"; id: number; from: number; to: number; loading: boolean; series: Record<string, SeriesData> }
   | ({ type: "radioResult" } & RadioResultBody)
-  /** Answers olderCalls; `more`: there are older ones still. */
-  | { type: "olderCalls"; before: number; entries: CallEntry[]; more: boolean }
-  /** Answers callsQuery; `before` is where the next page starts (the oldest start in `entries`; with none, the `before` asked, or 0 when none was). */
-  | { type: "callsResult"; id: number; entries: CallEntry[]; more: boolean; before: number; error?: string }
+  /** Answers callsQuery: newest first (by start, then path); `next`: more remain, ask again with it as the `cursor`; `error`: only the recent calls (the call store is off). */
+  | { type: "callsResult"; id: number; entries: CallEntry[]; next?: string; error?: string }
   | { type: "quit" };
 
 export type ToRecorder =
@@ -1896,10 +1894,8 @@ export type ToRecorder =
   | { type: "subscribe"; topics: Topic[] }
   /** The history of series (names, or prefixes ending in `*`) over `range` back from now, or `from`–`to` (Unix s), in about `points` points. */
   | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d" | "30d" | "90d" | "1y"; from?: number; to?: number; points?: number }
-  /** Calls that started before `before` (Unix ms), newest first (the Listen page's "Load older"): from the call store (the desktop app); the browser build: the last 24 hours. */
-  | { type: "olderCalls"; before: number; limit: number }
-  /** Recorded calls from the call store, newest first: by system (its short name), talkgroup, radio, and start time (Unix ms, `from` inclusive to `to` exclusive); `before` pages like olderCalls; `limit` 1..500 (100). */
-  | { type: "callsQuery"; id: number; system?: string; talkgroup?: number; unit?: number; from?: number; to?: number; before?: number; limit?: number }
+  /** Recorded calls from the call store, newest first (by start, then path): by system (its short name), talkgroup and radio (a system's own: without one, each system's), and start time (Unix ms, `from` inclusive to `to` exclusive); `cursor`: the last page's `next`; `limit` 1..500 (100). */
+  | { type: "callsQuery"; id: number; system?: string; talkgroup?: number; unit?: number; from?: number; to?: number; cursor?: string; limit?: number }
   /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited). */
   | { type: "pluginAction"; id: number; plugin: string; action: string; value: unknown }
   /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */

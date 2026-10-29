@@ -12,6 +12,7 @@
 //! decided here too: [`ToClient::audience`], [`Command::listen_may_send`].
 
 use serde::{Deserialize, Serialize};
+pub use crate::calls::{CallsPage, CallsQuery, StoredCall};
 use serde_json::{Map, Value};
 
 use crate::Config;
@@ -53,7 +54,12 @@ pub enum ToClient {
         capabilities: Vec<Capability>,
     },
     /// The latest calls, newest first: on connecting (then `concluded` for each new one).
-    History { entries: Vec<Value> },
+    History {
+        entries: Vec<StoredCall>,
+        /// Where older calls go on from (a `callsQuery` `cursor`), if there are any.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
+    },
     /// A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV):
     /// one for each system with some, on connecting (then `unitAlias` for each new one).
     Units { system: String, csv: String },
@@ -116,15 +122,12 @@ pub enum ToClient {
     Subscribed { topics: Vec<String> },
     StatsResult(Body),
     RadioResult(Body),
-    OlderCalls { before: i64, entries: Vec<Value>, more: bool },
-    /// Answers `callsQuery`: a page of calls ([`CallsPage`]); `error` when the
-    /// call store couldn't answer (off: the page is the recent calls alone).
+    /// Answers `callsQuery`: a page of calls ([`CallsPage`]: its `error` when
+    /// the call store couldn't answer, the page then the recent calls alone).
     CallsResult {
         id: Value,
         #[serde(flatten)]
         page: CallsPage,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
     },
     Quit,
 }
@@ -309,22 +312,19 @@ pub enum Command {
     RemoveInterface { id: String },
     Subscribe { topics: Vec<String> },
     StatsQuery(StatsQuery),
-    OlderCalls { #[serde(default = "i64_max")] before: i64, #[serde(default = "hundred")] limit: usize },
     RadioQuery(Body),
-    CallsQuery(CallsQuery),
+    /// Recorded calls ([`CallsQuery`]), answered with `callsResult` `id`.
+    CallsQuery {
+        #[serde(default)]
+        id: Value,
+        #[serde(flatten)]
+        query: CallsQuery,
+    },
     /// Press plugin `plugin`'s button `action` on `value` (the settings
     /// object it's on, as edited): answered with `pluginActionResult` `id`
     /// once the plugin says how it went.
     PluginAction { id: u64, plugin: String, action: String, #[serde(default)] value: Value },
     Quit,
-}
-
-fn i64_max() -> i64 {
-    i64::MAX
-}
-
-fn hundred() -> usize {
-    100
 }
 
 impl Command {
@@ -345,38 +345,8 @@ impl Command {
 
     /// What a listen-only connection may send: looking, never changing.
     pub fn listen_may_send(&self) -> bool {
-        matches!(self, Command::Subscribe { .. } | Command::StatsQuery(_) | Command::RadioQuery(_) | Command::OlderCalls { .. } | Command::CallsQuery(_) | Command::Listen { .. })
+        matches!(self, Command::Subscribe { .. } | Command::StatsQuery(_) | Command::RadioQuery(_) | Command::CallsQuery { .. } | Command::Listen { .. })
     }
-}
-
-/// `callsQuery`: recorded calls from the call store, newest first: by system
-/// (its short name), talkgroup, radio, and start time (Unix ms, `from`
-/// inclusive to `to` exclusive); `before` pages like `olderCalls`; `limit`
-/// 1..500 (100).
-/// A page of recorded calls, newest first: what `callsQuery`, `olderCalls`
-/// and `GET /api/v1/calls` answer with. Equal start times are never split
-/// between pages, so `before` loses and repeats nothing.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct CallsPage {
-    pub entries: Vec<Value>,
-    /// Calls remain that started before the oldest on this page.
-    pub more: bool,
-    /// Where the next page starts (the next query's `before`): the oldest
-    /// start on this page; with none, the `before` asked, or 0.
-    pub before: i64,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct CallsQuery {
-    pub id: Value,
-    pub system: Option<String>,
-    pub talkgroup: Option<u32>,
-    pub unit: Option<i64>,
-    pub from: Option<i64>,
-    pub to: Option<i64>,
-    pub before: Option<i64>,
-    pub limit: Option<usize>,
 }
 
 /// `statsQuery`: the history of `series` (names, or prefixes ending in `*`)

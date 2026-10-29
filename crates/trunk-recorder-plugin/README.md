@@ -80,8 +80,8 @@ uses only the protocol types, with `default-features = false`.
 
 `host.calls(CallsQuery { talkgroup: Some(101), ..Default::default() })` asks the recorder for
 recorded calls (by system, talkgroup, radio and time, a page at a time); the page arrives at
-`Plugin::calls` with the request number it returned. The recorder answers from its call store, the
-latest calls included. (Since SDK 0.9.0.)
+`Plugin::calls(request, page)` with the request number it returned. A `CallsPage` is `entries`, `next` (present when more calls remain: put it in the next query's `cursor`) and `error` (the call store is off: the page is the recent calls alone). The recorder answers from its call store, the
+latest calls included. On the wire the request number rides beside the query and the page: `{"type":"calls.query","request":1,"talkgroup":101}` and `{"type":"calls","request":1,"entries":[...],"next":"..."}`. (Since SDK 0.9.0.)
 
 ## Versions
 

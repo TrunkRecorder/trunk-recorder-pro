@@ -832,6 +832,12 @@ fn serve(a: &Args) {
         for n in &cfg.notes {
             log::info!("{n}");
         }
+    } else if cfg.numbered {
+        // (Systems given their ids: kept from here on, so what's stored by them stays theirs.)
+        match cfg.save(&config_path) {
+            Ok(()) => log::info!("{}: systems numbered", config_path.display()),
+            Err(e) => log::warn!("{}: couldn't save the systems' ids ({e})", config_path.display()),
+        }
     }
     // (For this run only: the config, saved from the interface, keeps its own.)
     let port = match a.get("port") {

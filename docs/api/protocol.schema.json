@@ -1923,6 +1923,9 @@
               "items": {
                 "$ref": "#/definitions/CallEntry"
               }
+            },
+            "next": {
+              "type": "string"
             }
           },
           "required": [
@@ -3645,34 +3648,6 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "olderCalls"
-            },
-            "before": {
-              "type": "number"
-            },
-            "entries": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/CallEntry"
-              }
-            },
-            "more": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "type",
-            "before",
-            "entries",
-            "more"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
               "const": "callsResult"
             },
             "id": {
@@ -3684,11 +3659,8 @@
                 "$ref": "#/definitions/CallEntry"
               }
             },
-            "more": {
-              "type": "boolean"
-            },
-            "before": {
-              "type": "number"
+            "next": {
+              "type": "string"
             },
             "error": {
               "type": "string"
@@ -3697,9 +3669,7 @@
           "required": [
             "type",
             "id",
-            "entries",
-            "more",
-            "before"
+            "entries"
           ],
           "additionalProperties": false
         },
@@ -8633,27 +8603,6 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "olderCalls"
-            },
-            "before": {
-              "type": "number"
-            },
-            "limit": {
-              "type": "number"
-            }
-          },
-          "required": [
-            "type",
-            "before",
-            "limit"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
               "const": "callsQuery"
             },
             "id": {
@@ -8674,8 +8623,8 @@
             "to": {
               "type": "number"
             },
-            "before": {
-              "type": "number"
+            "cursor": {
+              "type": "string"
             },
             "limit": {
               "type": "number"

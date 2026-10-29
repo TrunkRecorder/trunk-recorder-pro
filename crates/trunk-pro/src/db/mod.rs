@@ -25,9 +25,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use serde_json::Value;
 
-use read::{CallsFilter, Page};
 use store::{Store, StoreInfo};
 
 /// Writes the channel holds before `send` blocks.
@@ -307,13 +305,14 @@ impl Db {
         true
     }
 
-    /// A page of the calls `f` wants, as committed.
-    pub fn page(&self, f: &CallsFilter) -> Result<Page, String> {
-        self.store()?.page(f)
+    /// A page of the calls `q` asks for, of `systems` (none: any), as
+    /// committed ([`Store::calls`]).
+    pub fn calls(&self, q: &trunk_app::calls::CallsQuery, systems: &[i64]) -> Result<trunk_app::calls::CallsPage, String> {
+        self.store()?.calls(q, systems)
     }
 
     /// The call filed under `path`, as committed.
-    pub fn one(&self, path: &str) -> Result<Option<Value>, String> {
+    pub fn one(&self, path: &str) -> Result<Option<trunk_app::calls::StoredCall>, String> {
         self.store()?.one(path)
     }
 
@@ -541,13 +540,12 @@ mod tests {
             db.send(Change::Talkgroups { system_id: 5, old: String::new(), new: "Decimal,Alpha Tag\n1,A\n".into() });
             let mut r = row::tests::record(1, 1000);
             r.short_name = "old".into();
-            db.send(Change::Call { row: row::call_row("old/1", &r, &r.to_json(), true, true, None, 0), live: true });
+            db.send(Change::Call { row: row::call_row("old/1", &r, true, true, None, 0), live: true });
             db.flush().unwrap();
             db.set_systems(&cfg("new"));
             db.flush().unwrap();
             assert_eq!(db.talkgroups("new").unwrap().as_deref(), Some("Decimal,Alpha Tag\n1,A\n"), "{}", db.kind());
-            let f = CallsFilter { systems: vec![db.system_id("new").unwrap()], limit: 10, ..Default::default() };
-            assert_eq!(db.page(&f).unwrap().entries.len(), 1);
+            assert_eq!(db.calls(&Default::default(), &[db.system_id("new").unwrap()]).unwrap().entries.len(), 1);
             assert_eq!(db.count("select count(*) from systems where id = 5 and short_name = 'new'"), 1);
         }
     }
@@ -646,7 +644,7 @@ mod tests {
         for db in Db::for_each_backend("retention-clock", Duration::from_secs(1)) {
             assert_eq!(db.retention_cutoff(120, 1000 * DAY_MS), 880 * DAY_MS, "an empty store counts back from now ({})", db.kind());
             let r = row::tests::record(1, 10 * DAY_MS);
-            db.send(Change::Call { row: row::call_row("s/a", &r, &r.to_json(), true, true, None, 0), live: true });
+            db.send(Change::Call { row: row::call_row("s/a", &r, true, true, None, 0), live: true });
             db.flush().unwrap();
             // The clock jumped 990 days ahead of the newest call.
             let cut = db.retention_cutoff(120, 1000 * DAY_MS);
@@ -683,7 +681,7 @@ mod tests {
         let db = Db::disabled();
         assert!(db.is_disabled());
         assert!(!db.checkpoint());
-        assert_eq!(db.page(&CallsFilter::default()).unwrap_err(), "the call store is off");
+        assert_eq!(db.calls(&Default::default(), &[]).unwrap_err(), "the call store is off");
         assert!(db.flush().is_ok());
         assert_eq!((db.recorder(), db.describe()), (None, None));
         assert!(!db.try_begin_backfill());
@@ -751,7 +749,7 @@ mod tests {
                 }
                 let json = r.to_json();
                 size = json.len();
-                db.send(Change::Call { row: row::call_row(&format!("big/{second}"), &r, &json, true, true, None, 0), live: true });
+                db.send(Change::Call { row: row::call_row(&format!("big/{second}"), &r, true, true, None, 0), live: true });
                 if (second + 1) % every == 0 {
                     db.flush().unwrap();
                 }

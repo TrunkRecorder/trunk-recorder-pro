@@ -15,13 +15,14 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, Offset, TimeZone};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::broadcast;
 use trunk_app::protocol::{body, Audience, ToClient};
 use trunk_app::saving::Saved;
 use trunk_app::{Feeder, Output, Session};
 
 use crate::db::Change;
+use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, bladerf, soapy, uhd};
@@ -100,7 +101,7 @@ pub struct Ctx {
     /// The calls concluded lately (newest first), as sent to the browser:
     /// the live list (`history`, `callFiles`), kept whether or not the call
     /// store is open. The store keeps the record; queries merge the two.
-    pub recent: Mutex<VecDeque<Value>>,
+    pub recent: Mutex<VecDeque<StoredCall>>,
     /// The call store: every finished call, indexed (off when it can't be opened).
     pub db: crate::db::Db,
     /// Signalled by a browser's `quit`.
@@ -1031,8 +1032,8 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
         return;
     }
     // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
-    let entry = index_call(ctx, &f.rel, &f.record, &json, keep_audio, keep_json);
-    publish(&ctx.hub, ToClient::Concluded { entry });
+    let call = index_call(ctx, &f.rel, &f.record, keep_audio, keep_json);
+    publish(&ctx.hub, ToClient::Concluded { entry: serde_json::to_value(&call).unwrap_or_default() });
     let mut wav_written = p.write_wav;
     let mut m4a = None;
     if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
@@ -1133,20 +1134,17 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
 }
 
 /// A finished call: put at the front of the live list and handed to the
-/// store (`json` is its record as written, `audio` and `json_kept` what is
-/// kept of it so far). Gives the entry the interface is sent.
-pub fn index_call(ctx: &Ctx, rel: &str, record: &trunk_recorder_plugin::CallRecord, json: &str, audio: bool, json_kept: bool) -> Value {
-    let mut entry = trunk_app::session::call_entry(rel, record);
-    entry["audio"] = json!(audio);
-    entry["json"] = json!(json_kept);
+/// store (`audio` and `json` say what of it is kept so far). Gives the call.
+pub fn index_call(ctx: &Ctx, rel: &str, record: &trunk_recorder_plugin::CallRecord, audio: bool, json: bool) -> StoredCall {
+    let call = StoredCall { path: rel.replace('\\', "/"), record: record.clone(), audio, json };
     {
         let mut r = ctx.recent.lock().unwrap();
-        r.push_front(entry.clone());
+        r.push_front(call.clone());
         r.truncate(RECENT_KEPT);
     }
-    let row = crate::db::row::call_row(rel, record, json, audio, json_kept, ctx.db.recorder(), crate::clock::unix_ms() as i64);
+    let row = crate::db::row::call_row(rel, record, audio, json, ctx.db.recorder(), crate::clock::unix_ms() as i64);
     ctx.db.send(Change::Call { row, live: true });
-    entry
+    call
 }
 
 /// A call's plugins are done: what of it was kept (`audio`, `json`). The
@@ -1157,12 +1155,11 @@ pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
     let rel = rel.replace('\\', "/");
     ctx.db.send(Change::CallFiles { path: rel.clone(), audio, json });
     let mut r = ctx.recent.lock().unwrap();
-    let Some(e) = r.iter_mut().find(|e| e["path"] == rel) else { return };
-    if e["audio"] == json!(audio) && e["json"] == json!(json) {
+    let Some(c) = r.iter_mut().find(|c| c.path == rel) else { return };
+    if (c.audio, c.json) == (audio, json) {
         return;
     }
-    e["audio"] = json!(audio);
-    e["json"] = json!(json);
+    (c.audio, c.json) = (audio, json);
     drop(r);
     publish(&ctx.hub, ToClient::CallFiles { path: rel, audio, json });
 }
@@ -1180,14 +1177,14 @@ pub fn load_recent(ctx: Arc<Ctx>) {
     let _ = std::thread::Builder::new().name("recent".into()).spawn(move || {
         let found = scan_recent(&dir, HISTORY);
         let mut r = ctx.recent.lock().unwrap();
-        let known: std::collections::HashSet<String> = r.iter().filter_map(|e| e["path"].as_str().map(String::from)).collect();
-        r.extend(found.into_iter().filter(|e| e["path"].as_str().is_none_or(|p| !known.contains(p))));
+        let known: std::collections::HashSet<String> = r.iter().map(|c| c.path.clone()).collect();
+        r.extend(found.into_iter().filter(|c| !known.contains(&c.path)));
         r.truncate(RECENT_KEPT);
     });
 }
 
 /// The newest `limit` calls already on disk, by when their records were written.
-fn scan_recent(dir: &Path, limit: usize) -> VecDeque<Value> {
+fn scan_recent(dir: &Path, limit: usize) -> VecDeque<StoredCall> {
     let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -1206,10 +1203,10 @@ fn scan_recent(dir: &Path, limit: usize) -> VecDeque<Value> {
         .into_iter()
         .take(limit)
         .filter_map(|(_, p)| {
-            let record: Value = serde_json::from_str(&fs::read_to_string(&p).ok()?).ok()?;
+            let record = serde_json::from_str(&fs::read_to_string(&p).ok()?).ok()?;
             let rel = p.strip_prefix(dir).ok()?.with_extension("");
             let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
-            Some(json!({ "path": rel.to_string_lossy().replace('\\', "/"), "record": record, "audio": audio, "json": true }))
+            Some(StoredCall { path: rel.to_string_lossy().replace('\\', "/"), record, audio, json: true })
         })
         .collect()
 }
@@ -1224,38 +1221,19 @@ fn store_error(ctx: &Ctx, what: &str, e: &str) {
     }
 }
 
-/// The `history` message: the newest calls, from the live list and the store
-/// (the live copy wins), by start time.
+/// The `history` message: the newest calls ([`calls`]).
 pub fn history(ctx: &Ctx) -> ToClient {
-    // (The live list first: a call committed meanwhile is then in one or the other.)
-    let live: Vec<Value> = ctx.recent.lock().unwrap().iter().cloned().collect();
-    let stored = if ctx.db.is_disabled() {
-        Vec::new()
-    } else {
-        ctx.db.page(&crate::db::read::CallsFilter { limit: HISTORY, ..Default::default() }).map(|p| p.entries).unwrap_or_else(|e| {
-            store_error(ctx, "history", &e);
-            Vec::new()
-        })
-    };
-    let mut seen = std::collections::HashSet::new();
-    let mut entries: Vec<Value> = live
-        .into_iter()
-        .chain(stored)
-        .filter(|e| seen.insert(e["path"].as_str().unwrap_or_default().to_string()))
-        .collect();
-    let key = |e: &Value| (e["record"]["start_time_ms"].as_i64().unwrap_or(0), e["path"].as_str().unwrap_or_default().to_string());
-    entries.sort_by_key(|e| std::cmp::Reverse(key(e)));
-    entries.truncate(HISTORY);
-    ToClient::History { entries }
+    let page = calls(ctx, &CallsQuery { limit: Some(HISTORY), ..Default::default() });
+    ToClient::History { entries: page.entries, next: page.next }
 }
 
-/// Calls by `q` (system, talkgroup, radio, time; paged by `before`), newest
-/// first: the one query behind `callsQuery`, `olderCalls`, `/api/v1/calls`
-/// and the plugins'. From the store, with the live list's calls it hasn't
-/// committed yet merged in; with the store off (or failing), from the live
-/// list alone, and why it's only that.
-pub fn calls(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> (crate::db::read::Page, Option<String>) {
-    use crate::db::read;
+/// Calls by `q` (system, talkgroup, radio, time; paged by its cursor),
+/// newest first: the one query behind `callsQuery`, the greeting's history,
+/// `/api/v1/calls` and the plugins'. From the store, with the live list's
+/// calls it hasn't committed yet merged in; with the store off (or
+/// failing), from the live list alone, and the page's `error` says why.
+pub fn calls(ctx: &Ctx, q: &CallsQuery) -> CallsPage {
+    use trunk_app::calls::{page_of, with_live};
     let (systems, names) = match q.system.as_deref() {
         // (A name not the config's: no calls, rather than every system's.)
         Some(name) => (vec![ctx.db.system_id(name).unwrap_or(-1)], systems_for(&ctx.config.lock().unwrap(), name)),
@@ -1263,52 +1241,33 @@ pub fn calls(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> (crate::db::read
         None if q.talkgroup.is_some() || q.unit.is_some() => (ctx.db.system_ids(), Vec::new()),
         None => (Vec::new(), Vec::new()),
     };
-    let filter = read::CallsFilter {
-        systems,
-        names,
-        talkgroup: q.talkgroup,
-        unit: q.unit,
-        from_ms: q.from,
-        to_ms: q.to,
-        before_ms: q.before,
-        limit: q.limit.unwrap_or(100).clamp(1, 500),
-    };
     // (The live list first: a call committed meanwhile is then in one or the other.)
-    let live: Vec<Value> = ctx.recent.lock().unwrap().iter().cloned().collect();
-    match ctx.db.page(&filter) {
-        Ok(stored) => (read::with_live(stored, &live, &filter), None),
+    let live: Vec<StoredCall> = ctx.recent.lock().unwrap().iter().cloned().collect();
+    if ctx.db.is_disabled() {
+        return CallsPage { error: Some("the call store is off: only the recent calls".into()), ..page_of(&live, q, &names) };
+    }
+    match ctx.db.calls(q, &systems) {
+        Ok(stored) => with_live(stored, &live, q, &names),
         Err(e) => {
             store_error(ctx, "calls", &e);
-            (read::page_of(&live, &filter), Some(format!("{e}: only the recent calls")))
+            CallsPage { error: Some(format!("{e}: only the recent calls")), ..page_of(&live, q, &names) }
         }
     }
 }
 
-/// The plugins' `calls.query`: [`calls`], the page in the SDK's types. (A
-/// weak hold on the context: the plugins are part of it.)
+/// The plugins' `calls.query`: [`calls`]. (A weak hold on the context: the
+/// plugins are part of it.)
 fn plugin_calls(ctx: &Arc<Ctx>) -> crate::plugins::Calls {
-    use trunk_recorder_plugin::{CallsPage, StoredCall};
     let ctx = Arc::downgrade(ctx);
-    Arc::new(move |q| {
-        let Some(ctx) = ctx.upgrade() else { return CallsPage { request: q.request, error: Some("the recorder is stopping".into()), ..Default::default() } };
-        let asked = trunk_app::protocol::CallsQuery { id: Value::Null, system: q.system.clone(), talkgroup: q.talkgroup, unit: q.unit, from: q.from, to: q.to, before: q.before, limit: q.limit };
-        let (page, error) = calls(&ctx, &asked);
-        let entries = page.entries.into_iter().filter_map(|e| serde_json::from_value::<StoredCall>(e).ok()).collect();
-        CallsPage { request: q.request, entries, more: page.more, before: page.before, error }
+    Arc::new(move |q| match ctx.upgrade() {
+        Some(ctx) => calls(&ctx, q),
+        None => CallsPage { error: Some("the recorder is stopping".into()), ..Default::default() },
     })
 }
 
-/// `olderCalls` (the Listen page's "Load older"): [`calls`] before `before_ms`.
-pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
-    let q = trunk_app::protocol::CallsQuery { before: Some(before_ms), limit: Some(limit), ..Default::default() };
-    let (page, _) = calls(ctx, &q);
-    ToClient::OlderCalls { before: before_ms, entries: page.entries, more: page.more }
-}
-
 /// `callsQuery`: [`calls`].
-pub fn calls_query(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> ToClient {
-    let (page, error) = calls(ctx, q);
-    ToClient::CallsResult { id: q.id.clone(), page, error }
+pub fn calls_query(ctx: &Ctx, id: Value, q: &CallsQuery) -> ToClient {
+    ToClient::CallsResult { id, page: calls(ctx, q) }
 }
 
 /// System `name` and the names its sites had as systems of their own, which
@@ -1426,13 +1385,13 @@ mod finish_tests {
         assert_eq!(names, ["ohmarcs-butler"]);
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
         let rel = "ohmarcs/2026/10/26/9179-1700000000_851350000";
-        let entry = index_call(&ctx, rel, &r, &r.to_json(), true, true);
+        let entry = index_call(&ctx, rel, &r, true, true);
         ctx.db.flush().unwrap();
-        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0], entry, "the entry on the wire is the entry in the store");
-        let ToClient::OlderCalls { entries, more, .. } = older_calls(&ctx, i64::MAX, 100) else { panic!() };
-        assert_eq!((entries.len(), more), (1, false));
+        let page = calls(&ctx, &CallsQuery::default());
+        assert_eq!((page.entries.len(), page.next), (1, None));
         // The writer tells the interface when the files kept are not what the entry said.
         let mut heard = ctx.hub.subscribe();
         call_files(&ctx, rel, false, true);
@@ -1459,8 +1418,8 @@ mod live_list_tests {
         assert!(ctx.db.is_disabled());
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
         let rel = "ohmarcs/2026/10/26/9179-1700000000_851350000";
-        let entry = index_call(&ctx, rel, &r, &r.to_json(), true, true);
-        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        let entry = index_call(&ctx, rel, &r, true, true);
+        let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
         assert_eq!(entries, [entry]);
         let mut heard = ctx.hub.subscribe();
         call_files(&ctx, rel, false, true);
@@ -1481,12 +1440,12 @@ mod pending_tests {
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
         ctx.db.send(crate::db::Change::Meta { key: "warm".into(), value: "1".into() });
         ctx.db.flush().unwrap();
-        let entry = index_call(&ctx, "ohmarcs/pending", &r, &r.to_json(), true, true);
-        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        let entry = index_call(&ctx, "ohmarcs/pending", &r, true, true);
+        let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0], entry);
         ctx.db.flush().unwrap();
-        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
         assert_eq!(entries.len(), 1, "no duplicate once committed");
     }
 
@@ -1496,11 +1455,11 @@ mod pending_tests {
         let ctx = test_ctx_with_batch(&dir, std::time::Duration::from_secs(60));
         let old = crate::db::row::tests::record(1, 1000);
         let new = crate::db::row::tests::record(1, 2000);
-        index_call(&ctx, "ohmarcs/old", &old, &old.to_json(), true, true);
+        index_call(&ctx, "ohmarcs/old", &old, true, true);
         ctx.db.flush().unwrap();
-        index_call(&ctx, "ohmarcs/new", &new, &new.to_json(), true, true);
-        let ToClient::History { entries } = history(&ctx) else { panic!() };
-        let paths: Vec<_> = entries.iter().map(|e| e["path"].as_str().unwrap().to_string()).collect();
+        index_call(&ctx, "ohmarcs/new", &new, true, true);
+        let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
+        let paths: Vec<_> = entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, ["ohmarcs/new", "ohmarcs/old"]);
     }
 }
@@ -1508,7 +1467,6 @@ mod pending_tests {
 #[cfg(test)]
 mod calls_query_tests {
     use super::*;
-    use trunk_app::protocol::{CallsPage, CallsQuery};
 
     #[test]
     fn calls_query_honours_old_system_names() {
@@ -1516,11 +1474,10 @@ mod calls_query_tests {
         let ctx = test_ctx(&dir);
         let mut r = crate::db::row::tests::record(1, 1000);
         r.short_name = "ohmarcs-butler".into();
-        index_call(&ctx, "ohmarcs-butler/x", &r, &r.to_json(), true, true);
+        index_call(&ctx, "ohmarcs-butler/x", &r, true, true);
         ctx.db.flush().unwrap();
         let q = CallsQuery { system: Some("ohmarcs".into()), ..Default::default() };
-        let ToClient::CallsResult { page: CallsPage { entries, .. }, .. } = calls_query(&ctx, &q) else { panic!() };
-        assert_eq!(entries.len(), 1);
+        assert_eq!(calls(&ctx, &q).entries.len(), 1);
     }
 
     #[test]
@@ -1529,23 +1486,23 @@ mod calls_query_tests {
         let ctx = test_ctx(&dir);
         for i in 0..501 {
             let r = crate::db::row::tests::record(1, 1000 + i);
-            index_call(&ctx, &format!("ohmarcs/{i}"), &r, &r.to_json(), true, true);
+            index_call(&ctx, &format!("ohmarcs/{i}"), &r, true, true);
         }
         ctx.db.flush().unwrap();
-        let q = CallsQuery { limit: Some(9999), ..Default::default() };
-        let ToClient::CallsResult { page: CallsPage { entries, more, .. }, .. } = calls_query(&ctx, &q) else { panic!() };
-        assert_eq!((entries.len(), more), (500, true));
-        let q = CallsQuery { limit: Some(0), ..Default::default() };
-        let ToClient::CallsResult { page: CallsPage { entries, more, .. }, .. } = calls_query(&ctx, &q) else { panic!() };
-        assert_eq!((entries.len(), more), (1, true));
+        let page = calls(&ctx, &CallsQuery { limit: Some(9999), ..Default::default() });
+        assert_eq!((page.entries.len(), page.next.is_some()), (500, true));
+        let page = calls(&ctx, &CallsQuery { limit: Some(0), ..Default::default() });
+        assert_eq!((page.entries.len(), page.next.is_some()), (1, true));
+        let ToClient::CallsResult { id, page } = calls_query(&ctx, serde_json::json!(3), &CallsQuery::default()) else { panic!() };
+        assert_eq!((id, page.entries.len()), (serde_json::json!(3), 100));
     }
 
     #[test]
-    fn an_empty_answer_with_no_before_asked_says_0() {
+    fn an_empty_answer_has_no_next() {
         let dir = crate::db::TestDir::new("cq3");
         let ctx = test_ctx(&dir);
-        let ToClient::CallsResult { page: CallsPage { entries, before, .. }, .. } = calls_query(&ctx, &CallsQuery::default()) else { panic!() };
-        assert_eq!((entries.len(), before), (0, 0));
+        let page = calls(&ctx, &CallsQuery::default());
+        assert_eq!((page.entries.len(), page.next, page.error), (0, None, None));
     }
 
     /// A store from a newer build is refused: the recorder starts with the
@@ -1557,17 +1514,15 @@ mod calls_query_tests {
         crate::db::seed_unopenable(&store);
         let ctx = test_ctx_with_store(&dir.join("capture"), &store);
         assert!(ctx.db.is_disabled());
-        let ToClient::History { entries } = history(&ctx) else { panic!() };
+        let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
         assert!(entries.is_empty());
         let r = crate::db::row::tests::record(1, 1000);
-        index_call(&ctx, "ohmarcs/x", &r, &r.to_json(), true, true);
+        index_call(&ctx, "ohmarcs/x", &r, true, true);
         call_files(&ctx, "ohmarcs/x", false, true);
         ctx.db.flush().unwrap();
         // (The live list answers: the calls since the recorder started.)
-        let ToClient::OlderCalls { entries, more, .. } = older_calls(&ctx, i64::MAX, 100) else { panic!() };
-        assert_eq!((entries.len(), more), (1, false));
-        let ToClient::CallsResult { page: CallsPage { entries, before, .. }, error, .. } = calls_query(&ctx, &CallsQuery::default()) else { panic!() };
-        assert_eq!((entries.len(), before), (1, 1000));
-        assert!(error.is_some_and(|e| e.contains("only the recent calls")), "and says why it's only those");
+        let page = calls(&ctx, &CallsQuery::default());
+        assert_eq!((page.entries.len(), page.next), (1, None));
+        assert!(page.error.is_some_and(|e| e.contains("only the recent calls")), "and says why it's only those");
     }
 }

@@ -529,7 +529,7 @@ pub(crate) fn tr_config(path: &str) -> ToClient {
 pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
     let ctx2 = ctx.clone();
     let found = tokio::task::spawn_blocking(move || (control.then(|| json!(sdr::devices())), crate::radio::radios_json(false), runtime::history(&ctx2), kept_now(&ctx2))).await;
-    let (devices, radios, history, kept) = found.unwrap_or((None, Value::Null, ToClient::History { entries: Vec::new() }, Vec::new()));
+    let (devices, radios, history, kept) = found.unwrap_or((None, Value::Null, ToClient::History { entries: Vec::new(), next: None }, Vec::new()));
     let mut m = greeting_now(ctx, devices, radios, history, kept);
     if control {
         m.push(plugins_list(ctx).await);
@@ -845,13 +845,9 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || radio_query(&ctx2, &q)).await.ok()
         }
-        Command::OlderCalls { before, limit } => {
+        Command::CallsQuery { id, query } => {
             let ctx2 = ctx.clone();
-            tokio::task::spawn_blocking(move || runtime::older_calls(&ctx2, before, limit.clamp(1, 500))).await.ok()
-        }
-        Command::CallsQuery(q) => {
-            let ctx2 = ctx.clone();
-            tokio::task::spawn_blocking(move || runtime::calls_query(&ctx2, &q)).await.ok()
+            tokio::task::spawn_blocking(move || runtime::calls_query(&ctx2, id, &query)).await.ok()
         }
         Command::SetConfig { config, version } => match Config::from_value(config) {
             Ok(mut c) => {

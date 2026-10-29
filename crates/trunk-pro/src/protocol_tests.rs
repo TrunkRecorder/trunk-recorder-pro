@@ -504,11 +504,11 @@ fn the_servers_messages() {
     // The call store answers `callsQuery`: a call indexed, then asked for by talkgroup.
     let mut record = crate::db::row::tests::record(9179, now * 1000);
     record.short_name = "p25".into();
-    crate::runtime::index_call(&ctx, "p25/2026/10/26/9179-1", &record, &record.to_json(), true, true);
+    crate::runtime::index_call(&ctx, "p25/2026/10/26/9179-1", &record, true, true);
     ctx.db.flush().unwrap();
-    let Ok(Command::CallsQuery(cq)) = Command::parse(r#"{"type":"callsQuery","id":3,"talkgroup":9179}"#) else { panic!("callsQuery") };
-    let calls = crate::runtime::calls_query(&ctx, &cq).to_value();
-    assert_eq!((calls["id"].as_i64(), calls["entries"].as_array().map(Vec::len), calls["more"].as_bool()), (Some(3), Some(1), Some(false)), "{calls}");
+    let Ok(Command::CallsQuery { id, query }) = Command::parse(r#"{"type":"callsQuery","id":3,"talkgroup":9179}"#) else { panic!("callsQuery") };
+    let calls = crate::runtime::calls_query(&ctx, id, &query).to_value();
+    assert_eq!((calls["id"].as_i64(), calls["entries"].as_array().map(Vec::len), calls.get("next")), (Some(3), Some(1), None), "{calls}");
     queries.push(calls);
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
@@ -589,8 +589,7 @@ fn messages_to_the_recorder() {
         json!({ "type": "radioQuery", "id": 4, "what": "unit", "system": "dcfd", "key": 1234 }),
         json!({ "type": "channelFile", "index": 0, "path": "" }),
         json!({ "type": "unlockKeys", "source": "county", "password": "p" }),
-        json!({ "type": "olderCalls", "before": 1_750_000_000_000i64, "limit": 50 }),
-        json!({ "type": "callsQuery", "id": 5, "system": "dcfd", "talkgroup": 9179, "unit": 1234, "from": 1_750_000_000_000i64, "to": 1_750_086_400_000i64, "before": 1_750_050_000_000i64, "limit": 50 }),
+        json!({ "type": "callsQuery", "id": 5, "system": "dcfd", "talkgroup": 9179, "unit": 1234, "from": 1_750_000_000_000i64, "to": 1_750_086_400_000i64, "cursor": "1750050000000:dcfd/2025/6/15/9179-1750050000_851012500", "limit": 50 }),
         json!({ "type": "surveyListen", "freqHz": 851_012_500 }),
         json!({ "type": "callSignQuery", "id": 3, "callSigns": ["KNJA391", "KNJE616"] }),
         json!({ "type": "licenseQuery", "id": 1, "lat": 38.9, "lon": -77.03, "radiusM": 50_000, "signals": [{ "freqHz": 857_987_500 }, { "freqHz": 489_087_500, "widthHz": 12_500 }] }),

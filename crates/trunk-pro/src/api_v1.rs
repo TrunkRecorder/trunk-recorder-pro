@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::access::Door;
 use trunk_app::protocol::CallsQuery;
@@ -43,13 +43,13 @@ fn error(code: StatusCode, msg: &str) -> Fail {
 }
 
 /// Why a request may not go on: its door is gone or off, or the store is.
+fn hidden(ctx: &Ctx, door: &Door) -> Option<Response> {
+    crate::server::access_of(ctx, door).is_none().then(|| StatusCode::NOT_FOUND.into_response())
+}
+
+/// [`hidden`], or the store is off (503).
 fn refused(ctx: &Ctx, door: &Door) -> Option<Response> {
-    if crate::server::access_of(ctx, door).is_none() {
-        return Some(StatusCode::NOT_FOUND.into_response());
-    }
-    ctx.db
-        .is_disabled()
-        .then(|| error(StatusCode::SERVICE_UNAVAILABLE, "the call store is off").into_response())
+    hidden(ctx, door).or_else(|| ctx.db.is_disabled().then(|| error(StatusCode::SERVICE_UNAVAILABLE, "the call store is off").into_response()))
 }
 
 /// Parameter `name`, trimmed; one that is empty is as if not given.
@@ -74,13 +74,12 @@ fn number<T: std::str::FromStr>(
 /// The query the parameters ask: `callsQuery`'s, by its names.
 fn query(q: &HashMap<String, String>) -> Result<CallsQuery, Fail> {
     Ok(CallsQuery {
-        id: Value::Null,
         system: param(q, "system").map(str::to_string),
         talkgroup: number(q, "talkgroup")?,
         unit: number(q, "unit")?,
         from: number(q, "from")?,
         to: number(q, "to")?,
-        before: number(q, "before")?,
+        cursor: param(q, "cursor").map(str::to_string),
         limit: number(q, "limit")?,
     })
 }
@@ -100,7 +99,8 @@ async fn calls(
     Extension(door): Extension<Door>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    if let Some(r) = refused(&ctx, &door) {
+    // (With the store off: the recent calls, as callsQuery answers; the page's `error` says so.)
+    if let Some(r) = hidden(&ctx, &door) {
         return r;
     }
     let q = match query(&q) {
@@ -110,8 +110,7 @@ async fn calls(
     // (The same query as callsQuery: the store, with calls not committed yet.)
     let ctx2 = ctx.clone();
     match tokio::task::spawn_blocking(move || runtime::calls(&ctx2, &q)).await {
-        Ok((page, None)) => Json(page).into_response(),
-        Ok((_, Some(e))) => error(StatusCode::INTERNAL_SERVER_ERROR, &e).into_response(),
+        Ok(page) => Json(page).into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
 }
@@ -121,14 +120,17 @@ async fn call(
     Extension(door): Extension<Door>,
     Path(path): Path<String>,
 ) -> Response {
-    if let Some(r) = refused(&ctx, &door) {
+    if let Some(r) = hidden(&ctx, &door) {
         return r;
     }
     let path = path.replace('\\', "/");
     // (A call finished lately may not be committed yet: the live list has it.)
-    let live = ctx.recent.lock().unwrap().iter().find(|e| e["path"] == path).cloned();
-    if let Some(e) = live {
-        return Json(e).into_response();
+    let live = ctx.recent.lock().unwrap().iter().find(|c| c.path == path).cloned();
+    if let Some(c) = live {
+        return Json(c).into_response();
+    }
+    if ctx.db.is_disabled() {
+        return error(StatusCode::NOT_FOUND, "no such call among the recent calls (the call store is off)").into_response();
     }
     match read(&ctx, move |db| db.one(&path)).await {
         Ok(Some(entry)) => Json(entry).into_response(),
@@ -190,7 +192,7 @@ mod tests {
         get_as(ctx, Door::Builtin, path).await
     }
 
-    fn json_of(body: &str) -> Value {
+    fn json_of(body: &str) -> serde_json::Value {
         serde_json::from_str(body).unwrap()
     }
 
@@ -210,13 +212,13 @@ mod tests {
             (Some(0), true, true)
         );
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
-        runtime::index_call(&ctx, "ohmarcs/a", &r, &r.to_json(), true, true);
+        runtime::index_call(&ctx, "ohmarcs/a", &r, true, true);
         ctx.db.flush().unwrap();
         let (code, body) = get(&ctx, "/api/v1/calls?talkgroup=9179").await;
         assert_eq!(code, 200, "not the docs 404: {body}");
         let v = json_of(&body);
         assert_eq!(v["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(v["more"], false);
+        assert!(v.get("next").is_none(), "no more: {v}");
         assert_eq!(
             json_of(&get(&ctx, "/api/v1/calls?talkgroup=1").await.1)["entries"]
                 .as_array()
@@ -224,7 +226,7 @@ mod tests {
                 .len(),
             0
         );
-        let every = "system=ohmarcs&from=0&to=1700000001000&before=1700000001000&limit=5";
+        let every = "system=ohmarcs&from=0&to=1700000001000&cursor=1700000001000:zzz&limit=5";
         let (code, body) = get(&ctx, &format!("/api/v1/calls?{every}")).await;
         assert_eq!(code, 200, "{body}");
         assert_eq!(json_of(&body)["entries"].as_array().unwrap().len(), 1);
@@ -270,7 +272,7 @@ mod tests {
         let dir = TestDir::new("api-v1-empty");
         let ctx = runtime::test_ctx(&dir.join("api-v1-empty-cap"));
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
-        runtime::index_call(&ctx, "ohmarcs/a", &r, &r.to_json(), true, true);
+        runtime::index_call(&ctx, "ohmarcs/a", &r, true, true);
         ctx.db.flush().unwrap();
         for q in [
             "talkgroup=",
@@ -325,20 +327,24 @@ mod tests {
         }
     }
 
+    /// With the store off: the calls are the recent calls, as callsQuery
+    /// answers (the page's `error` says so); the storage route is 503.
     #[tokio::test]
-    async fn a_store_that_is_off_answers_503() {
+    async fn a_store_that_is_off_answers_from_the_recent_calls() {
         let dir = TestDir::new("api-v1-off");
         let store = dir.join("trunk-pro.sqlite");
         crate::db::seed_unopenable(&store);
         let ctx = runtime::test_ctx_with_store(&dir.join("cap"), &store);
-        for p in ["/api/v1/calls", "/api/v1/calls/ohmarcs/a", "/api/v1/storage"] {
-            let (code, body) = get(&ctx, p).await;
-            assert_eq!(
-                (code, json_of(&body)["error"].as_str()),
-                (503, Some("the call store is off")),
-                "{p}"
-            );
-        }
+        let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
+        runtime::index_call(&ctx, "ohmarcs/a", &r, true, true);
+        let (code, body) = get(&ctx, "/api/v1/calls").await;
+        let v = json_of(&body);
+        assert_eq!((code, v["entries"].as_array().map(Vec::len)), (200, Some(1)), "{body}");
+        assert!(v["error"].as_str().is_some_and(|e| e.contains("only the recent calls")));
+        assert_eq!(get(&ctx, "/api/v1/calls/ohmarcs/a").await.0, 200, "a recent call");
+        assert_eq!(get(&ctx, "/api/v1/calls/ohmarcs/b").await.0, 404);
+        let (code, body) = get(&ctx, "/api/v1/storage").await;
+        assert_eq!((code, json_of(&body)["error"].as_str()), (503, Some("the call store is off")));
     }
 
     #[tokio::test]

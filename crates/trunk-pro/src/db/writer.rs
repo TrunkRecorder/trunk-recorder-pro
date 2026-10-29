@@ -226,15 +226,14 @@ mod tests {
     fn a_live_row_wins_over_a_backfilled_one() {
         for db in Db::for_each_backend("upsert", Duration::from_secs(1)) {
             let r = record(9179, 1_700_000_000_000);
-            let json = r.to_json();
-            db.send(Change::Call { row: call_row("ohmarcs/a", &r, &json, true, true, None, 1), live: true });
-            db.send(Change::Call { row: call_row("ohmarcs/a", &r, &json, false, false, None, 2), live: false });
+            db.send(Change::Call { row: call_row("ohmarcs/a", &r, true, true, None, 1), live: true });
+            db.send(Change::Call { row: call_row("ohmarcs/a", &r, false, false, None, 2), live: false });
             db.flush().unwrap();
             assert_eq!(db.count("select count(*) from calls where path = 'ohmarcs/a'"), 1);
-            assert_eq!(db.one("ohmarcs/a").unwrap().unwrap()["audio"], true, "the backfilled copy is ignored ({})", db.kind());
-            db.send(Change::Call { row: call_row("ohmarcs/a", &r, &json, false, true, None, 3), live: true });
+            assert!(db.one("ohmarcs/a").unwrap().unwrap().audio, "the backfilled copy is ignored ({})", db.kind());
+            db.send(Change::Call { row: call_row("ohmarcs/a", &r, false, true, None, 3), live: true });
             db.flush().unwrap();
-            assert_eq!(db.one("ohmarcs/a").unwrap().unwrap()["audio"], false, "a live copy replaces");
+            assert!(!db.one("ohmarcs/a").unwrap().unwrap().audio, "a live copy replaces");
             assert_eq!(db.count("select count(*) from call_transmissions"), 2, "children replaced, not duplicated");
         }
     }
@@ -249,8 +248,8 @@ mod tests {
             let ok = record(1, 1000);
             let mut bad = record(2, 2000);
             bad.src_list[1].src = 666;
-            db.send(Change::Call { row: call_row("s/ok", &ok, &ok.to_json(), true, true, None, 0), live: true });
-            db.send(Change::Call { row: call_row("s/bad", &bad, &bad.to_json(), true, true, None, 0), live: true });
+            db.send(Change::Call { row: call_row("s/ok", &ok, true, true, None, 0), live: true });
+            db.send(Change::Call { row: call_row("s/bad", &bad, true, true, None, 0), live: true });
             db.flush().unwrap();
             let got = (db.count("select count(*) from calls"), db.count("select count(*) from call_transmissions"));
             assert_eq!(got, (1, 2), "s/ok and its two transmissions; nothing of s/bad ({})", db.kind());
@@ -276,11 +275,11 @@ mod tests {
     fn call_files_updates_the_flags() {
         for db in Db::for_each_backend("files", Duration::from_secs(1)) {
             let r = record(1, 1000);
-            db.send(Change::Call { row: call_row("ohmarcs/b", &r, &r.to_json(), true, true, None, 1), live: true });
+            db.send(Change::Call { row: call_row("ohmarcs/b", &r, true, true, None, 1), live: true });
             db.send(Change::CallFiles { path: "ohmarcs/b".into(), audio: false, json: true });
             db.flush().unwrap();
             let e = db.one("ohmarcs/b").unwrap().unwrap();
-            assert_eq!((e["audio"].as_bool(), e["json"].as_bool()), (Some(false), Some(true)), "{}", db.kind());
+            assert_eq!((e.audio, e.json), (false, true), "{}", db.kind());
         }
     }
 
@@ -303,14 +302,14 @@ mod tests {
         for db in Db::for_each_backend("retention", Duration::from_secs(1)) {
             for i in 0..2500u32 {
                 let r = record(1, i as i64);
-                db.send(Change::Call { row: call_row(&format!("s/{i}"), &r, &r.to_json(), true, true, None, 0), live: true });
+                db.send(Change::Call { row: call_row(&format!("s/{i}"), &r, true, true, None, 0), live: true });
             }
             db.flush().unwrap();
             let before = db.commits();
             db.retire_for_test(2200);
             db.flush().unwrap();
             let r = record(1, 9999);
-            db.send(Change::Call { row: call_row("live", &r, &r.to_json(), true, true, None, 0), live: true });
+            db.send(Change::Call { row: call_row("live", &r, true, true, None, 0), live: true });
             db.flush().unwrap();
             assert_eq!(wait_for(&db, 301), (301, 602), "{}", db.kind());
             assert!(db.commits() - before >= 4, "2200 rows in chunks of 1000, and the live write's own");

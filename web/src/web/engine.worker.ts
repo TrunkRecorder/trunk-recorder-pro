@@ -2,10 +2,9 @@
 // RTL-SDR driver (WebUSB), speaking the same protocol as the desktop app's
 // server, so the interface is identical. Calls are stored in OPFS.
 
-import { callsPage } from "../calls.ts";
 import { editCells, withCells } from "../talkgroups.ts";
-import init, { directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
-import type { Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
+import init, { calls_page, directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
+import type { CallEntry, Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
 import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, trpBase } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
@@ -37,6 +36,12 @@ let topics: string[] = [];
 /** The radio registry, saved between runs: one file, `{shortName: registry}`. */
 const REGISTRY_FILE = "radio-registry.json";
 const ready = init();
+
+/** A page of `calls` (newest first, by the recorder's own order and cursor: trunk-app's `calls`, through wasm). */
+type CallsPage = { entries: CallEntry[]; next?: string };
+function callsPage(calls: CallEntry[], q: Omit<Extract<ToRecorder, { type: "callsQuery" }>, "type" | "id">): CallsPage {
+  return JSON.parse(calls_page(JSON.stringify(calls), JSON.stringify(q))) as CallsPage;
+}
 
 function setPhase(p: "idle" | "starting" | "running" | "stopping", error: string | null = null, ended = false): void {
   phase = { type: "state", phase: p, error, ended };
@@ -460,7 +465,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       for (const [system, csv] of Object.entries(m.talkgroups)) post({ type: "talkgroups", system, csv });
       for (const [system, csv] of Object.entries(await savedUnits(m.config))) post({ type: "units", system, csv });
       post({ type: "heard", heard: await savedHeard(m.config) });
-      post({ type: "history", entries: await listCalls(300) });
+      post({ type: "history", ...callsPage(await listCalls(Number.MAX_SAFE_INTEGER), { limit: 300 }) });
       post({ type: "survey", stage: "idle" });
       post({ type: "devices", devices: await devices() });
       post({
@@ -518,11 +523,6 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       post(session ? (JSON.parse(session.radio_query(JSON.stringify(m))) as FromRecorder) : ({ type: "radioResult", id: m.id, what: m.what as "summary", error: "Start recording to see the radio system." } as FromRecorder));
       break;
     // The whole index is small (one line a call): read it, and page it as the recorder's call store does.
-    case "olderCalls": {
-      const p = callsPage(await listCalls(Number.MAX_SAFE_INTEGER), { before: m.before, limit: m.limit });
-      post({ type: "olderCalls", before: m.before, entries: p.entries, more: p.more });
-      break;
-    }
     case "callsQuery": {
       const { type: _, id, ...q } = m;
       post({ type: "callsResult", id, ...callsPage(await listCalls(Number.MAX_SAFE_INTEGER), q) });

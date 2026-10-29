@@ -1702,7 +1702,7 @@ recorder can do beyond recording (`Capability`: `service`, `drivers`, `plugins`,
 | Every client | `state`, `status`, `stats`, `host`, `concluded`, `callFiles`, `monitorEvent`, `unitAlias`, `heard`, `config`, `talkgroups`, `survey`, `surveySpectrum`, `log` (the recorder's own warnings and errors, with their clock time and level), `quit` |
 | Control access only | `plugins`, `pluginRuntime`, `interfaces`, `store`, `installProgress`, `keys` (`ToClient::audience`) |
 | Topic subscribers | `spectrum` (`spectrum:<source>`, about 7/s, 512 bins), `log` (`log`: control channel lines and the rest of the recorder's log), `rfDetail` (`rf:<source>`, 1/s), `decodeDetail` (`decode:<shortName>`, 1/s: channels, each site's adjacent sites and DMR / NXDN detail, patches), per-core detail in `host` (`platform`) |
-| The sender only | `configSaved`, `devices`, `radios`, `dir`, `trConfig`, `store`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`, `sourceProfile`, `error`, `notice` |
+| The sender only | `configSaved`, `devices`, `radios`, `dir`, `trConfig`, `store`, `subscribed`, `statsResult`, `radioResult`, `callsResult`, `sourceProfile`, `error`, `notice` |
 | Binary, to listeners | live audio frames |
 
 Nothing is computed for a topic nobody watches. A client more than 4,096 messages behind on the
@@ -1713,7 +1713,7 @@ hub skips the oldest without notice.
 | Area | Commands |
 |---|---|
 | Recording | `setConfig`, `setTalkgroups`, `start`, `stop`, `quit`, `channelFile` |
-| Watching | `subscribe`, `listen`, `statsQuery`, `radioQuery`, `olderCalls` |
+| Watching | `subscribe`, `listen`, `statsQuery`, `radioQuery`, `callsQuery` |
 | Setup | `devices`, `findRadios`, `listDir`, `readTrConfig`, `profileSource`, `surveyStart`, `surveyListen`, `surveyRescan`, `surveyStop` |
 | Plugins and interfaces | `plugins`, `addPlugin`, `removePlugin`, `interfaces`, `addInterface`, `removeInterface`; their stores: `store {kind, refresh?}`, `install {kind, id}` or `{kind, repository, tag?}` (progress in `installProgress {kind, key, id, stage, message}`), `kind` `plugin` or `interface` |
 | Keys | `unlockKeys {source, password}`, `lockKeys {source}` (key containers without a password file) |

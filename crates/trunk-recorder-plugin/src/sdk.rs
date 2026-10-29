@@ -50,7 +50,7 @@ pub trait Plugin: Sized {
     }
     /// The answer to [`Host::calls`]: a page of recorded calls, for the
     /// `request` it gave.
-    fn calls(&mut self, _page: CallsPage) {}
+    fn calls(&mut self, _request: u64, _page: CallsPage) {}
     /// Its settings changed while it runs (set [`Manifest::live_settings`]
     /// for this to be called rather than the plugin restarted). An `Err` is
     /// shown as its status, and the settings it had stay.
@@ -140,10 +140,10 @@ impl Host {
 
     /// Ask the recorder for recorded calls ([`CallsQuery`]); the page comes
     /// to [`Plugin::calls`] with the request number this gives.
-    pub fn calls(&self, mut q: CallsQuery) -> u64 {
-        q.request = self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        self.send(&PluginMessage::CallsQuery(q.clone()));
-        q.request
+    pub fn calls(&self, query: CallsQuery) -> u64 {
+        let request = self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        self.send(&PluginMessage::CallsQuery { request, query });
+        request
     }
 
     pub fn send(&self, m: &PluginMessage) {
@@ -315,7 +315,7 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
                 let reply = Reply { host: host.clone(), request: a.request, sent: false };
                 p.action(a, reply)
             }
-            HostMessage::Calls(c) => p.calls(c),
+            HostMessage::Calls { request, page } => p.calls(request, page),
             HostMessage::Settings(h) => match setup::<P>(h).and_then(|s| p.settings(s)) {
                 Ok(()) => host.status(State::Ok, ""),
                 Err(e) => host.status(State::Error, format!("new settings not taken: {e}")),
@@ -446,8 +446,8 @@ mod tests {
             host.calls(CallsQuery { talkgroup: Some(101), limit: Some(10), ..Default::default() });
             Ok(Asker(host))
         }
-        fn calls(&mut self, page: CallsPage) {
-            self.0.info(format!("request {}: {} calls, more {}", page.request, page.entries.len(), page.more));
+        fn calls(&mut self, request: u64, page: CallsPage) {
+            self.0.info(format!("request {request}: {} calls, next {:?}", page.entries.len(), page.next));
         }
     }
 
@@ -457,13 +457,14 @@ mod tests {
     fn a_plugin_asks_for_calls_and_gets_the_page() {
         let dir = testing::temp_dir("sdk-calls");
         let call = StoredCall { path: "sys1/2026/10/27/101-1".into(), record: CallRecord { talkgroup: 101, ..Default::default() }, audio: true, json: true };
-        let page = CallsPage { request: 1, entries: vec![call], more: true, before: 1000, error: None };
-        let out = testing::run::<Asker>([HostMessage::Hello(testing::hello(&dir, json!({}))), HostMessage::Calls(page)]);
-        let asked = out.messages.iter().find_map(|m| if let PluginMessage::CallsQuery(q) = m { Some(q.clone()) } else { None }).expect("calls.query sent");
-        assert_eq!((asked.request, asked.talkgroup, asked.limit), (1, Some(101), Some(10)));
-        let line = serde_json::to_string(&PluginMessage::CallsQuery(asked)).unwrap();
+        let page = CallsPage { entries: vec![call], next: Some("1000:sys1/x".into()), error: None };
+        let out = testing::run::<Asker>([HostMessage::Hello(testing::hello(&dir, json!({}))), HostMessage::Calls { request: 1, page }]);
+        let asked = out.messages.iter().find(|m| matches!(m, PluginMessage::CallsQuery { .. })).cloned().expect("calls.query sent");
+        let PluginMessage::CallsQuery { request, query } = &asked else { unreachable!() };
+        assert_eq!((*request, query.talkgroup, query.limit), (1, Some(101), Some(10)));
+        let line = serde_json::to_string(&asked).unwrap();
         assert_eq!(line, r#"{"type":"calls.query","request":1,"talkgroup":101,"limit":10}"#, "only what was asked goes on the wire");
         let said: Vec<String> = out.logs().into_iter().map(|(_, t)| t).collect();
-        assert_eq!(said, ["request 1: 1 calls, more true"]);
+        assert_eq!(said, ["request 1: 1 calls, next Some(\"1000:sys1/x\")"]);
     }
 }

@@ -252,7 +252,7 @@ pub fn run(
                 return Ok(());
             }
             let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
-            let row = call_row(&rel, &record, &text, audio, true, db.recorder(), now_ms);
+            let row = call_row(&rel, &record, audio, true, db.recorder(), now_ms);
             db.send(Change::Call { row, live: false });
             stats.indexed += 1;
             // (A batch at a time: the writer commits it, and live writes go in between.)
@@ -393,7 +393,7 @@ mod tests {
         let (db, _) = Db::for_test("backfill-clock-ahead");
         let r = record(1, newest);
         db.send(Change::Call {
-            row: call_row("live/1", &r, &r.to_json(), true, true, None, 0),
+            row: call_row("live/1", &r, true, true, None, 0),
             live: true,
         });
         db.flush().unwrap();
@@ -566,7 +566,7 @@ mod tests {
         let started = std::time::Instant::now();
         let r = record(9, 99);
         db.send(Change::Call {
-            row: call_row("live/1", &r, &r.to_json(), true, true, None, 0),
+            row: call_row("live/1", &r, true, true, None, 0),
             live: true,
         });
         assert!(

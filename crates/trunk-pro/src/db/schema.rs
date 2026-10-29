@@ -9,8 +9,9 @@
 //!
 //! Indexes follow the queries, each page an index walked in order to its
 //! limit (`read::Where`): calls by start (every page), by system and start
-//! (a system's page), by system, talkgroup and start (a talkgroup's), and
-//! `call_units`, a radio's calls by system and the call's start. Each costs
+//! (a system's page), by system, talkgroup and start (a talkgroup's), and a
+//! radio's calls by system and the call's start (a partial index on each
+//! radio's first transmission in a call, so each call once). Each costs
 //! page writes on every commit (research/storage.md). Tables keyed by what
 //! they're read by are `without rowid` in SQLite: their primary key is the
 //! table, not a second index beside it.
@@ -19,7 +20,7 @@ use super::sql::Dialect;
 
 /// This build's schema. Raise it with any change to [`TABLES`] or
 /// [`INDEXES`]: a store of another version is made afresh.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// What a column holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +78,8 @@ pub struct Index {
     pub name: &'static str,
     pub table: &'static str,
     pub cols: &'static [&'static str],
+    /// A partial index's condition.
+    pub cond: Option<&'static str>,
 }
 
 use Ty::*;
@@ -88,34 +91,60 @@ pub const TABLES: &[Table] = &[
     // them: what everything else is kept by, so a rename orphans nothing. A
     // system gone from the config keeps its row (its calls still have a name).
     Table { name: "systems", cols: &[col("id", BigInt), col("short_name", Text), col("kind", Text)], key: &["id"] },
+    // A call mirrored once (`row.rs`): the record's fields, typed; the lists
+    // nothing queries in `detail`; its radios in `call_transmissions`.
     Table {
         name: "calls",
         cols: &[
             col("id", Id),
             unique("path", Text),
             system("system_id"),
-            opt("nac", Text),
-            opt("site", Text),
+            col("site", Text),
             col("talkgroup", BigInt),
-            col("start_ms", BigInt),
-            col("stop_ms", BigInt),
-            col("length_ms", BigInt),
+            opt("talkgroup_ota", BigInt),
+            col("talkgroup_tag", Text),
+            col("talkgroup_description", Text),
+            col("talkgroup_group_tag", Text),
+            col("talkgroup_group", Text),
+            col("call_num", BigInt),
+            col("transmission_id", Text),
             col("freq_hz", BigInt),
-            col("emergency", Bool),
-            col("encrypted", Bool),
-            col("decrypted", Bool),
-            col("duplex", Bool),
-            opt("priority", BigInt),
-            opt("audio_type", Text),
+            col("freq_error", BigInt),
             opt("signal", Real),
             opt("noise", Real),
             opt("snr", Real),
             opt("clean_voice_pct", Real),
+            col("source_num", BigInt),
+            col("recorder_num", BigInt),
+            col("tdma_slot", BigInt),
+            col("phase2_tdma", Bool),
+            col("start_ms", BigInt),
+            col("stop_ms", BigInt),
+            col("length_ms", BigInt),
+            col("length_s", Real),
+            col("emergency", Bool),
+            col("priority", BigInt),
+            col("mode", Bool),
+            col("duplex", Bool),
+            col("encrypted", Bool),
+            col("algid", BigInt),
+            col("key_id", BigInt),
+            col("decrypted", Bool),
+            col("clock_off", Bool),
+            col("nac", Text),
+            col("color_code", BigInt),
+            col("ran", BigInt),
+            col("tone_mode", Text),
+            col("tone_detected", Text),
+            col("tone_confidence", Real),
+            col("audio_type", Text),
+            col("system_type", Text),
+            col("voice_mode", Text),
             col("audio", Bool),
             col("json", Bool),
             opt("recorder", Text),
-            col("record", Json),
             col("indexed_ms", BigInt),
+            col("detail", Json),
         ],
         key: &[],
     },
@@ -124,32 +153,27 @@ pub const TABLES: &[Table] = &[
         cols: &[
             of("call_id", BigInt, "calls(id)"),
             col("seq", Int),
+            // (The call's system and start: a radio's page is these, in order.)
+            system("system_id"),
+            col("call_start_ms", BigInt),
             col("unit", BigInt),
-            col("start_ms", BigInt),
-            col("length_ms", BigInt),
+            // (Its radio's first in the call: the radio index takes these alone.)
+            col("first", Bool),
+            col("time", BigInt),
+            col("pos", Real),
             col("emergency", Bool),
-            opt("signal_system", Text),
-            opt("tag", Text),
+            col("encrypted", Bool),
+            col("duplex", Bool),
+            col("mode", Bool),
+            col("priority", BigInt),
+            col("signal_system", Text),
+            col("tag", Text),
+            col("tag_ota", Text),
+            opt("lat", Real),
+            opt("lon", Real),
+            opt("extra", Json),
         ],
         key: &["call_id", "seq"],
-    },
-    Table {
-        name: "call_frequencies",
-        cols: &[
-            of("call_id", BigInt, "calls(id)"),
-            col("seq", Int),
-            col("freq_hz", BigInt),
-            col("start_ms", BigInt),
-            col("length_ms", BigInt),
-            col("error_count", BigInt),
-            col("spike_count", BigInt),
-        ],
-        key: &["call_id", "seq"],
-    },
-    Table {
-        name: "call_units",
-        cols: &[system("system_id"), col("unit", BigInt), col("start_ms", BigInt), of("call_id", BigInt, "calls(id)")],
-        key: &["system_id", "unit", "start_ms", "call_id"],
     },
     Table { name: "kept", cols: &[col("kind", Text), col("key", Text), col("value", Text)], key: &["kind", "key"] },
     Table { name: "registry", cols: &[system("system_id"), col("whole", Json)], key: &["system_id"] },
@@ -180,11 +204,13 @@ pub const TABLES: &[Table] = &[
 ];
 
 pub const INDEXES: &[Index] = &[
-    Index { name: "calls_start", table: "calls", cols: &["start_ms"] },
-    Index { name: "calls_system_start", table: "calls", cols: &["system_id", "start_ms"] },
-    Index { name: "calls_system_tg_start", table: "calls", cols: &["system_id", "talkgroup", "start_ms"] },
-    Index { name: "talkgroups_number", table: "talkgroups", cols: &["system_id", "number"] },
-    Index { name: "stats_minutes_t", table: "stats_minutes", cols: &["t"] },
+    Index { name: "calls_start", table: "calls", cols: &["start_ms"], cond: None },
+    Index { name: "calls_system_start", table: "calls", cols: &["system_id", "start_ms"], cond: None },
+    Index { name: "calls_system_tg_start", table: "calls", cols: &["system_id", "talkgroup", "start_ms"], cond: None },
+    // A radio's calls: each once (its first transmission in each), by system and the call's start.
+    Index { name: "transmissions_radio", table: "call_transmissions", cols: &["system_id", "unit", "call_start_ms", "call_id"], cond: Some("first") },
+    Index { name: "talkgroups_number", table: "talkgroups", cols: &["system_id", "number"], cond: None },
+    Index { name: "stats_minutes_t", table: "stats_minutes", cols: &["t"], cond: None },
 ];
 
 fn ty(d: Dialect, t: Ty) -> &'static str {
@@ -234,7 +260,8 @@ pub fn ddl(d: Dialect) -> String {
         out.push_str(&format!("create table {} (\n{}\n){rowid};\n", t.name, lines.join(",\n")));
     }
     for i in INDEXES {
-        out.push_str(&format!("create index {} on {}({});\n", i.name, i.table, i.cols.join(", ")));
+        let cond = i.cond.map_or(String::new(), |c| format!(" where {c}"));
+        out.push_str(&format!("create index {} on {}({}){cond};\n", i.name, i.table, i.cols.join(", ")));
     }
     out
 }
@@ -299,11 +326,12 @@ mod tests {
     /// several, a talkgroup, a radio, and the paging cursor's parts.
     #[test]
     fn every_page_walks_an_index_without_sorting() {
-        use crate::db::read::{CallsFilter, Where, COLUMNS};
+        use crate::db::read::{columns, Where};
+        use trunk_app::calls::CallsQuery;
         let c = Connection::open_in_memory().unwrap();
         prepare(&c).unwrap();
-        let plan = |f: CallsFilter| -> String {
-            let (sql, ps) = Where::of(&f).query(COLUMNS, 101);
+        let plan = |(q, systems): (CallsQuery, Vec<i64>)| -> String {
+            let (sql, ps) = Where::of(&q, &systems).query(&columns(), 101);
             let ps: Vec<rusqlite::types::Value> = ps.into_iter().map(|p| match p {
                 crate::db::sql::V::Int(i) => i.into(),
                 crate::db::sql::V::Text(t) => t.into(),
@@ -313,24 +341,25 @@ mod tests {
             let rows: Vec<String> = st.query_map(rusqlite::params_from_iter(ps), |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
             rows.join(" | ")
         };
-        let f = |systems: &[i64], tg: Option<u32>, unit: Option<i64>| CallsFilter { systems: systems.to_vec(), talkgroup: tg, unit, before_ms: Some(5), limit: 100, ..Default::default() };
+        let f = |systems: &[i64], tg: Option<u32>, unit: Option<i64>| (CallsQuery { talkgroup: tg, unit, cursor: Some("5:p".into()), ..Default::default() }, systems.to_vec());
         for (what, filter, index) in [
             ("every call", f(&[], None, None), "calls_start"),
             ("a system", f(&[1], None, None), "calls_system_start"),
             ("two systems", f(&[1, 2], None, None), "calls_system_start"),
             ("a talkgroup", f(&[1], Some(1), None), "calls_system_tg_start"),
             ("a talkgroup on two", f(&[1, 2], Some(1), None), "calls_system_tg_start"),
-            // (call_units, as `u`: its key is system, radio, start.)
-            ("a radio", f(&[1], None, Some(7)), "SEARCH u USING PRIMARY KEY (system_id=? AND unit=? AND start_ms<?)"),
-            ("a radio on two", f(&[1, 2], None, Some(7)), "SEARCH u USING PRIMARY KEY (system_id=? AND unit=? AND start_ms<?)"),
+            ("a radio", f(&[1], None, Some(7)), "transmissions_radio"),
+            ("a radio on two", f(&[1, 2], None, Some(7)), "transmissions_radio"),
         ] {
             let p = plan(filter);
             assert!(p.contains(index), "{what}: {p}");
             // A sort only ever of a system's part once it's cut to the limit (the union
             // merging them), right after that part's scan: never of the calls matched.
             let steps: Vec<&str> = p.split(" | ").collect();
+            // (And a sort of the order's last term, the path: within one millisecond,
+            // in small groups as the index is walked.)
             for (i, s) in steps.iter().enumerate() {
-                if s.contains("TEMP B-TREE") {
+                if s.contains("TEMP B-TREE") && !s.contains("LAST TERM OF ORDER BY") {
                     assert!(i > 0 && steps[i - 1].starts_with("SCAN a"), "{what} sorts what it matched: {p}");
                 }
             }

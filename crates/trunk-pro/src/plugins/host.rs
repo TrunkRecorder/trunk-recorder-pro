@@ -797,13 +797,13 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
                 continue;
             }
             // (Answered on its own queue, behind what's already waiting for it.)
-            Ok(PluginMessage::CallsQuery(q)) => {
+            Ok(PluginMessage::CallsQuery { request, query }) => {
                 let page = match &sh.calls {
-                    Some(answer) => answer(&q),
-                    None => CallsPage { request: q.request, error: Some("no recorder to ask".into()), ..Default::default() },
+                    Some(answer) => answer(&query),
+                    None => CallsPage { error: Some("no recorder to ask".into()), ..Default::default() },
                 };
                 if let Some(tx) = p.tx.lock().unwrap().as_ref() {
-                    let _ = tx.send(Arc::from(line(&HostMessage::Calls(page))));
+                    let _ = tx.send(Arc::from(line(&HostMessage::Calls { request, page })));
                 }
                 continue;
             }
@@ -960,7 +960,7 @@ mod tests {
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\necho '{{\"type\":\"calls.query\",\"request\":7,\"talkgroup\":101}}'\nwhile read l; do case \"$l\" in *'\"type\":\"calls\"'*) echo \"$l\" > answer.json;; esac; done\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let spec = Spec { id: "asker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
-        let calls: Calls = Arc::new(|q| CallsPage { request: q.request, more: q.talkgroup == Some(101), before: 42, ..Default::default() });
+        let calls: Calls = Arc::new(|q| CallsPage { next: (q.talkgroup == Some(101)).then(|| "42:x".into()), ..Default::default() });
         let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, Some(calls));
         let answer = dir.join("data/answer.json");
         let t0 = Instant::now();
@@ -969,7 +969,7 @@ mod tests {
         }
         host.shutdown(Duration::from_secs(1));
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&answer).expect("answered")).unwrap();
-        assert_eq!((v["request"].as_u64(), v["more"].as_bool(), v["before"].as_i64()), (Some(7), Some(true), Some(42)), "{v}");
+        assert_eq!((v["request"].as_u64(), v["next"].as_str()), (Some(7), Some("42:x")), "{v}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

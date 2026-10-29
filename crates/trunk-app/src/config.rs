@@ -1852,6 +1852,10 @@ pub struct Config {
     /// What reading it changed (an older config upgraded: [`crate::migrate`]), to log.
     #[serde(skip)]
     pub notes: Vec<String>,
+    /// Reading it gave a system its id ([`Config::assign_system_ids`]): to
+    /// be saved, so the ids stay the same from here on.
+    #[serde(skip)]
+    pub numbered: bool,
 }
 
 /// The log (desktop app), with Trunk Recorder's options: `logLevel`,
@@ -1929,6 +1933,7 @@ impl Default for Config {
             storage: StorageSettings::default(),
             monitor: MonitorSettings::default(),
             notes: vec![],
+            numbered: false,
         }
     }
 }
@@ -2135,25 +2140,29 @@ impl Config {
         source_types(&mut v);
         let mut c: Config = serde_json::from_value(v)?;
         c.notes = notes;
-        c.assign_system_ids();
+        c.numbered = c.assign_system_ids();
         Ok(c)
     }
 
     /// Give every system (trunked and conventional) without an id the next
     /// one, and a second with the same id one of its own; [`Config::next_system_id`]
     /// stays above them all, so an id is never given twice.
-    pub fn assign_system_ids(&mut self) {
+    /// Whether any was given one.
+    pub fn assign_system_ids(&mut self) -> bool {
         let given = self.systems.iter().map(|s| s.id).chain(self.conventional.iter().map(|c| c.id)).max().unwrap_or(0);
         let mut next = self.next_system_id.max(given + 1);
         let mut seen = std::collections::HashSet::new();
+        let mut given = false;
         for id in self.systems.iter_mut().map(|s| &mut s.id).chain(self.conventional.iter_mut().map(|c| &mut c.id)) {
             if *id == 0 || !seen.insert(*id) {
                 *id = next;
                 seen.insert(next);
                 next += 1;
+                given = true;
             }
         }
         self.next_system_id = next;
+        given
     }
 
     /// Each system's id and short name (trunked, then conventional).

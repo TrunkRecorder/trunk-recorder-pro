@@ -112,9 +112,9 @@ export class TrunkClient {
 
   /**
    * Recorded calls, newest first: `query` has any of system (short name),
-   * talkgroup, unit (a radio), from / to (start time, Unix ms), before (the
-   * previous page's `before`) and limit (1 to 500, 100). Answers
-   * `{ entries, more, before, error? }`; page on with `before`. Needs the
+   * talkgroup, unit (a radio), from / to (start time, Unix ms), cursor (the
+   * previous page's `next`) and limit (1 to 500, 100). Answers
+   * `{ entries, next?, error? }`; page on with `cursor` while `next` is there. Needs the
    * `calls` capability; the desktop app answers from its call store.
    */
   calls(query = {}) {
@@ -341,7 +341,7 @@ export class TrunkClient {
       case "callsResult": {
         const resolve = this._asked.get(m.id);
         this._asked.delete(m.id);
-        resolve?.({ entries: m.entries, more: m.more, before: m.before, ...(m.error ? { error: m.error } : {}) });
+        resolve?.({ entries: m.entries, ...(m.next ? { next: m.next } : {}), ...(m.error ? { error: m.error } : {}) });
         break;
       }
       case "error":

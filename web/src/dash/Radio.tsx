@@ -483,19 +483,19 @@ const CALLS_PAGE = 25;
  * them; the browser build, its own list). Each plays from here.
  */
 function CallsCard({ sys, talkgroup, unit }: { sys: DashSystem; talkgroup?: number; unit?: number }) {
-  const [page, setPage] = useState<{ entries: CallEntry[]; more: boolean; before: number; error?: string } | null>(null);
-  const ask = (before?: number) => callsQuery({ system: sys.name, talkgroup, unit, before, limit: CALLS_PAGE });
+  const [page, setPage] = useState<{ entries: CallEntry[]; next?: string; error?: string } | null>(null);
+  const ask = (cursor?: string) => callsQuery({ system: sys.name, talkgroup, unit, ...(cursor ? { cursor } : {}), limit: CALLS_PAGE });
   useEffect(() => {
     let live = true;
     setPage(null);
-    void ask().then((r) => live && setPage({ entries: r.entries ?? [], more: !!r.more, before: r.before, error: r.error }));
+    void ask().then((r) => live && setPage({ entries: r.entries ?? [], next: r.next, error: r.error }));
     return () => {
       live = false;
     };
   }, [sys.name, talkgroup, unit]);
   const older = () => {
-    if (!page) return;
-    void ask(page.before).then((r) => setPage((p) => p && { entries: [...p.entries, ...(r.entries ?? [])], more: !!r.more, before: r.before, error: r.error }));
+    if (!page?.next) return;
+    void ask(page.next).then((r) => setPage((p) => p && { entries: [...p.entries, ...(r.entries ?? [])], next: r.next, error: r.error }));
   };
   return (
     <Card title="Calls">
@@ -526,7 +526,7 @@ function CallsCard({ sys, talkgroup, unit }: { sys: DashSystem; talkgroup?: numb
         </ul>
       )}
       {page?.error && <p className="small muted">{page.error}</p>}
-      {page?.more && (
+      {page?.next && (
         <button className="btn ghost small" onClick={older}>
           Load older
         </button>

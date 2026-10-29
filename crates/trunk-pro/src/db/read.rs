@@ -1,51 +1,18 @@
-//! Reading the call store, the same for every backend: which calls a query
-//! wants, the paging over a backend's rows, and the live list merged in.
-//! Paging is by whole milliseconds: a page never ends between two calls that
-//! started in the same millisecond, so `before` (the oldest start on the
-//! page) is a cursor that loses and repeats nothing.
+//! A page of calls from the store, the same for every backend: the query a
+//! [`CallsQuery`] makes. Calls are in one order everywhere, newest first by
+//! start then path ([`trunk_app::calls`], which pages calls held in memory
+//! the same way), and a page is one query: up to its limit and one more
+//! (whether more remain), after the cursor its query carries.
 
-use serde_json::Value;
+use trunk_app::calls::{CallsQuery, Cursor};
 
-pub use trunk_app::protocol::CallsPage as Page;
-
+use super::row::CALL_COLS;
 use super::sql::{Params, V};
 
-/// Which calls a query wants. Every field narrows the result; the default
-/// is every call.
-#[derive(Default, Clone, Debug)]
-pub struct CallsFilter {
-    /// Systems (`systems.id`) to take calls from; empty means any.
-    pub systems: Vec<i64>,
-    /// The same systems by every short name their calls were filed under
-    /// (calls held in memory say theirs).
-    pub names: Vec<String>,
-    pub talkgroup: Option<u32>,
-    /// Only calls this radio transmitted in.
-    pub unit: Option<i64>,
-    /// Calls starting at or after this time.
-    pub from_ms: Option<i64>,
-    /// Calls starting before this time.
-    pub to_ms: Option<i64>,
-    /// Calls starting before this time: the cursor from the previous page.
-    pub before_ms: Option<i64>,
-    pub limit: usize,
-}
-
-/// The columns a call entry is made from (of `calls c`), then `id` and
-/// `start_ms` for paging.
-pub const COLUMNS: &str = "c.path, c.record, c.audio, c.json, c.id, c.start_ms";
-
-/// A condition on a call's place in the order.
-#[derive(Clone, Copy, Debug)]
-enum Cond {
-    /// Started at or after.
-    From(i64),
-    /// Started before.
-    Before(i64),
-    /// Started in this very millisecond.
-    At(i64),
-    /// Filed before this one (`id`), in the same millisecond.
-    IdBelow(i64),
+/// The columns a page reads: each call's id and system's short name, then
+/// [`CALL_COLS`] (`row::stored_call` reads them from 2).
+pub fn columns() -> String {
+    std::iter::once("c.id".to_string()).chain(std::iter::once("s.short_name".to_string())).chain(CALL_COLS.iter().map(|c| format!("c.{c}"))).collect::<Vec<_>>().join(", ")
 }
 
 /// The calls a query wants, as SQL. Every page walks an index in order and
@@ -53,66 +20,61 @@ enum Cond {
 /// - several systems: a query each, put together (`union all`) and cut to
 ///   the limit again, rather than one that sorts all their calls;
 /// - a talkgroup: `calls_system_tg_start` (talkgroups are a system's own);
-/// - a radio: `call_units`, the call's system, radio and start, walked in
-///   that order and joined to the call.
+/// - a radio: `transmissions_radio`, each radio's first transmission in a
+///   call by system and the call's start, joined to the call.
 ///
-/// Parameters are `$1, $2…` ([`super::sql`]).
+/// Equal starts are ordered by path (a sort only within one millisecond).
 #[derive(Clone, Default)]
 pub struct Where {
     systems: Vec<i64>,
     talkgroup: Option<u32>,
     unit: Option<i64>,
-    conds: Vec<Cond>,
+    from: Option<i64>,
+    to: Option<i64>,
+    after: Option<Cursor>,
 }
 
 impl Where {
-    pub fn of(f: &CallsFilter) -> Where {
-        let mut conds = Vec::new();
-        conds.extend(f.from_ms.map(Cond::From));
-        conds.extend(f.to_ms.map(Cond::Before));
-        conds.extend(f.before_ms.map(Cond::Before));
-        Where { systems: f.systems.clone(), talkgroup: f.talkgroup, unit: f.unit, conds }
-    }
-
-    fn and(&self, c: Cond) -> Where {
-        let mut w = self.clone();
-        w.conds.push(c);
-        w
+    /// `q` over `systems` (its system's id, or each system's; none: any).
+    pub fn of(q: &CallsQuery, systems: &[i64]) -> Where {
+        Where { systems: systems.to_vec(), talkgroup: q.talkgroup, unit: q.unit, from: q.from, to: q.to, after: q.cursor.as_deref().and_then(Cursor::decode) }
     }
 
     /// One system's (or, with `system` none, every system's) part: the
-    /// newest `limit` of `columns` (of `calls c`).
+    /// newest `limit` of `columns` (of `calls c` and `systems s`).
     fn arm(&self, system: Option<i64>, columns: &str, limit: i64, ps: &mut Params) -> String {
-        // (The table the index walk is on: a radio's call_units, else calls.)
-        let (from, start, id, sys) = match self.unit {
-            Some(_) => ("call_units u join calls c on c.id = u.call_id", "u.start_ms", "u.call_id", "u.system_id"),
-            None => ("calls c", "c.start_ms", "c.id", "c.system_id"),
+        // (The table the index walk is on: a radio's transmissions, else calls.)
+        let (from, start, sys) = match self.unit {
+            Some(_) => ("call_transmissions u join calls c on c.id = u.call_id join systems s on s.id = c.system_id", "u.call_start_ms", "u.system_id"),
+            None => ("calls c join systems s on s.id = c.system_id", "c.start_ms", "c.system_id"),
         };
         let mut w: Vec<String> = Vec::new();
-        if let Some(s) = system {
-            w.push(format!("{sys} = {}", ps.add(s)));
+        if let Some(id) = system {
+            w.push(format!("{sys} = {}", ps.add(id)));
         }
         if let Some(u) = self.unit {
-            w.push(format!("u.unit = {}", ps.add(u)));
+            w.push(format!("u.first and u.unit = {}", ps.add(u)));
         }
         if let Some(tg) = self.talkgroup {
             w.push(format!("c.talkgroup = {}", ps.add(tg)));
         }
-        for c in &self.conds {
-            let (op, col, v) = match *c {
-                Cond::From(t) => (">=", start, t),
-                Cond::Before(t) => ("<", start, t),
-                Cond::At(t) => ("=", start, t),
-                Cond::IdBelow(i) => ("<", id, i),
-            };
-            w.push(format!("{col} {op} {}", ps.add(v)));
+        if let Some(t) = self.from {
+            w.push(format!("{start} >= {}", ps.add(t)));
+        }
+        if let Some(t) = self.to {
+            w.push(format!("{start} < {}", ps.add(t)));
+        }
+        if let Some(a) = &self.after {
+            // (The index's range first, then the path within the millisecond.)
+            let (t, p) = (ps.add(a.start_ms), ps.add(a.path.clone()));
+            w.push(format!("{start} <= {t} and ({start} < {t} or c.path < {p})"));
         }
         let cond = if w.is_empty() { String::new() } else { format!(" where {}", w.join(" and ")) };
-        format!("select {columns} from {from}{cond} order by {start} desc, {id} desc limit {}", ps.add(limit))
+        format!("select {columns} from {from}{cond} order by {start} desc, c.path desc limit {}", ps.add(limit))
     }
 
-    /// The query of a page: up to `limit` of `columns` (of `calls c`), newest
-    /// first, and its parameters.
+    /// The query of a page: up to `limit` of `columns`, in order, and its
+    /// parameters.
     pub fn query(&self, columns: &str, limit: i64) -> (String, Vec<V>) {
         let mut ps = Params::default();
         let sql = match self.systems.as_slice() {
@@ -121,115 +83,26 @@ impl Where {
             many => {
                 let arms: Vec<String> = many.iter().enumerate().map(|(i, s)| format!("select * from ({}) a{i}", self.arm(Some(*s), columns, limit, &mut ps))).collect();
                 let lim = ps.add(limit);
-                format!("{} order by start_ms desc, id desc limit {lim}", arms.join(" union all "))
+                format!("{} order by start_ms desc, path desc limit {lim}", arms.join(" union all "))
             }
         };
         (sql, ps.0)
     }
 }
 
-/// A fetched call: its entry and where it sits in the order.
-pub struct Fetched {
-    pub entry: Value,
-    pub id: i64,
-    pub start_ms: i64,
-}
-
-/// A backend's rows for a [`Where`]: up to `limit`, newest first, and
-/// whether one more matched beyond them.
-pub type Fetch<'a> = dyn FnMut(&Where, usize) -> Result<(Vec<Fetched>, bool), String> + 'a;
-
-/// The page `f` asks for, over a backend's `fetch`: the `limit` newest,
-/// plus every further call sharing the oldest one's start.
-pub fn paged(f: &CallsFilter, fetch: &mut Fetch) -> Result<Page, String> {
-    let limit = f.limit.max(1);
-    let w = Where::of(f);
-    let (mut rows, extra) = fetch(&w, limit)?;
-    let asked = f.before_ms.unwrap_or(0);
-    let Some((id, oldest)) = rows.last().map(|r| (r.id, r.start_ms)) else {
-        return Ok(Page { entries: Vec::new(), more: false, before: asked });
-    };
-    let mut more = false;
-    if extra {
-        // The oldest start is shared with rows not yet taken: take them all.
-        let tail = w.and(Cond::At(oldest)).and(Cond::IdBelow(id));
-        rows.extend(fetch(&tail, usize::MAX / 2)?.0);
-        more = !fetch(&w.and(Cond::Before(oldest)), 1)?.0.is_empty();
-    }
-    let before = rows.last().map_or(asked, |r| r.start_ms);
-    Ok(Page { entries: rows.into_iter().map(|r| r.entry).collect(), more, before })
-}
-
-/// Whether call entry `e` is one `f` wants (its time, system, talkgroup,
-/// radio): the same filter as [`Where::of`]'s, for calls held in memory.
-pub fn matches(e: &Value, f: &CallsFilter) -> bool {
-    let r = &e["record"];
-    let start = start_of(e);
-    let system = r["short_name"].as_str().unwrap_or_default();
-    (f.names.is_empty() || f.names.iter().any(|s| s == system))
-        && f.talkgroup.is_none_or(|tg| r["talkgroup"].as_u64() == Some(u64::from(tg)))
-        && f.unit.is_none_or(|u| r["srcList"].as_array().is_some_and(|l| l.iter().any(|t| t["src"].as_i64() == Some(u))))
-        && f.from_ms.is_none_or(|t| start >= t)
-        && f.to_ms.is_none_or(|t| start < t)
-        && f.before_ms.is_none_or(|t| start < t)
-}
-
-fn start_of(e: &Value) -> i64 {
-    e["record"]["start_time_ms"].as_i64().unwrap_or(0)
-}
-
-/// Newest first, then by path: the order every page is in.
-fn newest_first(v: &mut [Value]) {
-    v.sort_by_key(|e| std::cmp::Reverse((start_of(e), e["path"].as_str().unwrap_or_default().to_string())));
-}
-
-/// A page of `f` from calls held in memory (the live list, with the store
-/// off): paged as [`paged`] pages, equal starts taken whole.
-pub fn page_of(calls: &[Value], f: &CallsFilter) -> Page {
-    let mut v: Vec<Value> = calls.iter().filter(|e| matches(e, f)).cloned().collect();
-    newest_first(&mut v);
-    let limit = f.limit.max(1);
-    let mut take = v.len().min(limit);
-    while take > 0 && take < v.len() && start_of(&v[take]) == start_of(&v[take - 1]) {
-        take += 1;
-    }
-    let more = take < v.len();
-    v.truncate(take);
-    let before = v.last().map_or(f.before_ms.unwrap_or(0), start_of);
-    Page { entries: v, more, before }
-}
-
-/// `stored` (a page from the store) with the live list's calls that belong
-/// on it merged in: those `f` wants that the store hasn't committed yet,
-/// within the page's span (from its oldest start when more remain). A call
-/// in both is the live copy. The cursor is the stored page's, so paging on
-/// loses and repeats nothing.
-pub fn with_live(stored: Page, live: &[Value], f: &CallsFilter) -> Page {
-    let floor = if stored.more { Some(stored.before) } else { None };
-    let mut seen = std::collections::HashSet::new();
-    let mut v: Vec<Value> = live
-        .iter()
-        .filter(|e| matches(e, f) && floor.is_none_or(|b| start_of(e) >= b))
-        .cloned()
-        .chain(stored.entries)
-        .filter(|e| seen.insert(e["path"].as_str().unwrap_or_default().to_string()))
-        .collect();
-    newest_first(&mut v);
-    let before = if stored.more { stored.before } else { v.last().map_or(stored.before, start_of) };
-    Page { entries: v, more: stored.more, before }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::row::{call_row, entry};
+    use crate::db::row::call_row;
     use crate::db::{Change, Db};
     use std::time::Duration;
+    use trunk_app::calls::StoredCall;
+    use trunk_recorder_plugin::{ErrorInterval, SrcEntry, ToneEntry};
 
     /// Each backend with 12 calls: talkgroup 2 (odd i) and 1 (even i),
     /// starts i*1000, except call 6 shares call 5's start 5000 and call 12
     /// has start 0 (clock off); unit 77 talks on calls 3 (talkgroup 2) and 8
-    /// (talkgroup 1).
+    /// (talkgroup 1), twice on 8.
     fn seeded(name: &str) -> Vec<Db> {
         let dbs = Db::for_each_backend(name, Duration::from_secs(1));
         for db in &dbs {
@@ -243,155 +116,109 @@ mod tests {
                 if i == 3 || i == 8 {
                     r.src_list[0].src = 77;
                 }
-                db.send(Change::Call { row: call_row(&format!("s/{i}"), &r, &r.to_json(), true, true, None, 0), live: true });
+                if i == 8 {
+                    r.src_list[1].src = 77;
+                }
+                db.send(Change::Call { row: call_row(&format!("s/{i}"), &r, true, true, None, 0), live: true });
             }
             db.flush().unwrap();
         }
         dbs
     }
 
-    fn paths(v: &[Value]) -> Vec<&str> {
-        v.iter().map(|e| e["path"].as_str().unwrap()).collect()
+    fn paths(v: &[StoredCall]) -> Vec<&str> {
+        v.iter().map(|e| e.path.as_str()).collect()
     }
 
-    fn page(db: &Db, f: CallsFilter) -> Page {
-        db.page(&f).unwrap()
-    }
-
-    fn newest(limit: usize) -> CallsFilter {
-        CallsFilter { limit, ..Default::default() }
-    }
-
-    fn older(before: i64, limit: usize) -> CallsFilter {
-        CallsFilter { before_ms: Some(before), limit, ..Default::default() }
-    }
-
-    #[test]
-    fn newest_is_newest_first_and_takes_equal_starts_whole() {
-        for db in seeded("newest") {
-            assert_eq!(paths(&page(&db, newest(3)).entries), ["s/11", "s/10", "s/9"], "{}", db.kind());
-            // The sixth newest is s/6 at 5000, which s/5 shares.
-            assert_eq!(paths(&page(&db, newest(6)).entries), ["s/11", "s/10", "s/9", "s/8", "s/7", "s/6", "s/5"], "{}", db.kind());
-        }
-    }
-
-    /// Every page of `f` from the start, the paths in the order they came.
-    fn every_page(db: &Db, f: CallsFilter) -> Vec<String> {
+    /// Every page of `q` from the start, the paths in the order they came.
+    fn every_page(db: &Db, q: CallsQuery, systems: &[i64]) -> Vec<String> {
         let mut seen = Vec::new();
-        let mut f = f;
+        let mut q = q;
         loop {
-            let p = page(db, f.clone());
-            assert!(!p.entries.is_empty() || !p.more, "an empty page says no more");
+            let p = db.calls(&q, systems).unwrap();
             seen.extend(paths(&p.entries).into_iter().map(str::to_string));
-            if !p.more {
-                break;
+            match p.next {
+                Some(n) => q.cursor = Some(n),
+                None => break,
             }
-            f.before_ms = Some(p.before);
         }
         seen
     }
 
     #[test]
-    fn paging_returns_every_call_exactly_once() {
+    fn newest_first_then_by_path() {
+        for db in seeded("newest") {
+            let q = |limit| CallsQuery { limit: Some(limit), ..Default::default() };
+            assert_eq!(paths(&db.calls(&q(3), &[]).unwrap().entries), ["s/11", "s/10", "s/9"], "{}", db.kind());
+            // s/6 and s/5 share 5000: by path, s/6 first; a page may end between them.
+            let p = db.calls(&q(6), &[]).unwrap();
+            assert_eq!(paths(&p.entries), ["s/11", "s/10", "s/9", "s/8", "s/7", "s/6"]);
+            assert_eq!(p.next.as_deref(), Some("5000:s/6"));
+        }
+    }
+
+    #[test]
+    fn paging_returns_every_call_exactly_once_in_order() {
         for db in seeded("paging") {
-            let mut want: Vec<String> = (1..=12).map(|i| format!("s/{i}")).collect();
-            want.sort();
+            let want = ["s/11", "s/10", "s/9", "s/8", "s/7", "s/6", "s/5", "s/4", "s/3", "s/2", "s/1", "s/12"];
             for limit in 1..=12 {
-                let mut seen = every_page(&db, newest(limit));
-                seen.sort();
-                assert_eq!(seen, want, "limit {limit} ({})", db.kind());
+                assert_eq!(every_page(&db, CallsQuery { limit: Some(limit), ..Default::default() }, &[]), want, "limit {limit} ({})", db.kind());
             }
-            // Talkgroup 2 (the odd calls), two to a page.
-            let mut seen = every_page(&db, CallsFilter { talkgroup: Some(2), limit: 2, ..Default::default() });
-            seen.sort();
-            let mut want: Vec<String> = (1..=12).filter(|i| i % 2 == 1).map(|i| format!("s/{i}")).collect();
-            want.sort();
-            assert_eq!(seen, want);
-        }
-    }
-
-    #[test]
-    fn an_empty_page_says_the_before_asked_or_0() {
-        for db in Db::for_each_backend("empty-before", Duration::from_secs(1)) {
-            let p = page(&db, CallsFilter::default());
-            assert_eq!((p.entries.len(), p.more, p.before), (0, false, 0));
-            assert_eq!(page(&db, older(1234, 10)).before, 1234, "the before asked");
-        }
-    }
-
-    #[test]
-    fn equal_starts_are_taken_whole_and_a_zero_start_pages_last() {
-        for db in seeded("whole-ms") {
-            assert_eq!(paths(&page(&db, older(7001, 1)).entries), ["s/7"], "7000 is alone");
-            let p = page(&db, older(5001, 1));
-            assert_eq!((p.entries.len(), p.before, p.more), (2, 5000, true), "5000 is shared, both come ({})", db.kind());
-            let p = page(&db, older(1, 10));
-            assert_eq!((paths(&p.entries), p.more), (vec!["s/12"], false));
+            let a = db.system_id("ohmarcs").unwrap();
+            assert_eq!(every_page(&db, CallsQuery { talkgroup: Some(2), limit: Some(2), ..Default::default() }, &[a]), ["s/11", "s/9", "s/7", "s/5", "s/3", "s/1"]);
+            assert_eq!(every_page(&db, CallsQuery { unit: Some(77), limit: Some(1), ..Default::default() }, &[a]), ["s/8", "s/3"], "each call once, though 77 talked twice on s/8");
         }
     }
 
     #[test]
     fn query_filters_by_talkgroup_unit_range_and_system() {
         for db in seeded("query") {
-            let f = |tg, unit, from, to, systems: &[&str]| CallsFilter { systems: systems.iter().map(|s| db.system_id(s).unwrap()).collect(), names: systems.iter().map(|s| s.to_string()).collect(), talkgroup: tg, unit, from_ms: from, to_ms: to, before_ms: None, limit: 100 };
-            let n = |f: CallsFilter| page(&db, f).entries.len();
-            assert_eq!(n(f(Some(1), None, None, None, &[])), 6, "{}", db.kind());
-            assert_eq!(n(f(None, Some(77), None, None, &[])), 2);
-            assert_eq!(n(f(Some(2), Some(77), None, None, &[])), 1);
-            assert_eq!(n(f(None, None, Some(3000), Some(6000), &[])), 4, "3000, 4000, 5000, 5000");
-            assert_eq!(n(f(None, None, None, None, &["ohmarcs"])), 12);
-            assert_eq!(n(f(None, None, None, None, &["other"])), 0);
-            let p = page(&db, CallsFilter { limit: 5, ..f(None, None, None, None, &[]) });
-            assert_eq!((p.more, p.entries.len()), (true, 5));
+            let a = db.system_id("ohmarcs").unwrap();
+            let n = |q: CallsQuery, systems: &[i64]| db.calls(&q, systems).unwrap().entries.len();
+            assert_eq!(n(CallsQuery { talkgroup: Some(1), ..Default::default() }, &[a]), 6, "{}", db.kind());
+            assert_eq!(n(CallsQuery { unit: Some(77), ..Default::default() }, &[a]), 2);
+            assert_eq!(n(CallsQuery { talkgroup: Some(2), unit: Some(77), ..Default::default() }, &[a]), 1);
+            assert_eq!(n(CallsQuery { from: Some(3000), to: Some(6000), ..Default::default() }, &[]), 4, "3000, 4000, 5000, 5000");
+            assert_eq!(n(CallsQuery::default(), &[a]), 12);
+            assert_eq!(n(CallsQuery::default(), &[a, 999]), 12, "two systems' arms");
+            assert_eq!(n(CallsQuery::default(), &[999]), 0);
         }
     }
 
-    /// The live list's calls not committed yet join the page they belong
-    /// on, and paging on from it still loses and repeats nothing.
+    /// The store mirrors a call once and gives back the record that went in:
+    /// every field, its radios, and the lists in `detail`.
     #[test]
-    fn live_calls_join_the_page_they_belong_on() {
-        for db in seeded("live") {
-            let live_entry = |path: &str, tg: u32, start: i64| {
-                let r = crate::db::row::tests::record(tg, start);
-                entry(path, &r.to_json(), true, true)
-            };
-            // A call newer than all, one in the middle (a long call finished late), one stored already.
-            let live = [live_entry("live/new", 1, 20_000), live_entry("live/mid", 2, 6500), live_entry("s/11", 2, 11_000)];
-            let mut seen = Vec::new();
-            let mut f = CallsFilter { limit: 4, ..Default::default() };
-            loop {
-                let p = with_live(page(&db, f.clone()), &live, &f);
-                seen.extend(paths(&p.entries).into_iter().map(str::to_string));
-                if !p.more {
-                    break;
-                }
-                f.before_ms = Some(p.before);
-            }
-            let mut want: Vec<String> = (1..=12).map(|i| format!("s/{i}")).chain(["live/new".into(), "live/mid".into()]).collect();
-            let mut got = seen.clone();
-            got.sort();
-            want.sort();
-            assert_eq!(got, want, "every call once: {seen:?} ({})", db.kind());
-            assert_eq!(seen[0], "live/new", "newest first");
-            // The live list alone (the store off), paged the same way, by talkgroup.
-            let p = page_of(&live, &CallsFilter { talkgroup: Some(2), limit: 1, ..Default::default() });
-            assert_eq!((paths(&p.entries), p.more, p.before), (vec!["s/11"], true, 11_000));
-        }
-    }
-
-    #[test]
-    fn one_by_path_and_known() {
-        for db in seeded("one") {
-            assert_eq!(db.one("s/4").unwrap().unwrap()["record"]["talkgroup"], 1, "{}", db.kind());
+    fn a_call_comes_back_as_it_went_in() {
+        for db in Db::for_each_backend("mirror", Duration::from_secs(1)) {
+            let mut r = crate::db::row::tests::record(9179, 1_700_000_000_123);
+            r.call_num = 42;
+            r.transmission_id = "t-1".into();
+            r.freq_error = -12;
+            (r.signal, r.noise, r.snr, r.clean_voice_pct) = (Some(-60.25), Some(-110.5), None, Some(97.5));
+            (r.tdma_slot, r.phase2_tdma, r.emergency, r.priority, r.encrypted, r.algid, r.key_id, r.decrypted) = (1, true, true, 3, true, 0x84, 7, true);
+            (r.talkgroup_ota, r.talkgroup_tag, r.talkgroup_group) = (Some(9180), "FD Disp".into(), "Fire".into());
+            (r.color_code, r.ran, r.tone_mode, r.tone_confidence, r.audio_type, r.system_type, r.voice_mode) = (-1, 3, "ctcss".into(), 0.875, "digital".into(), "p25".into(), "phase2".into());
+            r.src_list[1] = SrcEntry { src: 8344139, time: 1_700_000_002, pos: 2.5, tag: "E1".into(), tag_ota: "ENGINE 1".into(), lat: Some(38.9), lon: Some(-77.03), ..Default::default() };
+            r.src_list[1].extra.insert("future".into(), serde_json::json!(1));
+            r.error_list = vec![ErrorInterval { pos: 1.0, len: 0.5, frames: 3, error_count: 7, bad_frames: 1, max_frame_errors: 4 }];
+            r.tones = vec![ToneEntry { kind: "ctcss".into(), value: "123.0".into(), pos: 0.0, len: 4.0, src: 9001644, origin: "audio".into(), ..Default::default() }];
+            r.signals = vec!["Page".into()];
+            r.patched_talkgroups = vec![9181];
+            r.extra.insert("newField".into(), serde_json::json!({ "a": [1, 2] }));
+            db.send(Change::Call { row: call_row("ohmarcs/x", &r, true, false, None, 0), live: true });
+            db.flush().unwrap();
+            let back = db.one("ohmarcs/x").unwrap().unwrap();
+            assert_eq!(serde_json::to_value(&back.record).unwrap(), serde_json::to_value(&r).unwrap(), "{}", db.kind());
+            assert_eq!((back.path.as_str(), back.audio, back.json), ("ohmarcs/x", true, false));
             assert!(db.one("s/99").unwrap().is_none());
-            assert!(db.known("s/4").unwrap() && !db.known("s/99").unwrap());
+            assert!(db.known("ohmarcs/x").unwrap() && !db.known("s/99").unwrap());
         }
     }
 
     #[test]
     fn parameters_are_numbered_as_written() {
-        let w = Where::of(&CallsFilter { systems: vec![1, 2], talkgroup: Some(1), ..Default::default() });
-        let (sql, ps) = w.query("c.path", 10);
+        let q = CallsQuery { talkgroup: Some(1), ..Default::default() };
+        let (sql, ps) = Where::of(&q, &[1, 2]).query("c.path", 10);
         // (Two arms of system, talkgroup and limit, then the union's limit.)
         assert!(sql.contains("c.system_id = $1") && sql.contains("c.talkgroup = $2") && sql.contains("c.system_id = $4") && sql.ends_with("limit $7"), "{sql}");
         assert_eq!(ps.len(), 7);

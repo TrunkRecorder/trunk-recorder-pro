@@ -178,7 +178,7 @@ What a page may do depends on the port it came from:
 | `setConfig`, `start`, `stop`, `quit`, plugins, interfaces, keys, the survey, files on the recorder's computer | refused with an `error` | ✓ |
 
 A listen-only connection may send `subscribe`, `statsQuery`, `radioQuery`,
-`olderCalls` and `listen`; anything else is answered with an `error`. Its
+`callsQuery` and `listen`; anything else is answered with an `error`. Its
 `hello` has no `configPath`, and it isn't sent `devices`, `plugins`,
 `pluginRuntime`, `interfaces`, `store`, `installProgress` or `keys`. An interface that needs more says
 `"access": "control"` in its `interface.json`; the store shows that before
@@ -376,7 +376,7 @@ origin listed (e.g. `"https://radio.example.com"`).
    doesn't compute them.
 5. **Send commands** as JSON text whenever you like. Answers to your own
    commands (`error`, `notice`, `dir`, `trConfig`, `devices`, `radios`,
-   `store`, `configSaved`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`,
+   `store`, `configSaved`, `subscribed`, `statsResult`, `radioResult`, `callsResult`,
    `licenseResult`, `callSignResult`, `pluginActionResult`, and `plugins` when you sent
    `plugins`) come to your connection only. A command the recorder can't
    read (a field missing or of the wrong kind, an unknown `type`) is answered with an `error`. Everything else goes to every client: after
@@ -457,7 +457,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `type` | When | What's in it |
 |---|---|---|
 | `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host`, `keys`, `calls` (the call store, for `callsQuery`) and `history` (the dashboard's history further back than a week, for `statsQuery`'s `30d`, `90d` and `1y`; the desktop app has all of them, `calls` and `history` while its call store is open, and the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
-| `history` | On connecting | `entries`: the latest calls (≤ 300 `CallEntry`), newest first. Then `concluded` for each new one |
+| `history` | On connecting | `entries`: the latest calls (≤ 300 `CallEntry`), newest first; `next?`: where older calls go on from (a `callsQuery` `cursor`), present when there are more. Then `concluded` for each new one |
 | `units` | On connecting, for each system with some | `system` (short name), `csv`: the talker aliases saved, as CSV: `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins. Then `unitAlias` for each new one |
 | `talkgroups` | On connecting, for each system; whenever one is replaced | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |
 | `talkgroupEdited` | One talkgroup of a system's file was edited (`setTalkgroup`) | `system`, `talkgroup`, `edit`: the cells it set. Make the same edit to the file you keep: only that row changes, a column or row is added when missing (`client.js` does this) |
@@ -471,8 +471,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now, each with its `site`), `sites` (each running site's `index`, `name`, and what its control channel announces: `adjacent` sites, `dmr`, `nxdn`), `patches` (the patches standing now, each once: `supergroup` and `members`) |
 | `monitorEvent` | Something notable happened | `t`, `level` (`info`, `ok`, `warn`, `bad`), `kind` and its fields: control channels (`controlLost`, `controlRegained`; `system`, `site`), talkgroups and radios (`tgFirstSeen`, `tgActive`, `unitFirstSeen`, `unitActive`, `unitAffiliated`, `callVolume`), tones (`tonePattern`: `text`, `signals`), radios (`sourceDrops`, `sourceClipping`, `sourceRecovered`), plugins (`pluginHealth`), the computer (`linkDown`, `linkUp`, `diskLow`), the RAM spool (`spoolLow` with `critical`, `spoolFull` with `calls`, `spoolRecovered`, `spoolRemoved` with `spool` (its kind) and `remade`), the clock (`clockOff` with `why` and `bad`, `clockOk`, `clockStep` with `byMs`). The event feed's kinds are listed in protocol.ts (`MonitorEvent`) |
 | `subscribed` | Answers `subscribe` | `topics` |
-| `olderCalls` | Answers `olderCalls` | `before` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still) |
-| `callsResult` | Answers `callsQuery` | `id` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still), `before` (where the next page starts: send it as `before`; with no entries, the `before` asked, or 0 when none was), `error?` (the call store is off or failed: the page is the recent calls alone) |
+| `callsResult` | Answers `callsQuery` | `id` (as asked), `entries` (`CallEntry[]`, newest first, ordered by start time then path), `next?` (present only when more calls remain: send it back as `cursor` for the next page), `error?` (the call store is off or failed: the page is the recent calls alone) |
 | `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies / tone patterns heard), `outOfBand` (freqs), `row` and its detail, `systems` (summary), `histogram` |
@@ -538,8 +537,7 @@ too.
 | `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d` / `30d` / `90d` / `1y`) or `from` / `to` (Unix s), `points?` | The history of series, averaged down to about `points` steps (→ `statsResult`). Up to a day (a week without a store) is answered from memory by the minute; further back (`7d` with a store, `30d`, `90d`, `1y`, or an older `from`) is the store's hours, needs `history` in `hello.capabilities`, and its steps are whole hours or days, as far back as `storage.statsDays` keeps. |
 | `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths`, `tones` (→ `radioResult`). |
 | `pluginAction` | `id`, `plugin`, `action`, `value` | Press one of a plugin's buttons (its settings schema's `x-actions`) on `value`, the settings object it's on as edited (→ `pluginActionResult`, once the plugin answers). Control access; plugins run only while recording. |
-| `olderCalls` | `before?` (Unix ms), `limit?` (≤ 500, default 100) | `callsQuery` with only `before` and `limit`, answered as `olderCalls` (kept for interfaces that use it; new ones send `callsQuery`). Listen-only connections may send it. |
-| `callsQuery` | `id`, `system?` (short name), `talkgroup?`, `unit?` (a radio), `from?` / `to?` (start time, Unix ms: `from` inclusive, `to` exclusive), `before?` (Unix ms: the last page's `before`), `limit?` (1 to 500, default 100) | Recorded calls, newest first (→ `callsResult`). The desktop app answers from its call store with the latest calls included; the browser build from its own list. Listen-only connections may send it. |
+| `callsQuery` | `id`, `system?` (short name), `talkgroup?`, `unit?` (a radio), `from?` / `to?` (start time, Unix ms: `from` inclusive, `to` exclusive), `cursor?` (the previous page's `next`), `limit?` (1 to 500, default 100) | Recorded calls, newest first (→ `callsResult`). Talkgroup and radio numbers are a system's own: asked without `system`, each configured system's calls are searched. The desktop app answers from its call store with the latest calls included; the browser build from its own list. Listen-only connections may send it. |
 | `unlockKeys` | `source`, `password` | Open a key container that has no password file; the password is kept in memory only. `keys` follows. |
 | `lockKeys` | `source` | Forget a container's keys: its systems stop decrypting at once. |
 | `quit` | — | Stop recording and exit the recorder. |
@@ -585,7 +583,7 @@ after a reconnect, so send `listen` again after `hello`.
 
 ## Recorded calls
 
-The call store is a database of every recorded call, kept beside the config (`trunk-pro.sqlite`). `callsQuery` searches it by system, talkgroup, radio and time, as far back as it keeps calls (`storage.retentionDays`); `history`, `olderCalls`, `GET /api/v1/calls` and plugins' `calls.query` are the same query. Every answer includes the latest calls, the store's not-yet-committed ones too. `hello.capabilities` has `calls` while the store is open; when it's off, the same messages answer from the recent calls alone (`callsResult.error` says so).
+The call store is a database of every recorded call, kept beside the config (`trunk-pro.sqlite`). `callsQuery` searches it by system, talkgroup, radio and time, as far back as it keeps calls (`storage.retentionDays`); `history`, `GET /api/v1/calls` and plugins' `calls.query` are the same query. Every answer includes the latest calls, the store's not-yet-committed ones too. `hello.capabilities` has `calls` while the store is open; when it's off, the same messages answer from the recent calls alone (`callsResult.error` says so).
 
 Each recorded call's files are under the recordings folder at
 `CallEntry.path`:
@@ -621,13 +619,13 @@ another machine that has no WebSocket to keep. Every door that serves the API
 serves these (the built-in interface and each interface's port), to a
 connection with listen or control access, as `callsQuery` is; a door that is
 off answers 404. All answers are JSON. When the call store could not be
-opened, each answers 503 `{"error": "the call store is off"}`. (Plugins ask
+opened, `GET /api/v1/storage` answers 503 `{"error": "the call store is off"}`; the calls routes answer from the recent calls alone (below). (Plugins ask
 over their own channel instead: `calls.query`, in the plugin SDK.)
 
 | Route | Answers |
 |---|---|
-| `GET /api/v1/calls` | `{ entries, more, before }`, the page `callsResult` has: `CallEntry`s, newest first. Parameters, all optional: `system` (short name; its sites' old names too), `talkgroup`, `unit` (a radio), `from` (start time, Unix ms, inclusive), `to` (exclusive), `before` (Unix ms: pass the last answer's `before` for the next page), `limit` (1 to 500, default 100). A parameter given empty counts as not given; a bad number answers 400 `{"error": "<name> must be a number"}`. |
-| `GET /api/v1/calls/<path>` | One `CallEntry`: `{ path, record, audio, json }`, for the `path` its entry has (slashes stay slashes); 404 `{"error": "no such call"}` when there is none. |
+| `GET /api/v1/calls` | `{ entries, next?, error? }`, the page `callsResult` has: `CallEntry`s, newest first. With the call store off it answers 200 with the recent calls and an `error`, "the call store is off: only the recent calls". Parameters, all optional: `system` (short name; its sites' old names too), `talkgroup`, `unit` (a radio), `from` (start time, Unix ms, inclusive), `to` (exclusive), `cursor` (pass the last answer's `next` for the next page), `limit` (1 to 500, default 100). A parameter given empty counts as not given; a bad number answers 400 `{"error": "<name> must be a number"}`. |
+| `GET /api/v1/calls/<path>` | One `CallEntry`: `{ path, record, audio, json }`, for the `path` its entry has (slashes stay slashes); 404 `{"error": "no such call"}` when there is none. With the call store off it answers a recent call if it has it, else 404. |
 | `GET /api/v1/storage` | `{ backend, path, schemaVersion, calls, oldestMs, newestMs, retentionDays, commitSeconds }`: which backend (`sqlite`, `postgres`) and where the store is (a PostgreSQL database without its password), how many calls it holds and the start times of the oldest and newest committed (`null` when empty), and the settings `storage.retentionDays` and `storage.commitSeconds`. |
 
 The routes are described in

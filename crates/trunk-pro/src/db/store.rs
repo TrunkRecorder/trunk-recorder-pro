@@ -6,12 +6,11 @@
 //! retention timing (`writer.rs`), the live list merged into every query
 //! (`runtime::calls`), the paging rules (`read.rs`), and the backfill.
 
-use serde_json::Value;
-
+use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use trunk_app::stats::radio::{RegistryChanges, SystemRadio};
 
-use super::read::{self, CallsFilter, Fetched, Page, Where, COLUMNS};
-use super::row::{entry, CallRow};
+use super::read::{self, Where};
+use super::row::{call_values, src_entry, stored_call, tx_values, CallRow, CALL_COLS, TX_COLS};
 use super::schema::SCHEMA_VERSION;
 #[cfg(test)]
 use super::sql::Dialect;
@@ -146,24 +145,20 @@ impl Store {
         })
     }
 
-    /// A page of the calls `f` wants, newest first, equal starts whole.
-    pub fn page(&self, f: &CallsFilter) -> Result<Page, String> {
-        self.read(|x| {
-            let mut fetch = |w: &Where, limit: usize| -> Result<(Vec<Fetched>, bool), String> {
-                let want = i64::try_from(limit).unwrap_or(i64::MAX - 1);
-                let (sql, ps) = w.query(COLUMNS, want.saturating_add(1));
-                let rows = x.query(&sql, &ps)?;
-                let extra = rows.len() as i64 > want;
-                let out = rows.iter().take(want as usize).map(|r| Fetched { entry: entry(&r.text(0), &r.text(1), r.bool(2), r.bool(3)), id: r.int(4), start_ms: r.int(5) }).collect();
-                Ok((out, extra))
-            };
-            read::paged(f, &mut fetch)
-        })
+    /// A page of the calls `q` asks for, of `systems` (none: any), newest
+    /// first: up to its limit and, when more remain, the cursor after them.
+    /// Without the live list (`runtime::calls` merges it in).
+    pub fn calls(&self, q: &CallsQuery, systems: &[i64]) -> Result<CallsPage, String> {
+        let limit = trunk_app::calls::limit(q);
+        let (sql, ps) = Where::of(q, systems).query(&read::columns(), limit as i64 + 1);
+        let found = self.read(|x| calls_of(x, &sql, &ps))?;
+        Ok(trunk_app::calls::cut(found, limit))
     }
 
-    /// The call filed under `path`, as its entry.
-    pub fn one(&self, path: &str) -> Result<Option<Value>, String> {
-        self.read(|x| Ok(x.query_opt("select path, record, audio, json from calls where path = $1", vals![path])?.map(|r| entry(&r.text(0), &r.text(1), r.bool(2), r.bool(3)))))
+    /// The call filed under `path`.
+    pub fn one(&self, path: &str) -> Result<Option<StoredCall>, String> {
+        let sql = format!("select {} from calls c join systems s on s.id = c.system_id where c.path = $1", read::columns());
+        self.read(|x| Ok(calls_of(x, &sql, vals![path])?.pop()))
     }
 
     /// Whether a call is filed under `path` (the backfill skips it).
@@ -323,44 +318,40 @@ fn apply_one(x: &mut dyn Exec, change: &Change) -> Result<(), String> {
     }
 }
 
-/// Write a call's row and its children. A live call replaces what is there;
-/// a backfilled one only fills a gap, and brings its children only if it
-/// landed.
+/// The calls `sql` finds (columns [`read::columns`]), each with its radios'
+/// transmissions (one more query for them all).
+fn calls_of(x: &mut dyn Exec, sql: &str, ps: &[V]) -> Result<Vec<StoredCall>, String> {
+    let rows = x.query(sql, ps)?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut ids = Params::default();
+    let marks: Vec<String> = rows.iter().map(|r| ids.add(r.int(0))).collect();
+    let mut txs: std::collections::HashMap<i64, Vec<trunk_recorder_plugin::SrcEntry>> = Default::default();
+    for t in x.query(&format!("select {} from call_transmissions where call_id in ({}) order by call_id, seq", TX_COLS.join(", "), marks.join(", ")), &ids.0)? {
+        txs.entry(t.int(0)).or_default().push(src_entry(&t, 0));
+    }
+    Ok(rows.iter().map(|r| stored_call(r, 2, r.text(1), txs.remove(&r.int(0)).unwrap_or_default())).collect())
+}
+
+/// Write a call's row and its transmissions. A live call replaces what is
+/// there; a backfilled one only fills a gap, and brings its transmissions
+/// only if it landed.
 fn write_call(x: &mut dyn Exec, row: &CallRow, live: bool) -> Result<(), String> {
-    const COLS: [&str; 24] = [
-        "path", "system_id", "nac", "site", "talkgroup", "start_ms", "stop_ms", "length_ms", "freq_hz", "emergency", "encrypted", "decrypted", "duplex", "priority", "audio_type", "signal", "noise", "snr",
-        "clean_voice_pct", "audio", "json", "recorder", "record", "indexed_ms",
-    ];
     let conflict = if live {
-        format!("on conflict (path) do update set {}", COLS[1..].iter().map(|c| format!("{c} = excluded.{c}")).collect::<Vec<_>>().join(", "))
+        format!("on conflict (path) do update set {}", CALL_COLS[1..].iter().map(|c| format!("{c} = excluded.{c}")).collect::<Vec<_>>().join(", "))
     } else {
         "on conflict (path) do nothing".into()
     };
-    let marks: Vec<String> = (1..=COLS.len()).map(|i| format!("${i}")).collect();
-    let sql = format!("insert into calls ({}) values ({}) {conflict} returning id", COLS.join(", "), marks.join(", "));
-    let ps = vals![
-        &row.path, row.system_id, row.nac.as_ref(), row.site.as_ref(), row.talkgroup, row.start_ms, row.stop_ms, row.length_ms, row.freq_hz, row.emergency, row.encrypted, row.decrypted, row.duplex, row.priority,
-        row.audio_type.as_ref(), row.signal, row.noise, row.snr, row.clean_voice_pct, row.audio, row.json, row.recorder.as_ref(), &row.record, row.indexed_ms,
-    ];
-    let Some(landed) = x.query_opt(&sql, ps)? else { return Ok(()) };
+    let marks: Vec<String> = (1..=CALL_COLS.len()).map(|i| format!("${i}")).collect();
+    let sql = format!("insert into calls ({}) values ({}) {conflict} returning id", CALL_COLS.join(", "), marks.join(", "));
+    let Some(landed) = x.query_opt(&sql, &call_values(row))? else { return Ok(()) };
     let id = landed.int(0);
-    for table in ["call_transmissions", "call_frequencies", "call_units"] {
-        x.execute(&format!("delete from {table} where call_id = $1"), vals![id])?;
-    }
-    for t in &row.transmissions {
-        x.execute("insert into call_units (system_id, unit, start_ms, call_id) values ($1, $2, $3, $4) on conflict do nothing", vals![row.system_id, t.unit, row.start_ms, id])?;
-    }
-    for (seq, t) in row.transmissions.iter().enumerate() {
-        x.execute(
-            "insert into call_transmissions (call_id, seq, unit, start_ms, length_ms, emergency, signal_system, tag) values ($1, $2, $3, $4, $5, $6, $7, $8)",
-            vals![id, seq, t.unit, t.start_ms, t.length_ms, t.emergency, t.signal_system.as_ref(), t.tag.as_ref()],
-        )?;
-    }
-    for (seq, f) in row.frequencies.iter().enumerate() {
-        x.execute(
-            "insert into call_frequencies (call_id, seq, freq_hz, start_ms, length_ms, error_count, spike_count) values ($1, $2, $3, $4, $5, $6, $7)",
-            vals![id, seq, f.freq_hz, f.start_ms, f.length_ms, f.error_count, f.spike_count],
-        )?;
+    x.execute("delete from call_transmissions where call_id = $1", vals![id])?;
+    let tx_sql = format!("insert into call_transmissions ({}) values ({})", TX_COLS.join(", "), (1..=TX_COLS.len()).map(|i| format!("${i}")).collect::<Vec<_>>().join(", "));
+    let mut seen = std::collections::HashSet::new();
+    for (seq, s) in row.record.src_list.iter().enumerate() {
+        x.execute(&tx_sql, &tx_values(id, seq, row, s, seen.insert(s.src)))?;
     }
     Ok(())
 }

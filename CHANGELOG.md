@@ -28,6 +28,23 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     it) is left off: recording, the call list and every query go on from the recent calls.
     Nothing else is kept meanwhile (talkgroups, aliases, the radio registry, the dashboard's
     history), rather than kept in files that would be lost when it opens; the log says so.
+  - **Systems have ids.** Each system in `config.json` gets an `id` the first time it's read,
+    kept across renames and never given twice (`nextSystemId`). The store keeps everything by
+    it, so a renamed system keeps its calls, talkgroups and registry.
+  - **A call is kept once in the store.** Its record's fields are columns, its radios rows of
+    their own, and the lists nothing searches one JSON document. The call's `.json` file stays the
+    truth.
+  - **Paging by cursor (breaking).**
+    - `callsQuery` takes `cursor`, which is the last page's `next`. `callsResult` is
+      `{ id, entries, next?, error? }`, and `history` carries `next` too.
+    - Calls are ordered by start, then path, and every page is one query.
+    - `olderCalls` is gone; the Listen page's "Load older" goes on from the history's `next`.
+    - Plugins: `CallsQuery.cursor` and `CallsPage.next`, the request number beside them
+      (`Plugin::calls(request, page)`).
+    - With the store off, `GET /api/v1/calls` answers from the recent calls (its `error` says
+      so), as `callsQuery` does, rather than 503.
+    - A talkgroup or radio asked for without a system is looked for in each configured
+      system.
   - **Breaking, while in beta: nothing is carried over or migrated.** With the store on (the
     default), the flat files (`<shortName>.talkgroups.csv`, `radio/`, `*.units.csv`,
     `*.bandplan`, `conventional.heard.json`, `tune.json`, `sharing.json`, `stats/`) aren't read;

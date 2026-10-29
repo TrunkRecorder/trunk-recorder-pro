@@ -179,7 +179,11 @@ pub enum HostMessage {
     Settings(Hello),
     /// The answer to a [`PluginMessage::CallsQuery`] (the same `request`).
     #[serde(rename = "calls")]
-    Calls(CallsPage),
+    Calls {
+        request: u64,
+        #[serde(flatten)]
+        page: CallsPage,
+    },
     /// The recorder is stopping: finish what's queued, then exit. stdin closes
     /// after this, and the process is killed if it hasn't exited within
     /// [`Shutdown::grace_s`].
@@ -946,9 +950,8 @@ pub struct Action {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CallsQuery {
-    /// Set by [`crate::Host::calls`]: the answer carries it back.
-    pub request: u64,
-    /// A system's short name (its sites' old names count as it).
+    /// A system's short name (its sites' old names count as it). Talkgroup
+    /// and radio numbers are a system's own: without one, each system's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -962,11 +965,10 @@ pub struct CallsQuery {
     /// Calls that started before this, Unix ms.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to: Option<i64>,
-    /// The next page: the last page's [`CallsPage::before`].
+    /// The page after the one this came from: its [`CallsPage::next`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub before: Option<i64>,
-    /// Calls on a page, 1 to 500 (100). A page never splits calls that
-    /// started in the same millisecond, so it may hold a few more.
+    pub cursor: Option<String>,
+    /// Calls on a page, 1 to 500 (100).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
@@ -975,12 +977,12 @@ pub struct CallsQuery {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CallsPage {
-    pub request: u64,
+    /// Newest first: by start, then path.
     pub entries: Vec<StoredCall>,
-    /// Calls remain before the oldest on this page: ask again with `before`.
-    pub more: bool,
-    /// Where the next page starts (the next query's `before`).
-    pub before: i64,
+    /// More remain: ask again with this as the query's `cursor`. Opaque:
+    /// where the last call on this page sits in the order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
     /// Why the answer is only the recent calls (the call store is off).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -1040,7 +1042,12 @@ pub enum PluginMessage {
     Metrics(Metrics),
     /// Recorded calls, asked of the recorder: answered with [`HostMessage::Calls`].
     #[serde(rename = "calls.query")]
-    CallsQuery(CallsQuery),
+    CallsQuery {
+        /// Set by [`crate::Host::calls`]: the answer carries it back.
+        request: u64,
+        #[serde(flatten)]
+        query: CallsQuery,
+    },
     /// How an [`Action`] went: shown by the button that was pressed.
     #[serde(rename = "action.result")]
     ActionResult {

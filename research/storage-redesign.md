@@ -4,7 +4,12 @@ Status (2026-10-29):
 
 - the review's four bugs are fixed (66556e8);
 - phase 1 is done (e88e35a);
-- phase 2 is done, as below.
+- phase 2 is done, as below;
+- phase 3 is done: a call mirrored once (typed columns, `call_transmissions` with a partial
+  radio index, `detail` JSON); the (start, path) cursor; one call type (`StoredCall`) and one
+  query/page (`CallsQuery`/`CallsPage`, the SDK's); filter and paging in trunk-app, used by the
+  browser build through wasm; `olderCalls` gone; one meaning of "calls" over WebSocket and HTTP.
+  Still to do from it: the greeting reads talker aliases from memory (with phase 5's `units`).
 
 Phase 2 as built:
 

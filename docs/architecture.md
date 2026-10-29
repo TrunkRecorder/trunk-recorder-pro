@@ -651,7 +651,7 @@ schema, and every documented command against `Command::parse`.
     version now, and `error` when the edit wasn't taken or saved), `devices`,
     `radios`, `dir`, `trConfig`, `sourceProfile`, `store` (with `kind`; its
     list is `listings`), `subscribed`, `statsResult`, `radioResult`,
-    `olderCalls`, `error`, `notice`.
+    `callsResult`, `error`, `notice`.
   - A site's identity, in `status`, the survey and the config's `expect`,
     is one shape, `SiteIdentity` (trunk-app's config, made from the engine's
     `Identity`): a field not heard yet is left out.
@@ -669,8 +669,8 @@ schema, and every documented command against `Command::parse`.
   `readTrConfig`, `survey*`, `profileSource`, `plugins`, `addPlugin`,
   `removePlugin`, `interfaces`, `addInterface`, `removeInterface`, `store`
   and `install` (each with `kind`: `plugin` or `interface`), `subscribe`,
-  `statsQuery`, `olderCalls`, `radioQuery`, `quit`. A listen-only connection
-  may send only `subscribe`, `statsQuery`, `radioQuery`, `olderCalls` and
+  `statsQuery`, `callsQuery`, `radioQuery`, `quit`. A listen-only connection
+  may send only `subscribe`, `statsQuery`, `radioQuery`, `callsQuery` and
   `listen`.
 - **HTTP routes**, on every interface's port (`server::api`):
   - `/api/ws`, `/api/version`, `/api/docs`, `/api/schema`, `/api/protocol.ts`,

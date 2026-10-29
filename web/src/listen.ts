@@ -38,9 +38,10 @@ export interface ListenState {
   missed: number;
   /** Every call known, newest first: as they conclude, and older ones loaded. */
   calls: CallEntry[];
-  /** Loading older calls; whether there are older ones still (null: not asked yet). */
+  /** Loading older calls; whether there are older ones still (null: not asked yet), and where they go on from. */
   loadingOlder: boolean;
   moreOlder: boolean | null;
+  olderCursor: string | null;
   sel: Selection;
 }
 
@@ -84,6 +85,7 @@ let state: ListenState = {
   calls: [],
   loadingOlder: false,
   moreOlder: null,
+  olderCursor: null,
   sel: loadSelection(),
 };
 
@@ -353,20 +355,19 @@ function merge(calls: CallEntry[], more: CallEntry[]): CallEntry[] {
   return [...calls, ...add].sort((a, b) => b.record.start_time_ms - a.record.start_time_ms).slice(0, CALLS_MAX);
 }
 
-/** Ask for calls older than the oldest known: a page of `callsQuery`, as every list of calls asks. */
+/** Ask for older calls, from where the history (or the last page) left off: a page of `callsQuery`, as every list of calls asks. */
 export function loadOlder(): void {
   if (state.loadingOlder) return;
-  const oldest = state.calls.at(-1)?.record.start_time_ms ?? Date.now();
   set({ loadingOlder: true });
-  void callsQuery({ before: oldest, limit: OLDER_PAGE }).then((m) => {
-    set({ calls: merge(state.calls, m.entries ?? []), loadingOlder: false, moreOlder: !!m.more });
+  void callsQuery({ ...(state.olderCursor ? { cursor: state.olderCursor } : {}), limit: OLDER_PAGE }).then((m) => {
+    set({ calls: merge(state.calls, m.entries ?? []), loadingOlder: false, moreOlder: !!m.next, olderCursor: m.next ?? null });
   });
 }
 
 onRecorderMessage((m) => {
   switch (m.type) {
     case "history":
-      set({ calls: merge(state.calls, m.entries) });
+      set({ calls: merge(state.calls, m.entries), olderCursor: m.next ?? null, ...(m.next ? {} : { moreOlder: false }) });
       break;
     case "concluded":
       arrived(m.entry);

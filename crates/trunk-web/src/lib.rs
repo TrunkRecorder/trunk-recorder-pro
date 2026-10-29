@@ -285,6 +285,18 @@ pub fn directory_recorder_id(random: &[u8]) -> String {
 }
 
 /// The bands the survey can scan: JSON [{id, label, loHz, hiHz, defaultOn}].
+/// The page of `calls` (JSON: the browser build's call index, as stored
+/// calls) that `query` (JSON: `callsQuery`'s fields) asks for, as the desktop
+/// app pages its store: the same order, filter and cursor ([`trunk_app::calls`]).
+#[wasm_bindgen]
+pub fn calls_page(calls: &str, query: &str) -> String {
+    use trunk_app::calls::{page_of, CallsQuery, StoredCall};
+    let calls: Vec<StoredCall> = serde_json::from_str(calls).unwrap_or_default();
+    let q: CallsQuery = serde_json::from_str(query).unwrap_or_default();
+    let names: Vec<String> = q.system.iter().cloned().collect();
+    serde_json::to_string(&page_of(&calls, &q, &names)).unwrap_or_default()
+}
+
 #[wasm_bindgen]
 pub fn survey_bands() -> String {
     trunk_app::survey::bands_json().to_string()
