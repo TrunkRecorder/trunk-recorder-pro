@@ -74,6 +74,21 @@ create index tx_unit_start on call_transmissions(unit, start_ms);
 create table kept (kind text not null, key text not null, value text not null, primary key (kind, key)) without rowid;
 create table registry (system text primary key, whole text not null);
 create table registry_changes (id integer primary key, system text not null, changes text not null);
+create table talkgroups (
+    system text not null,
+    seq integer not null,
+    line text not null,
+    number integer,
+    alpha_tag text,
+    description text,
+    tag text,
+    category text,
+    mode text,
+    priority integer,
+    ignore integer,
+    primary key (system, seq)
+) without rowid;
+create index talkgroups_number on talkgroups(system, number);
 "];
 
 /// How a database stands after [`migrate`].

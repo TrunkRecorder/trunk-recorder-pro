@@ -48,6 +48,10 @@ pub enum Write {
     Kept { kind: String, key: String, value: Option<String> },
     /// What changed in a system's radio registry since the last ([`store::StoredRegistry`]).
     Registry { system: String, changes: Box<trunk_app::stats::radio::RegistryChanges> },
+    /// A system's talkgroup file edited from `old` to `new` ("" for `old`:
+    /// in place of what's stored; "" for `new`: none). Committed at once:
+    /// people make these.
+    Talkgroups { system: String, old: String, new: String },
     /// A system's whole radio registry, in place of what's stored.
     RegistryWhole { system: String, radio: Box<trunk_app::stats::radio::SystemRadio> },
     /// Delete calls that started before this time, as the writer does by
@@ -227,6 +231,11 @@ impl Db {
         self.store()?.kept(kind, key)
     }
 
+    /// A system's stored talkgroup file.
+    pub fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
+        self.store()?.talkgroups(system)
+    }
+
     /// Every system's stored radio registry.
     pub fn registry(&self) -> Result<Vec<store::StoredRegistry>, String> {
         self.store()?.registry()
@@ -373,6 +382,34 @@ pub fn seed_newer(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A talkgroup file comes back exactly, through edits, a shorter file
+    /// and none; its rows can be asked for by talkgroup.
+    #[test]
+    fn talkgroup_files_come_back() {
+        for db in Db::for_each_backend("talkgroups", std::time::Duration::from_secs(60)) {
+            let file = "# county\nDecimal;Alpha Tag;Ignore\n101;\"Fire; Disp\";\n102;Tac;\n";
+            db.send(Write::Talkgroups { system: "a".into(), old: String::new(), new: file.into() });
+            let t = std::time::Instant::now();
+            db.send(Write::Talkgroups { system: "b".into(), old: String::new(), new: "1,x\n".into() });
+            let edited = trunk_core::trunk::edit_row(file, 102, &[("Ignore", "x")]);
+            db.send(Write::Talkgroups { system: "a".into(), old: file.into(), new: edited.clone() });
+            // (People's edits commit at once, whatever the interval.)
+            while db.talkgroups("a").unwrap().as_deref() != Some(edited.as_str()) {
+                assert!(t.elapsed() < std::time::Duration::from_secs(5), "an edit waits for the interval ({})", db.kind());
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert_eq!(db.count("select count(*) from talkgroups where system = 'a' and number = 102 and ignore"), 1);
+            assert_eq!(db.count("select count(*) from talkgroups where system = 'a' and alpha_tag = 'Fire; Disp'"), 1);
+            let shorter = "Decimal;Alpha Tag\n101;Fire\n";
+            db.send(Write::Talkgroups { system: "a".into(), old: String::new(), new: shorter.into() });
+            db.send(Write::Talkgroups { system: "b".into(), old: "1,x\n".into(), new: String::new() });
+            db.flush().unwrap();
+            assert_eq!(db.talkgroups("a").unwrap().as_deref(), Some(shorter));
+            assert_eq!(db.talkgroups("b").unwrap(), None, "cleared");
+            assert_eq!(db.talkgroups("c").unwrap(), None);
+        }
+    }
 
     /// Kept documents come back as they went in; the radio registry, kept
     /// as changes, comes back as it was, its logs to their caps; written

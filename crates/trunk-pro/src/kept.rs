@@ -1,7 +1,7 @@
-//! What a recording keeps between runs besides its calls (research/sqlite-plan.md,
-//! "Flat files"): each system's talker aliases, band plans, the codes
-//! conventional frequencies carried, AutoTune's scores, what sharing did,
-//! and the radio registry. With `storage.backend: "files"` (or a store that
+//! What's kept between runs besides the calls (research/sqlite-plan.md,
+//! "The flat-file stores"): each system's talkgroup file, talker aliases,
+//! band plans, the codes conventional frequencies carried, AutoTune's
+//! scores, what sharing did, and the radio registry. With `storage.backend: "files"` (or a store that
 //! could not open) they're the files they always were, written by the
 //! saver; otherwise they're rows in the store, written by its writer.
 //!
@@ -69,9 +69,11 @@ fn imported(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Rename `path` once the store has committed what was read from it.
-fn retire_file(db: &Db, path: &Path) {
+/// Rename `path` once the store has committed what was read from it and
+/// `stored` finds it there (a batch commits though one change in it fails).
+fn retire_file(db: &Db, path: &Path, stored: impl FnOnce() -> bool) {
     match db.flush() {
+        Ok(()) if !stored() => log::warn!("{}: not imported into the store (the log says why); read again next start", path.display()),
         Ok(()) => {
             if let Err(e) = fs::rename(path, imported(path)) {
                 log::warn!("{}: imported into the store, but not renamed: {e}", path.display());
@@ -95,7 +97,7 @@ fn read_in(db: &Db, dir: &Path, doc: Doc) -> Option<String> {
     }
     if let Ok(text) = fs::read_to_string(&path) {
         db.send(Write::Kept { kind: doc.kind().into(), key: doc.key().into(), value: Some(text.clone()) });
-        retire_file(db, &path);
+        retire_file(db, &path, || db.kept(doc.kind(), doc.key()).is_ok_and(|v| v.as_ref() == Some(&text)));
         return Some(text);
     }
     match db.kept(doc.kind(), doc.key()) {
@@ -113,6 +115,54 @@ pub fn write(db: &Db, saver: &Saver, doc: Doc, text: String) {
         saver.text(doc.file(&crate::paths::data_dir()), text);
     } else {
         db.send(Write::Kept { kind: doc.kind().into(), key: doc.key().into(), value: Some(text) });
+    }
+}
+
+/// System `system`'s talkgroup file in `dir`, as `files` keeps it.
+fn talkgroups_file(dir: &Path, system: &str) -> PathBuf {
+    trunk_app::config::talkgroups_path(dir, system)
+}
+
+/// The talkgroup files of `cfg`'s systems (trunked and conventional), as
+/// kept. Blocks: never from async code.
+pub fn load_talkgroups(db: &Db, cfg: &trunk_app::Config) -> trunk_app::config::TalkgroupFiles {
+    load_talkgroups_in(db, &crate::paths::data_dir(), cfg)
+}
+
+fn load_talkgroups_in(db: &Db, dir: &Path, cfg: &trunk_app::Config) -> trunk_app::config::TalkgroupFiles {
+    let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
+    let read = |name: &String| -> Option<String> {
+        let path = talkgroups_file(dir, name);
+        if db.is_disabled() {
+            return fs::read_to_string(&path).or_else(|_| fs::read_to_string(imported(&path))).ok();
+        }
+        // (A file here is newer than the store's copy: one edited by hand, or from before it.)
+        if let Ok(csv) = fs::read_to_string(&path) {
+            db.send(Write::Talkgroups { system: name.clone(), old: String::new(), new: csv.clone() });
+            retire_file(db, &path, || csv.trim().is_empty() || db.talkgroups(name).is_ok_and(|v| v.is_some()));
+            return Some(csv);
+        }
+        match db.talkgroups(name) {
+            Ok(csv) => csv,
+            Err(e) => {
+                log::warn!("Call store: talkgroups of {name} not read ({e}); using its last file");
+                fs::read_to_string(imported(&path)).ok()
+            }
+        }
+    };
+    names.filter_map(|name| read(name).map(|csv| (name.clone(), csv))).collect()
+}
+
+/// Keep system `system`'s talkgroup file, edited from `old` to `new` (""
+/// for `old`: in place of what's kept; "" for `new`: none). The store
+/// writes only the lines that changed, and commits at once.
+pub fn write_talkgroups(db: &Db, saver: &Saver, system: &str, old: &str, new: String) {
+    if !db.is_disabled() {
+        db.send(Write::Talkgroups { system: system.to_string(), old: old.to_string(), new });
+    } else if new.trim().is_empty() {
+        saver.remove(talkgroups_file(&crate::paths::data_dir(), system));
+    } else {
+        saver.text(talkgroups_file(&crate::paths::data_dir(), system), new);
     }
 }
 
@@ -203,8 +253,8 @@ fn load_registry_in(db: &Db, radio_dir: &Path, shared: &trunk_app::stats::Shared
         let (Some(name), Ok(text)) = (stem(&p), fs::read_to_string(&p)) else { continue };
         r.load(&name, &text);
         let Some(radio) = r.systems.get(&name).cloned() else { continue };
-        db.send(Write::RegistryWhole { system: name, radio: Box::new(radio) });
-        retire_file(db, &p);
+        db.send(Write::RegistryWhole { system: name.clone(), radio: Box::new(radio) });
+        retire_file(db, &p, || db.registry().is_ok_and(|all| all.iter().any(|s| s.system == name && s.whole.is_some())));
     }
 }
 
@@ -248,6 +298,20 @@ mod tests {
             assert_eq!(serde_json::to_value(&b.systems["x"]).unwrap(), serde_json::to_value(&whole.systems["x"]).unwrap(), "{}", db.kind());
             assert_eq!(serde_json::to_value(&a.systems["x"]).unwrap(), serde_json::to_value(&b.systems["x"]).unwrap());
         }
+
+        // A talkgroup file: imported once, then the store's; edits by line.
+        let mut cfg = trunk_app::Config::default();
+        cfg.systems.push(trunk_app::config::System { short_name: "a".into(), ..Default::default() });
+        let tgs = talkgroups_file(&dir, "a");
+        for db in Db::for_each_backend("kept-talkgroups", std::time::Duration::from_millis(10)) {
+            fs::write(&tgs, "Decimal,Alpha Tag\n101,Fire\n").unwrap();
+            assert_eq!(load_talkgroups_in(&db, &dir, &cfg)["a"], "Decimal,Alpha Tag\n101,Fire\n");
+            assert!(!tgs.exists() && imported(&tgs).exists(), "{}", db.kind());
+            db.send(Write::Talkgroups { system: "a".into(), old: "Decimal,Alpha Tag\n101,Fire\n".into(), new: "Decimal,Alpha Tag\n101,Fire 1\n".into() });
+            db.flush().unwrap();
+            assert_eq!(load_talkgroups_in(&db, &dir, &cfg)["a"], "Decimal,Alpha Tag\n101,Fire 1\n");
+        }
+        assert_eq!(load_talkgroups_in(&off, &dir, &cfg)["a"], "Decimal,Alpha Tag\n101,Fire\n", "off: the imported copy");
 
         // Off again: the imported copies are the last.
         let shared = trunk_app::stats::Shared::new();

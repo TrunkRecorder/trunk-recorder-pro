@@ -1394,7 +1394,8 @@ found on the air with `plan_centers`, through the same `off_dc`.
 | `tune.json` | AutoTune's scores per source, for the next run |
 | `radio/<short>.json` | the radio registry (units, talkgroups, affiliations); every 15 min and at stop |
 
-With the store on (`storage.backend` `sqlite` or `postgres`), the band plans, talker aliases,
+With the store on (`storage.backend` `sqlite` or `postgres`), the talkgroup files (a line at a
+time, table `talkgroups`), band plans, talker aliases,
 conventional codes, AutoTune's scores, sharing's state and the radio registry are kept in the
 store instead (`trunk-pro/src/kept.rs`). The registry is stored as each save's changes, and
 written whole once a day. Files found at startup are imported and renamed `.imported`.

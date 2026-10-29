@@ -1,7 +1,8 @@
 // A system's talkgroup names (Setup → Systems): a Trunk Recorder talkgroup
 // CSV loaded from a file, or the talkgroup table copied from RadioReference's
-// web page and pasted in. Each system keeps its own file, beside the config
-// (`<short name>.talkgroups.csv`), saved as soon as it changes.
+// web page and pasted in. Each system keeps its own file, saved as soon as it
+// changes: in the recorder's store, a line at a time, or beside the config
+// (`<short name>.talkgroups.csv`) with `storage.backend: "files"`.
 
 import { useMemo, useRef, useState } from "react";
 import { downloadText, setNotice, setTalkgroups, useApp } from "./controller.ts";

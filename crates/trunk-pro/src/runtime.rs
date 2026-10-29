@@ -88,7 +88,7 @@ pub struct Ctx {
     pub config: Mutex<Config>,
     /// The config's version: one more each time it changes ([`Ctx::config_changed`]).
     pub config_version: AtomicU64,
-    /// Each system's talkgroup file, as kept beside the config ([`talkgroups_path`]).
+    /// Each system's talkgroup file, as kept ([`kept::load_talkgroups`]).
     pub talkgroups: Mutex<trunk_app::config::TalkgroupFiles>,
     pub hub: Hub,
     /// What the radios are doing ([`Lifecycle`]): changed only through its
@@ -538,20 +538,9 @@ fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
     let _ = (ctx, cfg);
 }
 
-/// Where a system's talkgroup file is kept (`<short name>.talkgroups.csv`, beside the config).
-pub(crate) fn talkgroups_path(short_name: &str) -> PathBuf {
-    trunk_app::config::talkgroups_path(&crate::paths::data_dir(), short_name)
-}
-
-/// The talkgroup files of `cfg`'s systems (trunked and conventional), as kept.
-pub fn load_talkgroups(cfg: &Config) -> trunk_app::config::TalkgroupFiles {
-    let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
-    names.filter_map(|name| fs::read_to_string(talkgroups_path(name)).ok().map(|csv| (name.clone(), csv))).collect()
-}
-
 /// System `system`'s talkgroup file is now `csv` ("": none): kept, told to
 /// every browser, and taken by the recording at once; written in the
-/// background ([`crate::saver`]).
+/// background ([`kept::write_talkgroups`]).
 pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String> {
     if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
         return Err(format!("bad short name {system:?}"));
@@ -561,11 +550,10 @@ pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String
         let mut files = ctx.talkgroups.lock().unwrap();
         if csv.trim().is_empty() {
             files.remove(system);
-            ctx.saver.remove(talkgroups_path(system));
         } else {
             files.insert(system.to_string(), csv.clone());
-            ctx.saver.text(talkgroups_path(system), csv.clone());
         }
+        kept::write_talkgroups(&ctx.db, &ctx.saver, system, "", csv.clone());
     }
     ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
     // (The config first, then the names: as config_changed takes them.)
@@ -585,9 +573,10 @@ pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::prot
     let row = {
         // (Edited and handed to the writer with the lock held: edits are written in the order they're kept.)
         let mut files = ctx.talkgroups.lock().unwrap();
-        let csv = trunk_core::trunk::edit_row(files.get(system).map_or("", String::as_str), number, &edit.cells());
+        let old = files.get(system).map_or("", String::as_str);
+        let csv = trunk_core::trunk::edit_row(old, number, &edit.cells());
         let row = trunk_core::trunk::row_of(&csv, number);
-        ctx.saver.text(talkgroups_path(system), csv.clone());
+        kept::write_talkgroups(&ctx.db, &ctx.saver, system, old, csv.clone());
         files.insert(system.to_string(), csv);
         row
     };

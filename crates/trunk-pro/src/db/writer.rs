@@ -65,12 +65,12 @@ impl Writer {
             // Wait out the interval since the last commit, taking writes as they come;
             // a flush, a full batch or the last handle going ends the wait at once.
             if let Some(at) = last_commit {
-                let mut flushing = matches!(held[0], Write::Flush(_));
+                let mut flushing = matches!(held[0], Write::Flush(_) | Write::Talkgroups { .. });
                 while !flushing && held.len() < MAX_BATCH {
                     let Some(rest) = self.batch.checked_sub(at.elapsed()) else { break };
                     match rx.recv_timeout(rest) {
                         Ok(w) => {
-                            flushing = matches!(w, Write::Flush(_));
+                            flushing = matches!(w, Write::Flush(_) | Write::Talkgroups { .. });
                             held.push(w);
                         }
                         Err(RecvTimeoutError::Timeout) => break,
@@ -112,6 +112,10 @@ impl Writer {
                 Write::Kept { kind, key, value } => changes.push(Change::Kept { kind, key, value }),
                 // (Turned into JSON here, off the engine's thread: a whole registry can be megabytes.)
                 Write::Registry { system, changes: c } => changes.extend(serde_json::to_string(&c).ok().map(|json| Change::RegistryChanges { system, json })),
+                Write::Talkgroups { system, old, new } => {
+                    let (lines, len) = super::store::talkgroup_lines(&old, &new);
+                    changes.push(Change::Talkgroups { system, lines, len });
+                }
                 Write::RegistryWhole { system, radio } => changes.extend(serde_json::to_string(&radio).ok().map(|json| Change::RegistryWhole { system, json })),
                 #[cfg(test)]
                 Write::Retention { before_ms } => retire = Some(retire.map_or(before_ms, |b| b.max(before_ms))),

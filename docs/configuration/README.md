@@ -63,8 +63,9 @@ with `--config` files in different folders never share band plans, talker aliase
   anywhere else (inside a source, a channel, `expect`, `unitNames`, a system's own `recording`,
   `m4a`, `ramSpool`, an interface, a plugin's entry, `monitor`) are dropped the next time the file is
   saved.
-- **Talkgroups aren't in the config.** Each system's talkgroup file is a file of its own beside it
-  (`<shortName>.talkgroups.csv`); see [Files kept beside the config](#files-kept-beside-the-config).
+- **Talkgroups aren't in the config.** Each system's talkgroup file is kept in the
+  [call store](#the-call-store-storage), or with `storage.backend: "files"` as a file of its own
+  beside it (`<shortName>.talkgroups.csv`); see [Files kept beside the config](#files-kept-beside-the-config).
   A config from an older version that holds them (`talkgroupsCsv`) is upgraded when it's read: the
   talkgroups are moved out into those files, and the log says so.
 - **The interface saves the whole file on every change**, so hand edits made while the app is running
@@ -121,7 +122,7 @@ upload-only settings).
 
 Both are read when the app starts.
 
-The store also keeps what a recording learns between runs:
+The store also keeps each system's talkgroup file, and what a recording learns between runs:
 
 - the radio registry;
 - each system's talker aliases;
@@ -130,12 +131,20 @@ The store also keeps what a recording learns between runs:
 - AutoTune's scores;
 - what sharing with the directory did.
 
-With `files` these stay files in the data folder (`radio/<system>.json`, `<system>.units.csv`,
-…). With `sqlite` or `postgres`, the files found there at the first start are imported, then
-renamed `<name>.imported` and kept. The registry is stored as the changes of each 15 minutes,
-and written whole once a day: on the Pi's eMMC that's 0.10 GB a day for a busy system, against
-0.44 GB for the whole file every 15 minutes. Talkgroup files (`<system>.talkgroups.csv`) stay
-files.
+With `files` these stay files in the data folder (`<system>.talkgroups.csv`,
+`radio/<system>.json`, `<system>.units.csv`, …). With `sqlite` or `postgres`, the files found
+there at the first start are imported, then renamed `<name>.imported` and kept. A file put there
+later (a talkgroup file edited by hand, say) is imported the same way at the next start.
+
+- **Talkgroup files** are kept a line at a time, exactly as loaded: comments, extra columns and
+  the delimiter too. An edit in Setup (Ignore, a name) writes only the lines it changed, and
+  commits at once. Each row also has its talkgroup's number, alpha tag, description, tag,
+  category, mode, priority and Ignore in columns of their own (table `talkgroups`), so a call's
+  talkgroup can be looked up by SQL. Setup's **Download** exports the file; **Load CSV…** replaces
+  it.
+- **The radio registry** is stored as the changes of each 15 minutes, and written whole once a
+  day. On the Pi's eMMC that's 0.10 GB a day for a busy system, against 0.44 GB for the whole file
+  every 15 minutes.
 
 ## A minimal config
 
@@ -280,7 +289,7 @@ then Start). A few apply at once:
 
 | Applies at once | Applies at the next Start | Applies when the app restarts |
 |---|---|---|
-| A trunked system's talkgroup file (`<shortName>.talkgroups.csv`): an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
+| A trunked system's talkgroup file: an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
 | Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them | Recording rules, `filenameFormat`, `captureDir` | `monitor.probeHosts` |
 | `log` settings, `monitor.networkChecks` | `recording.ramSpool` (the interface says "from the next start") | |
 | `server.allowedOrigins`, `server.interfaces` (an interface moves to its new port at once) | A linked `channelFile` is re-read at every Start | |
@@ -288,12 +297,14 @@ then Start). A few apply at once:
 ## Files kept beside the config
 
 The app keeps these in the folder the config file is in. With the default config that is the app's
-config folder above; with `--config elsewhere/config.json`, it's `elsewhere/`.
+config folder above; with `--config elsewhere/config.json`, it's `elsewhere/`. With the call store
+on (`storage.backend` `sqlite` or `postgres`), the talkgroup files, band plans, talker aliases,
+Heard list and radio registry are kept [in the store](#the-call-store-storage) instead.
 
 | File or folder | What it holds |
 |---|---|
 | `<shortName>.bandplan` | Each trunked system's learned band plan (P25 IDEN tables, DMR and NXDN channel tables), so grants can be followed at once next time |
-| `<shortName>.talkgroups.csv` | Each system's [talkgroup file](systems.md#talkgroup-file), in Trunk Recorder's CSV format. Setup writes it |
+| `<shortName>.talkgroups.csv` | Each system's [talkgroup file](systems.md#talkgroup-file), in Trunk Recorder's CSV format (`files`). Setup writes it |
 | `<shortName>.units.csv` | Talker aliases heard over the air, per system |
 | `conventional.heard.json` | The tones, NACs, colour codes and RANs each conventional frequency carried (the Heard list) |
 | `radio/` | The radio registry: the talkgroups, radios and frequencies each system has heard, one `.json` per system |

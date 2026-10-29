@@ -27,6 +27,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   - A store that can't be opened (a newer version's, a full disk, a server not reachable,
     another recorder using it) is left off: recording, the call list and every query go on from
     the recent calls.
+  - **Talkgroup files are kept in the store too**, a line at a time and exactly as loaded. An
+    Ignore or name change writes only that line and commits at once, rather than rewriting the
+    file. Each row's talkgroup is in columns of its own, so a call's talkgroup name is a SQL join
+    away. **Download** in Setup exports the file. A `<shortName>.talkgroups.csv` left beside the
+    config is imported at the next start.
   - **What a recording learns between runs is kept in the store too:**
     - the radio registry;
     - talker aliases;

@@ -10,7 +10,8 @@ Status (2026-10-28):
 - **Built, in #104:** the [flat-file stores](#the-flat-file-stores) behind the same interface:
   the radio registry, talker aliases, band plans, conventional codes heard, AutoTune's scores and
   sharing's state. Existing files are imported once and renamed `.imported`.
-- **Next:** talkgroup files as internal data ([phase 3](#phase-3-talkgroups-and-unit-names-as-internal-data)).
+- **Built, in #104:** talkgroup files in the store, a line at a time with each row's talkgroup
+  read into columns ([phase 3](#phase-3-talkgroups-and-unit-names-as-internal-data)).
 
 It builds on issue #100's design and on the measurements in [storage.md](storage.md). PR #101
 laid the groundwork:
@@ -170,7 +171,7 @@ store's, written by its writer in its batches.
 | `<sys>.units.csv` (talker aliases learned) | `kept` (`units`, system) | soon after a change |
 | `<site>.bandplan` | `kept` (`bandplan`, key) | when it changes |
 | `tune.json`, `sharing.json` | `kept` (`tune`, `sharing`) | as before |
-| `<sys>.talkgroups.csv` | not yet: phase 3, rows edited per row (`setTalkgroup`), with Import/Export | the user edits these; CSV stays the exchange format |
+| `<sys>.talkgroups.csv` | `talkgroups` (system, line number): each line as loaded, and its talkgroup's columns | an edit (`setTalkgroup`), only the lines it changed, committed at once; a file loaded (`setTalkgroups`), all of it |
 | `stats/YYYY-MM-DD.jsonl` | stays append-only files; finished days optionally into the store (phase 4) | already the right shape for flash |
 | `config.json`, plugin and interface folders, registry caches, logs | stay files | edited by people, or other programs' |
 
@@ -338,6 +339,23 @@ follows, queries by SQL and retention in place of the caps, is not.)
   - every `radioQuery` answer equal to the in-memory one on a replayed capture (a test).
 
 ### Phase 3: talkgroups and unit names as internal data
+
+Built for talkgroups in #104, more simply than below. The file's text stays the model (the
+engine, the browser and the protocol all take a CSV), so the store keeps it **a line at a time**:
+
+- `talkgroups (system, seq, line, number, alpha_tag, description, tag, category, mode, priority,
+  ignore)`, keyed by (system, seq), indexed by (system, number).
+- The file comes back exactly (comments, extra columns, delimiter), and the columns make a call's
+  talkgroup a join.
+- `setTalkgroup` writes only the lines `edit_row` changed (all of them when it changed the
+  header). Edits commit at once, not at `commitSeconds`: people make them.
+- Import and Export were already in Setup (**Load CSV…**, **Download**). A file left beside the
+  config is imported at the next start. No CLI, since the running recorder holds the store's
+  lock.
+- Unit names stay in the config (`unitNames`). Talker aliases learned over the air are a `kept`
+  document.
+
+What follows was the first plan:
 
 - **Tables:** `talkgroup_file` and `unit_names`, imported once from `<sys>.talkgroups.csv` and
   `<sys>.units.csv`. The files are renamed `.imported` afterwards and kept.

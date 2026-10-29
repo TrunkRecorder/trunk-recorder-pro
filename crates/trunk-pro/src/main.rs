@@ -881,7 +881,7 @@ fn serve(a: &Args) {
     kept::load_registry(&db, &shared);
     let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
     let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone());
-    let talkgroups = runtime::load_talkgroups(&cfg);
+    let talkgroups = kept::load_talkgroups(&db, &cfg);
     runtime::load_names(&shared, &cfg, &talkgroups, &db);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),

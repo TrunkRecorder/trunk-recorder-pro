@@ -371,10 +371,13 @@ sync). **Lock** forgets the keys and they stop at once. The password is never sa
 
 ## Talkgroup file
 
-A system's talkgroups are a Trunk Recorder talkgroup file, kept beside the config file as
-`<shortName>.talkgroups.csv` (not in the config). RadioReference's talkgroup CSV export reads as is.
-Setup loads it from a file or a RadioReference paste and saves it there, and renames it when the
-system is renamed. By hand, put the file in the config's folder under that name. A conventional
+A system's talkgroups are a Trunk Recorder talkgroup file (not in the config). RadioReference's
+talkgroup CSV export reads as is. Setup loads it from a file or a RadioReference paste, keeps it
+with the system when the system is renamed, and **Download** exports it. It's kept in the
+[call store](README.md#the-call-store-storage), a line at a time, or with `storage.backend:
+"files"` beside the config file as `<shortName>.talkgroups.csv`. By hand, put the file in the
+config's folder under that name: with the store on, it's imported at the next start (and renamed
+`.imported`). A conventional
 system has its own file the same way, which names the talkgroups its P25, DMR and NXDN channels hear.
 A config from an older version, which kept the file inside it as `talkgroupsCsv`, is upgraded when
 it's read: the talkgroups are moved out into these files.

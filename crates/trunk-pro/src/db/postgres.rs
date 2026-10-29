@@ -86,6 +86,21 @@ create index tx_unit_start on call_transmissions(unit, start_ms);
 create table kept (kind text not null, key text not null, value text not null, primary key (kind, key));
 create table registry (system text primary key, whole text not null);
 create table registry_changes (id bigserial primary key, system text not null, changes text not null);
+create table talkgroups (
+    system text not null,
+    seq bigint not null,
+    line text not null,
+    number bigint,
+    alpha_tag text,
+    description text,
+    tag text,
+    category text,
+    mode text,
+    priority integer,
+    ignore boolean,
+    primary key (system, seq)
+);
+create index talkgroups_number on talkgroups(system, number);
 "];
 
 pub struct PostgresStore {
@@ -256,6 +271,15 @@ impl CallStore for PostgresStore {
                         log::warn!("Call store: registry write {system} failed: {e}");
                     }
                 }
+                Change::Talkgroups { system, lines, len } => {
+                    let written = tx.transaction().and_then(|mut sp| {
+                        write_talkgroups(&mut sp, &system, &lines, len)?;
+                        sp.commit()
+                    });
+                    if let Err(e) = written {
+                        log::warn!("Call store: talkgroups write {system} failed: {e}");
+                    }
+                }
                 Change::RegistryWhole { system, json } => {
                     let written = tx.transaction().and_then(|mut sp| {
                         sp.execute("insert into registry (system, whole) values ($1, $2) on conflict (system) do update set whole = excluded.whole", &[&system, &json])?;
@@ -315,6 +339,10 @@ impl CallStore for PostgresStore {
         })
     }
 
+    fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
+        self.read(|c| Ok(super::store::talkgroup_file(c.query("select line from talkgroups where system = $1 order by seq", &[&system])?.iter().map(|r| r.get(0)).collect())))
+    }
+
     fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String> {
         let mut w = self.writer()?;
         let n = w.execute("delete from calls where id in (select id from calls where start_ms < $1 order by start_ms limit $2)", &[&before_ms, &(max as i64)]).map_err(|e| e.to_string())?;
@@ -346,6 +374,21 @@ impl CallStore for PostgresStore {
         );
         self.writer().unwrap().batch_execute(&sql).unwrap();
     }
+}
+
+/// Write a system's talkgroup lines (as `sqlite.rs` does).
+fn write_talkgroups(tx: &mut postgres::Transaction<'_>, system: &str, lines: &[super::store::TalkgroupLine], len: i64) -> Result<(), postgres::Error> {
+    let up = tx.prepare(
+        "insert into talkgroups (system, seq, line, number, alpha_tag, description, tag, category, mode, priority, ignore) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         on conflict (system, seq) do update set line = excluded.line, number = excluded.number, alpha_tag = excluded.alpha_tag, description = excluded.description, tag = excluded.tag,
+         category = excluded.category, mode = excluded.mode, priority = excluded.priority, ignore = excluded.ignore",
+    )?;
+    for l in lines {
+        let t = l.tg.as_ref();
+        tx.execute(&up, &[&system, &l.seq, &l.line, &t.map(|t| i64::from(t.number)), &t.map(|t| &t.alpha_tag), &t.map(|t| &t.description), &t.map(|t| &t.tag), &t.map(|t| &t.group), &t.map(|t| &t.mode), &t.map(|t| t.priority), &t.map(|t| t.ignore)])?;
+    }
+    tx.execute("delete from talkgroups where system = $1 and seq >= $2", &[&system, &len])?;
+    Ok(())
 }
 
 /// Write a call's row and its children. A live call replaces what is there;

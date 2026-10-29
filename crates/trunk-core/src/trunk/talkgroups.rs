@@ -177,6 +177,15 @@ fn cell(v: &str, delim: char) -> String {
     }
 }
 
+/// Each line of a talkgroup file (`csv`, as `str::lines` splits it): the
+/// talkgroup number it's the row of, or none (the header, a comment, a
+/// blank line), as [`parse_csv`] reads it.
+pub fn line_numbers(csv: &str) -> Vec<Option<u32>> {
+    let text = csv.strip_prefix('\u{feff}').unwrap_or(csv);
+    let delim = csv_lines(text).next().map_or(',', csv_delimiter);
+    text.lines().map(|l| if is_data(l) { split_csv_on(l, delim).first().and_then(|d| d.parse().ok()) } else { None }).collect()
+}
+
 /// Talkgroup `number`'s row of a talkgroup file (`csv`) with `cells` set,
 /// each (column, value), the column named as Trunk Recorder names it
 /// ("Alpha Tag", "Ignore"…). Only those cells change, in that row: the
@@ -283,6 +292,12 @@ mod tests {
         let legacy = edit_row("202,ca,E,Police,Tac 2,Law,City\n", 202, &[("Alpha Tag", "PD Tac")]);
         assert_eq!(legacy, "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n202,ca,E,PD Tac,Tac 2,Law,City\n");
         assert_eq!(edit_row("", 7, &[("Ignore", "x")]), "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category,Ignore\n7,7,,D,,,,x\n");
+    }
+
+    #[test]
+    fn each_line_s_number() {
+        assert_eq!(line_numbers("\u{feff}# county\nDecimal;Alpha Tag\n\n101;Fire\nx;y\n"), [None, None, None, Some(101), None]);
+        assert_eq!(line_numbers("202,ca,E\n203,cb,D"), [Some(202), Some(203)]);
     }
 
     #[test]

@@ -555,11 +555,13 @@ main ─► serve()
     change; `tune.json` (AutoTune's scores) every minute and at stop.
   - `radio/<short>.json` (the radio registry) is written every 15 min and
     at stop.
-  - With the store on (`storage.backend` `sqlite` or `postgres`), those
-    last four are the store's instead (`trunk-pro/src/kept.rs`): documents
-    in `kept`, and the registry as each save's changes appended to
-    `registry_changes`, written whole to `registry` once a day. Files found
-    at startup are imported and renamed `.imported`.
+  - With the store on (`storage.backend` `sqlite` or `postgres`), all of
+    those but `config.json` are the store's instead (`trunk-pro/src/kept.rs`):
+    talkgroup files a line at a time in `talkgroups` (an edit writes its
+    lines, committed at once), documents in `kept`, and the registry as
+    each save's changes appended to `registry_changes`, written whole to
+    `registry` once a day. Files found at startup are imported and renamed
+    `.imported`.
   - `stats/YYYY-MM-DD.jsonl` gets each minute's rollup appended (see
     [Measurements](#measurements)).
   - `trunk-pro.sqlite` (`trunk-pro/src/db/`) is the call store: one row per

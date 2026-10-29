@@ -127,6 +127,15 @@ impl CallStore for SqliteStore {
                         log::warn!("Call store: registry write {system} failed: {e}");
                     }
                 }
+                Change::Talkgroups { system, lines, len } => {
+                    let written = tx.savepoint().and_then(|sp| {
+                        write_talkgroups(&sp, &system, &lines, len)?;
+                        sp.commit()
+                    });
+                    if let Err(e) = written {
+                        log::warn!("Call store: talkgroups write {system} failed: {e}");
+                    }
+                }
                 Change::RegistryWhole { system, json } => {
                     let written = tx.savepoint().and_then(|sp| {
                         sp.execute("insert into registry (system, whole) values (?1, ?2) on conflict(system) do update set whole = excluded.whole", params![system, json])?;
@@ -191,6 +200,10 @@ impl CallStore for SqliteStore {
             let changes = c.prepare("select system, changes from registry_changes order by id")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(super::store::stored_registry(whole, changes))
         })
+    }
+
+    fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
+        self.read(|c| Ok(super::store::talkgroup_file(c.prepare("select line from talkgroups where system = ?1 order by seq")?.query_map([system], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)))
     }
 
     fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String> {
@@ -353,6 +366,21 @@ fn move_aside(path: &Path) -> Result<PathBuf, String> {
     Ok(aside)
 }
 
+/// Write a system's talkgroup lines, and remove those past `len`.
+fn write_talkgroups(conn: &Connection, system: &str, lines: &[super::store::TalkgroupLine], len: i64) -> rusqlite::Result<()> {
+    let mut up = conn.prepare_cached(
+        "insert into talkgroups (system, seq, line, number, alpha_tag, description, tag, category, mode, priority, ignore) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         on conflict(system, seq) do update set line = excluded.line, number = excluded.number, alpha_tag = excluded.alpha_tag, description = excluded.description, tag = excluded.tag,
+         category = excluded.category, mode = excluded.mode, priority = excluded.priority, ignore = excluded.ignore",
+    )?;
+    for l in lines {
+        let t = l.tg.as_ref();
+        up.execute(params![system, l.seq, l.line, t.map(|t| t.number), t.map(|t| &t.alpha_tag), t.map(|t| &t.description), t.map(|t| &t.tag), t.map(|t| &t.group), t.map(|t| &t.mode), t.map(|t| t.priority), t.map(|t| t.ignore)])?;
+    }
+    conn.execute("delete from talkgroups where system = ?1 and seq >= ?2", params![system, len])?;
+    Ok(())
+}
+
 /// Write a call's row and its children. A live call replaces what is there;
 /// a backfilled one only fills a gap, and brings its children only if it
 /// landed.
@@ -493,7 +521,7 @@ mod tests {
         let mode: String = store.read(|c| c.query_row("pragma journal_mode", [], |r| r.get(0))).unwrap();
         assert_eq!(mode, "wal");
         let tables: Vec<String> = store.read(|c| c.prepare("select name from sqlite_master where type='table' order by name")?.query_map([], |r| r.get(0))?.collect()).unwrap();
-        assert_eq!(tables, ["call_frequencies", "call_transmissions", "calls", "kept", "meta", "registry", "registry_changes"]);
+        assert_eq!(tables, ["call_frequencies", "call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "talkgroups"]);
     }
 
     /// A second opener of the same store (another recorder on the same data
