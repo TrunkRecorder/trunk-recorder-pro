@@ -109,6 +109,10 @@ impl Writer {
                 Write::Call { row, live } => changes.push(Change::Call { row: Box::new(row), live }),
                 Write::CallFiles { path, audio, json } => changes.push(Change::CallFiles { path, audio, json }),
                 Write::Meta { key, value } => changes.push(Change::Meta { key, value }),
+                Write::Kept { kind, key, value } => changes.push(Change::Kept { kind, key, value }),
+                // (Turned into JSON here, off the engine's thread: a whole registry can be megabytes.)
+                Write::Registry { system, changes: c } => changes.extend(serde_json::to_string(&c).ok().map(|json| Change::RegistryChanges { system, json })),
+                Write::RegistryWhole { system, radio } => changes.extend(serde_json::to_string(&radio).ok().map(|json| Change::RegistryWhole { system, json })),
                 #[cfg(test)]
                 Write::Retention { before_ms } => retire = Some(retire.map_or(before_ms, |b| b.max(before_ms))),
                 Write::Checkpoint => checkpoint = true,

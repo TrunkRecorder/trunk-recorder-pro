@@ -241,6 +241,8 @@ impl WebSession {
                     Saved::Heard(json) => item("heard", "", json),
                     Saved::Tune(json) => item("tune", "", json),
                     Saved::Registry { system, radio } => item("registry", &system, serde_json::to_string(&radio).ok()?),
+                    // (The browser keeps the registry whole: it never asks for rows.)
+                    Saved::RegistryChanges { .. } => return None,
                 })
             })
             .collect();

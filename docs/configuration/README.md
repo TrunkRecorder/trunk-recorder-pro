@@ -121,6 +121,22 @@ upload-only settings).
 
 Both are read when the app starts.
 
+The store also keeps what a recording learns between runs:
+
+- the radio registry;
+- each system's talker aliases;
+- band plans;
+- the codes conventional frequencies carried;
+- AutoTune's scores;
+- what sharing with the directory did.
+
+With `files` these stay files in the data folder (`radio/<system>.json`, `<system>.units.csv`,
+…). With `sqlite` or `postgres`, the files found there at the first start are imported, then
+renamed `<name>.imported` and kept. The registry is stored as the changes of each 15 minutes,
+and written whole once a day: on the Pi's eMMC that's 0.10 GB a day for a busy system, against
+0.44 GB for the whole file every 15 minutes. Talkgroup files (`<system>.talkgroups.csv`) stay
+files.
+
 ## A minimal config
 
 One RTL-SDR placed automatically, one P25 system, recordings in a folder of your choice:

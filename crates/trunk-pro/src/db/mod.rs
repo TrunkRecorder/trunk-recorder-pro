@@ -44,6 +44,12 @@ pub enum Write {
     CallFiles { path: String, audio: bool, json: bool },
     /// Set a `meta` value.
     Meta { key: String, value: String },
+    /// Keep a document (`crate::kept`), or remove it (`None`).
+    Kept { kind: String, key: String, value: Option<String> },
+    /// What changed in a system's radio registry since the last ([`store::StoredRegistry`]).
+    Registry { system: String, changes: Box<trunk_app::stats::radio::RegistryChanges> },
+    /// A system's whole radio registry, in place of what's stored.
+    RegistryWhole { system: String, radio: Box<trunk_app::stats::radio::SystemRadio> },
     /// Delete calls that started before this time, as the writer does by
     /// itself for `retentionDays` (tests).
     #[cfg(test)]
@@ -216,6 +222,16 @@ impl Db {
         self.store()?.meta(key)
     }
 
+    /// A kept document (`crate::kept`).
+    pub fn kept(&self, kind: &str, key: &str) -> Result<Option<String>, String> {
+        self.store()?.kept(kind, key)
+    }
+
+    /// Every system's stored radio registry.
+    pub fn registry(&self) -> Result<Vec<store::StoredRegistry>, String> {
+        self.store()?.registry()
+    }
+
     pub fn info(&self) -> Result<StoreInfo, String> {
         self.store()?.info()
     }
@@ -358,6 +374,58 @@ pub fn seed_newer(path: &Path) {
 mod tests {
     use super::*;
 
+    /// Kept documents come back as they went in; the radio registry, kept
+    /// as changes, comes back as it was, its logs to their caps; written
+    /// whole, its changes go.
+    #[test]
+    fn kept_documents_and_the_registry_come_back() {
+        use trunk_app::stats::radio::{Registry, SystemRadio, MAX_AFFILIATIONS};
+        use trunk_core::trunk::{Message, MessageType};
+        for db in Db::for_each_backend("kept", std::time::Duration::from_millis(10)) {
+            db.send(Write::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 1".into()) });
+            db.send(Write::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 2".into()) });
+            db.send(Write::Kept { kind: "tune".into(), key: "".into(), value: Some("{}".into()) });
+            db.send(Write::Kept { kind: "tune".into(), key: "".into(), value: None });
+            db.flush().unwrap();
+            assert_eq!(db.kept("units", "a").unwrap().as_deref(), Some("1,Engine 2"), "{}", db.kind());
+            assert_eq!(db.kept("units", "b").unwrap(), None);
+            assert_eq!(db.kept("tune", "").unwrap(), None, "removed");
+
+            let mut r = Registry::default();
+            r.track_rows();
+            let save = |r: &mut Registry| {
+                for (system, c) in r.take_changes() {
+                    db.send(Write::Registry { system, changes: Box::new(c) });
+                }
+            };
+            let affiliate = |r: &mut Registry, from: usize, n: usize| {
+                for i in from..from + n {
+                    r.message("x", &Message { kind: MessageType::Affiliation, source: 1 + i as i64 % 50, talkgroup: 300 + i as u32 % 7, ..Default::default() }, 1000 + i as i64);
+                }
+            };
+            affiliate(&mut r, 0, MAX_AFFILIATIONS - 5);
+            r.concluded("x", &trunk_recorder_plugin::CallRecord { freq: 851_000_000, talkgroup: 300, ..Default::default() }, 1000);
+            save(&mut r);
+            affiliate(&mut r, MAX_AFFILIATIONS - 5, 15);
+            save(&mut r);
+            db.flush().unwrap();
+            let back = db.registry().unwrap();
+            assert_eq!((back.len(), back[0].whole.is_none(), back[0].changes.len()), (1, true, 2));
+            let again = crate::kept::from_stored(&back[0]).unwrap();
+            assert_eq!(again.affiliations.len(), MAX_AFFILIATIONS, "the log kept to its cap ({})", db.kind());
+            assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap(), "{}", db.kind());
+
+            db.send(Write::RegistryWhole { system: "x".into(), radio: Box::new(r.systems["x"].clone()) });
+            affiliate(&mut r, MAX_AFFILIATIONS + 10, 3);
+            save(&mut r);
+            db.flush().unwrap();
+            let back = db.registry().unwrap();
+            assert_eq!((back[0].whole.is_some(), back[0].changes.len()), (true, 1), "the changes before the whole copy went ({})", db.kind());
+            let again: SystemRadio = crate::kept::from_stored(&back[0]).unwrap();
+            assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap(), "{}", db.kind());
+        }
+    }
+
     #[test]
     fn the_last_handle_removes_a_test_folder() {
         let (db, path) = Db::for_test("cleanup");
@@ -489,5 +557,85 @@ mod tests {
                 let _ = std::fs::remove_file(format!("{}{x}", path.display()));
             }
         }
+    }
+
+    /// What keeping a busy system's radio registry as changes writes,
+    /// against the whole file every 15 minutes (`files`): six hours heard
+    /// first (written whole), then an hour of a call and an affiliation a
+    /// second over 2,500 talkgroups and 10,000 radios, its changes appended
+    /// every 15 minutes as the session does (and written whole once a day,
+    /// counted in). Linux only, as `write_budget`.
+    #[test]
+    #[ignore]
+    fn registry_write_budget() {
+        use trunk_app::stats::radio::Registry;
+        use trunk_core::trunk::{Call, CallSource, Message, MessageType};
+        let written = || -> u64 {
+            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
+            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+        };
+        let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % u64::from(n)) as u32
+        };
+        let t0 = 1_790_000_000i64;
+        let mut second = |r: &mut Registry, t: i64| {
+            let (tg, a, b) = (10_000 + next(2500), 1_000_000 + next(10_000), 1_000_000 + next(10_000));
+            let sources = vec![CallSource { src: a, time_s: 0.0, ..Default::default() }, CallSource { src: b, time_s: 2.0, ..Default::default() }];
+            r.call_end("big", &Call { talkgroup: tg, start_s: 0.0, last_update_s: 4.0, sources, ..Default::default() }, t);
+            r.concluded("big", &trunk_recorder_plugin::CallRecord { freq: 851_000_000 + u64::from(next(20)) * 25_000, talkgroup: tg.into(), ..Default::default() }, t);
+            r.message("big", &Message { kind: MessageType::Affiliation, source: i64::from(1_000_000 + next(10_000)), talkgroup: 10_000 + next(2500), ..Default::default() }, t);
+        };
+        let mut r = Registry::default();
+        for t in 0..6 * 3600 {
+            second(&mut r, t0 + t);
+        }
+        let file = serde_json::to_string(&r.systems["big"]).unwrap().len() as f64;
+        let path = dir.join("trp-registry-budget.sqlite");
+        let gone = || {
+            for x in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{}{x}", path.display()));
+            }
+        };
+        gone();
+        let db = Db::open(&path, Duration::from_secs(3600), 0).unwrap();
+        db.send(Write::RegistryWhole { system: "big".into(), radio: Box::new(r.systems["big"].clone()) });
+        db.flush().unwrap();
+        r.track_rows();
+        let (at, before) = (std::time::Instant::now(), written());
+        let mut rows = 0;
+        for t in 6 * 3600..7 * 3600 {
+            second(&mut r, t0 + t);
+            if (t + 1) % 900 == 0 {
+                for (system, c) in r.take_changes() {
+                    rows += c.tgs.len() + c.units.len() + c.pairs.len() + c.freqs.len();
+                    db.send(Write::Registry { system, changes: Box::new(c) });
+                }
+                db.flush().unwrap();
+            }
+        }
+        let hour = (written() - before) as f64;
+        // (The day's whole copy.)
+        let before = written();
+        db.send(Write::RegistryWhole { system: "big".into(), radio: Box::new(r.systems["big"].clone()) });
+        db.flush().unwrap();
+        let bytes = hour + (written() - before) as f64 / 24.0;
+        let stored = db.registry().unwrap();
+        assert_eq!(serde_json::to_value(crate::kept::from_stored(&stored[0]).unwrap()).unwrap(), serde_json::to_value(&r.systems["big"]).unwrap());
+        println!(
+            "registry as changes: {:.1} MB an hour, {:.2} GB a day ({rows} rows changed, {:.1?}); whole file every 15 min: {:.1} MB an hour, {:.2} GB a day ({:.1} MB file)",
+            bytes / 1e6,
+            bytes * 24.0 / 1e9,
+            at.elapsed(),
+            file * 4.0 / 1e6,
+            file * 96.0 / 1e9,
+            file / 1e6
+        );
+        drop(db);
+        gone();
     }
 }

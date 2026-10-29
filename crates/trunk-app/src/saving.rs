@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use crate::stats::radio::SystemRadio;
+use crate::stats::radio::{RegistryChanges, SystemRadio};
 
 /// Talker aliases, sharing, band plans.
 pub const SOON_MS: f64 = 10_000.0;
@@ -23,6 +23,11 @@ pub const SOON_MS: f64 = 10_000.0;
 pub const MINUTE_MS: f64 = 60_000.0;
 /// The radio registry (rewritten whole).
 pub const REGISTRY_MS: f64 = 15.0 * 60_000.0;
+
+/// Kept as changes ([`Saved::RegistryChanges`]), the registry is written
+/// whole once in this many (a day, at [`REGISTRY_MS`]), and the changes
+/// before it let go.
+pub const REGISTRY_WHOLE_EVERY: u32 = 96;
 
 /// Something to keep, due to be written.
 #[derive(Debug)]
@@ -39,6 +44,10 @@ pub enum Saved {
     Tune(String),
     /// A system's radio registry: turned into JSON by whoever writes it (it can be large).
     Registry { system: String, radio: SystemRadio },
+    /// The rows of a system's radio registry that changed (or went) since
+    /// last time: what a store appends rather than writing the whole
+    /// ([`crate::Session::keep_registry_as_changes`]).
+    RegistryChanges { system: String, changes: Box<RegistryChanges> },
 }
 
 /// When each kind was last due, and the band plans as last given.
@@ -51,6 +60,9 @@ pub(crate) struct Clock {
     registry_ms: f64,
     /// [`REGISTRY_MS`] unless set ([`crate::Session::save_registry_every`]).
     pub registry_every_ms: Option<f64>,
+    /// The registry is kept as changes ([`Saved::RegistryChanges`]), and
+    /// how many were taken since it was last written whole.
+    pub registry_as_changes: Option<u32>,
     pub plans: HashMap<String, String>,
 }
 

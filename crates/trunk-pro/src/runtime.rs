@@ -3,6 +3,7 @@
 //! (`<captureDir>/<shortName>/<YYYY>/<M>/<D>/<tg>-<epoch>_<freq>.wav|json`, a folder per system) and
 //! publishes what happens to the browser interface through the [`Hub`].
 
+use crate::kept::{self, Doc};
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
@@ -442,7 +443,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let epoch_ms = crate::clock::unix_ms() as f64;
     let epoch_at = Instant::now();
     let talkgroups = ctx.talkgroups.lock().unwrap().clone();
-    let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
+    let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| kept::read(&ctx.db, Doc::Bandplan(name)), local_offset)?;
     session.attach(ctx.shared.clone());
     if cfg.systems.iter().any(|s| s.share) {
         session.set_recorder(&crate::directory::recorder_id());
@@ -468,10 +469,13 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             session.set_keys(s, Some(ring.clone()));
         }
     }
-    session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
-    session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
-    session.load_sharing(&fs::read_to_string(sharing_path()).unwrap_or_default());
-    session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
+    session.load_units(&|name| kept::read(&ctx.db, Doc::Units(name)));
+    session.load_heard(&kept::read(&ctx.db, Doc::Heard).unwrap_or_default());
+    session.load_sharing(&kept::read(&ctx.db, Doc::Sharing).unwrap_or_default());
+    session.load_tune(&kept::read(&ctx.db, Doc::Tune).unwrap_or_default());
+    if !ctx.db.is_disabled() {
+        session.keep_registry_as_changes();
+    }
     ctx.plugins.start(&cfg, plugin_calls(&ctx));
     if cfg.sources.iter().any(|s| matches!(s, Source::Rtlsdr { .. })) {
         if let Some(hint) = cfg.rtl_buflen_hint(sdr::rtl_most_on_a_bus()) {
@@ -534,10 +538,6 @@ fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
     let _ = (ctx, cfg);
 }
 
-fn bandplan_path(short_name: &str) -> PathBuf {
-    crate::paths::data_dir().join(format!("{short_name}.bandplan"))
-}
-
 /// Where a system's talkgroup file is kept (`<short name>.talkgroups.csv`, beside the config).
 pub(crate) fn talkgroups_path(short_name: &str) -> PathBuf {
     trunk_app::config::talkgroups_path(&crate::paths::data_dir(), short_name)
@@ -597,77 +597,37 @@ pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::prot
     Ok(())
 }
 
-pub(crate) fn units_path(short_name: &str) -> PathBuf {
-    crate::paths::data_dir().join(format!("{short_name}.units.csv"))
-}
-
 /// Hand what's due to be kept between runs ([`Session::due`]: it says when
-/// each is) to the writer; `all`: everything that changed (the recording's end).
+/// each is) to the store's writer, or the saver's ([`kept`]); `all`:
+/// everything that changed (the recording's end).
 fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
-    let heard = heard_path(session.config());
+    let keep = |doc: Doc, text: String| kept::write(&ctx.db, &ctx.saver, doc, text);
     for saved in session.due(now_ms, all) {
         match saved {
-            Saved::Units { system, csv } => ctx.saver.text(units_path(&system), csv),
-            Saved::Sharing(json) => ctx.saver.text(sharing_path(), json),
-            Saved::Bandplan { key, plan } => ctx.saver.text(bandplan_path(&key), plan),
-            Saved::Heard(json) => ctx.saver.text(heard.clone(), json),
-            Saved::Tune(json) => ctx.saver.text(tune_path(), json),
-            // (Turned into JSON by the writer: it can be megabytes.)
-            Saved::Registry { system, radio } => ctx.saver.later(registry_path(&system), move || serde_json::to_string(&radio).ok()),
-        }
-    }
-}
-
-/// Where the radio registry (talkgroups, radios, frequencies heard) is kept, a file per system.
-fn radio_dir() -> PathBuf {
-    crate::paths::data_dir().join("radio")
-}
-
-/// The names the radio registry answers with, as saved: each system's
-/// talkgroups (`cfg` with its talkgroup files) and talker aliases. A
-/// recording keeps them current from then on.
-pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &trunk_app::config::TalkgroupFiles) {
-    let mut book = shared.names.lock().unwrap();
-    book.set_config(cfg, talkgroups);
-    for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
-        if let Ok(csv) = fs::read_to_string(units_path(n)) {
-            book.set_units(n, &csv);
-        }
-    }
-}
-
-/// Read the radio registry saved by earlier runs.
-pub fn load_registry(shared: &trunk_app::stats::Shared) {
-    let mut r = shared.radio.lock().unwrap();
-    for e in fs::read_dir(radio_dir()).into_iter().flatten().flatten() {
-        let p = e.path();
-        if p.extension().is_some_and(|x| x == "json") {
-            if let (Some(name), Ok(text)) = (p.file_stem().and_then(|n| n.to_str()), fs::read_to_string(&p)) {
-                r.load(name, &text);
+            Saved::Units { system, csv } => keep(Doc::Units(&system), csv),
+            Saved::Sharing(json) => keep(Doc::Sharing, json),
+            Saved::Bandplan { key, plan } => keep(Doc::Bandplan(&key), plan),
+            Saved::Heard(json) => keep(Doc::Heard, json),
+            Saved::Tune(json) => keep(Doc::Tune, json),
+            Saved::Registry { system, radio } => kept::write_registry(&ctx.db, &ctx.saver, system, radio),
+            Saved::RegistryChanges { system, changes } => {
+                ctx.db.send(crate::db::Write::Registry { system, changes });
             }
         }
     }
 }
 
-/// A system's radio registry file.
-fn registry_path(short_name: &str) -> PathBuf {
-    radio_dir().join(format!("{}.json", trunk_core::metrics::key_part(short_name)))
-}
-
-/// Where the codes conventional frequencies carried are kept ([`trunk_app::heard`]).
-pub(crate) fn heard_path(cfg: &trunk_app::Config) -> PathBuf {
-    crate::paths::data_dir().join(Session::heard_file(cfg))
-}
-
-/// AutoTune's scores from earlier runs ([`Saved::Tune`]).
-fn tune_path() -> PathBuf {
-    crate::paths::data_dir().join("tune.json")
-}
-
-/// What sharing with the directory did (each record's version, the last
-/// share): beside the config, so sharing never rewrites the config itself.
-fn sharing_path() -> PathBuf {
-    crate::paths::data_dir().join("sharing.json")
+/// The names the radio registry answers with, as saved: each system's
+/// talkgroups (`cfg` with its talkgroup files) and talker aliases. A
+/// recording keeps them current from then on.
+pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &trunk_app::config::TalkgroupFiles, db: &crate::db::Db) {
+    let mut book = shared.names.lock().unwrap();
+    book.set_config(cfg, talkgroups);
+    for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
+        if let Some(csv) = kept::read(db, Doc::Units(n)) {
+            book.set_units(n, &csv);
+        }
+    }
 }
 
 /// Replay a capture file as a source, paced to real time or as fast as possible.

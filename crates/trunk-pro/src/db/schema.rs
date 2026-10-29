@@ -71,6 +71,9 @@ create index calls_start on calls(start_ms);
 create index calls_system_start on calls(short_name, start_ms);
 create index calls_tg_start on calls(talkgroup, start_ms);
 create index tx_unit_start on call_transmissions(unit, start_ms);
+create table kept (kind text not null, key text not null, value text not null, primary key (kind, key)) without rowid;
+create table registry (system text primary key, whole text not null);
+create table registry_changes (id integer primary key, system text not null, changes text not null);
 "];
 
 /// How a database stands after [`migrate`].

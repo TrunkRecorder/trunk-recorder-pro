@@ -528,9 +528,9 @@ pub(crate) fn tr_config(path: &str) -> ToClient {
 /// connection gets the config without secrets ([`Out::of`]).
 pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
     let ctx2 = ctx.clone();
-    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(sdr::devices())), crate::radio::radios_json(false), runtime::history(&ctx2))).await;
-    let (devices, radios, history) = found.unwrap_or((None, Value::Null, ToClient::History { entries: Vec::new() }));
-    let mut m = greeting_now(ctx, devices, radios, history);
+    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(sdr::devices())), crate::radio::radios_json(false), runtime::history(&ctx2), kept_now(&ctx2))).await;
+    let (devices, radios, history, kept) = found.unwrap_or((None, Value::Null, ToClient::History { entries: Vec::new() }, Vec::new()));
+    let mut m = greeting_now(ctx, devices, radios, history, kept);
     if control {
         m.push(plugins_list(ctx).await);
         let cfg = ctx.config.lock().unwrap().clone();
@@ -554,23 +554,30 @@ fn capabilities(ctx: &Ctx) -> Vec<trunk_app::protocol::Capability> {
     Capability::ALL.iter().copied().filter(|c| *c != Capability::Calls || !ctx.db.is_disabled()).collect()
 }
 
-/// The greeting's messages that need nothing found or listed: `devices` for control access only.
-pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, history: ToClient) -> Vec<ToClient> {
+/// The greeting's messages from what's kept between runs (the store, or
+/// files: so it blocks): each system's talker aliases, and the codes
+/// conventional frequencies carried as saved (if not told since).
+fn kept_now(ctx: &Ctx) -> Vec<ToClient> {
+    use crate::kept::{self, Doc};
+    let config = ctx.config.lock().unwrap().clone();
+    let mut m: Vec<ToClient> = config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)).filter_map(|n| Some(ToClient::Units { system: n.clone(), csv: kept::read(&ctx.db, Doc::Units(n))? })).collect();
+    if ctx.heard_last.lock().unwrap().is_none() {
+        let saved = kept::read(&ctx.db, Doc::Heard).and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        m.push(ToClient::Heard { heard: saved.unwrap_or(json!({})) });
+    }
+    m
+}
+
+/// The greeting's messages that need nothing found or listed: `devices` for
+/// control access only; `kept` from [`kept_now`].
+pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, history: ToClient, kept: Vec<ToClient>) -> Vec<ToClient> {
     let config = ctx.config.lock().unwrap().clone();
     let mut m = vec![ctx.phase.lock().unwrap().message(), ToClient::Config { config: Box::new(config.clone()), version: ctx.config_version.load(Ordering::SeqCst) }];
     m.extend(ctx.talkgroups.lock().unwrap().iter().map(|(system, csv)| ToClient::Talkgroups { system: system.clone(), csv: csv.clone() }));
-    // Each system's talker aliases, as saved.
-    for n in config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)) {
-        if let Ok(csv) = std::fs::read_to_string(crate::runtime::units_path(n)) {
-            m.push(ToClient::Units { system: n.clone(), csv });
-        }
-    }
-    // The codes conventional frequencies carried: as last told, else as saved.
-    let heard = ctx.heard_last.lock().unwrap().clone().unwrap_or_else(|| {
-        let saved = std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
-        ToClient::Heard { heard: saved.unwrap_or(json!({})) }
-    });
-    m.push(heard);
+    // Each system's talker aliases; the codes conventional frequencies carried: as last told, else as saved.
+    let (heard, units): (Vec<ToClient>, Vec<ToClient>) = kept.into_iter().partition(|k| matches!(k, ToClient::Heard { .. }));
+    m.extend(units);
+    m.extend(ctx.heard_last.lock().unwrap().clone().or_else(|| heard.into_iter().next()));
     m.push(history);
     m.push(ToClient::Radios { radios });
     m.push(ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle));

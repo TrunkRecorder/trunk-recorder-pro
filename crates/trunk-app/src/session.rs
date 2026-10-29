@@ -737,7 +737,7 @@ impl Session {
     }
 
     /// Preload the codes conventional frequencies carried before (what
-    /// [`Saved::Heard`] gave, saved as [`Session::heard_file`]).
+    /// [`Saved::Heard`] gave, saved as [`Session::HEARD_FILE`]).
     pub fn load_heard(&mut self, json: &str) {
         self.heard = HeardCodes::load(json);
     }
@@ -762,10 +762,26 @@ impl Session {
             out.extend(self.tune_unsaved().map(Saved::Tune));
         }
         if due.registry {
-            let changed = self.meas.shared().radio.lock().unwrap().take_dirty_copies();
-            out.extend(changed.into_iter().map(|(system, radio)| Saved::Registry { system, radio }));
+            let mut radio = self.meas.shared().radio.lock().unwrap();
+            if let Some(taken) = self.saving.registry_as_changes.as_mut().filter(|n| **n + 1 < crate::saving::REGISTRY_WHOLE_EVERY) {
+                *taken += 1;
+                out.extend(radio.take_changes().into_iter().map(|(system, changes)| Saved::RegistryChanges { system, changes: Box::new(changes) }));
+            } else if self.saving.registry_as_changes.is_some() {
+                self.saving.registry_as_changes = Some(0);
+                out.extend(radio.take_all_copies().into_iter().map(|(system, radio)| Saved::Registry { system, radio }));
+            } else {
+                out.extend(radio.take_dirty_copies().into_iter().map(|(system, radio)| Saved::Registry { system, radio }));
+            }
         }
         out
+    }
+
+    /// Keep the radio registry as changes ([`Saved::RegistryChanges`]): a
+    /// store appends what changed, and writes every system whole only once
+    /// in [`crate::saving::REGISTRY_WHOLE_EVERY`].
+    pub fn keep_registry_as_changes(&mut self) {
+        self.saving.registry_as_changes = Some(0);
+        self.meas.shared().radio.lock().unwrap().track_rows();
     }
 
     /// Write the radio registry every `ms` rather than [`crate::saving::REGISTRY_MS`]
@@ -775,9 +791,7 @@ impl Session {
     }
 
     /// The file name (beside the config) the codes are kept in.
-    pub fn heard_file(_cfg: &Config) -> String {
-        "conventional.heard.json".into()
-    }
+    pub const HEARD_FILE: &'static str = "conventional.heard.json";
 
     /// Each site's (band plan key, band plan), to keep for the next run.
     fn bandplans(&self) -> Vec<(String, String)> {

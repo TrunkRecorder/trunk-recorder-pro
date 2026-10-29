@@ -27,6 +27,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   - A store that can't be opened (a newer version's, a full disk, a server not reachable,
     another recorder using it) is left off: recording, the call list and every query go on from
     the recent calls.
+  - **What a recording learns between runs is kept in the store too:**
+    - the radio registry;
+    - talker aliases;
+    - band plans;
+    - conventional codes heard;
+    - AutoTune's scores;
+    - sharing's state.
+
+    The files already in the data folder are imported at the first start and renamed
+    `.imported`; with `files` they stay files as before. The radio registry is appended as each
+    15 minutes' changes and written whole once a day, instead of whole every 15 minutes. On the
+    Pi's eMMC a busy system writes 0.10 GB a day instead of 0.44 (`db::tests::registry_write_budget`).
 - **Calls by talkgroup, radio and time, for interfaces and plugins:** `callsQuery` on the
   WebSocket (`client.js`: `rec.calls({ … })`), `GET /api/v1/calls`, `/api/v1/calls/<path>` and
   `/api/v1/storage` over HTTP (`docs/api/calls.openapi.yaml`), and for plugins `calls.query`

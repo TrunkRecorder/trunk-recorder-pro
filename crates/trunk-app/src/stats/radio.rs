@@ -21,9 +21,9 @@ const MAX_TGS: usize = 5000;
 const MAX_UNITS: usize = 20_000;
 const MAX_PAIRS: usize = 50_000;
 const MAX_FREQS: usize = 512;
-const MAX_AFFILIATIONS: usize = 2000;
-const MAX_LENGTHS: usize = 5000;
-const MAX_TONES: usize = 5000;
+pub const MAX_AFFILIATIONS: usize = 2000;
+pub const MAX_LENGTHS: usize = 5000;
+pub const MAX_TONES: usize = 5000;
 const MAX_RECENT_TX: usize = 30;
 const TOP_TGS: usize = 8;
 /// Ciphers (ALGID, key ID) kept per talkgroup.
@@ -156,9 +156,12 @@ pub struct SystemRadio {
 
 /// What changed in a system's registry, by row: which talkgroups, radios,
 /// pairs and frequencies changed or went, and how many of the latest
-/// affiliations, call lengths and tone patterns are new.
+/// affiliations, call lengths and tone patterns are new. Kept only while `on`
+/// ([`Registry::track_rows`]: a store keeps it by row), so a registry saved
+/// whole doesn't gather them for nothing.
 #[derive(Clone, Debug, Default)]
 struct Changed {
+    on: bool,
     tgs: BTreeSet<u32>,
     units: BTreeSet<u32>,
     pairs: BTreeSet<u64>,
@@ -167,6 +170,29 @@ struct Changed {
     affiliations: usize,
     lengths: usize,
     tones: usize,
+}
+
+impl Changed {
+    fn tg(&mut self, k: u32) {
+        if self.on {
+            self.tgs.insert(k);
+        }
+    }
+    fn unit(&mut self, k: u32) {
+        if self.on {
+            self.units.insert(k);
+        }
+    }
+    fn pair(&mut self, k: u64) {
+        if self.on {
+            self.pairs.insert(k);
+        }
+    }
+    fn freq(&mut self, k: u64) {
+        if self.on {
+            self.freqs.insert(k);
+        }
+    }
 }
 
 /// Rows that went (past a cap, the least recently heard).
@@ -186,6 +212,8 @@ pub struct Gone {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RegistryChanges {
+    /// When the system was first heard (Unix s).
+    pub created: i64,
     pub tgs: Vec<(u32, Tg)>,
     pub units: Vec<(u32, Unit)>,
     pub pairs: Vec<(u64, Pair)>,
@@ -238,6 +266,8 @@ pub struct Names<'a> {
 pub struct Registry {
     pub systems: BTreeMap<String, SystemRadio>,
     dirty: BTreeSet<String>,
+    /// Changes are kept by row ([`Registry::take_changes`]): a store keeps it so.
+    track: bool,
 }
 
 fn pair_key(a: u32, b: u32) -> u64 {
@@ -307,7 +337,7 @@ impl SystemRadio {
     }
 
     fn unit(&mut self, unit: u32, t: i64) -> (&mut Unit, bool) {
-        self.changed.units.insert(unit);
+        self.changed.unit(unit);
         let new = !self.units.contains_key(&unit);
         let u = self.units.entry(unit).or_insert_with(|| Unit { first: t, ..Default::default() });
         u.last = u.last.max(t);
@@ -318,7 +348,7 @@ impl SystemRadio {
         if a == b || a == 0 || b == 0 {
             return;
         }
-        self.changed.pairs.insert(pair_key(a, b));
+        self.changed.pair(pair_key(a, b));
         let p = self.pairs.entry(pair_key(a, b)).or_default();
         p.n += 1;
         p.last = t;
@@ -326,20 +356,47 @@ impl SystemRadio {
 
     fn evict(&mut self) {
         let c = &mut self.changed;
-        went(evict(&mut self.tgs, MAX_TGS, |v| v.last), &mut c.tgs, &mut c.gone.tgs);
-        went(evict(&mut self.units, MAX_UNITS, |v| v.last), &mut c.units, &mut c.gone.units);
-        went(evict(&mut self.pairs, MAX_PAIRS, |v| v.last), &mut c.pairs, &mut c.gone.pairs);
-        went(evict(&mut self.freqs, MAX_FREQS, Freq::heard), &mut c.freqs, &mut c.gone.freqs);
+        let (tgs, units, pairs, freqs) = (evict(&mut self.tgs, MAX_TGS, |v| v.last), evict(&mut self.units, MAX_UNITS, |v| v.last), evict(&mut self.pairs, MAX_PAIRS, |v| v.last), evict(&mut self.freqs, MAX_FREQS, Freq::heard));
+        if c.on {
+            went(tgs, &mut c.tgs, &mut c.gone.tgs);
+            went(units, &mut c.units, &mut c.gone.units);
+            went(pairs, &mut c.pairs, &mut c.gone.pairs);
+            went(freqs, &mut c.freqs, &mut c.gone.freqs);
+        }
+    }
+
+    /// Every row, as changes: the whole system, to store from scratch.
+    pub fn whole(&self) -> RegistryChanges {
+        RegistryChanges {
+            created: self.created,
+            tgs: self.tgs.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            units: self.units.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            pairs: self.pairs.iter().map(|(k, v)| (*k, *v)).collect(),
+            freqs: self.freqs.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            gone: Gone::default(),
+            affiliations: self.affiliations.iter().copied().collect(),
+            lengths: self.lengths.iter().copied().collect(),
+            tones: self.tones.iter().cloned().collect(),
+        }
+    }
+
+    /// The system the stored rows `c` make (what a store loads).
+    pub fn from_changes(c: &RegistryChanges) -> SystemRadio {
+        let mut s = SystemRadio::new(c.created);
+        s.apply(c);
+        s
     }
 
     /// What changed since the last call, as rows (none: nothing did).
     fn take_changes(&mut self) -> Option<RegistryChanges> {
-        let c = std::mem::take(&mut self.changed);
+        let on = self.changed.on;
+        let c = std::mem::replace(&mut self.changed, Changed { on, ..Default::default() });
         let nothing = c.tgs.is_empty() && c.units.is_empty() && c.pairs.is_empty() && c.freqs.is_empty() && c.gone == Gone::default() && c.affiliations + c.lengths + c.tones == 0;
         if nothing {
             return None;
         }
         Some(RegistryChanges {
+            created: self.created,
             tgs: c.tgs.iter().filter_map(|k| self.tgs.get(k).map(|v| (*k, v.clone()))).collect(),
             units: c.units.iter().filter_map(|k| self.units.get(k).map(|v| (*k, v.clone()))).collect(),
             pairs: c.pairs.iter().filter_map(|k| self.pairs.get(k).map(|v| (*k, *v))).collect(),
@@ -387,7 +444,27 @@ pub struct Firsts {
 impl Registry {
     fn sys(&mut self, name: &str, t: i64) -> &mut SystemRadio {
         self.dirty.insert(name.to_string());
-        self.systems.entry(name.to_string()).or_insert_with(|| SystemRadio::new(t))
+        let track = self.track;
+        self.systems.entry(name.to_string()).or_insert_with(|| {
+            let mut s = SystemRadio::new(t);
+            s.changed.on = track;
+            s
+        })
+    }
+
+    /// Keep changes by row from now on ([`Registry::take_changes`]), for a
+    /// store that keeps the registry so.
+    pub fn track_rows(&mut self) {
+        self.track = true;
+        for s in self.systems.values_mut() {
+            s.changed.on = true;
+        }
+    }
+
+    /// Put system `name` as a store gave it.
+    pub fn put(&mut self, name: &str, mut s: SystemRadio) {
+        s.changed.on = self.track;
+        self.systems.insert(name.to_string(), s);
     }
 
     /// A call began (`t`: Unix s). Returns what was heard for the first time
@@ -397,7 +474,7 @@ impl Registry {
         let base = s.has_baseline(t);
         let mut firsts = Firsts::default();
         if !c.unit_to_unit {
-            s.changed.tgs.insert(c.talkgroup);
+            s.changed.tg(c.talkgroup);
             let new = !s.tgs.contains_key(&c.talkgroup);
             let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: t, ..Default::default() });
             g.last = t;
@@ -405,7 +482,7 @@ impl Registry {
             firsts.tg = new && base;
         }
         if c.reason == Some(Reason::NoSource) {
-            s.changed.freqs.insert(c.freq_hz);
+            s.changed.freq(c.freq_hz);
             let f = s.freqs.entry(c.freq_hz).or_default();
             f.out_of_band += 1;
             f.out_of_band_last = t;
@@ -429,7 +506,7 @@ impl Registry {
         let start = t - secs.round() as i64;
         let h = t.div_euclid(3600);
         if !c.unit_to_unit {
-            s.changed.tgs.insert(c.talkgroup);
+            s.changed.tg(c.talkgroup);
             let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: start, ..Default::default() });
             g.last = t;
             g.note_name(c);
@@ -449,7 +526,7 @@ impl Registry {
                 }, || (0, 0.0));
             }
             append(&mut s.lengths, &[(t, c.talkgroup, secs)], MAX_LENGTHS);
-            s.changed.lengths += 1;
+            s.changed.lengths += s.changed.on as usize;
         }
         let mut firsts = Vec::new();
         // Each talker's turn: from when it was first heard to the next's (or the end).
@@ -503,7 +580,7 @@ impl Registry {
                 u.aff_t = t;
                 if changed {
                     append(&mut s.affiliations, &[(t, unit, m.talkgroup)], MAX_AFFILIATIONS);
-                    s.changed.affiliations += 1;
+                    s.changed.affiliations += s.changed.on as usize;
                 }
                 changed.then_some((unit, m.talkgroup))
             }
@@ -529,7 +606,7 @@ impl Registry {
                 if let Some(s) = self.systems.get_mut(system) {
                     if let Some(u) = s.units.get_mut(&unit) {
                         u.last = u.last.max(t);
-                        s.changed.units.insert(unit);
+                        s.changed.unit(unit);
                     }
                 }
                 None
@@ -548,7 +625,7 @@ impl Registry {
             bad += i.bad_frames;
         }
         let s = self.sys(system, t);
-        s.changed.freqs.insert(freq);
+        s.changed.freq(freq);
         let f = s.freqs.entry(freq).or_default();
         let ewma = |old: Option<f32>, new: Option<f64>| match (old, new) {
             (o, None) => o,
@@ -576,13 +653,21 @@ impl Registry {
     pub fn tone_pattern(&mut self, system: &str, tg: u32, pattern: &trunk_recorder_plugin::TonePattern, t: i64) {
         let s = self.sys(system, t);
         append(&mut s.tones, &[PatternSeen { t, tg, pattern: pattern.clone() }], MAX_TONES);
-        s.changed.tones += 1;
+        s.changed.tones += s.changed.on as usize;
     }
 
     /// Each system's rows that changed since the last call ([`RegistryChanges`]):
     /// for a store that writes a row at a time.
     pub fn take_changes(&mut self) -> Vec<(String, RegistryChanges)> {
         self.systems.iter_mut().filter_map(|(n, s)| s.take_changes().map(|c| (n.clone(), c))).collect()
+    }
+
+    /// Every system, copied, and nothing changed since (the changes before
+    /// let go): to write whole.
+    pub fn take_all_copies(&mut self) -> Vec<(String, SystemRadio)> {
+        self.take_changes();
+        self.dirty.clear();
+        self.systems.iter().map(|(n, s)| (n.clone(), s.clone())).collect()
     }
 
     /// Systems changed since the last call, as (short name, JSON) to save.
@@ -599,7 +684,7 @@ impl Registry {
     /// Load a system saved by [`Registry::take_dirty`] (a bad file is ignored).
     pub fn load(&mut self, system: &str, json: &str) {
         if let Ok(s) = serde_json::from_str::<SystemRadio>(json) {
-            self.systems.insert(system.to_string(), s);
+            self.put(system, s);
         }
     }
 
@@ -1135,7 +1220,12 @@ mod tests {
     /// heard again since, the newest affiliations, lengths and tones too.
     #[test]
     fn changes_taken_by_row_make_the_registry() {
+        // Saved whole (no store), nothing is gathered by row.
+        let mut untracked = Registry::default();
+        untracked.call_end("x", &call(100, &[(1, 0.0), (2, 1.0)], 0.0, 3.0), 3);
+        assert!(untracked.take_changes().is_empty());
         let mut r = Registry::default();
+        r.track_rows();
         r.call_end("x", &call(100, &[(1, 0.0), (2, 1.0)], 0.0, 3.0), 3);
         assert_eq!(r.take_changes().len(), 1);
         assert!(r.take_changes().is_empty(), "nothing since");
@@ -1158,9 +1248,16 @@ mod tests {
         assert!(c.units.len() < r.systems["x"].units.len() + c.gone.units.len(), "only what changed");
         kept.apply(c);
         assert_eq!(serde_json::to_value(&kept).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap());
+        // The whole system as rows, made again: what a store imports and loads.
+        let again = SystemRadio::from_changes(&r.systems["x"].whole());
+        assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap());
         // As a log's line, and back.
         let line = serde_json::to_string(c).unwrap();
         assert_eq!(serde_json::from_str::<RegistryChanges>(&line).unwrap().units.len(), c.units.len());
+        // Written whole: what changed before goes with it.
+        r.call_end("x", &call(100, &[(1, 0.0)], 0.0, 2.0), 100_010);
+        assert_eq!(r.take_all_copies().len(), 1);
+        assert!(r.take_changes().is_empty() && r.take_dirty().is_empty());
     }
 
     #[test]

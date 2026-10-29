@@ -19,6 +19,43 @@ pub enum Change {
     CallFiles { path: String, audio: bool, json: bool },
     /// A `meta` value (the backfill's markers).
     Meta { key: String, value: String },
+    /// A document kept between runs, by kind and key (a band plan, a
+    /// system's talker aliases, AutoTune's scores…: `crate::kept`); `None`
+    /// removes it.
+    Kept { kind: String, key: String, value: Option<String> },
+    /// A system's radio registry changes since the last ([`StoredRegistry`]), as JSON.
+    RegistryChanges { system: String, json: String },
+    /// A system's whole radio registry, as JSON, in place of what's stored
+    /// (its changes go with it).
+    RegistryWhole { system: String, json: String },
+}
+
+/// A system's radio registry as stored: the last whole copy (the
+/// registry's own JSON, as `files` keeps it) and the changes since, oldest
+/// first (each a [`trunk_app::stats::radio::RegistryChanges`] as JSON).
+/// Changes are appended, not rows updated in place: a busy system changes
+/// thousands of rows every 15 minutes, which as row updates writes more
+/// than the whole file did (research/sqlite-plan.md).
+pub struct StoredRegistry {
+    pub system: String,
+    pub whole: Option<String>,
+    pub changes: Vec<String>,
+}
+
+/// Each system's [`StoredRegistry`] from its whole copy (system, JSON) and
+/// changes (system, JSON; oldest first).
+pub fn stored_registry(whole: Vec<(String, String)>, changes: Vec<(String, String)>) -> Vec<StoredRegistry> {
+    let mut out: std::collections::BTreeMap<String, StoredRegistry> = Default::default();
+    fn at(out: &mut std::collections::BTreeMap<String, StoredRegistry>, system: String) -> &mut StoredRegistry {
+        out.entry(system.clone()).or_insert_with(|| StoredRegistry { system, whole: None, changes: Vec::new() })
+    }
+    for (system, json) in whole {
+        at(&mut out, system).whole = Some(json);
+    }
+    for (system, json) in changes {
+        at(&mut out, system).changes.push(json);
+    }
+    out.into_values().collect()
 }
 
 /// What `GET /api/v1/storage` says of a store.
@@ -53,6 +90,10 @@ pub trait CallStore: Send + Sync {
     /// Whether a call is filed under `path` (the backfill skips it).
     fn known(&self, path: &str) -> Result<bool, String>;
     fn meta(&self, key: &str) -> Result<Option<String>, String>;
+    /// A document kept between runs ([`Change::Kept`]).
+    fn kept(&self, kind: &str, key: &str) -> Result<Option<String>, String>;
+    /// Every system's radio registry, as stored (at startup).
+    fn registry(&self) -> Result<Vec<StoredRegistry>, String>;
     /// Delete up to `max` calls that started before `before_ms`, oldest
     /// first, with their children; how many went.
     fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String>;

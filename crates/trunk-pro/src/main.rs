@@ -101,6 +101,7 @@ mod clock;
 mod directory;
 mod dmrtool;
 mod interfaces;
+mod kept;
 mod licenses;
 mod logging;
 mod monitor;
@@ -876,12 +877,12 @@ fn serve(a: &Args) {
     let ui_url = dev.as_ref().map(|d| format!("http://{host}:{}/", d.port));
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
-    runtime::load_registry(&shared);
+    let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
+    kept::load_registry(&db, &shared);
     let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
     let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone());
     let talkgroups = runtime::load_talkgroups(&cfg);
-    runtime::load_names(&shared, &cfg, &talkgroups);
-    let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
+    runtime::load_names(&shared, &cfg, &talkgroups, &db);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),

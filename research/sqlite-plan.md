@@ -7,7 +7,10 @@ Status (2026-10-28):
 - **Built, in #104:** the store behind a [backend interface](#backends), with `files`,
   `sqlite` and `postgres`, so a Pi and a Xeon server each get the storage that suits them. The
   conformance tests run on SQLite always and on PostgreSQL in CI (a service container).
-- **Next:** the [flat-file stores](#the-flat-file-stores-next) move behind the same interface.
+- **Built, in #104:** the [flat-file stores](#the-flat-file-stores) behind the same interface:
+  the radio registry, talker aliases, band plans, conventional codes heard, AutoTune's scores and
+  sharing's state. Existing files are imported once and renamed `.imported`.
+- **Next:** talkgroup files as internal data ([phase 3](#phase-3-talkgroups-and-unit-names-as-internal-data)).
 
 It builds on issue #100's design and on the measurements in [storage.md](storage.md). PR #101
 laid the groundwork:
@@ -154,24 +157,55 @@ It's small and synchronous: the writer is a thread, and queries already run in
 - **The write budget test** (`write_budget`) measures SQLite on the disk it runs on (the
   recorder's own writes). A PostgreSQL server's writes are the server's, outside the recorder.
 
-## The flat-file stores (next)
+## The flat-file stores
 
-After the call store, the flat files move behind the same interface, kind by kind. Each gets the
-backend's tables, with the file kept only where people edit it or other programs read it.
+Built in #104 (`trunk-pro/src/kept.rs`). With `storage.backend: "files"`, or a store that could
+not open, they are the files they always were, written by `saver.rs`. Otherwise they are the
+store's, written by its writer in its batches.
 
-| Today | Where it goes | Notes |
+| File | In the store | Written |
 |---|---|---|
-| `radio/<sys>.json` (the radio registry) | the store, phase 2: facts appended, state upserted per batch from `take_changes` | the biggest win: no 15-minute whole rewrite, no caps |
-| `conventional.heard.json` | the store: one row per (frequency, code) | upserted per batch |
-| `<sys>.units.csv` (talker aliases learned) | the store: one row per (system, unit) | Export to Trunk Recorder's CSV |
-| `<site>.bandplan` | the store: one row per site | small; moves for one place to back up |
-| `tune.json`, `sharing.json` | the store: `meta`-like rows | small |
-| `<sys>.talkgroups.csv` | the store, phase 3: rows, edited per row (`setTalkgroup`), with Import/Export | the user edits these; CSV stays the exchange format |
+| `radio/<sys>.json` (the radio registry) | `registry` (a whole copy per system) and `registry_changes` (`take_changes` as JSON, appended) | changes every 15 min; whole once a day ([below](#the-registry-as-changes-not-rows)) |
+| `conventional.heard.json` | `kept` (`heard`) | each minute it changed |
+| `<sys>.units.csv` (talker aliases learned) | `kept` (`units`, system) | soon after a change |
+| `<site>.bandplan` | `kept` (`bandplan`, key) | when it changes |
+| `tune.json`, `sharing.json` | `kept` (`tune`, `sharing`) | as before |
+| `<sys>.talkgroups.csv` | not yet: phase 3, rows edited per row (`setTalkgroup`), with Import/Export | the user edits these; CSV stays the exchange format |
 | `stats/YYYY-MM-DD.jsonl` | stays append-only files; finished days optionally into the store (phase 4) | already the right shape for flash |
 | `config.json`, plugin and interface folders, registry caches, logs | stay files | edited by people, or other programs' |
 
-`Session::due()` / `Saved` is the seam: each kind becomes a `Change` for the store's writer instead
-of a file for `saver.rs`. The browser build keeps its files on OPFS.
+- **The seam:** `Session::due()` / `Saved` as before; `runtime::save_due` hands each to
+  `kept::write` (the store's `Write::Kept`, or the saver), and reads go through `kept::read`.
+- **`kept`** is a document per (kind, key): these are read whole at startup and written whole,
+  and nothing queries inside them, so rows of their own would only add tables.
+- **Import:** a file found while the store is on was written while it was off (or by an earlier
+  release), so it is newer: it's imported, committed, then renamed `<name>.imported`. A store
+  that can't be read falls back on that last copy; so does `files` after a switch back.
+- **Reads block** (PostgreSQL's client refuses a tokio worker): the greeting's talker aliases
+  and conventional codes are read under `spawn_blocking`.
+- **The browser build** keeps its files on OPFS.
+
+### The registry as changes, not rows
+
+The first build kept the registry as rows (`registry_rows`, upserted from `take_changes`, and a
+capped log). Measured on the Pi's eMMC (`db::tests::registry_write_budget`): a busy system (2,500
+talkgroups, 10,000 radios, a call and an affiliation a second, six hours heard) changes about
+16,000 rows an hour. The keys are random, so each upsert dirties its own page, and the WAL writes
+pages twice:
+
+| Kept as | Writes a day |
+|---|---|
+| the whole file every 15 min (`files`, 4.6 MB) | 0.44 GB |
+| rows upserted every 15 min | 0.71 GB |
+| changes appended every 15 min, whole once a day | **0.10 GB** |
+
+Nothing queries those rows: the registry is loaded whole at startup and answered from memory.
+So the store keeps what `take_changes` gives as one appended JSON row per system per save. That
+writes only new pages. Once a day (`REGISTRY_WHOLE_EVERY`), or at a start that finds a quarter
+day's worth, the whole registry is written and the changes before it are deleted. Loading is the
+whole copy with each change applied (`SystemRadio::apply`, the same code the round-trip test
+checks). Phase 2's SQL-answered `radioQuery` would need real rows; it can build them from the
+same changes when it comes.
 
 ## Architecture
 
@@ -284,6 +318,9 @@ As built, against what's below:
   builds for every target pass in CI.
 
 ### Phase 2: the registry (#100 step 2)
+
+(Its storage is built: [the registry as changes](#the-registry-as-changes-not-rows). What
+follows, queries by SQL and retention in place of the caps, is not.)
 
 - **Facts:** `unit_events` and `tones` appended as they happen.
 - **State:** `talkgroups` and `units` upserted per batch from `take_changes()`.

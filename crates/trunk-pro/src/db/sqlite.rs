@@ -15,7 +15,7 @@ use serde_json::Value;
 use super::read::{self, CallsFilter, Fetched, Page, Param, Where, COLUMNS};
 use super::row::{entry, CallRow};
 use super::schema;
-use super::store::{CallStore, Change, StoreInfo};
+use super::store::{CallStore, Change, StoreInfo, StoredRegistry};
 
 /// Read-only connections opened up front, and the most the pool keeps.
 const READERS: usize = 2;
@@ -113,6 +113,30 @@ impl CallStore for SqliteStore {
                         log::warn!("Call store: meta write {key} failed: {e}");
                     }
                 }
+                Change::Kept { kind, key, value } => {
+                    let r = match &value {
+                        Some(v) => tx.execute("insert into kept (kind, key, value) values (?1, ?2, ?3) on conflict(kind, key) do update set value = excluded.value", params![kind, key, v]),
+                        None => tx.execute("delete from kept where kind = ?1 and key = ?2", params![kind, key]),
+                    };
+                    if let Err(e) = r {
+                        log::warn!("Call store: {kind} {key} write failed: {e}");
+                    }
+                }
+                Change::RegistryChanges { system, json } => {
+                    if let Err(e) = tx.execute("insert into registry_changes (system, changes) values (?1, ?2)", params![system, json]) {
+                        log::warn!("Call store: registry write {system} failed: {e}");
+                    }
+                }
+                Change::RegistryWhole { system, json } => {
+                    let written = tx.savepoint().and_then(|sp| {
+                        sp.execute("insert into registry (system, whole) values (?1, ?2) on conflict(system) do update set whole = excluded.whole", params![system, json])?;
+                        sp.execute("delete from registry_changes where system = ?1", [&system])?;
+                        sp.commit()
+                    });
+                    if let Err(e) = written {
+                        log::warn!("Call store: registry write {system} failed: {e}");
+                    }
+                }
             }
         }
         tx.commit().map_err(|e| format!("commit failed: {e}"))
@@ -155,6 +179,18 @@ impl CallStore for SqliteStore {
 
     fn meta(&self, key: &str) -> Result<Option<String>, String> {
         self.read(|c| c.query_row("select value from meta where key = ?1", [key], |r| r.get(0)).optional())
+    }
+
+    fn kept(&self, kind: &str, key: &str) -> Result<Option<String>, String> {
+        self.read(|c| c.query_row("select value from kept where kind = ?1 and key = ?2", [kind, key], |r| r.get(0)).optional())
+    }
+
+    fn registry(&self) -> Result<Vec<StoredRegistry>, String> {
+        self.read(|c| {
+            let whole = c.prepare("select system, whole from registry")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let changes = c.prepare("select system, changes from registry_changes order by id")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(super::store::stored_registry(whole, changes))
+        })
     }
 
     fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String> {
@@ -457,7 +493,7 @@ mod tests {
         let mode: String = store.read(|c| c.query_row("pragma journal_mode", [], |r| r.get(0))).unwrap();
         assert_eq!(mode, "wal");
         let tables: Vec<String> = store.read(|c| c.prepare("select name from sqlite_master where type='table' order by name")?.query_map([], |r| r.get(0))?.collect()).unwrap();
-        assert_eq!(tables, ["call_frequencies", "call_transmissions", "calls", "meta"]);
+        assert_eq!(tables, ["call_frequencies", "call_transmissions", "calls", "kept", "meta", "registry", "registry_changes"]);
     }
 
     /// A second opener of the same store (another recorder on the same data

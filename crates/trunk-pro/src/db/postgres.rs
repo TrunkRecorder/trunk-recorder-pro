@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use super::read::{self, CallsFilter, Fetched, Page, Param, Where};
 use super::row::{entry, CallRow};
-use super::store::{CallStore, Change, StoreInfo};
+use super::store::{CallStore, Change, StoreInfo, StoredRegistry};
 
 /// Read connections kept.
 const READERS: usize = 2;
@@ -83,6 +83,9 @@ create index calls_start on calls(start_ms);
 create index calls_system_start on calls(short_name, start_ms);
 create index calls_tg_start on calls(talkgroup, start_ms);
 create index tx_unit_start on call_transmissions(unit, start_ms);
+create table kept (kind text not null, key text not null, value text not null, primary key (kind, key));
+create table registry (system text primary key, whole text not null);
+create table registry_changes (id bigserial primary key, system text not null, changes text not null);
 "];
 
 pub struct PostgresStore {
@@ -239,6 +242,30 @@ impl CallStore for PostgresStore {
                         log::warn!("Call store: meta write {key} failed: {e}");
                     }
                 }
+                Change::Kept { kind, key, value } => {
+                    let r = match &value {
+                        Some(v) => tx.execute("insert into kept (kind, key, value) values ($1, $2, $3) on conflict (kind, key) do update set value = excluded.value", &[&kind, &key, v]),
+                        None => tx.execute("delete from kept where kind = $1 and key = $2", &[&kind, &key]),
+                    };
+                    if let Err(e) = r {
+                        log::warn!("Call store: {kind} {key} write failed: {e}");
+                    }
+                }
+                Change::RegistryChanges { system, json } => {
+                    if let Err(e) = tx.execute("insert into registry_changes (system, changes) values ($1, $2)", &[&system, &json]) {
+                        log::warn!("Call store: registry write {system} failed: {e}");
+                    }
+                }
+                Change::RegistryWhole { system, json } => {
+                    let written = tx.transaction().and_then(|mut sp| {
+                        sp.execute("insert into registry (system, whole) values ($1, $2) on conflict (system) do update set whole = excluded.whole", &[&system, &json])?;
+                        sp.execute("delete from registry_changes where system = $1", &[&system])?;
+                        sp.commit()
+                    });
+                    if let Err(e) = written {
+                        log::warn!("Call store: registry write {system} failed: {e}");
+                    }
+                }
             }
         }
         tx.commit().map_err(|e| format!("commit failed: {e}"))
@@ -274,6 +301,18 @@ impl CallStore for PostgresStore {
 
     fn meta(&self, key: &str) -> Result<Option<String>, String> {
         self.read(|c| Ok(c.query_opt("select value from meta where key = $1", &[&key])?.map(|r| r.get(0))))
+    }
+
+    fn kept(&self, kind: &str, key: &str) -> Result<Option<String>, String> {
+        self.read(|c| Ok(c.query_opt("select value from kept where kind = $1 and key = $2", &[&kind, &key])?.map(|r| r.get(0))))
+    }
+
+    fn registry(&self) -> Result<Vec<StoredRegistry>, String> {
+        self.read(|c| {
+            let whole = c.query("select system, whole from registry", &[])?.iter().map(|r| (r.get(0), r.get(1))).collect();
+            let changes = c.query("select system, changes from registry_changes order by id", &[])?.iter().map(|r| (r.get(0), r.get(1))).collect();
+            Ok(super::store::stored_registry(whole, changes))
+        })
     }
 
     fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String> {
