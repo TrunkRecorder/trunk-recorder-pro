@@ -31,9 +31,10 @@ const BACKUP_EVERY: Duration = Duration::from_secs(86_400);
 /// Start the `db-writer` thread over `store`; it runs until every sender of
 /// `rx` is gone. `batch`: the least time between two commits under load.
 /// `retention_days`: calls kept (0: all).
-pub(super) fn spawn(store: Arc<Store>, rx: Receiver<Msg>, commits: Arc<AtomicU64>, batch: Duration, retention_days: u32, report: super::Reporter) -> Option<std::thread::JoinHandle<()>> {
+pub(super) fn spawn(store: Arc<Store>, rx: Receiver<Msg>, commits: Arc<AtomicU64>, written: Arc<AtomicU64>, batch: Duration, retention_days: u32, report: super::Reporter) -> Option<std::thread::JoinHandle<()>> {
     let spawned = std::thread::Builder::new().name("db-writer".into()).spawn(move || {
-        let mut w = Writer { store, commits, batch, retention_days, retiring: None, retain_at: Instant::now(), report, backup_at: Instant::now() + BACKUP_FIRST };
+        let mut w = Writer { store, commits, written, batch, retention_days, retiring: None, retain_at: Instant::now(), report, backup_at: Instant::now() + BACKUP_FIRST };
+        w.measure();
         w.run(rx);
     });
     spawned.inspect_err(|e| log::error!("Call store: could not start the writer thread: {e}")).ok()
@@ -42,6 +43,8 @@ pub(super) fn spawn(store: Arc<Store>, rx: Receiver<Msg>, commits: Arc<AtomicU64
 struct Writer {
     store: Arc<Store>,
     commits: Arc<AtomicU64>,
+    /// What this thread has written to disk ([`thread_written`]; `u64::MAX`: not measured here).
+    written: Arc<AtomicU64>,
     batch: Duration,
     retention_days: u32,
     /// Retention under way: calls that started before this go, a chunk per pass.
@@ -144,6 +147,7 @@ impl Writer {
         if checkpoint {
             self.store.checkpoint();
         }
+        self.measure();
         for done in flushes {
             let _ = done.send(outcome.clone());
         }
@@ -167,6 +171,14 @@ impl Writer {
                 Ok(None) => {}
                 Err(e) => log::warn!("Store: backup failed: {e}"),
             }
+        }
+        self.measure();
+    }
+
+    /// What this thread has written to disk so far, for the dashboard.
+    fn measure(&self) {
+        if let Some(b) = thread_written() {
+            self.written.store(b, Ordering::Relaxed);
         }
     }
 
@@ -197,6 +209,16 @@ impl Writer {
             }
         }
     }
+}
+
+/// The bytes the calling thread has written to disk (Linux: its
+/// `/proc/thread-self/io`, which charges each page to the thread that wrote
+/// it). The writer thread does all of SQLite's writing, its checkpoints and
+/// backups too, so this is what the store costs the disk. None: this OS
+/// doesn't count a thread's writes (macOS), or PostgreSQL's server writes.
+fn thread_written() -> Option<u64> {
+    let io = std::fs::read_to_string("/proc/thread-self/io").ok()?;
+    io.lines().find_map(|l| l.strip_prefix("write_bytes: ")).and_then(|v| v.trim().parse().ok())
 }
 
 #[cfg(test)]

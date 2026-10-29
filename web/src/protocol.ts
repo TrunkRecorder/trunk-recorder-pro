@@ -1517,7 +1517,13 @@ export interface PlatformInfo {
   interfaces: { name: string; rx: number; tx: number; state: string }[] | null;
   unavailable: { field: string; why: string }[];
   /** The store (desktop app): each table's and index's size, measured every 15 minutes; absent until measured, or with the store off. */
-  store?: { backend: "sqlite" | "postgres"; radioIndex: boolean; sizes: StoreSizes };
+  store?: {
+    backend: "sqlite" | "postgres";
+    radioIndex: boolean;
+    sizes: StoreSizes;
+    /** What it has written to disk: `of` "store" (SQLite's writer, counted by the OS: Linux), or "server" (PostgreSQL's write-ahead log, the whole server's); else `why` not. Its rate is the `store/written` series. */
+    written: { bytes: number; of: "store" | "server" } | { why: string };
+  };
 }
 
 /** The store's tables and indexes, biggest first, and its files. */

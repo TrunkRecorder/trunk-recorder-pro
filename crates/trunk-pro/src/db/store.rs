@@ -286,6 +286,17 @@ impl Store {
         })
     }
 
+    /// PostgreSQL's write-ahead log so far (`pg_stat_wal`, PostgreSQL 14 on;
+    /// the whole server's). None: SQLite, or a server that doesn't say.
+    pub fn server_wal_bytes(&self) -> Option<i64> {
+        self.read(|x| match x.dialect() {
+            Dialect::Postgres => Ok(x.query_opt("select wal_bytes::bigint from pg_stat_wal", &[])?.map(|r| r.int(0))),
+            Dialect::Sqlite => Ok(None),
+        })
+        .ok()
+        .flatten()
+    }
+
     pub fn checkpoint(&self) {
         self.backend.checkpoint()
     }

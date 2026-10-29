@@ -73,6 +73,8 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
     let spotlight: Arc<Mutex<Option<Value>>> = Default::default();
     let mut spotlight_for: Option<(String, Instant)> = None;
     let sizes: Arc<Mutex<Option<crate::db::store::StoreSizes>>> = Default::default();
+    // (PostgreSQL's server's write-ahead log, read with the sizes.)
+    let server_wal: Arc<Mutex<Option<i64>>> = Default::default();
     let mut sized: Option<Instant> = None;
     loop {
         let t = crate::clock::unix_s();
@@ -101,18 +103,34 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
         // in the platform message (Platform → Storage) and its history (`store/<name>`).
         if !ctx.db.is_disabled() && sized.is_none_or(|at| at.elapsed() >= SIZES_EVERY) {
             sized = Some(Instant::now());
-            let (db, out) = (ctx.db.clone(), sizes.clone());
-            let _ = std::thread::Builder::new().name("store-sizes".into()).spawn(move || match db.sizes() {
-                Ok(s) => *out.lock().unwrap() = Some(s),
-                Err(e) => log::warn!("Store: sizes not measured ({e})"),
+            let (db, out, wal) = (ctx.db.clone(), sizes.clone(), server_wal.clone());
+            let _ = std::thread::Builder::new().name("store-sizes".into()).spawn(move || {
+                match db.sizes() {
+                    Ok(s) => *out.lock().unwrap() = Some(s),
+                    Err(e) => log::warn!("Store: sizes not measured ({e})"),
+                }
+                *wal.lock().unwrap() = db.server_wal_bytes();
             });
+        }
+        // What the store writes to disk (a counter: the history has its rate).
+        let (written, how) = match (ctx.db.written(), *server_wal.lock().unwrap()) {
+            (Some(b), _) => (Some(b), "store"),
+            (None, Some(b)) => (Some(b.max(0) as u64), "server"),
+            (None, None) => (None, if ctx.db.backend() == "sqlite" { "this system doesn't count a thread's writes" } else { "the server doesn't say (pg_stat_wal: PostgreSQL 14 on)" }),
+        };
+        if let Some(b) = written {
+            agg.counter("store/written", b);
         }
         if let Some(s) = sizes.lock().unwrap().as_ref() {
             for o in &s.objects {
                 agg.gauge(&format!("store/{}", o.name), o.bytes as f64);
             }
             agg.gauge("store/total", (s.file_bytes + s.wal_bytes) as f64);
-            p["store"] = json!({ "backend": ctx.db.backend(), "radioIndex": ctx.db.indexes_radios(), "sizes": s });
+            let written = match written {
+                Some(b) => json!({ "bytes": b, "of": how }),
+                None => json!({ "why": how }),
+            };
+            p["store"] = json!({ "backend": ctx.db.backend(), "radioIndex": ctx.db.indexes_radios(), "sizes": s, "written": written });
         }
         for d in p["disks"].as_array().into_iter().flatten() {
             let (Some(name), Some(total), Some(free)) = (d["name"].as_str(), d["totalBytes"].as_f64(), d["freeBytes"].as_f64()) else { continue };

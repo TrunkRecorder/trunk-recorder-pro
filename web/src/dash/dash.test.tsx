@@ -269,7 +269,11 @@ test("Platform → Storage: each table with its rows, its indexes under it, bigg
   };
   assert.deepEqual(tablesOf(sizes).map((t) => [t.name, t.indexes.map((i) => i.name)]), [["call_transmissions", ["transmissions_radio"]], ["calls", ["calls_start"]], ["talkgroups", []]]);
   twoSites();
-  const page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, sizes }} />));
+  let page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, sizes, written: { why: "this system doesn't count a thread's writes" } }} />));
+  assert.match(page, /Written\s*—\s*not measured: this system doesn/);
+  page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, sizes, written: { bytes: 5e9, of: "store" } }} />));
+  assert.match(page, /5\.00 GB since it started/);
+  assert.match(page, /Written to disk/);
   assert.match(page, /Store\s*100 MB/);
   assert.match(page, /call_transmissions\s*300,?000\s*25(\.0)? MB\s*↳ transmissions_radio\s*30(\.0)? MB/);
   assert.match(page, /Calls aren\S{1,6}t indexed by radio/);

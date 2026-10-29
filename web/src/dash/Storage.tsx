@@ -1,14 +1,15 @@
 // Platform → Storage: what the recorder's store holds and how big each part
 // is — every table, its rows, and each of its indexes — measured by the
 // recorder every 15 minutes, and how each has grown (the `store/<name>`
-// series). Settings for it are in Setup → Data.
+// series) — and what it writes to disk (`store/written`): what wears an SD
+// card or eMMC. Settings for it are in Setup → Data.
 
 import { Fragment, useState } from "react";
 import type { StoreSizes } from "../protocol.ts";
 import { setSetupTab, setView, type StatsRange } from "../controller.ts";
 import { Card, Choice, Stat, TimeSeries } from "../charts.tsx";
 import { bytes, num } from "../fmt.ts";
-import { useHistory, useRanges } from "./data.ts";
+import { total, useHistory, useRanges } from "./data.ts";
 
 /** A table with its indexes, biggest first. */
 interface TableRow {
@@ -34,15 +35,23 @@ export function tablesOf(s: StoreSizes): TableRow[] {
   return [...t.values()].sort((a, b) => all(b) - all(a));
 }
 
-export function StorageView(props: { store: { backend: string; radioIndex: boolean; sizes: StoreSizes } }) {
-  const { backend, radioIndex, sizes } = props.store;
+export function StorageView(props: { store: { backend: string; radioIndex: boolean; sizes: StoreSizes; written?: { bytes: number; of: "store" | "server" } | { why: string } } }) {
+  const { backend, radioIndex, sizes, written } = props.store;
   const [range, setRange] = useState<StatsRange>("7d");
   const ranges = useRanges();
   const tables = tablesOf(sizes);
   const indexBytes = sizes.objects.filter((o) => o.index).reduce((n, o) => n + o.bytes, 0);
   const tableBytes = sizes.objects.filter((o) => !o.index).reduce((n, o) => n + o.bytes, 0);
   const top = sizes.objects.slice(0, 5).map((o) => o.name);
-  const hist = useHistory(["store/total", ...top.map((n) => `store/${n}`)], range, 360);
+  const hist = useHistory(["store/total", "store/written", ...top.map((n) => `store/${n}`)], range, 360);
+  const day = useHistory(["store/written"], "24h", 96);
+  const perDay = (() => {
+    const d = day?.["store/written"];
+    const t = total(d);
+    const covered = d ? d.v.filter((x) => x !== null).length * d.stepS : 0;
+    return t !== null && covered >= 3600 ? (t / covered) * 86400 : null;
+  })();
+  const measured = written && "of" in written ? written : null;
   const max = Math.max(1, ...sizes.objects.map((o) => o.bytes));
   const colors = ["var(--series-2)", "var(--series-3)", "var(--series-4)", "var(--series-5)", "var(--series-6)"];
   const toData = () => {
@@ -56,6 +65,19 @@ export function StorageView(props: { store: { backend: string; radioIndex: boole
         <Stat label="Tables" value={bytes(tableBytes)} sub={`${tables.length} tables`} />
         <Stat label="Indexes" value={bytes(indexBytes)} sub={tableBytes ? `${num((100 * indexBytes) / tableBytes, 0)}% of the tables` : undefined} />
         {backend === "sqlite" && <Stat label="Write-ahead log" value={bytes(sizes.walBytes)} sub={`${bytes(sizes.freeBytes)} free inside the file`} />}
+        <Stat
+          label="Written"
+          value={measured ? (perDay === null ? "—" : `${bytes(perDay)}`) : "—"}
+          unit={measured && perDay !== null ? "a day" : undefined}
+          sub={
+            !written ? undefined
+            : !measured ? `not measured: ${"why" in written ? written.why : ""}`
+            : measured.of === "server" ? `the PostgreSQL server's log (all its databases) · ${bytes(measured.bytes)} so far`
+            : perDay === null ? `${bytes(measured.bytes)} since it started; a day's rate after an hour`
+            : `to disk, the last 24 h · ${bytes(measured.bytes)} since it started`
+          }
+          hint="What the store writes to disk: commits, checkpoints and its daily backup. It's what wears an SD card or eMMC; Setup → Data has what lowers it."
+        />
       </div>
       {!radioIndex && (
         <p className="muted small">
@@ -78,6 +100,11 @@ export function StorageView(props: { store: { backend: string; radioIndex: boole
           empty="Measured every 15 minutes: its history starts with the first."
         />
       </Card>
+      {measured && (
+        <Card title="Written to disk">
+          <TimeSeries lines={[{ label: "Written", color: "var(--series-1)", data: hist?.["store/written"] ?? null, band: true }]} zero fmt={(x) => `${bytes(x * 86400)}/day`} empty="Its history starts as it writes." />
+        </Card>
+      )}
       <Card title="Tables and indexes">
         <table className="calls store-sizes">
           <thead>

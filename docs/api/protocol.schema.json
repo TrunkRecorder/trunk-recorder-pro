@@ -4673,12 +4673,50 @@
             },
             "sizes": {
               "$ref": "#/definitions/StoreSizes"
+            },
+            "written": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "bytes": {
+                      "type": "number"
+                    },
+                    "of": {
+                      "type": "string",
+                      "enum": [
+                        "store",
+                        "server"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "bytes",
+                    "of"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "why": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "why"
+                  ],
+                  "additionalProperties": false
+                }
+              ],
+              "description": "What it has written to disk: `of` \"store\" (SQLite's writer, counted by the OS: Linux), or \"server\" (PostgreSQL's write-ahead log, the whole server's); else `why` not. Its rate is the `store/written` series."
             }
           },
           "required": [
             "backend",
             "radioIndex",
-            "sizes"
+            "sizes",
+            "written"
           ],
           "additionalProperties": false,
           "description": "The store (desktop app): each table's and index's size, measured every 15 minutes; absent until measured, or with the store off."

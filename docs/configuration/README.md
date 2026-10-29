@@ -114,7 +114,10 @@ mirrors each call once, and a call index lost is rebuilt from them. `backend` sa
 | `"postgres"` | servers: years of history, your own backups and replication | the PostgreSQL database `url` names: `"postgres://user:password@host/database"`. One recorder per database (or schema): a second one pointed at it runs with its store off |
 
 These are in Setup → **Data**. What the store holds, each table's and index's size and how
-they've grown are on the dashboard's Platform → **Storage**.
+they've grown, and what it writes to disk a day are on the dashboard's Platform → **Storage**.
+What it writes is counted on Linux (the store's writer thread, as the kernel counts it:
+commits, checkpoints and the daily backup). With PostgreSQL it's the server's write-ahead log, all
+of its databases. macOS doesn't count a thread's writes, so it isn't shown there.
 
 `lowWrite: true` writes as little as can be, for an SD card:
 

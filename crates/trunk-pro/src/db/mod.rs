@@ -68,6 +68,8 @@ struct Inner {
     index_calls: bool,
     /// Calls are indexed by radio too (`storage.radioIndex`).
     index_radios: bool,
+    /// The bytes the writer thread has written to disk (`u64::MAX`: not measured here).
+    written: Arc<AtomicU64>,
     /// Who's told when a change people made couldn't be saved.
     report: Reporter,
     /// The config's systems: each short name its calls were filed under (a
@@ -158,8 +160,9 @@ impl Db {
     pub fn with_store(store: Arc<Store>, batch: Duration, retention_days: u32, recorder: Option<String>) -> Db {
         let (tx, rx) = sync_channel(QUEUE_LEN);
         let commits = Arc::new(AtomicU64::new(0));
+        let written = Arc::new(AtomicU64::new(u64::MAX));
         let report: Reporter = Default::default();
-        let writer = writer::spawn(store.clone(), rx, commits.clone(), batch, retention_days, report.clone());
+        let writer = writer::spawn(store.clone(), rx, commits.clone(), written.clone(), batch, retention_days, report.clone());
         Db(
             Some(Arc::new(Inner {
             store,
@@ -171,6 +174,7 @@ impl Db {
             report,
             backfill_running: AtomicBool::new(false),
             systems: Default::default(),
+            written,
             #[cfg(test)]
             commits,
             #[cfg(test)]
@@ -406,6 +410,21 @@ impl Db {
     /// Every system's stored radio registry.
     pub fn registry(&self) -> Result<Vec<(i64, Option<trunk_app::stats::radio::SystemRadio>)>, String> {
         self.store()?.registry()
+    }
+
+    /// The bytes the store has written to disk since it opened: SQLite's
+    /// writer thread's own count (Linux). None: not measured on this OS, or
+    /// a PostgreSQL store (its server writes: [`Db::server_wal_bytes`]).
+    pub fn written(&self) -> Option<u64> {
+        let b = self.0.as_deref()?.written.load(Ordering::Relaxed);
+        (b != u64::MAX && self.backend() == "sqlite").then_some(b)
+    }
+
+    /// PostgreSQL: the bytes its server's write-ahead log has had since its
+    /// statistics were reset (the whole server's: every database on it).
+    /// Blocks: never from async code.
+    pub fn server_wal_bytes(&self) -> Option<i64> {
+        self.store().ok()?.server_wal_bytes()
     }
 
     /// Each table's and index's size (blocks: never from async code).
@@ -814,6 +833,24 @@ mod tests {
 
     /// Low-write mode: a store, keeping no call index (a call sent is
     /// dropped) and the rest as ever; the backup keeps what can't be rebuilt.
+    /// SQLite's writer counts what it writes to disk where the OS counts a
+    /// thread's writes (Linux); elsewhere it says it can't.
+    #[test]
+    fn the_writer_counts_what_it_writes() {
+        let (db, _path) = Db::for_test_with_batch("written", Duration::from_millis(10));
+        for i in 0..50 {
+            db.send(Change::Call { row: row::call_row(&format!("ohmarcs/w{i}"), &row::tests::record(1, 1000 + i), true, true, None, 0), live: true });
+        }
+        db.flush().unwrap();
+        db.checkpoint();
+        db.flush().unwrap();
+        if cfg!(target_os = "linux") {
+            assert!(db.written().is_some_and(|b| b > 0), "{:?}", db.written());
+        } else {
+            assert_eq!(db.written(), None);
+        }
+    }
+
     /// Each table and index is measured, with its table and rows, in either backend.
     #[test]
     fn tables_and_indexes_are_measured() {
@@ -826,6 +863,9 @@ mod tests {
             assert!(!calls.index && calls.bytes > 0, "{}", db.kind());
             if db.kind() == "sqlite" {
                 assert_eq!(calls.rows, Some(1));
+                assert_eq!(db.server_wal_bytes(), None);
+            } else {
+                assert!(db.server_wal_bytes().is_some_and(|b| b > 0), "pg_stat_wal");
             }
             let i = get("calls_start");
             assert!(i.index && i.table == "calls" && i.bytes > 0);
