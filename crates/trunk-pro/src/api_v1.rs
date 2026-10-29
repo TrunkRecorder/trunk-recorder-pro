@@ -252,7 +252,7 @@ mod tests {
         let v = json_of(&body);
         assert_eq!(
             (v["schemaVersion"].as_u64(), v["calls"].as_u64()),
-            (Some(1), Some(1))
+            (Some(u64::from(crate::db::schema::SCHEMA_VERSION)), Some(1))
         );
         assert_eq!(
             (v["oldestMs"].as_i64(), v["newestMs"].as_i64()),
@@ -329,7 +329,7 @@ mod tests {
     async fn a_store_that_is_off_answers_503() {
         let dir = TestDir::new("api-v1-off");
         let store = dir.join("trunk-pro.sqlite");
-        crate::db::seed_newer(&store);
+        crate::db::seed_unopenable(&store);
         let ctx = runtime::test_ctx_with_store(&dir.join("cap"), &store);
         for p in ["/api/v1/calls", "/api/v1/calls/ohmarcs/a", "/api/v1/storage"] {
             let (code, body) = get(&ctx, p).await;

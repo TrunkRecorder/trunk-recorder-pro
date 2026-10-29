@@ -634,7 +634,7 @@ mod tests {
     fn a_store_that_is_off_starts_no_backfill() {
         let base = TestDir::new("backfill-off");
         let store = base.join("trunk-pro.sqlite");
-        crate::db::seed_newer(&store);
+        crate::db::seed_unopenable(&store);
         let ctx = crate::runtime::test_ctx_with_store(&base.join("capture"), &store);
         assert!(ctx.db.is_disabled());
         start(ctx.clone());

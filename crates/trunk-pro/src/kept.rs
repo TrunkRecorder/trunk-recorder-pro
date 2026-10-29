@@ -1,14 +1,10 @@
 //! What's kept between runs besides the calls (research/sqlite-plan.md,
 //! "The flat-file stores"): each system's talkgroup file, talker aliases,
 //! band plans, the codes conventional frequencies carried, AutoTune's
-//! scores, what sharing did, and the radio registry. With `storage.backend: "files"` (or a store that
-//! could not open) they're the files they always were, written by the
-//! saver; otherwise they're rows in the store, written by its writer.
-//!
-//! A file found while the store is on was written while it was off (or by a
-//! release before it): it's newer than the store's copy, so it's imported
-//! and renamed `<name>.imported`. A store that can't be read falls back on
-//! that last copy.
+//! scores, what sharing did, and the radio registry. With the store on
+//! they're its rows, written by its writer; with `storage.backend: "files"`
+//! (or a store that could not open) they're files, written by the saver.
+//! One or the other: nothing is carried between them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -62,51 +58,16 @@ impl Doc<'_> {
     }
 }
 
-/// `path` once imported.
-fn imported(path: &Path) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(".imported");
-    PathBuf::from(s)
-}
-
-/// Rename `path` once the store has committed what was read from it and
-/// `stored` finds it there (a batch commits though one change in it fails).
-fn retire_file(db: &Db, path: &Path, stored: impl FnOnce() -> bool) {
-    match db.flush() {
-        Ok(()) if !stored() => log::warn!("{}: not imported into the store (the log says why); read again next start", path.display()),
-        Ok(()) => {
-            if let Err(e) = fs::rename(path, imported(path)) {
-                log::warn!("{}: imported into the store, but not renamed: {e}", path.display());
-            } else {
-                log::info!("{}: imported into the store", path.display());
-            }
-        }
-        Err(e) => log::warn!("{}: not imported into the store ({e}); read again next start", path.display()),
-    }
-}
-
 /// `doc` as last kept. Blocks: never from async code.
 pub fn read(db: &Db, doc: Doc) -> Option<String> {
     read_in(db, &crate::paths::data_dir(), doc)
 }
 
 fn read_in(db: &Db, dir: &Path, doc: Doc) -> Option<String> {
-    let path = doc.file(dir);
     if db.is_disabled() {
-        return fs::read_to_string(&path).or_else(|_| fs::read_to_string(imported(&path))).ok();
+        return fs::read_to_string(doc.file(dir)).ok();
     }
-    if let Ok(text) = fs::read_to_string(&path) {
-        db.send(Write::Kept { kind: doc.kind().into(), key: doc.key().into(), value: Some(text.clone()) });
-        retire_file(db, &path, || db.kept(doc.kind(), doc.key()).is_ok_and(|v| v.as_ref() == Some(&text)));
-        return Some(text);
-    }
-    match db.kept(doc.kind(), doc.key()) {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("Call store: {} {} not read ({e}); using its last file", doc.kind(), doc.key());
-            fs::read_to_string(imported(&path)).ok()
-        }
-    }
+    db.kept(doc.kind(), doc.key()).inspect_err(|e| log::warn!("Call store: {} {} not read ({e})", doc.kind(), doc.key())).ok().flatten()
 }
 
 /// Keep `text` as `doc`.
@@ -132,23 +93,10 @@ pub fn load_talkgroups(db: &Db, cfg: &trunk_app::Config) -> trunk_app::config::T
 fn load_talkgroups_in(db: &Db, dir: &Path, cfg: &trunk_app::Config) -> trunk_app::config::TalkgroupFiles {
     let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
     let read = |name: &String| -> Option<String> {
-        let path = talkgroups_file(dir, name);
         if db.is_disabled() {
-            return fs::read_to_string(&path).or_else(|_| fs::read_to_string(imported(&path))).ok();
+            return fs::read_to_string(talkgroups_file(dir, name)).ok();
         }
-        // (A file here is newer than the store's copy: one edited by hand, or from before it.)
-        if let Ok(csv) = fs::read_to_string(&path) {
-            db.send(Write::Talkgroups { system: name.clone(), old: String::new(), new: csv.clone() });
-            retire_file(db, &path, || csv.trim().is_empty() || db.talkgroups(name).is_ok_and(|v| v.is_some()));
-            return Some(csv);
-        }
-        match db.talkgroups(name) {
-            Ok(csv) => csv,
-            Err(e) => {
-                log::warn!("Call store: talkgroups of {name} not read ({e}); using its last file");
-                fs::read_to_string(imported(&path)).ok()
-            }
-        }
+        db.talkgroups(name).inspect_err(|e| log::warn!("Call store: talkgroups of {name} not read ({e})")).ok().flatten()
     };
     names.filter_map(|name| read(name).map(|csv| (name.clone(), csv))).collect()
 }
@@ -206,25 +154,12 @@ pub fn load_registry(db: &Db, shared: &trunk_app::stats::Shared) {
 
 fn load_registry_in(db: &Db, radio_dir: &Path, shared: &trunk_app::stats::Shared) {
     let mut r = shared.radio.lock().unwrap();
-    let files = |also_imported: bool| {
-        fs::read_dir(radio_dir).into_iter().flatten().flatten().map(|e| e.path()).filter(move |p| p.extension().is_some_and(|x| x == "json" || (also_imported && x == "imported")))
-    };
-    let stem = |p: &Path| -> Option<String> {
-        let name = p.file_name()?.to_str()?;
-        Some(name.strip_suffix(".imported").unwrap_or(name).strip_suffix(".json")?.to_string())
-    };
-    // Each file, an imported one first (a plain one is newer).
-    let load_files = |r: &mut trunk_app::stats::radio::Registry| {
-        let mut paths: Vec<PathBuf> = files(true).collect();
-        paths.sort_by_key(|p| p.extension().is_some_and(|x| x == "json"));
-        for p in paths {
-            if let (Some(name), Ok(text)) = (stem(&p), fs::read_to_string(&p)) {
-                r.load(&name, &text);
+    if db.is_disabled() {
+        for p in fs::read_dir(radio_dir).into_iter().flatten().flatten().map(|e| e.path()) {
+            if let (Some("json"), Some(name), Ok(text)) = (p.extension().and_then(|x| x.to_str()), p.file_stem().and_then(|n| n.to_str()), fs::read_to_string(&p)) {
+                r.load(name, &text);
             }
         }
-    };
-    if db.is_disabled() {
-        load_files(&mut r);
         return;
     }
     match db.registry() {
@@ -240,22 +175,9 @@ fn load_registry_in(db: &Db, radio_dir: &Path, shared: &trunk_app::stats::Shared
                 r.put(&s.system, radio);
             }
         }
-        Err(e) => {
-            // (Kept by row from its last files: what changes is written as ever.)
-            log::warn!("Call store: radio registry not read ({e}); using its last files");
-            load_files(&mut r);
-            r.track_rows();
-            return;
-        }
+        Err(e) => log::warn!("Call store: radio registry not read ({e})"),
     }
     r.track_rows();
-    for p in files(false).collect::<Vec<_>>() {
-        let (Some(name), Ok(text)) = (stem(&p), fs::read_to_string(&p)) else { continue };
-        r.load(&name, &text);
-        let Some(radio) = r.systems.get(&name).cloned() else { continue };
-        db.send(Write::RegistryWhole { system: name.clone(), radio: Box::new(radio) });
-        retire_file(db, &p, || db.registry().is_ok_and(|all| all.iter().any(|s| s.system == name && s.whole.is_some())));
-    }
 }
 
 #[cfg(test)]
@@ -263,60 +185,44 @@ mod tests {
     use super::*;
     use crate::db::TestDir;
 
-    /// With the store on, a file is imported once (it was written while the
-    /// store was off) and renamed; with it off, the files are read as ever,
-    /// an imported one as the last copy.
+    /// With the store on, what's kept is the store's, and files beside it are
+    /// not read; with it off, the files are.
     #[test]
-    fn files_are_imported_once() {
-        let dir = TestDir::new("kept-import");
-        let units = Doc::Units("a").file(&dir);
-        fs::write(&units, "1,Engine 1").unwrap();
+    fn the_store_or_the_files_not_both() {
+        let dir = TestDir::new("kept");
+        fs::write(Doc::Units("a").file(&dir), "1,From a file").unwrap();
         let radio = dir.join("radio");
         fs::create_dir_all(&radio).unwrap();
-        let mut whole = trunk_app::stats::radio::Registry::default();
-        whole.concluded("x", &trunk_recorder_plugin::CallRecord { freq: 851_000_000, talkgroup: 300, ..Default::default() }, 1000);
-        let json = serde_json::to_string(&whole.systems["x"]).unwrap();
-
-        let off = Db::disabled();
-        assert_eq!(read_in(&off, &dir, Doc::Units("a")).as_deref(), Some("1,Engine 1"));
-        assert!(units.exists(), "off: left as it is");
-
-        for db in Db::for_each_backend("kept-import", std::time::Duration::from_millis(10)) {
-            fs::write(&units, "1,Engine 1").unwrap();
-            fs::write(radio.join("x.json"), &json).unwrap();
-            assert_eq!(read_in(&db, &dir, Doc::Units("a")).as_deref(), Some("1,Engine 1"));
-            assert!(!units.exists() && imported(&units).exists(), "renamed once imported ({})", db.kind());
-            assert_eq!(read_in(&db, &dir, Doc::Units("a")).as_deref(), Some("1,Engine 1"), "from the store");
-            assert_eq!(read_in(&db, &dir, Doc::Tune), None);
-
-            let shared = trunk_app::stats::Shared::new();
-            load_registry_in(&db, &radio, &shared);
-            assert!(!radio.join("x.json").exists());
-            let again = trunk_app::stats::Shared::new();
-            load_registry_in(&db, &radio, &again);
-            let (a, b) = (shared.radio.lock().unwrap(), again.radio.lock().unwrap());
-            assert_eq!(serde_json::to_value(&b.systems["x"]).unwrap(), serde_json::to_value(&whole.systems["x"]).unwrap(), "{}", db.kind());
-            assert_eq!(serde_json::to_value(&a.systems["x"]).unwrap(), serde_json::to_value(&b.systems["x"]).unwrap());
-        }
-
-        // A talkgroup file: imported once, then the store's; edits by line.
+        let mut reg = trunk_app::stats::radio::Registry::default();
+        reg.concluded("x", &trunk_recorder_plugin::CallRecord { freq: 851_000_000, talkgroup: 300, ..Default::default() }, 1000);
+        fs::write(radio.join("x.json"), serde_json::to_string(&reg.systems["x"]).unwrap()).unwrap();
         let mut cfg = trunk_app::Config::default();
         cfg.systems.push(trunk_app::config::System { short_name: "a".into(), ..Default::default() });
-        let tgs = talkgroups_file(&dir, "a");
-        for db in Db::for_each_backend("kept-talkgroups", std::time::Duration::from_millis(10)) {
-            fs::write(&tgs, "Decimal,Alpha Tag\n101,Fire\n").unwrap();
-            assert_eq!(load_talkgroups_in(&db, &dir, &cfg)["a"], "Decimal,Alpha Tag\n101,Fire\n");
-            assert!(!tgs.exists() && imported(&tgs).exists(), "{}", db.kind());
-            db.send(Write::Talkgroups { system: "a".into(), old: "Decimal,Alpha Tag\n101,Fire\n".into(), new: "Decimal,Alpha Tag\n101,Fire 1\n".into() });
-            db.flush().unwrap();
-            assert_eq!(load_talkgroups_in(&db, &dir, &cfg)["a"], "Decimal,Alpha Tag\n101,Fire 1\n");
-        }
-        assert_eq!(load_talkgroups_in(&off, &dir, &cfg)["a"], "Decimal,Alpha Tag\n101,Fire\n", "off: the imported copy");
+        fs::write(talkgroups_file(&dir, "a"), "Decimal,Alpha Tag\n101,From a file\n").unwrap();
 
-        // Off again: the imported copies are the last.
+        let off = Db::disabled();
+        assert_eq!(read_in(&off, &dir, Doc::Units("a")).as_deref(), Some("1,From a file"));
+        assert_eq!(load_talkgroups_in(&off, &dir, &cfg)["a"], "Decimal,Alpha Tag\n101,From a file\n");
         let shared = trunk_app::stats::Shared::new();
         load_registry_in(&off, &radio, &shared);
         assert!(shared.radio.lock().unwrap().systems.contains_key("x"));
-        assert_eq!(read_in(&off, &dir, Doc::Units("a")).as_deref(), Some("1,Engine 1"));
+
+        for db in Db::for_each_backend("kept", std::time::Duration::from_millis(10)) {
+            assert_eq!(read_in(&db, &dir, Doc::Units("a")), None, "the file isn't read ({})", db.kind());
+            assert!(load_talkgroups_in(&db, &dir, &cfg).is_empty());
+            let shared = trunk_app::stats::Shared::new();
+            load_registry_in(&db, &radio, &shared);
+            assert!(shared.radio.lock().unwrap().systems.is_empty());
+            db.send(Write::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 1".into()) });
+            db.send(Write::Talkgroups { system: "a".into(), old: String::new(), new: "Decimal,Alpha Tag\n101,Fire\n".into() });
+            db.send(Write::RegistryWhole { system: "x".into(), radio: Box::new(reg.systems["x"].clone()) });
+            db.flush().unwrap();
+            assert_eq!(read_in(&db, &dir, Doc::Units("a")).as_deref(), Some("1,Engine 1"));
+            assert_eq!(load_talkgroups_in(&db, &dir, &cfg)["a"], "Decimal,Alpha Tag\n101,Fire\n");
+            let shared = trunk_app::stats::Shared::new();
+            load_registry_in(&db, &radio, &shared);
+            assert_eq!(serde_json::to_value(&shared.radio.lock().unwrap().systems["x"]).unwrap(), serde_json::to_value(&reg.systems["x"]).unwrap(), "{}", db.kind());
+        }
+        assert!(Doc::Units("a").file(&dir).exists(), "files are left as they are");
     }
 }

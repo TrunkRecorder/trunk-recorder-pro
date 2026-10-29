@@ -1,6 +1,7 @@
-//! The call store's schema, as numbered migration scripts. `migrate` brings
-//! any database, new or old, up to the last one. The version is SQLite's own
-//! `user_version`, which changes in the same transaction as the tables.
+//! The store's schema, and its version (SQLite's own `user_version`). While
+//! in development nothing is migrated: the version is raised whenever the
+//! schema changes, and a store of any other version is set aside and made
+//! afresh (`sqlite.rs`; PostgreSQL's tables dropped and made again).
 //!
 //! Indexes follow the queries: calls by start (every page), by system and
 //! start (a system's page, without scanning the busier systems' calls), by
@@ -12,12 +13,12 @@
 
 use rusqlite::Connection;
 
-/// The version a fully migrated database reports.
-pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
+/// This build's schema. Raise it with any change to [`SCHEMA`] (or
+/// PostgreSQL's twin): a store of another version is made afresh.
+pub const SCHEMA_VERSION: u32 = 2;
 
-/// One script per version; entry `n` takes a database from version `n` to
-/// `n + 1`. Never edit a shipped script: add the next one.
-pub const MIGRATIONS: &[&str] = &["
+/// The tables, made in a new database.
+pub const SCHEMA: &str = "
 create table meta (key text primary key, value text not null) without rowid;
 create table calls (
     id integer primary key,
@@ -100,31 +101,32 @@ create table stats_hours (
     n integer not null,
     primary key (series, t)
 ) without rowid;
-"];
+";
 
-/// How a database stands after [`migrate`].
-pub enum Migrated {
+/// How a database stands after [`prepare`].
+pub enum Prepared {
+    /// This build's schema (made now, if the database was new).
     Current,
-    /// A newer build wrote it (this version): it's left as it is.
-    Newer(u32),
+    /// Another version's (older or newer): for the caller to set aside.
+    Other(u32),
 }
 
-/// Apply every migration past the database's version, all in one
-/// transaction, so a failure leaves the file as it was.
-pub fn migrate(conn: &Connection) -> rusqlite::Result<Migrated> {
+/// A new database (no version, nothing in it) made this schema, in one
+/// transaction; one of this version left as it is.
+pub fn prepare(conn: &Connection) -> rusqlite::Result<Prepared> {
     let have: u32 = conn.query_row("pragma user_version", [], |r| r.get(0))?;
-    if have > SCHEMA_VERSION {
-        return Ok(Migrated::Newer(have));
+    if have == SCHEMA_VERSION {
+        return Ok(Prepared::Current);
     }
-    if have < SCHEMA_VERSION {
-        let tx = conn.unchecked_transaction()?;
-        for script in &MIGRATIONS[have as usize..] {
-            tx.execute_batch(script)?;
-        }
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        tx.commit()?;
+    let tables: i64 = conn.query_row("select count(*) from sqlite_master", [], |r| r.get(0))?;
+    if have != 0 || tables > 0 {
+        return Ok(Prepared::Other(have));
     }
-    Ok(Migrated::Current)
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(SCHEMA)?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    tx.commit()?;
+    Ok(Prepared::Current)
 }
 
 #[cfg(test)]
@@ -137,7 +139,7 @@ mod tests {
     #[test]
     fn the_queries_use_the_indexes() {
         let c = Connection::open_in_memory().unwrap();
-        migrate(&c).unwrap();
+        prepare(&c).unwrap();
         let plan = |sql: &str| -> String {
             let mut st = c.prepare(&format!("explain query plan {sql}")).unwrap();
             let rows: Vec<String> = st.query_map([], |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();

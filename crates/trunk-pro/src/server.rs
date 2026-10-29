@@ -1204,7 +1204,7 @@ mod tests {
         let open = crate::runtime::test_ctx(&dir.join("open"));
         assert_eq!(capabilities(&open).await, Capability::ALL);
         let store = dir.join("trunk-pro.sqlite");
-        crate::db::seed_newer(&store);
+        crate::db::seed_unopenable(&store);
         let off = crate::runtime::test_ctx_with_store(&dir.join("off"), &store);
         let caps = capabilities(&off).await;
         assert!(!caps.contains(&Capability::Calls) && !caps.contains(&Capability::History), "{caps:?}");

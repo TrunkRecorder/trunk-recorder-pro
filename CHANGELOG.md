@@ -24,21 +24,25 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     mid-size server), `postgres` (a PostgreSQL server, `storage.url`: years of history, your
     own backups and replication) or `files` (no index: the least writing). Setup's Recording tab
     has the choice.
-  - A store that can't be opened (a newer version's, a full disk, a server not reachable,
-    another recorder using it) is left off: recording, the call list and every query go on from
-    the recent calls.
+  - A store that can't be opened (a full disk, a server not reachable, another recorder using
+    it) is left off: recording, the call list and every query go on from the recent calls.
+  - **Breaking, while in beta: nothing is carried over or migrated.** With the store on (the
+    default), the flat files (`<shortName>.talkgroups.csv`, `radio/`, `*.units.csv`,
+    `*.bandplan`, `conventional.heard.json`, `tune.json`, `sharing.json`, `stats/`) aren't read;
+    they're left as they are. Load each system's talkgroups again in Setup (**Load CSV…**, the
+    old file will do). A store of another schema version is set aside (SQLite: renamed
+    `.v<n>-<time>`; PostgreSQL: its tables made afresh) and a new one started; the call list is
+    rebuilt from the recordings' `.json` files.
   - **Talkgroup files are kept in the store too**, a line at a time and exactly as loaded. An
     Ignore or name change writes only that line and commits at once, rather than rewriting the
     file. Each row's talkgroup is in columns of its own, so a call's talkgroup name is a SQL join
-    away. **Download** in Setup exports the file. A `<shortName>.talkgroups.csv` left beside the
-    config is imported at the next start.
+    away. **Load CSV…** and **Download** in Setup are the import and export.
   - **The dashboard's history goes back a year, not a week** (`storage.statsDays`, 365 by default;
     0 keeps it all). The Platform, RF and Decode pages' charts offer 30 days, 90 days and 1 year,
     as far as the store keeps. Each series is kept by the hour, and only the last day by the
     minute in memory. A longer chart asks the store for its hours and gets a few hundred points a
-    series whatever the span, so neither the recorder nor the browser holds the history. The
-    stats files already there are imported at the first start. With `files` it stays a week of
-    files, as before. On the Pi's eMMC the store writes about 17 MB a
+    series whatever the span, so neither the recorder nor the browser holds the history. With
+    `files` it stays a week of files, as before. On the Pi's eMMC the store writes about 17 MB a
     day for it. `hello.capabilities` has a new `history`; `statsQuery` takes `30d`, `90d` and `1y`.
   - **What a recording learns between runs is kept in the store too:**
     - the radio registry;
@@ -48,8 +52,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     - AutoTune's scores;
     - sharing's state.
 
-    The files already in the data folder are imported at the first start and renamed
-    `.imported`; with `files` they stay files as before. The radio registry is appended as each
+    With `files` they stay files as before. The radio registry is appended as each
     15 minutes' changes and written whole once a day, instead of whole every 15 minutes. On the
     Pi's eMMC a busy system writes 0.10 GB a day instead of 0.44 (`db::tests::registry_write_budget`).
 - **Calls by talkgroup, radio and time, for interfaces and plugins:** `callsQuery` on the

@@ -17,6 +17,7 @@ use serde_json::Value;
 
 use super::read::{self, CallsFilter, Fetched, Page, Param, Where};
 use super::row::{entry, CallRow};
+use super::schema::SCHEMA_VERSION;
 use super::store::{CallStore, Change, StoreInfo, StoredRegistry};
 
 /// Read connections kept.
@@ -26,10 +27,9 @@ const READERS: usize = 2;
 /// `start_ms` for paging.
 const COLUMNS: &str = "path, record::text, audio, json, id, start_ms";
 
-/// One script per version; entry `n` takes a database from version `n` to
-/// `n + 1`. Never edit a shipped script: add the next one. (The SQLite
-/// schema's twin: keep them in step.)
-const MIGRATIONS: &[&str] = &["
+/// The tables, made in a new database: the SQLite schema's twin (keep them
+/// in step, under the one [`SCHEMA_VERSION`]).
+const SCHEMA: &str = "
 create table meta (key text primary key, value text not null);
 create table calls (
     id bigserial primary key,
@@ -112,7 +112,10 @@ create table stats_hours (
     n integer not null,
     primary key (series, t)
 );
-"];
+";
+
+/// Every table [`SCHEMA`] makes, dropped to make it afresh.
+const TABLES: &str = "stats_hours, stats_minutes, talkgroups, registry_changes, registry, kept, call_frequencies, call_transmissions, calls, meta";
 
 pub struct PostgresStore {
     url: String,
@@ -147,7 +150,7 @@ impl PostgresStore {
         let location = redacted(url);
         let mut writer = connect(url, schema.as_deref()).map_err(|e| format!("{location}: {e}"))?;
         take(&mut writer).map_err(|e| format!("{location}: {e}"))?;
-        migrate(&mut writer).map_err(|e| format!("{location}: {e}"))?;
+        prepare(&mut writer, &location).map_err(|e| format!("{location}: {e}"))?;
         let readers = (0..READERS).map(|_| connect(url, schema.as_deref())).collect::<Result<Vec<_>, _>>().map_err(|e| format!("{location}: {e}"))?;
         Ok(PostgresStore { url: url.to_string(), schema, location, writer: Mutex::new(writer), readers: Mutex::new(readers) })
     }
@@ -199,17 +202,20 @@ fn take(c: &mut Client) -> Result<(), String> {
 
 /// Bring the schema up to the last migration, in one transaction. A
 /// database a newer build wrote is refused.
-fn migrate(c: &mut Client) -> Result<(), String> {
+fn prepare(c: &mut Client, location: &str) -> Result<(), String> {
     let mut tx = c.transaction().map_err(|e| e.to_string())?;
     tx.batch_execute("create table if not exists schema_version (version integer not null)").map_err(|e| e.to_string())?;
-    let have: i32 = tx.query_opt("select version from schema_version", &[]).map_err(|e| e.to_string())?.map_or(0, |r| r.get(0));
-    let want = MIGRATIONS.len() as i32;
-    if have > want {
-        return Err(format!("its schema is version {have}, newer than this build's {want} (written by a newer Trunk Recorder Pro)"));
+    let have: Option<i32> = tx.query_opt("select version from schema_version", &[]).map_err(|e| e.to_string())?.map(|r| r.get(0));
+    let want = SCHEMA_VERSION as i32;
+    if have == Some(want) {
+        return tx.commit().map_err(|e| e.to_string());
     }
-    for script in &MIGRATIONS[have as usize..] {
-        tx.batch_execute(script).map_err(|e| e.to_string())?;
+    // (Nothing is migrated while in development: another version's tables are made afresh.)
+    if let Some(v) = have {
+        log::warn!("Call store: {location} has schema version {v}, not this build's {want}; its tables are made afresh");
     }
+    tx.batch_execute(&format!("drop table if exists {TABLES} cascade")).map_err(|e| e.to_string())?;
+    tx.batch_execute(SCHEMA).map_err(|e| e.to_string())?;
     tx.execute("delete from schema_version", &[]).map_err(|e| e.to_string())?;
     tx.execute("insert into schema_version (version) values ($1)", &[&want]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
@@ -406,7 +412,7 @@ impl CallStore for PostgresStore {
             let r = c.query_one("select count(*), min(start_ms), max(start_ms) from calls", &[])?;
             Ok((r.get(0), r.get(1), r.get(2)))
         })?;
-        Ok(StoreInfo { location: self.location.clone(), schema_version: MIGRATIONS.len() as u32, calls, oldest_ms, newest_ms })
+        Ok(StoreInfo { location: self.location.clone(), schema_version: SCHEMA_VERSION, calls, oldest_ms, newest_ms })
     }
 
     #[cfg(test)]
@@ -501,17 +507,18 @@ mod tests {
         assert_eq!(redacted("host=db user=trp password=secret dbname=trunk"), "host=db user=trp dbname=trunk");
     }
 
-    /// The database is this recorder's: a second store on it is refused, and
-    /// a newer schema is too. (With `TRP_PG_URL`.)
+    /// The database is this recorder's: a second store on it is refused;
+    /// another version's tables are made afresh. (With `TRP_PG_URL`.)
     #[test]
-    fn a_second_recorder_and_a_newer_schema_are_refused() {
+    fn a_second_recorder_is_refused_and_another_version_made_afresh() {
         let Ok(url) = std::env::var("TRP_PG_URL") else { return };
         let first = PostgresStore::open_fresh_schema(&url, "t_pg_lock").unwrap();
         let err = PostgresStore::open_in(&url, Some("t_pg_lock".into())).err().expect("refused");
         assert!(err.contains("another Trunk Recorder Pro"), "{err}");
-        first.writer().unwrap().batch_execute("update schema_version set version = 99").unwrap();
+        first.writer().unwrap().batch_execute("insert into meta (key, value) values ('a', '1'); update schema_version set version = 99").unwrap();
         drop(first);
-        let err = PostgresStore::open_in(&url, Some("t_pg_lock".into())).err().expect("newer refused");
-        assert!(err.contains("99"), "{err}");
+        let again = PostgresStore::open_in(&url, Some("t_pg_lock".into())).unwrap();
+        assert_eq!(again.scalar("select max(version)::bigint from schema_version"), i64::from(SCHEMA_VERSION));
+        assert_eq!(again.scalar("select count(*) from meta"), 0, "made afresh");
     }
 }

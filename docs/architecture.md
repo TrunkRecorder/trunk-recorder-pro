@@ -560,8 +560,8 @@ main ─► serve()
     talkgroup files a line at a time in `talkgroups` (an edit writes its
     lines, committed at once), documents in `kept`, and the registry as
     each save's changes appended to `registry_changes`, written whole to
-    `registry` once a day. Files found at startup are imported and renamed
-    `.imported`.
+    `registry` once a day. The files aren't read then: nothing is carried
+    between the two.
   - `stats/YYYY-MM-DD.jsonl` gets each minute's rollup appended (see
     [Measurements](#measurements)); with the store on, `stats_minutes`
     (2 days) and `stats_hours` (each series' hours, `storage.statsDays`)

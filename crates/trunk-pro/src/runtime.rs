@@ -1443,7 +1443,7 @@ mod live_list_tests {
     fn the_live_list_answers_without_the_store() {
         let dir = crate::db::TestDir::new("live-off");
         let store = dir.join("trunk-pro.sqlite");
-        crate::db::seed_newer(&store);
+        crate::db::seed_unopenable(&store);
         let ctx = test_ctx_with_store(&dir.join("capture"), &store);
         assert!(ctx.db.is_disabled());
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
@@ -1543,7 +1543,7 @@ mod calls_query_tests {
     fn a_store_that_cannot_be_opened_leaves_the_recorder_running() {
         let dir = crate::db::TestDir::new("store-off");
         let store = dir.join("trunk-pro.sqlite");
-        crate::db::seed_newer(&store);
+        crate::db::seed_unopenable(&store);
         let ctx = test_ctx_with_store(&dir.join("capture"), &store);
         assert!(ctx.db.is_disabled());
         let ToClient::History { entries } = history(&ctx) else { panic!() };

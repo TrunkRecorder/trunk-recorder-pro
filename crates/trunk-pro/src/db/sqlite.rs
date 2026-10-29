@@ -40,8 +40,14 @@ impl SqliteStore {
         let conn = match open_sound(path) {
             Ok(c) => c,
             Err(OpenError::Corrupt(e)) if path.exists() => {
-                let aside = move_aside(path)?;
+                let aside = move_aside(path, "corrupt")?;
                 log::warn!("Call store: {} is unusable ({e}); moved to {}", path.display(), aside.display());
+                open_sound(path).map_err(|e| format!("open {}: {e}", path.display()))?
+            }
+            // (Nothing is migrated while in development: another version's store starts afresh.)
+            Err(OpenError::Version(v)) => {
+                let aside = move_aside(path, &format!("v{v}"))?;
+                log::warn!("Call store: {} has schema version {v}, not this build's {}; moved to {} and started afresh", path.display(), schema::SCHEMA_VERSION, aside.display());
                 open_sound(path).map_err(|e| format!("open {}: {e}", path.display()))?
             }
             Err(e) => return Err(format!("open {}: {e}", path.display())),
@@ -290,14 +296,18 @@ impl CallStore for SqliteStore {
 enum OpenError {
     /// The file is not a sound database: it may be moved aside.
     Corrupt(String),
-    /// Anything else (busy, disk full, a newer schema): the file is left alone.
+    /// Another version's schema: it's moved aside.
+    Version(u32),
+    /// Anything else (busy, disk full): the file is left alone.
     Other(String),
 }
 
 impl std::fmt::Display for OpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (Self::Corrupt(e) | Self::Other(e)) = self;
-        f.write_str(e)
+        match self {
+            Self::Corrupt(e) | Self::Other(e) => f.write_str(e),
+            Self::Version(v) => write!(f, "schema version {v}"),
+        }
     }
 }
 
@@ -324,8 +334,8 @@ fn open_sound(path: &Path) -> Result<Connection, OpenError> {
     conn.pragma_update(None, "wal_autocheckpoint", 4096)?;
     conn.pragma_update(None, "journal_size_limit", 16 << 20)?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
-    if let schema::Migrated::Newer(v) = schema::migrate(&conn)? {
-        return Err(OpenError::Other(format!("its schema is version {v}, newer than this build's {} (written by a newer Trunk Recorder Pro)", schema::SCHEMA_VERSION)));
+    if let schema::Prepared::Other(v) = schema::prepare(&conn)? {
+        return Err(OpenError::Version(v));
     }
     Ok(conn)
 }
@@ -360,7 +370,7 @@ fn open_reader(path: &Path) -> rusqlite::Result<Connection> {
 /// back and the move has failed, so a fresh database never adopts an old WAL
 /// and a WAL's committed data is never deleted. Only a `-shm` that will not
 /// rename is removed: it is an index that SQLite rebuilds.
-fn move_aside(path: &Path) -> Result<PathBuf, String> {
+fn move_aside(path: &Path, why: &str) -> Result<PathBuf, String> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -369,7 +379,7 @@ fn move_aside(path: &Path) -> Result<PathBuf, String> {
         s.push(suffix);
         PathBuf::from(s)
     };
-    let aside = with(path, &format!(".corrupt-{secs}"));
+    let aside = with(path, &format!(".{why}-{secs}"));
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     let undo = |moved: &[(PathBuf, PathBuf)]| {
         for (from, to) in moved.iter().rev() {
@@ -543,7 +553,7 @@ fn set_files(conn: &Connection, path: &str, audio: bool, json: bool) -> rusqlite
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{seed_newer, Db, TestDir};
+    use crate::db::{seed_unopenable, Db, TestDir};
     use std::time::Duration;
 
     fn aside_count(dir: &Path) -> usize {
@@ -583,20 +593,27 @@ mod tests {
         let path = dir.join("trunk-pro.sqlite");
         std::fs::write(&path, b"this is not a database").unwrap();
         let store = SqliteStore::open(&path).unwrap();
-        assert_eq!(store.scalar("pragma user_version"), 1);
+        assert_eq!(store.scalar("pragma user_version"), i64::from(schema::SCHEMA_VERSION));
         assert_eq!(aside_count(&dir), 1);
     }
 
+    /// Another version's store (older or newer: nothing is migrated) is
+    /// moved aside and a fresh one made; one that can't be opened at all
+    /// leaves the store off.
     #[test]
-    fn a_database_from_a_newer_version_is_refused_not_moved_aside() {
-        let dir = TestDir::new("db-newer");
+    fn another_version_s_store_is_set_aside_and_made_afresh() {
+        let dir = TestDir::new("db-version");
         let path = dir.join("trunk-pro.sqlite");
-        seed_newer(&path);
-        let err = SqliteStore::open(&path).err().expect("a newer schema must be refused");
-        assert!(err.contains("99"), "{err}");
-        assert!(path.exists());
-        assert_eq!(aside_count(&dir), 0);
-        assert!(Db::open_or_off(&path, Duration::from_secs(1), 0).is_disabled(), "the recorder carries on with the store off");
+        drop(SqliteStore::open(&path).unwrap());
+        rusqlite::Connection::open(&path).unwrap().pragma_update(None, "user_version", 99).unwrap();
+        let store = SqliteStore::open(&path).unwrap();
+        assert_eq!(store.scalar("pragma user_version"), i64::from(schema::SCHEMA_VERSION));
+        let aside = std::fs::read_dir(&*dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(".v99-")).count();
+        assert_eq!(aside, 1, "kept beside, not deleted");
+        drop(store);
+        let off = dir.join("off.sqlite");
+        seed_unopenable(&off);
+        assert!(Db::open_or_off(&off, Duration::from_secs(1), 0).is_disabled(), "the recorder carries on with the store off");
     }
 
     #[test]
@@ -630,7 +647,7 @@ mod tests {
         let path = dir.join("x.sqlite");
         std::fs::write(&path, b"db").unwrap();
         std::fs::write(dir.join("x.sqlite-wal"), b"wal").unwrap();
-        let aside = move_aside(&path).unwrap();
+        let aside = move_aside(&path, "corrupt").unwrap();
         assert!(!path.exists());
         let mut wal = aside.as_os_str().to_owned();
         wal.push("-wal");
@@ -638,7 +655,7 @@ mod tests {
         // The database file is missing, so the final rename fails: the WAL must be back where it was.
         let path2 = dir.join("y.sqlite");
         std::fs::write(dir.join("y.sqlite-wal"), b"wal2").unwrap();
-        assert!(move_aside(&path2).is_err());
+        assert!(move_aside(&path2, "corrupt").is_err());
         assert_eq!(std::fs::read(dir.join("y.sqlite-wal")).unwrap(), b"wal2");
     }
 }

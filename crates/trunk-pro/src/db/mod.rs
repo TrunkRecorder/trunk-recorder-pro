@@ -388,11 +388,11 @@ impl Drop for TestDir {
     }
 }
 
-/// A SQLite store at `path` whose schema version says a newer build wrote it (tests).
+/// Something at `path` no SQLite store can be opened from (a folder): the
+/// store stays off (tests).
 #[cfg(test)]
-pub fn seed_newer(path: &Path) {
-    drop(Db::open(path, Duration::from_secs(1), 0).unwrap());
-    rusqlite::Connection::open(path).unwrap().pragma_update(None, "user_version", 99).unwrap();
+pub fn seed_unopenable(path: &Path) {
+    std::fs::create_dir_all(path).unwrap();
 }
 
 #[cfg(test)]

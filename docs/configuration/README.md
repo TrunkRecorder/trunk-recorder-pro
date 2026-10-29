@@ -132,9 +132,13 @@ The store also keeps each system's talkgroup file, and what a recording learns b
 - what sharing with the directory did.
 
 With `files` these stay files in the data folder (`<system>.talkgroups.csv`,
-`radio/<system>.json`, `<system>.units.csv`, …). With `sqlite` or `postgres`, the files found
-there at the first start are imported, then renamed `<name>.imported` and kept. A file put there
-later (a talkgroup file edited by hand, say) is imported the same way at the next start.
+`radio/<system>.json`, `<system>.units.csv`, …). With `sqlite` or `postgres` they're the store's,
+and those files aren't read: one or the other, nothing carried between them (load talkgroups
+into Setup with **Load CSV…**).
+
+While in beta, a store made by another version is set aside and a new one started (nothing is
+migrated): SQLite's file is renamed `trunk-pro.sqlite.v<n>-<time>`, PostgreSQL's tables are made
+afresh. The call list is then rebuilt from the recordings' `.json` files.
 
 - **Talkgroup files** are kept a line at a time, exactly as loaded: comments, extra columns and
   the delimiter too. An edit in Setup (Ignore, a name) writes only the lines it changed, and

@@ -9,7 +9,8 @@ Status (2026-10-28):
   conformance tests run on SQLite always and on PostgreSQL in CI (a service container).
 - **Built, in #104:** the [flat-file stores](#the-flat-file-stores) behind the same interface:
   the radio registry, talker aliases, band plans, conventional codes heard, AutoTune's scores and
-  sharing's state. Existing files are imported once and renamed `.imported`.
+  sharing's state. Nothing is imported or migrated while in beta: the store or the files, and a
+  store of another schema version is set aside and started afresh.
 - **Built, in #104:** talkgroup files in the store, a line at a time with each row's talkgroup
   read into columns ([phase 3](#phase-3-talkgroups-and-unit-names-as-internal-data)).
 
@@ -179,9 +180,12 @@ store's, written by its writer in its batches.
   `kept::write` (the store's `Write::Kept`, or the saver), and reads go through `kept::read`.
 - **`kept`** is a document per (kind, key): these are read whole at startup and written whole,
   and nothing queries inside them, so rows of their own would only add tables.
-- **Import:** a file found while the store is on was written while it was off (or by an earlier
-  release), so it is newer: it's imported, committed, then renamed `<name>.imported`. A store
-  that can't be read falls back on that last copy; so does `files` after a switch back.
+- **No import:** the store's or the files, one or the other. (An import of the files at the
+  first start was built, then dropped: while in beta, a sensible design beats carrying old
+  data over. Talkgroups load again with **Load CSV…**.)
+- **Schema:** one script and `SCHEMA_VERSION`, raised with any change. A store of another
+  version is set aside (SQLite renamed `.v<n>-<time>`; PostgreSQL's tables dropped) and made
+  afresh; the backfill rebuilds the call index from the recordings' `.json` files.
 - **Reads block** (PostgreSQL's client refuses a tokio worker): the greeting's talker aliases
   and conventional codes are read under `spawn_blocking`.
 - **The browser build** keeps its files on OPFS.
@@ -212,9 +216,7 @@ Built in #104 (`statstore.rs`). The point is a longer look back, not only a new 
 - **`hello.capabilities` `history`** says longer spans work: the store is open. The browser
   build and `files` keep a week, and the dashboard offers 30 days, 90 days and a year only as far
   as `statsDays` keeps.
-- **Import.** A `stats/` folder is imported once and renamed `stats.imported`. Its hours are
-  written from the files themselves (a temporary history, let go after), so the whole imported
-  week has them.
+- **No import** of the `stats/` files: the store starts its own history.
 
 ### The registry as changes, not rows
 
@@ -379,9 +381,8 @@ engine, the browser and the protocol all take a CSV), so the store keeps it **a 
   talkgroup a join.
 - `setTalkgroup` writes only the lines `edit_row` changed (all of them when it changed the
   header). Edits commit at once, not at `commitSeconds`: people make them.
-- Import and Export were already in Setup (**Load CSV…**, **Download**). A file left beside the
-  config is imported at the next start. No CLI, since the running recorder holds the store's
-  lock.
+- Import and Export were already in Setup (**Load CSV…**, **Download**). No CLI, since the
+  running recorder holds the store's lock.
 - Unit names stay in the config (`unitNames`). Talker aliases learned over the air are a `kept`
   document.
 
