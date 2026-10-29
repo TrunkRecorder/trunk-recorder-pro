@@ -323,10 +323,13 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
 }
 
 /// As [`ctx`], with the call store `db` makes on the hub.
-pub(crate) fn ctx_with(cfg: Config, dir: &Path, db: impl FnOnce(crate::runtime::Hub) -> crate::db::Db) -> Arc<crate::runtime::Ctx> {
+pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runtime::Hub) -> crate::db::Db) -> Arc<crate::runtime::Ctx> {
     let (hub, _) = tokio::sync::broadcast::channel(16);
     let shared = trunk_app::stats::Shared::new();
     let db = db(hub.clone());
+    // (As a config read or set has them.)
+    cfg.assign_system_ids();
+    db.set_systems(&cfg);
     let series = Arc::new(Mutex::new(trunk_app::stats::History::new(crate::statstore::memory_minutes(&db))));
     let ctx = Arc::new(crate::runtime::Ctx {
         config_path: dir.join("config.json"),

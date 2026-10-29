@@ -14,8 +14,11 @@ use super::sql::{Params, V};
 /// is every call.
 #[derive(Default, Clone, Debug)]
 pub struct CallsFilter {
-    /// Systems (`short_name`) to take calls from; empty means any.
-    pub systems: Vec<String>,
+    /// Systems (`systems.id`) to take calls from; empty means any.
+    pub systems: Vec<i64>,
+    /// The same systems by every short name their calls were filed under
+    /// (calls held in memory say theirs).
+    pub names: Vec<String>,
     pub talkgroup: Option<u32>,
     /// Only calls this radio transmitted in.
     pub unit: Option<i64>,
@@ -56,7 +59,7 @@ enum Cond {
 /// Parameters are `$1, $2…` ([`super::sql`]).
 #[derive(Clone, Default)]
 pub struct Where {
-    systems: Vec<String>,
+    systems: Vec<i64>,
     talkgroup: Option<u32>,
     unit: Option<i64>,
     conds: Vec<Cond>,
@@ -79,11 +82,11 @@ impl Where {
 
     /// One system's (or, with `system` none, every system's) part: the
     /// newest `limit` of `columns` (of `calls c`).
-    fn arm(&self, system: Option<&str>, columns: &str, limit: i64, ps: &mut Params) -> String {
+    fn arm(&self, system: Option<i64>, columns: &str, limit: i64, ps: &mut Params) -> String {
         // (The table the index walk is on: a radio's call_units, else calls.)
         let (from, start, id, sys) = match self.unit {
-            Some(_) => ("call_units u join calls c on c.id = u.call_id", "u.start_ms", "u.call_id", "u.short_name"),
-            None => ("calls c", "c.start_ms", "c.id", "c.short_name"),
+            Some(_) => ("call_units u join calls c on c.id = u.call_id", "u.start_ms", "u.call_id", "u.system_id"),
+            None => ("calls c", "c.start_ms", "c.id", "c.system_id"),
         };
         let mut w: Vec<String> = Vec::new();
         if let Some(s) = system {
@@ -114,9 +117,9 @@ impl Where {
         let mut ps = Params::default();
         let sql = match self.systems.as_slice() {
             [] => self.arm(None, columns, limit, &mut ps),
-            [one] => self.arm(Some(one), columns, limit, &mut ps),
+            [one] => self.arm(Some(*one), columns, limit, &mut ps),
             many => {
-                let arms: Vec<String> = many.iter().enumerate().map(|(i, s)| format!("select * from ({}) a{i}", self.arm(Some(s), columns, limit, &mut ps))).collect();
+                let arms: Vec<String> = many.iter().enumerate().map(|(i, s)| format!("select * from ({}) a{i}", self.arm(Some(*s), columns, limit, &mut ps))).collect();
                 let lim = ps.add(limit);
                 format!("{} order by start_ms desc, id desc limit {lim}", arms.join(" union all "))
             }
@@ -163,7 +166,7 @@ pub fn matches(e: &Value, f: &CallsFilter) -> bool {
     let r = &e["record"];
     let start = start_of(e);
     let system = r["short_name"].as_str().unwrap_or_default();
-    (f.systems.is_empty() || f.systems.iter().any(|s| s == system))
+    (f.names.is_empty() || f.names.iter().any(|s| s == system))
         && f.talkgroup.is_none_or(|tg| r["talkgroup"].as_u64() == Some(u64::from(tg)))
         && f.unit.is_none_or(|u| r["srcList"].as_array().is_some_and(|l| l.iter().any(|t| t["src"].as_i64() == Some(u))))
         && f.from_ms.is_none_or(|t| start >= t)
@@ -330,7 +333,7 @@ mod tests {
     #[test]
     fn query_filters_by_talkgroup_unit_range_and_system() {
         for db in seeded("query") {
-            let f = |tg, unit, from, to, systems: &[&str]| CallsFilter { systems: systems.iter().map(|s| s.to_string()).collect(), talkgroup: tg, unit, from_ms: from, to_ms: to, before_ms: None, limit: 100 };
+            let f = |tg, unit, from, to, systems: &[&str]| CallsFilter { systems: systems.iter().map(|s| db.system_id(s).unwrap()).collect(), names: systems.iter().map(|s| s.to_string()).collect(), talkgroup: tg, unit, from_ms: from, to_ms: to, before_ms: None, limit: 100 };
             let n = |f: CallsFilter| page(&db, f).entries.len();
             assert_eq!(n(f(Some(1), None, None, None, &[])), 6, "{}", db.kind());
             assert_eq!(n(f(None, Some(77), None, None, &[])), 2);
@@ -387,10 +390,10 @@ mod tests {
 
     #[test]
     fn parameters_are_numbered_as_written() {
-        let w = Where::of(&CallsFilter { systems: vec!["a".into(), "b".into()], talkgroup: Some(1), ..Default::default() });
+        let w = Where::of(&CallsFilter { systems: vec![1, 2], talkgroup: Some(1), ..Default::default() });
         let (sql, ps) = w.query("c.path", 10);
         // (Two arms of system, talkgroup and limit, then the union's limit.)
-        assert!(sql.contains("c.short_name = $1") && sql.contains("c.talkgroup = $2") && sql.contains("c.short_name = $4") && sql.ends_with("limit $7"), "{sql}");
+        assert!(sql.contains("c.system_id = $1") && sql.contains("c.talkgroup = $2") && sql.contains("c.system_id = $4") && sql.ends_with("limit $7"), "{sql}");
         assert_eq!(ps.len(), 7);
     }
 }

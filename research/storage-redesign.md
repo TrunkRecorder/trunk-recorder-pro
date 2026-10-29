@@ -1,7 +1,19 @@
 # Plan: the storage redesign (PR #104, schema version 4)
 
-Status: proposed 2026-10-29; the review's four bugs are fixed (66556e8); the work below has not
-started.
+Status (2026-10-29):
+
+- the review's four bugs are fixed (66556e8);
+- phase 1 is done (e88e35a);
+- phase 2 is done, as below.
+
+Phase 2 as built:
+
+- `systems (id, short_name, kind)`. No `sites` table yet: a call's site stays a column.
+- Ids are assigned in `Config::assign_system_ids`, with the `nextSystemId` high-water mark.
+- `Db::set_systems` maps each name a system's calls were filed under to its id, its names from
+  before it had sites included.
+- Calls of a system not in the config aren't indexed.
+- Band plans and talker aliases stay keyed by name until phase 5.
 
 This plan answers the PR #104 review: an outside architecture review and a DBA's review of the
 data model. Both found the same thing. The store works, but it took its shapes from the flat files

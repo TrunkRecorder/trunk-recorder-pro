@@ -878,6 +878,8 @@ fn serve(a: &Args) {
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
     let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
+    // (The systems first: everything kept is kept by their ids.)
+    db.set_systems(&cfg);
     kept::load_registry(&db, &shared);
     let series = Arc::new(Mutex::new(trunk_app::stats::History::new(statstore::memory_minutes(&db))));
     let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone(), db.clone(), cfg.storage.stats_days);

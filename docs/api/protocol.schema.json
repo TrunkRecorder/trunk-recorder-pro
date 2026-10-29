@@ -1200,6 +1200,10 @@
             "$ref": "#/definitions/Conventional"
           }
         },
+        "nextSystemId": {
+          "type": "number",
+          "description": "The next system id the recorder gives: above every one given, so none is given twice."
+        },
         "recording": {
           "$ref": "#/definitions/Recording"
         },
@@ -1289,6 +1293,10 @@
     "Conventional": {
       "type": "object",
       "properties": {
+        "id": {
+          "type": "number",
+          "description": "Its number, as a trunked system's (numbered together)."
+        },
         "shortName": {
           "type": "string",
           "description": "Folder / record name of its calls."
@@ -7556,6 +7564,10 @@
     "System": {
       "type": "object",
       "properties": {
+        "id": {
+          "type": "number",
+          "description": "Its number, the same across renames (the store keeps everything of it by this). Given by the recorder when it's saved; never reused."
+        },
         "shortName": {
           "type": "string"
         },

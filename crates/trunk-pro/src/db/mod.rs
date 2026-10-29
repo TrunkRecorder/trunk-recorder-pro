@@ -66,11 +66,25 @@ struct Inner {
     /// The writer thread, waited for when the last handle goes.
     writer: Option<JoinHandle<()>>,
     backfill_running: AtomicBool,
+    /// The config's systems: each short name its calls were filed under (a
+    /// system's own, and its sites' from before it had them) to its id.
+    systems: std::sync::RwLock<Systems>,
     #[cfg(test)]
     commits: Arc<AtomicU64>,
     /// The test's folder, removed once the store is closed.
     #[cfg(test)]
     dir: Option<TestDir>,
+}
+
+/// The config's systems as the store knows them ([`Db::set_systems`]).
+#[derive(Default)]
+struct Systems {
+    by_name: std::collections::HashMap<String, i64>,
+    /// Each system's id and short name, in the config's order.
+    all: Vec<(i64, String)>,
+    /// (Tests: any name is a system, given an id the first time it's seen.)
+    #[cfg(test)]
+    any: bool,
 }
 
 impl Drop for Inner {
@@ -128,6 +142,7 @@ impl Db {
             tx: Some(tx),
             writer,
             backfill_running: AtomicBool::new(false),
+            systems: Default::default(),
             #[cfg(test)]
             commits,
             #[cfg(test)]
@@ -200,9 +215,75 @@ impl Db {
     }
 
     /// Queue a change. Blocks only while the queue is full. False when it
-    /// was dropped: the writer has stopped, or the store is off.
-    pub fn send(&self, c: Change) -> bool {
+    /// was dropped: the writer has stopped, the store is off, or (a call) its
+    /// system isn't the config's.
+    pub fn send(&self, mut c: Change) -> bool {
+        if let Change::Call { row, .. } = &mut c {
+            let Some(id) = self.system_id(&row.short_name) else {
+                log::debug!("Call store: {} is of a system not in the config ({}); not indexed", row.path, row.short_name);
+                return false;
+            };
+            row.system_id = id;
+        }
         self.post(Msg::Change(c))
+    }
+
+    /// The config's systems are now `cfg`'s: what names are resolved by,
+    /// and the `systems` table (written first, before anything that refers
+    /// to it).
+    pub fn set_systems(&self, cfg: &trunk_app::Config) {
+        let Some(inner) = self.0.as_deref() else { return };
+        let mut by_name = std::collections::HashMap::new();
+        let mut rows = Vec::new();
+        for s in &cfg.systems {
+            let id = i64::from(s.id);
+            for name in std::iter::once(s.short_name.clone()).chain(trunk_app::migrate::old_names(s)) {
+                by_name.entry(name).or_insert(id);
+            }
+            let kind = serde_json::to_value(s.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+            rows.push((id, s.short_name.clone(), kind));
+        }
+        for c in &cfg.conventional {
+            by_name.entry(c.short_name.clone()).or_insert(i64::from(c.id));
+            rows.push((i64::from(c.id), c.short_name.clone(), "conventional".into()));
+        }
+        {
+            let mut s = inner.systems.write().unwrap();
+            s.by_name = by_name;
+            s.all = rows.iter().map(|(id, n, _)| (*id, n.clone())).collect();
+        }
+        self.send(Change::Systems(rows));
+    }
+
+    /// The id of the system its calls file as `name`.
+    pub fn system_id(&self, name: &str) -> Option<i64> {
+        let inner = self.0.as_deref()?;
+        if let Some(id) = inner.systems.read().unwrap().by_name.get(name) {
+            return Some(*id);
+        }
+        #[cfg(test)]
+        {
+            let mut s = inner.systems.write().unwrap();
+            if s.any {
+                let id = 1000 + s.all.len() as i64;
+                s.by_name.insert(name.to_string(), id);
+                s.all.push((id, name.to_string()));
+                drop(s);
+                self.post(Msg::Change(Change::Systems(vec![(id, name.to_string(), "p25".into())])));
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    /// The short name of system `id`, as the config has it now.
+    pub fn system_name(&self, id: i64) -> Option<String> {
+        self.0.as_deref()?.systems.read().unwrap().all.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone())
+    }
+
+    /// Every system of the config, by id.
+    pub fn system_ids(&self) -> Vec<i64> {
+        self.0.as_deref().map(|i| i.systems.read().unwrap().all.iter().map(|(id, _)| *id).collect()).unwrap_or_default()
     }
 
     /// Fold what's pending into the store proper (SQLite: the WAL), after
@@ -261,7 +342,8 @@ impl Db {
 
     /// A system's stored talkgroup file.
     pub fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
-        self.store()?.talkgroups(system)
+        let Some(id) = self.system_id(system) else { return Ok(None) };
+        self.store()?.talkgroups(id)
     }
 
     /// Every system's stored radio registry.
@@ -347,6 +429,7 @@ impl Db {
         let mut db = Db::open(&path, batch, 0).expect("open test db");
         if let Some(inner) = db.0.as_mut().and_then(Arc::get_mut) {
             inner.dir = Some(dir);
+            inner.systems.get_mut().unwrap().any = true;
         }
         (db, path)
     }
@@ -359,7 +442,11 @@ impl Db {
         let mut v = vec![Db::for_test_with_batch(name, batch).0];
         if let Ok(url) = std::env::var("TRP_PG_URL") {
             let store = postgres::open_fresh_schema(&url, &format!("t_{name}").replace('-', "_")).expect("open the test PostgreSQL schema");
-            v.push(Db::with_store(Arc::new(store), batch, 0, None));
+            let mut db = Db::with_store(Arc::new(store), batch, 0, None);
+            if let Some(inner) = db.0.as_mut().and_then(Arc::get_mut) {
+                inner.systems.get_mut().unwrap().any = true;
+            }
+            v.push(db);
         }
         v
     }
@@ -443,27 +530,50 @@ mod tests {
         }
     }
 
+    /// What's kept is kept by the config's system id: a renamed system
+    /// keeps its talkgroups and calls, and a name not the config's has none.
+    #[test]
+    fn a_renamed_system_keeps_what_is_kept_by_its_id() {
+        let cfg = |name: &str| trunk_app::Config::from_json(&format!(r#"{{"systems":[{{"shortName":"{name}","id":5}}]}}"#)).unwrap();
+        for db in Db::for_each_backend("rename", Duration::from_millis(10)) {
+            db.set_systems(&cfg("old"));
+            assert_eq!(db.system_id("old"), Some(5));
+            db.send(Change::Talkgroups { system_id: 5, old: String::new(), new: "Decimal,Alpha Tag\n1,A\n".into() });
+            let mut r = row::tests::record(1, 1000);
+            r.short_name = "old".into();
+            db.send(Change::Call { row: row::call_row("old/1", &r, &r.to_json(), true, true, None, 0), live: true });
+            db.flush().unwrap();
+            db.set_systems(&cfg("new"));
+            db.flush().unwrap();
+            assert_eq!(db.talkgroups("new").unwrap().as_deref(), Some("Decimal,Alpha Tag\n1,A\n"), "{}", db.kind());
+            let f = CallsFilter { systems: vec![db.system_id("new").unwrap()], limit: 10, ..Default::default() };
+            assert_eq!(db.page(&f).unwrap().entries.len(), 1);
+            assert_eq!(db.count("select count(*) from systems where id = 5 and short_name = 'new'"), 1);
+        }
+    }
+
     /// A talkgroup file comes back exactly, through edits, a shorter file
     /// and none; its rows can be asked for by talkgroup.
     #[test]
     fn talkgroup_files_come_back() {
         for db in Db::for_each_backend("talkgroups", std::time::Duration::from_secs(60)) {
             let file = "# county\nDecimal;Alpha Tag;Ignore\n101;\"Fire; Disp\";\n102;Tac;\n";
-            db.send(Change::Talkgroups { system: "a".into(), old: String::new(), new: file.into() });
+            db.send(Change::Talkgroups { system_id: db.system_id("a").unwrap(), old: String::new(), new: file.into() });
             let t = std::time::Instant::now();
-            db.send(Change::Talkgroups { system: "b".into(), old: String::new(), new: "1,x\n".into() });
+            db.send(Change::Talkgroups { system_id: db.system_id("b").unwrap(), old: String::new(), new: "1,x\n".into() });
             let edited = trunk_core::trunk::edit_row(file, 102, &[("Ignore", "x")]);
-            db.send(Change::Talkgroups { system: "a".into(), old: file.into(), new: edited.clone() });
+            db.send(Change::Talkgroups { system_id: db.system_id("a").unwrap(), old: file.into(), new: edited.clone() });
             // (People's edits commit at once, whatever the interval.)
             while db.talkgroups("a").unwrap().as_deref() != Some(edited.as_str()) {
                 assert!(t.elapsed() < std::time::Duration::from_secs(5), "an edit waits for the interval ({})", db.kind());
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            assert_eq!(db.count("select count(*) from talkgroups where system = 'a' and number = 102 and ignore"), 1);
-            assert_eq!(db.count("select count(*) from talkgroups where system = 'a' and alpha_tag = 'Fire; Disp'"), 1);
+            let a = db.system_id("a").unwrap();
+            assert_eq!(db.count(&format!("select count(*) from talkgroups where system_id = {a} and number = 102 and ignore")), 1);
+            assert_eq!(db.count(&format!("select count(*) from talkgroups where system_id = {a} and alpha_tag = 'Fire; Disp'")), 1);
             let shorter = "Decimal;Alpha Tag\n101;Fire\n";
-            db.send(Change::Talkgroups { system: "a".into(), old: String::new(), new: shorter.into() });
-            db.send(Change::Talkgroups { system: "b".into(), old: "1,x\n".into(), new: String::new() });
+            db.send(Change::Talkgroups { system_id: db.system_id("a").unwrap(), old: String::new(), new: shorter.into() });
+            db.send(Change::Talkgroups { system_id: db.system_id("b").unwrap(), old: "1,x\n".into(), new: String::new() });
             db.flush().unwrap();
             assert_eq!(db.talkgroups("a").unwrap().as_deref(), Some(shorter));
             assert_eq!(db.talkgroups("b").unwrap(), None, "cleared");
@@ -492,7 +602,7 @@ mod tests {
             r.track_rows();
             let save = |r: &mut Registry| {
                 for (system, c) in r.take_changes() {
-                    db.send(Change::Registry { system, changes: Box::new(c) });
+                    db.send(Change::Registry { system_id: db.system_id(&system).unwrap(), changes: Box::new(c) });
                 }
             };
             let affiliate = |r: &mut Registry, from: usize, n: usize| {
@@ -512,7 +622,7 @@ mod tests {
             assert_eq!(again.affiliations.len(), MAX_AFFILIATIONS, "the log kept to its cap ({})", db.kind());
             assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap(), "{}", db.kind());
 
-            db.send(Change::RegistryWhole { system: "x".into(), radio: Box::new(r.systems["x"].clone()) });
+            db.send(Change::RegistryWhole { system_id: db.system_id("x").unwrap(), radio: Box::new(r.systems["x"].clone()) });
             affiliate(&mut r, MAX_AFFILIATIONS + 10, 3);
             save(&mut r);
             db.flush().unwrap();
@@ -745,7 +855,7 @@ mod tests {
         };
         gone();
         let db = Db::open(&path, Duration::from_secs(3600), 0).unwrap();
-        db.send(Change::RegistryWhole { system: "big".into(), radio: Box::new(r.systems["big"].clone()) });
+        db.send(Change::RegistryWhole { system_id: db.system_id("big").unwrap(), radio: Box::new(r.systems["big"].clone()) });
         db.flush().unwrap();
         r.track_rows();
         let (at, before) = (std::time::Instant::now(), written());
@@ -755,7 +865,7 @@ mod tests {
             if (t + 1) % 900 == 0 {
                 for (system, c) in r.take_changes() {
                     rows += c.tgs.len() + c.units.len() + c.pairs.len() + c.freqs.len();
-                    db.send(Change::Registry { system, changes: Box::new(c) });
+                    db.send(Change::Registry { system_id: db.system_id(&system).unwrap(), changes: Box::new(c) });
                 }
                 db.flush().unwrap();
             }
@@ -763,7 +873,7 @@ mod tests {
         let hour = (written() - before) as f64;
         // (The day's whole copy.)
         let before = written();
-        db.send(Change::RegistryWhole { system: "big".into(), radio: Box::new(r.systems["big"].clone()) });
+        db.send(Change::RegistryWhole { system_id: db.system_id("big").unwrap(), radio: Box::new(r.systems["big"].clone()) });
         db.flush().unwrap();
         let bytes = hour + (written() - before) as f64 / 24.0;
         let stored = db.registry().unwrap();

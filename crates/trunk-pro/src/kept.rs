@@ -107,7 +107,9 @@ fn load_talkgroups_in(db: &Db, dir: &Path, cfg: &trunk_app::Config) -> trunk_app
 /// writes only the lines that changed, and commits at once.
 pub fn write_talkgroups(db: &Db, saver: &Saver, system: &str, old: &str, new: String) {
     if !db.uses_files() {
-        db.send(Change::Talkgroups { system: system.to_string(), old: old.to_string(), new });
+        if let Some(system_id) = db.system_id(system) {
+            db.send(Change::Talkgroups { system_id, old: old.to_string(), new });
+        }
     } else if new.trim().is_empty() {
         saver.remove(talkgroups_file(&crate::paths::data_dir(), system));
     } else {
@@ -125,8 +127,8 @@ fn registry_path(short_name: &str) -> PathBuf {
 pub fn write_registry(db: &Db, saver: &Saver, system: String, radio: SystemRadio) {
     if db.uses_files() {
         saver.later(registry_path(&system), move || serde_json::to_string(&radio).ok());
-    } else {
-        db.send(Change::RegistryWhole { system, radio: Box::new(radio) });
+    } else if let Some(system_id) = db.system_id(&system) {
+        db.send(Change::RegistryWhole { system_id, radio: Box::new(radio) });
     }
 }
 
@@ -166,14 +168,16 @@ fn load_registry_in(db: &Db, radio_dir: &Path, shared: &trunk_app::stats::Shared
     match db.registry() {
         Ok(systems) => {
             for s in systems {
+                // (A system gone from the config: its registry is left.)
+                let Some(name) = db.system_name(s.system_id) else { continue };
                 let Some(radio) = from_stored(&s) else {
-                    log::warn!("Call store: radio registry {} not read", s.system);
+                    log::warn!("Call store: radio registry of {name} not read");
                     continue;
                 };
                 if s.changes.len() >= (trunk_app::saving::REGISTRY_WHOLE_EVERY / 4) as usize {
-                    db.send(Change::RegistryWhole { system: s.system.clone(), radio: Box::new(radio.clone()) });
+                    db.send(Change::RegistryWhole { system_id: s.system_id, radio: Box::new(radio.clone()) });
                 }
-                r.put(&s.system, radio);
+                r.put(&name, radio);
             }
         }
         Err(e) => log::warn!("Call store: radio registry not read ({e})"),
@@ -215,8 +219,8 @@ mod tests {
             load_registry_in(&db, &radio, &shared);
             assert!(shared.radio.lock().unwrap().systems.is_empty());
             db.send(Change::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 1".into()) });
-            db.send(Change::Talkgroups { system: "a".into(), old: String::new(), new: "Decimal,Alpha Tag\n101,Fire\n".into() });
-            db.send(Change::RegistryWhole { system: "x".into(), radio: Box::new(reg.systems["x"].clone()) });
+            db.send(Change::Talkgroups { system_id: db.system_id("a").unwrap(), old: String::new(), new: "Decimal,Alpha Tag\n101,Fire\n".into() });
+            db.send(Change::RegistryWhole { system_id: db.system_id("x").unwrap(), radio: Box::new(reg.systems["x"].clone()) });
             db.flush().unwrap();
             assert_eq!(read_in(&db, &dir, Doc::Units("a")).as_deref(), Some("1,Engine 1"));
             assert_eq!(load_talkgroups_in(&db, &dir, &cfg)["a"], "Decimal,Alpha Tag\n101,Fire\n");

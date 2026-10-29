@@ -325,9 +325,17 @@ impl Source {
 ///   "sites": [ { "controlChannelsHz": [851012500] },
 ///              { "name": "dcfd-south", "controlChannelsHz": [852337500], "expect": { "rfss": 1, "site": 2 } } ] }
 /// ```
+fn no_id(v: &u32) -> bool {
+    *v == 0
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct System {
+    /// Its number, the same across renames: what the store keeps its calls,
+    /// talkgroups and registry by ([`Config::assign_system_ids`]). Never reused.
+    #[serde(skip_serializing_if = "no_id")]
+    pub id: u32,
     pub short_name: String,
     /// What people call it ("County Public Safety"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -893,6 +901,7 @@ impl Site {
 impl Default for System {
     fn default() -> Self {
         System {
+            id: 0,
             other: BTreeMap::new(),
             keys: String::new(),
             short_name: "sys1".into(),
@@ -1000,6 +1009,9 @@ impl SiteIdentity {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Conventional {
+    /// Its number, as a trunked system's ([`System::id`]): numbered together.
+    #[serde(skip_serializing_if = "no_id")]
+    pub id: u32,
     /// Folder and record name of its calls (Trunk Recorder's shortName).
     pub short_name: String,
     /// What people call it ("County Fire"); the short name is its folder.
@@ -1079,6 +1091,7 @@ impl UnitNames {
 impl Default for Conventional {
     fn default() -> Self {
         Conventional {
+            id: 0,
             other: BTreeMap::new(),
             keys: String::new(),
             short_name: "conv".into(),
@@ -1810,6 +1823,10 @@ pub struct Config {
     pub systems: Vec<System>,
     /// The conventional systems (numbered after the trunked ones: [`Config::call_systems`]).
     pub conventional: Vec<Conventional>,
+    /// The next system id to give ([`Config::assign_system_ids`]): above every
+    /// one given, so a removed system's id is never given again.
+    #[serde(skip_serializing_if = "no_id")]
+    pub next_system_id: u32,
     pub recording: Recording,
     pub server: Server,
     /// The plugins, by id: on or off, and their settings for the whole recorder.
@@ -1902,6 +1919,7 @@ impl Default for Config {
             sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len: 0, buffers: 0 }],
             systems: vec![],
             conventional: vec![],
+            next_system_id: 0,
             recording: Recording::default(),
             server: Server::default(),
             plugins: BTreeMap::new(),
@@ -2117,7 +2135,30 @@ impl Config {
         source_types(&mut v);
         let mut c: Config = serde_json::from_value(v)?;
         c.notes = notes;
+        c.assign_system_ids();
         Ok(c)
+    }
+
+    /// Give every system (trunked and conventional) without an id the next
+    /// one, and a second with the same id one of its own; [`Config::next_system_id`]
+    /// stays above them all, so an id is never given twice.
+    pub fn assign_system_ids(&mut self) {
+        let given = self.systems.iter().map(|s| s.id).chain(self.conventional.iter().map(|c| c.id)).max().unwrap_or(0);
+        let mut next = self.next_system_id.max(given + 1);
+        let mut seen = std::collections::HashSet::new();
+        for id in self.systems.iter_mut().map(|s| &mut s.id).chain(self.conventional.iter_mut().map(|c| &mut c.id)) {
+            if *id == 0 || !seen.insert(*id) {
+                *id = next;
+                seen.insert(next);
+                next += 1;
+            }
+        }
+        self.next_system_id = next;
+    }
+
+    /// Each system's id and short name (trunked, then conventional).
+    pub fn system_ids(&self) -> impl Iterator<Item = (u32, &str)> {
+        self.systems.iter().map(|s| (s.id, s.short_name.as_str())).chain(self.conventional.iter().map(|c| (c.id, c.short_name.as_str())))
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -2702,6 +2743,23 @@ const RTL_BUSY_COUNT: usize = 4;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every system gets an id the first time a config is read or set, a
+    /// second with the same id one of its own, and an id is never given
+    /// twice, not even after its system is removed.
+    #[test]
+    fn systems_get_ids_never_given_twice() {
+        let mut c = Config::from_json(r#"{"systems":[{"shortName":"a"},{"shortName":"b","id":7}],"conventional":[{"shortName":"c"}]}"#).unwrap();
+        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(8, "a"), (7, "b"), (9, "c")]);
+        assert_eq!(c.next_system_id, 10);
+        c.systems.remove(1);
+        c.systems.push(System { short_name: "d".into(), ..Default::default() });
+        c.conventional[0].id = 8;
+        c.assign_system_ids();
+        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(8, "a"), (10, "d"), (11, "c")], "a new one past the removed 7; a copied id made its own");
+        let saved = serde_json::to_value(&c).unwrap();
+        assert_eq!((saved["systems"][0]["id"].as_u64(), saved["nextSystemId"].as_u64()), (Some(8), Some(12)));
+    }
 
     #[test]
     fn storage_defaults_to_300_second_commits_and_120_days() {

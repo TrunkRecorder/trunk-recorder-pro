@@ -10,7 +10,10 @@ pub struct CallRow {
     /// The call's files' path under the capture folder, without an extension,
     /// always with `/` separators.
     pub path: String,
+    /// The system it's filed under, as the record names it…
     pub short_name: String,
+    /// …and as the store keeps it (`systems.id`): set by `Db::send`.
+    pub system_id: i64,
     pub nac: Option<String>,
     pub site: Option<String>,
     pub talkgroup: i64,
@@ -114,6 +117,7 @@ pub fn call_row(
     CallRow {
         path: rel.replace('\\', "/"),
         short_name: record.short_name.clone(),
+        system_id: 0,
         nac: some(&record.nac),
         site: some(&record.site),
         talkgroup: i64::from(record.talkgroup),

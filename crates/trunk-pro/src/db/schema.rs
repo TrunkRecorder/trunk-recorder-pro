@@ -19,7 +19,7 @@ use super::sql::Dialect;
 
 /// This build's schema. Raise it with any change to [`TABLES`] or
 /// [`INDEXES`]: a store of another version is made afresh.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// What a column holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,24 +40,30 @@ pub struct Col {
     pub ty: Ty,
     pub null: bool,
     pub unique: bool,
-    /// `table(column)`, its rows deleted with the one referred to.
-    pub cascade: Option<&'static str>,
+    /// `table(column)` it refers to, and whether its rows go with that one.
+    pub refs: Option<(&'static str, bool)>,
 }
 
 const fn col(name: &'static str, ty: Ty) -> Col {
-    Col { name, ty, null: false, unique: false, cascade: None }
+    Col { name, ty, null: false, unique: false, refs: None }
 }
 
 const fn opt(name: &'static str, ty: Ty) -> Col {
-    Col { name, ty, null: true, unique: false, cascade: None }
+    Col { name, ty, null: true, unique: false, refs: None }
 }
 
 const fn unique(name: &'static str, ty: Ty) -> Col {
-    Col { name, ty, null: false, unique: true, cascade: None }
+    Col { name, ty, null: false, unique: true, refs: None }
 }
 
+/// A child's column: its rows go with the parent's.
 const fn of(name: &'static str, ty: Ty, parent: &'static str) -> Col {
-    Col { name, ty, null: false, unique: false, cascade: Some(parent) }
+    Col { name, ty, null: false, unique: false, refs: Some((parent, true)) }
+}
+
+/// A system's: `systems(id)`.
+const fn system(name: &'static str) -> Col {
+    Col { name, ty: BigInt, null: false, unique: false, refs: Some(("systems(id)", false)) }
 }
 
 pub struct Table {
@@ -78,12 +84,16 @@ use Ty::*;
 /// Every table, parents before children.
 pub const TABLES: &[Table] = &[
     Table { name: "meta", cols: &[col("key", Text), col("value", Text)], key: &["key"] },
+    // The config's systems (trunked and conventional), by the id it gives
+    // them: what everything else is kept by, so a rename orphans nothing. A
+    // system gone from the config keeps its row (its calls still have a name).
+    Table { name: "systems", cols: &[col("id", BigInt), col("short_name", Text), col("kind", Text)], key: &["id"] },
     Table {
         name: "calls",
         cols: &[
             col("id", Id),
             unique("path", Text),
-            col("short_name", Text),
+            system("system_id"),
             opt("nac", Text),
             opt("site", Text),
             col("talkgroup", BigInt),
@@ -138,16 +148,16 @@ pub const TABLES: &[Table] = &[
     },
     Table {
         name: "call_units",
-        cols: &[col("short_name", Text), col("unit", BigInt), col("start_ms", BigInt), of("call_id", BigInt, "calls(id)")],
-        key: &["short_name", "unit", "start_ms", "call_id"],
+        cols: &[system("system_id"), col("unit", BigInt), col("start_ms", BigInt), of("call_id", BigInt, "calls(id)")],
+        key: &["system_id", "unit", "start_ms", "call_id"],
     },
     Table { name: "kept", cols: &[col("kind", Text), col("key", Text), col("value", Text)], key: &["kind", "key"] },
-    Table { name: "registry", cols: &[col("system", Text), col("whole", Json)], key: &["system"] },
-    Table { name: "registry_changes", cols: &[col("id", Id), col("system", Text), col("changes", Json)], key: &[] },
+    Table { name: "registry", cols: &[system("system_id"), col("whole", Json)], key: &["system_id"] },
+    Table { name: "registry_changes", cols: &[col("id", Id), system("system_id"), col("changes", Json)], key: &[] },
     Table {
         name: "talkgroups",
         cols: &[
-            col("system", Text),
+            system("system_id"),
             col("seq", Int),
             col("line", Text),
             opt("number", BigInt),
@@ -159,7 +169,7 @@ pub const TABLES: &[Table] = &[
             opt("priority", BigInt),
             opt("ignore", Bool),
         ],
-        key: &["system", "seq"],
+        key: &["system_id", "seq"],
     },
     Table { name: "stats_minutes", cols: &[col("id", Id), col("t", BigInt), col("s", Json)], key: &[] },
     Table {
@@ -171,9 +181,9 @@ pub const TABLES: &[Table] = &[
 
 pub const INDEXES: &[Index] = &[
     Index { name: "calls_start", table: "calls", cols: &["start_ms"] },
-    Index { name: "calls_system_start", table: "calls", cols: &["short_name", "start_ms"] },
-    Index { name: "calls_system_tg_start", table: "calls", cols: &["short_name", "talkgroup", "start_ms"] },
-    Index { name: "talkgroups_number", table: "talkgroups", cols: &["system", "number"] },
+    Index { name: "calls_system_start", table: "calls", cols: &["system_id", "start_ms"] },
+    Index { name: "calls_system_tg_start", table: "calls", cols: &["system_id", "talkgroup", "start_ms"] },
+    Index { name: "talkgroups_number", table: "talkgroups", cols: &["system_id", "number"] },
     Index { name: "stats_minutes_t", table: "stats_minutes", cols: &["t"] },
 ];
 
@@ -208,8 +218,10 @@ pub fn ddl(d: Dialect) -> String {
                 if c.unique {
                     s.push_str(" unique");
                 }
-                if let Some(p) = c.cascade {
-                    s.push_str(&format!(" references {p} on delete cascade"));
+                match c.refs {
+                    Some((p, true)) => s.push_str(&format!(" references {p} on delete cascade")),
+                    Some((p, false)) => s.push_str(&format!(" references {p}")),
+                    None => {}
                 }
                 s
             })
@@ -301,16 +313,16 @@ mod tests {
             let rows: Vec<String> = st.query_map(rusqlite::params_from_iter(ps), |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
             rows.join(" | ")
         };
-        let f = |systems: &[&str], tg: Option<u32>, unit: Option<i64>| CallsFilter { systems: systems.iter().map(|s| s.to_string()).collect(), talkgroup: tg, unit, before_ms: Some(5), limit: 100, ..Default::default() };
+        let f = |systems: &[i64], tg: Option<u32>, unit: Option<i64>| CallsFilter { systems: systems.to_vec(), talkgroup: tg, unit, before_ms: Some(5), limit: 100, ..Default::default() };
         for (what, filter, index) in [
             ("every call", f(&[], None, None), "calls_start"),
-            ("a system", f(&["a"], None, None), "calls_system_start"),
-            ("two systems", f(&["a", "b"], None, None), "calls_system_start"),
-            ("a talkgroup", f(&["a"], Some(1), None), "calls_system_tg_start"),
-            ("a talkgroup on two", f(&["a", "b"], Some(1), None), "calls_system_tg_start"),
+            ("a system", f(&[1], None, None), "calls_system_start"),
+            ("two systems", f(&[1, 2], None, None), "calls_system_start"),
+            ("a talkgroup", f(&[1], Some(1), None), "calls_system_tg_start"),
+            ("a talkgroup on two", f(&[1, 2], Some(1), None), "calls_system_tg_start"),
             // (call_units, as `u`: its key is system, radio, start.)
-            ("a radio", f(&["a"], None, Some(7)), "SEARCH u USING PRIMARY KEY (short_name=? AND unit=? AND start_ms<?)"),
-            ("a radio on two", f(&["a", "b"], None, Some(7)), "SEARCH u USING PRIMARY KEY (short_name=? AND unit=? AND start_ms<?)"),
+            ("a radio", f(&[1], None, Some(7)), "SEARCH u USING PRIMARY KEY (system_id=? AND unit=? AND start_ms<?)"),
+            ("a radio on two", f(&[1, 2], None, Some(7)), "SEARCH u USING PRIMARY KEY (system_id=? AND unit=? AND start_ms<?)"),
         ] {
             let p = plan(filter);
             assert!(p.contains(index), "{what}: {p}");

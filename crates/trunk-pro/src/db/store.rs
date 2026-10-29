@@ -22,6 +22,9 @@ use crate::vals;
 /// whole or not at all, and one that fails is logged and the rest go on.
 #[allow(clippy::large_enum_variant)] // one row per call; boxing it would only add a hop
 pub enum Change {
+    /// The config's systems (id, short name, kind): kept by id, a renamed one
+    /// renamed, one gone left (its calls still have a name).
+    Systems(Vec<(i64, String, String)>),
     /// A call's row and its children: a live one replaces what is there, a
     /// backfilled one only fills a gap.
     Call { row: CallRow, live: bool },
@@ -34,9 +37,9 @@ pub enum Change {
     /// removes it.
     Kept { kind: String, key: String, value: Option<String> },
     /// What changed in a system's radio registry since the last ([`StoredRegistry`]).
-    Registry { system: String, changes: Box<RegistryChanges> },
+    Registry { system_id: i64, changes: Box<RegistryChanges> },
     /// A system's whole radio registry, in place of what's stored.
-    RegistryWhole { system: String, radio: Box<SystemRadio> },
+    RegistryWhole { system_id: i64, radio: Box<SystemRadio> },
     /// A minute of the dashboard's history: a [`trunk_app::stats::Rollup`]
     /// as its JSON line (a minute may have several, merged when read).
     StatsMinute { t: i64, json: String },
@@ -48,21 +51,22 @@ pub enum Change {
     /// A system's talkgroup file edited from `old` to `new` ("" for `old`:
     /// in place of what's stored; "" for `new`: none). Committed at once:
     /// people make these.
-    Talkgroups { system: String, old: String, new: String },
+    Talkgroups { system_id: i64, old: String, new: String },
 }
 
 impl Change {
     /// What it is, for the log when it fails.
     pub fn what(&self) -> String {
         match self {
+            Change::Systems(_) => "systems write".into(),
             Change::Call { row, .. } => format!("call write {}", row.path),
             Change::CallFiles { path, .. } => format!("files write {path}"),
             Change::Meta { key, .. } => format!("meta write {key}"),
             Change::Kept { kind, key, .. } => format!("{kind} {key} write"),
-            Change::Registry { system, .. } | Change::RegistryWhole { system, .. } => format!("registry write {system}"),
+            Change::Registry { system_id, .. } | Change::RegistryWhole { system_id, .. } => format!("registry write (system {system_id})"),
             Change::StatsMinute { .. } | Change::StatsHours(_) => "stats write".into(),
             Change::RetireStats { .. } => "stats retention".into(),
-            Change::Talkgroups { system, .. } => format!("talkgroups write {system}"),
+            Change::Talkgroups { system_id, .. } => format!("talkgroups write (system {system_id})"),
         }
     }
 
@@ -179,15 +183,15 @@ impl Store {
     /// Every system's radio registry, as stored (at startup).
     pub fn registry(&self) -> Result<Vec<StoredRegistry>, String> {
         self.read(|x| {
-            let whole = x.query("select system, whole from registry", &[])?.iter().map(|r| (r.text(0), r.text(1))).collect();
-            let changes = x.query("select system, changes from registry_changes order by id", &[])?.iter().map(|r| (r.text(0), r.text(1))).collect();
+            let whole = x.query("select system_id, whole from registry", &[])?.iter().map(|r| (r.int(0), r.text(1))).collect();
+            let changes = x.query("select system_id, changes from registry_changes order by id", &[])?.iter().map(|r| (r.int(0), r.text(1))).collect();
             Ok(stored_registry(whole, changes))
         })
     }
 
     /// A system's talkgroup file, as stored ([`talkgroup_file`]).
-    pub fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
-        self.read(|x| Ok(talkgroup_file(x.query("select line from talkgroups where system = $1 order by seq", vals![system])?.iter().map(|r| r.text(0)).collect())))
+    pub fn talkgroups(&self, system_id: i64) -> Result<Option<String>, String> {
+        self.read(|x| Ok(talkgroup_file(x.query("select line from talkgroups where system_id = $1 order by seq", vals![system_id])?.iter().map(|r| r.text(0)).collect())))
     }
 
     /// The dashboard's minutes from `since` (Unix s) on, as JSON lines, oldest first.
@@ -267,19 +271,25 @@ impl Store {
 /// One change, in the savepoint `x` is in.
 fn apply_one(x: &mut dyn Exec, change: &Change) -> Result<(), String> {
     match change {
+        Change::Systems(rows) => {
+            for (id, short_name, kind) in rows {
+                x.execute("insert into systems (id, short_name, kind) values ($1, $2, $3) on conflict (id) do update set short_name = excluded.short_name, kind = excluded.kind", vals![*id, short_name, kind])?;
+            }
+            Ok(())
+        }
         Change::Call { row, live } => write_call(x, row, *live),
         Change::CallFiles { path, audio, json } => x.execute("update calls set audio = $2, json = $3 where path = $1", vals![path, *audio, *json]).map(drop),
         Change::Meta { key, value } => x.execute("insert into meta (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value", vals![key, value]).map(drop),
         Change::Kept { kind, key, value: Some(v) } => x.execute("insert into kept (kind, key, value) values ($1, $2, $3) on conflict (kind, key) do update set value = excluded.value", vals![kind, key, v]).map(drop),
         Change::Kept { kind, key, value: None } => x.execute("delete from kept where kind = $1 and key = $2", vals![kind, key]).map(drop),
-        Change::Registry { system, changes } => {
+        Change::Registry { system_id, changes } => {
             let json = serde_json::to_string(changes).map_err(|e| e.to_string())?;
-            x.execute("insert into registry_changes (system, changes) values ($1, $2)", vals![system, json]).map(drop)
+            x.execute("insert into registry_changes (system_id, changes) values ($1, $2)", vals![*system_id, json]).map(drop)
         }
-        Change::RegistryWhole { system, radio } => {
+        Change::RegistryWhole { system_id, radio } => {
             let json = serde_json::to_string(radio).map_err(|e| e.to_string())?;
-            x.execute("insert into registry (system, whole) values ($1, $2) on conflict (system) do update set whole = excluded.whole", vals![system, json])?;
-            x.execute("delete from registry_changes where system = $1", vals![system]).map(drop)
+            x.execute("insert into registry (system_id, whole) values ($1, $2) on conflict (system_id) do update set whole = excluded.whole", vals![*system_id, json])?;
+            x.execute("delete from registry_changes where system_id = $1", vals![*system_id]).map(drop)
         }
         Change::StatsMinute { t, json } => x.execute("insert into stats_minutes (t, s) values ($1, $2)", vals![*t, json]).map(drop),
         Change::StatsHours(rows) => {
@@ -296,18 +306,19 @@ fn apply_one(x: &mut dyn Exec, change: &Change) -> Result<(), String> {
             x.execute("delete from stats_minutes where t < $1", vals![*minutes_before])?;
             hours_before.map_or(Ok(()), |h| x.execute("delete from stats_hours where t < $1", vals![h]).map(drop))
         }
-        Change::Talkgroups { system, old, new } => {
+        Change::Talkgroups { system_id, old, new } => {
+            let system = *system_id;
             let (lines, len) = talkgroup_lines(old, new);
             for l in &lines {
                 let t = l.tg.as_ref();
                 x.execute(
-                    "insert into talkgroups (system, seq, line, number, alpha_tag, description, tag, category, mode, priority, ignore) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                     on conflict (system, seq) do update set line = excluded.line, number = excluded.number, alpha_tag = excluded.alpha_tag, description = excluded.description,
+                    "insert into talkgroups (system_id, seq, line, number, alpha_tag, description, tag, category, mode, priority, ignore) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                     on conflict (system_id, seq) do update set line = excluded.line, number = excluded.number, alpha_tag = excluded.alpha_tag, description = excluded.description,
                      tag = excluded.tag, category = excluded.category, mode = excluded.mode, priority = excluded.priority, ignore = excluded.ignore",
                     vals![system, l.seq, &l.line, t.map(|t| t.number), t.map(|t| &t.alpha_tag), t.map(|t| &t.description), t.map(|t| &t.tag), t.map(|t| &t.group), t.map(|t| &t.mode), t.map(|t| t.priority), t.map(|t| t.ignore)],
                 )?;
             }
-            x.execute("delete from talkgroups where system = $1 and seq >= $2", vals![system, len]).map(drop)
+            x.execute("delete from talkgroups where system_id = $1 and seq >= $2", vals![system, len]).map(drop)
         }
     }
 }
@@ -317,7 +328,7 @@ fn apply_one(x: &mut dyn Exec, change: &Change) -> Result<(), String> {
 /// landed.
 fn write_call(x: &mut dyn Exec, row: &CallRow, live: bool) -> Result<(), String> {
     const COLS: [&str; 24] = [
-        "path", "short_name", "nac", "site", "talkgroup", "start_ms", "stop_ms", "length_ms", "freq_hz", "emergency", "encrypted", "decrypted", "duplex", "priority", "audio_type", "signal", "noise", "snr",
+        "path", "system_id", "nac", "site", "talkgroup", "start_ms", "stop_ms", "length_ms", "freq_hz", "emergency", "encrypted", "decrypted", "duplex", "priority", "audio_type", "signal", "noise", "snr",
         "clean_voice_pct", "audio", "json", "recorder", "record", "indexed_ms",
     ];
     let conflict = if live {
@@ -328,7 +339,7 @@ fn write_call(x: &mut dyn Exec, row: &CallRow, live: bool) -> Result<(), String>
     let marks: Vec<String> = (1..=COLS.len()).map(|i| format!("${i}")).collect();
     let sql = format!("insert into calls ({}) values ({}) {conflict} returning id", COLS.join(", "), marks.join(", "));
     let ps = vals![
-        &row.path, &row.short_name, row.nac.as_ref(), row.site.as_ref(), row.talkgroup, row.start_ms, row.stop_ms, row.length_ms, row.freq_hz, row.emergency, row.encrypted, row.decrypted, row.duplex, row.priority,
+        &row.path, row.system_id, row.nac.as_ref(), row.site.as_ref(), row.talkgroup, row.start_ms, row.stop_ms, row.length_ms, row.freq_hz, row.emergency, row.encrypted, row.decrypted, row.duplex, row.priority,
         row.audio_type.as_ref(), row.signal, row.noise, row.snr, row.clean_voice_pct, row.audio, row.json, row.recorder.as_ref(), &row.record, row.indexed_ms,
     ];
     let Some(landed) = x.query_opt(&sql, ps)? else { return Ok(()) };
@@ -337,7 +348,7 @@ fn write_call(x: &mut dyn Exec, row: &CallRow, live: bool) -> Result<(), String>
         x.execute(&format!("delete from {table} where call_id = $1"), vals![id])?;
     }
     for t in &row.transmissions {
-        x.execute("insert into call_units (short_name, unit, start_ms, call_id) values ($1, $2, $3, $4) on conflict do nothing", vals![&row.short_name, t.unit, row.start_ms, id])?;
+        x.execute("insert into call_units (system_id, unit, start_ms, call_id) values ($1, $2, $3, $4) on conflict do nothing", vals![row.system_id, t.unit, row.start_ms, id])?;
     }
     for (seq, t) in row.transmissions.iter().enumerate() {
         x.execute(
@@ -361,7 +372,7 @@ fn write_call(x: &mut dyn Exec, row: &CallRow, live: bool) -> Result<(), String>
 /// thousands of rows every 15 minutes, which as row updates writes more
 /// than the whole file did (research/sqlite-plan.md).
 pub struct StoredRegistry {
-    pub system: String,
+    pub system_id: i64,
     pub whole: Option<String>,
     pub changes: Vec<String>,
 }
@@ -461,10 +472,10 @@ pub fn talkgroup_file(lines: Vec<String>) -> Option<String> {
 
 /// Each system's [`StoredRegistry`] from its whole copy (system, JSON) and
 /// changes (system, JSON; oldest first).
-pub fn stored_registry(whole: Vec<(String, String)>, changes: Vec<(String, String)>) -> Vec<StoredRegistry> {
-    let mut out: std::collections::BTreeMap<String, StoredRegistry> = Default::default();
-    fn at(out: &mut std::collections::BTreeMap<String, StoredRegistry>, system: String) -> &mut StoredRegistry {
-        out.entry(system.clone()).or_insert_with(|| StoredRegistry { system, whole: None, changes: Vec::new() })
+pub fn stored_registry(whole: Vec<(i64, String)>, changes: Vec<(i64, String)>) -> Vec<StoredRegistry> {
+    let mut out: std::collections::BTreeMap<i64, StoredRegistry> = Default::default();
+    fn at(out: &mut std::collections::BTreeMap<i64, StoredRegistry>, system_id: i64) -> &mut StoredRegistry {
+        out.entry(system_id).or_insert_with(|| StoredRegistry { system_id, whole: None, changes: Vec::new() })
     }
     for (system, json) in whole {
         at(&mut out, system).whole = Some(json);

@@ -193,6 +193,8 @@ export interface SmartnetBandplan {
  * heard it best).
  */
 export interface System {
+  /** Its number, the same across renames (the store keeps everything of it by this). Given by the recorder when it's saved; never reused. */
+  id?: number;
   shortName: string;
   /** What people call it ("County Public Safety"); the short name is its folder. */
   name?: string;
@@ -419,6 +421,8 @@ export interface Recording extends RecordingRules {
  * A frequency belongs to one system.
  */
 export interface Conventional {
+  /** Its number, as a trunked system's (numbered together). */
+  id?: number;
   /** Folder / record name of its calls. */
   shortName: string;
   /** What people call it; the short name is its folder. */
@@ -467,6 +471,8 @@ export interface Config {
   sources: Source[];
   systems: System[];
   conventional: Conventional[];
+  /** The next system id the recorder gives: above every one given, so none is given twice. */
+  nextSystemId?: number;
   recording: Recording;
   server: {
     /** The address every interface listens on. */

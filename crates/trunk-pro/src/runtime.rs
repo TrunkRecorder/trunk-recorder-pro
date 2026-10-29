@@ -200,6 +200,7 @@ impl Ctx {
     /// The config is now `c` (call with its lock held, so versions follow
     /// the changes in order): a new version, told to every browser. Returns it.
     pub fn config_changed(&self, c: &Config) -> u64 {
+        self.db.set_systems(c);
         let files = self.talkgroups.lock().unwrap().clone();
         self.shared.names.lock().unwrap().set_config(c, &files);
         let version = self.config_version.fetch_add(1, Ordering::SeqCst) + 1;
@@ -600,7 +601,9 @@ fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
             Saved::Tune(json) => keep(Doc::Tune, json),
             Saved::Registry { system, radio } => kept::write_registry(&ctx.db, &ctx.saver, system, radio),
             Saved::RegistryChanges { system, changes } => {
-                ctx.db.send(crate::db::Change::Registry { system, changes });
+                if let Some(system_id) = ctx.db.system_id(&system) {
+                    ctx.db.send(crate::db::Change::Registry { system_id, changes });
+                }
             }
         }
     }
@@ -1253,18 +1256,16 @@ pub fn history(ctx: &Ctx) -> ToClient {
 /// list alone, and why it's only that.
 pub fn calls(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> (crate::db::read::Page, Option<String>) {
     use crate::db::read;
+    let (systems, names) = match q.system.as_deref() {
+        // (A name not the config's: no calls, rather than every system's.)
+        Some(name) => (vec![ctx.db.system_id(name).unwrap_or(-1)], systems_for(&ctx.config.lock().unwrap(), name)),
+        // (Talkgroup and radio numbers are a system's own: asked without one, each system's.)
+        None if q.talkgroup.is_some() || q.unit.is_some() => (ctx.db.system_ids(), Vec::new()),
+        None => (Vec::new(), Vec::new()),
+    };
     let filter = read::CallsFilter {
-        systems: {
-            let cfg = ctx.config.lock().unwrap();
-            match q.system.as_deref() {
-                Some(name) => systems_for(&cfg, name),
-                // (Talkgroup and radio numbers are a system's own: asked without one, each system's.)
-                None if q.talkgroup.is_some() || q.unit.is_some() => {
-                    cfg.systems.iter().flat_map(|s| systems_for(&cfg, &s.short_name)).chain(cfg.conventional.iter().map(|c| c.short_name.clone())).collect()
-                }
-                None => Vec::new(),
-            }
-        },
+        systems,
+        names,
         talkgroup: q.talkgroup,
         unit: q.unit,
         from_ms: q.from,
