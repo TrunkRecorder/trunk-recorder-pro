@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use trunk_app::stats::{History, Rollup};
 
-use crate::db::{Db, Write as DbWrite};
+use crate::db::{Change, Db};
 
 /// Days of minutes kept as files (a week, and the day being written).
 pub const KEEP_DAYS: i64 = 8;
@@ -183,12 +183,12 @@ fn write_hours(db: &Db, history: &Mutex<History>, mut done: i64, now: i64) -> i6
         done += 3600;
         let rows = history.lock().unwrap().hour_rows(done);
         if !rows.is_empty() {
-            db.send(DbWrite::StatsHours(rows));
+            db.send(Change::StatsHours(rows));
         }
         wrote = true;
     }
     if wrote {
-        db.send(DbWrite::Meta { key: HOURS_DONE.into(), value: done.to_string() });
+        db.send(Change::Meta { key: HOURS_DONE.into(), value: done.to_string() });
     }
     done
 }
@@ -199,7 +199,7 @@ fn write_hours(db: &Db, history: &Mutex<History>, mut done: i64, now: i64) -> i6
 fn write_store(db: &Db, history: &Mutex<History>, rx: mpsc::Receiver<Rollup>, done: &AtomicI64, stats_days: u32) {
     for r in rx {
         history.lock().unwrap().insert(&r);
-        db.send(DbWrite::StatsMinute { t: r.t, json: r.to_json().to_string() });
+        db.send(Change::StatsMinute { t: r.t, json: r.to_json().to_string() });
         let was = done.load(Ordering::SeqCst);
         if was == NOT_YET {
             continue;
@@ -209,7 +209,7 @@ fn write_store(db: &Db, history: &Mutex<History>, rx: mpsc::Receiver<Rollup>, do
         if last != was {
             done.store(last, Ordering::SeqCst);
             let hours_before = (stats_days > 0).then(|| now - i64::from(stats_days) * 86400);
-            db.send(DbWrite::RetireStats { minutes_before: now - STORE_MINUTE_DAYS * 86400, hours_before });
+            db.send(Change::RetireStats { minutes_before: now - STORE_MINUTE_DAYS * 86400, hours_before });
         }
     }
 }
@@ -318,7 +318,7 @@ mod tests {
         fs::write(stats.join(format!("{}.jsonl", day_name(t0.div_euclid(86400)))), format!("{line}\n")).unwrap();
         let (db, _) = Db::for_test_with_batch("stats-store", std::time::Duration::from_millis(10));
         for t in [t0, t0 + 3900, t0 + 7200] {
-            db.send(DbWrite::StatsMinute { t, json: Rollup { t, values: BTreeMap::from([("a".to_string(), [2.0, 1.0, 3.0])]) }.to_json().to_string() });
+            db.send(Change::StatsMinute { t, json: Rollup { t, values: BTreeMap::from([("a".to_string(), [2.0, 1.0, 3.0])]) }.to_json().to_string() });
         }
         db.flush().unwrap();
         let wait = |h: &Arc<Mutex<History>>| {

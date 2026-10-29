@@ -13,7 +13,7 @@ use trunk_recorder_plugin::CallRecord;
 
 use super::row::call_row;
 use super::writer::MAX_BATCH;
-use super::{Db, Write};
+use super::{Change, Db};
 use crate::config::Config;
 use crate::runtime::Ctx;
 
@@ -253,7 +253,7 @@ pub fn run(
             }
             let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
             let row = call_row(&rel, &record, &text, audio, true, db.recorder(), now_ms);
-            db.send(Write::Call { row, live: false });
+            db.send(Change::Call { row, live: false });
             stats.indexed += 1;
             // (A batch at a time: the writer commits it, and live writes go in between.)
             if stats.indexed % MAX_BATCH == 0 {
@@ -283,11 +283,11 @@ pub fn run(
             // (An empty capture folder, before the first call, is ordinary: not a warning.)
             Some(why) => log::debug!("Call store: {folder} is not marked as indexed: {why}; it is walked again on the next start"),
             None => {
-                db.send(Write::Meta {
+                db.send(Change::Meta {
                     key: "backfill_done_at".into(),
                     value: now_ms.to_string(),
                 });
-                db.send(Write::Meta {
+                db.send(Change::Meta {
                     key: "capture_dir".into(),
                     value: folder,
                 });
@@ -392,7 +392,7 @@ mod tests {
         let dir = capture("clock-ahead", &[("s/a", 1, newest - 10 * day)]);
         let (db, _) = Db::for_test("backfill-clock-ahead");
         let r = record(1, newest);
-        db.send(Write::Call {
+        db.send(Change::Call {
             row: call_row("live/1", &r, &r.to_json(), true, true, None, 0),
             live: true,
         });
@@ -565,7 +565,7 @@ mod tests {
         }
         let started = std::time::Instant::now();
         let r = record(9, 99);
-        db.send(Write::Call {
+        db.send(Change::Call {
             row: call_row("live/1", &r, &r.to_json(), true, true, None, 0),
             live: true,
         });

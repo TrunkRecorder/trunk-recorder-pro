@@ -21,7 +21,7 @@ use trunk_app::protocol::{body, Audience, ToClient};
 use trunk_app::saving::Saved;
 use trunk_app::{Feeder, Output, Session};
 
-use crate::db::Write;
+use crate::db::Change;
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, bladerf, soapy, uhd};
@@ -600,7 +600,7 @@ fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
             Saved::Tune(json) => keep(Doc::Tune, json),
             Saved::Registry { system, radio } => kept::write_registry(&ctx.db, &ctx.saver, system, radio),
             Saved::RegistryChanges { system, changes } => {
-                ctx.db.send(crate::db::Write::Registry { system, changes });
+                ctx.db.send(crate::db::Change::Registry { system, changes });
             }
         }
     }
@@ -1142,7 +1142,7 @@ pub fn index_call(ctx: &Ctx, rel: &str, record: &trunk_recorder_plugin::CallReco
         r.truncate(RECENT_KEPT);
     }
     let row = crate::db::row::call_row(rel, record, json, audio, json_kept, ctx.db.recorder(), crate::clock::unix_ms() as i64);
-    ctx.db.send(Write::Call { row, live: true });
+    ctx.db.send(Change::Call { row, live: true });
     entry
 }
 
@@ -1152,7 +1152,7 @@ pub fn index_call(ctx: &Ctx, rel: &str, record: &trunk_recorder_plugin::CallReco
 /// store's row follows with its next commit.
 pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
     let rel = rel.replace('\\', "/");
-    ctx.db.send(Write::CallFiles { path: rel.clone(), audio, json });
+    ctx.db.send(Change::CallFiles { path: rel.clone(), audio, json });
     let mut r = ctx.recent.lock().unwrap();
     let Some(e) = r.iter_mut().find(|e| e["path"] == rel) else { return };
     if e["audio"] == json!(audio) && e["json"] == json!(json) {
@@ -1478,7 +1478,7 @@ mod pending_tests {
         let dir = crate::db::TestDir::new("hist-pending");
         let ctx = test_ctx_with_batch(&dir, std::time::Duration::from_secs(60));
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
-        ctx.db.send(crate::db::Write::Meta { key: "warm".into(), value: "1".into() });
+        ctx.db.send(crate::db::Change::Meta { key: "warm".into(), value: "1".into() });
         ctx.db.flush().unwrap();
         let entry = index_call(&ctx, "ohmarcs/pending", &r, &r.to_json(), true, true);
         let ToClient::History { entries } = history(&ctx) else { panic!() };

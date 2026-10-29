@@ -1171,7 +1171,7 @@ mod tests {
         let ctx = crate::runtime::test_ctx_with_store(&dir.join("cap"), &dir.join("trunk-pro.sqlite"));
         let now = crate::clock::unix_s() as i64;
         let old = (now - 30 * 86_400).div_euclid(3600) * 3600;
-        ctx.db.send(crate::db::Write::StatsHours(vec![HourRow { series: "a".into(), t: old, avg: 10.0, lo: 5.0, hi: 20.0, n: 60 }]));
+        ctx.db.send(crate::db::Change::StatsHours(vec![HourRow { series: "a".into(), t: old, avg: 10.0, lo: 5.0, hi: 20.0, n: 60 }]));
         ctx.db.flush().unwrap();
         ctx.series.lock().unwrap().insert(&Rollup { t: now.div_euclid(60) * 60 - 3600, values: [("a".to_string(), [1.0, 0.0, 2.0])].into() });
         let ask = |range: &str| {

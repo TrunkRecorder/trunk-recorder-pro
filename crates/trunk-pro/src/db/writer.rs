@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use super::store::{CallStore, Change};
-use super::{DAY_MS, Write};
+use super::store::{Change, Store};
+use super::{Msg, DAY_MS};
 
 /// Most writes one transaction takes: it bounds how long one runs (a
 /// backfill sends this many, then flushes, so live writes never queue
@@ -27,7 +27,7 @@ const RETAIN_EVERY: Duration = Duration::from_secs(3600);
 /// Start the `db-writer` thread over `store`; it runs until every sender of
 /// `rx` is gone. `batch`: the least time between two commits under load.
 /// `retention_days`: calls kept (0: all).
-pub fn spawn(store: Arc<dyn CallStore>, rx: Receiver<Write>, commits: Arc<AtomicU64>, batch: Duration, retention_days: u32) -> Option<std::thread::JoinHandle<()>> {
+pub(super) fn spawn(store: Arc<Store>, rx: Receiver<Msg>, commits: Arc<AtomicU64>, batch: Duration, retention_days: u32) -> Option<std::thread::JoinHandle<()>> {
     let spawned = std::thread::Builder::new().name("db-writer".into()).spawn(move || {
         let mut w = Writer { store, commits, batch, retention_days, retiring: None, retain_at: Instant::now() };
         w.run(rx);
@@ -36,7 +36,7 @@ pub fn spawn(store: Arc<dyn CallStore>, rx: Receiver<Write>, commits: Arc<Atomic
 }
 
 struct Writer {
-    store: Arc<dyn CallStore>,
+    store: Arc<Store>,
     commits: Arc<AtomicU64>,
     batch: Duration,
     retention_days: u32,
@@ -47,7 +47,7 @@ struct Writer {
 }
 
 impl Writer {
-    fn run(&mut self, rx: Receiver<Write>) {
+    fn run(&mut self, rx: Receiver<Msg>) {
         let mut last_commit: Option<Instant> = None;
         loop {
             // Idle: a write, or retention's next chunk (at once) or next look.
@@ -65,12 +65,12 @@ impl Writer {
             // Wait out the interval since the last commit, taking writes as they come;
             // a flush, a full batch or the last handle going ends the wait at once.
             if let Some(at) = last_commit {
-                let mut flushing = matches!(held[0], Write::Flush(_) | Write::Talkgroups { .. });
+                let mut flushing = matches!(&held[0], Msg::Flush(_)) || matches!(&held[0], Msg::Change(c) if c.urgent());
                 while !flushing && held.len() < MAX_BATCH {
                     let Some(rest) = self.batch.checked_sub(at.elapsed()) else { break };
                     match rx.recv_timeout(rest) {
                         Ok(w) => {
-                            flushing = matches!(w, Write::Flush(_) | Write::Talkgroups { .. });
+                            flushing = matches!(&w, Msg::Flush(_)) || matches!(&w, Msg::Change(c) if c.urgent());
                             held.push(w);
                         }
                         Err(RecvTimeoutError::Timeout) => break,
@@ -99,31 +99,18 @@ impl Writer {
     /// retention cut (tests), the flushes waiting on it. A batch that can't
     /// be committed is lost to the store (the live list still has its calls,
     /// and the next start's reconcile indexes them from their files).
-    fn commit(&mut self, held: Vec<Write>) {
+    fn commit(&mut self, held: Vec<Msg>) {
         let (mut changes, mut flushes, mut checkpoint): (Vec<Change>, Vec<Sender<Result<(), String>>>, bool) = (Vec::new(), Vec::new(), false);
-        // (Set only by tests' Write::Retention: the writer's own retention runs between batches.)
+        // (Set only by tests' Msg::Retention: the writer's own retention runs between batches.)
         #[allow(unused_mut)]
         let mut retire: Option<i64> = None;
-        for w in held {
-            match w {
-                Write::Call { row, live } => changes.push(Change::Call { row: Box::new(row), live }),
-                Write::CallFiles { path, audio, json } => changes.push(Change::CallFiles { path, audio, json }),
-                Write::Meta { key, value } => changes.push(Change::Meta { key, value }),
-                Write::Kept { kind, key, value } => changes.push(Change::Kept { kind, key, value }),
-                // (Turned into JSON here, off the engine's thread: a whole registry can be megabytes.)
-                Write::Registry { system, changes: c } => changes.extend(serde_json::to_string(&c).ok().map(|json| Change::RegistryChanges { system, json })),
-                Write::StatsMinute { t, json } => changes.push(Change::StatsMinute { t, json }),
-                Write::StatsHours(rows) => changes.push(Change::StatsHours(rows)),
-                Write::RetireStats { minutes_before, hours_before } => changes.push(Change::RetireStats { minutes_before, hours_before }),
-                Write::Talkgroups { system, old, new } => {
-                    let (lines, len) = super::store::talkgroup_lines(&old, &new);
-                    changes.push(Change::Talkgroups { system, lines, len });
-                }
-                Write::RegistryWhole { system, radio } => changes.extend(serde_json::to_string(&radio).ok().map(|json| Change::RegistryWhole { system, json })),
+        for m in held {
+            match m {
+                Msg::Change(c) => changes.push(c),
                 #[cfg(test)]
-                Write::Retention { before_ms } => retire = Some(retire.map_or(before_ms, |b| b.max(before_ms))),
-                Write::Checkpoint => checkpoint = true,
-                Write::Flush(done) => flushes.push(done),
+                Msg::Retention { before_ms } => retire = Some(retire.map_or(before_ms, |b| b.max(before_ms))),
+                Msg::Checkpoint => checkpoint = true,
+                Msg::Flush(done) => flushes.push(done),
             }
         }
         let outcome = if changes.is_empty() {
@@ -186,7 +173,7 @@ impl Writer {
 #[cfg(test)]
 mod tests {
     use super::super::row::{call_row, tests::record};
-    use super::super::{Db, Write};
+    use super::super::{Change, Db};
     use std::time::Duration;
 
     #[test]
@@ -194,7 +181,7 @@ mod tests {
         for db in Db::for_each_backend("interval", Duration::from_secs(2)) {
             let t = std::time::Instant::now();
             while t.elapsed() < Duration::from_millis(4500) {
-                db.send(Write::Meta { key: format!("k{}", t.elapsed().as_millis()), value: "v".into() });
+                db.send(Change::Meta { key: format!("k{}", t.elapsed().as_millis()), value: "v".into() });
                 std::thread::sleep(Duration::from_millis(50));
             }
             db.flush().unwrap();
@@ -202,7 +189,7 @@ mod tests {
         }
         for db in Db::for_each_backend("lone", Duration::from_secs(60)) {
             let t = std::time::Instant::now();
-            db.send(Write::Meta { key: "a".into(), value: "1".into() });
+            db.send(Change::Meta { key: "a".into(), value: "1".into() });
             db.flush().unwrap();
             assert!(t.elapsed() < Duration::from_millis(1500), "the first write after a quiet spell commits at once ({})", db.kind());
         }
@@ -214,7 +201,7 @@ mod tests {
             // A producer faster than the writer must not make one transaction
             // swallow everything, whatever the disk speed.
             for i in 0..2500 {
-                db.send(Write::Meta { key: format!("k{i}"), value: "v".into() });
+                db.send(Change::Meta { key: format!("k{i}"), value: "v".into() });
             }
             db.flush().unwrap();
             assert!(db.commits() >= 3, "{} commits for 2,500 writes", db.commits());
@@ -225,10 +212,10 @@ mod tests {
     #[test]
     fn dropping_the_last_handle_does_not_wait_out_the_interval() {
         let (db, path) = Db::for_test_with_batch("drop-fast", Duration::from_secs(60));
-        db.send(Write::Meta { key: "a".into(), value: "1".into() });
+        db.send(Change::Meta { key: "a".into(), value: "1".into() });
         db.flush().unwrap();
         // The next write is held back for the interval.
-        db.send(Write::Meta { key: "b".into(), value: "2".into() });
+        db.send(Change::Meta { key: "b".into(), value: "2".into() });
         let t = std::time::Instant::now();
         drop(db);
         assert!(t.elapsed() < Duration::from_millis(1500), "the writer leaves at once: {:?}", t.elapsed());
@@ -240,12 +227,12 @@ mod tests {
         for db in Db::for_each_backend("upsert", Duration::from_secs(1)) {
             let r = record(9179, 1_700_000_000_000);
             let json = r.to_json();
-            db.send(Write::Call { row: call_row("ohmarcs/a", &r, &json, true, true, None, 1), live: true });
-            db.send(Write::Call { row: call_row("ohmarcs/a", &r, &json, false, false, None, 2), live: false });
+            db.send(Change::Call { row: call_row("ohmarcs/a", &r, &json, true, true, None, 1), live: true });
+            db.send(Change::Call { row: call_row("ohmarcs/a", &r, &json, false, false, None, 2), live: false });
             db.flush().unwrap();
             assert_eq!(db.count("select count(*) from calls where path = 'ohmarcs/a'"), 1);
             assert_eq!(db.one("ohmarcs/a").unwrap().unwrap()["audio"], true, "the backfilled copy is ignored ({})", db.kind());
-            db.send(Write::Call { row: call_row("ohmarcs/a", &r, &json, false, true, None, 3), live: true });
+            db.send(Change::Call { row: call_row("ohmarcs/a", &r, &json, false, true, None, 3), live: true });
             db.flush().unwrap();
             assert_eq!(db.one("ohmarcs/a").unwrap().unwrap()["audio"], false, "a live copy replaces");
             assert_eq!(db.count("select count(*) from call_transmissions"), 2, "children replaced, not duplicated");
@@ -262,8 +249,8 @@ mod tests {
             let ok = record(1, 1000);
             let mut bad = record(2, 2000);
             bad.src_list[1].src = 666;
-            db.send(Write::Call { row: call_row("s/ok", &ok, &ok.to_json(), true, true, None, 0), live: true });
-            db.send(Write::Call { row: call_row("s/bad", &bad, &bad.to_json(), true, true, None, 0), live: true });
+            db.send(Change::Call { row: call_row("s/ok", &ok, &ok.to_json(), true, true, None, 0), live: true });
+            db.send(Change::Call { row: call_row("s/bad", &bad, &bad.to_json(), true, true, None, 0), live: true });
             db.flush().unwrap();
             let got = (db.count("select count(*) from calls"), db.count("select count(*) from call_transmissions"));
             assert_eq!(got, (1, 2), "s/ok and its two transmissions; nothing of s/bad ({})", db.kind());
@@ -277,9 +264,9 @@ mod tests {
     fn a_failed_change_leaves_the_rest_of_its_batch() {
         for db in Db::for_each_backend("one-fails", Duration::from_secs(1)) {
             db.refuse_for_test("meta", "key", "'bad'");
-            db.send(Write::Meta { key: "bad".into(), value: "1".into() });
-            db.send(Write::Meta { key: "good".into(), value: "2".into() });
-            db.send(Write::Kept { kind: "tune".into(), key: String::new(), value: Some("{}".into()) });
+            db.send(Change::Meta { key: "bad".into(), value: "1".into() });
+            db.send(Change::Meta { key: "good".into(), value: "2".into() });
+            db.send(Change::Kept { kind: "tune".into(), key: String::new(), value: Some("{}".into()) });
             db.flush().unwrap();
             assert_eq!((db.count("select count(*) from meta"), db.count("select count(*) from kept")), (1, 1), "{}", db.kind());
         }
@@ -289,8 +276,8 @@ mod tests {
     fn call_files_updates_the_flags() {
         for db in Db::for_each_backend("files", Duration::from_secs(1)) {
             let r = record(1, 1000);
-            db.send(Write::Call { row: call_row("ohmarcs/b", &r, &r.to_json(), true, true, None, 1), live: true });
-            db.send(Write::CallFiles { path: "ohmarcs/b".into(), audio: false, json: true });
+            db.send(Change::Call { row: call_row("ohmarcs/b", &r, &r.to_json(), true, true, None, 1), live: true });
+            db.send(Change::CallFiles { path: "ohmarcs/b".into(), audio: false, json: true });
             db.flush().unwrap();
             let e = db.one("ohmarcs/b").unwrap().unwrap();
             assert_eq!((e["audio"].as_bool(), e["json"].as_bool()), (Some(false), Some(true)), "{}", db.kind());
@@ -316,18 +303,18 @@ mod tests {
         for db in Db::for_each_backend("retention", Duration::from_secs(1)) {
             for i in 0..2500u32 {
                 let r = record(1, i as i64);
-                db.send(Write::Call { row: call_row(&format!("s/{i}"), &r, &r.to_json(), true, true, None, 0), live: true });
+                db.send(Change::Call { row: call_row(&format!("s/{i}"), &r, &r.to_json(), true, true, None, 0), live: true });
             }
             db.flush().unwrap();
             let before = db.commits();
-            db.send(Write::Retention { before_ms: 2200 });
+            db.retire_for_test(2200);
             db.flush().unwrap();
             let r = record(1, 9999);
-            db.send(Write::Call { row: call_row("live", &r, &r.to_json(), true, true, None, 0), live: true });
+            db.send(Change::Call { row: call_row("live", &r, &r.to_json(), true, true, None, 0), live: true });
             db.flush().unwrap();
             assert_eq!(wait_for(&db, 301), (301, 602), "{}", db.kind());
             assert!(db.commits() - before >= 4, "2200 rows in chunks of 1000, and the live write's own");
-            db.send(Write::Retention { before_ms: 0 });
+            db.retire_for_test(0);
             db.flush().unwrap();
             assert_eq!(wait_for(&db, 301).0, 301, "nothing before 0");
         }

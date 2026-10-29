@@ -8,19 +8,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use rusqlite::types::Value as Sql;
-use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
-use serde_json::Value;
+use rusqlite::types::{Value as Lit, ValueRef};
+use rusqlite::{params_from_iter, Connection, OpenFlags, TransactionBehavior};
 
-use super::read::{self, CallsFilter, Fetched, Page, Param, Where, COLUMNS};
-use super::row::{entry, CallRow};
 use super::schema;
-use super::store::{CallStore, Change, StoreInfo, StoredRegistry};
+use super::sql::{question_marks, Dialect, Exec, Row, V};
+use super::store::{Backend, Store};
 
 /// Read-only connections opened up front, and the most the pool keeps.
 const READERS: usize = 2;
 
-pub struct SqliteStore {
+pub struct SqliteBackend {
     path: PathBuf,
     /// The writer's connection (only the writer thread uses it).
     writer: Mutex<Connection>,
@@ -30,10 +28,16 @@ pub struct SqliteStore {
     _lock: std::fs::File,
 }
 
-impl SqliteStore {
-    /// Open (creating if need be) the database at `path` and migrate it. A
-    /// file that is not a sound database is moved aside and replaced.
-    pub fn open(path: &Path) -> Result<SqliteStore, String> {
+/// The store in the SQLite database at `path` ([`SqliteBackend::open`]).
+pub fn open(path: &Path) -> Result<Store, String> {
+    SqliteBackend::open(path).map(|b| Store::new(Box::new(b)))
+}
+
+impl SqliteBackend {
+    /// Open (creating if need be) the database at `path`, at this build's
+    /// schema. A file that is not a sound database, or another version's, is
+    /// moved aside and a fresh one made.
+    pub fn open(path: &Path) -> Result<SqliteBackend, String> {
         let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let lock = lock(path)?;
@@ -53,23 +57,7 @@ impl SqliteStore {
             Err(e) => return Err(format!("open {}: {e}", path.display())),
         };
         let readers = (0..READERS).map(|_| open_reader(path)).collect::<rusqlite::Result<Vec<_>>>().map_err(|e| format!("open reader {}: {e}", path.display()))?;
-        Ok(SqliteStore { path: path.to_path_buf(), writer: Mutex::new(conn), readers: Mutex::new(readers), _lock: lock })
-    }
-
-    /// Run `f` on a read-only connection from the pool (one opened for the
-    /// occasion when all are out).
-    fn read<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, String> {
-        let pooled = self.readers.lock().unwrap_or_else(|e| e.into_inner()).pop();
-        let conn = match pooled {
-            Some(c) => c,
-            None => open_reader(&self.path).map_err(|e| format!("open reader: {e}"))?,
-        };
-        let out = f(&conn).map_err(|e| e.to_string());
-        let mut pool = self.readers.lock().unwrap_or_else(|e| e.into_inner());
-        if pool.len() < READERS {
-            pool.push(conn);
-        }
-        out
+        Ok(SqliteBackend { path: path.to_path_buf(), writer: Mutex::new(conn), readers: Mutex::new(readers), _lock: lock })
     }
 
     #[cfg(test)]
@@ -78,14 +66,7 @@ impl SqliteStore {
     }
 }
 
-fn sql(p: &Param) -> Sql {
-    match p {
-        Param::Int(i) => Sql::Integer(*i),
-        Param::Text(t) => Sql::Text(t.clone()),
-    }
-}
-
-impl CallStore for SqliteStore {
+impl Backend for SqliteBackend {
     fn kind(&self) -> &'static str {
         "sqlite"
     }
@@ -94,102 +75,27 @@ impl CallStore for SqliteStore {
         self.path.display().to_string()
     }
 
-    fn apply(&self, batch: Vec<Change>) -> Result<(), String> {
+    fn write(&self, f: &mut dyn FnMut(&mut dyn Exec) -> Result<(), String>) -> Result<(), String> {
         let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| format!("could not begin a transaction: {e}"))?;
-        // Each change whole or not at all, and one that fails doesn't take the batch with it.
-        for change in &batch {
-            let written = tx.savepoint().and_then(|sp| {
-                apply_one(&sp, change)?;
-                sp.commit()
-            });
-            if let Err(e) = written {
-                log::warn!("Call store: {} failed: {e}", change.what());
-            }
-        }
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| format!("could not begin a transaction: {e}"))?;
+        f(&mut Lite(&tx))?;
         tx.commit().map_err(|e| format!("commit failed: {e}"))
     }
 
-    fn page(&self, f: &CallsFilter) -> Result<Page, String> {
-        self.read(|c| {
-            let mut fetch = |w: &Where, limit: usize| -> Result<(Vec<Fetched>, bool), String> {
-                let want = i64::try_from(limit).unwrap_or(i64::MAX - 1);
-                let (text, ps) = w.query(COLUMNS, want.saturating_add(1), false);
-                let ps: Vec<Sql> = ps.iter().map(sql).collect();
-                let rows = (|| -> rusqlite::Result<(Vec<Fetched>, bool)> {
-                    let mut stmt = c.prepare_cached(&text)?;
-                    let mut rows = stmt.query(params_from_iter(ps))?;
-                    let (mut out, mut extra) = (Vec::new(), false);
-                    while let Some(r) = rows.next()? {
-                        if out.len() as i64 == want {
-                            extra = true;
-                            break;
-                        }
-                        out.push(Fetched { entry: entry(&r.get::<_, String>(0)?, &r.get::<_, String>(1)?, r.get(2)?, r.get(3)?), id: r.get(4)?, start_ms: r.get(5)? });
-                    }
-                    Ok((out, extra))
-                })();
-                rows.map_err(|e| e.to_string())
-            };
-            Ok(read::paged(f, &mut fetch))
-        })?
-    }
-
-    fn one(&self, path: &str) -> Result<Option<Value>, String> {
-        self.read(|c| {
-            c.query_row("select path, record, audio, json from calls where path = ?1", [path], |r| Ok(entry(&r.get::<_, String>(0)?, &r.get::<_, String>(1)?, r.get(2)?, r.get(3)?))).optional()
-        })
-    }
-
-    fn known(&self, path: &str) -> Result<bool, String> {
-        self.read(|c| c.prepare_cached("select 1 from calls where path = ?1")?.exists([path]))
-    }
-
-    fn meta(&self, key: &str) -> Result<Option<String>, String> {
-        self.read(|c| c.query_row("select value from meta where key = ?1", [key], |r| r.get(0)).optional())
-    }
-
-    fn kept(&self, kind: &str, key: &str) -> Result<Option<String>, String> {
-        self.read(|c| c.query_row("select value from kept where kind = ?1 and key = ?2", [kind, key], |r| r.get(0)).optional())
-    }
-
-    fn registry(&self) -> Result<Vec<StoredRegistry>, String> {
-        self.read(|c| {
-            let whole = c.prepare("select system, whole from registry")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            let changes = c.prepare("select system, changes from registry_changes order by id")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(super::store::stored_registry(whole, changes))
-        })
-    }
-
-    fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
-        self.read(|c| Ok(super::store::talkgroup_file(c.prepare("select line from talkgroups where system = ?1 order by seq")?.query_map([system], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)))
-    }
-
-    fn stats_minutes(&self, since: i64) -> Result<Vec<String>, String> {
-        self.read(|c| c.prepare("select s from stats_minutes where t >= ?1 order by t, id")?.query_map([since], |r| r.get(0))?.collect())
-    }
-
-    fn stats_hours(&self, q: &super::store::HoursQuery) -> Result<Vec<super::store::HoursSum>, String> {
-        let (sql_text, ps) = q.sql();
-        let ps: Vec<Sql> = ps.iter().map(sql).collect();
-        self.read(|c| c.prepare(&sql_text)?.query_map(params_from_iter(ps), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?.collect())
-    }
-
-    fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String> {
-        let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
-        let n = tx.execute("delete from calls where id in (select id from calls where start_ms < ?1 order by start_ms limit ?2)", params![before_ms, max as i64]).map_err(|e| e.to_string())?;
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(n)
-    }
-
-    fn newest_start(&self) -> Result<Option<i64>, String> {
-        self.read(|c| c.query_row("select max(start_ms) from calls", [], |r| r.get(0)))
-    }
-
-    fn info(&self) -> Result<StoreInfo, String> {
-        let (calls, oldest_ms, newest_ms) = self.read(|c| c.query_row("select count(*), min(start_ms), max(start_ms) from calls", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))))?;
-        Ok(StoreInfo { location: self.path.display().to_string(), schema_version: schema::SCHEMA_VERSION, calls, oldest_ms, newest_ms })
+    /// `f` on a read-only connection from the pool (one opened for the
+    /// occasion when all are out).
+    fn read(&self, f: &mut dyn FnMut(&mut dyn Exec) -> Result<(), String>) -> Result<(), String> {
+        let pooled = self.readers.lock().unwrap_or_else(|e| e.into_inner()).pop();
+        let conn = match pooled {
+            Some(c) => c,
+            None => open_reader(&self.path).map_err(|e| format!("open reader: {e}"))?,
+        };
+        let out = f(&mut Lite(&conn));
+        let mut pool = self.readers.lock().unwrap_or_else(|e| e.into_inner());
+        if pool.len() < READERS {
+            pool.push(conn);
+        }
+        out
     }
 
     fn checkpoint(&self) {
@@ -204,16 +110,53 @@ impl CallStore for SqliteStore {
             log::debug!("Call store: optimize: {e}");
         }
     }
+}
 
-    #[cfg(test)]
-    fn scalar(&self, sql: &str) -> i64 {
-        self.read(|c| c.query_row(sql, [], |r| r.get(0))).unwrap()
+/// Statements on a SQLite connection (a transaction's, or a reader's).
+struct Lite<'a>(&'a Connection);
+
+fn lit(v: &V) -> Lit {
+    match v {
+        V::Null => Lit::Null,
+        V::Int(i) => Lit::Integer(*i),
+        V::Real(r) => Lit::Real(*r),
+        V::Bool(b) => Lit::Integer(i64::from(*b)),
+        V::Text(t) => Lit::Text(t.clone()),
+    }
+}
+
+fn value(v: ValueRef) -> V {
+    match v {
+        ValueRef::Null => V::Null,
+        ValueRef::Integer(i) => V::Int(i),
+        ValueRef::Real(r) => V::Real(r),
+        ValueRef::Text(t) | ValueRef::Blob(t) => V::Text(String::from_utf8_lossy(t).into_owned()),
+    }
+}
+
+impl Exec for Lite<'_> {
+    fn dialect(&self) -> Dialect {
+        Dialect::Sqlite
     }
 
-    #[cfg(test)]
-    fn refuse(&self, table: &str, column: &str, value: &str) {
-        let sql = format!("create trigger refuse_{table} before insert on {table} when new.{column} = {value} begin select raise(abort, 'refused'); end;");
-        self.writer.lock().unwrap().execute_batch(&sql).unwrap();
+    fn execute(&mut self, sql: &str, ps: &[V]) -> Result<u64, String> {
+        let mut st = self.0.prepare_cached(&question_marks(sql)).map_err(|e| e.to_string())?;
+        st.execute(params_from_iter(ps.iter().map(lit))).map(|n| n as u64).map_err(|e| e.to_string())
+    }
+
+    fn query(&mut self, sql: &str, ps: &[V]) -> Result<Vec<Row>, String> {
+        let mut st = self.0.prepare_cached(&question_marks(sql)).map_err(|e| e.to_string())?;
+        let n = st.column_count();
+        let mut rows = st.query(params_from_iter(ps.iter().map(lit))).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+            out.push(Row((0..n).map(|i| r.get_ref(i).map_or(V::Null, value)).collect()));
+        }
+        Ok(out)
+    }
+
+    fn batch(&mut self, sql: &str) -> Result<(), String> {
+        self.0.execute_batch(sql).map_err(|e| e.to_string())
     }
 }
 
@@ -339,178 +282,9 @@ fn move_aside(path: &Path, why: &str) -> Result<PathBuf, String> {
     Ok(aside)
 }
 
-/// Write a system's talkgroup lines, and remove those past `len`.
-fn write_talkgroups(conn: &Connection, system: &str, lines: &[super::store::TalkgroupLine], len: i64) -> rusqlite::Result<()> {
-    let mut up = conn.prepare_cached(
-        "insert into talkgroups (system, seq, line, number, alpha_tag, description, tag, category, mode, priority, ignore) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-         on conflict(system, seq) do update set line = excluded.line, number = excluded.number, alpha_tag = excluded.alpha_tag, description = excluded.description, tag = excluded.tag,
-         category = excluded.category, mode = excluded.mode, priority = excluded.priority, ignore = excluded.ignore",
-    )?;
-    for l in lines {
-        let t = l.tg.as_ref();
-        up.execute(params![system, l.seq, l.line, t.map(|t| t.number), t.map(|t| &t.alpha_tag), t.map(|t| &t.description), t.map(|t| &t.tag), t.map(|t| &t.group), t.map(|t| &t.mode), t.map(|t| t.priority), t.map(|t| t.ignore)])?;
-    }
-    conn.execute("delete from talkgroups where system = ?1 and seq >= ?2", params![system, len])?;
-    Ok(())
-}
 
-/// One change, in the savepoint `conn` is.
-fn apply_one(conn: &Connection, change: &Change) -> rusqlite::Result<()> {
-    match change {
-        Change::Call { row, live } => write_call(conn, row, *live),
-        Change::CallFiles { path, audio, json } => set_files(conn, path, *audio, *json).map(drop),
-        Change::Meta { key, value } => conn.execute("insert into meta (key, value) values (?1, ?2) on conflict(key) do update set value = excluded.value", params![key, value]).map(drop),
-        Change::Kept { kind, key, value: Some(v) } => conn.execute("insert into kept (kind, key, value) values (?1, ?2, ?3) on conflict(kind, key) do update set value = excluded.value", params![kind, key, v]).map(drop),
-        Change::Kept { kind, key, value: None } => conn.execute("delete from kept where kind = ?1 and key = ?2", params![kind, key]).map(drop),
-        Change::RegistryChanges { system, json } => conn.execute("insert into registry_changes (system, changes) values (?1, ?2)", params![system, json]).map(drop),
-        Change::RegistryWhole { system, json } => {
-            conn.execute("insert into registry (system, whole) values (?1, ?2) on conflict(system) do update set whole = excluded.whole", params![system, json])?;
-            conn.execute("delete from registry_changes where system = ?1", [system]).map(drop)
-        }
-        Change::StatsMinute { t, json } => conn.execute("insert into stats_minutes (t, s) values (?1, ?2)", params![t, json]).map(drop),
-        Change::StatsHours(rows) => {
-            let mut up = conn.prepare_cached(
-                "insert into stats_hours (series, t, avg, lo, hi, n) values (?1, ?2, ?3, ?4, ?5, ?6)
-                 on conflict(series, t) do update set avg = excluded.avg, lo = excluded.lo, hi = excluded.hi, n = excluded.n",
-            )?;
-            for r in rows {
-                up.execute(params![r.series, r.t, r.avg, r.lo, r.hi, r.n])?;
-            }
-            Ok(())
-        }
-        Change::RetireStats { minutes_before, hours_before } => {
-            conn.execute("delete from stats_minutes where t < ?1", [minutes_before])?;
-            hours_before.map_or(Ok(()), |h| conn.execute("delete from stats_hours where t < ?1", [h]).map(drop))
-        }
-        Change::Talkgroups { system, lines, len } => write_talkgroups(conn, system, lines, *len),
-    }
-}
 
-/// Write a call's row and its children. A live call replaces what is there;
-/// a backfilled one only fills a gap, and brings its children only if it
-/// landed.
-fn write_call(conn: &Connection, row: &CallRow, live: bool) -> rusqlite::Result<()> {
-    let conflict = if live {
-        "on conflict(path) do update set
-            short_name = excluded.short_name, nac = excluded.nac, site = excluded.site,
-            talkgroup = excluded.talkgroup, start_ms = excluded.start_ms,
-            stop_ms = excluded.stop_ms, length_ms = excluded.length_ms,
-            freq_hz = excluded.freq_hz, emergency = excluded.emergency,
-            encrypted = excluded.encrypted, decrypted = excluded.decrypted,
-            duplex = excluded.duplex, priority = excluded.priority,
-            audio_type = excluded.audio_type, signal = excluded.signal,
-            noise = excluded.noise, snr = excluded.snr,
-            clean_voice_pct = excluded.clean_voice_pct, audio = excluded.audio,
-            json = excluded.json, recorder = excluded.recorder,
-            record = excluded.record, indexed_ms = excluded.indexed_ms"
-    } else {
-        "on conflict(path) do nothing"
-    };
-    let landed = conn.execute(
-        &format!(
-            "insert into calls (path, short_name, nac, site, talkgroup, start_ms, stop_ms,
-                length_ms, freq_hz, emergency, encrypted, decrypted, duplex, priority,
-                audio_type, signal, noise, snr, clean_voice_pct, audio, json, recorder,
-                record, indexed_ms)
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
-             {conflict}"
-        ),
-        params![
-            row.path,
-            row.short_name,
-            row.nac,
-            row.site,
-            row.talkgroup,
-            row.start_ms,
-            row.stop_ms,
-            row.length_ms,
-            row.freq_hz,
-            row.emergency,
-            row.encrypted,
-            row.decrypted,
-            row.duplex,
-            row.priority,
-            row.audio_type,
-            row.signal,
-            row.noise,
-            row.snr,
-            row.clean_voice_pct,
-            row.audio,
-            row.json,
-            row.recorder,
-            row.record,
-            row.indexed_ms,
-        ],
-    )? > 0;
-    if !landed {
-        return Ok(());
-    }
-    let id: i64 = conn.query_row("select id from calls where path = ?1", [&row.path], |r| {
-        r.get(0)
-    })?;
-    conn.execute("delete from call_transmissions where call_id = ?1", [id])?;
-    conn.execute("delete from call_frequencies where call_id = ?1", [id])?;
-    conn.execute("delete from call_units where call_id = ?1", [id])?;
-    let mut unit = conn.prepare_cached("insert into call_units (short_name, unit, start_ms, call_id) values (?1, ?2, ?3, ?4) on conflict do nothing")?;
-    for t in &row.transmissions {
-        unit.execute(params![row.short_name, t.unit, row.start_ms, id])?;
-    }
-    let mut tx = conn.prepare_cached(
-        "insert into call_transmissions
-            (call_id, seq, unit, start_ms, length_ms, emergency, signal_system, tag)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-    )?;
-    for (seq, t) in row.transmissions.iter().enumerate() {
-        tx.execute(params![
-            id,
-            seq as i64,
-            t.unit,
-            t.start_ms,
-            t.length_ms,
-            t.emergency,
-            t.signal_system,
-            t.tag
-        ])?;
-    }
-    let mut freq = conn.prepare_cached(
-        "insert into call_frequencies
-            (call_id, seq, freq_hz, start_ms, length_ms, error_count, spike_count)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-    )?;
-    for (seq, f) in row.frequencies.iter().enumerate() {
-        freq.execute(params![
-            id,
-            seq as i64,
-            f.freq_hz,
-            f.start_ms,
-            f.length_ms,
-            f.error_count,
-            f.spike_count
-        ])?;
-    }
-    Ok(())
-}
 
-/// Set the call's file flags; true if they changed. A call not in the store
-/// is no change.
-fn set_files(conn: &Connection, path: &str, audio: bool, json: bool) -> rusqlite::Result<bool> {
-    let had: Option<(bool, bool)> = conn
-        .query_row(
-            "select audio, json from calls where path = ?1",
-            [path],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    if had.is_none_or(|h| h == (audio, json)) {
-        return Ok(false);
-    }
-    conn.execute(
-        "update calls set audio = ?2, json = ?3 where path = ?1",
-        params![path, audio, json],
-    )?;
-    Ok(true)
-}
 
 #[cfg(test)]
 mod tests {
@@ -525,12 +299,11 @@ mod tests {
     #[test]
     fn opening_creates_the_file_in_wal_at_the_current_version() {
         let dir = TestDir::new("sqlite-open");
-        let store = SqliteStore::open(&dir.join("trunk-pro.sqlite")).unwrap();
+        let store = open(&dir.join("trunk-pro.sqlite")).unwrap();
         assert!(dir.join("trunk-pro.sqlite").exists());
         assert_eq!(store.scalar("pragma user_version"), i64::from(schema::SCHEMA_VERSION));
-        let mode: String = store.read(|c| c.query_row("pragma journal_mode", [], |r| r.get(0))).unwrap();
-        assert_eq!(mode, "wal");
-        let tables: Vec<String> = store.read(|c| c.prepare("select name from sqlite_master where type='table' order by name")?.query_map([], |r| r.get(0))?.collect()).unwrap();
+        assert_eq!(store.texts("pragma journal_mode"), ["wal"]);
+        let tables = store.texts("select name from sqlite_master where type='table' order by name");
         assert_eq!(tables, ["call_frequencies", "call_transmissions", "call_units", "calls", "kept", "meta", "registry", "registry_changes", "stats_hours", "stats_minutes", "talkgroups"]);
     }
 
@@ -540,13 +313,13 @@ mod tests {
     #[test]
     fn a_second_opener_is_refused_while_the_first_holds_it() {
         let (db, path) = Db::for_test("lock");
-        let err = SqliteStore::open(&path).err().expect("refused");
+        let err = open(&path).err().expect("refused");
         assert!(err.contains("another Trunk Recorder Pro"), "{err}");
         let dir = TestDir::new("db-lock-2");
         let other = dir.join("trunk-pro.sqlite");
         std::fs::copy(&path, &other).unwrap();
         drop(db);
-        assert!(SqliteStore::open(&other).is_ok());
+        assert!(open(&other).is_ok());
     }
 
     #[test]
@@ -554,7 +327,7 @@ mod tests {
         let dir = TestDir::new("db-corrupt");
         let path = dir.join("trunk-pro.sqlite");
         std::fs::write(&path, b"this is not a database").unwrap();
-        let store = SqliteStore::open(&path).unwrap();
+        let store = open(&path).unwrap();
         assert_eq!(store.scalar("pragma user_version"), i64::from(schema::SCHEMA_VERSION));
         assert_eq!(aside_count(&dir), 1);
     }
@@ -566,9 +339,9 @@ mod tests {
     fn another_version_s_store_is_set_aside_and_made_afresh() {
         let dir = TestDir::new("db-version");
         let path = dir.join("trunk-pro.sqlite");
-        drop(SqliteStore::open(&path).unwrap());
+        drop(open(&path).unwrap());
         rusqlite::Connection::open(&path).unwrap().pragma_update(None, "user_version", 99).unwrap();
-        let store = SqliteStore::open(&path).unwrap();
+        let store = open(&path).unwrap();
         assert_eq!(store.scalar("pragma user_version"), i64::from(schema::SCHEMA_VERSION));
         let aside = std::fs::read_dir(&*dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains(".v99-")).count();
         assert_eq!(aside, 1, "kept beside, not deleted");
@@ -581,16 +354,17 @@ mod tests {
     #[test]
     fn the_reader_pool_keeps_no_more_than_it_opened() {
         let dir = TestDir::new("sqlite-pool");
-        let store = SqliteStore::open(&dir.join("trunk-pro.sqlite")).unwrap();
+        let b = SqliteBackend::open(&dir.join("trunk-pro.sqlite")).unwrap();
         // Three at once: the third is opened for the occasion.
-        fn nest(s: &SqliteStore, depth: usize) -> rusqlite::Result<()> {
+        fn nest(b: &SqliteBackend, depth: usize) -> Result<(), String> {
             if depth == 0 {
                 return Ok(());
             }
-            s.read(|_| nest(s, depth - 1)).map_err(rusqlite::Error::InvalidParameterName)
+            b.read(&mut |_| nest(b, depth - 1))
         }
-        nest(&store, READERS + 1).unwrap();
-        assert_eq!(store.readers_pooled(), READERS);
+        nest(&b, READERS + 1).unwrap();
+        assert_eq!(b.readers_pooled(), READERS);
+        let store = Store::new(Box::new(b));
         assert_eq!(store.scalar("pragma busy_timeout"), 1000, "a reader waits a second for a lock");
     }
 

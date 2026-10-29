@@ -11,6 +11,7 @@ pub mod postgres;
 pub mod read;
 pub mod row;
 pub mod schema;
+pub mod sql;
 pub mod sqlite;
 pub mod store;
 pub mod writer;
@@ -27,48 +28,27 @@ use std::time::Duration;
 use serde_json::Value;
 
 use read::{CallsFilter, Page};
-use row::CallRow;
-use store::{CallStore, StoreInfo};
+use store::{Store, StoreInfo};
 
 /// Writes the channel holds before `send` blocks.
 const QUEUE_LEN: usize = 4096;
 /// A day, in milliseconds.
 pub(super) const DAY_MS: i64 = 86_400_000;
 
-/// A change for the writer thread to make.
-#[allow(clippy::large_enum_variant)] // one row per call; boxing it would only add a hop
-pub enum Write {
-    /// Insert or update a call's row.
-    Call { row: CallRow, live: bool },
-    /// Mark which of a call's files exist.
-    CallFiles { path: String, audio: bool, json: bool },
-    /// Set a `meta` value.
-    Meta { key: String, value: String },
-    /// Keep a document (`crate::kept`), or remove it (`None`).
-    Kept { kind: String, key: String, value: Option<String> },
-    /// What changed in a system's radio registry since the last ([`store::StoredRegistry`]).
-    Registry { system: String, changes: Box<trunk_app::stats::radio::RegistryChanges> },
-    /// A minute of the dashboard's history ([`store::Change::StatsMinute`]).
-    StatsMinute { t: i64, json: String },
-    /// Hours of the dashboard's history, in place of any there.
-    StatsHours(Vec<trunk_app::stats::HourRow>),
-    /// The dashboard's history before these goes ([`store::Change::RetireStats`]).
-    RetireStats { minutes_before: i64, hours_before: Option<i64> },
-    /// A system's talkgroup file edited from `old` to `new` ("" for `old`:
-    /// in place of what's stored; "" for `new`: none). Committed at once:
-    /// people make these.
-    Talkgroups { system: String, old: String, new: String },
-    /// A system's whole radio registry, in place of what's stored.
-    RegistryWhole { system: String, radio: Box<trunk_app::stats::radio::SystemRadio> },
+pub use store::Change;
+
+/// What the writer thread takes: changes, and what to do around them.
+pub(crate) enum Msg {
+    Change(Change),
+    /// Fold what's pending into the store proper (SQLite: the WAL).
+    Checkpoint,
+    /// Answered with the outcome of the commit that took every change sent
+    /// before it.
+    Flush(std::sync::mpsc::Sender<Result<(), String>>),
     /// Delete calls that started before this time, as the writer does by
     /// itself for `retentionDays` (tests).
     #[cfg(test)]
     Retention { before_ms: i64 },
-    /// Fold what's pending into the store proper (SQLite: the WAL).
-    Checkpoint,
-    /// Answered with the outcome of the commit that took every write sent
-    /// before it.
-    Flush(std::sync::mpsc::Sender<Result<(), String>>),
 }
 
 /// A handle on the call store. Clones share one backend and one writer; the
@@ -79,10 +59,10 @@ pub enum Write {
 pub struct Db(Option<Arc<Inner>>, Option<Arc<str>>);
 
 struct Inner {
-    store: Arc<dyn CallStore>,
+    store: Arc<Store>,
     recorder: Option<String>,
     /// Taken when the last handle goes, which closes the writer's channel.
-    tx: Option<SyncSender<Write>>,
+    tx: Option<SyncSender<Msg>>,
     /// The writer thread, waited for when the last handle goes.
     writer: Option<JoinHandle<()>>,
     backfill_running: AtomicBool,
@@ -121,13 +101,13 @@ impl Db {
             log::warn!("storage.commitSeconds {} is outside {} to {}; using {commit}", storage.commit_seconds, range.start(), range.end());
         }
         let batch = Duration::from_secs(u64::from(commit));
-        let opened: Result<Arc<dyn CallStore>, String> = match storage.backend {
+        let opened = match storage.backend {
             StorageBackend::Files => return Db::disabled(),
-            StorageBackend::Sqlite => sqlite::SqliteStore::open(&data.join("trunk-pro.sqlite")).map(|s| Arc::new(s) as Arc<dyn CallStore>),
-            StorageBackend::Postgres => postgres::PostgresStore::open(&storage.url).map(|s| Arc::new(s) as Arc<dyn CallStore>),
+            StorageBackend::Sqlite => sqlite::open(&data.join("trunk-pro.sqlite")),
+            StorageBackend::Postgres => postgres::open(&storage.url),
         };
         match opened {
-            Ok(store) => Db::with_store(store, batch, storage.retention_days, recorder_id(data)),
+            Ok(store) => Db::with_store(Arc::new(store), batch, storage.retention_days, recorder_id(data)),
             Err(e) => {
                 log::error!("Call store: off: {e}. Nothing is kept until it opens: not the calls' index, talkgroups, aliases, the radio registry or the dashboard's history");
                 Db::failed(&e)
@@ -137,7 +117,7 @@ impl Db {
 
     /// The store over `store`, its writer committing at most once per
     /// `batch` under load and keeping `retention_days` of calls (0: all).
-    pub fn with_store(store: Arc<dyn CallStore>, batch: Duration, retention_days: u32, recorder: Option<String>) -> Db {
+    pub fn with_store(store: Arc<Store>, batch: Duration, retention_days: u32, recorder: Option<String>) -> Db {
         let (tx, rx) = sync_channel(QUEUE_LEN);
         let commits = Arc::new(AtomicU64::new(0));
         let writer = writer::spawn(store.clone(), rx, commits.clone(), batch, retention_days);
@@ -160,7 +140,7 @@ impl Db {
     /// A SQLite store at `path` (the default backend; tests).
     #[cfg(test)]
     pub fn open(path: &Path, batch: Duration, retention_days: u32) -> Result<Db, String> {
-        let store = sqlite::SqliteStore::open(path)?;
+        let store = sqlite::open(path)?;
         let dir = path.parent().unwrap_or(Path::new("."));
         Ok(Db::with_store(Arc::new(store), batch, retention_days, recorder_id(dir)))
     }
@@ -192,17 +172,13 @@ impl Db {
         self.0.is_none() && self.1.is_none()
     }
 
-    /// Why the store asked for is off, if it is.
-    pub fn failure(&self) -> Option<&str> {
-        self.1.as_deref()
-    }
 
     /// There is no store: it's off, or the backend is `files`.
     pub fn is_disabled(&self) -> bool {
         self.0.is_none()
     }
 
-    fn store(&self) -> Result<&dyn CallStore, String> {
+    fn store(&self) -> Result<&Store, String> {
         self.0.as_deref().map(|i| &*i.store).ok_or_else(|| "the call store is off".to_string())
     }
 
@@ -223,11 +199,27 @@ impl Db {
         self.0.as_deref()?.recorder.as_deref()
     }
 
-    /// Queue a write. Blocks only while the queue is full. False when the
-    /// write was dropped: the writer has stopped, or the store is off.
-    pub fn send(&self, w: Write) -> bool {
+    /// Queue a change. Blocks only while the queue is full. False when it
+    /// was dropped: the writer has stopped, or the store is off.
+    pub fn send(&self, c: Change) -> bool {
+        self.post(Msg::Change(c))
+    }
+
+    /// Fold what's pending into the store proper (SQLite: the WAL), after
+    /// what's queued.
+    pub fn checkpoint(&self) -> bool {
+        self.post(Msg::Checkpoint)
+    }
+
+    /// Have the writer cut calls started before `before_ms` (tests).
+    #[cfg(test)]
+    pub fn retire_for_test(&self, before_ms: i64) {
+        self.post(Msg::Retention { before_ms });
+    }
+
+    fn post(&self, m: Msg) -> bool {
         let Some(tx) = self.0.as_deref().and_then(|i| i.tx.as_ref()) else { return false };
-        if tx.send(w).is_err() {
+        if tx.send(m).is_err() {
             log::warn!("Call store: the writer has stopped; write dropped");
             return false;
         }
@@ -318,7 +310,7 @@ impl Db {
             return Ok(());
         }
         let (done, wait) = std::sync::mpsc::channel();
-        self.send(Write::Flush(done));
+        self.post(Msg::Flush(done));
         wait.recv().map_err(|_| "the writer has stopped".to_string())?
     }
 
@@ -366,7 +358,7 @@ impl Db {
     pub fn for_each_backend(name: &str, batch: Duration) -> Vec<Db> {
         let mut v = vec![Db::for_test_with_batch(name, batch).0];
         if let Ok(url) = std::env::var("TRP_PG_URL") {
-            let store = postgres::PostgresStore::open_fresh_schema(&url, &format!("t_{name}").replace('-', "_")).expect("open the test PostgreSQL schema");
+            let store = postgres::open_fresh_schema(&url, &format!("t_{name}").replace('-', "_")).expect("open the test PostgreSQL schema");
             v.push(Db::with_store(Arc::new(store), batch, 0, None));
         }
         v
@@ -426,11 +418,11 @@ mod tests {
         use trunk_app::stats::{HourRow, Span};
         for db in Db::for_each_backend("stats", std::time::Duration::from_millis(10)) {
             for t in [60, 120, 7200] {
-                db.send(Write::StatsMinute { t, json: format!("{{\"t\":{t}}}") });
+                db.send(Change::StatsMinute { t, json: format!("{{\"t\":{t}}}") });
             }
             let row = |series: &str, t: i64, avg: f32, n: u32| HourRow { series: series.into(), t, avg, lo: avg - 1.0, hi: avg + 1.0, n };
-            db.send(Write::StatsHours(vec![row("all/calls", 0, 9.0, 60), row("all/airMs", 0, 2.0, 60), row("cpu", 0, 50.0, 60)]));
-            db.send(Write::StatsHours(vec![row("all/calls", 0, 4.0, 60), row("all/calls", 3600, 2.0, 30), row("all/calls", 4 * 3600, 1.0, 60)]));
+            db.send(Change::StatsHours(vec![row("all/calls", 0, 9.0, 60), row("all/airMs", 0, 2.0, 60), row("cpu", 0, 50.0, 60)]));
+            db.send(Change::StatsHours(vec![row("all/calls", 0, 4.0, 60), row("all/calls", 3600, 2.0, 30), row("all/calls", 4 * 3600, 1.0, 60)]));
             db.flush().unwrap();
             assert_eq!(db.stats_minutes(100).unwrap(), ["{\"t\":120}", "{\"t\":7200}"], "{}", db.kind());
             // Two-hour buckets over four hours.
@@ -444,7 +436,7 @@ mod tests {
             assert_eq!(exact.len(), 1);
             assert_eq!(db.stats_hours(&store::HoursQuery { patterns: &["*".to_string()], span, from: 0, before: 4 * 3600 }).unwrap().len(), 3);
             assert!(db.stats_hours(&store::HoursQuery { patterns: &[], span, from: 0, before: 4 * 3600 }).unwrap().is_empty());
-            db.send(Write::RetireStats { minutes_before: 7200, hours_before: Some(3600) });
+            db.send(Change::RetireStats { minutes_before: 7200, hours_before: Some(3600) });
             db.flush().unwrap();
             assert_eq!(db.stats_minutes(0).unwrap().len(), 1);
             assert_eq!(db.count("select count(*) from stats_hours"), 2, "{}", db.kind());
@@ -457,11 +449,11 @@ mod tests {
     fn talkgroup_files_come_back() {
         for db in Db::for_each_backend("talkgroups", std::time::Duration::from_secs(60)) {
             let file = "# county\nDecimal;Alpha Tag;Ignore\n101;\"Fire; Disp\";\n102;Tac;\n";
-            db.send(Write::Talkgroups { system: "a".into(), old: String::new(), new: file.into() });
+            db.send(Change::Talkgroups { system: "a".into(), old: String::new(), new: file.into() });
             let t = std::time::Instant::now();
-            db.send(Write::Talkgroups { system: "b".into(), old: String::new(), new: "1,x\n".into() });
+            db.send(Change::Talkgroups { system: "b".into(), old: String::new(), new: "1,x\n".into() });
             let edited = trunk_core::trunk::edit_row(file, 102, &[("Ignore", "x")]);
-            db.send(Write::Talkgroups { system: "a".into(), old: file.into(), new: edited.clone() });
+            db.send(Change::Talkgroups { system: "a".into(), old: file.into(), new: edited.clone() });
             // (People's edits commit at once, whatever the interval.)
             while db.talkgroups("a").unwrap().as_deref() != Some(edited.as_str()) {
                 assert!(t.elapsed() < std::time::Duration::from_secs(5), "an edit waits for the interval ({})", db.kind());
@@ -470,8 +462,8 @@ mod tests {
             assert_eq!(db.count("select count(*) from talkgroups where system = 'a' and number = 102 and ignore"), 1);
             assert_eq!(db.count("select count(*) from talkgroups where system = 'a' and alpha_tag = 'Fire; Disp'"), 1);
             let shorter = "Decimal;Alpha Tag\n101;Fire\n";
-            db.send(Write::Talkgroups { system: "a".into(), old: String::new(), new: shorter.into() });
-            db.send(Write::Talkgroups { system: "b".into(), old: "1,x\n".into(), new: String::new() });
+            db.send(Change::Talkgroups { system: "a".into(), old: String::new(), new: shorter.into() });
+            db.send(Change::Talkgroups { system: "b".into(), old: "1,x\n".into(), new: String::new() });
             db.flush().unwrap();
             assert_eq!(db.talkgroups("a").unwrap().as_deref(), Some(shorter));
             assert_eq!(db.talkgroups("b").unwrap(), None, "cleared");
@@ -487,10 +479,10 @@ mod tests {
         use trunk_app::stats::radio::{Registry, SystemRadio, MAX_AFFILIATIONS};
         use trunk_core::trunk::{Message, MessageType};
         for db in Db::for_each_backend("kept", std::time::Duration::from_millis(10)) {
-            db.send(Write::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 1".into()) });
-            db.send(Write::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 2".into()) });
-            db.send(Write::Kept { kind: "tune".into(), key: "".into(), value: Some("{}".into()) });
-            db.send(Write::Kept { kind: "tune".into(), key: "".into(), value: None });
+            db.send(Change::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 1".into()) });
+            db.send(Change::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 2".into()) });
+            db.send(Change::Kept { kind: "tune".into(), key: "".into(), value: Some("{}".into()) });
+            db.send(Change::Kept { kind: "tune".into(), key: "".into(), value: None });
             db.flush().unwrap();
             assert_eq!(db.kept("units", "a").unwrap().as_deref(), Some("1,Engine 2"), "{}", db.kind());
             assert_eq!(db.kept("units", "b").unwrap(), None);
@@ -500,7 +492,7 @@ mod tests {
             r.track_rows();
             let save = |r: &mut Registry| {
                 for (system, c) in r.take_changes() {
-                    db.send(Write::Registry { system, changes: Box::new(c) });
+                    db.send(Change::Registry { system, changes: Box::new(c) });
                 }
             };
             let affiliate = |r: &mut Registry, from: usize, n: usize| {
@@ -520,7 +512,7 @@ mod tests {
             assert_eq!(again.affiliations.len(), MAX_AFFILIATIONS, "the log kept to its cap ({})", db.kind());
             assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap(), "{}", db.kind());
 
-            db.send(Write::RegistryWhole { system: "x".into(), radio: Box::new(r.systems["x"].clone()) });
+            db.send(Change::RegistryWhole { system: "x".into(), radio: Box::new(r.systems["x"].clone()) });
             affiliate(&mut r, MAX_AFFILIATIONS + 10, 3);
             save(&mut r);
             db.flush().unwrap();
@@ -534,7 +526,7 @@ mod tests {
     #[test]
     fn the_last_handle_removes_a_test_folder() {
         let (db, path) = Db::for_test("cleanup");
-        db.send(Write::Meta { key: "a".into(), value: "1".into() });
+        db.send(Change::Meta { key: "a".into(), value: "1".into() });
         drop(db);
         assert!(!path.parent().unwrap().exists(), "the writer has let go and the folder is gone");
     }
@@ -544,7 +536,7 @@ mod tests {
         for db in Db::for_each_backend("retention-clock", Duration::from_secs(1)) {
             assert_eq!(db.retention_cutoff(120, 1000 * DAY_MS), 880 * DAY_MS, "an empty store counts back from now ({})", db.kind());
             let r = row::tests::record(1, 10 * DAY_MS);
-            db.send(Write::Call { row: row::call_row("s/a", &r, &r.to_json(), true, true, None, 0), live: true });
+            db.send(Change::Call { row: row::call_row("s/a", &r, &r.to_json(), true, true, None, 0), live: true });
             db.flush().unwrap();
             // The clock jumped 990 days ahead of the newest call.
             let cut = db.retention_cutoff(120, 1000 * DAY_MS);
@@ -557,7 +549,7 @@ mod tests {
     fn writes_are_batched_into_few_transactions() {
         for db in Db::for_each_backend("batch", Duration::from_secs(1)) {
             for i in 0..1000 {
-                db.send(Write::Meta { key: format!("k{i}"), value: "v".into() });
+                db.send(Change::Meta { key: format!("k{i}"), value: "v".into() });
             }
             db.flush().unwrap();
             assert_eq!(db.count("select count(*) from meta"), 1000);
@@ -569,7 +561,7 @@ mod tests {
     fn a_quiet_write_commits_promptly() {
         for db in Db::for_each_backend("prompt", Duration::from_secs(1)) {
             let t = std::time::Instant::now();
-            db.send(Write::Meta { key: "a".into(), value: "1".into() });
+            db.send(Change::Meta { key: "a".into(), value: "1".into() });
             db.flush().unwrap();
             assert!(t.elapsed() < Duration::from_millis(1500));
             assert_eq!(db.meta("a").unwrap().as_deref(), Some("1"));
@@ -580,7 +572,7 @@ mod tests {
     fn a_store_that_is_off_takes_writes_and_answers_reads_with_an_error() {
         let db = Db::disabled();
         assert!(db.is_disabled());
-        assert!(!db.send(Write::Checkpoint));
+        assert!(!db.checkpoint());
         assert_eq!(db.page(&CallsFilter::default()).unwrap_err(), "the call store is off");
         assert!(db.flush().is_ok());
         assert_eq!((db.recorder(), db.describe()), (None, None));
@@ -649,7 +641,7 @@ mod tests {
                 }
                 let json = r.to_json();
                 size = json.len();
-                db.send(Write::Call { row: row::call_row(&format!("big/{second}"), &r, &json, true, true, None, 0), live: true });
+                db.send(Change::Call { row: row::call_row(&format!("big/{second}"), &r, &json, true, true, None, 0), live: true });
                 if (second + 1) % every == 0 {
                     db.flush().unwrap();
                 }
@@ -692,11 +684,11 @@ mod tests {
         for m in 0..hours * 60 {
             let t = t0 + m * 60;
             for r in [rollup(t, "engine", 88), rollup(t, "plat", 48)] {
-                db.send(Write::StatsMinute { t, json: r.to_json().to_string() });
+                db.send(Change::StatsMinute { t, json: r.to_json().to_string() });
             }
             if (m + 1) % 60 == 0 {
                 let h = t0 + (m / 60) * 3600;
-                db.send(Write::StatsHours((0..136).map(|i| HourRow { series: format!("s/series{i}"), t: h, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 }).collect()));
+                db.send(Change::StatsHours((0..136).map(|i| HourRow { series: format!("s/series{i}"), t: h, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 }).collect()));
             }
             if (m + 1) % 5 == 0 {
                 db.flush().unwrap();
@@ -753,7 +745,7 @@ mod tests {
         };
         gone();
         let db = Db::open(&path, Duration::from_secs(3600), 0).unwrap();
-        db.send(Write::RegistryWhole { system: "big".into(), radio: Box::new(r.systems["big"].clone()) });
+        db.send(Change::RegistryWhole { system: "big".into(), radio: Box::new(r.systems["big"].clone()) });
         db.flush().unwrap();
         r.track_rows();
         let (at, before) = (std::time::Instant::now(), written());
@@ -763,7 +755,7 @@ mod tests {
             if (t + 1) % 900 == 0 {
                 for (system, c) in r.take_changes() {
                     rows += c.tgs.len() + c.units.len() + c.pairs.len() + c.freqs.len();
-                    db.send(Write::Registry { system, changes: Box::new(c) });
+                    db.send(Change::Registry { system, changes: Box::new(c) });
                 }
                 db.flush().unwrap();
             }
@@ -771,7 +763,7 @@ mod tests {
         let hour = (written() - before) as f64;
         // (The day's whole copy.)
         let before = written();
-        db.send(Write::RegistryWhole { system: "big".into(), radio: Box::new(r.systems["big"].clone()) });
+        db.send(Change::RegistryWhole { system: "big".into(), radio: Box::new(r.systems["big"].clone()) });
         db.flush().unwrap();
         let bytes = hour + (written() - before) as f64 / 24.0;
         let stored = db.registry().unwrap();

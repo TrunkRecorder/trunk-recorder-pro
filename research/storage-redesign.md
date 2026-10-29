@@ -318,12 +318,10 @@ backends.
 | `bigint` where `int` would do (PostgreSQL) | 1 (logical types) |
 | Paging can take up to three queries | 3, with a (start, path) cursor if the protocol change is worth it |
 
-## Open questions
+## Answered (owner, 2026-10-29)
 
-1. **System ids:** small integers that the app assigns and puts in `config.json` (recommended: easy
-   to read in SQL), or UUIDs?
-2. **Talkgroup CSV fidelity:** keep unknown columns in `extra` for export but drop comment lines
-   (recommended), or keep comments too?
-3. **The paging cursor:** keep `before` (milliseconds) as now, at up to three queries for a page
-   ending in a busy millisecond, or move to an opaque cursor (start and path) that's always one
-   query? That's a protocol change; worth it now, while there's no back-compat to keep.
+1. **System ids are small integers** that the app assigns and keeps in `config.json`.
+2. **Talkgroup comments:** a comment line directly above a talkgroup's row is that row's
+   (`talkgroups.comment`) and is exported above it again. Other comments (before the header, after
+   a blank line, at the end) are dropped. Unknown columns are kept in `extra`.
+3. **The paging cursor becomes (start, path)**, opaque to clients, so every page is one query.

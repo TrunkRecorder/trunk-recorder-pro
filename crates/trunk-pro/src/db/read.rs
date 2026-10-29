@@ -8,6 +8,8 @@ use serde_json::Value;
 
 pub use trunk_app::protocol::CallsPage as Page;
 
+use super::sql::{Params, V};
+
 /// Which calls a query wants. Every field narrows the result; the default
 /// is every call.
 #[derive(Default, Clone, Debug)]
@@ -30,13 +32,6 @@ pub struct CallsFilter {
 /// `start_ms` for paging.
 pub const COLUMNS: &str = "c.path, c.record, c.audio, c.json, c.id, c.start_ms";
 
-/// A parameter of a query, in either dialect.
-#[derive(Clone, Debug)]
-pub enum Param {
-    Int(i64),
-    Text(String),
-}
-
 /// A condition on a call's place in the order.
 #[derive(Clone, Copy, Debug)]
 enum Cond {
@@ -58,7 +53,7 @@ enum Cond {
 /// - a radio: `call_units`, the call's system, radio and start, walked in
 ///   that order and joined to the call.
 ///
-/// Parameters are `?`; [`numbered`] makes them PostgreSQL's `$1, $2…`.
+/// Parameters are `$1, $2…` ([`super::sql`]).
 #[derive(Clone, Default)]
 pub struct Where {
     systems: Vec<String>,
@@ -84,7 +79,7 @@ impl Where {
 
     /// One system's (or, with `system` none, every system's) part: the
     /// newest `limit` of `columns` (of `calls c`).
-    fn arm(&self, system: Option<&str>, columns: &str, limit: i64, ps: &mut Vec<Param>) -> String {
+    fn arm(&self, system: Option<&str>, columns: &str, limit: i64, ps: &mut Params) -> String {
         // (The table the index walk is on: a radio's call_units, else calls.)
         let (from, start, id, sys) = match self.unit {
             Some(_) => ("call_units u join calls c on c.id = u.call_id", "u.start_ms", "u.call_id", "u.short_name"),
@@ -92,16 +87,13 @@ impl Where {
         };
         let mut w: Vec<String> = Vec::new();
         if let Some(s) = system {
-            w.push(format!("{sys} = ?"));
-            ps.push(Param::Text(s.to_string()));
+            w.push(format!("{sys} = {}", ps.add(s)));
         }
         if let Some(u) = self.unit {
-            w.push("u.unit = ?".into());
-            ps.push(Param::Int(u));
+            w.push(format!("u.unit = {}", ps.add(u)));
         }
         if let Some(tg) = self.talkgroup {
-            w.push("c.talkgroup = ?".into());
-            ps.push(Param::Int(i64::from(tg)));
+            w.push(format!("c.talkgroup = {}", ps.add(tg)));
         }
         for c in &self.conds {
             let (op, col, v) = match *c {
@@ -110,44 +102,27 @@ impl Where {
                 Cond::At(t) => ("=", start, t),
                 Cond::IdBelow(i) => ("<", id, i),
             };
-            w.push(format!("{col} {op} ?"));
-            ps.push(Param::Int(v));
+            w.push(format!("{col} {op} {}", ps.add(v)));
         }
         let cond = if w.is_empty() { String::new() } else { format!(" where {}", w.join(" and ")) };
-        ps.push(Param::Int(limit));
-        format!("select {columns} from {from}{cond} order by {start} desc, {id} desc limit ?")
+        format!("select {columns} from {from}{cond} order by {start} desc, {id} desc limit {}", ps.add(limit))
     }
 
     /// The query of a page: up to `limit` of `columns` (of `calls c`), newest
-    /// first, and its parameters. `dollar`: PostgreSQL's numbered placeholders.
-    pub fn query(&self, columns: &str, limit: i64, dollar: bool) -> (String, Vec<Param>) {
-        let mut ps = Vec::new();
+    /// first, and its parameters.
+    pub fn query(&self, columns: &str, limit: i64) -> (String, Vec<V>) {
+        let mut ps = Params::default();
         let sql = match self.systems.as_slice() {
             [] => self.arm(None, columns, limit, &mut ps),
             [one] => self.arm(Some(one), columns, limit, &mut ps),
             many => {
                 let arms: Vec<String> = many.iter().enumerate().map(|(i, s)| format!("select * from ({}) a{i}", self.arm(Some(s), columns, limit, &mut ps))).collect();
-                ps.push(Param::Int(limit));
-                format!("{} order by start_ms desc, id desc limit ?", arms.join(" union all "))
+                let lim = ps.add(limit);
+                format!("{} order by start_ms desc, id desc limit {lim}", arms.join(" union all "))
             }
         };
-        (if dollar { numbered(&sql) } else { sql }, ps)
+        (sql, ps.0)
     }
-}
-
-/// `sql` with each `?` numbered `$1, $2…`, as PostgreSQL has its parameters.
-pub fn numbered(sql: &str) -> String {
-    let mut n = 0;
-    sql.chars()
-        .map(|c| {
-            if c == '?' {
-                n += 1;
-                format!("${n}")
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
 }
 
 /// A fetched call: its entry and where it sits in the order.
@@ -245,7 +220,7 @@ pub fn with_live(stored: Page, live: &[Value], f: &CallsFilter) -> Page {
 mod tests {
     use super::*;
     use crate::db::row::{call_row, entry};
-    use crate::db::{Db, Write};
+    use crate::db::{Change, Db};
     use std::time::Duration;
 
     /// Each backend with 12 calls: talkgroup 2 (odd i) and 1 (even i),
@@ -265,7 +240,7 @@ mod tests {
                 if i == 3 || i == 8 {
                     r.src_list[0].src = 77;
                 }
-                db.send(Write::Call { row: call_row(&format!("s/{i}"), &r, &r.to_json(), true, true, None, 0), live: true });
+                db.send(Change::Call { row: call_row(&format!("s/{i}"), &r, &r.to_json(), true, true, None, 0), live: true });
             }
             db.flush().unwrap();
         }
@@ -411,12 +386,11 @@ mod tests {
     }
 
     #[test]
-    fn placeholders_are_numbered_for_postgres() {
+    fn parameters_are_numbered_as_written() {
         let w = Where::of(&CallsFilter { systems: vec!["a".into(), "b".into()], talkgroup: Some(1), ..Default::default() });
-        let (sql, ps) = w.query("c.path", 10, true);
+        let (sql, ps) = w.query("c.path", 10);
         // (Two arms of system, talkgroup and limit, then the union's limit.)
         assert!(sql.contains("c.short_name = $1") && sql.contains("c.talkgroup = $2") && sql.contains("c.short_name = $4") && sql.ends_with("limit $7"), "{sql}");
         assert_eq!(ps.len(), 7);
-        assert!(w.query("c.path", 10, false).0.ends_with("limit ?"));
     }
 }

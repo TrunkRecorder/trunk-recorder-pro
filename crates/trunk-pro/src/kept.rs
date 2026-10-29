@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use trunk_app::stats::radio::{RegistryChanges, SystemRadio};
 
-use crate::db::{Db, Write};
+use crate::db::{Change, Db};
 use crate::saver::Saver;
 
 /// A document kept between runs.
@@ -76,7 +76,7 @@ pub fn write(db: &Db, saver: &Saver, doc: Doc, text: String) {
     if db.uses_files() {
         saver.text(doc.file(&crate::paths::data_dir()), text);
     } else {
-        db.send(Write::Kept { kind: doc.kind().into(), key: doc.key().into(), value: Some(text) });
+        db.send(Change::Kept { kind: doc.kind().into(), key: doc.key().into(), value: Some(text) });
     }
 }
 
@@ -107,7 +107,7 @@ fn load_talkgroups_in(db: &Db, dir: &Path, cfg: &trunk_app::Config) -> trunk_app
 /// writes only the lines that changed, and commits at once.
 pub fn write_talkgroups(db: &Db, saver: &Saver, system: &str, old: &str, new: String) {
     if !db.uses_files() {
-        db.send(Write::Talkgroups { system: system.to_string(), old: old.to_string(), new });
+        db.send(Change::Talkgroups { system: system.to_string(), old: old.to_string(), new });
     } else if new.trim().is_empty() {
         saver.remove(talkgroups_file(&crate::paths::data_dir(), system));
     } else {
@@ -126,7 +126,7 @@ pub fn write_registry(db: &Db, saver: &Saver, system: String, radio: SystemRadio
     if db.uses_files() {
         saver.later(registry_path(&system), move || serde_json::to_string(&radio).ok());
     } else {
-        db.send(Write::RegistryWhole { system, radio: Box::new(radio) });
+        db.send(Change::RegistryWhole { system, radio: Box::new(radio) });
     }
 }
 
@@ -171,7 +171,7 @@ fn load_registry_in(db: &Db, radio_dir: &Path, shared: &trunk_app::stats::Shared
                     continue;
                 };
                 if s.changes.len() >= (trunk_app::saving::REGISTRY_WHOLE_EVERY / 4) as usize {
-                    db.send(Write::RegistryWhole { system: s.system.clone(), radio: Box::new(radio.clone()) });
+                    db.send(Change::RegistryWhole { system: s.system.clone(), radio: Box::new(radio.clone()) });
                 }
                 r.put(&s.system, radio);
             }
@@ -214,9 +214,9 @@ mod tests {
             let shared = trunk_app::stats::Shared::new();
             load_registry_in(&db, &radio, &shared);
             assert!(shared.radio.lock().unwrap().systems.is_empty());
-            db.send(Write::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 1".into()) });
-            db.send(Write::Talkgroups { system: "a".into(), old: String::new(), new: "Decimal,Alpha Tag\n101,Fire\n".into() });
-            db.send(Write::RegistryWhole { system: "x".into(), radio: Box::new(reg.systems["x"].clone()) });
+            db.send(Change::Kept { kind: "units".into(), key: "a".into(), value: Some("1,Engine 1".into()) });
+            db.send(Change::Talkgroups { system: "a".into(), old: String::new(), new: "Decimal,Alpha Tag\n101,Fire\n".into() });
+            db.send(Change::RegistryWhole { system: "x".into(), radio: Box::new(reg.systems["x"].clone()) });
             db.flush().unwrap();
             assert_eq!(read_in(&db, &dir, Doc::Units("a")).as_deref(), Some("1,Engine 1"));
             assert_eq!(load_talkgroups_in(&db, &dir, &cfg)["a"], "Decimal,Alpha Tag\n101,Fire\n");

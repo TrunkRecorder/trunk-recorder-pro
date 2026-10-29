@@ -2,201 +2,228 @@
 //! backups, replication and point-in-time recovery. `storage.url` names the
 //! database (`postgres://user:password@host/db`, or `host=… dbname=…`).
 //!
-//! The same shapes as SQLite's (`schema.rs`), in PostgreSQL's dialect: a
-//! call's record is `jsonb`, so the database can be queried by it too. One
-//! recorder per database (or schema) for now: a session advisory lock plays
-//! the lock file's part, so a second recorder pointed at it runs with its
-//! store off. Connections that drop (a server restart) are opened again on
-//! the next use. Plain TCP; TLS is a later step.
+//! It only connects: the schema is `schema.rs`'s in PostgreSQL's types, and
+//! every statement is `store.rs`'s. Values go to each parameter's own type,
+//! which a statement says once prepared (statements are kept per
+//! connection). One recorder per database (or schema) for now: a session
+//! advisory lock plays the lock file's part, so a second recorder pointed at
+//! it runs with its store off. Connections that drop (a server restart) are
+//! opened again on the next use. Plain TCP; TLS is a later step.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
-use postgres::types::ToSql;
-use postgres::{Client, NoTls};
-use serde_json::Value;
+use postgres::types::{ToSql, Type};
+use postgres::{Client, GenericClient, NoTls, Statement};
 
-use super::read::{self, CallsFilter, Fetched, Page, Param, Where};
-use super::row::{entry, CallRow};
-use super::schema::SCHEMA_VERSION;
-use super::store::{CallStore, Change, StoreInfo, StoredRegistry};
+use super::schema::{self, SCHEMA_VERSION};
+use super::sql::{Dialect, Exec, Row, V};
+use super::store::{Backend, Store};
 
 /// Read connections kept.
 const READERS: usize = 2;
 
-/// The columns a call entry is made from (the record as text), then `id` and
-/// `start_ms` for paging.
-const COLUMNS: &str = "c.path, c.record::text as record, c.audio, c.json, c.id, c.start_ms";
+/// A connection and the statements prepared on it.
+struct Conn {
+    client: Client,
+    prepared: HashMap<String, Statement>,
+}
 
-/// The tables, made in a new database: the SQLite schema's twin (keep them
-/// in step, under the one [`SCHEMA_VERSION`]).
-const SCHEMA: &str = "
-create table meta (key text primary key, value text not null);
-create table calls (
-    id bigserial primary key,
-    path text not null unique,
-    short_name text not null,
-    nac text,
-    site text,
-    talkgroup bigint not null,
-    start_ms bigint not null,
-    stop_ms bigint not null,
-    length_ms bigint not null,
-    freq_hz bigint not null,
-    emergency boolean not null,
-    encrypted boolean not null,
-    decrypted boolean not null,
-    duplex boolean not null,
-    priority bigint,
-    audio_type text,
-    signal double precision,
-    noise double precision,
-    snr double precision,
-    clean_voice_pct double precision,
-    audio boolean not null,
-    json boolean not null,
-    recorder text,
-    record jsonb not null,
-    indexed_ms bigint not null
-);
-create table call_transmissions (
-    call_id bigint not null references calls(id) on delete cascade,
-    seq bigint not null,
-    unit bigint not null,
-    start_ms bigint not null,
-    length_ms bigint not null,
-    emergency boolean not null,
-    signal_system text,
-    tag text,
-    primary key (call_id, seq)
-);
-create table call_frequencies (
-    call_id bigint not null references calls(id) on delete cascade,
-    seq bigint not null,
-    freq_hz bigint not null,
-    start_ms bigint not null,
-    length_ms bigint not null,
-    error_count bigint not null,
-    spike_count bigint not null,
-    primary key (call_id, seq)
-);
-create index calls_start on calls(start_ms);
-create index calls_system_start on calls(short_name, start_ms);
-create index calls_system_tg_start on calls(short_name, talkgroup, start_ms);
-create table call_units (
-    short_name text not null,
-    unit bigint not null,
-    start_ms bigint not null,
-    call_id bigint not null references calls(id) on delete cascade,
-    primary key (short_name, unit, start_ms, call_id)
-);
-create table kept (kind text not null, key text not null, value text not null, primary key (kind, key));
-create table registry (system text primary key, whole text not null);
-create table registry_changes (id bigserial primary key, system text not null, changes text not null);
-create table talkgroups (
-    system text not null,
-    seq bigint not null,
-    line text not null,
-    number bigint,
-    alpha_tag text,
-    description text,
-    tag text,
-    category text,
-    mode text,
-    priority integer,
-    ignore boolean,
-    primary key (system, seq)
-);
-create index talkgroups_number on talkgroups(system, number);
-create table stats_minutes (id bigserial primary key, t bigint not null, s text not null);
-create index stats_minutes_t on stats_minutes(t);
-create table stats_hours (
-    series text not null,
-    t bigint not null,
-    avg real not null,
-    lo real not null,
-    hi real not null,
-    n integer not null,
-    primary key (series, t)
-);
-";
-
-/// Every table [`SCHEMA`] makes, dropped to make it afresh.
-const TABLES: &str = "stats_hours, stats_minutes, talkgroups, registry_changes, registry, kept, call_units, call_frequencies, call_transmissions, calls, meta";
-
-pub struct PostgresStore {
+pub struct PostgresBackend {
     url: String,
     /// The schema it lives in (tests: one each); None: the connection's own.
     schema: Option<String>,
     /// The database, said without its password.
     location: String,
-    writer: Mutex<Client>,
-    readers: Mutex<Vec<Client>>,
+    writer: Mutex<Conn>,
+    readers: Mutex<Vec<Conn>>,
 }
 
-impl PostgresStore {
-    /// Connect to the database `url` names, take it for this recorder, and
-    /// migrate it.
-    pub fn open(url: &str) -> Result<PostgresStore, String> {
-        Self::open_in(url, None)
-    }
+/// The store in the database `url` names ([`PostgresBackend::open`]).
+pub fn open(url: &str) -> Result<Store, String> {
+    PostgresBackend::open_in(url, None).map(|b| Store::new(Box::new(b)))
+}
 
-    /// A fresh store in schema `schema` of `url`'s database, emptied first
-    /// (tests: each its own).
-    #[cfg(test)]
-    pub fn open_fresh_schema(url: &str, schema: &str) -> Result<PostgresStore, String> {
-        let mut c = Client::connect(url, NoTls).map_err(|e| e.to_string())?;
-        c.batch_execute(&format!("drop schema if exists {schema} cascade; create schema {schema}")).map_err(|e| e.to_string())?;
-        Self::open_in(url, Some(schema.to_string()))
-    }
+/// A fresh store in schema `schema` of `url`'s database, emptied first
+/// (tests: each its own).
+#[cfg(test)]
+pub fn open_fresh_schema(url: &str, schema: &str) -> Result<Store, String> {
+    let mut c = Client::connect(url, NoTls).map_err(|e| e.to_string())?;
+    c.batch_execute(&format!("drop schema if exists {schema} cascade; create schema {schema}")).map_err(|e| e.to_string())?;
+    PostgresBackend::open_in(url, Some(schema.to_string())).map(|b| Store::new(Box::new(b)))
+}
 
-    fn open_in(url: &str, schema: Option<String>) -> Result<PostgresStore, String> {
+impl PostgresBackend {
+    /// Connect to the database `url` names (in `schema`), take it for this
+    /// recorder, and make its tables if they aren't this build's.
+    fn open_in(url: &str, schema: Option<String>) -> Result<PostgresBackend, String> {
         if url.trim().is_empty() {
             return Err("storage.url is empty: say which PostgreSQL database".into());
         }
         let location = redacted(url);
         let mut writer = connect(url, schema.as_deref()).map_err(|e| format!("{location}: {e}"))?;
-        take(&mut writer).map_err(|e| format!("{location}: {e}"))?;
-        prepare(&mut writer, &location).map_err(|e| format!("{location}: {e}"))?;
+        take(&mut writer.client).map_err(|e| format!("{location}: {e}"))?;
+        prepare(&mut writer.client, &location).map_err(|e| format!("{location}: {e}"))?;
         let readers = (0..READERS).map(|_| connect(url, schema.as_deref())).collect::<Result<Vec<_>, _>>().map_err(|e| format!("{location}: {e}"))?;
-        Ok(PostgresStore { url: url.to_string(), schema, location, writer: Mutex::new(writer), readers: Mutex::new(readers) })
+        Ok(PostgresBackend { url: url.to_string(), schema, location, writer: Mutex::new(writer), readers: Mutex::new(readers) })
+    }
+}
+
+impl Backend for PostgresBackend {
+    fn kind(&self) -> &'static str {
+        "postgres"
     }
 
-    /// The writer's connection, opened again (and the database taken again)
-    /// if the server dropped it.
-    fn writer(&self) -> Result<std::sync::MutexGuard<'_, Client>, String> {
+    fn location(&self) -> String {
+        self.location.clone()
+    }
+
+    /// `f` in a transaction on the writer's connection (opened again, and
+    /// the database taken again, if the server dropped it).
+    fn write(&self, f: &mut dyn FnMut(&mut dyn Exec) -> Result<(), String>) -> Result<(), String> {
         let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        if w.is_closed() {
+        if w.client.is_closed() {
             log::warn!("Call store: {}: the connection dropped; connecting again", self.location);
             let mut c = connect(&self.url, self.schema.as_deref()).map_err(|e| e.to_string())?;
-            take(&mut c)?;
+            take(&mut c.client)?;
             *w = c;
         }
-        Ok(w)
+        let Conn { client, prepared } = &mut *w;
+        let mut tx = client.transaction().map_err(|e| format!("could not begin a transaction: {e}"))?;
+        f(&mut Pg { c: &mut tx, prepared })?;
+        tx.commit().map_err(|e| format!("commit failed: {e}"))
     }
 
-    /// Run `f` on a read connection from the pool (a new one when all are
-    /// out, or the one taken had dropped).
-    fn read<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, postgres::Error>) -> Result<T, String> {
-        let pooled = self.readers.lock().unwrap_or_else(|e| e.into_inner()).pop().filter(|c| !c.is_closed());
+    /// `f` on a read connection from the pool (a new one when all are out,
+    /// or the one taken had dropped).
+    fn read(&self, f: &mut dyn FnMut(&mut dyn Exec) -> Result<(), String>) -> Result<(), String> {
+        let pooled = self.readers.lock().unwrap_or_else(|e| e.into_inner()).pop().filter(|c| !c.client.is_closed());
         let mut c = match pooled {
             Some(c) => c,
             None => connect(&self.url, self.schema.as_deref()).map_err(|e| e.to_string())?,
         };
-        let out = f(&mut c).map_err(|e| e.to_string());
+        let out = f(&mut Pg { c: &mut c.client, prepared: &mut c.prepared });
         let mut pool = self.readers.lock().unwrap_or_else(|e| e.into_inner());
-        if !c.is_closed() && pool.len() < READERS {
+        if !c.client.is_closed() && pool.len() < READERS {
             pool.push(c);
         }
         out
     }
 }
 
-fn connect(url: &str, schema: Option<&str>) -> Result<Client, postgres::Error> {
-    let mut c = Client::connect(url, NoTls)?;
-    if let Some(s) = schema {
-        c.batch_execute(&format!("set search_path to {s}"))?;
+/// Statements on a connection or a transaction of it.
+struct Pg<'a, C: GenericClient> {
+    c: &'a mut C,
+    prepared: &'a mut HashMap<String, Statement>,
+}
+
+impl<C: GenericClient> Pg<'_, C> {
+    /// `sql` prepared (once per connection), and `ps` as its parameters' types.
+    fn statement(&mut self, sql: &str, ps: &[V]) -> Result<(Statement, Vec<Box<dyn ToSql + Sync>>), String> {
+        let st = match self.prepared.get(sql) {
+            Some(st) => st.clone(),
+            None => {
+                let st = self.c.prepare(sql).map_err(|e| e.to_string())?;
+                self.prepared.insert(sql.to_string(), st.clone());
+                st
+            }
+        };
+        let args = ps.iter().zip(st.params()).map(|(v, t)| param(v, t)).collect::<Result<Vec<_>, _>>()?;
+        Ok((st, args))
     }
-    Ok(c)
+}
+
+impl<C: GenericClient> Exec for Pg<'_, C> {
+    fn dialect(&self) -> Dialect {
+        Dialect::Postgres
+    }
+
+    fn execute(&mut self, sql: &str, ps: &[V]) -> Result<u64, String> {
+        let (st, args) = self.statement(sql, ps)?;
+        let refs: Vec<&(dyn ToSql + Sync)> = args.iter().map(|a| &**a).collect();
+        self.c.execute(&st, &refs).map_err(|e| e.to_string())
+    }
+
+    fn query(&mut self, sql: &str, ps: &[V]) -> Result<Vec<Row>, String> {
+        let (st, args) = self.statement(sql, ps)?;
+        let refs: Vec<&(dyn ToSql + Sync)> = args.iter().map(|a| &**a).collect();
+        Ok(self.c.query(&st, &refs).map_err(|e| e.to_string())?.iter().map(row).collect())
+    }
+
+    fn batch(&mut self, sql: &str) -> Result<(), String> {
+        self.c.batch_execute(sql).map_err(|e| e.to_string())
+    }
+}
+
+/// `v` as a parameter of type `t`.
+fn param(v: &V, t: &Type) -> Result<Box<dyn ToSql + Sync>, String> {
+    let bad = || format!("{v:?} can't be a {t}");
+    Ok(match v {
+        V::Null => match *t {
+            Type::INT2 => Box::new(None::<i16>),
+            Type::INT4 => Box::new(None::<i32>),
+            Type::INT8 => Box::new(None::<i64>),
+            Type::FLOAT4 => Box::new(None::<f32>),
+            Type::FLOAT8 => Box::new(None::<f64>),
+            Type::BOOL => Box::new(None::<bool>),
+            Type::JSON | Type::JSONB => Box::new(None::<serde_json::Value>),
+            _ => Box::new(None::<String>),
+        },
+        V::Int(i) => match *t {
+            Type::INT2 => Box::new(i16::try_from(*i).map_err(|_| bad())?),
+            Type::INT4 => Box::new(i32::try_from(*i).map_err(|_| bad())?),
+            Type::INT8 => Box::new(*i),
+            Type::FLOAT4 => Box::new(*i as f32),
+            Type::FLOAT8 => Box::new(*i as f64),
+            Type::BOOL => Box::new(*i != 0),
+            Type::TEXT | Type::VARCHAR => Box::new(i.to_string()),
+            _ => return Err(bad()),
+        },
+        V::Real(r) => match *t {
+            Type::FLOAT4 => Box::new(*r as f32),
+            Type::FLOAT8 => Box::new(*r),
+            Type::INT8 => Box::new(*r as i64),
+            _ => return Err(bad()),
+        },
+        V::Bool(b) => match *t {
+            Type::BOOL => Box::new(*b),
+            Type::INT2 => Box::new(i16::from(*b)),
+            Type::INT4 => Box::new(i32::from(*b)),
+            Type::INT8 => Box::new(i64::from(*b)),
+            _ => return Err(bad()),
+        },
+        V::Text(s) => match *t {
+            Type::JSON | Type::JSONB => Box::new(serde_json::from_str::<serde_json::Value>(s).map_err(|e| format!("not JSON: {e}"))?),
+            _ => Box::new(s.clone()),
+        },
+    })
+}
+
+/// A row's values, by each column's type (JSON as its text).
+fn row(r: &postgres::Row) -> Row {
+    Row(r
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(i, c)| match *c.type_() {
+            Type::INT2 => r.get::<_, Option<i16>>(i).map_or(V::Null, |v| V::Int(v.into())),
+            Type::INT4 => r.get::<_, Option<i32>>(i).map_or(V::Null, |v| V::Int(v.into())),
+            Type::INT8 => r.get::<_, Option<i64>>(i).map_or(V::Null, V::Int),
+            Type::FLOAT4 => r.get::<_, Option<f32>>(i).map_or(V::Null, |v| V::Real(v.into())),
+            Type::FLOAT8 => r.get::<_, Option<f64>>(i).map_or(V::Null, V::Real),
+            Type::BOOL => r.get::<_, Option<bool>>(i).map_or(V::Null, V::Bool),
+            Type::JSON | Type::JSONB => r.get::<_, Option<serde_json::Value>>(i).map_or(V::Null, |v| V::Text(v.to_string())),
+            _ => r.get::<_, Option<String>>(i).map_or(V::Null, V::Text),
+        })
+        .collect())
+}
+
+fn connect(url: &str, schema: Option<&str>) -> Result<Conn, postgres::Error> {
+    let mut client = Client::connect(url, NoTls)?;
+    if let Some(s) = schema {
+        client.batch_execute(&format!("set search_path to {s}"))?;
+    }
+    Ok(Conn { client, prepared: HashMap::new() })
 }
 
 /// Take the database (its schema) for this recorder: a session advisory
@@ -206,8 +233,8 @@ fn take(c: &mut Client) -> Result<(), String> {
     if got { Ok(()) } else { Err("another Trunk Recorder Pro is using this database".into()) }
 }
 
-/// Bring the schema up to the last migration, in one transaction. A
-/// database a newer build wrote is refused.
+/// The tables at this build's schema, in one transaction: kept if they are,
+/// otherwise (nothing migrated while in development) dropped and made afresh.
 fn prepare(c: &mut Client, location: &str) -> Result<(), String> {
     let mut tx = c.transaction().map_err(|e| e.to_string())?;
     tx.batch_execute("create table if not exists schema_version (version integer not null)").map_err(|e| e.to_string())?;
@@ -216,12 +243,11 @@ fn prepare(c: &mut Client, location: &str) -> Result<(), String> {
     if have == Some(want) {
         return tx.commit().map_err(|e| e.to_string());
     }
-    // (Nothing is migrated while in development: another version's tables are made afresh.)
     if let Some(v) = have {
         log::warn!("Call store: {location} has schema version {v}, not this build's {want}; its tables are made afresh");
     }
-    tx.batch_execute(&format!("drop table if exists {TABLES} cascade")).map_err(|e| e.to_string())?;
-    tx.batch_execute(SCHEMA).map_err(|e| e.to_string())?;
+    tx.batch_execute(&format!("drop table if exists {} cascade", schema::tables_to_drop())).map_err(|e| e.to_string())?;
+    tx.batch_execute(&schema::ddl(Dialect::Postgres)).map_err(|e| e.to_string())?;
     tx.execute("delete from schema_version", &[]).map_err(|e| e.to_string())?;
     tx.execute("insert into schema_version (version) values ($1)", &[&want]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
@@ -237,233 +263,6 @@ fn redacted(url: &str) -> String {
         return format!("{scheme}://{rest}");
     }
     url.split_whitespace().filter(|kv| !kv.starts_with("password=")).collect::<Vec<_>>().join(" ")
-}
-
-fn boxed(p: &Param) -> Box<dyn ToSql + Sync> {
-    match p {
-        Param::Int(i) => Box::new(*i),
-        Param::Text(t) => Box::new(t.clone()),
-    }
-}
-
-impl CallStore for PostgresStore {
-    fn kind(&self) -> &'static str {
-        "postgres"
-    }
-
-    fn location(&self) -> String {
-        self.location.clone()
-    }
-
-    fn apply(&self, batch: Vec<Change>) -> Result<(), String> {
-        let mut w = self.writer()?;
-        let mut tx = w.transaction().map_err(|e| format!("could not begin a transaction: {e}"))?;
-        // Each change in a savepoint: in PostgreSQL a failed statement aborts the whole
-        // transaction (and its commit quietly rolls back) unless rolled back to one.
-        for change in &batch {
-            let written = tx.transaction().and_then(|mut sp| {
-                apply_one(&mut sp, change)?;
-                sp.commit()
-            });
-            if let Err(e) = written {
-                log::warn!("Call store: {} failed: {e}", change.what());
-            }
-        }
-        tx.commit().map_err(|e| format!("commit failed: {e}"))
-    }
-
-    fn page(&self, f: &CallsFilter) -> Result<Page, String> {
-        self.read(|c| {
-            let mut fetch = |w: &Where, limit: usize| -> Result<(Vec<Fetched>, bool), String> {
-                let want = i64::try_from(limit).unwrap_or(i64::MAX - 1);
-                let (sql, ps) = w.query(COLUMNS, want.saturating_add(1), true);
-                let ps: Vec<Box<dyn ToSql + Sync>> = ps.iter().map(boxed).collect();
-                let refs: Vec<&(dyn ToSql + Sync)> = ps.iter().map(|p| &**p).collect();
-                let rows = c.query(&sql, &refs).map_err(|e| e.to_string())?;
-                let extra = rows.len() as i64 > want;
-                let out = rows
-                    .iter()
-                    .take(want as usize)
-                    .map(|r| Fetched { entry: entry(r.get::<_, &str>(0), r.get::<_, &str>(1), r.get(2), r.get(3)), id: r.get(4), start_ms: r.get(5) })
-                    .collect();
-                Ok((out, extra))
-            };
-            Ok(read::paged(f, &mut fetch))
-        })?
-    }
-
-    fn one(&self, path: &str) -> Result<Option<Value>, String> {
-        self.read(|c| Ok(c.query_opt("select path, record::text, audio, json from calls where path = $1", &[&path])?.map(|r| entry(r.get::<_, &str>(0), r.get::<_, &str>(1), r.get(2), r.get(3)))))
-    }
-
-    fn known(&self, path: &str) -> Result<bool, String> {
-        self.read(|c| Ok(c.query_opt("select 1 from calls where path = $1", &[&path])?.is_some()))
-    }
-
-    fn meta(&self, key: &str) -> Result<Option<String>, String> {
-        self.read(|c| Ok(c.query_opt("select value from meta where key = $1", &[&key])?.map(|r| r.get(0))))
-    }
-
-    fn kept(&self, kind: &str, key: &str) -> Result<Option<String>, String> {
-        self.read(|c| Ok(c.query_opt("select value from kept where kind = $1 and key = $2", &[&kind, &key])?.map(|r| r.get(0))))
-    }
-
-    fn registry(&self) -> Result<Vec<StoredRegistry>, String> {
-        self.read(|c| {
-            let whole = c.query("select system, whole from registry", &[])?.iter().map(|r| (r.get(0), r.get(1))).collect();
-            let changes = c.query("select system, changes from registry_changes order by id", &[])?.iter().map(|r| (r.get(0), r.get(1))).collect();
-            Ok(super::store::stored_registry(whole, changes))
-        })
-    }
-
-    fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
-        self.read(|c| Ok(super::store::talkgroup_file(c.query("select line from talkgroups where system = $1 order by seq", &[&system])?.iter().map(|r| r.get(0)).collect())))
-    }
-
-    fn stats_minutes(&self, since: i64) -> Result<Vec<String>, String> {
-        self.read(|c| Ok(c.query("select s from stats_minutes where t >= $1 order by t, id", &[&since])?.iter().map(|r| r.get(0)).collect()))
-    }
-
-    fn stats_hours(&self, q: &super::store::HoursQuery) -> Result<Vec<super::store::HoursSum>, String> {
-        let (sql, ps) = q.sql();
-        let ps: Vec<Box<dyn ToSql + Sync>> = ps.iter().map(boxed).collect();
-        let refs: Vec<&(dyn ToSql + Sync)> = ps.iter().map(|p| &**p).collect();
-        self.read(|c| Ok(c.query(&read::numbered(&sql), &refs)?.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5))).collect()))
-    }
-
-    fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String> {
-        let mut w = self.writer()?;
-        let n = w.execute("delete from calls where id in (select id from calls where start_ms < $1 order by start_ms limit $2)", &[&before_ms, &(max as i64)]).map_err(|e| e.to_string())?;
-        Ok(n as usize)
-    }
-
-    fn newest_start(&self) -> Result<Option<i64>, String> {
-        self.read(|c| Ok(c.query_one("select max(start_ms) from calls", &[])?.get(0)))
-    }
-
-    fn info(&self) -> Result<StoreInfo, String> {
-        let (calls, oldest_ms, newest_ms) = self.read(|c| {
-            let r = c.query_one("select count(*), min(start_ms), max(start_ms) from calls", &[])?;
-            Ok((r.get(0), r.get(1), r.get(2)))
-        })?;
-        Ok(StoreInfo { location: self.location.clone(), schema_version: SCHEMA_VERSION, calls, oldest_ms, newest_ms })
-    }
-
-    #[cfg(test)]
-    fn scalar(&self, sql: &str) -> i64 {
-        self.read(|c| Ok(c.query_one(sql, &[])?.get::<_, i64>(0))).unwrap()
-    }
-
-    #[cfg(test)]
-    fn refuse(&self, table: &str, column: &str, value: &str) {
-        let sql = format!(
-            "create or replace function refuse_{table}() returns trigger as $$ begin if new.{column} = {value} then raise exception 'refused'; end if; return new; end $$ language plpgsql;
-             create trigger refuse_{table} before insert on {table} for each row execute function refuse_{table}();"
-        );
-        self.writer().unwrap().batch_execute(&sql).unwrap();
-    }
-}
-
-/// One change, in the savepoint `tx` is.
-fn apply_one(tx: &mut postgres::Transaction<'_>, change: &Change) -> Result<(), postgres::Error> {
-    match change {
-        Change::Call { row, live } => write_call(tx, row, *live),
-        Change::CallFiles { path, audio, json } => tx.execute("update calls set audio = $2, json = $3 where path = $1", &[path, audio, json]).map(drop),
-        Change::Meta { key, value } => tx.execute("insert into meta (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value", &[key, value]).map(drop),
-        Change::Kept { kind, key, value: Some(v) } => tx.execute("insert into kept (kind, key, value) values ($1, $2, $3) on conflict (kind, key) do update set value = excluded.value", &[kind, key, v]).map(drop),
-        Change::Kept { kind, key, value: None } => tx.execute("delete from kept where kind = $1 and key = $2", &[kind, key]).map(drop),
-        Change::RegistryChanges { system, json } => tx.execute("insert into registry_changes (system, changes) values ($1, $2)", &[system, json]).map(drop),
-        Change::RegistryWhole { system, json } => {
-            tx.execute("insert into registry (system, whole) values ($1, $2) on conflict (system) do update set whole = excluded.whole", &[system, json])?;
-            tx.execute("delete from registry_changes where system = $1", &[system]).map(drop)
-        }
-        Change::StatsMinute { t, json } => tx.execute("insert into stats_minutes (t, s) values ($1, $2)", &[t, json]).map(drop),
-        Change::StatsHours(rows) => {
-            let up = tx.prepare(
-                "insert into stats_hours (series, t, avg, lo, hi, n) values ($1, $2, $3, $4, $5, $6)
-                 on conflict (series, t) do update set avg = excluded.avg, lo = excluded.lo, hi = excluded.hi, n = excluded.n",
-            )?;
-            for r in rows {
-                tx.execute(&up, &[&r.series, &r.t, &r.avg, &r.lo, &r.hi, &(r.n as i32)])?;
-            }
-            Ok(())
-        }
-        Change::RetireStats { minutes_before, hours_before } => {
-            tx.execute("delete from stats_minutes where t < $1", &[minutes_before])?;
-            hours_before.map_or(Ok(()), |h| tx.execute("delete from stats_hours where t < $1", &[&h]).map(drop))
-        }
-        Change::Talkgroups { system, lines, len } => write_talkgroups(tx, system, lines, *len),
-    }
-}
-
-/// Write a system's talkgroup lines (as `sqlite.rs` does).
-fn write_talkgroups(tx: &mut postgres::Transaction<'_>, system: &str, lines: &[super::store::TalkgroupLine], len: i64) -> Result<(), postgres::Error> {
-    let up = tx.prepare(
-        "insert into talkgroups (system, seq, line, number, alpha_tag, description, tag, category, mode, priority, ignore) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-         on conflict (system, seq) do update set line = excluded.line, number = excluded.number, alpha_tag = excluded.alpha_tag, description = excluded.description, tag = excluded.tag,
-         category = excluded.category, mode = excluded.mode, priority = excluded.priority, ignore = excluded.ignore",
-    )?;
-    for l in lines {
-        let t = l.tg.as_ref();
-        tx.execute(&up, &[&system, &l.seq, &l.line, &t.map(|t| i64::from(t.number)), &t.map(|t| &t.alpha_tag), &t.map(|t| &t.description), &t.map(|t| &t.tag), &t.map(|t| &t.group), &t.map(|t| &t.mode), &t.map(|t| t.priority), &t.map(|t| t.ignore)])?;
-    }
-    tx.execute("delete from talkgroups where system = $1 and seq >= $2", &[&system, &len])?;
-    Ok(())
-}
-
-/// Write a call's row and its children. A live call replaces what is there;
-/// a backfilled one only fills a gap, and brings its children only if it
-/// landed.
-fn write_call(tx: &mut postgres::Transaction<'_>, row: &CallRow, live: bool) -> Result<(), postgres::Error> {
-    let conflict = if live {
-        "on conflict (path) do update set
-            short_name = excluded.short_name, nac = excluded.nac, site = excluded.site,
-            talkgroup = excluded.talkgroup, start_ms = excluded.start_ms, stop_ms = excluded.stop_ms,
-            length_ms = excluded.length_ms, freq_hz = excluded.freq_hz, emergency = excluded.emergency,
-            encrypted = excluded.encrypted, decrypted = excluded.decrypted, duplex = excluded.duplex,
-            priority = excluded.priority, audio_type = excluded.audio_type, signal = excluded.signal,
-            noise = excluded.noise, snr = excluded.snr, clean_voice_pct = excluded.clean_voice_pct,
-            audio = excluded.audio, json = excluded.json, recorder = excluded.recorder,
-            record = excluded.record, indexed_ms = excluded.indexed_ms"
-    } else {
-        "on conflict (path) do nothing"
-    };
-    let sql = format!(
-        "insert into calls (path, short_name, nac, site, talkgroup, start_ms, stop_ms, length_ms, freq_hz,
-            emergency, encrypted, decrypted, duplex, priority, audio_type, signal, noise, snr,
-            clean_voice_pct, audio, json, recorder, record, indexed_ms)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-            $20, $21, $22, ($23::text)::jsonb, $24)
-         {conflict} returning id"
-    );
-    let landed = tx.query_opt(
-        &sql,
-        &[
-            &row.path, &row.short_name, &row.nac, &row.site, &row.talkgroup, &row.start_ms, &row.stop_ms, &row.length_ms, &row.freq_hz, &row.emergency, &row.encrypted, &row.decrypted, &row.duplex, &row.priority, &row.audio_type, &row.signal, &row.noise, &row.snr,
-            &row.clean_voice_pct, &row.audio, &row.json, &row.recorder, &row.record, &row.indexed_ms,
-        ],
-    )?;
-    let Some(landed) = landed else { return Ok(()) };
-    let id: i64 = landed.get(0);
-    tx.execute("delete from call_transmissions where call_id = $1", &[&id])?;
-    tx.execute("delete from call_frequencies where call_id = $1", &[&id])?;
-    tx.execute("delete from call_units where call_id = $1", &[&id])?;
-    for t in &row.transmissions {
-        tx.execute("insert into call_units (short_name, unit, start_ms, call_id) values ($1, $2, $3, $4) on conflict do nothing", &[&row.short_name, &t.unit, &row.start_ms, &id])?;
-    }
-    for (seq, t) in row.transmissions.iter().enumerate() {
-        tx.execute(
-            "insert into call_transmissions (call_id, seq, unit, start_ms, length_ms, emergency, signal_system, tag) values ($1, $2, $3, $4, $5, $6, $7, $8)",
-            &[&id, &(seq as i64), &t.unit, &t.start_ms, &t.length_ms, &t.emergency, &t.signal_system, &t.tag],
-        )?;
-    }
-    for (seq, f) in row.frequencies.iter().enumerate() {
-        tx.execute(
-            "insert into call_frequencies (call_id, seq, freq_hz, start_ms, length_ms, error_count, spike_count) values ($1, $2, $3, $4, $5, $6, $7)",
-            &[&id, &(seq as i64), &f.freq_hz, &f.start_ms, &f.length_ms, &f.error_count, &f.spike_count],
-        )?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -482,12 +281,13 @@ mod tests {
     #[test]
     fn a_second_recorder_is_refused_and_another_version_made_afresh() {
         let Ok(url) = std::env::var("TRP_PG_URL") else { return };
-        let first = PostgresStore::open_fresh_schema(&url, "t_pg_lock").unwrap();
-        let err = PostgresStore::open_in(&url, Some("t_pg_lock".into())).err().expect("refused");
+        let first = open_fresh_schema(&url, "t_pg_lock").unwrap();
+        let err = PostgresBackend::open_in(&url, Some("t_pg_lock".into())).err().expect("refused");
         assert!(err.contains("another Trunk Recorder Pro"), "{err}");
-        first.writer().unwrap().batch_execute("insert into meta (key, value) values ('a', '1'); update schema_version set version = 99").unwrap();
+        first.apply(vec![crate::db::Change::Meta { key: "a".into(), value: "1".into() }]).unwrap();
+        first.batch_for_test("update schema_version set version = 99");
         drop(first);
-        let again = PostgresStore::open_in(&url, Some("t_pg_lock".into())).unwrap();
+        let again = Store::new(Box::new(PostgresBackend::open_in(&url, Some("t_pg_lock".into())).unwrap()));
         assert_eq!(again.scalar("select max(version)::bigint from schema_version"), i64::from(SCHEMA_VERSION));
         assert_eq!(again.scalar("select count(*) from meta"), 0, "made afresh");
     }

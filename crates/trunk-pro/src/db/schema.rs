@@ -1,115 +1,238 @@
-//! The store's schema, and its version (SQLite's own `user_version`). While
-//! in development nothing is migrated: the version is raised whenever the
-//! schema changes, and a store of any other version is set aside and made
+//! The store's schema, declared once ([`TABLES`], [`INDEXES`]) and made into
+//! each dialect's DDL ([`ddl`]): the two can't drift apart. Logical types
+//! ([`Ty`]) say what a column holds; each dialect says how (a boolean is
+//! SQLite's 0/1 and PostgreSQL's `boolean`, JSON is `text` and `jsonb`).
+//!
+//! While in development nothing is migrated: [`SCHEMA_VERSION`] is raised
+//! with any change, and a store of any other version is set aside and made
 //! afresh (`sqlite.rs`; PostgreSQL's tables dropped and made again).
 //!
 //! Indexes follow the queries, each page an index walked in order to its
 //! limit (`read::Where`): calls by start (every page), by system and start
 //! (a system's page), by system, talkgroup and start (a talkgroup's), and
-//! `call_units`, a radio's calls by system and the call's start. Each costs page writes on every commit
-//! (research/storage.md); a setup that must write the least has
-//! `storage.backend: "files"`. The child tables are `without rowid`: their
-//! primary key is the table, not a second index beside it.
+//! `call_units`, a radio's calls by system and the call's start. Each costs
+//! page writes on every commit (research/storage.md). Tables keyed by what
+//! they're read by are `without rowid` in SQLite: their primary key is the
+//! table, not a second index beside it.
 
-use rusqlite::Connection;
+use super::sql::Dialect;
 
-/// This build's schema. Raise it with any change to [`SCHEMA`] (or
-/// PostgreSQL's twin): a store of another version is made afresh.
+/// This build's schema. Raise it with any change to [`TABLES`] or
+/// [`INDEXES`]: a store of another version is made afresh.
 pub const SCHEMA_VERSION: u32 = 3;
 
-/// The tables, made in a new database.
-pub const SCHEMA: &str = "
-create table meta (key text primary key, value text not null) without rowid;
-create table calls (
-    id integer primary key,
-    path text not null unique,
-    short_name text not null,
-    nac text,
-    site text,
-    talkgroup integer not null,
-    start_ms integer not null,
-    stop_ms integer not null,
-    length_ms integer not null,
-    freq_hz integer not null,
-    emergency integer not null,
-    encrypted integer not null,
-    decrypted integer not null,
-    duplex integer not null,
-    priority integer,
-    audio_type text,
-    signal real,
-    noise real,
-    snr real,
-    clean_voice_pct real,
-    audio integer not null,
-    json integer not null,
-    recorder text,
-    record text not null,
-    indexed_ms integer not null
-);
-create table call_transmissions (
-    call_id integer not null references calls(id) on delete cascade,
-    seq integer not null,
-    unit integer not null,
-    start_ms integer not null,
-    length_ms integer not null,
-    emergency integer not null,
-    signal_system text,
-    tag text,
-    primary key (call_id, seq)
-) without rowid;
-create table call_frequencies (
-    call_id integer not null references calls(id) on delete cascade,
-    seq integer not null,
-    freq_hz integer not null,
-    start_ms integer not null,
-    length_ms integer not null,
-    error_count integer not null,
-    spike_count integer not null,
-    primary key (call_id, seq)
-) without rowid;
-create index calls_start on calls(start_ms);
-create index calls_system_start on calls(short_name, start_ms);
-create index calls_system_tg_start on calls(short_name, talkgroup, start_ms);
-create table call_units (
-    short_name text not null,
-    unit integer not null,
-    start_ms integer not null,
-    call_id integer not null references calls(id) on delete cascade,
-    primary key (short_name, unit, start_ms, call_id)
-) without rowid;
-create table kept (kind text not null, key text not null, value text not null, primary key (kind, key)) without rowid;
-create table registry (system text primary key, whole text not null);
-create table registry_changes (id integer primary key, system text not null, changes text not null);
-create table talkgroups (
-    system text not null,
-    seq integer not null,
-    line text not null,
-    number integer,
-    alpha_tag text,
-    description text,
-    tag text,
-    category text,
-    mode text,
-    priority integer,
-    ignore integer,
-    primary key (system, seq)
-) without rowid;
-create index talkgroups_number on talkgroups(system, number);
-create table stats_minutes (id integer primary key, t integer not null, s text not null);
-create index stats_minutes_t on stats_minutes(t);
-create table stats_hours (
-    series text not null,
-    t integer not null,
-    avg real not null,
-    lo real not null,
-    hi real not null,
-    n integer not null,
-    primary key (series, t)
-) without rowid;
-";
+/// What a column holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ty {
+    /// The table's surrogate key, made by the database.
+    Id,
+    Int,
+    BigInt,
+    Real,
+    Bool,
+    Text,
+    /// A JSON document (PostgreSQL can query into it).
+    Json,
+}
 
-/// How a database stands after [`prepare`].
+pub struct Col {
+    pub name: &'static str,
+    pub ty: Ty,
+    pub null: bool,
+    pub unique: bool,
+    /// `table(column)`, its rows deleted with the one referred to.
+    pub cascade: Option<&'static str>,
+}
+
+const fn col(name: &'static str, ty: Ty) -> Col {
+    Col { name, ty, null: false, unique: false, cascade: None }
+}
+
+const fn opt(name: &'static str, ty: Ty) -> Col {
+    Col { name, ty, null: true, unique: false, cascade: None }
+}
+
+const fn unique(name: &'static str, ty: Ty) -> Col {
+    Col { name, ty, null: false, unique: true, cascade: None }
+}
+
+const fn of(name: &'static str, ty: Ty, parent: &'static str) -> Col {
+    Col { name, ty, null: false, unique: false, cascade: Some(parent) }
+}
+
+pub struct Table {
+    pub name: &'static str,
+    pub cols: &'static [Col],
+    /// The primary key's columns (none: the `Id` column is it).
+    pub key: &'static [&'static str],
+}
+
+pub struct Index {
+    pub name: &'static str,
+    pub table: &'static str,
+    pub cols: &'static [&'static str],
+}
+
+use Ty::*;
+
+/// Every table, parents before children.
+pub const TABLES: &[Table] = &[
+    Table { name: "meta", cols: &[col("key", Text), col("value", Text)], key: &["key"] },
+    Table {
+        name: "calls",
+        cols: &[
+            col("id", Id),
+            unique("path", Text),
+            col("short_name", Text),
+            opt("nac", Text),
+            opt("site", Text),
+            col("talkgroup", BigInt),
+            col("start_ms", BigInt),
+            col("stop_ms", BigInt),
+            col("length_ms", BigInt),
+            col("freq_hz", BigInt),
+            col("emergency", Bool),
+            col("encrypted", Bool),
+            col("decrypted", Bool),
+            col("duplex", Bool),
+            opt("priority", BigInt),
+            opt("audio_type", Text),
+            opt("signal", Real),
+            opt("noise", Real),
+            opt("snr", Real),
+            opt("clean_voice_pct", Real),
+            col("audio", Bool),
+            col("json", Bool),
+            opt("recorder", Text),
+            col("record", Json),
+            col("indexed_ms", BigInt),
+        ],
+        key: &[],
+    },
+    Table {
+        name: "call_transmissions",
+        cols: &[
+            of("call_id", BigInt, "calls(id)"),
+            col("seq", Int),
+            col("unit", BigInt),
+            col("start_ms", BigInt),
+            col("length_ms", BigInt),
+            col("emergency", Bool),
+            opt("signal_system", Text),
+            opt("tag", Text),
+        ],
+        key: &["call_id", "seq"],
+    },
+    Table {
+        name: "call_frequencies",
+        cols: &[
+            of("call_id", BigInt, "calls(id)"),
+            col("seq", Int),
+            col("freq_hz", BigInt),
+            col("start_ms", BigInt),
+            col("length_ms", BigInt),
+            col("error_count", BigInt),
+            col("spike_count", BigInt),
+        ],
+        key: &["call_id", "seq"],
+    },
+    Table {
+        name: "call_units",
+        cols: &[col("short_name", Text), col("unit", BigInt), col("start_ms", BigInt), of("call_id", BigInt, "calls(id)")],
+        key: &["short_name", "unit", "start_ms", "call_id"],
+    },
+    Table { name: "kept", cols: &[col("kind", Text), col("key", Text), col("value", Text)], key: &["kind", "key"] },
+    Table { name: "registry", cols: &[col("system", Text), col("whole", Json)], key: &["system"] },
+    Table { name: "registry_changes", cols: &[col("id", Id), col("system", Text), col("changes", Json)], key: &[] },
+    Table {
+        name: "talkgroups",
+        cols: &[
+            col("system", Text),
+            col("seq", Int),
+            col("line", Text),
+            opt("number", BigInt),
+            opt("alpha_tag", Text),
+            opt("description", Text),
+            opt("tag", Text),
+            opt("category", Text),
+            opt("mode", Text),
+            opt("priority", BigInt),
+            opt("ignore", Bool),
+        ],
+        key: &["system", "seq"],
+    },
+    Table { name: "stats_minutes", cols: &[col("id", Id), col("t", BigInt), col("s", Json)], key: &[] },
+    Table {
+        name: "stats_hours",
+        cols: &[col("series", Text), col("t", BigInt), col("avg", Real), col("lo", Real), col("hi", Real), col("n", BigInt)],
+        key: &["series", "t"],
+    },
+];
+
+pub const INDEXES: &[Index] = &[
+    Index { name: "calls_start", table: "calls", cols: &["start_ms"] },
+    Index { name: "calls_system_start", table: "calls", cols: &["short_name", "start_ms"] },
+    Index { name: "calls_system_tg_start", table: "calls", cols: &["short_name", "talkgroup", "start_ms"] },
+    Index { name: "talkgroups_number", table: "talkgroups", cols: &["system", "number"] },
+    Index { name: "stats_minutes_t", table: "stats_minutes", cols: &["t"] },
+];
+
+fn ty(d: Dialect, t: Ty) -> &'static str {
+    match (d, t) {
+        (Dialect::Sqlite, Id) => "integer primary key",
+        (Dialect::Postgres, Id) => "bigint generated always as identity primary key",
+        (Dialect::Sqlite, Int | BigInt | Bool) => "integer",
+        (Dialect::Postgres, Int) => "integer",
+        (Dialect::Postgres, BigInt) => "bigint",
+        (Dialect::Postgres, Bool) => "boolean",
+        (Dialect::Sqlite, Real) => "real",
+        (Dialect::Postgres, Real) => "double precision",
+        (_, Text) => "text",
+        (Dialect::Sqlite, Json) => "text",
+        (Dialect::Postgres, Json) => "jsonb",
+    }
+}
+
+/// The schema's DDL in dialect `d`.
+pub fn ddl(d: Dialect) -> String {
+    let mut out = String::new();
+    for t in TABLES {
+        let mut lines: Vec<String> = t
+            .cols
+            .iter()
+            .map(|c| {
+                let mut s = format!("    {} {}", c.name, ty(d, c.ty));
+                if !c.null && c.ty != Id {
+                    s.push_str(" not null");
+                }
+                if c.unique {
+                    s.push_str(" unique");
+                }
+                if let Some(p) = c.cascade {
+                    s.push_str(&format!(" references {p} on delete cascade"));
+                }
+                s
+            })
+            .collect();
+        if !t.key.is_empty() {
+            lines.push(format!("    primary key ({})", t.key.join(", ")));
+        }
+        // (Keyed by what it's read by: the key is the table, in SQLite.)
+        let rowid = if d == Dialect::Sqlite && !t.key.is_empty() { " without rowid" } else { "" };
+        out.push_str(&format!("create table {} (\n{}\n){rowid};\n", t.name, lines.join(",\n")));
+    }
+    for i in INDEXES {
+        out.push_str(&format!("create index {} on {}({});\n", i.name, i.table, i.cols.join(", ")));
+    }
+    out
+}
+
+/// Every table, children before parents (to drop them).
+pub fn tables_to_drop() -> String {
+    TABLES.iter().rev().map(|t| t.name).collect::<Vec<_>>().join(", ")
+}
+
+/// How a SQLite database stands after [`prepare`].
 pub enum Prepared {
     /// This build's schema (made now, if the database was new).
     Current,
@@ -117,9 +240,9 @@ pub enum Prepared {
     Other(u32),
 }
 
-/// A new database (no version, nothing in it) made this schema, in one
-/// transaction; one of this version left as it is.
-pub fn prepare(conn: &Connection) -> rusqlite::Result<Prepared> {
+/// A new SQLite database (no version, nothing in it) made this schema, in
+/// one transaction; one of this version left as it is.
+pub fn prepare(conn: &rusqlite::Connection) -> rusqlite::Result<Prepared> {
     let have: u32 = conn.query_row("pragma user_version", [], |r| r.get(0))?;
     if have == SCHEMA_VERSION {
         return Ok(Prepared::Current);
@@ -129,7 +252,7 @@ pub fn prepare(conn: &Connection) -> rusqlite::Result<Prepared> {
         return Ok(Prepared::Other(have));
     }
     let tx = conn.unchecked_transaction()?;
-    tx.execute_batch(SCHEMA)?;
+    tx.execute_batch(&ddl(Dialect::Sqlite))?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(Prepared::Current)
@@ -138,6 +261,26 @@ pub fn prepare(conn: &Connection) -> rusqlite::Result<Prepared> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
+
+    /// Both dialects' DDL come from the one declaration: each table has the
+    /// same columns in the same order (PostgreSQL's too, with `TRP_PG_URL`).
+    #[test]
+    fn both_dialects_make_the_same_tables() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(&ddl(Dialect::Sqlite)).unwrap();
+        let sqlite = |t: &str| -> Vec<String> { c.prepare(&format!("select name from pragma_table_info('{t}') order by cid")).unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect() };
+        for t in TABLES {
+            assert_eq!(sqlite(t.name), t.cols.iter().map(|c| c.name).collect::<Vec<_>>(), "{}", t.name);
+        }
+        let Ok(url) = std::env::var("TRP_PG_URL") else { return };
+        let mut pg = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        pg.batch_execute(&format!("drop schema if exists t_schema cascade; create schema t_schema; set search_path to t_schema; {}", ddl(Dialect::Postgres))).unwrap();
+        for t in TABLES {
+            let cols: Vec<String> = pg.query("select column_name::text from information_schema.columns where table_schema = 't_schema' and table_name = $1 order by ordinal_position", &[&t.name]).unwrap().iter().map(|r| r.get(0)).collect();
+            assert_eq!(cols, sqlite(t.name), "{}", t.name);
+        }
+    }
 
     /// Every page the query builder makes walks an index in order to its
     /// limit, never sorting all the calls it matches: every call, a system,
@@ -148,12 +291,13 @@ mod tests {
         let c = Connection::open_in_memory().unwrap();
         prepare(&c).unwrap();
         let plan = |f: CallsFilter| -> String {
-            let (sql, ps) = Where::of(&f).query(COLUMNS, 101, false);
+            let (sql, ps) = Where::of(&f).query(COLUMNS, 101);
             let ps: Vec<rusqlite::types::Value> = ps.into_iter().map(|p| match p {
-                crate::db::read::Param::Int(i) => i.into(),
-                crate::db::read::Param::Text(t) => t.into(),
+                crate::db::sql::V::Int(i) => i.into(),
+                crate::db::sql::V::Text(t) => t.into(),
+                v => panic!("{v:?}"),
             }).collect();
-            let mut st = c.prepare(&format!("explain query plan {sql}")).unwrap();
+            let mut st = c.prepare(&format!("explain query plan {}", crate::db::sql::question_marks(&sql))).unwrap();
             let rows: Vec<String> = st.query_map(rusqlite::params_from_iter(ps), |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
             rows.join(" | ")
         };
