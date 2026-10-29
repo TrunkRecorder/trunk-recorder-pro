@@ -376,10 +376,16 @@ impl Db {
         self.store()?.stats_hours(q)
     }
 
-    /// A system's stored talkgroup file.
-    pub fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
-        let Some(id) = self.system_id(system) else { return Ok(None) };
+    /// A system's stored talkgroups, in their order.
+    pub fn talkgroups(&self, system: &str) -> Result<Vec<trunk_core::trunk::TalkgroupRow>, String> {
+        let Some(id) = self.system_id(system) else { return Ok(Vec::new()) };
         self.store()?.talkgroups(id)
+    }
+
+    /// A system's stored talker aliases.
+    pub fn units(&self, system: &str) -> Result<Vec<(u32, trunk_core::trunk::UnitAlias)>, String> {
+        let Some(id) = self.system_id(system) else { return Ok(Vec::new()) };
+        self.store()?.units(id)
     }
 
     /// Every system's stored radio registry.
@@ -574,45 +580,67 @@ mod tests {
         for db in Db::for_each_backend("rename", Duration::from_millis(10)) {
             db.set_systems(&cfg("old"));
             assert_eq!(db.system_id("old"), Some(5));
-            db.send(Change::Talkgroups { system_id: 5, old: String::new(), new: "Decimal,Alpha Tag\n1,A\n".into() });
+            db.send(Change::Talkgroups { system_id: 5, rows: trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n1,A\n") });
             let mut r = row::tests::record(1, 1000);
             r.short_name = "old".into();
             db.send(Change::Call { row: row::call_row("old/1", &r, true, true, None, 0), live: true });
             db.flush().unwrap();
             db.set_systems(&cfg("new"));
             db.flush().unwrap();
-            assert_eq!(db.talkgroups("new").unwrap().as_deref(), Some("Decimal,Alpha Tag\n1,A\n"), "{}", db.kind());
+            assert_eq!(db.talkgroups("new").unwrap().iter().map(|r| r.tg.alpha_tag.as_str()).collect::<Vec<_>>(), ["A"], "{}", db.kind());
             assert_eq!(db.calls(&Default::default(), &[db.system_id("new").unwrap()]).unwrap().entries.len(), 1);
             assert_eq!(db.count("select count(*) from systems where id = 5 and short_name = 'new'"), 1);
         }
     }
 
-    /// A talkgroup file comes back exactly, through edits, a shorter file
-    /// and none; its rows can be asked for by talkgroup.
+    /// A system's talkgroups come back as rows in their order, with each
+    /// row's comment and unknown columns, through a one-row edit (committed
+    /// at once), a shorter list and none.
     #[test]
-    fn talkgroup_files_come_back() {
+    fn talkgroups_come_back_as_rows() {
+        use trunk_core::trunk::{edit_rows, parse_rows};
         for db in Db::for_each_backend("talkgroups", std::time::Duration::from_secs(60)) {
-            let file = "# county\nDecimal;Alpha Tag;Ignore\n101;\"Fire; Disp\";\n102;Tac;\n";
-            db.send(Change::Talkgroups { system_id: db.system_id("a").unwrap(), old: String::new(), new: file.into() });
+            let (a, b) = (db.system_id("a").unwrap(), db.system_id("b").unwrap());
+            let mut rows = parse_rows("# county\nDecimal;Alpha Tag;Ignore;Unit\n# dispatch\n201;\"Fire; Disp\";;E\n102;Tac;;\n");
+            db.send(Change::Talkgroups { system_id: a, rows: rows.clone() });
             let t = std::time::Instant::now();
-            db.send(Change::Talkgroups { system_id: db.system_id("b").unwrap(), old: String::new(), new: "1,x\n".into() });
-            let edited = trunk_core::trunk::edit_row(file, 102, &[("Ignore", "x")]);
-            db.send(Change::Talkgroups { system_id: db.system_id("a").unwrap(), old: file.into(), new: edited.clone() });
+            db.send(Change::Talkgroups { system_id: b, rows: parse_rows("1,x\n") });
+            let edited = edit_rows(&mut rows, 102, &[("Ignore", "x")]).unwrap();
+            db.send(Change::Talkgroup { system_id: a, row: edited, order: 1 });
             // (People's edits commit at once, whatever the interval.)
-            while db.talkgroups("a").unwrap().as_deref() != Some(edited.as_str()) {
+            while db.talkgroups("a").unwrap() != rows {
                 assert!(t.elapsed() < std::time::Duration::from_secs(5), "an edit waits for the interval ({})", db.kind());
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            let a = db.system_id("a").unwrap();
+            let back = db.talkgroups("a").unwrap();
+            assert_eq!(back.iter().map(|r| r.tg.number).collect::<Vec<_>>(), [201, 102], "in their order, not by number ({})", db.kind());
+            assert_eq!((back[0].comment.as_str(), back[0].extra.clone()), ("# dispatch", vec![("Unit".to_string(), "E".to_string())]));
             assert_eq!(db.count(&format!("select count(*) from talkgroups where system_id = {a} and number = 102 and ignore")), 1);
-            assert_eq!(db.count(&format!("select count(*) from talkgroups where system_id = {a} and alpha_tag = 'Fire; Disp'")), 1);
-            let shorter = "Decimal;Alpha Tag\n101;Fire\n";
-            db.send(Change::Talkgroups { system_id: db.system_id("a").unwrap(), old: String::new(), new: shorter.into() });
-            db.send(Change::Talkgroups { system_id: db.system_id("b").unwrap(), old: "1,x\n".into(), new: String::new() });
+            db.send(Change::Talkgroups { system_id: a, rows: parse_rows("Decimal;Alpha Tag\n201;Fire\n") });
+            db.send(Change::Talkgroups { system_id: b, rows: Vec::new() });
             db.flush().unwrap();
-            assert_eq!(db.talkgroups("a").unwrap().as_deref(), Some(shorter));
-            assert_eq!(db.talkgroups("b").unwrap(), None, "cleared");
-            assert_eq!(db.talkgroups("c").unwrap(), None);
+            assert_eq!(db.talkgroups("a").unwrap().len(), 1);
+            assert!(db.talkgroups("b").unwrap().is_empty(), "cleared");
+            assert!(db.talkgroups("c").unwrap().is_empty());
+        }
+    }
+
+    /// Talker aliases are kept as rows, and an alias heard again (no change)
+    /// is no write.
+    #[test]
+    fn talker_aliases_write_what_changed() {
+        use trunk_core::trunk::UnitAlias;
+        for db in Db::for_each_backend("units", std::time::Duration::from_millis(10)) {
+            let a = db.system_id("a").unwrap();
+            let alias = |s: &str, t: i64| UnitAlias { alias: s.into(), source: "ota".into(), time: t, talkgroup: Some(9), ..Default::default() };
+            db.send(Change::Units { system_id: a, aliases: vec![(1, alias("E1", 10)), (2, alias("E2", 10))] });
+            db.flush().unwrap();
+            assert_eq!(db.units("a").unwrap(), vec![(1, alias("E1", 10)), (2, alias("E2", 10))], "{}", db.kind());
+            // (A trigger that refuses unit 1's row: unchanged, it isn't written.)
+            db.refuse_for_test("units", "unit", "1");
+            db.send(Change::Units { system_id: a, aliases: vec![(1, alias("E1", 10)), (3, alias("E3", 20))] });
+            db.flush().unwrap();
+            assert_eq!(db.units("a").unwrap(), vec![(1, alias("E1", 10)), (3, alias("E3", 20))], "2 gone, 3 new ({})", db.kind());
         }
     }
 

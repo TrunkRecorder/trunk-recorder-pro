@@ -20,7 +20,7 @@ use super::sql::Dialect;
 
 /// This build's schema. Raise it with any change to [`TABLES`] or
 /// [`INDEXES`]: a store of another version is made afresh.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// What a column holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,22 +178,34 @@ pub const TABLES: &[Table] = &[
     Table { name: "kept", cols: &[col("kind", Text), col("key", Text), col("value", Text)], key: &["kind", "key"] },
     Table { name: "registry", cols: &[system("system_id"), col("whole", Json)], key: &["system_id"] },
     Table { name: "registry_changes", cols: &[col("id", Id), system("system_id"), col("changes", Json)], key: &[] },
+    // A system's talkgroups, by number, in the order loaded (`sort_order`):
+    // a talkgroup file is only how they come in and go out
+    // (trunk_core::trunk::parse_rows / rows_csv).
     Table {
         name: "talkgroups",
         cols: &[
             system("system_id"),
-            col("seq", Int),
-            col("line", Text),
-            opt("number", BigInt),
-            opt("alpha_tag", Text),
-            opt("description", Text),
-            opt("tag", Text),
-            opt("category", Text),
-            opt("mode", Text),
-            opt("priority", BigInt),
-            opt("ignore", Bool),
+            col("number", BigInt),
+            col("alpha_tag", Text),
+            col("mode", Text),
+            col("description", Text),
+            col("tag", Text),
+            col("category", Text),
+            col("priority", BigInt),
+            col("preferred_nac", BigInt),
+            col("preferred_site", Text),
+            col("ignore", Bool),
+            col("sort_order", BigInt),
+            col("comment", Text),
+            opt("extra", Json),
         ],
-        key: &["system_id", "seq"],
+        key: &["system_id", "number"],
+    },
+    // Each system's radios' talker aliases, as heard over the air.
+    Table {
+        name: "units",
+        cols: &[system("system_id"), col("unit", BigInt), col("alias", Text), col("source", Text), col("heard", BigInt), col("wacn", Text), col("sys", Text), opt("talkgroup", BigInt)],
+        key: &["system_id", "unit"],
     },
     Table { name: "stats_minutes", cols: &[col("id", Id), col("t", BigInt), col("s", Json)], key: &[] },
     Table {
@@ -209,7 +221,6 @@ pub const INDEXES: &[Index] = &[
     Index { name: "calls_system_tg_start", table: "calls", cols: &["system_id", "talkgroup", "start_ms"], cond: None },
     // A radio's calls: each once (its first transmission in each), by system and the call's start.
     Index { name: "transmissions_radio", table: "call_transmissions", cols: &["system_id", "unit", "call_start_ms", "call_id"], cond: Some("first") },
-    Index { name: "talkgroups_number", table: "talkgroups", cols: &["system_id", "number"], cond: None },
     Index { name: "stats_minutes_t", table: "stats_minutes", cols: &["t"], cond: None },
 ];
 

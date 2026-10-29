@@ -469,7 +469,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             session.set_keys(s, Some(ring.clone()));
         }
     }
-    session.load_units(&|name| kept::read(&ctx.db, Doc::Units(name)));
+    session.load_units(&|name| kept::read_units(&ctx.db, name));
     session.load_heard(&kept::read(&ctx.db, Doc::Heard).unwrap_or_default());
     session.load_sharing(&kept::read(&ctx.db, Doc::Sharing).unwrap_or_default());
     session.load_tune(&kept::read(&ctx.db, Doc::Tune).unwrap_or_default());
@@ -545,15 +545,18 @@ pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String
     if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
         return Err(format!("bad short name {system:?}"));
     }
+    // (As the store keeps it: its rows, each with the comment above it.)
+    let rows = trunk_core::trunk::parse_rows(&csv);
+    let csv = if rows.is_empty() { String::new() } else { trunk_core::trunk::rows_csv(&rows) };
     // (Handed to the writer with the lock held: two browsers' edits are written in the order they're kept.)
     {
         let mut files = ctx.talkgroups.lock().unwrap();
-        if csv.trim().is_empty() {
+        if csv.is_empty() {
             files.remove(system);
         } else {
             files.insert(system.to_string(), csv.clone());
         }
-        kept::write_talkgroups(&ctx.db, system, "", csv.clone());
+        kept::write_talkgroups(&ctx.db, system, rows);
     }
     ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
     // (The config first, then the names: as config_changed takes them.)
@@ -573,12 +576,14 @@ pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::prot
     let row = {
         // (Edited and handed to the writer with the lock held: edits are written in the order they're kept.)
         let mut files = ctx.talkgroups.lock().unwrap();
-        let old = files.get(system).map_or("", String::as_str);
-        let csv = trunk_core::trunk::edit_row(old, number, &edit.cells());
-        let row = trunk_core::trunk::row_of(&csv, number);
-        kept::write_talkgroups(&ctx.db, system, old, csv.clone());
-        files.insert(system.to_string(), csv);
-        row
+        let mut rows = trunk_core::trunk::parse_rows(files.get(system).map_or("", String::as_str));
+        let edited = trunk_core::trunk::edit_rows(&mut rows, number, &edit.cells());
+        let order = rows.iter().position(|r| r.tg.number == number).unwrap_or(rows.len());
+        if let Some(r) = &edited {
+            kept::write_talkgroup(&ctx.db, system, r.clone(), order);
+        }
+        files.insert(system.to_string(), trunk_core::trunk::rows_csv(&rows));
+        edited.map(|r| r.tg)
     };
     ctx.shared.names.lock().unwrap().set_talkgroup(system, number, row.clone());
     ctx.tell_engine(EngineCmd::Talkgroup { short_name: system.to_string(), number, row });
@@ -593,7 +598,7 @@ fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
     let keep = |doc: Doc, text: String| kept::write(&ctx.db, doc, text);
     for saved in session.due(now_ms, all) {
         match saved {
-            Saved::Units { system, csv } => keep(Doc::Units(&system), csv),
+            Saved::Units { system, csv } => kept::write_units(&ctx.db, &system, &csv),
             Saved::Sharing(json) => keep(Doc::Sharing, json),
             Saved::Bandplan { key, plan } => keep(Doc::Bandplan(&key), plan),
             Saved::Heard(json) => keep(Doc::Heard, json),
@@ -615,7 +620,7 @@ pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &
     let mut book = shared.names.lock().unwrap();
     book.set_config(cfg, talkgroups);
     for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
-        if let Some(csv) = kept::read(db, Doc::Units(n)) {
+        if let Some(csv) = kept::read_units(db, n) {
             book.set_units(n, &csv);
         }
     }

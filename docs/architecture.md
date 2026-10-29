@@ -545,27 +545,20 @@ main ─► serve()
 - **Persistence.**
   - `config.json` is written by `setConfig` (the interface always sends the
     whole config, with the version it edited).
-  - `<short>.talkgroups.csv` (a system's talkgroup file, trunked or
-    conventional) is written by `setTalkgroups`. An older config's
-    talkgroups are moved out into these when it's read (`migrate.rs`).
-  - `<short>.bandplan` (`<short>.<site>.bandplan` for a site with a name of
-    its own: `SiteKey::file_stem`) is written every 10 s when it changes,
-    and at stop.
-  - `<short>.units.csv` and `conventional.heard.json` are written when they
-    change; `tune.json` (AutoTune's scores) every minute and at stop.
-  - `radio/<short>.json` (the radio registry) is written every 15 min and
-    at stop.
-  - With the store on (`storage.backend` `sqlite` or `postgres`), all of
-    those but `config.json` are the store's instead (`trunk-pro/src/kept.rs`):
-    talkgroup files a line at a time in `talkgroups` (an edit writes its
-    lines, committed at once), documents in `kept`, and the registry as
-    each save's changes appended to `registry_changes`, written whole to
-    `registry` once a day. The files aren't read then: nothing is carried
-    between the two.
-  - `stats/YYYY-MM-DD.jsonl` gets each minute's rollup appended (see
-    [Measurements](#measurements)); with the store on, `stats_minutes`
-    (2 days) and `stats_hours` (each series' hours, `storage.statsDays`)
-    instead.
+  - Everything else kept between runs is the store's (`storage.backend`
+    `sqlite` or `postgres`; `trunk-pro/src/kept.rs`, `db/`), keyed by each
+    system's id from `config.json`:
+    - talkgroups as rows in `talkgroups`: a file load (`setTalkgroups`)
+      replaces a system's rows, an edit (`setTalkgroup`) upserts one, both
+      committed at once; `parse_rows` / `rows_csv` in trunk-core are the
+      import and export;
+    - talker aliases in `units` (only those that changed are written);
+    - band plans, the Heard list, AutoTune's scores and sharing's state in
+      `kept`, written within 10 s of a change (`Session::due`) and at stop;
+    - the radio registry as each 15 minutes' changes appended to
+      `registry_changes`, written whole to `registry` once a day;
+    - the dashboard's history in `stats_minutes` (2 days) and `stats_hours`
+      (each series' hours, `storage.statsDays`).
   - `trunk-pro.sqlite` (`trunk-pro/src/db/`) is the call store: one row per
     finished call, written in batches by the `db-writer` thread. The
     recording and its `.json` are still files; the row is how `callsQuery`

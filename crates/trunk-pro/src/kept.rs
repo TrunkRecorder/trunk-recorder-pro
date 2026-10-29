@@ -1,18 +1,17 @@
 //! What's kept between runs besides the calls (research/storage-redesign.md):
-//! each system's talkgroup file, talker aliases, band plans, the codes
+//! each system's talkgroups and talker aliases (rows of their own), band plans, the codes
 //! conventional frequencies carried, AutoTune's scores, what sharing did,
 //! and the radio registry. The store's, always: written by its writer, read
 //! at start. A store that couldn't open keeps nothing meanwhile (the
 //! interface says so). Reads block: never from async code.
 
 use trunk_app::stats::radio::{RegistryChanges, SystemRadio};
+use trunk_core::trunk::{TalkgroupRow, UnitAliases};
 
 use crate::db::{Change, Db};
 
 /// A document kept between runs.
 pub enum Doc<'a> {
-    /// A system's talker aliases (CSV).
-    Units(&'a str),
     /// A site's band plan, by its key.
     Bandplan(&'a str),
     /// The codes conventional frequencies carried ([`trunk_app::heard`]).
@@ -26,7 +25,6 @@ pub enum Doc<'a> {
 impl Doc<'_> {
     fn kind(&self) -> &'static str {
         match self {
-            Doc::Units(_) => "units",
             Doc::Bandplan(_) => "bandplan",
             Doc::Heard => "heard",
             Doc::Tune => "tune",
@@ -36,7 +34,7 @@ impl Doc<'_> {
 
     fn key(&self) -> &str {
         match self {
-            Doc::Units(k) | Doc::Bandplan(k) => k,
+            Doc::Bandplan(k) => k,
             _ => "",
         }
     }
@@ -55,22 +53,47 @@ pub fn write(db: &Db, doc: Doc, text: String) {
     db.send(Change::Kept { kind: doc.kind().into(), key: doc.key().into(), value: Some(text) });
 }
 
-/// The talkgroup files of `cfg`'s systems (trunked and conventional), as kept.
+/// The talkgroups of `cfg`'s systems (trunked and conventional), as kept:
+/// each system's as a talkgroup file ([`trunk_core::trunk::rows_csv`]), as
+/// the recording and browsers take them.
 pub fn load_talkgroups(db: &Db, cfg: &trunk_app::Config) -> trunk_app::config::TalkgroupFiles {
     if db.is_disabled() {
         return Default::default();
     }
     let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
-    let read = |name: &String| db.talkgroups(name).inspect_err(|e| log::warn!("Store: talkgroups of {name} not read ({e})")).ok().flatten();
-    names.filter_map(|name| read(name).map(|csv| (name.clone(), csv))).collect()
+    let read = |name: &String| db.talkgroups(name).inspect_err(|e| log::warn!("Store: talkgroups of {name} not read ({e})")).ok().filter(|rows| !rows.is_empty());
+    names.filter_map(|name| read(name).map(|rows| (name.clone(), trunk_core::trunk::rows_csv(&rows)))).collect()
 }
 
-/// Keep system `system`'s talkgroup file, edited from `old` to `new` (""
-/// for `old`: in place of what's kept; "" for `new`: none). The store
-/// writes only the lines that changed, and commits at once.
-pub fn write_talkgroups(db: &Db, system: &str, old: &str, new: String) {
+/// Keep system `system`'s talkgroups (none: it has none now), in place of
+/// what's kept. Committed at once.
+pub fn write_talkgroups(db: &Db, system: &str, rows: Vec<TalkgroupRow>) {
     if let Some(system_id) = db.system_id(system) {
-        db.send(Change::Talkgroups { system_id, old: old.to_string(), new });
+        db.send(Change::Talkgroups { system_id, rows });
+    }
+}
+
+/// Keep one talkgroup of system `system`, `order`th among them. Committed at once.
+pub fn write_talkgroup(db: &Db, system: &str, row: TalkgroupRow, order: usize) {
+    if let Some(system_id) = db.system_id(system) {
+        db.send(Change::Talkgroup { system_id, row, order });
+    }
+}
+
+/// System `system`'s talker aliases as kept, as their CSV (none: none kept).
+pub fn read_units(db: &Db, system: &str) -> Option<String> {
+    if db.is_disabled() {
+        return None;
+    }
+    let aliases = db.units(system).inspect_err(|e| log::warn!("Store: talker aliases of {system} not read ({e})")).ok()?;
+    (!aliases.is_empty()).then(|| UnitAliases::from_entries(aliases).to_csv())
+}
+
+/// Keep system `system`'s talker aliases, `csv` (only the rows that changed are written).
+pub fn write_units(db: &Db, system: &str, csv: &str) {
+    if let Some(system_id) = db.system_id(system) {
+        let aliases = UnitAliases::parse_csv(csv).entries().into_iter().map(|(u, a)| (u, a.clone())).collect();
+        db.send(Change::Units { system_id, aliases });
     }
 }
 
@@ -138,19 +161,26 @@ mod tests {
         let mut cfg = trunk_app::Config::default();
         cfg.systems.push(trunk_app::config::System { short_name: "a".into(), ..Default::default() });
         for db in Db::for_each_backend("kept", std::time::Duration::from_millis(10)) {
-            assert_eq!(read(&db, Doc::Units("a")), None, "{}", db.kind());
-            write(&db, Doc::Units("a"), "1,Engine 1".into());
-            write_talkgroups(&db, "a", "", "Decimal,Alpha Tag\n101,Fire\n".into());
+            assert_eq!(read(&db, Doc::Tune), None, "{}", db.kind());
+            assert_eq!(read_units(&db, "a"), None);
+            write(&db, Doc::Tune, "{}".into());
+            let units = "1,Engine 1,ota,1000,BEE00,1F7,101\n";
+            write_units(&db, "a", units);
+            write_talkgroups(&db, "a", trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n# the fire one\n101,Fire\n102,EMS\n"));
+            let mut ems = trunk_core::trunk::parse_rows("Decimal,Alpha Tag,Ignore\n102,EMS,x\n").remove(0);
+            ems.comment = String::new();
+            write_talkgroup(&db, "a", ems, 1);
             write_registry(&db, "x".into(), reg.systems["x"].clone());
             db.flush().unwrap();
-            assert_eq!(read(&db, Doc::Units("a")).as_deref(), Some("1,Engine 1"));
-            assert_eq!(load_talkgroups(&db, &cfg)["a"], "Decimal,Alpha Tag\n101,Fire\n");
+            assert_eq!(read(&db, Doc::Tune).as_deref(), Some("{}"));
+            assert_eq!(read_units(&db, "a").map(|c| UnitAliases::parse_csv(&c).entries().len()), Some(1));
+            assert_eq!(load_talkgroups(&db, &cfg)["a"], trunk_core::trunk::rows_csv(&trunk_core::trunk::parse_rows("Decimal,Alpha Tag,Ignore\n# the fire one\n101,Fire,\n102,EMS,x\n")), "{}", db.kind());
             let shared = trunk_app::stats::Shared::new();
             load_registry(&db, &shared);
             assert_eq!(serde_json::to_value(&shared.radio.lock().unwrap().systems["x"]).unwrap(), serde_json::to_value(&reg.systems["x"]).unwrap(), "{}", db.kind());
         }
         let off = Db::failed("refused");
-        assert_eq!(read(&off, Doc::Units("a")), None);
+        assert_eq!(read(&off, Doc::Tune), None);
         assert!(load_talkgroups(&off, &cfg).is_empty());
         assert_eq!(off.failure(), Some("refused"));
     }

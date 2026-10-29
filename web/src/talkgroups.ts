@@ -356,8 +356,9 @@ export function editCells(e: TalkgroupEdit): [string, string][] {
  * are. A column it lacks is added; a legacy headerless file is given its
  * header; a talkgroup it lacks gets a row when a value is set. Clearing
  * Ignore also undoes Trunk Recorder's way of ignoring, a priority of −1.
- * The same edit as the recorder's (trunk-core's `edit_row`), so this copy of
- * the file stays the recorder's.
+ * The same edit as the recorder's (trunk-core's `edit_rows`), so this copy
+ * of the file holds the recorder's talkgroups (the recorder keeps them as
+ * rows, and writes them out as `rows_csv` does).
  */
 export function withCells(csv: string, tg: number, cells: [string, string][]): string {
   const f = openFile(csv);

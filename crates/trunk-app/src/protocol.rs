@@ -228,7 +228,7 @@ pub struct TalkgroupEdit {
 }
 
 impl TalkgroupEdit {
-    /// The cells it sets, by the talkgroup file's column names ([`trunk_core::trunk::edit_row`]).
+    /// The cells it sets, by the talkgroup file's column names ([`trunk_core::trunk::edit_rows`]).
     pub fn cells(&self) -> Vec<(&'static str, &str)> {
         let text = [("Alpha Tag", &self.alpha_tag), ("Description", &self.description), ("Tag", &self.tag), ("Category", &self.category)];
         let mut cells: Vec<(&'static str, &str)> = text.into_iter().filter_map(|(c, v)| v.as_deref().map(|v| (c, v.trim()))).collect();

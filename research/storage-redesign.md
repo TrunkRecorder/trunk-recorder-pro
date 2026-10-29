@@ -1,4 +1,4 @@
-# Plan: the storage redesign (PR #104, schema version 4)
+# Plan: the storage redesign (PR #104, schema version 6)
 
 Status (2026-10-29):
 
@@ -17,6 +17,21 @@ Status (2026-10-29):
   too; a daily backup of `KEEP_SAFE` tables to `trunk-pro.backup` (SQLite). The backup copies
   what can't be rebuilt rather than `VACUUM INTO` the whole store: the call index is gigabytes on
   a big store and is rebuilt from its files.
+- phase 5 is done for the store (schema 6):
+  - `talkgroups` holds a system's rows, keyed (system_id, number), each in its own typed columns,
+    with `sort_order`, the comment directly above it, and unknown columns in `extra` JSON.
+  - A file load replaces a system's rows; an edit (Ignore, a name) upserts one row, committed at
+    once.
+  - `units` holds talker aliases, and only the aliases that changed are written.
+  - The import and export are `parse_rows` / `rows_csv` / `edit_rows` in trunk-core, beside the
+    engine's `parse_csv` (wasm-safe, so the browser build can use them). The CSV line editors
+    (`edit_row`, `row_of`, `line_numbers`) are gone.
+  - Still to decide (owner): the wire still carries a system's talkgroups as CSV, now the
+    normalized `rows_csv` text, with the browser's `withCells` making the same edit. The plan
+    wanted rows on the wire with the browser editing rows. That reshapes the Setup talkgroup
+    editor and the browser build's file handling, so it's left for a yes. The engine and
+    `NameBook` still take the CSV too.
+  - The greeting reads talker aliases from the store (as before), not from memory.
 
 Phase 2 as built:
 

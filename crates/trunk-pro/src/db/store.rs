@@ -8,6 +8,7 @@
 
 use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use trunk_app::stats::radio::{RegistryChanges, SystemRadio};
+use trunk_core::trunk::{TalkgroupRow, UnitAlias};
 
 use super::read::{self, Where};
 use super::row::{call_values, src_entry, stored_call, tx_values, CallRow, CALL_COLS, TX_COLS};
@@ -47,10 +48,13 @@ pub enum Change {
     /// The dashboard's minutes before `minutes_before` go, and its hours
     /// before `hours_before` (none: kept).
     RetireStats { minutes_before: i64, hours_before: Option<i64> },
-    /// A system's talkgroup file edited from `old` to `new` ("" for `old`:
-    /// in place of what's stored; "" for `new`: none). Committed at once:
-    /// people make these.
-    Talkgroups { system_id: i64, old: String, new: String },
+    /// A system's talkgroups, in place of what's stored (a file loaded).
+    /// Committed at once, as [`Change::Talkgroup`]: people make these.
+    Talkgroups { system_id: i64, rows: Vec<TalkgroupRow> },
+    /// One talkgroup of a system edited (`order`: its place among them).
+    Talkgroup { system_id: i64, row: TalkgroupRow, order: usize },
+    /// A system's talker aliases now (what changed is written).
+    Units { system_id: i64, aliases: Vec<(u32, UnitAlias)> },
 }
 
 impl Change {
@@ -65,14 +69,15 @@ impl Change {
             Change::Registry { system_id, .. } | Change::RegistryWhole { system_id, .. } => format!("registry write (system {system_id})"),
             Change::StatsMinute { .. } | Change::StatsHours(_) => "stats write".into(),
             Change::RetireStats { .. } => "stats retention".into(),
-            Change::Talkgroups { system_id, .. } => format!("talkgroups write (system {system_id})"),
+            Change::Talkgroups { system_id, .. } | Change::Talkgroup { system_id, .. } => format!("talkgroups (system {system_id})"),
+            Change::Units { system_id, .. } => format!("talker aliases write (system {system_id})"),
         }
     }
 
     /// Whether it should be committed at once, not at the writer's interval
     /// (people make it).
     pub fn urgent(&self) -> bool {
-        matches!(self, Change::Talkgroups { .. })
+        matches!(self, Change::Talkgroups { .. } | Change::Talkgroup { .. })
     }
 }
 
@@ -103,7 +108,7 @@ pub trait Backend: Send + Sync {
 /// What a backup keeps: what people made and the recorder learned, which
 /// can't be made again (calls can, from their files; the dashboard's
 /// history is the dashboard's). Small: written once a day.
-pub const KEEP_SAFE: &[&str] = &["systems", "talkgroups", "kept", "registry", "registry_changes", "meta"];
+pub const KEEP_SAFE: &[&str] = &["systems", "talkgroups", "units", "kept", "registry", "registry_changes", "meta"];
 
 /// The store over a backend. Only [`Backend::kind`] and [`Store::location`]
 /// are free to call from async code.
@@ -199,9 +204,15 @@ impl Store {
         })
     }
 
-    /// A system's talkgroup file, as stored ([`talkgroup_file`]).
-    pub fn talkgroups(&self, system_id: i64) -> Result<Option<String>, String> {
-        self.read(|x| Ok(talkgroup_file(x.query("select line from talkgroups where system_id = $1 order by seq", vals![system_id])?.iter().map(|r| r.text(0)).collect())))
+    /// A system's talkgroups, in their order.
+    pub fn talkgroups(&self, system_id: i64) -> Result<Vec<TalkgroupRow>, String> {
+        let sql = format!("select {} from talkgroups where system_id = $1 order by sort_order", TG_COLS.join(", "));
+        self.read(|x| Ok(x.query(&sql, vals![system_id])?.iter().map(talkgroup_row).collect()))
+    }
+
+    /// A system's talker aliases.
+    pub fn units(&self, system_id: i64) -> Result<Vec<(u32, UnitAlias)>, String> {
+        self.read(|x| units_of(x, system_id))
     }
 
     /// The dashboard's minutes from `since` (Unix s) on, as JSON lines, oldest first.
@@ -321,19 +332,28 @@ fn apply_one(x: &mut dyn Exec, change: &Change) -> Result<(), String> {
             x.execute("delete from stats_minutes where t < $1", vals![*minutes_before])?;
             hours_before.map_or(Ok(()), |h| x.execute("delete from stats_hours where t < $1", vals![h]).map(drop))
         }
-        Change::Talkgroups { system_id, old, new } => {
-            let system = *system_id;
-            let (lines, len) = talkgroup_lines(old, new);
-            for l in &lines {
-                let t = l.tg.as_ref();
-                x.execute(
-                    "insert into talkgroups (system_id, seq, line, number, alpha_tag, description, tag, category, mode, priority, ignore) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                     on conflict (system_id, seq) do update set line = excluded.line, number = excluded.number, alpha_tag = excluded.alpha_tag, description = excluded.description,
-                     tag = excluded.tag, category = excluded.category, mode = excluded.mode, priority = excluded.priority, ignore = excluded.ignore",
-                    vals![system, l.seq, &l.line, t.map(|t| t.number), t.map(|t| &t.alpha_tag), t.map(|t| &t.description), t.map(|t| &t.tag), t.map(|t| &t.group), t.map(|t| &t.mode), t.map(|t| t.priority), t.map(|t| t.ignore)],
-                )?;
+        Change::Talkgroups { system_id, rows } => {
+            x.execute("delete from talkgroups where system_id = $1", vals![*system_id])?;
+            rows.iter().enumerate().try_for_each(|(i, r)| write_talkgroup(x, *system_id, r, i))
+        }
+        Change::Talkgroup { system_id, row, order } => write_talkgroup(x, *system_id, row, *order),
+        Change::Units { system_id, aliases } => {
+            // (What changed alone: an alias heard again is no write.)
+            let had: std::collections::HashMap<u32, UnitAlias> = units_of(x, *system_id)?.into_iter().collect();
+            for (unit, a) in aliases {
+                if had.get(unit) != Some(a) {
+                    x.execute(
+                        "insert into units (system_id, unit, alias, source, heard, wacn, sys, talkgroup) values ($1, $2, $3, $4, $5, $6, $7, $8)
+                         on conflict (system_id, unit) do update set alias = excluded.alias, source = excluded.source, heard = excluded.heard, wacn = excluded.wacn, sys = excluded.sys, talkgroup = excluded.talkgroup",
+                        vals![*system_id, *unit, &a.alias, &a.source, a.time, &a.wacn, &a.sys, a.talkgroup],
+                    )?;
+                }
             }
-            x.execute("delete from talkgroups where system_id = $1 and seq >= $2", vals![system, len]).map(drop)
+            let now: std::collections::HashSet<u32> = aliases.iter().map(|(u, _)| *u).collect();
+            for unit in had.keys().filter(|u| !now.contains(u)) {
+                x.execute("delete from units where system_id = $1 and unit = $2", vals![*system_id, *unit])?;
+            }
+            Ok(())
         }
     }
 }
@@ -388,37 +408,42 @@ pub struct StoredRegistry {
     pub changes: Vec<String>,
 }
 
-/// A line of a system's talkgroup file, as the `talkgroups` table keeps it:
-/// the line itself (the file comes back exactly, comments, extra columns
-/// and delimiter too), and the talkgroup it's the row of, read, for queries
-/// (a call's talkgroup by name).
-pub struct TalkgroupLine {
-    pub seq: i64,
-    pub line: String,
-    pub tg: Option<trunk_core::trunk::Talkgroup>,
+/// `talkgroups`' columns, in the order [`write_talkgroup`] gives them and
+/// [`talkgroup_row`] reads them.
+const TG_COLS: &[&str] = &["system_id", "number", "alpha_tag", "mode", "description", "tag", "category", "priority", "preferred_nac", "preferred_site", "ignore", "sort_order", "comment", "extra"];
+
+/// Talkgroup `r` of system `system_id`, at `order` among them.
+fn write_talkgroup(x: &mut dyn Exec, system_id: i64, r: &TalkgroupRow, order: usize) -> Result<(), String> {
+    let t = &r.tg;
+    let extra = (!r.extra.is_empty()).then(|| serde_json::to_string(&r.extra).unwrap_or_default());
+    let marks: Vec<String> = (1..=TG_COLS.len()).map(|i| format!("${i}")).collect();
+    let set: Vec<String> = TG_COLS[2..].iter().map(|c| format!("{c} = excluded.{c}")).collect();
+    let sql = format!("insert into talkgroups ({}) values ({}) on conflict (system_id, number) do update set {}", TG_COLS.join(", "), marks.join(", "), set.join(", "));
+    let ps = vals![system_id, t.number, &t.alpha_tag, &t.mode, &t.description, &t.tag, &t.group, i64::from(t.priority), t.preferred_nac, &t.preferred_site, t.ignore, order, &r.comment, extra];
+    x.execute(&sql, ps).map(drop)
 }
 
-/// What changed from talkgroup file `old` to `new` ("" for `old`: all of
-/// it), as lines to write and the new length: an edit writes only the
-/// lines it changed, unless it changed the header (then every row, read
-/// again).
-pub fn talkgroup_lines(old: &str, new: &str) -> (Vec<TalkgroupLine>, i64) {
-    let unmarked = |s: &str| s.strip_prefix('\u{feff}').unwrap_or(s).to_string();
-    let (old, new) = (unmarked(old), unmarked(new));
-    let (was, lines): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
-    fn header<'a>(l: &[&'a str]) -> Option<&'a str> {
-        l.iter().find(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).copied()
-    }
-    let all = header(&was) != header(&lines);
-    let numbers = trunk_core::trunk::line_numbers(&new);
-    let parsed = trunk_core::trunk::parse_csv(&new);
-    let changed = lines
-        .iter()
-        .enumerate()
-        .filter(|&(i, l)| all || was.get(i) != Some(l))
-        .map(|(i, l)| TalkgroupLine { seq: i as i64, line: l.to_string(), tg: numbers.get(i).copied().flatten().and_then(|n| parsed.get(&n).cloned()) })
-        .collect();
-    (changed, lines.len() as i64)
+/// A talkgroup read back (columns [`TG_COLS`]).
+fn talkgroup_row(r: &super::sql::Row) -> TalkgroupRow {
+    let tg = trunk_core::trunk::Talkgroup {
+        number: r.int(1) as u32,
+        alpha_tag: r.text(2),
+        mode: r.text(3),
+        description: r.text(4),
+        tag: r.text(5),
+        group: r.text(6),
+        priority: r.int(7) as i32,
+        preferred_nac: r.int(8) as u32,
+        preferred_site: r.text(9),
+        ignore: r.bool(10),
+    };
+    TalkgroupRow { tg, comment: r.text(12), extra: r.opt_text(13).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default() }
+}
+
+/// System `system_id`'s talker aliases as stored.
+fn units_of(x: &mut dyn Exec, system_id: i64) -> Result<Vec<(u32, UnitAlias)>, String> {
+    let rows = x.query("select unit, alias, source, heard, wacn, sys, talkgroup from units where system_id = $1 order by unit", vals![system_id])?;
+    Ok(rows.iter().map(|r| (r.int(0) as u32, UnitAlias { alias: r.text(1), source: r.text(2), time: r.int(3), wacn: r.text(4), sys: r.text(5), talkgroup: r.opt_int(6).map(|t| t as u32) })).collect())
 }
 
 /// Hours of the dashboard's history wanted: the series matching `patterns`
@@ -476,10 +501,6 @@ fn after(prefix: &str) -> Option<String> {
     None
 }
 
-/// A system's talkgroup file from its stored lines.
-pub fn talkgroup_file(lines: Vec<String>) -> Option<String> {
-    (!lines.is_empty()).then(|| lines.join("\n") + "\n")
-}
 
 /// Each system's [`StoredRegistry`] from its whole copy (system, JSON) and
 /// changes (system, JSON; oldest first).
@@ -505,30 +526,4 @@ pub struct StoreInfo {
     pub calls: i64,
     pub oldest_ms: Option<i64>,
     pub newest_ms: Option<i64>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// An edit writes the lines it changed; a new header, every row; a
-    /// shorter file, its length. Each row read as the file reads it.
-    #[test]
-    fn talkgroup_edits_write_only_their_lines() {
-        let file = "# county\nDecimal,Alpha Tag,Ignore\n101,Fire,\n102,Tac,\n";
-        let (all, len) = talkgroup_lines("", file);
-        assert_eq!((all.len(), len), (4, 4));
-        assert!(all[0].tg.is_none() && all[1].tg.is_none());
-        assert_eq!(all[3].tg.as_ref().map(|t| (t.number, t.alpha_tag.as_str())), Some((102, "Tac")));
-        let edited = trunk_core::trunk::edit_row(file, 102, &[("Ignore", "x")]);
-        let (one, len) = talkgroup_lines(file, &edited);
-        assert_eq!((one.len(), one[0].seq, len), (1, 3, 4));
-        assert!(one[0].tg.as_ref().unwrap().ignore);
-        let named = trunk_core::trunk::edit_row(file, 101, &[("Tag", "Fire")]);
-        assert_eq!(talkgroup_lines(file, &named).0.len(), 4, "a column added: every line");
-        let (none, len) = talkgroup_lines(file, "# county\nDecimal,Alpha Tag,Ignore\n");
-        assert_eq!((none.len(), len), (0, 2));
-        assert_eq!(talkgroup_file(file.lines().map(str::to_string).collect()).as_deref(), Some(file));
-        assert_eq!(talkgroup_file(Vec::new()), None);
-    }
 }

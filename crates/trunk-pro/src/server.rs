@@ -568,7 +568,7 @@ fn capabilities(ctx: &Ctx) -> Vec<trunk_app::protocol::Capability> {
 fn kept_now(ctx: &Ctx) -> Vec<ToClient> {
     use crate::kept::{self, Doc};
     let config = ctx.config.lock().unwrap().clone();
-    let mut m: Vec<ToClient> = config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)).filter_map(|n| Some(ToClient::Units { system: n.clone(), csv: kept::read(&ctx.db, Doc::Units(n))? })).collect();
+    let mut m: Vec<ToClient> = config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)).filter_map(|n| Some(ToClient::Units { system: n.clone(), csv: kept::read_units(&ctx.db, n)? })).collect();
     if ctx.heard_last.lock().unwrap().is_none() {
         let saved = kept::read(&ctx.db, Doc::Heard).and_then(|t| serde_json::from_str::<Value>(&t).ok());
         m.push(ToClient::Heard { heard: saved.unwrap_or(json!({})) });

@@ -60,10 +60,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     old file will do). A store of another schema version is set aside (SQLite: renamed
     `.v<n>-<time>`; PostgreSQL: its tables made afresh) and a new one started; the call list is
     rebuilt from the recordings' `.json` files.
-  - **Talkgroup files are kept in the store too**, a line at a time and exactly as loaded. An
-    Ignore or name change writes only that line and commits at once, rather than rewriting the
-    file. Each row's talkgroup is in columns of its own, so a call's talkgroup name is a SQL join
-    away. **Load CSV…** and **Download** in Setup are the import and export.
+  - **Talkgroups are kept in the store as rows**, one per talkgroup with its columns typed (a
+    call's talkgroup name is a SQL join away). An Ignore or name change writes only that row and
+    commits at once. **Load CSV…** and **Download** in Setup are the import and export. A
+    downloaded file keeps each row's order, the comment line directly above it and any columns
+    of its own; other comment lines and the original delimiter aren't kept (it's written with
+    commas). Talker aliases are rows too (`units`), and only the ones that changed are written.
   - **The dashboard's history goes back a year, not a week** (`storage.statsDays`, 365 by default;
     0 keeps it all). The Platform, RF and Decode pages' charts offer 30 days, 90 days and 1 year,
     as far as the store keeps. Each series is kept by the hour, and only the last day by the
