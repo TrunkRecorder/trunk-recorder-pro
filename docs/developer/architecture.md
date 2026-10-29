@@ -1394,12 +1394,11 @@ found on the air with `plan_centers`, through the same `off_dc`.
 | `tune.json` | AutoTune's scores per source, for the next run |
 | `radio/<short>.json` | the radio registry (units, talkgroups, affiliations); every 15 min and at stop |
 
-With the store on (`storage.backend` `sqlite` or `postgres`), the talkgroup files (a line at a
-time, table `talkgroups`), band plans, talker aliases,
-conventional codes, AutoTune's scores, sharing's state and the radio registry are kept in the
-store instead (`trunk-pro/src/kept.rs`). The registry is stored as each save's changes, and
-written whole once a day. The files aren't read then (nothing is carried between the two), and
-a store of another schema version is set aside and made afresh (`db/schema.rs`).
+The store keeps the talkgroup files (a line at a time, table `talkgroups`), band plans, talker
+aliases, conventional codes, AutoTune's scores, sharing's state, the radio registry (each save's
+changes, whole once a day) and the dashboard's history (`trunk-pro/src/kept.rs`,
+`statstore.rs`); there are no files for them. Low-write mode keeps no call index. A store of
+another schema version is set aside and made afresh (`db/schema.rs`).
 
 | `stats/YYYY-MM-DD.jsonl` | a dashboard rollup per minute; gzipped after the day, kept 8 days (`files`; the store on: `stats_minutes` and `stats_hours`) |
 | `plugins/<id>/` | installed plugins |

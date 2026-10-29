@@ -104,6 +104,22 @@ impl Backend for SqliteBackend {
         }
     }
 
+    /// `tables` copied to `<name>.backup` beside the store (whole, then
+    /// renamed over the last one).
+    fn backup(&self, tables: &[&str]) -> Result<Option<String>, String> {
+        let to = self.path.with_extension("backup");
+        let tmp = self.path.with_extension("backup.tmp");
+        let _ = std::fs::remove_file(&tmp);
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("attach database ?1 as b", [tmp.to_string_lossy()]).map_err(|e| e.to_string())?;
+        let copied = tables.iter().try_for_each(|t| conn.execute_batch(&format!("create table b.{t} as select * from main.{t}")));
+        let _ = conn.execute_batch("detach database b");
+        drop(conn);
+        copied.map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &to).map_err(|e| e.to_string())?;
+        Ok(Some(to.display().to_string()))
+    }
+
     fn close(&self) {
         // (The planner's statistics, kept current as SQLite advises, on the way out.)
         if let Err(e) = self.writer.lock().unwrap_or_else(|e| e.into_inner()).execute_batch("pragma optimize") {

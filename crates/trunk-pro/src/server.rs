@@ -536,6 +536,10 @@ pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
         let cfg = ctx.config.lock().unwrap().clone();
         m.push(ctx.interfaces.list(&cfg, &ctx.config_path));
     }
+    // (A store that couldn't open: said to everyone who connects, until it's fixed.)
+    if let Some(why) = ctx.db.failure() {
+        m.push(ToClient::error(format!("The store couldn't be opened ({why}). Nothing is kept until it opens: talkgroups, aliases, the radio registry, the call index and the dashboard's history. Recording goes on.")));
+    }
     m.push(ToClient::Hello {
         version: env!("CARGO_PKG_VERSION").into(),
         platform: std::env::consts::OS.into(),
@@ -551,7 +555,11 @@ pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
 /// `history` only while the call store is open.
 fn capabilities(ctx: &Ctx) -> Vec<trunk_app::protocol::Capability> {
     use trunk_app::protocol::Capability;
-    Capability::ALL.iter().copied().filter(|c| !matches!(c, Capability::Calls | Capability::History) || !ctx.db.is_disabled()).collect()
+    Capability::ALL.iter().copied().filter(|c| match c {
+        Capability::Calls => ctx.db.indexes_calls(),
+        Capability::History => !ctx.db.is_disabled(),
+        _ => true,
+    }).collect()
 }
 
 /// The greeting's messages from what's kept between runs (the store, or

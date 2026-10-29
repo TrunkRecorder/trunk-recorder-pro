@@ -10,6 +10,13 @@ Status (2026-10-29):
   query/page (`CallsQuery`/`CallsPage`, the SDK's); filter and paging in trunk-app, used by the
   browser build through wasm; `olderCalls` gone; one meaning of "calls" over WebSocket and HTTP.
   Still to do from it: the greeting reads talker aliases from memory (with phase 5's `units`).
+- phase 4 is done: `files` gone (`storage.backend` sqlite | postgres), `storage.lowWrite` (no
+  call index, hours only, commits ≥ 3600 s), `saver.rs` and every file path of `kept.rs` and
+  `statstore.rs` gone; a failed store said in every greeting; a failed talkgroup edit told to the
+  browsers (`Db::on_failure`); the writer's timed work (retention, backup) runs between batches
+  too; a daily backup of `KEEP_SAFE` tables to `trunk-pro.backup` (SQLite). The backup copies
+  what can't be rebuilt rather than `VACUUM INTO` the whole store: the call index is gigabytes on
+  a big store and is rebuilt from its files.
 
 Phase 2 as built:
 

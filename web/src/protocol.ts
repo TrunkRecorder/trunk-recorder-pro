@@ -502,15 +502,17 @@ export interface Config {
 }
 
 export interface StorageSettings {
-  /** Which store keeps the call index: "files" (none: the call files and the recent calls alone), "sqlite" (a file beside the config; the default) or "postgres" (a database server, `url`). */
-  backend: "files" | "sqlite" | "postgres";
+  /** Which database keeps what the recorder keeps (the call index, talkgroups, aliases, the radio registry, the dashboard's history): "sqlite" (a file beside the config; the default) or "postgres" (a database server, `url`). */
+  backend: "sqlite" | "postgres";
+  /** Write as little as can be (an SD card): no call index (the call list is the recent calls), the dashboard's history by the hour only, a commit an hour. */
+  lowWrite?: boolean;
   /** PostgreSQL's connection string (postgres://user:password@host/db); one recorder per database or schema. Not sent to listen-only connections (it can hold a password). */
   url?: string;
   /** Days of calls the call store indexes (default 120); 0 keeps them all. The calls' files on disk aren't touched. */
   retentionDays: number;
   /** Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, twice, so longer is gentler on flash. */
   commitSeconds: number;
-  /** Days of the dashboard's history kept, as hours (default 365); 0 keeps it all. "files" keeps a week. */
+  /** Days of the dashboard's history kept, as hours (default 365); 0 keeps it all. */
   statsDays?: number;
 }
 

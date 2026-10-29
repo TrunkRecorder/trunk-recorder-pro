@@ -63,9 +63,9 @@ pub fn recent_folders(cfg: &Config, now_s: i64) -> Vec<PathBuf> {
 
 /// Index the capture folder in the background. A walk already going is left
 /// to finish: starting another would only read every file twice. Nothing
-/// runs when the store is off.
+/// runs when calls aren't indexed (the store off, or low-write mode).
 pub fn start(ctx: Arc<Ctx>) {
-    if ctx.db.is_disabled() {
+    if !ctx.db.indexes_calls() {
         return;
     }
     if !ctx.db.try_begin_backfill() {

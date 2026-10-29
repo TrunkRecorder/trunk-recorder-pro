@@ -122,7 +122,7 @@ const RANGE_DAYS: { v: StatsRange; label: string; days: number }[] = [
 
 /** The spans a chart can show: a week from memory; with a store (`history`), as far as it keeps (`storage.statsDays`; 0: all). */
 export function rangesFor(storage: StorageSettings | undefined, history: boolean): { v: StatsRange; label: string }[] {
-  const kept = !history || storage?.backend === "files" ? 7 : (storage?.statsDays ?? 365) || Infinity;
+  const kept = !history ? 7 : (storage?.statsDays ?? 365) || Infinity;
   return RANGE_DAYS.filter((r) => r.days <= Math.max(7, kept)).map(({ v, label }) => ({ v, label }));
 }
 

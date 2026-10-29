@@ -3159,15 +3159,17 @@ export function Setup() {
                       />
                     </Field>
                   )}
-                  <Field label="Call history kept in" hint="Files writes the least (the recordings alone, and the recent calls). From the next start">
+                  <Field label="Kept in" hint="Talkgroups, aliases, the radio registry, the call index and the dashboard's history. From the next start">
                     <select
                       value={c.storage?.backend ?? "sqlite"}
-                      onChange={(e) => updateConfig((x) => void (x.storage = { url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, backend: e.target.value as "files" | "sqlite" | "postgres" }))}
+                      onChange={(e) => updateConfig((x) => void (x.storage = { url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, backend: e.target.value as "sqlite" | "postgres" }))}
                     >
                       <option value="sqlite">This computer (SQLite)</option>
                       <option value="postgres">A PostgreSQL server</option>
-                      <option value="files">Files only</option>
                     </select>
+                  </Field>
+                  <Field label="Low-write mode" hint="For an SD card: no call index (the call list is the recent calls), the dashboard's history by the hour, a commit an hour. From the next start">
+                    <Switch label="Low-write mode" checked={!!c.storage?.lowWrite} onChange={(v) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, lowWrite: v || undefined }))} />
                   </Field>
                   {c.storage?.backend === "postgres" && (
                     <Field label="PostgreSQL connection" hint="postgres://user:password@host/database; one recorder per database or schema" wide>

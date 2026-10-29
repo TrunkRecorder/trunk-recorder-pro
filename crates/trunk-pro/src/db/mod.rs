@@ -64,6 +64,10 @@ struct Inner {
     /// The writer thread, waited for when the last handle goes.
     writer: Option<JoinHandle<()>>,
     backfill_running: AtomicBool,
+    /// Calls are indexed (not in low-write mode).
+    index_calls: bool,
+    /// Who's told when a change people made couldn't be saved.
+    report: Reporter,
     /// The config's systems: each short name its calls were filed under (a
     /// system's own, and its sites' from before it had them) to its id.
     systems: std::sync::RwLock<Systems>,
@@ -73,6 +77,12 @@ struct Inner {
     #[cfg(test)]
     dir: Option<TestDir>,
 }
+
+/// Who's told when a change people made couldn't be saved ([`Db::on_failure`]).
+pub(crate) type Reporter = Arc<std::sync::Mutex<Option<Box<dyn Fn(String) + Send + Sync>>>>;
+
+/// Commits are at least this far apart in low-write mode.
+const LOW_WRITE_COMMIT_S: u32 = 3600;
 
 /// The config's systems as the store knows them ([`Db::set_systems`]).
 #[derive(Default)]
@@ -102,9 +112,10 @@ pub fn recorder_id(dir: &Path) -> Option<String> {
 }
 
 impl Db {
-    /// The store `storage` asks for (`data` is the data folder), or off:
-    /// `files` asks for none, and one that can't be opened is logged and left
-    /// off; recording goes on either way.
+    /// The store `storage` asks for (`data` is the data folder). One that
+    /// can't be opened is left off ([`Db::failure`] says why, and the
+    /// interface shows it); recording goes on either way. Low-write mode
+    /// keeps no call index and commits at most once an hour.
     pub fn from_settings(storage: &trunk_app::config::StorageSettings, data: &Path) -> Db {
         use trunk_app::config::StorageBackend;
         let range = trunk_app::config::StorageSettings::COMMIT_SECONDS;
@@ -112,16 +123,22 @@ impl Db {
         if commit != storage.commit_seconds {
             log::warn!("storage.commitSeconds {} is outside {} to {}; using {commit}", storage.commit_seconds, range.start(), range.end());
         }
+        let commit = if storage.low_write { commit.max(LOW_WRITE_COMMIT_S) } else { commit };
         let batch = Duration::from_secs(u64::from(commit));
         let opened = match storage.backend {
-            StorageBackend::Files => return Db::disabled(),
             StorageBackend::Sqlite => sqlite::open(&data.join("trunk-pro.sqlite")),
             StorageBackend::Postgres => postgres::open(&storage.url),
         };
         match opened {
-            Ok(store) => Db::with_store(Arc::new(store), batch, storage.retention_days, recorder_id(data)),
+            Ok(store) => {
+                let mut db = Db::with_store(Arc::new(store), batch, storage.retention_days, recorder_id(data));
+                if let Some(inner) = db.0.as_mut().and_then(Arc::get_mut) {
+                    inner.index_calls = !storage.low_write;
+                }
+                db
+            }
             Err(e) => {
-                log::error!("Call store: off: {e}. Nothing is kept until it opens: not the calls' index, talkgroups, aliases, the radio registry or the dashboard's history");
+                log::error!("Store: off: {e}. Nothing is kept until it opens: not the calls' index, talkgroups, aliases, the radio registry or the dashboard's history");
                 Db::failed(&e)
             }
         }
@@ -132,13 +149,16 @@ impl Db {
     pub fn with_store(store: Arc<Store>, batch: Duration, retention_days: u32, recorder: Option<String>) -> Db {
         let (tx, rx) = sync_channel(QUEUE_LEN);
         let commits = Arc::new(AtomicU64::new(0));
-        let writer = writer::spawn(store.clone(), rx, commits.clone(), batch, retention_days);
+        let report: Reporter = Default::default();
+        let writer = writer::spawn(store.clone(), rx, commits.clone(), batch, retention_days, report.clone());
         Db(
             Some(Arc::new(Inner {
             store,
             recorder,
             tx: Some(tx),
             writer,
+            index_calls: true,
+            report,
             backfill_running: AtomicBool::new(false),
             systems: Default::default(),
             #[cfg(test)]
@@ -167,8 +187,9 @@ impl Db {
         })
     }
 
-    /// The store off: writes are dropped without a word, reads are errors,
-    /// and nothing runs in the background.
+    /// No store (tests): writes are dropped without a word, reads are
+    /// errors, and nothing runs in the background.
+    #[cfg(test)]
     pub fn disabled() -> Db {
         Db(None, None)
     }
@@ -180,15 +201,27 @@ impl Db {
         Db(None, Some(why.into()))
     }
 
-    /// `storage.backend` is `files`: what's kept between runs is files.
-    pub fn uses_files(&self) -> bool {
-        self.0.is_none() && self.1.is_none()
+    /// Why the store asked for is off, if it is.
+    pub fn failure(&self) -> Option<&str> {
+        self.1.as_deref()
     }
 
-
-    /// There is no store: it's off, or the backend is `files`.
+    /// There is no store: it couldn't be opened (or a test has none).
     pub fn is_disabled(&self) -> bool {
         self.0.is_none()
+    }
+
+    /// The store keeps the call index (not in low-write mode).
+    pub fn indexes_calls(&self) -> bool {
+        self.0.as_deref().is_some_and(|i| i.index_calls)
+    }
+
+    /// Tell `f` of a change people made that couldn't be saved (a talkgroup
+    /// edit: what to say to them).
+    pub fn on_failure(&self, f: impl Fn(String) + Send + Sync + 'static) {
+        if let Some(i) = self.0.as_deref() {
+            *i.report.lock().unwrap() = Some(Box::new(f));
+        }
     }
 
     fn store(&self) -> Result<&Store, String> {
@@ -202,9 +235,9 @@ impl Db {
         Some(format!("{} {}", s.kind(), s.location()))
     }
 
-    /// The backend's name (`files` when there's none). Safe from async code.
+    /// The backend's name (`off` when there's none). Safe from async code.
     pub fn backend(&self) -> &'static str {
-        self.store().map_or("files", |s| s.kind())
+        self.store().map_or("off", |s| s.kind())
     }
 
     /// The directory recorder's id, read once at open.
@@ -216,6 +249,10 @@ impl Db {
     /// was dropped: the writer has stopped, the store is off, or (a call) its
     /// system isn't the config's.
     pub fn send(&self, mut c: Change) -> bool {
+        // (Low-write mode keeps no call index.)
+        if matches!(c, Change::Call { .. } | Change::CallFiles { .. }) && !self.indexes_calls() {
+            return false;
+        }
         if let Change::Call { row, .. } = &mut c {
             let Some(id) = self.system_id(&row.short_name) else {
                 log::debug!("Call store: {} is of a system not in the config ({}); not indexed", row.path, row.short_name);
@@ -688,16 +725,26 @@ mod tests {
         assert_eq!(db.now_ms(5), 5);
     }
 
-    /// `storage.backend: "files"` is no store at all: the recorder runs
-    /// from its live list and the call files, as with the store off.
+    /// Low-write mode: a store, keeping no call index (a call sent is
+    /// dropped) and the rest as ever; the backup keeps what can't be rebuilt.
     #[test]
-    fn the_files_backend_is_no_store() {
-        let dir = TestDir::new("db-files-backend");
-        let storage = trunk_app::config::StorageSettings { backend: trunk_app::config::StorageBackend::Files, ..Default::default() };
-        assert!(Db::from_settings(&storage, &dir).is_disabled());
-        assert!(!dir.join("trunk-pro.sqlite").exists());
-        let sqlite = Db::from_settings(&Default::default(), &dir);
-        assert_eq!(sqlite.kind(), "sqlite");
+    fn low_write_keeps_no_call_index() {
+        let dir = TestDir::new("db-low-write");
+        let storage = trunk_app::config::StorageSettings { low_write: true, ..Default::default() };
+        let db = Db::from_settings(&storage, &dir);
+        assert_eq!(db.kind(), "sqlite");
+        assert!(!db.indexes_calls() && !db.is_disabled());
+        let r = row::tests::record(1, 1000);
+        assert!(!db.send(Change::Call { row: row::call_row("ohmarcs/a", &r, true, true, None, 0), live: true }));
+        db.send(Change::Kept { kind: "tune".into(), key: String::new(), value: Some("{}".into()) });
+        db.flush().unwrap();
+        assert_eq!((db.count("select count(*) from calls"), db.count("select count(*) from kept")), (0, 1));
+        let to = db.store().unwrap().backup().unwrap().unwrap();
+        let b = rusqlite::Connection::open(&to).unwrap();
+        assert_eq!(b.query_row("select count(*) from kept", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "kept in the backup");
+        assert!(b.query_row("select count(*) from calls", [], |r| r.get::<_, i64>(0)).is_err(), "calls aren't: they're rebuilt from their files");
+        drop(db);
+        assert!(Db::from_settings(&Default::default(), &dir).indexes_calls());
     }
 
     #[test]

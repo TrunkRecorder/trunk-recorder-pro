@@ -118,8 +118,6 @@ pub struct Ctx {
     /// The dashboard's minute history (a week), and where new minutes go.
     pub series: Arc<Mutex<trunk_app::stats::History>>,
     pub store: crate::statstore::Store,
-    /// Writes the files kept beside the config, in the background.
-    pub saver: crate::saver::Saver,
     /// The codes conventional frequencies carried, as last told: for browsers
     /// that connect (the file is written only every so often).
     pub heard_last: Mutex<Option<ToClient>>,
@@ -555,7 +553,7 @@ pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String
         } else {
             files.insert(system.to_string(), csv.clone());
         }
-        kept::write_talkgroups(&ctx.db, &ctx.saver, system, "", csv.clone());
+        kept::write_talkgroups(&ctx.db, system, "", csv.clone());
     }
     ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
     // (The config first, then the names: as config_changed takes them.)
@@ -578,7 +576,7 @@ pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::prot
         let old = files.get(system).map_or("", String::as_str);
         let csv = trunk_core::trunk::edit_row(old, number, &edit.cells());
         let row = trunk_core::trunk::row_of(&csv, number);
-        kept::write_talkgroups(&ctx.db, &ctx.saver, system, old, csv.clone());
+        kept::write_talkgroups(&ctx.db, system, old, csv.clone());
         files.insert(system.to_string(), csv);
         row
     };
@@ -589,10 +587,10 @@ pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::prot
 }
 
 /// Hand what's due to be kept between runs ([`Session::due`]: it says when
-/// each is) to the store's writer, or the saver's ([`kept`]); `all`:
+/// each is) to the store's writer ([`kept`]); `all`:
 /// everything that changed (the recording's end).
 fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
-    let keep = |doc: Doc, text: String| kept::write(&ctx.db, &ctx.saver, doc, text);
+    let keep = |doc: Doc, text: String| kept::write(&ctx.db, doc, text);
     for saved in session.due(now_ms, all) {
         match saved {
             Saved::Units { system, csv } => keep(Doc::Units(&system), csv),
@@ -600,7 +598,7 @@ fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
             Saved::Bandplan { key, plan } => keep(Doc::Bandplan(&key), plan),
             Saved::Heard(json) => keep(Doc::Heard, json),
             Saved::Tune(json) => keep(Doc::Tune, json),
-            Saved::Registry { system, radio } => kept::write_registry(&ctx.db, &ctx.saver, system, radio),
+            Saved::Registry { system, radio } => kept::write_registry(&ctx.db, system, radio),
             Saved::RegistryChanges { system, changes } => {
                 if let Some(system_id) = ctx.db.system_id(&system) {
                     ctx.db.send(crate::db::Change::Registry { system_id, changes });
@@ -962,8 +960,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     // Uploads in flight get a moment to finish.
     ctx.plugins.stop(Duration::from_secs(10));
     save_due(&ctx, &mut session, now_ms(), true);
-    // (All of it on disk before recording is said to have stopped: the files, and the calls' index.)
-    ctx.saver.flush();
+    // (All of it in the store before recording is said to have stopped.)
     if let Err(e) = ctx.db.flush() {
         log::warn!("Call store: {e}");
     }
@@ -1243,8 +1240,9 @@ pub fn calls(ctx: &Ctx, q: &CallsQuery) -> CallsPage {
     };
     // (The live list first: a call committed meanwhile is then in one or the other.)
     let live: Vec<StoredCall> = ctx.recent.lock().unwrap().iter().cloned().collect();
-    if ctx.db.is_disabled() {
-        return CallsPage { error: Some("the call store is off: only the recent calls".into()), ..page_of(&live, q, &names) };
+    if !ctx.db.indexes_calls() {
+        let why = if ctx.db.is_disabled() { "the call store is off: only the recent calls" } else { "low-write mode keeps no call index: only the recent calls" };
+        return CallsPage { error: Some(why.into()), ..page_of(&live, q, &names) };
     }
     match ctx.db.calls(q, &systems) {
         Ok(stored) => with_live(stored, &live, q, &names),

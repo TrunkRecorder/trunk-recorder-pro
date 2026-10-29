@@ -93,7 +93,17 @@ pub trait Backend: Send + Sync {
     fn checkpoint(&self) {}
     /// The writer is going: the last tidy-up (SQLite: `pragma optimize`).
     fn close(&self) {}
+    /// Copy `tables` (what can't be rebuilt) somewhere of its own; where
+    /// (none: the database's operator backs it up, as PostgreSQL's).
+    fn backup(&self, _tables: &[&str]) -> Result<Option<String>, String> {
+        Ok(None)
+    }
 }
+
+/// What a backup keeps: what people made and the recorder learned, which
+/// can't be made again (calls can, from their files; the dashboard's
+/// history is the dashboard's). Small: written once a day.
+pub const KEEP_SAFE: &[&str] = &["systems", "talkgroups", "kept", "registry", "registry_changes", "meta"];
 
 /// The store over a backend. Only [`Backend::kind`] and [`Store::location`]
 /// are free to call from async code.
@@ -133,15 +143,20 @@ impl Store {
     }
 
     /// One batch in one transaction; each change in a savepoint, whole or
-    /// not at all, and one that fails is logged and the rest go on.
-    pub fn apply(&self, batch: Vec<Change>) -> Result<(), String> {
+    /// not at all, and one that fails is logged and the rest go on. What
+    /// people made that failed (a talkgroup edit), said for them.
+    pub fn apply(&self, batch: Vec<Change>) -> Result<Vec<String>, String> {
         self.write(|x| {
+            let mut failed = Vec::new();
             for change in &batch {
                 if let Err(e) = savepoint(x, |x| apply_one(x, change)) {
-                    log::warn!("Call store: {} failed: {e}", change.what());
+                    log::warn!("Store: {} failed: {e}", change.what());
+                    if change.urgent() {
+                        failed.push(format!("Couldn't save the {}: {e}", change.what()));
+                    }
                 }
             }
-            Ok(())
+            Ok(failed)
         })
     }
 
@@ -225,6 +240,11 @@ impl Store {
 
     pub fn close(&self) {
         self.backend.close()
+    }
+
+    /// Back up what can't be rebuilt ([`KEEP_SAFE`]); where, if anywhere.
+    pub fn backup(&self) -> Result<Option<String>, String> {
+        self.backend.backup(KEEP_SAFE)
     }
 
     /// A number from a plain SQL query, the same in every dialect (tests).

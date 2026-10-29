@@ -374,7 +374,6 @@ test("History spans: a week from memory or files; further as the store keeps the
   const spans = (st: Parameters<typeof rangesFor>[0], history = true) => rangesFor(st, history).map((r) => r.v).join(" ");
   const store = { backend: "sqlite" as const, retentionDays: 120, commitSeconds: 300 };
   assert.equal(spans(store, false), "1h 24h 7d", "no store (the browser build, or one that didn't open)");
-  assert.equal(spans({ ...store, backend: "files", statsDays: 365 }), "1h 24h 7d", "files keeps a week");
   assert.equal(spans(store), "1h 24h 7d 30d 90d 1y", "a year by default");
   assert.equal(spans({ ...store, backend: "postgres", statsDays: 90 }), "1h 24h 7d 30d 90d");
   assert.equal(spans({ ...store, statsDays: 0 }), "1h 24h 7d 30d 90d 1y", "0: all of it");

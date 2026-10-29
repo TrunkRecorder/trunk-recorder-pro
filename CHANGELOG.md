@@ -22,12 +22,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     starts check the last two days for calls recorded while it was off.
   - **Where it's kept** (`storage.backend`): `sqlite` (the default, beside the config: a Pi to a
     mid-size server), `postgres` (a PostgreSQL server, `storage.url`: years of history, your
-    own backups and replication) or `files` (no index: the least writing). Setup's Recording tab
-    has the choice.
+    own backups and replication). Setup's Recording tab has the choice.
   - A store that can't be opened (a full disk, a server not reachable, another recorder using
     it) is left off: recording, the call list and every query go on from the recent calls.
     Nothing else is kept meanwhile (talkgroups, aliases, the radio registry, the dashboard's
-    history), rather than kept in files that would be lost when it opens; the log says so.
+    history); every connection is told.
   - **Systems have ids.** Each system in `config.json` gets an `id` the first time it's read,
     kept across renames and never given twice (`nextSystemId`). The store keeps everything by
     it, so a renamed system keeps its calls, talkgroups and registry.
@@ -45,6 +44,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
       so), as `callsQuery` does, rather than 503.
     - A talkgroup or radio asked for without a system is looked for in each configured
       system.
+  - **A database always: the `files` backend is gone (breaking).** `storage.backend` is
+    `sqlite` (the default) or `postgres`, and talkgroups, aliases, band plans, the registry and
+    the dashboard's history are always the store's.
+    - **`storage.lowWrite`** (Setup: "Low-write mode") is for SD cards: no call index (the call
+      list is the recent calls), the dashboard's history by the hour only, and a commit an hour.
+    - A store that can't be opened is said to every connection, and nothing is kept meanwhile.
+    - A talkgroup edit that couldn't be saved is told to the browsers.
+    - SQLite copies what can't be made again (systems, talkgroups, aliases and other documents,
+      the radio registry) to `trunk-pro.backup` once a day.
   - **Breaking, while in beta: nothing is carried over or migrated.** With the store on (the
     default), the flat files (`<shortName>.talkgroups.csv`, `radio/`, `*.units.csv`,
     `*.bandplan`, `conventional.heard.json`, `tune.json`, `sharing.json`, `stats/`) aren't read;
@@ -60,8 +68,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     0 keeps it all). The Platform, RF and Decode pages' charts offer 30 days, 90 days and 1 year,
     as far as the store keeps. Each series is kept by the hour, and only the last day by the
     minute in memory. A longer chart asks the store for its hours and gets a few hundred points a
-    series whatever the span, so neither the recorder nor the browser holds the history. With
-    `files` it stays a week of files, as before. On the Pi's eMMC the store writes about 17 MB a
+    series whatever the span, so neither the recorder nor the browser holds the history. On the
+    Pi's eMMC the store writes about 17 MB a
     day for it. `hello.capabilities` has a new `history`; `statsQuery` takes `30d`, `90d` and `1y`.
   - **What a recording learns between runs is kept in the store too:**
     - the radio registry;
@@ -71,14 +79,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     - AutoTune's scores;
     - sharing's state.
 
-    With `files` they stay files as before. The radio registry is appended as each
+    The radio registry is appended as each
     15 minutes' changes and written whole once a day, instead of whole every 15 minutes. On the
     Pi's eMMC a busy system writes 0.10 GB a day instead of 0.44 (`db::tests::registry_write_budget`).
 - **Calls by talkgroup, radio and time, for interfaces and plugins:** `callsQuery` on the
   WebSocket (`client.js`: `rec.calls({ … })`), `GET /api/v1/calls`, `/api/v1/calls/<path>` and
   `/api/v1/storage` over HTTP (`docs/api/calls.openapi.yaml`), and for plugins `calls.query`
   (Plugin SDK 0.9.0: `Host::calls`, answered to `Plugin::calls`). One query behind them all.
-  `olderCalls` stays, as `callsQuery` with only `before`.
 
 ## [0.2.11] — 2026-10-27
 

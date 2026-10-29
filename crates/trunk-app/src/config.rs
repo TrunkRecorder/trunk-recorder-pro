@@ -1938,16 +1938,22 @@ impl Default for Config {
     }
 }
 
-/// The call store: the index of recorded calls in `trunk-pro.sqlite`
-/// (research/sqlite-plan.md).
+/// The store: what the recorder keeps (the call index, talkgroups, talker
+/// aliases, the radio registry, the dashboard's history…), in a database
+/// always (research/storage-redesign.md). The recordings and their `.json`
+/// files are the calls' truth; the store mirrors them.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct StorageSettings {
-    /// Which store keeps the index: `files` (none: the call files and the
-    /// recent calls alone), `sqlite` (a file beside the config: a Pi to a
+    /// Which database: `sqlite` (a file beside the config: a Pi to a
     /// mid-size server) or `postgres` (a database server: years of history,
     /// the operator's backups and replication).
     pub backend: StorageBackend,
+    /// Write as little as can be (an SD card): no call index (the call list
+    /// is the recent calls), the dashboard's history by the hour only, and a
+    /// commit an hour. Everything else is kept as ever.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub low_write: bool,
     /// PostgreSQL's connection string (`postgres://user:password@host/db`, or
     /// `host=… user=… dbname=…`); one recorder per database or schema for now.
     pub url: String,
@@ -1960,7 +1966,6 @@ pub struct StorageSettings {
     /// 300, 0.6 at 60 (trunk-pro's `db::tests::write_budget`).
     pub commit_seconds: u32,
     /// Days of the dashboard's history kept, as hours; 0 keeps it all.
-    /// `files` keeps a week.
     pub stats_days: u32,
 }
 
@@ -1971,7 +1976,7 @@ impl StorageSettings {
 
 impl Default for StorageSettings {
     fn default() -> Self {
-        StorageSettings { backend: StorageBackend::Sqlite, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365 }
+        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365 }
     }
 }
 
@@ -1979,8 +1984,6 @@ impl Default for StorageSettings {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageBackend {
-    /// None: the call files and the recent calls alone.
-    Files,
     #[default]
     Sqlite,
     Postgres,

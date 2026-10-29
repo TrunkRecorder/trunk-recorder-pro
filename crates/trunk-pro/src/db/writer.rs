@@ -23,13 +23,17 @@ pub(super) const MAX_BATCH: usize = 1000;
 const RETAIN_CHUNK: usize = 1000;
 /// How often retention looks for calls past `retentionDays`.
 const RETAIN_EVERY: Duration = Duration::from_secs(3600);
+/// The backup of what can't be rebuilt ([`Store::backup`]): first this long
+/// after the start, then once a day.
+const BACKUP_FIRST: Duration = Duration::from_secs(600);
+const BACKUP_EVERY: Duration = Duration::from_secs(86_400);
 
 /// Start the `db-writer` thread over `store`; it runs until every sender of
 /// `rx` is gone. `batch`: the least time between two commits under load.
 /// `retention_days`: calls kept (0: all).
-pub(super) fn spawn(store: Arc<Store>, rx: Receiver<Msg>, commits: Arc<AtomicU64>, batch: Duration, retention_days: u32) -> Option<std::thread::JoinHandle<()>> {
+pub(super) fn spawn(store: Arc<Store>, rx: Receiver<Msg>, commits: Arc<AtomicU64>, batch: Duration, retention_days: u32, report: super::Reporter) -> Option<std::thread::JoinHandle<()>> {
     let spawned = std::thread::Builder::new().name("db-writer".into()).spawn(move || {
-        let mut w = Writer { store, commits, batch, retention_days, retiring: None, retain_at: Instant::now() };
+        let mut w = Writer { store, commits, batch, retention_days, retiring: None, retain_at: Instant::now(), report, backup_at: Instant::now() + BACKUP_FIRST };
         w.run(rx);
     });
     spawned.inspect_err(|e| log::error!("Call store: could not start the writer thread: {e}")).ok()
@@ -44,18 +48,22 @@ struct Writer {
     retiring: Option<i64>,
     /// When retention next looks.
     retain_at: Instant,
+    /// Told of a change people made that couldn't be saved.
+    report: super::Reporter,
+    /// When the next backup of what can't be rebuilt is made.
+    backup_at: Instant,
 }
 
 impl Writer {
     fn run(&mut self, rx: Receiver<Msg>) {
         let mut last_commit: Option<Instant> = None;
         loop {
-            // Idle: a write, or retention's next chunk (at once) or next look.
-            let idle = if self.retiring.is_some() { Duration::ZERO } else { self.retain_at.saturating_duration_since(Instant::now()) };
+            // Idle: a write, or what's timed (retention's next chunk at once, its next look, the backup).
+            let idle = if self.retiring.is_some() { Duration::ZERO } else { self.retain_at.min(self.backup_at).saturating_duration_since(Instant::now()) };
             let first = match rx.recv_timeout(idle) {
                 Ok(w) => w,
                 Err(RecvTimeoutError::Timeout) => {
-                    self.retain_step();
+                    self.timed();
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -88,6 +96,8 @@ impl Writer {
                 held.push(next);
             }
             self.commit(held);
+            // (A busy recorder's writes never leave the writer idle: what's due runs between batches too.)
+            self.timed();
             if disconnected {
                 break;
             }
@@ -118,12 +128,15 @@ impl Writer {
         } else {
             let applied = self.store.apply(changes);
             match &applied {
-                Ok(()) => {
+                Ok(failed) => {
                     self.commits.fetch_add(1, Ordering::Relaxed);
+                    if let Some(tell) = self.report.lock().unwrap().as_ref() {
+                        failed.iter().for_each(|f| tell(f.clone()));
+                    }
                 }
-                Err(e) => log::warn!("Call store: {e}"),
+                Err(e) => log::warn!("Store: {e}"),
             }
-            applied
+            applied.map(drop)
         };
         if let Some(b) = retire.filter(|_| outcome.is_ok()) {
             self.retiring = Some(self.retiring.map_or(b, |r| r.max(b)));
@@ -141,6 +154,22 @@ impl Writer {
     /// so a clock jumping ahead can't empty the store); then one chunk of the
     /// oldest calls past the cut, with their transmissions and frequencies.
     /// The files on disk aren't touched.
+    /// What's due of the timed work: retention's next step, the backup.
+    fn timed(&mut self) {
+        let now = Instant::now();
+        if self.retiring.is_some() || now >= self.retain_at {
+            self.retain_step();
+        }
+        if now >= self.backup_at {
+            self.backup_at = now + BACKUP_EVERY;
+            match self.store.backup() {
+                Ok(Some(to)) => log::info!("Store: what can't be rebuilt backed up to {to}"),
+                Ok(None) => {}
+                Err(e) => log::warn!("Store: backup failed: {e}"),
+            }
+        }
+    }
+
     fn retain_step(&mut self) {
         if self.retiring.is_none() {
             self.retain_at = Instant::now() + RETAIN_EVERY;

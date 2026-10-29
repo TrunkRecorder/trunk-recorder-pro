@@ -114,7 +114,6 @@ mod plugins;
 mod profile;
 mod radio;
 mod runtime;
-mod saver;
 mod sdr;
 mod server;
 mod spool;
@@ -888,7 +887,12 @@ fn serve(a: &Args) {
     db.set_systems(&cfg);
     kept::load_registry(&db, &shared);
     let series = Arc::new(Mutex::new(trunk_app::stats::History::new(statstore::memory_minutes(&db))));
-    let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone(), db.clone(), cfg.storage.stats_days);
+    let store = statstore::Store::start(series.clone(), db.clone(), cfg.storage.stats_days, cfg.storage.low_write);
+    {
+        // (A change people made that couldn't be saved is told to them.)
+        let hub = hub.clone();
+        db.on_failure(move |why| runtime::publish(&hub, trunk_app::protocol::ToClient::error(why)));
+    }
     let talkgroups = kept::load_talkgroups(&db, &cfg);
     runtime::load_names(&shared, &cfg, &talkgroups, &db);
     let ctx = Arc::new(runtime::Ctx {
@@ -909,10 +913,6 @@ fn serve(a: &Args) {
         shared,
         series,
         store,
-        saver: {
-            let hub = hub.clone();
-            saver::Saver::start(move |why| runtime::publish(&hub, trunk_app::protocol::ToClient::error(why)))
-        },
         heard_last: Mutex::new(None),
         topics: Mutex::new(Default::default()),
         engine: Mutex::new(None),
@@ -933,7 +933,7 @@ fn serve(a: &Args) {
     let cfg = ctx.config.lock().unwrap().clone();
     ctx.plugins.open_hold(&cfg);
     // (The live list comes from the store; with it off, from a walk of the capture folder.)
-    if ctx.db.is_disabled() {
+    if !ctx.db.indexes_calls() {
         runtime::load_recent(ctx.clone());
     }
     db::backfill::start(ctx.clone());
@@ -964,7 +964,6 @@ fn serve(a: &Args) {
     if let Err(e) = rt.block_on(server::serve(ctx.clone(), listener)) {
         fatal(&format!("web server on {addr}: {e}"));
     }
-    ctx.saver.flush();
     ctx.db.checkpoint();
     if let Err(e) = ctx.db.flush() {
         log::warn!("Call store: {e}");

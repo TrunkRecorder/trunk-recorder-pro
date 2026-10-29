@@ -129,8 +129,8 @@ async fn call(
     if let Some(c) = live {
         return Json(c).into_response();
     }
-    if ctx.db.is_disabled() {
-        return error(StatusCode::NOT_FOUND, "no such call among the recent calls (the call store is off)").into_response();
+    if !ctx.db.indexes_calls() {
+        return error(StatusCode::NOT_FOUND, "no such call among the recent calls (no call index)").into_response();
     }
     match read(&ctx, move |db| db.one(&path)).await {
         Ok(Some(entry)) => Json(entry).into_response(),

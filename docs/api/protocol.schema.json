@@ -6731,11 +6731,14 @@
         "backend": {
           "type": "string",
           "enum": [
-            "files",
             "sqlite",
             "postgres"
           ],
-          "description": "Which store keeps the call index: \"files\" (none: the call files and the recent calls alone), \"sqlite\" (a file beside the config; the default) or \"postgres\" (a database server, `url`)."
+          "description": "Which database keeps what the recorder keeps (the call index, talkgroups, aliases, the radio registry, the dashboard's history): \"sqlite\" (a file beside the config; the default) or \"postgres\" (a database server, `url`)."
+        },
+        "lowWrite": {
+          "type": "boolean",
+          "description": "Write as little as can be (an SD card): no call index (the call list is the recent calls), the dashboard's history by the hour only, a commit an hour."
         },
         "url": {
           "type": "string",
@@ -6751,7 +6754,7 @@
         },
         "statsDays": {
           "type": "number",
-          "description": "Days of the dashboard's history kept, as hours (default 365); 0 keeps it all. \"files\" keeps a week."
+          "description": "Days of the dashboard's history kept, as hours (default 365); 0 keeps it all."
         }
       },
       "required": [

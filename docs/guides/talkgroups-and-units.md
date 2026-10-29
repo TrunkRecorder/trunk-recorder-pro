@@ -21,8 +21,7 @@ Each system has its own, shared by all its sites. It's the **Talkgroups** field 
 - **Clear** removes it.
 
 The talkgroup file isn't part of the config, and isn't kept as a path: Setup keeps a copy in the
-call store (with `storage.backend: "files"`, beside the config file as
-`<shortName>.talkgroups.csv`), and moves it when you rename the system. (A config
+recorder's store, and it stays with the system when you rename it. (A config
 from before 0.2.0 had them inside it; they're moved out into these files the first time it's read.) To change it later, edit your copy and load it
 again, or **Download**, edit, and load. Changes made while recording take effect at once (the log
 says "Talkgroups updated").

@@ -64,8 +64,7 @@ with `--config` files in different folders never share band plans, talker aliase
   `m4a`, `ramSpool`, an interface, a plugin's entry, `monitor`) are dropped the next time the file is
   saved.
 - **Talkgroups aren't in the config.** Each system's talkgroup file is kept in the
-  [call store](#the-call-store-storage), or with `storage.backend: "files"` as a file of its own
-  beside it (`<shortName>.talkgroups.csv`); see [Files kept beside the config](#files-kept-beside-the-config).
+  [store](#the-store-storage); Setup loads and downloads it as Trunk Recorder's CSV.
   A config from an older version that holds them (`talkgroupsCsv`) is upgraded when it's read: the
   talkgroups are moved out into those files, and the log says so.
 - **The interface saves the whole file on every change**, so hand edits made while the app is running
@@ -87,25 +86,49 @@ with `--config` files in different folders never share band plans, talker aliase
 | `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
 | `monitor` | | see page | object | The dashboard's internet checks. [server-and-log.md](server-and-log.md#monitor) |
-| `storage` | | `{ "backend": "sqlite", "retentionDays": 120, "commitSeconds": 300, "statsDays": 365 }` | object | The call store: where it's kept, how long calls stay in it, and how far apart it commits. [See below](#the-call-store-storage) |
+| `storage` | | `{ "backend": "sqlite", "retentionDays": 120, "commitSeconds": 300, "statsDays": 365 }` | object | The call store: where it's kept, how long calls stay in it, and how far apart it commits. [See below](#the-store-storage) |
 | `plugins` | | `{}` | object | Which plugins run and their recorder-wide settings, by plugin id. [plugins.md](plugins.md) |
 | `keys` | | `{}` | object | P25 encryption key sources, by name: where each set of keys is read from. [Encryption keys](systems.md#encryption-keys-keys) |
 
-### The call store (`storage`)
+### The store (`storage`)
 
-Finished calls are indexed so the interface can list them by talkgroup, radio and time, as far
-back as it keeps them. The recordings and their `.json` files are written as before; the store is
-an index over them. `backend` says where it's kept:
+Everything the recorder keeps between runs is kept in a database:
+
+- the call index, so the interface can list calls by talkgroup, radio and time as far back as it
+  keeps them;
+- each system's talkgroups;
+- talker aliases heard over the air;
+- the radio registry (the talkgroups, radios and frequencies each system has heard);
+- band plans;
+- the codes conventional frequencies carried;
+- AutoTune's scores;
+- what sharing with the directory did;
+- the dashboard's history.
+
+The recordings and their `.json` files are written as before. They're the calls' truth: the store
+mirrors each call once, and a call index lost is rebuilt from them. `backend` says which database:
 
 | `backend` | For | Kept |
 |---|---|---|
 | `"sqlite"` (default) | a Raspberry Pi to a mid-size server | `trunk-pro.sqlite`, beside the config |
 | `"postgres"` | servers: years of history, your own backups and replication | the PostgreSQL database `url` names: `"postgres://user:password@host/database"`. One recorder per database (or schema): a second one pointed at it runs with its store off |
-| `"files"` | the least writing of all (an SD card you'd rather spare) | nothing: the call list and every query answer from the recent calls, and the recordings are still there |
 
-The recorder records whatever happens to the store: one that can't be opened (or a PostgreSQL
-server that can't be reached) is left off, and the log says why. `url` isn't sent to
-listen-only interfaces.
+`lowWrite: true` writes as little as can be, for an SD card:
+
+- no call index (the call list and every query answer from the recent calls, and say so);
+- the dashboard's history by the hour only;
+- a commit an hour.
+
+Everything else is kept as usual.
+
+A store that can't be opened (a full disk, a PostgreSQL server that can't be reached, another
+recorder using it) is left off. The recorder records anyway, every connection is told, and
+nothing is kept until it opens. `url` isn't sent to listen-only interfaces.
+
+Once a day, SQLite copies what can't be made again to `trunk-pro.backup`, beside the store: the
+systems, talkgroups, talker aliases and other documents, and the radio registry. It's small, and
+written whole each time. Calls aren't in it, because they're rebuilt from their files. With
+PostgreSQL, backups are the database's.
 
 `retentionDays` (default 120) is how long a call stays in the store; older ones are removed a
 thousand at a time, when the app starts and every hour after. `0` keeps them all. It never deletes
@@ -116,46 +139,34 @@ the calls' audio and JSON files: they stay where they were recorded (deleting re
 coming in. Each commit writes whole pages, twice on SQLite (the log, then the database), so fewer
 commits write far less: on the Pi's eMMC, a busy system (a call a second) writes 0.21 GB a day at
 300, 0.61 GB at 60. On a PostgreSQL server, 10 to 60 is fine. A finished call is in the call list
-and every query at once whatever this is; a crash loses at most one interval of the index, and the
-next start finds those calls again from their `.json` files (not where none are kept, as with
-upload-only settings).
+and every query at once whatever this is. A crash loses at most one interval of the index, and
+the next start finds those calls again from their `.json` files (but not where none are kept, as
+with upload-only settings).
 
-Both are read when the app starts.
+These are read when the app starts.
 
-The store also keeps each system's talkgroup file, and what a recording learns between runs:
-
-- the radio registry;
-- each system's talker aliases;
-- band plans;
-- the codes conventional frequencies carried;
-- AutoTune's scores;
-- what sharing with the directory did.
-
-With `files` these stay files in the data folder (`<system>.talkgroups.csv`,
-`radio/<system>.json`, `<system>.units.csv`, …). With `sqlite` or `postgres` they're the store's,
-and those files aren't read: one or the other, nothing carried between them (load talkgroups
-into Setup with **Load CSV…**).
+- **Talkgroups** are kept a line at a time, exactly as loaded, so comments, extra columns and the
+  delimiter come back too.
+  - An edit in Setup (Ignore, a name) writes only the lines it changed, and commits at once.
+  - Each row also has its talkgroup's number, alpha tag, description, tag, category, mode,
+    priority and Ignore in columns of their own (table `talkgroups`), so a call's talkgroup can be
+    looked up by SQL.
+  - Setup's **Download** exports the file; **Load CSV…** replaces it.
+- **The dashboard's history** goes back `statsDays` (default 365; `0` keeps it all).
+  - Every series is kept by the hour, and the dashboard's charts offer 30 days, 90 days and a
+    year, as far as that goes.
+  - Only the last day is held in memory, by the minute. Anything longer is asked of the store and
+    comes back as a few hundred points per series, so a long chart doesn't grow the recorder or
+    the browser tab.
+  - On the Pi's eMMC this writes about 17 MB a day. A year of hours is about 70 MB on disk for a
+    recorder with two systems.
+- **The radio registry** is stored as the changes of each 15 minutes, and written whole once a
+  day. On the Pi's eMMC that's 0.10 GB a day for a busy system, against 0.44 GB for the whole file
+  every 15 minutes it was before.
 
 While in beta, a store made by another version is set aside and a new one started (nothing is
 migrated): SQLite's file is renamed `trunk-pro.sqlite.v<n>-<time>`, PostgreSQL's tables are made
-afresh. The call list is then rebuilt from the recordings' `.json` files.
-
-- **Talkgroup files** are kept a line at a time, exactly as loaded: comments, extra columns and
-  the delimiter too. An edit in Setup (Ignore, a name) writes only the lines it changed, and
-  commits at once. Each row also has its talkgroup's number, alpha tag, description, tag,
-  category, mode, priority and Ignore in columns of their own (table `talkgroups`), so a call's
-  talkgroup can be looked up by SQL. Setup's **Download** exports the file; **Load CSV…** replaces
-  it.
-- **The dashboard's history** goes back `statsDays` (default 365; `0` keeps it all), not a week.
-  Every series is kept by the hour, and the dashboard's charts offer 30 days, 90 days and a year,
-  as far as that goes. Only the last day is held in memory, by the minute. Anything longer is
-  asked of the store and comes back as a few hundred points a series, so a long chart doesn't
-  grow the recorder or the browser tab. On the Pi's eMMC this writes about
-  17 MB a day, against about 9 MB for the files. A year of hours is about 70 MB on disk for a
-  recorder with two systems.
-- **The radio registry** is stored as the changes of each 15 minutes, and written whole once a
-  day. On the Pi's eMMC that's 0.10 GB a day for a busy system, against 0.44 GB for the whole file
-  every 15 minutes.
+afresh. The call index is then rebuilt from the recordings' `.json` files.
 
 ## A minimal config
 
@@ -308,18 +319,13 @@ then Start). A few apply at once:
 ## Files kept beside the config
 
 The app keeps these in the folder the config file is in. With the default config that is the app's
-config folder above; with `--config elsewhere/config.json`, it's `elsewhere/`. With the call store
-on (`storage.backend` `sqlite` or `postgres`), the talkgroup files, band plans, talker aliases,
-Heard list and radio registry are kept [in the store](#the-call-store-storage) instead.
+config folder above; with `--config elsewhere/config.json`, it's `elsewhere/`. Talkgroups, band
+plans, talker aliases, the Heard list, the radio registry and the dashboard's history are kept
+[in the store](#the-store-storage).
 
 | File or folder | What it holds |
 |---|---|
-| `<shortName>.bandplan` | Each trunked system's learned band plan (P25 IDEN tables, DMR and NXDN channel tables), so grants can be followed at once next time |
-| `<shortName>.talkgroups.csv` | Each system's [talkgroup file](systems.md#talkgroup-file), in Trunk Recorder's CSV format (`files`). Setup writes it |
-| `<shortName>.units.csv` | Talker aliases heard over the air, per system |
-| `conventional.heard.json` | The tones, NACs, colour codes and RANs each conventional frequency carried (the Heard list) |
-| `radio/` | The radio registry: the talkgroups, radios and frequencies each system has heard, one `.json` per system |
-| `stats/` | The dashboard's history (`files`): a `YYYY-MM-DD.jsonl` per day (UTC), gzipped once the day is over, deleted after about a week |
+| `trunk-pro.sqlite` | The [store](#the-store-storage) (SQLite), and `trunk-pro.backup`, its daily copy of what can't be made again |
 | `plugins/<id>/` | Installed plugins |
 | `plugin-data/<id>/` | Each plugin's own data (calls waiting to upload, for example), and its working folder |
 | `plugin-registry.json` | The plugin store's cached index |
@@ -332,4 +338,4 @@ Heard list and radio registry are kept [in the store](#the-call-store-storage) i
 A linked conventional `channelFile` and a relative `log.dir` or `server.interfaces` path are also
 taken from this folder.
 
-Deleting a `.bandplan` or `.units.csv` file is safe: the app learns it again from the air.
+
