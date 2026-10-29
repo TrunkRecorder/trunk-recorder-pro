@@ -20,7 +20,7 @@ use super::sql::Dialect;
 
 /// This build's schema. Raise it with any change to [`TABLES`] or
 /// [`INDEXES`]: a store of another version is made afresh.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// What a column holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

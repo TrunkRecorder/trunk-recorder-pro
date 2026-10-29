@@ -1,4 +1,4 @@
-# Plan: the storage redesign (PR #104, schema version 6)
+# Plan: the storage redesign (PR #104, schema version 8)
 
 Status (2026-10-29):
 
@@ -47,7 +47,7 @@ Status (2026-10-29):
     the browser build alike.
   - Not done: `series.system_id`. Series names carry the short name, so a renamed system's
     series start afresh.
-- phase 7 is done (schema 7, unchanged): reporting views `calls_report`, `transmissions_report`
+- phase 7 is done (schema 8): reporting views `calls_report`, `transmissions_report`
   and `stats_report` in both dialects, part of the one DDL. Each has names joined in and times
   as timestamps (`timestamptz` in PostgreSQL, ISO 8601 text in SQLite). Their columns are the same
   in both (`both_dialects_make_the_same_tables`), and `the_reporting_views_name_things` checks
