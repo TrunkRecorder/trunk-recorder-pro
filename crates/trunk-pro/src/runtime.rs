@@ -1239,6 +1239,9 @@ pub fn calls(ctx: &Ctx, q: &CallsQuery) -> CallsPage {
         let why = if ctx.db.is_disabled() { "the call store is off: only the recent calls" } else { "low-write mode keeps no call index: only the recent calls" };
         return CallsPage { error: Some(why.into()), ..page_of(&live, q, &names) };
     }
+    if q.unit.is_some() && !ctx.db.indexes_radios() {
+        return CallsPage { error: Some("the store doesn't index calls by radio (Setup → Data): only the recent calls".into()), ..page_of(&live, q, &names) };
+    }
     match ctx.db.calls(q, &systems) {
         Ok(stored) => with_live(stored, &live, q, &names),
         Err(e) => {

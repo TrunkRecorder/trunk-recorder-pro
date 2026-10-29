@@ -169,7 +169,7 @@ export interface AppState {
   setupTab: SetupTab;
 }
 
-export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
+export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "data" | "plugins";
 
 export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "plugin" | "plugins" | "interfaces" | "platform" | "setup";
 const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "plugin", "plugins", "interfaces", "platform", "setup"];
@@ -1133,7 +1133,7 @@ export function closeGuide(): void {
 function loadSetupTab(): SetupTab {
   try {
     const t = localStorage.getItem(TAB_KEY);
-    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "plugins") return t;
+    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "data" || t === "plugins") return t;
   } catch {
     // Not remembered.
   }

@@ -82,6 +82,19 @@ pub struct Index {
     pub cond: Option<&'static str>,
 }
 
+impl Index {
+    /// Its `create index` (`if not exists`: to make it again in a store
+    /// that dropped it).
+    pub fn create(&self) -> String {
+        let cond = self.cond.map_or(String::new(), |c| format!(" where {c}"));
+        format!("create index if not exists {} on {}({}){cond}", self.name, self.table, self.cols.join(", "))
+    }
+}
+
+/// The index a radio's calls are found by: optional (`storage.radioIndex`),
+/// made with the schema and dropped by a store that doesn't keep it.
+pub const RADIO_INDEX: &str = "transmissions_radio";
+
 use Ty::*;
 
 /// Every table, parents before children.
@@ -274,8 +287,7 @@ pub fn ddl(d: Dialect) -> String {
         out.push_str(&format!("create table {} (\n{}\n){rowid};\n", t.name, lines.join(",\n")));
     }
     for i in INDEXES {
-        let cond = i.cond.map_or(String::new(), |c| format!(" where {c}"));
-        out.push_str(&format!("create index {} on {}({}){cond};\n", i.name, i.table, i.cols.join(", ")));
+        out.push_str(&format!("{};\n", i.create()));
     }
     for (name, sql) in VIEWS {
         out.push_str(&format!("create view {name} as {};\n", timestamps(sql, d)));

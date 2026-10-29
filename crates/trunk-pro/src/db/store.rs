@@ -293,6 +293,14 @@ impl Store {
         .unwrap()
     }
 
+    /// Keep the radio index (`on`), made from the transmissions stored if
+    /// it was dropped, or drop it.
+    pub fn radio_index(&self, on: bool) -> Result<(), String> {
+        let index = super::schema::INDEXES.iter().find(|i| i.name == super::schema::RADIO_INDEX).expect("the radio index");
+        let sql = if on { index.create() } else { format!("drop index if exists {}", index.name) };
+        self.write(|x| x.batch(&sql))
+    }
+
     /// Make system `system_id`'s registry changes over its whole copy now (tests).
     #[cfg(test)]
     pub fn compact_registry(&self, system_id: i64) {

@@ -66,6 +66,8 @@ struct Inner {
     backfill_running: AtomicBool,
     /// Calls are indexed (not in low-write mode).
     index_calls: bool,
+    /// Calls are indexed by radio too (`storage.radioIndex`).
+    index_radios: bool,
     /// Who's told when a change people made couldn't be saved.
     report: Reporter,
     /// The config's systems: each short name its calls were filed under (a
@@ -131,9 +133,16 @@ impl Db {
         };
         match opened {
             Ok(store) => {
+                // (A store that doesn't index calls by radio drops the index;
+                // one that does again makes it, which can take a while.)
+                let radios = storage.radio_index && !storage.low_write;
+                if let Err(e) = store.radio_index(radios) {
+                    log::warn!("Store: the radio index not {} ({e})", if radios { "made" } else { "dropped" });
+                }
                 let mut db = Db::with_store(Arc::new(store), batch, storage.retention_days, recorder_id(data));
                 if let Some(inner) = db.0.as_mut().and_then(Arc::get_mut) {
                     inner.index_calls = !storage.low_write;
+                    inner.index_radios = radios;
                 }
                 db
             }
@@ -158,6 +167,7 @@ impl Db {
             tx: Some(tx),
             writer,
             index_calls: true,
+            index_radios: true,
             report,
             backfill_running: AtomicBool::new(false),
             systems: Default::default(),
@@ -214,6 +224,11 @@ impl Db {
     /// The store keeps the call index (not in low-write mode).
     pub fn indexes_calls(&self) -> bool {
         self.0.as_deref().is_some_and(|i| i.index_calls)
+    }
+
+    /// Whether a radio's calls can be paged from the store (`storage.radioIndex`).
+    pub fn indexes_radios(&self) -> bool {
+        self.indexes_calls() && self.0.as_deref().is_some_and(|i| i.index_radios)
     }
 
     /// Tell `f` of a change people made that couldn't be saved (a talkgroup
@@ -794,6 +809,22 @@ mod tests {
 
     /// Low-write mode: a store, keeping no call index (a call sent is
     /// dropped) and the rest as ever; the backup keeps what can't be rebuilt.
+    /// Without the radio index (`storage.radioIndex` off) the store drops
+    /// it; turned on again, it's made again from the transmissions.
+    #[test]
+    fn the_radio_index_is_optional() {
+        let dir = TestDir::new("db-radio-index");
+        let has = |db: &Db| db.count("select count(*) from sqlite_master where name = 'transmissions_radio'");
+        let off = trunk_app::config::StorageSettings { radio_index: false, ..Default::default() };
+        let db = Db::from_settings(&off, &dir);
+        assert!(db.indexes_calls() && !db.indexes_radios());
+        assert_eq!(has(&db), 0);
+        drop(db);
+        let db = Db::from_settings(&Default::default(), &dir);
+        assert!(db.indexes_radios());
+        assert_eq!(has(&db), 1);
+    }
+
     #[test]
     fn low_write_keeps_no_call_index() {
         let dir = TestDir::new("db-low-write");
@@ -852,6 +883,7 @@ mod tests {
             }
             // (Commits as the writer makes them under load: one per interval, here by flushing.)
             let db = Db::open(&path, Duration::from_secs(3600), 0).unwrap();
+            db.set_systems(&trunk_app::Config::from_json(r#"{"systems":[{"shortName":"ohmarcs","id":1}]}"#).unwrap());
             let (at, before) = (std::time::Instant::now(), written());
             let mut size = 0;
             for second in 0..3600i64 {
@@ -870,6 +902,7 @@ mod tests {
             }
             db.flush().unwrap();
             let bytes = (written() - before) as f64;
+            assert_eq!(db.count("select count(*) from calls"), 3600);
             println!("commit every {every:>3} s: {:6.1} MB an hour, {:.2} GB a day ({size} B records, {:.1?})", bytes / 1e6, bytes * 24.0 / 1e9, at.elapsed());
             drop(db);
             for x in ["", "-wal", "-shm", ".lock"] {
@@ -923,6 +956,90 @@ mod tests {
         gone();
     }
 
+    /// What the store writes in a day for a busy system, standard against
+    /// low-write mode (`storage.lowWrite`), everything together: a call a
+    /// second (three talkers among 10,000 radios, 2,500 talkgroups) and an
+    /// affiliation, the registry's changes every 15 minutes, the dashboard's
+    /// minutes and hours; committed every 300 s, or every hour in low-write
+    /// mode (which also drops the calls and the minutes, as the recorder
+    /// does), the registry folded into its whole copy as it does live. An
+    /// hour heard first, then a whole day measured (checkpoints come every
+    /// few hours: a shorter run can miss them). Linux only, as
+    /// `write_budget`; `TRP_BENCH_DIR=<dir> cargo test --release -p
+    /// trunk-pro day_write_budget -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn day_write_budget() {
+        use trunk_app::stats::radio::Registry;
+        use trunk_app::stats::{HourRow, Rollup};
+        use trunk_core::trunk::{Call, CallSource, Message, MessageType};
+        let written = || -> u64 {
+            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
+            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+        };
+        let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+        let cfg = trunk_app::Config::from_json(r#"{"systems":[{"shortName":"ohmarcs","id":1}]}"#).unwrap();
+        for low_write in [false, true] {
+            let mut seed = 0x2545_f491_4f6c_dd1du64;
+            let mut next = |n: u32| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (seed % u64::from(n)) as u32
+            };
+            let here = dir.join(format!("trp-day-{low_write}"));
+            let _ = std::fs::remove_dir_all(&here);
+            std::fs::create_dir_all(&here).unwrap();
+            let db = Db::from_settings(&trunk_app::config::StorageSettings { low_write, ..Default::default() }, &here);
+            db.set_systems(&cfg);
+            let every = if low_write { LOW_WRITE_COMMIT_S as i64 } else { 300 };
+            let mut r = Registry::default();
+            let t0 = 1_790_000_000i64.div_euclid(3600) * 3600;
+            let (mut at, mut before) = (std::time::Instant::now(), written());
+            for second in 0..25 * 3600i64 {
+                if second == 3600 {
+                    db.flush().unwrap();
+                    (at, before) = (std::time::Instant::now(), written());
+                }
+                let t = t0 + second;
+                let mut rec = row::tests::record(10_000 + next(2500), t * 1000);
+                rec.src_list.push(rec.src_list[0].clone());
+                for (k, x) in rec.src_list.iter_mut().enumerate() {
+                    x.src = 1_000_000 + i64::from(next(10_000));
+                    x.pos = k as f64 * 2.0;
+                }
+                let sources = rec.src_list.iter().map(|x| CallSource { src: x.src as u32, time_s: x.pos, ..Default::default() }).collect();
+                r.call_end("ohmarcs", &Call { talkgroup: rec.talkgroup, start_s: 0.0, last_update_s: 4.0, sources, ..Default::default() }, t);
+                r.concluded("ohmarcs", &rec, t);
+                r.message("ohmarcs", &Message { kind: MessageType::Affiliation, source: i64::from(1_000_000 + next(10_000)), talkgroup: 10_000 + next(2500), ..Default::default() }, t);
+                db.send(Change::Call { row: row::call_row(&format!("ohmarcs/{second}"), &rec, true, true, None, 0), live: true });
+                if (second + 1) % 60 == 0 && !low_write {
+                    for roll in ["engine", "plat"].map(|p| Rollup { t, values: (0..68).map(|i| (format!("{p}/series{i}"), [1.234 * i as f32, 0.5, 9.87])).collect() }) {
+                        db.send(Change::StatsMinute { t, json: roll.to_json().to_string() });
+                    }
+                }
+                if (second + 1) % 900 == 0 {
+                    for (system, changes) in r.take_changes() {
+                        db.send(Change::Registry { system_id: db.system_id(&system).unwrap(), changes: Box::new(changes) });
+                    }
+                }
+                if (second + 1) % 3600 == 0 {
+                    db.send(Change::StatsHours((0..136).map(|i| HourRow { series: format!("s/series{i}"), t: t - 3599, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 }).collect()));
+                }
+                // (Commits as the writer makes them under load: one per interval, here by flushing.)
+                if (second + 1) % every == 0 {
+                    db.flush().unwrap();
+                }
+            }
+            db.flush().unwrap();
+            let day = (written() - before) as f64;
+            println!("{}: {:.2} GB a day ({:.1?})", if low_write { "low-write" } else { "standard " }, day / 1e9, at.elapsed());
+
+            drop(db);
+            let _ = std::fs::remove_dir_all(&here);
+        }
+    }
+
     /// What keeping a busy system's radio registry as changes writes,
     /// against the whole file every 15 minutes (`files`): six hours heard
     /// first (written whole), then an hour of a call and an affiliation a
@@ -967,6 +1084,7 @@ mod tests {
         };
         gone();
         let db = Db::open(&path, Duration::from_secs(3600), 0).unwrap();
+        db.set_systems(&trunk_app::Config::from_json(r#"{"systems":[{"shortName":"big","id":1}]}"#).unwrap());
         for (system, c) in r.take_changes() {
             db.send(Change::Registry { system_id: db.system_id(&system).unwrap(), changes: Box::new(c) });
         }

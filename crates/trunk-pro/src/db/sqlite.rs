@@ -214,9 +214,11 @@ fn open_sound(path: &Path) -> Result<Connection, OpenError> {
     conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get::<_, String>(0))?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    // Checkpoints by size (16 MB of WAL): periodic sequential bursts.
-    conn.pragma_update(None, "wal_autocheckpoint", 4096)?;
-    conn.pragma_update(None, "journal_size_limit", 16 << 20)?;
+    // Checkpoints by size (64 MB of WAL): rarer, so a page changed by many
+    // commits is copied into the file once (a busy day: 1.6 GB written
+    // against 2.3 at 16 MB; `db::tests::day_write_budget`).
+    conn.pragma_update(None, "wal_autocheckpoint", 16384)?;
+    conn.pragma_update(None, "journal_size_limit", 64 << 20)?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     if let schema::Prepared::Other(v) = schema::prepare(&conn)? {
         return Err(OpenError::Version(v));

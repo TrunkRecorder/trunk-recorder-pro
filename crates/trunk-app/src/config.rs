@@ -1961,12 +1961,17 @@ pub struct StorageSettings {
     /// disk aren't touched.
     pub retention_days: u32,
     /// Seconds between the store's commits under load ([`StorageSettings::COMMIT_SECONDS`]
-    /// bounds it). Each commit writes whole pages, twice, so longer is gentler
-    /// on flash: on the Pi's eMMC a busy system's store writes 0.2 GB a day at
-    /// 300, 0.6 at 60 (trunk-pro's `db::tests::write_budget`).
+    /// bounds it). Each commit writes whole pages, so longer is gentler on
+    /// flash: a page many calls change is written once per commit.
     pub commit_seconds: u32,
     /// Days of the dashboard's history kept, as hours; 0 keeps it all.
     pub stats_days: u32,
+    /// Index each call by its radios, so a radio's calls page back as far
+    /// as the store keeps them; off, a radio's list is its recent calls.
+    /// The index is most of what the call index writes on a busy system
+    /// (on the Pi's eMMC, a call a second: 2.3 GB a day with it, 0.9
+    /// without; `db::tests::day_write_budget`).
+    pub radio_index: bool,
 }
 
 impl StorageSettings {
@@ -1976,7 +1981,7 @@ impl StorageSettings {
 
 impl Default for StorageSettings {
     fn default() -> Self {
-        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365 }
+        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true }
     }
 }
 

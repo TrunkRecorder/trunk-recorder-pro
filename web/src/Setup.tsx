@@ -70,8 +70,8 @@ import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } fr
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { SystemSignals } from "./Signals.tsx";
-import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, StorageSettings, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -2965,6 +2965,56 @@ function RecordingOverridePanel(props: OverrideProps & { title: string; groups: 
   );
 }
 
+/**
+ * Setup → Data (desktop app): where the recorder keeps what it keeps (the
+ * call index, talkgroups, aliases, the radio registry, the dashboard's
+ * history) and how much it writes. Each takes effect from the next start.
+ * What's in it and how big: the dashboard's Platform → Storage.
+ */
+function DataTab(props: { c: Config }) {
+  const st = props.c.storage;
+  const set = (patch: Partial<StorageSettings>) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, ...patch }));
+  const low = !!st?.lowWrite;
+  return (
+    <Section title="Data" hint="What the recorder keeps between runs, where, and how much it writes. From the next start.">
+      <section className="set-card">
+        <Group title="Store" hint="Talkgroups, talker aliases, band plans, the radio registry, the call index and the dashboard's history. Recordings stay in the recordings folder.">
+          <Field label="Kept in">
+            <select value={st?.backend ?? "sqlite"} onChange={(e) => set({ backend: e.target.value as "sqlite" | "postgres" })}>
+              <option value="sqlite">This computer (SQLite)</option>
+              <option value="postgres">A PostgreSQL server</option>
+            </select>
+          </Field>
+          {st?.backend === "postgres" && (
+            <Field label="PostgreSQL connection" hint="postgres://user:password@host/database; one recorder per database or schema" wide>
+              <TextInput className="mono" value={st.url ?? ""} placeholder="postgres://trp@db.example/trunk" onChange={(v) => set({ url: v })} />
+            </Field>
+          )}
+        </Group>
+        <Group title="Writing less" hint="For an SD card or a Pi's eMMC: each index and commit is writes the card wears out by.">
+          <Field label="Low-write mode" hint="No call index (the call list is the recent calls), the dashboard's history by the hour, a commit an hour">
+            <Switch label="Low-write mode" checked={low} onChange={(v) => set({ lowWrite: v || undefined })} />
+          </Field>
+          <Field label="Calls by radio" hint={low ? "Low-write mode keeps no call index" : "A radio's calls as far back as the store keeps them. Off, its recent calls only: on a busy system it's most of what the call index writes"}>
+            <Switch label="Calls by radio" checked={!low && st?.radioIndex !== false} disabled={low} onChange={(v) => set({ radioIndex: v ? undefined : false })} />
+          </Field>
+          <Field label="Write every, s" hint="Longer writes less; calls show at once either way">
+            <NumberInput label="Write every, s" value={st?.commitSeconds ?? 300} onChange={(v) => set({ commitSeconds: Math.max(10, Math.min(3600, Math.round(v ?? 300))) })} />
+          </Field>
+        </Group>
+        <Group title="How long">
+          <Field label="Call history, days" hint="How long calls stay findable by talkgroup and radio; 0 keeps them all. Their files aren't touched">
+            <NumberInput label="Call history, days" value={st?.retentionDays ?? 120} onChange={(v) => set({ retentionDays: Math.max(0, Math.round(v ?? 120)) })} />
+          </Field>
+          <Field label="Dashboard history, days" hint="How far back the dashboard's charts go, kept by the hour; 0 keeps it all">
+            <NumberInput label="Dashboard history, days" value={st?.statsDays ?? 365} onChange={(v) => set({ statsDays: Math.max(0, Math.round(v ?? 365)) })} />
+          </Field>
+        </Group>
+      </section>
+    </Section>
+  );
+}
+
 /** The tab showing now (for showTodo, outside React). */
 let shownTab: SetupTab = "systems";
 const currentTab = () => shownTab;
@@ -2974,6 +3024,7 @@ const TABS: { id: SetupTab; label: string; icon: () => React.ReactNode }[] = [
   { id: "conventional", label: "Conventional", icon: IconAntenna },
   { id: "radios", label: "Radios", icon: IconDongle },
   { id: "recording", label: "Recording", icon: IconFolder },
+  { id: "data", label: "Data", icon: IconDatabase },
   { id: "plugins", label: "Plugins", icon: IconPuzzle },
 ];
 
@@ -2986,11 +3037,12 @@ function SetupTabs(props: { c: Config; tab: SetupTab }) {
     conventional: props.c.conventional.reduce((n, v) => n + v.channels.length, 0),
     radios: props.c.sources.length,
     recording: null,
+    data: null,
     plugins: s.plugins ? s.plugins.plugins.length : null,
   };
   return (
     <nav className="setup-tabs" role="tablist" aria-label="Setup">
-      {TABS.filter((t) => t.id !== "plugins" || can("plugins")).map((t) => {
+      {TABS.filter((t) => (t.id !== "plugins" || can("plugins")) && (t.id !== "data" || !web)).map((t) => {
         const todo = todos.filter((x) => tabOf(x.target) === t.id).length;
         return (
           <button key={t.id} role="tab" aria-selected={props.tab === t.id} className={props.tab === t.id ? "on" : ""} onClick={() => setSetupTab(t.id)}>
@@ -3159,44 +3211,6 @@ export function Setup() {
                       />
                     </Field>
                   )}
-                  <Field label="Kept in" hint="Talkgroups, aliases, the radio registry, the call index and the dashboard's history. From the next start">
-                    <select
-                      value={c.storage?.backend ?? "sqlite"}
-                      onChange={(e) => updateConfig((x) => void (x.storage = { url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, backend: e.target.value as "sqlite" | "postgres" }))}
-                    >
-                      <option value="sqlite">This computer (SQLite)</option>
-                      <option value="postgres">A PostgreSQL server</option>
-                    </select>
-                  </Field>
-                  <Field label="Low-write mode" hint="For an SD card: no call index (the call list is the recent calls), the dashboard's history by the hour, a commit an hour. From the next start">
-                    <Switch label="Low-write mode" checked={!!c.storage?.lowWrite} onChange={(v) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, lowWrite: v || undefined }))} />
-                  </Field>
-                  {c.storage?.backend === "postgres" && (
-                    <Field label="PostgreSQL connection" hint="postgres://user:password@host/database; one recorder per database or schema" wide>
-                      <TextInput className="mono" value={c.storage.url ?? ""} placeholder="postgres://trp@db.example/trunk" onChange={(v) => updateConfig((x) => void (x.storage = { ...x.storage!, url: v }))} />
-                    </Field>
-                  )}
-                  <Field label="Call history, days" hint="How long calls stay findable by talkgroup and radio; 0 keeps them all. Their files aren't touched. From the next start">
-                    <NumberInput
-                      label="Call history, days"
-                      value={c.storage?.retentionDays ?? 120}
-                      onChange={(v) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", commitSeconds: 300, ...x.storage, retentionDays: Math.max(0, Math.round(v ?? 120)) }))}
-                    />
-                  </Field>
-                  <Field label="Dashboard history, days" hint="How far back the dashboard's charts go, kept by the hour; 0 keeps it all. Files keeps a week. From the next start">
-                    <NumberInput
-                      label="Dashboard history, days"
-                      value={c.storage?.statsDays ?? 365}
-                      onChange={(v) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, statsDays: Math.max(0, Math.round(v ?? 365)) }))}
-                    />
-                  </Field>
-                  <Field label="Write call history every, s" hint="Longer writes the SD card or eMMC less; calls show at once either way. From the next start">
-                    <NumberInput
-                      label="Write call history every, s"
-                      value={c.storage?.commitSeconds ?? 300}
-                      onChange={(v) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", retentionDays: 120, ...x.storage, commitSeconds: Math.max(10, Math.min(3600, Math.round(v ?? 300))) }))}
-                    />
-                  </Field>
                 </>
               )}
             </Group>
@@ -3254,6 +3268,7 @@ export function Setup() {
         </Section>
       )}
 
+      {tab === "data" && !web && <DataTab c={c} />}
       {tab === "plugins" && can("plugins") && <PluginSetupPanel />}
     </div>
   );

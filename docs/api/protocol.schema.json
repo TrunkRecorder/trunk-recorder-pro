@@ -6750,11 +6750,15 @@
         },
         "commitSeconds": {
           "type": "number",
-          "description": "Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, twice, so longer is gentler on flash."
+          "description": "Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, so longer is gentler on flash."
         },
         "statsDays": {
           "type": "number",
           "description": "Days of the dashboard's history kept, as hours (default 365); 0 keeps it all."
+        },
+        "radioIndex": {
+          "type": "boolean",
+          "description": "Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system."
         }
       },
       "required": [

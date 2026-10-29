@@ -510,10 +510,12 @@ export interface StorageSettings {
   url?: string;
   /** Days of calls the call store indexes (default 120); 0 keeps them all. The calls' files on disk aren't touched. */
   retentionDays: number;
-  /** Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, twice, so longer is gentler on flash. */
+  /** Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, so longer is gentler on flash. */
   commitSeconds: number;
   /** Days of the dashboard's history kept, as hours (default 365); 0 keeps it all. */
   statsDays?: number;
+  /** Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system. */
+  radioIndex?: boolean;
 }
 
 export interface MonitorSettings {
