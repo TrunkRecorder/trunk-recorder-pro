@@ -86,15 +86,25 @@ with `--config` files in different folders never share band plans, talker aliase
 | `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
 | `monitor` | | see page | object | The dashboard's internet checks. [server-and-log.md](server-and-log.md#monitor) |
-| `storage` | | `{ "retentionDays": 120, "commitSeconds": 300 }` | object | The call store: how long calls stay in it, and how far apart it commits. [See below](#the-call-store-storage) |
+| `storage` | | `{ "backend": "sqlite", "retentionDays": 120, "commitSeconds": 300 }` | object | The call store: where it's kept, how long calls stay in it, and how far apart it commits. [See below](#the-call-store-storage) |
 | `plugins` | | `{}` | object | Which plugins run and their recorder-wide settings, by plugin id. [plugins.md](plugins.md) |
 | `keys` | | `{}` | object | P25 encryption key sources, by name: where each set of keys is read from. [Encryption keys](systems.md#encryption-keys-keys) |
 
 ### The call store (`storage`)
 
-Finished calls are indexed in `trunk-pro.sqlite`, beside the config, so the interface can list
-them by talkgroup, radio and time, as far back as it keeps them. The recordings and their `.json`
-files are written as before; the store is an index over them.
+Finished calls are indexed so the interface can list them by talkgroup, radio and time, as far
+back as it keeps them. The recordings and their `.json` files are written as before; the store is
+an index over them. `backend` says where it's kept:
+
+| `backend` | For | Kept |
+|---|---|---|
+| `"sqlite"` (default) | a Raspberry Pi to a mid-size server | `trunk-pro.sqlite`, beside the config |
+| `"postgres"` | servers: years of history, your own backups and replication | the PostgreSQL database `url` names: `"postgres://user:password@host/database"`. One recorder per database (or schema): a second one pointed at it runs with its store off |
+| `"files"` | the least writing of all (an SD card you'd rather spare) | nothing: the call list and every query answer from the recent calls, and the recordings are still there |
+
+The recorder records whatever happens to the store: one that can't be opened (or a PostgreSQL
+server that can't be reached) is left off, and the log says why. `url` isn't sent to
+listen-only interfaces.
 
 `retentionDays` (default 120) is how long a call stays in the store; older ones are removed a
 thousand at a time, when the app starts and every hour after. `0` keeps them all. It never deletes
@@ -102,11 +112,12 @@ the calls' audio and JSON files: they stay where they were recorded (deleting re
 #25).
 
 `commitSeconds` (default 300, 10 to 3600) is how far apart the store's commits are when calls are
-coming in. Each commit writes whole pages, twice (the log, then the database), so fewer commits
-write far less: on the Pi's eMMC, a busy system (a call a second) writes 0.2 GB a day at 300, 0.6
-GB at 60. A finished call is in the call list and every query at once whatever this
-is; a crash loses at most one interval of the index, and the next start finds those calls again
-from their `.json` files (not where none are kept, as with upload-only settings).
+coming in. Each commit writes whole pages, twice on SQLite (the log, then the database), so fewer
+commits write far less: on the Pi's eMMC, a busy system (a call a second) writes 0.21 GB a day at
+300, 0.61 GB at 60. On a PostgreSQL server, 10 to 60 is fine. A finished call is in the call list
+and every query at once whatever this is; a crash loses at most one interval of the index, and the
+next start finds those calls again from their `.json` files (not where none are kept, as with
+upload-only settings).
 
 Both are read when the app starts.
 

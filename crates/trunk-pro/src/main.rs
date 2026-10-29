@@ -881,13 +881,7 @@ fn serve(a: &Args) {
     let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone());
     let talkgroups = runtime::load_talkgroups(&cfg);
     runtime::load_names(&shared, &cfg, &talkgroups);
-    let db_path = paths::data_dir().join("trunk-pro.sqlite");
-    let range = trunk_app::config::StorageSettings::COMMIT_SECONDS;
-    let commit_seconds = cfg.storage.commit_seconds.clamp(*range.start(), *range.end());
-    if commit_seconds != cfg.storage.commit_seconds {
-        log::warn!("storage.commitSeconds {} is outside {} to {}; using {commit_seconds}", cfg.storage.commit_seconds, range.start(), range.end());
-    }
-    let db = db::Db::open_or_off(&db_path, std::time::Duration::from_secs(u64::from(commit_seconds)), cfg.storage.retention_days);
+    let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
@@ -940,7 +934,7 @@ fn serve(a: &Args) {
         log::info!("Trunk Recorder Pro {} — open {url}", env!("CARGO_PKG_VERSION"));
         log::info!("Using Config file: {}", config_path.display());
         log::info!("Capture Directory: {}", c.recording.capture_dir);
-        log::info!("Call store: {}", ctx.db.path().map_or("off".into(), |p| p.display().to_string()));
+        log::info!("Call store: {}", ctx.db.describe().unwrap_or_else(|| "off (the call files and recent calls only)".into()));
         let dir = if l.dir.is_empty() { config_path.parent().unwrap_or(Path::new(".")).join("logs") } else { config_path.parent().unwrap_or(Path::new(".")).join(&l.dir) };
         log::info!("Log Level: {} · Log to File: {}{} · System log: {}", level.unwrap_or(l.level).as_str(), l.file, if l.file { format!(" ({})", dir.display()) } else { String::new() }, l.syslog);
     }

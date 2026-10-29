@@ -71,9 +71,10 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [path, schemaVersion, calls, oldestMs, newestMs, retentionDays, commitSeconds]
+                required: [backend, path, schemaVersion, calls, oldestMs, newestMs, retentionDays, commitSeconds]
                 properties:
-                  path: { type: string, description: The database file. }
+                  backend: { type: string, enum: [sqlite, postgres], description: "`storage.backend`." }
+                  path: { type: string, description: "The SQLite file, or the PostgreSQL database without its password." }
                   schemaVersion: { type: integer }
                   calls: { type: integer, format: int64 }
                   oldestMs: { type: integer, format: int64, nullable: true, description: Start time of the oldest call; null when empty. }

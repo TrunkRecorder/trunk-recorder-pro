@@ -2,10 +2,12 @@
 //! any database, new or old, up to the last one. The version is SQLite's own
 //! `user_version`, which changes in the same transaction as the tables.
 //!
-//! Indexes cost page writes on every commit (research/storage.md), so there
-//! are only those a query needs: calls by start (every page), by talkgroup
-//! and start (a talkgroup's calls; a system is filtered on top), and
-//! transmissions by radio. The child tables are `without rowid`: their
+//! Indexes follow the queries: calls by start (every page), by system and
+//! start (a system's page, without scanning the busier systems' calls), by
+//! talkgroup and start (a talkgroup's calls; its system is filtered on top),
+//! and transmissions by radio. Each costs page writes on every commit
+//! (research/storage.md); a setup that must write the least has
+//! `storage.backend: "files"`. The child tables are `without rowid`: their
 //! primary key is the table, not a second index beside it.
 
 use rusqlite::Connection;
@@ -66,6 +68,7 @@ create table call_frequencies (
     primary key (call_id, seq)
 ) without rowid;
 create index calls_start on calls(start_ms);
+create index calls_system_start on calls(short_name, start_ms);
 create index calls_tg_start on calls(talkgroup, start_ms);
 create index tx_unit_start on call_transmissions(unit, start_ms);
 "];
@@ -118,6 +121,6 @@ mod tests {
         let unit = plan("select call_id from call_transmissions where unit = 7");
         assert!(unit.contains("tx_unit_start"), "{unit}");
         let sys = plan(&format!("select path from calls where short_name in ('a') {order}"));
-        assert!(sys.contains("calls_start") && !sys.contains("TEMP B-TREE"), "a system's page walks the start index: {sys}");
+        assert!(sys.contains("calls_system_start") && !sys.contains("TEMP B-TREE"), "a system's page walks its own index: {sys}");
     }
 }

@@ -628,7 +628,7 @@ over their own channel instead: `calls.query`, in the plugin SDK.)
 |---|---|
 | `GET /api/v1/calls` | `{ entries, more, before }`, the page `callsResult` has: `CallEntry`s, newest first. Parameters, all optional: `system` (short name; its sites' old names too), `talkgroup`, `unit` (a radio), `from` (start time, Unix ms, inclusive), `to` (exclusive), `before` (Unix ms: pass the last answer's `before` for the next page), `limit` (1 to 500, default 100). A parameter given empty counts as not given; a bad number answers 400 `{"error": "<name> must be a number"}`. |
 | `GET /api/v1/calls/<path>` | One `CallEntry`: `{ path, record, audio, json }`, for the `path` its entry has (slashes stay slashes); 404 `{"error": "no such call"}` when there is none. |
-| `GET /api/v1/storage` | `{ path, schemaVersion, calls, oldestMs, newestMs, retentionDays, commitSeconds }`: where the store is, how many calls it holds and the start times of the oldest and newest committed (`null` when empty), and the settings `storage.retentionDays` and `storage.commitSeconds`. |
+| `GET /api/v1/storage` | `{ backend, path, schemaVersion, calls, oldestMs, newestMs, retentionDays, commitSeconds }`: which backend (`sqlite`, `postgres`) and where the store is (a PostgreSQL database without its password), how many calls it holds and the start times of the oldest and newest committed (`null` when empty), and the settings `storage.retentionDays` and `storage.commitSeconds`. |
 
 The routes are described in
 [calls.openapi.yaml](calls.openapi.yaml) (OpenAPI 3.0).

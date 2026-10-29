@@ -9,7 +9,6 @@ use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rusqlite::OptionalExtension;
 use trunk_recorder_plugin::CallRecord;
 
 use super::row::call_row;
@@ -106,13 +105,7 @@ impl Drop for EndBackfill {
 }
 
 fn meta(db: &Db, key: &str) -> Option<String> {
-    db.with_reader(|c| {
-        c.query_row("select value from meta where key = ?", [key], |r| {
-            r.get::<_, String>(0)
-        })
-        .optional()
-    })
-    .unwrap_or_else(|e| {
+    db.meta(key).unwrap_or_else(|e| {
         log::warn!("Call store: reading {key}: {e}");
         None
     })
@@ -131,8 +124,8 @@ enum Found<'a> {
 /// indexing starts at once and only the folders still to walk are held.
 fn walk(
     roots: &[&Path],
-    f: &mut impl FnMut(Found<'_>) -> rusqlite::Result<()>,
-) -> rusqlite::Result<()> {
+    f: &mut impl FnMut(Found<'_>) -> Result<(), String>,
+) -> Result<(), String> {
     let mut stack: Vec<PathBuf> = roots.iter().rev().map(|p| p.to_path_buf()).collect();
     while let Some(d) = stack.pop() {
         let rd = match std::fs::read_dir(&d) {
@@ -205,8 +198,7 @@ pub fn run(
     };
     let floor_ms = (retention_days > 0).then(|| db.retention_cutoff(retention_days, now_ms));
     let mut stats = Stats::default();
-    let walked = db.with_reader(|c| {
-        let mut known = c.prepare("select 1 from calls where path = ?")?;
+    let walked: Result<(), String> = (|| {
         walk(&roots, &mut |found| {
             let p = match found {
                 Found::Record(p) => p,
@@ -235,7 +227,7 @@ pub fn run(
                 return Ok(());
             };
             let rel = rel.with_extension("").to_string_lossy().replace('\\', "/");
-            if known.exists([&rel])? {
+            if db.known(&rel)? {
                 stats.skipped += 1;
                 return Ok(());
             }
@@ -271,7 +263,7 @@ pub fn run(
             }
             Ok(())
         })
-    });
+    })();
     if stats.aborted {
         // (A capture folder not made yet, before the first call, is ordinary.)
         if stats.missing > 0 {
@@ -338,8 +330,7 @@ mod tests {
     }
 
     fn count(db: &Db, sql: &str) -> u32 {
-        db.with_reader(|c| c.query_row(sql, [], |r| r.get(0)))
-            .unwrap()
+        db.count(sql) as u32
     }
 
     #[test]
@@ -569,7 +560,7 @@ mod tests {
             let dir = dir.to_path_buf();
             move || run(&db, &dir, &[], 0, 10_000)
         });
-        while db.with_reader(|c| c.query_row("select count(*) from calls", [], |r| r.get::<_, i64>(0))).unwrap() == 0 && !t.is_finished() {
+        while db.count("select count(*) from calls") == 0 && !t.is_finished() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let started = std::time::Instant::now();
@@ -589,9 +580,7 @@ mod tests {
         t.join().unwrap();
         db.flush().unwrap();
         assert!(
-            db.with_reader(|c| crate::db::read::one(c, "live/1"))
-                .unwrap()
-                .is_some()
+            db.one("live/1").unwrap().is_some()
         );
     }
 

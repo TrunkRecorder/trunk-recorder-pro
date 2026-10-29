@@ -1280,7 +1280,7 @@ pub fn history(ctx: &Ctx) -> ToClient {
     let stored = if ctx.db.is_disabled() {
         Vec::new()
     } else {
-        ctx.db.with_reader(|c| crate::db::read::newest(c, HISTORY)).unwrap_or_else(|e| {
+        ctx.db.page(&crate::db::read::CallsFilter { limit: HISTORY, ..Default::default() }).map(|p| p.entries).unwrap_or_else(|e| {
             store_error(ctx, "history", &e);
             Vec::new()
         })
@@ -1315,7 +1315,7 @@ pub fn calls(ctx: &Ctx, q: &trunk_app::protocol::CallsQuery) -> (crate::db::read
     };
     // (The live list first: a call committed meanwhile is then in one or the other.)
     let live: Vec<Value> = ctx.recent.lock().unwrap().iter().cloned().collect();
-    match ctx.db.with_reader(|c| read::query(c, &filter)) {
+    match ctx.db.page(&filter) {
         Ok(stored) => (read::with_live(stored, &live, &filter), None),
         Err(e) => {
             store_error(ctx, "calls", &e);

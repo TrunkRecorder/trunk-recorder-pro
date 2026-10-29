@@ -16,12 +16,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     The recordings and their JSON files aren't touched.
   - **`storage.commitSeconds`**: how far apart the store's commits are under load, 300 by
     default (10 to 3600). Each commit writes whole pages, twice, so fewer is gentler on SD cards
-    and eMMC: on the Pi's eMMC a busy system's store writes 0.2 GB a day at 300, 0.6 at 60
+    and eMMC: on the Pi's eMMC a busy system's store writes 0.21 GB a day at 300, 0.61 at 60
     (`db::tests::write_budget`).
   - The first start indexes the calls already in the capture folder, in the background; later
     starts check the last two days for calls recorded while it was off.
-  - A store that can't be opened (a newer version's, a full disk, another recorder using it)
-    is left off: recording, the call list and every query go on from the recent calls.
+  - **Where it's kept** (`storage.backend`): `sqlite` (the default, beside the config: a Pi to a
+    mid-size server), `postgres` (a PostgreSQL server, `storage.url`: years of history, your
+    own backups and replication) or `files` (no index: the least writing). Setup's Recording tab
+    has the choice.
+  - A store that can't be opened (a newer version's, a full disk, a server not reachable,
+    another recorder using it) is left off: recording, the call list and every query go on from
+    the recent calls.
 - **Calls by talkgroup, radio and time, for interfaces and plugins:** `callsQuery` on the
   WebSocket (`client.js`: `rec.calls({ … })`), `GET /api/v1/calls`, `/api/v1/calls/<path>` and
   `/api/v1/storage` over HTTP (`docs/api/calls.openapi.yaml`), and for plugins `calls.query`

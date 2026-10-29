@@ -1920,6 +1920,14 @@ impl Default for Config {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct StorageSettings {
+    /// Which store keeps the index: `files` (none: the call files and the
+    /// recent calls alone), `sqlite` (a file beside the config: a Pi to a
+    /// mid-size server) or `postgres` (a database server: years of history,
+    /// the operator's backups and replication).
+    pub backend: StorageBackend,
+    /// PostgreSQL's connection string (`postgres://user:password@host/db`, or
+    /// `host=… user=… dbname=…`); one recorder per database or schema for now.
+    pub url: String,
     /// Days of calls the store indexes; 0 keeps them all. The calls' files on
     /// disk aren't touched.
     pub retention_days: u32,
@@ -1937,8 +1945,19 @@ impl StorageSettings {
 
 impl Default for StorageSettings {
     fn default() -> Self {
-        StorageSettings { retention_days: 120, commit_seconds: 300 }
+        StorageSettings { backend: StorageBackend::Sqlite, url: String::new(), retention_days: 120, commit_seconds: 300 }
     }
+}
+
+/// Which store keeps the call index ([`StorageSettings::backend`]).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageBackend {
+    /// None: the call files and the recent calls alone.
+    Files,
+    #[default]
+    Sqlite,
+    Postgres,
 }
 
 /// What the dashboard watches on the computer.
@@ -2686,7 +2705,9 @@ mod tests {
         let c = Config::from_value(serde_json::json!({})).unwrap();
         assert_eq!((c.storage.commit_seconds, c.storage.retention_days), (300, 120));
         let c = Config::from_value(serde_json::json!({ "storage": { "commitSeconds": 60, "retentionDays": 0 } })).unwrap();
-        assert_eq!((c.storage.commit_seconds, c.storage.retention_days), (60, 0));
+        assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.backend), (60, 0, StorageBackend::Sqlite));
+        let c = Config::from_value(serde_json::json!({ "storage": { "backend": "postgres", "url": "postgres://trp@db/trunk" } })).unwrap();
+        assert_eq!((c.storage.backend, c.storage.url.as_str(), c.storage.commit_seconds), (StorageBackend::Postgres, "postgres://trp@db/trunk", 300));
     }
 
     /// A call sign heard on a frequency goes into its system's licenses there (trunked or

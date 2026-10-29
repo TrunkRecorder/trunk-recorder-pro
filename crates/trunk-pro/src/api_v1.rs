@@ -15,7 +15,6 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::access::Door;
-use crate::db::read;
 use trunk_app::protocol::CallsQuery;
 use crate::runtime::{self, Ctx};
 
@@ -87,12 +86,9 @@ fn query(q: &HashMap<String, String>) -> Result<CallsQuery, Fail> {
 }
 
 /// Run a store read off the async threads: its answer, or a 500.
-async fn read<T: Send + 'static>(
-    ctx: &Arc<Ctx>,
-    f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T> + Send + 'static,
-) -> Result<T, Fail> {
+async fn read<T: Send + 'static>(ctx: &Arc<Ctx>, f: impl FnOnce(&crate::db::Db) -> Result<T, String> + Send + 'static) -> Result<T, Fail> {
     let ctx = ctx.clone();
-    match tokio::task::spawn_blocking(move || ctx.db.with_reader(f)).await {
+    match tokio::task::spawn_blocking(move || f(&ctx.db)).await {
         Ok(Ok(v)) => Ok(v),
         Ok(Err(e)) => Err(error(StatusCode::INTERNAL_SERVER_ERROR, &e)),
         Err(e) => Err(error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())),
@@ -134,7 +130,7 @@ async fn call(
     if let Some(e) = live {
         return Json(e).into_response();
     }
-    match read(&ctx, move |c| read::one(c, &path)).await {
+    match read(&ctx, move |db| db.one(&path)).await {
         Ok(Some(entry)) => Json(entry).into_response(),
         Ok(None) => error(StatusCode::NOT_FOUND, "no such call").into_response(),
         Err(r) => r.into_response(),
@@ -149,34 +145,18 @@ async fn storage(State(ctx): State<Arc<Ctx>>, Extension(door): Extension<Door>) 
         let cfg = ctx.config.lock().unwrap();
         (cfg.storage.retention_days, cfg.storage.commit_seconds)
     };
-    let stats = read(&ctx, |c| {
-        c.query_row(
-            "select count(*), min(start_ms), max(start_ms) from calls",
-            [],
-            |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, Option<i64>>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                ))
-            },
-        )
-    })
-    .await;
-    match stats {
-        Ok((calls, oldest, newest)) => {
-            let path: Value = ctx.db.path().map(|p| p.display().to_string()).into();
-            Json(json!({
-                "path": path,
-                "schemaVersion": crate::db::schema::SCHEMA_VERSION,
-                "calls": calls,
-                "oldestMs": oldest,
-                "newestMs": newest,
-                "retentionDays": retention_days,
-                "commitSeconds": commit_seconds,
-            }))
-            .into_response()
-        }
+    match read(&ctx, |db| db.info()).await {
+        Ok(i) => Json(json!({
+            "backend": ctx.db.backend(),
+            "path": i.location,
+            "schemaVersion": i.schema_version,
+            "calls": i.calls,
+            "oldestMs": i.oldest_ms,
+            "newestMs": i.newest_ms,
+            "retentionDays": retention_days,
+            "commitSeconds": commit_seconds,
+        }))
+        .into_response(),
         Err(r) => r.into_response(),
     }
 }

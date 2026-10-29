@@ -41,6 +41,8 @@ getrandom = "0.3"
 flate2 = "1"
 # The call store (db/): bundled SQLite, no system library.
 rusqlite = { version = "0.41", features = ["bundled"] }
+# The call store on a PostgreSQL server (storage.backend "postgres"): pure Rust.
+postgres = "0.19"
 tar = "0.4"
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk", "network", "component"] }

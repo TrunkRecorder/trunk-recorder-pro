@@ -3159,18 +3159,33 @@ export function Setup() {
                       />
                     </Field>
                   )}
+                  <Field label="Call history kept in" hint="Files writes the least (the recordings alone, and the recent calls). From the next start">
+                    <select
+                      value={c.storage?.backend ?? "sqlite"}
+                      onChange={(e) => updateConfig((x) => void (x.storage = { url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, backend: e.target.value as "files" | "sqlite" | "postgres" }))}
+                    >
+                      <option value="sqlite">This computer (SQLite)</option>
+                      <option value="postgres">A PostgreSQL server</option>
+                      <option value="files">Files only</option>
+                    </select>
+                  </Field>
+                  {c.storage?.backend === "postgres" && (
+                    <Field label="PostgreSQL connection" hint="postgres://user:password@host/database; one recorder per database or schema" wide>
+                      <TextInput className="mono" value={c.storage.url ?? ""} placeholder="postgres://trp@db.example/trunk" onChange={(v) => updateConfig((x) => void (x.storage = { ...x.storage!, url: v }))} />
+                    </Field>
+                  )}
                   <Field label="Call history, days" hint="How long calls stay findable by talkgroup and radio; 0 keeps them all. Their files aren't touched. From the next start">
                     <NumberInput
                       label="Call history, days"
                       value={c.storage?.retentionDays ?? 120}
-                      onChange={(v) => updateConfig((x) => void (x.storage = { commitSeconds: 300, ...x.storage, retentionDays: Math.max(0, Math.round(v ?? 120)) }))}
+                      onChange={(v) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", commitSeconds: 300, ...x.storage, retentionDays: Math.max(0, Math.round(v ?? 120)) }))}
                     />
                   </Field>
                   <Field label="Write call history every, s" hint="Longer writes the SD card or eMMC less; calls show at once either way. From the next start">
                     <NumberInput
                       label="Write call history every, s"
                       value={c.storage?.commitSeconds ?? 300}
-                      onChange={(v) => updateConfig((x) => void (x.storage = { retentionDays: 120, ...x.storage, commitSeconds: Math.max(10, Math.min(3600, Math.round(v ?? 300))) }))}
+                      onChange={(v) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", retentionDays: 120, ...x.storage, commitSeconds: Math.max(10, Math.min(3600, Math.round(v ?? 300))) }))}
                     />
                   </Field>
                 </>
