@@ -240,7 +240,8 @@ From the recorder:
   hello        { version, platform, api, configPath?, surveyBands, capabilities }
                capabilities: what it can do beyond recording, of "service" (quit, files by path, log,
                M4A), "drivers" (USRP/Airspy/SoapySDR), "plugins", "interfaces", "host", "keys",
-               "calls" (the call store: callsQuery). The desktop app has all ("calls" while its
+               "calls" (the call store: callsQuery), "history" (statsQuery further back than a
+               week: 30d, 90d, 1y). The desktop app has all ("calls" and "history" while its
                call store is open); the browser build none. Show only what works.
   config       { config, version }: on connecting, and when someone changes it
   configSaved  { version, error? }: answers your setConfig; error when the edit wasn't taken
@@ -279,7 +280,8 @@ To the recorder:
   { type: "callsQuery", id, system?: <short name>, talkgroup?, unit?, from?, to?, before?, limit?: <1 to 500> }
     recorded calls by system, talkgroup, radio and start time (Unix ms, from inclusive, to exclusive), newest
     first, the latest included (→ callsResult; listen access may send it)
-  { type: "statsQuery", id, series: ["sys/<short>/calls", …], range: "1h" }   history (→ statsResult; listen may send it)
+  { type: "statsQuery", id, series: ["sys/<short>/calls", …], range: "1h" }   history (→ statsResult; listen may send it);
+               range 10m/1h/6h/24h/7d, or 30d/90d/1y with "history" (hourly steps, as far as storage.statsDays keeps)
   { type: "radioQuery", id, what: "talkgroups" | "units" | "tones" | …, system: <short name> }   what the
     recorder has heard (→ radioResult; listen may send it)
   { type: "subscribe", topics: ["log", "spectrum:0", "rf:0", "decode:<shortName>", "platform"] }

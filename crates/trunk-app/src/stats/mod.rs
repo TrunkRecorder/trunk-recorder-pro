@@ -34,7 +34,7 @@ use crate::protocol::ToClient;
 use crate::session::Output;
 pub use aggregate::{Aggregator, Rollup};
 pub use events::{Monitor, MonitorEvent, Watcher};
-pub use history::History;
+pub use history::{Bucket, Buckets, History, HourRow, Span};
 pub use meter::SampleMeter;
 pub use radio::{Names, Registry, TgInfo};
 

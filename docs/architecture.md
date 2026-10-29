@@ -563,7 +563,9 @@ main ─► serve()
     `registry` once a day. Files found at startup are imported and renamed
     `.imported`.
   - `stats/YYYY-MM-DD.jsonl` gets each minute's rollup appended (see
-    [Measurements](#measurements)).
+    [Measurements](#measurements)); with the store on, `stats_minutes`
+    (8 days) and `stats_hours` (each series' hours, `storage.statsDays`)
+    instead.
   - `trunk-pro.sqlite` (`trunk-pro/src/db/`) is the call store: one row per
     finished call, written in batches by the `db-writer` thread. The
     recording and its `.json` are still files; the row is how `callsQuery`

@@ -87,7 +87,7 @@ with `--config` files in different folders never share band plans, talker aliase
 | `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
 | `monitor` | | see page | object | The dashboard's internet checks. [server-and-log.md](server-and-log.md#monitor) |
-| `storage` | | `{ "backend": "sqlite", "retentionDays": 120, "commitSeconds": 300 }` | object | The call store: where it's kept, how long calls stay in it, and how far apart it commits. [See below](#the-call-store-storage) |
+| `storage` | | `{ "backend": "sqlite", "retentionDays": 120, "commitSeconds": 300, "statsDays": 365 }` | object | The call store: where it's kept, how long calls stay in it, and how far apart it commits. [See below](#the-call-store-storage) |
 | `plugins` | | `{}` | object | Which plugins run and their recorder-wide settings, by plugin id. [plugins.md](plugins.md) |
 | `keys` | | `{}` | object | P25 encryption key sources, by name: where each set of keys is read from. [Encryption keys](systems.md#encryption-keys-keys) |
 
@@ -142,6 +142,11 @@ later (a talkgroup file edited by hand, say) is imported the same way at the nex
   category, mode, priority and Ignore in columns of their own (table `talkgroups`), so a call's
   talkgroup can be looked up by SQL. Setup's **Download** exports the file; **Load CSV…** replaces
   it.
+- **The dashboard's history** goes back `statsDays` (default 365; `0` keeps it all), not a week.
+  The last week is kept by the minute and every series by the hour, so the dashboard's charts
+  offer 30 days, 90 days and a year, as far as that goes. On the Pi's eMMC this writes about
+  17 MB a day, against about 9 MB for the files. A year of hours is about 70 MB on disk for a
+  recorder with two systems.
 - **The radio registry** is stored as the changes of each 15 minutes, and written whole once a
   day. On the Pi's eMMC that's 0.10 GB a day for a busy system, against 0.44 GB for the whole file
   every 15 minutes.
@@ -308,7 +313,7 @@ Heard list and radio registry are kept [in the store](#the-call-store-storage) i
 | `<shortName>.units.csv` | Talker aliases heard over the air, per system |
 | `conventional.heard.json` | The tones, NACs, colour codes and RANs each conventional frequency carried (the Heard list) |
 | `radio/` | The radio registry: the talkgroups, radios and frequencies each system has heard, one `.json` per system |
-| `stats/` | The dashboard's history: a `YYYY-MM-DD.jsonl` per day (UTC), gzipped once the day is over, deleted after about a week |
+| `stats/` | The dashboard's history (`files`): a `YYYY-MM-DD.jsonl` per day (UTC), gzipped once the day is over, deleted after about a week |
 | `plugins/<id>/` | Installed plugins |
 | `plugin-data/<id>/` | Each plugin's own data (calls waiting to upload, for example), and its working folder |
 | `plugin-registry.json` | The plugin store's cached index |

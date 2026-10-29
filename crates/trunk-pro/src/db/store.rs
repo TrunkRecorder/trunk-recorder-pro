@@ -28,6 +28,14 @@ pub enum Change {
     /// A system's whole radio registry, as JSON, in place of what's stored
     /// (its changes go with it).
     RegistryWhole { system: String, json: String },
+    /// A minute of the dashboard's history: a [`trunk_app::stats::Rollup`]
+    /// as its JSON line (a minute may have several, merged when read).
+    StatsMinute { t: i64, json: String },
+    /// Hours of the dashboard's history, in place of any there.
+    StatsHours(Vec<trunk_app::stats::HourRow>),
+    /// The dashboard's minutes before `minutes_before` go, and its hours
+    /// before `hours_before` (none: kept).
+    RetireStats { minutes_before: i64, hours_before: Option<i64> },
     /// A system's talkgroup file ([`talkgroup_lines`]): these lines written,
     /// and those from `len` on removed.
     Talkgroups { system: String, lines: Vec<TalkgroupLine>, len: i64 },
@@ -76,6 +84,71 @@ pub fn talkgroup_lines(old: &str, new: &str) -> (Vec<TalkgroupLine>, i64) {
         .map(|(i, l)| TalkgroupLine { seq: i as i64, line: l.to_string(), tg: numbers.get(i).copied().flatten().and_then(|n| parsed.get(&n).cloned()) })
         .collect();
     (changed, lines.len() as i64)
+}
+
+/// Hours of the dashboard's history wanted: the series matching `patterns`
+/// (names, or prefixes ending in `*`), from `from` to before `before`
+/// (Unix s), added up into `span`'s buckets.
+pub struct HoursQuery<'a> {
+    pub patterns: &'a [String],
+    pub span: trunk_app::stats::Span,
+    pub from: i64,
+    pub before: i64,
+}
+
+/// A bucket's worth of a series' hours: (series, bucket, Σ avg × n, n, lo, hi).
+pub type HoursSum = (String, i64, f64, i64, f64, f64);
+
+impl HoursQuery<'_> {
+    /// The query, `?` for each parameter, and its parameters: each bucket's
+    /// sum, so a year of hours comes back as a few hundred rows.
+    pub fn sql(&self) -> (String, Vec<super::read::Param>) {
+        use super::read::Param;
+        let step = self.span.step * 60;
+        let mut ps = vec![Param::Int(self.span.m0 * 60), Param::Int(step), Param::Int(self.from), Param::Int(self.before)];
+        let mut any = Vec::new();
+        for p in self.patterns {
+            match p.strip_suffix('*') {
+                Some(prefix) => match after(prefix) {
+                    _ if prefix.is_empty() => any.push("1 = 1".to_string()),
+                    Some(end) => {
+                        any.push("(series >= ? and series < ?)".into());
+                        ps.extend([Param::Text(prefix.into()), Param::Text(end)]);
+                    }
+                    None => {
+                        any.push("series >= ?".into());
+                        ps.push(Param::Text(prefix.into()));
+                    }
+                },
+                None => {
+                    any.push("series = ?".into());
+                    ps.push(Param::Text(p.clone()));
+                }
+            }
+        }
+        if any.is_empty() {
+            any.push("1 = 0".into());
+        }
+        let sql = format!(
+            "select series, (t - ?) / ? as b, cast(sum(avg * n) as double precision), cast(sum(n) as bigint), cast(min(lo) as double precision), cast(max(hi) as double precision)
+             from stats_hours where t >= ? and t < ? and ({}) group by series, b",
+            any.join(" or ")
+        );
+        (sql, ps)
+    }
+}
+
+/// The first string after every string starting with `prefix`: its last
+/// character one higher (none: nothing is).
+fn after(prefix: &str) -> Option<String> {
+    let mut s: Vec<char> = prefix.chars().collect();
+    while let Some(c) = s.pop() {
+        if let Some(next) = char::from_u32(c as u32 + 1) {
+            s.push(next);
+            return Some(s.into_iter().collect());
+        }
+    }
+    None
 }
 
 /// A system's talkgroup file from its stored lines.
@@ -137,6 +210,10 @@ pub trait CallStore: Send + Sync {
     fn registry(&self) -> Result<Vec<StoredRegistry>, String>;
     /// A system's talkgroup file, as stored ([`talkgroup_file`]).
     fn talkgroups(&self, system: &str) -> Result<Option<String>, String>;
+    /// The dashboard's minutes from `since` (Unix s) on, as JSON lines, oldest first.
+    fn stats_minutes(&self, since: i64) -> Result<Vec<String>, String>;
+    /// The dashboard's hours, added up by bucket ([`HoursQuery`]).
+    fn stats_hours(&self, q: &HoursQuery) -> Result<Vec<HoursSum>, String>;
     /// Delete up to `max` calls that started before `before_ms`, oldest
     /// first, with their children; how many went.
     fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String>;

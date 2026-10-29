@@ -1,20 +1,36 @@
-//! The dashboard's history on disk: each minute's [`Rollup`]s as JSON lines
-//! in `<data>/stats/YYYY-MM-DD.jsonl` (UTC days; a minute may have several
-//! lines — the engine's, the platform's, the plugins' — merged when read).
-//! Appended, never rewritten (an SD card's friend); a finished day is
-//! gzipped, and days past [`KEEP_DAYS`] deleted. At startup the files are
-//! read into the in-memory [`History`] in the background.
+//! The dashboard's history kept: each minute's [`Rollup`]s (a minute may
+//! have several — the engine's, the platform's, the plugins' — merged when
+//! read), read into the in-memory [`History`] in the background at startup.
+//!
+//! - **The store on** (`storage.backend` `sqlite` or `postgres`): the
+//!   minutes in `stats_minutes`, kept [`KEEP_DAYS`] (what memory holds), and
+//!   each series' hours in `stats_hours`, written as each hour ends and kept
+//!   `storage.statsDays`. A chart further back than memory adds the store's
+//!   hours to memory's minutes (`server::stats_query`). A `stats/` folder
+//!   found at startup is imported and renamed `stats.imported`.
+//! - **`files`**: JSON lines in `<data>/stats/YYYY-MM-DD.jsonl` (UTC days),
+//!   appended, never rewritten (an SD card's friend); a finished day is
+//!   gzipped, and days past [`KEEP_DAYS`] deleted.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use trunk_app::stats::{History, Rollup};
 
-/// Days of files kept (a week, and the day being written).
+use crate::db::{Db, Write as DbWrite};
+
+/// Days of minutes kept (a week, and the day being written).
 pub const KEEP_DAYS: i64 = 8;
+/// An hour is written this long after it ends: a minute's rollups come from several places.
+const HOUR_GRACE_S: i64 = 120;
+/// The `meta` key of the last hour written to the store.
+const HOURS_DONE: &str = "stats.hoursDone";
+/// No hour written yet (the history still loading).
+const NOT_YET: i64 = i64::MIN;
 
 /// Hands rollups to the writer thread.
 #[derive(Clone)]
@@ -23,16 +39,29 @@ pub struct Store {
 }
 
 impl Store {
-    /// Start the writer (and the reader of what's on disk) for `dir`, filling `history`.
-    pub fn start(dir: PathBuf, history: Arc<Mutex<History>>) -> Store {
+    /// Start the writer (and the reader of what's kept) filling `history`:
+    /// the store `db`, keeping hours `stats_days` (0: all), or with it off
+    /// the files in `dir`.
+    pub fn start(dir: PathBuf, history: Arc<Mutex<History>>, db: Db, stats_days: u32) -> Store {
         let (tx, rx) = mpsc::channel::<Rollup>();
         history.lock().unwrap().loading = true;
-        let (d2, h2) = (dir.clone(), history.clone());
+        let done = Arc::new(AtomicI64::new(NOT_YET));
+        let (d2, h2, db2, done2) = (dir.clone(), history.clone(), db.clone(), done.clone());
         let _ = std::thread::Builder::new().name("stats-load".into()).spawn(move || {
-            load(&d2, &h2);
+            if db2.is_disabled() {
+                load(&d2, &h2);
+            } else {
+                load_store(&d2, &db2, &h2, &done2);
+            }
             h2.lock().unwrap().loading = false;
         });
-        let _ = std::thread::Builder::new().name("stats-store".into()).spawn(move || write(&dir, &history, rx));
+        let _ = std::thread::Builder::new().name("stats-store".into()).spawn(move || {
+            if db.is_disabled() {
+                write(&dir, &history, rx);
+            } else {
+                write_store(&db, &history, rx, &done, stats_days);
+            }
+        });
         Store { tx }
     }
 
@@ -90,27 +119,123 @@ fn files(dir: &Path) -> Vec<(i64, PathBuf)> {
     v
 }
 
+/// `dir`, or once imported into the store (a switch back to `files`) its last copy.
+fn files_dir(dir: &Path) -> PathBuf {
+    let imported = imported(dir);
+    if !dir.exists() && imported.exists() { imported } else { dir.to_path_buf() }
+}
+
+fn imported(dir: &Path) -> PathBuf {
+    dir.with_file_name(format!("{}.imported", dir.file_name().and_then(|n| n.to_str()).unwrap_or("stats")))
+}
+
 fn load(dir: &Path, history: &Mutex<History>) {
+    read_files(&files_dir(dir), history, |_| {});
+}
+
+/// Each of the files' minutes from the last [`KEEP_DAYS`] into `history`
+/// (and to `also`), oldest first; how many were read.
+fn read_files(dir: &Path, history: &Mutex<History>, mut also: impl FnMut(&Rollup)) -> usize {
     let today = chrono::Utc::now().timestamp().div_euclid(86400);
+    let mut read = 0;
     for (day, path) in files(dir) {
         if day < today - KEEP_DAYS {
             continue;
         }
         let Ok(f) = fs::File::open(&path) else { continue };
         let reader: Box<dyn Read> = if path.extension().is_some_and(|e| e == "gz") { Box::new(flate2::read::GzDecoder::new(f)) } else { Box::new(f) };
-        let mut batch = Vec::new();
-        for line in BufReader::new(reader).lines().map_while(Result::ok) {
-            if let Some(r) = serde_json::from_str(&line).ok().as_ref().and_then(Rollup::from_json) {
-                batch.push(r);
-            }
-            // A few hundred at a time: the live writer shares the lock.
-            if batch.len() >= 500 {
-                let mut h = history.lock().unwrap();
-                batch.drain(..).for_each(|r| h.insert(&r));
-            }
+        let lines = BufReader::new(reader).lines().map_while(Result::ok);
+        read += insert_all(history, lines.filter_map(|line| serde_json::from_str(&line).ok().as_ref().and_then(Rollup::from_json)).inspect(&mut also));
+    }
+    read
+}
+
+/// `rollups` into `history`, a few hundred at a time (the live writer
+/// shares the lock); how many.
+fn insert_all(history: &Mutex<History>, rollups: impl Iterator<Item = Rollup>) -> usize {
+    let (mut batch, mut n) = (Vec::new(), 0);
+    for r in rollups {
+        batch.push(r);
+        n += 1;
+        if batch.len() >= 500 {
+            let mut h = history.lock().unwrap();
+            batch.drain(..).for_each(|r| h.insert(&r));
         }
-        let mut h = history.lock().unwrap();
-        batch.drain(..).for_each(|r| h.insert(&r));
+    }
+    let mut h = history.lock().unwrap();
+    batch.drain(..).for_each(|r| h.insert(&r));
+    n
+}
+
+/// Read the store's minutes into `history` (or import the files in `dir`,
+/// once), then write the hours it has that the store hasn't, and say which
+/// hour was the last (`done`) to the writer.
+fn load_store(dir: &Path, db: &Db, history: &Mutex<History>, done: &AtomicI64) {
+    let now = crate::clock::unix_s() as i64;
+    if dir.is_dir() {
+        let mut first = None;
+        let n = read_files(dir, history, |r| {
+            first.get_or_insert(r.t);
+            db.send(DbWrite::StatsMinute { t: r.t, json: r.to_json().to_string() });
+        });
+        let stored = db.flush().is_ok() && first.is_none_or(|t| db.stats_minutes(t).is_ok_and(|v| !v.is_empty()));
+        if !stored {
+            log::warn!("{}: not imported into the store (the log says why); read again next start", dir.display());
+        } else if let Err(e) = fs::rename(dir, imported(dir)) {
+            log::warn!("{}: imported into the store, but not renamed: {e}", dir.display());
+        } else {
+            log::info!("{}: {n} minutes of history imported into the store", dir.display());
+        }
+    } else {
+        match db.stats_minutes(now - KEEP_DAYS * 86400) {
+            Ok(lines) => {
+                insert_all(history, lines.iter().filter_map(|l| serde_json::from_str(l).ok().as_ref().and_then(Rollup::from_json)));
+            }
+            Err(e) => log::warn!("Call store: the dashboard's history not read ({e})"),
+        }
+    }
+    let last = db.meta(HOURS_DONE).ok().flatten().and_then(|v| v.parse::<i64>().ok());
+    let first = history.lock().unwrap().first().map(|t| t.div_euclid(3600) * 3600 - 3600);
+    let from = last.or(first).unwrap_or(now.div_euclid(3600) * 3600 - 3600);
+    done.store(write_hours(db, history, from, now), Ordering::SeqCst);
+}
+
+/// Write each hour after `done` that has ended by `now` (with
+/// [`HOUR_GRACE_S`]) from `history`; the last one written (else `done`).
+fn write_hours(db: &Db, history: &Mutex<History>, mut done: i64, now: i64) -> i64 {
+    let mut wrote = false;
+    while done + 2 * 3600 + HOUR_GRACE_S <= now {
+        done += 3600;
+        let rows = history.lock().unwrap().hour_rows(done);
+        if !rows.is_empty() {
+            db.send(DbWrite::StatsHours(rows));
+        }
+        wrote = true;
+    }
+    if wrote {
+        db.send(DbWrite::Meta { key: HOURS_DONE.into(), value: done.to_string() });
+    }
+    done
+}
+
+/// The live minutes: into `history` and the store; each hour into the
+/// store as it ends (once the history is loaded: `done`), and what's past
+/// keeping let go.
+fn write_store(db: &Db, history: &Mutex<History>, rx: mpsc::Receiver<Rollup>, done: &AtomicI64, stats_days: u32) {
+    for r in rx {
+        history.lock().unwrap().insert(&r);
+        db.send(DbWrite::StatsMinute { t: r.t, json: r.to_json().to_string() });
+        let was = done.load(Ordering::SeqCst);
+        if was == NOT_YET {
+            continue;
+        }
+        let now = r.t + 60;
+        let last = write_hours(db, history, was, now);
+        if last != was {
+            done.store(last, Ordering::SeqCst);
+            let hours_before = (stats_days > 0).then(|| now - i64::from(stats_days) * 86400);
+            db.send(DbWrite::RetireStats { minutes_before: now - KEEP_DAYS * 86400, hours_before });
+        }
     }
 }
 
@@ -185,7 +310,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let now = chrono::Utc::now().timestamp() / 60 * 60;
         let h = Arc::new(Mutex::new(History::default()));
-        let store = Store::start(dir.clone(), h.clone());
+        let store = Store::start(dir.clone(), h.clone(), Db::disabled(), 0);
         store.add(Rollup { t: now, values: BTreeMap::from([("a".to_string(), [1.0, 0.0, 2.0])]) });
         store.add(Rollup { t: now, values: BTreeMap::from([("b".to_string(), [5.0, 5.0, 5.0])]) });
         drop(store);
@@ -202,5 +327,55 @@ mod tests {
         assert_eq!(q["a"]["v"], serde_json::json!([1.0]));
         assert_eq!(q["b"]["v"], serde_json::json!([5.0]));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// With the store on: a stats folder imported once (renamed), the minutes
+    /// read back at the next start, each ended hour written once, and the
+    /// writer going on from the last.
+    #[test]
+    fn the_store_keeps_minutes_and_each_hour() {
+        let dir = crate::db::TestDir::new("stats-store");
+        let stats = dir.join("stats");
+        fs::create_dir_all(&stats).unwrap();
+        let now = crate::clock::unix_s() as i64;
+        let t0 = now.div_euclid(3600) * 3600 - 4 * 3600;
+        let lines: String = [t0, t0 + 3900, t0 + 7200].iter().map(|t| format!("{}\n", Rollup { t: *t, values: BTreeMap::from([("a".to_string(), [2.0, 1.0, 3.0])]) }.to_json())).collect();
+        fs::write(stats.join(format!("{}.jsonl", day_name(t0.div_euclid(86400)))), &lines).unwrap();
+        let (db, _) = Db::for_test_with_batch("stats-store", std::time::Duration::from_millis(10));
+        let wait = |h: &Arc<Mutex<History>>| {
+            for _ in 0..200 {
+                if !h.lock().unwrap().loading {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("still loading");
+        };
+        let h = Arc::new(Mutex::new(History::default()));
+        let store = Store::start(stats.clone(), h.clone(), db.clone(), 30);
+        wait(&h);
+        db.flush().unwrap();
+        assert!(!stats.exists() && dir.join("stats.imported").exists(), "imported, renamed");
+        assert_eq!(db.stats_minutes(0).unwrap().len(), 3);
+        assert_eq!(db.count("select count(*) from stats_hours"), 3, "the three hours with minutes");
+        let ended = (now - HOUR_GRACE_S).div_euclid(3600) * 3600 - 3600;
+        assert_eq!(db.meta(HOURS_DONE).unwrap(), Some(ended.to_string()), "the last hour that has ended");
+        // Live: a minute well into the next hour writes the one before.
+        let next = now.div_euclid(3600) * 3600 + 3600;
+        store.add(Rollup { t: next + 30 * 60, values: BTreeMap::from([("a".to_string(), [6.0, 6.0, 6.0])]) });
+        store.add(Rollup { t: next + 3600 + 5 * 60, values: BTreeMap::from([("a".to_string(), [6.0, 6.0, 6.0])]) });
+        drop(store);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        db.flush().unwrap();
+        assert_eq!(db.count("select count(*) from stats_hours"), 4);
+        assert_eq!(db.meta(HOURS_DONE).unwrap(), Some(next.to_string()));
+        // The next start: from the store, nothing imported or written twice.
+        let again = Arc::new(Mutex::new(History::default()));
+        let _store = Store::start(stats.clone(), again.clone(), db.clone(), 30);
+        wait(&again);
+        db.flush().unwrap();
+        assert_eq!(again.lock().unwrap().query(&["a".into()], t0, t0, 10)["a"]["v"], serde_json::json!([2.0]));
+        assert_eq!(db.count("select count(*) from stats_minutes"), 5);
+        assert_eq!(db.count("select count(*) from stats_hours"), 4);
     }
 }

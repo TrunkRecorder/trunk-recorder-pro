@@ -753,7 +753,8 @@
         "interfaces",
         "host",
         "keys",
-        "calls"
+        "calls",
+        "history"
       ],
       "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open"
     },
@@ -6769,6 +6770,10 @@
         "commitSeconds": {
           "type": "number",
           "description": "Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, twice, so longer is gentler on flash."
+        },
+        "statsDays": {
+          "type": "number",
+          "description": "Days of the dashboard's history kept, as hours (the last week by the minute too; default 365); 0 keeps it all. \"files\" keeps a week."
         }
       },
       "required": [
@@ -8588,7 +8593,10 @@
                 "1h",
                 "6h",
                 "24h",
-                "7d"
+                "7d",
+                "30d",
+                "90d",
+                "1y"
               ]
             },
             "from": {

@@ -3181,6 +3181,13 @@ export function Setup() {
                       onChange={(v) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", commitSeconds: 300, ...x.storage, retentionDays: Math.max(0, Math.round(v ?? 120)) }))}
                     />
                   </Field>
+                  <Field label="Dashboard history, days" hint="How far back the dashboard's charts go, kept by the hour (the last week by the minute); 0 keeps it all. Files keeps a week. From the next start">
+                    <NumberInput
+                      label="Dashboard history, days"
+                      value={c.storage?.statsDays ?? 365}
+                      onChange={(v) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, statsDays: Math.max(0, Math.round(v ?? 365)) }))}
+                    />
+                  </Field>
                   <Field label="Write call history every, s" hint="Longer writes the SD card or eMMC less; calls show at once either way. From the next start">
                     <NumberInput
                       label="Write call history every, s"

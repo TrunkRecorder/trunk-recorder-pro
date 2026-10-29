@@ -1936,6 +1936,9 @@ pub struct StorageSettings {
     /// on flash: on the Pi's eMMC a busy system's store writes 0.2 GB a day at
     /// 300, 0.6 at 60 (trunk-pro's `db::tests::write_budget`).
     pub commit_seconds: u32,
+    /// Days of the dashboard's history kept, as hours (the last week is kept
+    /// by the minute too); 0 keeps it all. `files` keeps a week.
+    pub stats_days: u32,
 }
 
 impl StorageSettings {
@@ -1945,7 +1948,7 @@ impl StorageSettings {
 
 impl Default for StorageSettings {
     fn default() -> Self {
-        StorageSettings { backend: StorageBackend::Sqlite, url: String::new(), retention_days: 120, commit_seconds: 300 }
+        StorageSettings { backend: StorageBackend::Sqlite, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365 }
     }
 }
 

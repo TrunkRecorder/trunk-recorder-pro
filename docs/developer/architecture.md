@@ -1400,7 +1400,7 @@ conventional codes, AutoTune's scores, sharing's state and the radio registry ar
 store instead (`trunk-pro/src/kept.rs`). The registry is stored as each save's changes, and
 written whole once a day. Files found at startup are imported and renamed `.imported`.
 
-| `stats/YYYY-MM-DD.jsonl` | a dashboard rollup per minute; gzipped after the day, kept 8 days |
+| `stats/YYYY-MM-DD.jsonl` | a dashboard rollup per minute; gzipped after the day, kept 8 days (`files`; the store on: `stats_minutes` and `stats_hours`) |
 | `plugins/<id>/` | installed plugins |
 | `plugin-data/<id>/` | plugin state |
 | `plugin-hold/` | finished calls held back by plugin delays |
@@ -1565,10 +1565,19 @@ asks.
 - **`Aggregator`**: rates from counters; each series' value now; per minute its average, lowest
   and highest. A rollup line is `{"t": minute, "s": {key: [avg, min, max]}}`.
 - **`History`**: a minute grid per series, a week in memory. `statsQuery` takes names or prefixes
-  ending in `*`, a range (10m, 1h, 6h, 24h, 7d) or from/to, and is answered downsampled (360
-  points by default).
-- **stats files**: UTC days, appended and never rewritten, a finished day gzipped, days past 8
-  deleted; read back into `History` in the background at start (`statsResult.loading` meanwhile).
+  ending in `*`, a range (10m, 1h, 6h, 24h, 7d, 30d, 90d, 1y) or from/to, and is answered
+  downsampled (360 points by default) into a `Span`'s buckets. Within the week, from memory alone.
+  Further back (the store on: `hello.capabilities` has `history`), `server::stats_query` adds the
+  store's hours before six days ago to memory's minutes since, on a grid of whole hours (1, 2, 3,
+  6, 12 h, a day, two, a week).
+- **Kept (`statstore.rs`)**: with the store on, each rollup a row of `stats_minutes` (kept 8 days,
+  read back into `History` at start) and, as each hour ends (two minutes late, for stragglers),
+  each series' hour a row of `stats_hours` (`History::hour_rows`: avg, lo, hi, minutes), kept
+  `storage.statsDays` (365; 0: all). `meta` `stats.hoursDone` is the last hour written; a start
+  writes the hours memory has after it. A `stats/` folder is imported once (renamed
+  `stats.imported`). With `files`: UTC days of JSON lines, appended and never rewritten, a
+  finished day gzipped, days past 8 deleted. Either is read back in the background at start
+  (`statsResult.loading` meanwhile).
 - **`Registry`**: per system, bounded maps of talkgroups (5,000), units (20,000), unit pairs,
   frequencies and affiliations, with a week of hourly activity.
 - **`Monitor`**: notable events (talkgroup or unit first seen, talkgroup active, call volume,

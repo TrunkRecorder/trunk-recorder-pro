@@ -48,6 +48,12 @@ pub enum Write {
     Kept { kind: String, key: String, value: Option<String> },
     /// What changed in a system's radio registry since the last ([`store::StoredRegistry`]).
     Registry { system: String, changes: Box<trunk_app::stats::radio::RegistryChanges> },
+    /// A minute of the dashboard's history ([`store::Change::StatsMinute`]).
+    StatsMinute { t: i64, json: String },
+    /// Hours of the dashboard's history, in place of any there.
+    StatsHours(Vec<trunk_app::stats::HourRow>),
+    /// The dashboard's history before these goes ([`store::Change::RetireStats`]).
+    RetireStats { minutes_before: i64, hours_before: Option<i64> },
     /// A system's talkgroup file edited from `old` to `new` ("" for `old`:
     /// in place of what's stored; "" for `new`: none). Committed at once:
     /// people make these.
@@ -231,6 +237,16 @@ impl Db {
         self.store()?.kept(kind, key)
     }
 
+    /// The dashboard's minutes kept from `since` (Unix s) on, as JSON lines.
+    pub fn stats_minutes(&self, since: i64) -> Result<Vec<String>, String> {
+        self.store()?.stats_minutes(since)
+    }
+
+    /// The dashboard's hours, added up by bucket.
+    pub fn stats_hours(&self, q: &store::HoursQuery) -> Result<Vec<store::HoursSum>, String> {
+        self.store()?.stats_hours(q)
+    }
+
     /// A system's stored talkgroup file.
     pub fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
         self.store()?.talkgroups(system)
@@ -382,6 +398,38 @@ pub fn seed_newer(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dashboard's minutes come back from a time on; its hours, rewritten
+    /// in place, add up by bucket for names and prefixes; retention cuts both.
+    #[test]
+    fn stats_minutes_and_hours_come_back() {
+        use trunk_app::stats::{HourRow, Span};
+        for db in Db::for_each_backend("stats", std::time::Duration::from_millis(10)) {
+            for t in [60, 120, 7200] {
+                db.send(Write::StatsMinute { t, json: format!("{{\"t\":{t}}}") });
+            }
+            let row = |series: &str, t: i64, avg: f32, n: u32| HourRow { series: series.into(), t, avg, lo: avg - 1.0, hi: avg + 1.0, n };
+            db.send(Write::StatsHours(vec![row("all/calls", 0, 9.0, 60), row("all/airMs", 0, 2.0, 60), row("cpu", 0, 50.0, 60)]));
+            db.send(Write::StatsHours(vec![row("all/calls", 0, 4.0, 60), row("all/calls", 3600, 2.0, 30), row("all/calls", 4 * 3600, 1.0, 60)]));
+            db.flush().unwrap();
+            assert_eq!(db.stats_minutes(100).unwrap(), ["{\"t\":120}", "{\"t\":7200}"], "{}", db.kind());
+            // Two-hour buckets over four hours.
+            let span = Span::of(0, 4 * 3600 - 1, 2, 60);
+            assert_eq!((span.step, span.n), (120, 2));
+            let q = store::HoursQuery { patterns: &["all/*".to_string()], span, from: 0, before: 4 * 3600 };
+            let mut got = db.stats_hours(&q).unwrap();
+            got.sort_by(|a, b| (a.0.as_str(), a.1).cmp(&(b.0.as_str(), b.1)));
+            assert_eq!(got, [("all/airMs".to_string(), 0, 120.0, 60, 1.0, 3.0), ("all/calls".to_string(), 0, 4.0 * 60.0 + 2.0 * 30.0, 90, 1.0, 5.0)], "{}", db.kind());
+            let exact = db.stats_hours(&store::HoursQuery { patterns: &["cpu".to_string()], span, from: 0, before: 4 * 3600 }).unwrap();
+            assert_eq!(exact.len(), 1);
+            assert_eq!(db.stats_hours(&store::HoursQuery { patterns: &["*".to_string()], span, from: 0, before: 4 * 3600 }).unwrap().len(), 3);
+            assert!(db.stats_hours(&store::HoursQuery { patterns: &[], span, from: 0, before: 4 * 3600 }).unwrap().is_empty());
+            db.send(Write::RetireStats { minutes_before: 7200, hours_before: Some(3600) });
+            db.flush().unwrap();
+            assert_eq!(db.stats_minutes(0).unwrap().len(), 1);
+            assert_eq!(db.count("select count(*) from stats_hours"), 2, "{}", db.kind());
+        }
+    }
 
     /// A talkgroup file comes back exactly, through edits, a shorter file
     /// and none; its rows can be asked for by talkgroup.
@@ -594,6 +642,51 @@ mod tests {
                 let _ = std::fs::remove_file(format!("{}{x}", path.display()));
             }
         }
+    }
+
+    /// What the dashboard's history writes in the store: two rollups a minute
+    /// (the engine's 88 series and the platform's 48, as the live recorder
+    /// has them) and each hour's 136 series rows, committed every 300 s as
+    /// the writer does under load. Linux only, as `write_budget`.
+    #[test]
+    #[ignore]
+    fn stats_write_budget() {
+        use trunk_app::stats::{HourRow, Rollup};
+        let written = || -> u64 {
+            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
+            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+        };
+        let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+        let path = dir.join("trp-stats-budget.sqlite");
+        let gone = || {
+            for x in ["", "-wal", "-shm", ".lock"] {
+                let _ = std::fs::remove_file(format!("{}{x}", path.display()));
+            }
+        };
+        gone();
+        let db = Db::open(&path, Duration::from_secs(3600), 0).unwrap();
+        let rollup = |t: i64, prefix: &str, n: usize| Rollup { t, values: (0..n).map(|i| (format!("{prefix}/series{i}"), [1.234 * i as f32, 0.5, 9.87])).collect() };
+        let t0 = 1_790_000_000i64.div_euclid(3600) * 3600;
+        let (at, before) = (std::time::Instant::now(), written());
+        let hours = 6;
+        for m in 0..hours * 60 {
+            let t = t0 + m * 60;
+            for r in [rollup(t, "engine", 88), rollup(t, "plat", 48)] {
+                db.send(Write::StatsMinute { t, json: r.to_json().to_string() });
+            }
+            if (m + 1) % 60 == 0 {
+                let h = t0 + (m / 60) * 3600;
+                db.send(Write::StatsHours((0..136).map(|i| HourRow { series: format!("s/series{i}"), t: h, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 }).collect()));
+            }
+            if (m + 1) % 5 == 0 {
+                db.flush().unwrap();
+            }
+        }
+        db.flush().unwrap();
+        let bytes = (written() - before) as f64 * 24.0 / hours as f64;
+        println!("dashboard history in the store: {:.1} MB a day at 300 s commits ({:.1?}); the files wrote about 9 MB a day", bytes / 1e6, at.elapsed());
+        drop(db);
+        gone();
     }
 
     /// What keeping a busy system's radio registry as changes writes,

@@ -112,6 +112,9 @@ impl Writer {
                 Write::Kept { kind, key, value } => changes.push(Change::Kept { kind, key, value }),
                 // (Turned into JSON here, off the engine's thread: a whole registry can be megabytes.)
                 Write::Registry { system, changes: c } => changes.extend(serde_json::to_string(&c).ok().map(|json| Change::RegistryChanges { system, json })),
+                Write::StatsMinute { t, json } => changes.push(Change::StatsMinute { t, json }),
+                Write::StatsHours(rows) => changes.push(Change::StatsHours(rows)),
+                Write::RetireStats { minutes_before, hours_before } => changes.push(Change::RetireStats { minutes_before, hours_before }),
                 Write::Talkgroups { system, old, new } => {
                     let (lines, len) = super::store::talkgroup_lines(&old, &new);
                     changes.push(Change::Talkgroups { system, lines, len });

@@ -101,6 +101,17 @@ create table talkgroups (
     primary key (system, seq)
 );
 create index talkgroups_number on talkgroups(system, number);
+create table stats_minutes (id bigserial primary key, t bigint not null, s text not null);
+create index stats_minutes_t on stats_minutes(t);
+create table stats_hours (
+    series text not null,
+    t bigint not null,
+    avg real not null,
+    lo real not null,
+    hi real not null,
+    n integer not null,
+    primary key (series, t)
+);
 "];
 
 pub struct PostgresStore {
@@ -271,6 +282,32 @@ impl CallStore for PostgresStore {
                         log::warn!("Call store: registry write {system} failed: {e}");
                     }
                 }
+                Change::StatsMinute { t, json } => {
+                    if let Err(e) = tx.execute("insert into stats_minutes (t, s) values ($1, $2)", &[&t, &json]) {
+                        log::warn!("Call store: stats write failed: {e}");
+                    }
+                }
+                Change::StatsHours(rows) => {
+                    let written = tx.transaction().and_then(|mut sp| {
+                        let up = sp.prepare(
+                            "insert into stats_hours (series, t, avg, lo, hi, n) values ($1, $2, $3, $4, $5, $6)
+                             on conflict (series, t) do update set avg = excluded.avg, lo = excluded.lo, hi = excluded.hi, n = excluded.n",
+                        )?;
+                        for r in &rows {
+                            sp.execute(&up, &[&r.series, &r.t, &r.avg, &r.lo, &r.hi, &(r.n as i32)])?;
+                        }
+                        sp.commit()
+                    });
+                    if let Err(e) = written {
+                        log::warn!("Call store: stats hours write failed: {e}");
+                    }
+                }
+                Change::RetireStats { minutes_before, hours_before } => {
+                    let r = tx.execute("delete from stats_minutes where t < $1", &[&minutes_before]).and_then(|_| hours_before.map_or(Ok(0), |h| tx.execute("delete from stats_hours where t < $1", &[&h])));
+                    if let Err(e) = r {
+                        log::warn!("Call store: stats retention failed: {e}");
+                    }
+                }
                 Change::Talkgroups { system, lines, len } => {
                     let written = tx.transaction().and_then(|mut sp| {
                         write_talkgroups(&mut sp, &system, &lines, len)?;
@@ -341,6 +378,17 @@ impl CallStore for PostgresStore {
 
     fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
         self.read(|c| Ok(super::store::talkgroup_file(c.query("select line from talkgroups where system = $1 order by seq", &[&system])?.iter().map(|r| r.get(0)).collect())))
+    }
+
+    fn stats_minutes(&self, since: i64) -> Result<Vec<String>, String> {
+        self.read(|c| Ok(c.query("select s from stats_minutes where t >= $1 order by t, id", &[&since])?.iter().map(|r| r.get(0)).collect()))
+    }
+
+    fn stats_hours(&self, q: &super::store::HoursQuery) -> Result<Vec<super::store::HoursSum>, String> {
+        let (sql, ps) = q.sql();
+        let ps: Vec<Box<dyn ToSql + Sync>> = ps.iter().map(boxed).collect();
+        let refs: Vec<&(dyn ToSql + Sync)> = ps.iter().map(|p| &**p).collect();
+        self.read(|c| Ok(c.query(&read::numbered(&sql), &refs)?.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5))).collect()))
     }
 
     fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String> {

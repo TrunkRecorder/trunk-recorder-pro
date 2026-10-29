@@ -89,6 +89,17 @@ create table talkgroups (
     primary key (system, seq)
 ) without rowid;
 create index talkgroups_number on talkgroups(system, number);
+create table stats_minutes (id integer primary key, t integer not null, s text not null);
+create index stats_minutes_t on stats_minutes(t);
+create table stats_hours (
+    series text not null,
+    t integer not null,
+    avg real not null,
+    lo real not null,
+    hi real not null,
+    n integer not null,
+    primary key (series, t)
+) without rowid;
 "];
 
 /// How a database stands after [`migrate`].

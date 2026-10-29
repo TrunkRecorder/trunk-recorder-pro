@@ -220,7 +220,7 @@ whenever `change` fires.
 |---|---|
 | `connected` | `true` while connected (from `hello` on) |
 | `version` | the recorder's version |
-| `capabilities` | what the recorder can do beyond recording (`hello.capabilities`): `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys`, `calls` |
+| `capabilities` | what the recorder can do beyond recording (`hello.capabilities`): `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys`, `calls`, `history` |
 | `config` | the config (`Config`) |
 | `phase` | `{ phase: "idle" \| "starting" \| "running" \| "stopping", error, ended }` |
 | `status` | `EngineStatus` while running: `nowS`, totals, `systems[]` |
@@ -456,7 +456,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 
 | `type` | When | What's in it |
 |---|---|---|
-| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host`, `keys` and `calls` (the call store, for `callsQuery`; the desktop app has all of them, `calls` while its call store is open, and the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
+| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host`, `keys`, `calls` (the call store, for `callsQuery`) and `history` (the dashboard's history further back than a week, for `statsQuery`'s `30d`, `90d` and `1y`; the desktop app has all of them, `calls` and `history` while its call store is open, and the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
 | `history` | On connecting | `entries`: the latest calls (≤ 300 `CallEntry`), newest first. Then `concluded` for each new one |
 | `units` | On connecting, for each system with some | `system` (short name), `csv`: the talker aliases saved, as CSV: `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins. Then `unitAlias` for each new one |
 | `talkgroups` | On connecting, for each system; whenever one is replaced | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |
@@ -535,7 +535,7 @@ too.
 | `addInterface` | `path` | Serve a folder on the recorder's computer as an interface. |
 | `removeInterface` | `id` | Stop serving it and forget it; an installed copy is deleted. |
 | `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform` (→ `subscribed`). |
-| `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d`) or `from` / `to` (Unix s), `points?` | The minute history of series, averaged down to about `points` steps (→ `statsResult`). |
+| `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d` / `30d` / `90d` / `1y`) or `from` / `to` (Unix s), `points?` | The history of series, averaged down to about `points` steps (→ `statsResult`). The last week is kept by the minute; further back (`30d`, `90d`, `1y`, or an older `from`) needs `history` in `hello.capabilities`, and its steps are whole hours or days, as far back as `storage.statsDays` keeps. |
 | `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths`, `tones` (→ `radioResult`). |
 | `pluginAction` | `id`, `plugin`, `action`, `value` | Press one of a plugin's buttons (its settings schema's `x-actions`) on `value`, the settings object it's on as edited (→ `pluginActionResult`, once the plugin answers). Control access; plugins run only while recording. |
 | `olderCalls` | `before?` (Unix ms), `limit?` (≤ 500, default 100) | `callsQuery` with only `before` and `limit`, answered as `olderCalls` (kept for interfaces that use it; new ones send `callsQuery`). Listen-only connections may send it. |

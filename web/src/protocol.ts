@@ -504,6 +504,8 @@ export interface StorageSettings {
   retentionDays: number;
   /** Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, twice, so longer is gentler on flash. */
   commitSeconds: number;
+  /** Days of the dashboard's history kept, as hours (the last week by the minute too; default 365); 0 keeps it all. "files" keeps a week. */
+  statsDays?: number;
 }
 
 export interface MonitorSettings {
@@ -1730,7 +1732,7 @@ export interface RadioResultBody {
  * - `keys`: key containers opened with a password
  * - `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open
  */
-export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys" | "calls";
+export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys" | "calls" | "history";
 
 /** What an edit of one talkgroup sets; what's left out stays as it is. */
 export interface TalkgroupEdit {
@@ -1887,7 +1889,7 @@ export type ToRecorder =
   /** What this connection watches (replaces the last): costly messages only go to those that ask. */
   | { type: "subscribe"; topics: Topic[] }
   /** The history of series (names, or prefixes ending in `*`) over `range` back from now, or `from`–`to` (Unix s), in about `points` points. */
-  | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d"; from?: number; to?: number; points?: number }
+  | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d" | "30d" | "90d" | "1y"; from?: number; to?: number; points?: number }
   /** Calls that started before `before` (Unix ms), newest first (the Listen page's "Load older"): from the call store (the desktop app); the browser build: the last 24 hours. */
   | { type: "olderCalls"; before: number; limit: number }
   /** Recorded calls from the call store, newest first: by system (its short name), talkgroup, radio, and start time (Unix ms, `from` inclusive to `to` exclusive); `before` pages like olderCalls; `limit` 1..500 (100). */

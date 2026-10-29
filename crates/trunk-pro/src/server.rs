@@ -547,11 +547,11 @@ pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
     m
 }
 
-/// What `hello` says the recorder can do: everything, but `calls` only while
-/// the call store is open.
+/// What `hello` says the recorder can do: everything, but `calls` and
+/// `history` only while the call store is open.
 fn capabilities(ctx: &Ctx) -> Vec<trunk_app::protocol::Capability> {
     use trunk_app::protocol::Capability;
-    Capability::ALL.iter().copied().filter(|c| *c != Capability::Calls || !ctx.db.is_disabled()).collect()
+    Capability::ALL.iter().copied().filter(|c| !matches!(c, Capability::Calls | Capability::History) || !ctx.db.is_disabled()).collect()
 }
 
 /// The greeting's messages from what's kept between runs (the store, or
@@ -627,9 +627,36 @@ impl Drop for Subs {
 
 
 /// `statsQuery`: the minute history.
+/// `statsQuery`: within the week kept in memory, from memory; further back
+/// (with the store on), the store's hours before six days ago and memory's
+/// minutes since, added into one grid of whole hours. Blocks: run it under
+/// `spawn_blocking`.
 pub(crate) fn stats_query(ctx: &Ctx, q: &StatsQuery) -> ToClient {
+    use trunk_app::stats::{Bucket, Buckets, Span};
+    let now = crate::clock::unix_s() as i64;
+    let (from, to) = q.span(now);
     let h = ctx.series.lock().unwrap();
-    q.answer(&h, crate::clock::unix_s() as i64, h.loading)
+    if ctx.db.is_disabled() || from >= now - (trunk_app::stats::history::WEEK_MINUTES as i64) * 60 {
+        return q.answer(&h, now, h.loading);
+    }
+    let (patterns, loading) = (q.patterns(), h.loading);
+    let span = Span::of(from, to, q.points, 60);
+    let split = (now - 6 * 86_400).div_euclid(3600) * 3600;
+    let mut b = Buckets::new();
+    h.fill(&patterns, &span, split.div_euclid(60), &mut b);
+    drop(h);
+    let hours = crate::db::store::HoursQuery { patterns: &patterns, span, from: span.m0 * 60, before: split };
+    match ctx.db.stats_hours(&hours) {
+        Ok(rows) => {
+            for (k, i, sum, n, lo, hi) in rows {
+                if let Some(i) = usize::try_from(i).ok().filter(|i| *i < span.n) {
+                    b.entry(k).or_insert_with(|| vec![Bucket::default(); span.n])[i].add(sum, n as u32, lo as f32, hi as f32);
+                }
+            }
+        }
+        Err(e) => log::warn!("Call store: the dashboard's history not read ({e})"),
+    }
+    q.result(from, to, loading, span.answer(b))
 }
 
 /// `radioQuery`: the registry, with talkgroup names from the config and radio names as saved.
@@ -1124,7 +1151,36 @@ mod tests {
         (status, if location.is_empty() { mime } else { location }, body)
     }
 
-    /// `hello` lists `calls` while the call store is open, and not when it
+    /// A chart further back than the week in memory: the store's hours and
+    /// memory's minutes in one grid of whole hours; within the week, memory alone.
+    #[test]
+    fn a_long_chart_is_the_store_s_hours_and_memory_s_minutes() {
+        use trunk_app::stats::{HourRow, Rollup};
+        let dir = crate::db::TestDir::new("stats-query");
+        let ctx = crate::runtime::test_ctx_with_store(&dir.join("cap"), &dir.join("trunk-pro.sqlite"));
+        let now = crate::clock::unix_s() as i64;
+        let old = (now - 30 * 86_400).div_euclid(3600) * 3600;
+        ctx.db.send(crate::db::Write::StatsHours(vec![HourRow { series: "a".into(), t: old, avg: 10.0, lo: 5.0, hi: 20.0, n: 60 }]));
+        ctx.db.flush().unwrap();
+        ctx.series.lock().unwrap().insert(&Rollup { t: now.div_euclid(60) * 60 - 3600, values: [("a".to_string(), [1.0, 0.0, 2.0])].into() });
+        let ask = |range: &str| {
+            let q = trunk_app::protocol::StatsQuery { series: vec!["a".into()], range: Some(range.into()), points: 90, ..Default::default() };
+            match super::stats_query(&ctx, &q) {
+                trunk_app::protocol::ToClient::StatsResult(b) => serde_json::Value::Object(b),
+                m => panic!("{m:?}"),
+            }
+        };
+        let r = ask("90d");
+        let a = &r["series"]["a"];
+        assert_eq!(a["stepS"], 24 * 3600, "90 days in about 90 points: a day each");
+        let n: Vec<u64> = a["n"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+        assert_eq!((n.iter().sum::<u64>(), n.iter().filter(|v| **v > 0).count()), (61, 2), "the stored hour and the minute in memory");
+        assert_eq!(a["hi"].as_array().unwrap().iter().filter_map(|v| v.as_f64()).fold(0.0, f64::max), 20.0);
+        let week = ask("7d");
+        assert_eq!(week["series"]["a"]["n"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).sum::<u64>(), 1, "the week: memory's");
+    }
+
+    /// `hello` lists `calls` and `history` while the call store is open, and not when it
     /// could not be opened.
     #[tokio::test]
     async fn hello_lists_calls_only_while_the_store_is_open() {
@@ -1142,8 +1198,8 @@ mod tests {
         crate::db::seed_newer(&store);
         let off = crate::runtime::test_ctx_with_store(&dir.join("off"), &store);
         let caps = capabilities(&off).await;
-        assert!(!caps.contains(&Capability::Calls), "{caps:?}");
-        assert_eq!(caps.len(), Capability::ALL.len() - 1);
+        assert!(!caps.contains(&Capability::Calls) && !caps.contains(&Capability::History), "{caps:?}");
+        assert_eq!(caps.len(), Capability::ALL.len() - 2);
     }
 
     /// An edit of the config as it was before someone else's change is

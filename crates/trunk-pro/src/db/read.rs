@@ -81,21 +81,23 @@ impl Where {
     pub fn select(&self, columns: &str, dollar: bool) -> String {
         let cond = if self.clauses.is_empty() { String::new() } else { format!(" where {}", self.clauses.join(" and ")) };
         let sql = format!("select {columns} from calls{cond} order by start_ms desc, id desc limit ?");
-        if !dollar {
-            return sql;
-        }
-        let mut n = 0;
-        sql.chars()
-            .map(|c| {
-                if c == '?' {
-                    n += 1;
-                    format!("${n}")
-                } else {
-                    c.to_string()
-                }
-            })
-            .collect()
+        if dollar { numbered(&sql) } else { sql }
     }
+}
+
+/// `sql` with each `?` numbered `$1, $2…`, as PostgreSQL has its parameters.
+pub fn numbered(sql: &str) -> String {
+    let mut n = 0;
+    sql.chars()
+        .map(|c| {
+            if c == '?' {
+                n += 1;
+                format!("${n}")
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 /// A fetched call: its entry and where it sits in the order.

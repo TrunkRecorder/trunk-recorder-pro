@@ -127,6 +127,34 @@ impl CallStore for SqliteStore {
                         log::warn!("Call store: registry write {system} failed: {e}");
                     }
                 }
+                Change::StatsMinute { t, json } => {
+                    if let Err(e) = tx.execute("insert into stats_minutes (t, s) values (?1, ?2)", params![t, json]) {
+                        log::warn!("Call store: stats write failed: {e}");
+                    }
+                }
+                Change::StatsHours(rows) => {
+                    let written = tx.savepoint().and_then(|sp| {
+                        {
+                            let mut up = sp.prepare_cached(
+                                "insert into stats_hours (series, t, avg, lo, hi, n) values (?1, ?2, ?3, ?4, ?5, ?6)
+                                 on conflict(series, t) do update set avg = excluded.avg, lo = excluded.lo, hi = excluded.hi, n = excluded.n",
+                            )?;
+                            for r in &rows {
+                                up.execute(params![r.series, r.t, r.avg, r.lo, r.hi, r.n])?;
+                            }
+                        }
+                        sp.commit()
+                    });
+                    if let Err(e) = written {
+                        log::warn!("Call store: stats hours write failed: {e}");
+                    }
+                }
+                Change::RetireStats { minutes_before, hours_before } => {
+                    let r = tx.execute("delete from stats_minutes where t < ?1", [minutes_before]).and_then(|_| hours_before.map_or(Ok(0), |h| tx.execute("delete from stats_hours where t < ?1", [h])));
+                    if let Err(e) = r {
+                        log::warn!("Call store: stats retention failed: {e}");
+                    }
+                }
                 Change::Talkgroups { system, lines, len } => {
                     let written = tx.savepoint().and_then(|sp| {
                         write_talkgroups(&sp, &system, &lines, len)?;
@@ -204,6 +232,16 @@ impl CallStore for SqliteStore {
 
     fn talkgroups(&self, system: &str) -> Result<Option<String>, String> {
         self.read(|c| Ok(super::store::talkgroup_file(c.prepare("select line from talkgroups where system = ?1 order by seq")?.query_map([system], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)))
+    }
+
+    fn stats_minutes(&self, since: i64) -> Result<Vec<String>, String> {
+        self.read(|c| c.prepare("select s from stats_minutes where t >= ?1 order by t, id")?.query_map([since], |r| r.get(0))?.collect())
+    }
+
+    fn stats_hours(&self, q: &super::store::HoursQuery) -> Result<Vec<super::store::HoursSum>, String> {
+        let (sql_text, ps) = q.sql();
+        let ps: Vec<Sql> = ps.iter().map(sql).collect();
+        self.read(|c| c.prepare(&sql_text)?.query_map(params_from_iter(ps), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?.collect())
     }
 
     fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String> {
@@ -521,7 +559,7 @@ mod tests {
         let mode: String = store.read(|c| c.query_row("pragma journal_mode", [], |r| r.get(0))).unwrap();
         assert_eq!(mode, "wal");
         let tables: Vec<String> = store.read(|c| c.prepare("select name from sqlite_master where type='table' order by name")?.query_map([], |r| r.get(0))?.collect()).unwrap();
-        assert_eq!(tables, ["call_frequencies", "call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "talkgroups"]);
+        assert_eq!(tables, ["call_frequencies", "call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "stats_hours", "stats_minutes", "talkgroups"]);
     }
 
     /// A second opener of the same store (another recorder on the same data

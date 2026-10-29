@@ -153,6 +153,9 @@ pub enum Capability {
     Keys,
     /// The call store: `callsQuery`.
     Calls,
+    /// The dashboard's history further back than a week (`statsQuery`'s
+    /// `30d`, `90d`, `1y`), as far as `storage.statsDays` keeps: the store.
+    History,
 }
 
 impl Capability {
@@ -397,18 +400,29 @@ impl StatsQuery {
             "6h" => 6 * 3600,
             "24h" => 86400,
             "7d" => 7 * 86400,
+            "30d" => 30 * 86400,
+            "90d" => 90 * 86400,
+            "1y" => 365 * 86400,
             _ => 3600,
         };
         let to = self.to.unwrap_or(now);
         (self.from.unwrap_or(to - back), to)
     }
 
+    /// The series patterns it asks for (at most 200).
+    pub fn patterns(&self) -> Vec<String> {
+        self.series.iter().take(200).cloned().collect()
+    }
+
     /// Its answer from `history` (`loading`: its files are still being read).
     pub fn answer(&self, history: &crate::stats::History, now: i64, loading: bool) -> ToClient {
         let (from, to) = self.span(now);
-        let series: Vec<String> = self.series.iter().take(200).cloned().collect();
-        let found = history.query(&series, from, to, self.points);
-        ToClient::StatsResult(body(serde_json::json!({ "id": self.id, "from": from, "to": to, "loading": loading, "series": found })))
+        self.result(from, to, loading, history.query(&self.patterns(), from, to, self.points))
+    }
+
+    /// Its answer: `series` ([`crate::stats::Span::answer`]) from `from` to `to`.
+    pub fn result(&self, from: i64, to: i64, loading: bool, series: serde_json::Map<String, Value>) -> ToClient {
+        ToClient::StatsResult(body(serde_json::json!({ "id": self.id, "from": from, "to": to, "loading": loading, "series": series })))
     }
 }
 

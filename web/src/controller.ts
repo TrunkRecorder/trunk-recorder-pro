@@ -586,7 +586,7 @@ function ask<T extends FromRecorder>(msg: ToRecorder & { id: number }): Promise<
 }
 
 export type StatsResult = Extract<FromRecorder, { type: "statsResult" }>;
-export type StatsRange = "10m" | "1h" | "6h" | "24h" | "7d";
+export type StatsRange = "10m" | "1h" | "6h" | "24h" | "7d" | "30d" | "90d" | "1y";
 
 /** The history of `series` (names or `prefix*`) over `range`. */
 export function statsQuery(series: string[], range: StatsRange, points?: number): Promise<StatsResult> {

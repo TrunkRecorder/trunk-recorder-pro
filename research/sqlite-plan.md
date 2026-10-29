@@ -172,7 +172,7 @@ store's, written by its writer in its batches.
 | `<site>.bandplan` | `kept` (`bandplan`, key) | when it changes |
 | `tune.json`, `sharing.json` | `kept` (`tune`, `sharing`) | as before |
 | `<sys>.talkgroups.csv` | `talkgroups` (system, line number): each line as loaded, and its talkgroup's columns | an edit (`setTalkgroup`), only the lines it changed, committed at once; a file loaded (`setTalkgroups`), all of it |
-| `stats/YYYY-MM-DD.jsonl` | stays append-only files; finished days optionally into the store (phase 4) | already the right shape for flash |
+| `stats/YYYY-MM-DD.jsonl` | `stats_minutes` (each rollup, 8 days) and `stats_hours` (each series' hour, `storage.statsDays`) | minutes in the writer's batches; an hour's rows as it ends ([below](#the-dashboards-history)) |
 | `config.json`, plugin and interface folders, registry caches, logs | stay files | edited by people, or other programs' |
 
 - **The seam:** `Session::due()` / `Saved` as before; `runtime::save_due` hands each to
@@ -185,6 +185,32 @@ store's, written by its writer in its batches.
 - **Reads block** (PostgreSQL's client refuses a tokio worker): the greeting's talker aliases
   and conventional codes are read under `spawn_blocking`.
 - **The browser build** keeps its files on OPFS.
+
+### The dashboard's history
+
+Built in #104 (`statstore.rs`). The point is a longer look back, not only a new place:
+
+- **Two tiers.**
+  - Minutes, as the files had them: one JSON row per rollup in `stats_minutes`. They're kept 8
+    days, which is what memory holds, and read back at start.
+  - Hours: one row per series per hour in `stats_hours (series, t, avg, lo, hi, n)`. They're
+    written as each hour ends, from memory (`History::hour_rows`), and kept `storage.statsDays`
+    (365 by default; 0 keeps them all).
+- **Queries.**
+  - Within the week, from memory as before.
+  - Further back, the store's hours before six days ago are summed by bucket in SQL. Memory's
+    minutes since then are added into the same `Span`. The bucket sizes are ones a chart reads:
+    1, 2, 3, 6 or 12 hours, a day, two days, a week.
+  - Measured on the import of a real week (136 series): a year at 360 points takes 2 ms for 19
+    series and 12 ms for all of them.
+- **Writes.** About 17 MB a day on the Pi's eMMC at 300 s commits (`db::tests::stats_write_budget`),
+  against about 9 MB for the files.
+- **Size.** A year of hours is about 1.2M rows, roughly 70 MB in SQLite.
+- **`hello.capabilities` `history`** says longer spans work: the store is open. The browser
+  build and `files` keep a week, and the dashboard offers 30 days, 90 days and a year only as far
+  as `statsDays` keeps.
+- **Import.** A `stats/` folder is imported once and renamed `stats.imported`. Hours are written
+  for what memory holds (the last week).
 
 ### The registry as changes, not rows
 

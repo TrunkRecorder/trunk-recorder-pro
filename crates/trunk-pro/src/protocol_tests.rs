@@ -344,7 +344,7 @@ pub(crate) fn ctx_with(cfg: Config, dir: &Path, db: impl FnOnce(crate::runtime::
         interfaces: crate::interfaces::Interfaces::new(None, 8080),
         shared,
         series: series.clone(),
-        store: crate::statstore::Store::start(dir.join("stats"), series),
+        store: crate::statstore::Store::start(dir.join("stats"), series, crate::db::Db::disabled(), 0),
         saver: crate::saver::Saver::start(|_| {}),
         heard_last: Mutex::new(None),
         topics: Mutex::new(Default::default()),

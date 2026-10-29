@@ -7,7 +7,7 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
-import { coverage, pageHealth } from "./data.ts";
+import { coverage, pageHealth, rangesFor } from "./data.ts";
 import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
@@ -31,7 +31,7 @@ function running(c: Config, systems: SystemStatus[], calls: Partial<CallView>[] 
     { type: "state", phase: "running", error: null, ended: false },
     { type: "config", config: c, version: 1 },
     { type: "history", entries: [] },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys"] },
+    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys", "history"] },
   ];
   clearSeries();
   for (const m of greeting) transport.onMessage(m);
@@ -255,6 +255,14 @@ test("Platform: the clock as measured and as the OS says, and the light goes by 
   assert.match(page, /3 of 3 queries unanswered .*UDP port 123/);
 });
 
+test("Platform: the span chooser offers what the store keeps", () => {
+  twoSites();
+  setView("platform");
+  host({ os: synced, server: "pool.ntp.org", measured: null, error: null, problem: null, check: null });
+  const page = text(renderToString(<PlatformPage />));
+  assert.match(page, /7 days\s*30 days\s*90 days\s*1 year/, "a year, by default with the store on");
+});
+
 test("Platform: the Network card's Checks switch turns the internet checks and the time server off (#37)", () => {
   twoSites();
   setView("platform");
@@ -360,4 +368,14 @@ test("A y axis never has two ticks that read the same", () => {
     assert.equal(new Set(labels).size, labels.length, `${lo}..${hi}: ${labels.join(", ")}`);
     assert.ok(t.length >= 2 && t[0] <= lo + 1e-9 + (t[1] - t[0]) && t[t.length - 1] >= hi - (t[1] - t[0]) - 1e-9, `${lo}..${hi}: ${t.join(", ")} spans the data`);
   }
+});
+
+test("History spans: a week from memory or files; further as the store keeps the dashboard's history", () => {
+  const spans = (st: Parameters<typeof rangesFor>[0], history = true) => rangesFor(st, history).map((r) => r.v).join(" ");
+  const store = { backend: "sqlite" as const, retentionDays: 120, commitSeconds: 300 };
+  assert.equal(spans(store, false), "1h 24h 7d", "no store (the browser build, or one that didn't open)");
+  assert.equal(spans({ ...store, backend: "files", statsDays: 365 }), "1h 24h 7d", "files keeps a week");
+  assert.equal(spans(store), "1h 24h 7d 30d 90d 1y", "a year by default");
+  assert.equal(spans({ ...store, backend: "postgres", statsDays: 90 }), "1h 24h 7d 30d 90d");
+  assert.equal(spans({ ...store, statsDays: 0 }), "1h 24h 7d 30d 90d 1y", "0: all of it");
 });
