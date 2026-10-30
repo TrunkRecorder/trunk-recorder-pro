@@ -45,6 +45,14 @@
         "silenceTimeoutS": {
           "type": "number"
         },
+        "maxCallS": {
+          "type": "number",
+          "description": "Maximum duration of one saved call segment, seconds (default: 120)."
+        },
+        "maxContinuousS": {
+          "type": "number",
+          "description": "Maximum activity before waiting for a full silence timeout, seconds (default: 600)."
+        },
         "plugins": {
           "type": "object",
           "additionalProperties": {
