@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **`client.js`'s `LivePlayer` has a panner.** `new LivePlayer({ pan })` puts the sound left (-1) to
+  right (1), and `setPan(v)` and `setGain(v)` change the position and the volume while playing,
+  so an interface can give each talkgroup its own place in the stereo field.
+
 ## [0.2.11] — 2026-10-27
 
 - **Saving never holds up recording or a click.** Large systems on slow disks (SD cards) waited on

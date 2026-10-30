@@ -271,10 +271,14 @@ sound otherwise.
 | `followCall` | `true` | one call at a time: the first heard, until quiet for `quietS`; overlapping calls are skipped |
 | `quietS` | 1.5 | silence that ends a call, s |
 | `gain` | 2 | volume (the vocoders' output is quiet) |
+| `pan` | 0 | where the sound sits: left (-1) to right (1) |
 | `onNowPlaying` | — | `(call \| null) => …` when the call playing changes |
 
 `player.nowPlaying` is `{ callId, system, talkgroup }` or `null`;
-`player.stop()` releases the audio output.
+`player.setGain(v)` and `player.setPan(v)` change the volume and the
+position while playing (a wall that puts each talkgroup in its own place
+sets the pan from `onNowPlaying`); `player.stop()` releases the audio
+output.
 
 **Helpers:** `duration(s)` gives `"1:05"`, `mhz(hz)` gives
 `"155.2000 MHz"`, `escapeHtml(s)`, and `parseTalkgroups(csv)` reads a

@@ -448,12 +448,14 @@ export class LivePlayer {
    * @param {boolean} [opts.followCall] one call at a time (default true)
    * @param {number} [opts.quietS] a call is over after this long without audio, s (default 1.5)
    * @param {number} [opts.gain] volume (default 2: the vocoders' output is quiet)
+   * @param {number} [opts.pan] left (-1) to right (1); default 0, the middle
    * @param {(call: {callId:number, system:number, talkgroup:number} | null) => void} [opts.onNowPlaying]
    */
   constructor(opts = {}) {
     this.followCall = opts.followCall ?? true;
     this.quietS = opts.quietS ?? 1.5;
     this.gainValue = opts.gain ?? 2;
+    this.panValue = Math.max(-1, Math.min(1, opts.pan ?? 0));
     this.onNowPlaying = opts.onNowPlaying ?? (() => {});
     /** The call playing: { callId, system, talkgroup }, or null. */
     this.nowPlaying = null;
@@ -469,9 +471,24 @@ export class LivePlayer {
       this._ctx = new AudioContext();
       this._gain = this._ctx.createGain();
       this._gain.gain.value = this.gainValue;
-      this._gain.connect(this._ctx.destination);
+      this._pan = this._ctx.createStereoPanner();
+      this._pan.pan.value = this.panValue;
+      this._gain.connect(this._pan);
+      this._pan.connect(this._ctx.destination);
     }
     return this._ctx.resume();
+  }
+
+  /** The volume, now and for the next resume(). */
+  setGain(gain) {
+    this.gainValue = gain;
+    if (this._gain) this._gain.gain.value = gain;
+  }
+
+  /** Where the sound sits, left (-1) to right (1): per call from onNowPlaying, say. */
+  setPan(pan) {
+    this.panValue = Math.max(-1, Math.min(1, pan));
+    if (this._pan) this._pan.pan.value = this.panValue;
   }
 
   /** Queue a chunk from on("audio", …). */
