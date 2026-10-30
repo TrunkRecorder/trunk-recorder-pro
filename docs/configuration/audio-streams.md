@@ -1,8 +1,8 @@
 # Internet audio streams
 
-An HTTP or HTTPS audio stream is an independent call system, recorded as silence-delimited calls
-without a radio or conventional system. The recorder needs **ffmpeg** on `PATH` to decode the stream; the native
-desktop/server app supports this source, not the browser-only build.
+An HTTP or HTTPS MP3 or PCM WAV stream is an independent call system, recorded as silence-delimited
+calls without a radio or conventional system. The native desktop/server app decodes streams in
+Rust; no FFmpeg network support is needed. This source is not available in the browser-only build.
 
 In **Setup → Conventional systems**, choose **Add internet audio source**, enter the URL, set its
 system short name and talkgroup, and set how long silence ends a call. A 0.5-second pre-roll is
@@ -38,8 +38,7 @@ The equivalent configuration is:
 }
 ```
 
-The URL may include provider authentication. It is stored in the config file, passed to ffmpeg
-through its standard input (not its command-line arguments), and hidden from listen-only interfaces.
-Protect the config file and only grant control access to trusted users.
+The URL may include provider authentication. It is stored in the config file and hidden from
+listen-only interfaces. Protect the config file and only grant control access to trusted users.
 
 Set `enabled` to `false` to keep a stream configured without starting it.

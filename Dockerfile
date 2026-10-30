@@ -4,10 +4,11 @@
 #   docker build -t trunk-pro .
 #   docker buildx build --platform linux/amd64,linux/arm64 -t trunk-pro .
 #
-# Four stages: the config's rules as WebAssembly (the interface uses the
-# recorder's own), the web interface (embedded in the binary), the app, and
-# the image itself — Debian slim, since plugins are downloaded as glibc builds
-# and upload-script runs /bin/sh scripts.
+# Five stages: the config's rules as WebAssembly (the interface uses the
+# recorder's own), the web interface (embedded in the binary), the app, a small
+# static ffmpeg that only makes M4A from WAV (for plugins that upload
+# compressed audio), and the image itself — Debian slim, since plugins are
+# downloaded as glibc builds and upload-script runs /bin/sh scripts.
 
 ARG DEBIAN=trixie
 
@@ -85,8 +86,7 @@ RUN ./configure --prefix=/opt/ffmpeg \
 
 # --- The image ----------------------------------------------------------------
 FROM debian:${DEBIAN}-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=ffmpeg /src/ffmpeg /usr/local/bin/ffmpeg
 COPY --from=app /usr/local/bin/trunk-pro /usr/local/bin/trunk-pro
 # Everything the app writes is under /data: settings, band plans and plugins
 # in /data/config/trunk-pro, recordings in /data/TrunkRecorderPro.

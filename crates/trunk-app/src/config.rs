@@ -226,16 +226,6 @@ pub enum AudioStreamChannel {
     Mix,
 }
 
-impl AudioStreamChannel {
-    pub fn filter(self) -> Option<&'static str> {
-        match self {
-            Self::Left => Some("pan=mono|c0=c0"),
-            Self::Right => Some("pan=mono|c0=c1"),
-            Self::Mix => None,
-        }
-    }
-}
-
 fn audio_stream_enabled() -> bool {
     true
 }
@@ -1974,7 +1964,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             other: BTreeMap::new(),
-            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len: 0, buffers: 0 }],
+            sources: vec![Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
             audio_streams: vec![],
             systems: vec![],
             conventional: vec![],
@@ -2760,7 +2750,7 @@ impl Config {
         }
         EngineConfig {
             systems,
-            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz(), auto_tune: s.auto_tune(), guard_hz: s.guard_hz() }).collect(),
+            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz, auto_tune: s.auto_tune, guard_hz: s.guard_hz }).collect(),
             has_audio_streams: self.audio_streams.iter().any(|stream| stream.enabled),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
