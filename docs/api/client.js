@@ -449,6 +449,8 @@ export class LivePlayer {
    * @param {number} [opts.quietS] a call is over after this long without audio, s (default 1.5)
    * @param {number} [opts.gain] volume (default 2: the vocoders' output is quiet)
    * @param {number} [opts.pan] left (-1) to right (1); default 0, the middle
+   * @param {AudioContext} [opts.context] an audio output to share: several players (one per
+   *   call, say, each with its own pan) mix into it; default: one of this player's own
    * @param {(call: {callId:number, system:number, talkgroup:number} | null) => void} [opts.onNowPlaying]
    */
   constructor(opts = {}) {
@@ -456,6 +458,7 @@ export class LivePlayer {
     this.quietS = opts.quietS ?? 1.5;
     this.gainValue = opts.gain ?? 2;
     this.panValue = Math.max(-1, Math.min(1, opts.pan ?? 0));
+    this.context = opts.context ?? null;
     this.onNowPlaying = opts.onNowPlaying ?? (() => {});
     /** The call playing: { callId, system, talkgroup }, or null. */
     this.nowPlaying = null;
@@ -468,7 +471,7 @@ export class LivePlayer {
   /** Make or wake the audio output: call it from a click or key press. */
   resume() {
     if (!this._ctx) {
-      this._ctx = new AudioContext();
+      this._ctx = this.context ?? new AudioContext();
       this._gain = this._ctx.createGain();
       this._gain.gain.value = this.gainValue;
       this._pan = this._ctx.createStereoPanner();
@@ -515,11 +518,15 @@ export class LivePlayer {
     this._timer = setTimeout(() => this._setPlaying(null), (this._next - now + this.quietS) * 1000);
   }
 
-  /** Stop and release the audio output. */
+  /** Stop and release the audio output (a shared one is left open: just this player's part of it). */
   stop() {
     clearTimeout(this._timer);
-    this._ctx?.close();
+    if (this._ctx && this._ctx === this.context) {
+      this._gain?.disconnect();
+      this._pan?.disconnect();
+    } else this._ctx?.close();
     this._ctx = null;
+    this._next = 0;
     this._setPlaying(null);
   }
 

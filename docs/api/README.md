@@ -272,13 +272,16 @@ sound otherwise.
 | `quietS` | 1.5 | silence that ends a call, s |
 | `gain` | 2 | volume (the vocoders' output is quiet) |
 | `pan` | 0 | where the sound sits: left (-1) to right (1) |
+| `context` | — | an `AudioContext` to share: one player per call, each with its own `pan`, mix into it (`stop()` then releases only that player's part) |
 | `onNowPlaying` | — | `(call \| null) => …` when the call playing changes |
 
 `player.nowPlaying` is `{ callId, system, talkgroup }` or `null`;
 `player.setGain(v)` and `player.setPan(v)` change the volume and the
 position while playing (a wall that puts each talkgroup in its own place
 sets the pan from `onNowPlaying`); `player.stop()` releases the audio
-output.
+output. To hear several calls at once, make a player per call with
+`followCall: false` and a shared `context`, give each its pan, and route
+each chunk by its `callId`.
 
 **Helpers:** `duration(s)` gives `"1:05"`, `mhz(hz)` gives
 `"155.2000 MHz"`, `escapeHtml(s)`, and `parseTalkgroups(csv)` reads a
