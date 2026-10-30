@@ -97,6 +97,7 @@
 
 mod access;
 mod api_v1;
+mod audio_stream;
 mod clock;
 mod directory;
 mod dmrtool;

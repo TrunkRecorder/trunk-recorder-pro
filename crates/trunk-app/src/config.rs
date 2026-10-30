@@ -172,6 +172,55 @@ pub enum SourceKind {
     },
 }
 
+/// An HTTP audio stream treated as a conventional call source.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioStream {
+    pub url: String,
+    pub short_name: String,
+    pub talkgroup: u32,
+    pub channel: AudioStreamChannel,
+    #[serde(default = "audio_stream_enabled")]
+    pub enabled: bool,
+    #[serde(default = "audio_stream_silence_timeout")]
+    pub silence_timeout_s: f64,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugin_delays: Vec<DelayRule>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<SignalDef>,
+    #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
+    pub recording: RecordingOverride,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioStreamChannel {
+    Left,
+    Right,
+    #[default]
+    Mix,
+}
+
+impl AudioStreamChannel {
+    pub fn filter(self) -> Option<&'static str> {
+        match self {
+            Self::Left => Some("pan=mono|c0=c0"),
+            Self::Right => Some("pan=mono|c0=c1"),
+            Self::Mix => None,
+        }
+    }
+}
+
+fn audio_stream_enabled() -> bool {
+    true
+}
+
+fn audio_stream_silence_timeout() -> f64 {
+    3.0
+}
+
 choice! {
     /// How an Airspy's gain is set: libairspy's linearity or sensitivity
     /// tables (one 0..21 step for all three stages), or each stage by hand.
@@ -1791,6 +1840,8 @@ pub struct LoadedKeys {
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub sources: Vec<Source>,
+    #[serde(default)]
+    pub audio_streams: Vec<AudioStream>,
     /// The trunked systems, each with its sites.
     pub systems: Vec<System>,
     /// The conventional systems (numbered after the trunked ones: [`Config::call_systems`]).
@@ -1892,7 +1943,8 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             other: BTreeMap::new(),
-            sources: vec![Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len: 0, buffers: 0 }],
+            audio_streams: vec![],
             systems: vec![],
             conventional: vec![],
             next_system_id: 0,
@@ -2125,6 +2177,30 @@ impl Config {
         source_types(&mut v);
         let mut c: Config = serde_json::from_value(v)?;
         c.notes = notes;
+        let mut used: std::collections::HashSet<String> = c
+            .systems
+            .iter()
+            .map(|system| system.short_name.clone())
+            .chain(c.conventional.iter().map(|system| system.short_name.clone()))
+            .collect();
+        for stream in &mut c.audio_streams {
+            if used.insert(stream.short_name.clone()) {
+                continue;
+            }
+            let old = stream.short_name.clone();
+            let stem = format!("{old}-stream");
+            let mut short_name = stem.clone();
+            let mut suffix = 2;
+            while used.contains(&short_name) {
+                short_name = format!("{stem}{suffix}");
+                suffix += 1;
+            }
+            stream.short_name = short_name.clone();
+            used.insert(short_name.clone());
+            c.notes.push(format!(
+                "Internet audio stream \"{old}\" is now its own system; its short name was changed to \"{short_name}\"."
+            ));
+        }
         c.numbered = c.assign_system_ids();
         Ok(c)
     }
@@ -2408,7 +2484,12 @@ impl Config {
     /// conventional, on or off, has one of its own.
     pub fn name_problem(&self) -> Option<String> {
         let mut names = std::collections::HashSet::new();
-        let all = self.systems.iter().map(|s| s.short_name.as_str()).chain(self.conventional.iter().map(|v| v.short_name.as_str()));
+        let all = self
+            .systems
+            .iter()
+            .map(|s| s.short_name.as_str())
+            .chain(self.conventional.iter().map(|v| v.short_name.as_str()))
+            .chain(self.audio_streams.iter().map(|stream| stream.short_name.as_str()));
         for n in all {
             if n.trim().is_empty() {
                 return Some("Every system needs a short name.".into());
@@ -2429,8 +2510,9 @@ impl Config {
 
     /// Why this config can't start, or None.
     pub fn problem(&self) -> Option<String> {
-        if self.sources.is_empty() {
-            return Some("Add a source (a dongle or a capture file).".into());
+        let active_streams = self.audio_streams.iter().filter(|stream| stream.enabled);
+        if self.sources.is_empty() && active_streams.clone().next().is_none() {
+            return Some("Add a source (a dongle, capture file, or internet audio stream).".into());
         }
         if self.sources.iter().any(|s| matches!(&s.kind, SourceKind::File { path, .. } if path.trim().is_empty())) {
             return Some("Choose the capture file to replay.".into());
@@ -2460,13 +2542,33 @@ impl Config {
             }
         }
         let trunked = self.active_systems().next().is_some();
-        if !trunked && self.enabled_channels().next().is_none() {
+        if !trunked && self.enabled_channels().next().is_none() && active_streams.clone().next().is_none() {
             return Some("Add a system with a control channel, or a conventional channel.".into());
         }
         if let Some(p) = self.name_problem() {
             return Some(p);
         }
-        let signals = self.systems.iter().map(|s| (&s.short_name, &s.signals)).chain(self.conventional.iter().map(|c| (&c.short_name, &c.signals)));
+        for stream in active_streams {
+            let url = stream.url.trim();
+            let http_url = url.split_once("://").is_some_and(|(scheme, rest)| {
+                (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")) && !rest.is_empty()
+            });
+            if url != stream.url || !http_url || url.chars().any(char::is_control) {
+                return Some("Each internet audio stream needs an HTTP or HTTPS URL.".into());
+            }
+            if !stream.silence_timeout_s.is_finite() || !(0.25..=30.0).contains(&stream.silence_timeout_s) {
+                return Some(format!("{}: silence timeout must be between 0.25 and 30 seconds.", stream.short_name));
+            }
+        }
+        if self.sources.is_empty() && self.enabled_channels().next().is_some() {
+            return Some("Conventional radio channels need an RF source.".into());
+        }
+        let signals = self
+            .systems
+            .iter()
+            .map(|s| (&s.short_name, &s.signals))
+            .chain(self.conventional.iter().map(|c| (&c.short_name, &c.signals)))
+            .chain(self.audio_streams.iter().map(|stream| (&stream.short_name, &stream.signals)));
         if let Some(p) = signals.filter_map(|(n, d)| signals_problem(n, d)).next() {
             return Some(p);
         }
@@ -2548,14 +2650,16 @@ impl Config {
     }
 
     /// Every system a call can come from, numbered as calls number them
-    /// (`Call::system`): the active trunked systems, then the active
-    /// conventional ones. The one place that number is worked out for a
-    /// config — the engine, plugins, status and the interface all go by it.
+    /// (`Call::system`): active trunked, conventional, then internet audio
+    /// systems. The one place that number is worked out for a config — the
+    /// engine, plugins, status and interface all go by it.
     pub fn call_systems(&self) -> Vec<CallSystem<'_>> {
         let trunked = self.active_systems().map(|s| (&s.short_name, s.kind.name(), &s.recording, &s.plugins, &s.plugin_delays[..]));
         let conventional = self.active_conventional().map(|c| (&c.short_name, "conventional", &c.recording, &c.plugins, &c.plugin_delays[..]));
+        let streams = self.audio_streams.iter().filter(|stream| stream.enabled).map(|stream| (&stream.short_name, "conventional", &stream.recording, &stream.plugins, &stream.plugin_delays[..]));
         trunked
             .chain(conventional)
+            .chain(streams)
             .enumerate()
             .map(|(i, (short_name, kind, recording, plugins, plugin_delays))| CallSystem { index: i as u16, short_name, kind, recording, plugins, plugin_delays })
             .collect()
@@ -2563,7 +2667,11 @@ impl Config {
 
     /// The short name of the system a call's `system` names.
     pub fn short_name_of(&self, system: u16) -> Option<&str> {
-        self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|c| c.short_name.as_str())).nth(system as usize)
+        self.active_systems()
+            .map(|s| s.short_name.as_str())
+            .chain(self.active_conventional().map(|c| c.short_name.as_str()))
+            .chain(self.audio_streams.iter().filter(|stream| stream.enabled).map(|stream| stream.short_name.as_str()))
+            .nth(system as usize)
     }
 
     /// The engine's config, with each system's talkgroups (kept apart from the config).
@@ -2603,9 +2711,20 @@ impl Config {
                 ..SystemConfig::conventional(&v.short_name)
             });
         }
+        for stream in self.audio_streams.iter().filter(|stream| stream.enabled) {
+            let r = self.recording.with(&stream.recording);
+            systems.push(SystemConfig {
+                calls: r.call_config(),
+                save: r.save_rules(),
+                talkgroups: tg(&stream.short_name),
+                signals: engine_signals(&stream.signals),
+                ..SystemConfig::conventional(&stream.short_name)
+            });
+        }
         EngineConfig {
             systems,
-            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz, auto_tune: s.auto_tune, guard_hz: s.guard_hz }).collect(),
+            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz(), auto_tune: s.auto_tune(), guard_hz: s.guard_hz() }).collect(),
+            has_audio_streams: self.audio_streams.iter().any(|stream| stream.enabled),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
             epoch_ms_at_zero: epoch_ms,
@@ -2757,6 +2876,108 @@ mod tests {
         assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.backend), (60, 0, StorageBackend::Sqlite));
         let c = Config::from_value(serde_json::json!({ "storage": { "backend": "postgres", "url": "postgres://trp@db/trunk" } })).unwrap();
         assert_eq!((c.storage.backend, c.storage.url.as_str(), c.storage.commit_seconds), (StorageBackend::Postgres, "postgres://trp@db/trunk", 300));
+    }
+
+    #[test]
+    fn audio_stream_channel_defaults_to_mix_and_parses_choices() {
+        let defaults: AudioStream = serde_json::from_value(serde_json::json!({
+            "url": "https://example.test/live.mp3",
+            "shortName": "stream",
+            "talkgroup": 1
+        }))
+        .unwrap();
+        assert_eq!(defaults.channel, AudioStreamChannel::Mix);
+        assert_eq!(
+            serde_json::from_value::<AudioStreamChannel>(serde_json::json!("left")).unwrap(),
+            AudioStreamChannel::Left
+        );
+        assert_eq!(
+            serde_json::from_value::<AudioStreamChannel>(serde_json::json!("right")).unwrap(),
+            AudioStreamChannel::Right
+        );
+    }
+
+    #[test]
+    fn an_internet_audio_source_can_run_without_radios() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "sources": [],
+            "audioStreams": [{
+                "url": "https://example.test/live.mp3",
+                "shortName": "stream",
+                "talkgroup": 123,
+                "silenceTimeoutS": 3,
+                "plugins": { "example": { "token": "configured" } }
+            }]
+        }))
+        .unwrap();
+        assert!(config.audio_streams[0].enabled, "existing stream configs default to enabled");
+        assert_eq!(config.problem(), None);
+        let call_systems = config.call_systems();
+        assert_eq!(call_systems.len(), 1);
+        assert_eq!(call_systems[0].index, 0);
+        assert_eq!(call_systems[0].short_name, "stream");
+        assert!(call_systems[0].plugins.contains_key("example"));
+        let mut mixed = config.clone();
+        mixed.conventional.push(
+            serde_json::from_value(serde_json::json!({
+                "shortName": "radio",
+                "channels": [{ "freqHz": 154000000, "mode": "fm", "talkgroup": 1 }]
+            }))
+            .unwrap(),
+        );
+        mixed.sources.push(
+            serde_json::from_value(serde_json::json!({
+                "type": "rtlsdr", "serial": "", "centerHz": 154000000, "rateHz": 2400000, "ppm": 0
+            }))
+            .unwrap(),
+        );
+        let mixed_systems = mixed.call_systems();
+        assert_eq!(mixed_systems.iter().map(|s| s.short_name).collect::<Vec<_>>(), ["radio", "stream"]);
+        assert_eq!(mixed_systems[1].index, 1);
+        assert_eq!(
+            mixed.engine_config(0.0, &Default::default()).systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(),
+            ["radio", "stream"]
+        );
+        let engine_config = config.engine_config(0.0, &Default::default());
+        assert_eq!(engine_config.systems.len(), 1);
+        assert!(engine_config.systems[0].is_conventional());
+        assert!(trunk_core::trunk::Engine::new(engine_config).is_ok());
+        assert!(crate::session::Session::new(config.clone(), &Default::default(), 0.0, &|_| None, |_| 0).is_ok());
+        let mut invalid = config.clone();
+        invalid.audio_streams[0].url = "file:///etc/passwd".into();
+        assert!(invalid.problem().unwrap().contains("HTTP or HTTPS"));
+        invalid = config.clone();
+        invalid.audio_streams[0].silence_timeout_s = 31.0;
+        assert!(invalid.problem().unwrap().contains("silence timeout"));
+        let mut disabled = config.clone();
+        disabled.audio_streams[0].enabled = false;
+        assert!(disabled.problem().unwrap().contains("Add a source"));
+        let mut with_radio = config;
+        with_radio.sources.push(serde_json::from_value(serde_json::json!({
+            "type": "rtlsdr", "serial": "", "centerHz": 154000000, "rateHz": 2400000, "ppm": 0
+        })).unwrap());
+        assert_eq!(with_radio.problem(), None);
+        assert!(trunk_core::trunk::Engine::new(with_radio.engine_config(0.0, &Default::default())).is_ok());
+    }
+
+    #[test]
+    fn a_stream_previously_linked_to_a_conventional_system_gets_its_own_name() {
+        let config = Config::from_json(
+            r#"{
+                "sources": [],
+                "audioStreams": [{
+                    "url": "https://example.test/live.mp3",
+                    "shortName": "dispatch",
+                    "talkgroup": 1,
+                    "silenceTimeoutS": 3
+                }],
+                "conventional": [{ "shortName": "dispatch" }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(config.audio_streams[0].short_name, "dispatch-stream");
+        assert!(config.notes.iter().any(|note| note.contains("now its own system")));
+        assert_eq!(config.problem(), None);
     }
 
     /// A call sign heard on a frequency goes into its system's licenses there (trunked or

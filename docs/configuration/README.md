@@ -8,6 +8,7 @@ guides; these pages list what each key does.
 | Page | Covers |
 |---|---|
 | [sources.md](sources.md) | Radios and capture files (`sources`) |
+| [audio-streams.md](audio-streams.md) | HTTP/HTTPS audio input (`audioStreams`) |
 | [systems.md](systems.md) | Trunked systems (`systems`), talkgroup files, unit names, site lock |
 | [conventional.md](conventional.md) | Conventional systems and channels (`conventional`), the channel CSV |
 | [recording.md](recording.md) | Where and how calls are saved (`recording`), per-system rules, file names |
@@ -80,6 +81,7 @@ with `--config` files in different folders never share band plans, talker aliase
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `sources` | | one RTL-SDR | array | Radios and capture files. [sources.md](sources.md) |
+| `audioStreams` | | `[]` | array | Independent HTTP/HTTPS call systems, split on silence. [audio-streams.md](audio-streams.md) |
 | `systems` | | `[]` | array | Trunked systems, each with its sites. [systems.md](systems.md) |
 | `conventional` | | `[]` | array | Conventional systems, each a group of single-frequency channels. [conventional.md](conventional.md) |
 | `recording` | | see page | object | Where calls go and which are kept. [recording.md](recording.md) |
