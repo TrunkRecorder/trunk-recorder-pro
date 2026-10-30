@@ -1543,7 +1543,7 @@ asks.
 | `ControlChannel::report` (per protocol; default nothing), `Engine::report` (levels, ppm, calls), `SampleMeter` (headroom and clipping, 1 sample in 16), `Tally` (calls, airtime, reasons, voice errors, counted from events) | `Aggregator` | `stats` message every 1 s; a `Rollup` every minute |
 | `Rollup` | `History` (a week in memory) and `stats/YYYY-MM-DD.jsonl` | `statsQuery` → `statsResult` |
 | Session events → `Stats::observe` | `Registry` | `radioQuery` → `radioResult` (`Shared::radio_query`, names from the `NameBook`); `radio/<short>.json` every 15 min and at stop |
-| Session events → `Stats::observe` | `Monitor` | watchers (the hook for alert rules; none yet) and `monitorEvent` |
+| Session events → `Stats::observe` | `Monitor` | watchers (the hook for alert rules; none yet) and `monitorEvent`; the frequent kinds only for subscribers to the topic `activity` |
 | monitor thread (desktop, every 2 s): the computer and the plugins | its own aggregator | `host` message every 2 s; rollups into the same history |
 | `VoiceDecoder::quality()`, `ControlChannel::quality()` (`ChannelQuality`: eye opening, CQPSK phase error) | `Engine::channels()` | `rfDetail` / `decodeDetail`, only for subscribers |
 

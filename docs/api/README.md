@@ -363,7 +363,9 @@ origin listed (e.g. `"https://radio.example.com"`).
      (see [Statistics and history](#statistics-and-history))
    - `host` every 2 s: the computer and the plugins (desktop app)
    - `concluded` for each recorded call
-   - `monitorEvent` when something notable happens
+   - `monitorEvent` when something notable happens (and, for a connection
+     subscribed to `activity`, on every grant, affiliation and talkgroup
+     heard)
    - `config` when anyone changes the config (with its `version`)
    - …the full list is [below](#messages-from-the-recorder).
 4. **Subscribe** to what costs the recorder something to make, while you
@@ -372,8 +374,10 @@ origin listed (e.g. `"https://radio.example.com"`).
    last. Topics: `spectrum:<source>` (the waterfall, ~7/s), `log` (every
    control channel message as a line), `rf:<source>` (`rfDetail`, 1/s),
    `decode:<shortName>` (`decodeDetail`, 1/s), `platform` (per-core and
-   per-interface figures in `host`). With nobody subscribed the recorder
-   doesn't compute them.
+   per-interface figures in `host`), `activity` (the frequent `monitorEvent`
+   kinds: `unitActive`, `unitAffiliated`, `tgActive`, `callVolume`, which the
+   feed leaves out). With nobody subscribed the recorder doesn't compute
+   them.
 5. **Send commands** as JSON text whenever you like. Answers to your own
    commands (`error`, `notice`, `dir`, `trConfig`, `devices`, `radios`,
    `store`, `configSaved`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`,
@@ -469,7 +473,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, `disks[]` (`{ name, path, mount, totalBytes, freeBytes }`; the RAM spool's as `spool`, with `kind` (`"RAM disk"`, `"tmpfs"` (/dev/shm), `"service"` (systemd's runtime folder) or `"folder"`), calls `overflowed` to disk, times it was `removed` while running, and `missing`: gone and not made again), `probes[]` (connectivity checks), `clock` (the clock's health: the operating system's sync and time service, a measured offset from `server`, the recording's drift, the radio systems' clocks, and `problem`: the recorder's verdict), `spotlight` (macOS: whether Spotlight indexes the recordings folder), `unavailable`: what this platform can't tell and why) |
 | `rfDetail` | Topic `rf:<source>`: 1/s | `source`, `profile` (the noise floor in 64 slices across the band, dBFS per FFT bin), `channels` (each channel on it: power, floor, SNR, carrier offset, the receiver's eye opening or CQPSK phase error) |
 | `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now, each with its `site`), `sites` (each running site's `index`, `name`, and what its control channel announces: `adjacent` sites, `dmr`, `nxdn`), `patches` (the patches standing now, each once: `supergroup` and `members`) |
-| `monitorEvent` | Something notable happened | `t`, `level` (`info`, `ok`, `warn`, `bad`), `kind` and its fields: control channels (`controlLost`, `controlRegained`; `system`, `site`), talkgroups and radios (`tgFirstSeen`, `tgActive`, `unitFirstSeen`, `unitActive`, `unitAffiliated`, `callVolume`), tones (`tonePattern`: `text`, `signals`), radios (`sourceDrops`, `sourceClipping`, `sourceRecovered`), plugins (`pluginHealth`), the computer (`linkDown`, `linkUp`, `diskLow`), the RAM spool (`spoolLow` with `critical`, `spoolFull` with `calls`, `spoolRecovered`, `spoolRemoved` with `spool` (its kind) and `remade`), the clock (`clockOff` with `why` and `bad`, `clockOk`, `clockStep` with `byMs`). The event feed's kinds are listed in protocol.ts (`MonitorEvent`) |
+| `monitorEvent` | Something notable happened | `t`, `level` (`info`, `ok`, `warn`, `bad`), `kind` and its fields: control channels (`controlLost`, `controlRegained`; `system`, `site`), talkgroups and radios (`tgFirstSeen`, `unitFirstSeen`; and only for the topic `activity`: `tgActive` with `units`, `unitActive` with `unit` and `talkgroup`, `unitAffiliated`, `callVolume` with `perMin`), tones (`tonePattern`: `text`, `signals`), radios (`sourceDrops`, `sourceClipping`, `sourceRecovered`), plugins (`pluginHealth`), the computer (`linkDown`, `linkUp`, `diskLow`), the RAM spool (`spoolLow` with `critical`, `spoolFull` with `calls`, `spoolRecovered`, `spoolRemoved` with `spool` (its kind) and `remade`), the clock (`clockOff` with `why` and `bad`, `clockOk`, `clockStep` with `byMs`). The event feed's kinds are listed in protocol.ts (`MonitorEvent`) |
 | `subscribed` | Answers `subscribe` | `topics` |
 | `olderCalls` | Answers `olderCalls` | `before` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still) |
 | `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
@@ -533,7 +537,7 @@ too.
 | `install` | `kind`, then `id`, or `repository` and `tag?` | Install or update a plugin or an interface from its store or a GitHub release (→ `installProgress` as it goes). A new interface is served at once on the next free port. |
 | `addInterface` | `path` | Serve a folder on the recorder's computer as an interface. |
 | `removeInterface` | `id` | Stop serving it and forget it; an installed copy is deleted. |
-| `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform` (→ `subscribed`). |
+| `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`, `activity` (→ `subscribed`). |
 | `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d`) or `from` / `to` (Unix s), `points?` | The minute history of series, averaged down to about `points` steps (→ `statsResult`). |
 | `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths`, `tones` (→ `radioResult`). |
 | `pluginAction` | `id`, `plugin`, `action`, `value` | Press one of a plugin's buttons (its settings schema's `x-actions`) on `value`, the settings object it's on as edited (→ `pluginActionResult`, once the plugin answers). Control access; plugins run only while recording. |

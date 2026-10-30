@@ -529,7 +529,8 @@ impl Plugins {
                         // A change of health is an event (not every "ok" of a starting plugin).
                         if was != r.state && !(was == "starting" || was == "off") || r.state == "error" && was != "error" {
                             let e = trunk_app::stats::MonitorEvent::PluginHealth { plugin: id.clone(), state: r.state.to_string(), message: message.clone() };
-                            if let Some(v) = monitor.emit(crate::clock::unix_s(), e) {
+                            // (Never a frequent one: it's for the feed.)
+                            if let Some(trunk_app::stats::Emitted::Feed(v)) = monitor.emit(crate::clock::unix_s(), e) {
                                 publish(&hub, ToClient::MonitorEvent(body(v)));
                             }
                         }

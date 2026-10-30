@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The frequent events on request.** A connection that subscribes to the topic `activity` gets
+  every grant (`unitActive`), affiliation (`unitAffiliated`), talkgroup heard (`tgActive`) and
+  call-volume reading as `monitorEvent` messages. The feed, the recent events a connection is
+  greeted with, and the dashboard are as they were; the recorder builds these only while someone
+  subscribes. For interfaces that show a unit activity feed.
+
 ## [0.2.11] — 2026-10-27
 
 - **Saving never holds up recording or a click.** Large systems on slow disks (SD cards) waited on

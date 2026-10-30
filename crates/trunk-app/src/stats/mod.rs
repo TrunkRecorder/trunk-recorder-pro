@@ -33,7 +33,7 @@ use crate::config::Config;
 use crate::protocol::ToClient;
 use crate::session::Output;
 pub use aggregate::{Aggregator, Rollup};
-pub use events::{Monitor, MonitorEvent, Watcher};
+pub use events::{Emitted, Monitor, MonitorEvent, Watcher, ACTIVITY};
 pub use history::History;
 pub use meter::SampleMeter;
 pub use radio::{Names, Registry, TgInfo};
@@ -58,8 +58,9 @@ impl Shared {
         Arc::new(Shared::default())
     }
 
-    /// Hand an event to the watchers; its `monitorEvent` message when it's one for the feed.
-    pub fn emit(&self, t: f64, e: MonitorEvent) -> Option<Value> {
+    /// Hand an event to the watchers; its `monitorEvent` message and where
+    /// it goes (the feed, or the `activity` topic), if anywhere.
+    pub fn emit(&self, t: f64, e: MonitorEvent) -> Option<Emitted> {
         self.monitor.lock().unwrap().emit(t, e)
     }
 
@@ -291,9 +292,18 @@ impl Stats {
     }
 
     fn emit(&mut self, e: MonitorEvent, out: &mut Vec<Output>) {
-        if let Some(v) = self.shared.emit(self.now, e) {
-            out.push(Output::Message(ToClient::MonitorEvent(crate::protocol::body(v))));
+        match self.shared.emit(self.now, e) {
+            Some(Emitted::Feed(v)) => out.push(Output::Message(ToClient::MonitorEvent(crate::protocol::body(v)))),
+            Some(Emitted::Activity(v)) => out.push(Output::Topic { topic: ACTIVITY.to_string(), msg: ToClient::MonitorEvent(crate::protocol::body(v)) }),
+            None => {}
         }
+    }
+
+    /// What the connections watch; the monitor builds the frequent events
+    /// while someone subscribes to the `activity` topic.
+    pub fn set_topics(&mut self, topics: Topics) {
+        self.shared.monitor.lock().unwrap().set_subscribed(topics.has(ACTIVITY));
+        self.topics = topics;
     }
 
     fn roll_day(&mut self) {
@@ -527,6 +537,33 @@ pub fn tg_info(tables: &HashMap<String, trunk_core::trunk::Talkgroups>, system: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Subscribing to `activity` makes the monitor build the frequent events,
+    /// and the session sends them for the topic, not as a message for all.
+    #[test]
+    fn the_activity_topic_turns_the_frequent_events_on_and_routes_them() {
+        let shared = Shared::new();
+        let mut stats = Stats::new(&Config::default(), shared.clone(), |_| 0);
+        let tg_active = || MonitorEvent::TgActive { system: "dcfd".into(), talkgroup: 1, units: vec![7] };
+        let mut out = Vec::new();
+        stats.emit(tg_active(), &mut out);
+        assert!(out.is_empty(), "nobody asked");
+        stats.set_topics(Topics::new(["activity".to_string()]));
+        assert!(shared.monitor.lock().unwrap().wants_frequent());
+        stats.emit(tg_active(), &mut out);
+        match out.as_slice() {
+            [Output::Topic { topic, msg: ToClient::MonitorEvent(body) }] => {
+                assert_eq!(topic, ACTIVITY);
+                assert_eq!(body["kind"], "tgActive");
+            }
+            other => panic!("not for the topic: {}", other.len()),
+        }
+        out.clear();
+        stats.set_topics(Topics::default());
+        assert!(!shared.monitor.lock().unwrap().wants_frequent());
+        stats.emit(tg_active(), &mut out);
+        assert!(out.is_empty(), "nobody asks any more");
+    }
 
     #[test]
     fn a_long_calls_air_counts_in_the_minutes_it_was_on() {

@@ -186,8 +186,12 @@ impl Ctx {
     /// Hand an event to the monitor, and to the browsers when it's one for the feed.
     pub fn event(&self, e: trunk_app::stats::MonitorEvent) {
         let t = crate::clock::unix_s();
-        if let Some(v) = self.shared.emit(t, e) {
-            publish(&self.hub, ToClient::MonitorEvent(body(v)));
+        match self.shared.emit(t, e) {
+            Some(trunk_app::stats::Emitted::Feed(v)) => publish(&self.hub, ToClient::MonitorEvent(body(v))),
+            Some(trunk_app::stats::Emitted::Activity(v)) => {
+                let _ = self.hub.send(Arc::new(Out::Topic { topic: trunk_app::stats::ACTIVITY.to_string(), text: ToClient::MonitorEvent(body(v)).to_json() }));
+            }
+            None => {}
         }
     }
 

@@ -470,7 +470,7 @@ impl Session {
 
     /// What the connected interfaces watch: costly outputs are made for these only.
     pub fn set_topics(&mut self, topics: Topics) {
-        self.meas.topics = topics;
+        self.meas.set_topics(topics);
     }
 
     /// A system's talkgroup file changed (an Ignore flag set from the
