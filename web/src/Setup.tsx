@@ -947,6 +947,12 @@ function AudioStreamCard(props: { c: Config; i: number }) {
         <Field label="End call after silence" hint="A short pre-roll is kept before detected audio.">
           <NumberInput label="Silence timeout, seconds" min={0.25} max={30} step={0.25} value={stream.silenceTimeoutS} onChange={(v) => v !== undefined && edit((x) => void (x.silenceTimeoutS = v))} />
         </Field>
+        <Field label="Maximum call duration" hint="Longer continuous audio is split into separate files.">
+          <NumberInput label="Seconds per file" min={1} max={3600} step={1} value={stream.maxCallS ?? 120} onChange={(v) => v !== undefined && edit((x) => void (x.maxCallS = v))} />
+        </Field>
+        <Field label="Maximum continuous audio" hint="After this much continuous audio, recording pauses until the silence timeout is reached.">
+          <NumberInput label="Seconds before waiting for silence" min={1} max={3600} step={1} value={stream.maxContinuousS ?? 600} onChange={(v) => v !== undefined && edit((x) => void (x.maxContinuousS = v))} />
+        </Field>
       </Group>
       <Group title="Plugins" hint="Plugin settings, delays and signals for this stream system." cols={1}>
         <SystemPluginSettings system={{ audio: i }} />
@@ -1378,7 +1384,7 @@ function ConventionalTab(props: { c: Config }) {
               className="btn"
               onClick={() =>
                 updateConfig((x) => {
-                  x.audioStreams.push({ url: "", shortName: uniqueShortName(x, "stream"), talkgroup: 1, channel: "mix", enabled: true, silenceTimeoutS: 3 });
+                  x.audioStreams.push({ url: "", shortName: uniqueShortName(x, "stream"), talkgroup: 1, channel: "mix", enabled: true, silenceTimeoutS: 3, maxCallS: 120, maxContinuousS: 600 });
                   addCard(x.audioStreams.map(audioStreamKey), audioStreamKey(x.audioStreams.at(-1)!, x.audioStreams.length - 1, x.audioStreams));
                 })
               }

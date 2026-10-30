@@ -9,6 +9,9 @@ system short name and talkgroup, and set how long silence ends a call. A 0.5-sec
 kept before detected audio. Activity is detected at approximately −42 dBFS; the default silence
 hang is 3 seconds (configurable from 0.25 to 30 seconds). When the stream disconnects, an active
 call is finalized and the source reconnects.
+Calls are split into files after 120 seconds by default. After 600 seconds of continuous audio
+(five default-size files), recording pauses until the configured silence timeout is reached;
+then detection resumes. Both duration limits can be changed per stream in Setup.
 
 Calls follow the normal recording finalizer: WAV and JSON files, the stream system's recording
 rules, live audio subscribers, and call-concluded plugins. Configure plugin settings, delays and
@@ -27,7 +30,9 @@ The equivalent configuration is:
       "talkgroup": 1,
       "channel": "mix",
       "enabled": true,
-      "silenceTimeoutS": 3
+      "silenceTimeoutS": 3,
+      "maxCallS": 120,
+      "maxContinuousS": 600
     }
   ]
 }

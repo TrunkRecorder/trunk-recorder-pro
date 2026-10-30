@@ -197,7 +197,7 @@ fn decode(
     tx: &Sender<EngineCmd>,
     stop: &AtomicBool,
 ) -> Result<(), String> {
-    let mut detector = Detector::new(stream.silence_timeout_s);
+    let mut detector = Detector::new(stream.silence_timeout_s, stream.max_call_s, stream.max_continuous_s);
     let mut bytes = Vec::with_capacity(FRAME_SAMPLES * 4 * 8);
     let mut input = [0u8; 8192];
     let mut stream_samples = 0usize;
@@ -292,10 +292,15 @@ struct Detector {
     call_num: Option<u32>,
     quiet_samples: usize,
     silence_samples: usize,
+    max_call_samples: usize,
+    max_continuous_samples: usize,
+    continuous_samples: usize,
+    continuing: bool,
+    waiting_for_silence: bool,
 }
 
 impl Detector {
-    fn new(silence_timeout_s: f64) -> Self {
+    fn new(silence_timeout_s: f64, max_call_s: f64, max_continuous_s: f64) -> Self {
         Detector {
             pre_roll: VecDeque::with_capacity(PRE_ROLL_SAMPLES),
             active: None,
@@ -303,23 +308,73 @@ impl Detector {
             call_num: None,
             quiet_samples: 0,
             silence_samples: (silence_timeout_s * SAMPLE_RATE as f64).round() as usize,
+            max_call_samples: (max_call_s * SAMPLE_RATE as f64).round() as usize,
+            max_continuous_samples: (max_continuous_s * SAMPLE_RATE as f64).round() as usize,
+            continuous_samples: 0,
+            continuing: false,
+            waiting_for_silence: false,
         }
     }
 
     fn push(&mut self, frame: &[f32], at: Instant) -> Option<(u32, Vec<f32>, Instant)> {
         let rms = (frame.iter().map(|s| s * s).sum::<f32>() / frame.len().max(1) as f32).sqrt();
         let voice = rms > 10.0_f32.powf(ACTIVE_DBFS / 20.0);
-        if self.active.is_none() {
+        if self.waiting_for_silence {
             if voice {
+                self.quiet_samples = 0;
+            } else {
+                self.quiet_samples += frame.len();
+                if self.quiet_samples >= self.silence_samples {
+                    self.waiting_for_silence = false;
+                    self.continuous_samples = 0;
+                    self.quiet_samples = 0;
+                    self.remember(frame);
+                }
+            }
+            return None;
+        }
+        if self.active.is_none() {
+            if self.continuing {
+                if voice {
+                    self.active = Some(frame.to_vec());
+                    self.started_at = Some(at);
+                    self.call_num = Some(Self::next_call_id());
+                    self.continuous_samples += frame.len();
+                    self.quiet_samples = 0;
+                    return None;
+                }
+                self.quiet_samples += frame.len();
+                self.continuous_samples += frame.len();
+                if self.quiet_samples >= self.silence_samples {
+                    self.continuing = false;
+                    self.continuous_samples = 0;
+                    self.quiet_samples = 0;
+                    self.remember(frame);
+                } else if self.continuous_samples >= self.max_continuous_samples {
+                    self.continuing = false;
+                    self.waiting_for_silence = true;
+                }
+                return None;
+            }
+            if voice {
+                let keep = self.max_call_samples.saturating_sub(frame.len()).min(self.pre_roll.len());
+                let discard = self.pre_roll.len() - keep;
+                self.pre_roll.drain(..discard);
                 let mut samples: Vec<f32> = self.pre_roll.drain(..).collect();
                 let pre_roll = Duration::from_secs_f64(samples.len() as f64 / SAMPLE_RATE as f64);
                 samples.extend_from_slice(frame);
                 self.started_at = Some(at.checked_sub(pre_roll).unwrap_or(at));
                 self.active = Some(samples);
-                self.call_num = Some(
-                    0x8000_0000 | (NEXT_CALL_ID.fetch_add(1, Ordering::Relaxed) & 0x7fff_ffff),
-                );
+                self.call_num = Some(Self::next_call_id());
                 self.quiet_samples = 0;
+                self.continuous_samples = frame.len();
+                if self.active.as_ref().is_some_and(|samples| samples.len() >= self.max_call_samples) {
+                    let samples = self.active.take().expect("active call");
+                    let call_num = self.call_num.take().expect("active call id");
+                    let started_at = self.started_at.take().expect("active call start");
+                    self.continuing = true;
+                    return Some((call_num, samples, started_at));
+                }
             } else {
                 self.remember(frame);
             }
@@ -334,13 +389,27 @@ impl Detector {
         } else {
             self.quiet_samples += frame.len();
         }
+        self.continuous_samples += frame.len();
         if self.quiet_samples < self.silence_samples {
-            return None;
+            if self.continuous_samples < self.max_continuous_samples
+                && self.active.as_ref().is_some_and(|samples| samples.len() < self.max_call_samples)
+            {
+                return None;
+            }
+        } else {
+            self.continuing = false;
+            self.continuous_samples = 0;
+        }
+        if self.quiet_samples < self.silence_samples {
+            self.continuing = self.continuous_samples < self.max_continuous_samples;
+            self.waiting_for_silence = !self.continuing;
         }
         let samples = self.active.take().expect("active call");
         let call_num = self.call_num.take().expect("active call id");
         let started_at = self.started_at.take().expect("active call start");
-        self.quiet_samples = 0;
+        if !self.continuing {
+            self.quiet_samples = 0;
+        }
         Some((call_num, samples, started_at))
     }
 
@@ -349,7 +418,14 @@ impl Detector {
         let call_num = self.call_num.take()?;
         let started_at = self.started_at.take()?;
         self.quiet_samples = 0;
+        self.continuing = false;
+        self.waiting_for_silence = false;
+        self.continuous_samples = 0;
         Some((call_num, samples, started_at))
+    }
+
+    fn next_call_id() -> u32 {
+        0x8000_0000 | (NEXT_CALL_ID.fetch_add(1, Ordering::Relaxed) & 0x7fff_ffff)
     }
 
     fn active_call(&self) -> Option<u32> {
@@ -372,7 +448,7 @@ mod tests {
 
     #[test]
     fn silence_delimits_audio_and_keeps_preroll() {
-        let mut detector = Detector::new(0.25);
+        let mut detector = Detector::new(0.25, 120.0, 600.0);
         let now = Instant::now();
         let silence = vec![0.0; FRAME_SAMPLES];
         let voice = vec![0.2; FRAME_SAMPLES];
@@ -397,10 +473,35 @@ mod tests {
 
     #[test]
     fn stream_end_flushes_a_call_without_waiting_for_the_hang() {
-        let mut detector = Detector::new(3.0);
+        let mut detector = Detector::new(3.0, 120.0, 600.0);
         let now = Instant::now();
         assert!(detector.push(&vec![0.2; FRAME_SAMPLES], now).is_none());
         assert_eq!(detector.flush().unwrap().1.len(), FRAME_SAMPLES);
+    }
+
+    #[test]
+    fn long_audio_is_split_and_detection_waits_for_silence_at_the_continuous_limit() {
+        let mut detector = Detector::new(0.04, 0.04, 0.12);
+        let now = Instant::now();
+        let voice = vec![0.2; FRAME_SAMPLES];
+        let silence = vec![0.0; FRAME_SAMPLES];
+
+        let mut completed = Vec::new();
+        for i in 0..6 {
+            if let Some(call) = detector.push(&voice, now + Duration::from_millis(i * 20)) {
+                completed.push(call);
+            }
+        }
+        assert_eq!(completed.len(), 3);
+        assert!(completed.iter().all(|(_, samples, _)| samples.len() == 2 * FRAME_SAMPLES));
+        assert!(detector.waiting_for_silence);
+        assert!(detector.push(&voice, now + Duration::from_millis(120)).is_none());
+
+        detector.push(&silence, now + Duration::from_millis(140));
+        detector.push(&silence, now + Duration::from_millis(160));
+        assert!(!detector.waiting_for_silence);
+        let next = detector.push(&voice, now + Duration::from_millis(180)).expect("recording resumes after silence");
+        assert_eq!(next.1.len(), 2 * FRAME_SAMPLES);
     }
 
     #[test]
@@ -411,6 +512,8 @@ mod tests {
             talkgroup: 123,
             enabled: true,
             silence_timeout_s: 0.25,
+            max_call_s: 120.0,
+            max_continuous_s: 600.0,
             ..Default::default()
         };
         let (tx, rx) = std::sync::mpsc::channel();

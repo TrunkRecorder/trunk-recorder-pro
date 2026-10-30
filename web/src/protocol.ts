@@ -69,6 +69,10 @@ export interface AudioStream {
   channel?: "left" | "right" | "mix";
   enabled: boolean;
   silenceTimeoutS: number;
+  /** Maximum duration of one saved call segment, seconds (default: 120). */
+  maxCallS?: number;
+  /** Maximum activity before waiting for a full silence timeout, seconds (default: 600). */
+  maxContinuousS?: number;
   plugins?: Record<string, SystemPluginValues>;
   pluginDelays?: DelayRule[];
   signals?: SignalDef[];

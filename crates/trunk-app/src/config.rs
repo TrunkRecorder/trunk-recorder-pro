@@ -181,7 +181,7 @@ pub enum Source {
 }
 
 /// An HTTP audio stream treated as a conventional call source.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AudioStream {
     pub url: String,
@@ -192,6 +192,10 @@ pub struct AudioStream {
     pub enabled: bool,
     #[serde(default = "audio_stream_silence_timeout")]
     pub silence_timeout_s: f64,
+    #[serde(default = "audio_stream_max_call")]
+    pub max_call_s: f64,
+    #[serde(default = "audio_stream_max_continuous")]
+    pub max_continuous_s: f64,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -200,6 +204,25 @@ pub struct AudioStream {
     pub signals: Vec<SignalDef>,
     #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
     pub recording: RecordingOverride,
+}
+
+impl Default for AudioStream {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            short_name: String::new(),
+            talkgroup: 0,
+            channel: AudioStreamChannel::default(),
+            enabled: true,
+            silence_timeout_s: audio_stream_silence_timeout(),
+            max_call_s: audio_stream_max_call(),
+            max_continuous_s: audio_stream_max_continuous(),
+            plugins: BTreeMap::new(),
+            plugin_delays: Vec::new(),
+            signals: Vec::new(),
+            recording: RecordingOverride::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,6 +250,14 @@ fn audio_stream_enabled() -> bool {
 
 fn audio_stream_silence_timeout() -> f64 {
     3.0
+}
+
+fn audio_stream_max_call() -> f64 {
+    120.0
+}
+
+fn audio_stream_max_continuous() -> f64 {
+    600.0
 }
 
 choice! {
@@ -2479,6 +2510,12 @@ impl Config {
             if !stream.silence_timeout_s.is_finite() || !(0.25..=30.0).contains(&stream.silence_timeout_s) {
                 return Some(format!("{}: silence timeout must be between 0.25 and 30 seconds.", stream.short_name));
             }
+            if !stream.max_call_s.is_finite() || !(1.0..=3600.0).contains(&stream.max_call_s) {
+                return Some(format!("{}: maximum call duration must be between 1 and 3600 seconds.", stream.short_name));
+            }
+            if !stream.max_continuous_s.is_finite() || !(1.0..=3600.0).contains(&stream.max_continuous_s) {
+                return Some(format!("{}: maximum continuous recording must be between 1 and 3600 seconds.", stream.short_name));
+            }
         }
         if self.sources.is_empty() && self.enabled_channels().next().is_some() {
             return Some("Conventional radio channels need an RF source.".into());
@@ -2780,6 +2817,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(defaults.channel, AudioStreamChannel::Mix);
+        assert_eq!((defaults.max_call_s, defaults.max_continuous_s), (120.0, 600.0));
         assert_eq!(
             serde_json::from_value::<AudioStreamChannel>(serde_json::json!("left")).unwrap(),
             AudioStreamChannel::Left
@@ -2842,6 +2880,12 @@ mod tests {
         invalid = config.clone();
         invalid.audio_streams[0].silence_timeout_s = 31.0;
         assert!(invalid.problem().unwrap().contains("silence timeout"));
+        invalid = config.clone();
+        invalid.audio_streams[0].max_call_s = 0.0;
+        assert!(invalid.problem().unwrap().contains("maximum call duration"));
+        invalid = config.clone();
+        invalid.audio_streams[0].max_continuous_s = f64::INFINITY;
+        assert!(invalid.problem().unwrap().contains("maximum continuous recording"));
         let mut disabled = config.clone();
         disabled.audio_streams[0].enabled = false;
         assert!(disabled.problem().unwrap().contains("Add a source"));
