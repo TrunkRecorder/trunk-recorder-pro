@@ -234,16 +234,6 @@ pub enum AudioStreamChannel {
     Mix,
 }
 
-impl AudioStreamChannel {
-    pub fn filter(self) -> Option<&'static str> {
-        match self {
-            Self::Left => Some("pan=mono|c0=c0"),
-            Self::Right => Some("pan=mono|c0=c1"),
-            Self::Mix => None,
-        }
-    }
-}
-
 fn audio_stream_enabled() -> bool {
     true
 }

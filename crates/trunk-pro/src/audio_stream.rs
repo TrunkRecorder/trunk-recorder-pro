@@ -2,16 +2,21 @@
 //! voice activity, then handed to the recorder's normal call finalizer.
 
 use std::collections::VecDeque;
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::io::{self, Cursor, Read};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::config::AudioStream;
+use crate::config::{AudioStream, AudioStreamChannel};
 use crate::runtime::EngineCmd;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
+use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource};
+use symphonia::core::meta::MetadataOptions;
 
 const SAMPLE_RATE: usize = 8000;
 const FRAME_SAMPLES: usize = 160;
@@ -76,187 +81,360 @@ fn stream_once(
     tx: &Sender<EngineCmd>,
     stop: &Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let mut args = vec![
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostats",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-protocol_whitelist",
-        "http,https,tcp,tls,crypto,pipe",
-        "-i",
-        "pipe:0",
-        "-map",
-        "0:a:0",
-        "-vn",
-    ];
-    if let Some(filter) = stream.channel.filter() {
-        args.extend(["-af", filter]);
-    }
-    args.extend([
-        "-ac",
-        "1",
-        "-ar",
-        "8000",
-        "-f",
-        "f32le",
-        "-acodec",
-        "pcm_f32le",
-        "pipe:1",
-    ]);
-    let mut child = Command::new("ffmpeg")
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                "ffmpeg is required to decode internet audio streams".to_string()
-            } else {
-                format!("couldn't start ffmpeg: {e}")
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("couldn't start HTTP runtime: {e}"))?;
+    runtime.block_on(stream_once_async(stream, system, tx, stop))
+}
+
+async fn stream_once_async(
+    stream: &AudioStream,
+    system: u16,
+    tx: &Sender<EngineCmd>,
+    stop: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .user_agent(concat!("trunk-pro/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|_| "couldn't initialize HTTP client".to_string())?;
+    let request = client.get(&stream.url).send();
+    tokio::pin!(request);
+    let mut response = loop {
+        tokio::select! {
+            response = &mut request => {
+                break response.map_err(|e| format!("HTTP stream request failed: {}", e.without_url()))?;
             }
-        })?;
-    let escaped_url = stream.url.replace('\\', "\\\\").replace('\'', "\\'");
-    let manifest = format!("ffconcat version 1.0\nfile '{escaped_url}'\n");
-    if let Some(mut stdin) = child.stdin.take() {
-        if stdin.write_all(manifest.as_bytes()).is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("couldn't pass the stream URL to ffmpeg".into());
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                if stop.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+            }
         }
-    }
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("ffmpeg has no audio output".into());
     };
+    if !response.status().is_success() {
+        return Err(format!(
+            "HTTP stream server returned status {}",
+            response.status()
+        ));
+    }
+
+    let icy_metaint = response
+        .headers()
+        .get("icy-metaint")
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .ok_or_else(|| "invalid ICY metadata interval".to_string())
+        })
+        .transpose()?;
+    let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel(8);
     let stream = stream.clone();
     let tx = tx.clone();
     let stop_reader = stop.clone();
-    let reader = match std::thread::Builder::new()
+    let reader = std::thread::Builder::new()
         .name("audio-stream-decode".into())
-        .spawn(move || decode(stdout, system, &stream, &tx, &stop_reader))
-    {
-        Ok(reader) => reader,
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("couldn't start audio decoder thread: {e}"));
-        }
-    };
+        .spawn(move || {
+            decode(
+                HttpChunkReader::new(chunk_rx),
+                system,
+                &stream,
+                &tx,
+                &stop_reader,
+            )
+        })
+        .map_err(|e| format!("couldn't start audio decoder thread: {e}"))?;
 
-    let status = loop {
+    let mut icy = icy_metaint.map(IcyMetadataStripper::new);
+    let network_result = loop {
         if stop.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            break match child.wait() {
-                Ok(status) => status,
-                Err(e) => {
-                    let _ = reader.join();
-                    return Err(format!("couldn't stop ffmpeg: {e}"));
-                }
-            };
+            break Ok(());
         }
-        match child.try_wait() {
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = reader.join();
-                return Err(format!("ffmpeg process error: {e}"));
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            chunk = response.chunk() => match chunk {
+                Ok(Some(chunk)) => {
+                    let audio = icy.as_mut().map_or_else(
+                        || chunk.to_vec(),
+                        |stripper| stripper.strip(&chunk),
+                    );
+                    if !audio.is_empty() && chunk_tx.send(audio).await.is_err() {
+                        break Err("audio decoder stopped unexpectedly".into());
+                    }
+                }
+                Ok(None) => break Err("stream ended".into()),
+                Err(e) => break Err(format!("HTTP stream read failed: {}", e.without_url())),
             }
-            Ok(Some(status)) => break status,
-            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
         }
     };
+    drop(chunk_tx);
     let decoded = reader
         .join()
         .map_err(|_| "audio decoder thread panicked".to_string())?;
-    decoded?;
     if stop.load(Ordering::Relaxed) {
         return Ok(());
     }
-    if status.success() {
-        Err("stream ended".into())
-    } else {
-        Err(format!(
-            "ffmpeg exited with status {}",
-            status
-                .code()
-                .map_or_else(|| "unknown".into(), |c| c.to_string())
-        ))
+    if let Err(error) = &network_result {
+        if error != "stream ended" {
+            return Err(error.clone());
+        }
     }
+    decoded?;
+    network_result
 }
 
 fn decode(
-    mut stdout: impl Read,
+    input: impl Read + Send + Sync + 'static,
     system: u16,
     stream: &AudioStream,
     tx: &Sender<EngineCmd>,
     stop: &AtomicBool,
 ) -> Result<(), String> {
-    let mut detector = Detector::new(stream.silence_timeout_s, stream.max_call_s, stream.max_continuous_s);
-    let mut bytes = Vec::with_capacity(FRAME_SAMPLES * 4 * 8);
-    let mut input = [0u8; 8192];
+    let mut detector = Detector::new(
+        stream.silence_timeout_s,
+        stream.max_call_s,
+        stream.max_continuous_s,
+    );
+    let mut pcm = Vec::with_capacity(FRAME_SAMPLES * 8);
     let mut stream_samples = 0usize;
     let stream_started = Instant::now();
     let mut connected = false;
-    let read_result = loop {
+    let source = MediaSourceStream::new(
+        Box::new(ReadOnlySource::new(input)),
+        MediaSourceStreamOptions::default(),
+    );
+    let mut hint = Hint::new();
+    let extension = reqwest::Url::parse(&stream.url)
+        .ok()
+        .and_then(|url| url.path().rsplit('/').next().map(str::to_owned))
+        .and_then(|name| {
+            name.rsplit_once('.')
+                .map(|(_, extension)| extension.to_owned())
+        })
+        .filter(|extension| matches!(extension.to_ascii_lowercase().as_str(), "mp3" | "wav"));
+    if let Some(extension) = extension {
+        hint.with_extension(&extension);
+    }
+    let probed = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            source,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| format!("unsupported or invalid audio stream: {e}"))?;
+    let mut format = probed;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| "audio stream contains no audio track".to_string())?;
+    let track_id = track.id;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .ok_or_else(|| "audio stream codec is unknown".to_string())?;
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
+        .map_err(|e| format!("unsupported audio codec: {e}"))?;
+    let mut resampler: Option<StreamResampler> = None;
+    let decode_result = loop {
         if stop.load(Ordering::Relaxed) {
             break Ok(());
         }
-        let n = match stdout.read(&mut input) {
-            Ok(n) => n,
-            Err(e) => break Err(format!("couldn't read ffmpeg audio: {e}")),
+        let packet = match format.next_packet() {
+            Ok(Some(packet)) => packet,
+            Ok(None) => break Ok(()),
+            Err(SymphoniaError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                break Ok(());
+            }
+            Err(SymphoniaError::ResetRequired) => {
+                break Err("audio stream format changed unexpectedly".into());
+            }
+            Err(e) => break Err(format!("couldn't read audio stream: {e}")),
         };
-        if n == 0 {
-            break Ok(());
+        if packet.track_id != track_id {
+            continue;
         }
-        if !connected {
-            tx.send(EngineCmd::AudioStreamStatus {
-                short_name: stream.short_name.clone(),
-                connected: true,
-                error: None,
-            })
-            .map_err(|_| "recorder stopped".to_string())?;
-            connected = true;
+        let decoded = match decoder.decode(&packet) {
+            Ok(decoded) => decoded,
+            Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(e) => break Err(format!("couldn't decode audio stream: {e}")),
+        };
+        let sample_rate = decoded.spec().rate();
+        let channels = decoded.spec().channels().count();
+        if sample_rate == 0 || channels == 0 {
+            break Err("audio stream has an invalid sample format".into());
         }
-        bytes.extend_from_slice(&input[..n]);
-        let complete = bytes.len() / (FRAME_SAMPLES * 4) * (FRAME_SAMPLES * 4);
-        for frame in bytes[..complete].chunks_exact(FRAME_SAMPLES * 4) {
-            let samples: Vec<f32> = frame
-                .chunks_exact(4)
-                .map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]]).clamp(-1.0, 1.0))
-                .collect();
-            let at = stream_started
-                + Duration::from_secs_f64(stream_samples as f64 / SAMPLE_RATE as f64);
-            stream_samples += FRAME_SAMPLES;
-            let completed = detector.push(&samples, at);
-            let call_num = detector
-                .active_call()
-                .or_else(|| completed.as_ref().map(|(id, _, _)| *id));
-            if let Some(call_num) = call_num {
-                tx.send(EngineCmd::AudioFrame(AudioFrame {
-                    system,
-                    call_num,
+        let mut interleaved = Vec::with_capacity(decoded.samples_interleaved());
+        decoded.copy_to_vec_interleaved(&mut interleaved);
+        let mono = select_channel(&interleaved, channels, stream.channel);
+        let converter = resampler.get_or_insert_with(|| StreamResampler::new(sample_rate));
+        if converter.sample_rate != sample_rate {
+            *converter = StreamResampler::new(sample_rate);
+        }
+        converter.process(&mono, &mut pcm);
+        let complete = pcm.len() / FRAME_SAMPLES * FRAME_SAMPLES;
+        if complete > 0 {
+            if !connected {
+                tx.send(EngineCmd::AudioStreamStatus {
                     short_name: stream.short_name.clone(),
-                    talkgroup: stream.talkgroup,
-                    samples: samples.clone(),
-                }))
+                    connected: true,
+                    error: None,
+                })
                 .map_err(|_| "recorder stopped".to_string())?;
+                connected = true;
             }
-            if let Some((call_num, samples, started_at)) = completed {
-                send_call(stream, system, call_num, tx, samples, started_at)?;
+            for samples in pcm[..complete].chunks_exact(FRAME_SAMPLES) {
+                let samples = samples.to_vec();
+                let at = stream_started
+                    + Duration::from_secs_f64(stream_samples as f64 / SAMPLE_RATE as f64);
+                stream_samples += FRAME_SAMPLES;
+                let completed = detector.push(&samples, at);
+                let call_num = detector
+                    .active_call()
+                    .or_else(|| completed.as_ref().map(|(id, _, _)| *id));
+                if let Some(call_num) = call_num {
+                    tx.send(EngineCmd::AudioFrame(AudioFrame {
+                        system,
+                        call_num,
+                        short_name: stream.short_name.clone(),
+                        talkgroup: stream.talkgroup,
+                        samples: samples.clone(),
+                    }))
+                    .map_err(|_| "recorder stopped".to_string())?;
+                }
+                if let Some((call_num, samples, started_at)) = completed {
+                    send_call(stream, system, call_num, tx, samples, started_at)?;
+                }
             }
+            pcm.drain(..complete);
         }
-        bytes.drain(..complete);
     };
     if let Some((call_num, samples, started_at)) = detector.flush() {
         send_call(stream, system, call_num, tx, samples, started_at)?;
     }
-    read_result
+    decode_result
+}
+
+fn select_channel(samples: &[f32], channels: usize, selection: AudioStreamChannel) -> Vec<f32> {
+    samples
+        .chunks_exact(channels)
+        .map(|frame| match selection {
+            AudioStreamChannel::Left => frame[0],
+            AudioStreamChannel::Right => *frame.get(1).unwrap_or(&frame[0]),
+            AudioStreamChannel::Mix => frame.iter().sum::<f32>() / channels as f32,
+        })
+        .collect()
+}
+
+struct StreamResampler {
+    sample_rate: u32,
+    inner: trunk_core::dsp::fm::AudioResampler,
+}
+
+impl StreamResampler {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate,
+            inner: trunk_core::dsp::fm::AudioResampler::new(
+                sample_rate as f64,
+                3400.0_f64.min(sample_rate as f64 * 0.45),
+            ),
+        }
+    }
+
+    fn process(&mut self, input: &[f32], output: &mut Vec<f32>) {
+        for &sample in input {
+            self.inner.push(sample, |sample| {
+                output.push(sample.clamp(-1.0, 1.0));
+            });
+        }
+    }
+}
+
+struct HttpChunkReader {
+    receiver: Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+    current: Cursor<Vec<u8>>,
+}
+
+impl HttpChunkReader {
+    fn new(receiver: tokio::sync::mpsc::Receiver<Vec<u8>>) -> Self {
+        Self {
+            receiver: Mutex::new(receiver),
+            current: Cursor::new(Vec::new()),
+        }
+    }
+}
+
+impl Read for HttpChunkReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let n = self.current.read(output)?;
+            if n > 0 {
+                return Ok(n);
+            }
+            let receiver = self
+                .receiver
+                .get_mut()
+                .map_err(|_| io::Error::other("HTTP stream reader lock was poisoned"))?;
+            match receiver.blocking_recv() {
+                Some(chunk) => self.current = Cursor::new(chunk),
+                None => return Ok(0),
+            }
+        }
+    }
+}
+
+struct IcyMetadataStripper {
+    interval: usize,
+    audio_remaining: usize,
+    metadata_remaining: usize,
+    reading_metadata_length: bool,
+}
+
+impl IcyMetadataStripper {
+    fn new(interval: usize) -> Self {
+        Self {
+            interval,
+            audio_remaining: interval,
+            metadata_remaining: 0,
+            reading_metadata_length: false,
+        }
+    }
+
+    fn strip(&mut self, input: &[u8]) -> Vec<u8> {
+        let mut output = Vec::with_capacity(input.len());
+        for &byte in input {
+            if self.audio_remaining > 0 {
+                output.push(byte);
+                self.audio_remaining -= 1;
+                if self.audio_remaining == 0 {
+                    self.reading_metadata_length = true;
+                }
+            } else if self.reading_metadata_length {
+                self.metadata_remaining = usize::from(byte) * 16;
+                self.reading_metadata_length = false;
+                if self.metadata_remaining == 0 {
+                    self.audio_remaining = self.interval;
+                }
+            } else if self.metadata_remaining > 0 {
+                self.metadata_remaining -= 1;
+                if self.metadata_remaining == 0 {
+                    self.audio_remaining = self.interval;
+                }
+            } else {
+                self.reading_metadata_length = true;
+            }
+        }
+        output
+    }
 }
 
 fn send_call(
@@ -357,7 +535,10 @@ impl Detector {
                 return None;
             }
             if voice {
-                let keep = self.max_call_samples.saturating_sub(frame.len()).min(self.pre_roll.len());
+                let keep = self
+                    .max_call_samples
+                    .saturating_sub(frame.len())
+                    .min(self.pre_roll.len());
                 let discard = self.pre_roll.len() - keep;
                 self.pre_roll.drain(..discard);
                 let mut samples: Vec<f32> = self.pre_roll.drain(..).collect();
@@ -368,7 +549,11 @@ impl Detector {
                 self.call_num = Some(Self::next_call_id());
                 self.quiet_samples = 0;
                 self.continuous_samples = frame.len();
-                if self.active.as_ref().is_some_and(|samples| samples.len() >= self.max_call_samples) {
+                if self
+                    .active
+                    .as_ref()
+                    .is_some_and(|samples| samples.len() >= self.max_call_samples)
+                {
                     let samples = self.active.take().expect("active call");
                     let call_num = self.call_num.take().expect("active call id");
                     let started_at = self.started_at.take().expect("active call start");
@@ -392,7 +577,10 @@ impl Detector {
         self.continuous_samples += frame.len();
         if self.quiet_samples < self.silence_samples {
             if self.continuous_samples < self.max_continuous_samples
-                && self.active.as_ref().is_some_and(|samples| samples.len() < self.max_call_samples)
+                && self
+                    .active
+                    .as_ref()
+                    .is_some_and(|samples| samples.len() < self.max_call_samples)
             {
                 return None;
             }
@@ -446,6 +634,31 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    fn wav(samples: impl IntoIterator<Item = f32>) -> Vec<u8> {
+        let samples: Vec<i16> = samples
+            .into_iter()
+            .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+            .collect();
+        let data_len = (samples.len() * 2) as u32;
+        let mut wav = Vec::with_capacity(data_len as usize + 44);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&(SAMPLE_RATE as u32).to_le_bytes());
+        wav.extend_from_slice(&((SAMPLE_RATE * 2) as u32).to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        wav
+    }
+
     #[test]
     fn silence_delimits_audio_and_keeps_preroll() {
         let mut detector = Detector::new(0.25, 120.0, 600.0);
@@ -453,14 +666,18 @@ mod tests {
         let silence = vec![0.0; FRAME_SAMPLES];
         let voice = vec![0.2; FRAME_SAMPLES];
         for i in 0..30 {
-            assert!(detector
-                .push(&silence, now + Duration::from_millis(i * 20))
-                .is_none());
+            assert!(
+                detector
+                    .push(&silence, now + Duration::from_millis(i * 20))
+                    .is_none()
+            );
         }
         for i in 0..10 {
-            assert!(detector
-                .push(&voice, now + Duration::from_millis(600 + i * 20))
-                .is_none());
+            assert!(
+                detector
+                    .push(&voice, now + Duration::from_millis(600 + i * 20))
+                    .is_none()
+            );
         }
         let mut call = None;
         for i in 0..13 {
@@ -493,14 +710,24 @@ mod tests {
             }
         }
         assert_eq!(completed.len(), 3);
-        assert!(completed.iter().all(|(_, samples, _)| samples.len() == 2 * FRAME_SAMPLES));
+        assert!(
+            completed
+                .iter()
+                .all(|(_, samples, _)| samples.len() == 2 * FRAME_SAMPLES)
+        );
         assert!(detector.waiting_for_silence);
-        assert!(detector.push(&voice, now + Duration::from_millis(120)).is_none());
+        assert!(
+            detector
+                .push(&voice, now + Duration::from_millis(120))
+                .is_none()
+        );
 
         detector.push(&silence, now + Duration::from_millis(140));
         detector.push(&silence, now + Duration::from_millis(160));
         assert!(!detector.waiting_for_silence);
-        let next = detector.push(&voice, now + Duration::from_millis(180)).expect("recording resumes after silence");
+        let next = detector
+            .push(&voice, now + Duration::from_millis(180))
+            .expect("recording resumes after silence");
         assert_eq!(next.1.len(), 2 * FRAME_SAMPLES);
     }
 
@@ -517,14 +744,17 @@ mod tests {
             ..Default::default()
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut bytes = Vec::new();
-        for sample in std::iter::repeat_n(0.0_f32, 30 * FRAME_SAMPLES)
+        let samples = std::iter::repeat_n(0.0_f32, 30 * FRAME_SAMPLES)
             .chain(std::iter::repeat_n(0.2_f32, 10 * FRAME_SAMPLES))
-            .chain(std::iter::repeat_n(0.0_f32, 13 * FRAME_SAMPLES))
-        {
-            bytes.extend_from_slice(&sample.to_le_bytes());
-        }
-        decode(Cursor::new(bytes), 2, &stream, &tx, &AtomicBool::new(false)).unwrap();
+            .chain(std::iter::repeat_n(0.0_f32, 13 * FRAME_SAMPLES));
+        decode(
+            Cursor::new(wav(samples)),
+            2,
+            &stream,
+            &tx,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
 
         let messages: Vec<_> = rx.try_iter().collect();
         let frames: Vec<_> = messages
@@ -542,18 +772,102 @@ mod tests {
             })
             .collect();
         assert_eq!(frames.len(), 23);
-        assert!(frames
-            .iter()
-            .all(|f| f.system == 2 && f.talkgroup == 123 && f.short_name == "dispatch"));
+        assert!(
+            frames
+                .iter()
+                .all(|f| f.system == 2 && f.talkgroup == 123 && f.short_name == "dispatch")
+        );
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].samples.len(), 4000 + 1600 + 13 * FRAME_SAMPLES);
     }
 
     #[test]
-    fn channel_selection_uses_expected_mono_mix() {
-        use crate::config::AudioStreamChannel;
-        assert_eq!(AudioStreamChannel::Left.filter(), Some("pan=mono|c0=c0"));
-        assert_eq!(AudioStreamChannel::Right.filter(), Some("pan=mono|c0=c1"));
-        assert_eq!(AudioStreamChannel::Mix.filter(), None);
+    fn http_mp3_stream_is_decoded_without_ffmpeg() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let bytes = include_bytes!("../tests/fixtures/audio_stream.mp3").to_vec();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            let mut request = BufReader::new(client.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                request.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+            }
+            write!(
+                client,
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            )
+            .unwrap();
+            client.write_all(&bytes).unwrap();
+        });
+
+        let stream = AudioStream {
+            url: format!("http://{address}/fixture.mp3"),
+            short_name: "synthetic".into(),
+            talkgroup: 12,
+            ..Default::default()
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(stream_once_async(
+                &stream,
+                1,
+                &tx,
+                &Arc::new(AtomicBool::new(false)),
+            ));
+        server.join().unwrap();
+
+        assert_eq!(result, Err("stream ended".into()));
+        let messages: Vec<_> = rx.try_iter().collect();
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            EngineCmd::AudioStreamStatus {
+                connected: true,
+                ..
+            }
+        )));
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, EngineCmd::AudioCall(_)))
+        );
+    }
+
+    #[test]
+    fn channel_selection_uses_the_configured_channel() {
+        assert_eq!(
+            select_channel(&[0.2, 0.8, 0.4, 0.6], 2, AudioStreamChannel::Left),
+            [0.2, 0.4]
+        );
+        assert_eq!(
+            select_channel(&[0.2, 0.8, 0.4, 0.6], 2, AudioStreamChannel::Right),
+            [0.8, 0.6]
+        );
+        assert_eq!(
+            select_channel(&[0.2, 0.8, 0.4, 0.6], 2, AudioStreamChannel::Mix),
+            [0.5, 0.5]
+        );
+        assert_eq!(
+            select_channel(&[0.4, 0.6], 1, AudioStreamChannel::Right),
+            [0.4, 0.6]
+        );
+    }
+
+    #[test]
+    fn icy_metadata_is_removed_across_chunk_boundaries() {
+        let mut stripper = IcyMetadataStripper::new(3);
+        assert_eq!(stripper.strip(b"abc\x01"), b"abc");
+        assert_eq!(stripper.strip(b"abcdefghijklmnopxyz"), b"xyz");
     }
 }
