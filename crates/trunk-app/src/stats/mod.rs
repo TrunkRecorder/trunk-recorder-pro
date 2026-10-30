@@ -429,6 +429,28 @@ impl Stats {
         self.details(engine, site_names, decode_sites, out);
     }
 
+    /// Account for an internet audio call like the radio call-end and
+    /// recording-concluded events, which streams do not produce themselves.
+    pub fn audio_call(&mut self, name: &str, talkgroup: u32, start_s: f64, stop_s: f64, samples: usize, alpha_tag: &str, saved: bool) {
+        self.set_now(stop_s);
+        let secs = (stop_s - start_s).max(0.0);
+        let sys = format!("sys/{}", key_part(name));
+        self.tally.add(format!("{sys}/calls"), 1);
+        self.tally.add("all/calls".into(), 1);
+        self.add_air(&sys, (secs * 1000.0) as u64);
+        *self.minute_calls.entry(name.to_string()).or_default() += 1;
+        self.roll_day();
+        self.day.calls += 1;
+        self.day.air_s += secs;
+        if saved {
+            let bytes = 44 + samples as u64 * 2;
+            self.tally.add(format!("{sys}/audioBytes"), bytes);
+            self.tally.add("all/audioBytes".into(), bytes);
+            self.day.audio_bytes += bytes;
+        }
+        self.shared.radio.lock().unwrap().audio_call(name, talkgroup, start_s, stop_s, alpha_tag);
+    }
+
     fn add_air(&mut self, sys: &str, ms: u64) {
         self.tally.add(format!("{sys}/airMs"), ms);
         self.tally.add("all/airMs".into(), ms);
@@ -527,6 +549,36 @@ pub fn tg_info(tables: &HashMap<String, trunk_core::trunk::Talkgroups>, system: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internet_audio_calls_update_system_and_daily_stats() {
+        let cfg = Config::default();
+        let mut stats = Stats::new(&cfg, Shared::new(), |_| 0);
+
+        stats.audio_call("stream", 100, 1000.0, 1002.5, 8000, "Dispatch", true);
+
+        assert_eq!(stats.tally.counts["sys/stream/calls"], 1);
+        assert_eq!(stats.tally.counts["all/calls"], 1);
+        assert_eq!(stats.tally.counts["sys/stream/airMs"], 2500);
+        assert_eq!(stats.tally.counts["sys/stream/audioBytes"], 16_044);
+        assert_eq!((stats.day.calls, stats.day.air_s, stats.day.audio_bytes), (1, 2.5, 16_044));
+        let shared = stats.shared.radio.lock().unwrap();
+        let tg = &shared.systems["stream"].tgs[&100];
+        assert_eq!((tg.calls, tg.secs, tg.name.as_str()), (1, 2.5, "Dispatch"));
+    }
+
+    #[test]
+    fn unrecorded_internet_audio_calls_count_without_audio_bytes() {
+        let cfg = Config::default();
+        let mut stats = Stats::new(&cfg, Shared::new(), |_| 0);
+
+        stats.audio_call("stream", 100, 1000.0, 1002.5, 8000, "Dispatch", false);
+
+        assert_eq!(stats.tally.counts["sys/stream/calls"], 1);
+        assert!(!stats.tally.counts.contains_key("sys/stream/audioBytes"));
+        assert_eq!((stats.day.calls, stats.day.audio_bytes), (1, 0));
+        assert_eq!(stats.shared.radio.lock().unwrap().systems["stream"].tgs[&100].calls, 1);
+    }
 
     #[test]
     fn a_long_calls_air_counts_in_the_minutes_it_was_on() {

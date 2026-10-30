@@ -96,6 +96,7 @@
 //! ```
 
 mod access;
+mod audio_stream;
 mod clock;
 mod directory;
 mod dmrtool;

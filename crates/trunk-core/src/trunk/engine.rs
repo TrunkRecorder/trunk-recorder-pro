@@ -233,6 +233,8 @@ pub struct EngineConfig {
     /// them, and [`Call::site`] their sites in order ([`sites`]).
     pub systems: Vec<SystemConfig>,
     pub sources: Vec<SourceConfig>,
+    /// Calls may be supplied by an external audio stream without RF channels.
+    pub has_audio_streams: bool,
     /// Seconds of air a voice channel replays from before its grant.
     pub preroll_s: f64,
     /// Recorders shared by every system.
@@ -257,6 +259,7 @@ impl Default for EngineConfig {
         EngineConfig {
             systems: vec![],
             sources: vec![],
+            has_audio_streams: false,
             preroll_s: 1.0,
             max_recorders: 32,
             epoch_ms_at_zero: 0.0,
@@ -1500,10 +1503,10 @@ impl Core {
         if let Some(c) = cfg.conventional.iter().find(|c| !cfg.systems[c.system].is_conventional()) {
             return Err(format!("Conventional channel {:.5} MHz is in {}, a trunked system.", c.freq_hz / 1e6, cfg.systems[c.system].short_name));
         }
-        if cfg.sources.is_empty() {
+        if cfg.sources.is_empty() && !cfg.has_audio_streams {
             return Err("no sources configured".into());
         }
-        if cfg.systems.iter().all(|s| s.sites.iter().all(|s| s.control_channels.is_empty())) && cfg.conventional.is_empty() {
+        if !cfg.has_audio_streams && cfg.systems.iter().all(|s| s.sites.iter().all(|s| s.control_channels.is_empty())) && cfg.conventional.is_empty() {
             return Err("Add a control channel or a conventional channel.".into());
         }
         // A short name is a system's identity (its folder, its talker aliases,
@@ -1529,7 +1532,7 @@ impl Core {
         // (The engine's one copy of the sources' settings, shared.)
         let cfgs: Arc<[SourceConfig]> = std::mem::take(&mut cfg.sources).into();
         let sources: Vec<Source> = (0..cfgs.len()).map(|i| Source::new(&cfgs, i, history)).collect();
-        let rate = sources[0].chz.output_rate();
+        let rate = sources.first().map_or(48_000.0, |source| source.chz.output_rate());
         let ids = CallIds::default();
         let n_sites = sites(&cfg.systems).count();
         let rx = sources

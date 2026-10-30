@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import type { AudioStream, Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
 
@@ -17,6 +17,7 @@ export { autoCenter, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUAR
 export function restartKey(c: Config, liveGain: boolean): string {
   return JSON.stringify({
     sources: liveGain ? c.sources.map(withoutLiveGain) : c.sources,
+    audioStreams: c.audioStreams.map(({ plugins: _a, pluginDelays: _d, ...stream }) => stream),
     // (Sharing and the directory's link apply live: a first share saves the link.)
     systems: c.systems.map(({ plugins: _a, pluginDelays: _d, share: _s, directory: _l, ...s }) => ({ ...s, sites: s.sites.map(({ directoryId: _i, ...x }) => x) })),
     conventional: c.conventional.map(({ plugins: _a, pluginDelays: _d, channelFileStatus: _f, ...s }) => s),
@@ -512,9 +513,9 @@ export function systemColor(c: Config | null | undefined, name: string): string 
  * base2, base3… A short name is a system's identity (its folder, how plugins
  * know it), so no two share one.
  */
-export function uniqueShortName(c: Config, base: string, except?: System | Conventional): string {
+export function uniqueShortName(c: Config, base: string, except?: System | Conventional | AudioStream): string {
   const clean = base.replace(/[^\w.-]/g, "") || "sys";
-  const taken = new Set([...c.systems, ...c.conventional].filter((x) => x !== except).map((x) => x.shortName));
+  const taken = new Set([...c.systems, ...c.conventional, ...c.audioStreams].filter((x) => x !== except).map((x) => x.shortName));
   if (!taken.has(clean)) return clean;
   const stem = clean.replace(/\d+$/, "");
   for (let n = 2; ; n++) if (!taken.has(`${stem}${n}`)) return `${stem}${n}`;

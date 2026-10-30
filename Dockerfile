@@ -4,11 +4,10 @@
 #   docker build -t trunk-pro .
 #   docker buildx build --platform linux/amd64,linux/arm64 -t trunk-pro .
 #
-# Five stages: the config's rules as WebAssembly (the interface uses the
-# recorder's own), the web interface (embedded in the binary), the app, a small
-# static ffmpeg that only makes M4A from WAV (for plugins that upload
-# compressed audio), and the image itself — Debian slim, since plugins are
-# downloaded as glibc builds and upload-script runs /bin/sh scripts.
+# Four stages: the config's rules as WebAssembly (the interface uses the
+# recorder's own), the web interface (embedded in the binary), the app, and
+# the image itself — Debian slim, since plugins are downloaded as glibc builds
+# and upload-script runs /bin/sh scripts.
 
 ARG DEBIAN=trixie
 
@@ -53,28 +52,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --locked -p trunk-pro --profile dist \
     && cp target/dist/trunk-pro /usr/local/bin/trunk-pro
 
-# --- ffmpeg: WAV in, AAC in MP4 out, nothing else (~2 MB, static) ----------
-FROM debian:${DEBIAN}-slim AS ffmpeg
-ARG FFMPEG=7.1.2
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev make curl ca-certificates xz-utils \
-    && rm -rf /var/lib/apt/lists/*
-WORKDIR /src
-RUN curl -fsSL https://ffmpeg.org/releases/ffmpeg-${FFMPEG}.tar.xz | tar -xJ --strip-components=1
-RUN ./configure --prefix=/opt/ffmpeg \
-      --enable-static --disable-shared --extra-ldflags=-static --pkg-config-flags=--static \
-      --disable-autodetect --disable-everything --disable-doc --disable-network \
-      --disable-programs --enable-ffmpeg --disable-ffplay --disable-ffprobe \
-      --disable-swscale --disable-x86asm --enable-small \
-      --enable-protocol=file,pipe \
-      --enable-demuxer=wav --enable-decoder=pcm_s16le,pcm_f32le \
-      --enable-encoder=aac --enable-muxer=mp4 \
-      --enable-filter=aresample,aformat,anull,atrim,abuffer,abuffersink \
-    && make -j"$(nproc)" ffmpeg && strip ffmpeg \
-    && ./ffmpeg -hide_banner -version | head -1
-
 # --- The image ----------------------------------------------------------------
 FROM debian:${DEBIAN}-slim
-COPY --from=ffmpeg /src/ffmpeg /usr/local/bin/ffmpeg
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=app /usr/local/bin/trunk-pro /usr/local/bin/trunk-pro
 # Everything the app writes is under /data: settings, band plans and plugins
 # in /data/config/trunk-pro, recordings in /data/TrunkRecorderPro.

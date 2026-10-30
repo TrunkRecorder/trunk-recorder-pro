@@ -61,6 +61,20 @@ export type Source = (
 
 export type AirspyGainMode = "linearity" | "sensitivity" | "manual";
 
+/** An independent authenticated HTTP audio call system, silence-delimited without an RF source. */
+export interface AudioStream {
+  url: string;
+  shortName: string;
+  talkgroup: number;
+  channel?: "left" | "right" | "mix";
+  enabled: boolean;
+  silenceTimeoutS: number;
+  plugins?: Record<string, SystemPluginValues>;
+  pluginDelays?: DelayRule[];
+  signals?: SignalDef[];
+  recording?: RecordingOverride;
+}
+
 /** An optional driver (desktop app) and what it found; `devices` null = not searched. */
 export interface DriverState {
   available: boolean;
@@ -465,6 +479,7 @@ export interface KeySource {
 
 export interface Config {
   sources: Source[];
+  audioStreams: AudioStream[];
   systems: System[];
   conventional: Conventional[];
   recording: Recording;
@@ -611,7 +626,7 @@ export interface PhaseState {
   ended: boolean;
 }
 
-/** One system being recorded: trunked (with a site running) or conventional. `index` is what calls and audio carry as `system`. */
+/** One system being recorded: trunked (with a site running), conventional, or internet audio. `index` is what calls and audio carry as `system`. */
 export interface SystemStatus {
   index: number;
   shortName: string;
@@ -622,7 +637,11 @@ export interface SystemStatus {
   callsConcluded: number;
   /** Its sharing with the community directory; null when it isn't shared. */
   share?: ShareStatus | null;
-  /** Its sites following their control channels, in order (conventional: none). */
+  /** An internet audio source: FFmpeg has returned decoded audio. */
+  connected?: boolean;
+  /** The latest connection failure, cleared when audio resumes. */
+  lastError?: string | null;
+  /** Its sites following their control channels, in order (conventional and audio: none). */
   sites: SiteStatus[];
 }
 
@@ -712,7 +731,7 @@ export interface EngineStatus {
   conventionalOpen: number;
   callsConcluded: number;
   systems: SystemStatus[];
-  /** Every system's short name, by the number its calls and live audio carry as `system` (trunked systems first, then conventional). */
+  /** Every system's short name, by the number its calls and live audio carry as `system` (trunked, conventional, then audio streams). */
   systemNames: string[];
 }
 

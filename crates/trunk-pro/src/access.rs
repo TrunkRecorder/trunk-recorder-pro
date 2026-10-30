@@ -36,11 +36,20 @@ pub fn redact_config(mut c: Value) -> Value {
         o.remove("plugins");
         o.remove("keys");
     }
-    for list in ["systems", "conventional"] {
+    for list in ["systems", "conventional", "audioStreams"] {
         for s in c[list].as_array_mut().into_iter().flatten() {
             if let Some(o) = s.as_object_mut() {
                 o.remove("plugins");
                 o.remove("keys");
+            }
+        }
+    }
+    if let Some(streams) = c["audioStreams"].as_array_mut() {
+        for stream in streams {
+            if let Some(o) = stream.as_object_mut() {
+                if o.contains_key("url") {
+                    o.insert("url".into(), Value::String(String::new()));
+                }
             }
         }
     }
@@ -61,15 +70,25 @@ mod tests {
     fn listen_sees_no_secrets_and_changes_nothing() {
         let c = json!({ "plugins": { "openmhz": { "settings": { "apiKey": "k" } } }, "keys": { "a": { "file": "k.json" } },
                         "systems": [{ "shortName": "x", "plugins": { "openmhz": { "apiKey": "k" } }, "keys": "a" }],
-                        "conventional": [{ "shortName": "c", "plugins": {} }], "server": { "port": 8080 } });
+                        "conventional": [{ "shortName": "c", "plugins": {} }],
+                        "audioStreams": [{ "shortName": "stream", "plugins": { "openmhz": { "apiKey": "k" } }, "keys": "a" }],
+                        "server": { "port": 8080 } });
         let r = redact_config(c);
         assert!(!r.to_string().contains("apiKey") && !r.to_string().contains("k.json"));
         assert_eq!(r["systems"][0]["shortName"], "x");
+        assert!(r["audioStreams"][0].get("plugins").is_none());
+        assert!(r["audioStreams"][0].get("keys").is_none());
         assert_eq!(r["server"]["port"], 8080);
         let parse = |t: &str| trunk_app::protocol::Command::parse(t).unwrap();
         assert!(parse(r#"{"type":"listen","on":true}"#).listen_may_send() && parse(r#"{"type":"olderCalls"}"#).listen_may_send());
         for c in [r#"{"type":"setConfig","config":{},"version":1}"#, r#"{"type":"start"}"#, r#"{"type":"quit"}"#, r#"{"type":"install","kind":"plugin","id":"x"}"#, r#"{"type":"store","kind":"interface"}"#, r#"{"type":"listDir"}"#, r#"{"type":"unlockKeys","source":"a","password":"b"}"#] {
             assert!(!parse(c).listen_may_send(), "{c}");
         }
+    }
+
+    #[test]
+    fn listen_sees_no_stream_url() {
+        let c = serde_json::json!({ "audioStreams": [{ "url": "https://example.test/live.mp3" }] });
+        assert_eq!(redact_config(c)["audioStreams"][0]["url"], "");
     }
 }

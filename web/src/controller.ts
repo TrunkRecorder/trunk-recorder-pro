@@ -837,12 +837,14 @@ export function setChannelFile(index: number, path: string): void {
   transport.send({ type: "channelFile", index, path });
 }
 
-/** A system: a trunked one by its place in `systems`, or conventional system `conv`. */
-export type SystemRef = number | { conv: number };
+/** A system: trunked by its place in `systems`, or conventional / audio by its config index. */
+export type SystemRef = number | { conv: number } | { audio: number };
 
 /** The system a ref names. */
-export function systemAt(c: Config, at: SystemRef): System | Conventional | undefined {
-  return typeof at === "number" ? c.systems[at] : c.conventional[at.conv];
+export function systemAt(c: Config, at: SystemRef): System | Conventional | Config["audioStreams"][number] | undefined {
+  if (typeof at === "number") return c.systems[at];
+  if ("audio" in at) return c.audioStreams[at.audio];
+  return c.conventional[at.conv];
 }
 
 /** The lists a system keeps in the config, each edited as a whole (editList). */

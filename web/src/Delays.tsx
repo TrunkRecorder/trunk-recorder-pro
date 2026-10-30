@@ -52,7 +52,7 @@ const rule = (system: string | null, r: DelayRule): Rule => ({
 function allRules(c: Config): Rule[] {
   return [
     ...(c.pluginDelays ?? []).map((r) => rule(null, r)),
-    ...[...c.systems, ...c.conventional].flatMap((s) => (s.pluginDelays ?? []).map((r) => rule(s.shortName, r))),
+    ...[...c.systems, ...c.conventional, ...c.audioStreams].flatMap((s) => (s.pluginDelays ?? []).map((r) => rule(s.shortName, r))),
   ];
 }
 

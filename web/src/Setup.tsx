@@ -41,6 +41,7 @@ import {
   rateOk,
   ratesText,
   SOURCE_KINDS,
+  uniqueShortName,
 } from "./config.ts";
 import {
   can,
@@ -71,7 +72,7 @@ import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { SystemSignals } from "./Signals.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, AudioStream, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -90,6 +91,7 @@ import { parseAccess, sameAccess, type AccessParts } from "./tones.ts";
 
 /** Each card's key (the controller's `cardKey`), seeded from what its entry is now; `all`: its list. */
 const srcKey = (x: Source, i: number, all: Source[]) => cardKey(x, `src:${i}`, all);
+const audioStreamKey = (x: AudioStream, i: number, all: AudioStream[]) => cardKey(x, `audio:${i}`, all);
 const sysKey = (x: System, _i: number, all: System[]) => cardKey(x, `sys:${x.shortName}`, all);
 const siteKey = (sys: System, x: Site) => cardKey(x, `site:${sys.shortName}/${siteNameOf(sys, x)}`, sys.sites);
 const convKey = (x: Conventional, _i: number, all: Conventional[]) => cardKey(x, `conv:${x.shortName}`, all);
@@ -890,6 +892,84 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
 }
 
 
+/** Configure an independent internet audio call system. */
+function AudioStreamCard(props: { c: Config; i: number }) {
+  const { c, i } = props;
+  const stream = c.audioStreams[i];
+  const edit = (fn: (x: AudioStream) => void) => updateConfig((x) => fn(x.audioStreams[i]));
+  return (
+    <Card
+      cardKey={audioStreamKey(stream, i, c.audioStreams)}
+      n={c.audioStreams.length}
+      className={stream.enabled ? "source-card" : "source-card off"}
+      head={
+        <div className="set-card-title">
+          <h3>Internet audio source {i + 1}</h3>
+          <span className="set-card-sub">{stream.shortName ? `${stream.shortName} · TG ${stream.talkgroup}` : "Set a system short name"}</span>
+        </div>
+      }
+      actions={
+        <>
+          <Switch label="Enable" checked={stream.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
+          <button className="btn ghost small" onClick={() => updateConfig((x) => void x.audioStreams.splice(i, 1))}>
+            Remove
+          </button>
+        </>
+      }
+    >
+      <Group title="Stream" hint="HTTP/HTTPS audio is decoded with ffmpeg. Calls start when audio rises above the activity threshold and end after silence.">
+        <Field
+          label="Stream URL"
+          hint={
+            <>
+              Credentials in this URL are saved in the recorder config and hidden from listen-only interfaces.
+              <br />
+              Example: <span className="mono">https://user:password@url.com/12345.mp3</span>
+            </>
+          }
+          wide
+        >
+          <TextInput className="mono" type="text" value={stream.url} placeholder="https://host.example/feed.mp3" onChange={(v) => edit((x) => void (x.url = v))} />
+        </Field>
+        <Field label="Audio channel" hint="Choose which side of a stereo stream to record, or mix both sides to mono.">
+          <select value={stream.channel ?? "mix"} onChange={(e) => edit((x) => void (x.channel = e.target.value as AudioStream["channel"]))}>
+            <option value="left">Left</option>
+            <option value="right">Right</option>
+            <option value="mix">Mix</option>
+          </select>
+        </Field>
+        <Field label="System short name">
+          <TextInput value={stream.shortName} placeholder="System short name" onChange={(v) => edit((x) => void (x.shortName = cleanShortName(v)))} />
+        </Field>
+        <Field label="Talkgroup" hint="Calls from this stream are filed under this talkgroup.">
+          <NumberInput label="Talkgroup" min={0} step={1} value={stream.talkgroup} onChange={(v) => v !== undefined && edit((x) => void (x.talkgroup = v))} />
+        </Field>
+        <Field label="End call after silence" hint="A short pre-roll is kept before detected audio.">
+          <NumberInput label="Silence timeout, seconds" min={0.25} max={30} step={0.25} value={stream.silenceTimeoutS} onChange={(v) => v !== undefined && edit((x) => void (x.silenceTimeoutS = v))} />
+        </Field>
+      </Group>
+      <Group title="Plugins" hint="Plugin settings, delays and signals for this stream system." cols={1}>
+        <SystemPluginSettings system={{ audio: i }} />
+        <SystemDelays system={{ audio: i }} />
+        <SystemSignals system={{ audio: i }} />
+      </Group>
+      <Group title="Recording" hint="This stream's own call rules and what it keeps. Anything left at Default follows the Recording tab." cols={1}>
+        <RecordingOverrides
+          c={c}
+          value={stream.recording}
+          onChange={(fn) =>
+            edit((x) => {
+              x.recording = { ...x.recording };
+              fn(x.recording);
+              if (!Object.keys(x.recording).length) delete x.recording;
+            })
+          }
+        />
+      </Group>
+    </Card>
+  );
+}
+
 /** `fresh`: just added (measuring its roll-off is offered). */
 function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
   const s = useApp();
@@ -1292,7 +1372,20 @@ function ConventionalTab(props: { c: Config }) {
       hint="Single frequencies (analog FM or AM, P25, DMR or NXDN), kept together as a system with its own folder."
       actions={
         <>
-          <ExpandAll keys={c.conventional.map(convKey)} />
+          <ExpandAll keys={[...c.conventional.map(convKey), ...c.audioStreams.map(audioStreamKey)]} />
+          {!web && (
+            <button
+              className="btn"
+              onClick={() =>
+                updateConfig((x) => {
+                  x.audioStreams.push({ url: "", shortName: uniqueShortName(x, "stream"), talkgroup: 1, channel: "mix", enabled: true, silenceTimeoutS: 3 });
+                  addCard(x.audioStreams.map(audioStreamKey), audioStreamKey(x.audioStreams.at(-1)!, x.audioStreams.length - 1, x.audioStreams));
+                })
+              }
+            >
+              Add internet audio source
+            </button>
+          )}
           <button
             className="btn"
             onClick={() => {
@@ -1312,6 +1405,7 @@ function ConventionalTab(props: { c: Config }) {
         <ConventionalPanel key={convKey(x, k, c.conventional)} c={c} k={k} />
       ))}
       {!c.conventional.length && <p className="set-empty">No conventional systems yet.</p>}
+      {!web && c.audioStreams.map((x, i) => <AudioStreamCard key={audioStreamKey(x, i, c.audioStreams)} c={c} i={i} />)}
     </Section>
   );
 }
@@ -3079,8 +3173,8 @@ export function Setup() {
 
       {tab === "radios" && (
         <Section
-          title="Radios"
-          hint="Each source hears a slice of spectrum; the systems and channels inside it are recorded."
+          title="Sources"
+          hint="Add radios or capture files here. Internet audio sources are configured with conventional systems."
           actions={
             <>
               <ExpandAll keys={c.sources.map(srcKey)} />
@@ -3095,7 +3189,7 @@ export function Setup() {
                   });
                 }}
               >
-                Add a source
+                Add radio or capture
               </button>
             </>
           }

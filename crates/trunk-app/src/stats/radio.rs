@@ -487,6 +487,35 @@ impl Registry {
         firsts
     }
 
+    /// An internet audio call: it has a talkgroup and duration but no radio
+    /// source or frequency to add to the radio tables.
+    pub fn audio_call(&mut self, system: &str, talkgroup: u32, start_s: f64, end_s: f64, name: &str) {
+        let t = end_s as i64;
+        let secs = (end_s - start_s).max(0.0) as f32;
+        let start = t - secs.round() as i64;
+        let s = self.sys(system, t);
+        s.changed.tgs.insert(talkgroup);
+        let g = s.tgs.entry(talkgroup).or_insert_with(|| Tg { first: start, ..Default::default() });
+        g.last = t;
+        if !name.is_empty() {
+            g.name = name.to_string();
+        }
+        g.calls += 1;
+        g.secs += secs;
+        let h = t.div_euclid(3600);
+        for hh in start.div_euclid(3600).max(h - HOURS + 1)..=h {
+            let on = (t.min((hh + 1) * 3600) - start.max(hh * 3600)).max(0) as f32;
+            let air = if t > start { secs * on / (t - start) as f32 } else { secs };
+            bump_hour(&mut g.hours, hh, |v: &mut (u32, f32)| {
+                v.0 += (hh == h) as u32;
+                v.1 += air;
+            }, || (0, 0.0));
+        }
+        append(&mut s.lengths, &[(t, talkgroup, secs)], MAX_LENGTHS);
+        s.changed.lengths += 1;
+        s.evict();
+    }
+
     /// A control channel message about a radio: affiliation, registration,
     /// location, grants. Returns the talkgroup on an affiliation.
     pub fn message(&mut self, system: &str, m: &Message, t: i64) -> Option<(u32, u32)> {
