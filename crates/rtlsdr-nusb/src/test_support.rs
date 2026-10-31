@@ -38,6 +38,43 @@ pub(crate) struct FakeState {
     pub(crate) bulk_in_count: AtomicUsize,
     pub(crate) cancel_count: AtomicUsize,
     pub(crate) events: Mutex<Vec<FakeEvent>>,
+    /// An E4000's registers (when `tuner_address` is 0xC8) and its register pointer.
+    pub(crate) e4k_registers: Mutex<std::collections::HashMap<u8, u8>>,
+    pub(crate) e4k_pointer: AtomicU8,
+}
+impl FakeState {
+    /// An I2C write to an emulated E4000: a pointer set, or a register written.
+    fn e4k_write(&self, request: &OutRequest) {
+        if request.index != 0x610
+            || request.value != u16::from(crate::tuners::E4K_ADDRESS)
+            || self.tuner_address.load(Ordering::SeqCst) != crate::tuners::E4K_ADDRESS
+        {
+            return;
+        }
+        match request.data[..] {
+            [reg] => self.e4k_pointer.store(reg, Ordering::SeqCst),
+            [reg, value] => {
+                self.e4k_registers.lock().unwrap().insert(reg, value);
+            }
+            _ => {}
+        }
+    }
+    /// A read from an emulated E4000: chip ID 0x40 in register 2, SYNTH1's lock bit.
+    fn e4k_read(&self, length: u16) -> Vec<u8> {
+        let pointer = self.e4k_pointer.load(Ordering::SeqCst);
+        let registers = self.e4k_registers.lock().unwrap();
+        (0..length)
+            .map(|i| {
+                let reg = pointer.wrapping_add(i as u8);
+                let value = registers.get(&reg).copied().unwrap_or(if reg == 2 { 0x40 } else { 0 });
+                if reg == 0x07 {
+                    (value & !1) | u8::from(self.pll_locked.load(Ordering::SeqCst))
+                } else {
+                    value
+                }
+            })
+            .collect()
+    }
 }
 impl Default for FakeState {
     fn default() -> Self {
@@ -62,6 +99,8 @@ impl Default for FakeState {
             bulk_in_count: Default::default(),
             cancel_count: Default::default(),
             events: Default::default(),
+            e4k_registers: Default::default(),
+            e4k_pointer: Default::default(),
         }
     }
 }
@@ -143,6 +182,7 @@ impl std::future::IntoFuture for FakeTransportOut {
             {
                 Err(nusb::transfer::TransferError::Stall.into())
             } else {
+                self.state.e4k_write(&self.request);
                 if (self.request.index == 0x210 || self.request.index == 0x110)
                     && let Some(value) = self.request.data.first()
                 {
@@ -177,6 +217,7 @@ impl MaybeFuture for FakeTransportOut {
         {
             Err(nusb::transfer::TransferError::Fault.into())
         } else {
+            self.state.e4k_write(&self.request);
             Ok(())
         }
     }
@@ -323,6 +364,11 @@ impl FakeTransportIn {
             return response;
         }
         if self.request.index == 0x600 {
+            if self.request.value == u16::from(crate::tuners::E4K_ADDRESS)
+                && self.state.tuner_address.load(Ordering::SeqCst) == crate::tuners::E4K_ADDRESS
+            {
+                return Ok(self.state.e4k_read(self.request.length));
+            }
             if self.request.value != u16::from(self.state.tuner_address.load(Ordering::SeqCst)) {
                 return Ok(vec![0; usize::from(self.request.length)]);
             }

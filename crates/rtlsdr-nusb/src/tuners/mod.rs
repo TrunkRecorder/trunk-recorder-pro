@@ -1,13 +1,19 @@
-//! Rafael Micro tuner control. The caller serializes the entire I2C operation.
+//! Tuner control: Rafael Micro R820T/R828D here, Elonics E4000 in [`e4k`].
+//! The caller serializes the entire I2C operation.
 
+mod e4k;
 mod registers;
 use crate::{Error, GainConfig, Result, protocol::Com, usb::ControlBackend};
 use registers::*;
 
 pub(crate) const IF_HZ: u64 = 3_570_000;
+#[cfg(test)]
+pub(crate) const E4K_ADDRESS: u8 = e4k::ADDRESS;
 pub(crate) const XTAL_HZ: u64 = 28_800_000;
 
 /// Detected tuner family. R820T-compatible revisions share the same chip ID.
+///
+/// The R82xx tuners use a 3.57 MHz IF; the E4000 is zero IF.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum TunerKind {
@@ -15,6 +21,9 @@ pub enum TunerKind {
     R820T,
     /// R828D tuner at I2C address 0x74.
     R828D,
+    /// Elonics E4000 tuner at I2C address 0xC8 (zero IF; roughly 52-2200 MHz
+    /// with a gap near 1100-1250 MHz where its PLL does not lock).
+    E4000,
 }
 
 #[derive(Debug)]
@@ -36,10 +45,10 @@ impl Tuner {
         }
     }
     fn address(&self) -> u8 {
-        if self.kind == TunerKind::R820T {
-            0x34
-        } else {
-            0x74
+        match self.kind {
+            TunerKind::R820T => 0x34,
+            TunerKind::R828D => 0x74,
+            TunerKind::E4000 => e4k::ADDRESS,
         }
     }
     pub async fn detect<C: ControlBackend>(com: &Com<'_, C>) -> Result<TunerKind> {
@@ -50,10 +59,34 @@ impl Tuner {
                 Err(error) => return Err(error),
             }
         }
+        // Probed after the R82xx so their dongles see no extra NAKed request.
+        if e4k::probe(com).await? {
+            return Ok(TunerKind::E4000);
+        }
         Err(Error::UnsupportedTuner)
+    }
+    /// The IF the demodulator must shift down from: zero for the E4000.
+    pub fn if_hz(&self) -> u64 {
+        if self.kind == TunerKind::E4000 { 0 } else { IF_HZ }
+    }
+    /// Whether the demodulator takes I and Q baseband (zero IF) from the tuner.
+    pub fn zero_if(&self) -> bool {
+        self.kind == TunerKind::E4000
+    }
+    /// Set the tuner's IF filters for `hz` of bandwidth. Only the E4000's are
+    /// driven (librtlsdr sets them to the sample rate); the R82xx keep theirs.
+    pub async fn set_bandwidth<C: ControlBackend>(&mut self, com: &Com<'_, C>, hz: u64) -> Result<()> {
+        if self.kind == TunerKind::E4000 {
+            e4k::set_bandwidth(com, hz).await
+        } else {
+            Ok(())
+        }
     }
     pub async fn open<C: ControlBackend>(&mut self, com: &Com<'_, C>) -> Result<()> {
         self.input = None;
+        if self.kind == TunerKind::E4000 {
+            return e4k::open(com).await;
+        }
         for (i, value) in INITIAL.iter().copied().enumerate() {
             com.i2c_write(self.address(), i as u8 + 5, value).await?;
             self.shadow[i] = value;
@@ -64,6 +97,9 @@ impl Tuner {
         self.write_many(com, INIT_AFTER_CAL).await
     }
     pub async fn standby<C: ControlBackend>(&mut self, com: &Com<'_, C>) -> Result<()> {
+        if self.kind == TunerKind::E4000 {
+            return e4k::standby(com).await;
+        }
         // Try every independent power-down write even if one transfer fails.
         let mut result = Ok(());
         for &(reg, value, mask) in STANDBY {
@@ -77,6 +113,9 @@ impl Tuner {
         com: &Com<'_, C>,
         gain: GainConfig,
     ) -> Result<()> {
+        if self.kind == TunerKind::E4000 {
+            return e4k::set_gain(com, gain).await;
+        }
         match gain {
             GainConfig::Auto => {
                 self.write_many(
@@ -102,6 +141,9 @@ impl Tuner {
         }
     }
     pub async fn tune<C: ControlBackend>(&mut self, com: &Com<'_, C>, hz: u64) -> Result<u64> {
+        if self.kind == TunerKind::E4000 {
+            return e4k::tune(com, hz, self.crystal_hz).await;
+        }
         let upconvert = if self.blog_v4 && hz < XTAL_HZ {
             XTAL_HZ
         } else {
@@ -431,6 +473,11 @@ mod tests {
         assert_eq!(
             futures_lite::future::block_on(Tuner::detect(&Com(&control))).unwrap(),
             TunerKind::R828D
+        );
+        control.state.tuner_address.store(e4k::ADDRESS, Ordering::SeqCst);
+        assert_eq!(
+            futures_lite::future::block_on(Tuner::detect(&Com(&control))).unwrap(),
+            TunerKind::E4000
         );
         control.state.tuner_address.store(0, Ordering::SeqCst);
         assert!(matches!(

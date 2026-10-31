@@ -1,4 +1,4 @@
-//! Native RTL2832U / R820T / R828D driver built on `nusb`.
+//! Native RTL2832U / R820T / R828D / E4000 driver built on `nusb`.
 //!
 //! Device and stream operations can be awaited, or synchronously executed with
 //! [`MaybeFuture::wait`] on native targets. Enable `smol` or `tokio` when awaiting

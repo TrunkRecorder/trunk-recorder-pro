@@ -4,7 +4,7 @@ use crate::{
     DeviceDescriptor, DirectSampling, Error, GainConfig, Result,
     config::Settings,
     protocol::{Com, DROPPED_BLOCKS, DROPPED_BLOCK_SAMPLES},
-    tuners::{IF_HZ, Tuner, TunerKind, XTAL_HZ},
+    tuners::{Tuner, TunerKind, XTAL_HZ},
     usb::ControlBackend,
 };
 
@@ -180,7 +180,8 @@ impl Hardware {
         tuner.crystal_hz = crystal;
         let direct = config.frequency_hz < XTAL_HZ && config.direct_sampling != DirectSampling::Off;
         com.i2c_gate(true).await?;
-        if reinitialize || (self.direct && !direct) {
+        let opened = reinitialize || (self.direct && !direct);
+        if opened {
             tuner.open(com).await?;
         }
         // While streaming, the start bit stays set through a reconfiguration.
@@ -206,6 +207,16 @@ impl Hardware {
                 1,
             )
             .await?;
+        } else if tuner.zero_if() {
+            // E4000: zero IF (en_bbin + DC/IQ correction), I and Q ADCs, no
+            // spectrum inversion; IF 0 below (librtlsdr's baseband defaults).
+            com.demod(1, 0xb1, 0x1b, 1).await?;
+            com.demod(0, 0x08, 0xcd, 1).await?;
+            com.demod(1, 0x15, 0, 1).await?;
+            self.output_mode = 0;
+            com.demod(0, 0x06, u16::from(start), 1).await?;
+            com.demod(0, 0x19, 5, 1).await?;
+            tuner.set_gain(com, config.gain).await?;
         } else {
             com.demod(1, 0xb1, 0x1a, 1).await?;
             com.demod(0, 0x08, 0x4d, 1).await?;
@@ -224,13 +235,17 @@ impl Hardware {
         let (ratio, sample_rate_hz) = sample_rate(config.sample_rate_hz);
         com.demod(1, 0x9f, (ratio >> 16) as u16, 2).await?;
         com.demod(1, 0xa1, ratio as u16, 2).await?;
+        // The tuner's IF filters follow the rate (E4000; its open narrows them).
+        if !direct && (opened || rate_changed) {
+            tuner.set_bandwidth(com, u64::from(sample_rate_hz)).await?;
+        }
         // Tuner accesses precede closing/resetting the repeater.
         let frequency_hz = if direct {
             config.frequency_hz
         } else {
             tuner.tune(com, config.frequency_hz).await?
         };
-        let if_frequency = if direct { config.frequency_hz } else { IF_HZ };
+        let if_frequency = if direct { config.frequency_hz } else { tuner.if_hz() };
         let word = if_word(if_frequency, crystal);
         com.demod(1, 0x19, ((word >> 16) & 0x3f) as u16, 1).await?;
         com.demod(1, 0x1a, ((word >> 8) & 0xff) as u16, 1).await?;
@@ -446,6 +461,41 @@ mod tests {
         assert!(demod(&w) > 0 && !soft_reset(&w), "a new ppm: in full, no soft reset");
         config.sample_rate_hz = 2_400_000;
         assert!(soft_reset(&apply(&config)), "a new rate");
+    }
+
+    /// An E4000 dongle: zero IF in the demodulator (no IF shift, both ADCs, no
+    /// inversion), its IF filters set to the rate, and tune/gain-only changes.
+    #[test]
+    fn e4000_configures_zero_if_and_follows_retunes() {
+        use std::sync::atomic::Ordering;
+        let control = FakeTransport::default();
+        control.state.tuner_address.store(0xc8, Ordering::SeqCst);
+        let descriptor = DeviceDescriptor { index: 0, vid: 0x0bda, pid: 0x2838, serial: None, manufacturer: None, product: None };
+        let mut hardware = Hardware::default();
+        let mut config = Settings { frequency_hz: 851_012_500, sample_rate_hz: 2_400_000, ..Settings::default() };
+        let applied = futures_lite::future::block_on(hardware.configure(&control, &config, &descriptor)).unwrap();
+        assert_eq!(hardware.tuner.as_ref().unwrap().kind, TunerKind::E4000);
+        assert!(851_012_500 - applied.frequency_hz < 500);
+        {
+            let writes = control.state.control_out_requests.lock().unwrap();
+            let last = |page: u16, reg: u8| writes.iter().rev().find(|r| r.index == page | 0x10 && r.value == (u16::from(reg) << 8 | 0x20)).unwrap().data.clone();
+            assert_eq!(last(1, 0xb1), [0x1b]);
+            assert_eq!(last(0, 0x08), [0xcd]);
+            assert_eq!(last(1, 0x15), [0]);
+            for reg in [0x19, 0x1a, 0x1b] {
+                assert_eq!(last(1, reg), [0], "IF register {reg:#x}");
+            }
+        }
+        let e4k = |reg: u8| *control.state.e4k_registers.lock().unwrap().get(&reg).unwrap_or(&0);
+        assert_eq!(e4k(0x11), (14 << 4) | 12, "IF filters at 2.4 MS/s");
+        config.frequency_hz = 155_000_000;
+        config.gain = GainConfig::Manual(29.0);
+        control.state.control_out_requests.lock().unwrap().clear();
+        let applied = futures_lite::future::block_on(hardware.configure(&control, &config, &descriptor)).unwrap();
+        assert!(155_000_000 - applied.frequency_hz < 500);
+        let writes = control.state.control_out_requests.lock().unwrap();
+        assert!(writes.iter().all(|r| r.index == 0x610 || (r.index == 0x11 && r.value == 0x0120)), "tuner alone: {writes:?}");
+        assert_eq!(e4k(0x14) & 0x0f, 13);
     }
 
     #[test]

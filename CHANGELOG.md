@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **RTL-SDR dongles with an Elonics E4000 tuner open natively.** The built-in driver
+  (`rtlsdr-nusb`) now drives the E4000 as well as the R820T and R828D, so these dongles no longer
+  need a SoapySDR source. It runs the E4000 at zero IF, as librtlsdr does; its IF filters follow
+  the sample rate, and a manual gain is the nearest of librtlsdr's steps from -1 to 42 dB (prefer
+  manual: the tuner's own AGC sits low). It covers about 52–2200 MHz except a gap near
+  1090–1230 MHz where its PLL doesn't lock; every P25 band is clear. Tuning to the gap is an
+  error, as before for frequencies a tuner can't reach. The tuner code is ported from osmocom
+  librtlsdr's `tuner_e4k.c` and is GPL-2.0-or-later (`crates/rtlsdr-nusb/LICENSE-GPL-2.0`).
+  `cargo test -p rtlsdr-nusb --test hardware_e4000 -- --ignored` checks an attached one.
 - **Live audio in stereo, through an interface's own sound chain.** `client.js`'s
   `LivePlayer` has `pan` (left -1 to right 1) beside `gain`, both settable while playing
   (`player.pan = -1`; they glide, no clicks), and `skip()` drops the call playing. It
