@@ -133,10 +133,19 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.listen({ system, talkgroup })  one system's (its short name) talkgroup's
   rec.listen(false)                  none
                                      (kept across reconnects; one filter per connection)
+  rec.subscribe(topics)              the costly messages to receive: ["log"] fills log,
+                                     "spectrum:0" a waterfall's spectrum (kept across reconnects)
   rec.setConfig((c) => { … })        change a copy of the config; the whole config is sent
                                      with configVersion. Refused if the config changed elsewhere
                                      meanwhile (rec.error says so)
   rec.setTalkgroups(shortName, rows) replace a system's talkgroups (Talkgroup rows; [] for none)
+  rec.setTalkgroup(shortName, talkgroup, edit)  change one talkgroup's cells: any of
+                                     { alphaTag, description, tag, category, ignore }
+  await rec.calls(query)             recorded calls, newest first: query has any of system
+                                     (short name), talkgroup, unit, from / to (start time,
+                                     Unix ms), cursor, limit (1–500, default 100). Answers
+                                     { entries, next?, error? }: page on with cursor: next
+                                     while next is there. Needs the "calls" capability
   rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL
   rec.talkgroups(shortName)          Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode }
                                      (a conventional system's: its channels, alphaTag the channel's name)
@@ -161,8 +170,8 @@ audioOut()                the page's one AudioContext, shared by every player; m
   Calls at once: a LivePlayer each (per call with followCall: false, stopped at its
   onNowPlaying(null); or per talkgroup), each with its pan. examples/wall.html?stereo.
 Helpers: escapeHtml(s), duration(seconds) → "1:05", mhz(hz) → "155.2000 MHz",
-  parseTalkgroups(csv), decodeAudioFrame(arrayBuffer), systemName(status, system)
-  (status.systemNames[system]).
+  decodeAudioFrame(arrayBuffer), systemName(status, system) (status.systemNames[system]),
+  parseUnitAliases(csv): a units message's CSV → { unit: alias }.
 
 
 ## The data
