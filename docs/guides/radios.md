@@ -7,7 +7,7 @@ Installing drivers for USRP, Airspy, bladeRF and SoapySDR radios is covered in
 [configuration reference](../configuration/sources.md).
 
 All of these settings are on the **Radios** tab of **Setup**, one card per source. **Add a
-source** adds another; the buttons at the top of a card pick its kind: **RTL-SDR**, **USRP**,
+source** adds another; the buttons at the top of a card pick its kind: **RTL-SDR**, **HackRF**, **USRP**,
 **Airspy**, **bladeRF**, **SoapySDR** or **Capture file** (USRP, Airspy, bladeRF and SoapySDR only in the desktop app).
 
 ## What a source is
@@ -35,6 +35,7 @@ The sample rates offered for each kind:
 | Kind | Offered | Notes |
 |---|---|---|
 | RTL-SDR | 2.4, 2.048, 2.56, 3.2, 1.92, 1.024 MSPS | 2.4 MSPS is the default |
+| HackRF | 1 to 20 MSPS | |
 | USRP | 2.4 to 20 MSPS, or any rate typed in | any rate its master clock divides to; default 8 MSPS |
 | Airspy | 10, 6, 3, 2.5 MSPS | R2: 10 or 2.5; Mini: 6 or 3 |
 | bladeRF | any rate typed in, 0.52 to 61.44 MSPS | over ~40 MSPS needs USB 3 and a fast CPU |
@@ -144,10 +145,11 @@ usually works better for trunked systems, so the default is AGC off (except on S
 | Kind | Gain setting | Default |
 |---|---|---|
 | RTL-SDR | **Gain, dB**, 0 to 49.6 on most dongles, or **AGC** | 25.4 dB, AGC off |
+| HackRF | **LNA, dB** 0 to 40 in steps of 8, **VGA, dB** 0 to 62 in steps of 2, and the **Amp** (+14 dB, overloads near strong signals) | LNA 16, VGA 20, amp off |
 | USRP | **Gain, dB** (B200/B210: 0 to 76), or **AGC** (B200 / B210 and E3xx only) | 40 dB, AGC off |
 | Airspy | **Gain**: **Linearity** or **Sensitivity**, a step 0 to 21; or **Each stage**: **LNA** 0 to 14, **Mixer** and **VGA (IF)** 0 to 15, with **AGC** for the LNA and mixer | Linearity, step 14 |
 | bladeRF | **Gain, dB** overall (bladeRF 2.0: about −15 to 60), or **AGC** | 30 dB, AGC off |
-| SoapySDR | **Gain, dB** overall (blank leaves it as the device has it), then **Gain stages, dB** one by one (HackRF LNA / VGA / AMP, SDRplay IFGR / RFGR...), or **AGC** | AGC on |
+| SoapySDR | **Gain, dB** overall (blank leaves it as the device has it), then **Gain stages, dB** one by one (SDRplay IFGR / RFGR...), or **AGC** | AGC on |
 
 On an Airspy, **Linearity** is best near transmitters and **Sensitivity** for weak signals.
 
@@ -189,7 +191,8 @@ There are three ways to find the number:
   error: +1.40 ppm* once a control channel on it has been measured, and offers **Set correction
   to N ppm** when the error is 0.3 ppm or more. The error is measured whether AutoTune is on or
   not. The **RF** page shows it too, and the dashboard warns when a source is more than 2 ppm off
-  with AutoTune off.
+  with AutoTune off. (The RF page also shows the *sample clock*, `clockPpm` in a source's status:
+  the radio's crystal measured against the computer's clock, which times the calls.)
 - **AutoTune** corrects for it automatically (see below).
 
 ### AutoTune

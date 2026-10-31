@@ -7,14 +7,16 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
-import { coverage, dashSystems, pageHealth, systemHealth } from "./data.ts";
+import { coverage, dashSystems, pageHealth, rangesFor, systemHealth } from "./data.ts";
 import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
+import { RfPage } from "./Rf.tsx";
 import { PlatformPage } from "./Platform.tsx";
 import { PluginHealthPage } from "./PluginHealth.tsx";
+import { StorageView, tablesOf } from "./Storage.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
@@ -31,7 +33,7 @@ function running(c: Config, systems: SystemStatus[], calls: Partial<CallView>[] 
     { type: "state", phase: "running", error: null, ended: false },
     { type: "config", config: c, version: 1 },
     { type: "history", entries: [] },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys"] },
+    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys", "history"] },
   ];
   clearSeries();
   for (const m of greeting) transport.onMessage(m);
@@ -281,6 +283,43 @@ test("Platform: the clock as measured and as the OS says, and the light goes by 
   assert.match(page, /3 of 3 queries unanswered .*UDP port 123/);
 });
 
+test("Platform → Storage: each table with its rows, its indexes under it, biggest first", () => {
+  const sizes = {
+    objects: [
+      { name: "calls", table: "calls", index: false, bytes: 40e6, rows: 120000 },
+      { name: "transmissions_radio", table: "call_transmissions", index: true, bytes: 30e6 },
+      { name: "call_transmissions", table: "call_transmissions", index: false, bytes: 25e6, rows: 300000 },
+      { name: "calls_start", table: "calls", index: true, bytes: 3e6 },
+      { name: "talkgroups", table: "talkgroups", index: false, bytes: 8192, rows: 23 },
+    ],
+    fileBytes: 98e6, walBytes: 2e6, freeBytes: 1e6,
+  };
+  assert.deepEqual(tablesOf(sizes).map((t) => [t.name, t.indexes.map((i) => i.name)]), [["call_transmissions", ["transmissions_radio"]], ["calls", ["calls_start"]], ["talkgroups", []]]);
+  twoSites();
+  let page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, sizes, written: { why: "this system doesn't count a thread's writes" } }} />));
+  assert.match(page, /Written\s*—\s*not measured: this system doesn/);
+  page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, sizes, written: { bytes: 5e9, of: "store" } }} />));
+  assert.match(page, /5\.00 GB since it started/);
+  assert.match(page, /Written to disk/);
+  page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, talkgroupIndex: false, sizes, written: { bytes: 5e9, of: "store" } }} />));
+  assert.match(page, /Calls aren\S{1,6}t indexed by talkgroup or radio/);
+  assert.match(page, /transmissions_radio · the calls a radio talked on, newest first/);
+  assert.match(page, /calls_system_tg_start finds a talkgroup\S{1,6}s calls, newest first: the Radio page\S{1,6}s calls when you pick a talkgroup/);
+  assert.match(page, /Store\s*100 MB/);
+  assert.match(page, /call_transmissions\s*300,?000\s*25(\.0)? MB\s*↳ transmissions_radio[^M]*30(\.0)? MB/);
+  assert.match(page, /Calls aren\S{1,6}t indexed by (talkgroup or )?radio/);
+  host({ os: synced, server: "pool.ntp.org", measured: null, error: null, problem: null, check: null });
+  assert.doesNotMatch(text(renderToString(<PlatformPage />)), /Storage/, "no Storage tab until the store is measured");
+});
+
+test("Platform: the span chooser offers what the store keeps", () => {
+  twoSites();
+  setView("platform");
+  host({ os: synced, server: "pool.ntp.org", measured: null, error: null, problem: null, check: null });
+  const page = text(renderToString(<PlatformPage />));
+  assert.match(page, /7 days\s*30 days\s*90 days\s*1 year/, "a year, by default with the store on");
+});
+
 test("Platform: the Network card's Checks switch turns the internet checks and the time server off (#37)", () => {
   twoSites();
   setView("platform");
@@ -386,4 +425,28 @@ test("A y axis never has two ticks that read the same", () => {
     assert.equal(new Set(labels).size, labels.length, `${lo}..${hi}: ${labels.join(", ")}`);
     assert.ok(t.length >= 2 && t[0] <= lo + 1e-9 + (t[1] - t[0]) && t[t.length - 1] >= hi - (t[1] - t[0]) - 1e-9, `${lo}..${hi}: ${t.join(", ")} spans the data`);
   }
+});
+
+test("RF: a HackRF's stages, and the sample clock's error once measured", () => {
+  const c = defaultConfig();
+  c.sources = [{ type: "hackrf", serial: "", centerHz: 851_000_000, rateHz: 8_000_000, lnaDb: 24, vgaDb: 30, amp: true, biasTee: false, ppm: 0 }];
+  running(c, []);
+  const src = (clockPpm: number | null): SourceStatus => ({ index: 0, label: "HackRF", centerHz: 851_000_000, rateHz: 8_000_000, rateMeasured: 8_000_000, dropped: 0, errors: 0, lastError: null, ended: false, clockPpm });
+  const status = (clockPpm: number | null) =>
+    transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [src(clockPpm)], load: 0, calls: [] });
+  setView("rf");
+  status(null);
+  assert.doesNotMatch(text(renderToString(<RfPage />)), /Sample clock/, "not until it is measured");
+  status(1.234);
+  assert.match(text(renderToString(<RfPage />)), /Sample clock \+1\.23 ppm against this computer/);
+  assert.match(text(renderToString(<RfPage />)), /LNA 24 · VGA 30 · amp/);
+});
+
+test("History spans: a week from memory or files; further as the store keeps the dashboard's history", () => {
+  const spans = (st: Parameters<typeof rangesFor>[0], history = true) => rangesFor(st, history).map((r) => r.v).join(" ");
+  const store = { backend: "sqlite" as const, retentionDays: 120, commitSeconds: 300 };
+  assert.equal(spans(store, false), "1h 24h 7d", "no store (the browser build, or one that didn't open)");
+  assert.equal(spans(store), "1h 24h 7d 30d 90d 1y", "a year by default");
+  assert.equal(spans({ ...store, backend: "postgres", statsDays: 90 }), "1h 24h 7d 30d 90d");
+  assert.equal(spans({ ...store, statsDays: 0 }), "1h 24h 7d 30d 90d 1y", "0: all of it");
 });

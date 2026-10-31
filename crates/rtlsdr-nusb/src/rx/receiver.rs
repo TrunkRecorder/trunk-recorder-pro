@@ -69,6 +69,10 @@ impl<C: Transport, M: SampleMode> Receiver<C, M> {
         })
     }
 
+    /// Start: the chip readied with nothing flowing ([`crate::rtl2832u::Hardware::arm`]),
+    /// every transfer queued, then the chip's output started — in that order,
+    /// so the endpoint isn't held while transfers are queued and the FIFO
+    /// isn't filling before they are.
     fn start_pipeline(&mut self, fresh: bool) -> impl MaybeFuture<Output = Result<()>> + '_ {
         if fresh {
             self.retire_stream();
@@ -77,7 +81,7 @@ impl<C: Transport, M: SampleMode> Receiver<C, M> {
         let shared = Arc::clone(&self.claim.shared);
         let fallback = Arc::clone(&shared);
         let off = if fresh {
-            Either::left(shared.receiver_mode(false))
+            Either::left(shared.receiver_mode(false).map(|r| r.map(drop)))
         } else {
             Either::right(ready(Ok(())))
         };
@@ -92,13 +96,14 @@ impl<C: Transport, M: SampleMode> Receiver<C, M> {
             } else {
                 Ok(())
             };
+            let arm = Arc::clone(&shared);
             ready(prepare).and_then(move |_| {
-                shared.receiver_mode(true).and_then(move |_| {
-                    if fresh {
-                        Either::left(queue.as_mut().expect("prepared queue").initialize())
-                    } else {
-                        Either::right(ready(Ok(())))
-                    }
+                arm.receiver_arm().and_then(move |_| {
+                    queue
+                        .as_mut()
+                        .expect("prepared queue")
+                        .initialize()
+                        .and_then(move |_| shared.receiver_mode(true).map(|r| r.map(drop)))
                 })
             })
         });
@@ -111,15 +116,20 @@ impl<C: Transport, M: SampleMode> Receiver<C, M> {
         })
     }
 
+    /// Stop: the chip's output stopped (what it dropped while it ran read
+    /// meanwhile, and told with the first block after the restart), then the
+    /// transfers cancelled.
     pub(crate) fn stop(&mut self) -> impl MaybeFuture<Output = Result<StreamingStats>> + '_ {
         ready(()).continue_with(move |_| {
             if !self.claim.begin_stop() {
                 return Either::right(ready(Ok(self.current_stats())));
             }
             Either::left(self.claim.shared.receiver_mode(false).map(move |result| {
-                result?;
+                let chip_dropped = result?;
+                self.stats.chip_dropped_samples += chip_dropped;
                 if let Some(queue) = &mut self.queue {
                     queue.pause();
+                    queue.add_dropped(chip_dropped);
                 }
                 self.processor.reset();
                 self.claim.set_receiver_state(ReceiverState::Stopped);

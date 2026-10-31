@@ -6,6 +6,8 @@
   Options in the URL:
     ?talkgroups=101,202   only these talkgroups (on screen and in the audio)
     ?system=dcfd          only this system (its short name)
+    ?stereo               hear every call at once, each talkgroup from its own place
+                          (with ?talkgroups=, spread left to right in that order)
     ?server=host:port     another recorder (its config must allow this page's origin)
 
   Run it from the recorder: http://localhost:8080/api/examples/wall.html,
@@ -63,6 +65,38 @@ const rec = new TrunkClient({ server: q.get("server") ?? undefined });
 const player = new LivePlayer({ onNowPlaying: () => draw() });
 let audioOn = false;
 
+// ?stereo: a player per call, each panned to its talkgroup's place; they mix
+// in the page's output. A call's player goes when the call has been quiet.
+const stereo = q.has("stereo");
+const players = new Map(); // call id → LivePlayer
+const order = only ? [...only] : [];
+function panOf(talkgroup) {
+  const i = order.indexOf(talkgroup);
+  if (i >= 0) return order.length > 1 ? -0.8 + (1.6 * i) / (order.length - 1) : 0;
+  return ((Math.imul(talkgroup, 2654435761) >>> 0) % 9) / 5 - 0.8; // anywhere else: one of 9 places, always the same
+}
+function playerFor(chunk) {
+  if (!stereo) return player;
+  let p = players.get(chunk.callId);
+  if (!p) {
+    p = new LivePlayer({
+      followCall: false,
+      pan: panOf(chunk.talkgroup),
+      onNowPlaying: (call) => {
+        if (!call) {
+          players.delete(chunk.callId);
+          p.stop();
+        }
+        draw();
+      },
+    });
+    players.set(chunk.callId, p);
+    p.resume();
+  }
+  return p;
+}
+const playing = (callId) => (stereo ? players.has(callId) : player.nowPlaying?.callId === callId);
+
 document.getElementById("audio").onclick = async () => {
   audioOn = !audioOn;
   if (audioOn) {
@@ -72,12 +106,13 @@ document.getElementById("audio").onclick = async () => {
   } else {
     rec.listen(false);
     player.stop();
+    for (const p of players.values()) p.stop();
   }
   draw();
 };
 rec.on("audio", (chunk) => {
   const name = rec.status?.systemNames[chunk.system] ?? rec.calls.find((c) => c.id === chunk.callId)?.systemName;
-  if (audioOn && wanted(name, chunk.talkgroup)) player.play(chunk);
+  if (audioOn && wanted(name, chunk.talkgroup)) playerFor(chunk).play(chunk);
 });
 rec.on("change", () => draw());
 
@@ -98,7 +133,7 @@ function draw() {
         .map((c) => {
           const unit = c.sources.at(-1);
           const who = unit !== undefined ? rec.unitName(c.systemName, unit) || `Unit ${unit}` : "";
-          const cls = ["call", c.state, c.emergency ? "emergency" : "", player.nowPlaying?.callId === c.id ? "playing" : ""].join(" ");
+          const cls = ["call", c.state, c.emergency ? "emergency" : "", playing(c.id) ? "playing" : ""].join(" ");
           return `<div class="${cls}">
             <div class="tg">${esc(c.alphaTag || `Talkgroup ${c.talkgroup}`)}</div>
             <div class="meta">

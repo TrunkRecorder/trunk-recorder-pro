@@ -81,6 +81,16 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # The call store's tests run on every backend: SQLite always, and PostgreSQL here
+    # (TRP_PG_URL; research/sqlite-plan.md, "Keeping the backends equal").
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env: { POSTGRES_USER: trp, POSTGRES_PASSWORD: trp-test, POSTGRES_DB: trp }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TRP_PG_URL: postgres://trp:trp-test@localhost:5432/trp
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -95,7 +105,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { kind: macos, os: macos-14 }
+          - { kind: macos, os: macos-15 }
           - { kind: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, glibc: "2.28" }
           - { kind: linux-aarch64, os: ubuntu-latest, target: aarch64-unknown-linux-gnu, glibc: "2.28" }
           - { kind: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc }

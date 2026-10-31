@@ -5,7 +5,7 @@
 //! recording session (a conventional call), a survey, the server's replies;
 //! and protocol.ts's message types against [`ToClient`] and [`Command`].
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 use std::f64::consts::PI;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -199,15 +199,7 @@ fn a_late_radio_keeps_to_the_wall_clock() {
     assert!((radio - 3500.0).abs() < 100.0, "the call starts {radio} ms in");
     // A capture played as fast as it can be keeps its own time.
     let mut replay = conventional_config();
-    replay.sources = vec![trunk_app::config::Source::File {
-        path: "x.cu8".into(),
-        center_hz: 155_000_000.0,
-        rate_hz: 2_400_000.0,
-        realtime: false,
-        format: None,
-        auto_tune: false,
-        guard_hz: trunk_app::config::DEFAULT_GUARD_HZ,
-    }];
+    replay.sources = vec![trunk_app::config::Source { kind: crate::config::SourceKind::File { path: "x.cu8".into(), realtime: false, format: None }, center_hz: 155_000_000.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: trunk_app::config::DEFAULT_GUARD_HZ }];
     let file = start_of(replay);
     assert!((file - 500.0).abs() < 100.0, "the replayed call starts {file} ms in");
 }
@@ -318,10 +310,20 @@ fn a_spare_radio_is_one_no_source_names() {
 }
 
 pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
+    let name = format!("ctx-{}", dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
+    ctx_with(cfg, dir, |_| crate::db::Db::for_test_with_batch(&name, std::time::Duration::from_secs(1)).0)
+}
+
+/// As [`ctx`], with the call store `db` makes on the hub.
+pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runtime::Hub) -> crate::db::Db) -> Arc<crate::runtime::Ctx> {
     let (hub, _) = tokio::sync::broadcast::channel(16);
     let shared = trunk_app::stats::Shared::new();
-    let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
-    Arc::new(crate::runtime::Ctx {
+    let db = db(hub.clone());
+    // (As a config read or set has them.)
+    cfg.assign_system_ids();
+    db.set_systems(&cfg);
+    let series = Arc::new(Mutex::new(trunk_app::stats::History::new(crate::statstore::memory_minutes(&db))));
+    let ctx = Arc::new(crate::runtime::Ctx {
         config_path: dir.join("config.json"),
         config: Mutex::new(cfg),
         config_version: std::sync::atomic::AtomicU64::new(1),
@@ -329,7 +331,8 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         hub: hub.clone(),
         lifecycle: Mutex::new(crate::runtime::Lifecycle::default()),
         phase: Mutex::new(crate::runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
-        history: Mutex::new(VecDeque::new()),
+        recent: Mutex::new(Default::default()),
+        db,
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
@@ -337,8 +340,7 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         interfaces: crate::interfaces::Interfaces::new(None, 8080),
         shared,
         series: series.clone(),
-        store: crate::statstore::Store::start(dir.join("stats"), series),
-        saver: crate::saver::Saver::start(|_| {}),
+        store: crate::statstore::Store::start(series, crate::db::Db::disabled(), 0, false),
         heard_last: Mutex::new(None),
         topics: Mutex::new(Default::default()),
         engine: Mutex::new(None),
@@ -346,7 +348,14 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         spool: Mutex::new(None),
         clock: Default::default(),
         unlocked: Default::default(),
-    })
+    });
+    // The stats thread makes its folder as it starts: wait for that, so a
+    // test that removes `dir` when done does not see it made again after.
+    let t = std::time::Instant::now();
+    while !dir.join("stats").exists() && t.elapsed() < std::time::Duration::from_secs(1) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    ctx
 }
 
 /// A source's roll-off, from a capture of noise; and why it couldn't be had.
@@ -442,7 +451,7 @@ fn the_servers_messages() {
     agg.begin(now as f64);
     let p = platform.sample(&mut agg, true);
     *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
-    ctx.talkgroups.lock().unwrap().insert("p25".into(), "101,Fire Dispatch\n".into());
+    ctx.talkgroups.lock().unwrap().insert("p25".into(), trunk_core::trunk::parse_rows("101,Fire Dispatch\n"));
     // The greeting: hello last, after how things are now; less of it for listen access.
     let heard = |control| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -483,10 +492,19 @@ fn the_servers_messages() {
     ] {
         queries.push(crate::server::radio_query(&ctx, &body(q)).to_value());
     }
+    // The call store answers `callsQuery`: a call indexed, then asked for by talkgroup.
+    let mut record = crate::db::row::tests::record(9179, now * 1000);
+    record.short_name = "p25".into();
+    crate::runtime::index_call(&ctx, "p25/2026/10/26/9179-1", &record, true, true);
+    ctx.db.flush().unwrap();
+    let Ok(Command::CallsQuery { id, query }) = Command::parse(r#"{"type":"callsQuery","id":3,"talkgroup":9179}"#) else { panic!("callsQuery") };
+    let calls = crate::runtime::calls_query(&ctx, id, &query).to_value();
+    assert_eq!((calls["id"].as_i64(), calls["entries"].as_array().map(Vec::len), calls.get("next")), (Some(3), Some(1), None), "{calls}");
+    queries.push(calls);
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
     // Named from the name book the server keeps (talkgroup files and the config; aliases as saved).
-    let files: trunk_app::config::TalkgroupFiles = [("p25".to_string(), "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n".to_string())].into();
+    let files: trunk_app::config::TalkgroupLists = [("p25".to_string(), trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))].into();
     ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
     ctx.shared.names.lock().unwrap().set_units("p25", "7,Engine 7\n");
     let named = |q: Value| crate::server::radio_query(&ctx, &body(q)).to_value().to_string();
@@ -562,13 +580,13 @@ fn messages_to_the_recorder() {
         json!({ "type": "radioQuery", "id": 4, "what": "unit", "system": "dcfd", "key": 1234 }),
         json!({ "type": "channelFile", "index": 0, "path": "" }),
         json!({ "type": "unlockKeys", "source": "county", "password": "p" }),
-        json!({ "type": "olderCalls", "before": 1_750_000_000_000i64, "limit": 50 }),
+        json!({ "type": "callsQuery", "id": 5, "system": "dcfd", "talkgroup": 9179, "unit": 1234, "from": 1_750_000_000_000i64, "to": 1_750_086_400_000i64, "cursor": "1750050000000:dcfd/2025/6/15/9179-1750050000_851012500", "limit": 50 }),
         json!({ "type": "surveyListen", "freqHz": 851_012_500 }),
         json!({ "type": "callSignQuery", "id": 3, "callSigns": ["KNJA391", "KNJE616"] }),
         json!({ "type": "licenseQuery", "id": 1, "lat": 38.9, "lon": -77.03, "radiusM": 50_000, "signals": [{ "freqHz": 857_987_500 }, { "freqHz": 489_087_500, "widthHz": 12_500 }] }),
         json!({ "type": "store", "kind": "interface" }),
         json!({ "type": "removeInterface", "id": "trunkamp" }),
-        json!({ "type": "setTalkgroups", "system": "dcfd", "csv": "Decimal,Alpha Tag\n101,FD Disp\n" }),
+        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "comment": "# dispatch", "extra": [["Zone", "North"]] }] }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 101, "edit": { "ignore": true } }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 102, "edit": { "alphaTag": "FIRE4A", "description": "", "tag": "Fire Tac", "category": "Fire" } }),
     ];

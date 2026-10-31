@@ -9,7 +9,8 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "allowJs": true
   },
   "include": ["src", "vite.config.ts"]
 }

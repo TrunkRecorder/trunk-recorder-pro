@@ -48,7 +48,7 @@ other program that might be using it, such as SDR#, SDR++, GQRX or rtl_tcp. Only
 use a radio at a time.
 
 RTL-SDR dongles work with nothing else installed (on Windows, after the one-time WinUSB driver
-install with Zadig; on Linux, after the udev rule). USRP, Airspy and SoapySDR radios need their
+install with Zadig; on Linux, after the udev rule), and so do HackRF Ones. USRP, Airspy and SoapySDR radios need their
 makers' drivers: see [Other radios](install/other-radios.md).
 
 To see what Trunk Recorder Pro can find from a terminal:
@@ -80,8 +80,10 @@ The guide has six steps:
 
 1. **Radios.** It lists every radio it can see (RTL-SDRs, Airspys, USRPs and SoapySDR devices)
    and asks *Which radios should record?* All free ones are ticked. A radio another program is
-   using shows as busy. If none shows up, **Help me find it** walks through the usual fixes for
-   your operating system (USB driver, udev rule, TV-tuner driver, other SDR apps).
+   using shows as busy. An Airspy, bladeRF or HackRF card has a **Bias-T** switch: turn it on if an LNA
+   is powered through the antenna cable, and the scan in the next step uses it. If none shows
+   up, **Help me find it** walks through the usual fixes for your operating system (USB driver,
+   udev rule, TV-tuner driver, other SDR apps).
 2. **Find a system.** *Find a system near you* scans the bands for control channels (pick which
    bands under **Bands to scan**; the defaults cover most public-safety systems) and takes a
    minute or two. Press **Start scan**. When it finds a P25 or SmartNet control channel it

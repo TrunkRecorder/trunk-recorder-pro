@@ -4,7 +4,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { systemColor } from "./config.ts";
-import { clockAt, ticks } from "./fmt.ts";
+import { axisAt, clockAt, ticks } from "./fmt.ts";
 import { useSeries } from "./series.ts";
 import type { Config, SeriesData } from "./protocol.ts";
 
@@ -361,7 +361,7 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
           ))}
           {xt.map((t, i) => (
             <text key={i} x={x(t)} y={H - 4} textAnchor={i === 0 ? "start" : i === 4 ? "end" : "middle"} className="axis">
-              {clockAt(t)}
+              {axisAt(t, span)}
             </text>
           ))}
           {(props.marks ?? []).map((m) => (
@@ -418,7 +418,7 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
             className={`ts-tip${tipAt.flip ? " flip" : ""}`}
             style={{ ...(tipAt.flip ? { right: `${(100 - unit(tipAt.cx, 0, W) * 100).toFixed(1)}%` } : { left: `${(unit(tipAt.cx, 0, W) * 100).toFixed(1)}%` }), ...(tipAt.high ? { bottom: B + 4 } : { top: T }) }}
           >
-            <b>{clockAt(ht, span < 3600)}</b>
+            <b>{span > 8 * 86400 ? axisAt(ht, span, true) : clockAt(ht, span < 3600)}</b>
             {near.map((i, k) =>
               i >= 0 && pts[k].v[i] !== null ? (
                 <div key={k}>

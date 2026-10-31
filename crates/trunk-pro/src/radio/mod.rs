@@ -7,22 +7,121 @@
 
 pub mod airspy;
 pub mod bladerf;
+pub mod hackrf;
+pub mod priority;
+pub mod rtl;
 mod sdrplay;
 pub mod soapy;
 pub mod uhd;
+mod usb_speed;
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::time::Duration;
 
 /// Held while a radio opens, and while a driver searches for radios. libairspy,
 /// librtlsdr and libhackrf find a radio by opening every one of theirs to read its
 /// serial and skip any they can't open (on macOS an open is exclusive), so a
 /// search or an open beside another radio's open could miss it: "not found" until
 /// the retry. The SDRplay API wants its device selection kept apart too. UHD keeps
-/// its own lock, so a USRP opens without this one.
-pub fn opening() -> MutexGuard<'static, ()> {
+/// its own lock, so a USRP opens without this one. Taken by [`open`].
+fn opening() -> MutexGuard<'static, ()> {
     static OPENING: Mutex<()> = Mutex::new(());
     OPENING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// How long an open (or a driver's search for radios) may take, by what it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Deadline {
+    /// A radio that opens in well under a second (RTL-SDR, HackRF, Airspy) or a search: 5 s.
+    Quick,
+    /// One that loads firmware or an FPGA image as it opens (bladeRF, a SoapySDR module): 15 s.
+    Loads,
+    /// A USRP: an FPGA image over USB, or a search of the network: 30 s.
+    Slow,
+}
+
+impl Deadline {
+    fn duration(self) -> Duration {
+        Duration::from_secs(match self {
+            Deadline::Quick => 5,
+            Deadline::Loads => 15,
+            Deadline::Slow => 30,
+        })
+    }
+}
+
+/// Radios whose open passed its deadline and hasn't returned yet, by name.
+static STUCK: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Open the radio `name` ("RTL-SDR 00000050") with `f`, or search for radios,
+/// on a thread of its own, under [`opening`] when `shared` (every driver but
+/// UHD), given up at the `deadline`.
+///
+/// A radio whose firmware is stuck (often across a reboot) still enumerates
+/// but never answers; the open — usbfs and IOKit calls, a vendor library's —
+/// then waits in the kernel for ever, and under [`opening`] no other radio
+/// could reopen either (sdr-core's `open_with_deadline`). Given up, the thread
+/// is left behind (it holds nothing the program needs: whatever it returns
+/// late is dropped, closing it) and `name` is refused at once until it
+/// returns, so two opens never talk to one radio together. Other radios open
+/// as usual.
+pub fn open<T: Send + 'static>(name: &str, deadline: Deadline, shared: bool, f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    open_within(name, deadline.duration(), shared, f)
+}
+
+fn open_within<T: Send + 'static>(name: &str, deadline: Duration, shared: bool, f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    let wedged = || format!("{name} isn't answering (its firmware is stuck): unplug it and plug it back in, or power-cycle its USB hub");
+    if STUCK.lock().unwrap().iter().any(|s| s == name) {
+        return Err(wedged());
+    }
+    let _one = shared.then(opening);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let given_up = Arc::new(AtomicBool::new(false));
+    let (gave_up, key) = (Arc::clone(&given_up), name.to_string());
+    std::thread::Builder::new()
+        .name("radio-open".into())
+        .spawn(move || {
+            let r = f();
+            let mut stuck = STUCK.lock().unwrap();
+            if gave_up.load(Ordering::SeqCst) {
+                stuck.retain(|s| *s != key);
+            }
+            let _ = tx.send(r);
+        })
+        .map_err(|e| format!("open {name}: {e}"))?;
+    match rx.recv_timeout(deadline) {
+        Ok(r) => r,
+        Err(_) => {
+            // (Under STUCK's lock, so the thread's own check can't come between.)
+            let mut stuck = STUCK.lock().unwrap();
+            if let Ok(r) = rx.try_recv() {
+                return r;
+            }
+            given_up.store(true, Ordering::SeqCst);
+            stuck.push(name.to_string());
+            log::error!("{} (no answer in {} s)", wedged(), deadline.as_secs());
+            Err(wedged())
+        }
+    }
+}
+
+/// A value from a vendor library (a device handle) that may be handed to the
+/// thread that asked for it: the libraries are thread-safe per handle, and
+/// [`open`]'s thread only ever passes it on.
+pub struct Handed<T>(pub T);
+// SAFETY: see above — one thread uses it at a time.
+unsafe impl<T> Send for Handed<T> {}
+
+/// What a USB transfer refused for lack of memory means, when it does: Linux
+/// gives usbfs 16 MB by default, and every radio keeps ~2 MB in flight.
+pub fn usb_memory_hint(e: &str) -> String {
+    if cfg!(target_os = "linux") && (e.contains("ENOMEM") || e.contains("out of memory") || e.contains("Cannot allocate memory")) {
+        format!("{e} — Linux's USB memory (usbfs_memory_mb, 16 MB by default) is used up by the radios' transfers: raise it with `echo 0 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb` (0 = no limit; add usbcore.usbfs_memory_mb=0 to the kernel command line to keep it)")
+    } else {
+        e.to_string()
+    }
 }
 
 /// The sample rates a radio runs at, as it said when opened.
@@ -219,7 +318,8 @@ pub fn radios_json(search: bool) -> serde_json::Value {
     } else {
         serde_json::Value::Null
     };
-    serde_json::json!({ "usrp": uj, "airspy": airspy_json(), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
+    let hackrf = serde_json::json!({ "available": true, "detail": "built in", "devices": hackrf::devices() });
+    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
 }
 
 fn bladerf_json() -> serde_json::Value {
@@ -268,6 +368,27 @@ impl DriverInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An open that hangs is given up at its deadline, the radio refused at
+    /// once while it stays stuck, others opened meanwhile, and it opens again
+    /// once the stuck open returns.
+    #[test]
+    fn a_hung_open_is_given_up_and_the_radio_refused_until_it_returns() {
+        let ms = Duration::from_millis;
+        let t = std::time::Instant::now();
+        let e = open_within("test-wedged", ms(50), true, move || {
+            std::thread::sleep(ms(400));
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(t.elapsed() < ms(300) && e.contains("isn't answering"), "{e}");
+        let t = std::time::Instant::now();
+        assert!(open_within("test-wedged", ms(1000), true, || Ok(())).is_err());
+        assert!(t.elapsed() < ms(50), "refused at once");
+        assert_eq!(open_within("test-other", ms(1000), true, || Ok(7)), Ok(7), "other radios open");
+        std::thread::sleep(ms(500));
+        assert_eq!(open_within("test-wedged", ms(1000), true, || Ok(8)), Ok(8));
+    }
 
     #[test]
     fn rate_refusal_names_the_radio_and_the_fix() {

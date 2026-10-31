@@ -18,10 +18,10 @@ use std::time::Duration;
 
 /// Counters collected during a receive stream.
 ///
-/// These counters describe USB completions observed by the host. RTL-SDR bulk data
-/// has no sequence number, so the driver cannot detect samples lost in the device
-/// before a USB transfer completes (for example, when the application stops
-/// polling long enough to exhaust the host transfer queue).
+/// RTL-SDR bulk data has no sequence number. Samples the chip itself drops
+/// (its endpoint FIFO overflowed: the host queue ran dry) are counted by the
+/// chip and read each time the stream stops, while nothing flows
+/// ([`StreamingStats::chip_dropped_samples`]); between stops they're not known.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StreamingStats {
     /// Number of USB completions consumed by the driver.
@@ -38,6 +38,10 @@ pub struct StreamingStats {
     /// transfer cancellation, including WebUSB, consuming these old submissions may
     /// delay the first fresh block after restarting.
     pub buffers_discarded_on_restart: u64,
+    /// Samples the chip counted as dropped (its FIFO overflowed), read at each stop.
+    pub chip_dropped_samples: u64,
+    /// Bulk transfers the endpoint refused (STALL) and the stream recovered from in place.
+    pub stall_recoveries: u64,
 }
 
 impl StreamingStats {
@@ -46,6 +50,8 @@ impl StreamingStats {
         self.buffers_processed += other.buffers_processed;
         self.buffers_dropped += other.buffers_dropped;
         self.buffers_discarded_on_restart += other.buffers_discarded_on_restart;
+        self.chip_dropped_samples += other.chip_dropped_samples;
+        self.stall_recoveries += other.stall_recoveries;
     }
 
     pub(crate) fn combined(mut self, other: Self) -> Self {
@@ -81,10 +87,9 @@ impl<'a> SampleBlock<'a> {
         self.sample_count
     }
 
-    /// Estimated sample count represented by USB buffers the driver discarded.
-    ///
-    /// RTL-SDR transfers have no sequence numbers, so this cannot include samples
-    /// lost inside the device while the host transfer queue was exhausted.
+    /// Samples lost just before this block: buffers the driver discarded (a
+    /// stop's, a stall's) and, after a restart, what the chip counted as
+    /// dropped while it ran. Not a running total.
     pub const fn dropped_samples(&self) -> u64 {
         self.dropped_samples
     }

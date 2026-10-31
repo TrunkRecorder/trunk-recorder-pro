@@ -15,9 +15,9 @@ use trunk_app::survey::{Request, SurveySession};
 use trunk_app::Output;
 use trunk_core::survey::{Command, Stage};
 
-use crate::config::{Config, Source};
+use crate::config::{Config, Source, SourceKind};
 use crate::runtime::{self, Ctx};
-use crate::sdr::{Control, Gain, SourceMsg};
+use crate::sdr::{Block, Control, Gain, Inbox, SourceMsg};
 
 /// What the interface asks of a running survey.
 pub enum UserCmd {
@@ -68,11 +68,11 @@ fn apply(session: &mut SurveySession, ctl: &Control, file_center: Option<f64>) {
 /// Feed one source message; false once the source has ended.
 fn feed(session: &mut SurveySession, msg: SourceMsg) -> bool {
     match msg {
-        SourceMsg::Data { bytes, .. } => session.survey().push_u8(&bytes),
-        SourceMsg::Iq { samples, .. } => session.survey().push_iq(&samples),
+        SourceMsg::Samples { block: Block::U8(b), .. } => session.survey().push_u8(&b),
+        SourceMsg::Samples { block: Block::Iq(b), .. } => session.survey().push_iq(&b),
+        // (The callers' inbox makes these I/Q.)
+        SourceMsg::Samples { block: Block::Real16(_), .. } => {}
         SourceMsg::Tuned { center_hz, .. } => session.survey().tuned(center_hz),
-        // (The callers turn these into Iq first.)
-        SourceMsg::Real16 { .. } => {}
         SourceMsg::Error { error, .. } => session.source_error(&error),
         SourceMsg::End { .. } => {
             session.survey().finish();
@@ -85,8 +85,8 @@ fn feed(session: &mut SurveySession, msg: SourceMsg) -> bool {
 /// A capture's centre (it can't be tuned); None for a radio.
 fn file_center(cfg: &Config, req: &Request) -> Option<f64> {
     match (&req.radio, req.radio(cfg).ok()?) {
-        (_, s) if !matches!(s, Source::File { .. }) => None,
-        (Some(_), s) => Some(s.center_hz()),
+        (_, s) if !matches!(s.kind, SourceKind::File { .. }) => None,
+        (Some(_), s) => Some(s.center_hz),
         (None, _) => Some(cfg.resolved_centers()[req.source]),
     }
 }
@@ -100,12 +100,13 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
     // The first hop is the source's opening frequency.
     let first = match session.command() {
         Some(Command::Tune(f)) => f,
-        _ => fixed.unwrap_or(radio.center_hz()),
+        _ => fixed.unwrap_or(radio.center_hz),
     };
     if fixed.is_none() {
         *ctl.current_hz.lock().unwrap() = Some(first);
     }
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
+    let mut rx = Inbox::new(rx);
     let mut threads = vec![runtime::spawn_source(&radio, req.source, first, tx, stop.clone(), Some(ctl.clone()), &format!("survey-source-{}", req.source)).map_err(|e| e.to_string())?];
     // The opening tune is confirmed by the first samples.
     let mut opened = fixed.is_some();
@@ -118,7 +119,6 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
                 let t0 = Instant::now();
                 let mut out = Vec::new();
                 let mut running = true;
-                let mut iqf = crate::sdr::IqFrom::default();
                 while !stop2.load(Ordering::Relaxed) {
                     while let Ok(c) = cmd_rx.try_recv() {
                         match c {
@@ -130,8 +130,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
                     if running {
                         match rx.recv_timeout(Duration::from_millis(50)) {
                             Ok(m) => {
-                                let m = iqf.iq(m);
-                                if !opened && matches!(m, SourceMsg::Data { .. } | SourceMsg::Iq { .. }) {
+                                if !opened && matches!(m, SourceMsg::Samples { .. }) {
                                     opened = true;
                                     session.survey().tuned(first);
                                 }
@@ -176,20 +175,9 @@ pub fn cli(a: &crate::Args) {
         cfg.sources = vec![serde_json::from_str(r).unwrap_or_else(|e| crate::die(&format!("--radio: {e}")))];
     } else if let Some(path) = a.positional.first() {
         let format = crate::sample_format(path, a.get("format"));
-        cfg.sources = vec![Source::File { path: path.clone(), center_hz: a.num("center", 0.0), rate_hz: rate, realtime: false, format: Some(format), auto_tune: false, guard_hz: crate::config::DEFAULT_GUARD_HZ }];
+        cfg.sources = vec![Source { kind: crate::config::SourceKind::File { path: path.clone(), realtime: false, format: Some(format) }, center_hz: a.num("center", 0.0), rate_hz: rate, ppm: 0.0, auto_tune: false, guard_hz: crate::config::DEFAULT_GUARD_HZ }];
     } else {
-        cfg.sources = vec![Source::Rtlsdr {
-            serial: a.get("serial").unwrap_or("").into(),
-            center_hz: 0.0,
-            rate_hz: rate,
-            gain_db: a.get("gain").and_then(|g| g.parse().ok()).unwrap_or(crate::config::RTL_DEFAULT_GAIN_DB),
-            agc: a.get("gain").is_none(),
-            ppm: a.num("ppm", 0.0) as i32,
-            auto_tune: false,
-            guard_hz: crate::config::DEFAULT_GUARD_HZ,
-            buf_len: a.num("buflen", 0.0) as u32,
-            buffers: a.num("buffers", 0.0) as u32,
-        }];
+        cfg.sources = vec![Source { kind: crate::config::SourceKind::Rtlsdr { serial: a.get("serial").unwrap_or("").into(), gain_db: a.get("gain").and_then(|g| g.parse().ok()).unwrap_or(crate::config::RTL_DEFAULT_GAIN_DB), agc: a.get("gain").is_none(), buf_len: a.num("buflen", 0.0) as u32, buffers: a.num("buffers", 0.0) as u32 }, center_hz: 0.0, rate_hz: rate, ppm: a.num("ppm", 0.0), auto_tune: false, guard_hz: crate::config::DEFAULT_GUARD_HZ }];
     }
     let bands = a.get("bands").map(|b| json!(b.split(',').collect::<Vec<_>>())).unwrap_or(Value::Null);
     let freqs: Vec<f64> = a.get("freqs").map(|f| f.split(',').filter_map(|x| x.trim().parse::<f64>().ok()).map(|m| (m * 1e6).round()).collect()).unwrap_or_default();
@@ -208,6 +196,7 @@ pub fn cli(a: &crate::Args) {
         *ctl.current_hz.lock().unwrap() = Some(first);
     }
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
+    let mut rx = Inbox::new(rx);
     let th = runtime::spawn_source(&cfg.sources[0], 0, first, tx, stop.clone(), Some(ctl.clone()), "survey-source-0").unwrap_or_else(|e| crate::die(&e.to_string()));
     let listen_s = a.num("seconds", 30.0);
     let t0 = Instant::now();
@@ -217,13 +206,11 @@ pub fn cli(a: &crate::Args) {
     let mut last;
     let mut n_found = 0;
     let mut last_err: Option<String> = None;
-    let mut iqf = crate::sdr::IqFrom::default();
     loop {
         apply(&mut session, &ctl, fixed);
         let running = match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(m) => {
-                let m = iqf.iq(m);
-                if !opened && matches!(m, SourceMsg::Data { .. } | SourceMsg::Iq { .. }) {
+                if !opened && matches!(m, SourceMsg::Samples { .. }) {
                     opened = true;
                     session.survey().tuned(first);
                 }

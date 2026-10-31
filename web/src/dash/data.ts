@@ -4,11 +4,11 @@
 // a hint (what it means, what to try).
 
 import { activeSystems, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
-import { setView, snapshot, statsQuery, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
+import { can, setView, snapshot, statsQuery, useApp, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
 import { keyPart, num, pct } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
 import type { Level } from "../charts.tsx";
-import type { PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, SystemStatus } from "../protocol.ts";
+import type { PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, StorageSettings, SystemStatus } from "../protocol.ts";
 
 // ── series names (crates/trunk-app/src/stats) ────────────────────────────────
 
@@ -113,6 +113,27 @@ export function useHistory(series: string[], range: StatsRange, points?: number)
   const key = `${series.join("|")}@${range}@${points ?? ""}`;
   const r = usePolled(key, () => statsQuery(series, range, points), range === "10m" ? 20_000 : range === "1h" ? 60_000 : 300_000);
   return r?.series ?? null;
+}
+
+/** Days of history each span needs. */
+const RANGE_DAYS: { v: StatsRange; label: string; days: number }[] = [
+  { v: "1h", label: "1 h", days: 0 },
+  { v: "24h", label: "24 h", days: 1 },
+  { v: "7d", label: "7 days", days: 7 },
+  { v: "30d", label: "30 days", days: 30 },
+  { v: "90d", label: "90 days", days: 90 },
+  { v: "1y", label: "1 year", days: 365 },
+];
+
+/** The spans a chart can show: a week from memory; with a store (`history`), as far as it keeps (`storage.statsDays`; 0: all). */
+export function rangesFor(storage: StorageSettings | undefined, history: boolean): { v: StatsRange; label: string }[] {
+  const kept = !history ? 7 : (storage?.statsDays ?? 365) || Infinity;
+  return RANGE_DAYS.filter((r) => r.days <= Math.max(7, kept)).map(({ v, label }) => ({ v, label }));
+}
+
+/** `rangesFor` the recorder's settings. */
+export function useRanges(): { v: StatsRange; label: string }[] {
+  return rangesFor(useApp().config?.storage, can("history"));
 }
 
 /** The usual of each series: its average (and lowest and highest step) over the last day. */

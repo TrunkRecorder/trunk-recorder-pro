@@ -30,11 +30,15 @@ pub enum Door {
 // [`trunk_app::protocol::Command::listen_may_send`], [`trunk_app::protocol::ToClient::audience`].
 
 /// The config as a listen-only page sees it: without plugin settings and
-/// key sources, the recorder's or any system's.
+/// key sources, the recorder's or any system's, or the database's
+/// connection string (it can hold a password).
 pub fn redact_config(mut c: Value) -> Value {
     if let Some(o) = c.as_object_mut() {
         o.remove("plugins");
         o.remove("keys");
+    }
+    if let Some(o) = c["storage"].as_object_mut() {
+        o.remove("url");
     }
     for list in ["systems", "conventional", "audioStreams"] {
         for s in c[list].as_array_mut().into_iter().flatten() {
@@ -71,16 +75,17 @@ mod tests {
         let c = json!({ "plugins": { "openmhz": { "settings": { "apiKey": "k" } } }, "keys": { "a": { "file": "k.json" } },
                         "systems": [{ "shortName": "x", "plugins": { "openmhz": { "apiKey": "k" } }, "keys": "a" }],
                         "conventional": [{ "shortName": "c", "plugins": {} }],
-                        "audioStreams": [{ "shortName": "stream", "plugins": { "openmhz": { "apiKey": "k" } }, "keys": "a" }],
-                        "server": { "port": 8080 } });
+                        "audioStreams": [{ "shortName": "stream", "plugins": { "openmhz": { "apiKey": "k" } }, "keys": "a" }], "server": { "port": 8080 },
+                        "storage": { "backend": "postgres", "url": "postgres://trp:secret@db/trunk" } });
         let r = redact_config(c);
-        assert!(!r.to_string().contains("apiKey") && !r.to_string().contains("k.json"));
+        assert!(!r.to_string().contains("apiKey") && !r.to_string().contains("k.json") && !r.to_string().contains("secret"));
+        assert_eq!(r["storage"]["backend"], "postgres", "which backend is no secret");
         assert_eq!(r["systems"][0]["shortName"], "x");
         assert!(r["audioStreams"][0].get("plugins").is_none());
         assert!(r["audioStreams"][0].get("keys").is_none());
         assert_eq!(r["server"]["port"], 8080);
         let parse = |t: &str| trunk_app::protocol::Command::parse(t).unwrap();
-        assert!(parse(r#"{"type":"listen","on":true}"#).listen_may_send() && parse(r#"{"type":"olderCalls"}"#).listen_may_send());
+        assert!(parse(r#"{"type":"listen","on":true}"#).listen_may_send() && parse(r#"{"type":"callsQuery","id":1}"#).listen_may_send());
         for c in [r#"{"type":"setConfig","config":{},"version":1}"#, r#"{"type":"start"}"#, r#"{"type":"quit"}"#, r#"{"type":"install","kind":"plugin","id":"x"}"#, r#"{"type":"store","kind":"interface"}"#, r#"{"type":"listDir"}"#, r#"{"type":"unlockKeys","source":"a","password":"b"}"#] {
             assert!(!parse(c).listen_may_send(), "{c}");
         }
