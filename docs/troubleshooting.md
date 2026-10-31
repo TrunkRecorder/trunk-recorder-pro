@@ -143,11 +143,11 @@ what follows.
 ### "its tuner isn't supported natively"
 
 ```text
-open RTL-SDR (first): its tuner isn't supported natively (only R820T / R828D; not E4000, FC0012, FC0013 or FC2580) — add it as a SoapySDR source with device arguments driver=rtlsdr instead (needs SoapySDR's RTL-SDR module)
+open RTL-SDR (first): its tuner isn't supported natively (only R820T / R828D / E4000; not FC0012, FC0013 or FC2580) — add it as a SoapySDR source with device arguments driver=rtlsdr instead (needs SoapySDR's RTL-SDR module)
 ```
 
-The built-in RTL-SDR driver handles the R820T and R828D tuners (nearly every current dongle). For
-an older one, install SoapySDR and its RTL-SDR module and add the dongle as a SoapySDR source; see
+The built-in RTL-SDR driver handles the R820T, R828D and E4000 tuners (nearly every dongle). For
+an FC0012, FC0013 or FC2580 one, install SoapySDR and its RTL-SDR module and add the dongle as a SoapySDR source; see
 [Other radios](install/other-radios.md).
 
 ### Source errors while recording

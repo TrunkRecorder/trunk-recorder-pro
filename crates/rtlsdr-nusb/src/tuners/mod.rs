@@ -52,18 +52,27 @@ impl Tuner {
         }
     }
     pub async fn detect<C: ControlBackend>(com: &Com<'_, C>) -> Result<TunerKind> {
+        // A tuner that isn't there NAKs, which the RTL2832U reports as a STALL.
+        // Chrome's WebUSB on Windows reports that STALL as a NetworkError, which
+        // nusb maps to Disconnected: also taken as "not here" while probing.
+        // Only if no tuner answers at all is a disconnect the answer.
+        let mut disconnected = None;
         for (address, kind) in [(0x34, TunerKind::R820T), (0x74, TunerKind::R828D)] {
             match com.i2c_read(address, 0, 1).await {
                 Ok(data) if data[0] == 0x69 => return Ok(kind),
                 Ok(_) | Err(Error::Transfer(nusb::transfer::TransferError::Stall)) => {}
+                Err(error) if probe_disconnect(&error) => disconnected = Some(error),
                 Err(error) => return Err(error),
             }
         }
         // Probed after the R82xx so their dongles see no extra NAKed request.
-        if e4k::probe(com).await? {
-            return Ok(TunerKind::E4000);
+        match e4k::probe(com).await {
+            Ok(true) => return Ok(TunerKind::E4000),
+            Ok(false) => {}
+            Err(error) if probe_disconnect(&error) => disconnected = Some(error),
+            Err(error) => return Err(error),
         }
-        Err(Error::UnsupportedTuner)
+        Err(disconnected.unwrap_or(Error::UnsupportedTuner))
     }
     /// The IF the demodulator must shift down from: zero for the E4000.
     pub fn if_hz(&self) -> u64 {
@@ -303,6 +312,11 @@ impl Tuner {
     }
 }
 
+/// A probe's NAK as WebUSB on Windows reports it (see [`Tuner::detect`]).
+fn probe_disconnect(error: &Error) -> bool {
+    matches!(error, Error::Transfer(nusb::transfer::TransferError::Disconnected))
+}
+
 pub(crate) fn v4_input(hz: u64) -> u8 {
     if hz < XTAL_HZ {
         2
@@ -483,6 +497,29 @@ mod tests {
         assert!(matches!(
             futures_lite::future::block_on(Tuner::detect(&Com(&control))),
             Err(Error::UnsupportedTuner)
+        ));
+    }
+    /// WebUSB on Windows: absent tuners' NAKs arrive as "disconnected". An
+    /// E4000 is still found behind them; with nothing answering, the
+    /// disconnect is the error.
+    #[test]
+    fn probe_naks_reported_as_disconnects_are_passed_over() {
+        let control = FakeTransport::default();
+        control.state.tuner_address.store(e4k::ADDRESS, Ordering::SeqCst);
+        control.state.disconnect_absent_i2c.store(true, Ordering::SeqCst);
+        assert_eq!(
+            futures_lite::future::block_on(Tuner::detect(&Com(&control))).unwrap(),
+            TunerKind::E4000
+        );
+        control.state.tuner_address.store(0x74, Ordering::SeqCst);
+        assert_eq!(
+            futures_lite::future::block_on(Tuner::detect(&Com(&control))).unwrap(),
+            TunerKind::R828D
+        );
+        control.state.tuner_address.store(0, Ordering::SeqCst);
+        assert!(matches!(
+            futures_lite::future::block_on(Tuner::detect(&Com(&control))),
+            Err(Error::Transfer(nusb::transfer::TransferError::Disconnected))
         ));
     }
     #[test]

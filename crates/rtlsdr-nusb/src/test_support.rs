@@ -41,6 +41,9 @@ pub(crate) struct FakeState {
     /// An E4000's registers (when `tuner_address` is 0xC8) and its register pointer.
     pub(crate) e4k_registers: Mutex<std::collections::HashMap<u8, u8>>,
     pub(crate) e4k_pointer: AtomicU8,
+    /// I2C writes to an address with no tuner fail as WebUSB on Windows
+    /// reports a NAK: "disconnected".
+    pub(crate) disconnect_absent_i2c: AtomicBool,
 }
 impl FakeState {
     /// An I2C write to an emulated E4000: a pointer set, or a register written.
@@ -101,6 +104,7 @@ impl Default for FakeState {
             events: Default::default(),
             e4k_registers: Default::default(),
             e4k_pointer: Default::default(),
+            disconnect_absent_i2c: Default::default(),
         }
     }
 }
@@ -167,6 +171,12 @@ impl std::future::IntoFuture for FakeTransportOut {
                 }
             })
             .await;
+            if self.state.disconnect_absent_i2c.load(Ordering::SeqCst)
+                && self.request.index == 0x610
+                && self.request.value != u16::from(self.state.tuner_address.load(Ordering::SeqCst))
+            {
+                return Err(nusb::transfer::TransferError::Disconnected.into());
+            }
             let stall_at = self.state.stall_control_out_at.load(Ordering::SeqCst);
             if self.state.fail_control_out.load(Ordering::SeqCst)
                 || self.state.fail_control_out_at.load(Ordering::SeqCst) == call

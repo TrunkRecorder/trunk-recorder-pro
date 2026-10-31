@@ -8,7 +8,7 @@ in the [browser version](browser.md) or the [Docker image](docker.md). The excep
 
 ## How drivers are found
 
-RTL-SDRs with an R820T or R828D tuner, and HackRF Ones, need nothing: Trunk Recorder Pro has its
+RTL-SDRs with an R820T, R828D or E4000 tuner, and HackRF Ones, need nothing: Trunk Recorder Pro has its
 own driver for them. Every other radio uses its maker's driver library, which you install yourself. Trunk
 Recorder Pro isn't built against these libraries. It looks for each one when it starts, so the
 same download works with or without them:
@@ -166,9 +166,9 @@ A SoapySDR source with `driver=hackrf` still works, for a rad1o or a HackRF behi
 ## Older RTL-SDR dongles
 
 Trunk Recorder Pro's own RTL-SDR driver handles the **R820T** and **R828D** tuners, which are in
-nearly every dongle sold today, including the RTL-SDR Blog V3 and V4. Older dongles with an
-**E4000**, **FC0012**, **FC0013** or **FC2580** tuner show up in the list but fail to open with a
-message that the tuner isn't supported natively.
+nearly every dongle sold today, including the RTL-SDR Blog V3 and V4, and the older **E4000**.
+Dongles with an **FC0012**, **FC0013** or **FC2580** tuner show up in the list but fail to open
+with a message that the tuner isn't supported natively.
 
 Those work through SoapySDR instead:
 
