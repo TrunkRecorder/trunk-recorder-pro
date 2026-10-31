@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 use crate::config::{Channel, Stereo};
 use crate::runtime::EngineCmd;
+use base64::Engine;
+use percent_encoding::percent_decode_str;
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
@@ -59,6 +61,7 @@ pub fn spawn(row: Channel, stream: usize, feeder: StreamFeeder, ctl: Sender<Engi
 /// One connection: its audio to `push` (8 kHz) until it ends, fails or `stop`.
 /// `Ok` only when stopped (a stream that ends is tried again).
 fn stream_once(row: &Channel, stop: &Arc<AtomicBool>, push: &mut dyn FnMut(&[f32])) -> Result<(), String> {
+    let (url, authorization) = request_url(row.url.trim())?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_per_read(Some(Duration::from_secs(15)))
@@ -66,7 +69,13 @@ fn stream_once(row: &Channel, stop: &Arc<AtomicBool>, push: &mut dyn FnMut(&[f32
         .http_status_as_error(false)
         .build()
         .into();
-    let response = agent.get(row.url.trim()).call().map_err(|e| format!("couldn't connect: {e}"))?;
+    let mut request = agent.get(&url);
+    if let Some(authorization) = authorization {
+        request = request.header("Authorization", &authorization);
+    }
+    let response = request
+        .call()
+        .map_err(|e| format!("couldn't connect: {e}"))?;
     if !response.status().is_success() {
         return Err(format!("the server answered {}", response.status()));
     }
@@ -115,6 +124,39 @@ fn stream_once(row: &Channel, stop: &Arc<AtomicBool>, push: &mut dyn FnMut(&[f32
     }
     decoded?;
     network
+}
+
+fn request_url(url: &str) -> Result<(String, Option<String>), String> {
+    let uri = url
+        .parse::<ureq::http::Uri>()
+        .map_err(|_| "invalid HTTP stream URL".to_string())?;
+    let Some(authority) = uri.authority() else {
+        return Ok((url.to_string(), None));
+    };
+    let Some((userinfo, host_port)) = authority.as_str().rsplit_once('@') else {
+        return Ok((url.to_string(), None));
+    };
+    let (username, password) = userinfo.split_once(':').unwrap_or((userinfo, ""));
+    if username.is_empty() && password.is_empty() {
+        return Ok((url.to_string(), None));
+    }
+
+    let username = percent_decode_str(username)
+        .decode_utf8()
+        .map_err(|_| "invalid credentials in HTTP stream URL".to_string())?;
+    let password = percent_decode_str(password)
+        .decode_utf8()
+        .map_err(|_| "invalid credentials in HTTP stream URL".to_string())?;
+    let credentials = format!("{username}:{password}");
+    let authorization = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
+    let scheme = uri
+        .scheme_str()
+        .ok_or_else(|| "invalid HTTP stream URL".to_string())?;
+    let path_and_query = uri.path_and_query().map_or("/", |path| path.as_str());
+    Ok((
+        format!("{scheme}://{host_port}{path_and_query}"),
+        Some(format!("Basic {authorization}")),
+    ))
 }
 
 /// Decode `input` (MP3 or WAV) to 8 kHz mono, in the row's stereo channel, into `push`.
@@ -322,6 +364,24 @@ mod tests {
 
     const SAMPLE_RATE: usize = 8000;
 
+    #[test]
+    fn request_url_moves_embedded_credentials_to_basic_auth() {
+        let (url, authorization) =
+            request_url("https://user%40domain:p%3Ass@radio.example:8443/live.mp3?mount=1")
+                .unwrap();
+        assert_eq!(url, "https://radio.example:8443/live.mp3?mount=1");
+        assert_eq!(
+            authorization.as_deref(),
+            Some("Basic dXNlckBkb21haW46cDpzcw==")
+        );
+    }
+
+    #[test]
+    fn request_url_preserves_urls_without_credentials() {
+        let original = "https://radio.example/live.mp3?mount=1";
+        assert_eq!(request_url(original).unwrap(), (original.to_string(), None));
+    }
+
     fn wav(samples: impl IntoIterator<Item = f32>) -> Vec<u8> {
         let samples: Vec<i16> = samples
             .into_iter()
@@ -374,13 +434,23 @@ mod tests {
             let (mut client, _) = listener.accept().unwrap();
             let mut request = BufReader::new(client.try_clone().unwrap());
             let mut line = String::new();
+            let mut authorized = false;
+            let mut request_target_is_clean = false;
             loop {
                 line.clear();
                 request.read_line(&mut line).unwrap();
+                if line == "GET /fixture.mp3 HTTP/1.1\r\n" {
+                    request_target_is_clean = true;
+                }
+                if line.eq_ignore_ascii_case("Authorization: Basic dXNlcjpwYXNz\r\n") {
+                    authorized = true;
+                }
                 if line == "\r\n" || line.is_empty() {
                     break;
                 }
             }
+            assert!(authorized);
+            assert!(request_target_is_clean);
             write!(
                 client,
                 "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -391,7 +461,11 @@ mod tests {
         });
 
         let mut got = 0;
-        let result = stream_once(&row(&format!("http://{address}/fixture.mp3")), &Arc::new(AtomicBool::new(false)), &mut |a| got += a.len());
+        let result = stream_once(
+            &row(&format!("http://user:pass@{address}/fixture.mp3")),
+            &Arc::new(AtomicBool::new(false)),
+            &mut |audio| got += audio.len(),
+        );
         server.join().unwrap();
         assert_eq!(result, Err("the stream ended".into()));
         assert!(got > 0, "its audio came through");
