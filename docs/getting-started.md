@@ -48,7 +48,7 @@ other program that might be using it, such as SDR#, SDR++, GQRX or rtl_tcp. Only
 use a radio at a time.
 
 RTL-SDR dongles work with nothing else installed (on Windows, after the one-time WinUSB driver
-install with Zadig; on Linux, after the udev rule). USRP, Airspy and SoapySDR radios need their
+install with Zadig; on Linux, after the udev rule), and so do HackRF Ones. USRP, Airspy and SoapySDR radios need their
 makers' drivers: see [Other radios](install/other-radios.md).
 
 To see what Trunk Recorder Pro can find from a terminal:

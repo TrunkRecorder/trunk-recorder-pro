@@ -53,6 +53,15 @@ pub use nusb::MaybeFuture;
 pub use rx::{MAX_F32_IQ_SAMPLES_PER_TRANSFER, RxBuffers, RxStream, SampleBlock, StreamingStats};
 pub use tuners::TunerKind;
 
+/// What a device's control pipe has counted since it opened.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LinkStats {
+    /// Requests the chip refused (STALL) and that were tried again.
+    pub stall_retries: u64,
+    /// Reads sent only so a demodulator write after them is not refused.
+    pub wake_reads: u64,
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod test_support;
 

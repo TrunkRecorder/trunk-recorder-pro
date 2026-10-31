@@ -1,7 +1,7 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
-import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
+import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, Talkgroup, UnitNames } from "./protocol.ts";
+import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
@@ -63,13 +63,18 @@ export const BLADERF_RATES = [2_400_000, 4_000_000, 5_000_000, 6_000_000, 8_000_
 export function newBladerf(): Source {
   return { type: "bladerf", serial: "", centerHz: 0, rateHz: 10_000_000, bandwidthHz: 0, gainDb: 30, agc: false, biasTee: false, ppm: 0 };
 }
+/** Offered for a HackRF (1–20 MSPS can be typed). */
+export const HACKRF_RATES = [8_000_000, 10_000_000, 4_000_000, 2_000_000, 16_000_000, 20_000_000];
+export function newHackrf(): Source {
+  return { type: "hackrf", serial: "", centerHz: 0, rateHz: 8_000_000, lnaDb: 16, vgaDb: 20, amp: false, biasTee: false, ppm: 0 };
+}
 /** Offered for SoapySDR devices; any rate the device takes can be typed. */
 export const SOAPY_RATES = [2_000_000, 2_400_000, 2_500_000, 3_000_000, 6_000_000, 8_000_000, 10_000_000];
 export function newSoapy(): Source {
   return { type: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, agc: true, gainDb: null, gains: {}, antenna: "", settings: "", ppm: 0 };
 }
 export function newFile(): Source {
-  return { type: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8" };
+  return { type: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8", ppm: 0 };
 }
 
 export type Os = "windows" | "macos" | "linux";
@@ -102,6 +107,8 @@ export interface SourceKind {
   device?: "serial" | "args";
   /** The library it needs, loaded at run time (desktop app only). */
   driver?: Driver;
+  /** A driver of its own, built in: nothing to install (desktop app only). */
+  native?: boolean;
   /** The name SoapySDR lists it under, when this source drives it natively. */
   soapyDriver?: string;
   /** Its gain settings, which the desktop recorder takes while recording (runtime::live_gain). */
@@ -147,6 +154,17 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     soapyDriver: "bladerf",
     liveGain: ["gainDb"],
   },
+  hackrf: {
+    label: "HackRF",
+    fresh: newHackrf,
+    rates: HACKRF_RATES,
+    freeRate: true,
+    rateHint: "MSPS, 1–20",
+    device: "serial",
+    native: true,
+    soapyDriver: "hackrf",
+    liveGain: ["lnaDb", "vgaDb", "amp"],
+  },
   soapy: {
     label: "SoapySDR",
     fresh: newSoapy,
@@ -155,17 +173,17 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     rateHint: "MSPS, one the device supports",
     device: "args",
     driver: { name: "SoapySDR and your radio's module", macos: "brew install soapysdr soapyhackrf", linux: "sudo apt install soapysdr0.8-module-all", windows: "PothosSDR or radioconda" },
-    covers: "HackRF, SDRplay, LimeSDR, PlutoSDR…",
+    covers: "SDRplay, LimeSDR, PlutoSDR…",
     liveGain: ["gainDb"],
   },
   file: { label: "Capture file", fresh: newFile, rates: [...SAMPLE_RATES, 8_000_000, 10_000_000] },
 };
 
-/** The kinds of source that need a driver (and so the desktop app): the recorder reports each in `radios`. */
+/** The kinds of source with a driver (installed, or built in) and so the desktop app: the recorder reports each in `radios`. */
 export type DriverKind = keyof Radios;
-export const DRIVER_KINDS = (Object.keys(SOURCE_KINDS) as Source["type"][]).filter((k): k is DriverKind => !!SOURCE_KINDS[k].driver);
+export const DRIVER_KINDS = (Object.keys(SOURCE_KINDS) as Source["type"][]).filter((k): k is DriverKind => !!(SOURCE_KINDS[k].driver || SOURCE_KINDS[k].native));
 /** A source that needs a driver, and so the desktop app. */
-export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind }> => !!SOURCE_KINDS[x.type].driver;
+export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind }> => !!(SOURCE_KINDS[x.type].driver || SOURCE_KINDS[x.type].native);
 
 /** The device a source names ("" = the first found, or a file). */
 export function deviceId(x: Source): string {
@@ -916,7 +934,7 @@ export function importTrunkRecorderConfig(
   base: Config,
   files: Record<string, string> = {},
   merge = false,
-): { config: Config; talkgroups: Record<string, string>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
+): { config: Config; talkgroups: Record<string, Talkgroup[]>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
   // A byte-order mark (Windows editors add one) is not JSON; Trunk Recorder skips it, so do we.
   const j = JSON.parse(text.replace(/^\uFEFF/, "")) as Record<string, unknown>;
   const notes: string[] = [];
@@ -925,8 +943,8 @@ export function importTrunkRecorderConfig(
   const names = new Map<string, string>();
   const systemNames = new Map<unknown, string>();
   const cfg: Config = structuredClone(base);
-  // Each system's talkgroup file, by its short name here (kept beside the config: setTalkgroups).
-  const talkgroups: Record<string, string> = {};
+  // Each system's talkgroups (read from its file), by its short name here (kept beside the config: setTalkgroups).
+  const talkgroups: Record<string, Talkgroup[]> = {};
   const sources = (j.sources as Record<string, unknown>[] | undefined) ?? [];
   const systems = (j.systems as Record<string, unknown>[] | undefined) ?? [];
   const imported: Source[] = [];
@@ -1164,9 +1182,9 @@ export function importTrunkRecorderConfig(
         const csv = files[sys.talkgroupsFile];
         const had = talkgroups[x.shortName];
         if (x !== one && had) {
-          if (csv !== undefined && normalizeTalkgroupCsv(csv) !== had) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
+          if (csv !== undefined && JSON.stringify(readTalkgroupFile(csv).talkgroups) !== JSON.stringify(had)) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
         } else if (csv === undefined) todo.push({ kind: "talkgroups", system: x.shortName, file: sys.talkgroupsFile });
-        else talkgroups[x.shortName] = normalizeTalkgroupCsv(csv);
+        else talkgroups[x.shortName] = readTalkgroupFile(csv).talkgroups;
       }
       if (sys.siteId !== undefined && sys.siteId !== null && sys.siteId !== "") todo.push({ kind: "siteLock", system: x.shortName, siteId: String(sys.siteId), site });
       if (x === one) {

@@ -9,20 +9,45 @@
 //! |---|---|---|
 //! | [`SOON_MS`] | talker aliases, sharing, band plans | small, and wanted back |
 //! | [`MINUTE_MS`] | the codes conventional frequencies carried, AutoTune's scores | counted on every call |
-//! | [`REGISTRY_MS`] | the radio registry ([`crate::stats::radio`]) | can be megabytes |
+//! | [`REGISTRY_MS`] | what changed in the radio registry ([`crate::stats::radio`]) | the whole can be megabytes |
 //!
 //! At the end of a recording everything is due.
 
 use std::collections::HashMap;
 
-use crate::stats::radio::SystemRadio;
+use crate::stats::radio::RegistryChanges;
 
 /// Talker aliases, sharing, band plans.
 pub const SOON_MS: f64 = 10_000.0;
 /// The codes conventional frequencies carried, AutoTune's scores.
 pub const MINUTE_MS: f64 = 60_000.0;
-/// The radio registry (rewritten whole).
+/// What changed in the radio registry.
 pub const REGISTRY_MS: f64 = 15.0 * 60_000.0;
+
+/// What's kept between runs, by kind: what a store files each under, with
+/// [`Saved::key`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Units,
+    Sharing,
+    Bandplan,
+    Heard,
+    Tune,
+    Registry,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Units => "units",
+            Kind::Sharing => "sharing",
+            Kind::Bandplan => "bandplan",
+            Kind::Heard => "heard",
+            Kind::Tune => "tune",
+            Kind::Registry => "registry",
+        }
+    }
+}
 
 /// Something to keep, due to be written.
 #[derive(Debug)]
@@ -37,8 +62,32 @@ pub enum Saved {
     Heard(String),
     /// AutoTune's scores, by source label.
     Tune(String),
-    /// A system's radio registry: turned into JSON by whoever writes it (it can be large).
-    Registry { system: String, radio: SystemRadio },
+    /// The rows of a system's radio registry that changed (or went) since
+    /// last time. A store appends them and writes the whole now and then
+    /// (trunk-pro's `db::store`); the browser writes the system whole.
+    Registry { system: String, changes: Box<RegistryChanges> },
+}
+
+impl Saved {
+    pub fn kind(&self) -> Kind {
+        match self {
+            Saved::Units { .. } => Kind::Units,
+            Saved::Sharing(_) => Kind::Sharing,
+            Saved::Bandplan { .. } => Kind::Bandplan,
+            Saved::Heard(_) => Kind::Heard,
+            Saved::Tune(_) => Kind::Tune,
+            Saved::Registry { .. } => Kind::Registry,
+        }
+    }
+
+    /// Which of its kind it is: the system, the site's key, or "" (one of its kind).
+    pub fn key(&self) -> &str {
+        match self {
+            Saved::Units { system, .. } | Saved::Registry { system, .. } => system,
+            Saved::Bandplan { key, .. } => key,
+            _ => "",
+        }
+    }
 }
 
 /// When each kind was last due, and the band plans as last given.

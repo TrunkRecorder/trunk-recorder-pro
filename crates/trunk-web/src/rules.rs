@@ -30,6 +30,33 @@ pub fn config_talkgroups(json: &str) -> String {
     serde_json::from_str::<serde_json::Value>(json).map_or_else(|_| "{}".into(), |v| serde_json::json!(trunk_app::migrate::talkgroups_of(&v)).to_string())
 }
 
+/// A talkgroup file (Trunk Recorder's CSV, or one saved by a spreadsheet)
+/// read as the recorder reads one: JSON `{ talkgroups: [Talkgroup], legacy,
+/// skipped, unknownColumns, missing }` (trunk_core::trunk::read_rows).
+#[wasm_bindgen(js_name = talkgroupsFromCsv)]
+pub fn talkgroups_from_csv(text: &str) -> String {
+    serde_json::to_string(&trunk_core::trunk::read_rows(text)).unwrap_or_default()
+}
+
+/// Talkgroups (JSON `[Talkgroup]`) as a talkgroup file: Trunk Recorder's
+/// headed CSV, with each row's comment and columns of its own.
+#[wasm_bindgen(js_name = talkgroupsToCsv)]
+pub fn talkgroups_to_csv(json: &str) -> String {
+    trunk_core::trunk::rows_csv(&serde_json::from_str::<Vec<trunk_core::trunk::TalkgroupRow>>(json).unwrap_or_default())
+}
+
+/// Talkgroups (JSON `[Talkgroup]`) with talkgroup `number`'s cells set
+/// (JSON `[[column, value]]`, by Trunk Recorder's column names): the same
+/// edit the recorder makes for `setTalkgroup`. JSON `[Talkgroup]`.
+#[wasm_bindgen(js_name = talkgroupsEdit)]
+pub fn talkgroups_edit(json: &str, number: u32, cells_json: &str) -> String {
+    let mut rows: Vec<trunk_core::trunk::TalkgroupRow> = serde_json::from_str(json).unwrap_or_default();
+    let cells: Vec<(String, String)> = serde_json::from_str(cells_json).unwrap_or_default();
+    let cells: Vec<(&str, &str)> = cells.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    trunk_core::trunk::edit_rows(&mut rows, number, &cells);
+    serde_json::to_string(&rows).unwrap_or_default()
+}
+
 /// Why Start would refuse this config, or none.
 #[wasm_bindgen(js_name = configProblem)]
 pub fn config_problem(json: &str) -> Option<String> {

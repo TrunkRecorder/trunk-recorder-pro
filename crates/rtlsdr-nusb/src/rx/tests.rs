@@ -165,11 +165,45 @@ fn restart_reuses_queue_and_discards_every_old_submission() {
     let (control, _, mut rx) = setup::<RawIq>();
     rx.start().wait().unwrap();
     rx.next_block(None).wait().unwrap().unwrap();
+    // A stop reaps every transfer in flight (counted as dropped, told with
+    // the first block after the restart); the one being read is dropped too.
     rx.stop().wait().unwrap();
+    let in_flight = RxBuffers::default().count as u64 - 1;
+    assert_eq!(rx.current_stats().buffers_discarded_on_restart, in_flight);
+    rx.start().wait().unwrap();
+    let block = rx.next_block(None).wait().unwrap().unwrap();
+    assert_eq!(block.dropped_samples(), (in_flight + 1) * DEFAULT_BUFFER_SIZE as u64 / 2);
+    assert_eq!(rx.next_block(None).wait().unwrap().unwrap().dropped_samples(), 0, "per block, not a running total");
+    assert_eq!(control.state.bulk_in_count.load(Ordering::SeqCst), 1);
+}
+
+/// What the chip counted as dropped while it ran (read at the stop) is told
+/// with the first block after the restart.
+#[test]
+fn the_chips_dropped_count_comes_with_the_next_block() {
+    let (control, _, mut rx) = setup::<RawIq>();
     rx.start().wait().unwrap();
     rx.next_block(None).wait().unwrap().unwrap();
-    assert_eq!(control.state.bulk_in_count.load(Ordering::SeqCst), 1);
-    assert_eq!(rx.current_stats().buffers_discarded_on_restart, 8);
+    control.state.sys_registers.lock().unwrap().insert(crate::protocol::DROPPED_BLOCKS, 3);
+    rx.stop().wait().unwrap();
+    assert_eq!(rx.current_stats().chip_dropped_samples, 3 * 94);
+    assert_eq!(control.state.sys_registers.lock().unwrap()[&crate::protocol::DROPPED_BLOCKS], 0, "cleared");
+    rx.start().wait().unwrap();
+    let reaped = RxBuffers::default().count as u64 * DEFAULT_BUFFER_SIZE as u64 / 2;
+    assert_eq!(rx.next_block(None).wait().unwrap().unwrap().dropped_samples(), reaped + 3 * 94);
+}
+
+/// A transfer the endpoint refused (STALL) is cleared in place: the stream
+/// goes on, what was in flight counted as dropped.
+#[test]
+fn a_bulk_stall_is_cleared_in_place() {
+    let (_, _, mut rx) = setup::<RawIq>();
+    rx.start().wait().unwrap();
+    rx.next_block(None).wait().unwrap().unwrap();
+    rx.queue.as_mut().unwrap().bulk_in.as_mut().unwrap().stall_next = true;
+    let block = rx.next_block(None).wait().unwrap().unwrap();
+    assert!(block.dropped_samples() > 0);
+    assert_eq!(rx.current_stats().stall_recoveries, 1);
 }
 
 #[test]

@@ -5,10 +5,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
-import { radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
+import { callsQuery, radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
 import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
-import type { CipherSeen, LengthHistogram, OutOfBandRow, RadioResult, TgRow, UnitRow } from "../protocol.ts";
+import type { CallEntry, CipherSeen, LengthHistogram, OutOfBandRow, RadioResult, TgRow, UnitRow } from "../protocol.ts";
+import { playable, playNow } from "../listen.ts";
 import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
 import { Tones } from "./Tones.tsx";
 import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
@@ -453,6 +454,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
         <div className="stack">
           <Lengths h={r.lengths} />
           {row.ciphers.length > 0 && <Ciphers ciphers={row.ciphers} />}
+          <CallsCard sys={sys} talkgroup={tg} />
           <Card title="Affiliated with it">
             {(r.affiliated ?? []).length === 0 ? (
               <p className="empty">None right now.</p>
@@ -469,6 +471,67 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Calls a page of the Calls card asks for. */
+const CALLS_PAGE = 25;
+
+/**
+ * A talkgroup's or a radio's recorded calls, newest first, a page at a time
+ * (`callsQuery`: the call store on the desktop app, as far back as it keeps
+ * them; the browser build, its own list). Each plays from here.
+ */
+function CallsCard({ sys, talkgroup, unit }: { sys: DashSystem; talkgroup?: number; unit?: number }) {
+  const [page, setPage] = useState<{ entries: CallEntry[]; next?: string; error?: string } | null>(null);
+  const ask = (cursor?: string) => callsQuery({ system: sys.name, talkgroup, unit, ...(cursor ? { cursor } : {}), limit: CALLS_PAGE });
+  useEffect(() => {
+    let live = true;
+    setPage(null);
+    void ask().then((r) => live && setPage({ entries: r.entries ?? [], next: r.next, error: r.error }));
+    return () => {
+      live = false;
+    };
+  }, [sys.name, talkgroup, unit]);
+  const older = () => {
+    if (!page?.next) return;
+    void ask(page.next).then((r) => setPage((p) => p && { entries: [...p.entries, ...(r.entries ?? [])], next: r.next, error: r.error }));
+  };
+  return (
+    <Card title="Calls">
+      {!page ? (
+        <p className="empty">Loading…</p>
+      ) : page.entries.length === 0 ? (
+        <p className="empty">No recorded calls.</p>
+      ) : (
+        <ul className="timeline">
+          {page.entries.map((c) => (
+            <li key={c.path}>
+              <span className="muted small">{clockAt(c.record.start_time_ms / 1000, true)}</span>
+              {unit !== undefined ? (
+                <button className="linkish" onClick={() => setView("radio", sys.name, "tg", c.record.talkgroup)}>
+                  {c.record.talkgroup_tag || c.record.talkgroup}
+                </button>
+              ) : (
+                <span className="small">{(c.record.srcList ?? []).length} talking</span>
+              )}
+              <span className="mono small">{num(c.record.call_length, 0)} s</span>
+              {playable(c) && (
+                <button className="btn ghost small" onClick={() => playNow(c)}>
+                  Play
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {page?.error && <p className="small muted">{page.error}</p>}
+      {page?.next && (
+        <button className="btn ghost small" onClick={older}>
+          Load older
+        </button>
+      )}
+    </Card>
   );
 }
 
@@ -568,6 +631,7 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
               ))}
             </ul>
           </Card>
+          <CallsCard sys={sys} unit={unit} />
           <Card title="Affiliations">
             {(r.affiliations ?? []).length === 0 ? (
               <p className="empty">None heard.</p>

@@ -5,6 +5,182 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Live audio in stereo, through an interface's own sound chain.** `client.js`'s
+  `LivePlayer` has `pan` (left -1 to right 1) beside `gain`, both settable while playing
+  (`player.pan = -1`; they glide, no clicks), and `skip()` drops the call playing. It
+  plays into the page's one audio output, `audioOut()`, or into an `output` node an
+  interface builds on it (an EQ, a visualizer's analyser, a master volume), so players
+  mix: a player per call or per talkgroup, each with its pan, hears several calls at once
+  (`wall.html?stereo`). The dashboard now plays live audio with this same player, so
+  every interface gets its care for Safari (resampled, woken after tab switches) and
+  a backlog over 3 s is dropped instead of played late.
+- **A call store: every recorded call indexed, and found by talkgroup, radio or time** (#100,
+  from #102 and #103 by auggiesoft). Each finished call is a row in `trunk-pro.sqlite`, beside the
+  config.
+  - A talkgroup's and a radio's Radio page list their calls, a page at a time, as far back as the
+    store keeps them, and each plays from there. "Load older" on the Listen page pages back the
+    same way, with no 24-hour limit.
+  - The latest calls are in every answer at once; the store commits them in batches behind.
+  - **`storage.retentionDays`**: how long calls stay in the store, 120 days by default (0: all).
+    The recordings and their JSON files aren't touched.
+  - **`storage.commitSeconds`**: how far apart the store's commits are under load, 300 by
+    default (10 to 3600). Each commit writes whole pages, twice, so fewer is gentler on SD cards
+    and eMMC: on the Pi's eMMC a busy system's store writes 0.21 GB a day at 300, 0.61 at 60
+    (`db::tests::write_budget`).
+  - The first start indexes the calls already in the capture folder, in the background; later
+    starts check the last two days for calls recorded while it was off.
+  - **Where it's kept** (`storage.backend`): `sqlite` (the default, beside the config: a Pi to a
+    mid-size server), `postgres` (a PostgreSQL server, `storage.url`: years of history, your
+    own backups and replication). Setup's Recording tab has the choice.
+  - A store that can't be opened (a full disk, a server not reachable, another recorder using
+    it) is left off: recording, the call list and every query go on from the recent calls.
+    Nothing else is kept meanwhile (talkgroups, aliases, the radio registry, the dashboard's
+    history); every connection is told.
+  - **Systems have ids.** Each system in `config.json` gets an `id` the first time it's read,
+    kept across renames and never given twice (`nextSystemId`). The store keeps everything by
+    it, so a renamed system keeps its calls, talkgroups and registry.
+  - **A call is kept once in the store.** Its record's fields are columns, its radios rows of
+    their own, and the lists nothing searches one JSON document. The call's `.json` file stays the
+    truth.
+  - **Paging by cursor (breaking).**
+    - `callsQuery` takes `cursor`, which is the last page's `next`. `callsResult` is
+      `{ id, entries, next?, error? }`, and `history` carries `next` too.
+    - Calls are ordered by start, then path, and every page is one query.
+    - `olderCalls` is gone; the Listen page's "Load older" goes on from the history's `next`.
+    - Plugins: `CallsQuery.cursor` and `CallsPage.next`, the request number beside them
+      (`Plugin::calls(request, page)`).
+    - With the store off, `GET /api/v1/calls` answers from the recent calls (its `error` says
+      so), as `callsQuery` does, rather than 503.
+    - A talkgroup or radio asked for without a system is looked for in each configured
+      system.
+  - **A database always: the `files` backend is gone (breaking).** `storage.backend` is
+    `sqlite` (the default) or `postgres`, and talkgroups, aliases, band plans, the registry and
+    the dashboard's history are always the store's.
+    - The store's settings have a Setup tab of their own, **Data**. The dashboard's Platform page has
+      a **Storage** view: each table's and index's size, its rows, how they've grown, and what the
+      store writes to disk a day (Linux; PostgreSQL: its server's log).
+    - **`storage.radioIndex` and `storage.talkgroupIndex`** (Setup → Data: "Calls by radio" and "Calls
+      by talkgroup", both on by default) are the indexes behind a radio's and a talkgroup's call list
+      (the Radio page, and `callsQuery` / `/api/v1/calls` / plugins asking by `unit` or `talkgroup`).
+      Off, that list is its recent calls. On a busy system the radio index is most of what the store
+      writes (on a Pi's eMMC, a call a second all day: 1.6 GB a day with it, 0.8 without); the
+      talkgroup index is about a third as much.
+    - **`storage.lowWrite`** (Setup: "Low-write mode") is for SD cards: no call index (the call
+      list is the recent calls), the dashboard's history by the hour only, and a commit an hour.
+    - A store that can't be opened is said to every connection, and nothing is kept meanwhile.
+    - A talkgroup edit that couldn't be saved is told to the browsers.
+    - SQLite copies what can't be made again (systems, talkgroups, aliases and other documents,
+      the radio registry) to `trunk-pro.backup` once a day.
+  - **Breaking, while in beta: little is carried over.**
+    - **Talkgroups are:** each system's `<shortName>.talkgroups.csv` beside the config (and an older
+      config's `talkgroupsCsv`) is read into the store at the first start, and the file renamed
+      `….imported`. A system the store already has talkgroups for keeps them (its file is renamed
+      `….unused`).
+    - **So is the config:** `storage.backend: "files"` reads as the default (SQLite), and the
+      config is saved without it (the old one kept as `config.json.before-sites`).
+    - **Nothing else is.** The other flat files (`radio/`, `*.units.csv`, `*.bandplan`,
+      `conventional.heard.json`, `tune.json`, `sharing.json`, `stats/`) aren't read; they're left as
+      they are. Talker aliases, band plans and the radio registry are learned again on the air. A store of another schema version is set aside (SQLite: renamed
+    `.v<n>-<time>`; PostgreSQL: its tables made afresh) and a new one started; the call list is
+    rebuilt from the recordings' `.json` files.
+  - **Talkgroups are kept in the store as rows**, one per talkgroup with its columns typed (a
+    call's talkgroup name is a SQL join away). An Ignore or name change writes only that row and
+    commits at once. **Load CSV…** and **Download** in Setup are the import and export. A
+    downloaded file keeps each row's order, the comment line directly above it and any columns
+    of its own; other comment lines and the original delimiter aren't kept (it's written with
+    commas). Talker aliases are rows too (`units`), and only the ones that changed are written.
+  - **The dashboard's history goes back a year, not a week** (`storage.statsDays`, 365 by default;
+    0 keeps it all). The Platform, RF and Decode pages' charts offer 30 days, 90 days and 1 year,
+    as far as the store keeps. Each series is kept by the hour, and only the last day by the
+    minute in memory. A longer chart asks the store for its hours and gets a few hundred points a
+    series whatever the span, so neither the recorder nor the browser holds the history. On the
+    Pi's eMMC the store writes about 17 MB a
+    day for it. `hello.capabilities` has a new `history`; `statsQuery` takes `30d`, `90d` and `1y`.
+  - **What a recording learns between runs is kept in the store too:**
+    - the radio registry;
+    - talker aliases;
+    - band plans;
+    - conventional codes heard;
+    - AutoTune's scores;
+    - sharing's state.
+
+    The radio registry is appended as each
+    15 minutes' changes and written whole once a day, instead of whole every 15 minutes. On the
+    Pi's eMMC a busy system writes 0.10 GB a day instead of 0.44 (`db::tests::registry_write_budget`).
+    The browser version saves the registry in the same shape, so a registry it saved before
+    starts afresh.
+- **Reporting views in the store:** `calls_report`, `transmissions_report` and `stats_report`
+  give calls, radios and the dashboard's hours with names and timestamps, for the `sqlite3` shell,
+  Grafana and the like (docs/configuration: "The store"). PostgreSQL's big tables are vacuumed
+  and analysed sooner.
+- **Calls by talkgroup, radio and time, for interfaces and plugins:** `callsQuery` on the
+  WebSocket (`client.js`: `rec.calls({ … })`), `GET /api/v1/calls`, `/api/v1/calls/<path>` and
+  `/api/v1/storage` over HTTP (`docs/api/calls.openapi.yaml`), and for plugins `calls.query`
+  (Plugin SDK 0.9.0: `Host::calls`, answered to `Plugin::calls`). One query behind them all.
+
+### HackRF
+
+- **HackRF One is a source of its own** (`"type": "hackrf"`), driven directly over USB like an
+  RTL-SDR: nothing to install, and it works in Docker. Gain by stage (`lnaDb` 0–40 in 8 dB steps,
+  `vgaDb` 0–62 in 2 dB steps, `amp`, off by default because it overloads near strong signals),
+  `biasTee`, `ppm`, `autoTune`, 1 to 20 MSPS. It needs firmware 2021.03 or newer; an older one is
+  refused when opened, with a message to update it (`hackrf_spiflash`). A SoapySDR source with
+  `driver=hackrf` still works, for a rad1o or SoapyRemote — and on Windows, where the built-in driver
+  isn't available yet. The Linux udev rule now covers HackRFs
+  (`1d50:6089`, `1d50:604b`) and the USRP B206mini (`2500:0023`).
+
+### RTL-SDR
+
+- **Smaller USB transfers by default**: 128 of 16 KiB (2 MiB in flight) instead of 8 of 256 KiB.
+  The advice, and the log warning, to set `bufLen` to 65536 with 4 or more dongles on one bus is
+  gone; `bufLen` and `buffers` are still there to override. Trunk Recorder's `buflen` still
+  imports.
+- **A retune or gain change no longer disturbs the signal.** The dongle's output is halted for a
+  moment and only the tuner is changed, without the demodulator reset that used to dent the signal
+  for hundreds of milliseconds. The chip's own count of dropped samples is read at each halt and
+  reported.
+- **A USB stall is recovered in place**, not by reopening the dongle. Requests the chip refuses are
+  retried (some Linux hosts refuse demodulator writes without a recent read), and a PLL that won't
+  lock tries the neighbouring divider. Writes known to wedge a dongle until power is removed are
+  refused by the driver.
+- **Fixed: after a retune, every block re-reported the samples dropped so far** (a running total
+  read as each block's own), so the decoders were fed that much silence again and again. Mostly
+  seen in the survey, which retunes.
+
+### USRP
+
+- **`wireFormat`** (**Wire format** in Setup): `sc16`, `sc12` (B200 / B210 / B200mini / B205mini)
+  or `sc8`. Left blank, a B2xx on a USB 2.0 link above 8 MSPS gets `sc12`; the link speed is
+  detected and logged, with a warning when `sc16` is used at a high rate on USB 2.0.
+- **A bigger receive buffer**: `num_recv_frames=1024` (about 260 ms at 8 MSPS; was 256), also for
+  SoapySDR `driver=uhd`. Device arguments can still set their own.
+- **No sidebands around strong signals on a B2xx.** When UHD would run the master clock at the
+  sample rate (sidebands 270–310 kHz either side of strong carriers), it is doubled, unless the
+  device arguments set `master_clock_rate`.
+- The B206mini needs UHD 4.9 or newer (Debian trixie's package is 4.8).
+
+### Every radio
+
+- **Opening a radio has a deadline** (5 s for an RTL-SDR, HackRF or Airspy; 15 s for a bladeRF or
+  SoapySDR device; 30 s for a USRP), as does a driver's search. A radio whose firmware is stuck now
+  says "isn't answering (its firmware is stuck): unplug it and plug it back in, or power-cycle its
+  USB hub", and no longer keeps other radios from opening.
+- **A stuck USB stream is noticed.** An RTL-SDR or HackRF that sends the same samples over and over
+  (the waterfall stands still), or far more than its sample rate, is reopened.
+- **A slow computer no longer overflows a radio's own buffer unseen.** If the queue to the decoder
+  is full, the block is dropped there, counted as dropped samples and the gap filled.
+- **Real-time priority** for receive threads (and the driver's USB threads) on macOS and Linux. On
+  Linux it needs `CAP_SYS_NICE`; if refused, the log warns once with
+  `sudo setcap cap_sys_nice+ep $(which trunk-pro)` (again after each update). File capabilities
+  make the loader ignore `LD_LIBRARY_PATH`: if UHD or SoapySDR are found only through it, name
+  them with `TRUNK_PRO_UHD` / `TRUNK_PRO_SOAPY`, or skip `setcap`.
+- **A USB transfer refused for lack of memory on Linux explains `usbfs_memory_mb`** and how to
+  raise it.
+- **The sample clock behind call timestamps uses a phase-and-rate loop**, and each source's status
+  reports `clockPpm`, the radio's crystal error against the computer's clock. The RF page shows it.
+- **Device discovery no longer probes an RTL-SDR the app is recording from**; it shows as
+  "recording" (fixes the "interface is busy" log entries of issue #106).
+
 ## [0.2.11] — 2026-10-27
 
 - **Saving never holds up recording or a click.** Large systems on slow disks (SD cards) waited on
@@ -42,7 +218,6 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Escape puts it back. Before, each pause in typing was a save: a system's short name typed as
   "fire4a" renamed it to f, fi, fir… on the way, moving its talkgroup file each time, and a
   plugin's settings restarted it on each pause. Switches and menus still act at once.
-
 - **Phase 2 and DMR `.sdr` files play in MimoSDR.** A Phase 2 frame's symbols were stored as the
   dibit rather than its quadrant, so MimoSDR's player (and anyone else's) misread most of them; and
   frames our vocoder repeated or muted were stored as heard, so other players played them. They're

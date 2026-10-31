@@ -8,6 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The sample clock (session.rs): sdr-core's SampleClock, no_std (also built for the browser).
+sdr-core = { version = "0.1", default-features = false }
 trunk-core.workspace = true
 trunk-recorder-plugin.workspace = true
 serde.workspace = true

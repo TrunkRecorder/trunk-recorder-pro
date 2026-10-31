@@ -2,7 +2,7 @@
 // as it was heard or configured: its tones, at their lengths. What a pattern
 // sounds like, step by step, is the recorder's (rules.ts toneSteps).
 
-import { audioOut } from "./audioOut.ts";
+import { audioOut } from "../../docs/api/client.js";
 import type { TonePatternKind } from "./protocol.ts";
 import { toneSteps, type Step } from "./rules.ts";
 

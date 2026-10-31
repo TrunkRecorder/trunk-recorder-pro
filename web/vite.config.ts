@@ -19,6 +19,8 @@ export default defineConfig(({ mode }) => ({
   define: { __APP_VERSION__: JSON.stringify(version) },
   worker: { format: "es" },
   server: {
+    // client.js (docs/api/) is the live-audio player here too: the one every interface gets.
+    fs: { allow: [".", "../docs/api"] },
     proxy: {
       "/api": { target: "http://127.0.0.1:8080", ws: true },
       "/calls": "http://127.0.0.1:8080",
