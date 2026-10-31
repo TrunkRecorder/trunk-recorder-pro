@@ -18,7 +18,7 @@ pub struct RtlConfig {
     pub rate_hz: u32,
     /// None = tuner AGC.
     pub gain_db: Option<f32>,
-    pub ppm: i32,
+    pub ppm: f64,
     /// Bytes per USB transfer, 0 = the driver's default (Trunk Recorder's `buflen`).
     pub buf_len: u32,
     /// USB transfers in flight, 0 = enough for about 2 MiB.
@@ -173,7 +173,7 @@ impl Drop for Using {
 }
 
 fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
-    let mut b = Device::builder().raw_iq().frequency_hz(cfg.center_hz).sample_rate_hz(cfg.rate_hz).correction_ppm(cfg.ppm);
+    let mut b = Device::builder().raw_iq().frequency_hz(cfg.center_hz).sample_rate_hz(cfg.rate_hz).correction_ppm(cfg.ppm.round() as i32);
     b = b.gain(cfg.gain_db.map_or(GainConfig::Auto, GainConfig::Manual));
     if !cfg.serial.is_empty() {
         b = b.serial(cfg.serial.clone());

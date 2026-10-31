@@ -14,7 +14,7 @@ use crate::saving::Saved;
 use trunk_core::dsp::inband::subaudible::Tone;
 use trunk_core::Complex32;
 
-use crate::config::{Config, Source};
+use crate::config::{Config, SourceKind};
 use crate::stats::{Rollup, SampleMeter, Shared, Stats, Topics};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -371,7 +371,7 @@ impl Session {
         let stats = cfg
             .sources
             .iter()
-            .map(|s| Arc::new(Mutex::new(SourceStats { clock: ClockFit { live: !matches!(s, Source::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })))
+            .map(|s| Arc::new(Mutex::new(SourceStats { clock: ClockFit { live: !matches!(s.kind, SourceKind::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })))
             .collect();
         let recordings = cfg.recordings();
         let meas = Stats::new(&cfg, Shared::new(), local_offset);
@@ -674,8 +674,8 @@ impl Session {
         for (i, c) in self.cfg.sources.iter().enumerate() {
             let v = self.tune.get(&c.label());
             let (e, at) = (v.and_then(|v| v["errorPpm"].as_f64()), v.and_then(|v| v["atPpm"].as_f64()));
-            if let (true, Some(e), Some(at)) = (c.auto_tune(), e, at) {
-                self.engine.seed_tune(i, e + (c.ppm() - at));
+            if let (true, Some(e), Some(at)) = (c.auto_tune, e, at) {
+                self.engine.seed_tune(i, e + (c.ppm - at));
             }
         }
     }
@@ -687,7 +687,7 @@ impl Session {
         let st = self.engine.status();
         for (c, t) in self.cfg.sources.iter().zip(&st.sources) {
             if let Some(e) = t.error_ppm {
-                self.tune.insert(c.label(), json!({ "errorPpm": (e * 100.0).round() / 100.0, "atPpm": c.ppm() }));
+                self.tune.insert(c.label(), json!({ "errorPpm": (e * 100.0).round() / 100.0, "atPpm": c.ppm }));
             }
         }
         let text = serde_json::to_string_pretty(&self.tune).unwrap_or_default();
@@ -850,7 +850,7 @@ impl Session {
 
     /// Site `y`'s radio clock ([`Session::radio_clocks`]).
     fn radio_clock(&self, y: &trunk_core::trunk::SiteStatus) -> Option<RadioClock> {
-        let (t, system_ms, valid) = y.system_time.filter(|_| !self.cfg.sources.iter().any(|s| matches!(s, Source::File { .. })))?;
+        let (t, system_ms, valid) = y.system_time.filter(|_| !self.cfg.sources.iter().any(|s| matches!(s.kind, SourceKind::File { .. })))?;
         let at_s = self.wall(t);
         Some(RadioClock { site: y.site_name.clone(), offset_ms: system_ms as f64 - at_s * 1000.0, at_s, valid })
     }

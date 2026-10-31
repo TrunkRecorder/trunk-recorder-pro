@@ -199,15 +199,7 @@ fn a_late_radio_keeps_to_the_wall_clock() {
     assert!((radio - 3500.0).abs() < 100.0, "the call starts {radio} ms in");
     // A capture played as fast as it can be keeps its own time.
     let mut replay = conventional_config();
-    replay.sources = vec![trunk_app::config::Source::File {
-        path: "x.cu8".into(),
-        center_hz: 155_000_000.0,
-        rate_hz: 2_400_000.0,
-        realtime: false,
-        format: None,
-        auto_tune: false,
-        guard_hz: trunk_app::config::DEFAULT_GUARD_HZ,
-    }];
+    replay.sources = vec![trunk_app::config::Source { kind: crate::config::SourceKind::File { path: "x.cu8".into(), realtime: false, format: None }, center_hz: 155_000_000.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: trunk_app::config::DEFAULT_GUARD_HZ }];
     let file = start_of(replay);
     assert!((file - 500.0).abs() < 100.0, "the replayed call starts {file} ms in");
 }

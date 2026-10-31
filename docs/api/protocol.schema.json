@@ -6417,6 +6417,17 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
             "autoTune": {
               "type": "boolean"
             },
@@ -6430,20 +6441,11 @@
             "serial": {
               "type": "string"
             },
-            "centerHz": {
-              "type": "number"
-            },
-            "rateHz": {
-              "type": "number"
-            },
             "gainDb": {
               "type": "number"
             },
             "agc": {
               "type": "boolean"
-            },
-            "ppm": {
-              "type": "number"
             },
             "bufLen": {
               "type": "number"
@@ -6466,6 +6468,17 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
             "autoTune": {
               "type": "boolean"
             },
@@ -6479,12 +6492,6 @@
             "args": {
               "type": "string"
             },
-            "centerHz": {
-              "type": "number"
-            },
-            "rateHz": {
-              "type": "number"
-            },
             "gainDb": {
               "type": "number"
             },
@@ -6493,9 +6500,6 @@
             },
             "antenna": {
               "type": "string"
-            },
-            "ppm": {
-              "type": "number"
             },
             "wireFormat": {
               "type": "string"
@@ -6516,6 +6520,17 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
             "autoTune": {
               "type": "boolean"
             },
@@ -6528,12 +6543,6 @@
             },
             "serial": {
               "type": "string"
-            },
-            "centerHz": {
-              "type": "number"
-            },
-            "rateHz": {
-              "type": "number"
             },
             "gainMode": {
               "$ref": "#/definitions/AirspyGainMode"
@@ -6559,9 +6568,6 @@
             "packing": {
               "type": "boolean",
               "description": "12-bit samples packed on the USB: a quarter less of the bus (default true)."
-            },
-            "ppm": {
-              "type": "number"
             }
           },
           "required": [
@@ -6584,6 +6590,17 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
             "autoTune": {
               "type": "boolean"
             },
@@ -6597,12 +6614,6 @@
             "serial": {
               "type": "string"
             },
-            "centerHz": {
-              "type": "number"
-            },
-            "rateHz": {
-              "type": "number"
-            },
             "bandwidthHz": {
               "type": "number"
             },
@@ -6614,9 +6625,6 @@
             },
             "biasTee": {
               "type": "boolean"
-            },
-            "ppm": {
-              "type": "number"
             }
           },
           "required": [
@@ -6635,6 +6643,17 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
             "autoTune": {
               "type": "boolean"
             },
@@ -6648,12 +6667,6 @@
             "serial": {
               "type": "string"
             },
-            "centerHz": {
-              "type": "number"
-            },
-            "rateHz": {
-              "type": "number"
-            },
             "lnaDb": {
               "type": "number"
             },
@@ -6665,9 +6678,6 @@
             },
             "biasTee": {
               "type": "boolean"
-            },
-            "ppm": {
-              "type": "number"
             }
           },
           "required": [
@@ -6686,6 +6696,17 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
             "autoTune": {
               "type": "boolean"
             },
@@ -6698,12 +6719,6 @@
             },
             "args": {
               "type": "string"
-            },
-            "centerHz": {
-              "type": "number"
-            },
-            "rateHz": {
-              "type": "number"
             },
             "agc": {
               "type": "boolean"
@@ -6725,9 +6740,6 @@
             },
             "settings": {
               "type": "string"
-            },
-            "ppm": {
-              "type": "number"
             }
           },
           "required": [
@@ -6747,6 +6759,17 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
             "autoTune": {
               "type": "boolean"
             },
@@ -6760,12 +6783,6 @@
             "path": {
               "type": "string"
             },
-            "centerHz": {
-              "type": "number"
-            },
-            "rateHz": {
-              "type": "number"
-            },
             "realtime": {
               "type": "boolean"
             },
@@ -6776,13 +6793,14 @@
           "required": [
             "centerHz",
             "path",
+            "ppm",
             "rateHz",
             "realtime",
             "type"
           ]
         }
       ],
-      "description": "A radio, or a capture to replay (`type`). Every type may have `autoTune`: correct its channels for the frequency error measured on the control channels (Trunk Recorder's autoTune); the error is measured and shown either way. And `guardHz`: left unused at each edge of its band, where the anti-alias filter rolls off (default 75 000; Setup can measure it — `profileSource`)."
+      "description": "A radio, or a capture to replay (`type`), its own keys beside the ones every source has: `centerHz`, `rateHz`, `ppm`, and `autoTune`: correct its channels for the frequency error measured on the control channels (Trunk Recorder's autoTune); the error is measured and shown either way. And `guardHz`: left unused at each edge of its band, where the anti-alias filter rolls off (default 75 000; Setup can measure it — `profileSource`)."
     },
     "SourceStatus": {
       "type": "object",

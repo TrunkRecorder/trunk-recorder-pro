@@ -74,7 +74,7 @@ export function newSoapy(): Source {
   return { type: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, agc: true, gainDb: null, gains: {}, antenna: "", settings: "", ppm: 0 };
 }
 export function newFile(): Source {
-  return { type: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8" };
+  return { type: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8", ppm: 0 };
 }
 
 export type Os = "windows" | "macos" | "linux";

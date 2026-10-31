@@ -769,7 +769,7 @@ fn capture(a: &Args) {
         center_hz: a.num("freq", 0.0) as u64,
         rate_hz: a.num("rate", 2_400_000.0) as u32,
         gain_db: a.get("gain").and_then(|g| g.parse().ok()),
-        ppm: a.num("ppm", 0.0) as i32,
+        ppm: a.num("ppm", 0.0),
         buf_len: a.num("buflen", 0.0) as u32,
         buffers: a.num("buffers", 0.0) as u32,
     };

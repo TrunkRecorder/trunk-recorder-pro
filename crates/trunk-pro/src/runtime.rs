@@ -25,7 +25,7 @@ use trunk_app::{Feeder, Output, Session};
 
 use crate::db::Change;
 use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
-use crate::config::{AirspyGain, Config, SampleFormat, Source};
+use crate::config::{AirspyGain, Config, SampleFormat, Source, SourceKind};
 use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, uhd};
 use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
@@ -357,28 +357,28 @@ pub struct Runner {
 pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
     // `old` with `new`'s gain: equal to `new` when only the gain differs.
     let mut o = old.clone();
-    let gain = match (&mut o, new) {
-        (Source::Rtlsdr { gain_db, agc, .. }, Source::Rtlsdr { gain_db: g, agc: a, .. }) => {
+    let gain = match (&mut o.kind, &new.kind) {
+        (SourceKind::Rtlsdr { gain_db, agc, .. }, SourceKind::Rtlsdr { gain_db: g, agc: a, .. }) => {
             (*gain_db, *agc) = (*g, *a);
             if *a { Gain::Agc } else { Gain::Db(*g as f32) }
         }
         (
-            Source::Airspy { gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, .. },
-            Source::Airspy { gain_mode: m, gain_step: g, lna_step: l, mixer_step: x, vga_step: v, agc: a, .. },
+            SourceKind::Airspy { gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, .. },
+            SourceKind::Airspy { gain_mode: m, gain_step: g, lna_step: l, mixer_step: x, vga_step: v, agc: a, .. },
         ) => {
             (*gain_mode, *gain_step, *lna_step, *mixer_step, *vga_step, *agc) = (*m, *g, *l, *x, *v, *a);
             airspy_gain(*m, *g, *l, *x, *v, *a)
         }
-        (Source::Usrp { gain_db, agc: false, .. }, Source::Usrp { gain_db: g, agc: false, .. })
-        | (Source::Bladerf { gain_db, agc: false, .. }, Source::Bladerf { gain_db: g, agc: false, .. }) => {
+        (SourceKind::Usrp { gain_db, agc: false, .. }, SourceKind::Usrp { gain_db: g, agc: false, .. })
+        | (SourceKind::Bladerf { gain_db, agc: false, .. }, SourceKind::Bladerf { gain_db: g, agc: false, .. }) => {
             *gain_db = *g;
             Gain::Db(*g as f32)
         }
-        (Source::Hackrf { lna_db, vga_db, amp, .. }, Source::Hackrf { lna_db: l, vga_db: v, amp: a, .. }) => {
+        (SourceKind::Hackrf { lna_db, vga_db, amp, .. }, SourceKind::Hackrf { lna_db: l, vga_db: v, amp: a, .. }) => {
             (*lna_db, *vga_db, *amp) = (*l, *v, *a);
             Gain::Stages(hackrf_gain(*l, *v, *a))
         }
-        (Source::Soapy { gain_db, agc: false, .. }, Source::Soapy { gain_db: Some(g), agc: false, .. }) => {
+        (SourceKind::Soapy { gain_db, agc: false, .. }, SourceKind::Soapy { gain_db: Some(g), agc: false, .. }) => {
             *gain_db = Some(*g);
             Gain::Db(*g as f32)
         }
@@ -635,28 +635,31 @@ pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &
 /// start their sources this way.
 pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<sdr::Control>>, name: &str) -> std::io::Result<JoinHandle<()>> {
     let src = src.clone();
-    std::thread::Builder::new().name(name.to_string()).spawn(move || match src {
-        Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, buf_len, buffers, .. } => {
-            sdr::run_with(i, rtl::RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers }, tx, stop, ctl)
+    std::thread::Builder::new().name(name.to_string()).spawn(move || {
+        let Source { kind, rate_hz, ppm, .. } = src;
+        match kind {
+            SourceKind::Rtlsdr { serial, gain_db, agc, buf_len, buffers } => {
+                sdr::run_with(i, rtl::RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers }, tx, stop, ctl)
+            }
+            SourceKind::Usrp { args, gain_db, agc, antenna, wire_format } => {
+                sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm, wire_format }, tx, stop, ctl)
+            }
+            SourceKind::Hackrf { serial, lna_db, vga_db, amp, bias_tee } => {
+                sdr::run_with(i, hackrf::HackrfConfig { serial, center_hz: center, rate_hz, gain: hackrf_gain(lna_db, vga_db, amp), bias_tee, ppm }, tx, stop, ctl)
+            }
+            SourceKind::Airspy { serial, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing } => {
+                let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
+                sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
+            }
+            SourceKind::Bladerf { serial, bandwidth_hz, gain_db, agc, bias_tee } => {
+                sdr::run_with(i, bladerf::BladerfConfig { serial, center_hz: center, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm }, tx, stop, ctl)
+            }
+            SourceKind::Soapy { args, agc, gain_db, gains, antenna, settings } => {
+                let gains = gains.into_iter().collect();
+                sdr::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, ctl)
+            }
+            SourceKind::File { path, realtime, format } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
         }
-        Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, wire_format, .. } => {
-            sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm, wire_format }, tx, stop, ctl)
-        }
-        Source::Hackrf { serial, rate_hz, lna_db, vga_db, amp, bias_tee, ppm, .. } => {
-            sdr::run_with(i, hackrf::HackrfConfig { serial, center_hz: center, rate_hz, gain: hackrf_gain(lna_db, vga_db, amp), bias_tee, ppm }, tx, stop, ctl)
-        }
-        Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
-            let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
-            sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
-        }
-        Source::Bladerf { serial, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm, .. } => {
-            sdr::run_with(i, bladerf::BladerfConfig { serial, center_hz: center, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm }, tx, stop, ctl)
-        }
-        Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
-            let gains = gains.into_iter().collect();
-            sdr::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, ctl)
-        }
-        Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
     })
 }
 
@@ -858,11 +861,11 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         .map(|(i, q)| {
             let (f, ctl, stop) = (session.feeder(i), ctl_tx.clone(), stop.clone());
             let src = &cfg.sources[i];
-            let paced = !matches!(src, Source::File { realtime: false, .. });
+            let paced = !matches!(src.kind, SourceKind::File { realtime: false, .. });
             if paced {
                 at_ms[i].store(u64::MAX, Ordering::Relaxed);
             }
-            let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz(), samples: Default::default(), paced };
+            let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz, samples: Default::default(), paced };
             std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air)).expect("thread")
         })
         .collect();

@@ -15,7 +15,7 @@ use trunk_app::survey::{Request, SurveySession};
 use trunk_app::Output;
 use trunk_core::survey::{Command, Stage};
 
-use crate::config::{Config, Source};
+use crate::config::{Config, Source, SourceKind};
 use crate::runtime::{self, Ctx};
 use crate::sdr::{Block, Control, Gain, Inbox, SourceMsg};
 
@@ -85,8 +85,8 @@ fn feed(session: &mut SurveySession, msg: SourceMsg) -> bool {
 /// A capture's centre (it can't be tuned); None for a radio.
 fn file_center(cfg: &Config, req: &Request) -> Option<f64> {
     match (&req.radio, req.radio(cfg).ok()?) {
-        (_, s) if !matches!(s, Source::File { .. }) => None,
-        (Some(_), s) => Some(s.center_hz()),
+        (_, s) if !matches!(s.kind, SourceKind::File { .. }) => None,
+        (Some(_), s) => Some(s.center_hz),
         (None, _) => Some(cfg.resolved_centers()[req.source]),
     }
 }
@@ -100,7 +100,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
     // The first hop is the source's opening frequency.
     let first = match session.command() {
         Some(Command::Tune(f)) => f,
-        _ => fixed.unwrap_or(radio.center_hz()),
+        _ => fixed.unwrap_or(radio.center_hz),
     };
     if fixed.is_none() {
         *ctl.current_hz.lock().unwrap() = Some(first);
@@ -175,20 +175,9 @@ pub fn cli(a: &crate::Args) {
         cfg.sources = vec![serde_json::from_str(r).unwrap_or_else(|e| crate::die(&format!("--radio: {e}")))];
     } else if let Some(path) = a.positional.first() {
         let format = crate::sample_format(path, a.get("format"));
-        cfg.sources = vec![Source::File { path: path.clone(), center_hz: a.num("center", 0.0), rate_hz: rate, realtime: false, format: Some(format), auto_tune: false, guard_hz: crate::config::DEFAULT_GUARD_HZ }];
+        cfg.sources = vec![Source { kind: crate::config::SourceKind::File { path: path.clone(), realtime: false, format: Some(format) }, center_hz: a.num("center", 0.0), rate_hz: rate, ppm: 0.0, auto_tune: false, guard_hz: crate::config::DEFAULT_GUARD_HZ }];
     } else {
-        cfg.sources = vec![Source::Rtlsdr {
-            serial: a.get("serial").unwrap_or("").into(),
-            center_hz: 0.0,
-            rate_hz: rate,
-            gain_db: a.get("gain").and_then(|g| g.parse().ok()).unwrap_or(crate::config::RTL_DEFAULT_GAIN_DB),
-            agc: a.get("gain").is_none(),
-            ppm: a.num("ppm", 0.0) as i32,
-            auto_tune: false,
-            guard_hz: crate::config::DEFAULT_GUARD_HZ,
-            buf_len: a.num("buflen", 0.0) as u32,
-            buffers: a.num("buffers", 0.0) as u32,
-        }];
+        cfg.sources = vec![Source { kind: crate::config::SourceKind::Rtlsdr { serial: a.get("serial").unwrap_or("").into(), gain_db: a.get("gain").and_then(|g| g.parse().ok()).unwrap_or(crate::config::RTL_DEFAULT_GAIN_DB), agc: a.get("gain").is_none(), buf_len: a.num("buflen", 0.0) as u32, buffers: a.num("buffers", 0.0) as u32 }, center_hz: 0.0, rate_hz: rate, ppm: a.num("ppm", 0.0), auto_tune: false, guard_hz: crate::config::DEFAULT_GUARD_HZ }];
     }
     let bands = a.get("bands").map(|b| json!(b.split(',').collect::<Vec<_>>())).unwrap_or(Value::Null);
     let freqs: Vec<f64> = a.get("freqs").map(|f| f.split(',').filter_map(|x| x.trim().parse::<f64>().ok()).map(|m| (m * 1e6).round()).collect()).unwrap_or_default();

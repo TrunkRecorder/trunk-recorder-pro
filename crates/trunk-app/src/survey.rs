@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use trunk_core::sitecheck::{self, Site};
 use trunk_core::survey::{Command, GainState, Kind, Receivers, Stage, Survey, SurveyConfig, BANDS};
 
-use crate::config::{auto_center, usable_half_width, Config, SiteIdentity, Source};
+use crate::config::{auto_center, usable_half_width, Config, SiteIdentity, Source, SourceKind};
 use crate::protocol::ToClient;
 #[cfg(test)]
 use crate::config::DEFAULT_GUARD_HZ;
@@ -125,52 +125,47 @@ impl Request {
 /// The survey settings for the request's radio.
 pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String> {
     let src = req.radio(cfg)?;
-    let mut sc = SurveyConfig { rate_hz: src.rate_hz(), bands: req.bands.clone(), threads: req.threads.max(1), ..Default::default() };
+    let mut sc = SurveyConfig { rate_hz: src.rate_hz, bands: req.bands.clone(), threads: req.threads.max(1), ..Default::default() };
     if let Some(l) = &req.look_for {
         sc.targets = l.freqs_hz.clone();
         sc.probe_s = l.listen_s;
         sc.receivers = l.system_type.as_deref().map_or(Receivers::ALL, Receivers::of_type);
     }
-    match src {
-        Source::Rtlsdr { ppm, .. } => {
-            sc.ppm = *ppm as f64;
+    sc.ppm = src.ppm;
+    match &src.kind {
+        SourceKind::Rtlsdr { .. } => {
             sc.tune_range_hz = (24e6, 1766e6);
             sc.settle_s = 0.03;
             if req.find_gain {
                 sc.gains = RTL_GAINS.to_vec();
             }
         }
-        Source::Usrp { ppm, .. } => {
-            sc.ppm = *ppm;
+        SourceKind::Usrp { .. } => {
             sc.tune_range_hz = (10e6, 6e9);
             sc.settle_s = 0.15;
         }
-        Source::Airspy { ppm, .. } => {
-            sc.ppm = *ppm;
+        SourceKind::Airspy { .. } => {
             sc.tune_range_hz = (24e6, 1800e6);
             sc.settle_s = 0.2;
         }
         // bladeRF 2.0 (AD9361): 47 MHz – 6 GHz.
-        Source::Bladerf { ppm, .. } => {
-            sc.ppm = *ppm;
+        SourceKind::Bladerf { .. } => {
             sc.tune_range_hz = (47e6, 6e9);
             sc.settle_s = 0.15;
         }
         // HackRF One: 1 MHz – 6 GHz; it keeps sampling through a retune.
-        Source::Hackrf { ppm, .. } => {
-            sc.ppm = *ppm;
+        SourceKind::Hackrf { .. } => {
             sc.tune_range_hz = (1e6, 6e9);
             sc.settle_s = 0.05;
         }
         // The device's range isn't known here: the widest any module offers; a
         // tune it refuses shows as a source error.
-        Source::Soapy { ppm, .. } => {
-            sc.ppm = *ppm;
+        SourceKind::Soapy { .. } => {
             sc.tune_range_hz = (1e6, 6e9);
             sc.settle_s = 0.2;
         }
-        Source::File { center_hz, .. } => {
-            let c = if req.radio.is_some() { *center_hz } else { cfg.resolved_centers().get(req.source).copied().unwrap_or(0.0) };
+        SourceKind::File { .. } => {
+            let c = if req.radio.is_some() { src.center_hz } else { cfg.resolved_centers().get(req.source).copied().unwrap_or(0.0) };
             if c <= 0.0 {
                 return Err("Set the capture's center frequency first.".into());
             }
@@ -212,8 +207,8 @@ impl SurveySession {
             source: req.source,
             spare: req.radio.as_ref().map(Source::label),
             look_for: req.look_for.clone(),
-            rtl: matches!(src, Source::Rtlsdr { .. }),
-            guard_hz: src.guard_hz(),
+            rtl: matches!(src.kind, SourceKind::Rtlsdr { .. }),
+            guard_hz: src.guard_hz,
             bands: req.bands.clone(),
             error: None,
             last_ms: f64::NEG_INFINITY,
