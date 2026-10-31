@@ -91,9 +91,13 @@ impl Index {
     }
 }
 
-/// The index a radio's calls are found by: optional (`storage.radioIndex`),
-/// made with the schema and dropped by a store that doesn't keep it.
+/// The index a radio's calls are found by (each radio's calls in a system,
+/// newest first): optional (`storage.radioIndex`), made with the schema and
+/// dropped by a store that doesn't keep it.
 pub const RADIO_INDEX: &str = "transmissions_radio";
+/// The index a talkgroup's calls are found by: optional the same way
+/// (`storage.talkgroupIndex`).
+pub const TALKGROUP_INDEX: &str = "calls_system_tg_start";
 
 use Ty::*;
 

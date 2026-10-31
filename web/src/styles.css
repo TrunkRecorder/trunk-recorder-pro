@@ -1440,3 +1440,4 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .store-sizes .bar-cell { width: 30%; }
 .store-sizes .bar { display: block; height: 8px; border-radius: 4px; background: var(--series-1); min-width: 2px; }
 .store-sizes .bar.alt { background: var(--series-2); opacity: 0.8; }
+.store-sizes .index-use { font-family: var(--font, inherit); opacity: 0.8; }

@@ -127,8 +127,22 @@ of its databases. macOS doesn't count a thread's writes, so it isn't shown there
 
 Everything else is kept as usual.
 
-`radioIndex: false` (Setup: "Calls by radio") keeps the call index but not by radio: a radio's
-call list is then its recent calls. On a busy system that index is most of what the store writes.
+**Calls by talkgroup and by radio** (`talkgroupIndex`, `radioIndex`; both on by default). The
+store keeps two indexes for finding calls:
+
+- by **talkgroup**: a talkgroup's calls, newest first;
+- by **radio**: the calls a radio talked on, newest first.
+
+They're used when you pick a talkgroup or a radio on the dashboard's **Radio** page, whose call
+list pages back as far as the store keeps calls. They're also used by anything else that asks the
+recorder for one talkgroup's or one radio's calls: `callsQuery` with `talkgroup` or `unit`
+(interfaces, `client.js`'s `rec.calls`), `GET /api/v1/calls?talkgroup=…` or `?unit=…`, and
+plugins' `calls.query`.
+
+Turning one off saves the writes it costs. Its lists then show only the recent calls, and the
+answer says why. Nothing else changes: recording, the Listen page, a system's call list and the
+other searches use other indexes. On a busy system the radio index is most of what the store
+writes, and the talkgroup index about a third as much. Platform → Storage shows how big each is.
 
 What the store writes on a Pi's eMMC in a day, for a busy system (a call a second, 10,000 radios,
 2,500 talkgroups; `db::tests::day_write_budget`):

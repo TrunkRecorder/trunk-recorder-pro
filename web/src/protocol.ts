@@ -516,6 +516,8 @@ export interface StorageSettings {
   statsDays?: number;
   /** Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system. */
   radioIndex?: boolean;
+  /** Index calls by their talkgroups (default true), so a talkgroup's calls page back as far as the store keeps them; off, a talkgroup's list is its recent calls. */
+  talkgroupIndex?: boolean;
 }
 
 export interface MonitorSettings {
@@ -1520,6 +1522,7 @@ export interface PlatformInfo {
   store?: {
     backend: "sqlite" | "postgres";
     radioIndex: boolean;
+    talkgroupIndex: boolean;
     sizes: StoreSizes;
     /** What it has written to disk: `of` "store" (SQLite's writer, counted by the OS: Linux), or "server" (PostgreSQL's write-ahead log, the whole server's); else `why` not. Its rate is the `store/written` series. */
     written: { bytes: number; of: "store" | "server" } | { why: string };

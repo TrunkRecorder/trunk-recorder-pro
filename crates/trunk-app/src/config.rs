@@ -1966,12 +1966,17 @@ pub struct StorageSettings {
     pub commit_seconds: u32,
     /// Days of the dashboard's history kept, as hours; 0 keeps it all.
     pub stats_days: u32,
-    /// Index each call by its radios, so a radio's calls page back as far
-    /// as the store keeps them; off, a radio's list is its recent calls.
-    /// The index is most of what the call index writes on a busy system
-    /// (on the Pi's eMMC, a call a second: 1.6 GB a day with it, 0.8
+    /// Index each call by its radios, for a radio's call list (the Radio
+    /// page, `callsQuery`/`/api/v1/calls`/plugins asking by `unit`), so it
+    /// pages back as far as the store keeps calls; off, a radio's list is
+    /// its recent calls. Most of what the call index writes on a busy
+    /// system (on the Pi's eMMC, a call a second: 1.6 GB a day with it, 0.8
     /// without; `db::tests::day_write_budget`).
     pub radio_index: bool,
+    /// Index each call by its talkgroup, for a talkgroup's call list (the
+    /// same, asking by `talkgroup`); off, a talkgroup's list is its recent
+    /// calls. About a third as costly as the radio index.
+    pub talkgroup_index: bool,
 }
 
 impl StorageSettings {
@@ -1981,7 +1986,7 @@ impl StorageSettings {
 
 impl Default for StorageSettings {
     fn default() -> Self {
-        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true }
+        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true, talkgroup_index: true }
     }
 }
 

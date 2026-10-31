@@ -66,8 +66,9 @@ struct Inner {
     backfill_running: AtomicBool,
     /// Calls are indexed (not in low-write mode).
     index_calls: bool,
-    /// Calls are indexed by radio too (`storage.radioIndex`).
+    /// Calls are indexed by radio too (`storage.radioIndex`), and by talkgroup (`storage.talkgroupIndex`).
     index_radios: bool,
+    index_talkgroups: bool,
     /// The bytes the writer thread has written to disk (`u64::MAX`: not measured here).
     written: Arc<AtomicU64>,
     /// Who's told when a change people made couldn't be saved.
@@ -135,16 +136,20 @@ impl Db {
         };
         match opened {
             Ok(store) => {
-                // (A store that doesn't index calls by radio drops the index;
-                // one that does again makes it, which can take a while.)
+                // (A store that doesn't index calls by radio or talkgroup drops
+                // that index; one that does again makes it, which can take a while.)
                 let radios = storage.radio_index && !storage.low_write;
-                if let Err(e) = store.radio_index(radios) {
-                    log::warn!("Store: the radio index not {} ({e})", if radios { "made" } else { "dropped" });
+                let talkgroups = storage.talkgroup_index && !storage.low_write;
+                for (name, on) in [(schema::RADIO_INDEX, radios), (schema::TALKGROUP_INDEX, talkgroups)] {
+                    if let Err(e) = store.optional_index(name, on) {
+                        log::warn!("Store: index {name} not {} ({e})", if on { "made" } else { "dropped" });
+                    }
                 }
                 let mut db = Db::with_store(Arc::new(store), batch, storage.retention_days, recorder_id(data));
                 if let Some(inner) = db.0.as_mut().and_then(Arc::get_mut) {
                     inner.index_calls = !storage.low_write;
                     inner.index_radios = radios;
+                    inner.index_talkgroups = talkgroups;
                 }
                 db
             }
@@ -171,6 +176,7 @@ impl Db {
             writer,
             index_calls: true,
             index_radios: true,
+            index_talkgroups: true,
             report,
             backfill_running: AtomicBool::new(false),
             systems: Default::default(),
@@ -233,6 +239,11 @@ impl Db {
     /// Whether a radio's calls can be paged from the store (`storage.radioIndex`).
     pub fn indexes_radios(&self) -> bool {
         self.indexes_calls() && self.0.as_deref().is_some_and(|i| i.index_radios)
+    }
+
+    /// Whether a talkgroup's calls can be paged from the store (`storage.talkgroupIndex`).
+    pub fn indexes_talkgroups(&self) -> bool {
+        self.indexes_calls() && self.0.as_deref().is_some_and(|i| i.index_talkgroups)
     }
 
     /// Tell `f` of a change people made that couldn't be saved (a talkgroup
@@ -873,20 +884,24 @@ mod tests {
         }
     }
 
-    /// Without the radio index (`storage.radioIndex` off) the store drops
-    /// it; turned on again, it's made again from the transmissions.
+    /// Without the radio or talkgroup index (`storage.radioIndex`,
+    /// `storage.talkgroupIndex` off) the store drops it; turned on again,
+    /// it's made again from what's stored.
     #[test]
-    fn the_radio_index_is_optional() {
-        let dir = TestDir::new("db-radio-index");
-        let has = |db: &Db| db.count("select count(*) from sqlite_master where name = 'transmissions_radio'");
-        let off = trunk_app::config::StorageSettings { radio_index: false, ..Default::default() };
+    fn the_radio_and_talkgroup_indexes_are_optional() {
+        let dir = TestDir::new("db-optional-indexes");
+        let has = |db: &Db, i: &str| db.count(&format!("select count(*) from sqlite_master where name = '{i}'"));
+        let off = trunk_app::config::StorageSettings { radio_index: false, talkgroup_index: false, ..Default::default() };
         let db = Db::from_settings(&off, &dir);
-        assert!(db.indexes_calls() && !db.indexes_radios());
-        assert_eq!(has(&db), 0);
+        assert!(db.indexes_calls() && !db.indexes_radios() && !db.indexes_talkgroups());
+        assert_eq!((has(&db, schema::RADIO_INDEX), has(&db, schema::TALKGROUP_INDEX)), (0, 0));
+        drop(db);
+        let db = Db::from_settings(&trunk_app::config::StorageSettings { talkgroup_index: false, ..Default::default() }, &dir);
+        assert!(db.indexes_radios() && !db.indexes_talkgroups());
+        assert_eq!((has(&db, schema::RADIO_INDEX), has(&db, schema::TALKGROUP_INDEX)), (1, 0));
         drop(db);
         let db = Db::from_settings(&Default::default(), &dir);
-        assert!(db.indexes_radios());
-        assert_eq!(has(&db), 1);
+        assert_eq!((has(&db, schema::RADIO_INDEX), has(&db, schema::TALKGROUP_INDEX)), (1, 1));
     }
 
     #[test]

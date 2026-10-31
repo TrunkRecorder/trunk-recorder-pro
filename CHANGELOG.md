@@ -50,9 +50,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     - The store's settings have a Setup tab of their own, **Data**. The dashboard's Platform page has
       a **Storage** view: each table's and index's size, its rows, how they've grown, and what the
       store writes to disk a day (Linux; PostgreSQL: its server's log).
-    - **`storage.radioIndex`** (Setup: "Calls by radio", on by default): off, the store doesn't index
-      calls by radio, and a radio's list is its recent calls. On a busy system it's most of what the
-      store writes (on a Pi's eMMC, a call a second all day: 1.6 GB a day with it, 0.8 without).
+    - **`storage.radioIndex` and `storage.talkgroupIndex`** (Setup → Data: "Calls by radio" and "Calls
+      by talkgroup", both on by default) are the indexes behind a radio's and a talkgroup's call list
+      (the Radio page, and `callsQuery` / `/api/v1/calls` / plugins asking by `unit` or `talkgroup`).
+      Off, that list is its recent calls. On a busy system the radio index is most of what the store
+      writes (on a Pi's eMMC, a call a second all day: 1.6 GB a day with it, 0.8 without); the
+      talkgroup index is about a third as much.
     - **`storage.lowWrite`** (Setup: "Low-write mode") is for SD cards: no call index (the call
       list is the recent calls), the dashboard's history by the hour only, and a commit an hour.
     - A store that can't be opened is said to every connection, and nothing is kept meanwhile.

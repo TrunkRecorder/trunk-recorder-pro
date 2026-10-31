@@ -1,4 +1,5 @@
 import { Fragment, useId, useMemo, useRef, useState } from "react";
+import { INDEX_USES } from "./storeIndexes.ts";
 import { SystemDot, SystemTag } from "./charts.tsx";
 import {
   activeSites,
@@ -2993,7 +2994,13 @@ function DataTab(props: { c: Config }) {
           <Field label="Low-write mode" hint="No call index (the call list is the recent calls), the dashboard's history by the hour, a commit an hour">
             <Switch label="Low-write mode" checked={low} onChange={(v) => set({ lowWrite: v || undefined })} />
           </Field>
-          <Field label="Calls by radio" hint={low ? "Low-write mode keeps no call index" : "A radio's calls as far back as the store keeps them. Off, its recent calls only: on a busy system it's most of what the call index writes"}>
+          <p className="muted small wide">
+            The store keeps an index of calls by talkgroup and one by radio. Each lets a list of that talkgroup's or radio's calls go back as far as the store keeps calls; each costs writes as calls come in (on a busy system, the radio index is most of what the store writes, the talkgroup index about a third as much). Turned off, those lists show the recent calls only. Everything else is unaffected.
+          </p>
+          <Field label="Calls by talkgroup" hint={low ? "Low-write mode keeps no call index" : `Used by ${INDEX_USES.calls_system_tg_start.used}. Off: ${INDEX_USES.calls_system_tg_start.without}`} wide>
+            <Switch label="Calls by talkgroup" checked={!low && st?.talkgroupIndex !== false} disabled={low} onChange={(v) => set({ talkgroupIndex: v ? undefined : false })} />
+          </Field>
+          <Field label="Calls by radio" hint={low ? "Low-write mode keeps no call index" : `Used by ${INDEX_USES.transmissions_radio.used}. Off: ${INDEX_USES.transmissions_radio.without}`} wide>
             <Switch label="Calls by radio" checked={!low && st?.radioIndex !== false} disabled={low} onChange={(v) => set({ radioIndex: v ? undefined : false })} />
           </Field>
           <Field label="Write every, s" hint="Longer writes less; calls show at once either way">

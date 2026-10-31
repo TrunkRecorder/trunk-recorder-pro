@@ -1252,8 +1252,13 @@ pub fn calls(ctx: &Ctx, q: &CallsQuery) -> CallsPage {
         let why = if ctx.db.is_disabled() { "the call store is off: only the recent calls" } else { "low-write mode keeps no call index: only the recent calls" };
         return CallsPage { error: Some(why.into()), ..page_of(&live, q, &names) };
     }
+    // (A page walks one index: a radio's, or else a talkgroup's. Without it,
+    // the recent calls rather than a walk through all of a system's.)
     if q.unit.is_some() && !ctx.db.indexes_radios() {
         return CallsPage { error: Some("the store doesn't index calls by radio (Setup → Data): only the recent calls".into()), ..page_of(&live, q, &names) };
+    }
+    if q.unit.is_none() && q.talkgroup.is_some() && !ctx.db.indexes_talkgroups() {
+        return CallsPage { error: Some("the store doesn't index calls by talkgroup (Setup → Data): only the recent calls".into()), ..page_of(&live, q, &names) };
     }
     match ctx.db.calls(q, &systems) {
         Ok(stored) => with_live(stored, &live, q, &names),
@@ -1504,6 +1509,24 @@ mod calls_query_tests {
         assert_eq!((page.entries.len(), page.next.is_some()), (1, true));
         let ToClient::CallsResult { id, page } = calls_query(&ctx, serde_json::json!(3), &CallsQuery::default()) else { panic!() };
         assert_eq!((id, page.entries.len()), (serde_json::json!(3), 100));
+    }
+
+    /// Without the radio or talkgroup index, a radio's or talkgroup's list
+    /// is its recent calls, and says so; with them, the store's.
+    #[test]
+    fn without_an_index_a_list_is_the_recent_calls() {
+        let dir = crate::db::TestDir::new("cq-indexes");
+        let storage = trunk_app::config::StorageSettings { radio_index: false, talkgroup_index: false, ..Default::default() };
+        let ctx = crate::protocol_tests::ctx_with(test_config(&dir), &dir, |_| crate::db::Db::from_settings(&storage, &dir));
+        let r = crate::db::row::tests::record(7, 1000);
+        index_call(&ctx, "ohmarcs/a", &r, true, true);
+        ctx.db.flush().unwrap();
+        let by_tg = calls(&ctx, &CallsQuery { talkgroup: Some(7), ..Default::default() });
+        assert!(by_tg.error.as_deref().is_some_and(|e| e.contains("by talkgroup")), "{:?}", by_tg.error);
+        assert_eq!(by_tg.entries.len(), 1, "the recent call");
+        let by_unit = calls(&ctx, &CallsQuery { unit: Some(r.src_list[0].src), ..Default::default() });
+        assert!(by_unit.error.as_deref().is_some_and(|e| e.contains("by radio")), "{:?}", by_unit.error);
+        assert_eq!(calls(&ctx, &CallsQuery::default()).error, None, "every call: by time, always indexed");
     }
 
     #[test]

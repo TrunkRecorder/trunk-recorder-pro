@@ -342,10 +342,10 @@ impl Store {
         .unwrap()
     }
 
-    /// Keep the radio index (`on`), made from the transmissions stored if
-    /// it was dropped, or drop it.
-    pub fn radio_index(&self, on: bool) -> Result<(), String> {
-        let index = super::schema::INDEXES.iter().find(|i| i.name == super::schema::RADIO_INDEX).expect("the radio index");
+    /// Keep an optional index, `name` (`on`: made from what's stored if it
+    /// was dropped), or drop it ([`super::schema::RADIO_INDEX`], [`super::schema::TALKGROUP_INDEX`]).
+    pub fn optional_index(&self, name: &str, on: bool) -> Result<(), String> {
+        let index = super::schema::INDEXES.iter().find(|i| i.name == name).ok_or_else(|| format!("no index {name}"))?;
         let sql = if on { index.create() } else { format!("drop index if exists {}", index.name) };
         self.write(|x| x.batch(&sql))
     }

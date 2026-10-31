@@ -274,9 +274,13 @@ test("Platform → Storage: each table with its rows, its indexes under it, bigg
   page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, sizes, written: { bytes: 5e9, of: "store" } }} />));
   assert.match(page, /5\.00 GB since it started/);
   assert.match(page, /Written to disk/);
+  page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, talkgroupIndex: false, sizes, written: { bytes: 5e9, of: "store" } }} />));
+  assert.match(page, /Calls aren\S{1,6}t indexed by talkgroup or radio/);
+  assert.match(page, /transmissions_radio · the calls a radio talked on, newest first/);
+  assert.match(page, /calls_system_tg_start finds a talkgroup\S{1,6}s calls, newest first: the Radio page\S{1,6}s calls when you pick a talkgroup/);
   assert.match(page, /Store\s*100 MB/);
-  assert.match(page, /call_transmissions\s*300,?000\s*25(\.0)? MB\s*↳ transmissions_radio\s*30(\.0)? MB/);
-  assert.match(page, /Calls aren\S{1,6}t indexed by radio/);
+  assert.match(page, /call_transmissions\s*300,?000\s*25(\.0)? MB\s*↳ transmissions_radio[^M]*30(\.0)? MB/);
+  assert.match(page, /Calls aren\S{1,6}t indexed by (talkgroup or )?radio/);
   host({ os: synced, server: "pool.ntp.org", measured: null, error: null, problem: null, check: null });
   assert.doesNotMatch(text(renderToString(<PlatformPage />)), /Storage/, "no Storage tab until the store is measured");
 });

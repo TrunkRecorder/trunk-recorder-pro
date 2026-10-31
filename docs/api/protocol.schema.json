@@ -4671,6 +4671,9 @@
             "radioIndex": {
               "type": "boolean"
             },
+            "talkgroupIndex": {
+              "type": "boolean"
+            },
             "sizes": {
               "$ref": "#/definitions/StoreSizes"
             },
@@ -4715,6 +4718,7 @@
           "required": [
             "backend",
             "radioIndex",
+            "talkgroupIndex",
             "sizes",
             "written"
           ],
@@ -6825,6 +6829,10 @@
         "radioIndex": {
           "type": "boolean",
           "description": "Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system."
+        },
+        "talkgroupIndex": {
+          "type": "boolean",
+          "description": "Index calls by their talkgroups (default true), so a talkgroup's calls page back as far as the store keeps them; off, a talkgroup's list is its recent calls."
         }
       },
       "required": [

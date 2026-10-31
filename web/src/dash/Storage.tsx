@@ -10,6 +10,7 @@ import { setSetupTab, setView, type StatsRange } from "../controller.ts";
 import { Card, Choice, Stat, TimeSeries } from "../charts.tsx";
 import { bytes, num } from "../fmt.ts";
 import { total, useHistory, useRanges } from "./data.ts";
+import { INDEX_USES } from "../storeIndexes.ts";
 
 /** A table with its indexes, biggest first. */
 interface TableRow {
@@ -35,8 +36,9 @@ export function tablesOf(s: StoreSizes): TableRow[] {
   return [...t.values()].sort((a, b) => all(b) - all(a));
 }
 
-export function StorageView(props: { store: { backend: string; radioIndex: boolean; sizes: StoreSizes; written?: { bytes: number; of: "store" | "server" } | { why: string } } }) {
-  const { backend, radioIndex, sizes, written } = props.store;
+export function StorageView(props: { store: { backend: string; radioIndex: boolean; talkgroupIndex?: boolean; sizes: StoreSizes; written?: { bytes: number; of: "store" | "server" } | { why: string } } }) {
+  const { backend, radioIndex, talkgroupIndex = true, sizes, written } = props.store;
+  const off = [!talkgroupIndex && "talkgroup", !radioIndex && "radio"].filter(Boolean) as string[];
   const [range, setRange] = useState<StatsRange>("7d");
   const ranges = useRanges();
   const tables = tablesOf(sizes);
@@ -79,9 +81,9 @@ export function StorageView(props: { store: { backend: string; radioIndex: boole
           hint="What the store writes to disk: commits, checkpoints and its daily backup. It's what wears an SD card or eMMC; Setup → Data has what lowers it."
         />
       </div>
-      {!radioIndex && (
+      {off.length > 0 && (
         <p className="muted small">
-          Calls aren't indexed by radio: a radio's list is its recent calls.{" "}
+          Calls aren't indexed by {off.join(" or ")}: a {off.join(" or ")}'s list shows only its recent calls.{" "}
           <button className="btn ghost small" onClick={toData}>
             Setup → Data
           </button>
@@ -128,7 +130,10 @@ export function StorageView(props: { store: { backend: string; radioIndex: boole
                 </tr>
                 {t.indexes.map((i) => (
                   <tr key={`${t.name}/${i.name}`} className="sub">
-                    <td className="mono muted">↳ {i.name}</td>
+                    <td className="mono muted" title={INDEX_USES[i.name] ? `Finds ${INDEX_USES[i.name].finds}: ${INDEX_USES[i.name].used}` : undefined}>
+                      ↳ {i.name}
+                      {INDEX_USES[i.name] && <span className="index-use"> · {INDEX_USES[i.name].finds}</span>}
+                    </td>
                     <td />
                     <td className="num">{bytes(i.bytes)}</td>
                     <td className="bar-cell">
@@ -141,6 +146,16 @@ export function StorageView(props: { store: { backend: string; radioIndex: boole
           </tbody>
         </table>
         <p className="muted small">Measured every 15 minutes{backend === "postgres" ? "; rows are PostgreSQL's estimate" : ""}. Settings: Setup → Data.</p>
+        <details className="muted small">
+          <summary>What the call indexes are for</summary>
+          <ul>
+            {Object.entries(INDEX_USES).map(([name, u]) => (
+              <li key={name}>
+                <span className="mono">{name}</span> finds {u.finds}: {u.used}.{u.setting && ` Optional (Setup → Data): without it, ${u.without}.`}
+              </li>
+            ))}
+          </ul>
+        </details>
       </Card>
     </>
   );
