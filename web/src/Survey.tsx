@@ -13,7 +13,7 @@
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { deviceId, fccKey, fccPrimary, formatGain, formatMhz, needsDriver, siteNameOf, SOURCE_KINDS, sourceKey, systemWithChannel } from "./config.ts";
+import { deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, needsDriver, siteNameOf, SOURCE_KINDS, sourceKey, systemWithChannel } from "./config.ts";
 import {
   can,
   addDmrSite,
@@ -41,6 +41,7 @@ import { defaultListenS, lookedFreqs, type LookingFor } from "./lookFor.ts";
 import type { Config, FccLicense, FccLicenses, SiteIdentity, Source, SurveyCandidate, SurveyMonitor, SurveySite, SurveySuggestion } from "./protocol.ts";
 import type { LicenseLookup } from "./controller.ts";
 import { IdentifyBar, LicenseCell, licensesOn } from "./Identify.tsx";
+import { BiasT } from "./inputs.tsx";
 import { Waterfall } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
@@ -565,6 +566,10 @@ export function SurveyPanel(props: { c: Config }) {
   const radioKey = radioPick ?? (recording && spares.length ? `spare:${sourceKey(spares[0])}` : "0");
   const spare = spares.find((x) => `spare:${sourceKey(x)}` === radioKey);
   const source = spare ? -1 : Math.min(Number(radioKey) || 0, c.sources.length - 1);
+  // Which spare radios power an LNA through their bias-T for the scan (a source's bias-T is its own setting).
+  const [spareBias, setSpareBias] = useState<ReadonlySet<string>>(new Set());
+  const spareBiasOn = !!spare && spareBias.has(sourceKey(spare));
+  const scanWith = spare && hasBiasT(spare) ? { ...spare, biasTee: spareBiasOn } : spare;
   const src = spare ?? c.sources[source];
   const active = sv.stage !== "idle";
   const unsupported = !can("drivers") && !!src && needsDriver(src);
@@ -652,6 +657,20 @@ export function SurveyPanel(props: { c: Config }) {
                 <span className="field-hint">{lookingFor.type === "dmr" ? "A DMR site may be quiet between calls: the longer, the surer." : "A control channel says who it is within seconds."}</span>
               </label>
             )}
+            {spare && (
+              <BiasT
+                src={spare}
+                checked={spareBiasOn}
+                onChange={(v) =>
+                  setSpareBias((x) => {
+                    const n = new Set(x);
+                    if (v) n.add(sourceKey(spare));
+                    else n.delete(sourceKey(spare));
+                    return n;
+                  })
+                }
+              />
+            )}
             {src?.type === "rtlsdr" && (
               <label className="toggle">
                 <input type="checkbox" checked={findGain} onChange={(e) => setFindGain(e.target.checked)} />
@@ -686,7 +705,7 @@ export function SurveyPanel(props: { c: Config }) {
             <button
               className="btn primary"
               disabled={!s.connected || !src || (recording && !spare) || unsupported || (src.type !== "file" && !lookingFor && !bands.length)}
-              onClick={() => startSurvey(spare ?? source, bands, src?.type === "rtlsdr" && findGain, listenS ?? undefined)}
+              onClick={() => startSurvey(scanWith ?? source, bands, src?.type === "rtlsdr" && findGain, listenS ?? undefined)}
             >
               Scan
             </button>

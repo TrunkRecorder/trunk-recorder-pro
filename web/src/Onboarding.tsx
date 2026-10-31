@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { autoCenter, detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newSystem, parseFreqList, planCenters, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
+import { autoCenter, detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newSystem, parseFreqList, planCenters, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -34,7 +34,7 @@ import {
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
-import { FileInput, TextInput } from "./inputs.tsx";
+import { BiasT, FileInput, TextInput } from "./inputs.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { parseRadioReferencePaste, readTalkgroupFile, type Talkgroup } from "./talkgroups.ts";
@@ -280,14 +280,17 @@ async function connectWebDongle(): Promise<void> {
   }
 }
 
-function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack: () => void }) {
+export function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack: () => void }) {
   const { s } = props;
   const detected = useMemo(() => detectRadios(s.devices, s.radios), [s.devices, s.radios]);
   const [picked, setPicked] = useState<Set<string> | null>(null);
+  // Which radios power an LNA through their bias-T: as saved, until changed here.
+  const [biasT, setBiasT] = useState<Set<string> | null>(null);
   const [helping, setHelping] = useState(false);
   const free = detected.filter((d) => !d.busy);
   const chosen = picked ?? new Set(free.map((d) => d.key));
   const selected = free.filter((d) => chosen.has(d.key));
+  const powered = biasT ?? new Set(props.c.sources.filter((o) => hasBiasT(o) && o.biasTee).map(sourceKey));
   const look = () => {
     refreshDevices();
     if (can("drivers")) findRadios();
@@ -300,10 +303,19 @@ function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack:
     else n.add(key);
     setPicked(n);
   };
+  const power = (key: string, on: boolean) => {
+    const n = new Set(powered);
+    if (on) n.add(key);
+    else n.delete(key);
+    setBiasT(n);
+  };
   const use = () => {
     updateConfig((x) => {
-      // A radio already set up keeps its settings (frequency correction, gain).
-      x.sources = selected.map((d) => x.sources.find((o) => sourceKey(o) === d.key) ?? d.source);
+      // A radio already set up keeps its settings (frequency correction, gain); its bias-T is as ticked here.
+      x.sources = selected.map((d) => {
+        const o = x.sources.find((o) => sourceKey(o) === d.key) ?? d.source;
+        return hasBiasT(o) ? { ...o, biasTee: powered.has(d.key) } : o;
+      });
     });
     props.onNext();
   };
@@ -330,17 +342,20 @@ function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack:
           {[...free, ...detected.filter((d) => d.busy)].map((d) => {
             const on = !d.busy && chosen.has(d.key);
             return (
-              <button key={d.key} className={`ob-card pick${on ? " on" : ""}${d.busy ? " busy" : ""}`} role="checkbox" aria-checked={on} disabled={!!d.busy} onClick={() => toggle(d.key)}>
-                {!d.busy && (
-                  <span className="ob-check" aria-hidden="true">
-                    {on ? "✓" : ""}
-                  </span>
-                )}
-                <span className="ob-card-art">{d.kind === "usrp" || d.kind === "soapy" ? <IconBox /> : <IconDongle />}</span>
-                <span className="ob-card-title">{d.name}</span>
-                <span className="ob-card-sub">{d.detail}</span>
-                {d.busy && <span className="ob-busy">{d.busy.replace(/^./, (ch) => ch.toUpperCase())}</span>}
-              </button>
+              <div key={d.key} className="ob-pick">
+                <button className={`ob-card pick${on ? " on" : ""}${d.busy ? " busy" : ""}`} role="checkbox" aria-checked={on} disabled={!!d.busy} onClick={() => toggle(d.key)}>
+                  {!d.busy && (
+                    <span className="ob-check" aria-hidden="true">
+                      {on ? "✓" : ""}
+                    </span>
+                  )}
+                  <span className="ob-card-art">{d.kind === "usrp" || d.kind === "soapy" ? <IconBox /> : <IconDongle />}</span>
+                  <span className="ob-card-title">{d.name}</span>
+                  <span className="ob-card-sub">{d.detail}</span>
+                  {d.busy && <span className="ob-busy">{d.busy.replace(/^./, (ch) => ch.toUpperCase())}</span>}
+                </button>
+                {on && <BiasT src={d.source} checked={powered.has(d.key)} onChange={(v) => power(d.key, v)} />}
+              </div>
             );
           })}
         </div>

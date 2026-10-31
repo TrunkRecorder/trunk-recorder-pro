@@ -9,7 +9,9 @@
 // The rules for using them: docs/developer/ui-style.md.
 
 import { useEffect, useRef, useState, type InputHTMLAttributes, type KeyboardEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
+import { hasBiasT, SOURCE_KINDS } from "./config.ts";
 import { asTyped, decimal, finishDraft, gain, hex, talkgroupProblem, type TextCodec } from "./fieldText.ts";
+import type { Source } from "./protocol.ts";
 
 /** A labelled setting. `needs`: what an import left to fill in here (highlighted); `anchor`: its place, for the to-do list's Show. */
 export function Field(props: { label: string; hint?: ReactNode; children: ReactNode; wide?: boolean; needs?: string; anchor?: string; className?: string }) {
@@ -40,6 +42,11 @@ export function Toggle(props: { label: string; checked: boolean; onChange: (v: b
       </span>
     </label>
   );
+}
+
+/** A radio's bias-T switch, wherever it's picked (Setup, the setup guide, a scan's spare radio); none for a radio without one. */
+export function BiasT(props: { src: Source; checked: boolean; onChange: (v: boolean) => void }) {
+  return hasBiasT(props.src) ? <Toggle label="Bias-T" hint={SOURCE_KINDS[props.src.type].biasT} checked={props.checked} onChange={props.onChange} /> : null;
 }
 
 /**

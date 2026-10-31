@@ -583,6 +583,9 @@ td.unit-cell .unit, .now-playing .unit {
 .ob-plan-group { display: flex; flex-direction: column; gap: 8px; }
 .ob-plan-range { font-family: var(--mono); color: var(--muted); font-size: 15px; }
 .ob-card.busy { cursor: not-allowed; border-style: dashed; background: transparent; }
+.ob-pick { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ob-pick > .ob-card { flex: 1; }
+.ob-pick > .toggle { justify-content: center; font-size: 14px; }
 .ob-card.busy:hover { border-color: var(--line); }
 .ob-card.busy .ob-card-art, .ob-card.busy .ob-card-title, .ob-card.busy .ob-card-sub { opacity: 0.45; }
 .ob-busy { margin-top: 4px; padding: 3px 12px; border-radius: 999px; font-size: 14px; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }

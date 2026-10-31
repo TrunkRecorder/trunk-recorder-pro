@@ -35,6 +35,7 @@ import {
   systemType,
   deviceKey,
   needsDriver,
+  hasBiasT,
   sourceKey,
   foundRadio,
   radioName,
@@ -82,7 +83,7 @@ import { findOnAir, siteFrequencies, type FccTarget } from "./controller.ts";
 import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
-import { DraftInput, Field, FileInput, NumberInput, TextInput, Toggle } from "./inputs.tsx";
+import { BiasT, DraftInput, Field, FileInput, NumberInput, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
 import { openTodos } from "./todo.ts";
@@ -1068,22 +1069,14 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
             }
           />
         )}
+        {hasBiasT(src) && <BiasT src={src} checked={src.biasTee} onChange={(v) => edit((x) => hasBiasT(x) && void (x.biasTee = v))} />}
         {src.type === "airspy" && (
-          <>
-            <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
-            <Toggle
-              label="Pack samples"
-              hint="12-bit samples on the USB: a quarter less of the bus (an Airspy at 10 MSPS nearly fills a USB 2.0 bus). Off only for old firmware"
-              checked={src.packing ?? true}
-              onChange={(v) => edit((x) => x.type === "airspy" && void (x.packing = v))}
-            />
-          </>
-        )}
-        {src.type === "bladerf" && (
-          <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable (bladeRF 2.0)" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "bladerf" && void (x.biasTee = v))} />
-        )}
-        {src.type === "hackrf" && (
-          <Toggle label="Bias-T" hint="Powers an LNA via the antenna port (up to 50 mA)" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "hackrf" && void (x.biasTee = v))} />
+          <Toggle
+            label="Pack samples"
+            hint="12-bit samples on the USB: a quarter less of the bus (an Airspy at 10 MSPS nearly fills a USB 2.0 bus). Off only for old firmware"
+            checked={src.packing ?? true}
+            onChange={(v) => edit((x) => x.type === "airspy" && void (x.packing = v))}
+          />
         )}
         {src.type === "soapy" &&
           (missing ? null : (
