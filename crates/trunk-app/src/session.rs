@@ -392,6 +392,7 @@ impl Session {
             book.set_systems(&systems);
             book.set_rows(&cfg);
         }
+        meas.shared().radio.lock().unwrap().set_caps(crate::stats::radio::Caps::of(&cfg.storage));
         let mut session = Session {
             meas,
             listed: cfg.placement().iter().map(|p| p.listed).collect(),
@@ -738,7 +739,11 @@ impl Session {
             out.extend(self.tune_unsaved().map(Saved::Tune));
         }
         if due.registry {
-            let changes = self.meas.shared().radio.lock().unwrap().take_changes();
+            // (What hasn't been heard for the caps' days goes now, and is saved as gone.)
+            let mut radio = self.meas.shared().radio.lock().unwrap();
+            radio.expire((now_ms / 1000.0) as i64);
+            let changes = radio.take_changes();
+            drop(radio);
             out.extend(changes.into_iter().map(|(system, changes)| Saved::Registry { system, changes: Box::new(changes) }));
         }
         out

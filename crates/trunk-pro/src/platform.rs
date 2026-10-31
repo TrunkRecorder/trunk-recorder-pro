@@ -100,16 +100,6 @@ fn memory_level() -> Option<f64> {
     None
 }
 
-/// The computer's memory, bytes (a container's limit when that is smaller; 0 if unknown).
-pub fn total_memory() -> u64 {
-    let mut sys = System::new();
-    sys.refresh_memory();
-    match sys.cgroup_limits() {
-        Some(c) if c.total_memory > 0 && c.total_memory < sys.total_memory() => c.total_memory,
-        _ => sys.total_memory(),
-    }
-}
-
 /// Raspberry Pi firmware: under-voltage / throttling now (bits 0–3 of get_throttled).
 fn pi_throttled() -> Option<u32> {
     let s = std::fs::read_to_string("/sys/devices/platform/soc/soc:firmware/get_throttled").ok()?;
