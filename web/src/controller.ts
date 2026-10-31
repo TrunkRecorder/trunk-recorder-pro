@@ -31,6 +31,7 @@ import type {
   InterfacesList,
   Store,
   StoreKind,
+  Talkgroup,
   TalkgroupEdit,
   PluginValues,
   LockableKeys,
@@ -74,7 +75,7 @@ import {
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
-import { editCells, ignoreEdit, withCells } from "./talkgroups.ts";
+import { editCells, ignoreEdit, withEdit } from "./talkgroups.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 import { lookedFreqs, lookForMessage, type LookingFor } from "./lookFor.ts";
 
@@ -90,8 +91,8 @@ export interface AppState {
   notice: string | null;
   ended: boolean;
   config: Config | null;
-  /** Each system's talkgroup file (Trunk Recorder's CSV), by short name: kept beside the config, not in it. */
-  talkgroups: Record<string, string>;
+  /** Each system's talkgroups, by short name (none: absent): kept beside the config, not in it. */
+  talkgroups: Record<string, Talkgroup[]>;
   devices: Device[];
   /** Optional drivers (desktop app); null in the web build. */
   radios: Radios | null;
@@ -169,7 +170,7 @@ export interface AppState {
   setupTab: SetupTab;
 }
 
-export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
+export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "data" | "plugins";
 
 export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "plugin" | "plugins" | "interfaces" | "platform" | "setup";
 const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "plugin", "plugins", "interfaces", "platform", "setup"];
@@ -386,7 +387,7 @@ function take(m: FromRecorder): void {
       break;
     case "talkgroups":
       if (wholeSent.get(m.system)) wholeSent.set(m.system, wholeSent.get(m.system)! - 1);
-      set({ talkgroups: withFile(state.talkgroups, m.system, withUnanswered(m.system, m.csv)) });
+      set({ talkgroups: withList(state.talkgroups, m.system, withUnanswered(m.system, m.talkgroups)) });
       saveSettled();
       break;
     case "talkgroupEdited":
@@ -491,6 +492,7 @@ function take(m: FromRecorder): void {
       break;
     case "statsResult":
     case "radioResult":
+    case "callsResult":
     case "pluginActionResult": {
       const r = pending.get(m.id);
       pending.delete(m.id);
@@ -590,7 +592,7 @@ function ask<T extends FromRecorder>(msg: ToRecorder & { id: number }): Promise<
 }
 
 export type StatsResult = Extract<FromRecorder, { type: "statsResult" }>;
-export type StatsRange = "10m" | "1h" | "6h" | "24h" | "7d";
+export type StatsRange = "10m" | "1h" | "6h" | "24h" | "7d" | "30d" | "90d" | "1y";
 
 /** The history of `series` (names or `prefix*`) over `range`. */
 export function statsQuery(series: string[], range: StatsRange, points?: number): Promise<StatsResult> {
@@ -606,6 +608,13 @@ export type RadioQuery = Omit<Extract<ToRecorder, { type: "radioQuery" }>, "type
 
 export function radioQuery(q: RadioQuery): Promise<RadioResult> {
   return ask<RadioResult>({ type: "radioQuery", id: nextId++, ...q });
+}
+
+export type CallsResult = Extract<FromRecorder, { type: "callsResult" }>;
+
+/** Recorded calls by system, talkgroup, radio and time, newest first: a page, and `before` for the next. */
+export function callsQuery(q: Omit<Extract<ToRecorder, { type: "callsQuery" }>, "type" | "id">): Promise<CallsResult> {
+  return ask<CallsResult>({ type: "callsQuery", id: nextId++, ...q });
 }
 
 export type PluginActionResult = Extract<FromRecorder, { type: "pluginActionResult" }>;
@@ -634,29 +643,29 @@ export function usePolled<T>(key: string, run: () => Promise<T>, everyMs: number
   return v && v.key === key ? v.v : null;
 }
 
-/** Mark talkgroup `tg` of system `system` ignored (or not) in its talkgroup file. */
+/** Mark talkgroup `tg` of system `system` ignored (or not). */
 export function setTalkgroupIgnore(system: string, tg: number, ignore: boolean, alphaTag = ""): void {
-  editTalkgroup(system, tg, ignoreEdit(state.talkgroups[system] ?? "", tg, ignore, alphaTag));
+  editTalkgroup(system, tg, ignoreEdit(state.talkgroups[system] ?? [], tg, ignore, alphaTag));
 }
 
 /**
- * Edit one talkgroup of system `system`'s file: shown at once, sent as the
+ * Edit one talkgroup of system `system`'s: shown at once, sent as the
  * row's edit alone (setTalkgroup), the recorder's copy edited the same way.
  */
 export function editTalkgroup(system: string, tg: number, edit: TalkgroupEdit): void {
   unanswered.push({ system, tg, edit });
-  set({ talkgroups: withFile(state.talkgroups, system, withCells(state.talkgroups[system] ?? "", tg, editCells(edit))), saveStatus: "saving", saveError: null });
+  set({ talkgroups: withList(state.talkgroups, system, withEdit(state.talkgroups[system] ?? [], tg, edit)), saveStatus: "saving", saveError: null });
   transport.send({ type: "setTalkgroup", system, talkgroup: tg, edit });
 }
 
 /** Talkgroup edits this browser sent that the recorder hasn't answered yet, oldest first. */
 let unanswered: { system: string; tg: number; edit: TalkgroupEdit }[] = [];
-/** Whole talkgroup files this browser sent not answered yet, by system. */
+/** Whole talkgroup lists this browser sent not answered yet, by system. */
 const wholeSent = new Map<string, number>();
 
-/** `csv` (system `system`'s file as the recorder has it) with this browser's edits not answered yet. */
-function withUnanswered(system: string, csv: string): string {
-  return unanswered.filter((u) => u.system === system).reduce((f, u) => withCells(f, u.tg, editCells(u.edit)), csv);
+/** `rows` (system `system`'s talkgroups as the recorder has them) with this browser's edits not answered yet. */
+function withUnanswered(system: string, rows: Talkgroup[]): Talkgroup[] {
+  return unanswered.filter((u) => u.system === system).reduce((f, u) => withEdit(f, u.tg, u.edit), rows);
 }
 
 /** A talkgroup edited (by this browser or another): this browser's answered, or another's made here too. */
@@ -665,8 +674,8 @@ function talkgroupEdited(system: string, tg: number, edit: TalkgroupEdit): void 
   if (unanswered.length && same(unanswered[0])) unanswered.shift();
   else {
     // Another's, made before this browser's not answered yet: those are made over it again.
-    const csv = withCells(state.talkgroups[system] ?? "", tg, editCells(edit));
-    set({ talkgroups: withFile(state.talkgroups, system, withUnanswered(system, csv)) });
+    const rows = withEdit(state.talkgroups[system] ?? [], tg, edit);
+    set({ talkgroups: withList(state.talkgroups, system, withUnanswered(system, rows)) });
   }
   saveSettled();
 }
@@ -677,26 +686,26 @@ function saveSettled(): void {
   if (!waiting && state.saveStatus === "saving") set({ saveStatus: "saved" });
 }
 
-// ── talkgroup files ──────────────────────────────────────────────────────────
+// ── talkgroups ───────────────────────────────────────────────────────────────
 
-/** `files` with system `system`'s now `csv` ("" for none). */
-function withFile(files: Record<string, string>, system: string, csv: string): Record<string, string> {
-  const next = { ...files };
-  if (csv.trim()) next[system] = csv;
+/** `lists` with system `system`'s talkgroups now `rows` (`[]`: none). */
+function withList(lists: Record<string, Talkgroup[]>, system: string, rows: Talkgroup[]): Record<string, Talkgroup[]> {
+  const next = { ...lists };
+  if (rows.length) next[system] = rows;
   else delete next[system];
   return next;
 }
 
-/** System `system`'s talkgroup file is now `csv` ("": none): saved on the recorder at once. */
-export function setTalkgroups(system: string, csv: string): void {
+/** System `system`'s talkgroups are now `rows` (`[]`: none): saved on the recorder at once. */
+export function setTalkgroups(system: string, rows: Talkgroup[]): void {
   wholeSent.set(system, (wholeSent.get(system) ?? 0) + 1);
-  set({ talkgroups: withFile(state.talkgroups, system, csv), saveStatus: "saving", saveError: null });
-  transport.send({ type: "setTalkgroups", system, csv });
+  set({ talkgroups: withList(state.talkgroups, system, rows), saveStatus: "saving", saveError: null });
+  transport.send({ type: "setTalkgroups", system, talkgroups: rows });
 }
 
 /**
  * Rename `sys` (one of `x`'s systems, trunked or conventional) to `to`, in an
- * updateConfig: its talkgroup file moves with it, and plugin settings that
+ * updateConfig: its talkgroups move with it, and plugin settings that
  * name it follow. Setup and the first-run guide both rename this way.
  */
 export function renameSystem(x: Config, sys: { shortName: string }, to: string): void {
@@ -706,67 +715,67 @@ export function renameSystem(x: Config, sys: { shortName: string }, to: string):
   sys.shortName = to;
 }
 
-/** System `name` is gone from `x` (removed, or made a site of another), in an updateConfig: its talkgroup file goes too (once the config is saved), unless a system still has the name. */
+/** System `name` is gone from `x` (removed, or made a site of another), in an updateConfig: its talkgroups go too (once the config is saved), unless a system still has the name. */
 export function forgetTalkgroups(x: Config, name: string): void {
   if ([...x.systems, ...x.conventional].some((s) => s.shortName === name)) return;
-  const csv = state.talkgroups[name];
-  if (csv === undefined) return;
-  forgottenTalkgroups.set(name, csv);
-  set({ talkgroups: withFile(state.talkgroups, name, "") });
+  const rows = state.talkgroups[name];
+  if (rows === undefined) return;
+  forgottenTalkgroups.set(name, rows);
+  set({ talkgroups: withList(state.talkgroups, name, []) });
 }
 
-// Talkgroup files follow the config they are edited with: moved and dropped in
+// Talkgroups follow the config they are edited with: moved and dropped in
 // the store as the edit is made, on the recorder once the edit is saved (a
 // refused edit puts them back).
 
-/** Files following a renamed system: its name when the renaming began → its name now, and the name the file sits under in the store. */
+/** Talkgroups following a renamed system: its name when the renaming began → its name now, and the name they sit under in the store. */
 const movedTalkgroups = new Map<string, { now: string; at: string }>();
-/** Files of systems removed (by name), with their text, in case the edit is refused. */
-const forgottenTalkgroups = new Map<string, string>();
+/** Talkgroups of systems removed (by name), in case the edit is refused. */
+const forgottenTalkgroups = new Map<string, Talkgroup[]>();
 
 /**
- * System `from` is renamed `to` (as its short name is typed): its talkgroup
- * file follows. Not onto "" or a name another system has (`taken`): the file
- * waits under its last name of its own until the new one is.
+ * System `from` is renamed `to` (as its short name is typed): its
+ * talkgroups follow. Not onto "" or a name another system has (`taken`):
+ * they wait under its last name of its own until the new one is.
  */
 export function moveTalkgroups(from: string, to: string, taken = false): void {
   if (from === to) return;
   const began = [...movedTalkgroups].find(([, m]) => m.now === from)?.[0] ?? from;
   const move = movedTalkgroups.get(began) ?? { now: from, at: from };
-  const csv = state.talkgroups[move.at];
-  if (csv === undefined) return;
+  const rows = state.talkgroups[move.at];
+  if (rows === undefined) return;
   move.now = to;
   if (to === began) movedTalkgroups.delete(began);
   else movedTalkgroups.set(began, move);
   if (to === "" || taken) return;
-  if (move.at !== to) set({ talkgroups: withFile(withFile(state.talkgroups, move.at, ""), to, csv) });
+  if (move.at !== to) set({ talkgroups: withList(withList(state.talkgroups, move.at, []), to, rows) });
   move.at = to;
 }
 
-/** The config was saved: the recorder's files follow it. */
+/** The config was saved: the recorder's talkgroups follow it. */
 function sendTalkgroupMoves(): void {
   for (const [began, m] of movedTalkgroups) {
-    // (Waiting for a name of its own: the file stays where it was.)
+    // (Waiting for a name of its own: they stay where they were.)
     if (m.at !== m.now) continue;
-    transport.send({ type: "setTalkgroups", system: m.now, csv: state.talkgroups[m.now] ?? "" });
-    transport.send({ type: "setTalkgroups", system: began, csv: "" });
+    transport.send({ type: "setTalkgroups", system: m.now, talkgroups: state.talkgroups[m.now] ?? [] });
+    transport.send({ type: "setTalkgroups", system: began, talkgroups: [] });
     movedTalkgroups.delete(began);
   }
-  for (const name of forgottenTalkgroups.keys()) transport.send({ type: "setTalkgroups", system: name, csv: "" });
+  for (const name of forgottenTalkgroups.keys()) transport.send({ type: "setTalkgroups", system: name, talkgroups: [] });
   forgottenTalkgroups.clear();
 }
 
-/** The edit was refused: the files are where the recorder has them. */
+/** The edit was refused: the talkgroups are where the recorder has them. */
 function undoTalkgroupMoves(): void {
-  let files = state.talkgroups;
+  let lists = state.talkgroups;
   for (const [began, m] of movedTalkgroups) {
-    const csv = files[m.at];
-    if (m.at !== began && csv !== undefined) files = withFile(withFile(files, m.at, ""), began, csv);
+    const rows = lists[m.at];
+    if (m.at !== began && rows !== undefined) lists = withList(withList(lists, m.at, []), began, rows);
   }
-  for (const [name, csv] of forgottenTalkgroups) files = withFile(files, name, csv);
+  for (const [name, rows] of forgottenTalkgroups) lists = withList(lists, name, rows);
   movedTalkgroups.clear();
   forgottenTalkgroups.clear();
-  set({ talkgroups: files });
+  set({ talkgroups: lists });
 }
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -1130,7 +1139,7 @@ export function closeGuide(): void {
 function loadSetupTab(): SetupTab {
   try {
     const t = localStorage.getItem(TAB_KEY);
-    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "plugins") return t;
+    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "data" || t === "plugins") return t;
   } catch {
     // Not remembered.
   }

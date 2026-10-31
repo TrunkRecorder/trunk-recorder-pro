@@ -178,7 +178,7 @@ What a page may do depends on the port it came from:
 | `setConfig`, `start`, `stop`, `quit`, plugins, interfaces, keys, the survey, files on the recorder's computer | refused with an `error` | ✓ |
 
 A listen-only connection may send `subscribe`, `statsQuery`, `radioQuery`,
-`olderCalls` and `listen`; anything else is answered with an `error`. Its
+`callsQuery` and `listen`; anything else is answered with an `error`. Its
 `hello` has no `configPath`, and it isn't sent `devices`, `plugins`,
 `pluginRuntime`, `interfaces`, `store`, `installProgress` or `keys`. An interface that needs more says
 `"access": "control"` in its `interface.json`; the store shows that before
@@ -193,7 +193,7 @@ reconnecting, re-sending `listen` after a reconnect, keeping state, safe
 config edits, and gapless audio.
 
 ```js
-import { TrunkClient, LivePlayer, decodeAudioFrame, parseTalkgroups, systemName, duration, mhz, escapeHtml } from "/api/client.js";
+import { TrunkClient, LivePlayer, decodeAudioFrame, systemName, duration, mhz, escapeHtml } from "/api/client.js";
 ```
 
 From a page served elsewhere, import it by its full URL and say which
@@ -220,7 +220,7 @@ whenever `change` fires.
 |---|---|
 | `connected` | `true` while connected (from `hello` on) |
 | `version` | the recorder's version |
-| `capabilities` | what the recorder can do beyond recording (`hello.capabilities`): `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys` |
+| `capabilities` | what the recorder can do beyond recording (`hello.capabilities`): `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys`, `calls`, `history` |
 | `config` | the config (`Config`) |
 | `phase` | `{ phase: "idle" \| "starting" \| "running" \| "stopping", error, ended }` |
 | `status` | `EngineStatus` while running: `nowS`, totals, `systems[]` |
@@ -228,7 +228,7 @@ whenever `change` fires.
 | `calls` | `CallView[]`: on the air now (empty when not running) |
 | `history` | `CallEntry[]`: recorded calls, newest first |
 | `configVersion` | the config's version, which `setConfig` sends |
-| `talkgroupFiles` | each system's talkgroup file as CSV text: short name → CSV |
+| `talkgroupRows` | each system's talkgroups as the recorder sent them: short name → `Talkgroup[]` |
 | `log` | the latest 500 `LogLine`s |
 | `aliases` | talker aliases heard on the air: short name → `{ unit: alias }` (those saved, from `units`, then each `unitAlias`) |
 | `error` | the latest `error` message's text, or why a `setConfig` was refused |
@@ -253,10 +253,10 @@ whenever `change` fires.
 | `listen()`, `listen({ talkgroup })`, `listen({ system, talkgroup })`, `listen(false)` | live audio: every call, one talkgroup's, one system's (by short name) talkgroup's, none. Kept across reconnects. |
 | `subscribe(topics)` | the costly messages to receive: `["log"]` fills `log`; `"spectrum:0"` a waterfall's `spectrum`. Kept across reconnects. |
 | `setConfig(edit)` | `edit(copy)` changes a copy of the latest config, and the whole config is sent with `configVersion`. If the config changed elsewhere meanwhile it's refused, and `error` says so |
-| `setTalkgroups(shortName, csv)` | replace a system's talkgroup file (`""` for none) |
+| `setTalkgroups(shortName, rows)` | replace a system's talkgroups (`Talkgroup` rows; `[]` for none) |
 | `setTalkgroup(shortName, talkgroup, edit)` | change one talkgroup's cells (`{ alphaTag, description, tag, category, ignore }`, any of them) |
 | `callUrl(entry, "wav" \| "json" \| "m4a")` | a recorded call's file URL |
-| `talkgroups(shortName)` | the system's talkgroup file, parsed from `talkgroupFiles`: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }`; a conventional system's channels (`alphaTag` the channel's name) |
+| `talkgroups(shortName)` | the system's talkgroups, from `talkgroupRows` and the edits since: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }`; a conventional system's channels (`alphaTag` the channel's name) |
 | `unitName(shortName, unit)` | a radio's name, as the system's `unitNames.mode` says: its unit names (`unitNames.csv`, regular-expression rows too) and the alias heard; else `""` |
 | `close()` | disconnect for good |
 
@@ -302,8 +302,7 @@ and stopped at its `onNowPlaying(null)`, when the call is quiet. A
 player per talkgroup can keep `followCall` and stay for good.
 
 **Helpers:** `duration(s)` gives `"1:05"`, `mhz(hz)` gives
-`"155.2000 MHz"`, `escapeHtml(s)`, and `parseTalkgroups(csv)` reads a
-talkgroup CSV. `systemName(status, system)` turns the `system`
+`"155.2000 MHz"`, and `escapeHtml(s)`. `systemName(status, system)` turns the `system`
 number a call or audio chunk carries into its short name
 (`status.systemNames`).
 
@@ -379,7 +378,7 @@ origin listed (e.g. `"https://radio.example.com"`).
    also `devices`, `keys`, `plugins` and `interfaces`. **`hello`** comes
    last. It means you're caught up: draw the first screen then, and don't
    treat something missing as missing before it (a system with no
-   `talkgroups` message has no talkgroup file).
+   `talkgroups` message has no talkgroups).
 3. Then **messages as things happen**, to every connected client:
    - `state` when recording starts or stops
    - `status` about twice a second while recording: systems, sources and the
@@ -401,7 +400,7 @@ origin listed (e.g. `"https://radio.example.com"`).
    doesn't compute them.
 5. **Send commands** as JSON text whenever you like. Answers to your own
    commands (`error`, `notice`, `dir`, `trConfig`, `devices`, `radios`,
-   `store`, `configSaved`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`,
+   `store`, `configSaved`, `subscribed`, `statsResult`, `radioResult`, `callsResult`,
    `licenseResult`, `callSignResult`, `pluginActionResult`, and `plugins` when you sent
    `plugins`) come to your connection only. A command the recorder can't
    read (a field missing or of the wrong kind, an unknown `type`) is answered with an `error`. Everything else goes to every client: after
@@ -481,11 +480,11 @@ Every message is a JSON object with a `type`. Exact fields are in
 
 | `type` | When | What's in it |
 |---|---|---|
-| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host` and `keys` (the desktop app has all; the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
-| `history` | On connecting | `entries`: the latest calls (≤ 300 `CallEntry`), newest first. Then `concluded` for each new one |
+| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host`, `keys`, `calls` (the call store, for `callsQuery`) and `history` (the dashboard's history further back than a week, for `statsQuery`'s `30d`, `90d` and `1y`; the desktop app has all of them, `calls` and `history` while its call store is open, and the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
+| `history` | On connecting | `entries`: the latest calls (≤ 300 `CallEntry`), newest first; `next?`: where older calls go on from (a `callsQuery` `cursor`), present when there are more. Then `concluded` for each new one |
 | `units` | On connecting, for each system with some | `system` (short name), `csv`: the talker aliases saved, as CSV: `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins. Then `unitAlias` for each new one |
-| `talkgroups` | On connecting, for each system; whenever one is replaced | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |
-| `talkgroupEdited` | One talkgroup of a system's file was edited (`setTalkgroup`) | `system`, `talkgroup`, `edit`: the cells it set. Make the same edit to the file you keep: only that row changes, a column or row is added when missing (`client.js` does this) |
+| `talkgroups` | On connecting, for each system with some; whenever they're replaced | `system` (short name), `talkgroups`: its talkgroups, a row each in Trunk Recorder's columns: `number`, `mode`, `alphaTag`, `description`, `tag`, `category`, `priority` (1 unless set; −1 means ignore), `preferredNac` (0: none), `preferredSite`, `ignore`, and `comment` (the `#` lines above its row in the file it came from) and `extra` (`[column, value]` pairs of columns Trunk Recorder doesn't know) when it has them. `[]`: none now |
+| `talkgroupEdited` | One talkgroup of a system's was edited (`setTalkgroup`) | `system`, `talkgroup`, `edit`: the cells it set. Make the same edit to the rows you keep: only that row changes, and a row is added when missing and something is set (`client.js` does this) |
 | `plugins` | On connecting (control access); after plugin changes; answers `plugins` | `plugins` (`PluginInfo[]`), `encoderFound` |
 | `state` | Recording starts / stops | `phase`, `error`, `ended` |
 | `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systemNames`: every system's short name by its number, `systems[]` (trunked, then conventional) with `share` (a system shared with the directory: `{ state: "needsCallSign" | "waiting" | "shared" | "error", lastShared, error }`, else null), and each site's control channel, decode counts `good`/`bad`, site identity, `callsigns` (the FCC call signs a Motorola control channel sends, each with its `freqHz`); neighbours, patches and the like are in `decodeDetail`), `sources[]` (each radio: its rate as set and `rateMeasured`, drops, errors and the last (`lastError`, `lastErrorS`), frequency error measured `errorPpm` and the correction `tunePpm`), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
@@ -496,7 +495,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now, each with its `site`), `sites` (each running site's `index`, `name`, and what its control channel announces: `adjacent` sites, `dmr`, `nxdn`), `patches` (the patches standing now, each once: `supergroup` and `members`) |
 | `monitorEvent` | Something notable happened | `t`, `level` (`info`, `ok`, `warn`, `bad`), `kind` and its fields: control channels (`controlLost`, `controlRegained`; `system`, `site`), talkgroups and radios (`tgFirstSeen`, `tgActive`, `unitFirstSeen`, `unitActive`, `unitAffiliated`, `callVolume`), tones (`tonePattern`: `text`, `signals`), radios (`sourceDrops`, `sourceClipping`, `sourceRecovered`), plugins (`pluginHealth`), the computer (`linkDown`, `linkUp`, `diskLow`), the RAM spool (`spoolLow` with `critical`, `spoolFull` with `calls`, `spoolRecovered`, `spoolRemoved` with `spool` (its kind) and `remade`), the clock (`clockOff` with `why` and `bad`, `clockOk`, `clockStep` with `byMs`). The event feed's kinds are listed in protocol.ts (`MonitorEvent`) |
 | `subscribed` | Answers `subscribe` | `topics` |
-| `olderCalls` | Answers `olderCalls` | `before` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still) |
+| `callsResult` | Answers `callsQuery` | `id` (as asked), `entries` (`CallEntry[]`, newest first, ordered by start time then path), `next?` (present only when more calls remain: send it back as `cursor` for the next page), `error?` (the call store is off or failed: the page is the recent calls alone) |
 | `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies / tone patterns heard), `outOfBand` (freqs), `row` and its detail, `systems` (summary), `histogram` |
@@ -537,8 +536,8 @@ too.
 | `stop` | — | Stop recording. Calls in progress are saved. |
 | `listen` | `on`, `system` (a short name, or null), `talkgroup` (number or null) | Live audio on this connection: every call (both null), one system's, one talkgroup's, or both. `on: false` stops it. |
 | `setConfig` | `config`, `version` | Replace the whole config, edited from `version` (the last `config` message's): saved, and sent to everyone as `config`. Refused if the config has changed since (another browser saved). Always answered with `configSaved`. Takes effect at the next `start` (plugin settings at once). |
-| `setTalkgroups` | `system` (short name), `csv` | Replace a system's talkgroup file (`""` removes it). Everyone gets it as `talkgroups`; a recording takes it at once. |
-| `setTalkgroup` | `system`, `talkgroup`, `edit`: any of `alphaTag`, `description`, `tag`, `category` (text), `ignore` (true/false) | Change one talkgroup's row: only the cells given (a row added when the file lacks it and something is set). Everyone gets it as `talkgroupEdited`; a recording takes it at once. For an Ignore button or a name edit, rather than sending the whole file. |
+| `setTalkgroups` | `system` (short name), `talkgroups`: rows as the `talkgroups` message has them | Replace all of a system's talkgroups (`[]` removes them; a number twice: the later row, in the first's place). Everyone gets them as `talkgroups`; a recording takes them at once. CSV is only for files: read a talkgroup file yourself and send its rows. |
+| `setTalkgroup` | `system`, `talkgroup`, `edit`: any of `alphaTag`, `description`, `tag`, `category` (text), `ignore` (true/false) | Change one talkgroup's row: only the cells given (a row added when there's none and something is set). Everyone gets it as `talkgroupEdited`; a recording takes it at once. For an Ignore button or a name edit, rather than sending them all. |
 | `channelFile` | `index`, `path` | Link conventional system `index`'s channels to a CSV, reload it (same path), or unlink (`""`). |
 | `devices` | — | List RTL-SDR dongles (→ `devices`). |
 | `findRadios` | — | Look for USRP / Airspy / SoapySDR devices (→ `radios`; takes a few seconds). |
@@ -559,10 +558,10 @@ too.
 | `addInterface` | `path` | Serve a folder on the recorder's computer as an interface. |
 | `removeInterface` | `id` | Stop serving it and forget it; an installed copy is deleted. |
 | `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform` (→ `subscribed`). |
-| `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d`) or `from` / `to` (Unix s), `points?` | The minute history of series, averaged down to about `points` steps (→ `statsResult`). |
+| `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d` / `30d` / `90d` / `1y`) or `from` / `to` (Unix s), `points?` | The history of series, averaged down to about `points` steps (→ `statsResult`). Up to a day (a week without a store) is answered from memory by the minute; further back (`7d` with a store, `30d`, `90d`, `1y`, or an older `from`) is the store's hours, needs `history` in `hello.capabilities`, and its steps are whole hours or days, as far back as `storage.statsDays` keeps. |
 | `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths`, `tones` (→ `radioResult`). |
 | `pluginAction` | `id`, `plugin`, `action`, `value` | Press one of a plugin's buttons (its settings schema's `x-actions`) on `value`, the settings object it's on as edited (→ `pluginActionResult`, once the plugin answers). Control access; plugins run only while recording. |
-| `olderCalls` | `before?` (Unix ms), `limit?` (≤ 500, default 100) | Recorded calls that started before `before`, newest first, from the last 24 hours (→ `olderCalls`). Listen-only connections may send it. |
+| `callsQuery` | `id`, `system?` (short name), `talkgroup?`, `unit?` (a radio), `from?` / `to?` (start time, Unix ms: `from` inclusive, `to` exclusive), `cursor?` (the previous page's `next`), `limit?` (1 to 500, default 100) | Recorded calls, newest first (→ `callsResult`). Talkgroup and radio numbers are a system's own: asked without `system`, each configured system's calls are searched. The desktop app answers from its call store with the latest calls included; the browser build from its own list. Listen-only connections may send it. |
 | `unlockKeys` | `source`, `password` | Open a key container that has no password file; the password is kept in memory only. `keys` follows. |
 | `lockKeys` | `source` | Forget a container's keys: its systems stop decrypting at once. |
 | `quit` | — | Stop recording and exit the recorder. |
@@ -608,6 +607,8 @@ after a reconnect, so send `listen` again after `hello`.
 
 ## Recorded calls
 
+The call store is a database of every recorded call, kept beside the config (`trunk-pro.sqlite`). `callsQuery` searches it by system, talkgroup, radio and time, as far back as it keeps calls (`storage.retentionDays`); `history`, `GET /api/v1/calls` and plugins' `calls.query` are the same query. Every answer includes the latest calls, the store's not-yet-committed ones too. `hello.capabilities` has `calls` while the store is open; when it's off, the same messages answer from the recent calls alone (`callsResult.error` says so).
+
 Each recorded call's files are under the recordings folder at
 `CallEntry.path`:
 
@@ -634,6 +635,25 @@ transmission saved, [above](#concepts)), `site`, `system_type` and
 `decrypted` with `algid` / `key_id`, `clock_off`, and the call's in-band
 `tones`, the `tone_patterns` they make up (each with `text` in words) and the
 system's `signals` it carried. docs/guides/recordings.md lists every field.
+
+### The call store over HTTP
+
+The same store answers plain HTTP `GET`s, for a plugin or an interface on
+another machine that has no WebSocket to keep. Every door that serves the API
+serves these (the built-in interface and each interface's port), to a
+connection with listen or control access, as `callsQuery` is; a door that is
+off answers 404. All answers are JSON. When the call store could not be
+opened, `GET /api/v1/storage` answers 503 `{"error": "the call store is off"}`; the calls routes answer from the recent calls alone (below). (Plugins ask
+over their own channel instead: `calls.query`, in the plugin SDK.)
+
+| Route | Answers |
+|---|---|
+| `GET /api/v1/calls` | `{ entries, next?, error? }`, the page `callsResult` has: `CallEntry`s, newest first. With the call store off it answers 200 with the recent calls and an `error`, "the call store is off: only the recent calls". Parameters, all optional: `system` (short name; its sites' old names too), `talkgroup`, `unit` (a radio), `from` (start time, Unix ms, inclusive), `to` (exclusive), `cursor` (pass the last answer's `next` for the next page), `limit` (1 to 500, default 100). A parameter given empty counts as not given; a bad number answers 400 `{"error": "<name> must be a number"}`. |
+| `GET /api/v1/calls/<path>` | One `CallEntry`: `{ path, record, audio, json }`, for the `path` its entry has (slashes stay slashes); 404 `{"error": "no such call"}` when there is none. With the call store off it answers a recent call if it has it, else 404. |
+| `GET /api/v1/storage` | `{ backend, path, schemaVersion, calls, oldestMs, newestMs, retentionDays, commitSeconds }`: which backend (`sqlite`, `postgres`) and where the store is (a PostgreSQL database without its password), how many calls it holds and the start times of the oldest and newest committed (`null` when empty), and the settings `storage.retentionDays` and `storage.commitSeconds`. |
+
+The routes are described in
+[calls.openapi.yaml](calls.openapi.yaml) (OpenAPI 3.0).
 
 ## Recipes
 

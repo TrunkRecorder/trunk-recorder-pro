@@ -339,6 +339,18 @@
               "emergency": {
                 "type": "number"
               },
+              "encrypted": {
+                "type": "number"
+              },
+              "duplex": {
+                "type": "number"
+              },
+              "mode": {
+                "type": "number"
+              },
+              "priority": {
+                "type": "number"
+              },
               "signal_system": {
                 "type": "string"
               },
@@ -740,9 +752,11 @@
         "plugins",
         "interfaces",
         "host",
-        "keys"
+        "keys",
+        "calls",
+        "history"
       ],
-      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password"
+      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open"
     },
     "Channel": {
       "type": "object",
@@ -1186,6 +1200,10 @@
             "$ref": "#/definitions/Conventional"
           }
         },
+        "nextSystemId": {
+          "type": "number",
+          "description": "The next system id the recorder gives: above every one given, so none is given twice."
+        },
         "recording": {
           "$ref": "#/definitions/Recording"
         },
@@ -1254,6 +1272,10 @@
           "$ref": "#/definitions/LogSettings",
           "description": "The log (desktop app)."
         },
+        "storage": {
+          "$ref": "#/definitions/StorageSettings",
+          "description": "What's kept on disk beside the config (desktop app): the call store."
+        },
         "monitor": {
           "$ref": "#/definitions/MonitorSettings",
           "description": "What the dashboard watches on the computer (desktop app)."
@@ -1271,6 +1293,10 @@
     "Conventional": {
       "type": "object",
       "properties": {
+        "id": {
+          "type": "number",
+          "description": "Its number, as a trunked system's (numbered together)."
+        },
         "shortName": {
           "type": "string",
           "description": "Folder / record name of its calls."
@@ -1897,6 +1923,9 @@
               "items": {
                 "$ref": "#/definitions/CallEntry"
               }
+            },
+            "next": {
+              "type": "string"
             }
           },
           "required": [
@@ -2042,14 +2071,17 @@
             "system": {
               "type": "string"
             },
-            "csv": {
-              "type": "string"
+            "talkgroups": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Talkgroup"
+              }
             }
           },
           "required": [
             "type",
             "system",
-            "csv"
+            "talkgroups"
           ],
           "additionalProperties": false
         },
@@ -3619,9 +3651,9 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "olderCalls"
+              "const": "callsResult"
             },
-            "before": {
+            "id": {
               "type": "number"
             },
             "entries": {
@@ -3630,15 +3662,17 @@
                 "$ref": "#/definitions/CallEntry"
               }
             },
-            "more": {
-              "type": "boolean"
+            "next": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
             }
           },
           "required": [
             "type",
-            "before",
-            "entries",
-            "more"
+            "id",
+            "entries"
           ],
           "additionalProperties": false
         },
@@ -4623,6 +4657,73 @@
             ],
             "additionalProperties": false
           }
+        },
+        "store": {
+          "type": "object",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "sqlite",
+                "postgres"
+              ]
+            },
+            "radioIndex": {
+              "type": "boolean"
+            },
+            "talkgroupIndex": {
+              "type": "boolean"
+            },
+            "sizes": {
+              "$ref": "#/definitions/StoreSizes"
+            },
+            "written": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "bytes": {
+                      "type": "number"
+                    },
+                    "of": {
+                      "type": "string",
+                      "enum": [
+                        "store",
+                        "server"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "bytes",
+                    "of"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "why": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "why"
+                  ],
+                  "additionalProperties": false
+                }
+              ],
+              "description": "What it has written to disk: `of` \"store\" (SQLite's writer, counted by the OS: Linux), or \"server\" (PostgreSQL's write-ahead log, the whole server's); else `why` not. Its rate is the `store/written` series."
+            }
+          },
+          "required": [
+            "backend",
+            "radioIndex",
+            "talkgroupIndex",
+            "sizes",
+            "written"
+          ],
+          "additionalProperties": false,
+          "description": "The store (desktop app): each table's and index's size, measured every 15 minutes; absent until measured, or with the store off."
         }
       },
       "required": [
@@ -6694,6 +6795,53 @@
       ],
       "additionalProperties": false
     },
+    "StorageSettings": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "sqlite",
+            "postgres"
+          ],
+          "description": "Which database keeps what the recorder keeps (the call index, talkgroups, aliases, the radio registry, the dashboard's history): \"sqlite\" (a file beside the config; the default) or \"postgres\" (a database server, `url`)."
+        },
+        "lowWrite": {
+          "type": "boolean",
+          "description": "Write as little as can be (an SD card): no call index (the call list is the recent calls), the dashboard's history by the hour only, a commit an hour."
+        },
+        "url": {
+          "type": "string",
+          "description": "PostgreSQL's connection string (postgres://user:password@host/db); one recorder per database or schema. Not sent to listen-only connections (it can hold a password)."
+        },
+        "retentionDays": {
+          "type": "number",
+          "description": "Days of calls the call store indexes (default 120); 0 keeps them all. The calls' files on disk aren't touched."
+        },
+        "commitSeconds": {
+          "type": "number",
+          "description": "Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, so longer is gentler on flash."
+        },
+        "statsDays": {
+          "type": "number",
+          "description": "Days of the dashboard's history kept, as hours (default 365); 0 keeps it all."
+        },
+        "radioIndex": {
+          "type": "boolean",
+          "description": "Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system."
+        },
+        "talkgroupIndex": {
+          "type": "boolean",
+          "description": "Index calls by their talkgroups (default true), so a talkgroup's calls page back as far as the store keeps them; off, a talkgroup's list is its recent calls."
+        }
+      },
+      "required": [
+        "backend",
+        "retentionDays",
+        "commitSeconds"
+      ],
+      "additionalProperties": false
+    },
     "StoreKind": {
       "type": "string",
       "enum": [
@@ -6701,6 +6849,61 @@
         "interface"
       ],
       "description": "Which store: the plugins' (the registry) or the interfaces'."
+    },
+    "StoreSizes": {
+      "type": "object",
+      "properties": {
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "table": {
+                "type": "string"
+              },
+              "index": {
+                "type": "boolean"
+              },
+              "bytes": {
+                "type": "number"
+              },
+              "rows": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "name",
+              "table",
+              "index",
+              "bytes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "fileBytes": {
+          "type": "number",
+          "description": "SQLite: the database file; PostgreSQL: its tables and indexes added up."
+        },
+        "walBytes": {
+          "type": "number",
+          "description": "SQLite's write-ahead log."
+        },
+        "freeBytes": {
+          "type": "number",
+          "description": "SQLite: pages free inside the file (used again before it grows)."
+        }
+      },
+      "required": [
+        "objects",
+        "fileBytes",
+        "walBytes",
+        "freeBytes"
+      ],
+      "additionalProperties": false,
+      "description": "The store's tables and indexes, biggest first, and its files."
     },
     "SurveyBand": {
       "type": "object",
@@ -7467,6 +7670,10 @@
     "System": {
       "type": "object",
       "properties": {
+        "id": {
+          "type": "number",
+          "description": "Its number, the same across renames (the store keeps everything of it by this). Given by the recorder when it's saved; never reused."
+        },
         "shortName": {
           "type": "string"
         },
@@ -7632,6 +7839,76 @@
       ],
       "additionalProperties": false,
       "description": "One system being recorded: trunked (with a site running) or conventional. `index` is what calls and audio carry as `system`."
+    },
+    "Talkgroup": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "number"
+        },
+        "mode": {
+          "type": "string",
+          "description": "\"D\", \"A\", \"E\", \"T\", \"DE\", \"TE\"… (Trunk Recorder's Mode)."
+        },
+        "alphaTag": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "number",
+          "description": "1 when the file gives none; −1: ignore it (Trunk Recorder's way)."
+        },
+        "preferredNac": {
+          "type": "number",
+          "description": "Multi-site: the site whose copy of a call to keep, by NAC (or RFSS and site, `RRRRssss`); 0: none."
+        },
+        "preferredSite": {
+          "type": "string",
+          "description": "Multi-site: the same by the site's short name; \"\": none."
+        },
+        "ignore": {
+          "type": "boolean",
+          "description": "Never record it (the Ignore column, or priority −1)."
+        },
+        "comment": {
+          "type": "string",
+          "description": "The `#` comment line(s) directly above its row in the file it came from."
+        },
+        "extra": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Columns this app doesn't know, [name, value]: kept for the file it's downloaded as."
+        }
+      },
+      "required": [
+        "number",
+        "mode",
+        "alphaTag",
+        "description",
+        "tag",
+        "category",
+        "priority",
+        "preferredNac",
+        "preferredSite",
+        "ignore"
+      ],
+      "additionalProperties": false,
+      "description": "A system's talkgroup: one row of its talkgroup file (Trunk Recorder's columns), as the recorder keeps it. CSV is only for a file loaded or downloaded."
     },
     "TalkgroupEdit": {
       "type": "object",
@@ -7920,14 +8197,17 @@
             "system": {
               "type": "string"
             },
-            "csv": {
-              "type": "string"
+            "talkgroups": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Talkgroup"
+              }
             }
           },
           "required": [
             "type",
             "system",
-            "csv"
+            "talkgroups"
           ],
           "additionalProperties": false
         },
@@ -8504,7 +8784,10 @@
                 "1h",
                 "6h",
                 "24h",
-                "7d"
+                "7d",
+                "30d",
+                "90d",
+                "1y"
               ]
             },
             "from": {
@@ -8529,10 +8812,28 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "olderCalls"
+              "const": "callsQuery"
             },
-            "before": {
+            "id": {
               "type": "number"
+            },
+            "system": {
+              "type": "string"
+            },
+            "talkgroup": {
+              "type": "number"
+            },
+            "unit": {
+              "type": "number"
+            },
+            "from": {
+              "type": "number"
+            },
+            "to": {
+              "type": "number"
+            },
+            "cursor": {
+              "type": "string"
             },
             "limit": {
               "type": "number"
@@ -8540,8 +8841,7 @@
           },
           "required": [
             "type",
-            "before",
-            "limit"
+            "id"
           ],
           "additionalProperties": false
         },

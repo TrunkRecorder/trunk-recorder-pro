@@ -847,7 +847,8 @@ encodes nothing itself. A call decrypted with the recorder's keys goes only to p
 1. Host → `hello` { api, host, config, systems [ {index, short_name, kind, name?, fcc? { "<Hz>": {call_sign, name?} }, fcc_call_sign?, fcc_name?, sites? [ {name} ], config, settings} ],
    capture_dir, data_dir, audio_formats }. `index` is the system's number this run (from 0,
    trunked then conventional); `kind` says which, `conventional` included; `settings` are the
-   plugin's own settings as a system's `override` changes them.
+   plugin's own settings as a system's `override` changes them. A plugin asks for recorded
+   calls with `calls.query` (answered `calls`, by request number), not by opening the store.
 2. Plugin → `ready` (or `status: error` and exit 78 for a config error).
 3. Host → events for subscribed topics: `call.start`, `call.end`, `call.concluded` (with
    json / wav / m4a paths), `unit`, `audio`, `status` (every 5 s).
@@ -1153,7 +1154,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78.
 
 | `type` | Payload fields |
 |---|---|
-| `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, name, fcc (by frequency), fcc_call_sign / fcc_name (the one that names it), sites: [SiteInfo { name }], config, settings }]` (name, FCC fields and sites left out when empty), `capture_dir`, `data_dir`, `audio_formats` |
+| `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, name, fcc (by frequency), fcc_call_sign / fcc_name (the one that names it), sites: [SiteInfo { name }], config, settings }]` (name, FCC fields and sites left out when empty), `capture_dir`, `data_dir`, `store?` (the call store's absolute path, left out when the store didn't open; open it read-only, WAL, read `schema_version` first, never write; remote plugins use the HTTP API), `audio_formats` |
 | `call.start`, `call.end` | once per call, from its first copy: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_ota, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
 | `unit` | `system`, `short_name`, `site`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |
@@ -1392,7 +1393,14 @@ found on the air with `plan_centers`, through the same `off_dc`.
 | `conventional.heard.json` | codes heard per conventional frequency |
 | `tune.json` | AutoTune's scores per source, for the next run |
 | `radio/<short>.json` | the radio registry (units, talkgroups, affiliations); every 15 min and at stop |
-| `stats/YYYY-MM-DD.jsonl` | a dashboard rollup per minute; gzipped after the day, kept 8 days |
+
+The store keeps the talkgroup files (a line at a time, table `talkgroups`), band plans, talker
+aliases, conventional codes, AutoTune's scores, sharing's state, the radio registry (each save's
+changes, whole once a day) and the dashboard's history (`trunk-pro/src/kept.rs`,
+`statstore.rs`); there are no files for them. Low-write mode keeps no call index. A store of
+another schema version is set aside and made afresh (`db/schema.rs`).
+
+| `stats/YYYY-MM-DD.jsonl` | a dashboard rollup per minute; gzipped after the day, kept 8 days (`files`; the store on: `stats_minutes` and `stats_hours`) |
 | `plugins/<id>/` | installed plugins |
 | `plugin-data/<id>/` | plugin state |
 | `plugin-hold/` | finished calls held back by plugin delays |
@@ -1541,7 +1549,7 @@ asks.
 | Producer | Feeds | Output |
 |---|---|---|
 | `ControlChannel::report` (per protocol; default nothing), `Engine::report` (levels, ppm, calls), `SampleMeter` (headroom and clipping, 1 sample in 16), `Tally` (calls, airtime, reasons, voice errors, counted from events) | `Aggregator` | `stats` message every 1 s; a `Rollup` every minute |
-| `Rollup` | `History` (a week in memory) and `stats/YYYY-MM-DD.jsonl` | `statsQuery` → `statsResult` |
+| `Rollup` | `History` (in memory: a week, or a day with the store) and `stats/YYYY-MM-DD.jsonl` or the store | `statsQuery` → `statsResult` |
 | Session events → `Stats::observe` | `Registry` | `radioQuery` → `radioResult` (`Shared::radio_query`, names from the `NameBook`); `radio/<short>.json` every 15 min and at stop |
 | Session events → `Stats::observe` | `Monitor` | watchers (the hook for alert rules; none yet) and `monitorEvent` |
 | monitor thread (desktop, every 2 s): the computer and the plugins | its own aggregator | `host` message every 2 s; rollups into the same history |
@@ -1556,11 +1564,21 @@ asks.
   `sys/<shortName>/site/<site>/cc/good`); renaming one loses its history.
 - **`Aggregator`**: rates from counters; each series' value now; per minute its average, lowest
   and highest. A rollup line is `{"t": minute, "s": {key: [avg, min, max]}}`.
-- **`History`**: a minute grid per series, a week in memory. `statsQuery` takes names or prefixes
-  ending in `*`, a range (10m, 1h, 6h, 24h, 7d) or from/to, and is answered downsampled (360
-  points by default).
-- **stats files**: UTC days, appended and never rewritten, a finished day gzipped, days past 8
-  deleted; read back into `History` in the background at start (`statsResult.loading` meanwhile).
+- **`History`**: a minute grid per series in memory: a week with no store (the browser build,
+  `files`); with one, 26 hours (`statstore::memory_minutes`). `statsQuery` takes names or
+  prefixes ending in `*`, a range (10m, 1h, 6h, 24h, 7d, 30d, 90d, 1y) or from/to, and is
+  answered downsampled (360 points by default) into a `Span`'s buckets. Within what memory keeps,
+  from memory alone. Further back (the store on: `hello.capabilities` has `history`),
+  `server::stats_query` adds the store's hours before the last day to memory's minutes since, on
+  a grid of whole hours (1, 2, 3, 6, 12 h, a day, two, a week): a few hundred points a series
+  whatever the span, so the history lives in the store, not in the recorder or the browser.
+- **Kept (`statstore.rs`)**: with the store on, each rollup a row of `stats_minutes` (kept 2 days,
+  read back into `History` at start) and, as each hour ends (two minutes late, for stragglers),
+  each series' hour a row of `stats_hours` (`History::hour_rows`: avg, lo, hi, minutes), kept
+  `storage.statsDays` (365; 0: all). `meta` `stats.hoursDone` is the last hour written; a start
+  writes the hours memory has after it. With `files`: UTC days of JSON lines, appended and never rewritten, a
+  finished day gzipped, days past 8 deleted. Either is read back in the background at start
+  (`statsResult.loading` meanwhile).
 - **`Registry`**: per system, bounded maps of talkgroups (5,000), units (20,000), unit pairs,
   frequencies and affiliations, with a week of hourly activity.
 - **`Monitor`**: notable events (talkgroup or unit first seen, talkgroup active, call volume,
@@ -1672,7 +1690,7 @@ recorder can do beyond recording (`Capability`: `service`, `drivers`, `plugins`,
 7. Client → `statsQuery {id, series, range}`; recorder → `statsResult {id, …}` to the asker.
 8. Client → `setConfig {config, version}` (always the whole config, edited from that version);
    recorder → `configSaved {version, error?}` to the sender, and `config` to everyone unless the
-   version was stale. Client → `setTalkgroups {system, csv}`; recorder → `talkgroups` to everyone.
+   version was stale. Client → `setTalkgroups {system, talkgroups}`; recorder → `talkgroups` to everyone.
 9. Client → `start` / `stop`; recorder → `state` to everyone.
 
 ### 14.2 Who gets what
@@ -1683,7 +1701,7 @@ recorder can do beyond recording (`Capability`: `service`, `drivers`, `plugins`,
 | Every client | `state`, `status`, `stats`, `host`, `concluded`, `callFiles`, `monitorEvent`, `unitAlias`, `heard`, `config`, `talkgroups`, `survey`, `surveySpectrum`, `log` (the recorder's own warnings and errors, with their clock time and level), `quit` |
 | Control access only | `plugins`, `pluginRuntime`, `interfaces`, `store`, `installProgress`, `keys` (`ToClient::audience`) |
 | Topic subscribers | `spectrum` (`spectrum:<source>`, about 7/s, 512 bins), `log` (`log`: control channel lines and the rest of the recorder's log), `rfDetail` (`rf:<source>`, 1/s), `decodeDetail` (`decode:<shortName>`, 1/s: channels, each site's adjacent sites and DMR / NXDN detail, patches), per-core detail in `host` (`platform`) |
-| The sender only | `configSaved`, `devices`, `radios`, `dir`, `trConfig`, `store`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`, `sourceProfile`, `error`, `notice` |
+| The sender only | `configSaved`, `devices`, `radios`, `dir`, `trConfig`, `store`, `subscribed`, `statsResult`, `radioResult`, `callsResult`, `sourceProfile`, `error`, `notice` |
 | Binary, to listeners | live audio frames |
 
 Nothing is computed for a topic nobody watches. A client more than 4,096 messages behind on the
@@ -1694,7 +1712,7 @@ hub skips the oldest without notice.
 | Area | Commands |
 |---|---|
 | Recording | `setConfig`, `setTalkgroups`, `start`, `stop`, `quit`, `channelFile` |
-| Watching | `subscribe`, `listen`, `statsQuery`, `radioQuery`, `olderCalls` |
+| Watching | `subscribe`, `listen`, `statsQuery`, `radioQuery`, `callsQuery` |
 | Setup | `devices`, `findRadios`, `listDir`, `readTrConfig`, `profileSource`, `surveyStart`, `surveyListen`, `surveyRescan`, `surveyStop` |
 | Plugins and interfaces | `plugins`, `addPlugin`, `removePlugin`, `interfaces`, `addInterface`, `removeInterface`; their stores: `store {kind, refresh?}`, `install {kind, id}` or `{kind, repository, tag?}` (progress in `installProgress {kind, key, id, stage, message}`), `kind` `plugin` or `interface` |
 | Keys | `unlockKeys {source, password}`, `lockKeys {source}` (key containers without a password file) |
@@ -1715,6 +1733,7 @@ hub skips the oldest without notice.
 |---|---|
 | `/api/ws` | the WebSocket |
 | `/api/version`, `/api/schema`, `/api/protocol.ts`, `/api/docs`, `/api/*` | version (and interface API), schema, TypeScript types, API docs and examples |
+| `/api/v1/calls`, `/api/v1/calls/<path>`, `/api/v1/storage` | the call store as JSON (`docs/api/calls.openapi.yaml`), with listen or control access; 503 when the store is off |
 | `/calls/<path>` | recordings (folder, then RAM spool), WAV ↔ M4A substitution, Range requests |
 | `/store/screenshots/<sha256>`, `/interfaces/<id>/screenshots/<n>` | store listings' screenshots (built-in port only) |
 | everything else | on `server.port` the embedded interface; on an interface's port, its folder (no hidden files) |

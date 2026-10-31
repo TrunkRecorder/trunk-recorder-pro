@@ -387,8 +387,8 @@ pub struct Session {
 impl Session {
     /// `bandplan`: the band plan saved for a site, by its key
     /// ([`Session::bandplans`], [`bandplan_key`]).
-    /// `talkgroups`: each system's talkgroup file ([`crate::config::TalkgroupFiles`]).
-    pub fn new(cfg: Config, talkgroups: &crate::config::TalkgroupFiles, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
+    /// `talkgroups`: each system's talkgroups ([`crate::config::TalkgroupLists`]).
+    pub fn new(cfg: Config, talkgroups: &crate::config::TalkgroupLists, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
@@ -473,10 +473,9 @@ impl Session {
         self.meas.topics = topics;
     }
 
-    /// A system's talkgroup file changed (an Ignore flag set from the
-    /// dashboard): calls from now on go by it.
-    pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) -> bool {
-        let set = self.engine.set_talkgroups(short_name, trunk_core::trunk::parse_csv(csv));
+    /// A system's talkgroups are now `rows` (a list loaded): calls from now on go by them.
+    pub fn set_talkgroups(&mut self, short_name: &str, rows: &[trunk_core::trunk::TalkgroupRow]) -> bool {
+        let set = self.engine.set_talkgroups(short_name, crate::config::talkgroups_of(rows));
         self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
         set
     }
@@ -737,7 +736,7 @@ impl Session {
     }
 
     /// Preload the codes conventional frequencies carried before (what
-    /// [`Saved::Heard`] gave, saved as [`Session::heard_file`]).
+    /// [`Saved::Heard`] gave, saved as [`Session::HEARD_FILE`]).
     pub fn load_heard(&mut self, json: &str) {
         self.heard = HeardCodes::load(json);
     }
@@ -762,8 +761,8 @@ impl Session {
             out.extend(self.tune_unsaved().map(Saved::Tune));
         }
         if due.registry {
-            let changed = self.meas.shared().radio.lock().unwrap().take_dirty_copies();
-            out.extend(changed.into_iter().map(|(system, radio)| Saved::Registry { system, radio }));
+            let changes = self.meas.shared().radio.lock().unwrap().take_changes();
+            out.extend(changes.into_iter().map(|(system, changes)| Saved::Registry { system, changes: Box::new(changes) }));
         }
         out
     }
@@ -775,9 +774,7 @@ impl Session {
     }
 
     /// The file name (beside the config) the codes are kept in.
-    pub fn heard_file(_cfg: &Config) -> String {
-        "conventional.heard.json".into()
-    }
+    pub const HEARD_FILE: &'static str = "conventional.heard.json";
 
     /// Each site's (band plan key, band plan), to keep for the next run.
     fn bandplans(&self) -> Vec<(String, String)> {

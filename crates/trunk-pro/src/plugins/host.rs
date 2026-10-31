@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
-    format, topic, Action, AudioChunk, CallFiles, CallRecord, ConcludedCall, Hello, HostInfo, HostMessage, Level, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
+    format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
     SystemInfo, API_VERSION, EXIT_CONFIG,
 };
 
@@ -54,6 +54,9 @@ pub struct ProcessStats {
 }
 
 pub type Notes = Arc<dyn Fn(Note) + Send + Sync>;
+
+/// Answers a plugin's `calls.query` (the recorder's [`crate::runtime::calls`]).
+pub type Calls = Arc<dyn Fn(&CallsQuery) -> CallsPage + Send + Sync>;
 
 /// Messages waiting for a plugin; beyond this it's behind, and loses them.
 const QUEUE: usize = 1024;
@@ -92,6 +95,8 @@ struct Shared {
     /// answer, by the request number it was given.
     answers: Mutex<HashMap<u64, mpsc::Sender<(bool, String)>>>,
     requests: AtomicU64,
+    /// Answers `calls.query` (None: no recorder to ask, as in `plugin test`).
+    calls: Option<Calls>,
 }
 
 /// How long `shutdown` waits for a plugin to read what was queued before
@@ -153,12 +158,14 @@ impl PluginHost {
     /// Start `specs`. `systems`: every system calls come from (their `config` is filled in here).
     /// A plugin that can't start is reported and left out.
     pub fn start(specs: Vec<Spec>, audio: &super::AudioSettings, systems: &[SystemInfo], capture_dir: &Path, notes: Notes) -> PluginHost {
-        Self::start_when(specs, audio, systems, capture_dir, notes, Arc::new(AtomicBool::new(true)), None)
+        Self::start_when(specs, audio, systems, capture_dir, notes, Arc::new(AtomicBool::new(true)), None, None)
     }
 
     /// `start`, with the processes held back until `go` is set (events queue
     /// meanwhile): the plugins they replace share their data folders. What
     /// a plugin is to have late goes to `hold` (None: everything goes now).
+    /// `calls` answers the plugins' `calls.query`.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_when(
         specs: Vec<Spec>,
         audio: &super::AudioSettings,
@@ -167,6 +174,7 @@ impl PluginHost {
         notes: Notes,
         go: Arc<AtomicBool>,
         hold: Option<Arc<Hold>>,
+        calls: Option<Calls>,
     ) -> PluginHost {
         let mut ready = Vec::new();
         for mut s in specs {
@@ -293,7 +301,7 @@ impl PluginHost {
                 audio_held_said: AtomicBool::new(false),
             });
         }
-        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold, answers: Default::default(), requests: AtomicU64::new(0) });
+        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold, answers: Default::default(), requests: AtomicU64::new(0), calls });
         let supervisors = queues
             .into_iter()
             .enumerate()
@@ -788,6 +796,17 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
                 }
                 continue;
             }
+            // (Answered on its own queue, behind what's already waiting for it.)
+            Ok(PluginMessage::CallsQuery { request, query }) => {
+                let page = match &sh.calls {
+                    Some(answer) => answer(&query),
+                    None => CallsPage { error: Some("no recorder to ask".into()), ..Default::default() },
+                };
+                if let Some(tx) = p.tx.lock().unwrap().as_ref() {
+                    let _ = tx.send(Arc::from(line(&HostMessage::Calls { request, page })));
+                }
+                continue;
+            }
             Ok(PluginMessage::Unknown) => continue,
             // Not the protocol (a stray print): keep it as a log line.
             Err(_) => Note::Log { plugin: p.id.clone(), level: Level::Info, text: l },
@@ -882,6 +901,7 @@ mod tests {
             hold: None,
             answers: Default::default(),
             requests: AtomicU64::new(0),
+            calls: None,
         };
         let msg: Arc<str> = "x\n".into();
         let (clear, decrypted) = (About { system: "dcfd".into(), ..Default::default() }, About { system: "dcfd".into(), decrypted: true, ..Default::default() });
@@ -926,6 +946,33 @@ mod tests {
         exe
     }
 
+    /// A plugin's `calls.query` is answered on its own queue, for its
+    /// request number, by what the host was given to answer with.
+    #[cfg(unix)]
+    #[test]
+    fn a_plugins_calls_query_is_answered() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-host-calls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = r#"{"id":"asker","name":"Asker","version":"1.0.0","api":1,"subscribe":["call.concluded"]}"#;
+        let exe = dir.join("asker");
+        std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\necho '{{\"type\":\"calls.query\",\"request\":7,\"talkgroup\":101}}'\nwhile read l; do case \"$l\" in *'\"type\":\"calls\"'*) echo \"$l\" > answer.json;; esac; done\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let spec = Spec { id: "asker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
+        let calls: Calls = Arc::new(|q| CallsPage { next: (q.talkgroup == Some(101)).then(|| "42:x".into()), ..Default::default() });
+        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, Some(calls));
+        let answer = dir.join("data/answer.json");
+        let t0 = Instant::now();
+        while !answer.exists() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        host.shutdown(Duration::from_secs(1));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&answer).expect("answered")).unwrap();
+        assert_eq!((v["request"].as_u64(), v["next"].as_str()), (Some(7), Some("42:x")), "{v}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A plugin delayed for a talkgroup: that talkgroup's calls wait in the
     /// hold (their live audio isn't sent), others go at once; once the delay
     /// is lifted, what waited goes too.
@@ -947,7 +994,7 @@ mod tests {
         let systems = vec![SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() }];
         let spec = Spec { id: "taker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
         let notes: Notes = Arc::new(|_| {});
-        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()));
+        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()), None);
         hold.attach(Some(host.outlet()));
         let call = |rel: &str, tg: u32| {
             host.concluded(0, rel, CallRecord { talkgroup: tg, short_name: "dcfd".into(), ..Default::default() }, CallFiles::default(), false);

@@ -1,16 +1,18 @@
 // An edit of the config is sent as editing the version it was made over, so
 // one made over a config another browser has since changed is refused rather
-// than saved over it; a system's talkgroup file follows its name only once the
+// than saved over it; a system's talkgroups follow its name only once the
 // edit is saved, and not onto a name another system has. `npm test`.
 import "./testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultConfig, newSystem } from "./config.ts";
 import { renameSystem, setTalkgroupIgnore, snapshot, transport, updateConfig } from "./controller.ts";
-import { parseTalkgroupCsv } from "./talkgroups.ts";
+import { talkgroup } from "./talkgroups.ts";
 import type { FromRecorder, ToRecorder } from "./protocol.ts";
 
-/** A recorder with systems alpha and beta, each with a talkgroup file, its config at version 1. */
+const [A, B] = [[talkgroup(1, { alphaTag: "a" })], [talkgroup(2, { alphaTag: "b" })]];
+
+/** A recorder with systems alpha and beta, each with talkgroups, its config at version 1. */
 function connect(): void {
   const c = defaultConfig();
   c.systems.push(newSystem(c, { shortName: "alpha" }));
@@ -18,8 +20,8 @@ function connect(): void {
   transport.onConnection(true);
   const greeting: FromRecorder[] = [
     { type: "config", config: c, version: 1 },
-    { type: "talkgroups", system: "alpha", csv: "1,a" },
-    { type: "talkgroups", system: "beta", csv: "2,b" },
+    { type: "talkgroups", system: "alpha", talkgroups: A },
+    { type: "talkgroups", system: "beta", talkgroups: B },
     { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: [] },
   ];
   for (const m of greeting) transport.onMessage(m);
@@ -62,17 +64,17 @@ test("an edit is sent as editing the version it was made over, and a refused one
   transport.onMessage({ type: "configSaved", version: 3 });
 });
 
-test("a talkgroup file follows its system's name once the edit is saved, not onto another's name", async () => {
+test("talkgroups follow their system's name once the edit is saved, not onto another's name", async () => {
   connect();
   const onto = await sent(() => updateConfig((x) => renameSystem(x, x.systems[0], "beta")));
   assert.equal(onto.filter((m) => m.type === "setTalkgroups").length, 0, "nothing moved on the recorder");
-  assert.deepEqual(snapshot().talkgroups, { alpha: "1,a", beta: "2,b" }, "beta's file is beta's; alpha's waits");
+  assert.deepEqual(snapshot().talkgroups, { alpha: A, beta: B }, "beta's are beta's; alpha's wait");
   transport.onMessage({ type: "configSaved", version: 2 });
   const refused = await sent(() => updateConfig((x) => renameSystem(x, x.systems[0], "gamma")));
   assert.equal(refused.filter((m) => m.type === "setTalkgroups").length, 0, "not before the edit is saved");
-  assert.deepEqual(snapshot().talkgroups, { gamma: "1,a", beta: "2,b" }, "in the store it follows at once");
+  assert.deepEqual(snapshot().talkgroups, { gamma: A, beta: B }, "in the store it follows at once");
   transport.onMessage({ type: "configSaved", version: 2, error: "no" });
-  assert.deepEqual(snapshot().talkgroups, { alpha: "1,a", beta: "2,b" }, "refused: back where the recorder has it");
+  assert.deepEqual(snapshot().talkgroups, { alpha: A, beta: B }, "refused: back where the recorder has it");
   const saved = await sent(() => {
     updateConfig((x) => renameSystem(x, x.systems[0], "gamma"));
   });
@@ -81,15 +83,15 @@ test("a talkgroup file follows its system's name once the edit is saved, not ont
   assert.deepEqual(
     moves.filter((m) => m.type === "setTalkgroups"),
     [
-      { type: "setTalkgroups", system: "gamma", csv: "1,a" },
-      { type: "setTalkgroups", system: "alpha", csv: "" },
+      { type: "setTalkgroups", system: "gamma", talkgroups: A },
+      { type: "setTalkgroups", system: "alpha", talkgroups: [] },
     ],
-    "saved: the file moves on the recorder",
+    "saved: they move on the recorder",
   );
 });
 
 /** Whether talkgroup `tg` of `system` is ignored, as this browser shows it. */
-const ignored = (system: string, tg: number) => parseTalkgroupCsv(snapshot().talkgroups[system] ?? "").get(tg)?.ignore ?? false;
+const ignored = (system: string, tg: number) => snapshot().talkgroups[system]?.find((t) => t.number === tg)?.ignore ?? false;
 
 test("Ignore clicked quickly: each click shown at once, sent as its row alone, and the last one stands", async () => {
   connect();
@@ -98,13 +100,13 @@ test("Ignore clicked quickly: each click shown at once, sent as its row alone, a
     setTalkgroupIgnore("alpha", 1, false);
     setTalkgroupIgnore("alpha", 1, true);
   });
-  assert.deepEqual(out.map((m) => m.type), ["setTalkgroup", "setTalkgroup", "setTalkgroup"], "no whole files");
+  assert.deepEqual(out.map((m) => m.type), ["setTalkgroup", "setTalkgroup", "setTalkgroup"], "no whole lists");
   assert.ok(ignored("alpha", 1));
   assert.equal(snapshot().saveStatus, "saving");
   // Another browser's edit, made by the recorder before these: made here too, these over it.
   transport.onMessage({ type: "talkgroupEdited", system: "alpha", talkgroup: 1, edit: { alphaTag: "Dispatch" } });
   assert.ok(ignored("alpha", 1), "still as last clicked");
-  assert.equal(parseTalkgroupCsv(snapshot().talkgroups.alpha).get(1)?.alphaTag, "Dispatch");
+  assert.equal(snapshot().talkgroups.alpha.find((t) => t.number === 1)?.alphaTag, "Dispatch");
   // The answers, in order: the state never flips back meanwhile.
   for (const ignore of [true, false, true]) {
     transport.onMessage({ type: "talkgroupEdited", system: "alpha", talkgroup: 1, edit: { ignore } });
@@ -118,7 +120,7 @@ test("An Ignore not answered before the connection dropped is sent again, and sh
   await sent(() => setTalkgroupIgnore("beta", 2, true));
   const again = await sent(connect);
   assert.ok(again.some((m) => m.type === "setTalkgroup" && m.system === "beta" && m.talkgroup === 2 && m.edit.ignore === true));
-  assert.ok(ignored("beta", 2), "over the greeting's file");
+  assert.ok(ignored("beta", 2), "over the greeting's talkgroups");
   transport.onMessage({ type: "talkgroupEdited", system: "beta", talkgroup: 2, edit: { ignore: true } });
   assert.equal(snapshot().saveStatus, "saved");
 });

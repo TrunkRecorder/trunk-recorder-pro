@@ -1,7 +1,7 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
-import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
+import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, Talkgroup, UnitNames } from "./protocol.ts";
+import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
@@ -911,7 +911,7 @@ export function importTrunkRecorderConfig(
   base: Config,
   files: Record<string, string> = {},
   merge = false,
-): { config: Config; talkgroups: Record<string, string>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
+): { config: Config; talkgroups: Record<string, Talkgroup[]>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
   // A byte-order mark (Windows editors add one) is not JSON; Trunk Recorder skips it, so do we.
   const j = JSON.parse(text.replace(/^\uFEFF/, "")) as Record<string, unknown>;
   const notes: string[] = [];
@@ -920,8 +920,8 @@ export function importTrunkRecorderConfig(
   const names = new Map<string, string>();
   const systemNames = new Map<unknown, string>();
   const cfg: Config = structuredClone(base);
-  // Each system's talkgroup file, by its short name here (kept beside the config: setTalkgroups).
-  const talkgroups: Record<string, string> = {};
+  // Each system's talkgroups (read from its file), by its short name here (kept beside the config: setTalkgroups).
+  const talkgroups: Record<string, Talkgroup[]> = {};
   const sources = (j.sources as Record<string, unknown>[] | undefined) ?? [];
   const systems = (j.systems as Record<string, unknown>[] | undefined) ?? [];
   const imported: Source[] = [];
@@ -1159,9 +1159,9 @@ export function importTrunkRecorderConfig(
         const csv = files[sys.talkgroupsFile];
         const had = talkgroups[x.shortName];
         if (x !== one && had) {
-          if (csv !== undefined && normalizeTalkgroupCsv(csv) !== had) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
+          if (csv !== undefined && JSON.stringify(readTalkgroupFile(csv).talkgroups) !== JSON.stringify(had)) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
         } else if (csv === undefined) todo.push({ kind: "talkgroups", system: x.shortName, file: sys.talkgroupsFile });
-        else talkgroups[x.shortName] = normalizeTalkgroupCsv(csv);
+        else talkgroups[x.shortName] = readTalkgroupFile(csv).talkgroups;
       }
       if (sys.siteId !== undefined && sys.siteId !== null && sys.siteId !== "") todo.push({ kind: "siteLock", system: x.shortName, siteId: String(sys.siteId), site });
       if (x === one) {

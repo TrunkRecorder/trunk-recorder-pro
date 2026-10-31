@@ -10,7 +10,7 @@ use trunk_core::dsp::inband::pattern::PatternKind;
 use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
-    check_channels, Access, parse_csv, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
+    check_channels, Access, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
@@ -325,9 +325,17 @@ impl Source {
 ///   "sites": [ { "controlChannelsHz": [851012500] },
 ///              { "name": "dcfd-south", "controlChannelsHz": [852337500], "expect": { "rfss": 1, "site": 2 } } ] }
 /// ```
+fn no_id(v: &u32) -> bool {
+    *v == 0
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct System {
+    /// Its number, the same across renames: what the store keeps its calls,
+    /// talkgroups and registry by ([`Config::assign_system_ids`]). Never reused.
+    #[serde(skip_serializing_if = "no_id")]
+    pub id: u32,
     pub short_name: String,
     /// What people call it ("County Public Safety"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -893,6 +901,7 @@ impl Site {
 impl Default for System {
     fn default() -> Self {
         System {
+            id: 0,
             other: BTreeMap::new(),
             keys: String::new(),
             short_name: "sys1".into(),
@@ -1000,6 +1009,9 @@ impl SiteIdentity {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Conventional {
+    /// Its number, as a trunked system's ([`System::id`]): numbered together.
+    #[serde(skip_serializing_if = "no_id")]
+    pub id: u32,
     /// Folder and record name of its calls (Trunk Recorder's shortName).
     pub short_name: String,
     /// What people call it ("County Fire"); the short name is its folder.
@@ -1079,6 +1091,7 @@ impl UnitNames {
 impl Default for Conventional {
     fn default() -> Self {
         Conventional {
+            id: 0,
             other: BTreeMap::new(),
             keys: String::new(),
             short_name: "conv".into(),
@@ -1810,6 +1823,10 @@ pub struct Config {
     pub systems: Vec<System>,
     /// The conventional systems (numbered after the trunked ones: [`Config::call_systems`]).
     pub conventional: Vec<Conventional>,
+    /// The next system id to give ([`Config::assign_system_ids`]): above every
+    /// one given, so a removed system's id is never given again.
+    #[serde(skip_serializing_if = "no_id")]
+    pub next_system_id: u32,
     pub recording: Recording,
     pub server: Server,
     /// The plugins, by id: on or off, and their settings for the whole recorder.
@@ -1824,6 +1841,8 @@ pub struct Config {
     pub keys: BTreeMap<String, KeySource>,
     /// The log: how much, where to, and how lines read.
     pub log: LogSettings,
+    /// What's kept on disk beside the config (desktop app): the call store.
+    pub storage: StorageSettings,
     /// The dashboard's watch on the computer (desktop app).
     pub monitor: MonitorSettings,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
@@ -1833,6 +1852,10 @@ pub struct Config {
     /// What reading it changed (an older config upgraded: [`crate::migrate`]), to log.
     #[serde(skip)]
     pub notes: Vec<String>,
+    /// Reading it gave a system its id ([`Config::assign_system_ids`]): to
+    /// be saved, so the ids stay the same from here on.
+    #[serde(skip)]
+    pub numbered: bool,
 }
 
 /// The log (desktop app), with Trunk Recorder's options: `logLevel`,
@@ -1900,16 +1923,80 @@ impl Default for Config {
             sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len: 0, buffers: 0 }],
             systems: vec![],
             conventional: vec![],
+            next_system_id: 0,
             recording: Recording::default(),
             server: Server::default(),
             plugins: BTreeMap::new(),
             plugin_delays: vec![],
             keys: BTreeMap::new(),
             log: LogSettings::default(),
+            storage: StorageSettings::default(),
             monitor: MonitorSettings::default(),
             notes: vec![],
+            numbered: false,
         }
     }
+}
+
+/// The store: what the recorder keeps (the call index, talkgroups, talker
+/// aliases, the radio registry, the dashboard's history…), in a database
+/// always (research/storage-redesign.md). The recordings and their `.json`
+/// files are the calls' truth; the store mirrors them.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StorageSettings {
+    /// Which database: `sqlite` (a file beside the config: a Pi to a
+    /// mid-size server) or `postgres` (a database server: years of history,
+    /// the operator's backups and replication).
+    pub backend: StorageBackend,
+    /// Write as little as can be (an SD card): no call index (the call list
+    /// is the recent calls), the dashboard's history by the hour only, and a
+    /// commit an hour. Everything else is kept as ever.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub low_write: bool,
+    /// PostgreSQL's connection string (`postgres://user:password@host/db`, or
+    /// `host=… user=… dbname=…`); one recorder per database or schema for now.
+    pub url: String,
+    /// Days of calls the store indexes; 0 keeps them all. The calls' files on
+    /// disk aren't touched.
+    pub retention_days: u32,
+    /// Seconds between the store's commits under load ([`StorageSettings::COMMIT_SECONDS`]
+    /// bounds it). Each commit writes whole pages, so longer is gentler on
+    /// flash: a page many calls change is written once per commit.
+    pub commit_seconds: u32,
+    /// Days of the dashboard's history kept, as hours; 0 keeps it all.
+    pub stats_days: u32,
+    /// Index each call by its radios, for a radio's call list (the Radio
+    /// page, `callsQuery`/`/api/v1/calls`/plugins asking by `unit`), so it
+    /// pages back as far as the store keeps calls; off, a radio's list is
+    /// its recent calls. Most of what the call index writes on a busy
+    /// system (on the Pi's eMMC, a call a second: 1.6 GB a day with it, 0.8
+    /// without; `db::tests::day_write_budget`).
+    pub radio_index: bool,
+    /// Index each call by its talkgroup, for a talkgroup's call list (the
+    /// same, asking by `talkgroup`); off, a talkgroup's list is its recent
+    /// calls. About a third as costly as the radio index.
+    pub talkgroup_index: bool,
+}
+
+impl StorageSettings {
+    /// What `commitSeconds` may be.
+    pub const COMMIT_SECONDS: std::ops::RangeInclusive<u32> = 10..=3600;
+}
+
+impl Default for StorageSettings {
+    fn default() -> Self {
+        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true, talkgroup_index: true }
+    }
+}
+
+/// Which store keeps the call index ([`StorageSettings::backend`]).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageBackend {
+    #[default]
+    Sqlite,
+    Postgres,
 }
 
 /// What the dashboard watches on the computer.
@@ -2066,7 +2153,34 @@ impl Config {
         source_types(&mut v);
         let mut c: Config = serde_json::from_value(v)?;
         c.notes = notes;
+        c.numbered = c.assign_system_ids();
         Ok(c)
+    }
+
+    /// Give every system (trunked and conventional) without an id the next
+    /// one, and a second with the same id one of its own; [`Config::next_system_id`]
+    /// stays above them all, so an id is never given twice.
+    /// Whether any was given one.
+    pub fn assign_system_ids(&mut self) -> bool {
+        let given = self.systems.iter().map(|s| s.id).chain(self.conventional.iter().map(|c| c.id)).max().unwrap_or(0);
+        let mut next = self.next_system_id.max(given + 1);
+        let mut seen = std::collections::HashSet::new();
+        let mut given = false;
+        for id in self.systems.iter_mut().map(|s| &mut s.id).chain(self.conventional.iter_mut().map(|c| &mut c.id)) {
+            if *id == 0 || !seen.insert(*id) {
+                *id = next;
+                seen.insert(next);
+                next += 1;
+                given = true;
+            }
+        }
+        self.next_system_id = next;
+        given
+    }
+
+    /// Each system's id and short name (trunked, then conventional).
+    pub fn system_ids(&self) -> impl Iterator<Item = (u32, &str)> {
+        self.systems.iter().map(|s| (s.id, s.short_name.as_str())).chain(self.conventional.iter().map(|c| (c.id, c.short_name.as_str())))
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -2486,10 +2600,9 @@ impl Config {
         self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|c| c.short_name.as_str())).nth(system as usize)
     }
 
-    /// The engine's config, with each system's talkgroup file (`talkgroups`:
-    /// its CSV by short name; kept beside the config, not in it).
-    pub fn engine_config(&self, epoch_ms: f64, talkgroups: &TalkgroupFiles) -> EngineConfig {
-        let tg = |short: &str| talkgroups.get(short).map_or_else(Default::default, |csv| parse_csv(csv));
+    /// The engine's config, with each system's talkgroups (kept apart from the config).
+    pub fn engine_config(&self, epoch_ms: f64, talkgroups: &TalkgroupLists) -> EngineConfig {
+        let tg = |short: &str| talkgroups.get(short).map_or_else(Default::default, |rows| talkgroups_of(rows));
         let centers = self.resolved_centers();
         // (Keys are read by the app: [`Config::load_keys`].)
         let mut systems: Vec<SystemConfig> = self
@@ -2541,11 +2654,17 @@ impl Config {
 }
 
 
-/// Each system's talkgroup file (Trunk Recorder's talkgroup CSV), by its
-/// short name. Kept apart from the config: the desktop app beside it
-/// (`<short name>.talkgroups.csv`), the browser in its storage; the
-/// interface edits one with `setTalkgroups`.
-pub type TalkgroupFiles = BTreeMap<String, String>;
+/// Each system's talkgroups, by its short name, in their order. Kept apart
+/// from the config: the desktop app's store, the browser's storage; the
+/// interface sets a system's with `setTalkgroups` and edits one with
+/// `setTalkgroup`. A talkgroup file (Trunk Recorder's CSV) is how they come
+/// in and go out (trunk_core::trunk::read_rows / rows_csv).
+pub type TalkgroupLists = BTreeMap<String, Vec<trunk_core::trunk::TalkgroupRow>>;
+
+/// A system's talkgroups as the engine looks them up, by number.
+pub fn talkgroups_of(rows: &[trunk_core::trunk::TalkgroupRow]) -> trunk_core::trunk::Talkgroups {
+    rows.iter().map(|r| (r.tg.number, r.tg.clone())).collect()
+}
 
 /// Where the desktop app keeps system `short_name`'s talkgroup file: beside
 /// the config (in `dir`).
@@ -2651,6 +2770,33 @@ const RTL_BUSY_COUNT: usize = 4;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every system gets an id the first time a config is read or set, a
+    /// second with the same id one of its own, and an id is never given
+    /// twice, not even after its system is removed.
+    #[test]
+    fn systems_get_ids_never_given_twice() {
+        let mut c = Config::from_json(r#"{"systems":[{"shortName":"a"},{"shortName":"b","id":7}],"conventional":[{"shortName":"c"}]}"#).unwrap();
+        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(8, "a"), (7, "b"), (9, "c")]);
+        assert_eq!(c.next_system_id, 10);
+        c.systems.remove(1);
+        c.systems.push(System { short_name: "d".into(), ..Default::default() });
+        c.conventional[0].id = 8;
+        c.assign_system_ids();
+        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(8, "a"), (10, "d"), (11, "c")], "a new one past the removed 7; a copied id made its own");
+        let saved = serde_json::to_value(&c).unwrap();
+        assert_eq!((saved["systems"][0]["id"].as_u64(), saved["nextSystemId"].as_u64()), (Some(8), Some(12)));
+    }
+
+    #[test]
+    fn storage_defaults_to_300_second_commits_and_120_days() {
+        let c = Config::from_value(serde_json::json!({})).unwrap();
+        assert_eq!((c.storage.commit_seconds, c.storage.retention_days), (300, 120));
+        let c = Config::from_value(serde_json::json!({ "storage": { "commitSeconds": 60, "retentionDays": 0 } })).unwrap();
+        assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.backend), (60, 0, StorageBackend::Sqlite));
+        let c = Config::from_value(serde_json::json!({ "storage": { "backend": "postgres", "url": "postgres://trp@db/trunk" } })).unwrap();
+        assert_eq!((c.storage.backend, c.storage.url.as_str(), c.storage.commit_seconds), (StorageBackend::Postgres, "postgres://trp@db/trunk", 300));
+    }
 
     /// A call sign heard on a frequency goes into its system's licenses there (trunked or
     /// conventional, on the raster): over a lookup's (keeping its name only for the same
@@ -2873,7 +3019,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let files: TalkgroupFiles = [("county".to_string(), "1,County TG\n".to_string()), ("fire".to_string(), "7,Fire Ops\n".to_string())].into();
+        let files: TalkgroupLists = [("county".to_string(), trunk_core::trunk::parse_rows("1,County TG\n")), ("fire".to_string(), trunk_core::trunk::parse_rows("7,Fire Ops\n"))].into();
         let e = c.engine_config(0.0, &files);
         let fire = e.systems.iter().find(|s| s.short_name == "fire").unwrap();
         assert!(fire.talkgroups.contains_key(&7) && !fire.talkgroups.contains_key(&1), "its own, not county's");
@@ -2904,7 +3050,7 @@ mod tests {
         assert_eq!(town[&46012].tag, "Law Dispatch");
         // Ahead of the talkgroup file, whose Ignore flag stays.
         let mut book = crate::stats::NameBook::default();
-        let files: TalkgroupFiles = [("town".to_string(), "46012,File name\n9,Nine,,,,,,,true\n".to_string())].into();
+        let files: TalkgroupLists = [("town".to_string(), trunk_core::trunk::parse_rows("46012,File name\n9,Nine,,,,,,,true\n"))].into();
         book.set_config(&c, &files);
         assert_eq!(book.tg("town", 46012).map(|t| t.alpha_tag), Some("Townville PD".into()));
         assert_eq!(book.tg("town", 154430).map(|t| t.alpha_tag), Some("Fire Dispatch".into()));
