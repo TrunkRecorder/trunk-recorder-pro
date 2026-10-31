@@ -34,7 +34,7 @@ import {
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
-import { FileInput, TextInput } from "./inputs.tsx";
+import { BiasT, FileInput, TextInput } from "./inputs.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { parseRadioReferencePaste, readTalkgroupFile, type Talkgroup } from "./talkgroups.ts";
@@ -284,7 +284,7 @@ export function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; 
   const { s } = props;
   const detected = useMemo(() => detectRadios(s.devices, s.radios), [s.devices, s.radios]);
   const [picked, setPicked] = useState<Set<string> | null>(null);
-  // Which radios power an LNA through the antenna cable (an Airspy or bladeRF's bias-T): as saved, until changed here.
+  // Which radios power an LNA through their bias-T: as saved, until changed here.
   const [biasT, setBiasT] = useState<Set<string> | null>(null);
   const [helping, setHelping] = useState(false);
   const free = detected.filter((d) => !d.busy);
@@ -354,14 +354,7 @@ export function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; 
                   <span className="ob-card-sub">{d.detail}</span>
                   {d.busy && <span className="ob-busy">{d.busy.replace(/^./, (ch) => ch.toUpperCase())}</span>}
                 </button>
-                {on && hasBiasT(d.source) && (
-                  <label className="toggle ob-card-opt">
-                    <input type="checkbox" checked={powered.has(d.key)} onChange={(e) => power(d.key, e.target.checked)} />
-                    <span>
-                      Bias-T <span className="field-hint">— powers an LNA via the antenna cable</span>
-                    </span>
-                  </label>
-                )}
+                {on && <BiasT src={d.source} checked={powered.has(d.key)} onChange={(v) => power(d.key, v)} />}
               </div>
             );
           })}

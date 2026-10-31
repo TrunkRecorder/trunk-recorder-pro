@@ -80,7 +80,7 @@ The guide has six steps:
 
 1. **Radios.** It lists every radio it can see (RTL-SDRs, Airspys, USRPs and SoapySDR devices)
    and asks *Which radios should record?* All free ones are ticked. A radio another program is
-   using shows as busy. An Airspy or bladeRF card has a **Bias-T** switch: turn it on if an LNA
+   using shows as busy. An Airspy, bladeRF or HackRF card has a **Bias-T** switch: turn it on if an LNA
    is powered through the antenna cable, and the scan in the next step uses it. If none shows
    up, **Help me find it** walks through the usual fixes for your operating system (USB driver,
    udev rule, TV-tuner driver, other SDR apps).

@@ -1,20 +1,21 @@
 // The bias-T switch where a radio is picked for a scan: the setup guide's
-// radio cards, and Find my system's spare radio. An Airspy or bladeRF powers
-// an LNA through the antenna cable; the recorder sets it when it opens the
-// radio, so a scan on a radio that isn't a source yet needs the switch here.
+// radio cards, and Find my system's spare radio. An Airspy, bladeRF or HackRF
+// (SOURCE_KINDS' `biasT`) powers an LNA through the antenna cable; the recorder
+// sets it when it opens the radio, so a scan on a radio that isn't a source yet
+// needs the switch here.
 import "./testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToString } from "react-dom/server";
-import { defaultConfig, detectRadios, hasBiasT } from "./config.ts";
+import { defaultConfig, detectRadios, hasBiasT, SOURCE_KINDS } from "./config.ts";
 import { snapshot, startSurvey, transport } from "./controller.ts";
 import { RadiosStep } from "./Onboarding.tsx";
 import type { Radios, ToRecorder } from "./protocol.ts";
 import { SurveyPanel } from "./Survey.tsx";
 
 const none = { available: false, detail: "", devices: null };
-const RADIOS: Radios = { usrp: none, bladerf: none, airspy: { available: true, detail: "", devices: [{ serial: "735863DC2F650AE3", label: "Airspy R2 735863DC2F650AE3" }] } };
-const NO_RADIOS: Radios = { usrp: none, bladerf: none, airspy: { available: true, detail: "", devices: [] } };
+const RADIOS: Radios = { usrp: none, bladerf: none, hackrf: none, airspy: { available: true, detail: "", devices: [{ serial: "735863DC2F650AE3", label: "Airspy R2 735863DC2F650AE3" }] } };
+const NO_RADIOS: Radios = { usrp: none, bladerf: none, hackrf: none, airspy: { available: true, detail: "", devices: [] } };
 
 /** Connected as the desktop app, with the recorder in `phase`, `radios` found by their drivers and `serials` of dongles plugged in; what the page sends kept. */
 function connected(phase: "idle" | "running", radios: Radios | null, serials: string[] = []): ToRecorder[] {
@@ -30,10 +31,12 @@ function connected(phase: "idle" | "running", radios: Radios | null, serials: st
   return sent;
 }
 
-test("an Airspy and a bladeRF have a bias-T; the others don't", () => {
+test("an Airspy, a bladeRF and a HackRF have a bias-T; the others don't", () => {
   const airspy = detectRadios([], RADIOS)[0].source;
   assert.equal(airspy.type, "airspy");
   assert.ok(hasBiasT(airspy));
+  const kinds = (Object.keys(SOURCE_KINDS) as (keyof typeof SOURCE_KINDS)[]).filter((k) => hasBiasT(SOURCE_KINDS[k].fresh()));
+  assert.deepEqual(kinds, ["airspy", "bladerf", "hackrf"]);
   assert.ok(!hasBiasT(defaultConfig().sources[0]), "the default source is an RTL-SDR");
 });
 
@@ -41,7 +44,7 @@ test("the setup guide's radio cards offer bias-T on an Airspy, not on a dongle",
   connected("idle", RADIOS, ["00000001"]);
   const html = renderToString(<RadiosStep s={snapshot()} c={snapshot().config!} onNext={() => {}} onBack={() => {}} />);
   assert.equal((html.match(/Bias-T/g) ?? []).length, 1, html);
-  assert.ok(html.includes("powers an LNA via the antenna cable"));
+  assert.ok(html.includes(SOURCE_KINDS.airspy.biasT!), "its hint from SOURCE_KINDS");
   connected("idle", NO_RADIOS, ["00000001"]);
   const dongle = renderToString(<RadiosStep s={snapshot()} c={snapshot().config!} onNext={() => {}} onBack={() => {}} />);
   assert.ok(!dongle.includes("Bias-T"), dongle);

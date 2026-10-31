@@ -41,6 +41,7 @@ import { defaultListenS, lookedFreqs, type LookingFor } from "./lookFor.ts";
 import type { Config, FccLicense, FccLicenses, SiteIdentity, Source, SurveyCandidate, SurveyMonitor, SurveySite, SurveySuggestion } from "./protocol.ts";
 import type { LicenseLookup } from "./controller.ts";
 import { IdentifyBar, LicenseCell, licensesOn } from "./Identify.tsx";
+import { BiasT } from "./inputs.tsx";
 import { Waterfall } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
@@ -565,9 +566,10 @@ export function SurveyPanel(props: { c: Config }) {
   const radioKey = radioPick ?? (recording && spares.length ? `spare:${sourceKey(spares[0])}` : "0");
   const spare = spares.find((x) => `spare:${sourceKey(x)}` === radioKey);
   const source = spare ? -1 : Math.min(Number(radioKey) || 0, c.sources.length - 1);
-  // A spare Airspy or bladeRF may power an LNA through the antenna cable for the scan (a source's bias-T is its own setting).
-  const [spareBias, setSpareBias] = useState(false);
-  const scanWith = spare && hasBiasT(spare) ? { ...spare, biasTee: spareBias } : spare;
+  // Which spare radios power an LNA through their bias-T for the scan (a source's bias-T is its own setting).
+  const [spareBias, setSpareBias] = useState<ReadonlySet<string>>(new Set());
+  const spareBiasOn = !!spare && spareBias.has(sourceKey(spare));
+  const scanWith = spare && hasBiasT(spare) ? { ...spare, biasTee: spareBiasOn } : spare;
   const src = spare ?? c.sources[source];
   const active = sv.stage !== "idle";
   const unsupported = !can("drivers") && !!src && needsDriver(src);
@@ -655,13 +657,19 @@ export function SurveyPanel(props: { c: Config }) {
                 <span className="field-hint">{lookingFor.type === "dmr" ? "A DMR site may be quiet between calls: the longer, the surer." : "A control channel says who it is within seconds."}</span>
               </label>
             )}
-            {spare && hasBiasT(spare) && (
-              <label className="toggle">
-                <input type="checkbox" checked={spareBias} onChange={(e) => setSpareBias(e.target.checked)} />
-                <span>
-                  Bias-T <span className="field-hint">— powers an LNA via the antenna cable</span>
-                </span>
-              </label>
+            {spare && (
+              <BiasT
+                src={spare}
+                checked={spareBiasOn}
+                onChange={(v) =>
+                  setSpareBias((x) => {
+                    const n = new Set(x);
+                    if (v) n.add(sourceKey(spare));
+                    else n.delete(sourceKey(spare));
+                    return n;
+                  })
+                }
+              />
             )}
             {src?.type === "rtlsdr" && (
               <label className="toggle">
