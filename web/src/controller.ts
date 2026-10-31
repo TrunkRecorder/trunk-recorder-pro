@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
-import { LivePlayer } from "./livePlayer.ts";
+import { LivePlayer } from "../../docs/api/client.js";
 import { copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
@@ -309,7 +309,12 @@ export function snapshot(): AppState {
   return state;
 }
 
-const player = new LivePlayer();
+// Live audio, as client.js plays it for every interface: a scanner, staying
+// on a call until it has been quiet 2 s; nowPlaying while one plays.
+const player = new LivePlayer({
+  quietS: 2,
+  onNowPlaying: (c) => set({ nowPlaying: c && { system: systemNameOf(state, c.system), talkgroup: c.talkgroup, callId: c.callId } }),
+});
 // The web build (`vite build --mode web`) runs the recorder in this page; the
 // desktop build leaves the worker and WebAssembly out entirely.
 /**
@@ -1639,7 +1644,7 @@ export function start(): void {
   runKey = state.config ? restartKey(state.config, liveGain) : null;
   set({ error: null, ended: false, restartNeeded: false });
   transport.send({ type: "start" });
-  if (state.listen) player.resume();
+  if (state.listen) void player.resume().catch(() => {});
 }
 
 /** Stop recording and end the desktop app (the web build has nothing to quit). */
@@ -1664,24 +1669,13 @@ export function systemNameOf(s: AppState, system: number): string {
 export function setListen(on: boolean, system: string | null = state.listenSystem, talkgroup: number | null = state.listenTalkgroup): void {
   set({ listen: on, listenSystem: system, listenTalkgroup: talkgroup });
   transport.send({ type: "listen", on, system, talkgroup });
-  if (on) player.resume();
-  else {
-    player.stop();
-    set({ nowPlaying: null });
-  }
+  if (on) void player.resume().catch(() => {});
+  else player.stop();
 }
-
-let current: { callId: number; lastMs: number } | null = null;
 
 function onAudio(a: AudioChunk): void {
   if (!state.listen) return;
-  const name = systemNameOf(state, a.system);
-  if (state.listenSystem !== null && name !== state.listenSystem) return;
+  if (state.listenSystem !== null && systemNameOf(state, a.system) !== state.listenSystem) return;
   if (state.listenTalkgroup !== null && a.talkgroup !== state.listenTalkgroup) return;
-  const now = performance.now();
-  // Scanner behaviour: stay on the current call until it has been quiet 2 s.
-  if (current && current.callId !== a.callId && now - current.lastMs < 2000) return;
-  current = { callId: a.callId, lastMs: now };
-  if (state.nowPlaying?.callId !== a.callId) set({ nowPlaying: { system: name, talkgroup: a.talkgroup, callId: a.callId } });
-  player.enqueue(a.samples, 8000);
+  player.play(a);
 }
