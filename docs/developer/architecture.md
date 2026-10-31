@@ -86,22 +86,42 @@ Stages in order. Thread in brackets.
    `stream_once`), run by one loop, `sdr::run_with`, that reopens it after an error (RTL 2 s, the
    others 3 s). `runtime::spawn_source` starts a source this way for recording, the survey and
    profiling. Produces a block of IQ:
-   - RTL-SDR (`trunk-pro/src/sdr.rs`, pure-Rust `rtlsdr-nusb`, our fork in `crates/rtlsdr-nusb`
-     with settable transfers, `RxBuffers`): by default 262,144-byte USB transfers (131,072 IQ
-     samples, about 55 ms at 2.4 MSPS), 8 in flight; `bufLen` / `buffers` per source
-     (`RtlConfig::rx_buffers`: a smaller `bufLen` gets more transfers, about 2 MiB in flight).
-     Sent as raw `u8` (`SourceMsg::Data`, in a reused `Pooled` buffer).
+   - RTL-SDR (`radio/rtl.rs`, pure-Rust `rtlsdr-nusb`, our fork in `crates/rtlsdr-nusb` with
+     settable transfers, `RxBuffers`): by default 16 KiB USB transfers (8,192 IQ samples, about
+     3.4 ms at 2.4 MSPS), 128 in flight (2 MiB); `bufLen` / `buffers` per source
+     (`RtlConfig::rx_buffers`). The `Sink` gathers them into messages of about 25 ms (`GATHER`; about 120 KB at 2.4 MSPS). A retune
+     or gain change halts the stream, reads the chip's dropped-block count, changes only the
+     tuner and restarts, reporting the quiet time (`Sink::tuned`); a USB stall is cleared in place.
+     Sent as raw `u8` (`Block::U8`, in a reused `Pooled` buffer).
+   - HackRF One (`radio/hackrf.rs`, pure Rust over `nusb`): raw bytes like an RTL-SDR, firmware
+     2021.03 or newer.
    - USRP (`radio/uhd.rs`, UHD loaded at run time): about 10 ms per block, float IQ
-     (`SourceMsg::Iq`). Adds `num_recv_frames=256` to the device args.
+     (`Block::Iq`). Adds `num_recv_frames=1024` to the device args; picks the wire format from the
+     USB link speed (`radio/usb_speed.rs`); doubles a B2xx's master clock when UHD would run it at the rate.
    - Airspy (`radio/airspy.rs`): whatever libairspy hands its callback; by default real samples
-     (`SourceMsg::Real16`), turned into IQ on the decoding thread (`sdr::IqFrom`).
+     (`Block::Real16`), turned into IQ by the `Inbox` on the thread that takes them.
+
+   What every radio shares lives in `sdr.rs` and `radio/mod.rs`. A radio sends through a `Sink`,
+   which never blocks a live radio: if the queue to the decoding thread is full, the block is
+   dropped and counted, and the next block carries the count as `dropped`. A capture file's sink
+   (`live: false`) waits instead. A radio's gain is one `Gain` (`sdr.rs`): `Agc`, `Db`, `Stages`
+   (sdr-core's `gain::Stage` names, each in the radio's own count) or a `Preset` step of the
+   radio's own table; there is no per-radio gain type. `radio::open(key,
+   deadline, f)` runs every open and driver search on a thread of its own under `opening()`
+   and gives up at the deadline (5 s RTL-SDR, HackRF, Airspy; 15 s bladeRF, SoapySDR; 30 s USRP),
+   with "isn't answering" and the device refused until the stuck open ends, so one wedged radio
+   doesn't hold up the others. `radio/priority.rs` makes the source thread and the threads its
+   driver starts real time (Mach time-constraint on macOS, `SCHED_RR` on Linux, needing
+   `CAP_SYS_NICE`; a refusal is logged once with the `setcap` fix). `StreamCheck` watches raw-byte
+   radios (RTL-SDR, HackRF) for a stuck stream, the same bytes repeating or a rate over 1.5× the
+   nominal for 2 s, and reopens. A transfer refused for memory names Linux's `usbfs_memory_mb`.
    - SoapySDR (`radio/soapy.rs`): about 10 ms per block, float IQ.
    - File (`runtime::run_file`): 32,768 samples per chunk, paced to real time or as fast as the
      engine takes them. Captures played as fast as they go keep within 100 ms of air of each other
      (`runtime::Air`).
    Each block is stamped with `Instant::now()` (`at`) and carries the driver's `dropped` count.
 2. **Source queue** [between threads]. One `sync_channel::<SourceMsg>(256)` per source, from its
-   `source-N` to its `dsp-N`. The sender blocks when it is full (see section 7). Errors and ends
+   `source-N` to its `dsp-N`. A live radio's `Sink` never blocks: when the queue is full the block is dropped and counted (see section 7). Errors and ends
    go on to the engine thread as `EngineCmd::Source`.
 3. **`Feeder::push` / `push_iq`** [`dsp-N`]. Records drops (`Feeder::gap` feeds them to
    `Engine::push_gap` as faint noise), feeds the wall-clock fit (`ClockFit`) and the sample meter,
@@ -154,7 +174,7 @@ Stages in order. Thread in brackets.
 11. **Plugins** [plugin processes]. Upload or stream the call, answer `call.result`. The Archive
    deletes files that are not to be kept once every taker has answered.
 
-Latency, roughly: driver block time (RTL about 55 ms, others about 10 ms) + up to one
+Latency, roughly: driver block time (RTL about 25 ms, others about 10 ms) + up to one
 channelizer block (5.12 ms at 2.4 MSPS) + filter delay (under 1 ms) + any backlog in the
 source queue + decoder framing (C4FM timing adds about 100 ms).
 
@@ -749,22 +769,24 @@ copy's start (`SaveContext::first_s`).
   threaded the calls come out the same (`sources_fed_from_threads_decode_as_from_one`).
 - **One FFT for all channels.** Opening a channel adds an M-point inverse FFT, not a full-rate
   filter. The recorder count costs little until channels actually decode.
-- **One bounded queue in front of each source's decoding, which blocks.**
+- **One bounded queue in front of each source's decoding; a live radio never waits on it.**
   `sync_channel::<SourceMsg>(256)` per source. If a source's decoding is slower than real time,
-  its queue fills (about 14 s of RTL data at 2.4 MSPS, about 2.5 s for 10 ms blocks), its source
-  thread blocks in `send`, the driver stops collecting, and the device's own buffer overflows. The
-  driver reports what it lost (`dropped`) where it can tell; the feeder fills it with faint noise
-  (`push_gap`, up to 10 s) so sample time stays in step with the air. Loss a driver can't see is
-  caught by the wall-clock fit: if samples are more than 0.25 s off, the clock is re-anchored and
-  the log says so.
+  its queue fills (about 6.4 s of RTL data at 2.4 MSPS in ~25 ms messages, about 2.5 s for the
+  ~10 ms blocks of USRP, SoapySDR and bladeRF). A live radio's `Sink::put` then drops that block
+  and counts its samples as `dropped`, told with the next block that does get through, so the
+  driver keeps collecting and the device's buffer isn't what overflows. A capture file's sink
+  (`live: false`) waits: nothing is lost, it just runs slower. The feeder fills dropped samples
+  with faint noise (`push_gap`, up to 10 s) so sample time stays in step with the air. Loss nobody
+  reports is caught by the clock fit: if the offset stays beyond 5 ms for 3 windows, the clock is
+  re-anchored and the log says so.
 - **Everything after decoding is non-blocking, with an explicit policy per queue.** Nothing
   downstream can stall decoding:
 
 | Queue | Capacity | Producer → consumer | When full |
 |---|---|---|---|
-| Source → decoding | 256 blocks per source | `source-N` → `dsp-N` | sender blocks; driver overflows; drops reported and gap-filled |
-| rtlsdr-nusb USB transfers | 8 × 256 KiB (`bufLen` / `buffers`) | USB → source thread | device FIFO overflows; caught by `ClockFit` as unreported loss |
-| UHD receive frames | 256 frames | USRP → UHD | overflow `O`; counted from the timestamp gap |
+| Source → decoding | 256 messages per source | `source-N` → `dsp-N` | a live radio's block is dropped and counted (`dropped`, gap-filled); a capture file's sender waits |
+| rtlsdr-nusb USB transfers | 128 × 16 KiB (`bufLen` / `buffers`) | USB → source thread | device FIFO overflows; the chip's own count is read at each retune, the rest caught by `ClockFit` as unreported loss |
+| UHD receive frames | 1024 frames | USRP → UHD | overflow `O`; counted from the timestamp gap |
 | Engine commands (`EngineCmd`) | unbounded | decoding threads, server → engine | — |
 | Hub (tokio broadcast) | 4,096 messages | engine, finish, monitor, logger → each WebSocket | a lagging client loses its oldest messages (silently); others unaffected |
 | Finish | 1,024 calls | engine → finish pool | the engine thread waits up to 5 s, then finishes the call itself by the same plan; decoding carries on |
@@ -781,7 +803,7 @@ copy's start (`SaveContext::first_s`).
 
 | Slow part | Effect |
 |---|---|
-| A source's decoding (CPU can't keep up) | Its queue fills → its source blocks → its driver loses samples → `dropped` in status, gap filled, calls carry on with a hole; the busiest source's load is shown on the dashboard. Other sources decode on their own cores. |
+| A source's decoding (CPU can't keep up) | Its queue fills → its radio's sink drops blocks and counts them → `dropped` in status, gap filled, calls carry on with a hole; the busiest source's load is shown on the dashboard. Other sources decode on their own cores. |
 | One browser | Its WebSocket task falls behind the 4,096-message ring and skips messages. Recording and other browsers are unaffected. |
 | Disk / finish threads | Finish queue fills (1,024 calls) → the engine thread waits up to 5 s for a place, then writes the call itself (its whole plan, .m4a included). Its messages and plugin events wait meanwhile; decoding doesn't. |
 | One plugin | Its 1,024-line queue fills → its events are dropped and counted. The engine and other plugins are unaffected. A call it never answered for counts as failed after 1 h. |
@@ -798,7 +820,7 @@ copy's start (`SaveContext::first_s`).
 | Channel extraction | a full-rate filter per recorder | a shared FFT; an M-point IFFT per channel |
 | Recorders | pre-built at start, enabled by selector | built per call; a count cap only |
 | Control → recorder | message queue polled by the main loop | direct call (`CallManager` → `RecorderHost`) in the same block |
-| Back-pressure | propagates block by block to the source | one blocking queue per source at the input; downstream queues never block decoding |
+| Back-pressure | propagates block by block to the source | one bounded queue per source at the input (a live radio's block is dropped and counted, a file waits); downstream queues never block decoding |
 | Overload | hardware overflow; any block can stall all | hardware overflow, measured, gap-filled, clock re-anchored |
 | Multi-core | automatic | a core per source for DSP (calls followed under one lock); I/O, encoding, plugins and the server on other threads |
 | CPU | — | measured 4–6× less than Trunk Recorder on Raspberry Pi / Linux (2026-10-02 benchmark) |
@@ -847,7 +869,8 @@ encodes nothing itself. A call decrypted with the recorder's keys goes only to p
 1. Host → `hello` { api, host, config, systems [ {index, short_name, kind, name?, fcc? { "<Hz>": {call_sign, name?} }, fcc_call_sign?, fcc_name?, sites? [ {name} ], config, settings} ],
    capture_dir, data_dir, audio_formats }. `index` is the system's number this run (from 0,
    trunked then conventional); `kind` says which, `conventional` included; `settings` are the
-   plugin's own settings as a system's `override` changes them.
+   plugin's own settings as a system's `override` changes them. A plugin asks for recorded
+   calls with `calls.query` (answered `calls`, by request number), not by opening the store.
 2. Plugin → `ready` (or `status: error` and exit 78 for a config error).
 3. Host → events for subscribed topics: `call.start`, `call.end`, `call.concluded` (with
    json / wav / m4a paths), `unit`, `audio`, `status` (every 5 s).
@@ -932,9 +955,7 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 
 | Variant | Fields |
 |---|---|
-| `Data` | `source: usize`, `bytes: Pooled<u8>` (u8 IQ, a reused buffer), `dropped: u64`, `at: Instant` |
-| `Iq` | `source`, `samples: Vec<Complex32>`, `dropped`, `at` |
-| `Real16` | `source`, `samples: Pooled<i16>` (an Airspy's real samples, made IQ by `IqFrom`), `dropped`, `at` |
+| `Samples` | `source: usize`, `block: Block`, `dropped: u64`, `at: Instant`. `Block` is `U8` (offset 8-bit IQ), `Iq` (float) or `Real16` (an Airspy's real samples, made IQ by the `Inbox`), each in a reused `Pooled` buffer |
 | `Error` | `source`, `error: String` (passed on to the engine thread) |
 | `End` | `source` (passed on to the engine thread) |
 | `Tuned` | `center_hz` (survey only) |
@@ -1153,7 +1174,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78.
 
 | `type` | Payload fields |
 |---|---|
-| `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, name, fcc (by frequency), fcc_call_sign / fcc_name (the one that names it), sites: [SiteInfo { name }], config, settings }]` (name, FCC fields and sites left out when empty), `capture_dir`, `data_dir`, `audio_formats` |
+| `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, name, fcc (by frequency), fcc_call_sign / fcc_name (the one that names it), sites: [SiteInfo { name }], config, settings }]` (name, FCC fields and sites left out when empty), `capture_dir`, `data_dir`, `store?` (the call store's absolute path, left out when the store didn't open; open it read-only, WAL, read `schema_version` first, never write; remote plugins use the HTTP API), `audio_formats` |
 | `call.start`, `call.end` | once per call, from its first copy: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_ota, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
 | `unit` | `system`, `short_name`, `site`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |
@@ -1218,12 +1239,13 @@ unlike the other messages).
 
 ### 10.3 `sources[]`
 
-`type` is `rtlsdr`, `usrp`, `airspy`, `soapy` or `file`. Every type has `centerHz` (required;
+`type` is `rtlsdr`, `hackrf`, `usrp`, `airspy`, `soapy` or `file`. In code a `Source` (`trunk-app/src/config.rs`) holds the keys every type has plus a `kind: SourceKind` (flattened, tagged by `type`) with the rest; the JSON stays flat. Every type has `centerHz` (required;
 0 = auto-centre), `rateHz` (required), `autoTune` (false) and `guardHz` (75,000).
 
 | Type | Other keys |
 |---|---|
-| `rtlsdr` | `serial` (required; "" = first free), `gainDb` 25.4, `agc` false, `ppm` (integer, required), `bufLen` 0 (= 262144), `buffers` 0 (= about 2 MiB) |
+| `rtlsdr` | `serial` (required; "" = first free), `gainDb` 25.4, `agc` false, `ppm` (integer, required), `bufLen` 0 (= 16384), `buffers` 0 (= about 2 MiB) |
+| `hackrf` | `serial` "" = first, `centerHz`, `rateHz` (1–20 MSPS), `lnaDb` 16, `vgaDb` 20, `amp` false, `biasTee`, `ppm`, `autoTune`, `guardHz` |
 | `usrp` | `args` "", `gainDb` 40, `agc` false, `antenna` "", `ppm` 0 |
 | `airspy` | `serial` "", `gainMode` linearity / sensitivity / manual, `gainStep` 14, `lnaStep` / `mixerStep` / `vgaStep` 10, `agc`, `biasTee`, `packing` true, `ppm` |
 | `soapy` | `args` "", `agc` true, `gainDb` null, `gains` {}, `antenna` "", `settings` "", `ppm` 0 |
@@ -1392,7 +1414,14 @@ found on the air with `plan_centers`, through the same `off_dc`.
 | `conventional.heard.json` | codes heard per conventional frequency |
 | `tune.json` | AutoTune's scores per source, for the next run |
 | `radio/<short>.json` | the radio registry (units, talkgroups, affiliations); every 15 min and at stop |
-| `stats/YYYY-MM-DD.jsonl` | a dashboard rollup per minute; gzipped after the day, kept 8 days |
+
+The store keeps the talkgroup files (a line at a time, table `talkgroups`), band plans, talker
+aliases, conventional codes, AutoTune's scores, sharing's state, the radio registry (each save's
+changes, whole once a day) and the dashboard's history (`trunk-pro/src/kept.rs`,
+`statstore.rs`); there are no files for them. Low-write mode keeps no call index. A store of
+another schema version is set aside and made afresh (`db/schema.rs`).
+
+| `stats/YYYY-MM-DD.jsonl` | a dashboard rollup per minute; gzipped after the day, kept 8 days (`files`; the store on: `stats_minutes` and `stats_hours`) |
 | `plugins/<id>/` | installed plugins |
 | `plugin-data/<id>/` | plugin state |
 | `plugin-hold/` | finished calls held back by plugin delays |
@@ -1463,7 +1492,9 @@ and no channel is within 25 kHz of the centre.
 The engine has no wall clock. Every time inside it (a frame, a message, a call's start, a timeout)
 is a source's sample count divided by its rate, plus that source's clock offset. A capture
 therefore decodes the same at any speed. The offset is the one link to the wall clock, and
-`Session` keeps it for each live source with `ClockFit` (`trunk-app/src/session.rs`).
+`Session` keeps it for each live source with `ClockFit` (`trunk-app/src/session.rs`), which wraps
+sdr-core's `SampleClock`: a phase-and-rate loop, so a source's status also reports `clockPpm`,
+the radio's crystal error against the computer's clock.
 
 ### 11.1 The clock path
 
@@ -1474,13 +1505,13 @@ therefore decodes the same at any speed. The offset is the one link to the wall 
    block's length.
 3. **`ClockFit::observe`**: lag = (at − epoch) − samples ÷ rate. Buffers only ever arrive late
    (USB, driver buffering), so the least lag is the clock's own.
-4. **10 s window** (`CLOCK_WINDOW_MS`): the first block sets the target at once (this absorbs the
-   radio's open time, such as a USRP's FPGA load); after that, each window's least lag is the new
-   target.
-5. **Steer, each poll** (`Session::poll`, on the engine thread): within 0.25 s (`REANCHOR_S`) of the
-   offset already set, the difference is drift and the offset slews toward it at most 1 ms per wall
-   second (`CLOCK_SLEW`, 1000 ppm). Further than 0.25 s, samples were lost unreported (or invented):
-   the offset is set at once and the log says "clock re-anchored".
+4. **1 s windows** (`SampleClock`): the first block sets the target at once (this absorbs the
+   radio's open time, such as a USRP's FPGA load); after that, each window's least lag feeds a
+   second-order loop that tracks the phase and the rate.
+5. **Steer, each poll** (`Session::poll`, on the engine thread): the offset follows the loop. A
+   jump of more than 5 ms held for 3 windows means samples were lost unreported (or invented):
+   the offset is set at once and the log says "clock re-anchored". A deliberate gap (an RTL-SDR's
+   retune halt, `Sink::tuned`) resumes the clock and doesn't count as loss.
 6. **`Engine::set_clock_offset`**: the only place wall time enters the engine.
 7. **`Source::time()`** = samples ÷ rate + offset: every frame and message is timed this way.
 8. **Each `Trunk`'s `now_s`** (a site's clock) comes from its control channel's source
@@ -1500,14 +1531,16 @@ time.
 
 ### 11.2 What the steering looks like (the page's simulation)
 
-- **A steady radio.** Lags scatter upward from buffering; the least lag in each window sits on the
-  true offset (for example 0.35 s, the radio's open time). The first block anchors the offset;
-  it then settles on the first window's minimum.
-- **Crystal drift.** Each window's target moves a few milliseconds; the offset slews after it at up
-  to 1 ms per second, with no jumps in call times.
-- **Samples lost, unreported.** 0.6 s of samples vanish at 30 s; sample time is 0.6 s behind the
-  air. At the next window (40 s) the target is more than 0.25 s off, so the offset steps at once
-  and the log says "clock re-anchored".
+- **A steady radio.** Lags scatter upward from buffering; the least lag in each 1 s window sits on
+  the true offset (for example 0.35 s, the radio's open time). The first block anchors the offset;
+  the loop (time constant 8 s, doubling to 256 s after 4τ of windows under 1 ms) then pulls it onto
+  the windows' minima and measures the crystal's rate.
+- **Crystal drift.** Each window's target moves a fraction of a millisecond (0.6 ms at the
+  page's exaggerated 600 ppm); the loop follows the phase and learns the rate, staying within a few
+  milliseconds with no jumps in call times.
+- **Samples lost, unreported.** 20 ms of samples vanish at 30 s; sample time is 20 ms behind the
+  air. The target stays more than 5 ms off for 3 windows, so at 33.75 s the offset steps at once,
+  the loop restarts fast and the log says "clock re-anchored".
 
 ### 11.3 Identifiers
 
@@ -1541,7 +1574,7 @@ asks.
 | Producer | Feeds | Output |
 |---|---|---|
 | `ControlChannel::report` (per protocol; default nothing), `Engine::report` (levels, ppm, calls), `SampleMeter` (headroom and clipping, 1 sample in 16), `Tally` (calls, airtime, reasons, voice errors, counted from events) | `Aggregator` | `stats` message every 1 s; a `Rollup` every minute |
-| `Rollup` | `History` (a week in memory) and `stats/YYYY-MM-DD.jsonl` | `statsQuery` → `statsResult` |
+| `Rollup` | `History` (in memory: a week, or a day with the store) and `stats/YYYY-MM-DD.jsonl` or the store | `statsQuery` → `statsResult` |
 | Session events → `Stats::observe` | `Registry` | `radioQuery` → `radioResult` (`Shared::radio_query`, names from the `NameBook`); `radio/<short>.json` every 15 min and at stop |
 | Session events → `Stats::observe` | `Monitor` | watchers (the hook for alert rules; none yet) and `monitorEvent`; the frequent kinds only for subscribers to the topic `activity` |
 | monitor thread (desktop, every 2 s): the computer and the plugins | its own aggregator | `host` message every 2 s; rollups into the same history |
@@ -1556,11 +1589,21 @@ asks.
   `sys/<shortName>/site/<site>/cc/good`); renaming one loses its history.
 - **`Aggregator`**: rates from counters; each series' value now; per minute its average, lowest
   and highest. A rollup line is `{"t": minute, "s": {key: [avg, min, max]}}`.
-- **`History`**: a minute grid per series, a week in memory. `statsQuery` takes names or prefixes
-  ending in `*`, a range (10m, 1h, 6h, 24h, 7d) or from/to, and is answered downsampled (360
-  points by default).
-- **stats files**: UTC days, appended and never rewritten, a finished day gzipped, days past 8
-  deleted; read back into `History` in the background at start (`statsResult.loading` meanwhile).
+- **`History`**: a minute grid per series in memory: a week with no store (the browser build,
+  `files`); with one, 26 hours (`statstore::memory_minutes`). `statsQuery` takes names or
+  prefixes ending in `*`, a range (10m, 1h, 6h, 24h, 7d, 30d, 90d, 1y) or from/to, and is
+  answered downsampled (360 points by default) into a `Span`'s buckets. Within what memory keeps,
+  from memory alone. Further back (the store on: `hello.capabilities` has `history`),
+  `server::stats_query` adds the store's hours before the last day to memory's minutes since, on
+  a grid of whole hours (1, 2, 3, 6, 12 h, a day, two, a week): a few hundred points a series
+  whatever the span, so the history lives in the store, not in the recorder or the browser.
+- **Kept (`statstore.rs`)**: with the store on, each rollup a row of `stats_minutes` (kept 2 days,
+  read back into `History` at start) and, as each hour ends (two minutes late, for stragglers),
+  each series' hour a row of `stats_hours` (`History::hour_rows`: avg, lo, hi, minutes), kept
+  `storage.statsDays` (365; 0: all). `meta` `stats.hoursDone` is the last hour written; a start
+  writes the hours memory has after it. With `files`: UTC days of JSON lines, appended and never rewritten, a
+  finished day gzipped, days past 8 deleted. Either is read back in the background at start
+  (`statsResult.loading` meanwhile).
 - **`Registry`**: per system, bounded maps of talkgroups (5,000), units (20,000), unit pairs,
   frequencies and affiliations, with a week of hourly activity.
 - **`Monitor`**: notable events (talkgroup or unit first seen, talkgroup active, call volume,
@@ -1672,7 +1715,7 @@ recorder can do beyond recording (`Capability`: `service`, `drivers`, `plugins`,
 7. Client → `statsQuery {id, series, range}`; recorder → `statsResult {id, …}` to the asker.
 8. Client → `setConfig {config, version}` (always the whole config, edited from that version);
    recorder → `configSaved {version, error?}` to the sender, and `config` to everyone unless the
-   version was stale. Client → `setTalkgroups {system, csv}`; recorder → `talkgroups` to everyone.
+   version was stale. Client → `setTalkgroups {system, talkgroups}`; recorder → `talkgroups` to everyone.
 9. Client → `start` / `stop`; recorder → `state` to everyone.
 
 ### 14.2 Who gets what
@@ -1683,7 +1726,7 @@ recorder can do beyond recording (`Capability`: `service`, `drivers`, `plugins`,
 | Every client | `state`, `status`, `stats`, `host`, `concluded`, `callFiles`, `monitorEvent`, `unitAlias`, `heard`, `config`, `talkgroups`, `survey`, `surveySpectrum`, `log` (the recorder's own warnings and errors, with their clock time and level), `quit` |
 | Control access only | `plugins`, `pluginRuntime`, `interfaces`, `store`, `installProgress`, `keys` (`ToClient::audience`) |
 | Topic subscribers | `spectrum` (`spectrum:<source>`, about 7/s, 512 bins), `log` (`log`: control channel lines and the rest of the recorder's log), `rfDetail` (`rf:<source>`, 1/s), `decodeDetail` (`decode:<shortName>`, 1/s: channels, each site's adjacent sites and DMR / NXDN detail, patches), per-core detail in `host` (`platform`) |
-| The sender only | `configSaved`, `devices`, `radios`, `dir`, `trConfig`, `store`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`, `sourceProfile`, `error`, `notice` |
+| The sender only | `configSaved`, `devices`, `radios`, `dir`, `trConfig`, `store`, `subscribed`, `statsResult`, `radioResult`, `callsResult`, `sourceProfile`, `error`, `notice` |
 | Binary, to listeners | live audio frames |
 
 Nothing is computed for a topic nobody watches. A client more than 4,096 messages behind on the
@@ -1694,7 +1737,7 @@ hub skips the oldest without notice.
 | Area | Commands |
 |---|---|
 | Recording | `setConfig`, `setTalkgroups`, `start`, `stop`, `quit`, `channelFile` |
-| Watching | `subscribe`, `listen`, `statsQuery`, `radioQuery`, `olderCalls` |
+| Watching | `subscribe`, `listen`, `statsQuery`, `radioQuery`, `callsQuery` |
 | Setup | `devices`, `findRadios`, `listDir`, `readTrConfig`, `profileSource`, `surveyStart`, `surveyListen`, `surveyRescan`, `surveyStop` |
 | Plugins and interfaces | `plugins`, `addPlugin`, `removePlugin`, `interfaces`, `addInterface`, `removeInterface`; their stores: `store {kind, refresh?}`, `install {kind, id}` or `{kind, repository, tag?}` (progress in `installProgress {kind, key, id, stage, message}`), `kind` `plugin` or `interface` |
 | Keys | `unlockKeys {source, password}`, `lockKeys {source}` (key containers without a password file) |
@@ -1715,6 +1758,7 @@ hub skips the oldest without notice.
 |---|---|
 | `/api/ws` | the WebSocket |
 | `/api/version`, `/api/schema`, `/api/protocol.ts`, `/api/docs`, `/api/*` | version (and interface API), schema, TypeScript types, API docs and examples |
+| `/api/v1/calls`, `/api/v1/calls/<path>`, `/api/v1/storage` | the call store as JSON (`docs/api/calls.openapi.yaml`), with listen or control access; 503 when the store is off |
 | `/calls/<path>` | recordings (folder, then RAM spool), WAV ↔ M4A substitution, Range requests |
 | `/store/screenshots/<sha256>`, `/interfaces/<id>/screenshots/<n>` | store listings' screenshots (built-in port only) |
 | everything else | on `server.port` the embedded interface; on an interface's port, its folder (no hidden files) |

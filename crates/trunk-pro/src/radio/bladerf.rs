@@ -8,15 +8,14 @@
 
 use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use libloading::Library;
 use num_complex::Complex32;
 
-use super::{cstr, ppm_corrected, Caps, DriverInfo, Rates};
-use crate::sdr::{Applied, Control, Gain, SourceMsg, Tunable};
+use super::{cstr, ppm_corrected, Caps, Deadline, DriverInfo, Handed, Rates};
+use crate::sdr::{Applied, Control, Gain, Retuned, Sink, Tunable};
 
 type Dev = *mut c_void;
 
@@ -220,31 +219,32 @@ fn key(serial: &str) -> String {
 /// run (a bladeRF 2.0 runs at 0.52–61.44 MSPS, the original at up to 40).
 pub fn devices() -> Vec<serde_json::Value> {
     let Ok(a) = api() else { return vec![] };
-    let mut list: *mut DevInfo = std::ptr::null_mut();
-    let _one = super::opening();
-    // SAFETY: libbladeRF allocates `n` entries, freed below.
-    let n = unsafe { (a.get_device_list)(&mut list) };
-    if n <= 0 || list.is_null() {
-        return vec![];
-    }
-    // SAFETY: n entries.
-    let out = unsafe { std::slice::from_raw_parts(list, n as usize) }
-        .iter()
-        .map(|d| {
-            let serial = carr(&d.serial);
-            let product = carr(&d.product);
+    let found = super::open("bladeRF search", Deadline::Quick, true, move || {
+        let mut list: *mut DevInfo = std::ptr::null_mut();
+        // SAFETY: libbladeRF allocates `n` entries, freed below.
+        let n = unsafe { (a.get_device_list)(&mut list) };
+        if n <= 0 || list.is_null() {
+            return Ok(vec![]);
+        }
+        // SAFETY: n entries.
+        let out = unsafe { std::slice::from_raw_parts(list, n as usize) }.iter().map(|d| (carr(&d.serial), carr(&d.product), d.usb_bus, d.usb_addr)).collect::<Vec<_>>();
+        // SAFETY: the list get_device_list returned.
+        unsafe { (a.free_device_list)(list) };
+        Ok(out)
+    });
+    found
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(serial, product, bus, address)| {
             let product = if product.is_empty() { "bladeRF".to_string() } else { product };
             let short = if serial.len() > 12 { &serial[..12] } else { &serial };
-            let mut j = serde_json::json!({ "serial": serial, "label": format!("{product} · SN {short}…"), "bus": d.usb_bus, "address": d.usb_addr });
+            let mut j = serde_json::json!({ "serial": serial, "label": format!("{product} · SN {short}…"), "bus": bus, "address": address });
             if let Some(c) = super::known(&key(&serial)) {
                 c.add_to(&mut j);
             }
             j
         })
-        .collect();
-    // SAFETY: the list get_device_list returned.
-    unsafe { (a.free_device_list)(list) };
-    out
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -275,37 +275,41 @@ impl crate::sdr::Radio for BladerfConfig {
             self.gain_db = db as f64;
         }
     }
-    fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
-        stream_once(source, self, tx, stop, ctl)
+    fn rate_hz(&self) -> f64 {
+        self.rate_hz
+    }
+    fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+        stream_once(self, sink, stop, ctl)
     }
 }
 
 /// Owns the open device so every exit path disables RX and closes it.
-struct Device<'a> {
-    a: &'a Api,
+struct Device {
+    a: &'static Api,
     dev: Dev,
     enabled: bool,
     ppm: f64,
 }
 
-impl Tunable for Device<'_> {
-    fn tune(&mut self, hz: f64) -> Result<f64, String> {
+impl Tunable for Device {
+    fn tune(&mut self, hz: f64) -> Result<Retuned, String> {
         // SAFETY: an open device.
         check(self.a, "tune", unsafe { (self.a.set_frequency)(self.dev, RX0, ppm_corrected(hz, self.ppm).round() as u64) })?;
-        Ok(hz)
+        Ok(Retuned { hz, gap: 0 })
     }
     /// A manual gain (AGC on or off waits for the next start).
-    fn set_gain(&mut self, g: Gain) -> Result<(), String> {
-        let Gain::Db(db) = g else { return Ok(()) };
+    fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
+        let Gain::Db(db) = g else { return Ok(0) };
         // SAFETY: an open device.
         unsafe {
             check(self.a, "manual gain", (self.a.set_gain_mode)(self.dev, RX0, GAIN_MGC))?;
-            check(self.a, "gain", (self.a.set_gain)(self.dev, RX0, db.round() as c_int))
+            check(self.a, "gain", (self.a.set_gain)(self.dev, RX0, db.round() as c_int))?;
         }
+        Ok(0)
     }
 }
 
-impl Drop for Device<'_> {
+impl Drop for Device {
     fn drop(&mut self) {
         // SAFETY: a device opened by this struct.
         unsafe {
@@ -333,18 +337,22 @@ fn identifier(serial: &str) -> String {
     }
 }
 
-fn stream_once(source: usize, cfg: &BladerfConfig, tx: &SyncSender<SourceMsg>, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
+fn stream_once(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     let a = api()?;
     let id = CString::new(identifier(&cfg.serial)).map_err(|e| e.to_string())?;
-    let mut dev: Dev = std::ptr::null_mut();
-    // SAFETY: libbladeRF calls on the device this function opens.
+    let first = cfg.serial.trim().is_empty();
+    // (Loading its FPGA image can take seconds.)
+    let dev = super::open(&format!("bladeRF {}", if first { "(first)" } else { &cfg.serial }), Deadline::Loads, true, move || {
+        let mut dev: Dev = std::ptr::null_mut();
+        // SAFETY: libbladeRF fills `dev`; the Device closes it.
+        let r = unsafe { (a.open)(&mut dev, if first { std::ptr::null() } else { id.as_ptr() }) };
+        check(a, "open", r)?;
+        Ok(Handed(Device { a, dev, enabled: false, ppm: 0.0 }))
+    })?;
+    let mut d = dev.0;
+    d.ppm = cfg.ppm;
+    // SAFETY: libbladeRF calls on the device opened above.
     unsafe {
-        let r = {
-            let _one = super::opening();
-            (a.open)(&mut dev, if cfg.serial.trim().is_empty() { std::ptr::null() } else { id.as_ptr() })
-        };
-        check(a, &format!("open {}", if cfg.serial.is_empty() { "(first)" } else { &cfg.serial }), r)?;
-        let mut d = Device { a, dev, enabled: false, ppm: cfg.ppm };
         let board = cstr((a.get_board_name)(d.dev));
 
         // What it is and the rates it runs at, for the list of radios and the refusal.
@@ -411,7 +419,7 @@ fn stream_once(source: usize, cfg: &BladerfConfig, tx: &SyncSender<SourceMsg>, s
         let mut timeouts = 0;
         while !stop.load(Ordering::Relaxed) {
             if let Some(c) = ctl {
-                match c.apply(&mut d, cfg.center_hz, tx)? {
+                match c.apply(&mut d, cfg.center_hz, sink)? {
                     // Samples already queued are from before the change: start over.
                     Applied::Tuned => next_t = None,
                     Applied::Closed => return Ok(()),
@@ -444,8 +452,9 @@ fn stream_once(source: usize, cfg: &BladerfConfig, tx: &SyncSender<SourceMsg>, s
             if n == 0 {
                 continue;
             }
-            let samples: Vec<Complex32> = raw[..n * 2].as_chunks::<2>().0.iter().map(|&[i, q]| Complex32::new(i as f32 / 2048.0, q as f32 / 2048.0)).collect();
-            if tx.send(SourceMsg::Iq { source, samples, dropped, at }).is_err() {
+            let mut samples = sink.iq_buffer(n);
+            samples.vec().extend(raw[..n * 2].as_chunks::<2>().0.iter().map(|&[i, q]| Complex32::new(i as f32 / 2048.0, q as f32 / 2048.0)));
+            if !sink.send(crate::sdr::Block::Iq(samples), dropped, at) {
                 return Ok(());
             }
         }

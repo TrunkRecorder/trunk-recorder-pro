@@ -109,7 +109,7 @@ new TrunkClient({ server?, secure?, historyLimit? })
   sources     SourceStatus[]: each radio (centerHz, rateHz, dropped, errors, errorPpm…)
   calls       CallView[]: the calls on the air now; [] when not running
   configVersion  the config's version (setConfig sends it)
-  talkgroupFiles each system's talkgroup file as CSV text: { shortName: csv }
+  talkgroupRows  each system's talkgroups as the recorder sent them: { shortName: Talkgroup[] }
   history     CallEntry[]: recorded calls, newest first (the last 300 at
               connect, plus each one recorded since; up to historyLimit)
   log         LogLine[]: the latest 500 log lines { timeS, kind, text, time?, level?, system?, site? }
@@ -133,10 +133,19 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.listen({ system, talkgroup })  one system's (its short name) talkgroup's
   rec.listen(false)                  none
                                      (kept across reconnects; one filter per connection)
+  rec.subscribe(topics)              the costly messages to receive: ["log"] fills log,
+                                     "spectrum:0" a waterfall's spectrum (kept across reconnects)
   rec.setConfig((c) => { … })        change a copy of the config; the whole config is sent
                                      with configVersion. Refused if the config changed elsewhere
                                      meanwhile (rec.error says so)
-  rec.setTalkgroups(shortName, csv)  replace a system's talkgroup file ("" for none)
+  rec.setTalkgroups(shortName, rows) replace a system's talkgroups (Talkgroup rows; [] for none)
+  rec.setTalkgroup(shortName, talkgroup, edit)  change one talkgroup's cells: any of
+                                     { alphaTag, description, tag, category, ignore }
+  await rec.calls(query)             recorded calls, newest first: query has any of system
+                                     (short name), talkgroup, unit, from / to (start time,
+                                     Unix ms), cursor, limit (1–500, default 100). Answers
+                                     { entries, next?, error? }: page on with cursor: next
+                                     while next is there. Needs the "calls" capability
   rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL
   rec.talkgroups(shortName)          Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode }
                                      (a conventional system's: its channels, alphaTag the channel's name)
@@ -144,15 +153,25 @@ new TrunkClient({ server?, secure?, historyLimit? })
                                      as the system's unitNames.mode says), or ""
   rec.send(message)                  any command (see Commands)
   rec.close()
-new LivePlayer({ followCall = true, quietS = 1.5, gain = 2, onNowPlaying })
+new LivePlayer({ followCall = true, quietS = 1.5, gain = 2, pan = 0, output, onNowPlaying })
   await player.resume()   Call it in a click or key handler; browsers block audio otherwise.
   player.play(chunk)      Pass the "audio" chunks. followCall plays one call at
-                          a time and skips calls that overlap it.
+                          a time and skips calls that overlap it; false queues every
+                          chunk one after another (still one call at a time).
   player.nowPlaying       { callId, system, talkgroup } or null
-  player.stop()
+  player.gain, player.pan volume (0 mutes) and place, left -1 to right 1; set them
+                          any time (they glide while playing)
+  player.skip()           drop the call playing (the rest of it too); the next one plays
+  player.stop()           stop; the page's output stays for other players
+  output                  an AudioNode to play into (an EQ, an AnalyserNode, a gain…)
+                          built on audioOut(); default audioOut().destination
+audioOut()                the page's one AudioContext, shared by every player; made on
+                          first use (in a click), woken by clicks and keys when suspended
+  Calls at once: a LivePlayer each (per call with followCall: false, stopped at its
+  onNowPlaying(null); or per talkgroup), each with its pan. examples/wall.html?stereo.
 Helpers: escapeHtml(s), duration(seconds) → "1:05", mhz(hz) → "155.2000 MHz",
-  parseTalkgroups(csv), decodeAudioFrame(arrayBuffer), systemName(status, system)
-  (status.systemNames[system]).
+  decodeAudioFrame(arrayBuffer), systemName(status, system) (status.systemNames[system]),
+  parseUnitAliases(csv): a units message's CSV → { unit: alias }.
 
 
 ## The data
@@ -239,14 +258,18 @@ From the recorder:
   (with control access also devices, keys, plugins, interfaces), then
   hello        { version, platform, api, configPath?, surveyBands, capabilities }
                capabilities: what it can do beyond recording, of "service" (quit, files by path, log,
-               M4A), "drivers" (USRP/Airspy/SoapySDR), "plugins", "interfaces", "host", "keys".
-               The desktop app has all; the browser build none. Show only what works.
+               M4A), "drivers" (USRP/Airspy/SoapySDR), "plugins", "interfaces", "host", "keys",
+               "calls" (the call store: callsQuery), "history" (statsQuery further back than a
+               week: 30d, 90d, 1y). The desktop app has all ("calls" and "history" while its
+               call store is open); the browser build none. Show only what works.
   config       { config, version }: on connecting, and when someone changes it
   configSaved  { version, error? }: answers your setConfig; error when the edit wasn't taken
                (the config changed elsewhere meanwhile) or couldn't be saved
-  talkgroups   { system (short name), csv }: a system's talkgroup file (Trunk Recorder's CSV;
-               "" none); one per system on connecting, and when one changes
-  history      { entries }: the latest calls (≤ 300), newest first
+  talkgroups   { system (short name), talkgroups: Talkgroup[] }: a system's talkgroups, a row each
+               { number, mode, alphaTag, description, tag, category, priority (1; -1 ignore),
+               preferredNac (0: none), preferredSite, ignore, comment?, extra?: [[column, value]] };
+               one per system with some on connecting, and when they change ([]: none now)
+  history      { entries, next? }: the latest calls (≤ 300), newest first; next (a callsQuery cursor) is there when older ones remain
   units        { system, csv }: a system's saved talker aliases (CSV unit,alias,source,time,wacn,sys,tg;
                newest line wins)
   decodeDetail topic decode:<shortName>: { system, channels, sites: [{ index, name, adjacent, dmr, nxdn }],
@@ -256,7 +279,7 @@ From the recorder:
   spectrum     ~7/s per radio: { source, centerHz, rateHz, bins: 512 dBFS levels }
   concluded    { entry }: a call was recorded
   log          { lines }: topic log (warnings and errors always); { timeS, kind, text, time?, level?, system?, site? }
-  olderCalls   { before, entries, more }: answers the olderCalls command
+  callsResult  { id, entries, next?, error? }: answers callsQuery; next is there only when more remain: send it back as cursor
   monitorEvent { t, level ("info" | "ok" | "warn" | "bad"), kind, … }: something notable (a control
                channel lost / regained, a talkgroup or radio first seen, a radio dropping samples, a disk or
                the RAM spool filling, a tone pattern heard, the clock off…): the kinds are MonitorEvent in
@@ -272,9 +295,14 @@ To the recorder:
   { type: "start" }, { type: "stop" }
   { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required)
   { type: "setConfig", config: <the whole config>, version: <the last config message's> }
-  { type: "setTalkgroups", system: <short name>, csv: <Trunk Recorder talkgroup CSV, "" for none> }
-  { type: "olderCalls", before: <Unix ms>, limit: <≤ 500> }   recorded calls before that, from the last 24 hours (listen access may send it)
-  { type: "statsQuery", id, series: ["sys/<short>/calls", …], range: "1h" }   history (→ statsResult; listen may send it)
+  { type: "setTalkgroups", system: <short name>, talkgroups: <Talkgroup rows, [] for none> }   all of them
+    (a number twice: the later row); CSV is only for files: read one yourself and send its rows
+  { type: "callsQuery", id, system?: <short name>, talkgroup?, unit?, from?, to?, cursor?, limit?: <1 to 500> }
+    recorded calls by system, talkgroup, radio and start time (Unix ms, from inclusive, to exclusive), newest
+    first, the latest included (→ callsResult; listen access may send it). Talkgroup and radio numbers are a
+    system's own: without system, each configured system's calls are searched
+  { type: "statsQuery", id, series: ["sys/<short>/calls", …], range: "1h" }   history (→ statsResult; listen may send it);
+               range 10m/1h/6h/24h/7d, or 30d/90d/1y with "history" (hourly steps, as far as storage.statsDays keeps)
   { type: "radioQuery", id, what: "talkgroups" | "units" | "tones" | …, system: <short name> }   what the
     recorder has heard (→ radioResult; listen may send it)
   { type: "subscribe", topics: ["log", "spectrum:0", "rf:0", "decode:<shortName>", "platform"] }
@@ -304,10 +332,19 @@ system is a system's short name; you get its audio from whichever of its sites c
    rec.start / rec.stop. Never build a config from scratch: fields left out
    reset to defaults.
 7. History reaches back 300 calls at connect, and grows as calls are
-   recorded. For older ones (the last 24 hours) send olderCalls { before:
-   <Unix ms of the oldest you have>, limit } and read the olderCalls reply
-   (more: false at the end). Before that there's no API to list them. Say so
-   if the user asks for more.
+   recorded. For older ones, and to search by talkgroup, radio or time, send
+   callsQuery { id, cursor: <the last page's next>, … } and read callsResult
+   (no next at the end). The desktop app answers from its call store
+   (hello.capabilities has "calls" while it's open); the browser build from
+   its own list. client.js: rec.calls({ talkgroup, cursor }).
+   The same query over HTTP (no WebSocket; any door with listen or control access; JSON):
+     GET /api/v1/calls?talkgroup=<n>&limit=<n>                            → { entries, next?, error? }
+       (all optional: system=<shortName>, talkgroup=<n>, unit=<n>, from=<ms>, to=<ms>, cursor=<next>, limit=<1..500>)
+     GET /api/v1/calls/<path>                                             → CallEntry, or 404 { error }
+     GET /api/v1/storage                                                  → { backend, path, schemaVersion, calls, oldestMs, newestMs, retentionDays, commitSeconds }
+   An empty parameter counts as not given; a bad number is 400 { error }; a store that is off still
+   answers /calls with the recent calls and an error (200), /calls/<path> a recent call or 404, and /storage 503 { error }.
+   Plugins ask over their own channel: calls.query { request, … } → calls { request, entries, next?, error? } (the plugin SDK's Host::calls).
 8. One live-audio filter per connection: one talkgroup, or everything. For
    several talkgroups, listen to everything and drop the chunks you don't
    want before player.play.

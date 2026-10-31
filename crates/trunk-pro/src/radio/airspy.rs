@@ -7,15 +7,14 @@
 
 use std::ffi::{c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use libloading::Library;
 use num_complex::Complex32;
 
-use super::{ppm_corrected, Caps, DriverInfo, Rates};
-use crate::sdr::{Applied, Control, Gain, Pool, SourceMsg, Tunable};
+use super::{ppm_corrected, Caps, Deadline, DriverInfo, Rates};
+use crate::sdr::{Applied, Control, Gain, Preset, Retuned, Sink, Stage, Stages, Tunable};
 
 type Dev = *mut c_void;
 
@@ -153,22 +152,24 @@ fn check(a: &Api, what: &str, r: c_int) -> Result<(), String> {
     Err(format!("Airspy {what}: {name}"))
 }
 
-/// Open the Airspy `serial` (hex; "" = the first), one radio at a time ([`super::opening`]).
-///
-/// SAFETY (callers): the device returned is closed with `a.close`.
-unsafe fn open(a: &Api, serial: &str) -> Result<Dev, String> {
-    let _one = super::opening();
-    let mut dev: Dev = std::ptr::null_mut();
-    // SAFETY: libairspy fills `dev`.
-    unsafe {
-        if serial.is_empty() {
-            check(a, "open", (a.open)(&mut dev))?;
-        } else {
-            let sn = u64::from_str_radix(serial.trim_start_matches("0x"), 16).map_err(|_| format!("Airspy serial {serial:?} isn't hex"))?;
-            check(a, "open", (a.open_sn)(&mut dev, sn))?;
+/// Open the Airspy `serial` (hex; "" = the first), with a deadline, one
+/// radio at a time ([`super::open`]).
+fn open(a: &'static Api, serial: &str) -> Result<Device, String> {
+    let name = format!("Airspy {}", if serial.is_empty() { "(first)" } else { serial });
+    let serial = serial.to_string();
+    super::open(&name, Deadline::Quick, true, move || {
+        let mut dev: Dev = std::ptr::null_mut();
+        // SAFETY: libairspy fills `dev`; the Device closes it.
+        unsafe {
+            if serial.is_empty() {
+                check(a, "open", (a.open)(&mut dev))?;
+            } else {
+                let sn = u64::from_str_radix(serial.trim_start_matches("0x"), 16).map_err(|_| format!("Airspy serial {serial:?} isn't hex"))?;
+                check(a, "open", (a.open_sn)(&mut dev, sn))?;
+            }
         }
-    }
-    Ok(dev)
+        Ok(Device { a, dev, streaming: false, ppm: 0.0 })
+    })
 }
 
 /// What an open Airspy says it is — its model, from its firmware string ("AirSpy NOS
@@ -252,25 +253,19 @@ fn describe(serial: u64, caps: Option<&Caps>) -> serde_json::Value {
 /// Windows libairspy's own listing can't open it to read its serial.
 pub fn devices() -> Vec<serde_json::Value> {
     let Ok(a) = api() else { return vec![] };
-    let mut sn = [0u64; 16];
-    let n = {
-        let _one = super::opening();
+    let found = super::open("Airspy search", Deadline::Quick, true, move || {
+        let mut sn = [0u64; 16];
         // SAFETY: buffer and its length.
-        unsafe { (a.list_devices)(sn.as_mut_ptr(), sn.len() as c_int) }
-    };
-    sn[..n.clamp(0, 16) as usize]
-        .iter()
-        .map(|&s| {
-            let caps = super::known(&key(s)).or_else(|| {
-                // SAFETY: opened here, closed here, nothing else uses the handle.
-                unsafe {
-                    open(a, &format!("{s:016X}")).ok().map(|dev| {
-                        let caps = identify(a, dev);
-                        (a.close)(dev);
-                        caps
-                    })
-                }
-            });
+        let n = unsafe { (a.list_devices)(sn.as_mut_ptr(), sn.len() as c_int) };
+        Ok(sn[..n.clamp(0, 16) as usize].to_vec())
+    });
+    found
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| {
+            // (Opened here and closed when dropped: nothing else uses the handle.)
+            // SAFETY: an open device, as opened (IQ).
+            let caps = super::known(&key(s)).or_else(|| open(a, &format!("{s:016X}")).ok().map(|d| unsafe { identify(a, d.dev) }));
             describe(s, caps.as_ref())
         })
         .collect()
@@ -282,35 +277,12 @@ pub struct AirspyConfig {
     pub serial: String,
     pub center_hz: f64,
     pub rate_hz: f64,
-    pub gain: AirspyGain,
+    /// A [`Gain::Preset`], or [`Gain::Stages`] (LNA 0–14, mixer 0–15, VGA 0–15 steps; with `agc`, the VGA alone).
+    pub gain: Gain,
     pub bias_tee: bool,
     /// 12-bit packing on the USB.
     pub packing: bool,
     pub ppm: f64,
-}
-
-/// How its gain is set.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum AirspyGain {
-    /// libairspy's linearity table, step 0..21.
-    Linearity(u8),
-    /// Its sensitivity table, step 0..21.
-    Sensitivity(u8),
-    /// Each stage: LNA 0..14, mixer 0..15, VGA 0..15.
-    Manual { lna: u8, mixer: u8, vga: u8 },
-    /// The Airspy's AGC on the LNA and mixer; the VGA as given.
-    Agc { vga: u8 },
-}
-
-impl std::fmt::Display for AirspyGain {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            AirspyGain::Linearity(g) => write!(f, "linearity {g}"),
-            AirspyGain::Sensitivity(g) => write!(f, "sensitivity {g}"),
-            AirspyGain::Manual { lna, mixer, vga } => write!(f, "LNA {lna} · mixer {mixer} · VGA {vga}"),
-            AirspyGain::Agc { vga } => write!(f, "AGC (VGA {vga})"),
-        }
-    }
 }
 
 impl crate::sdr::Radio for AirspyConfig {
@@ -319,23 +291,23 @@ impl crate::sdr::Radio for AirspyConfig {
         self.center_hz = hz;
     }
     fn gain_to(&mut self, g: Gain) {
-        if let Gain::Airspy(g) = g {
+        if matches!(g, Gain::Stages(_) | Gain::Preset(..)) {
             self.gain = g;
         }
     }
-    fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
-        stream_once(source, self, tx, stop, ctl)
+    fn rate_hz(&self) -> f64 {
+        self.rate_hz
+    }
+    fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+        stream_once(self, sink, stop, ctl)
     }
 }
 
 /// What libairspy's streaming thread hands samples to.
-struct Ctx {
-    source: usize,
-    tx: SyncSender<SourceMsg>,
+struct Ctx<'a> {
+    sink: Mutex<&'a mut Sink>,
     stop: Arc<AtomicBool>,
     closed: AtomicBool,
-    /// Buffers for its real samples (its thread allocates none).
-    pool: Pool<i16>,
 }
 
 extern "C" fn on_samples(t: *mut Transfer) -> c_int {
@@ -348,50 +320,54 @@ extern "C" fn on_samples(t: *mut Transfer) -> c_int {
     if t.sample_count <= 0 {
         return 0;
     }
+    let mut sink = ctx.sink.lock().unwrap();
     // (dropped_samples: the buffers libairspy dropped just before this one, in this one's samples — not a running total.)
-    let msg = match t.sample_type {
+    let open = match t.sample_type {
         SAMPLE_INT16_REAL => {
             // SAFETY: sample_count 16-bit real samples.
             let s = unsafe { std::slice::from_raw_parts(t.samples as *const i16, t.sample_count as usize) };
-            SourceMsg::Real16 { source: ctx.source, samples: ctx.pool.copy(s), dropped: t.dropped_samples / 2, at: std::time::Instant::now() }
+            sink.real16(s, t.dropped_samples / 2, Instant::now())
         }
         SAMPLE_FLOAT32_IQ => {
             // SAFETY: sample_count complex floats.
             let s = unsafe { std::slice::from_raw_parts(t.samples as *const Complex32, t.sample_count as usize) };
-            SourceMsg::Iq { source: ctx.source, samples: s.to_vec(), dropped: t.dropped_samples, at: std::time::Instant::now() }
+            sink.iq(s, t.dropped_samples, Instant::now())
         }
         _ => return 0,
     };
-    if ctx.tx.send(msg).is_err() {
+    if !open {
         ctx.closed.store(true, Ordering::Relaxed);
         return 1;
     }
     0
 }
 
-struct Device<'a> {
-    a: &'a Api,
+/// An open Airspy: closed (and stopped) when dropped.
+struct Device {
+    a: &'static Api,
     dev: Dev,
     streaming: bool,
     ppm: f64,
 }
 
-impl Tunable for Device<'_> {
-    fn tune(&mut self, hz: f64) -> Result<f64, String> {
+// SAFETY: libairspy's handle is used from one thread at a time ([`super::open`]'s hands it over).
+unsafe impl Send for Device {}
+
+impl Tunable for Device {
+    fn tune(&mut self, hz: f64) -> Result<Retuned, String> {
         // SAFETY: an open device.
         check(self.a, "tune", unsafe { (self.a.set_freq)(self.dev, ppm_corrected(hz, self.ppm).round() as u32) })?;
-        Ok(hz)
+        Ok(Retuned { hz, gap: 0 })
     }
     /// Its own settings, which libairspy takes while streaming (a survey's
     /// dB is left alone: the linearity gain stays as set).
-    fn set_gain(&mut self, g: Gain) -> Result<(), String> {
-        let Gain::Airspy(g) = g else { return Ok(()) };
+    fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
         // SAFETY: an open device.
-        unsafe { set_gain(self.a, self.dev, g) }
+        unsafe { set_gain(self.a, self.dev, g) }.map(|()| 0)
     }
 }
 
-impl Drop for Device<'_> {
+impl Drop for Device {
     fn drop(&mut self) {
         // SAFETY: a device opened by this struct.
         unsafe {
@@ -403,36 +379,39 @@ impl Drop for Device<'_> {
     }
 }
 
-/// Set the gain as `g` says.
+/// Set the gain as `g` says: a table's step, or the stages (a survey's dB
+/// is left alone: the gain stays as set).
 ///
 /// SAFETY (callers): `dev` is open.
-unsafe fn set_gain(a: &Api, dev: Dev, g: AirspyGain) -> Result<(), String> {
+unsafe fn set_gain(a: &Api, dev: Dev, g: Gain) -> Result<(), String> {
+    let step = |s: &Stages, stage: Stage, most: u8| s.get(stage).unwrap_or(0.0).clamp(0.0, most as f32) as u8;
     unsafe {
         match g {
-            AirspyGain::Linearity(g) => check(a, "gain", (a.set_linearity_gain)(dev, g.min(21))),
-            AirspyGain::Sensitivity(g) => check(a, "gain", (a.set_sensitivity_gain)(dev, g.min(21))),
-            AirspyGain::Manual { lna, mixer, vga } => {
-                check(a, "LNA AGC off", (a.set_lna_agc)(dev, 0))?;
-                check(a, "mixer AGC off", (a.set_mixer_agc)(dev, 0))?;
-                check(a, "LNA gain", (a.set_lna_gain)(dev, lna.min(14)))?;
-                check(a, "mixer gain", (a.set_mixer_gain)(dev, mixer.min(15)))?;
-                check(a, "VGA gain", (a.set_vga_gain)(dev, vga.min(15)))
-            }
-            AirspyGain::Agc { vga } => {
+            Gain::Preset(Preset::Linearity, g) => check(a, "gain", (a.set_linearity_gain)(dev, g.min(21))),
+            Gain::Preset(Preset::Sensitivity, g) => check(a, "gain", (a.set_sensitivity_gain)(dev, g.min(21))),
+            Gain::Stages(s) if s.agc => {
                 check(a, "LNA AGC", (a.set_lna_agc)(dev, 1))?;
                 check(a, "mixer AGC", (a.set_mixer_agc)(dev, 1))?;
-                check(a, "VGA gain", (a.set_vga_gain)(dev, vga.min(15)))
+                check(a, "VGA gain", (a.set_vga_gain)(dev, step(&s, Stage::Vga, 15)))
             }
+            Gain::Stages(s) => {
+                check(a, "LNA AGC off", (a.set_lna_agc)(dev, 0))?;
+                check(a, "mixer AGC off", (a.set_mixer_agc)(dev, 0))?;
+                check(a, "LNA gain", (a.set_lna_gain)(dev, step(&s, Stage::Lna, 14)))?;
+                check(a, "mixer gain", (a.set_mixer_gain)(dev, step(&s, Stage::Mixer, 15)))?;
+                check(a, "VGA gain", (a.set_vga_gain)(dev, step(&s, Stage::Vga, 15)))
+            }
+            Gain::Agc | Gain::Db(_) => Ok(()),
         }
     }
 }
 
-fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+fn stream_once(cfg: &AirspyConfig, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
     let a = api()?;
     // SAFETY: libairspy calls on the device this function opens.
     unsafe {
-        let dev = open(a, &cfg.serial)?;
-        let mut d = Device { a, dev, streaming: false, ppm: cfg.ppm };
+        let mut d = open(a, &cfg.serial)?;
+        d.ppm = cfg.ppm;
         // (Asked as opened, for IQ samples: for real samples libairspy lists rates doubled.)
         let caps = identify(a, d.dev);
         let want_iq = cfg.rate_hz.round() as u32;
@@ -449,20 +428,20 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
         check(a, "sample rate", (a.set_samplerate)(d.dev, want_iq))?;
         d.tune(cfg.center_hz)?;
         // (As a gain set while running is: a reopened radio comes back the same.)
-        d.set_gain(Gain::Airspy(cfg.gain))?;
+        d.set_gain(cfg.gain)?;
         check(a, "bias-T", (a.set_rf_bias)(d.dev, cfg.bias_tee as u8))?;
         // (Older firmware can't pack: it streams unpacked then, as it always did.)
         if cfg.packing && (a.set_packing)(d.dev, 1) != 0 {
             log::warn!("Airspy {}: this firmware can't pack samples; streaming them unpacked (a third more USB bandwidth)", if cfg.serial.is_empty() { "(first)" } else { &cfg.serial });
         }
-        let ctx = Box::new(Ctx { source, tx: tx.clone(), stop: stop.clone(), closed: AtomicBool::new(false), pool: Pool::default() });
+        let ctx = Box::new(Ctx { sink: Mutex::new(sink), stop: stop.clone(), closed: AtomicBool::new(false) });
         let ctx_ptr = &*ctx as *const Ctx as *mut c_void;
         check(a, "start", (a.start_rx)(d.dev, on_samples, ctx_ptr))?;
         d.streaming = true;
         let result = loop {
             std::thread::sleep(Duration::from_millis(if ctl.is_some() { 10 } else { 100 }));
             if let Some(c) = ctl {
-                match c.apply(&mut d, cfg.center_hz, tx) {
+                match c.apply(&mut d, cfg.center_hz, &mut ctx.sink.lock().unwrap()) {
                     Err(e) => break Err(e),
                     Ok(Applied::Closed) => break Ok(()),
                     Ok(_) => {}

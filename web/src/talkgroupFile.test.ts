@@ -1,58 +1,63 @@
-// Editing a system's talkgroup file in place: ignoring a talkgroup, and
-// merging another file's talkgroups in, keep its columns, its delimiter and
-// everything of the user's. `npm test`.
+// A system's talkgroups as rows: a file read and written by the recorder's
+// own code (through wasm), one row edited as the recorder edits it, and
+// another list's talkgroups merged in without replacing the user's. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { editCells, mergeTalkgroupCsv, parseTalkgroupCsv, withCells, withIgnore } from "./talkgroups.ts";
+import { editCells, ignoreEdit, mergeTalkgroups, readTalkgroupFile, talkgroup, talkgroupFileText, withEdit } from "./talkgroups.ts";
 
-test("ignore: a file of none gets a header and the row", () => {
-  assert.equal(withIgnore("", 101, true, "Dispatch"), "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category,Ignore\n101,65,Dispatch,D,,,,x\n");
+const names = (rows: { number: number; alphaTag: string }[]) => rows.map((t) => [t.number, t.alphaTag]);
+
+test("a file: semicolons, a byte-order mark and header case read as Trunk Recorder's columns", () => {
+  const r = readTalkgroupFile('﻿decimal;MODE;alpha tag;Description;Group\n101;D;"Dispatch; North";Main;Fire\n');
+  assert.deepEqual(r.talkgroups, [talkgroup(101, { alphaTag: "Dispatch; North", description: "Main", category: "Fire" })]);
+  assert.deepEqual([r.legacy, r.missing, r.unknownColumns, r.skipped], [false, [], [], []]);
 });
 
-test("ignore: its column added, the row marked; others untouched; and not ignored again", () => {
-  const csv = "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,Dispatch,D,,Fire,Ops\n102,66,Tac,D,,,\n";
-  const on = withIgnore(csv, 102, true);
-  assert.equal(on, "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category,Ignore\n101,65,Dispatch,D,,Fire,Ops\n102,66,Tac,D,,,,x\n", "the other row as it was");
-  assert.equal(parseTalkgroupCsv(on).get(102)!.ignore, true);
-  assert.equal(parseTalkgroupCsv(withIgnore(on, 102, false)).get(102)!.ignore ?? false, false);
+test("a file's report: no header, columns missing or unknown, rows without a number", () => {
+  const legacy = readTalkgroupFile("101,65,D,Dispatch,Desc,Fire,Ops\n");
+  assert.equal(legacy.legacy, true);
+  assert.deepEqual(names(legacy.talkgroups), [[101, "Dispatch"]]);
+  const r = readTalkgroupFile("Decimal,Alpha Tag,Zone\n101,A,North\nabc,B,South\n");
+  assert.deepEqual([r.missing, r.unknownColumns, r.skipped], [["Mode", "Description"], ["Zone"], ["abc,B,South"]]);
+  assert.deepEqual(r.talkgroups[0].extra, [["Zone", "North"]], "kept for Download");
 });
 
-test("ignore: Trunk Recorder's priority -1 is undone when un-ignored", () => {
-  const csv = "Decimal,Mode,Alpha Tag,Priority\n7,D,Old,-1\n";
-  assert.match(withIgnore(csv, 7, false), /^7,D,Old,1,$/m);
+test("download: Trunk Recorder's headed CSV, with comments and columns of its own", () => {
+  const rows = readTalkgroupFile("Decimal,Alpha Tag,Mode,Description,Zone,Priority\n# county\n101,Fire Disp,D,Main,North,-1\n102,Tac,D,,,\n").talkgroups;
+  assert.equal(rows[0].comment, "# county");
+  assert.equal(rows[0].ignore, true, "priority -1 is ignored");
+  const text = talkgroupFileText(rows);
+  assert.match(text, /^Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category,Priority,Zone\n# county\n101,65,Fire Disp,D,Main,,,-1,North\n102,66,Tac,D,,,,1,\n$/);
+  assert.deepEqual(readTalkgroupFile(text).talkgroups, rows, "read back the same");
+  assert.equal(talkgroupFileText([]), "");
 });
 
-test("ignore: a legacy (headerless) file is given its header", () => {
-  const out = withIgnore("101,65,D,Dispatch,Desc,Fire,Ops\n", 101, true);
-  assert.equal(out.split("\n")[0], "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category,Ignore");
-  assert.equal(parseTalkgroupCsv(out).get(101)!.alphaTag, "Dispatch");
+// The same edits as trunk-core's: this copy of the rows stays the recorder's.
+test("withEdit: one row's cells, as the recorder sets them", () => {
+  const rows = [talkgroup(101, { alphaTag: "Fire Disp" }), talkgroup(102, { alphaTag: "Tac" })];
+  const named = withEdit(rows, 101, { alphaTag: "FIRE4A", tag: "Fire, Tac" });
+  assert.deepEqual([named[0].alphaTag, named[0].tag], ["FIRE4A", "Fire, Tac"]);
+  assert.deepEqual(named[1], rows[1], "the other row as it was");
+  assert.equal(withEdit(rows, 102, { ignore: true })[1].ignore, true);
+  assert.deepEqual(names(withEdit(rows, 205, { ignore: true, alphaTag: "Data" })), [[101, "Fire Disp"], [102, "Tac"], [205, "Data"]], "a row added");
+  assert.equal(withEdit(rows, 205, { ignore: false }).length, 2, "none for nothing set");
+  const old = withEdit([talkgroup(104, { priority: -1, ignore: true })], 104, { ignore: false });
+  assert.deepEqual([old[0].ignore, old[0].priority], [false, 1], "un-ignored: Trunk Recorder's priority -1 undone");
 });
 
-test("ignore: a semicolon file stays a semicolon file", () => {
-  const out = withIgnore("Decimal;Mode;Alpha Tag\n101;D;Dispatch, North\n", 101, true);
-  assert.equal(out, "Decimal;Mode;Alpha Tag;Ignore\n101;D;Dispatch, North;x\n");
+test("ignoreEdit: named too when the talkgroup has no row", () => {
+  const rows = [talkgroup(101, { alphaTag: "Dispatch" })];
+  assert.deepEqual(ignoreEdit(rows, 101, true, "Other"), { ignore: true });
+  assert.deepEqual(ignoreEdit(rows, 7, true, "Data"), { alphaTag: "Data", ignore: true });
+  assert.deepEqual(editCells({ alphaTag: " A ", ignore: false }), [["Alpha Tag", "A"], ["Ignore", ""]]);
 });
 
-test("merge: the talkgroups it lacks, appended in its columns and delimiter; its own as they are", () => {
-  const mine = "Decimal;Mode;Alpha Tag;Description;Priority;Ignore\n716;D;E16 TAC (mine);;2;\n900;D;Mine only;;;1\n";
-  const theirs = "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category,Priority\n716,2cc,Engine 16 Tac,D,,Fire Dispatch,,\n801,321,Dispatch,D,,,,\n";
-  const m = mergeTalkgroupCsv(mine, theirs);
+test("merge: the talkgroups it lacks, after its own; its own as they are", () => {
+  const mine = [talkgroup(716, { alphaTag: "E16 TAC (mine)", priority: 2 }), talkgroup(900, { alphaTag: "Mine only", ignore: true })];
+  const theirs = [talkgroup(716, { alphaTag: "Engine 16 Tac" }), talkgroup(801, { alphaTag: "Dispatch" })];
+  const m = mergeTalkgroups(mine, theirs);
   assert.equal(m.added, 1);
-  assert.equal(m.csv, mine + "801;D;Dispatch;;;\n");
-  assert.deepEqual(mergeTalkgroupCsv("", theirs), { csv: theirs, added: 2 });
-  assert.equal(mergeTalkgroupCsv(m.csv, theirs).added, 0);
-});
-
-// The same edits as trunk-core's `a_row_edited_in_place`: this copy of a file stays the recorder's.
-test("withCells: one row's cells, made as the recorder makes them", () => {
-  const csv = '# county\nDecimal;Alpha Tag;Description\n101;Fire Disp;Main\n102;"Tac; 2";\n';
-  const out = withCells(csv, 102, [["Ignore", "x"]]);
-  assert.equal(out, '# county\nDecimal;Alpha Tag;Description;Ignore\n101;Fire Disp;Main\n102;"Tac; 2";;x\n');
-  const named = withCells(out, 101, editCells({ alphaTag: "FIRE4A", tag: "Fire, Tac" }));
-  assert.deepEqual([parseTalkgroupCsv(named).get(101)?.alphaTag, parseTalkgroupCsv(named).get(101)?.tag], ["FIRE4A", "Fire, Tac"]);
-  assert.equal(withCells("Decimal,Alpha Tag\n101,A\n", 205, [["Ignore", "x"], ["Alpha Tag", "Data"]]), "Decimal,Alpha Tag,Ignore\n101,A\n205,Data,x\n");
-  assert.equal(withCells("Decimal,Alpha Tag\n101,A\n", 205, [["Ignore", ""]]), "Decimal,Alpha Tag,Ignore\n101,A\n");
-  assert.equal(parseTalkgroupCsv(withCells("Decimal,Alpha Tag,Priority\n104,Old,-1\n", 104, [["Ignore", ""]])).get(104)?.ignore ?? false, false);
-  assert.equal(withCells("202,ca,E,Police,Tac 2,Law,City\n", 202, [["Alpha Tag", "PD Tac"]]), "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n202,ca,E,PD Tac,Tac 2,Law,City\n");
-  assert.equal(withCells("", 7, [["Ignore", "x"]]), "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category,Ignore\n7,7,,D,,,,x\n");
+  assert.deepEqual(m.talkgroups, [...mine, theirs[1]]);
+  assert.deepEqual(mergeTalkgroups([], theirs), { talkgroups: theirs, added: 2 });
+  assert.equal(mergeTalkgroups(m.talkgroups, theirs).added, 0);
 });

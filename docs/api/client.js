@@ -34,7 +34,7 @@ export function decodeAudioFrame(buf) {
  *
  * State (read it, don't change it): connected, version, config, phase
  * ({ phase, error, ended }), status (EngineStatus), sources, calls (on the
- * air now), history (recorded calls, newest first), configVersion, talkgroupFiles,
+ * air now), history (recorded calls, newest first), configVersion, talkgroupRows,
  * capabilities, log (after subscribe(["log"])), aliases, error (also why a
  * setConfig was refused), exited (the recorder quit; it keeps trying to reconnect).
  * "change" fires once, at `hello`, while a connection is being greeted.
@@ -66,11 +66,14 @@ export class TrunkClient {
     this.sources = [];
     this.calls = [];
     this.history = [];
-    /** Each system's talkgroup file (Trunk Recorder's CSV), by short name. */
-    this.talkgroupFiles = {};
-    /** Edits of single talkgroups since each file came (`talkgroupEdited`): talkgroups() includes them. */
+    /** Each system's talkgroups as the recorder sent them (`talkgroups` messages: rows of Trunk Recorder's columns), by short name. */
+    this.talkgroupRows = {};
+    /** Edits of single talkgroups since each system's rows came (`talkgroupEdited`): talkgroups() includes them. */
     this.talkgroupEdits = {};
     this.log = [];
+    /** `calls` asked and not answered yet: id → resolve. */
+    this._asked = new Map();
+    this._nextId = 1;
     /** Talker aliases heard on the air (saved ones, then live): short name → { unit: alias }. */
     this.aliases = {};
     this._unitCache = new Map();
@@ -105,6 +108,21 @@ export class TrunkClient {
   send(msg) {
     if (this._ws?.readyState === 1) this._ws.send(JSON.stringify(msg));
     else this._queue.push(msg);
+  }
+
+  /**
+   * Recorded calls, newest first: `query` has any of system (short name),
+   * talkgroup, unit (a radio), from / to (start time, Unix ms), cursor (the
+   * previous page's `next`) and limit (1 to 500, 100). Answers
+   * `{ entries, next?, error? }`; page on with `cursor` while `next` is there. Needs the
+   * `calls` capability; the desktop app answers from its call store.
+   */
+  calls(query = {}) {
+    const id = this._nextId++;
+    return new Promise((resolve) => {
+      this._asked.set(id, resolve);
+      this.send({ type: "callsQuery", id, ...query });
+    });
   }
 
   start() {
@@ -174,31 +192,35 @@ export class TrunkClient {
   /**
    * System `shortName`'s talkgroups: Map talkgroup → { talkgroup, alphaTag,
    * description, tag, group, mode, ignore }. A trunked system's from its
-   * talkgroup file (Trunk Recorder's CSV: `talkgroups` messages) with the
-   * edits made since (`talkgroupEdited`); a conventional system's from its
-   * channels (alphaTag the channel's name).
+   * rows (`talkgroups` messages) with the edits made since
+   * (`talkgroupEdited`); a conventional system's from its channels (alphaTag
+   * the channel's name).
    */
   talkgroups(shortName) {
     const conv = this.config?.conventional?.find((s) => s.shortName === shortName);
     if (conv) return channelTalkgroups(conv.channels ?? []);
-    const csv = this.talkgroupFiles[shortName] ?? "";
+    const rows = this.talkgroupRows[shortName] ?? [];
     const edits = this.talkgroupEdits[shortName] ?? [];
     this._tgCache ??= new Map();
     const hit = this._tgCache.get(shortName);
-    if (hit?.csv === csv && hit.edits === edits) return hit.map;
-    const map = parseTalkgroups(csv);
+    if (hit?.rows === rows && hit.edits === edits) return hit.map;
+    const map = new Map(rows.map((t) => [t.number, { talkgroup: t.number, alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.category, mode: t.mode, ignore: t.ignore }]));
     for (const { talkgroup, edit } of edits) {
       const t = map.get(talkgroup) ?? { talkgroup, alphaTag: "", description: "", tag: "", group: "", mode: "D", ignore: false };
       const { category, ...rest } = edit;
       map.set(talkgroup, { ...t, ...rest, ...(category !== undefined ? { group: category } : {}) });
     }
-    this._tgCache.set(shortName, { csv, edits, map });
+    this._tgCache.set(shortName, { rows, edits, map });
     return map;
   }
 
-  /** Replace system `shortName`'s talkgroup file (Trunk Recorder's CSV; "" for none). Needs control access. */
-  setTalkgroups(shortName, csv) {
-    this.send({ type: "setTalkgroups", system: shortName, csv });
+  /**
+   * Replace system `shortName`'s talkgroups: rows { number, mode, alphaTag,
+   * description, tag, category, priority, preferredNac, preferredSite,
+   * ignore } (the protocol's Talkgroup; [] for none). Needs control access.
+   */
+  setTalkgroups(shortName, rows) {
+    this.send({ type: "setTalkgroups", system: shortName, talkgroups: rows });
   }
 
   /** Change one talkgroup of system `shortName`: `edit` sets any of alphaTag, description, tag, category, ignore. Needs control access. */
@@ -237,7 +259,7 @@ export class TrunkClient {
       this._retryMs = 500;
       // The greeting says how things are, from nothing; "change" waits for its end (hello).
       this._greeting = true;
-      Object.assign(this, { talkgroupFiles: {}, talkgroupEdits: {}, aliases: {}, error: null, exited: false });
+      Object.assign(this, { talkgroupRows: {}, talkgroupEdits: {}, aliases: {}, error: null, exited: false });
       for (const m of this._queue.splice(0)) ws.send(JSON.stringify(m));
     };
     ws.onmessage = (ev) => {
@@ -296,10 +318,10 @@ export class TrunkClient {
         if (m.error) this.error = m.error;
         break;
       case "talkgroups":
-        if (m.csv) this.talkgroupFiles = { ...this.talkgroupFiles, [m.system]: m.csv };
+        if (m.talkgroups.length) this.talkgroupRows = { ...this.talkgroupRows, [m.system]: m.talkgroups };
         else {
-          const { [m.system]: _, ...rest } = this.talkgroupFiles;
-          this.talkgroupFiles = rest;
+          const { [m.system]: _, ...rest } = this.talkgroupRows;
+          this.talkgroupRows = rest;
         }
         this.talkgroupEdits = { ...this.talkgroupEdits, [m.system]: [] };
         break;
@@ -321,6 +343,12 @@ export class TrunkClient {
       case "unitAlias":
         this.aliases[m.system] = { ...this.aliases[m.system], [m.unit]: m.alias };
         break;
+      case "callsResult": {
+        const resolve = this._asked.get(m.id);
+        this._asked.delete(m.id);
+        resolve?.({ entries: m.entries, ...(m.next ? { next: m.next } : {}), ...(m.error ? { error: m.error } : {}) });
+        break;
+      }
       case "error":
         this.error = m.message;
         break;
@@ -413,24 +441,34 @@ function channelTalkgroups(channels) {
   return map;
 }
 
-/** Trunk Recorder's talkgroup CSV (with a "Decimal,…" header, or the old fixed columns) → Map. */
-export function parseTalkgroups(csv) {
-  const lines = csv.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#"));
-  const map = new Map();
-  if (!lines.length) return map;
-  const head = splitCsv(lines[0]);
-  const headed = head[0] === "Decimal";
-  // Without a header: Decimal, Hex, Mode, Alpha Tag, Description, Tag, Category.
-  const at = (f, name, legacy) => (headed ? f[head.indexOf(name)] : f[legacy]) ?? "";
-  for (const line of headed ? lines.slice(1) : lines) {
-    const f = splitCsv(line);
-    const talkgroup = parseInt(f[0], 10);
-    if (!Number.isFinite(talkgroup)) continue;
-    const ignore = /^(true|yes|y|1|x|ignore)$/i.test(headed ? at(f, "Ignore", 99).trim() : "") || parseInt(at(f, "Priority", 7), 10) < 0;
-    map.set(talkgroup, { talkgroup, alphaTag: at(f, "Alpha Tag", 3), description: at(f, "Description", 4), tag: at(f, "Tag", 5), group: at(f, "Category", 6), mode: at(f, "Mode", 2), ignore });
+let pageAudio = null;
+
+/**
+ * The page's audio output: one AudioContext, shared by everything that
+ * plays (every LivePlayer, and an interface's own sounds: build on it and
+ * pass a node as a player's `output`). Made on first use, so call it (or a
+ * player's resume()) from a click or key press: browsers won't start sound
+ * before. It is kept for the page's life. A browser can suspend it (Safari:
+ * tab switches, output device changes) and only let it resume on a gesture,
+ * so any click or key press on the page wakes it.
+ */
+export function audioOut() {
+  if (!pageAudio) {
+    pageAudio = new AudioContext();
+    const wake = () => {
+      if (pageAudio.state !== "running") pageAudio.resume().catch(() => {});
+    };
+    document.addEventListener("pointerdown", wake, true);
+    document.addEventListener("keydown", wake, true);
+    document.addEventListener("visibilitychange", wake);
   }
-  return map;
+  if (pageAudio.state !== "running") pageAudio.resume().catch(() => {});
+  return pageAudio;
 }
+
+/** After a gap, playing starts this far ahead: audio comes in bursts (a window at a time). */
+const LEAD_S = 0.4;
+const clampPan = (v) => Math.max(-1, Math.min(1, Number(v) || 0));
 
 /**
  * Plays live audio: give it the chunks from on("audio", …).
@@ -441,7 +479,17 @@ export function parseTalkgroups(csv) {
  *
  * With `followCall` (the default) it plays one call at a time: the first
  * one heard, until it has been quiet for `quietS`, then the next — calls
- * overlapping it are skipped. Without, every chunk is queued in turn.
+ * overlapping it are skipped. Without, every chunk is queued in turn, one
+ * after another: for one call at a time. To hear calls at the same time,
+ * give each its own player (a call's, a talkgroup's, a system's), each
+ * with its `pan`; they mix in the page's output.
+ *
+ * Its sound goes through a gain and a stereo panner to `output`: the page's
+ * output (audioOut()) unless it's given a node of an interface's own, an EQ,
+ * a meter, a master volume, to go through first. Chunks are resampled to
+ * the output's rate as they come, continuously across them (Safari plays
+ * 8 kHz buffers poorly, each clicking at its seams), and dropped rather
+ * than piled up while the browser holds the output suspended.
  */
 export class LivePlayer {
   /**
@@ -449,28 +497,59 @@ export class LivePlayer {
    * @param {boolean} [opts.followCall] one call at a time (default true)
    * @param {number} [opts.quietS] a call is over after this long without audio, s (default 1.5)
    * @param {number} [opts.gain] volume (default 2: the vocoders' output is quiet)
+   * @param {number} [opts.pan] left (-1) to right (1); default 0, the middle
+   * @param {AudioNode} [opts.output] where the sound goes (default: the page's, audioOut().destination)
    * @param {(call: {callId:number, system:number, talkgroup:number} | null) => void} [opts.onNowPlaying]
    */
   constructor(opts = {}) {
     this.followCall = opts.followCall ?? true;
     this.quietS = opts.quietS ?? 1.5;
-    this.gainValue = opts.gain ?? 2;
+    /** Where the sound goes, taken at resume(); null: the page's output. */
+    this.output = opts.output ?? null;
     this.onNowPlaying = opts.onNowPlaying ?? (() => {});
     /** The call playing: { callId, system, talkgroup }, or null. */
     this.nowPlaying = null;
+    this._gainValue = opts.gain ?? 2;
+    this._panValue = clampPan(opts.pan ?? 0);
     this._ctx = null;
+    this._gain = null;
+    this._pan = null;
+    this._resampler = null;
+    this._sources = new Set();
+    this._skipped = new Set();
     this._next = 0;
     this._lastAt = 0;
     this._timer = null;
   }
 
+  /** The volume (0 mutes); a change while playing glides there. */
+  get gain() {
+    return this._gainValue;
+  }
+  set gain(v) {
+    this._gainValue = v;
+    this._glide(this._gain?.gain, v);
+  }
+
+  /** Where the sound sits, left (-1) to right (1); a change while playing glides there. */
+  get pan() {
+    return this._panValue;
+  }
+  set pan(v) {
+    this._panValue = clampPan(v);
+    this._glide(this._pan?.pan, this._panValue);
+  }
+
   /** Make or wake the audio output: call it from a click or key press. */
   resume() {
     if (!this._ctx) {
-      this._ctx = new AudioContext();
-      this._gain = this._ctx.createGain();
-      this._gain.gain.value = this.gainValue;
-      this._gain.connect(this._ctx.destination);
+      const to = this.output ?? audioOut().destination;
+      const ctx = (this._ctx = to.context);
+      this._gain = ctx.createGain();
+      this._gain.gain.value = this._gainValue;
+      this._pan = ctx.createStereoPanner();
+      this._pan.pan.value = this._panValue;
+      this._gain.connect(this._pan).connect(to);
     }
     return this._ctx.resume();
   }
@@ -478,7 +557,12 @@ export class LivePlayer {
   /** Queue a chunk from on("audio", …). */
   play(chunk) {
     const ctx = this._ctx;
-    if (!ctx || ctx.state !== "running" || !chunk.samples.length) return;
+    if (!ctx || !chunk.samples.length || this._skipped.has(chunk.callId)) return;
+    if (ctx.state !== "running") {
+      // Its clock is frozen: queueing now would stack the chunks up and play them all at once when it wakes.
+      ctx.resume().catch(() => {});
+      return;
+    }
     const now = ctx.currentTime;
     if (this.followCall) {
       const over = this.nowPlaying && now - this._lastAt > this.quietS && this._next <= now;
@@ -486,25 +570,60 @@ export class LivePlayer {
       else if (chunk.callId !== this.nowPlaying.callId) return;
     } else if (this.nowPlaying?.callId !== chunk.callId) this._setPlaying(chunk);
     this._lastAt = now;
-    const buf = ctx.createBuffer(1, chunk.samples.length, 8000);
-    buf.getChannelData(0).set(chunk.samples);
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(this._gain);
-    // Audio comes in bursts: queue after the last chunk; after a gap, start a little ahead.
-    if (this._next < now) this._next = now + 0.25;
-    src.start(this._next);
-    this._next += buf.duration;
+    // Queue after the last chunk. Behind it (a gap), or far ahead (a backlog,
+    // dropped), start again a little ahead instead of drifting from real time.
+    const behind = this._next < now + 0.02;
+    if (behind || this._next > now + 3) {
+      if (!behind) this._cut();
+      this._resampler = new Resampler(8000, ctx.sampleRate);
+      this._next = now + LEAD_S;
+    }
+    const samples = this._resampler.process(chunk.samples);
+    if (samples.length) {
+      const buf = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+      buf.getChannelData(0).set(samples);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(this._gain);
+      src.onended = () => this._sources.delete(src);
+      this._sources.add(src);
+      src.start(this._next);
+      this._next += buf.duration;
+    }
     clearTimeout(this._timer);
     this._timer = setTimeout(() => this._setPlaying(null), (this._next - now + this.quietS) * 1000);
   }
 
-  /** Stop and release the audio output. */
+  /** Drop the call playing, what's queued of it and the rest of it as it comes: the next call heard plays. */
+  skip() {
+    if (!this.nowPlaying) return;
+    this._skipped.add(this.nowPlaying.callId);
+    if (this._skipped.size > 64) this._skipped.delete(this._skipped.values().next().value);
+    clearTimeout(this._timer);
+    this._cut();
+    this._setPlaying(null);
+  }
+
+  /** Stop, and let go of this player's part of the output (the page's output stays, for the others). */
   stop() {
     clearTimeout(this._timer);
-    this._ctx?.close();
-    this._ctx = null;
+    this._cut();
+    this._gain?.disconnect();
+    this._pan?.disconnect();
+    this._ctx = this._gain = this._pan = this._resampler = null;
     this._setPlaying(null);
+  }
+
+  /** Stop what's queued. */
+  _cut() {
+    for (const src of this._sources) src.stop();
+    this._sources.clear();
+    this._next = 0;
+  }
+
+  /** A change heard while playing glides over ~15 ms: a jump clicks. */
+  _glide(param, v) {
+    if (param) param.setTargetAtTime(v, this._ctx.currentTime, 0.015);
   }
 
   _setPlaying(chunk) {
@@ -512,6 +631,50 @@ export class LivePlayer {
     if (next?.callId === this.nowPlaying?.callId) return;
     this.nowPlaying = next;
     this.onNowPlaying(next);
+  }
+}
+
+/** Streaming windowed-sinc resampler: its state carries across chunks, so their seams don't click. */
+class Resampler {
+  constructor(inRate, outRate) {
+    this.w = 8; // taps each side
+    this.step = inRate / outRate; // input samples per output sample
+    this.cutoff = Math.min(1, outRate / inRate) * 0.95; // relative to the input's Nyquist
+    this.hist = new Float32Array(this.w);
+    this.pos = this.w;
+  }
+
+  process(x) {
+    const W = this.w;
+    const buf = new Float32Array(this.hist.length + x.length);
+    buf.set(this.hist);
+    buf.set(x, this.hist.length);
+    const n = Math.max(0, Math.ceil((buf.length - W - this.pos) / this.step));
+    const out = new Float32Array(n);
+    let t = this.pos;
+    for (let i = 0; i < n; i++, t += this.step) {
+      const base = Math.floor(t);
+      let acc = 0;
+      for (let k = base - W + 1; k <= base + W; k++) {
+        if (k < 0 || k >= buf.length) continue;
+        acc += buf[k] * this.kernel(t - k);
+      }
+      out[i] = acc;
+    }
+    const drop = Math.max(0, Math.floor(t) - W);
+    this.hist = buf.slice(drop);
+    this.pos = t - drop;
+    return out;
+  }
+
+  kernel(d) {
+    const W = this.w;
+    if (Math.abs(d) >= W) return 0;
+    const c = this.cutoff;
+    const x = Math.PI * d * c;
+    const sinc = d === 0 ? c : (c * Math.sin(x)) / x;
+    const w = 0.42 + 0.5 * Math.cos((Math.PI * d) / W) + 0.08 * Math.cos((2 * Math.PI * d) / W); // Blackman
+    return sinc * w;
   }
 }
 

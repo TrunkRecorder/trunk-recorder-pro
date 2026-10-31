@@ -7,13 +7,14 @@ use serde_json::{json, Value};
 use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, MessageType, NoteLevel, ProtocolStatus};
 
 use crate::filename;
+use sdr_core::clock::{ClockEvent, SampleClock};
 use crate::log::{Body, CallState, CallTag, Level, Record};
 use crate::heard::HeardCodes;
 use crate::saving::Saved;
 use trunk_core::dsp::inband::subaudible::Tone;
 use trunk_core::Complex32;
 
-use crate::config::{Config, Source};
+use crate::config::{Config, SourceKind};
 use crate::stats::{Rollup, SampleMeter, Shared, Stats, Topics};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -77,24 +78,6 @@ const RATE_WINDOW_MS: f64 = 5000.0;
 const ERROR_SHOWN_S: f64 = 300.0;
 /// The most silence fed for one gap, s: a driver's count of samples lost.
 const MAX_GAP_S: f64 = 10.0;
-/// A source's clock is measured against the wall clock over this long:
-/// the least lag in it (samples only ever arrive late) is the clock's
-/// ([`ClockFit`]). ms.
-const CLOCK_WINDOW_MS: f64 = 10_000.0;
-/// A source's clock offset moves toward each window's measure at most this
-/// much per second of wall clock (1000 ppm: far more than a crystal's
-/// error, so it keeps up, yet smooth).
-const CLOCK_SLEW: f64 = 0.001;
-/// A window's measure further than this from the offset set is no drift
-/// but samples lost or invented (a driver's unreported overflow, a stalled
-/// radio's backlog after its quiet was filled in): the offset is set to it
-/// at once, s.
-const REANCHOR_S: f64 = 0.25;
-/// A window's least lag this much past the drift's trend: samples lost
-/// that the driver didn't report (an RTL-SDR's FIFO overflowing when its
-/// USB bus is busy; it has no way to say so), s. (A crystal's error is
-/// ~1 ms a window at 100 ppm; the least lag jitters well under that.)
-const LOSS_MIN_S: f64 = 0.005;
 
 /// What plugins subscribe to, so nothing else is built.
 #[derive(Clone, Copy, Debug, Default)]
@@ -141,10 +124,12 @@ struct SourceStats {
 /// to open, and jumps when samples are lost or silence is filled in for
 /// more than was missing. Each buffer is measured when the driver handed it
 /// over (`push`'s `at_ms`), so time spent queued for a busy engine doesn't
-/// count. The offset that makes sample time wall time is set on the engine
-/// ([`Engine::set_clock_offset`]): at once on the first samples; then every
-/// window, anchored afresh to that window's measure — slewed to it when
-/// it's drift, set at once when it's off by more than [`REANCHOR_S`].
+/// count, by sdr-core's [`SampleClock`]: the least-delayed handover each
+/// second (NTP's clock filter), a phase-and-rate loop between, and a jump
+/// held for 3 s beyond 5 ms re-anchored at once — positive, samples lost that
+/// nobody reported (an RTL-SDR's FIFO overflowing on a busy USB bus: it can't
+/// say so). The offset that makes sample time wall time is set on the engine
+/// ([`Engine::set_clock_offset`]).
 #[derive(Default, Clone)]
 struct ClockFit {
     /// Whether the wall clock means anything for it (not a capture played
@@ -152,17 +137,12 @@ struct ClockFit {
     live: bool,
     /// Samples fed, silence filled in for gaps included.
     samples: u64,
-    /// The least lag (wall time since the start, less sample time, s) seen
-    /// in this window, and when the window began (ms).
-    window_min: Option<f64>,
-    window_ms: Option<f64>,
-    /// The offset being steered to, and the one set.
-    target: Option<f64>,
+    /// From the first samples.
+    clock: Option<SampleClock>,
+    /// The offset last set, and whether the clock was re-anchored since.
     applied: Option<f64>,
-    /// The last window's least lag and when it ended (ms); the lag's trend
-    /// (the crystal's error, s per s); samples lost unreported, not yet taken.
-    last: Option<(f64, f64)>,
-    slope: Option<f64>,
+    stepped: bool,
+    /// Samples lost unreported, not yet taken.
     unreported: u64,
 }
 
@@ -172,56 +152,30 @@ impl ClockFit {
         if !self.live {
             return;
         }
-        // Samples only ever arrive late (USB and driver buffers): the least
-        // lag over a window is the clock's own.
-        let lag = (at_ms - epoch_ms) / 1000.0 - self.samples as f64 / rate;
-        self.window_min = Some(self.window_min.map_or(lag, |m| m.min(lag)));
-        match self.window_ms {
-            // The first samples: anchored at once (the radio's open time).
-            None => {
-                self.target = Some(lag);
-                self.window_ms = Some(at_ms);
+        let clock = self.clock.get_or_insert_with(|| SampleClock::new(rate));
+        if let Some(ClockEvent::Step { offset_s, .. }) = clock.observe(self.samples, (at_ms - epoch_ms) / 1000.0) {
+            self.stepped = true;
+            if offset_s > 0.0 {
+                self.unreported += (offset_s * rate).round() as u64;
             }
-            Some(w) if at_ms - w >= CLOCK_WINDOW_MS => {
-                self.target = self.window_min.take();
-                self.window_ms = Some(at_ms);
-                self.unreported_loss(at_ms, rate);
-            }
-            Some(_) => {}
         }
     }
 
-    /// A window closed: its least lag past the trend is samples lost that
-    /// nobody reported; within it, the trend learns (a crystal's drift).
-    fn unreported_loss(&mut self, at_ms: f64, rate: f64) {
-        let Some(lag) = self.target else { return };
-        if let Some((prev, prev_ms)) = self.last {
-            let dt = (at_ms - prev_ms) / 1000.0;
-            let excess = (lag - prev) - self.slope.unwrap_or(0.0) * dt;
-            if excess > LOSS_MIN_S {
-                self.unreported += (excess * rate).round() as u64;
-            } else if excess.abs() <= LOSS_MIN_S && dt > 0.0 {
-                let s = ((lag - prev) / dt).clamp(-2e-4, 2e-4);
-                self.slope = Some(self.slope.map_or(s, |o| o + 0.2 * (s - o)));
-            }
-        }
-        self.last = Some((lag, at_ms));
-    }
-
-    /// The offset to set after `dt` wall seconds, when it moved, and whether
-    /// it was re-anchored (a step, not a slew).
-    fn steer(&mut self, dt: f64) -> Option<(f64, bool)> {
-        let target = self.target?;
-        let (next, step) = match self.applied {
-            Some(a) if (target - a).abs() <= REANCHOR_S => (a + (target - a).clamp(-CLOCK_SLEW * dt, CLOCK_SLEW * dt), false),
-            Some(_) => (target, true),
-            None => (target, false),
-        };
+    /// The offset to set (wall time less sample time, s), when it moved, and
+    /// whether the clock was re-anchored (a step, not drift).
+    fn steer(&mut self, rate: f64) -> Option<(f64, bool)> {
+        let clock = self.clock.as_ref()?;
+        let next = clock.time_of(self.samples) - self.samples as f64 / rate;
         if self.applied == Some(next) {
             return None;
         }
         self.applied = Some(next);
-        Some((next, step))
+        Some((next, std::mem::take(&mut self.stepped)))
+    }
+
+    /// The radio's measured crystal error, ppm (positive: fast), once it has run a while.
+    fn ppm(&self) -> Option<f64> {
+        self.clock.as_ref().filter(|c| c.tau() > 8.0).map(SampleClock::ppm)
     }
 }
 
@@ -279,6 +233,18 @@ impl Feeder {
             drop(s);
             self.meter.lock().unwrap().dropped += lost;
         }
+    }
+
+    /// `n` samples the radio didn't make, on purpose (a change it halted
+    /// for: [`trunk_core`]'s callers say so with the change): fed as
+    /// silence, so time goes on, but not counted as lost.
+    pub fn quiet(&self, n: u64) {
+        let most = n.min((MAX_GAP_S * self.rate_hz) as u64);
+        if most == 0 {
+            return;
+        }
+        self.stats.lock().unwrap().clock.samples += most;
+        self.engine.push_gap(self.source, most);
     }
 
     /// `dropped` samples lost: counted, and fed as silence.
@@ -352,7 +318,6 @@ pub struct Session {
     local_offset: LocalOffset,
     busy_ms: f64,
     start_ms: Option<f64>,
-    last_poll_ms: Option<f64>,
     last_status_ms: f64,
     last_spec_ms: f64,
     /// Build audio frames (skip when nobody is listening).
@@ -387,8 +352,8 @@ pub struct Session {
 impl Session {
     /// `bandplan`: the band plan saved for a site, by its key
     /// ([`Session::bandplans`], [`bandplan_key`]).
-    /// `talkgroups`: each system's talkgroup file ([`crate::config::TalkgroupFiles`]).
-    pub fn new(cfg: Config, talkgroups: &crate::config::TalkgroupFiles, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
+    /// `talkgroups`: each system's talkgroups ([`crate::config::TalkgroupLists`]).
+    pub fn new(cfg: Config, talkgroups: &crate::config::TalkgroupLists, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
@@ -406,7 +371,7 @@ impl Session {
         let stats = cfg
             .sources
             .iter()
-            .map(|s| Arc::new(Mutex::new(SourceStats { clock: ClockFit { live: !matches!(s, Source::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })))
+            .map(|s| Arc::new(Mutex::new(SourceStats { clock: ClockFit { live: !matches!(s.kind, SourceKind::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })))
             .collect();
         let recordings = cfg.recordings();
         let meas = Stats::new(&cfg, Shared::new(), local_offset);
@@ -426,7 +391,6 @@ impl Session {
             local_offset,
             busy_ms: 0.0,
             start_ms: None,
-            last_poll_ms: None,
             last_status_ms: 0.0,
             last_spec_ms: 0.0,
             want_audio: true,
@@ -473,10 +437,9 @@ impl Session {
         self.meas.set_topics(topics);
     }
 
-    /// A system's talkgroup file changed (an Ignore flag set from the
-    /// dashboard): calls from now on go by it.
-    pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) -> bool {
-        let set = self.engine.set_talkgroups(short_name, trunk_core::trunk::parse_csv(csv));
+    /// A system's talkgroups are now `rows` (a list loaded): calls from now on go by them.
+    pub fn set_talkgroups(&mut self, short_name: &str, rows: &[trunk_core::trunk::TalkgroupRow]) -> bool {
+        let set = self.engine.set_talkgroups(short_name, crate::config::talkgroups_of(rows));
         self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
         set
     }
@@ -550,9 +513,8 @@ impl Session {
         }
     }
 
-    /// Steer each live source's clock offset ([`ClockFit`]). `dt`: wall
-    /// seconds since the last poll.
-    fn steer_clocks(&mut self, dt: f64) {
+    /// Set each live source's clock offset ([`ClockFit`]).
+    fn steer_clocks(&mut self) {
         for i in 0..self.stats.len() {
             let new = {
                 let mut s = self.stats[i].lock().unwrap();
@@ -565,7 +527,8 @@ impl Session {
                 let text = format!("Source {i}: about {new} samples ({ms:.0} ms) lost without its driver saying so — the USB bus or the computer couldn't keep up");
                 self.records.push(Record::text(Level::Warning, None, text));
             }
-            let steered = self.stats[i].lock().unwrap().clock.steer(dt);
+            let rate = self.engine.sources()[i].rate_hz;
+            let steered = self.stats[i].lock().unwrap().clock.steer(rate);
             let Some((offset, step)) = steered else { continue };
             if step {
                 let moved = offset - self.engine.clock_offset(i);
@@ -610,9 +573,7 @@ impl Session {
     /// measured against it.
     pub fn poll(&mut self, now_ms: f64, out: &mut Vec<Output>) {
         let start = *self.start_ms.get_or_insert(now_ms);
-        let dt = (now_ms - self.last_poll_ms.unwrap_or(now_ms)).max(0.0) / 1000.0;
-        self.last_poll_ms = Some(now_ms);
-        self.steer_clocks(dt);
+        self.steer_clocks();
         self.meas.set_now(now_ms / 1000.0);
         self.fill_quiet(now_ms);
         for ev in self.engine.drain_events() {
@@ -713,8 +674,8 @@ impl Session {
         for (i, c) in self.cfg.sources.iter().enumerate() {
             let v = self.tune.get(&c.label());
             let (e, at) = (v.and_then(|v| v["errorPpm"].as_f64()), v.and_then(|v| v["atPpm"].as_f64()));
-            if let (true, Some(e), Some(at)) = (c.auto_tune(), e, at) {
-                self.engine.seed_tune(i, e + (c.ppm() - at));
+            if let (true, Some(e), Some(at)) = (c.auto_tune, e, at) {
+                self.engine.seed_tune(i, e + (c.ppm - at));
             }
         }
     }
@@ -726,7 +687,7 @@ impl Session {
         let st = self.engine.status();
         for (c, t) in self.cfg.sources.iter().zip(&st.sources) {
             if let Some(e) = t.error_ppm {
-                self.tune.insert(c.label(), json!({ "errorPpm": (e * 100.0).round() / 100.0, "atPpm": c.ppm() }));
+                self.tune.insert(c.label(), json!({ "errorPpm": (e * 100.0).round() / 100.0, "atPpm": c.ppm }));
             }
         }
         let text = serde_json::to_string_pretty(&self.tune).unwrap_or_default();
@@ -737,7 +698,7 @@ impl Session {
     }
 
     /// Preload the codes conventional frequencies carried before (what
-    /// [`Saved::Heard`] gave, saved as [`Session::heard_file`]).
+    /// [`Saved::Heard`] gave, saved as [`Session::HEARD_FILE`]).
     pub fn load_heard(&mut self, json: &str) {
         self.heard = HeardCodes::load(json);
     }
@@ -762,8 +723,8 @@ impl Session {
             out.extend(self.tune_unsaved().map(Saved::Tune));
         }
         if due.registry {
-            let changed = self.meas.shared().radio.lock().unwrap().take_dirty_copies();
-            out.extend(changed.into_iter().map(|(system, radio)| Saved::Registry { system, radio }));
+            let changes = self.meas.shared().radio.lock().unwrap().take_changes();
+            out.extend(changes.into_iter().map(|(system, changes)| Saved::Registry { system, changes: Box::new(changes) }));
         }
         out
     }
@@ -775,9 +736,7 @@ impl Session {
     }
 
     /// The file name (beside the config) the codes are kept in.
-    pub fn heard_file(_cfg: &Config) -> String {
-        "conventional.heard.json".into()
-    }
+    pub const HEARD_FILE: &'static str = "conventional.heard.json";
 
     /// Each site's (band plan key, band plan), to keep for the next run.
     fn bandplans(&self) -> Vec<(String, String)> {
@@ -891,7 +850,7 @@ impl Session {
 
     /// Site `y`'s radio clock ([`Session::radio_clocks`]).
     fn radio_clock(&self, y: &trunk_core::trunk::SiteStatus) -> Option<RadioClock> {
-        let (t, system_ms, valid) = y.system_time.filter(|_| !self.cfg.sources.iter().any(|s| matches!(s, Source::File { .. })))?;
+        let (t, system_ms, valid) = y.system_time.filter(|_| !self.cfg.sources.iter().any(|s| matches!(s.kind, SourceKind::File { .. })))?;
         let at_s = self.wall(t);
         Some(RadioClock { site: y.site_name.clone(), offset_ms: system_ms as f64 - at_s * 1000.0, at_s, valid })
     }
@@ -1235,7 +1194,8 @@ impl Session {
                 let recent = ss.last_error.as_ref().filter(|_| ss.last_error_s == 0.0 || self.meas.now() - ss.last_error_s < ERROR_SHOWN_S);
                 json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured,
                         "dropped": ss.dropped, "errors": ss.errors, "lastError": recent, "lastErrorS": recent.filter(|_| ss.last_error_s > 0.0).map(|_| ss.last_error_s.round()), "ended": ss.ended,
-                        "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm, "tuneSeeded": tune.seeded })
+                        "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm, "tuneSeeded": tune.seeded,
+                        "clockPpm": ss.clock.ppm().map(|p| (p * 100.0).round() / 100.0) })
             })
             .collect();
         // Each running site, as its control channel describes it.
@@ -1419,44 +1379,45 @@ mod clock_tests {
     use super::*;
 
     /// A live clock fed `secs` of 1 MS/s samples, handed over every 100 ms
-    /// with `lag` s of latency, plus `extra` samples beyond the wall time
-    /// at `jump_at` s; steered every 100 ms. The offsets set, per 100 ms.
-    fn run(secs: f64, ppm: f64, jump_at: f64, extra: u64) -> Vec<(f64, bool)> {
+    /// with 20 ms (+ up to 8 ms) of latency, plus `extra` samples beyond the
+    /// wall time at `jump_at` s; steered every 100 ms. The offsets set.
+    fn run(secs: f64, ppm: f64, jump_at: f64, extra: u64) -> (Vec<(f64, bool)>, ClockFit) {
         let mut c = ClockFit { live: true, ..Default::default() };
-        let mut set = Vec::new();
-        let mut t = 0.0;
+        let (mut set, mut t, mut x) = (Vec::new(), 0.0, 12345u64);
         while t < secs {
             t += 0.1;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
             c.samples = (t * 1e6 * (1.0 + ppm * 1e-6)) as u64 + if t > jump_at { extra } else { 0 };
-            c.observe(1000.0 * (t + 0.02), 0.0, 1e6);
-            if let Some(s) = c.steer(0.1) {
+            c.observe(1000.0 * (t + 0.02 + (x % 8000) as f64 / 1e6), 0.0, 1e6);
+            if let Some(s) = c.steer(1e6) {
                 set.push(s);
             }
         }
-        set
+        (set, c)
     }
 
     #[test]
-    fn crystal_drift_is_followed_in_small_steps() {
-        // 20 ppm fast: 0.2 ms more every 10 s, never a step.
-        let set = run(120.0, 20.0, f64::INFINITY, 0);
-        assert!(set.iter().skip(1).all(|&(_, step)| !step));
+    fn crystal_drift_is_followed_without_steps() {
+        let (set, c) = run(600.0, 20.0, f64::INFINITY, 0);
+        assert!(set.iter().all(|&(_, step)| !step));
+        // The offset: the least latency, less the 20 ppm the samples run ahead.
         let last = set.last().unwrap().0;
-        // Lag = 0.02 s latency − 20 ppm × 120 s (the window's least lag lags by up to a window).
-        assert!((last - (0.02 - 20e-6 * 120.0)).abs() < 0.0005, "{last}");
+        assert!((last - (0.02 - 20e-6 * 600.0)).abs() < 0.001, "{last}");
+        // (Its rate settles over minutes: the loop slows as it locks, against the host's jitter.)
+        assert!((c.ppm().unwrap() - 20.0).abs() < 2.5, "{:?}", c.ppm());
     }
 
     #[test]
-    fn samples_gained_or_lost_are_re_anchored_at_once() {
+    fn samples_gained_or_lost_are_re_anchored() {
         // 2 s of samples more than the wall clock allows at 30 s (a stalled
-        // radio's backlog after its quiet was filled in).
-        let set = run(60.0, 0.0, 30.0, 2_000_000);
+        // radio's backlog after its quiet was filled in): one step, no loss.
+        let (set, c) = run(60.0, 0.0, 30.0, 2_000_000);
         let steps: Vec<f64> = set.iter().filter(|s| s.1).map(|s| s.0).collect();
         assert_eq!(steps.len(), 1, "{set:?}");
-        assert!((steps[0] - (0.02 - 2.0)).abs() < 1e-6, "{steps:?}");
-        // And 2 s lost (not reported by the driver).
-        let set = run(60.0, 0.0, 30.0, 0);
-        assert!((set.last().unwrap().0 - 0.02).abs() < 1e-6);
+        assert!((steps[0] - (0.02 - 2.0)).abs() < 0.01, "{steps:?}");
+        assert_eq!(c.unreported, 0);
     }
 }
 
@@ -1498,7 +1459,7 @@ mod unreported_tests {
 
     #[test]
     fn drift_and_jitter_are_no_loss() {
-        assert_eq!(run(180.0, f64::INFINITY, 0.0), 0);
+        assert_eq!(run(600.0, f64::INFINITY, 0.0), 0);
     }
 
     #[test]

@@ -1,7 +1,26 @@
-# Plan: a SQLite store
+# Plan: storage backends (files, SQLite, PostgreSQL)
 
-Status (2026-10-27): agreed direction, not started. It builds on issue #100's design (auggiesoft)
-and on the measurements in [storage.md](storage.md). PR #101 laid the groundwork:
+**Superseded in part by [storage-redesign.md](storage-redesign.md) (2026-10-29):** after the PR
+#104 review, `files` goes (a database always, with a low-write mode), systems get ids, the two
+backends become one SQL implementation, and calls, talkgroups, aliases and stats get a proper
+schema. What follows is the history of how the store got here.
+
+Status (2026-10-28):
+
+- **Phase 1 is built** (the call store and its queries: #102 and #103 by auggiesoft, with the
+  maintainer's changes, as one PR, #104).
+- **Built, in #104:** the store behind a [backend interface](#backends), with `files`,
+  `sqlite` and `postgres`, so a Pi and a Xeon server each get the storage that suits them. The
+  conformance tests run on SQLite always and on PostgreSQL in CI (a service container).
+- **Built, in #104:** the [flat-file stores](#the-flat-file-stores) behind the same interface:
+  the radio registry, talker aliases, band plans, conventional codes heard, AutoTune's scores and
+  sharing's state. Nothing is imported or migrated while in beta: the store or the files, and a
+  store of another schema version is set aside and started afresh.
+- **Built, in #104:** talkgroup files in the store, a line at a time with each row's talkgroup
+  read into columns ([phase 3](#phase-3-talkgroups-and-unit-names-as-internal-data)).
+
+It builds on issue #100's design and on the measurements in [storage.md](storage.md). PR #101
+laid the groundwork:
 
 - a single background writer (`trunk-pro/src/saver.rs`);
 - one save schedule (`Session::due()`);
@@ -47,13 +66,184 @@ These come from `tools/storage-bench` on the Pi's eMMC.
   at 7–11 GB a day.
 - **Upsert state once per batch.** Talkgroup and radio rows are upserted from
   `Registry::take_changes()` at commit: each changed row once, however many events touched it.
-- **Few indexes.** Each one adds scattered page writes. Phase 1 has only:
-  - `calls (talkgroup, start)`;
-  - `call_transmissions (unit, call)`.
+- **Indexes follow the queries.** Each one adds scattered page writes, but with `files` there
+  for setups that must write the least, SQLite needn't be starved of them. Phase 1 has:
+  - `calls (start)`, `calls (system, start)`, `calls (talkgroup, start)`;
+  - `call_transmissions (unit, start)`.
+
+  A new query that needs an index gets one, with its cost measured by `write_budget` on the
+  Pi. Adding `calls (system, start)` took a busy system from 0.20 to 0.21 GB a day at 300 s
+  (0.59 to 0.61 at 60 s). PostgreSQL, on a server, can afford more.
 - **Never `VACUUM`.** Retention deletes in time-ordered batches.
 - **Memory answers what's live.** The in-memory registry, the recent-calls list and the minute
   grid keep answering the dashboard. The store holds the record. A query that needs rows not yet
   committed merges the writer's pending batch with what's stored.
+
+## Backends
+
+One recorder runs on a Pi with an SD card, another on a Xeon server with years of history and a
+DBA. They need different storage, not different recorders. So the store has a backend chosen in
+the config, and everything above it is shared.
+
+### What stays shared, above the interface
+
+- **The writer thread:**
+  - batching (`commitSeconds`, a lone write after a quiet spell at once, `flush`);
+  - retention's timing (a chunk per pass);
+  - the single-writer rule.
+- **The live list and the one query** (`runtime::calls` merging `Ctx::recent`): the store is never
+  on the live path.
+- **Row building** (`row::call_row`), paging rules (whole milliseconds), `CallsFilter`,
+  `CallsPage`.
+- **The backfill and reconcile walks** (they ask the backend whether a call is known, and keep
+  their markers in its `meta`).
+- **The store being optional:** a backend that can't be opened (or is unreachable) is off, and
+  recording goes on from memory.
+
+### The interface (`trunk-pro/src/db/store.rs`)
+
+```rust
+pub trait CallStore: Send + Sync {
+    /// One batch, one transaction; each call whole or not at all (a savepoint each).
+    fn apply(&self, batch: Vec<Change>) -> Result<(), String>;
+    /// A page of calls, newest first, equal starts whole.
+    fn page(&self, f: &CallsFilter) -> Result<CallsPage, String>;
+    fn one(&self, path: &str) -> Result<Option<Value>, String>;
+    fn known(&self, path: &str) -> Result<bool, String>;
+    fn meta(&self, key: &str) -> Result<Option<String>, String>;
+    /// Delete up to `max` calls that started before `before_ms`, oldest first; how many.
+    fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String>;
+    fn newest_start(&self) -> Result<Option<i64>, String>;
+    fn info(&self) -> Result<StoreInfo, String>;   // /api/v1/storage
+    fn checkpoint(&self) {}                         // SQLite: fold the WAL
+    fn close(&self) {}                              // SQLite: pragma optimize
+}
+```
+
+It's small and synchronous: the writer is a thread, and queries already run in
+`spawn_blocking`.
+
+### The three backends
+
+| `storage.backend` | For | Holds | Reliability |
+|---|---|---|---|
+| `files` | the smallest setups, or no index wanted | nothing beyond the call files: queries answer from the live list (the recent calls) and the folder walk, as with the store off | the files themselves |
+| `sqlite` (default) | a Pi to a mid-size server | `<data>/trunk-pro.sqlite`: months (0.2 GB a day written on the Pi's eMMC at 300 s) | WAL, crash-safe; a crash loses at most one commit interval of the index, recovered from the call files at the next start |
+| `postgres` | servers: years of history, the operator's backups and replication | a PostgreSQL database (`storage.url`) | synchronous commit, replication, point-in-time recovery: the operator's |
+
+- **Settings:** `storage.backend`, `storage.url` (postgres), `retentionDays`, `commitSeconds`.
+  On a server, `commitSeconds` can be short (10 to 60): there's no flash to wear.
+- **One recorder per database (or schema) for now.** `path` is unique, as in SQLite. A
+  PostgreSQL advisory lock plays the lock file's part. Several recorders sharing one database
+  (the `recorder` column) is a later step, with `(recorder, path)` keys and queries by recorder.
+- **The client:** `postgres` (sfackler's crate), pure Rust, so there's no C toolchain on top of
+  SQLite's. Plain TCP to start; TLS (`tokio-postgres-rustls`) follows, for databases off the
+  machine. It's synchronous, with a runtime of its own inside, so it **must never be called
+  from async code**. `CallStore`'s methods run on the writer thread or under
+  `spawn_blocking`; only `kind` and `location` are free. The release smoke run found
+  `/api/v1/storage` breaking this rule; it was fixed.
+- **The record is `jsonb`** on PostgreSQL (text on SQLite), so a server's database can be
+  queried by any field of a call (`record->>'talkgroup'`).
+- **The same schema shape in both dialects**, each with its own numbered migrations. SQLite uses
+  `user_version`; PostgreSQL a `schema_version` table.
+- **Not more databases in core.** MySQL, ClickHouse, Elasticsearch and the like fit as plugins
+  fed every call (they already are); each core backend is a dialect to keep in step forever.
+
+### Keeping the backends equal
+
+- **One conformance suite** (`db::conformance`) runs every behaviour test against each backend:
+  - paging every limit;
+  - live and backfilled rows;
+  - a call whole or not at all;
+  - retention chunks;
+  - meta;
+  - one by path;
+  - known.
+- **SQLite always runs it.** PostgreSQL runs it when `TRP_PG_URL` names a database; CI starts a
+  PostgreSQL service for it.
+- **The write budget test** (`write_budget`) measures SQLite on the disk it runs on (the
+  recorder's own writes). A PostgreSQL server's writes are the server's, outside the recorder.
+
+## The flat-file stores
+
+Built in #104 (`trunk-pro/src/kept.rs`). With `storage.backend: "files"`, or a store that could
+not open, they are the files they always were, written by `saver.rs`. Otherwise they are the
+store's, written by its writer in its batches.
+
+| File | In the store | Written |
+|---|---|---|
+| `radio/<sys>.json` (the radio registry) | `registry` (a whole copy per system) and `registry_changes` (`take_changes` as JSON, appended) | changes every 15 min; whole once a day ([below](#the-registry-as-changes-not-rows)) |
+| `conventional.heard.json` | `kept` (`heard`) | each minute it changed |
+| `<sys>.units.csv` (talker aliases learned) | `kept` (`units`, system) | soon after a change |
+| `<site>.bandplan` | `kept` (`bandplan`, key) | when it changes |
+| `tune.json`, `sharing.json` | `kept` (`tune`, `sharing`) | as before |
+| `<sys>.talkgroups.csv` | `talkgroups` (system, line number): each line as loaded, and its talkgroup's columns | an edit (`setTalkgroup`), only the lines it changed, committed at once; a file loaded (`setTalkgroups`), all of it |
+| `stats/YYYY-MM-DD.jsonl` | `stats_minutes` (each rollup, 8 days) and `stats_hours` (each series' hour, `storage.statsDays`) | minutes in the writer's batches; an hour's rows as it ends ([below](#the-dashboards-history)) |
+| `config.json`, plugin and interface folders, registry caches, logs | stay files | edited by people, or other programs' |
+
+- **The seam:** `Session::due()` / `Saved` as before; `runtime::save_due` hands each to
+  `kept::write` (the store's `Write::Kept`, or the saver), and reads go through `kept::read`.
+- **`kept`** is a document per (kind, key): these are read whole at startup and written whole,
+  and nothing queries inside them, so rows of their own would only add tables.
+- **No import:** the store's or the files, one or the other. (An import of the files at the
+  first start was built, then dropped: while in beta, a sensible design beats carrying old
+  data over. Talkgroups load again with **Load CSV…**.)
+- **Schema:** one script and `SCHEMA_VERSION`, raised with any change. A store of another
+  version is set aside (SQLite renamed `.v<n>-<time>`; PostgreSQL's tables dropped) and made
+  afresh; the backfill rebuilds the call index from the recordings' `.json` files.
+- **Reads block** (PostgreSQL's client refuses a tokio worker): the greeting's talker aliases
+  and conventional codes are read under `spawn_blocking`.
+- **The browser build** keeps its files on OPFS.
+
+### The dashboard's history
+
+Built in #104 (`statstore.rs`). The point is a longer look back, not only a new place:
+
+- **Two tiers.**
+  - Minutes, as the files had them: one JSON row per rollup in `stats_minutes`. They're kept 2
+    days and read back at start. Memory holds 26 hours of them (a week with no store), so the
+    recorder doesn't keep a week of every series in memory when the store has it.
+  - Hours: one row per series per hour in `stats_hours (series, t, avg, lo, hi, n)`. They're
+    written as each hour ends, from memory (`History::hour_rows`), and kept `storage.statsDays`
+    (365 by default; 0 keeps them all).
+- **Queries.**
+  - Within what memory holds (24 h charts, "the usual"), from memory.
+  - Further back (7 days and up), the store's hours before the last day are summed by bucket in
+    SQL. Memory's minutes since then are added into the same `Span`. Every answer is a few
+    hundred points a series whatever the span, so neither the recorder nor the browser tab grows
+    with the look back. The bucket sizes are ones a chart reads:
+    1, 2, 3, 6 or 12 hours, a day, two days, a week.
+  - Measured on the import of a real week (136 series): a year at 360 points takes 2 ms for 19
+    series and 12 ms for all of them.
+- **Writes.** About 17 MB a day on the Pi's eMMC at 300 s commits (`db::tests::stats_write_budget`),
+  against about 9 MB for the files.
+- **Size.** A year of hours is about 1.2M rows, roughly 70 MB in SQLite.
+- **`hello.capabilities` `history`** says longer spans work: the store is open. The browser
+  build and `files` keep a week, and the dashboard offers 30 days, 90 days and a year only as far
+  as `statsDays` keeps.
+- **No import** of the `stats/` files: the store starts its own history.
+
+### The registry as changes, not rows
+
+The first build kept the registry as rows (`registry_rows`, upserted from `take_changes`, and a
+capped log). Measured on the Pi's eMMC (`db::tests::registry_write_budget`): a busy system (2,500
+talkgroups, 10,000 radios, a call and an affiliation a second, six hours heard) changes about
+16,000 rows an hour. The keys are random, so each upsert dirties its own page, and the WAL writes
+pages twice:
+
+| Kept as | Writes a day |
+|---|---|
+| the whole file every 15 min (`files`, 4.6 MB) | 0.44 GB |
+| rows upserted every 15 min | 0.71 GB |
+| changes appended every 15 min, whole once a day | **0.10 GB** |
+
+Nothing queries those rows: the registry is loaded whole at startup and answered from memory.
+So the store keeps what `take_changes` gives as one appended JSON row per system per save. That
+writes only new pages. Once a day (`REGISTRY_WHOLE_EVERY`), or at a start that finds a quarter
+day's worth, the whole registry is written and the changes before it are deleted. Loading is the
+whole copy with each change applied (`SystemRadio::apply`, the same code the round-trip test
+checks). Phase 2's SQL-answered `radioQuery` would need real rows; it can build them from the
+same changes when it comes.
 
 ## Architecture
 
@@ -117,7 +307,26 @@ Each phase is its own PR, reviewed as contributor PRs are (see the project's rev
 auggiesoft has offered phases 1 and 2. trunk-reporter already has the schema, the backfill and the
 query layer, with tests.
 
-### Phase 1: the store and the call index (#100 step 1)
+### Phase 1: the store and the call index (#100 step 1) — built
+
+As built, against what's below:
+
+- **The live list stayed.** The plan let the startup walk go and answered `history` from the
+  store. Built that way, the call list was empty with the store off, and a call's kept files
+  reached the interface only at the next commit. So `Ctx::recent` (the last 500 calls) is still the
+  live list, and every query merges it with the store (`runtime::calls`). The walk runs only with
+  the store off.
+- **One query** behind `callsQuery`, `olderCalls` (kept as a thin wrapper), `GET /api/v1/calls`
+  and plugins' `calls.query`, with one page type (`CallsPage`).
+- **Gate met.** On the Pi CM5's eMMC, the real write path (`db::tests::write_budget`, a call a
+  second, 1.2 kB records) writes **0.20 GB a day at 300 s** and 0.59 at 60 s, the same on two
+  runs.
+- **Not built yet:**
+  - the "Back up the history" button and `trunk-pro store backup`;
+  - refusing a data folder on a network filesystem;
+  - showing the file's size in Setup.
+
+  These are in Operations below.
 
 - **The store module:**
   - open, migrate and the writer thread;
@@ -148,6 +357,9 @@ query layer, with tests.
 
 ### Phase 2: the registry (#100 step 2)
 
+(Its storage is built: [the registry as changes](#the-registry-as-changes-not-rows). What
+follows, queries by SQL and retention in place of the caps, is not.)
+
 - **Facts:** `unit_events` and `tones` appended as they happen.
 - **State:** `talkgroups` and `units` upserted per batch from `take_changes()`.
 - **Queries:** `radioQuery` answered by SQL in today's shapes. Anything live (the current hour,
@@ -164,6 +376,22 @@ query layer, with tests.
   - every `radioQuery` answer equal to the in-memory one on a replayed capture (a test).
 
 ### Phase 3: talkgroups and unit names as internal data
+
+Built for talkgroups in #104, more simply than below. The file's text stays the model (the
+engine, the browser and the protocol all take a CSV), so the store keeps it **a line at a time**:
+
+- `talkgroups (system, seq, line, number, alpha_tag, description, tag, category, mode, priority,
+  ignore)`, keyed by (system, seq), indexed by (system, number).
+- The file comes back exactly (comments, extra columns, delimiter), and the columns make a call's
+  talkgroup a join.
+- `setTalkgroup` writes only the lines `edit_row` changed (all of them when it changed the
+  header). Edits commit at once, not at `commitSeconds`: people make them.
+- Import and Export were already in Setup (**Load CSV…**, **Download**). No CLI, since the
+  running recorder holds the store's lock.
+- Unit names stay in the config (`unitNames`). Talker aliases learned over the air are a `kept`
+  document.
+
+What follows was the first plan:
 
 - **Tables:** `talkgroup_file` and `unit_names`, imported once from `<sys>.talkgroups.csv` and
   `<sys>.units.csv`. The files are renamed `.imported` afterwards and kept.
@@ -185,9 +413,14 @@ imported, so history can be kept longer than eight days. The live path doesn't c
 
 ## Access for plugins and interfaces
 
-- **Read:** the HTTP API under `/api/` first, since it works for plugins and interfaces on other
-  machines. trunk-reporter's OpenAPI spec is the starting point. The file path in `hello`, for
-  local plugins to open read-only, can follow, with the schema version as the contract.
+- **Read, interfaces and tools:** `callsQuery` on the WebSocket and `GET /api/v1/calls` over HTTP.
+- **Read, plugins:** `calls.query` over the plugin's own channel (SDK 0.9.0, `Host::calls`). There
+  are no ports or authentication to set up, it works wherever the plugin runs, and it's the same
+  query.
+- **Not the file.** Handing plugins `trunk-pro.sqlite`'s path makes every table and column public
+  API, and any migration then breaks them. A plugin holding a read open also keeps the WAL from
+  checkpointing. If heavy offline analysis ever needs SQL, offer read-only views (`v1_*`) with a
+  compatibility version that only breaking changes bump, deliberately.
 - **Write:** only TRP writes. Per-call data from plugins (transcription, say) arrives through an
   API into `annotations`, which comes later, when a plugin needs it.
 
@@ -206,9 +439,9 @@ imported, so history can be kept longer than eight days. The live path doesn't c
 These are issue #100's questions, with suggestions:
 
 1. **File:** `<data>/trunk-pro.sqlite`.
-2. **Retention:** call rows as long as their files, with an option to keep the row after the
-   files go (#25). Other facts kept for 90 days.
-3. **Read access:** the HTTP API first, the file path later.
+2. **Retention:** decided: `storage.retentionDays`, 120 days by default in the store; the files
+   stay on disk past that. Other facts (phase 2): 90 days.
+3. **Read access:** decided: the APIs above; no file path.
 4. **`annotations`:** later.
 5. **The call's JSON in `calls`:** yes.
 6. **Commit interval:** 300 s by default.

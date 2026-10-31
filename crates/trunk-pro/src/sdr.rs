@@ -1,104 +1,57 @@
-//! RTL-SDR input over USB (rtlsdr-nusb: pure Rust, no libusb/librtlsdr).
+//! The radio runtime: what every radio's driver ([`crate::radio`]) streams
+//! through, and what the threads that take its samples receive.
+//!
+//! A source runs on a thread of its own ([`run_with`]): opened (with a
+//! deadline, [`crate::radio::open`]), streamed into a [`Sink`] until an error,
+//! then reopened after its back-off at the centre and gain last set. The
+//! sink never holds a live radio up: a full queue costs that block, counted,
+//! not the driver's own buffer (which an RTL-SDR would overflow unseen).
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rtlsdr_nusb::{Device, GainConfig, MaybeFuture, RxBuffers, RxStream, SampleMode};
+use num_complex::Complex32;
 
-use crate::radio::airspy::AirspyGain;
+use crate::radio::priority;
 
-#[derive(Clone, Debug)]
-pub struct RtlConfig {
-    /// Serial number ("" = first dongle).
-    pub serial: String,
-    pub center_hz: u64,
-    pub rate_hz: u32,
-    /// None = tuner AGC.
-    pub gain_db: Option<f32>,
-    pub ppm: i32,
-    /// Bytes per USB transfer, 0 = the driver's default (Trunk Recorder's `buflen`).
-    pub buf_len: u32,
-    /// USB transfers in flight, 0 = enough for about 2 MiB.
-    pub buffers: u32,
+/// What a source thread sends.
+pub enum SourceMsg {
+    /// Samples, the samples lost just before them (the driver's count, and
+    /// blocks the queue had no room for), and when the driver handed them
+    /// over (the source's clock is measured by it).
+    Samples { source: usize, block: Block, dropped: u64, at: Instant },
+    /// A [`Control`] request was applied: the samples after this are at
+    /// `center_hz`, and the radio made `gap` samples' worth of quiet on purpose
+    /// for it (an RTL-SDR's halt), not lost.
+    Tuned { center_hz: f64, gap: u64 },
+    Error { source: usize, error: String },
+    /// A finite source (a capture file) has no more data.
+    End { source: usize },
 }
 
-/// About this much is kept in flight when the number of transfers isn't set:
-/// what the driver's 8 × 256 KiB default holds, about 440 ms at 2.4 MS/s.
-const RTL_IN_FLIGHT: usize = 2 << 20;
+/// One block of samples, in a buffer its driver's thread reuses.
+pub enum Block {
+    /// 8-bit offset I/Q (RTL-SDR; a HackRF's signed bytes, offset as sent).
+    U8(Pooled<u8>),
+    /// Float I/Q.
+    Iq(Pooled<Complex32>),
+    /// Real samples at twice the I/Q rate (an Airspy's ADC, libairspy's
+    /// INT16_REAL): turned into I/Q by the [`Inbox`], on the thread that takes
+    /// them, not the driver's.
+    Real16(Pooled<i16>),
+}
 
-impl RtlConfig {
-    /// The USB transfers to ask for: smaller ones, if `buf_len` is set, but
-    /// more of them, so as much is still in flight.
-    pub fn rx_buffers(&self) -> RxBuffers {
-        let d = RxBuffers::default();
-        let len = if self.buf_len == 0 { d.len } else { self.buf_len as usize };
-        let count = if self.buffers != 0 { self.buffers as usize } else if self.buf_len == 0 { d.count } else { (RTL_IN_FLIGHT / len).clamp(8, 64) };
-        RxBuffers { len, count }
+impl Block {
+    /// Its I/Q samples.
+    pub fn len(&self) -> usize {
+        match self {
+            Block::U8(b) => b.len() / 2,
+            Block::Iq(b) => b.len(),
+            Block::Real16(b) => b.len() / 2,
+        }
     }
-}
-
-/// Opening a dongle whose tuner rtlsdr-nusb doesn't drive (only R820T / R828D).
-pub const UNSUPPORTED_TUNER: &str = "its tuner isn't supported natively (only R820T / R828D; not E4000, FC0012, FC0013 or FC2580) — add it as a SoapySDR source with device arguments driver=rtlsdr instead (needs SoapySDR's RTL-SDR module)";
-
-/// Attached dongles, for the browser: [{serial, product, index, busy}].
-/// `busy`: why it can't be opened now (another program has it), or null.
-pub fn devices() -> Vec<serde_json::Value> {
-    let usb: Vec<nusb::DeviceInfo> = nusb::list_devices().wait().map(|v| v.collect()).unwrap_or_default();
-    Device::list()
-        .wait()
-        .map(|v| {
-            v.iter()
-                .map(|d| {
-                    // The same USB device: by serial, else by place among its model's.
-                    let same: Vec<&nusb::DeviceInfo> = usb.iter().filter(|u| u.vendor_id() == d.vid && u.product_id() == d.pid).collect();
-                    let nth = v.iter().filter(|o| o.vid == d.vid && o.pid == d.pid).position(|o| o.index == d.index).unwrap_or(0);
-                    let info = match &d.serial {
-                        Some(sn) => same.iter().find(|u| u.serial_number() == Some(sn.as_str())).copied(),
-                        None => same.get(nth).copied(),
-                    };
-                    serde_json::json!({
-                        "index": d.index,
-                        "serial": d.serial.clone().unwrap_or_default(),
-                        "product": d.product.clone().unwrap_or_else(|| "RTL-SDR".into()),
-                        "busy": info.and_then(busy),
-                        "bus": info.map(|u| u.bus_id().to_string()),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// The most RTL-SDRs plugged into one USB bus (host controller), None if
-/// the USB devices can't be listed.
-pub fn rtl_most_on_a_bus() -> Option<usize> {
-    let usb: Vec<nusb::DeviceInfo> = nusb::list_devices().wait().ok()?.collect();
-    let mut per_bus = std::collections::HashMap::<&str, usize>::new();
-    for u in usb.iter().filter(|u| u.vendor_id() == 0x0bda && matches!(u.product_id(), 0x2832 | 0x2838)) {
-        *per_bus.entry(u.bus_id()).or_default() += 1;
-    }
-    Some(per_bus.into_values().max().unwrap_or(0))
-}
-
-/// Why a dongle can't be opened now, or None: claim its interface and let it
-/// go. Nothing is seized — another program's claim makes this fail (macOS
-/// opens without seizing; Linux detaches kernel drivers such as the DVB one,
-/// as opening it to record does, but never usbfs, i.e. another program).
-fn busy(info: &nusb::DeviceInfo) -> Option<String> {
-    let why = |e: nusb::Error| match e.kind() {
-        nusb::ErrorKind::Busy => "in use by another program".to_string(),
-        nusb::ErrorKind::PermissionDenied => "no permission to open it".to_string(),
-        _ => format!("can't be opened ({e})"),
-    };
-    // (Not while a radio opens: this claim could make it look busy.)
-    let _one = crate::radio::opening();
-    let dev = match info.open().wait() {
-        Ok(d) => d,
-        Err(e) => return Some(why(e)),
-    };
-    dev.detach_and_claim_interface(0).wait().err().map(why)
 }
 
 /// A buffer that goes back to its pool when dropped: a driver's thread
@@ -118,13 +71,29 @@ pub struct Pool<T> {
     free: Arc<Mutex<Vec<Vec<T>>>>,
 }
 
-impl<T: Copy> Pool<T> {
-    /// A buffer holding a copy of `from` (one returned earlier when there is one).
-    pub fn copy(&self, from: &[T]) -> Pooled<T> {
+impl<T> Pool<T> {
+    /// An empty buffer (one returned earlier when there is one) for at least `n`.
+    pub fn take(&self, n: usize) -> Pooled<T> {
         let mut v = self.free.lock().unwrap().pop().unwrap_or_default();
         v.clear();
-        v.extend_from_slice(from);
+        v.reserve(n);
         Pooled { v, pool: self.free.clone() }
+    }
+}
+
+impl<T: Copy> Pool<T> {
+    /// A buffer holding a copy of `from`.
+    pub fn copy(&self, from: &[T]) -> Pooled<T> {
+        let mut p = self.take(from.len());
+        p.v.extend_from_slice(from);
+        p
+    }
+}
+
+impl<T> Pooled<T> {
+    /// To fill.
+    pub fn vec(&mut self) -> &mut Vec<T> {
+        &mut self.v
     }
 }
 
@@ -144,42 +113,167 @@ impl<T> Drop for Pooled<T> {
     }
 }
 
-/// Turns each source's [`SourceMsg::Real16`] into [`SourceMsg::Iq`] on the
-/// thread that takes the messages; the rest pass through.
-#[derive(Default)]
-pub struct IqFrom {
-    conv: Vec<Option<trunk_core::dsp::real_iq::RealToIq>>,
+/// How a radio sends its 8-bit samples.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Wire {
+    /// Offset (0–255, centred on 127.5): RTL-SDR.
+    Offset,
+    /// Two's complement: HackRF (made offset as they're copied).
+    Signed,
 }
 
-impl IqFrom {
-    pub fn iq(&mut self, m: SourceMsg) -> SourceMsg {
-        let SourceMsg::Real16 { source, samples, dropped, at } = m else { return m };
-        if self.conv.len() <= source {
-            self.conv.resize_with(source + 1, || None);
+/// About this long of samples per 8-bit message: a radio's USB transfers
+/// (an RTL-SDR's 16 KiB) are gathered so the queue's 256 messages still hold
+/// seconds.
+const GATHER: Duration = Duration::from_millis(25);
+
+/// Where a source's driver sends what it receives.
+pub struct Sink {
+    source: usize,
+    tx: SyncSender<SourceMsg>,
+    /// A radio: never waits for room (a capture file played as fast as it can be does).
+    live: bool,
+    /// Samples in blocks the queue had no room for, told with the next one.
+    lost: u64,
+    closed: bool,
+    bytes: Pool<u8>,
+    iq: Pool<Complex32>,
+    real: Pool<i16>,
+    /// Bytes per 8-bit message, and the one being gathered (its dropped, when the last part came).
+    gather: usize,
+    pending: Option<(Pooled<u8>, u64, Instant)>,
+    /// The threads before the radio opened: its driver's are raised on the first samples.
+    raise: Option<priority::Before>,
+}
+
+impl Sink {
+    /// For source `source` at `rate_hz`; `live`: a radio (see [`Sink::live`]).
+    pub fn new(source: usize, tx: SyncSender<SourceMsg>, rate_hz: f64, live: bool) -> Sink {
+        let gather = ((rate_hz * 2.0 * GATHER.as_secs_f64()) as usize).clamp(16 << 10, 1 << 20);
+        Sink { source, tx, live, lost: 0, closed: false, bytes: Pool::default(), iq: Pool::default(), real: Pool::default(), gather, pending: None, raise: None }
+    }
+
+    /// An empty buffer for `n` I/Q samples, to fill and [`Sink::send`].
+    pub fn iq_buffer(&self, n: usize) -> Pooled<Complex32> {
+        self.iq.take(n)
+    }
+
+    /// Real samples, copied ([`Block::Real16`]).
+    pub fn real16(&mut self, s: &[i16], dropped: u64, at: Instant) -> bool {
+        let b = Block::Real16(self.real.copy(s));
+        self.send(b, dropped, at)
+    }
+
+    /// Float I/Q, copied.
+    pub fn iq(&mut self, s: &[Complex32], dropped: u64, at: Instant) -> bool {
+        let b = Block::Iq(self.iq.copy(s));
+        self.send(b, dropped, at)
+    }
+
+    /// 8-bit I/Q straight from the radio, gathered into messages of about
+    /// [`GATHER`]; `dropped` samples were lost just before `raw`.
+    pub fn bytes(&mut self, wire: Wire, raw: &[u8], dropped: u64, at: Instant) -> bool {
+        if dropped > 0 {
+            // (The gap starts a message: it comes before these samples.)
+            self.flush();
         }
-        let c = self.conv[source].get_or_insert_with(trunk_core::dsp::real_iq::RealToIq::new);
-        let mut iq = Vec::with_capacity(samples.len() / 2 + 64);
-        c.push(&samples, &mut iq);
-        SourceMsg::Iq { source, samples: iq, dropped, at }
+        let (buf, _, last) = self.pending.get_or_insert_with(|| (self.bytes.take(self.gather), dropped, at));
+        match wire {
+            Wire::Offset => buf.vec().extend_from_slice(raw),
+            Wire::Signed => buf.vec().extend(raw.iter().map(|b| b ^ 0x80)),
+        }
+        *last = at;
+        if buf.len() >= self.gather {
+            self.flush();
+        }
+        !self.closed
+    }
+
+    /// The 8-bit samples gathered so far, sent.
+    pub fn flush(&mut self) {
+        if let Some((buf, dropped, at)) = self.pending.take() {
+            self.put(Block::U8(buf), dropped, at);
+        }
+    }
+
+    /// A block; false once nobody takes them.
+    pub fn send(&mut self, block: Block, dropped: u64, at: Instant) -> bool {
+        self.flush();
+        self.put(block, dropped, at)
+    }
+
+    fn put(&mut self, block: Block, dropped: u64, at: Instant) -> bool {
+        if let Some(b) = self.raise.take() {
+            // The driver's threads are all running by now.
+            priority::raise_new(&b);
+        }
+        let dropped = dropped + std::mem::take(&mut self.lost);
+        let msg = SourceMsg::Samples { source: self.source, block, dropped, at };
+        let sent = if self.live {
+            match self.tx.try_send(msg) {
+                Err(TrySendError::Full(SourceMsg::Samples { block, dropped, .. })) => {
+                    // Dropped here, where it's counted, not in the driver's buffer, where it isn't.
+                    self.lost = dropped + block.len() as u64;
+                    Ok(())
+                }
+                Err(TrySendError::Full(_)) => Ok(()),
+                Err(TrySendError::Disconnected(_)) => Err(()),
+                Ok(()) => Ok(()),
+            }
+        } else {
+            self.tx.send(msg).map_err(drop)
+        };
+        if sent.is_err() {
+            self.closed = true;
+        }
+        !self.closed
+    }
+
+    /// A change the radio made ([`SourceMsg::Tuned`]): after the samples before it.
+    pub fn tuned(&mut self, center_hz: f64, gap: u64) -> bool {
+        self.flush();
+        // (Waits for room if it must: the survey can't miss one.)
+        if self.tx.send(SourceMsg::Tuned { center_hz, gap }).is_err() {
+            self.closed = true;
+        }
+        !self.closed
     }
 }
 
-/// What a source thread reports.
-pub enum SourceMsg {
-    /// Raw u8 IQ, samples the driver knows were dropped just before it, and
-    /// when the driver handed it over (the source's clock is measured by it).
-    /// (A [`Pooled`] buffer: the driver's thread reuses them, allocating none per transfer.)
-    Data { source: usize, bytes: Pooled<u8>, dropped: u64, at: Instant },
-    /// Float IQ (USRP, float captures).
-    Iq { source: usize, samples: Vec<num_complex::Complex32>, dropped: u64, at: Instant },
-    /// Real samples at twice the IQ rate (an Airspy's ADC, libairspy's INT16_REAL): turned into IQ on the
-    /// thread that takes them ([`IqFrom`]), not the driver's. `dropped` in IQ samples.
-    Real16 { source: usize, samples: Pooled<i16>, dropped: u64, at: Instant },
-    Error { source: usize, error: String },
-    /// A finite source (a capture file) has no more data.
-    End { source: usize },
-    /// A [`Control`] request was applied; the samples after this are at `center_hz`.
-    Tuned { center_hz: f64 },
+impl Drop for Sink {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
+/// A source's samples as its consumer takes them: an Airspy's real samples
+/// already turned into I/Q ([`Block::Iq`]), on this (the consumer's) thread.
+pub struct Inbox {
+    rx: Receiver<SourceMsg>,
+    real: Option<trunk_core::dsp::real_iq::RealToIq>,
+    iq: Pool<Complex32>,
+}
+
+impl Inbox {
+    /// One source's queue.
+    pub fn new(rx: Receiver<SourceMsg>) -> Inbox {
+        Inbox { rx, real: None, iq: Pool::default() }
+    }
+
+    pub fn recv_timeout(&mut self, d: Duration) -> Result<SourceMsg, RecvTimeoutError> {
+        self.rx.recv_timeout(d).map(|m| self.iq_of(m))
+    }
+
+    pub fn try_recv(&mut self) -> Result<SourceMsg, TryRecvError> {
+        self.rx.try_recv().map(|m| self.iq_of(m))
+    }
+
+    fn iq_of(&mut self, m: SourceMsg) -> SourceMsg {
+        let SourceMsg::Samples { source, block: Block::Real16(s), dropped, at } = m else { return m };
+        let mut iq = self.iq.take(s.len() / 2 + 64);
+        self.real.get_or_insert_with(trunk_core::dsp::real_iq::RealToIq::new).push(&s, iq.vec());
+        SourceMsg::Samples { source, block: Block::Iq(iq), dropped, at }
+    }
 }
 
 /// Retune / gain requests for a running source: the survey's, and a gain
@@ -194,15 +288,68 @@ pub struct Control {
     pub current_gain: Mutex<Option<Gain>>,
 }
 
+pub use sdr_core::gain::Stage;
+
 /// A gain for a running radio.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Gain {
-    /// Its AGC (RTL-SDR; an Airspy's is one of its [`Gain::Airspy`] settings).
+    /// Its AGC (an RTL-SDR's tuner AGC; an Airspy's runs its LNA and mixer, see [`Stages::agc`]).
     Agc,
-    /// A manual gain, dB.
+    /// One overall gain, dB: the radio spreads it over its stages.
     Db(f32),
-    /// An Airspy's preset or stages.
-    Airspy(AirspyGain),
+    /// Stage by stage (an Airspy's, a HackRF's).
+    Stages(Stages),
+    /// A step of one of the radio's own gain tables (libairspy's).
+    Preset(Preset, u8),
+}
+
+/// A radio's own table of gains, one step setting every stage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Preset {
+    Linearity,
+    Sensitivity,
+}
+
+/// Gain stage by stage ([`Stage`]: sdr-core's names), each in the radio's
+/// own count — an Airspy's steps (LNA 0–14, mixer and VGA 0–15), a HackRF's
+/// dB (its amp 0 or 14) — and whether its AGC runs the stages left out.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Stages {
+    levels: [Option<f32>; 5],
+    pub agc: bool,
+}
+
+impl Stages {
+    /// These, with `stage` at `level`.
+    pub fn with(mut self, stage: Stage, level: f32) -> Stages {
+        self.levels[stage.index()] = Some(level);
+        self
+    }
+    /// These, the radio's AGC running the stages left out.
+    pub fn agc(mut self) -> Stages {
+        self.agc = true;
+        self
+    }
+    /// The level set for `stage`, if any.
+    pub fn get(&self, stage: Stage) -> Option<f32> {
+        self.levels[stage.index()]
+    }
+}
+
+impl std::fmt::Display for Stages {
+    /// "AGC · VGA 10", "LNA 16 · VGA 20 · AMP on".
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut parts: Vec<String> = self.agc.then(|| "AGC".to_string()).into_iter().collect();
+        for s in Stage::ALL {
+            if let Some(v) = self.get(s) {
+                parts.push(match s {
+                    Stage::Amp => format!("AMP {}", if v > 0.0 { "on" } else { "off" }),
+                    _ => format!("{} {v}", s.label()),
+                });
+            }
+        }
+        write!(f, "{}", parts.join(" · "))
+    }
 }
 
 impl std::fmt::Display for Gain {
@@ -210,7 +357,9 @@ impl std::fmt::Display for Gain {
         match self {
             Gain::Agc => write!(f, "AGC"),
             Gain::Db(db) => write!(f, "{db} dB"),
-            Gain::Airspy(g) => write!(f, "{g}"),
+            Gain::Stages(s) => write!(f, "{s}"),
+            Gain::Preset(Preset::Linearity, step) => write!(f, "linearity {step}"),
+            Gain::Preset(Preset::Sensitivity, step) => write!(f, "sensitivity {step}"),
         }
     }
 }
@@ -223,21 +372,23 @@ impl Control {
 
     /// Between blocks: the pending requests applied to `radio` (opened at
     /// `center_hz`) and answered with [`SourceMsg::Tuned`].
-    pub fn apply(&self, radio: &mut impl Tunable, center_hz: f64, tx: &SyncSender<SourceMsg>) -> Result<Applied, String> {
+    pub fn apply(&self, radio: &mut impl Tunable, center_hz: f64, sink: &mut Sink) -> Result<Applied, String> {
         let (freq, gain) = self.take();
         if freq.is_none() && gain.is_none() {
             return Ok(Applied::Nothing);
         }
+        let mut gap = 0;
         if let Some(f) = freq {
-            let hz = radio.tune(f)?;
-            *self.current_hz.lock().unwrap() = Some(hz);
+            let r = radio.tune(f)?;
+            *self.current_hz.lock().unwrap() = Some(r.hz);
+            gap += r.gap;
         }
         if let Some(g) = gain {
-            radio.set_gain(g)?;
+            gap += radio.set_gain(g)?;
             *self.current_gain.lock().unwrap() = Some(g);
         }
         let hz = self.current_hz.lock().unwrap().unwrap_or(center_hz);
-        Ok(if tx.send(SourceMsg::Tuned { center_hz: hz }).is_ok() { Applied::Tuned } else { Applied::Closed })
+        Ok(if sink.tuned(hz, gap) { Applied::Tuned } else { Applied::Closed })
     }
 }
 
@@ -251,34 +402,45 @@ pub enum Applied {
     Closed,
 }
 
+/// A retune done: the centre now, and the samples' worth of quiet the radio
+/// made for it on purpose (0 for radios that keep sampling through a change).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Retuned {
+    pub hz: f64,
+    pub gap: u64,
+}
+
 /// An open radio, as [`Control`]'s requests change it ([`Control::apply`]).
 pub trait Tunable {
-    /// Retune to `hz`; the centre it is at now.
-    fn tune(&mut self, hz: f64) -> Result<f64, String>;
-    /// Set `g` (a kind of gain the radio doesn't take is left alone).
-    fn set_gain(&mut self, g: Gain) -> Result<(), String>;
+    /// Retune to `hz`.
+    fn tune(&mut self, hz: f64) -> Result<Retuned, String>;
+    /// Set `g` (a kind of gain the radio doesn't take is left alone); the
+    /// quiet made for it, as [`Retuned::gap`].
+    fn set_gain(&mut self, g: Gain) -> Result<u64, String>;
 }
 
 /// A radio's driver: [`run_with`] keeps it streaming.
 pub trait Radio: Send + 'static {
     /// How long to wait before opening it again after an error.
     const BACKOFF: Duration;
+    /// Its sample rate (I/Q samples per second).
+    fn rate_hz(&self) -> f64;
     /// It opens at `hz` from now on (where the survey last tuned it).
     fn retune_to(&mut self, hz: f64);
     /// It opens with `g` from now on (the gain last set while running).
     fn gain_to(&mut self, g: Gain);
-    /// Open it and stream into `tx` until `stop` or an error, retuning on
+    /// Open it and stream into `sink` until `stop` or an error, retuning on
     /// `ctl`'s requests (each answered with [`SourceMsg::Tuned`]).
-    fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String>;
-    /// On its thread, before it first opens.
-    fn prepare_thread(&self) {}
+    fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String>;
 }
 
-/// Stream `radio` until `stop` is set; blocks go to `tx`. Reopens it after
-/// errors (a USB stall, a sleep/wake, an unplug) after its back-off, at the
-/// centre and gain `ctl` last set.
+/// Stream `radio` as source `source` until `stop` is set; blocks go to
+/// `tx`. Reopens it after errors (a USB stall, a sleep/wake, an unplug, a
+/// stuck stream) after its back-off, at the centre and gain `ctl` last set.
+/// This thread, and the threads the radio's driver starts, run real time
+/// ([`priority`]).
 pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
-    radio.prepare_thread();
+    priority::raise_self();
     while !stop.load(Ordering::Relaxed) {
         if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
             radio.retune_to(c);
@@ -286,129 +448,173 @@ pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>
         if let Some(g) = ctl.as_ref().and_then(|c| *c.current_gain.lock().unwrap()) {
             radio.gain_to(g);
         }
-        if let Err(e) = radio.stream_once(source, &tx, &stop, ctl.as_deref()) {
-            let _ = tx.send(SourceMsg::Error { source, error: e });
+        let mut sink = Sink::new(source, tx.clone(), radio.rate_hz(), true);
+        sink.raise = Some(priority::before());
+        let r = radio.stream_once(&mut sink, &stop, ctl.as_deref());
+        drop(sink);
+        if let Err(e) = r {
+            let _ = tx.send(SourceMsg::Error { source, error: crate::radio::usb_memory_hint(&e) });
             std::thread::sleep(R::BACKOFF);
         }
     }
 }
 
-impl Radio for RtlConfig {
-    const BACKOFF: Duration = Duration::from_secs(2);
-    fn retune_to(&mut self, hz: f64) {
-        self.center_hz = hz as u64;
-    }
-    fn gain_to(&mut self, g: Gain) {
-        match g {
-            Gain::Agc => self.gain_db = None,
-            Gain::Db(db) => self.gain_db = Some(db),
-            Gain::Airspy(_) => {}
-        }
-    }
-    fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
-        stream_once(source, self, tx, stop, ctl)
-    }
+/// Watches a radio's raw 8-bit stream for the ways a stuck one fails while
+/// still "streaming" — a frozen waterfall at the full rate, nothing dropped.
+/// Live RF never repeats itself (the noise alone sees to that), so a block
+/// that does — the one before it again, or one run of bytes over and over
+/// (whole USB packets; the RTL2832U's 3,760-byte FIFO replay, sdr-rtl
+/// findings 9) — is a radio replaying a buffer; and one that sends far
+/// faster than its rate is replaying its FIFO. Either for [`STUCK_FOR`]
+/// is an error (and so a reopen).
+pub struct StreamCheck {
+    /// Bytes per second as set.
+    rate: f64,
+    last: Vec<u8>,
+    replay_since: Option<Instant>,
+    /// The rate window: when it began, the bytes since.
+    window: Option<(Instant, u64)>,
+    fast_windows: u32,
 }
 
-/// An open RTL-SDR and its stream, for [`Control::apply`].
-struct Rtl<'a, M: SampleMode> {
-    dev: &'a mut Device<M>,
-    rx: &'a mut RxStream<M>,
-}
+/// How long a stream may replay itself before it counts as stuck.
+const STUCK_FOR: Duration = Duration::from_secs(2);
 
-impl<M: SampleMode> Tunable for Rtl<'_, M> {
-    fn tune(&mut self, hz: f64) -> Result<f64, String> {
-        // Stopped while retuning, so no queued block is from the old frequency.
-        self.rx.stop().wait().map_err(|e| format!("USB: {e}"))?;
-        self.dev.set_frequency_hz(hz.round() as u64).wait().map_err(|e| format!("tune {:.4} MHz: {e}", hz / 1e6))?;
-        self.rx.start().wait().map_err(|e| format!("USB: {e}"))?;
-        Ok(self.dev.actual_frequency_hz() as f64)
+impl StreamCheck {
+    /// For a radio sending `rate_hz` I/Q samples a second, 2 bytes each.
+    pub fn new(rate_hz: f64) -> StreamCheck {
+        StreamCheck { rate: rate_hz * 2.0, last: Vec::new(), replay_since: None, window: None, fast_windows: 0 }
     }
-    fn set_gain(&mut self, g: Gain) -> Result<(), String> {
-        let gain = match g {
-            Gain::Agc => GainConfig::Auto,
-            Gain::Db(db) => GainConfig::Manual(db),
-            Gain::Airspy(_) => return Ok(()),
-        };
-        self.dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}"))
-    }
-}
 
-fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
-    let mut b = Device::builder().raw_iq().frequency_hz(cfg.center_hz).sample_rate_hz(cfg.rate_hz).correction_ppm(cfg.ppm);
-    b = b.gain(cfg.gain_db.map_or(GainConfig::Auto, GainConfig::Manual));
-    if !cfg.serial.is_empty() {
-        b = b.serial(cfg.serial.clone());
-    }
-    let opened = {
-        let _one = crate::radio::opening();
-        b.open().wait()
-    };
-    let mut dev = opened.map_err(|e| {
-        let name = if cfg.serial.is_empty() { "(first)" } else { &cfg.serial };
-        if matches!(e, rtlsdr_nusb::Error::UnsupportedTuner) {
-            format!("open RTL-SDR {name}: {UNSUPPORTED_TUNER}")
-        } else {
-            format!("open RTL-SDR {name}: {e}")
+    /// Each block as it comes: Err once the stream is stuck.
+    pub fn block(&mut self, b: &[u8], at: Instant) -> Result<(), String> {
+        let again = b == self.last.as_slice() || periodic(b);
+        self.last.clear();
+        self.last.extend_from_slice(b);
+        if !again {
+            self.replay_since = None;
+        } else if self.replay_since.get_or_insert(at).elapsed() >= STUCK_FOR {
+            return Err("keeps sending the same samples over and over (its USB stream is stuck, so the waterfall stands still)".into());
         }
-    })?;
-    let mut rx = dev.rx_stream_with(cfg.rx_buffers()).map_err(|e| format!("RTL-SDR USB transfers: {e}"))?;
-    rx.start().wait().map_err(|e| e.to_string())?;
-    // (Buffers to copy each transfer into, reused: this thread must keep up with the dongle.)
-    let pool = Pool::default();
-    let result = loop {
-        if stop.load(Ordering::Relaxed) {
-            break Ok(());
-        }
-        if let Some(c) = ctl {
-            match c.apply(&mut Rtl { dev: &mut dev, rx: &mut rx }, cfg.center_hz as f64, tx) {
-                Err(e) => break Err(e),
-                Ok(Applied::Closed) => break Ok(()),
-                Ok(_) => {}
+        // Seconds-long windows, two in a row past 1.5×: a backlog the
+        // transfers held while this thread waited empties faster than that.
+        let (start, n) = self.window.get_or_insert((at, 0));
+        *n += b.len() as u64;
+        let secs = at.duration_since(*start).as_secs_f64();
+        if secs >= 1.0 {
+            let ratio = *n as f64 / secs / self.rate;
+            self.window = Some((at, 0));
+            self.fast_windows = if ratio > 1.5 { self.fast_windows + 1 } else { 0 };
+            if self.fast_windows >= 2 {
+                return Err(format!("sends samples at {ratio:.1}× its sample rate (it's replaying its buffer, not receiving)"));
             }
         }
-        match rx.next_block(Some(Duration::from_secs(2))).wait() {
-            Ok(Some(block)) => {
-                let msg = SourceMsg::Data { source, bytes: pool.copy(block.raw_bytes()), dropped: block.dropped_samples(), at: Instant::now() };
-                if tx.send(msg).is_err() {
-                    break Ok(());
-                }
-            }
-            Ok(None) => break Err("USB stream timed out".to_string()),
-            Err(e) => break Err(format!("USB: {e}")),
-        }
-    };
-    let _ = rx.close().wait();
-    let _ = dev.shutdown().wait();
-    result
+        Ok(())
+    }
+}
+
+/// Whether `b` is one run of bytes over and over (any period up to half of it).
+fn periodic(b: &[u8]) -> bool {
+    const HEAD: usize = 64;
+    let n = b.len();
+    n >= 2 * HEAD && (1..=n / 2).filter(|&p| b[p] == b[0]).any(|p| b[p..p + HEAD] == b[..HEAD] && b[p..] == b[..n - p])
 }
 
 #[cfg(test)]
-mod pool_tests {
+mod tests {
     use super::*;
+
+    fn noise(n: usize, mut x: u32) -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    /// Fresh samples never count; a block sent again, or a run of bytes
+    /// repeated within one (the chip's 3,760-byte replay too), count once
+    /// they've gone on for STUCK_FOR; so does a stream at 10× its rate.
+    #[test]
+    fn stuck_streams_are_found() {
+        assert!(!periodic(&noise(1 << 18, 1)));
+        assert!(periodic(&noise(1536, 2).repeat(64)), "whole packets over and over");
+        assert!(periodic(&noise(3760, 3).repeat(8)[..16384]), "the FIFO replay");
+        assert!(periodic(&[127; 4096]), "nothing at all");
+        let t0 = Instant::now();
+        let mut c = StreamCheck::new(2.4e6);
+        // 16 KiB at 2.4 MS/s: one every 3.4 ms.
+        let at = |k: u32| t0 + Duration::from_micros(3413) * k;
+        for k in 0..2000 {
+            assert!(c.block(&noise(16384, k + 1), at(k)).is_ok());
+        }
+        let same = noise(16384, 99);
+        assert!(c.block(&same, t0).is_ok() && c.block(&same, t0).is_ok(), "not at once");
+        c.replay_since = Some(t0 - STUCK_FOR);
+        assert!(c.block(&same, t0).unwrap_err().contains("same samples"));
+        let mut c = StreamCheck::new(2.4e6);
+        let fast = |k: u32| t0 + Duration::from_micros(341) * k;
+        let r = (0..20_000).map(|k| c.block(&noise(16384, k + 1), fast(k))).find(Result::is_err);
+        assert!(r.unwrap().unwrap_err().contains("10.0×"));
+    }
 
     /// A buffer goes back to its pool when dropped, and the next copy reuses it.
     #[test]
     fn buffers_are_reused() {
-        let pool: Pool<i16> = Pool::default();
+        let pool = Pool::<u8>::default();
         let a = pool.copy(&[1, 2, 3]);
-        let p = a.as_ptr();
-        assert_eq!(&*a, &[1, 2, 3]);
+        let ptr = a.as_ptr();
         drop(a);
         let b = pool.copy(&[4, 5]);
-        assert_eq!((&*b, b.as_ptr()), (&[4i16, 5][..], p), "the same memory, refilled");
+        assert_eq!(b.as_ptr(), ptr);
+        assert_eq!(&*b, &[4, 5]);
     }
 
-    /// Real samples become IQ at half their count, per source.
+    /// A full queue never holds a live radio up: the block is dropped and its
+    /// samples told with the next one; small transfers are gathered; signed
+    /// bytes arrive offset.
+    #[test]
+    fn a_live_sink_never_waits_and_counts_what_it_drops() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let mut s = Sink::new(0, tx, 2.4e6, true);
+        let t = Instant::now();
+        let a = s.iq_buffer(4);
+        s.send(Block::Iq(a), 3, t);
+        let mut b = s.iq_buffer(10);
+        b.vec().resize(10, Complex32::default());
+        assert!(s.send(Block::Iq(b), 0, t), "full: dropped, not waited for");
+        let take = |rx: &Receiver<SourceMsg>| match rx.try_recv() {
+            Ok(SourceMsg::Samples { block, dropped, .. }) => (block.len(), dropped),
+            _ => panic!("samples"),
+        };
+        assert_eq!(take(&rx), (0, 3));
+        s.iq(&[Complex32::default(); 2], 1, t);
+        assert_eq!(take(&rx), (2, 1 + 10), "the dropped block's 10 told with the next");
+        // 2.4 MS/s: gathered into ~120 KB messages.
+        s.bytes(Wire::Signed, &[0, 1, 0x80, 0xff], 0, t);
+        s.bytes(Wire::Signed, &[5; 16384], 0, t);
+        assert!(rx.try_recv().is_err(), "still gathering");
+        s.flush();
+        match rx.try_recv() {
+            Ok(SourceMsg::Samples { block: Block::U8(b), .. }) => assert_eq!((&b[..4], b.len()), (&[0x80, 0x81, 0, 0x7f][..], 16388)),
+            _ => panic!("bytes"),
+        }
+        drop(rx);
+        assert!(!s.iq(&[], 0, t), "nobody takes them: stop");
+    }
+
     #[test]
     fn real_samples_become_iq() {
-        let pool: Pool<i16> = Pool::default();
-        let mut iqf = IqFrom::default();
-        let m = SourceMsg::Real16 { source: 1, samples: pool.copy(&vec![0i16; 4096]), dropped: 7, at: Instant::now() };
-        match iqf.iq(m) {
-            // (Half as many, less the filter's look-ahead held for the next push.)
-            SourceMsg::Iq { source, samples, dropped, .. } => assert_eq!((source, dropped, samples.len()), (1, 7, 2048 - 19)),
-            _ => panic!("not IQ"),
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let mut s = Sink::new(0, tx, 10e6, true);
+        s.real16(&[1000i16; 4096], 0, Instant::now());
+        let mut inbox = Inbox::new(rx);
+        match inbox.try_recv() {
+            Ok(SourceMsg::Samples { block: Block::Iq(iq), .. }) => assert!(!iq.is_empty()),
+            _ => panic!("I/Q"),
         }
     }
 }

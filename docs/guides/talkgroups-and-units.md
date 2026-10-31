@@ -20,8 +20,8 @@ Each system has its own, shared by all its sites. It's the **Talkgroups** field 
 - **Download** saves the system's talkgroup file as a CSV, `<shortName>.talkgroups.csv`.
 - **Clear** removes it.
 
-The talkgroup file isn't part of the config, and isn't kept as a path: Setup saves a copy beside the
-config file, as `<shortName>.talkgroups.csv`, and renames it when you rename the system. (A config
+The talkgroup file isn't part of the config, and isn't kept as a path: Setup keeps a copy in the
+recorder's store, and it stays with the system when you rename it. (A config
 from before 0.2.0 had them inside it; they're moved out into these files the first time it's read.) To change it later, edit your copy and load it
 again, or **Download**, edit, and load. Changes made while recording take effect at once (the log
 says "Talkgroups updated").

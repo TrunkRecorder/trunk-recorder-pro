@@ -12,7 +12,7 @@
 // each time.
 
 import init, * as wasm from "./web/pkg/trunk_web.js";
-import type { Channel, Config, SignalDef, Site, TonePatternKind } from "./protocol.ts";
+import type { Channel, Config, SignalDef, Site, Talkgroup, TonePatternKind } from "./protocol.ts";
 
 let ready = false;
 
@@ -40,6 +40,34 @@ function rules(): typeof wasm {
 /** The talkgroup files an older config's JSON holds, as JSON by short name (migrate.ts). */
 export function configTalkgroups(json: string): string {
   return rules().configTalkgroups(json);
+}
+
+/** A talkgroup file read ([`talkgroupsFromCsv`]): its rows, and what in it was passed over. */
+export interface TalkgroupFileReport {
+  talkgroups: Talkgroup[];
+  /** No header: the old fixed columns (Decimal, Hex, Mode, Alpha Tag, Description, Tag, Group, Priority). */
+  legacy: boolean;
+  /** Rows with no talkgroup number in the Decimal column (their text, the first few). */
+  skipped: string[];
+  /** Columns neither Trunk Recorder nor this app knows (kept, as each row's `extra`). */
+  unknownColumns: string[];
+  /** Header problems Trunk Recorder would stop at (it needs Decimal, Mode and Description). */
+  missing: string[];
+}
+
+/** A talkgroup file (Trunk Recorder's CSV, or one a spreadsheet saved) read as the recorder reads one (trunk_core::trunk::read_rows). */
+export function talkgroupsFromCsv(text: string): TalkgroupFileReport {
+  return JSON.parse(rules().talkgroupsFromCsv(text)) as TalkgroupFileReport;
+}
+
+/** Talkgroups as a talkgroup file: Trunk Recorder's headed CSV, comments and columns of their own kept ("" for none). */
+export function talkgroupsToCsv(rows: Talkgroup[]): string {
+  return rules().talkgroupsToCsv(JSON.stringify(rows));
+}
+
+/** `rows` with talkgroup `number`'s cells set ([column, value], Trunk Recorder's names): the recorder's own edit for setTalkgroup. */
+export function talkgroupsEdit(rows: Talkgroup[], number: number, cells: [string, string][]): Talkgroup[] {
+  return JSON.parse(rules().talkgroupsEdit(JSON.stringify(rows), number, JSON.stringify(cells))) as Talkgroup[];
 }
 
 /** The store's config now, and what has been worked out of it. */

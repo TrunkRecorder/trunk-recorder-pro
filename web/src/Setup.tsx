@@ -1,4 +1,5 @@
 import { Fragment, useId, useMemo, useRef, useState } from "react";
+import { INDEX_USES } from "./storeIndexes.ts";
 import { SystemDot, SystemTag } from "./charts.tsx";
 import {
   activeSites,
@@ -34,6 +35,7 @@ import {
   systemType,
   deviceKey,
   needsDriver,
+  hasBiasT,
   sourceKey,
   foundRadio,
   radioName,
@@ -70,8 +72,8 @@ import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } fr
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { SystemSignals } from "./Signals.tsx";
-import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, StorageSettings, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -81,8 +83,7 @@ import { findOnAir, siteFrequencies, type FccTarget } from "./controller.ts";
 import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
-import { readTalkgroupCsv } from "./talkgroups.ts";
-import { DraftInput, Field, FileInput, NumberInput, TextInput, Toggle } from "./inputs.tsx";
+import { BiasT, DraftInput, Field, FileInput, NumberInput, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
 import { openTodos } from "./todo.ts";
@@ -415,21 +416,20 @@ const NAME_FIELDS: [NameField, string, string][] = [
   ["group", "Category", "Fire"],
 ];
 
-/** The Tag and Category values a conventional system uses already (its rows', its talkgroup file's), most used first: offered as each row's are typed. */
+/** The Tag and Category values a conventional system uses already (its rows', its talkgroups'), most used first: offered as each row's are typed. */
 function useNameSuggestions(conv: Conventional): { tag: string[]; group: string[] } {
-  const csv = useApp().talkgroups[conv.shortName] ?? "";
+  const file = useApp().talkgroups[conv.shortName];
   return useMemo(() => {
-    const file = [...readTalkgroupCsv(csv).talkgroups.values()];
     const ranked = (values: string[]) => {
       const n = new Map<string, number>();
       for (const v of values.map((v) => v.trim()).filter(Boolean)) n.set(v, (n.get(v) ?? 0) + 1);
       return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([v]) => v);
     };
     return {
-      tag: ranked([...conv.channels.map((c) => c.tag ?? ""), ...file.map((t) => t.tag)]),
-      group: ranked([...conv.channels.map((c) => c.group ?? ""), ...file.map((t) => t.group)]),
+      tag: ranked([...conv.channels.map((c) => c.tag ?? ""), ...(file ?? []).map((t) => t.tag)]),
+      group: ranked([...conv.channels.map((c) => c.group ?? ""), ...(file ?? []).map((t) => t.category)]),
     };
-  }, [conv.channels, csv]);
+  }, [conv.channels, file]);
 }
 
 /**
@@ -603,8 +603,8 @@ function DriverMissing(props: { kind: Source["type"]; detail: string }) {
   );
 }
 
-/** A radio picked by serial from those its driver found (Airspy, bladeRF). */
-function SerialPicker(props: { kind: "airspy" | "bladerf"; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
+/** A radio picked by serial from those its driver found (Airspy, bladeRF, HackRF). */
+function SerialPicker(props: { kind: "airspy" | "bladerf" | "hackrf"; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
   const s = useApp();
   const { kind, serial, used } = props;
   const k = SOURCE_KINDS[kind];
@@ -693,33 +693,24 @@ function PpmField(props: { src: Exclude<Source, { type: "file" }>; edit: EditSou
   );
 }
 
-/** USB transfer sizes offered (Trunk Recorder's buflen), bytes; 0 = the driver's 256 KiB. */
-const BUF_LENS = [0, 131_072, 65_536, 32_768, 16_384];
-/** As many RTL-SDRs as this at 2 MS/s or more get the advice (as `Config::rtl_buflen_hint`). */
-const RTL_BUSY_COUNT = 4;
+/** USB transfer sizes offered (Trunk Recorder's buflen), bytes; 0 = the driver's 16 KiB. */
+const BUF_LENS = [0, 262_144, 131_072, 65_536, 32_768];
 
 /**
- * An RTL-SDR's USB transfer size: smaller transfers let several dongles take
- * turns on one USB 2.0 bus without any of their small FIFOs overflowing.
+ * An RTL-SDR's USB transfer size. The driver's default (16 KiB, 128 in flight) needs no
+ * tuning for several dongles on one bus; a larger one is Trunk Recorder's buflen.
  */
-function UsbTransfers(props: { src: Extract<Source, { type: "rtlsdr" }>; sources: Source[]; devices: Device[]; edit: EditSource }) {
-  const { src, sources, devices, edit } = props;
+function UsbTransfers(props: { src: Extract<Source, { type: "rtlsdr" }>; edit: EditSource }) {
+  const { src, edit } = props;
   const len = src.bufLen ?? 0;
-  const busy = sources.filter((x) => x.type === "rtlsdr" && x.rateHz >= 2_000_000).length;
-  const mine = devices.find((d) => (src.serial ? d.serial === src.serial : true));
-  const onBus = mine?.bus ? devices.filter((d) => d.bus === mine.bus).length : null;
-  const crowded = busy >= RTL_BUSY_COUNT && (onBus === null || onBus >= RTL_BUSY_COUNT);
-  const hint =
-    crowded && len === 0
-      ? `${busy} dongles at full rate${onBus !== null ? `, ${onBus} on this USB bus` : ""}: 64 KiB recommended`
-      : "Smaller helps several dongles share one USB 2.0 bus (Trunk Recorder's buflen)";
+  const hint = "The default (16 KiB, 128 in flight, about 2 MiB) is right for one dongle or several; larger matches Trunk Recorder's buflen";
   const kib = (n: number) => `${n / 1024} KiB`;
   return (
     <Field label="USB transfer size" hint={hint}>
       <select value={len} onChange={(e) => edit((x) => x.type === "rtlsdr" && void (x.bufLen = Number(e.target.value)))}>
         {BUF_LENS.map((n) => (
           <option key={n} value={n}>
-            {n === 0 ? "256 KiB (default)" : kib(n)}
+            {n === 0 ? "16 KiB (default)" : kib(n)}
           </option>
         ))}
         {!BUF_LENS.includes(len) && <option value={len}>{len % 1024 ? `${len} bytes` : kib(len)}</option>}
@@ -843,6 +834,31 @@ function AirspyGainFields(props: { src: Extract<Source, { type: "airspy" }>; edi
   );
 }
 
+/** A HackRF's gain stages: the IF LNA (8 dB steps), the baseband VGA (2 dB steps) and the +14 dB RF amp. */
+function HackrfGainFields(props: { src: Extract<Source, { type: "hackrf" }>; edit: EditSource }) {
+  const { src, edit } = props;
+  const range = (max: number, step: number) => Array.from({ length: max / step + 1 }, (_, n) => n * step);
+  const pick = (k: "lnaDb" | "vgaDb", label: string, hint: string, max: number, step: number) => (
+    <Field label={label} hint={hint}>
+      <select value={src[k]} aria-label={label} onChange={(e) => edit((x) => x.type === "hackrf" && void (x[k] = Number(e.target.value)))}>
+        {!range(max, step).includes(src[k]) && <option value={src[k]}>{src[k]} dB</option>}
+        {range(max, step).map((n) => (
+          <option key={n} value={n}>
+            {n} dB
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+  return (
+    <>
+      {pick("lnaDb", "LNA (IF) gain", "0–40 dB in 8 dB steps; the stage that matters most", 40, 8)}
+      {pick("vgaDb", "VGA (baseband) gain", "0–62 dB in 2 dB steps", 62, 2)}
+      <Toggle label="Amp" hint="+14 dB — leave off near strong signals: it overloads easily" checked={src.amp} onChange={(v) => edit((x) => x.type === "hackrf" && void (x.amp = v))} />
+    </>
+  );
+}
+
 /** Stage names SoapySDR modules commonly have. */
 const SOAPY_STAGES = ["LNA", "VGA", "AMP", "MIX", "IF", "BB", "TIA", "PGA", "IFGR", "RFGR", "VGA1", "VGA2", "LNAGR"];
 
@@ -891,7 +907,7 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
 
 
 /** `fresh`: just added (measuring its roll-off is offered). */
-function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
+export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
   const s = useApp();
   const { c, i } = props;
   const src = c.sources[i];
@@ -989,7 +1005,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             </div>
           </Field>
         )}
-        {src.type === "rtlsdr" && can("drivers") && <UsbTransfers src={src} sources={c.sources} devices={s.devices} edit={edit} />}
+        {src.type === "rtlsdr" && can("drivers") && <UsbTransfers src={src} edit={edit} />}
         {missing && <DriverMissing kind={src.type} detail={driverState.detail} />}
         {src.type === "usrp" && !missing && (
             <Field
@@ -1028,14 +1044,24 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             <TextInput className="mono" value={src.antenna} placeholder="default" onChange={(v) => edit((x) => x.type === "usrp" && void (x.antenna = v))} />
           </Field>
         )}
-        {(src.type === "airspy" || src.type === "bladerf") && !missing && (
+        {src.type === "usrp" && (
+          <Field label="Wire format" hint="Samples on the USB or network link: sc12 and sc8 take less of it, at some cost in range">
+            <select value={src.wireFormat ?? ""} aria-label="Wire format" onChange={(e) => edit((x) => x.type === "usrp" && void (x.wireFormat = e.target.value || undefined))}>
+              <option value="">Auto — sc16, or sc12 for a B2xx on USB 2.0 above 8 MSPS</option>
+              <option value="sc16">sc16</option>
+              <option value="sc12">sc12 (B2xx)</option>
+              <option value="sc8">sc8</option>
+            </select>
+          </Field>
+        )}
+        {(src.type === "airspy" || src.type === "bladerf" || src.type === "hackrf") && !missing && (
           <SerialPicker
             kind={src.type}
             serial={src.serial}
             used={used}
             onChange={(v) =>
               edit((x) => {
-                if (x.type !== "airspy" && x.type !== "bladerf") return;
+                if (x.type !== "airspy" && x.type !== "bladerf" && x.type !== "hackrf") return;
                 x.serial = v;
                 // Radios of one kind can run at different rates (an Airspy R2 and a Mini): start at one the picked radio does.
                 x.rateHz = rateFor(x.rateHz, foundRadio(s.radios, x));
@@ -1043,19 +1069,14 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             }
           />
         )}
+        {hasBiasT(src) && <BiasT src={src} checked={src.biasTee} onChange={(v) => edit((x) => hasBiasT(x) && void (x.biasTee = v))} />}
         {src.type === "airspy" && (
-          <>
-            <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
-            <Toggle
-              label="Pack samples"
-              hint="12-bit samples on the USB: a quarter less of the bus (an Airspy at 10 MSPS nearly fills a USB 2.0 bus). Off only for old firmware"
-              checked={src.packing ?? true}
-              onChange={(v) => edit((x) => x.type === "airspy" && void (x.packing = v))}
-            />
-          </>
-        )}
-        {src.type === "bladerf" && (
-          <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable (bladeRF 2.0)" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "bladerf" && void (x.biasTee = v))} />
+          <Toggle
+            label="Pack samples"
+            hint="12-bit samples on the USB: a quarter less of the bus (an Airspy at 10 MSPS nearly fills a USB 2.0 bus). Off only for old firmware"
+            checked={src.packing ?? true}
+            onChange={(v) => edit((x) => x.type === "airspy" && void (x.packing = v))}
+          />
         )}
         {src.type === "soapy" &&
           (missing ? null : (
@@ -1189,7 +1210,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         <Group
           title="Gain"
           hint={`${src.type === "airspy" ? "A preset, or each stage set by hand." : "Too little loses weak signals; too much overloads near strong ones."} ${
-            SOURCE_KINDS[src.type].liveAgc ? "Changes apply at once, also while recording." : "The gain in dB applies at once, also while recording; AGC on or off when recording starts."
+            SOURCE_KINDS[src.type].liveAgc || src.type === "hackrf" ? "Changes apply at once, also while recording." : "The gain in dB applies at once, also while recording; AGC on or off when recording starts."
           }`}
         >
           {src.type === "rtlsdr" && (
@@ -1217,6 +1238,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             </Field>
           )}
           {src.type === "airspy" && <AirspyGainFields src={src} edit={edit} />}
+          {src.type === "hackrf" && <HackrfGainFields src={src} edit={edit} />}
           {src.type === "soapy" && (
             <>
               <Field label="Gain, dB">
@@ -2373,9 +2395,9 @@ export function SystemCard(props: { c: Config; i: number }) {
   const join = (other: System) => {
     const j = c.systems.indexOf(other);
     const dropped = SYSTEM_OWN.filter(([k]) => other[k] !== undefined && other[k] !== "" && JSON.stringify(other[k]) !== JSON.stringify(sys[k])).map(([, w]) => w);
-    // Its talkgroup file comes along if this one has none.
+    // Its talkgroups come along if this one has none.
     const [theirs, mine] = [app.talkgroups[other.shortName], app.talkgroups[sys.shortName]];
-    if (theirs && mine && theirs !== mine) dropped.push("talkgroup file");
+    if (theirs && mine && JSON.stringify(theirs) !== JSON.stringify(mine)) dropped.push("talkgroups");
     const n = other.sites.length;
     const ask =
       `Make ${other.shortName} a site${n === 1 ? "" : "s"} of ${sys.shortName}? ` +
@@ -2965,6 +2987,62 @@ function RecordingOverridePanel(props: OverrideProps & { title: string; groups: 
   );
 }
 
+/**
+ * Setup → Data (desktop app): where the recorder keeps what it keeps (the
+ * call index, talkgroups, aliases, the radio registry, the dashboard's
+ * history) and how much it writes. Each takes effect from the next start.
+ * What's in it and how big: the dashboard's Platform → Storage.
+ */
+function DataTab(props: { c: Config }) {
+  const st = props.c.storage;
+  const set = (patch: Partial<StorageSettings>) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, ...patch }));
+  const low = !!st?.lowWrite;
+  return (
+    <Section title="Data" hint="What the recorder keeps between runs, where, and how much it writes. From the next start.">
+      <section className="set-card">
+        <Group title="Store" hint="Talkgroups, talker aliases, band plans, the radio registry, the call index and the dashboard's history. Recordings stay in the recordings folder.">
+          <Field label="Kept in">
+            <select value={st?.backend ?? "sqlite"} onChange={(e) => set({ backend: e.target.value as "sqlite" | "postgres" })}>
+              <option value="sqlite">This computer (SQLite)</option>
+              <option value="postgres">A PostgreSQL server</option>
+            </select>
+          </Field>
+          {st?.backend === "postgres" && (
+            <Field label="PostgreSQL connection" hint="postgres://user:password@host/database; one recorder per database or schema" wide>
+              <TextInput className="mono" value={st.url ?? ""} placeholder="postgres://trp@db.example/trunk" onChange={(v) => set({ url: v })} />
+            </Field>
+          )}
+        </Group>
+        <Group title="Writing less" hint="For an SD card or a Pi's eMMC: each index and commit is writes the card wears out by.">
+          <Field label="Low-write mode" hint="No call index (the call list is the recent calls), the dashboard's history by the hour, a commit an hour">
+            <Switch label="Low-write mode" checked={low} onChange={(v) => set({ lowWrite: v || undefined })} />
+          </Field>
+          <p className="muted small wide">
+            The store keeps an index of calls by talkgroup and one by radio. Each lets a list of that talkgroup's or radio's calls go back as far as the store keeps calls; each costs writes as calls come in (on a busy system, the radio index is most of what the store writes, the talkgroup index about a third as much). Turned off, those lists show the recent calls only. Everything else is unaffected.
+          </p>
+          <Field label="Calls by talkgroup" hint={low ? "Low-write mode keeps no call index" : `Used by ${INDEX_USES.calls_system_tg_start.used}. Off: ${INDEX_USES.calls_system_tg_start.without}`} wide>
+            <Switch label="Calls by talkgroup" checked={!low && st?.talkgroupIndex !== false} disabled={low} onChange={(v) => set({ talkgroupIndex: v ? undefined : false })} />
+          </Field>
+          <Field label="Calls by radio" hint={low ? "Low-write mode keeps no call index" : `Used by ${INDEX_USES.transmissions_radio.used}. Off: ${INDEX_USES.transmissions_radio.without}`} wide>
+            <Switch label="Calls by radio" checked={!low && st?.radioIndex !== false} disabled={low} onChange={(v) => set({ radioIndex: v ? undefined : false })} />
+          </Field>
+          <Field label="Write every, s" hint="Longer writes less; calls show at once either way">
+            <NumberInput label="Write every, s" value={st?.commitSeconds ?? 300} onChange={(v) => set({ commitSeconds: Math.max(10, Math.min(3600, Math.round(v ?? 300))) })} />
+          </Field>
+        </Group>
+        <Group title="How long">
+          <Field label="Call history, days" hint="How long calls stay findable by talkgroup and radio; 0 keeps them all. Their files aren't touched">
+            <NumberInput label="Call history, days" value={st?.retentionDays ?? 120} onChange={(v) => set({ retentionDays: Math.max(0, Math.round(v ?? 120)) })} />
+          </Field>
+          <Field label="Dashboard history, days" hint="How far back the dashboard's charts go, kept by the hour; 0 keeps it all">
+            <NumberInput label="Dashboard history, days" value={st?.statsDays ?? 365} onChange={(v) => set({ statsDays: Math.max(0, Math.round(v ?? 365)) })} />
+          </Field>
+        </Group>
+      </section>
+    </Section>
+  );
+}
+
 /** The tab showing now (for showTodo, outside React). */
 let shownTab: SetupTab = "systems";
 const currentTab = () => shownTab;
@@ -2974,6 +3052,7 @@ const TABS: { id: SetupTab; label: string; icon: () => React.ReactNode }[] = [
   { id: "conventional", label: "Conventional", icon: IconAntenna },
   { id: "radios", label: "Radios", icon: IconDongle },
   { id: "recording", label: "Recording", icon: IconFolder },
+  { id: "data", label: "Data", icon: IconDatabase },
   { id: "plugins", label: "Plugins", icon: IconPuzzle },
 ];
 
@@ -2986,11 +3065,12 @@ function SetupTabs(props: { c: Config; tab: SetupTab }) {
     conventional: props.c.conventional.reduce((n, v) => n + v.channels.length, 0),
     radios: props.c.sources.length,
     recording: null,
+    data: null,
     plugins: s.plugins ? s.plugins.plugins.length : null,
   };
   return (
     <nav className="setup-tabs" role="tablist" aria-label="Setup">
-      {TABS.filter((t) => t.id !== "plugins" || can("plugins")).map((t) => {
+      {TABS.filter((t) => (t.id !== "plugins" || can("plugins")) && (t.id !== "data" || !web)).map((t) => {
         const todo = todos.filter((x) => tabOf(x.target) === t.id).length;
         return (
           <button key={t.id} role="tab" aria-selected={props.tab === t.id} className={props.tab === t.id ? "on" : ""} onClick={() => setSetupTab(t.id)}>
@@ -3216,6 +3296,7 @@ export function Setup() {
         </Section>
       )}
 
+      {tab === "data" && !web && <DataTab c={c} />}
       {tab === "plugins" && can("plugins") && <PluginSetupPanel />}
     </div>
   );

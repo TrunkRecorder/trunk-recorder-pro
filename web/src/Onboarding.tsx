@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { autoCenter, detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newSystem, parseFreqList, planCenters, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
+import { autoCenter, detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newSystem, parseFreqList, planCenters, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -34,10 +34,10 @@ import {
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
-import { FileInput, TextInput } from "./inputs.tsx";
+import { BiasT, FileInput, TextInput } from "./inputs.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
-import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
+import { parseRadioReferencePaste, readTalkgroupFile, type Talkgroup } from "./talkgroups.ts";
 import { openTodos } from "./todo.ts";
 import { Waterfall } from "./Waterfall.tsx";
 import { savedWhere, takeWhere, WhereFields, WhyLocation, type Where } from "./Identify.tsx";
@@ -280,14 +280,17 @@ async function connectWebDongle(): Promise<void> {
   }
 }
 
-function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack: () => void }) {
+export function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack: () => void }) {
   const { s } = props;
   const detected = useMemo(() => detectRadios(s.devices, s.radios), [s.devices, s.radios]);
   const [picked, setPicked] = useState<Set<string> | null>(null);
+  // Which radios power an LNA through their bias-T: as saved, until changed here.
+  const [biasT, setBiasT] = useState<Set<string> | null>(null);
   const [helping, setHelping] = useState(false);
   const free = detected.filter((d) => !d.busy);
   const chosen = picked ?? new Set(free.map((d) => d.key));
   const selected = free.filter((d) => chosen.has(d.key));
+  const powered = biasT ?? new Set(props.c.sources.filter((o) => hasBiasT(o) && o.biasTee).map(sourceKey));
   const look = () => {
     refreshDevices();
     if (can("drivers")) findRadios();
@@ -300,10 +303,19 @@ function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack:
     else n.add(key);
     setPicked(n);
   };
+  const power = (key: string, on: boolean) => {
+    const n = new Set(powered);
+    if (on) n.add(key);
+    else n.delete(key);
+    setBiasT(n);
+  };
   const use = () => {
     updateConfig((x) => {
-      // A radio already set up keeps its settings (frequency correction, gain).
-      x.sources = selected.map((d) => x.sources.find((o) => sourceKey(o) === d.key) ?? d.source);
+      // A radio already set up keeps its settings (frequency correction, gain); its bias-T is as ticked here.
+      x.sources = selected.map((d) => {
+        const o = x.sources.find((o) => sourceKey(o) === d.key) ?? d.source;
+        return hasBiasT(o) ? { ...o, biasTee: powered.has(d.key) } : o;
+      });
     });
     props.onNext();
   };
@@ -330,17 +342,20 @@ function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack:
           {[...free, ...detected.filter((d) => d.busy)].map((d) => {
             const on = !d.busy && chosen.has(d.key);
             return (
-              <button key={d.key} className={`ob-card pick${on ? " on" : ""}${d.busy ? " busy" : ""}`} role="checkbox" aria-checked={on} disabled={!!d.busy} onClick={() => toggle(d.key)}>
-                {!d.busy && (
-                  <span className="ob-check" aria-hidden="true">
-                    {on ? "✓" : ""}
-                  </span>
-                )}
-                <span className="ob-card-art">{d.kind === "usrp" || d.kind === "soapy" ? <IconBox /> : <IconDongle />}</span>
-                <span className="ob-card-title">{d.name}</span>
-                <span className="ob-card-sub">{d.detail}</span>
-                {d.busy && <span className="ob-busy">{d.busy.replace(/^./, (ch) => ch.toUpperCase())}</span>}
-              </button>
+              <div key={d.key} className="ob-pick">
+                <button className={`ob-card pick${on ? " on" : ""}${d.busy ? " busy" : ""}`} role="checkbox" aria-checked={on} disabled={!!d.busy} onClick={() => toggle(d.key)}>
+                  {!d.busy && (
+                    <span className="ob-check" aria-hidden="true">
+                      {on ? "✓" : ""}
+                    </span>
+                  )}
+                  <span className="ob-card-art">{d.kind === "usrp" || d.kind === "soapy" ? <IconBox /> : <IconDongle />}</span>
+                  <span className="ob-card-title">{d.name}</span>
+                  <span className="ob-card-sub">{d.detail}</span>
+                  {d.busy && <span className="ob-busy">{d.busy.replace(/^./, (ch) => ch.toUpperCase())}</span>}
+                </button>
+                {on && <BiasT src={d.source} checked={powered.has(d.key)} onChange={(v) => power(d.key, v)} />}
+              </div>
             );
           })}
         </div>
@@ -1427,16 +1442,15 @@ function FolderPicker(props: { start: string; onPick: (path: string) => void }) 
 
 function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void; onBack: () => void }) {
   const { sys } = props;
-  const csv = useApp().talkgroups[sys.shortName] ?? "";
-  const [how, setHow] = useState<"later" | "paste" | "file">(csv ? "file" : "later");
+  const loaded = useApp().talkgroups[sys.shortName]?.length ?? 0;
+  const [how, setHow] = useState<"later" | "paste" | "file">(loaded ? "file" : "later");
   const [paste, setPaste] = useState("");
   const parsed = useMemo(() => parseRadioReferencePaste(paste), [paste]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const loaded = csv ? parseTalkgroupCsv(csv).size : 0;
-  const setList = (next: string) => setTalkgroups(sys.shortName, next);
+  const setList = (next: Talkgroup[]) => setTalkgroups(sys.shortName, next);
   const onFile = async (f: File | undefined) => {
     if (!f) return;
-    setList(normalizeTalkgroupCsv(await f.text()));
+    setList(readTalkgroupFile(await f.text()).talkgroups);
     props.onNext();
   };
   const id = sys.sites[0]?.expect ?? {};
@@ -1458,7 +1472,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
           <span>
             <b>{loaded} talkgroup names loaded</b>.
           </span>
-          <button className="ob-link" onClick={() => setList("")}>
+          <button className="ob-link" onClick={() => setList([])}>
             Remove
           </button>
         </div>
@@ -1527,7 +1541,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
                       <button
                         className="ob-btn primary"
                         onClick={() => {
-                          setList(talkgroupsToCsv(parsed));
+                          setList(parsed);
                           props.onNext();
                         }}
                       >
@@ -1575,8 +1589,7 @@ function DoneStep(props: { s: AppState; c: Config; sys: System | undefined; onSt
   const { c, sys } = props;
   const problem = startProblem(c);
   const radios = c.sources.length;
-  const tgCsv = sys ? props.s.talkgroups[sys.shortName] : undefined;
-  const tgs = tgCsv ? parseTalkgroupCsv(tgCsv).size : 0;
+  const tgs = sys ? (props.s.talkgroups[sys.shortName]?.length ?? 0) : 0;
   return (
     <section className="ob-step ob-welcome">
       <div className="ob-hero">
@@ -1862,8 +1875,8 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
       }
       x.plugins = plugins;
     });
-    // Each system's talkgroup file, beside the config.
-    for (const [system, csv] of Object.entries(result.talkgroups)) if (brings(system)) setTalkgroups(system, csv);
+    // Each system's talkgroups, beside the config.
+    for (const [system, rows] of Object.entries(result.talkgroups)) if (brings(system)) setTalkgroups(system, rows);
     // Radios that aren't ready yet join what's left to do.
     const radios: ImportTodo[] = cfg.sources.flatMap((src, index): ImportTodo[] => {
       if (!bringsSource(index)) return [];
@@ -1936,7 +1949,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
         <ul className="ob-rows">
           {cfg.systems.filter((x) => brings(x.shortName)).map((x) => {
             const file = named.find((n) => n.kind === "talkgroups" && n.system === x.shortName)?.file;
-            const tgs = result.talkgroups[x.shortName] ? parseTalkgroupCsv(result.talkgroups[x.shortName]).size : 0;
+            const tgs = result.talkgroups[x.shortName]?.length ?? 0;
             return (
               <li key={x.shortName} className={(file && missing(file)) || unheard(x) ? "warn" : "ok"}>
                 <span className="ob-row-main">
@@ -2292,6 +2305,7 @@ const IconChip = () => icon(<><rect className="ln" x="8" y="8" width="16" height
 const IconKey = () => icon(<><circle className="ln" cx="11" cy="16" r="6" /><path className="ln" d="M17 16 h11 M24 16 v5 M28 16 v4" /><circle className="ac" cx="11" cy="16" r="2" /></>);
 const IconQuestion = () => icon(<><circle className="ln" cx="16" cy="16" r="12" /><path className="acs" d="M12 12 a4 4 0 1 1 5 4 v3 M17 23 v.5" /></>);
 export const IconAntenna = () => icon(<><path className="ln" d="M16 29 V12 M11 29 h10" /><circle className="ac" cx="16" cy="10" r="2.5" /><path className="acs" d="M21 5 a8 8 0 0 1 0 10 M11 5 a8 8 0 0 0 0 10" /></>);
+export const IconDatabase = () => icon(<><ellipse className="ln" cx="16" cy="7" rx="10" ry="4" /><path className="ln" d="M6 7 v18 a10 4 0 0 0 20 0 V7" /><path className="acs" d="M6 13 a10 4 0 0 0 20 0 M6 19 a10 4 0 0 0 20 0" /></>);
 export const IconFolder = () => icon(<path className="ln" d="M3 8 h9 l3 3 h14 v15 h-26 z" />);
 const IconDrive = () => icon(<><rect className="ln" x="3" y="10" width="26" height="12" rx="3" /><circle className="ac" cx="23" cy="16" r="2" /><path className="ln" d="M7 16 h9" /></>);
 const IconClock = () => icon(<><circle className="ln" cx="16" cy="16" r="12" /><path className="acs" d="M16 9 v7 l5 3" /></>);

@@ -9,7 +9,7 @@ import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type S
 import { BackBar, Card, Choice, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, FreqRow, SeriesData } from "../protocol.ts";
-import { change, coverage, dashSystems, K, KIND_LABEL, perLive, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
+import { change, coverage, dashSystems, K, KIND_LABEL, perLive, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useRanges, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
 import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 
 /** `a / b` step by step (errors per frame from the two rates). */
@@ -210,15 +210,10 @@ function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x
   );
 }
 
-const RANGES: { v: StatsRange; label: string }[] = [
-  { v: "1h", label: "1 h" },
-  { v: "24h", label: "24 h" },
-  { v: "7d", label: "7 days" },
-];
-
 function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteName?: string }) {
   const x = dashSystems(s).find((y) => y.name === name);
   const [range, setRange] = useState<StatsRange>("24h");
+  const ranges = useRanges();
   useTopic(`decode:${name}`);
   // The site shown (a system of several: chosen; else its only one).
   const site = x?.sites.find((y) => y.name === siteName) ?? x?.sites[0];
@@ -226,7 +221,9 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
   const cc = (n: string) => (site ? K.cc(site, n) : k(`cc/${n}`));
   const hist = useHistory([cc("good"), cc("bad"), cc("airSym"), cc("sep"), cc("phaseErr"), cc("snr"), cc("offset"), k("voice/frames"), k("voice/bad"), k("calls"), k("airMs")], range, 360);
   const usual = useUsual([cc("good")]);
-  const freqs = usePolled(`dfreqs:${name}:${range}`, () => radioQuery({ what: "freqs", system: name, hours: range === "7d" ? 168 : 24 }), 120_000);
+  // (The registry keeps a week of each frequency's hours: a longer span shows that week.)
+  const freqHours = range === "1h" || range === "24h" ? 24 : 168;
+  const freqs = usePolled(`dfreqs:${name}:${freqHours}`, () => radioQuery({ what: "freqs", system: name, hours: freqHours }), 120_000);
   const rows = (freqs?.rows ?? []) as FreqRow[];
   const live = s.decodeDetail[name];
   const line = (key: string, label: string, c: string, extra: Partial<Line> = {}): Line => ({ label, color: c, data: hist?.[key] ?? null, ...extra });
@@ -319,7 +316,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
       <div className="row">
         <h2 className="section-title">Over time</h2>
         <span className="spacer" />
-        <Choice value={range} options={RANGES} onChange={setRange} label="Span" />
+        <Choice value={range} options={ranges} onChange={setRange} label="Span" />
       </div>
       <div className="columns">
         {x.kind !== "conventional" && (
@@ -374,7 +371,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
           </Card>
         )}
       </div>
-      <Card title={`Frequencies, ${range === "7d" ? "7 days" : "24 h"}`}>
+      <Card title={`Frequencies, ${freqHours === 168 ? "7 days" : "24 h"}`}>
         {hints.map((t, i) => (
           <p key={i} className="why why-warn">
             {t}

@@ -10,7 +10,8 @@
 export type SampleFormat = "cu8" | "cs16" | "cf32";
 
 /**
- * A radio, or a capture to replay (`type`). Every type may have `autoTune`: correct its
+ * A radio, or a capture to replay (`type`), its own keys beside the ones every
+ * source has: `centerHz`, `rateHz`, `ppm`, and `autoTune`: correct its
  * channels for the frequency error measured on the control channels (Trunk
  * Recorder's autoTune); the error is measured and shown either way. And
  * `guardHz`: left unused at each edge of its band, where the anti-alias filter
@@ -19,12 +20,15 @@ export type SampleFormat = "cu8" | "cs16" | "cf32";
 export type Source = (
   /**
    * `agc`: the tuner's AGC instead of `gainDb`. `bufLen`: bytes per USB transfer (Trunk Recorder's
-   * buflen), a multiple of 512, 0 = the driver's 262144; several dongles on one USB 2.0 bus want 65536.
-   * `buffers`: transfers in flight, 0 = enough for about 2 MiB. Desktop app only.
+   * buflen), a multiple of 512, 0 = the driver's 16384 bytes.
+   * `buffers`: transfers in flight, 0 = the driver's 128 (about 2 MiB). Desktop app only.
    */
-  | { type: "rtlsdr"; serial: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; ppm: number; bufLen?: number; buffers?: number }
-  /** USRP through UHD (desktop app, UHD installed). `args` "" = first found; `agc` the device's AGC (B200/B210). */
-  | { type: "usrp"; args: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; antenna: string; ppm: number }
+  | { type: "rtlsdr"; serial: string; gainDb: number; agc: boolean; bufLen?: number; buffers?: number }
+  /**
+   * USRP through UHD (desktop app, UHD installed). `args` "" = first found; `agc` the device's AGC (B200/B210).
+   * `wireFormat`: samples on the wire, "sc16", "sc12" (B2xx), "sc8"; "" or absent = sc16, or sc12 for a B2xx on USB 2.0 above 8 MSPS.
+   */
+  | { type: "usrp"; args: string; gainDb: number; agc: boolean; antenna: string; wireFormat?: string }
   /**
    * Airspy R2 / Mini through libairspy (desktop app). `gainStep`: a 0–21 step of the linearity or sensitivity
    * table (`gainMode`); "manual": each stage's step, LNA 0–14, mixer 0–15, VGA 0–15, with `agc` the Airspy's own on LNA and mixer.
@@ -32,8 +36,6 @@ export type Source = (
   | {
       type: "airspy";
       serial: string;
-      centerHz: number;
-      rateHz: number;
       gainMode: AirspyGainMode;
       gainStep: number;
       lnaStep: number;
@@ -43,21 +45,33 @@ export type Source = (
       biasTee: boolean;
       /** 12-bit samples packed on the USB: a quarter less of the bus (default true). */
       packing: boolean;
-      ppm: number;
     }
   /**
    * bladeRF 2.0 micro (xA4 / xA9) or original bladeRF through libbladeRF (desktop app). `serial` "" = the first;
    * `bandwidthHz` the analog filter, 0 = the sample rate; `agc` the board's AGC instead of `gainDb`; `biasTee` bladeRF 2.0 only.
    */
-  | { type: "bladerf"; serial: string; centerHz: number; rateHz: number; bandwidthHz: number; gainDb: number; agc: boolean; biasTee: boolean; ppm: number }
+  | { type: "bladerf"; serial: string; bandwidthHz: number; gainDb: number; agc: boolean; biasTee: boolean }
+  /**
+   * HackRF One, natively (desktop app; nothing to install). `serial` "" = the first. Gain by stage: `lnaDb` the IF LNA
+   * 0–40 (8 dB steps), `vgaDb` the baseband VGA 0–62 (2 dB steps), `amp` the +14 dB RF amp; `biasTee` powers an LNA on the antenna port.
+   */
+  | { type: "hackrf"; serial: string; lnaDb: number; vgaDb: number; amp: boolean; biasTee: boolean }
   /**
    * Any SDR with a SoapySDR module (desktop app). `args` "" = first found ("driver=hackrf,serial=…");
    * `agc` the device's AGC; else `gainDb` overall (null: left as it is), then each stage in `gains`
    * (HackRF LNA / VGA / AMP …); `settings` device settings ("biastee=true").
    */
-  | { type: "soapy"; args: string; centerHz: number; rateHz: number; agc: boolean; gainDb: number | null; gains: Record<string, number>; antenna: string; settings: string; ppm: number }
-  | { type: "file"; path: string; centerHz: number; rateHz: number; realtime: boolean; format?: SampleFormat }
-) & { autoTune?: boolean; guardHz?: number };
+  | { type: "soapy"; args: string; agc: boolean; gainDb: number | null; gains: Record<string, number>; antenna: string; settings: string }
+  | { type: "file"; path: string; realtime: boolean; format?: SampleFormat }
+) & {
+  /** Its centre, Hz; 0 = placed over the channels it's for. */
+  centerHz: number;
+  rateHz: number;
+  /** Its frequency error, ppm (a capture's: 0). */
+  ppm: number;
+  autoTune?: boolean;
+  guardHz?: number;
+};
 
 export type AirspyGainMode = "linearity" | "sensitivity" | "manual";
 
@@ -96,6 +110,8 @@ export interface SoapyState extends DriverState {
 }
 export interface Radios {
   usrp: DriverState;
+  /** Built in: always available. */
+  hackrf: DriverState;
   airspy: DriverState;
   bladerf: DriverState;
   soapy?: SoapyState;
@@ -193,6 +209,8 @@ export interface SmartnetBandplan {
  * heard it best).
  */
 export interface System {
+  /** Its number, the same across renames (the store keeps everything of it by this). Given by the recorder when it's saved; never reused. */
+  id?: number;
   shortName: string;
   /** What people call it ("County Public Safety"); the short name is its folder. */
   name?: string;
@@ -419,6 +437,8 @@ export interface Recording extends RecordingRules {
  * A frequency belongs to one system.
  */
 export interface Conventional {
+  /** Its number, as a trunked system's (numbered together). */
+  id?: number;
   /** Folder / record name of its calls. */
   shortName: string;
   /** What people call it; the short name is its folder. */
@@ -467,6 +487,8 @@ export interface Config {
   sources: Source[];
   systems: System[];
   conventional: Conventional[];
+  /** The next system id the recorder gives: above every one given, so none is given twice. */
+  nextSystemId?: number;
   recording: Recording;
   server: {
     /** The address every interface listens on. */
@@ -489,8 +511,29 @@ export interface Config {
   keys?: Record<string, KeySource>;
   /** The log (desktop app). */
   log?: LogSettings;
+  /** What's kept on disk beside the config (desktop app): the call store. */
+  storage?: StorageSettings;
   /** What the dashboard watches on the computer (desktop app). */
   monitor?: MonitorSettings;
+}
+
+export interface StorageSettings {
+  /** Which database keeps what the recorder keeps (the call index, talkgroups, aliases, the radio registry, the dashboard's history): "sqlite" (a file beside the config; the default) or "postgres" (a database server, `url`). */
+  backend: "sqlite" | "postgres";
+  /** Write as little as can be (an SD card): no call index (the call list is the recent calls), the dashboard's history by the hour only, a commit an hour. */
+  lowWrite?: boolean;
+  /** PostgreSQL's connection string (postgres://user:password@host/db); one recorder per database or schema. Not sent to listen-only connections (it can hold a password). */
+  url?: string;
+  /** Days of calls the call store indexes (default 120); 0 keeps them all. The calls' files on disk aren't touched. */
+  retentionDays: number;
+  /** Seconds between the call store's commits under load (10 to 3600; default 300). Each commit writes whole pages, so longer is gentler on flash. */
+  commitSeconds: number;
+  /** Days of the dashboard's history kept, as hours (default 365); 0 keeps it all. */
+  statsDays?: number;
+  /** Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system. */
+  radioIndex?: boolean;
+  /** Index calls by their talkgroups (default true), so a talkgroup's calls page back as far as the store keeps them; off, a talkgroup's list is its recent calls. */
+  talkgroupIndex?: boolean;
 }
 
 export interface MonitorSettings {
@@ -731,6 +774,8 @@ export interface SourceStatus {
   ended: boolean;
   /** Its frequency error, ppm (+: signals come in high): the median of its last control channel and call measurements; null until measured. */
   errorPpm?: number | null;
+  /** The radio's crystal error, measured from its sample clock against this computer's clock, ppm (+: fast); null until measured (about 10 s). */
+  clockPpm?: number | null;
   /** The correction autoTune applies now, ppm. */
   tunePpm?: number;
   /** The correction is an earlier run's score (nothing measured yet). */
@@ -864,7 +909,7 @@ export interface CallRecord {
    * The radios that talked: `time` Unix s, `pos` s into the audio. `tag`: the unit's name (the unit names
    * file or the alias heard, by the system's mode); `tag_ota`: the alias heard. `lat`, `lon`: where the radio said it was (GPS, decimal degrees), when it did.
    */
-  srcList: { src: number; time: number; pos: number; emergency: number; signal_system: string; tag: string; tag_ota: string; lat?: number; lon?: number }[];
+  srcList: { src: number; time: number; pos: number; emergency: number; encrypted?: number; duplex?: number; mode?: number; priority?: number; signal_system: string; tag: string; tag_ota: string; lat?: number; lon?: number }[];
   /**
    * In-band tones sent in its voice, in order (only when there were any): `type` "dtmf" | "knox" | "call_progress" | "tone";
    * `value` the digit, "350+440", or a single tone's Hz; `pos` / `len` s into the audio; `src` the radio talking (0: not known);
@@ -1495,6 +1540,26 @@ export interface PlatformInfo {
   perCore: number[] | null;
   interfaces: { name: string; rx: number; tx: number; state: string }[] | null;
   unavailable: { field: string; why: string }[];
+  /** The store (desktop app): each table's and index's size, measured every 15 minutes; absent until measured, or with the store off. */
+  store?: {
+    backend: "sqlite" | "postgres";
+    radioIndex: boolean;
+    talkgroupIndex: boolean;
+    sizes: StoreSizes;
+    /** What it has written to disk: `of` "store" (SQLite's writer, counted by the OS: Linux), or "server" (PostgreSQL's write-ahead log, the whole server's); else `why` not. Its rate is the `store/written` series. */
+    written: { bytes: number; of: "store" | "server" } | { why: string };
+  };
+}
+
+/** The store's tables and indexes, biggest first, and its files. */
+export interface StoreSizes {
+  objects: { name: string; table: string; index: boolean; bytes: number; rows?: number }[];
+  /** SQLite: the database file; PostgreSQL: its tables and indexes added up. */
+  fileBytes: number;
+  /** SQLite's write-ahead log. */
+  walBytes: number;
+  /** SQLite: pages free inside the file (used again before it grows). */
+  freeBytes: number;
 }
 
 /** Something checked again and again and how it's been answering: an internet target, or the time server. */
@@ -1719,8 +1784,36 @@ export interface RadioResultBody {
  * - `interfaces`: other interfaces, served on ports of their own
  * - `host`: the computer's and plugins' figures (`host`)
  * - `keys`: key containers opened with a password
+ * - `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open
  */
-export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys";
+export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys" | "calls" | "history";
+
+/**
+ * A system's talkgroup: one row of its talkgroup file (Trunk Recorder's
+ * columns), as the recorder keeps it. CSV is only for a file loaded or
+ * downloaded.
+ */
+export interface Talkgroup {
+  number: number;
+  /** "D", "A", "E", "T", "DE", "TE"… (Trunk Recorder's Mode). */
+  mode: string;
+  alphaTag: string;
+  description: string;
+  tag: string;
+  category: string;
+  /** 1 when the file gives none; −1: ignore it (Trunk Recorder's way). */
+  priority: number;
+  /** Multi-site: the site whose copy of a call to keep, by NAC (or RFSS and site, `RRRRssss`); 0: none. */
+  preferredNac: number;
+  /** Multi-site: the same by the site's short name; "": none. */
+  preferredSite: string;
+  /** Never record it (the Ignore column, or priority −1). */
+  ignore: boolean;
+  /** The `#` comment line(s) directly above its row in the file it came from. */
+  comment?: string;
+  /** Columns this app doesn't know, [name, value]: kept for the file it's downloaded as. */
+  extra?: [string, string][];
+}
 
 /** What an edit of one talkgroup sets; what's left out stays as it is. */
 export interface TalkgroupEdit {
@@ -1739,7 +1832,7 @@ export type FromRecorder =
    * units, heard, history, radios, survey, monitorEvent for each recent event,
    * host; with control access also devices, keys, plugins and interfaces): the
    * interface is caught up. Wait for it before treating what's missing as
-   * missing (a system with no talkgroups message has no talkgroup file).
+   * missing (a system with no talkgroups message has no talkgroups).
    */
   | {
       type: "hello";
@@ -1754,7 +1847,7 @@ export type FromRecorder =
       capabilities: Capability[];
     }
   /** The latest calls, newest first: on connecting (then `concluded` for each new one). */
-  | { type: "history"; entries: CallEntry[] }
+  | { type: "history"; entries: CallEntry[]; next?: string }
   /** A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV): one for each system with some, on connecting (then `unitAlias` for each new one). */
   | { type: "units"; system: string; csv: string }
   /** Which key containers are unlocked, after an unlock, a lock or a config change. */
@@ -1765,9 +1858,9 @@ export type FromRecorder =
   | { type: "config"; config: Config; version: number }
   /** Answers setConfig: the config's version now; `error` when the edit wasn't taken (it was of an older version — the config changed elsewhere meanwhile — or bad) or wasn't saved. */
   | { type: "configSaved"; version: number; error?: string }
-  /** A system's talkgroup file (Trunk Recorder's CSV; "" for none): one for each system on connecting, and again whenever one changes. Kept beside the config, not in it. */
-  | { type: "talkgroups"; system: string; csv: string }
-  /** One talkgroup of system `system`'s file edited (setTalkgroup): make the same edit to the file kept (talkgroups.ts withCells). */
+  /** A system's talkgroups: one message for each system with some on connecting, and again whenever they change (setTalkgroups). Kept beside the config, not in it. */
+  | { type: "talkgroups"; system: string; talkgroups: Talkgroup[] }
+  /** One talkgroup of system `system`'s edited (setTalkgroup): make the same edit to the talkgroups kept (talkgroups.ts withEdit). */
   | { type: "talkgroupEdited"; system: string; talkgroup: number; edit: TalkgroupEdit }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
   | ({ type: "spectrum" } & Spectrum)
@@ -1816,16 +1909,16 @@ export type FromRecorder =
   /** Answers statsQuery: `loading` while the history files are still being read. */
   | { type: "statsResult"; id: number; from: number; to: number; loading: boolean; series: Record<string, SeriesData> }
   | ({ type: "radioResult" } & RadioResultBody)
-  /** Answers olderCalls; `more`: there are older ones still. */
-  | { type: "olderCalls"; before: number; entries: CallEntry[]; more: boolean }
+  /** Answers callsQuery: newest first (by start, then path); `next`: more remain, ask again with it as the `cursor`; `error`: only the recent calls (the call store is off). */
+  | { type: "callsResult"; id: number; entries: CallEntry[]; next?: string; error?: string }
   | { type: "quit" };
 
 export type ToRecorder =
   /** The whole config, edited from `version` (the last `config` message's): refused when the config has changed since. */
   | { type: "setConfig"; config: Config; version: number }
-  /** System `system`'s talkgroup file (Trunk Recorder's CSV; "" for none). Everyone gets it back as a `talkgroups` message. */
-  | { type: "setTalkgroups"; system: string; csv: string }
-  /** One talkgroup of system `system`'s file: only the cells `edit` sets change (a row added when the file lacks it). Everyone gets it back as a `talkgroupEdited` message. */
+  /** System `system`'s talkgroups, all of them (`[]`: none; a number twice: the later row, in the first's place). Everyone gets them back as a `talkgroups` message. */
+  | { type: "setTalkgroups"; system: string; talkgroups: Talkgroup[] }
+  /** One talkgroup of system `system`'s: only the cells `edit` sets change (a row added when it has none). Everyone gets it back as a `talkgroupEdited` message. */
   | { type: "setTalkgroup"; system: string; talkgroup: number; edit: TalkgroupEdit }
   | { type: "start" }
   | { type: "stop" }
@@ -1875,9 +1968,9 @@ export type ToRecorder =
   /** What this connection watches (replaces the last): costly messages only go to those that ask (`activity`: the frequent monitorEvent kinds). */
   | { type: "subscribe"; topics: Topic[] }
   /** The history of series (names, or prefixes ending in `*`) over `range` back from now, or `from`–`to` (Unix s), in about `points` points. */
-  | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d"; from?: number; to?: number; points?: number }
-  /** Calls that started before `before` (Unix ms), newest first, from the last 24 hours (the Listen page's "Load older"). */
-  | { type: "olderCalls"; before: number; limit: number }
+  | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d" | "30d" | "90d" | "1y"; from?: number; to?: number; points?: number }
+  /** Recorded calls from the call store, newest first (by start, then path): by system (its short name), talkgroup and radio (a system's own: without one, each system's), and start time (Unix ms, `from` inclusive to `to` exclusive); `cursor`: the last page's `next`; `limit` 1..500 (100). */
+  | { type: "callsQuery"; id: number; system?: string; talkgroup?: number; unit?: number; from?: number; to?: number; cursor?: string; limit?: number }
   /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited). */
   | { type: "pluginAction"; id: number; plugin: string; action: string; value: unknown }
   /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */

@@ -34,7 +34,7 @@ use crate::protocol::ToClient;
 use crate::session::Output;
 pub use aggregate::{Aggregator, Rollup};
 pub use events::{Emitted, Monitor, MonitorEvent, Watcher, ACTIVITY};
-pub use history::History;
+pub use history::{Bucket, Buckets, History, HourRow, Span};
 pub use meter::SampleMeter;
 pub use radio::{Names, Registry, TgInfo};
 
@@ -98,7 +98,7 @@ pub struct NameBook {
 
 impl NameBook {
     /// Each system's talkgroups, as an engine built from `cfg` and these talkgroup files has them.
-    pub fn set_config(&mut self, cfg: &Config, files: &crate::config::TalkgroupFiles) {
+    pub fn set_config(&mut self, cfg: &Config, files: &crate::config::TalkgroupLists) {
         self.set_systems(&cfg.engine_config(0.0, files).systems);
         self.set_rows(cfg);
     }

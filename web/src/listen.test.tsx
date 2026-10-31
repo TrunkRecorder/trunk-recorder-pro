@@ -9,8 +9,9 @@ import { snapshot, transport } from "./controller.ts";
 import { ListenPage, Talkgroups } from "./dash/Listen.tsx";
 import { avoid, readSelection, setAll, setFeed, setTalkgroupsOn, wanted } from "./listen.ts";
 import type { CallEntry, EngineStatus, FromRecorder, SiteIdentity, SiteStatus } from "./protocol.ts";
+import { readTalkgroupFile } from "./talkgroups.ts";
 
-const CSV = (rows: string) => `Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n${rows}`;
+const CSV = (rows: string) => readTalkgroupFile(`Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n${rows}`).talkgroups;
 const call = (site: string, talkgroup: number, tag = "", at = Date.now()): CallEntry =>
   ({ path: `dcfd/${talkgroup}-${at}`, record: { short_name: "dcfd", site, talkgroup, talkgroup_tag: tag, start_time_ms: at, call_length_ms: 4000, encrypted: 0 } }) as unknown as CallEntry;
 
@@ -37,7 +38,7 @@ function twoSites(): void {
     { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys"] },
   ];
   for (const m of greeting) transport.onMessage(m);
-  transport.onMessage({ type: "talkgroups", system: "dcfd", csv: CSV("100,64,Fire Dispatch,D,Fire,,\n200,c8,EMS,D,EMS,,\n300,12c,Tac 3,D,Tac,,") });
+  transport.onMessage({ type: "talkgroups", system: "dcfd", talkgroups: CSV("100,64,Fire Dispatch,D,Fire,,\n200,c8,EMS,D,EMS,,\n300,12c,Tac 3,D,Tac,,") });
   const id = (site: number): SiteIdentity => ({ nac: null, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site });
   const site = (index: number, name: string): SiteStatus =>
     ({ index, name, nowS: 1, controlChannelHz: 851_000_000 + index * 500_000, identity: id(index + 1), good: 1, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null });
@@ -83,7 +84,7 @@ test("Listen: a system whose audio isn't kept has no talkgroups to pick, and say
   wmata.recording = { archiveWav: false, archiveM4a: false };
   c.systems.push(wmata);
   transport.onMessage({ type: "config", config: c, version: 2 });
-  transport.onMessage({ type: "talkgroups", system: "wmata", csv: CSV("32784,8010,Red Line,D,Rail,,") });
+  transport.onMessage({ type: "talkgroups", system: "wmata", talkgroups: CSV("32784,8010,Red Line,D,Rail,,") });
   concluded({ ...call("wmata", 32784, "Red Line"), path: "wmata/32784-1", record: { ...call("wmata", 32784).record, short_name: "wmata" }, audio: false } as CallEntry);
   const list = tgList();
   assert.doesNotMatch(list, /Red Line/, "none of its talkgroups");

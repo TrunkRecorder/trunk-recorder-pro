@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, radioName, rateFor, rateOk, ratesText, resolvedCenters, restartKey, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { activeSites, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, radioName, rateFor, rateOk, ratesText, resolvedCenters, restartKey, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -51,7 +51,7 @@ test("importTrunkRecorderConfig: multiSite systems of one multiSiteSystemName ar
   };
   const { config, todo, talkgroups } = importTrunkRecorderConfig(JSON.stringify(tr), defaultConfig(), { "tg.csv": "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n100,64,Fire,D,Fire,,\n" });
   assert.deepEqual(config.systems.map((s) => [s.shortName, s.sites.map((x) => siteNameOf(s, x))]), [["county", ["north", "south"]], ["city", ["city"]]]);
-  assert.match(talkgroups.county, /Fire/, "its talkgroup file, apart from the config");
+  assert.deepEqual(talkgroups.county.map((t) => [t.number, t.alphaTag]), [[100, "Fire"]], "its talkgroups, apart from the config");
   assert.ok(!JSON.stringify(config).includes("Fire"));
   assert.ok(todo.some((t) => t.kind === "siteLock" && t.system === "county" && t.site === 1), JSON.stringify(todo));
 });
@@ -101,8 +101,24 @@ test("SOURCE_KINDS: each kind's new source is that kind, and names its device wh
     assert.equal(k.fresh().type, type);
     if (k.device) assert.equal(deviceId(sourceFor(type, "x1")), "x1", type);
   }
-  assert.deepEqual(DRIVER_KINDS, ["usrp", "airspy", "bladerf", "soapy"]);
+  assert.deepEqual(DRIVER_KINDS, ["usrp", "airspy", "bladerf", "hackrf", "soapy"]);
   assert.equal(sourceKey(sourceFor("bladerf", "f12ce103")), "bladerf:f12ce103");
+});
+
+test("a new HackRF source: the driver's gain defaults, a native kind with a device list", () => {
+  const h = SOURCE_KINDS.hackrf.fresh();
+  assert.deepEqual(h, { type: "hackrf", serial: "", centerHz: 0, rateHz: 8_000_000, lnaDb: 16, vgaDb: 20, amp: false, biasTee: false, ppm: 0 });
+  assert.equal(SOURCE_KINDS.hackrf.label, "HackRF");
+  assert.equal(SOURCE_KINDS.hackrf.driver, undefined, "nothing to install");
+  assert.equal(sourceKey(sourceFor("hackrf", "0000a1")), "hackrf:0000a1");
+  const none = { available: true, detail: "", devices: [] };
+  const radios: Radios = { usrp: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] }, airspy: none, bladerf: none };
+  assert.equal(foundRadio(radios, h)?.serial, "0000a1", "the first, when none is named");
+  assert.equal(detectRadios([], radios)[0].kind, "hackrf");
+  // Its stages apply while recording, as an Airspy's do.
+  const c = (x: Source) => ({ ...defaultConfig(), sources: [x] });
+  assert.equal(restartKey(c({ ...h, lnaDb: 32, vgaDb: 40, amp: true } as Source), true), restartKey(c(h), true));
+  assert.notEqual(restartKey(c({ ...h, rateHz: 10e6 }), true), restartKey(c(h), true));
 });
 
 test("importing a bladeRF already set up keeps one source", () => {
@@ -131,7 +147,7 @@ test("foundRadio: what the picked radio runs at, once its driver has asked it; a
   const busy = { serial: "C", label: "Airspy · SN C" };
   const blade = { serial: "f12ce1037830a1b27f3ceeba1f521413", label: "bladeRF 2.0 · SN f12ce1037830…", model: "bladeRF 2.0", rateRange: [520_834, 61_440_000] as [number, number] };
   const driver = (devices: FoundRadio[] | null) => ({ available: true, detail: "", devices });
-  const radios: Radios = { usrp: driver(null), airspy: driver([r2, mini, busy]), bladerf: driver([blade]) };
+  const radios: Radios = { usrp: driver(null), hackrf: driver([]), airspy: driver([r2, mini, busy]), bladerf: driver([blade]) };
   const airspy = (serial: string) => ({ ...(SOURCE_KINDS.airspy.fresh() as Extract<Source, { type: "airspy" }>), serial });
   assert.equal(foundRadio(radios, airspy(r2.serial)), r2);
   assert.equal(foundRadio(radios, airspy("")), r2, "the first found");

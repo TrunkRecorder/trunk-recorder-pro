@@ -3,12 +3,13 @@
 This page covers using radios other than a current RTL-SDR: USRPs, Airspy R2 / Mini, bladeRFs, anything with
 a SoapySDR module, and older RTL-SDR dongles. It explains which driver each needs, how Trunk
 Recorder Pro finds it, and how to check it worked. These radios only work in the desktop app, not
-in the [browser version](browser.md) or the [Docker image](docker.md).
+in the [browser version](browser.md) or the [Docker image](docker.md). The exception is the
+[HackRF One](#hackrf-one), which needs no driver and works in Docker.
 
 ## How drivers are found
 
-RTL-SDRs with an R820T or R828D tuner need nothing: Trunk Recorder Pro has its own driver for
-them. Every other radio uses its maker's driver library, which you install yourself. Trunk
+RTL-SDRs with an R820T or R828D tuner, and HackRF Ones, need nothing: Trunk Recorder Pro has its
+own driver for them. Every other radio uses its maker's driver library, which you install yourself. Trunk
 Recorder Pro isn't built against these libraries. It looks for each one when it starts, so the
 same download works with or without them:
 
@@ -17,7 +18,7 @@ same download works with or without them:
 | USRP (Ettus / NI) | UHD (`libuhd`) | **USRP** |
 | Airspy R2, Airspy Mini | libairspy | **Airspy** |
 | bladeRF 2.0 micro xA4 / xA9, original bladeRF x40 / x115 | libbladeRF 2.x | **bladeRF** |
-| HackRF, SDRplay, LimeSDR, PlutoSDR, Airspy HF+, older RTL-SDRs, ... | SoapySDR plus the device's module | **SoapySDR** |
+| SDRplay, LimeSDR, PlutoSDR, Airspy HF+, older RTL-SDRs, ... | SoapySDR plus the device's module | **SoapySDR** |
 
 The driver is looked for once, when Trunk Recorder Pro starts. **After installing a driver,
 restart Trunk Recorder Pro.** If you choose a source type whose driver wasn't found, **Setup →
@@ -39,7 +40,7 @@ uhd_images_downloader          # sudo uhd_images_downloader on Linux
 ```
 
 On Linux, the udev rule from the [Linux](linux.md#dongle-access-udev) package already covers the
-Airspy R2 / Mini and the USB USRPs (B200, B210, B200mini); UHD's and libairspy's own packages
+Airspy R2 / Mini and the USB USRPs (B200, B210, B200mini, B206mini); UHD's and libairspy's own packages
 usually add rules for them as well. bladeRFs get theirs from the libbladeRF package
 (`88-nuand-bladerf*.rules`). Other SoapySDR devices need the udev rules their own packages
 install.
@@ -79,7 +80,9 @@ an environment variable:
 TRUNK_PRO_UHD=/opt/uhd/lib/libuhd.so.4.6.0 trunk-pro devices --usrp
 ```
 
-When the variable is set, only that file is tried. For the systemd service, add an
+When the variable is set, only that file is tried. Use these, not `LD_LIBRARY_PATH`, if you gave
+`trunk-pro` the real-time priority capability (`setcap`): such a program's loader ignores
+`LD_LIBRARY_PATH` (see [Dropped samples](../troubleshooting.md#dropped-samples)). For the systemd service, add an
 `Environment=TRUNK_PRO_UHD=...` line to the `[Service]` section of `trunk-pro.service`.
 
 ## Setting up each radio
@@ -99,6 +102,12 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
 - **Gain, dB**: 0–76 on a B200 / B210. **AGC** uses the device's own AGC instead, on the B200 /
   B210 and E3xx only.
 - **Antenna**: for example `RX2` or `TX/RX`. Blank uses the device's default.
+- **Wire format**: sc16, sc12 (B2xx only) or sc8; blank chooses. A B2xx on a USB 2.0 link above
+  8 MSPS gets sc12, and the log says which link and format it found. The buffer UHD keeps is
+  asked for as `num_recv_frames=1024` (about 260 ms at 8 MSPS) unless the device arguments set it.
+- A B2xx whose master clock UHD would set equal to the sample rate (sidebands 270–310 kHz either side of strong carriers) gets it doubled,
+  unless the device arguments set `master_clock_rate`.
+- The B206mini needs UHD 4.9 or newer (Debian trixie's package is 4.8); it uses the b205mini FPGA image.
 
 ### Airspy
 
@@ -128,14 +137,28 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
 Samples lost over USB are counted from the board's sample timestamps and show as **Dropped** on
 the RF page. A bladeRF that SoapySDR finds is pointed to the **bladeRF** source type instead.
 
+### HackRF One
+
+A **HackRF** source is driven directly over USB, like an RTL-SDR: no driver, no SoapySDR. It needs
+firmware 2021.03 or newer; an older one is refused when opened, with a message to update it
+(`hackrf_spiflash`). The Linux udev rule covers it.
+
+- **Device**: the board's serial; blank opens the first one.
+- **Sample rate**: 1 to 20 MSPS.
+- **LNA, dB** (0–40, steps of 8, default 16) and **VGA, dB** (0–62, steps of 2, default 20).
+- **RF amp (+14 dB)**: off by default; it overloads near strong signals.
+- **Bias-T**: powers an LNA through the antenna port.
+
+A SoapySDR source with `driver=hackrf` still works, for a rad1o or a HackRF behind SoapyRemote.
+
 ### SoapySDR
 
-- **Device**: SoapySDR device arguments, such as `driver=hackrf` or `driver=sdrplay,serial=...`.
+- **Device**: SoapySDR device arguments, such as `driver=sdrplay,serial=...` or `driver=sdrplay,serial=...`.
   **Find** searches and offers what it found. Blank opens the first device found.
 - **Sample rate**: one the device supports.
 - **Gain, dB** and **AGC**: an overall gain, or the device's AGC (on by default for SoapySDR).
-- **Gain stages, dB**: set each of the device's gain stages by name, for example HackRF LNA
-  (0–40), VGA (0–62) and AMP (0 or 14), or SDRplay IFGR / RFGR. Not used with AGC on.
+- **Gain stages, dB**: set each of the device's gain stages by name, for example SDRplay IFGR / RFGR
+  or a rad1o's LNA (0–40), VGA (0–62) and AMP (0 or 14). Not used with AGC on.
 - **Antenna**: blank uses the device's default.
 - **Device settings**: `key=value` settings, such as `biastee=true`. `SoapySDRUtil --probe` lists
   what your device accepts.
