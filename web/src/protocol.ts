@@ -1445,7 +1445,11 @@ export interface ChannelSnapshot {
   names?: string[];
 }
 
-/** Something notable (crates/trunk-app/src/stats/events.rs). Which fields come depends on `kind`. */
+/**
+ * Something notable (crates/trunk-app/src/stats/events.rs). Which fields come depends on `kind`.
+ * The frequent kinds (`tgActive`, `unitActive`, `unitAffiliated`, `callVolume`) come only to a
+ * connection subscribed to the topic `activity`, and aren't among the recent events it is greeted with.
+ */
 export type MonitorEvent = { type: "monitorEvent" } & MonitorEventBody;
 
 export interface MonitorEventBody {
@@ -1961,7 +1965,7 @@ export type ToRecorder =
   | { type: "addInterface"; path: string }
   /** Stop serving an interface and forget it; an installed copy is deleted. */
   | { type: "removeInterface"; id: string }
-  /** What this connection watches (replaces the last): costly messages only go to those that ask. */
+  /** What this connection watches (replaces the last): costly messages only go to those that ask (`activity`: the frequent monitorEvent kinds). */
   | { type: "subscribe"; topics: Topic[] }
   /** The history of series (names, or prefixes ending in `*`) over `range` back from now, or `from`–`to` (Unix s), in about `points` points. */
   | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d" | "30d" | "90d" | "1y"; from?: number; to?: number; points?: number }

@@ -1292,6 +1292,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A connection subscribed to `activity` gets the frequent events as
+    /// `monitorEvent`s; one that didn't subscribe gets none of them.
+    #[tokio::test]
+    async fn the_activity_topic_goes_to_its_subscribers_alone() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message as Ws;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-activity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = crate::protocol_tests::ctx(crate::protocol_tests::conventional_config(), &dir);
+        let app = super::api(axum::Router::new()).layer(axum::Extension(super::Door::Builtin)).with_state(ctx.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/api/ws", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        // Connected and greeted: everything up to hello.
+        let greeted = || async {
+            let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+            while let Some(Ok(m)) = ws.next().await {
+                if m.to_text().is_ok_and(|t| t.contains(r#""type":"hello""#)) {
+                    return ws;
+                }
+            }
+            panic!("no hello");
+        };
+        // What each connection hears, in order, up to the notice `until`.
+        let kinds_until = |mut ws: tokio_tungstenite::WebSocketStream<_>, until: &'static str| async move {
+            let mut kinds = Vec::new();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while let Some(Ok(Ws::Text(t))) = ws.next().await {
+                    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                    if v["type"] == "notice" && v["message"] == until {
+                        break;
+                    }
+                    if v["type"] == "monitorEvent" {
+                        kinds.push(v["kind"].as_str().unwrap_or("").to_string());
+                    }
+                }
+            })
+            .await
+            .expect("the notice came");
+            kinds
+        };
+        let mut subscriber = greeted().await;
+        let plain = greeted().await;
+        subscriber.send(Ws::Text(r#"{"type":"subscribe","topics":["activity"]}"#.into())).await.unwrap();
+        loop {
+            let m = subscriber.next().await.unwrap().unwrap();
+            if m.to_text().is_ok_and(|t| t.contains(r#""type":"subscribed""#)) {
+                assert!(m.to_text().unwrap().contains("activity"));
+                break;
+            }
+        }
+        assert!(ctx.topics().has(trunk_app::stats::ACTIVITY), "the engine is told");
+        let event = trunk_app::stats::MonitorEvent::UnitActive { system: "dcfd".into(), unit: 7, talkgroup: 1 }.to_json(100.0);
+        let _ = ctx.hub.send(std::sync::Arc::new(crate::runtime::Out::Topic { topic: trunk_app::stats::ACTIVITY.to_string(), text: event.to_string() }));
+        crate::runtime::publish(&ctx.hub, trunk_app::protocol::ToClient::notice("after".to_string()));
+        assert_eq!(kinds_until(subscriber, "after").await, ["unitActive"]);
+        assert!(kinds_until(plain, "after").await.is_empty(), "not for a connection that didn't ask");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn an_interface_folder_is_served_and_nothing_outside_it() {
         let base = std::env::temp_dir().join(format!("trunk-pro-ui-{}", std::process::id()));

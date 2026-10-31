@@ -180,6 +180,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   reports `clockPpm`, the radio's crystal error against the computer's clock. The RF page shows it.
 - **Device discovery no longer probes an RTL-SDR the app is recording from**; it shows as
   "recording" (fixes the "interface is busy" log entries of issue #106).
+- **The frequent events on request.** A connection that subscribes to the topic `activity` gets
+  every grant (`unitActive`), affiliation (`unitAffiliated`), talkgroup heard (`tgActive`) and
+  call-volume reading as `monitorEvent` messages. The feed, the recent events a connection is
+  greeted with, and the dashboard are as they were; the recorder builds these only while someone
+  subscribes. For interfaces that show a unit activity feed.
 
 ## [0.2.11] — 2026-10-27
 
