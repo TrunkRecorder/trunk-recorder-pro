@@ -2,9 +2,11 @@
 //! keys file named in `keys` (before key sources, v0.1.10), interfaces as a
 //! list and `server.home` (before interfaces had ports, v0.1.14), the audio
 //! kept as `audioArchive` and `compressWav` (before v0.2.4), a
-//! conventional channel's `tone` (before v0.2.6), and each
+//! conventional channel's `tone` (before v0.2.6), each
 //! site a system of its own (before v0.1.15; see
-//! research/multi-site-systems.md). Everything that reads an older config,
+//! research/multi-site-systems.md), and talkgroups kept as files beside
+//! the config and the `files` store (before the store, v0.2.12:
+//! [`talkgroup_files_into_store`], [`storage`]). Everything that reads an older config,
 //! or the files kept under a former system's name, goes through here; the
 //! web's side is web/src/migrate.ts. To drop the upgrade, delete both (and
 //! their tests) and the few lines the compiler then points at.
@@ -33,6 +35,7 @@ pub fn config(v: &mut serde_json::Value) -> Vec<String> {
     server(v);
     archive(v);
     let mut notes = channels(v);
+    notes.extend(storage(v));
     notes.extend(sites(v));
     notes.extend(talkgroups(v));
     notes
@@ -54,7 +57,7 @@ fn talkgroups(v: &mut serde_json::Value) -> Vec<String> {
     if moved.is_empty() {
         return vec![];
     }
-    vec![format!("Talkgroup files are kept beside the config now, as <short name>.talkgroups.csv: moved {}'s there.", moved.join("'s, "))]
+    vec![format!("Talkgroups are kept in the store now: moved {}'s out of the config.", moved.join("'s, "))]
 }
 
 /// The talkgroup files an older config (`v`, its JSON) holds, by its
@@ -87,6 +90,57 @@ pub fn move_talkgroups(path: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Before the store (v0.2.12), `storage.backend` could be `files`: the
+/// store is a database always now, so that's the default (SQLite), and the
+/// other old setting that went with it, `batchSeconds`, goes too.
+fn storage(v: &mut serde_json::Value) -> Vec<String> {
+    let Some(st) = v.get_mut("storage").and_then(serde_json::Value::as_object_mut) else { return vec![] };
+    st.remove("batchSeconds");
+    if st.get("backend").and_then(serde_json::Value::as_str) != Some("files") {
+        return vec![];
+    }
+    st.remove("backend");
+    vec!["storage.backend \"files\" is gone: what the recorder keeps is in its store (SQLite, beside the config) now.".into()]
+}
+
+/// Before the store (v0.2.12), a system's talkgroups were a file beside
+/// the config, `<short name>.talkgroups.csv` (and [`move_talkgroups`] still
+/// moves an older config's out to there first, so that saving the config
+/// without them loses nothing). Each such file of `cfg`'s systems is read
+/// into the store, here: handed to `keep` (Ok: the store has them now), then
+/// renamed `<short name>.talkgroups.csv.imported`. A system the store
+/// already has talkgroups for (`stored`) keeps them: its file is renamed
+/// `….unused`. A file that can't be kept is left, to try at the next start.
+/// Returns what was done, to tell.
+///
+/// Temporary, as the rest of this module: to drop it, delete this, the
+/// call in trunk-pro's `main.rs` (marked) and the test.
+pub fn talkgroup_files_into_store(path: &Path, cfg: &Config, stored: &dyn Fn(&str) -> bool, keep: &mut dyn FnMut(&str, Vec<trunk_core::trunk::TalkgroupRow>) -> Result<(), String>) -> Vec<String> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
+    let mut notes = Vec::new();
+    for name in names {
+        let file = crate::config::talkgroups_path(dir, name);
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        let set_aside = |to: &str| std::fs::rename(&file, file.with_extension(format!("csv.{to}")));
+        if stored(name) {
+            let _ = set_aside("unused");
+            notes.push(format!("{}: {name} already has talkgroups in the store; the file is kept as {}.unused", file.display(), file.display()));
+            continue;
+        }
+        let rows = trunk_core::trunk::parse_rows(&text);
+        let n = rows.len();
+        match keep(name, rows) {
+            Ok(()) => {
+                let _ = set_aside("imported");
+                notes.push(format!("{}: {n} talkgroups of {name} moved into the store (the file is kept as {}.imported)", file.display(), file.display()));
+            }
+            Err(e) => notes.push(format!("{}: {name}'s talkgroups couldn't be moved into the store ({e}); tried again at the next start", file.display())),
+        }
+    }
+    notes
 }
 
 /// Before key sources (v0.1.10), a system's `keys` named its keys file: such
@@ -320,6 +374,46 @@ pub fn old_bandplan(s: &SiteConfig) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    /// Talkgroup files beside a config go into the store and are renamed;
+    /// a system the store already has talkgroups for keeps its own; one
+    /// that can't be kept is left for next time.
+    #[test]
+    fn talkgroup_files_move_into_the_store() {
+        let dir = std::env::temp_dir().join(format!("trp-tg-into-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let cfg = Config::from_json(r#"{ "systems": [{ "shortName": "a" }, { "shortName": "b" }, { "shortName": "c" }, { "shortName": "d" }] }"#).unwrap();
+        for (n, csv) in [("a", "Decimal,Alpha Tag\n101,Fire\n102,EMS\n"), ("b", "1,x\n"), ("c", "7,Tac\n")] {
+            std::fs::write(crate::config::talkgroups_path(&dir, n), csv).unwrap();
+        }
+        let mut kept: BTreeMap<String, usize> = BTreeMap::new();
+        let notes = talkgroup_files_into_store(&path, &cfg, &|n| n == "b", &mut |n, rows| {
+            if n == "c" {
+                return Err("refused".into());
+            }
+            kept.insert(n.to_string(), rows.len());
+            Ok(())
+        });
+        assert_eq!(kept, BTreeMap::from([("a".to_string(), 2)]));
+        assert_eq!(notes.len(), 3, "{notes:?}");
+        let exists = |f: &str| dir.join(f).exists();
+        assert!(exists("a.talkgroups.csv.imported") && !exists("a.talkgroups.csv"));
+        assert!(exists("b.talkgroups.csv.unused"), "the store's own kept");
+        assert!(exists("c.talkgroups.csv"), "left, to try again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `files` store is gone: a config that had it reads as the default.
+    #[test]
+    fn the_files_store_becomes_the_default() {
+        let c = Config::from_json(r#"{ "storage": { "backend": "files", "batchSeconds": 60, "retentionDays": 30 } }"#).unwrap();
+        assert_eq!((c.storage.backend, c.storage.retention_days), (crate::config::StorageBackend::Sqlite, 30));
+        assert!(c.notes.iter().any(|n| n.contains("\"files\" is gone")), "{:?}", c.notes);
+    }
+
     use super::*;
 
     /// An older config: each system a site of its own, those its site group
@@ -418,7 +512,7 @@ mod tests {
         let site = &c.systems[0].sites[0];
         assert_eq!((site.name.as_str(), site.control_channels_hz.as_slice(), site.modulation), ("", &[851_012_500.0][..], crate::config::Modulation::Qpsk));
         assert_eq!(c.notes.len(), 2, "{:?}", c.notes);
-        assert!(c.notes[1].contains("moved a's there"), "its talkgroup file moves out, and the note says so: {:?}", c.notes);
+        assert!(c.notes[1].contains("moved a's out of the config"), "its talkgroup file moves out, and the note says so: {:?}", c.notes);
         assert!(!serde_json::to_string(&c).unwrap().contains("talkgroupsCsv"));
         let saved = serde_json::to_value(&c).unwrap();
         assert!(saved["systems"][0].get("controlChannelsHz").is_none() && saved["systems"][0]["sites"][0]["controlChannelsHz"][0] == 851012500.0);

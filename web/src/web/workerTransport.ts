@@ -2,11 +2,11 @@
 // The page keeps the config (localStorage) and the chosen capture files, asks
 // for WebUSB access (it needs a click), and reads recorded calls from OPFS.
 
-import { readTalkgroupFile, withEdit } from "../talkgroups.ts";
+import { withEdit } from "../talkgroups.ts";
 import { decodeAudioFrame, type AudioChunk, type Config, type FromRecorder, type Talkgroup, type ToRecorder } from "../protocol.ts";
 import type { CallExt, Transport } from "../transport.ts";
 import { defaultConfig, storedConfig } from "../config.ts";
-import { oldTalkgroups } from "../migrate.ts";
+import { migrateTalkgroups } from "../migrate.ts";
 import type { FromWorker, ToWorker } from "./engine.worker.ts";
 import { callBlob } from "./opfs.ts";
 
@@ -26,12 +26,9 @@ function loadConfig(): Config {
 
 function loadTalkgroups(): Record<string, Talkgroup[]> {
   try {
-    const kept = JSON.parse(localStorage.getItem(TALKGROUPS_KEY) ?? "{}") as Record<string, Talkgroup[] | string>;
-    // An older config's, moved out of it (migrate.ts).
-    const old = oldTalkgroups(JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}"));
-    // (Kept before as a talkgroup file's text: read as one.)
-    const rows = (v: Talkgroup[] | string) => (typeof v === "string" ? readTalkgroupFile(v).talkgroups : v);
-    return Object.fromEntries(Object.entries({ ...old, ...kept }).map(([k, v]) => [k, rows(v)]).filter(([, v]) => v.length));
+    const kept = JSON.parse(localStorage.getItem(TALKGROUPS_KEY) ?? "{}") as Record<string, Talkgroup[]>;
+    // (With what an older version kept read in: migrate.ts.)
+    return migrateTalkgroups(JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}"), kept);
   } catch {
     return {};
   }

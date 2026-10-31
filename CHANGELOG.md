@@ -62,11 +62,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     - A talkgroup edit that couldn't be saved is told to the browsers.
     - SQLite copies what can't be made again (systems, talkgroups, aliases and other documents,
       the radio registry) to `trunk-pro.backup` once a day.
-  - **Breaking, while in beta: nothing is carried over or migrated.** With the store on (the
-    default), the flat files (`<shortName>.talkgroups.csv`, `radio/`, `*.units.csv`,
-    `*.bandplan`, `conventional.heard.json`, `tune.json`, `sharing.json`, `stats/`) aren't read;
-    they're left as they are. Load each system's talkgroups again in Setup (**Load CSV…**, the
-    old file will do). A store of another schema version is set aside (SQLite: renamed
+  - **Breaking, while in beta: little is carried over.**
+    - **Talkgroups are:** each system's `<shortName>.talkgroups.csv` beside the config (and an older
+      config's `talkgroupsCsv`) is read into the store at the first start, and the file renamed
+      `….imported`. A system the store already has talkgroups for keeps them (its file is renamed
+      `….unused`).
+    - **So is the config:** `storage.backend: "files"` reads as the default (SQLite), and the
+      config is saved without it (the old one kept as `config.json.before-sites`).
+    - **Nothing else is.** The other flat files (`radio/`, `*.units.csv`, `*.bandplan`,
+      `conventional.heard.json`, `tune.json`, `sharing.json`, `stats/`) aren't read; they're left as
+      they are. Talker aliases, band plans and the radio registry are learned again on the air. A store of another schema version is set aside (SQLite: renamed
     `.v<n>-<time>`; PostgreSQL: its tables made afresh) and a new one started; the call list is
     rebuilt from the recordings' `.json` files.
   - **Talkgroups are kept in the store as rows**, one per talkgroup with its columns typed (a

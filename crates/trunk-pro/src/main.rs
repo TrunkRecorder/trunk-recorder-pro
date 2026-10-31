@@ -893,6 +893,21 @@ fn serve(a: &Args) {
         let hub = hub.clone();
         db.on_failure(move |why| runtime::publish(&hub, trunk_app::protocol::ToClient::error(why)));
     }
+    // TEMPORARY (trunk_app::migrate::talkgroup_files_into_store): talkgroup
+    // files an older version kept beside the config, into the store. Delete
+    // this block with it.
+    if !db.is_disabled() {
+        let stored = |name: &str| db.talkgroups(name).is_ok_and(|rows| !rows.is_empty());
+        let mut keep = |name: &str, rows: Vec<trunk_core::trunk::TalkgroupRow>| {
+            kept::write_talkgroups(&db, name, rows.clone());
+            db.flush()?;
+            // (Renamed only once it reads back as it went in.)
+            if db.talkgroups(name)? == rows { Ok(()) } else { Err("not read back as written".into()) }
+        };
+        for n in trunk_app::migrate::talkgroup_files_into_store(&config_path, &cfg, &stored, &mut keep) {
+            log::info!("{n}");
+        }
+    }
     let talkgroups = kept::load_talkgroups(&db, &cfg);
     runtime::load_names(&shared, &cfg, &talkgroups, &db);
     let ctx = Arc::new(runtime::Ctx {
