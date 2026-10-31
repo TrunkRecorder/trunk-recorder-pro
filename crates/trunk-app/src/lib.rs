@@ -5,6 +5,7 @@
 
 #[macro_use]
 mod choice;
+pub mod calls;
 pub mod channels;
 pub mod config;
 pub mod ekc;

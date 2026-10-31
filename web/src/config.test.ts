@@ -51,7 +51,7 @@ test("importTrunkRecorderConfig: multiSite systems of one multiSiteSystemName ar
   };
   const { config, todo, talkgroups } = importTrunkRecorderConfig(JSON.stringify(tr), defaultConfig(), { "tg.csv": "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n100,64,Fire,D,Fire,,\n" });
   assert.deepEqual(config.systems.map((s) => [s.shortName, s.sites.map((x) => siteNameOf(s, x))]), [["county", ["north", "south"]], ["city", ["city"]]]);
-  assert.match(talkgroups.county, /Fire/, "its talkgroup file, apart from the config");
+  assert.deepEqual(talkgroups.county.map((t) => [t.number, t.alphaTag]), [[100, "Fire"]], "its talkgroups, apart from the config");
   assert.ok(!JSON.stringify(config).includes("Fire"));
   assert.ok(todo.some((t) => t.kind === "siteLock" && t.system === "county" && t.site === 1), JSON.stringify(todo));
 });

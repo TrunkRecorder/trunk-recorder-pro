@@ -11,7 +11,7 @@ import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWid
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall } from "../Waterfall.tsx";
-import { K, recentAvg, running, runningSites, sourceGuard, sourceHealth, useHistory, val } from "./data.ts";
+import { K, recentAvg, running, runningSites, sourceGuard, sourceHealth, useHistory, useRanges, val } from "./data.ts";
 import { ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
@@ -326,15 +326,10 @@ function SourceWaterfall({ s, i, title }: { s: AppState; i: number; title?: stri
   );
 }
 
-const RANGES: { v: StatsRange; label: string }[] = [
-  { v: "1h", label: "1 h" },
-  { v: "24h", label: "24 h" },
-  { v: "7d", label: "7 days" },
-];
-
 function SourceDetail({ s, i }: { s: AppState; i: number }) {
   const src = s.sources[i];
   const [range, setRange] = useState<StatsRange>("24h");
+  const ranges = useRanges();
   useTopic(`rf:${i}`);
   const k = (x: string) => K.src(src.label, x);
   const hist = useHistory([k("noise"), k("peak"), k("ppm"), k("tune"), k("dropped"), k("clipPct")], range, 360);
@@ -397,7 +392,7 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
       <div className="row">
         <h2 className="section-title">Over time</h2>
         <span className="spacer" />
-        <Choice value={range} options={RANGES} onChange={setRange} label="Span" />
+        <Choice value={range} options={ranges} onChange={setRange} label="Span" />
       </div>
       <div className="columns">
         <Card title="Noise floor and peaks, dBFS">

@@ -1,35 +1,42 @@
 // A system's talkgroup names (Setup → Systems): a Trunk Recorder talkgroup
 // CSV loaded from a file, or the talkgroup table copied from RadioReference's
-// web page and pasted in. Each system keeps its own file, beside the config
-// (`<short name>.talkgroups.csv`), saved as soon as it changes.
+// web page and pasted in. Each system keeps its own talkgroups, saved as soon
+// as they change, in the recorder's store; a file is read and written by the
+// recorder's own code (talkgroups.ts).
 
 import { useMemo, useRef, useState } from "react";
 import { downloadText, setNotice, setTalkgroups, useApp } from "./controller.ts";
 import { FileInput } from "./inputs.tsx";
 import type { System } from "./protocol.ts";
-import { isEncryptedMode, normalizeTalkgroupCsv, parseRadioReferencePaste, readTalkgroupCsv, talkgroupsToCsv, withHeader, type Talkgroup } from "./talkgroups.ts";
+import type { TalkgroupFileReport } from "./rules.ts";
+import { isEncryptedMode, parseRadioReferencePaste, readTalkgroupFile, talkgroupFileText, type Talkgroup } from "./talkgroups.ts";
 
 /** A system with a talkgroup file: trunked (its first site's identity helps find it on RadioReference), or conventional. */
 type TalkgroupsOf = Pick<System, "shortName"> & Partial<Pick<System, "sites">>;
 
 export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anchor?: string }) {
   const { sys } = props;
-  const csv = useApp().talkgroups[sys.shortName] ?? "";
+  const tgs = useApp().talkgroups[sys.shortName] ?? [];
   const fileRef = useRef<HTMLInputElement>(null);
   const [pasting, setPasting] = useState(false);
-  const report = useMemo(() => readTalkgroupCsv(csv), [csv]);
-  const tgs = [...report.talkgroups.values()];
+  // What the file loaded last held that its rows don't say (until the talkgroups are replaced).
+  const [loaded, setLoaded] = useState<TalkgroupFileReport | null>(null);
   const ignored = tgs.filter((t) => t.ignore).length;
   const encrypted = tgs.filter((t) => isEncryptedMode(t.mode)).length;
-  const set = (next: string) => setTalkgroups(sys.shortName, next);
+  // Columns kept from the file that Trunk Recorder doesn't know.
+  const unknownColumns = useMemo(() => [...new Set(tgs.flatMap((t) => (t.extra ?? []).map(([k]) => k)))], [tgs]);
+  const report = loaded && tgs.length ? loaded : null;
+  const set = (next: Talkgroup[], from: TalkgroupFileReport | null = null) => {
+    setLoaded(from);
+    setTalkgroups(sys.shortName, next);
+  };
 
   const onFile = async (f: File | undefined) => {
     if (!f) return;
-    const next = normalizeTalkgroupCsv(await f.text());
-    const r = readTalkgroupCsv(next);
-    if (!r.talkgroups.size) return setNotice(`${f.name}: no talkgroups found.`);
-    set(next);
-    setNotice(`Loaded ${r.talkgroups.size} talkgroups from ${f.name} into ${sys.shortName}.${r.skipped.length ? ` ${r.skipped.length} row(s) without a number skipped.` : ""}`);
+    const r = readTalkgroupFile(await f.text());
+    if (!r.talkgroups.length) return setNotice(`${f.name}: no talkgroups found.`);
+    set(r.talkgroups, r);
+    setNotice(`Loaded ${r.talkgroups.length} talkgroups from ${f.name} into ${sys.shortName}.${r.skipped.length ? ` ${r.skipped.length} row(s) without a number skipped.` : ""}`);
   };
 
   return (
@@ -45,10 +52,10 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
         <span className="mono">{tgs.length ? `${tgs.length}` : "none"}</span>
         {tgs.length > 0 && (
           <>
-            <button className="btn ghost" title="Trunk Recorder CSV, with a header row" onClick={() => downloadText(`${sys.shortName || "system"}.talkgroups.csv`, withHeader(csv))}>
+            <button className="btn ghost" title="Trunk Recorder CSV, with a header row" onClick={() => downloadText(`${sys.shortName || "system"}.talkgroups.csv`, talkgroupFileText(tgs))}>
               Download
             </button>
-            <button className="btn ghost" onClick={() => set("")}>
+            <button className="btn ghost" onClick={() => set([])}>
               Clear
             </button>
           </>
@@ -59,18 +66,18 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
         <div className="row tg-facts">
           {ignored > 0 && <span className="chip">{ignored} ignored</span>}
           {encrypted > 0 && <span className="chip" title="Not recorded">{encrypted} encrypted</span>}
-          {report.legacy && <span className="chip" title="Trunk Recorder's old fixed columns; Download adds a header row">no header row</span>}
-          {report.missing.length > 0 && (
-            <span className="chip warn" title="Trunk Recorder requires it">
+          {report?.legacy && <span className="chip" title="Trunk Recorder's old fixed columns; Download adds a header row">no header row</span>}
+          {report && report.missing.length > 0 && (
+            <span className="chip warn" title="Trunk Recorder requires it; Download adds it">
               no {report.missing.join(" or ")} column
             </span>
           )}
-          {report.unknownColumns.length > 0 && (
-            <span className="chip warn" title="Trunk Recorder rejects these">
-              unknown column{report.unknownColumns.length === 1 ? "" : "s"}: {report.unknownColumns.join(", ")}
+          {unknownColumns.length > 0 && (
+            <span className="chip warn" title="Trunk Recorder rejects these; kept for Download">
+              unknown column{unknownColumns.length === 1 ? "" : "s"}: {unknownColumns.join(", ")}
             </span>
           )}
-          {report.skipped.length > 0 && (
+          {report && report.skipped.length > 0 && (
             <span className="chip warn" title={`Rows with no talkgroup number:\n${report.skipped.slice(0, 5).join("\n")}`}>
               {report.skipped.length} row{report.skipped.length === 1 ? "" : "s"} without a number
             </span>
@@ -83,7 +90,7 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
           sys={sys}
           replacing={tgs.length}
           onUse={(list) => {
-            set(talkgroupsToCsv(list));
+            set(list);
             setPasting(false);
             setNotice(`Loaded ${list.length} talkgroups from RadioReference into ${sys.shortName}.`);
           }}
@@ -149,7 +156,7 @@ function RadioReferencePaste(props: { sys: TalkgroupsOf; replacing: number; onUs
                     </td>
                     <td>{t.description}</td>
                     <td className="muted">{t.tag}</td>
-                    <td className="muted">{t.group}</td>
+                    <td className="muted">{t.category}</td>
                   </tr>
                 ))}
               </tbody>
@@ -175,7 +182,7 @@ function RadioReferencePaste(props: { sys: TalkgroupsOf; replacing: number; onUs
 }
 
 function summary(list: Talkgroup[]): string {
-  const cats = new Set(list.map((t) => t.group).filter(Boolean)).size;
+  const cats = new Set(list.map((t) => t.category).filter(Boolean)).size;
   const enc = list.filter((t) => isEncryptedMode(t.mode)).length;
   return [`${list.length} talkgroup${list.length === 1 ? "" : "s"}`, cats ? `in ${cats} categor${cats === 1 ? "y" : "ies"}` : "", enc ? `${enc} encrypted (not recorded)` : ""].filter(Boolean).join(", ") + ".";
 }

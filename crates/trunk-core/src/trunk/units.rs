@@ -69,6 +69,18 @@ impl UnitAliases {
         s
     }
 
+    /// Each unit's alias, by unit ID.
+    pub fn entries(&self) -> Vec<(u32, &UnitAlias)> {
+        let mut v: Vec<_> = self.map.iter().map(|(u, a)| (*u, a)).collect();
+        v.sort_by_key(|(u, _)| *u);
+        v
+    }
+
+    /// The aliases `entries` gives.
+    pub fn from_entries(entries: impl IntoIterator<Item = (u32, UnitAlias)>) -> Self {
+        UnitAliases { map: entries.into_iter().collect(), changed: false }
+    }
+
     pub fn get(&self, unit: u32) -> Option<&str> {
         self.map.get(&unit).map(|a| a.alias.as_str())
     }

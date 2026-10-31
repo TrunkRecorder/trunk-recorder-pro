@@ -12,6 +12,7 @@
 //! decided here too: [`ToClient::audience`], [`Command::listen_may_send`].
 
 use serde::{Deserialize, Serialize};
+pub use crate::calls::{CallsPage, CallsQuery, StoredCall};
 use serde_json::{Map, Value};
 
 use crate::Config;
@@ -53,7 +54,12 @@ pub enum ToClient {
         capabilities: Vec<Capability>,
     },
     /// The latest calls, newest first: on connecting (then `concluded` for each new one).
-    History { entries: Vec<Value> },
+    History {
+        entries: Vec<StoredCall>,
+        /// Where older calls go on from (a `callsQuery` `cursor`), if there are any.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
+    },
     /// A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV):
     /// one for each system with some, on connecting (then `unitAlias` for each new one).
     Units { system: String, csv: String },
@@ -68,11 +74,11 @@ pub enum ToClient {
     /// wasn't taken (it was of an older version, or the config was bad) or
     /// wasn't saved.
     ConfigSaved { version: u64, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
-    /// A system's talkgroup file (Trunk Recorder's CSV; "" for none): one for
-    /// each on connecting, and again whenever one changes.
-    Talkgroups { system: String, csv: String },
-    /// One talkgroup of system `system`'s file edited ([`Command::SetTalkgroup`]):
-    /// each interface makes the same edit to its copy (`withCells`).
+    /// A system's talkgroups, in their order (none: it has none): one for
+    /// each on connecting, and again whenever a system's are set.
+    Talkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
+    /// One talkgroup of system `system` edited ([`Command::SetTalkgroup`]):
+    /// each interface makes the same edit to its copy (`talkgroupsEdit`).
     TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit },
     Status { status: Value, sources: Vec<Value>, load: f64, calls: Vec<Value> },
     Spectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
@@ -116,12 +122,19 @@ pub enum ToClient {
     Subscribed { topics: Vec<String> },
     StatsResult(Body),
     RadioResult(Body),
-    OlderCalls { before: i64, entries: Vec<Value>, more: bool },
+    /// Answers `callsQuery`: a page of calls ([`CallsPage`]: its `error` when
+    /// the call store couldn't answer, the page then the recent calls alone).
+    CallsResult {
+        id: Value,
+        #[serde(flatten)]
+        page: CallsPage,
+    },
     Quit,
 }
 
 /// Something a recorder can do beyond recording (`hello.capabilities`). The
-/// desktop app can do all of them; the browser build, none.
+/// desktop app can do all of them (`calls` while its call store is open);
+/// the browser build, none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, strum::VariantArray)]
 #[serde(rename_all = "camelCase")]
 pub enum Capability {
@@ -141,6 +154,11 @@ pub enum Capability {
     Host,
     /// Key containers opened with a password.
     Keys,
+    /// The call store: `callsQuery`.
+    Calls,
+    /// The dashboard's history further back than a week (`statsQuery`'s
+    /// `30d`, `90d`, `1y`), as far as `storage.statsDays` keeps: the store.
+    History,
 }
 
 impl Capability {
@@ -210,7 +228,7 @@ pub struct TalkgroupEdit {
 }
 
 impl TalkgroupEdit {
-    /// The cells it sets, by the talkgroup file's column names ([`trunk_core::trunk::edit_row`]).
+    /// The cells it sets, by the talkgroup file's column names ([`trunk_core::trunk::edit_rows`]).
     pub fn cells(&self) -> Vec<(&'static str, &str)> {
         let text = [("Alpha Tag", &self.alpha_tag), ("Description", &self.description), ("Tag", &self.tag), ("Category", &self.category)];
         let mut cells: Vec<(&'static str, &str)> = text.into_iter().filter_map(|(c, v)| v.as_deref().map(|v| (c, v.trim()))).collect();
@@ -255,11 +273,13 @@ pub enum Command {
     /// The whole config (read as [`Config::from_value`] reads a file), edited
     /// from version `version`: refused when the config has changed since.
     SetConfig { config: Value, version: u64 },
-    /// System `system`'s talkgroup file (Trunk Recorder's CSV; "" for none).
-    SetTalkgroups { system: String, csv: String },
-    /// One talkgroup of system `system`'s file: only its cells that `edit`
-    /// sets change (a row added when the file lacks it). Answered to every
-    /// interface with `talkgroupEdited`.
+    /// System `system`'s talkgroups, in their order (none: it has none). A
+    /// talkgroup file is read into them, and written from them, by the
+    /// recorder's own code (the page's `talkgroupsFromCsv` / `talkgroupsToCsv`).
+    SetTalkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
+    /// One talkgroup of system `system`: only the cells `edit` sets change
+    /// (a row added when there's none). Answered to every interface with
+    /// `talkgroupEdited`.
     SetTalkgroup { system: String, talkgroup: u32, edit: TalkgroupEdit },
     Start,
     Stop,
@@ -294,21 +314,19 @@ pub enum Command {
     RemoveInterface { id: String },
     Subscribe { topics: Vec<String> },
     StatsQuery(StatsQuery),
-    OlderCalls { #[serde(default = "i64_max")] before: i64, #[serde(default = "hundred")] limit: usize },
     RadioQuery(Body),
+    /// Recorded calls ([`CallsQuery`]), answered with `callsResult` `id`.
+    CallsQuery {
+        #[serde(default)]
+        id: Value,
+        #[serde(flatten)]
+        query: CallsQuery,
+    },
     /// Press plugin `plugin`'s button `action` on `value` (the settings
     /// object it's on, as edited): answered with `pluginActionResult` `id`
     /// once the plugin says how it went.
     PluginAction { id: u64, plugin: String, action: String, #[serde(default)] value: Value },
     Quit,
-}
-
-fn i64_max() -> i64 {
-    i64::MAX
-}
-
-fn hundred() -> usize {
-    100
 }
 
 impl Command {
@@ -329,7 +347,7 @@ impl Command {
 
     /// What a listen-only connection may send: looking, never changing.
     pub fn listen_may_send(&self) -> bool {
-        matches!(self, Command::Subscribe { .. } | Command::StatsQuery(_) | Command::RadioQuery(_) | Command::OlderCalls { .. } | Command::Listen { .. })
+        matches!(self, Command::Subscribe { .. } | Command::StatsQuery(_) | Command::RadioQuery(_) | Command::CallsQuery { .. } | Command::Listen { .. })
     }
 }
 
@@ -354,18 +372,29 @@ impl StatsQuery {
             "6h" => 6 * 3600,
             "24h" => 86400,
             "7d" => 7 * 86400,
+            "30d" => 30 * 86400,
+            "90d" => 90 * 86400,
+            "1y" => 365 * 86400,
             _ => 3600,
         };
         let to = self.to.unwrap_or(now);
         (self.from.unwrap_or(to - back), to)
     }
 
+    /// The series patterns it asks for (at most 200).
+    pub fn patterns(&self) -> Vec<String> {
+        self.series.iter().take(200).cloned().collect()
+    }
+
     /// Its answer from `history` (`loading`: its files are still being read).
     pub fn answer(&self, history: &crate::stats::History, now: i64, loading: bool) -> ToClient {
         let (from, to) = self.span(now);
-        let series: Vec<String> = self.series.iter().take(200).cloned().collect();
-        let found = history.query(&series, from, to, self.points);
-        ToClient::StatsResult(body(serde_json::json!({ "id": self.id, "from": from, "to": to, "loading": loading, "series": found })))
+        self.result(from, to, loading, history.query(&self.patterns(), from, to, self.points))
+    }
+
+    /// Its answer: `series` ([`crate::stats::Span::answer`]) from `from` to `to`.
+    pub fn result(&self, from: i64, to: i64, loading: bool, series: serde_json::Map<String, Value>) -> ToClient {
+        ToClient::StatsResult(body(serde_json::json!({ "id": self.id, "from": from, "to": to, "loading": loading, "series": series })))
     }
 }
 

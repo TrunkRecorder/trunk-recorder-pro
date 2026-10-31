@@ -1433,3 +1433,11 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .setup-tabs .save-status { margin: auto 4px auto auto; }
 .save-status { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .save-status.failed { color: var(--bad); }
+
+/* Platform → Storage: each table, its indexes under it, a bar for its share. */
+.store-sizes .num { text-align: right; font-variant-numeric: tabular-nums; }
+.store-sizes tr.sub td { font-size: 0.92em; }
+.store-sizes .bar-cell { width: 30%; }
+.store-sizes .bar { display: block; height: 8px; border-radius: 4px; background: var(--series-1); min-width: 2px; }
+.store-sizes .bar.alt { background: var(--series-2); opacity: 0.8; }
+.store-sizes .index-use { font-family: var(--font, inherit); opacity: 0.8; }

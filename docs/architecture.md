@@ -43,7 +43,7 @@ bit-identical calls on the same capture.
 |---|---|
 | `trunk-core` | `trunk::Engine` (everything), `dsp::Channelizer`, `dsp::c4fm::C4fm`, `dsp::cqpsk::Cqpsk`, `dsp::fm::Nbfm`, `dsp::am::Am`, `dsp::filters` (RRC, windowed-sinc), `p25`, `dmr`, `nxdn`, `smartnet`, `ambe` (AMBE+2 codeword, shared by DMR, NXDN and Phase 2), `bits` (bit fields, CRC-CCITT), `mbe` (vocoders, `mbe::Profile`), `metrics`, `loudness`, `survey::Survey` |
 | `trunk-app` | `Config`, `migrate` (older configs upgraded), `Session`, `Feeder`, `Output`, `protocol` (`ToClient`, `Command`), `stats` (dashboard measurements), `survey::SurveySession`, `filename`, `channels` (conventional CSV), `heard` (codes conventional frequencies carried), `keys` (key sources), `samples` (sample formats → IQ), `log::Record` |
-| `trunk-pro` | `main.rs` (CLI; `tool.rs` + `toolkit.rs`, `snrtool.rs`, `dmrtool.rs`, `nxdntool.rs` analysis tools), `runtime.rs` (`Ctx`, threads), `server.rs` (HTTP + WebSocket), `access.rs`, `sdr.rs` + `radio/` (drivers), `plugins/` (host, store, manage, archive, encode, delay, hold, cli), `interfaces/` (other interfaces: store, serve, cli), `store.rs` (what both stores share), `spool.rs`, `unlock.rs` (key containers), `statstore.rs`, `monitor.rs` + `platform.rs` (the computer), `survey.rs`, `paths.rs`, `logging.rs` |
+| `trunk-pro` | `main.rs` (CLI; `tool.rs` + `toolkit.rs`, `snrtool.rs`, `dmrtool.rs`, `nxdntool.rs` analysis tools), `runtime.rs` (`Ctx`, threads), `server.rs` (HTTP + WebSocket), `access.rs`, `sdr.rs` + `radio/` (drivers), `plugins/` (host, store, manage, archive, encode, delay, hold, cli), `interfaces/` (other interfaces: store, serve, cli), `store.rs` (what both stores share), `db/` (the call store: schema, writer, reads, backfill), `spool.rs`, `unlock.rs` (key containers), `statstore.rs`, `monitor.rs` + `platform.rs` (the computer), `survey.rs`, `paths.rs`, `logging.rs` |
 | `trunk-web` | `WebSession`, `WebRtl`, `WebSurvey`, `WebProfiler`; `rules` (the config's rules for the page) |
 | `trunk-recorder-plugin` | `protocol` (`HostMessage`, `PluginMessage`, `Manifest`, `CallRecord`, topics), SDK (`Plugin`, `run`, `CallQueue`) |
 
@@ -364,7 +364,7 @@ dashboard; `Engine::channels()` lists every channel listened to
 - it makes the call's record (`record::call_record`): a `CallRecord`, the
   plugin SDK's type, with Trunk Recorder's fields plus `signal`, `noise`,
   `snr` from `Reception`, `clean_voice_pct`, `errorList`, `freq_error`.
-  The same typed record goes to the file, the history and the plugins; the
+  The same typed record goes to the file, the call store and the plugins; the
   finish thread serialises it once (`CallRecord::to_json`), byte for byte as
   Trunk Recorder's files have it (flags as 0 / 1).
 
@@ -452,7 +452,7 @@ ControlChannel::report, Engine::report ─────────────�
 stats::SampleMeter (headroom, clipping, on the sample path, 1 in 16) ────┤
 stats Tally (calls, airtime, reasons, voice errors, from events) ────────┴─► stats::Aggregator
                                                                                ├─► `stats` (1/s)
-                                                                               └─► Rollup (1/min) ─► History (a week in memory) + stats/*.jsonl
+                                                                               └─► Rollup (1/min) ─► History (a day in memory; a week with no store) + the store or stats/*.jsonl
 session events ─► Stats::observe ─► stats::Registry (talkgroups, radios, affiliations, pairs, frequencies) ─► radioQuery
                                └─► stats::Monitor ─► Watcher (the hook for alert rules; none registered) + the event feed
 VoiceDecoder::quality, ControlChannel::quality (ChannelQuality) ─► Engine::channels() ─► rfDetail / decodeDetail
@@ -485,7 +485,7 @@ VoiceDecoder::quality, ControlChannel::quality (ChannelQuality) ─► Engine::c
 ```text
 main ─► serve()
          ├─ Ctx (Arc): config (Mutex) + its version, talkgroup files, lifecycle (Lifecycle), phase,
-         │             history, plugins, interfaces, hub, shared (registry + monitor + names),
+         │             db (the call store), plugins, interfaces, hub, shared (registry + monitor + names),
          │             series + store (stats history), topics, engine (the engine thread's commands)
          ├─ logging (log facade): stderr, files, syslog, and the browsers (warnings and errors
          │             to every connection, the rest only while someone watches the `log` topic)
@@ -494,7 +494,9 @@ main ─► serve()
          │                    one task per WebSocket; blocking commands via spawn_blocking
          ├─ monitor thread: the computer and plugins every 2 s (net-probe thread beside it)
          ├─ stats-load / stats-store threads: history files in, rollups out
-         ├─ history thread: fills the call list from disk in the background
+         ├─ db-writer thread: the call store's one writer: a commit per storage.commitSeconds under
+         │             load, and retention a chunk at a time between (readers: a pool of two, for runtime::calls)
+         ├─ db-backfill thread: indexes the capture folder once, then reconciles the last two days
          └─ Ctx::begin_recording on "start" (or --start / autoStart) ─► runtime::start(cfg)
                ├─ source-0 … source-N threads (runtime::spawn_source) ─► one SourceMsg queue each (256)
                ├─ dsp-0 … dsp-N threads: each source's samples into the engine (Feeder);
@@ -514,7 +516,7 @@ main ─► serve()
                │     (plugins::plan: the system's file rules, what the plugins take, whether
                │     there's an encoder) says which files to write; they write .json + .wav +
                │     .m4a (WAV piped to the encoder; the WAV instead should that fail), send
-               │     `concluded` + history, hand PluginHost::concluded the files as they are,
+               │     `concluded` + a row in the call store, hand PluginHost::concluded the files as they are,
                │     and tell the Archive; files only the plugins need go to the RAM spool
                │     (spool.rs) if on
                └─ PluginHost: per enabled plugin a supervisor thread (plugin-<id>) and its
@@ -543,18 +545,31 @@ main ─► serve()
 - **Persistence.**
   - `config.json` is written by `setConfig` (the interface always sends the
     whole config, with the version it edited).
-  - `<short>.talkgroups.csv` (a system's talkgroup file, trunked or
-    conventional) is written by `setTalkgroups`. An older config's
-    talkgroups are moved out into these when it's read (`migrate.rs`).
-  - `<short>.bandplan` (`<short>.<site>.bandplan` for a site with a name of
-    its own: `SiteKey::file_stem`) is written every 10 s when it changes,
-    and at stop.
-  - `<short>.units.csv` and `conventional.heard.json` are written when they
-    change; `tune.json` (AutoTune's scores) every minute and at stop.
-  - `radio/<short>.json` (the radio registry) is written every 15 min and
-    at stop.
-  - `stats/YYYY-MM-DD.jsonl` gets each minute's rollup appended (see
-    [Measurements](#measurements)).
+  - Everything else kept between runs is the store's (`storage.backend`
+    `sqlite` or `postgres`; `trunk-pro/src/kept.rs`, `db/`), keyed by each
+    system's id from `config.json`:
+    - talkgroups as rows in `talkgroups`: a file load (`setTalkgroups`)
+      replaces a system's rows, an edit (`setTalkgroup`) upserts one, both
+      committed at once; `parse_rows` / `rows_csv` in trunk-core are the
+      import and export;
+    - talker aliases in `units` (only those that changed are written);
+    - band plans, the Heard list, AutoTune's scores and sharing's state in
+      `kept`, written within 10 s of a change (`Session::due`) and at stop;
+    - the radio registry in one shape, `RegistryChanges`: trunk-app hands
+      over each 15 minutes' changes (`Saved::Registry`), appended to
+      `registry_changes`; once a day's have piled up (`COMPACT_AFTER`) the
+      store makes them over the whole copy in `registry` and lets them go
+      (the browser build writes each changed system whole instead);
+    - the dashboard's history in `stats_minutes` (2 days) and `stats_hours`
+      (each series' hours by its `series` id, kept `storage.statsDays`; the
+      hours past that go once a day, series by series).
+  - `trunk-pro.sqlite` (`trunk-pro/src/db/`) is the call store: one row per
+    finished call, written in batches by the `db-writer` thread. The
+    recording and its `.json` are still files; the row is how `callsQuery`
+    finds them without reading the folder. The live list (`Ctx::recent`, the
+    last 500 calls) answers what's just happened and is merged into every
+    query (`runtime::calls`), so the store's batching never hides a call and
+    the recorder lists calls with the store off.
   - These companion files, installed plugins and plugin data all live
     beside the config file (`paths::data_dir()`), so recorders with their
     own `--config` don't share them.
@@ -633,7 +648,7 @@ schema, and every documented command against `Command::parse`.
     version now, and `error` when the edit wasn't taken or saved), `devices`,
     `radios`, `dir`, `trConfig`, `sourceProfile`, `store` (with `kind`; its
     list is `listings`), `subscribed`, `statsResult`, `radioResult`,
-    `olderCalls`, `error`, `notice`.
+    `callsResult`, `error`, `notice`.
   - A site's identity, in `status`, the survey and the config's `expect`,
     is one shape, `SiteIdentity` (trunk-app's config, made from the engine's
     `Identity`): a field not heard yet is left out.
@@ -646,13 +661,13 @@ schema, and every documented command against `Command::parse`.
     doesn't parse, is answered with an `error`.
 - **Client → recorder.** `setConfig { config, version }` (the whole config,
   and the version it edits: an edit of an older one is refused),
-  `setTalkgroups { system, csv }`, `start`, `stop`, `listen`, `unlockKeys`,
+  `setTalkgroups { system, talkgroups }`, `start`, `stop`, `listen`, `unlockKeys`,
   `lockKeys`, `channelFile`, `devices`, `findRadios`, `listDir`,
   `readTrConfig`, `survey*`, `profileSource`, `plugins`, `addPlugin`,
   `removePlugin`, `interfaces`, `addInterface`, `removeInterface`, `store`
   and `install` (each with `kind`: `plugin` or `interface`), `subscribe`,
-  `statsQuery`, `olderCalls`, `radioQuery`, `quit`. A listen-only connection
-  may send only `subscribe`, `statsQuery`, `radioQuery`, `olderCalls` and
+  `statsQuery`, `callsQuery`, `radioQuery`, `quit`. A listen-only connection
+  may send only `subscribe`, `statsQuery`, `radioQuery`, `callsQuery` and
   `listen`.
 - **HTTP routes**, on every interface's port (`server::api`):
   - `/api/ws`, `/api/version`, `/api/docs`, `/api/schema`, `/api/protocol.ts`,

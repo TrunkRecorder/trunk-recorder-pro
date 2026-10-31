@@ -30,6 +30,6 @@ pub use record::{Capture, Concluded, SaveRules};
 pub use engine::{sites, usable_half_width, AdjacentSite, ChannelKind, ChannelSnapshot, Engine, EngineConfig, Event, NoteLevel, SmartnetConfig, SourceConfig, SourceTune, Status, SiteConfig, SiteKey, SiteStatus, SystemConfig, SystemStatus, PatternHeard, DEFAULT_GUARD_HZ};
 pub use message::{Message, MessageType, P25Parser, Patch};
 pub use patches::Patches;
-pub use talkgroups::{edit_row, parse_csv, row_of, Talkgroup, Talkgroups};
+pub use talkgroups::{edit_rows, parse_csv, parse_rows, read_rows, rows_csv, TalkgroupFile, Talkgroup, TalkgroupRow, Talkgroups};
 pub use units::{UnitAlias, UnitAliases, UnitTags, UnitTagsMode};
 pub use voice::{ChannelQuality, CipherId};

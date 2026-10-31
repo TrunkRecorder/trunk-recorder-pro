@@ -224,8 +224,8 @@ plugins are published. A Trunk Recorder MQTT status plugin entry isn't imported 
 ### Files and settings live in the app's folder
 
 The config is in the app's config folder ([where](configuration/README.md#where-the-file-is)), not
-the folder you run it from, and keys are camelCase with frequencies in Hz. Talkgroup files are copied beside the
-config (`<shortName>.talkgroups.csv`) and unit files stored **inside** it (`unitNames.csv`), so editing
+the folder you run it from, and keys are camelCase with frequencies in Hz. Talkgroup files are copied into the
+recorder (its call store, or `<shortName>.talkgroups.csv` beside the config) and unit files stored **inside** it (`unitNames.csv`), so editing
 the original CSV afterwards changes nothing: load it again in Setup. A conventional system can stay linked to a
 channel CSV, though (`channelFile`), re-read at every Start.
 

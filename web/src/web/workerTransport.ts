@@ -2,16 +2,16 @@
 // The page keeps the config (localStorage) and the chosen capture files, asks
 // for WebUSB access (it needs a click), and reads recorded calls from OPFS.
 
-import { editCells, withCells } from "../talkgroups.ts";
-import { decodeAudioFrame, type AudioChunk, type Config, type FromRecorder, type ToRecorder } from "../protocol.ts";
+import { withEdit } from "../talkgroups.ts";
+import { decodeAudioFrame, type AudioChunk, type Config, type FromRecorder, type Talkgroup, type ToRecorder } from "../protocol.ts";
 import type { CallExt, Transport } from "../transport.ts";
 import { defaultConfig, storedConfig } from "../config.ts";
-import { oldTalkgroups } from "../migrate.ts";
+import { migrateTalkgroups } from "../migrate.ts";
 import type { FromWorker, ToWorker } from "./engine.worker.ts";
 import { callBlob } from "./opfs.ts";
 
 const CONFIG_KEY = "trp.config";
-/** Each system's talkgroup file, by short name: kept beside the config, not in it. */
+/** Each system's talkgroups (JSON rows), by short name: kept beside the config, not in it. */
 const TALKGROUPS_KEY = "trp.talkgroups";
 
 function loadConfig(): Config {
@@ -24,12 +24,11 @@ function loadConfig(): Config {
   return defaultConfig();
 }
 
-function loadTalkgroups(): Record<string, string> {
+function loadTalkgroups(): Record<string, Talkgroup[]> {
   try {
-    const kept = JSON.parse(localStorage.getItem(TALKGROUPS_KEY) ?? "{}") as Record<string, string>;
-    // An older config's, moved out of it (migrate.ts).
-    const old = oldTalkgroups(JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}"));
-    return { ...old, ...kept };
+    const kept = JSON.parse(localStorage.getItem(TALKGROUPS_KEY) ?? "{}") as Record<string, Talkgroup[]>;
+    // (With what an older version kept read in: migrate.ts.)
+    return migrateTalkgroups(JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}"), kept);
   } catch {
     return {};
   }
@@ -55,7 +54,7 @@ export class WorkerTransport implements Transport {
   onConnection: (connected: boolean) => void = () => {};
   private worker: Worker;
   private files: (File | null)[] = [];
-  private talkgroups: Record<string, string> = {};
+  private talkgroups: Record<string, Talkgroup[]> = {};
 
   constructor() {
     this.worker = new Worker(new URL("./engine.worker.ts", import.meta.url), { type: "module" });
@@ -82,8 +81,8 @@ export class WorkerTransport implements Transport {
 
   send(msg: ToRecorder): void {
     if (msg.type === "setTalkgroups" || msg.type === "setTalkgroup") {
-      const csv = msg.type === "setTalkgroups" ? msg.csv : withCells(this.talkgroups[msg.system] ?? "", msg.talkgroup, editCells(msg.edit));
-      if (csv.trim()) this.talkgroups[msg.system] = csv;
+      const rows = msg.type === "setTalkgroups" ? msg.talkgroups : withEdit(this.talkgroups[msg.system] ?? [], msg.talkgroup, msg.edit);
+      if (rows.length) this.talkgroups[msg.system] = rows;
       else delete this.talkgroups[msg.system];
       try {
         localStorage.setItem(TALKGROUPS_KEY, JSON.stringify(this.talkgroups));
