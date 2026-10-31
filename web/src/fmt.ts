@@ -93,6 +93,13 @@ export function clockAt(t: number, withSeconds = false): string {
   return today ? time : `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
 }
 
+/** A time on a chart spanning `span` seconds: the clock (`clockAt`) within a week, else the date (12 Oct), with the hour for `withTime`. */
+export function axisAt(t: number, span: number, withTime = false): string {
+  if (span <= 8 * 86400) return clockAt(t);
+  const opts: Intl.DateTimeFormatOptions = { day: "numeric", month: "short", ...(span > 300 * 86400 ? { year: "2-digit" } : {}), ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}) };
+  return new Date(t * 1000).toLocaleString([], opts);
+}
+
 /** Round "nice" tick values covering [lo, hi]. */
 export function ticks(lo: number, hi: number, n = 4): number[] {
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [];

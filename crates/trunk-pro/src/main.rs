@@ -96,10 +96,12 @@
 //! ```
 
 mod access;
+mod api_v1;
 mod clock;
 mod directory;
 mod dmrtool;
 mod interfaces;
+mod kept;
 mod licenses;
 mod logging;
 mod monitor;
@@ -112,11 +114,11 @@ mod plugins;
 mod profile;
 mod radio;
 mod runtime;
-mod saver;
 mod sdr;
 mod server;
 mod spool;
 mod spotlight;
+mod db;
 mod statstore;
 mod store;
 mod toolkit;
@@ -817,7 +819,6 @@ fn fatal(msg: &str) -> ! {
 }
 
 fn serve(a: &Args) {
-    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     let config_path = paths::config_path(a.get("config"));
     paths::init(&config_path);
@@ -833,6 +834,12 @@ fn serve(a: &Args) {
         }
         for n in &cfg.notes {
             log::info!("{n}");
+        }
+    } else if cfg.numbered {
+        // (Systems given their ids: kept from here on, so what's stored by them stays theirs.)
+        match cfg.save(&config_path) {
+            Ok(()) => log::info!("{}: systems numbered", config_path.display()),
+            Err(e) => log::warn!("{}: couldn't save the systems' ids ({e})", config_path.display()),
         }
     }
     // (For this run only: the config, saved from the interface, keeps its own.)
@@ -879,11 +886,34 @@ fn serve(a: &Args) {
     let ui_url = dev.as_ref().map(|d| format!("http://{host}:{}/", d.port));
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
-    runtime::load_registry(&shared);
-    let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
-    let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone());
-    let talkgroups = runtime::load_talkgroups(&cfg);
-    runtime::load_names(&shared, &cfg, &talkgroups);
+    let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
+    // (The systems first: everything kept is kept by their ids.)
+    db.set_systems(&cfg);
+    kept::load_registry(&db, &shared);
+    let series = Arc::new(Mutex::new(trunk_app::stats::History::new(statstore::memory_minutes(&db))));
+    let store = statstore::Store::start(series.clone(), db.clone(), cfg.storage.stats_days, cfg.storage.low_write);
+    {
+        // (A change people made that couldn't be saved is told to them.)
+        let hub = hub.clone();
+        db.on_failure(move |why| runtime::publish(&hub, trunk_app::protocol::ToClient::error(why)));
+    }
+    // TEMPORARY (trunk_app::migrate::talkgroup_files_into_store): talkgroup
+    // files an older version kept beside the config, into the store. Delete
+    // this block with it.
+    if !db.is_disabled() {
+        let stored = |name: &str| db.talkgroups(name).is_ok_and(|rows| !rows.is_empty());
+        let mut keep = |name: &str, rows: Vec<trunk_core::trunk::TalkgroupRow>| {
+            kept::write_talkgroups(&db, name, rows.clone());
+            db.flush()?;
+            // (Renamed only once it reads back as it went in.)
+            if db.talkgroups(name)? == rows { Ok(()) } else { Err("not read back as written".into()) }
+        };
+        for n in trunk_app::migrate::talkgroup_files_into_store(&config_path, &cfg, &stored, &mut keep) {
+            log::info!("{n}");
+        }
+    }
+    let talkgroups = kept::load_talkgroups(&db, &cfg);
+    runtime::load_names(&shared, &cfg, &talkgroups, &db);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
@@ -892,7 +922,8 @@ fn serve(a: &Args) {
         hub: hub.clone(),
         lifecycle: Mutex::new(runtime::Lifecycle::default()),
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
-        history: Mutex::new(VecDeque::new()),
+        recent: Mutex::new(std::collections::VecDeque::new()),
+        db,
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
@@ -901,10 +932,6 @@ fn serve(a: &Args) {
         shared,
         series,
         store,
-        saver: {
-            let hub = hub.clone();
-            saver::Saver::start(move |why| runtime::publish(&hub, trunk_app::protocol::ToClient::error(why)))
-        },
         heard_last: Mutex::new(None),
         topics: Mutex::new(Default::default()),
         engine: Mutex::new(None),
@@ -924,13 +951,18 @@ fn serve(a: &Args) {
     // Calls held back from plugins by the run before (the archive is told of them, so after on_settle).
     let cfg = ctx.config.lock().unwrap().clone();
     ctx.plugins.open_hold(&cfg);
-    runtime::load_history(ctx.clone());
+    // (The live list comes from the store; with it off, from a walk of the capture folder.)
+    if !ctx.db.indexes_calls() {
+        runtime::load_recent(ctx.clone());
+    }
+    db::backfill::start(ctx.clone());
     {
         let c = ctx.config.lock().unwrap();
         let l = &c.log;
         log::info!("Trunk Recorder Pro {} — open {url}", env!("CARGO_PKG_VERSION"));
         log::info!("Using Config file: {}", config_path.display());
         log::info!("Capture Directory: {}", c.recording.capture_dir);
+        log::info!("Call store: {}", ctx.db.describe().unwrap_or_else(|| "off (the call files and recent calls only)".into()));
         let dir = if l.dir.is_empty() { config_path.parent().unwrap_or(Path::new(".")).join("logs") } else { config_path.parent().unwrap_or(Path::new(".")).join(&l.dir) };
         log::info!("Log Level: {} · Log to File: {}{} · System log: {}", level.unwrap_or(l.level).as_str(), l.file, if l.file { format!(" ({})", dir.display()) } else { String::new() }, l.syslog);
     }
@@ -951,7 +983,10 @@ fn serve(a: &Args) {
     if let Err(e) = rt.block_on(server::serve(ctx.clone(), listener)) {
         fatal(&format!("web server on {addr}: {e}"));
     }
-    ctx.saver.flush();
+    ctx.db.checkpoint();
+    if let Err(e) = ctx.db.flush() {
+        log::warn!("Call store: {e}");
+    }
     log::info!("Cleaning up & Exiting...");
 }
 

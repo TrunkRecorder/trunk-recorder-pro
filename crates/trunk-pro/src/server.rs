@@ -92,12 +92,13 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
 
 /// The recorder's API, served on every interface's port: the WebSocket,
 /// the docs and client beside it, and the recorded calls.
-fn api(r: Router<Arc<Ctx>>) -> Router<Arc<Ctx>> {
+pub(crate) fn api(r: Router<Arc<Ctx>>) -> Router<Arc<Ctx>> {
     r.route("/api/ws", get(ws))
         .route("/api/version", get(|| async { axum::Json(json!({ "app": APP_ID, "version": env!("CARGO_PKG_VERSION"), "api": crate::interfaces::API_VERSION })) }))
         .route("/api/docs", get(|| async { api_file("README.md") }))
         .route("/api/schema", get(|| async { api_file("protocol.schema.json") }))
         .route("/api/protocol.ts", get(|| async { ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], PROTOCOL).into_response() }))
+        .merge(crate::api_v1::router())
         .route("/api/{*path}", get(|UrlPath(p): UrlPath<String>| async move { api_file(&p) }))
         .route("/calls/{*path}", get(call_file))
 }
@@ -424,7 +425,7 @@ async fn ws(State(ctx): State<Arc<Ctx>>, Extension(door): Extension<Door>, up: W
 }
 
 /// What a connection through `door` may do now; None once its interface is gone or off.
-fn access_of(ctx: &Ctx, door: &Door) -> Option<ApiAccess> {
+pub(crate) fn access_of(ctx: &Ctx, door: &Door) -> Option<ApiAccess> {
     match door {
         Door::Builtin => Some(ApiAccess::Control),
         Door::Interface { id, .. } => ctx.interfaces.access(&ctx.config.lock().unwrap(), id),
@@ -525,13 +526,18 @@ pub(crate) fn tr_config(path: &str) -> ToClient {
 /// access gets (devices, key containers, plugins, interfaces); a listen-only
 /// connection gets the config without secrets ([`Out::of`]).
 pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
-    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(crate::radio::rtl::devices())), crate::radio::radios_json(false))).await;
-    let (devices, radios) = found.unwrap_or((None, Value::Null));
-    let mut m = greeting_now(ctx, devices, radios);
+    let ctx2 = ctx.clone();
+    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(crate::radio::rtl::devices())), crate::radio::radios_json(false), runtime::history(&ctx2), kept_now(&ctx2))).await;
+    let (devices, radios, history, kept) = found.unwrap_or((None, Value::Null, ToClient::History { entries: Vec::new(), next: None }, Vec::new()));
+    let mut m = greeting_now(ctx, devices, radios, history, kept);
     if control {
         m.push(plugins_list(ctx).await);
         let cfg = ctx.config.lock().unwrap().clone();
         m.push(ctx.interfaces.list(&cfg, &ctx.config_path));
+    }
+    // (A store that couldn't open: said to everyone who connects, until it's fixed.)
+    if let Some(why) = ctx.db.failure() {
+        m.push(ToClient::error(format!("The store couldn't be opened ({why}). Nothing is kept until it opens: talkgroups, aliases, the radio registry, the call index and the dashboard's history. Recording goes on.")));
     }
     m.push(ToClient::Hello {
         version: env!("CARGO_PKG_VERSION").into(),
@@ -539,29 +545,47 @@ pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
         api: crate::interfaces::API_VERSION,
         config_path: control.then(|| ctx.config_path.display().to_string()),
         survey_bands: trunk_app::survey::bands_json(),
-        capabilities: trunk_app::protocol::Capability::ALL.to_vec(),
+        capabilities: capabilities(ctx),
     });
     m
 }
 
-/// The greeting's messages that need nothing found or listed: `devices` for control access only.
-pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value) -> Vec<ToClient> {
+/// What `hello` says the recorder can do: everything, but `calls` and
+/// `history` only while the call store is open.
+fn capabilities(ctx: &Ctx) -> Vec<trunk_app::protocol::Capability> {
+    use trunk_app::protocol::Capability;
+    Capability::ALL.iter().copied().filter(|c| match c {
+        Capability::Calls => ctx.db.indexes_calls(),
+        Capability::History => !ctx.db.is_disabled(),
+        _ => true,
+    }).collect()
+}
+
+/// The greeting's messages from what's kept between runs (the store, or
+/// files: so it blocks): each system's talker aliases, and the codes
+/// conventional frequencies carried as saved (if not told since).
+fn kept_now(ctx: &Ctx) -> Vec<ToClient> {
+    use crate::kept;
+    let config = ctx.config.lock().unwrap().clone();
+    let mut m: Vec<ToClient> = config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)).filter_map(|n| Some(ToClient::Units { system: n.clone(), csv: kept::read_units(&ctx.db, n)? })).collect();
+    if ctx.heard_last.lock().unwrap().is_none() {
+        let saved = kept::read(&ctx.db, trunk_app::saving::Kind::Heard, "").and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        m.push(ToClient::Heard { heard: saved.unwrap_or(json!({})) });
+    }
+    m
+}
+
+/// The greeting's messages that need nothing found or listed: `devices` for
+/// control access only; `kept` from [`kept_now`].
+pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, history: ToClient, kept: Vec<ToClient>) -> Vec<ToClient> {
     let config = ctx.config.lock().unwrap().clone();
     let mut m = vec![ctx.phase.lock().unwrap().message(), ToClient::Config { config: Box::new(config.clone()), version: ctx.config_version.load(Ordering::SeqCst) }];
-    m.extend(ctx.talkgroups.lock().unwrap().iter().map(|(system, csv)| ToClient::Talkgroups { system: system.clone(), csv: csv.clone() }));
-    // Each system's talker aliases, as saved.
-    for n in config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)) {
-        if let Ok(csv) = std::fs::read_to_string(crate::runtime::units_path(n)) {
-            m.push(ToClient::Units { system: n.clone(), csv });
-        }
-    }
-    // The codes conventional frequencies carried: as last told, else as saved.
-    let heard = ctx.heard_last.lock().unwrap().clone().unwrap_or_else(|| {
-        let saved = std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
-        ToClient::Heard { heard: saved.unwrap_or(json!({})) }
-    });
-    m.push(heard);
-    m.push(ToClient::History { entries: ctx.history.lock().unwrap().iter().take(runtime::HISTORY).cloned().collect() });
+    m.extend(ctx.talkgroups.lock().unwrap().iter().map(|(system, rows)| ToClient::Talkgroups { system: system.clone(), talkgroups: rows.clone() }));
+    // Each system's talker aliases; the codes conventional frequencies carried: as last told, else as saved.
+    let (heard, units): (Vec<ToClient>, Vec<ToClient>) = kept.into_iter().partition(|k| matches!(k, ToClient::Heard { .. }));
+    m.extend(units);
+    m.extend(ctx.heard_last.lock().unwrap().clone().or_else(|| heard.into_iter().next()));
+    m.push(history);
     m.push(ToClient::Radios { radios });
     m.push(ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle));
     // The dashboard: recent notable events (oldest first), the computer as last sampled.
@@ -610,9 +634,39 @@ impl Drop for Subs {
 
 
 /// `statsQuery`: the minute history.
+/// `statsQuery`: within what memory keeps (a week with no store; with one,
+/// a day and a bit), from memory; further back, the store's hours before the
+/// last day and memory's minutes since, added into one grid of whole hours:
+/// each answer a few hundred points a series, whatever the span. Blocks: run
+/// it under `spawn_blocking`.
 pub(crate) fn stats_query(ctx: &Ctx, q: &StatsQuery) -> ToClient {
+    use trunk_app::stats::{Bucket, Buckets, Span};
+    let now = crate::clock::unix_s() as i64;
+    let (from, to) = q.span(now);
     let h = ctx.series.lock().unwrap();
-    q.answer(&h, crate::clock::unix_s() as i64, h.loading)
+    let kept = h.cap_minutes() as i64 * 60;
+    if ctx.db.is_disabled() || from >= now - kept + 60 {
+        return q.answer(&h, now, h.loading);
+    }
+    let (patterns, loading) = (q.patterns(), h.loading);
+    let span = Span::of(from, to, q.points, 60);
+    // (On the hour, at least two hours inside what memory keeps.)
+    let split = (now - kept + 2 * 3600).div_euclid(3600) * 3600 + 3600;
+    let mut b = Buckets::new();
+    h.fill(&patterns, &span, split.div_euclid(60), &mut b);
+    drop(h);
+    let hours = crate::db::store::HoursQuery { patterns: &patterns, span, from: span.m0 * 60, before: split };
+    match ctx.db.stats_hours(&hours) {
+        Ok(rows) => {
+            for (k, i, h) in rows {
+                if let Some(i) = usize::try_from(i).ok().filter(|i| *i < span.n) {
+                    b.entry(k).or_insert_with(|| vec![Bucket::default(); span.n])[i].add(h.sum, h.n, h.lo, h.hi);
+                }
+            }
+        }
+        Err(e) => log::warn!("Call store: the dashboard's history not read ({e})"),
+    }
+    q.result(from, to, loading, span.answer(b))
 }
 
 /// `radioQuery`: the registry, with talkgroup names from the config and radio names as saved.
@@ -798,9 +852,9 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || radio_query(&ctx2, &q)).await.ok()
         }
-        Command::OlderCalls { before, limit } => {
+        Command::CallsQuery { id, query } => {
             let ctx2 = ctx.clone();
-            tokio::task::spawn_blocking(move || runtime::older_calls(&ctx2, before, limit.clamp(1, 500))).await.ok()
+            tokio::task::spawn_blocking(move || runtime::calls_query(&ctx2, id, &query)).await.ok()
         }
         Command::SetConfig { config, version } => match Config::from_value(config) {
             Ok(mut c) => {
@@ -858,8 +912,15 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             Err(e) => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: Some(format!("Bad config: {e}")) }),
         },
         // (Written beside the config; a recording takes it at once.)
-        Command::SetTalkgroups { system, csv } => failed(runtime::set_talkgroups(ctx, &system, csv)),
-        Command::SetTalkgroup { system, talkgroup, edit } => failed(runtime::set_talkgroup(ctx, &system, talkgroup, edit)),
+        // (Off the async workers: the store's queue can be full, and the edit holds the talkgroups' lock while it hands over.)
+        Command::SetTalkgroups { system, talkgroups } => {
+            let ctx2 = ctx.clone();
+            failed(tokio::task::spawn_blocking(move || runtime::set_talkgroups(&ctx2, &system, talkgroups)).await.unwrap_or_else(|e| Err(e.to_string())))
+        }
+        Command::SetTalkgroup { system, talkgroup, edit } => {
+            let ctx2 = ctx.clone();
+            failed(tokio::task::spawn_blocking(move || runtime::set_talkgroup(&ctx2, &system, talkgroup, edit)).await.unwrap_or_else(|e| Err(e.to_string())))
+        }
         // A key container with no passwordFile, unlocked with a password typed in, or locked again
         // (docs/configuration/systems.md). The password is never kept.
         Command::UnlockKeys { source, password } => {
@@ -1101,6 +1162,63 @@ mod tests {
         let (mime, location) = (h(header::CONTENT_TYPE), h(header::LOCATION));
         let body = String::from_utf8_lossy(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).to_string();
         (status, if location.is_empty() { mime } else { location }, body)
+    }
+
+    /// A chart further back than memory keeps (a day and a bit, with the
+    /// store): the store's hours and memory's minutes in one grid of whole
+    /// hours; within it, memory alone.
+    #[test]
+    fn a_long_chart_is_the_store_s_hours_and_memory_s_minutes() {
+        use trunk_app::stats::{HourRow, Rollup};
+        let dir = crate::db::TestDir::new("stats-query");
+        let ctx = crate::runtime::test_ctx_with_store(&dir.join("cap"), &dir.join("trunk-pro.sqlite"));
+        let now = crate::clock::unix_s() as i64;
+        let old = (now - 30 * 86_400).div_euclid(3600) * 3600;
+        ctx.db.send(crate::db::Change::StatsHours(vec![HourRow { series: "a".into(), t: old, avg: 10.0, lo: 5.0, hi: 20.0, n: 60 }]));
+        ctx.db.flush().unwrap();
+        ctx.series.lock().unwrap().insert(&Rollup { t: now.div_euclid(60) * 60 - 3600, values: [("a".to_string(), [1.0, 0.0, 2.0])].into() });
+        let ask = |range: &str| {
+            let q = trunk_app::protocol::StatsQuery { series: vec!["a".into()], range: Some(range.into()), points: 90, ..Default::default() };
+            match super::stats_query(&ctx, &q) {
+                trunk_app::protocol::ToClient::StatsResult(b) => serde_json::Value::Object(b),
+                m => panic!("{m:?}"),
+            }
+        };
+        let r = ask("90d");
+        let a = &r["series"]["a"];
+        assert_eq!(a["stepS"], 24 * 3600, "90 days in about 90 points: a day each");
+        let n: Vec<u64> = a["n"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+        assert_eq!((n.iter().sum::<u64>(), n.iter().filter(|v| **v > 0).count()), (61, 2), "the stored hour and the minute in memory");
+        assert_eq!(a["hi"].as_array().unwrap().iter().filter_map(|v| v.as_f64()).fold(0.0, f64::max), 20.0);
+        let day = ask("24h");
+        assert_eq!(day["series"]["a"]["n"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).sum::<u64>(), 1, "a day: memory's");
+        assert_eq!(day["series"]["a"]["stepS"], 17 * 60, "by the minute: memory's grid (a day in 90 points)");
+        assert_eq!(ctx.series.lock().unwrap().cap_minutes(), crate::statstore::STORE_MEMORY_MINUTES, "a day and a bit in memory");
+        let week = ask("7d");
+        assert_eq!(week["series"]["a"]["stepS"], 2 * 3600, "a week: whole hours, as the store has them (two each, in 90 points)");
+        assert_eq!(week["series"]["a"]["n"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).sum::<u64>(), 1, "memory's minute in it");
+    }
+
+    /// `hello` lists `calls` and `history` while the call store is open, and not when it
+    /// could not be opened.
+    #[tokio::test]
+    async fn hello_lists_calls_only_while_the_store_is_open() {
+        use trunk_app::protocol::{Capability, ToClient};
+        async fn capabilities(ctx: &std::sync::Arc<crate::runtime::Ctx>) -> Vec<Capability> {
+            match super::greeting(ctx, false).await.pop() {
+                Some(ToClient::Hello { capabilities, .. }) => capabilities,
+                _ => panic!("hello comes last"),
+            }
+        }
+        let dir = crate::db::TestDir::new("hello-calls");
+        let open = crate::runtime::test_ctx(&dir.join("open"));
+        assert_eq!(capabilities(&open).await, Capability::ALL);
+        let store = dir.join("trunk-pro.sqlite");
+        crate::db::seed_unopenable(&store);
+        let off = crate::runtime::test_ctx_with_store(&dir.join("off"), &store);
+        let caps = capabilities(&off).await;
+        assert!(!caps.contains(&Capability::Calls) && !caps.contains(&Capability::History), "{caps:?}");
+        assert_eq!(caps.len(), Capability::ALL.len() - 2);
     }
 
     /// An edit of the config as it was before someone else's change is

@@ -5,6 +5,110 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A call store: every recorded call indexed, and found by talkgroup, radio or time** (#100,
+  from #102 and #103 by auggiesoft). Each finished call is a row in `trunk-pro.sqlite`, beside the
+  config.
+  - A talkgroup's and a radio's Radio page list their calls, a page at a time, as far back as the
+    store keeps them, and each plays from there. "Load older" on the Listen page pages back the
+    same way, with no 24-hour limit.
+  - The latest calls are in every answer at once; the store commits them in batches behind.
+  - **`storage.retentionDays`**: how long calls stay in the store, 120 days by default (0: all).
+    The recordings and their JSON files aren't touched.
+  - **`storage.commitSeconds`**: how far apart the store's commits are under load, 300 by
+    default (10 to 3600). Each commit writes whole pages, twice, so fewer is gentler on SD cards
+    and eMMC: on the Pi's eMMC a busy system's store writes 0.21 GB a day at 300, 0.61 at 60
+    (`db::tests::write_budget`).
+  - The first start indexes the calls already in the capture folder, in the background; later
+    starts check the last two days for calls recorded while it was off.
+  - **Where it's kept** (`storage.backend`): `sqlite` (the default, beside the config: a Pi to a
+    mid-size server), `postgres` (a PostgreSQL server, `storage.url`: years of history, your
+    own backups and replication). Setup's Recording tab has the choice.
+  - A store that can't be opened (a full disk, a server not reachable, another recorder using
+    it) is left off: recording, the call list and every query go on from the recent calls.
+    Nothing else is kept meanwhile (talkgroups, aliases, the radio registry, the dashboard's
+    history); every connection is told.
+  - **Systems have ids.** Each system in `config.json` gets an `id` the first time it's read,
+    kept across renames and never given twice (`nextSystemId`). The store keeps everything by
+    it, so a renamed system keeps its calls, talkgroups and registry.
+  - **A call is kept once in the store.** Its record's fields are columns, its radios rows of
+    their own, and the lists nothing searches one JSON document. The call's `.json` file stays the
+    truth.
+  - **Paging by cursor (breaking).**
+    - `callsQuery` takes `cursor`, which is the last page's `next`. `callsResult` is
+      `{ id, entries, next?, error? }`, and `history` carries `next` too.
+    - Calls are ordered by start, then path, and every page is one query.
+    - `olderCalls` is gone; the Listen page's "Load older" goes on from the history's `next`.
+    - Plugins: `CallsQuery.cursor` and `CallsPage.next`, the request number beside them
+      (`Plugin::calls(request, page)`).
+    - With the store off, `GET /api/v1/calls` answers from the recent calls (its `error` says
+      so), as `callsQuery` does, rather than 503.
+    - A talkgroup or radio asked for without a system is looked for in each configured
+      system.
+  - **A database always: the `files` backend is gone (breaking).** `storage.backend` is
+    `sqlite` (the default) or `postgres`, and talkgroups, aliases, band plans, the registry and
+    the dashboard's history are always the store's.
+    - The store's settings have a Setup tab of their own, **Data**. The dashboard's Platform page has
+      a **Storage** view: each table's and index's size, its rows, how they've grown, and what the
+      store writes to disk a day (Linux; PostgreSQL: its server's log).
+    - **`storage.radioIndex` and `storage.talkgroupIndex`** (Setup → Data: "Calls by radio" and "Calls
+      by talkgroup", both on by default) are the indexes behind a radio's and a talkgroup's call list
+      (the Radio page, and `callsQuery` / `/api/v1/calls` / plugins asking by `unit` or `talkgroup`).
+      Off, that list is its recent calls. On a busy system the radio index is most of what the store
+      writes (on a Pi's eMMC, a call a second all day: 1.6 GB a day with it, 0.8 without); the
+      talkgroup index is about a third as much.
+    - **`storage.lowWrite`** (Setup: "Low-write mode") is for SD cards: no call index (the call
+      list is the recent calls), the dashboard's history by the hour only, and a commit an hour.
+    - A store that can't be opened is said to every connection, and nothing is kept meanwhile.
+    - A talkgroup edit that couldn't be saved is told to the browsers.
+    - SQLite copies what can't be made again (systems, talkgroups, aliases and other documents,
+      the radio registry) to `trunk-pro.backup` once a day.
+  - **Breaking, while in beta: little is carried over.**
+    - **Talkgroups are:** each system's `<shortName>.talkgroups.csv` beside the config (and an older
+      config's `talkgroupsCsv`) is read into the store at the first start, and the file renamed
+      `….imported`. A system the store already has talkgroups for keeps them (its file is renamed
+      `….unused`).
+    - **So is the config:** `storage.backend: "files"` reads as the default (SQLite), and the
+      config is saved without it (the old one kept as `config.json.before-sites`).
+    - **Nothing else is.** The other flat files (`radio/`, `*.units.csv`, `*.bandplan`,
+      `conventional.heard.json`, `tune.json`, `sharing.json`, `stats/`) aren't read; they're left as
+      they are. Talker aliases, band plans and the radio registry are learned again on the air. A store of another schema version is set aside (SQLite: renamed
+    `.v<n>-<time>`; PostgreSQL: its tables made afresh) and a new one started; the call list is
+    rebuilt from the recordings' `.json` files.
+  - **Talkgroups are kept in the store as rows**, one per talkgroup with its columns typed (a
+    call's talkgroup name is a SQL join away). An Ignore or name change writes only that row and
+    commits at once. **Load CSV…** and **Download** in Setup are the import and export. A
+    downloaded file keeps each row's order, the comment line directly above it and any columns
+    of its own; other comment lines and the original delimiter aren't kept (it's written with
+    commas). Talker aliases are rows too (`units`), and only the ones that changed are written.
+  - **The dashboard's history goes back a year, not a week** (`storage.statsDays`, 365 by default;
+    0 keeps it all). The Platform, RF and Decode pages' charts offer 30 days, 90 days and 1 year,
+    as far as the store keeps. Each series is kept by the hour, and only the last day by the
+    minute in memory. A longer chart asks the store for its hours and gets a few hundred points a
+    series whatever the span, so neither the recorder nor the browser holds the history. On the
+    Pi's eMMC the store writes about 17 MB a
+    day for it. `hello.capabilities` has a new `history`; `statsQuery` takes `30d`, `90d` and `1y`.
+  - **What a recording learns between runs is kept in the store too:**
+    - the radio registry;
+    - talker aliases;
+    - band plans;
+    - conventional codes heard;
+    - AutoTune's scores;
+    - sharing's state.
+
+    The radio registry is appended as each
+    15 minutes' changes and written whole once a day, instead of whole every 15 minutes. On the
+    Pi's eMMC a busy system writes 0.10 GB a day instead of 0.44 (`db::tests::registry_write_budget`).
+    The browser version saves the registry in the same shape, so a registry it saved before
+    starts afresh.
+- **Reporting views in the store:** `calls_report`, `transmissions_report` and `stats_report`
+  give calls, radios and the dashboard's hours with names and timestamps, for the `sqlite3` shell,
+  Grafana and the like (docs/configuration: "The store"). PostgreSQL's big tables are vacuumed
+  and analysed sooner.
+- **Calls by talkgroup, radio and time, for interfaces and plugins:** `callsQuery` on the
+  WebSocket (`client.js`: `rec.calls({ … })`), `GET /api/v1/calls`, `/api/v1/calls/<path>` and
+  `/api/v1/storage` over HTTP (`docs/api/calls.openapi.yaml`), and for plugins `calls.query`
+  (Plugin SDK 0.9.0: `Host::calls`, answered to `Plugin::calls`). One query behind them all.
+
 ### HackRF
 
 - **HackRF One is a source of its own** (`"type": "hackrf"`), driven directly over USB like an
@@ -104,7 +208,6 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Escape puts it back. Before, each pause in typing was a save: a system's short name typed as
   "fire4a" renamed it to f, fi, fir… on the way, moving its talkgroup file each time, and a
   plugin's settings restarted it on each pause. Switches and menus still act at once.
-
 - **Phase 2 and DMR `.sdr` files play in MimoSDR.** A Phase 2 frame's symbols were stored as the
   dibit rather than its quadrant, so MimoSDR's player (and anyone else's) misread most of them; and
   frames our vocoder repeated or muted were stored as heard, so other players played them. They're

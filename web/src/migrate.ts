@@ -1,20 +1,27 @@
 // Upgrading what an older version left — for a while only. Before 2026-10
-// each site was a system of its own (research/multi-site-systems.md). An
+// each site was a system of its own (research/multi-site-systems.md), and
+// talkgroups were kept as talkgroup files' text (before v0.2.12). An
 // older config is upgraded by the recorder's crates/trunk-app/src/migrate.rs
 // (the page reads configs through it: rules.ts); what is the page's own, a
 // selection kept by an older Listen page, goes through here. To drop the
 // upgrade, delete both (and their tests) and the few lines the compiler then
 // points at.
 
+import type { Talkgroup } from "./protocol.ts";
 import { configTalkgroups } from "./rules.ts";
+import { readTalkgroupFile } from "./talkgroups.ts";
 
 /**
- * The talkgroup files an older config this browser kept held (in
- * `talkgroupsCsv`, before v0.1.16), by short name once upgraded: the
- * recorder's own reading of it (trunk_app::migrate::talkgroups_of).
+ * The talkgroups this browser kept (`kept`, by short name), with what an
+ * older version kept them as read in: a talkgroup file's text (before
+ * v0.2.12), and the files an older config held (`rawConfig`'s
+ * `talkgroupsCsv`, before v0.1.16, read as the recorder reads them:
+ * trunk_app::migrate::talkgroups_of). Saved again, they're rows.
  */
-export function oldTalkgroups(raw: unknown): Record<string, string> {
-  return JSON.parse(configTalkgroups(JSON.stringify(raw ?? {}))) as Record<string, string>;
+export function migrateTalkgroups(rawConfig: unknown, kept: Record<string, Talkgroup[] | string>): Record<string, Talkgroup[]> {
+  const old = JSON.parse(configTalkgroups(JSON.stringify(rawConfig ?? {}))) as Record<string, string>;
+  const rows = (v: Talkgroup[] | string) => (typeof v === "string" ? readTalkgroupFile(v).talkgroups : v);
+  return Object.fromEntries(Object.entries({ ...old, ...kept }).map(([k, v]) => [k, rows(v)] as const).filter(([, v]) => v.length));
 }
 
 /**

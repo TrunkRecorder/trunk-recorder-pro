@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { siteNameOf } from "./config.ts";
-import { migrateSelection, oldTalkgroups } from "./migrate.ts";
+import { migrateSelection, migrateTalkgroups } from "./migrate.ts";
 import { readConfig } from "./rules.ts";
 
 test("an older config is read as the recorder reads it: systems joined by a site group or a site lock become one", () => {
@@ -34,14 +34,17 @@ test("migrateSelection: a system of sites kept under its group's name is its fir
   assert.equal(none.key("dcfd:1"), "dcfd:1");
 });
 
-test("oldTalkgroups: an older stored config's talkgroup files, by short name once upgraded", () => {
+test("migrateTalkgroups: what an older version kept, read in as rows", () => {
   const old = { systems: [
     { shortName: "a", controlChannelsHz: [1], siteGroup: "g", talkgroupsCsv: "1,a" },
     { shortName: "b", controlChannelsHz: [2], siteGroup: "g", talkgroupsCsv: "2,b" },
     { shortName: "c", sites: [{ controlChannelsHz: [3] }], talkgroupsCsv: "3,c" },
   ] };
-  assert.deepEqual(oldTalkgroups(old), { a: "1,a", c: "3,c" }, "joined systems keep the first's");
-  assert.deepEqual(oldTalkgroups({}), {});
+  const numbers = (m: Record<string, { number: number }[]>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, v.map((t) => t.number)]));
+  assert.deepEqual(numbers(migrateTalkgroups(old, {})), { a: [1], c: [3] }, "an older config's, joined systems keeping the first's");
+  const kept = { d: "Decimal,Alpha Tag\n7,Tac\n", e: [{ ...migrateTalkgroups({}, { x: "9,n" }).x[0] }] };
+  assert.deepEqual(numbers(migrateTalkgroups({}, kept)), { d: [7], e: [9] }, "a file's text kept before; rows as they are");
+  assert.deepEqual(migrateTalkgroups({}, {}), {});
 });
 
 test("a conventional channel's tone becomes its code, slot and talkgroup; P25 rows sharing a frequency keep their number", () => {

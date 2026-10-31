@@ -1,4 +1,5 @@
 import { Fragment, useId, useMemo, useRef, useState } from "react";
+import { INDEX_USES } from "./storeIndexes.ts";
 import { SystemDot, SystemTag } from "./charts.tsx";
 import {
   activeSites,
@@ -70,8 +71,8 @@ import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } fr
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { SystemSignals } from "./Signals.tsx";
-import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, Demod, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, StorageSettings, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -81,7 +82,6 @@ import { findOnAir, siteFrequencies, type FccTarget } from "./controller.ts";
 import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
-import { readTalkgroupCsv } from "./talkgroups.ts";
 import { DraftInput, Field, FileInput, NumberInput, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
@@ -415,21 +415,20 @@ const NAME_FIELDS: [NameField, string, string][] = [
   ["group", "Category", "Fire"],
 ];
 
-/** The Tag and Category values a conventional system uses already (its rows', its talkgroup file's), most used first: offered as each row's are typed. */
+/** The Tag and Category values a conventional system uses already (its rows', its talkgroups'), most used first: offered as each row's are typed. */
 function useNameSuggestions(conv: Conventional): { tag: string[]; group: string[] } {
-  const csv = useApp().talkgroups[conv.shortName] ?? "";
+  const file = useApp().talkgroups[conv.shortName];
   return useMemo(() => {
-    const file = [...readTalkgroupCsv(csv).talkgroups.values()];
     const ranked = (values: string[]) => {
       const n = new Map<string, number>();
       for (const v of values.map((v) => v.trim()).filter(Boolean)) n.set(v, (n.get(v) ?? 0) + 1);
       return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([v]) => v);
     };
     return {
-      tag: ranked([...conv.channels.map((c) => c.tag ?? ""), ...file.map((t) => t.tag)]),
-      group: ranked([...conv.channels.map((c) => c.group ?? ""), ...file.map((t) => t.group)]),
+      tag: ranked([...conv.channels.map((c) => c.tag ?? ""), ...(file ?? []).map((t) => t.tag)]),
+      group: ranked([...conv.channels.map((c) => c.group ?? ""), ...(file ?? []).map((t) => t.category)]),
     };
-  }, [conv.channels, csv]);
+  }, [conv.channels, file]);
 }
 
 /**
@@ -2403,9 +2402,9 @@ export function SystemCard(props: { c: Config; i: number }) {
   const join = (other: System) => {
     const j = c.systems.indexOf(other);
     const dropped = SYSTEM_OWN.filter(([k]) => other[k] !== undefined && other[k] !== "" && JSON.stringify(other[k]) !== JSON.stringify(sys[k])).map(([, w]) => w);
-    // Its talkgroup file comes along if this one has none.
+    // Its talkgroups come along if this one has none.
     const [theirs, mine] = [app.talkgroups[other.shortName], app.talkgroups[sys.shortName]];
-    if (theirs && mine && theirs !== mine) dropped.push("talkgroup file");
+    if (theirs && mine && JSON.stringify(theirs) !== JSON.stringify(mine)) dropped.push("talkgroups");
     const n = other.sites.length;
     const ask =
       `Make ${other.shortName} a site${n === 1 ? "" : "s"} of ${sys.shortName}? ` +
@@ -2995,6 +2994,62 @@ function RecordingOverridePanel(props: OverrideProps & { title: string; groups: 
   );
 }
 
+/**
+ * Setup → Data (desktop app): where the recorder keeps what it keeps (the
+ * call index, talkgroups, aliases, the radio registry, the dashboard's
+ * history) and how much it writes. Each takes effect from the next start.
+ * What's in it and how big: the dashboard's Platform → Storage.
+ */
+function DataTab(props: { c: Config }) {
+  const st = props.c.storage;
+  const set = (patch: Partial<StorageSettings>) => updateConfig((x) => void (x.storage = { backend: "sqlite", url: "", retentionDays: 120, commitSeconds: 300, ...x.storage, ...patch }));
+  const low = !!st?.lowWrite;
+  return (
+    <Section title="Data" hint="What the recorder keeps between runs, where, and how much it writes. From the next start.">
+      <section className="set-card">
+        <Group title="Store" hint="Talkgroups, talker aliases, band plans, the radio registry, the call index and the dashboard's history. Recordings stay in the recordings folder.">
+          <Field label="Kept in">
+            <select value={st?.backend ?? "sqlite"} onChange={(e) => set({ backend: e.target.value as "sqlite" | "postgres" })}>
+              <option value="sqlite">This computer (SQLite)</option>
+              <option value="postgres">A PostgreSQL server</option>
+            </select>
+          </Field>
+          {st?.backend === "postgres" && (
+            <Field label="PostgreSQL connection" hint="postgres://user:password@host/database; one recorder per database or schema" wide>
+              <TextInput className="mono" value={st.url ?? ""} placeholder="postgres://trp@db.example/trunk" onChange={(v) => set({ url: v })} />
+            </Field>
+          )}
+        </Group>
+        <Group title="Writing less" hint="For an SD card or a Pi's eMMC: each index and commit is writes the card wears out by.">
+          <Field label="Low-write mode" hint="No call index (the call list is the recent calls), the dashboard's history by the hour, a commit an hour">
+            <Switch label="Low-write mode" checked={low} onChange={(v) => set({ lowWrite: v || undefined })} />
+          </Field>
+          <p className="muted small wide">
+            The store keeps an index of calls by talkgroup and one by radio. Each lets a list of that talkgroup's or radio's calls go back as far as the store keeps calls; each costs writes as calls come in (on a busy system, the radio index is most of what the store writes, the talkgroup index about a third as much). Turned off, those lists show the recent calls only. Everything else is unaffected.
+          </p>
+          <Field label="Calls by talkgroup" hint={low ? "Low-write mode keeps no call index" : `Used by ${INDEX_USES.calls_system_tg_start.used}. Off: ${INDEX_USES.calls_system_tg_start.without}`} wide>
+            <Switch label="Calls by talkgroup" checked={!low && st?.talkgroupIndex !== false} disabled={low} onChange={(v) => set({ talkgroupIndex: v ? undefined : false })} />
+          </Field>
+          <Field label="Calls by radio" hint={low ? "Low-write mode keeps no call index" : `Used by ${INDEX_USES.transmissions_radio.used}. Off: ${INDEX_USES.transmissions_radio.without}`} wide>
+            <Switch label="Calls by radio" checked={!low && st?.radioIndex !== false} disabled={low} onChange={(v) => set({ radioIndex: v ? undefined : false })} />
+          </Field>
+          <Field label="Write every, s" hint="Longer writes less; calls show at once either way">
+            <NumberInput label="Write every, s" value={st?.commitSeconds ?? 300} onChange={(v) => set({ commitSeconds: Math.max(10, Math.min(3600, Math.round(v ?? 300))) })} />
+          </Field>
+        </Group>
+        <Group title="How long">
+          <Field label="Call history, days" hint="How long calls stay findable by talkgroup and radio; 0 keeps them all. Their files aren't touched">
+            <NumberInput label="Call history, days" value={st?.retentionDays ?? 120} onChange={(v) => set({ retentionDays: Math.max(0, Math.round(v ?? 120)) })} />
+          </Field>
+          <Field label="Dashboard history, days" hint="How far back the dashboard's charts go, kept by the hour; 0 keeps it all">
+            <NumberInput label="Dashboard history, days" value={st?.statsDays ?? 365} onChange={(v) => set({ statsDays: Math.max(0, Math.round(v ?? 365)) })} />
+          </Field>
+        </Group>
+      </section>
+    </Section>
+  );
+}
+
 /** The tab showing now (for showTodo, outside React). */
 let shownTab: SetupTab = "systems";
 const currentTab = () => shownTab;
@@ -3004,6 +3059,7 @@ const TABS: { id: SetupTab; label: string; icon: () => React.ReactNode }[] = [
   { id: "conventional", label: "Conventional", icon: IconAntenna },
   { id: "radios", label: "Radios", icon: IconDongle },
   { id: "recording", label: "Recording", icon: IconFolder },
+  { id: "data", label: "Data", icon: IconDatabase },
   { id: "plugins", label: "Plugins", icon: IconPuzzle },
 ];
 
@@ -3016,11 +3072,12 @@ function SetupTabs(props: { c: Config; tab: SetupTab }) {
     conventional: props.c.conventional.reduce((n, v) => n + v.channels.length, 0),
     radios: props.c.sources.length,
     recording: null,
+    data: null,
     plugins: s.plugins ? s.plugins.plugins.length : null,
   };
   return (
     <nav className="setup-tabs" role="tablist" aria-label="Setup">
-      {TABS.filter((t) => t.id !== "plugins" || can("plugins")).map((t) => {
+      {TABS.filter((t) => (t.id !== "plugins" || can("plugins")) && (t.id !== "data" || !web)).map((t) => {
         const todo = todos.filter((x) => tabOf(x.target) === t.id).length;
         return (
           <button key={t.id} role="tab" aria-selected={props.tab === t.id} className={props.tab === t.id ? "on" : ""} onClick={() => setSetupTab(t.id)}>
@@ -3246,6 +3303,7 @@ export function Setup() {
         </Section>
       )}
 
+      {tab === "data" && !web && <DataTab c={c} />}
       {tab === "plugins" && can("plugins") && <PluginSetupPanel />}
     </div>
   );

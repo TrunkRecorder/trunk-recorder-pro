@@ -30,7 +30,6 @@ import {
   type Selection,
 } from "../listen.ts";
 import type { CallEntry, Config, RecordingOverride } from "../protocol.ts";
-import { parseTalkgroupCsv } from "../talkgroups.ts";
 import { BrowserStorage } from "../web/BrowserStorage.tsx";
 import { aliasOf, AirTg } from "./Calls.tsx";
 
@@ -72,8 +71,8 @@ function catalog(s: Pick<AppState, "config" | "talkgroups">, calls: CallEntry[])
     if (!x.enabled || silent.has(x.shortName)) continue;
     const name = x.shortName;
     const m = sys(name);
-    for (const t of parseTalkgroupCsv(s.talkgroups[name] ?? "").values()) {
-      if (!t.ignore && !m.has(t.number)) m.set(t.number, { system: name, talkgroup: t.number, key: tgKey(name, t.number), alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.group });
+    for (const t of s.talkgroups[name] ?? []) {
+      if (!t.ignore && !m.has(t.number)) m.set(t.number, { system: name, talkgroup: t.number, key: tgKey(name, t.number), alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.category });
     }
   }
   for (const v of s.config?.conventional ?? []) if (v.enabled && !silent.has(v.shortName)) sys(v.shortName);

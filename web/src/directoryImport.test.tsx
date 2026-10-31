@@ -8,8 +8,8 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, normalizeSystem } from "./config.ts";
 import { snapshot, transport } from "./controller.ts";
 import { addSystem, findExisting, freeShortName, ImportDialog, importUrl, parseBundle, updateSystem, type Bundle } from "./directoryImport.tsx";
-import type { Config, ToRecorder } from "./protocol.ts";
-import { mergeTalkgroupCsv, parseTalkgroupCsv } from "./talkgroups.ts";
+import type { Config, Talkgroup, ToRecorder } from "./protocol.ts";
+import { mergeTalkgroups, readTalkgroupFile, talkgroup } from "./talkgroups.ts";
 
 /** DC Fire and EMS as the directory hands it over (GET /systems/{id}/config). */
 const bundle = (): Bundle => ({
@@ -31,7 +31,7 @@ let version = 1000;
 /** An edit is sent 300 ms after the last change (and the config isn't taken till then): wait it out. */
 const sent300 = () => new Promise((r) => setTimeout(r, 350));
 /** Connected with config `c` (a newer version than any before); what the page sends is kept in `sent`. */
-function connected(c: Config, talkgroups: Record<string, string> = {}): ToRecorder[] {
+function connected(c: Config, talkgroups: Record<string, Talkgroup[]> = {}): ToRecorder[] {
   const sent: ToRecorder[] = [];
   transport.send = (m: ToRecorder) => {
     sent.push(m);
@@ -45,7 +45,7 @@ function connected(c: Config, talkgroups: Record<string, string> = {}): ToRecord
   transport.onConnection(true);
   transport.onMessage({ type: "config", config: c, version: (version += 100) });
   transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service"] });
-  for (const [system, csv] of Object.entries(talkgroups)) transport.onMessage({ type: "talkgroups", system, csv });
+  for (const [system, rows] of Object.entries(talkgroups)) transport.onMessage({ type: "talkgroups", system, talkgroups: rows });
   return sent;
 }
 
@@ -85,17 +85,15 @@ test("a short name none has", () => {
   assert.equal(freeShortName(c, "WMATA Radio!"), "wmata-radio");
 });
 
-test("talkgroups merged: only those it lacks added, in its own columns; its names, priorities and ignores stay", () => {
-  const mine = "Decimal;Mode;Alpha Tag;Description;Priority;Ignore\n716;D;E16 TAC (mine);;2;\n900;D;Mine only;;;1\n";
-  const m = mergeTalkgroupCsv(mine, bundle().talkgroupsCsv);
+test("talkgroups merged: only those it lacks added, after its own; its names, priorities and ignores stay", () => {
+  const mine = [talkgroup(716, { alphaTag: "E16 TAC (mine)", priority: 2 }), talkgroup(900, { alphaTag: "Mine only", ignore: true })];
+  const theirs = readTalkgroupFile(bundle().talkgroupsCsv).talkgroups;
+  const m = mergeTalkgroups(mine, theirs);
   assert.equal(m.added, 1);
-  assert.ok(m.csv.startsWith(mine.trimEnd()), "its rows as they were");
-  assert.match(m.csv, /^801;D;Dispatch;;;$/m, "the new one in its columns and delimiter");
-  const t = parseTalkgroupCsv(m.csv);
-  assert.equal(t.get(716)!.alphaTag, "E16 TAC (mine)");
-  assert.equal(t.get(900)!.ignore, true);
-  assert.deepEqual(mergeTalkgroupCsv("", bundle().talkgroupsCsv), { csv: bundle().talkgroupsCsv, added: 2 });
-  assert.equal(mergeTalkgroupCsv(m.csv, bundle().talkgroupsCsv).added, 0);
+  assert.deepEqual(m.talkgroups.slice(0, 2), mine, "its rows as they were");
+  assert.deepEqual(m.talkgroups.map((t) => [t.number, t.alphaTag]), [[716, "E16 TAC (mine)"], [900, "Mine only"], [801, "Dispatch"]]);
+  assert.deepEqual(mergeTalkgroups([], theirs), { talkgroups: theirs, added: 2 });
+  assert.equal(mergeTalkgroups(m.talkgroups, theirs).added, 0);
 });
 
 test("added: the sites chosen, its licenses and link, and its talkgroups as its file", async () => {
@@ -107,7 +105,7 @@ test("added: the sites chosen, its licenses and link, and its talkgroups as its 
   assert.deepEqual(s.directory, { id: "sys_dcfd" }, "the link only: the version is sharing's (sharing.json)");
   assert.equal(s.fcc?.["857987500"].callSign, "WPXT459");
   const tg = sent.find((m) => m.type === "setTalkgroups");
-  assert.ok(tg && tg.type === "setTalkgroups" && tg.system === "dcfd" && tg.csv.includes("Engine 16 Tac"));
+  assert.ok(tg && tg.type === "setTalkgroups" && tg.system === "dcfd" && tg.talkgroups.some((t) => t.alphaTag === "Engine 16 Tac"));
   await sent300();
   assert.ok(sent.some((m) => m.type === "setConfig"), "saved");
 });
@@ -115,7 +113,7 @@ test("added: the sites chosen, its licenses and link, and its talkgroups as its 
 test("updated: the link, a site it has gets its directory ID and channels, the other is added; nothing of the user's replaced", async () => {
   const c = defaultConfig();
   c.systems = [normalizeSystem({ shortName: "dcfd", name: "My DCFD", type: "p25", controlChannelsHz: [855_462_500], fcc: { "857987500": { callSign: "KTYPED1" } } })];
-  const sent = connected(c, { dcfd: "Decimal,Mode,Alpha Tag\n716,D,Mine\n" });
+  const sent = connected(c, { dcfd: [talkgroup(716, { alphaTag: "Mine" })] });
   const added = updateSystem(bundle(), 0, [0, 1], snapshot().talkgroups);
   const s = snapshot().config!.systems[0];
   assert.equal(s.name, "My DCFD");
@@ -128,7 +126,8 @@ test("updated: the link, a site it has gets its directory ID and channels, the o
   assert.equal(s.fcc?.["857987500"].callSign, "KTYPED1", "a license typed stays");
   assert.equal(added, 1);
   const tg = sent.filter((m) => m.type === "setTalkgroups").pop();
-  assert.ok(tg && tg.type === "setTalkgroups" && /^716,D,Mine$/m.test(tg.csv) && /^801,D,Dispatch$/m.test(tg.csv));
+  assert.ok(tg && tg.type === "setTalkgroups");
+  assert.deepEqual(tg.talkgroups.map((t) => [t.number, t.alphaTag]), [[716, "Mine"], [801, "Dispatch"]]);
   await sent300();
 });
 
