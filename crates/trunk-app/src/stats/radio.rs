@@ -1321,6 +1321,35 @@ mod tests {
         assert!(r.systems["x"].units.contains_key(&3), "0: kept however old");
     }
 
+    /// A page is 500 rows by default, and a `limit` up to the cap is every
+    /// radio heard (from PR #112: an interface listing a system's radios).
+    #[test]
+    fn a_query_may_ask_for_every_radio_heard() {
+        let t = 1_790_000_000i64;
+        let mut s = SystemRadio::new(t);
+        for u in 0..6_000u32 {
+            s.units.insert(1_000_000 + u, Unit { first: t, last: t, last_tx: t, tx: 1, tx_secs: 1.0, aff: None, aff_t: 0, reg: None, tgs: Default::default(), recent: Default::default() });
+        }
+        let mut r = Registry::default();
+        r.put("x", s);
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let rows = |r: &Registry, limit: Option<u64>| {
+            let mut q = json!({ "what": "units", "system": "x", "hours": 24 });
+            if let Some(l) = limit {
+                q["limit"] = json!(l);
+            }
+            let a = r.query(&q, t + 60, &n);
+            assert_eq!(a["total"], 6_000);
+            a["rows"].as_array().unwrap().len()
+        };
+        assert_eq!(rows(&r, None), 500, "the default page");
+        assert_eq!(rows(&r, Some(Caps::default().units as u64)), 6_000, "every radio heard");
+        assert_eq!(rows(&r, Some(1_000_000)), 6_000, "more than were heard is all of them");
+        r.set_caps(Caps::of(&crate::config::StorageSettings { registry_radios: 0, ..Default::default() }));
+        assert_eq!(rows(&r, Some(1_000_000)), 6_000, "no cap: as many as asked for");
+    }
+
     #[test]
     fn caps_bound_the_tables_and_the_query() {
         let mut r = Registry::default();
