@@ -2424,6 +2424,7 @@ name = "trunk-pro"
 version = "0.2.11"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "chrono",
  "flate2",
  "futures-util",
@@ -2436,6 +2437,7 @@ dependencies = [
  "num-complex",
  "nusb",
  "postgres",
+ "percent-encoding",
  "rtlsdr-nusb",
  "rusqlite",
  "rust-embed",

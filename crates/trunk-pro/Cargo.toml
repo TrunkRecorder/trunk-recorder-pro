@@ -38,6 +38,8 @@ log = { version = "0.4", features = ["std"] }
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
 # (And internet audio streams, audio_stream.rs: fetched with it, MP3 and WAV decoded natively.)
 ureq = "3.5"
+base64 = "0.23"
+percent-encoding = "2"
 symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "wav", "pcm"] }
 sha2 = "0.11"
 # The install's anonymous directory recorder ID (directory.rs).
