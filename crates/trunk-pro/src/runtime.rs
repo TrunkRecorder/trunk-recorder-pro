@@ -142,6 +142,8 @@ pub struct Ctx {
 pub enum EngineCmd {
     /// A source's error or end, by way of its decoding thread.
     Source(SourceMsg),
+    /// Stream row `stream` couldn't be fetched or decoded (`crate::audio_stream`; it's tried again).
+    StreamError { stream: usize, error: String },
     /// What the connected browsers watch changed.
     Topics(trunk_app::stats::Topics),
     /// A system's talkgroups changed (loaded, pasted, edited in Setup).
@@ -509,6 +511,16 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     // The engine's commands: open before its thread is, so none sent meanwhile is lost.
     let ctl = mpsc::channel::<EngineCmd>();
     *ctx.engine.lock().unwrap() = Some(ctl.0.clone());
+    // Each stream row's audio, pushed into the engine from a thread of its own (as a source's samples are).
+    for (k, row) in cfg.streams().into_iter().enumerate() {
+        match crate::audio_stream::spawn(row.clone(), k, session.stream_feeder(k), ctl.0.clone(), stop.clone(), (epoch_ms, epoch_at)) {
+            Ok(t) => threads.push(t),
+            Err(e) => {
+                *ctx.engine.lock().unwrap() = None;
+                return Err(undo(threads, e));
+            }
+        }
+    }
     let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, stop2, (epoch_ms, epoch_at), ctl));
     match spawned {
         Ok(t) => threads.push(t),
@@ -922,6 +934,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         while let Some(c) = next {
             match c {
                 EngineCmd::Source(SourceMsg::Error { source, error }) => session.source_error(source, &error),
+                EngineCmd::StreamError { stream, error } => session.stream_error(stream, &error),
                 EngineCmd::Source(SourceMsg::End { source }) => {
                     if session.source_ended(source) {
                         // (Not "ended" when the user stopped it: the file thread ends on stop too.)

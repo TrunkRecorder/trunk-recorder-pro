@@ -30,8 +30,8 @@ pub enum Door {
 // [`trunk_app::protocol::Command::listen_may_send`], [`trunk_app::protocol::ToClient::audience`].
 
 /// The config as a listen-only page sees it: without plugin settings and
-/// key sources, the recorder's or any system's, or the database's
-/// connection string (it can hold a password).
+/// key sources, the recorder's or any system's, the database's connection
+/// string, or a stream row's address (either can hold a password).
 pub fn redact_config(mut c: Value) -> Value {
     if let Some(o) = c.as_object_mut() {
         o.remove("plugins");
@@ -46,6 +46,11 @@ pub fn redact_config(mut c: Value) -> Value {
                 o.remove("plugins");
                 o.remove("keys");
             }
+        }
+    }
+    for row in c["conventional"].as_array_mut().into_iter().flatten().flat_map(|v| v["channels"].as_array_mut().into_iter().flatten()) {
+        if let Some(o) = row.as_object_mut() {
+            o.remove("url");
         }
     }
     c
@@ -65,10 +70,11 @@ mod tests {
     fn listen_sees_no_secrets_and_changes_nothing() {
         let c = json!({ "plugins": { "openmhz": { "settings": { "apiKey": "k" } } }, "keys": { "a": { "file": "k.json" } },
                         "systems": [{ "shortName": "x", "plugins": { "openmhz": { "apiKey": "k" } }, "keys": "a" }],
-                        "conventional": [{ "shortName": "c", "plugins": {} }], "server": { "port": 8080 },
+                        "conventional": [{ "shortName": "c", "plugins": {}, "channels": [{ "mode": "stream", "url": "https://u:hunter2@feed.example/live.mp3" }] }], "server": { "port": 8080 },
                         "storage": { "backend": "postgres", "url": "postgres://trp:secret@db/trunk" } });
         let r = redact_config(c);
-        assert!(!r.to_string().contains("apiKey") && !r.to_string().contains("k.json") && !r.to_string().contains("secret"));
+        assert!(!r.to_string().contains("apiKey") && !r.to_string().contains("k.json") && !r.to_string().contains("secret") && !r.to_string().contains("hunter2"));
+        assert_eq!(r["conventional"][0]["channels"][0]["mode"], "stream", "that it is a stream is no secret");
         assert_eq!(r["storage"]["backend"], "postgres", "which backend is no secret");
         assert_eq!(r["systems"][0]["shortName"], "x");
         assert_eq!(r["server"]["port"], 8080);

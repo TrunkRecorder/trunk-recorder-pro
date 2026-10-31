@@ -96,6 +96,7 @@
 //! ```
 
 mod access;
+mod audio_stream;
 mod api_v1;
 mod clock;
 mod directory;

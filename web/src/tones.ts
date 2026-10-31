@@ -98,7 +98,7 @@ export interface AccessParts {
  * `CC1 TS2 TG201`, `CC 1 TG 201 SL 2`); NXDN's RAN and group (`RAN 5`, `5`,
  * `ran5 tg 201`; RAN 0 = any).
  */
-export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96", text: string): AccessParts | { error: string } {
+export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96" | "stream", text: string): AccessParts | { error: string } {
   if (mode === "fm") {
     const t = parseTone(text);
     return "tone" in t ? { code: t.tone } : t;
@@ -106,6 +106,7 @@ export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn
   const up = text.trim().toUpperCase();
   if (["", "0", "S", "ANY", "NONE", "SEARCH"].includes(up)) return { code: "" };
   if (mode === "am") return { error: `"${text.trim()}": AM channels carry no tone or code — leave it empty` };
+  if (mode === "stream") return { error: `"${text.trim()}": a stream carries no tone or code — leave it empty` };
   if (mode === "p25") {
     const bad = { error: `"${text.trim()}" isn't a NAC (up to 3 hex digits, like 293) or talkgroup (TG 1)` };
     const spaced = up.replace(/[,:=]/g, " ");

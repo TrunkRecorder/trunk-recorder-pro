@@ -190,7 +190,8 @@
             "nxdn96",
             "provoice",
             "fm",
-            "am"
+            "am",
+            "stream"
           ],
           "description": "What its voice was: a conventional row's mode, or a trunked grant's (absent in calls saved before)."
         },
@@ -772,8 +773,10 @@
             "p25",
             "dmr",
             "nxdn48",
-            "nxdn96"
-          ]
+            "nxdn96",
+            "stream"
+          ],
+          "description": "\"stream\": an internet audio stream (`url`), not a frequency (`freqHz` 0): it needs no radio."
         },
         "name": {
           "type": "string"
@@ -815,6 +818,19 @@
         "autoTune": {
           "type": "boolean",
           "description": "Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off."
+        },
+        "url": {
+          "type": "string",
+          "description": "A stream row: the HTTP(S) address of its audio (MP3 or WAV). It may hold the feed's credentials: listen-only interfaces aren't sent it."
+        },
+        "stereo": {
+          "type": "string",
+          "enum": [
+            "mix",
+            "left",
+            "right"
+          ],
+          "description": "A stream row: which of a stereo stream's channels it records (absent: both, mixed)."
         }
       },
       "required": [
@@ -894,7 +910,8 @@
             "p25",
             "dmr",
             "nxdn48",
-            "nxdn96"
+            "nxdn96",
+            "stream"
           ],
           "description": "A conventional channel: its mode."
         },

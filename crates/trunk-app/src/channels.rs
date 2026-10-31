@@ -43,11 +43,13 @@
 //!   mark and decimal commas (with semicolons) are accepted, as Excel
 //!   writes them in some locales. Blank rows and `#` comments are skipped.
 
-use crate::config::{Channel, ChannelMode};
+use crate::config::{Channel, ChannelMode, Stereo};
 use trunk_core::trunk::Access;
 
 /// The columns [`write`] produces.
 pub const HEADER: &str = "TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable,AutoTune";
+/// After [`HEADER`]'s, when a row is a stream: its address and stereo channel.
+const STREAM_COLUMNS: &str = ",URL,Stereo";
 
 /// What a CSV held: its channels and anything worth telling the user.
 #[derive(Debug, Default)]
@@ -129,6 +131,9 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
     let c_tone = c_code.or(col(&["tone"]));
     let c_slot = col(&["slot", "ts"]);
     let c_mtg = col(&["match tg", "matchtalkgroup", "match talkgroup"]);
+    // A stream row's address (its Frequency left empty), and which of its channels.
+    let c_url = col(&["url"]);
+    let c_stereo = col(&["stereo"]);
 
     let mut out = Parsed::default();
     let (mut bad_freq, mut bad_mode, mut bad_tg, mut bad_sq, mut bad_bw) = (vec![], vec![], vec![], vec![], vec![]);
@@ -136,7 +141,8 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
     for &(row, line) in &lines[1..] {
         let f = split(line, delim);
         let at = |c: Option<usize>| c.and_then(|i| f.get(i)).map(String::as_str).unwrap_or("");
-        let Some(freq_hz) = freq(at(Some(c_freq)), decimal_comma) else {
+        let stream = at(c_mode).eq_ignore_ascii_case("stream");
+        let Some(freq_hz) = freq(at(Some(c_freq)), decimal_comma).or(stream.then_some(0.0)) else {
             bad_freq.push(row);
             continue;
         };
@@ -151,6 +157,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             "dmr" => ChannelMode::Dmr,
             "nxdn" | "nxdn48" => ChannelMode::Nxdn48,
             "nxdn96" => ChannelMode::Nxdn96,
+            "stream" => ChannelMode::Stream,
             _ => {
                 bad_mode.push(row);
                 ChannelMode::Fm
@@ -218,6 +225,12 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             match_talkgroup,
             enabled,
             auto_tune,
+            url: at(c_url).trim().to_string(),
+            stereo: match at(c_stereo).to_lowercase().as_str() {
+                "left" | "l" => Stereo::Left,
+                "right" | "r" => Stereo::Right,
+                _ => Stereo::Mix,
+            },
         });
     }
     if old {
@@ -269,25 +282,23 @@ fn cell(s: &str) -> String {
     }
 }
 
-/// The channels as CSV ([`HEADER`]'s columns), which [`parse`] reads back unchanged.
+/// The channels as CSV ([`HEADER`]'s columns, and [`STREAM_COLUMNS`] when
+/// one is a stream), which [`parse`] reads back unchanged.
 pub fn write(channels: &[Channel]) -> String {
+    let streams = channels.iter().any(Channel::is_stream);
     let mut out = String::from(HEADER);
+    if streams {
+        out.push_str(STREAM_COLUMNS);
+    }
     out.push('\n');
     for c in channels {
-        let row = [
+        let mut row = vec![
             c.talkgroup.map_or(String::new(), |t| t.to_string()),
-            mhz(c.freq_hz),
+            if c.is_stream() { String::new() } else { mhz(c.freq_hz) },
             cell(&c.code),
             c.slot.map_or(String::new(), |s| s.to_string()),
             c.match_talkgroup.map_or(String::new(), |t| t.to_string()),
-            match c.mode {
-                ChannelMode::Fm => "fm".into(),
-                ChannelMode::Am => "am".into(),
-                ChannelMode::P25 => "p25".into(),
-                ChannelMode::Dmr => "dmr".into(),
-                ChannelMode::Nxdn48 => "nxdn48".into(),
-                ChannelMode::Nxdn96 => "nxdn96".into(),
-            },
+            c.mode.name().into(),
             cell(&c.name),
             cell(&c.description),
             cell(&c.tag),
@@ -297,6 +308,10 @@ pub fn write(channels: &[Channel]) -> String {
             c.enabled.to_string(),
             if c.auto_tune { "true".into() } else { String::new() },
         ];
+        if streams {
+            row.push(cell(&c.url));
+            row.push(if c.is_stream() && c.stereo != Stereo::Mix { c.stereo.name().into() } else { String::new() });
+        }
         out.push_str(&row.join(","));
         out.push('\n');
     }
@@ -352,7 +367,7 @@ mod tests {
                 code: "D023N".into(),
                 slot: None,
                 match_talkgroup: None,
-                enabled: true, auto_tune: false,
+                enabled: true, auto_tune: false, url: String::new(), stereo: Stereo::Mix,
             },
             Channel {
                 freq_hz: 460_125_000.0,
@@ -367,7 +382,7 @@ mod tests {
                 code: "293".into(),
                 slot: None,
                 match_talkgroup: Some(1),
-                enabled: false, auto_tune: false,
+                enabled: false, auto_tune: false, url: String::new(), stereo: Stereo::Mix,
             },
             Channel {
                 freq_hz: 451_500_000.0,
@@ -382,7 +397,7 @@ mod tests {
                 code: "1".into(),
                 slot: Some(1),
                 match_talkgroup: Some(1),
-                enabled: true, auto_tune: false,
+                enabled: true, auto_tune: false, url: String::new(), stereo: Stereo::Mix,
             },
         ];
         let csv = write(&chans);

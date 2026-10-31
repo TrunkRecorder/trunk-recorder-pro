@@ -124,7 +124,8 @@ export interface Radios {
  */
 export interface Channel {
   freqHz: number;
-  mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96";
+  /** "stream": an internet audio stream (`url`), not a frequency (`freqHz` 0): it needs no radio. */
+  mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96" | "stream";
   name: string;
   talkgroup?: number;
   /** The code it records: FM's CTCSS tone or DCS code ("151.4", "D023N"), P25's NAC ("293"), DMR's colour code ("1"), NXDN's RAN ("5"); absent / "": any. */
@@ -142,6 +143,10 @@ export interface Channel {
   enabled: boolean;
   /** Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off. */
   autoTune?: boolean;
+  /** A stream row: the HTTP(S) address of its audio (MP3 or WAV). It may hold the feed's credentials: listen-only interfaces aren't sent it. */
+  url?: string;
+  /** A stream row: which of a stereo stream's channels it records (absent: both, mixed). */
+  stereo?: "mix" | "left" | "right";
 }
 
 /** How a conventional system's analog channels are demodulated; each left out is the default. */
@@ -885,7 +890,7 @@ export interface CallRecord {
   /** The kind of system it came on (absent in calls saved before). */
   system_type?: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional";
   /** What its voice was: a conventional row's mode, or a trunked grant's (absent in calls saved before). */
-  voice_mode?: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96" | "provoice" | "fm" | "am";
+  voice_mode?: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96" | "provoice" | "fm" | "am" | "stream";
   /** Conventional analog: the tone it was matched on ("ctcss" / "dcs"), "search" (identified, not required), else "off". */
   tone_mode: "ctcss" | "dcs" | "search" | "off";
   /** The tone heard ("151.4 Hz", "D023N"), or "". */

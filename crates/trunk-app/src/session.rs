@@ -179,6 +179,33 @@ impl ClockFit {
     }
 }
 
+/// Feeds one stream row from a thread of its own ([`Session::stream_feeder`]):
+/// its audio to the engine, on the stream's own clock — its samples, so a
+/// stream that arrives slower or faster than the air keeps its own time.
+pub struct StreamFeeder {
+    stream: usize,
+    engine: Engine,
+    epoch_ms: f64,
+}
+
+impl StreamFeeder {
+    /// Audio, 8 kHz.
+    pub fn push(&self, audio: &[f32]) {
+        self.engine.push_audio(self.stream, audio);
+    }
+
+    /// Before its audio (re)starts, and while it's away (`now_ms`: on
+    /// `poll`'s clock): silence up to now, so its clock — and a call's
+    /// timeout — runs on for the time nothing came. Ahead of now, nothing.
+    pub fn catch_up(&self, now_ms: f64) {
+        let behind_s = (now_ms - self.epoch_ms) / 1000.0 - self.engine.stream_time(self.stream);
+        let n = (behind_s * trunk_core::dsp::fm::AUDIO_RATE).floor();
+        if n > 0.0 {
+            self.engine.push_audio_gap(self.stream, n as u64);
+        }
+    }
+}
+
 /// Feeds one source from a thread of its own ([`Session::feeder`]): its
 /// samples to the engine (decoded under its source's own lock), its counts,
 /// clock and sample meter to the session.
@@ -558,6 +585,24 @@ impl Session {
         }
         self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": format!("source {source}: {error}") }));
         self.records.push(Record::text(Level::Error, None, format!("Source {source}: {error}")));
+    }
+
+    /// Stream row `stream` ([`Config::streams`]) couldn't be fetched or decoded (it is tried again).
+    pub fn stream_error(&mut self, stream: usize, error: &str) {
+        let (system, name) = self
+            .cfg
+            .active_conventional()
+            .flat_map(|v| v.channels.iter().filter(|c| c.enabled && c.is_stream()).map(move |c| (v.short_name.clone(), c.name.trim().to_string())))
+            .nth(stream)
+            .unwrap_or_default();
+        let what = if name.is_empty() { format!("stream {}", stream + 1) } else { format!("stream {name}") };
+        self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": format!("{what}: {error}"), "system": system }));
+        self.records.push(Record::text(Level::Warning, None, format!("{system}: {what}: {error}")));
+    }
+
+    /// Stream row `stream` fed from a thread of its own ([`StreamFeeder`]).
+    pub fn stream_feeder(&self, stream: usize) -> StreamFeeder {
+        StreamFeeder { stream, engine: self.engine.clone(), epoch_ms: self.epoch_ms }
     }
 
     /// A finite source ran out; true when all have.
@@ -1124,6 +1169,7 @@ impl Session {
                         use trunk_core::trunk::Voice;
                         let kind = match c.voice {
                             Voice::Fm | Voice::Am => "Analog",
+                            Voice::Stream => "Stream",
                             Voice::Nxdn(trunk_core::nxdn::Rate::N48) => "NXDN48",
                             Voice::Nxdn(_) => "NXDN96",
                             Voice::Dmr { .. } => "DMR",

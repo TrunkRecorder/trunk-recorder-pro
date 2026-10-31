@@ -10,9 +10,10 @@ This page covers running Trunk Recorder Pro in a Docker container on a Linux hos
 - **Not Docker Desktop on macOS or Windows.** Containers there run inside a virtual machine that
   can't see your USB devices, so the recorder would find no dongles. Use the [macOS](macos.md) or
   [Windows](windows.md) app instead.
-- **RTL-SDRs only.** The image contains `trunk-pro` and a small `ffmpeg`, nothing else: no UHD,
-  libairspy or SoapySDR, so USRP, Airspy and SoapySDR sources (and older RTL-SDRs that need
-  SoapySDR) don't work in it. Use the [Linux](linux.md) package for those.
+- **RTL-SDRs only.** The image contains `trunk-pro` and a small FFmpeg for optional M4A encoding,
+  but no UHD, libairspy or SoapySDR, so USRP, Airspy and SoapySDR sources (and older RTL-SDRs
+  that need SoapySDR) don't work in it. Use the [Linux](linux.md) package for those. Internet
+  streams are fetched and decoded natively and don't need FFmpeg's network support.
 - **Nothing else may hold the dongles.** Stop any SDR program on the host that has them open. The
   kernel's DVB TV driver is not a problem: Trunk Recorder Pro detaches it itself.
 
