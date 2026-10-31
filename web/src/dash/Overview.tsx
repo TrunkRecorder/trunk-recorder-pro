@@ -102,9 +102,7 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
   const bad = recentAvg(cc("bad"), 60) ?? 0;
   const decoded = good + bad > 0 ? (100 * good) / (good + bad) : null;
   const callsMin = (recentAvg(K.sys(x.name, "calls"), 600) ?? 0) * 60;
-  const stream = x.kind === "audio";
   const onAir = s.calls.filter((c) => c.systemName === x.name);
-  const onAirCount = stream ? (x.status?.activeCalls ?? 0) : onAir.length;
   const tgs = [...new Map(onAir.map((c) => [c.talkgroup, c])).values()].slice(0, 4);
   const lost = voiceBadPct(x.name);
   // Not recording: the last day from the history instead.
@@ -114,7 +112,6 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
   const dayCalls = total(day?.[K.sys(x.name, "calls")]);
   // A conventional system: its calls this run, and its channels (open: a signal on them now).
   const channels = x.kind === "conventional" ? (s.config?.conventional.find((v) => v.shortName === x.name)?.channels.filter((ch) => ch.enabled).length ?? 0) : 0;
-  const streamState = x.status?.connected ? "Connected" : x.status?.lastError ? `Reconnecting · ${x.status.lastError}` : "Connecting";
   return (
     <Card
       title={
@@ -132,15 +129,15 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
           label="Last 24 h"
           value={dayCalls === null ? "—" : compact(dayCalls)}
           unit="calls"
-          spark={<Sparkline v={day?.[stream ? K.sys(x.name, "calls") : cc("good")]?.v ?? []} title={stream ? "Calls, last 24 h" : "Control msg/s, last 24 h"} />}
-          sub={stream ? "Internet audio" : dayRate ? `control avg ${num(dayRate.avg)} msg/s` : "no history yet"}
+          spark={<Sparkline v={day?.[cc("good")]?.v ?? []} title="Control msg/s, last 24 h" />}
+          sub={dayRate ? `control avg ${num(dayRate.avg)} msg/s` : "no history yet"}
         />
-      ) : x.kind !== "conventional" && x.kind !== "audio" && several ? (
+      ) : x.kind !== "conventional" && several ? (
         <div className="sys-main">
           <Stat label="Control channels" value={num(rate)} unit="msg/s" sub={`${x.sites.length} sites`} />
           <SiteRows s={s} x={x} />
         </div>
-      ) : x.kind !== "conventional" && x.kind !== "audio" ? (
+      ) : x.kind !== "conventional" ? (
         <div className="sys-main">
           <Stat
             label="Control channel"
@@ -163,7 +160,7 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
             value={x.status ? compact(x.status.callsConcluded) : "—"}
             unit="this run"
             spark={<LiveSpark k={K.sys(x.name, "calls")} mul={60} lo={0} title="Calls a minute, 10 min" />}
-            sub={stream ? `${streamState} · ${dayCalls === null ? "—" : compact(dayCalls)} in 24 h · Internet audio` : `${dayCalls === null ? "—" : compact(dayCalls)} in 24 h · ${channels} channel${channels === 1 ? "" : "s"}${x.status?.conventionalOpen ? ` · ${x.status.conventionalOpen} open now` : ""}`}
+            sub={`${dayCalls === null ? "—" : compact(dayCalls)} in 24 h · ${channels} channel${channels === 1 ? "" : "s"}${x.status?.conventionalOpen ? ` · ${x.status.conventionalOpen} open now` : ""}`}
           />
         </div>
       )}
@@ -173,7 +170,7 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
           <span>calls/min</span>
         </div>
         <div>
-          <b>{onAirCount}</b>
+          <b>{onAir.length}</b>
           <span>on the air</span>
         </div>
         <div title="Unusable voice frames, 10 min (under 2% is clean)">

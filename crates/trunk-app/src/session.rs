@@ -179,6 +179,33 @@ impl ClockFit {
     }
 }
 
+/// Feeds one stream row from a thread of its own ([`Session::stream_feeder`]):
+/// its audio to the engine, on the stream's own clock — its samples, so a
+/// stream that arrives slower or faster than the air keeps its own time.
+pub struct StreamFeeder {
+    stream: usize,
+    engine: Engine,
+    epoch_ms: f64,
+}
+
+impl StreamFeeder {
+    /// Audio, 8 kHz.
+    pub fn push(&self, audio: &[f32]) {
+        self.engine.push_audio(self.stream, audio);
+    }
+
+    /// Before its audio (re)starts, and while it's away (`now_ms`: on
+    /// `poll`'s clock): silence up to now, so its clock — and a call's
+    /// timeout — runs on for the time nothing came. Ahead of now, nothing.
+    pub fn catch_up(&self, now_ms: f64) {
+        let behind_s = (now_ms - self.epoch_ms) / 1000.0 - self.engine.stream_time(self.stream);
+        let n = (behind_s * trunk_core::dsp::fm::AUDIO_RATE).floor();
+        if n > 0.0 {
+            self.engine.push_audio_gap(self.stream, n as u64);
+        }
+    }
+}
+
 /// Feeds one source from a thread of its own ([`Session::feeder`]): its
 /// samples to the engine (decoded under its source's own lock), its counts,
 /// clock and sample meter to the session.
@@ -326,8 +353,6 @@ pub struct Session {
     sites: Vec<(u16, String)>,
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
     recordings: Vec<crate::config::Recording>,
-    /// Connection and voice activity of independent internet streams.
-    audio_streams: Vec<AudioStreamState>,
     pub plugin_topics: PluginTopics,
     /// Wall clock (Unix ms) at the engine's time 0.
     epoch_ms: f64,
@@ -349,15 +374,6 @@ pub struct Session {
     share: crate::share::Ledger,
     /// This install's anonymous ID for the directory (the platform keeps it); empty: nothing is shared.
     recorder_id: String,
-}
-
-struct AudioStreamState {
-    system: u16,
-    short_name: String,
-    connected: bool,
-    last_error: Option<String>,
-    active_calls: std::collections::BTreeSet<u32>,
-    calls_concluded: u64,
 }
 
 impl Session {
@@ -385,21 +401,6 @@ impl Session {
             .map(|s| Arc::new(Mutex::new(SourceStats { clock: ClockFit { live: !matches!(s.kind, SourceKind::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })))
             .collect();
         let recordings = cfg.recordings();
-        let call_systems = cfg.call_systems();
-        let mut audio_streams = Vec::new();
-        for stream in cfg.audio_streams.iter().filter(|stream| stream.enabled) {
-            let Some(system) = call_systems.iter().find(|system| system.short_name == stream.short_name) else {
-                return Err(format!("Internet audio stream {} has no enabled call system.", stream.short_name));
-            };
-            audio_streams.push(AudioStreamState {
-                system: system.index,
-                short_name: stream.short_name.clone(),
-                connected: false,
-                last_error: None,
-                active_calls: Default::default(),
-                calls_concluded: 0,
-            });
-        }
         let meas = Stats::new(&cfg, Shared::new(), local_offset);
         {
             let mut book = meas.shared().names.lock().unwrap();
@@ -422,7 +423,6 @@ impl Session {
             want_audio: true,
             sites,
             recordings,
-            audio_streams,
             plugin_topics: PluginTopics::default(),
             epoch_ms,
             last_plugin_status_ms: 0.0,
@@ -587,42 +587,22 @@ impl Session {
         self.records.push(Record::text(Level::Error, None, format!("Source {source}: {error}")));
     }
 
-    pub fn audio_stream_status(&mut self, short_name: &str, connected: bool, error: Option<String>) {
-        if let Some(stream) = self.audio_streams.iter_mut().find(|stream| stream.short_name == short_name) {
-            stream.connected = connected;
-            stream.last_error = if connected { None } else { error };
-            if !connected {
-                stream.active_calls.clear();
-            }
-        }
+    /// Stream row `stream` ([`Config::streams`]) couldn't be fetched or decoded (it is tried again).
+    pub fn stream_error(&mut self, stream: usize, error: &str) {
+        let (system, name) = self
+            .cfg
+            .active_conventional()
+            .flat_map(|v| v.channels.iter().filter(|c| c.enabled && c.is_stream()).map(move |c| (v.short_name.clone(), c.name.trim().to_string())))
+            .nth(stream)
+            .unwrap_or_default();
+        let what = if name.is_empty() { format!("stream {}", stream + 1) } else { format!("stream {name}") };
+        self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": format!("{what}: {error}"), "system": system }));
+        self.records.push(Record::text(Level::Warning, None, format!("{system}: {what}: {error}")));
     }
 
-    pub fn audio_stream_frame(&mut self, system: u16, call_num: u32) {
-        if let Some(stream) = self.audio_streams.iter_mut().find(|stream| stream.system == system) {
-            stream.active_calls.insert(call_num);
-        }
-    }
-
-    pub fn audio_stream_call(
-        &mut self,
-        system: u16,
-        call_num: u32,
-        talkgroup: u32,
-        start_s: f64,
-        stop_s: f64,
-        samples: usize,
-        alpha_tag: &str,
-        saved: bool,
-    ) -> bool {
-        let Some(stream) = self.audio_streams.iter_mut().find(|stream| stream.system == system) else {
-            return false;
-        };
-        stream.active_calls.remove(&call_num);
-        if saved {
-            stream.calls_concluded += 1;
-        }
-        self.meas.audio_call(&stream.short_name, talkgroup, start_s, stop_s, samples, alpha_tag, saved);
-        true
+    /// Stream row `stream` fed from a thread of its own ([`StreamFeeder`]).
+    pub fn stream_feeder(&self, stream: usize) -> StreamFeeder {
+        StreamFeeder { stream, engine: self.engine.clone(), epoch_ms: self.epoch_ms }
     }
 
     /// A finite source ran out; true when all have.
@@ -1151,8 +1131,7 @@ impl Session {
                 let named = t.signals.iter().map(|s| format!("{name}:{s}")).collect::<Vec<_>>().join(", ");
                 let text = format!("TG {}: {}{}", t.talkgroup, pattern.text, if named.is_empty() { String::new() } else { format!(" = {named}") });
                 self.records.push(Record::text(Level::Info, Some(&self.site_label(t.system, t.site)), text.clone()));
-                let kind = if t.signals.is_empty() { "tonePattern" } else { "signal" };
-                self.log.push(json!({ "timeS": t.time_s, "kind": kind, "text": text, "system": name, "site": self.site_name(t.site) }));
+                self.log.push(json!({ "timeS": t.time_s, "kind": "tonePattern", "text": text, "system": name, "site": self.site_name(t.site) }));
                 if self.plugin_topics.tone_patterns {
                     let alpha_tag = self.alpha_tag(t.system, t.talkgroup);
                     let time = (self.wall(t.time_s) * 1000.0).round() / 1000.0;
@@ -1190,6 +1169,7 @@ impl Session {
                         use trunk_core::trunk::Voice;
                         let kind = match c.voice {
                             Voice::Fm | Voice::Am => "Analog",
+                            Voice::Stream => "Stream",
                             Voice::Nxdn(trunk_core::nxdn::Rate::N48) => "NXDN48",
                             Voice::Nxdn(_) => "NXDN96",
                             Voice::Dmr { .. } => "DMR",
@@ -1277,7 +1257,7 @@ impl Session {
             })
         };
         // Each system being recorded (trunked or conventional), its running sites in order.
-        let mut systems: Vec<Value> = st
+        let systems: Vec<Value> = st
             .systems
             .iter()
             .map(|v| {
@@ -1288,17 +1268,6 @@ impl Session {
                 })
             })
             .collect();
-        systems.extend(self.audio_streams.iter().map(|stream| {
-            json!({
-                "index": stream.system, "shortName": stream.short_name,
-                "activeCalls": stream.active_calls.len(), "recording": stream.active_calls.len(),
-                "conventionalOpen": 0, "callsConcluded": stream.calls_concluded,
-                "connected": stream.connected, "lastError": stream.last_error,
-                "sites": [],
-            })
-        }));
-        let audio_active = self.audio_streams.iter().map(|stream| stream.active_calls.len()).sum::<usize>();
-        let audio_concluded = self.audio_streams.iter().map(|stream| stream.calls_concluded).sum::<u64>();
         let calls = self
             .engine
             .active_calls()
@@ -1318,8 +1287,8 @@ impl Session {
             .collect();
         let status = json!({
             "nowS": st.now_s,
-            "activeCalls": st.active_calls + audio_active, "recording": st.recording + audio_active, "channelsOpen": st.channels_open, "conventionalOpen": st.conventional_open,
-            "callsConcluded": st.calls_concluded + audio_concluded,
+            "activeCalls": st.active_calls, "recording": st.recording, "channelsOpen": st.channels_open, "conventionalOpen": st.conventional_open,
+            "callsConcluded": st.calls_concluded,
             "systems": systems,
             // Every system's short name, by the number its calls and audio carry.
             "systemNames": self.cfg.call_systems().iter().map(|s| s.short_name).collect::<Vec<_>>(),

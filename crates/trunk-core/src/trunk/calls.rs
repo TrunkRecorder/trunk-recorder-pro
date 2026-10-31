@@ -38,6 +38,8 @@ pub enum Voice {
     Fm,
     /// Analog AM (conventional channels).
     Am,
+    /// Audio from an internet stream, already demodulated (a conventional stream row).
+    Stream,
     /// EDACS ProVoice (9600 baud 2FSK, IMBE 7100).
     ProVoice,
 }
@@ -53,6 +55,8 @@ impl Voice {
             Voice::Fm => VoiceKind::Analog,
             Voice::Am => VoiceKind::Am,
             Voice::ProVoice => VoiceKind::ProVoice,
+            // (A stream's audio needs no receiver: none is opened for it.)
+            Voice::Stream => VoiceKind::Analog,
         }
     }
 
@@ -65,7 +69,7 @@ impl Voice {
     }
 
     pub fn analog(self) -> bool {
-        matches!(self, Voice::Fm | Voice::Am)
+        matches!(self, Voice::Fm | Voice::Am | Voice::Stream)
     }
 
     /// P25 Phase 2 (Trunk Recorder's `phase2_tdma`).
@@ -87,7 +91,7 @@ impl Voice {
     }
 
     /// Its name in the call JSON's `voice_mode`: a conventional row's `mode`
-    /// (`p25`, `dmr`, `nxdn48`, `nxdn96`, `fm`, `am`), `p25_phase2` or `provoice`.
+    /// (`p25`, `dmr`, `nxdn48`, `nxdn96`, `fm`, `am`, `stream`), `p25_phase2` or `provoice`.
     pub fn mode_name(self) -> &'static str {
         match self {
             Voice::P25 => "p25",
@@ -96,6 +100,7 @@ impl Voice {
             Voice::Nxdn(r) => r.name(),
             Voice::Fm => "fm",
             Voice::Am => "am",
+            Voice::Stream => "stream",
             Voice::ProVoice => "provoice",
         }
     }

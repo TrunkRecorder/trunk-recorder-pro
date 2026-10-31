@@ -27,10 +27,11 @@ export function renameSystemRefs(x: Config, from: string, to: string, plugins: P
   for (const p of plugins) {
     if (!p.manifest) continue;
     walk(p.manifest.config, x.plugins?.[p.id]?.settings);
-    for (const sys of [...x.systems, ...x.conventional, ...x.audioStreams])
+    for (const sys of [...x.systems, ...x.conventional])
       for (const v of pluginCopies(sys.plugins?.[p.id])) {
         walk(p.manifest.system_config, v);
         walk(p.manifest.config, copyOverride(v));
       }
   }
 }
+

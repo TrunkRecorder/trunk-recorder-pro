@@ -48,7 +48,7 @@ export function recentAvg(key: string, sinceS: number): number | null {
 
 export interface DashSystem {
   name: string;
-  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional" | "audio";
+  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional";
   /** The running system's status (trunked, once a control channel is open). */
   status: SystemStatus | null;
   /** Its sites being recorded (a conventional system: none). */
@@ -67,7 +67,7 @@ export interface DashSite {
 /** A site's series key (the recorder's SiteKey::stats_key): a site named as its system is under the system's. */
 export const siteKey = (system: string, site: string) => (site === system ? `sys/${keyPart(system)}` : `sys/${keyPart(system)}/site/${keyPart(site)}`);
 
-/** Every system set up (trunked, conventional with channels, then enabled audio streams), with its sites and running status. */
+/** Every system set up (trunked, then conventional with channels), with its sites and its status while running. */
 export function dashSystems(s: AppState): DashSystem[] {
   if (!s.config) return [];
   const out: DashSystem[] = activeSystems(s.config).map((x) => {
@@ -83,11 +83,6 @@ export function dashSystems(s: AppState): DashSystem[] {
     const status = s.status?.systems.find((y) => y.shortName === c.shortName) ?? null;
     out.push({ name: c.shortName, kind: "conventional", status, sites: [] });
   }
-  for (const stream of s.config.audioStreams) {
-    if (!stream.enabled) continue;
-    const status = s.status?.systems.find((y) => y.shortName === stream.shortName) ?? null;
-    out.push({ name: stream.shortName, kind: "audio", status, sites: [] });
-  }
   return out;
 }
 
@@ -102,7 +97,7 @@ export function runningSites(systems: SystemStatus[]): RunningSite[] {
   return systems.flatMap((y) => y.sites.map((x) => ({ ...x, shortName: y.shortName, label: x.name === y.shortName ? y.shortName : `${y.shortName}/${x.name}` })));
 }
 
-export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS", conventional: "Conventional", audio: "Internet audio" };
+export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS", conventional: "Conventional" };
 
 export const running = (s: AppState) => s.phase === "running" || s.phase === "starting";
 
@@ -232,11 +227,6 @@ export function worstOf<T>(items: T[], name: (x: T) => string, health: (x: T) =>
  */
 export function systemHealth(s: AppState, x: DashSystem, usual: Record<string, Usual | null> = {}): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  if (x.kind === "audio") {
-    if (x.status?.connected) return OK("Receiving internet audio");
-    if (x.status?.lastError) return { level: "warn", why: `Reconnecting: ${x.status.lastError}` };
-    return { level: "idle", why: "Connecting to internet audio" };
-  }
   if (x.kind === "conventional") return OK("Listening on its channels");
   if (!x.sites.length) return { level: "bad", why: "No site set up" };
   return worstOf(x.sites, (site) => site.name, (site) => siteHealth(s, site, usual[K.cc(site, "good")]));

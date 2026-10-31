@@ -233,8 +233,6 @@ pub struct EngineConfig {
     /// them, and [`Call::site`] their sites in order ([`sites`]).
     pub systems: Vec<SystemConfig>,
     pub sources: Vec<SourceConfig>,
-    /// Calls may be supplied by an external audio stream without RF channels.
-    pub has_audio_streams: bool,
     /// Seconds of air a voice channel replays from before its grant.
     pub preroll_s: f64,
     /// Recorders shared by every system.
@@ -259,7 +257,6 @@ impl Default for EngineConfig {
         EngineConfig {
             systems: vec![],
             sources: vec![],
-            has_audio_streams: false,
             preroll_s: 1.0,
             max_recorders: 32,
             epoch_ms_at_zero: 0.0,
@@ -1503,10 +1500,11 @@ impl Core {
         if let Some(c) = cfg.conventional.iter().find(|c| !cfg.systems[c.system].is_conventional()) {
             return Err(format!("Conventional channel {:.5} MHz is in {}, a trunked system.", c.freq_hz / 1e6, cfg.systems[c.system].short_name));
         }
-        if cfg.sources.is_empty() && !cfg.has_audio_streams {
+        // (A stream row needs no source: its audio is pushed as it is, [`Engine::push_audio`].)
+        if cfg.sources.is_empty() && !cfg.conventional.iter().any(|c| c.mode == ConvMode::Stream) {
             return Err("no sources configured".into());
         }
-        if !cfg.has_audio_streams && cfg.systems.iter().all(|s| s.sites.iter().all(|s| s.control_channels.is_empty())) && cfg.conventional.is_empty() {
+        if cfg.systems.iter().all(|s| s.sites.iter().all(|s| s.control_channels.is_empty())) && cfg.conventional.is_empty() {
             return Err("Add a control channel or a conventional channel.".into());
         }
         // A short name is a system's identity (its folder, its talker aliases,
@@ -1907,6 +1905,17 @@ impl Core {
             }
         }
         self.conv_out = out;
+    }
+
+    /// Audio of stream row `stream` ([`Conventional::on_audio`]). With no
+    /// source, the first stream's clock is the engine's.
+    fn on_audio(&mut self, stream: usize, audio: &[f32], gap: bool) {
+        let mut out = std::mem::take(&mut self.conv_out);
+        let t = self.conv.on_audio(stream, audio, gap, &self.call_ids, &|i| &self.systems[i].cfg, &mut out);
+        if stream == 0 && self.radio.cfgs.is_empty() {
+            self.now_s = t;
+        }
+        self.emit_conv(out);
     }
 
     /// A block of `source` was decoded — its voice channels (`dsp`), its
@@ -2536,6 +2545,39 @@ impl Engine {
         }
     }
 
+    /// Audio of stream row `stream` (the `stream`th conventional channel of
+    /// mode [`ConvMode::Stream`]): 8 kHz, already demodulated. Its clock is
+    /// its samples: a stream arriving slower or faster than the air keeps
+    /// its own time, and [`Engine::push_audio_gap`] fills in for samples
+    /// that never came.
+    pub fn push_audio(&self, stream: usize, audio: &[f32]) {
+        self.core().on_audio(stream, audio, false);
+    }
+
+    /// `n` samples of stream `stream` that never came (it was disconnected),
+    /// as silence on which nothing opens: its clock, and with it a call's
+    /// timeout, runs on.
+    pub fn push_audio_gap(&self, stream: usize, n: u64) {
+        const CHUNK: u64 = 8000;
+        let quiet = vec![0f32; n.min(CHUNK) as usize];
+        let mut left = n;
+        while left > 0 {
+            let k = left.min(CHUNK) as usize;
+            self.core().on_audio(stream, &quiet[..k], true);
+            left -= k as u64;
+        }
+    }
+
+    /// Stream `stream`'s clock ([`Engine::push_audio`]): its samples so far, s.
+    pub fn stream_time(&self, stream: usize) -> f64 {
+        self.core().conv.stream_time(stream)
+    }
+
+    /// The stream rows ([`Engine::push_audio`] numbers them).
+    pub fn stream_count(&self) -> usize {
+        self.core().conv.stream_count()
+    }
+
     /// `n` samples of `source` that never arrived — the driver dropped them,
     /// or the radio went quiet (unplugged, wedged) — fed as silence. Every
     /// clock here is a sample count, so this is what keeps a source's clock,
@@ -2874,6 +2916,62 @@ mod tests {
         let ev = e.drain_events();
         let k = ev.iter().find_map(|x| if let Event::Concluded(k) = x { Some(k) } else { None }).expect("the call is saved");
         assert!(k.record.to_json().contains("\"decrypted\":1"), "{}", k.record.to_json());
+    }
+
+    /// A stream row has no source: its audio, on its own clock (its
+    /// samples), makes calls as a frequency's does — opened by its level,
+    /// with the pre-roll before it, kept through a pause between words,
+    /// ended by the system's call timeout, split at its longest call. A gap
+    /// (it was away) runs its clock on and opens nothing. With no source,
+    /// its clock is the engine's.
+    #[test]
+    fn a_stream_rows_audio_makes_calls_on_its_own_clock() {
+        use super::super::conventional::{ConvChannel, ConvMode};
+        let mut sys = SystemConfig::conventional("feed");
+        (sys.calls.call_timeout_s, sys.calls.max_call_s) = (1.0, 4.0);
+        let row = ConvChannel { talkgroup: Some(7), ..ConvChannel::new(0.0, ConvMode::Stream) };
+        let e = Engine::new(EngineConfig { systems: vec![sys], conventional: vec![row], ..Default::default() }).unwrap();
+        assert_eq!(e.stream_count(), 1);
+        let tone = |s: f64| (0..(s * 8000.0) as usize).map(|i| 0.3 * (i as f32 * 0.785).sin()).collect::<Vec<f32>>();
+        let quiet = |s: f64| vec![0f32; (s * 8000.0) as usize];
+        let concluded = |ev: Vec<Event>| ev.into_iter().filter_map(|x| if let Event::Concluded(k) = x { Some(k) } else { None }).collect::<Vec<_>>();
+        for a in [quiet(1.0), tone(1.0), quiet(0.3), tone(1.0)] {
+            e.push_audio(0, &a);
+        }
+        let live = e.drain_events();
+        assert!(live.iter().any(|x| matches!(x, Event::CallStart(c) if c.talkgroup == 7 && c.voice == Voice::Stream && c.freq_hz == 0)));
+        assert!(live.iter().any(|x| matches!(x, Event::Audio { .. })), "played live");
+        assert!(concluded(live).is_empty(), "a pause between words doesn't end it");
+        e.push_audio(0, &quiet(2.0));
+        let saved = concluded(e.drain_events());
+        assert_eq!(saved.len(), 1);
+        let k = &saved[0];
+        assert!((k.call.start_s - 0.7).abs() < 0.03, "0.3 s of pre-roll: {}", k.call.start_s);
+        // (Pre-roll, voice, the pause, voice, then half a second of the quiet after it.)
+        assert!((k.audio.len() as f64 / 8000.0 - 3.1).abs() < 0.05, "{}", k.audio.len());
+        e.push_audio_gap(0, 5 * 8000);
+        assert!((e.stream_time(0) - 10.3).abs() < 1e-6 && e.status().now_s == e.stream_time(0));
+        assert!(concluded(e.drain_events()).is_empty(), "nothing opens on a gap");
+        e.push_audio(0, &tone(9.0));
+        e.push_audio(0, &quiet(2.0));
+        let lengths: Vec<f64> = concluded(e.drain_events()).iter().map(|k| k.audio.len() as f64 / 8000.0).collect();
+        assert_eq!(lengths.len(), 3, "split at 4 s: {lengths:?}");
+        assert!(lengths[..2].iter().all(|&s| (s - 4.0).abs() < 0.4), "{lengths:?}");
+    }
+
+    /// A stream's calls are listened to for the system's signals, as a frequency's are.
+    #[test]
+    fn a_stream_rows_page_is_its_systems_signal() {
+        use super::super::conventional::{ConvChannel, ConvMode};
+        use crate::dsp::inband::{pattern::PatternKind, signal::Signal};
+        let mut sys = SystemConfig::conventional("feed");
+        sys.signals = vec![Signal { id: "STATION_1".into(), pattern: PatternKind::TwoTone, hz: vec![788.5, 879.0], digits: String::new(), knox: false, extra_pct: 0.0, talkgroups: Vec::new() }];
+        let e = Engine::new(EngineConfig { systems: vec![sys], conventional: vec![ConvChannel::new(0.0, ConvMode::Stream)], ..Default::default() }).unwrap();
+        let tone = |hz: f32, s: f64| (0..(s * 8000.0) as usize).map(move |i| 0.3 * (std::f32::consts::TAU * hz * i as f32 / 8000.0).sin());
+        let page: Vec<f32> = std::iter::repeat_n(0.0, 4000).chain(tone(788.5, 1.0)).chain(tone(879.0, 3.0)).chain(std::iter::repeat_n(0.0, 5 * 8000)).collect();
+        e.push_audio(0, &page);
+        let heard: Vec<Vec<String>> = e.drain_events().into_iter().filter_map(|x| if let Event::TonePattern(p) = x { Some(p.signals) } else { None }).collect();
+        assert!(heard.iter().any(|s| s == &["STATION_1"]), "{heard:?}");
     }
 
     fn saved(ev: &[Event]) -> Vec<CallId> {

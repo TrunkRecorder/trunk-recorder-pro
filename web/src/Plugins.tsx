@@ -133,9 +133,6 @@ function systemsOf(c: Config): { at: SystemRef; name: string; copies: (id: strin
   c.conventional.forEach((v, k) => {
     if (v.channels.length) out.push({ at: { conv: k }, name: v.shortName, copies: (id) => pluginCopies(v.plugins?.[id]) });
   });
-  c.audioStreams.forEach((stream, i) => {
-    if (stream.enabled) out.push({ at: { audio: i }, name: stream.shortName, copies: (id) => pluginCopies(stream.plugins?.[id]) });
-  });
   return out;
 }
 
