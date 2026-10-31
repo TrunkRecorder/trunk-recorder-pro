@@ -64,6 +64,10 @@ impl<M: SampleMode> Device<M> {
     pub fn config(&self) -> &Config<M> {
         &self.config
     }
+    /// What the control pipe has counted since the device opened.
+    pub fn link_stats(&self) -> crate::LinkStats {
+        self.session.link_stats()
+    }
     /// Last successfully programmed center frequency after divider quantization.
     pub fn actual_frequency_hz(&self) -> u64 {
         self.applied.frequency_hz

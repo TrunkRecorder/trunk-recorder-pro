@@ -86,22 +86,39 @@ Stages in order. Thread in brackets.
    `stream_once`), run by one loop, `sdr::run_with`, that reopens it after an error (RTL 2 s, the
    others 3 s). `runtime::spawn_source` starts a source this way for recording, the survey and
    profiling. Produces a block of IQ:
-   - RTL-SDR (`trunk-pro/src/sdr.rs`, pure-Rust `rtlsdr-nusb`, our fork in `crates/rtlsdr-nusb`
-     with settable transfers, `RxBuffers`): by default 262,144-byte USB transfers (131,072 IQ
-     samples, about 55 ms at 2.4 MSPS), 8 in flight; `bufLen` / `buffers` per source
-     (`RtlConfig::rx_buffers`: a smaller `bufLen` gets more transfers, about 2 MiB in flight).
-     Sent as raw `u8` (`SourceMsg::Data`, in a reused `Pooled` buffer).
+   - RTL-SDR (`radio/rtl.rs`, pure-Rust `rtlsdr-nusb`, our fork in `crates/rtlsdr-nusb` with
+     settable transfers, `RxBuffers`): by default 16 KiB USB transfers (8,192 IQ samples, about
+     3.4 ms at 2.4 MSPS), 128 in flight (2 MiB); `bufLen` / `buffers` per source
+     (`RtlConfig::rx_buffers`). The `Sink` gathers them into messages of about 128 KiB. A retune
+     or gain change halts the stream, reads the chip's dropped-block count, changes only the
+     tuner and restarts, reporting the quiet time (`Sink::tuned`); a USB stall is cleared in place.
+     Sent as raw `u8` (`Block::U8`, in a reused `Pooled` buffer).
+   - HackRF One (`radio/hackrf.rs`, pure Rust over `nusb`): raw bytes like an RTL-SDR, firmware
+     2021.03 or newer.
    - USRP (`radio/uhd.rs`, UHD loaded at run time): about 10 ms per block, float IQ
-     (`SourceMsg::Iq`). Adds `num_recv_frames=256` to the device args.
+     (`Block::Iq`). Adds `num_recv_frames=1024` to the device args; picks the wire format from the
+     USB link speed (`radio/usb_speed.rs`); doubles a B2xx's master clock when UHD would run it at the rate.
    - Airspy (`radio/airspy.rs`): whatever libairspy hands its callback; by default real samples
-     (`SourceMsg::Real16`), turned into IQ on the decoding thread (`sdr::IqFrom`).
+     (`Block::Real16`), turned into IQ by the `Inbox` on the thread that takes them.
+
+   What every radio shares lives in `sdr.rs` and `radio/mod.rs`. A radio sends through a `Sink`,
+   which never blocks a live radio: if the queue to the decoding thread is full, the block is
+   dropped and counted, and the next block carries the count as `dropped`. `radio::open(key,
+   deadline, f)` runs every open and driver search on a thread of its own under `opening()`
+   and gives up at the deadline (5 s RTL-SDR, HackRF, Airspy; 15 s bladeRF, SoapySDR; 30 s USRP),
+   with "isn't answering" and the device refused until the stuck open ends, so one wedged radio
+   doesn't hold up the others. `radio/priority.rs` makes the source thread and the threads its
+   driver starts real time (Mach time-constraint on macOS, `SCHED_RR` on Linux, needing
+   `CAP_SYS_NICE`; a refusal is logged once with the `setcap` fix). `StreamCheck` watches raw-byte
+   radios (RTL-SDR, HackRF) for a stuck stream, the same bytes repeating or a rate over 1.5× the
+   nominal for 2 s, and reopens. A transfer refused for memory names Linux's `usbfs_memory_mb`.
    - SoapySDR (`radio/soapy.rs`): about 10 ms per block, float IQ.
    - File (`runtime::run_file`): 32,768 samples per chunk, paced to real time or as fast as the
      engine takes them. Captures played as fast as they go keep within 100 ms of air of each other
      (`runtime::Air`).
    Each block is stamped with `Instant::now()` (`at`) and carries the driver's `dropped` count.
 2. **Source queue** [between threads]. One `sync_channel::<SourceMsg>(256)` per source, from its
-   `source-N` to its `dsp-N`. The sender blocks when it is full (see section 7). Errors and ends
+   `source-N` to its `dsp-N`. A live radio's `Sink` never blocks: when the queue is full the block is dropped and counted (see section 7). Errors and ends
    go on to the engine thread as `EngineCmd::Source`.
 3. **`Feeder::push` / `push_iq`** [`dsp-N`]. Records drops (`Feeder::gap` feeds them to
    `Engine::push_gap` as faint noise), feeds the wall-clock fit (`ClockFit`) and the sample meter,
@@ -762,9 +779,9 @@ copy's start (`SaveContext::first_s`).
 
 | Queue | Capacity | Producer → consumer | When full |
 |---|---|---|---|
-| Source → decoding | 256 blocks per source | `source-N` → `dsp-N` | sender blocks; driver overflows; drops reported and gap-filled |
-| rtlsdr-nusb USB transfers | 8 × 256 KiB (`bufLen` / `buffers`) | USB → source thread | device FIFO overflows; caught by `ClockFit` as unreported loss |
-| UHD receive frames | 256 frames | USRP → UHD | overflow `O`; counted from the timestamp gap |
+| Source → decoding | 256 messages per source | `source-N` → `dsp-N` | a live radio's block is dropped and counted (`dropped`, gap-filled); a capture file's sender waits |
+| rtlsdr-nusb USB transfers | 128 × 16 KiB (`bufLen` / `buffers`) | USB → source thread | device FIFO overflows; the chip's own count is read at each retune, the rest caught by `ClockFit` as unreported loss |
+| UHD receive frames | 1024 frames | USRP → UHD | overflow `O`; counted from the timestamp gap |
 | Engine commands (`EngineCmd`) | unbounded | decoding threads, server → engine | — |
 | Hub (tokio broadcast) | 4,096 messages | engine, finish, monitor, logger → each WebSocket | a lagging client loses its oldest messages (silently); others unaffected |
 | Finish | 1,024 calls | engine → finish pool | the engine thread waits up to 5 s, then finishes the call itself by the same plan; decoding carries on |
@@ -932,9 +949,7 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 
 | Variant | Fields |
 |---|---|
-| `Data` | `source: usize`, `bytes: Pooled<u8>` (u8 IQ, a reused buffer), `dropped: u64`, `at: Instant` |
-| `Iq` | `source`, `samples: Vec<Complex32>`, `dropped`, `at` |
-| `Real16` | `source`, `samples: Pooled<i16>` (an Airspy's real samples, made IQ by `IqFrom`), `dropped`, `at` |
+| `Samples` | `source: usize`, `block: Block`, `dropped: u64`, `at: Instant`. `Block` is `U8` (offset 8-bit IQ), `Iq` (float) or `Real16` (an Airspy's real samples, made IQ by the `Inbox`), each in a reused `Pooled` buffer |
 | `Error` | `source`, `error: String` (passed on to the engine thread) |
 | `End` | `source` (passed on to the engine thread) |
 | `Tuned` | `center_hz` (survey only) |
@@ -1223,7 +1238,8 @@ unlike the other messages).
 
 | Type | Other keys |
 |---|---|
-| `rtlsdr` | `serial` (required; "" = first free), `gainDb` 25.4, `agc` false, `ppm` (integer, required), `bufLen` 0 (= 262144), `buffers` 0 (= about 2 MiB) |
+| `rtlsdr` | `serial` (required; "" = first free), `gainDb` 25.4, `agc` false, `ppm` (integer, required), `bufLen` 0 (= 16384), `buffers` 0 (= about 2 MiB) |
+| `hackrf` | `serial` "" = first, `centerHz`, `rateHz` (1–20 MSPS), `lnaDb` 16, `vgaDb` 20, `amp` false, `biasTee`, `ppm`, `autoTune`, `guardHz` |
 | `usrp` | `args` "", `gainDb` 40, `agc` false, `antenna` "", `ppm` 0 |
 | `airspy` | `serial` "", `gainMode` linearity / sensitivity / manual, `gainStep` 14, `lnaStep` / `mixerStep` / `vgaStep` 10, `agc`, `biasTee`, `packing` true, `ppm` |
 | `soapy` | `args` "", `agc` true, `gainDb` null, `gains` {}, `antenna` "", `settings` "", `ppm` 0 |
@@ -1463,7 +1479,9 @@ and no channel is within 25 kHz of the centre.
 The engine has no wall clock. Every time inside it (a frame, a message, a call's start, a timeout)
 is a source's sample count divided by its rate, plus that source's clock offset. A capture
 therefore decodes the same at any speed. The offset is the one link to the wall clock, and
-`Session` keeps it for each live source with `ClockFit` (`trunk-app/src/session.rs`).
+`Session` keeps it for each live source with `ClockFit` (`trunk-app/src/session.rs`), which wraps
+sdr-core's `SampleClock`: a phase-and-rate loop, so a source's status also reports `clockPpm`,
+the radio's crystal error against the computer's clock.
 
 ### 11.1 The clock path
 
@@ -1474,13 +1492,13 @@ therefore decodes the same at any speed. The offset is the one link to the wall 
    block's length.
 3. **`ClockFit::observe`**: lag = (at − epoch) − samples ÷ rate. Buffers only ever arrive late
    (USB, driver buffering), so the least lag is the clock's own.
-4. **10 s window** (`CLOCK_WINDOW_MS`): the first block sets the target at once (this absorbs the
-   radio's open time, such as a USRP's FPGA load); after that, each window's least lag is the new
-   target.
-5. **Steer, each poll** (`Session::poll`, on the engine thread): within 0.25 s (`REANCHOR_S`) of the
-   offset already set, the difference is drift and the offset slews toward it at most 1 ms per wall
-   second (`CLOCK_SLEW`, 1000 ppm). Further than 0.25 s, samples were lost unreported (or invented):
-   the offset is set at once and the log says "clock re-anchored".
+4. **1 s windows** (`SampleClock`): the first block sets the target at once (this absorbs the
+   radio's open time, such as a USRP's FPGA load); after that, each window's least lag feeds a
+   second-order loop that tracks the phase and the rate.
+5. **Steer, each poll** (`Session::poll`, on the engine thread): the offset follows the loop. A
+   jump of more than 5 ms held for 3 windows means samples were lost unreported (or invented):
+   the offset is set at once and the log says "clock re-anchored". A deliberate gap (an RTL-SDR's
+   retune halt, `Sink::tuned`) resumes the clock and doesn't count as loss.
 6. **`Engine::set_clock_offset`**: the only place wall time enters the engine.
 7. **`Source::time()`** = samples ÷ rate + offset: every frame and message is timed this way.
 8. **Each `Trunk`'s `now_s`** (a site's clock) comes from its control channel's source

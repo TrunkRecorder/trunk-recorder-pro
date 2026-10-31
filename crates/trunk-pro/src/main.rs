@@ -308,8 +308,12 @@ fn main() {
 
 fn devices(a: &Args) {
     println!("RTL-SDR (built in):");
-    for d in sdr::devices() {
+    for d in radio::rtl::devices() {
         println!("  {} · SN {}", d["product"].as_str().unwrap_or(""), d["serial"].as_str().unwrap_or(""));
+    }
+    println!("HackRF (built in):");
+    for d in radio::hackrf::devices() {
+        println!("  {}", d["label"].as_str().unwrap_or(""));
     }
     let ai = radio::airspy::info();
     println!("Airspy: {}", ai.detail);
@@ -758,7 +762,7 @@ fn capture(a: &Args) {
     use std::io::Write;
     use std::sync::{atomic::AtomicBool, mpsc, Arc};
     let out = a.positional.first().unwrap_or_else(|| die("capture <out.cu8> --freq Hz …"));
-    let cfg = sdr::RtlConfig {
+    let cfg = radio::rtl::RtlConfig {
         serial: a.get("serial").unwrap_or("").into(),
         center_hz: a.num("freq", 0.0) as u64,
         rate_hz: a.num("rate", 2_400_000.0) as u32,
@@ -778,14 +782,14 @@ fn capture(a: &Args) {
     let t0 = Instant::now();
     while got < want {
         match rx.recv() {
-            Ok(sdr::SourceMsg::Data { bytes, dropped: d, .. }) => {
+            Ok(sdr::SourceMsg::Samples { block: sdr::Block::U8(bytes), dropped: d, .. }) => {
                 let n = (bytes.len() as u64).min(want - got) as usize;
                 let _ = f.write_all(&bytes[..n]);
                 got += n as u64;
                 dropped += d;
             }
             Ok(sdr::SourceMsg::Error { error, .. }) => eprintln!("{error}"),
-            Ok(sdr::SourceMsg::Iq { .. } | sdr::SourceMsg::Real16 { .. } | sdr::SourceMsg::Tuned { .. }) => {}
+            Ok(sdr::SourceMsg::Samples { .. } | sdr::SourceMsg::Tuned { .. }) => {}
             Ok(sdr::SourceMsg::End { .. }) | Err(_) => break,
         }
     }

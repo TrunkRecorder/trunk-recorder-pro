@@ -9,7 +9,6 @@ use nusb::{
     Endpoint, MaybeFuture,
     transfer::{Buffer, Bulk, In},
 };
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 use std::{
     fmt::Debug,
@@ -26,8 +25,40 @@ pub(crate) trait BackendSafe {}
 #[cfg(target_arch = "wasm32")]
 impl<T> BackendSafe for T {}
 
+/// The control pipe's own state: when a read was last answered (a
+/// demodulator write needs one shortly before it on some hosts, see
+/// [`crate::protocol`]) and what the chip refused.
+#[derive(Debug, Default)]
+pub(crate) struct Link {
+    #[cfg(not(target_arch = "wasm32"))]
+    last_read: std::sync::Mutex<Option<std::time::Instant>>,
+    pub stall_retries: std::sync::atomic::AtomicU64,
+    pub wake_reads: std::sync::atomic::AtomicU64,
+}
+
+impl Link {
+    pub(crate) fn read_answered(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            *self.last_read.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+        }
+    }
+    /// Whether a read was answered within `d` (always, where time can't be told).
+    pub(crate) fn read_within(&self, d: Duration) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.last_read.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t.elapsed() < d);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = d;
+            true
+        }
+    }
+}
+
 /// Control operations must submit only when waited or polled, including after IntoFuture.
 pub(crate) trait ControlBackend: Debug + BackendSafe {
+    /// The pipe's state ([`Link`]).
+    fn link(&self) -> &Link;
     fn control_in(
         &self,
         request: InRequest,
@@ -65,6 +96,7 @@ pub(crate) trait BulkInBackend: Debug + NonWasmSend {
 pub(crate) struct NusbTransport {
     _device: nusb::Device,
     interface: nusb::Interface,
+    link: Link,
 }
 
 impl NusbTransport {
@@ -101,6 +133,7 @@ impl NusbTransport {
                             Self {
                                 _device: device,
                                 interface,
+                                link: Link::default(),
                             },
                             descriptor,
                         )
@@ -144,6 +177,9 @@ impl NusbTransport {
 }
 
 impl ControlBackend for NusbTransport {
+    fn link(&self) -> &Link {
+        &self.link
+    }
     fn control_in(&self, request: InRequest) -> impl MaybeFuture<Output = Result<Vec<u8>>> + use<> {
         let interface = self.interface.clone();
         // Native nusb control transfers submit on construction, not on their first poll.

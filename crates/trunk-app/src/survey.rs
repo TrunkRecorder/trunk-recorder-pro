@@ -156,6 +156,12 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
             sc.tune_range_hz = (47e6, 6e9);
             sc.settle_s = 0.15;
         }
+        // HackRF One: 1 MHz – 6 GHz; it keeps sampling through a retune.
+        Source::Hackrf { ppm, .. } => {
+            sc.ppm = *ppm;
+            sc.tune_range_hz = (1e6, 6e9);
+            sc.settle_s = 0.05;
+        }
         // The device's range isn't known here: the widest any module offers; a
         // tune it refuses shows as a source error.
         Source::Soapy { ppm, .. } => {

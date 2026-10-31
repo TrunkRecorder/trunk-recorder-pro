@@ -5348,6 +5348,10 @@
         "usrp": {
           "$ref": "#/definitions/DriverState"
         },
+        "hackrf": {
+          "$ref": "#/definitions/DriverState",
+          "description": "Built in: always available."
+        },
         "airspy": {
           "$ref": "#/definitions/DriverState"
         },
@@ -5360,6 +5364,7 @@
       },
       "required": [
         "usrp",
+        "hackrf",
         "airspy",
         "bladerf"
       ],
@@ -6390,6 +6395,9 @@
             },
             "ppm": {
               "type": "number"
+            },
+            "wireFormat": {
+              "type": "string"
             }
           },
           "required": [
@@ -6520,6 +6528,57 @@
             "rateHz",
             "serial",
             "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "autoTune": {
+              "type": "boolean"
+            },
+            "guardHz": {
+              "type": "number"
+            },
+            "type": {
+              "type": "string",
+              "const": "hackrf"
+            },
+            "serial": {
+              "type": "string"
+            },
+            "centerHz": {
+              "type": "number"
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "lnaDb": {
+              "type": "number"
+            },
+            "vgaDb": {
+              "type": "number"
+            },
+            "amp": {
+              "type": "boolean"
+            },
+            "biasTee": {
+              "type": "boolean"
+            },
+            "ppm": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "amp",
+            "biasTee",
+            "centerHz",
+            "lnaDb",
+            "ppm",
+            "rateHz",
+            "serial",
+            "type",
+            "vgaDb"
           ]
         },
         {
@@ -6671,6 +6730,13 @@
             "null"
           ],
           "description": "Its frequency error, ppm (+: signals come in high): the median of its last control channel and call measurements; null until measured."
+        },
+        "clockPpm": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The radio's crystal error, measured from its sample clock against this computer's clock, ppm (+: fast); null until measured (about 10 s)."
         },
         "tunePpm": {
           "type": "number",

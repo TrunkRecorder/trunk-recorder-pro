@@ -188,34 +188,37 @@ impl Tuner {
         }
         unreachable!()
     }
+    /// Program the PLL for `hz` and wait for lock. Unlocked even with more
+    /// charge-pump current, the neighbouring divider is tried where it keeps
+    /// the VCO in range: near the VCO's edges one divider may not lock where
+    /// the other does (sdr-rtl findings 20, 21: 851–858 MHz on two dongles).
     async fn set_pll<C: ControlBackend>(&mut self, com: &Com<'_, C>, hz: u64) -> Result<u64> {
         self.write_many(com, &[(0x10, 0, 0x10), (0x1a, 0, 0x0c), (0x12, 0x80, 0xe0)])
             .await?;
         let fine = (self.read(com, 5).await?[4] >> 4) & 3;
-        let plan = pll(
-            hz,
-            self.crystal_hz,
-            fine,
-            if self.kind == TunerKind::R820T { 2 } else { 1 },
-        )?;
-        self.write_many(
-            com,
-            &[
-                (0x10, plan.divider << 5, 0xe0),
-                (0x14, plan.integer, 0xff),
-                (0x12, if plan.sdm == 0 { 8 } else { 0 }, 8),
-                (0x16, (plan.sdm >> 8) as u8, 0xff),
-                (0x15, plan.sdm as u8, 0xff),
-            ],
-        )
-        .await?;
-        for attempt in 0..2 {
-            if self.read(com, 3).await?[2] & 0x40 != 0 {
-                self.write(com, 0x1a, 8, 8).await?;
-                return Ok(plan.actual_hz);
-            }
-            if attempt == 0 {
-                self.write(com, 0x12, 0x60, 0xe0).await?;
+        let power_ref = if self.kind == TunerKind::R820T { 2 } else { 1 };
+        for shift in [0, -1, 1] {
+            let Ok(plan) = pll(hz, self.crystal_hz, fine, power_ref, shift) else { continue };
+            self.write_many(
+                com,
+                &[
+                    (0x12, 0x80, 0xe0),
+                    (0x10, plan.divider << 5, 0xe0),
+                    (0x14, plan.integer, 0xff),
+                    (0x12, if plan.sdm == 0 { 8 } else { 0 }, 8),
+                    (0x16, (plan.sdm >> 8) as u8, 0xff),
+                    (0x15, plan.sdm as u8, 0xff),
+                ],
+            )
+            .await?;
+            for attempt in 0..2 {
+                if self.read(com, 3).await?[2] & 0x40 != 0 {
+                    self.write(com, 0x1a, 8, 8).await?;
+                    return Ok(plan.actual_hz);
+                }
+                if attempt == 0 {
+                    self.write(com, 0x12, 0x60, 0xe0).await?;
+                }
             }
         }
         Err(Error::PllUnlocked)
@@ -237,6 +240,11 @@ impl Tuner {
     ) -> Result<()> {
         let offset = usize::from(reg - 5);
         let value = (self.shadow[offset] & !mask) | (value & mask);
+        // The shadow holds what was written (every register at open): a write
+        // that changes nothing is a control request — samples — for nothing.
+        if value == self.shadow[offset] {
+            return Ok(());
+        }
         com.i2c_write(self.address(), reg, value).await?;
         self.shadow[offset] = value;
         Ok(())
@@ -274,11 +282,19 @@ struct Pll {
     sdm: u16,
     actual_hz: u64,
 }
-fn pll(hz: u64, crystal: u64, fine: u8, power_ref: u8) -> Result<Pll> {
+/// The VCO's range for a neighbouring divider (sdr-rtl's measured 1.71–3.65 GHz).
+const VCO_RANGE_HZ: std::ops::RangeInclusive<u64> = 1_710_000_000..=3_650_000_000;
+
+/// The words for `hz`: the divider that puts the VCO at 1.77 GHz or above
+/// (librtlsdr's rule), or with `shift` ±1 its neighbour, if that keeps the VCO in range.
+fn pll(hz: u64, crystal: u64, fine: u8, power_ref: u8, shift: i32) -> Result<Pll> {
     if hz == 0 || hz > 1_770_000_000 || crystal == 0 {
         return Err(Error::PllUnlocked);
     }
-    let div = (1_770_000_000 / hz).ilog2().min(6) as i32;
+    let div = (1_770_000_000 / hz).ilog2().min(6) as i32 + shift;
+    if !(0..=6).contains(&div) || (shift != 0 && !VCO_RANGE_HZ.contains(&(hz << (div + 1)))) {
+        return Err(Error::PllUnlocked);
+    }
     let mix = 1u64 << (div + 1);
     let divider = div
         + match fine.cmp(&power_ref) {
@@ -355,14 +371,8 @@ mod tests {
             (1_000_000, 0),
         ] {
             futures_lite::future::block_on(tuner.tune(&Com(&control), hz)).unwrap();
-            let writes = control.state.control_out_requests.lock().unwrap();
-            let value = writes
-                .iter()
-                .rev()
-                .find(|r| r.index == 0x610 && r.data.first() == Some(&0x17))
-                .unwrap()
-                .data[1];
-            assert_eq!(value & 8, notch, "RF frequency {hz}");
+            // (The shadow is what was written: an unchanged register isn't written again.)
+            assert_eq!(tuner.shadow[0x17 - 5] & 8, notch, "RF frequency {hz}");
         }
     }
     #[test]
@@ -450,7 +460,7 @@ mod tests {
     fn pll_quantization_stays_within_one_fractional_step_across_rf_range() {
         for crystal in [28_785_946, 28_800_000, 28_814_054] {
             for hz in (32_370_000..=1_769_570_000).step_by(1_000_000) {
-                let plan = pll(hz, crystal, 2, 2).unwrap();
+                let plan = pll(hz, crystal, 2, 2, 0).unwrap();
                 assert!(plan.actual_hz <= hz);
                 assert!(hz - plan.actual_hz < 500);
                 assert!(plan.divider <= 6);

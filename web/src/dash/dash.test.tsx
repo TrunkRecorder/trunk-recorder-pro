@@ -13,6 +13,7 @@ import { DecodePage } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
+import { RfPage } from "./Rf.tsx";
 import { PlatformPage } from "./Platform.tsx";
 import { PluginHealthPage } from "./PluginHealth.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
@@ -360,4 +361,19 @@ test("A y axis never has two ticks that read the same", () => {
     assert.equal(new Set(labels).size, labels.length, `${lo}..${hi}: ${labels.join(", ")}`);
     assert.ok(t.length >= 2 && t[0] <= lo + 1e-9 + (t[1] - t[0]) && t[t.length - 1] >= hi - (t[1] - t[0]) - 1e-9, `${lo}..${hi}: ${t.join(", ")} spans the data`);
   }
+});
+
+test("RF: a HackRF's stages, and the sample clock's error once measured", () => {
+  const c = defaultConfig();
+  c.sources = [{ type: "hackrf", serial: "", centerHz: 851_000_000, rateHz: 8_000_000, lnaDb: 24, vgaDb: 30, amp: true, biasTee: false, ppm: 0 }];
+  running(c, []);
+  const src = (clockPpm: number | null): SourceStatus => ({ index: 0, label: "HackRF", centerHz: 851_000_000, rateHz: 8_000_000, rateMeasured: 8_000_000, dropped: 0, errors: 0, lastError: null, ended: false, clockPpm });
+  const status = (clockPpm: number | null) =>
+    transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [src(clockPpm)], load: 0, calls: [] });
+  setView("rf");
+  status(null);
+  assert.doesNotMatch(text(renderToString(<RfPage />)), /Sample clock/, "not until it is measured");
+  status(1.234);
+  assert.match(text(renderToString(<RfPage />)), /Sample clock \+1\.23 ppm against this computer/);
+  assert.match(text(renderToString(<RfPage />)), /LNA 24 · VGA 30 · amp/);
 });

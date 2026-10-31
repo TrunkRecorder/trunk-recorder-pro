@@ -22,8 +22,8 @@ use trunk_app::{Feeder, Output, Session};
 
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
-use crate::radio::{airspy, bladerf, soapy, uhd};
-use crate::sdr::{self, Control, Gain, RtlConfig, SourceMsg};
+use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, uhd};
+use crate::sdr::{self, Block, Control, Gain, Inbox, SourceMsg};
 
 /// A message for the connected browsers, serialized once for all of them.
 pub enum Out {
@@ -365,6 +365,10 @@ pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
             *gain_db = *g;
             Gain::Db(*g as f32)
         }
+        (Source::Hackrf { lna_db, vga_db, amp, .. }, Source::Hackrf { lna_db: l, vga_db: v, amp: a, .. }) => {
+            (*lna_db, *vga_db, *amp) = (*l, *v, *a);
+            Gain::Hackrf(hackrf::HackrfGain { lna_db: *l, vga_db: *v, amp: *a })
+        }
         (Source::Soapy { gain_db, agc: false, .. }, Source::Soapy { gain_db: Some(g), agc: false, .. }) => {
             *gain_db = Some(*g);
             Gain::Db(*g as f32)
@@ -467,11 +471,6 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_sharing(&fs::read_to_string(sharing_path()).unwrap_or_default());
     session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
     ctx.plugins.start(&cfg);
-    if cfg.sources.iter().any(|s| matches!(s, Source::Rtlsdr { .. })) {
-        if let Some(hint) = cfg.rtl_buflen_hint(sdr::rtl_most_on_a_bus()) {
-            log::warn!("{hint}");
-        }
-    }
     let stop = Arc::new(AtomicBool::new(false));
     // Each source's samples queue for its own decoding thread ([`feed_source`]).
     let mut queues = Vec::new();
@@ -673,9 +672,14 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
     let src = src.clone();
     std::thread::Builder::new().name(name.to_string()).spawn(move || match src {
         Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, buf_len, buffers, .. } => {
-            sdr::run_with(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers }, tx, stop, ctl)
+            sdr::run_with(i, rtl::RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers }, tx, stop, ctl)
         }
-        Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop, ctl),
+        Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, wire_format, .. } => {
+            sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm, wire_format }, tx, stop, ctl)
+        }
+        Source::Hackrf { serial, rate_hz, lna_db, vga_db, amp, bias_tee, ppm, .. } => {
+            sdr::run_with(i, hackrf::HackrfConfig { serial, center_hz: center, rate_hz, gain: hackrf::HackrfGain { lna_db, vga_db, amp }, bias_tee, ppm }, tx, stop, ctl)
+        }
         Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
             let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
             sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
@@ -704,7 +708,8 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
     let chunk = 32768 * bps;
     let t0 = Instant::now();
     let mut sent = 0u64;
-    let pool = crate::sdr::Pool::default();
+    // (Waits for room: a capture loses nothing, whatever its pace.)
+    let mut sink = sdr::Sink::new(source, tx.clone(), rate_hz, false);
     let mut buf = vec![0u8; chunk];
     while !stop.load(Ordering::Relaxed) {
         buf.resize(chunk, 0);
@@ -714,11 +719,11 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
         }
         buf.truncate(n - n % bps);
         sent += (buf.len() / bps) as u64;
-        let msg = match format {
-            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: pool.copy(&buf), dropped: 0, at: Instant::now() },
-            _ => SourceMsg::Iq { source, samples: trunk_app::samples::to_iq(format, &buf), dropped: 0, at: Instant::now() },
+        let open = match format {
+            SampleFormat::Cu8 => sink.bytes(sdr::Wire::Offset, &buf, 0, Instant::now()),
+            _ => sink.iq(&trunk_app::samples::to_iq(format, &buf), 0, Instant::now()),
         };
-        if tx.send(msg).is_err() {
+        if !open {
             return;
         }
         if realtime {
@@ -728,6 +733,7 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
             }
         }
     }
+    drop(sink);
     let _ = tx.send(SourceMsg::End { source });
 }
 
@@ -788,28 +794,30 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     // An instant on the same clock (when a driver handed samples over).
     let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
-    // (An Airspy's real samples become IQ here, on this thread: see [`crate::sdr::IqFrom`].)
-    let mut iqf = crate::sdr::IqFrom::default();
-    let mut take = |m: SourceMsg| match iqf.iq(m) {
-        SourceMsg::Data { source, bytes, dropped, at } => {
+    // (An Airspy's real samples become IQ here, on this thread.)
+    let mut rx = Inbox::new(rx);
+    let take = |m: SourceMsg| match m {
+        SourceMsg::Samples { source, block, dropped, at } => {
             debug_assert_eq!(source, feeder.source());
             air.keep_up(&stop);
-            feeder.push(&bytes, dropped, at_ms(at));
-            air.fed((bytes.len() / 2) as u64 + dropped);
+            match &block {
+                Block::U8(b) => feeder.push(b, dropped, at_ms(at)),
+                Block::Iq(b) => feeder.push_iq(b, dropped, at_ms(at)),
+                Block::Real16(_) => unreachable!("the inbox makes them I/Q"),
+            }
+            air.fed(block.len() as u64 + dropped);
         }
-        SourceMsg::Iq { source, samples, dropped, at } => {
-            debug_assert_eq!(source, feeder.source());
-            air.keep_up(&stop);
-            feeder.push_iq(&samples, dropped, at_ms(at));
-            air.fed(samples.len() as u64 + dropped);
-        }
+        // A change the radio halted for: quiet, not loss (recording ignores the retune itself).
+        SourceMsg::Tuned { gap, .. } => feeder.quiet(gap),
         m => {
             let _ = ctl.send(EngineCmd::Source(m));
         }
     };
     loop {
         if stop.load(Ordering::Relaxed) {
-            rx.try_iter().for_each(&mut take);
+            while let Ok(m) = rx.try_recv() {
+                take(m);
+            }
             return;
         }
         match rx.recv_timeout(Duration::from_millis(50)) {

@@ -12,7 +12,7 @@ several radios, see the [radios guide](../guides/radios.md).
 ```
 
 A source receives a block of spectrum `rateHz` wide, centered on `centerHz`. Every source has a
-`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"bladerf"`, `"soapy"` or `"file"` (any case). Any other
+`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"bladerf"`, `"hackrf"`, `"soapy"` or `"file"` (any case). Any other
 `type`, or none, makes the file unreadable.
 
 The fixed choices below (`gainMode`, `format`) are read in any case, and an empty string is the default.
@@ -81,15 +81,13 @@ An RTL-SDR dongle, driven directly over USB (no driver library needed).
 | `ppm` | ✓ | | integer | Frequency correction, whole ppm |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
-| `bufLen` | | `0` | integer | Bytes per USB transfer (Trunk Recorder's `buflen`), a multiple of 512, at most 16 MiB. `0` = 262 144. **USB transfer size** in Setup |
-| `buffers` | | `0` | integer | USB transfers kept in flight (Trunk Recorder's `buffers`), at most 256. `0` = enough for about 2 MiB: 8 at the default size, 32 at 65 536 |
+| `bufLen` | | `0` | integer | Bytes per USB transfer (Trunk Recorder's `buflen`), a multiple of 512, at most 16 MiB. `0` = 16 384. **USB transfer size** in Setup |
+| `buffers` | | `0` | integer | USB transfers kept in flight (Trunk Recorder's `buffers`), at most 256. `0` = enough for about 2 MiB: 128 at the default size, 32 at 65 536 |
 
-**Several dongles on one USB bus.** Four or more RTL-SDRs at 2.4 MSPS on one USB 2.0 bus
-(including behind one hub) can overflow: each dongle holds only a few milliseconds of samples on
-the chip, and a 256 KiB transfer from one keeps the others waiting. The usual sign is a control
-channel that keeps dropping out while voice mostly works. Set `bufLen` to `65536` on each (as
-Trunk Recorder's docs advise). The recorder logs this advice at start when 4 or more dongles at
-2 MSPS or more are left at the default, and Setup shows it next to **USB transfer size**.
+The defaults (128 transfers of 16 KiB) suit any number of dongles on one bus, so `bufLen` and
+`buffers` rarely need setting. A retune or gain change halts the dongle's output for a moment and
+changes only the tuner; the samples the chip dropped meanwhile (it counts them itself) are reported
+as dropped. A USB stall is cleared in place, without reopening the dongle.
 
 The native driver handles R820T and R828D tuners (the RTL-SDR Blog V3 and V4, and most current
 dongles). For an older dongle with an E4000, FC0012, FC0013 or FC2580 tuner, use a `soapy` source
@@ -104,7 +102,7 @@ An Ettus USRP, through UHD. UHD must be installed separately; the app loads it w
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `type` | ✓ | | string | `"usrp"` |
-| `args` | | `""` | string | UHD device arguments: `""` = the first found, `serial=…`, `type=b200`, `addr=192.168.10.2`. `num_recv_frames=256` is added unless you set it (UHD's default buffer overflows at high rates) |
+| `args` | | `""` | string | UHD device arguments: `""` = the first found, `serial=…`, `type=b200`, `addr=192.168.10.2`. `num_recv_frames=1024` is added unless you set it (UHD's default buffer overflows at high rates; 1024 holds about 260 ms at 8 MSPS) |
 | `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
 | `rateHz` | ✓ | | number | Any rate the device's clock supports, e.g. 8 000 000 |
 | `gainDb` | | `40` | number | Gain, dB. B200/B210: 0–76 |
@@ -112,7 +110,35 @@ An Ettus USRP, through UHD. UHD must be installed separately; the app loads it w
 | `antenna` | | `""` | string | e.g. `RX2`, `TX/RX`. `""` = the device's default |
 | `ppm` | | `0` | number | Frequency correction, ppm |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
+| `wireFormat` | | `""` | string | Samples on the USB cable: `""` = chosen for you, `"sc16"`, `"sc12"` (B200 / B210 / B200mini / B205mini only) or `"sc8"`. UHD refuses anything else |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
+
+On a B200 / B210 / B200mini on a USB 2.0 link above 8 MSPS, the automatic choice is `sc12`, which needs a quarter less of the
+bus than `sc16`. The recorder reads the link speed, logs it, and warns when `sc16` is in use at a high rate on USB 2.0. If UHD
+would run a B2xx's master clock at the sample rate itself (no decimation, which puts sidebands 270–310 kHz either side of strong
+carriers), the recorder doubles it, unless `args` sets `master_clock_rate`. The B206mini needs UHD 4.9 or newer (Debian trixie's
+package is 4.8) and uses the b205mini FPGA image.
+
+## `"type": "hackrf"`
+
+A HackRF One, driven directly over USB: nothing to install, and it works in Docker. It needs firmware 2021.03 or newer; an older
+one is refused when opened, with a message to update it (`hackrf_spiflash`).
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `type` | ✓ | | string | `"hackrf"` |
+| `serial` | | `""` | string | The board's serial. `""` = the first found |
+| `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
+| `rateHz` | ✓ | | number | Sample rate, 1 000 000 to 20 000 000 |
+| `lnaDb` | | `16` | integer | IF (LNA) gain, 0–40 dB in 8 dB steps |
+| `vgaDb` | | `20` | integer | Baseband (VGA) gain, 0–62 dB in 2 dB steps |
+| `amp` | | `false` | bool | The +14 dB RF amplifier. It overloads near strong signals |
+| `biasTee` | | `false` | bool | Power an LNA through the antenna port |
+| `ppm` | | `0` | number | Frequency correction, ppm |
+| `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
+| `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
+
+A `soapy` source with `driver=hackrf` still works, for a rad1o or a HackRF behind SoapyRemote.
 
 ## `"type": "airspy"`
 
@@ -162,7 +188,7 @@ Samples that USB drops are counted from the board's sample timestamps.
 
 ## `"type": "soapy"`
 
-Any SDR with a SoapySDR module: HackRF, SDRplay, LimeSDR, PlutoSDR and others. SoapySDR and the
+Any SDR with a SoapySDR module: SDRplay, LimeSDR, PlutoSDR and others. SoapySDR and the
 device's module must be installed separately.
 
 | Key | Required | Default | Type | Description |
