@@ -56,10 +56,20 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # --- ffmpeg: WAV in, AAC in MP4 out, nothing else (~2 MB, static) ----------
 FROM debian:${DEBIAN}-slim AS ffmpeg
 ARG FFMPEG=7.1.2
+# The source, checked: FFmpeg's GitHub mirror (its release tag), else ffmpeg.org's
+# release tarball. ffmpeg.org resets connections from GitHub's runners at times.
+# The two are the same source (the tag has no VERSION file; RELEASE says the same).
+ARG FFMPEG_SHA256_GITHUB=8cb1bb8cfa9aeae13279b4da42ae8307ae6777456d4270f2e603c95aa08ca8ef
+ARG FFMPEG_SHA256_RELEASE=089bc60fb59d6aecc5d994ff530fd0dcb3ee39aa55867849a2bbc4e555f9c304
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev make curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN curl -fsSL https://ffmpeg.org/releases/ffmpeg-${FFMPEG}.tar.xz | tar -xJ --strip-components=1
+RUN get() { curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/ffmpeg.tar "$1" \
+      && echo "$2  /tmp/ffmpeg.tar" | sha256sum -c -; } \
+    && { get https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG}.tar.gz ${FFMPEG_SHA256_GITHUB} \
+      || get https://ffmpeg.org/releases/ffmpeg-${FFMPEG}.tar.xz ${FFMPEG_SHA256_RELEASE}; } \
+    && tar -xf /tmp/ffmpeg.tar --strip-components=1 \
+    && rm /tmp/ffmpeg.tar
 RUN ./configure --prefix=/opt/ffmpeg \
       --enable-static --disable-shared --extra-ldflags=-static --pkg-config-flags=--static \
       --disable-autodetect --disable-everything --disable-doc --disable-network \
