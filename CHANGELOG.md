@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **`radioQuery` can return every radio heard.** Its `limit` was capped at 5,000 rows while the
+  registry keeps 20,000 radios a system, so an interface could not list a large system's radios
+  (about a quarter went missing on a system with 6,500 heard in a day). The cap is now the
+  registry's own capacity; the default page stays 500. (The API guide says so.)
+
 ## [0.2.11] — 2026-10-27
 
 - **Saving never holds up recording or a click.** Large systems on slow disks (SD cards) waited on

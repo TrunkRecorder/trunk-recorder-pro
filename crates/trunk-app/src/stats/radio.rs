@@ -614,7 +614,8 @@ impl Registry {
         let Some(name) = q["system"].as_str() else { return json!({ "what": what, "error": "which system?" }) };
         let Some(s) = self.systems.get(name) else { return json!({ "what": what, "system": name, "rows": [] }) };
         let hours = q["hours"].as_i64().unwrap_or(24).clamp(1, HOURS);
-        let limit = q["limit"].as_u64().unwrap_or(500).min(5000) as usize;
+        // Up to the registry's own capacity: a client may ask for every radio heard.
+        let limit = q["limit"].as_u64().unwrap_or(500).min(MAX_UNITS as u64) as usize;
         let key = q["key"].as_u64().map(|k| k as u32);
         let mut out = match what {
             "talkgroups" => talkgroups(name, s, now, hours, limit, names),
@@ -1161,6 +1162,30 @@ mod tests {
         // As a log's line, and back.
         let line = serde_json::to_string(c).unwrap();
         assert_eq!(serde_json::from_str::<RegistryChanges>(&line).unwrap().units.len(), c.units.len());
+    }
+
+    #[test]
+    fn a_query_may_ask_for_every_radio_heard() {
+        // The registry keeps up to MAX_UNITS radios a system; a `limit` that high returns them all.
+        let t = 1_790_000_000i64;
+        let mut s = SystemRadio::new(t);
+        for u in 0..6_000u32 {
+            s.units.insert(1_000_000 + u, Unit { first: t, last: t, last_tx: t, tx: 1, tx_secs: 1.0, aff: None, aff_t: 0, reg: None, tgs: Default::default(), recent: Default::default() });
+        }
+        let mut r = Registry::default();
+        r.systems.insert("x".into(), s);
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let rows = |limit: Option<u64>| {
+            let mut q = json!({ "what": "units", "system": "x", "hours": 24 });
+            if let Some(l) = limit { q["limit"] = json!(l); }
+            let a = r.query(&q, t + 60, &n);
+            assert_eq!(a["total"], 6_000);
+            a["rows"].as_array().unwrap().len()
+        };
+        assert_eq!(rows(None), 500, "the default page");
+        assert_eq!(rows(Some(MAX_UNITS as u64)), 6_000, "every radio heard");
+        assert_eq!(rows(Some(1_000_000)), 6_000, "more than the registry holds is the registry");
     }
 
     #[test]
