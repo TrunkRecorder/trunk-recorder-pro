@@ -35,6 +35,8 @@ WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY Cargo.toml /src/
+# The live-audio player is client.js's, the one served to every interface.
+COPY docs/api/client.js /src/docs/api/client.js
 COPY web/ ./
 COPY --from=wasm /pkg src/web/pkg
 RUN npm run build
