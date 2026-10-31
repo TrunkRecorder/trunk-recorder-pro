@@ -289,7 +289,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
     <div class="fig"><span class="n">1</span><span class="l">decoding thread per source; calls followed under one lock</span></div>
     <div class="fig"><span class="n">16,384</span><span class="l">point FFT per source, shared by every channel</span></div>
     <div class="fig"><span class="n">12,288</span><span class="l">new samples per block (5.12 ms at 2.4 MSPS)</span></div>
-    <div class="fig"><span class="n">256</span><span class="l">blocks in each source's queue, the only kind that blocks</span></div>
+    <div class="fig"><span class="n">256</span><span class="l">messages in each source's queue; a live radio drops when it is full</span></div>
     <div class="fig"><span class="n">32</span><span class="l">recorders by default (<code>maxRecorders</code>)</span></div>
   </div>
 </header>
@@ -325,7 +325,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <h2>From SDR to saved call</h2>
   <p>Samples cross a thread boundary twice: from the radio's thread into the source's decoding thread, and from the engine's events out to the engine thread. Between those two points everything happens synchronously on the source's decoding thread (<code>dsp-N</code>), in a fixed order, one channelizer block at a time: its channels are decoded under the source's own lock (each control channel under a lock of its own), then followed under the engine's, so sources decode on cores of their own while the calls are followed in one place. Locks are never nested except the engine's with one other. Press <b>Follow a block</b> to walk the path, or click any stage.</p>
   <div id="dia-flow"></div>
-  <div class="callout"><p><b>Latency, roughly:</b> the driver's block (RTL about 55 ms, others about 10 ms) + up to one channelizer block (5.12 ms at 2.4 MSPS) + filter delay (under 1 ms) + any backlog in the source queue + decoder framing (the C4FM receiver's block timing adds about 100 ms).</p></div>
+  <div class="callout"><p><b>Latency, roughly:</b> the driver's block (RTL about 25 ms, others about 10 ms) + up to one channelizer block (5.12 ms at 2.4 MSPS) + filter delay (under 1 ms) + any backlog in the source queue + decoder framing (the C4FM receiver's block timing adds about 100 ms).</p></div>
 </section>
 
 <section id="channelizer">
@@ -441,7 +441,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
 <section id="backpressure">
   <div class="eyebrow"><b>07</b><span>trunk-pro/src/runtime.rs · sdr.rs · radio/ · plugins/host.rs · main.rs</span></div>
   <h2>Buffering and back-pressure, compared with GNU Radio</h2>
-  <p>Trunk Recorder is a GNU Radio flowgraph: many blocks, each on its own thread, joined by circular buffers. Trunk Recorder Pro is one thread per source that runs every stage to completion for each block, with one blocking queue in front of each and non-blocking, explicitly lossy queues behind it. Pick a slow part in each diagram to see where the pressure goes.</p>
+  <p>Trunk Recorder is a GNU Radio flowgraph: many blocks, each on its own thread, joined by circular buffers. Trunk Recorder Pro is one thread per source that runs every stage to completion for each block, with one bounded queue in front of each (a live radio drops when it is full, a capture file waits) and non-blocking, explicitly lossy queues behind it. Pick a slow part in each diagram to see where the pressure goes.</p>
   <div class="tabs" id="bp-tabs" role="tablist"></div>
   <div id="bp-body"></div>
   <h3>How long the input queue lasts</h3>
@@ -450,9 +450,9 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <div class="tablewrap"><table>
     <thead><tr><th>Queue</th><th class="num">Capacity</th><th>Producer → consumer</th><th>When full</th></tr></thead>
     <tbody>
-      <tr><td>Source → decoding<br><span class="small muted">runtime.rs <code>sync_channel</code></span></td><td class="num">256 blocks per source</td><td><code>source-N</code> → <code>dsp-N</code></td><td><b>Sender blocks.</b> The driver stops collecting, the device overflows; drops reported where the driver can tell, gap-filled with faint noise, clock re-anchored past 0.25 s.</td></tr>
-      <tr><td>rtlsdr-nusb USB transfers</td><td class="num">8 × 256 KiB</td><td>USB → source thread</td><td>Device FIFO overflows.</td></tr>
-      <tr><td>UHD receive frames</td><td class="num">256 frames</td><td>USRP → UHD streamer</td><td>Overflow (<code>O</code>); counted from the packet timestamp gap.</td></tr>
+      <tr><td>Source → decoding<br><span class="small muted">runtime.rs <code>sync_channel</code></span></td><td class="num">256 messages per source</td><td><code>source-N</code> → <code>dsp-N</code></td><td><b>A live radio's block is dropped</b> and counted (<code>dropped</code>), gap-filled with faint noise; a capture file's sender waits. Loss the radio can't see is caught by the clock, which re-anchors.</td></tr>
+      <tr><td>rtlsdr-nusb USB transfers</td><td class="num">128 × 16 KiB</td><td>USB → source thread</td><td>Device FIFO overflows; the chip's own count is read at each retune, the rest caught by <code>ClockFit</code> as unreported loss.</td></tr>
+      <tr><td>UHD receive frames</td><td class="num">1024 frames</td><td>USRP → UHD streamer</td><td>Overflow (<code>O</code>); counted from the packet timestamp gap.</td></tr>
       <tr><td>Engine commands<br><span class="small muted"><code>EngineCmd</code></span></td><td class="num">unbounded</td><td>decoding threads, server → engine</td><td>—</td></tr>
       <tr><td>Hub<br><span class="small muted">tokio broadcast</span></td><td class="num">4,096 messages</td><td>engine, finish, monitor, logger → each WebSocket task</td><td>A lagging client loses its oldest messages, silently. Recording and other clients are unaffected.</td></tr>
       <tr><td>Finish</td><td class="num">1,024 calls</td><td>engine → finish pool (1–3)</td><td>The engine thread waits up to 5 s (<code>FINISH_WAIT</code>) for room, then finishes the call itself with the same <code>finish_one</code> and <code>plugins::plan</code> (its .m4a too, if the plan has one). Decoding carries on.</td></tr>
@@ -473,7 +473,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
       <tr><td>Channel extraction</td><td>A full-rate filter per recorder (<code>xlat_channelizer</code>)</td><td>A shared FFT; an M-point inverse FFT per channel</td></tr>
       <tr><td>Recorders</td><td>Built at start, enabled through a <code>selector</code> port</td><td>Built per call; only a count cap</td></tr>
       <tr><td>Control → recorder</td><td>A message queue polled by the main loop</td><td>A direct call (<code>CallManager</code> → <code>RecorderHost</code>) in the same block</td></tr>
-      <tr><td>Back-pressure</td><td>Propagates buffer by buffer to the source</td><td>One blocking queue per source at the input; nothing downstream blocks decoding</td></tr>
+      <tr><td>Back-pressure</td><td>Propagates buffer by buffer to the source</td><td>One bounded queue per source at the input (a live radio's block is dropped and counted, a file waits); nothing downstream blocks decoding</td></tr>
       <tr><td>Overload</td><td>Hardware overflow; one slow recorder can stall all</td><td>Hardware overflow, measured, gap-filled, clock re-anchored</td></tr>
       <tr><td>Cores</td><td>Many, automatically</td><td>One per source for DSP (calls followed under one lock); I/O, encoding, plugins and the server elsewhere</td></tr>
       <tr><td>CPU</td><td></td><td>4–6× less than Trunk Recorder on Raspberry Pi / Linux (benchmark of 2026-10-02)</td></tr>
@@ -583,10 +583,10 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
 <section id="time">
   <div class="eyebrow"><b>11</b><span>trunk-app/src/session.rs (ClockFit) · trunk-core/src/trunk/engine.rs</span></div>
   <h2>Time, clocks and identifiers</h2>
-  <p>The engine has no wall clock. Every time inside it (a frame, a message, a call's start, a timeout) is a source's <b>sample count</b> divided by its rate, plus that source's <b>clock offset</b>. This makes a capture decode the same at any speed. The offset is the one link to the wall clock. <code>Session</code> keeps it for each live source with <code>ClockFit</code>, which measures each buffer against the instant its driver handed it over.</p>
+  <p>The engine has no wall clock. Every time inside it (a frame, a message, a call's start, a timeout) is a source's <b>sample count</b> divided by its rate, plus that source's <b>clock offset</b>. This makes a capture decode the same at any speed. The offset is the one link to the wall clock. <code>Session</code> keeps it for each live source with <code>ClockFit</code>, which measures each buffer against the instant its driver handed it over and wraps sdr-core's <code>SampleClock</code>: a phase-and-rate loop, so a source's status also reports <code>clockPpm</code>, the radio's crystal error against the computer's clock.</p>
   <div id="dia-clock"></div>
   <h3>Watch the offset being steered</h3>
-  <p>Each dot is one buffer's lag: the wall time since start minus the source's sample time. Buffers only ever arrive late (USB, driver buffering), so the lowest lag in each 10 s window is the clock's own. The dashed line is each window's minimum (the target); the solid line is the offset set on the engine.</p>
+  <p>Each dot is one buffer's lag: the wall time since start minus the source's sample time. Buffers only ever arrive late (USB, driver buffering), so the lowest lag in each 1 s window is the clock's own. The dashed line is each window's minimum (the target); the solid line is the offset set on the engine, which follows a second-order loop (<code>SampleClock</code>) rather than the target itself.</p>
   <div class="panel" id="clock-sim"></div>
   <ul>
     <li><b>Where each part of the clock's time comes from.</b> Each <code>Trunk</code> (a site) takes its time from its control channel's source, and every voice output of a block is applied at it, whichever source its channel is on; the engine's own <code>now_s</code> comes from source 0. Wall time is the epoch taken at start plus engine time. <code>Session</code> applies the local UTC offset for folder names, which only the platform knows.</li>
@@ -1011,9 +1011,9 @@ diagram($("dia-flow"), {
     { y: 500, h: 200, label: "finish pool · plugins · web server", color: "var(--lane-out)" }
   ],
   nodes: [
-    { id: "src", x: C[0], y: 42, label: "SDR driver", sub: "RTL · USRP · Airspy · Soapy · file", w: 200, text: "Each source thread runs its radio: a <code>Radio</code> (<code>BACKOFF</code>, <code>retune_to</code>, <code>stream_once</code>) under one loop, <code>sdr::run_with</code>, which reopens it after an error (RTL 2 s, the others 3 s); <code>runtime::spawn_source</code> starts it for recording, the survey and profiling. RTL-SDR (pure Rust over <code>rtlsdr-nusb</code>): 262,144-byte USB transfers, 8 in flight, sent as raw <code>u8</code> IQ in reused buffers (about 55 ms per block at 2.4 MSPS). USRP, Soapy: about 10 ms blocks of float IQ. Airspy: libairspy's callback, real samples made IQ on the decoding thread. File: 32,768-sample chunks, paced to real time or not. Each block is stamped with the instant it was handed over (<code>at</code>) and carries the driver's <code>dropped</code> count." },
-    { id: "queue", x: C[1] + 10, y: 42, label: "Source queue", sub: "sync_channel::<SourceMsg>(256) each", w: 210, cls: "k-queue", text: "One bounded channel per source, from its <code>source-N</code> to its <code>dsp-N</code>. The sender <b>blocks</b> when it is full; nothing is dropped here. The only queues that block (section 07). Errors and ends go on to the engine thread as <code>EngineCmd::Source</code>." },
-    { id: "push", x: C[0], y: 222, label: "Feeder::push", sub: "drops · ClockFit · meter", text: "On the source's decoding thread. Feeds reported drops to <code>Engine::push_gap</code> as faint noise (up to 10 s) so sample time stays in step with the air, and the block's arrival time to <code>ClockFit</code>, which keeps the source's clock offset; counts the sample meter. Then calls <code>Engine::push_u8</code> or <code>push_iq</code>. <code>Feeder::idle</code> fills in a source quiet for over 1 s." },
+    { id: "src", x: C[0], y: 42, label: "SDR driver", sub: "RTL · HackRF · USRP · Airspy · Soapy", w: 200, text: "Each source thread runs its radio: a <code>Radio</code> (<code>BACKOFF</code>, <code>retune_to</code>, <code>stream_once</code>) under one loop, <code>sdr::run_with</code>, which reopens it after an error (RTL 2 s, the others 3 s); <code>runtime::spawn_source</code> starts it for recording, the survey and profiling. RTL-SDR (pure Rust over <code>rtlsdr-nusb</code>): 16 KiB USB transfers (about 3.4 ms at 2.4 MSPS), 128 in flight, gathered by the <code>Sink</code> into messages of about 25 ms (about 120 KB at 2.4 MSPS) of raw <code>u8</code> IQ in reused buffers; a retune or gain change halts the stream, changes only the tuner and restarts, and the quiet time is reported (<code>Sink::tuned</code>). HackRF One (pure Rust over <code>nusb</code>): raw bytes like an RTL-SDR. USRP (<code>num_recv_frames=1024</code>), Soapy: about 10 ms blocks of float IQ. Airspy: libairspy's callback, real samples made IQ by the <code>Inbox</code> on the thread that takes them. File: 32,768-sample chunks, paced to real time or not. Every open and driver search runs under <code>radio::open</code>, which gives up at a deadline (5 s RTL-SDR, HackRF, Airspy; 15 s bladeRF, SoapySDR; 30 s USRP) so one wedged radio doesn't hold up the others; the source thread is made real time (<code>radio/priority.rs</code>); <code>StreamCheck</code> reopens an RTL-SDR or HackRF whose stream is stuck. Each block is stamped with the instant it was handed over (<code>at</code>) and carries the driver's <code>dropped</code> count." },
+    { id: "queue", x: C[1] + 10, y: 42, label: "Source queue", sub: "sync_channel::<SourceMsg>(256) each", w: 210, cls: "k-queue", text: "One bounded channel per source, from its <code>source-N</code> to its <code>dsp-N</code>. A live radio's <code>Sink</code> never blocks: when the queue is full the block is dropped and counted, and the next carries the count as <code>dropped</code> (section 07). A capture file's sender waits. Errors and ends go on to the engine thread as <code>EngineCmd::Source</code>." },
+    { id: "push", x: C[0], y: 222, label: "Feeder::push", sub: "drops · ClockFit · meter", text: "On the source's decoding thread. Feeds reported drops to <code>Engine::push_gap</code> as faint noise (up to 10 s) so sample time stays in step with the air, and the block's arrival time to <code>ClockFit</code> (sdr-core's <code>SampleClock</code>), which keeps the source's clock offset; counts the sample meter. Then calls <code>Engine::push_u8</code> or <code>push_iq</code>. <code>Feeder::idle</code> fills in a source quiet for over 1 s." },
     { id: "chz", x: C[1], y: 222, label: "Channelizer", sub: "16,384-pt FFT per block", text: "One per source, in its <code>SourceRx</code>, under the source's lock. Collects 12,288 new samples, runs one 16,384-point FFT and stores the spectrum for pre-roll. A driver block of 131,072 RTL samples is about 10.7 channelizer blocks, all run inside the one <code>push</code> call." },
     { id: "voice", x: C[2], y: 150, label: "Voice channels", sub: "SourceRx::decode_block", text: "Under the source's lock: every open voice channel on this source runs its head (M bins × filter → inverse FFT) and its decoder, giving a <code>VoiceResult</code> (outputs routed to their calls' slots, reception, frequency error). The control channel carriers' head IQ is copied out with them (<code>BlockDsp</code>)." },
     { id: "cc", x: C[2], y: 222, label: "Control channels", sub: "BlockDsp::decode_control", text: "Each control channel under its own lock: <code>ControlChannel::push</code> turns its carriers' IQ into <code>Step</code>s (messages plus the site's identity so far), gathered with what the site follows each block (notes, counts, <code>control_hz</code>, <code>offset_hz</code>, voice params) into a <code>CcResult</code>, so the site never locks its control channel to follow it." },
@@ -1441,17 +1441,17 @@ const BP = {
   },
   trp: {
     tab: "Trunk Recorder Pro",
-    intro: "A decoding thread per source does that source's DSP, one block at a time, to completion, and follows its calls under the engine's lock. Only the queue in front of each blocks. Every queue after decoding has its own rule for when it is full, and none of them can stop decoding.",
+    intro: "A decoding thread per source does that source's DSP, one block at a time, to completion, and follows its calls under the engine's lock. Only a capture file waits on the queue in front of each; a live radio drops. Every queue after decoding has its own rule for when it is full, and none of them can stop decoding.",
     spec: () => {
       const X = [20, 220, 420, 620, 820, 1020, 1220];
       return {
         w: 1420, h: 430, minW: 1100, nw: 170, title: "Trunk Recorder Pro's threads and queues", textTitle: "The threads and queues as text",
         nodes: [
-          { id: "radio", x: X[0], y: 180, label: "Radio", sub: "device FIFO · USB transfers", text: "RTL-SDR: 8 USB transfers of 256 KiB in flight. USRP: 256 receive frames. If nobody collects them, the device's own buffer overflows." },
-          { id: "sth", x: X[1], y: 180, label: "source-N thread", sub: "send() blocks when full", text: "Collects driver blocks, stamps them, sends them on. It blocks while its queue is full, which is how back-pressure reaches the radio." },
-          { id: "q", x: X[2], y: 180, label: "Source queue", sub: "256 blocks · blocking · per source", cls: "k-queue", text: "About 14 s of RTL data at 2.4 MSPS (256 × 131,072 samples), about 2.5 s of 10 ms USRP / Soapy blocks." },
+          { id: "radio", x: X[0], y: 180, label: "Radio", sub: "device FIFO · USB transfers", text: "RTL-SDR: 128 USB transfers of 16 KiB in flight. USRP: 1024 receive frames. If nobody collects them, the device's own buffer overflows." },
+          { id: "sth", x: X[1], y: 180, label: "source-N thread", sub: "Sink drops when full", text: "Collects driver blocks, stamps them, sends them on through the radio's <code>Sink</code>. A live radio's <code>Sink</code> never blocks: when the queue is full the block is dropped and counted, and the next carries the count as <code>dropped</code>." },
+          { id: "q", x: X[2], y: 180, label: "Source queue", sub: "256 messages · per source", cls: "k-queue", text: "About 6.4 s of RTL data at 2.4 MSPS (256 messages of about 25 ms, gathered from the small transfers), about 2.5 s of 10 ms USRP / Soapy / bladeRF blocks." },
           { id: "eng", x: X[3], y: 180, label: "dsp-N thread", sub: "every stage, in order", text: "The source's decoding thread: channelizer, every head and decoder on its source (under its lock), its control channels (each under its own), then the call manager and saving (under the engine's). No queues between stages. Other sources decode on their own threads." },
-          { id: "gap", x: X[3], y: 330, label: "Feeder · ClockFit", sub: "drops → faint noise", text: "Reported drops are fed as faint noise (up to 10 s) so sample time stays in step with the air; samples more than 0.25 s off the wall clock re-anchor it." },
+          { id: "gap", x: X[3], y: 330, label: "Feeder · ClockFit", sub: "drops → faint noise", text: "Reported drops are fed as faint noise (up to 10 s) so sample time stays in step with the air; samples more than 5 ms off the wall clock for 3 windows re-anchor it." },
           { id: "et", x: X[4], y: 180, label: "engine thread", sub: "poll · deliver", text: "Waits on its one <code>EngineCmd</code> channel (20 ms), then <code>Session::poll</code> turns the engine's events into outputs and <code>deliver</code> routes them. Never on the sample path." },
           { id: "hubq", x: X[5], y: 30, label: "Hub", sub: "4096 · per-client position", cls: "k-queue", text: "A broadcast ring. Sending never blocks; each client reads at its own pace and one more than 4,096 behind skips the oldest." },
           { id: "finq", x: X[5], y: 180, label: "Finish queue", sub: "1024 calls", cls: "k-queue", text: "If full, the engine thread waits up to 5 s for room, then finishes the call itself by the same plan (its .m4a too)." },
@@ -1466,7 +1466,7 @@ const BP = {
     },
     scen: [
       { label: "A source's decoding is too slow", states: { eng: "bad", q: "warn", sth: "warn", radio: "bad", gap: "ok", et: "ok", hubq: "ok", finq: "ok", plq: "ok" }, edges: { "q>eng": "bad", "sth>q": "warn", "radio>sth": "bad" },
-        text: "Its source queue fills, its source thread blocks in <code>send</code>, the driver stops collecting and the device overflows. Drops the driver can see are reported in status and filled with faint noise; loss it can't see is caught when the clock re-anchors. Calls carry on with a hole. Other sources decode on their own cores; nothing downstream is affected except that less comes out." },
+        text: "Its source queue fills and the radio's <code>Sink</code> drops each block it can't place. The drops are reported in status and filled with faint noise; loss the radio can't see is caught when the clock re-anchors. Calls carry on with a hole. Other sources decode on their own cores; nothing downstream is affected except that less comes out." },
       { label: "A browser is slow", states: { ws: "bad", hubq: "warn", eng: "ok", et: "ok", q: "ok", finq: "ok", plq: "ok" }, edges: { "hubq>ws": "bad" },
         text: "That client's WebSocket task falls more than 4,096 messages behind and skips the oldest. Recording, the other browsers and the plugins don't notice." },
       { label: "The disk or encoder is slow", states: { fin: "bad", finq: "warn", et: "warn", eng: "ok", q: "ok" }, edges: { "finq>fin": "bad", "et>finq": "warn" },
@@ -1524,7 +1524,7 @@ const BP = {
     <div class="controls">
       <div class="ctl"><label for="qc-src">Source</label>
         <select id="qc-src">
-          <option value="rtl:2400000">RTL-SDR at 2.4 MSPS (131,072-sample blocks)</option>
+          <option value="rtl:2400000">RTL-SDR at 2.4 MSPS (about 25 ms messages)</option>
           <option value="rtl:2048000">RTL-SDR at 2.048 MSPS</option>
           <option value="rtl:3200000">RTL-SDR at 3.2 MSPS</option>
           <option value="ten:0">USRP or SoapySDR (about 10 ms blocks)</option>
@@ -1537,13 +1537,13 @@ const BP = {
   function run() {
     const [kind, r] = $("qc-src").value.split(":"), speed = +$("qc-speed").value / 100;
     $("qc-sv").textContent = Math.round(speed * 100);
-    const cap = kind === "rtl" ? 256 * 131072 / +r : 2.56;
+    const cap = kind === "rtl" ? 256 * 0.025 : 2.56;
     let fill, loss, note;
     if (speed >= 1) { fill = "never"; loss = "0 %"; note = "Its decoding keeps up, so the queue stays near empty and every block is processed as it arrives. Headroom above 100 % is what the dashboard's load figure shows."; }
     else {
       const t = cap / (1 - speed);
       fill = fmt(t, 1) + " s"; loss = fmt((1 - speed) * 100) + " %";
-      note = `For the first ${fmt(t, 1)} s nothing is lost: the queue absorbs the difference, adding up to ${fmt(cap, 1)} s of latency. After that the source thread blocks, the device overflows, and about ${loss} of samples are lost. Lost samples the driver reports are filled with faint noise; the clock re-anchors when the error passes 0.25 s.`;
+      note = `For the first ${fmt(t, 1)} s nothing is lost: the queue absorbs the difference, adding up to ${fmt(cap, 1)} s of latency. After that the radio's sink drops blocks, and about ${loss} of samples are lost. Lost samples are counted and filled with faint noise; the clock re-anchors when the error holds past 5 ms.`;
     }
     $("qc-out").innerHTML = [["Queue holds", fmt(cap, 2) + " s of samples"], ["Full after", fill], ["Then lost", loss]].map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("");
     $("qc-bar").style.width = (speed >= 1 ? 0 : Math.min(100, 60 * (1 - speed) / cap * 100)) + "%";
@@ -1615,8 +1615,7 @@ sequence($("seq"), SEQ.map(([d, ...r]) => [d === "h" ? "l" : "r", ...r]), { left
 /* ---------- 09 data objects ---------- */
 const OBJ = [
   ["SourceMsg", "platform", "trunk-pro/src/sdr.rs", "What a source thread sends its decoding thread through its 256-deep queue.", [
-    ["Data", "{ source, bytes: Pooled<u8>, dropped: u64, at: Instant }", "raw u8 IQ (RTL-SDR, cu8 files), in a reused buffer"], ["Iq", "{ source, samples: Vec<Complex32>, dropped, at }", "float IQ (USRP, Soapy, other files)"],
-    ["Real16", "{ source, samples: Pooled<i16>, dropped, at }", "an Airspy's real samples, made IQ on the decoding thread (IqFrom)"],
+    ["Samples", "{ source, block: Block, dropped: u64, at: Instant }", "Block is U8 (offset 8-bit IQ: RTL-SDR, HackRF, cu8 files), Iq (float: USRP, Soapy, other files) or Real16 (an Airspy's real samples, made IQ by the Inbox), each in a reused Pooled buffer"],
     ["Error", "{ source, error: String }", "the source failed; it will reopen (passed on to the engine thread)"], ["End", "{ source }", "end of a capture file (passed on to the engine thread)"], ["Tuned", "{ center_hz }", "survey retunes only"]]],
   ["EngineCmd", "platform", "trunk-pro/src/runtime.rs", "Everything the engine thread is told, on its one channel (Ctx::tell_engine).", [
     ["Source", "(SourceMsg)", "a source's error or end"], ["Topics", "(Topics)", "what the browsers watch"], ["Talkgroups", "{ short_name, csv }", "a talkgroup file changed"], ["Keys", "{ short_name, ring }", "a key container unlocked or locked"]]],
@@ -1739,9 +1738,9 @@ const OBJ = [
 /* ---------- 10 configuration ---------- */
 const CFG = {
   "sources": ["array", "one RTL-SDR at 2.4 MSPS, auto centre", "Radios and capture files. Each becomes a source thread and a channelizer."],
-  "sources[].type": ["rtlsdr · usrp · airspy · soapy · file", "required", "Which driver. The other keys depend on it."],
-  "sources[].serial": ["string", "\"\" (first free)", "rtlsdr (required) and airspy: which device."],
-  "sources[].args": ["string", "\"\"", "usrp / soapy device arguments, e.g. serial=…, driver=hackrf. USRP gets num_recv_frames=256 unless set."],
+  "sources[].type": ["rtlsdr · hackrf · usrp · airspy · soapy · file", "required", "Which driver (the config's SourceKind). The other keys depend on it; the JSON is flat."],
+  "sources[].serial": ["string", "\"\" (first free)", "rtlsdr (required), hackrf and airspy: which device."],
+  "sources[].args": ["string", "\"\"", "usrp / soapy device arguments, e.g. serial=…, driver=hackrf. USRP gets num_recv_frames=1024 unless set."],
   "sources[].centerHz": ["number", "required; 0 = auto", "Centre frequency in Hz. 0 lets auto-centring place it over the systems."],
   "sources[].rateHz": ["number", "required", "Sample rate. Sets the channelizer's decimation and output rate (section 03)."],
   "sources[].gainDb": ["number", "rtlsdr 25.4 · usrp 40 · soapy null", "Tuner gain. Soapy null leaves the device as it is."],
@@ -1749,7 +1748,7 @@ const CFG = {
   "sources[].ppm": ["number", "rtlsdr required (integer) · others 0", "Crystal correction applied in the driver."],
   "sources[].autoTune": ["bool", "false", "Apply the frequency error measured on control channels and calls to new heads (section 05)."],
   "sources[].guardHz": ["number", "75000", "Unusable edge of the band. Usable half-width = max(rate/2 − guardHz, rate/4)."],
-  "sources[].bufLen": ["bytes", "0 (= 262144)", "rtlsdr: bytes per USB transfer (Trunk Recorder's buflen), a multiple of 512; 65536 for several dongles on one USB 2.0 bus."],
+  "sources[].bufLen": ["bytes", "0 (= 16384)", "rtlsdr: bytes per USB transfer, a multiple of 512."],
   "sources[].buffers": ["number", "0 (= about 2 MiB in flight)", "rtlsdr: USB transfers in flight, at most 256."],
   "sources[].packing": ["bool", "true", "airspy: 12-bit samples packed on the USB."],
   "sources[].antenna": ["string", "\"\"", "usrp / soapy antenna."],
@@ -1940,9 +1939,9 @@ diagram($("dia-clock"), {
   nodes: [
     { id: "drv", x: 20, y: 40, label: "Driver hands over a block", sub: "at = Instant::now()", text: "Stamped in the source thread (or by the worker in the browser), before the block waits in any queue. Time spent queued for a busy decoder therefore never counts as clock error." },
     { id: "fed", x: 250, y: 40, label: "Feeder::push", sub: "samples += n", text: "On the source's decoding thread (<code>Session::push</code> in the browser). The source's sample count grows by the block's length. The engine's sample time for this source is count ÷ rate." },
-    { id: "obs", x: 480, y: 40, label: "ClockFit::observe", sub: "lag = wall − sample time", text: "Lag = (at − epoch) − samples ÷ rate, in seconds. Buffers only ever arrive late, so the least lag is the clock's own." },
-    { id: "win", x: 710, y: 40, label: "10 s window", sub: "least lag → target", text: "The very first block sets the target at once (this absorbs the radio's open time, such as a USRP's FPGA load). After that, each 10 s window's least lag becomes the new target." },
-    { id: "steer", x: 920, y: 40, label: "steer, each poll", sub: "slew ≤ 1 ms/s · step > 0.25 s", text: "Within 0.25 s of the offset already set, the difference is drift (crystal error): the offset moves toward it at most 1 ms per second of wall clock (1000 ppm, far more than any crystal). Further than 0.25 s, samples were lost without being reported, or invented: the offset is set at once, and the log says \"clock re-anchored\"." },
+    { id: "obs", x: 480, y: 40, label: "ClockFit::observe", sub: "lag = wall − sample time", text: "Lag = (at − epoch) − samples ÷ rate, in seconds. Buffers only ever arrive late, so the least lag is the clock's own. <code>ClockFit</code> wraps sdr-core's <code>SampleClock</code>." },
+    { id: "win", x: 710, y: 40, label: "1 s window", sub: "least lag → phase, rate", text: "The very first block sets the target at once (this absorbs the radio's open time, such as a USRP's FPGA load). After that, each 1 s window's least lag feeds a second-order loop that tracks the phase and the rate (the rate is the status's <code>clockPpm</code>)." },
+    { id: "steer", x: 920, y: 40, label: "steer, each poll", sub: "follows the loop · jump > 5 ms", text: "The offset follows the loop. A jump of more than 5 ms held for 3 windows means samples were lost without being reported, or invented: the offset is set at once, and the log says \"clock re-anchored\". A deliberate gap (an RTL-SDR's retune halt, <code>Sink::tuned</code>) resumes the clock and doesn't count as loss." },
     { id: "set", x: 920, y: 175, label: "Engine::set_clock_offset", sub: "per source", text: "The only place wall time enters the engine." },
     { id: "time", x: 710, y: 175, label: "Source::time()", sub: "samples ÷ rate + offset", text: "Every frame and message is timed from its sample instant this way." },
     { id: "trunk", x: 480, y: 175, label: "Trunk now_s · call times", sub: "from the CC's source", text: "Each system's clock is its control channel's source; timeouts, call starts and ends use it. Multi-site matching compares these across sources, which is why their clocks must agree." },
@@ -1955,9 +1954,9 @@ diagram($("dia-clock"), {
 (function () {
   const host = $("clock-sim");
   const SC = [
-    { label: "A steady radio", drift: 20e-6, loss: 0, text: "Lags scatter upward from USB and driver buffering, but the least lag in each window sits on the clock's true offset (0.35 s here: the time the radio took to open). The first block anchors the offset at once; it then settles on the first window's minimum." },
-    { label: "Crystal drift (exaggerated)", drift: 600e-6, loss: 0, text: "Sample time slowly falls behind the wall clock (600 ppm here so it shows; a real crystal is under 50 ppm). Each window's target moves a few milliseconds, and the offset slews after it at up to 1 ms per second, smoothly, with no jumps in call times." },
-    { label: "Samples lost, unreported", drift: 20e-6, loss: 0.6, text: "At 30 s, 0.6 s of samples vanish without the driver saying so (an overflow inside the device). Sample time is now 0.6 s behind the air. At the next window (40 s) the target is more than 0.25 s from the offset, so it is not drift: the offset steps at once and the log says \"clock re-anchored\"." }
+    { label: "A steady radio", drift: 20e-6, loss: 0, text: "Lags scatter upward from USB and driver buffering, but the least-delayed buffer in each 1 s window sits on the clock's true offset (0.35 s here: the time the radio took to open). The first block anchors the offset at once; the loop (time constant 8 s, growing to 256 s as the offsets stay under 1 ms) then pulls it onto the windows' minima and measures the crystal's rate, so a 20 ppm error costs about a millisecond over the minute." },
+    { label: "Crystal drift (exaggerated)", drift: 600e-6, loss: 0, text: "Sample time slowly falls behind the wall clock (600 ppm here so it shows; a real crystal is under 50 ppm). Each window's target moves 0.6 ms. The loop follows the phase and learns the rate, so the offset stays within a few milliseconds of the target without a step, smoothly, with no jumps in call times." },
+    { label: "Samples lost, unreported", drift: 20e-6, loss: 0.02, text: "At 30 s, 20 ms of samples vanish without the driver saying so (an overflow inside the device). Sample time is now 20 ms behind the air. The target stays more than 5 ms from the offset for 3 windows running, so it is not drift or jitter: at 33.75 s the offset steps at once, the loop restarts fast (time constant 8 s) and the log says \"clock re-anchored\"." }
   ];
   host.innerHTML = `<div class="dia-bar" id="cs-b"></div>
     <div class="dia-frame"><svg class="clock-svg" id="cs-svg" viewBox="0 0 900 300" style="min-width:620px" role="img" aria-label="Buffer lags, window targets and the applied clock offset over 60 seconds"></svg></div>
@@ -1966,20 +1965,33 @@ diagram($("dia-clock"), {
   const svgEl = $("cs-svg");
   function rng(seed) { return () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }; }
   function sim(c) {
-    const r = rng(11), dt = 0.25, pts = [], tgt = [], app = [], steps = [];
-    let wmin = null, wstart = null, target = null, applied = null;
+    // sdr-core's SampleClock: 1 s windows, the least-delayed observation of each, a second-order loop (tau 8 -> 256 s), a step at > 5 ms held 3 windows
+    const r = rng(11), dt = 0.25, RATE = 2.4e6, W = 1, TMIN = 8, TMAX = 256, THR = 0.005, HOLD = 3;
+    const pts = [], tgt = [], app = [], steps = [];
+    let anchored = false, t0 = 0, n0 = 0, period = 1 / RATE, wStart = 0, wMin = Infinity, lagMin = Infinity, tau = TMIN, calm = 0, over = 0, overX = 0, target = 0;
+    const timeOf = n => t0 + (n - n0) * period;
+    const rebase = n => { t0 = timeOf(n); n0 = n; };
     for (let i = 0; i <= 240; i++) {
       const t = i * dt;
       const off = 0.35 + c.drift * t + (c.loss && t >= 30 ? c.loss : 0);
-      let j = r() * 0.02; if (r() < 0.08) j += 0.02 + r() * 0.04;
-      const lag = off + j; pts.push([t, lag]);
-      wmin = wmin == null ? lag : Math.min(wmin, lag);
-      if (wstart == null) { target = lag; wstart = t; }
-      else if (t - wstart >= 10) { target = wmin; wmin = null; wstart = t; }
-      if (applied == null) applied = target;
-      else if (Math.abs(target - applied) <= 0.25) applied += Math.max(-0.001 * dt, Math.min(0.001 * dt, target - applied));
-      else { applied = target; steps.push(t); }
-      tgt.push([t, target]); app.push([t, applied]);
+      let j = r() * 0.003; if (r() < 0.08) j += 0.003 + r() * 0.01;
+      const n = Math.floor((t - off) * RATE), seen = t + j, lag = seen - n / RATE;
+      pts.push([t, lag]);
+      if (!anchored) { t0 = seen; n0 = n; wStart = seen; anchored = true; target = lag; }
+      else {
+        wMin = Math.min(wMin, seen - timeOf(n)); lagMin = Math.min(lagMin, lag);
+        if (seen - wStart >= W) {
+          const x = wMin; target = lagMin; wStart = seen; wMin = Infinity; lagMin = Infinity;
+          if (Math.abs(x) > THR) {
+            overX = x;
+            if (++over >= HOLD) { rebase(n); t0 += overX; over = 0; tau = TMIN; calm = 0; steps.push(t); }
+          } else {
+            over = 0; rebase(n); t0 += x * W / tau; period *= 1 + x * W / (2 * tau * tau);
+            if (Math.abs(x) < THR / 5) { if (++calm * W >= 4 * tau && tau < TMAX) { tau = Math.min(tau * 2, TMAX); calm = 0; } } else calm = 0;
+          }
+        }
+      }
+      tgt.push([t, target]); app.push([t, timeOf(n) - n / RATE]);
     }
     return { pts, tgt, app, steps };
   }
@@ -1989,7 +2001,7 @@ diagram($("dia-clock"), {
     const L = 64, R = 880, T = 16, B = 260;
     const ys = d.pts.map(p => p[1]).concat(d.app.map(p => p[1]));
     let lo = Math.min(...ys), hi = Math.max(...ys);
-    const step = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5].find(st => (hi - lo) / st <= 7) || 0.5;
+    const step = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5].find(st => (hi - lo) / st <= 7) || 0.5;
     lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
     const X = t => L + t / 60 * (R - L), Y = v => B - (v - lo) / (hi - lo) * (B - T);
     for (let v = lo; v <= hi + 1e-9; v += step) {
@@ -2000,7 +2012,7 @@ diagram($("dia-clock"), {
       s("line", { x1: X(t), x2: X(t), y1: T, y2: B, class: "win" }, svg);
       const tx = s("text", { x: X(t), y: B + 18, "text-anchor": "middle" }, svg); tx.textContent = t + " s";
     }
-    const lab = s("text", { x: (L + R) / 2, y: 294, "text-anchor": "middle" }, svg); lab.textContent = "wall clock since start (dotted lines: 10 s windows)";
+    const lab = s("text", { x: (L + R) / 2, y: 294, "text-anchor": "middle" }, svg); lab.textContent = "wall clock since start (dotted lines: every 10 s)";
     d.pts.forEach(([t, v]) => s("circle", { cx: X(t), cy: Y(v), r: 2.2, class: "dot" }, svg));
     const path = arr => arr.map(([t, v], k) => (k ? "L" : "M") + X(t).toFixed(1) + "," + Y(v).toFixed(1)).join("");
     s("path", { d: path(d.tgt), class: "target" }, svg);

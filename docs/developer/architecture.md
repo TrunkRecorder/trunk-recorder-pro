@@ -89,7 +89,7 @@ Stages in order. Thread in brackets.
    - RTL-SDR (`radio/rtl.rs`, pure-Rust `rtlsdr-nusb`, our fork in `crates/rtlsdr-nusb` with
      settable transfers, `RxBuffers`): by default 16 KiB USB transfers (8,192 IQ samples, about
      3.4 ms at 2.4 MSPS), 128 in flight (2 MiB); `bufLen` / `buffers` per source
-     (`RtlConfig::rx_buffers`). The `Sink` gathers them into messages of about 128 KiB. A retune
+     (`RtlConfig::rx_buffers`). The `Sink` gathers them into messages of about 25 ms (`GATHER`; about 120 KB at 2.4 MSPS). A retune
      or gain change halts the stream, reads the chip's dropped-block count, changes only the
      tuner and restarts, reporting the quiet time (`Sink::tuned`); a USB stall is cleared in place.
      Sent as raw `u8` (`Block::U8`, in a reused `Pooled` buffer).
@@ -103,7 +103,10 @@ Stages in order. Thread in brackets.
 
    What every radio shares lives in `sdr.rs` and `radio/mod.rs`. A radio sends through a `Sink`,
    which never blocks a live radio: if the queue to the decoding thread is full, the block is
-   dropped and counted, and the next block carries the count as `dropped`. `radio::open(key,
+   dropped and counted, and the next block carries the count as `dropped`. A capture file's sink
+   (`live: false`) waits instead. A radio's gain is one `Gain` (`sdr.rs`): `Agc`, `Db`, `Stages`
+   (sdr-core's `gain::Stage` names, each in the radio's own count) or a `Preset` step of the
+   radio's own table; there is no per-radio gain type. `radio::open(key,
    deadline, f)` runs every open and driver search on a thread of its own under `opening()`
    and gives up at the deadline (5 s RTL-SDR, HackRF, Airspy; 15 s bladeRF, SoapySDR; 30 s USRP),
    with "isn't answering" and the device refused until the stuck open ends, so one wedged radio
@@ -171,7 +174,7 @@ Stages in order. Thread in brackets.
 11. **Plugins** [plugin processes]. Upload or stream the call, answer `call.result`. The Archive
    deletes files that are not to be kept once every taker has answered.
 
-Latency, roughly: driver block time (RTL about 55 ms, others about 10 ms) + up to one
+Latency, roughly: driver block time (RTL about 25 ms, others about 10 ms) + up to one
 channelizer block (5.12 ms at 2.4 MSPS) + filter delay (under 1 ms) + any backlog in the
 source queue + decoder framing (C4FM timing adds about 100 ms).
 
@@ -766,14 +769,16 @@ copy's start (`SaveContext::first_s`).
   threaded the calls come out the same (`sources_fed_from_threads_decode_as_from_one`).
 - **One FFT for all channels.** Opening a channel adds an M-point inverse FFT, not a full-rate
   filter. The recorder count costs little until channels actually decode.
-- **One bounded queue in front of each source's decoding, which blocks.**
+- **One bounded queue in front of each source's decoding; a live radio never waits on it.**
   `sync_channel::<SourceMsg>(256)` per source. If a source's decoding is slower than real time,
-  its queue fills (about 14 s of RTL data at 2.4 MSPS, about 2.5 s for 10 ms blocks), its source
-  thread blocks in `send`, the driver stops collecting, and the device's own buffer overflows. The
-  driver reports what it lost (`dropped`) where it can tell; the feeder fills it with faint noise
-  (`push_gap`, up to 10 s) so sample time stays in step with the air. Loss a driver can't see is
-  caught by the wall-clock fit: if samples are more than 0.25 s off, the clock is re-anchored and
-  the log says so.
+  its queue fills (about 6.4 s of RTL data at 2.4 MSPS in ~25 ms messages, about 2.5 s for the
+  ~10 ms blocks of USRP, SoapySDR and bladeRF). A live radio's `Sink::put` then drops that block
+  and counts its samples as `dropped`, told with the next block that does get through, so the
+  driver keeps collecting and the device's buffer isn't what overflows. A capture file's sink
+  (`live: false`) waits: nothing is lost, it just runs slower. The feeder fills dropped samples
+  with faint noise (`push_gap`, up to 10 s) so sample time stays in step with the air. Loss nobody
+  reports is caught by the clock fit: if the offset stays beyond 5 ms for 3 windows, the clock is
+  re-anchored and the log says so.
 - **Everything after decoding is non-blocking, with an explicit policy per queue.** Nothing
   downstream can stall decoding:
 
@@ -798,7 +803,7 @@ copy's start (`SaveContext::first_s`).
 
 | Slow part | Effect |
 |---|---|
-| A source's decoding (CPU can't keep up) | Its queue fills → its source blocks → its driver loses samples → `dropped` in status, gap filled, calls carry on with a hole; the busiest source's load is shown on the dashboard. Other sources decode on their own cores. |
+| A source's decoding (CPU can't keep up) | Its queue fills → its radio's sink drops blocks and counts them → `dropped` in status, gap filled, calls carry on with a hole; the busiest source's load is shown on the dashboard. Other sources decode on their own cores. |
 | One browser | Its WebSocket task falls behind the 4,096-message ring and skips messages. Recording and other browsers are unaffected. |
 | Disk / finish threads | Finish queue fills (1,024 calls) → the engine thread waits up to 5 s for a place, then writes the call itself (its whole plan, .m4a included). Its messages and plugin events wait meanwhile; decoding doesn't. |
 | One plugin | Its 1,024-line queue fills → its events are dropped and counted. The engine and other plugins are unaffected. A call it never answered for counts as failed after 1 h. |
@@ -815,7 +820,7 @@ copy's start (`SaveContext::first_s`).
 | Channel extraction | a full-rate filter per recorder | a shared FFT; an M-point IFFT per channel |
 | Recorders | pre-built at start, enabled by selector | built per call; a count cap only |
 | Control → recorder | message queue polled by the main loop | direct call (`CallManager` → `RecorderHost`) in the same block |
-| Back-pressure | propagates block by block to the source | one blocking queue per source at the input; downstream queues never block decoding |
+| Back-pressure | propagates block by block to the source | one bounded queue per source at the input (a live radio's block is dropped and counted, a file waits); downstream queues never block decoding |
 | Overload | hardware overflow; any block can stall all | hardware overflow, measured, gap-filled, clock re-anchored |
 | Multi-core | automatic | a core per source for DSP (calls followed under one lock); I/O, encoding, plugins and the server on other threads |
 | CPU | — | measured 4–6× less than Trunk Recorder on Raspberry Pi / Linux (2026-10-02 benchmark) |
@@ -1234,7 +1239,7 @@ unlike the other messages).
 
 ### 10.3 `sources[]`
 
-`type` is `rtlsdr`, `usrp`, `airspy`, `soapy` or `file`. Every type has `centerHz` (required;
+`type` is `rtlsdr`, `hackrf`, `usrp`, `airspy`, `soapy` or `file`. In code a `Source` (`trunk-app/src/config.rs`) holds the keys every type has plus a `kind: SourceKind` (flattened, tagged by `type`) with the rest; the JSON stays flat. Every type has `centerHz` (required;
 0 = auto-centre), `rateHz` (required), `autoTune` (false) and `guardHz` (75,000).
 
 | Type | Other keys |
@@ -1526,14 +1531,16 @@ time.
 
 ### 11.2 What the steering looks like (the page's simulation)
 
-- **A steady radio.** Lags scatter upward from buffering; the least lag in each window sits on the
-  true offset (for example 0.35 s, the radio's open time). The first block anchors the offset;
-  it then settles on the first window's minimum.
-- **Crystal drift.** Each window's target moves a few milliseconds; the offset slews after it at up
-  to 1 ms per second, with no jumps in call times.
-- **Samples lost, unreported.** 0.6 s of samples vanish at 30 s; sample time is 0.6 s behind the
-  air. At the next window (40 s) the target is more than 0.25 s off, so the offset steps at once
-  and the log says "clock re-anchored".
+- **A steady radio.** Lags scatter upward from buffering; the least lag in each 1 s window sits on
+  the true offset (for example 0.35 s, the radio's open time). The first block anchors the offset;
+  the loop (time constant 8 s, doubling to 256 s after 4τ of windows under 1 ms) then pulls it onto
+  the windows' minima and measures the crystal's rate.
+- **Crystal drift.** Each window's target moves a fraction of a millisecond (0.6 ms at the
+  page's exaggerated 600 ppm); the loop follows the phase and learns the rate, staying within a few
+  milliseconds with no jumps in call times.
+- **Samples lost, unreported.** 20 ms of samples vanish at 30 s; sample time is 20 ms behind the
+  air. The target stays more than 5 ms off for 3 windows, so at 33.75 s the offset steps at once,
+  the loop restarts fast and the log says "clock re-anchored".
 
 ### 11.3 Identifiers
 

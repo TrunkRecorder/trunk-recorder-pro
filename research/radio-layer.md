@@ -99,8 +99,13 @@ B200 is production's), Linux priority/usbfs (the Pi testbed next).
 Found on the way: the RTL queue's `dropped_samples` was a running total
 the app read per block (silence re-fed after every retune); now per block.
 
-Left for later: `Source` fields every kind repeats (centre, rate, ppm,
-guard, autoTune) could be one struct; per-stage gain (sdr-core's
-`gain::Stage`) across kinds instead of `Gain::Airspy`/`Gain::Hackrf`;
-`docs/developer/architecture.html` is hand-kept and still describes the
-old RTL transfers.
+Follow-ups, done in the same PR (2026-10-31): `Source` is a struct of the
+fields every source has plus a flattened `SourceKind` (the JSON unchanged;
+production's sources round-trip); one gain model, `Gain::{Agc, Db,
+Stages, Preset}` on sdr-core's `gain::Stage`; architecture.md/.html
+brought up to date (the clock simulation models SampleClock); CI's macOS
+build on macos-15 (macos-14 retires 2026-11-02).
+
+Still open: HackRF on Windows (sdr-hackrf uses device-level control
+transfers nusb lacks there — upstream); R828D / Blog V4 support in
+sdr-rtl (upstream, if we ever want to migrate).
