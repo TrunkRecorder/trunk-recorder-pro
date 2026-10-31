@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The radio registry is sized by the computer.** It remembered 20,000 radios a system on
+  every machine, the least recently heard going past that, which a statewide system fills in
+  days; and `radioQuery` returned 5,000 of them at most. The caps now follow memory (ten radios
+  a MB, 20,000 at least: a 2 GB Pi all but stays as it was, 64 GB remembers 655,000),
+  `storage.registryRadios` (Setup → Data) pins a number instead, a `radioQuery`'s `limit` goes
+  up to the cap, and its `summary` says what the cap is (`caps`).
+
 - **Plugins can follow a call as it runs.** The `call.update` topic (SDK 0.10.0: `Plugin::call_update`)
   sends a call again whenever any of it changes before it ends: another radio talking (its `sources`
   gain it), an emergency, encryption, a patch, whether it's recorded. TRP had these all along (its own pages use
