@@ -1315,7 +1315,9 @@ mod tests {
         assert!(!x.units.contains_key(&1) && !x.units.contains_key(&2) && x.units.contains_key(&3));
         assert!(!x.tgs.contains_key(&100) && x.tgs.contains_key(&200) && x.pairs.is_empty());
         let (_, c) = r.take_changes().remove(0);
-        assert_eq!((c.gone.units.clone(), c.gone.tgs.clone(), c.gone.pairs.len()), (vec![1, 2], vec![100], 1), "the store is told");
+        let mut gone = c.gone.units.clone();
+        gone.sort_unstable();
+        assert_eq!((gone, c.gone.tgs.clone(), c.gone.pairs.len()), (vec![1, 2], vec![100], 1), "the store is told");
         r.set_caps(Caps::of(&crate::config::StorageSettings { registry_days: 0, ..Default::default() }));
         r.expire(t0 + 10_000 * 86_400);
         assert!(r.systems["x"].units.contains_key(&3), "0: kept however old");
