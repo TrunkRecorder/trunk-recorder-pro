@@ -274,6 +274,13 @@ test("Platform → Storage: each table with its rows, its indexes under it, bigg
   page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, sizes, written: { bytes: 5e9, of: "store" } }} />));
   assert.match(page, /5\.00 GB since it started/);
   assert.match(page, /Written to disk/);
+  const registry = { caps: { talkgroups: 5000, radios: 20000, pairs: 50000, days: 365 }, systems: [{ system: "dcfd", talkgroups: 23, radios: 20000, pairs: 900 }] };
+  page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: true, registry, sizes, written: { bytes: 5e9, of: "store" } }} />));
+  assert.match(page, /Radio registry\s*System\s*Talkgroups\s*Radios\s*Pairs\s*dcfd\s*23 of 5,?000\s*20,?000 of 20,?000\s*900 of 50,?000/);
+  assert.match(page, /Forgotten after 365 days unheard/);
+  const uncapped = { caps: { talkgroups: null, radios: null, pairs: null, days: null }, systems: [{ system: "dcfd", talkgroups: 23, radios: 507, pairs: 900 }] };
+  page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: true, registry: uncapped, sizes }} />));
+  assert.match(page, /dcfd\s*23\s*507\s*900\s*Kept however long ago it was heard/);
   page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, talkgroupIndex: false, sizes, written: { bytes: 5e9, of: "store" } }} />));
   assert.match(page, /Calls aren\S{1,6}t indexed by talkgroup or radio/);
   assert.match(page, /transmissions_radio · the calls a radio talked on, newest first/);

@@ -3429,18 +3429,31 @@
               "type": "object",
               "properties": {
                 "talkgroups": {
-                  "type": "number"
+                  "type": [
+                    "number",
+                    "null"
+                  ]
                 },
                 "radios": {
-                  "type": "number"
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "days": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "talkgroups",
-                "radios"
+                "radios",
+                "days"
               ],
               "additionalProperties": false,
-              "description": "summary: the registry's caps a system (a `limit` of `radios` is every radio heard)."
+              "description": "summary: the registry's caps a system (null: none; a `limit` of `radios` is every radio heard), and the days an unheard row is kept."
             },
             "hours": {
               "type": "number",
@@ -4691,6 +4704,80 @@
             "talkgroupIndex": {
               "type": "boolean"
             },
+            "registry": {
+              "type": "object",
+              "properties": {
+                "caps": {
+                  "type": "object",
+                  "properties": {
+                    "talkgroups": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "radios": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "pairs": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "days": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "talkgroups",
+                    "radios",
+                    "pairs",
+                    "days"
+                  ],
+                  "additionalProperties": false
+                },
+                "systems": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "system": {
+                        "type": "string"
+                      },
+                      "talkgroups": {
+                        "type": "number"
+                      },
+                      "radios": {
+                        "type": "number"
+                      },
+                      "pairs": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "system",
+                      "talkgroups",
+                      "radios",
+                      "pairs"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "caps",
+                "systems"
+              ],
+              "additionalProperties": false,
+              "description": "How full the radio registry is: each system's rows against the caps (null: none)."
+            },
             "sizes": {
               "$ref": "#/definitions/StoreSizes"
             },
@@ -4736,6 +4823,7 @@
             "backend",
             "radioIndex",
             "talkgroupIndex",
+            "registry",
             "sizes",
             "written"
           ],
@@ -6849,7 +6937,11 @@
         },
         "registryRadios": {
           "type": "number",
-          "description": "Radios the radio registry remembers a system (past it the least recently heard go); 0 or absent: sized by the computer's memory, 20,000 at least."
+          "description": "Radios the radio registry keeps a system (default 20,000): past it, the least recently heard go (talkgroups a quarter as many, 5,000 at least). 0: no cap, `registryDays` alone bounding it."
+        },
+        "registryDays": {
+          "type": "number",
+          "description": "Days a talkgroup, radio or pair the registry hasn't heard is kept (default 365); 0 keeps it however old."
         },
         "talkgroupIndex": {
           "type": "boolean",

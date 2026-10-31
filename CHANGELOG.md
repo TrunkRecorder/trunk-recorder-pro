@@ -5,12 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **The radio registry is sized by the computer.** It remembered 20,000 radios a system on
-  every machine, the least recently heard going past that, which a statewide system fills in
-  days; and `radioQuery` returned 5,000 of them at most. The caps now follow memory (ten radios
-  a MB, 20,000 at least: a 2 GB Pi all but stays as it was, 64 GB remembers 655,000),
-  `storage.registryRadios` (Setup → Data) pins a number instead, a `radioQuery`'s `limit` goes
-  up to the cap, and its `summary` says what the cap is (`caps`).
+- **The radio registry's size and history are settings.** It used to keep 20,000 radios per
+  system on every machine, forgetting the least recently heard past that, and a statewide system
+  fills that in days. `radioQuery` also returned 5,000 rows at most.
+  - `storage.registryRadios` (default 20,000; `0` for no cap) is the radios kept per system.
+    Talkgroups and pairs follow it.
+  - `storage.registryDays` (default 365; `0` for never) forgets what hasn't been heard for that
+    long. That's saved to the store as anything else that goes.
+  - Both are in Setup → Data and apply at once, in both builds. Platform → Storage shows each
+    system's registry against them.
+  - A `radioQuery` `limit` goes up to the cap, and its `summary` gives the caps (`caps`).
 
 - **A call store: every recorded call indexed, and found by talkgroup, radio or time** (#100,
   from #102 and #103 by auggiesoft). Each finished call is a row in `trunk-pro.sqlite`, beside the
