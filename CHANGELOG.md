@@ -116,7 +116,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   `vgaDb` 0–62 in 2 dB steps, `amp`, off by default because it overloads near strong signals),
   `biasTee`, `ppm`, `autoTune`, 1 to 20 MSPS. It needs firmware 2021.03 or newer; an older one is
   refused when opened, with a message to update it (`hackrf_spiflash`). A SoapySDR source with
-  `driver=hackrf` still works, for a rad1o or SoapyRemote. The Linux udev rule now covers HackRFs
+  `driver=hackrf` still works, for a rad1o or SoapyRemote — and on Windows, where the built-in driver
+  isn't available yet. The Linux udev rule now covers HackRFs
   (`1d50:6089`, `1d50:604b`) and the USRP B206mini (`2500:0023`).
 
 ### RTL-SDR

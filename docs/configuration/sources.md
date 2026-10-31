@@ -138,7 +138,7 @@ one is refused when opened, with a message to update it (`hackrf_spiflash`).
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 
-A `soapy` source with `driver=hackrf` still works, for a rad1o or a HackRF behind SoapyRemote.
+A `soapy` source with `driver=hackrf` still works, for a rad1o or a HackRF behind SoapyRemote. On Windows the built-in HackRF driver isn't available yet: use a `soapy` source with `driver=hackrf` there.
 
 ## `"type": "airspy"`
 

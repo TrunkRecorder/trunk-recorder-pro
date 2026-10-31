@@ -1,16 +1,16 @@
 //! HackRF One over USB (sdr-hackrf: pure Rust over nusb, no libhackrf or
 //! libusb to install). SoapySDR's `driver=hackrf` stays for what this
-//! doesn't open (a rad1o, a HackRF through SoapyRemote).
+//! doesn't open (a rad1o, a HackRF through SoapyRemote) — and on Windows,
+//! where sdr-hackrf doesn't build (its control transfers are the device's,
+//! which nusb offers only through an interface there).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use sdr_core::{Iq, TuneRequest};
-use sdr_hackrf::blocking::{HackRf, Stream};
+use sdr_core::TuneRequest;
 
-use super::Deadline;
-use crate::sdr::{Applied, Control, Gain, Radio, Retuned, Sink, StreamCheck, Tunable, Wire};
+use crate::sdr::{Control, Gain, Radio, Sink};
 
 #[derive(Clone, Debug)]
 pub struct HackrfConfig {
@@ -43,15 +43,24 @@ impl std::fmt::Display for HackrfGain {
 
 /// The oldest firmware that answers what a change while streaming needs (its
 /// byte count, sdr-hackrf's `m0_state`): 2021.03.
+#[cfg_attr(windows, allow(dead_code))]
 const FIRMWARE_MIN: (u32, u32) = (2021, 3);
 
 /// "2024.02.1" → (2024, 2); None for a build that doesn't say ("git-…").
+#[cfg_attr(windows, allow(dead_code))]
 fn release(version: &str) -> Option<(u32, u32)> {
     let mut parts = version.trim().split('.');
     Some((parts.next()?.parse().ok()?, parts.next()?.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok()?))
 }
 
 /// Attached HackRFs, for the browser: [{serial, label}].
+#[cfg(windows)]
+pub fn devices() -> Vec<serde_json::Value> {
+    Vec::new()
+}
+
+/// Attached HackRFs, for the browser: [{serial, label}].
+#[cfg(not(windows))]
 pub fn devices() -> Vec<serde_json::Value> {
     sdr_hackrf::blocking::list()
         .into_iter()
@@ -90,99 +99,121 @@ impl Radio for HackrfConfig {
     }
 }
 
-/// A HackRF streaming, as [`Control`]'s requests change it. It keeps
-/// sampling through a change (placed by the firmware's own byte count): no gap.
-struct Live<'a> {
-    stream: &'a Stream,
-    cfg: &'a HackrfConfig,
+#[cfg(windows)]
+fn stream_once(cfg: &HackrfConfig, _: &mut Sink, _: &AtomicBool, _: Option<&Control>) -> Result<(), String> {
+    Err(format!("{}: the built-in HackRF driver isn't available on Windows yet — add it as a SoapySDR source with device arguments driver=hackrf instead", cfg.name()))
 }
 
-impl Tunable for Live<'_> {
-    fn tune(&mut self, hz: f64) -> Result<Retuned, String> {
-        self.stream.retune(&self.cfg.tune_request(hz)).map_err(|e| format!("tune {:.4} MHz: {e}", hz / 1e6))?;
-        Ok(Retuned { hz, gap: 0 })
-    }
-    fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
-        let r = match g {
-            Gain::Hackrf(g) => self.stream.reconfigure(async |h| {
-                h.set_lna_gain(g.lna_db).await?;
-                h.set_vga_gain(g.vga_db).await?;
-                h.set_amp(g.amp).await
-            }),
-            // (The survey's one number, split across the stages by the driver.)
-            Gain::Db(db) => self.stream.set_gain(db as f64).map(|b| ((), b)),
-            Gain::Agc | Gain::Airspy(_) => return Ok(0),
-        };
-        r.map(|_| 0).map_err(|e| format!("gain {g}: {e}"))
-    }
-}
+#[cfg(not(windows))]
+use native::stream_once;
 
-fn stream_once(cfg: &HackrfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
-    let name = cfg.name();
-    let spec = if cfg.serial.is_empty() { String::new() } else { format!("serial={}", cfg.serial) };
-    let what = name.clone();
-    let mut h = super::open(&name, Deadline::Quick, true, move || HackRf::open(&spec).map_err(|e| format!("open {what}: {e}")))?;
-    let version = h.version_string().unwrap_or_default();
-    if release(&version).is_some_and(|r| r < FIRMWARE_MIN) {
-        return Err(format!(
-            "{name}'s firmware ({version}) is older than {}.{:02}, which streaming needs: update it (hackrf_spiflash; see the HackRF documentation's \"Updating Firmware\")",
-            FIRMWARE_MIN.0, FIRMWARE_MIN.1
-        ));
+#[cfg(not(windows))]
+mod native {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    use sdr_core::Iq;
+    use sdr_hackrf::blocking::{HackRf, Stream};
+
+    use super::{release, HackrfConfig, FIRMWARE_MIN};
+    use crate::radio::Deadline;
+    use crate::sdr::{Applied, Control, Gain, Retuned, Sink, StreamCheck, Tunable, Wire};
+
+    /// A HackRF streaming, as [`Control`]'s requests change it. It keeps
+    /// sampling through a change (placed by the firmware's own byte count): no gap.
+    struct Live<'a> {
+        stream: &'a Stream,
+        cfg: &'a HackrfConfig,
     }
-    let gain = |h: &mut HackRf| -> sdr_core::Result<()> {
-        h.set_lna_gain(cfg.gain.lna_db)?;
-        h.set_vga_gain(cfg.gain.vga_db)?;
-        h.set_amp(cfg.gain.amp)?;
-        h.set_bias_tee(cfg.bias_tee)
-    };
-    h.set_rate(cfg.rate_hz).and_then(|()| h.set_freq(&cfg.tune_request(cfg.center_hz)).map(drop)).and_then(|()| gain(&mut h)).map_err(|e| format!("{name}: {e}"))?;
-    log::info!("{name} ({}, firmware {version}): {:.4} MHz, {:.3} MSPS, {}", h.label(), cfg.center_hz / 1e6, cfg.rate_hz / 1e6, cfg.gain);
-    // (The driver's default transfers: 32 × 64 KiB in flight.)
-    let mut stream = h.into_stream(0, 0).map_err(|e| format!("{name}: {}", e.error))?;
-    stream.start().map_err(|e| format!("{name}: {e}"))?;
-    let mut check = StreamCheck::new(cfg.rate_hz);
-    let mut iq = vec![Iq::default(); stream.max_num_samps().max(16_384)];
-    let mut bytes = Vec::with_capacity(iq.len() * 2);
-    let mut timeouts = 0;
-    let result = loop {
-        if stop.load(Ordering::Relaxed) {
-            break Ok(());
+
+    impl Tunable for Live<'_> {
+        fn tune(&mut self, hz: f64) -> Result<Retuned, String> {
+            self.stream.retune(&self.cfg.tune_request(hz)).map_err(|e| format!("tune {:.4} MHz: {e}", hz / 1e6))?;
+            Ok(Retuned { hz, gap: 0 })
         }
-        if let Some(c) = ctl {
-            match c.apply(&mut Live { stream: &stream, cfg }, cfg.center_hz, sink) {
-                Err(e) => break Err(e),
-                Ok(Applied::Closed) => break Ok(()),
-                Ok(_) => {}
-            }
+        fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
+            let r = match g {
+                Gain::Hackrf(g) => self.stream.reconfigure(async |h| {
+                    h.set_lna_gain(g.lna_db).await?;
+                    h.set_vga_gain(g.vga_db).await?;
+                    h.set_amp(g.amp).await
+                }),
+                // (The survey's one number, split across the stages by the driver.)
+                Gain::Db(db) => self.stream.set_gain(db as f64).map(|b| ((), b)),
+                Gain::Agc | Gain::Airspy(_) => return Ok(0),
+            };
+            r.map(|_| 0).map_err(|e| format!("gain {g}: {e}"))
         }
-        let info = match stream.recv_into(&mut iq, 1.0) {
-            Ok(i) => i,
-            Err(e) => break Err(format!("{name} USB: {e}")),
+    }
+
+    pub(super) fn stream_once(cfg: &HackrfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
+        let name = cfg.name();
+        let spec = if cfg.serial.is_empty() { String::new() } else { format!("serial={}", cfg.serial) };
+        let what = name.clone();
+        let mut h = crate::radio::open(&name, Deadline::Quick, true, move || HackRf::open(&spec).map_err(|e| format!("open {what}: {e}")))?;
+        let version = h.version_string().unwrap_or_default();
+        if release(&version).is_some_and(|r| r < FIRMWARE_MIN) {
+            return Err(format!(
+                "{name}'s firmware ({version}) is older than {}.{:02}, which streaming needs: update it (hackrf_spiflash; see the HackRF documentation's \"Updating Firmware\")",
+                FIRMWARE_MIN.0, FIRMWARE_MIN.1
+            ));
+        }
+        let gain = |h: &mut HackRf| -> sdr_core::Result<()> {
+            h.set_lna_gain(cfg.gain.lna_db)?;
+            h.set_vga_gain(cfg.gain.vga_db)?;
+            h.set_amp(cfg.gain.amp)?;
+            h.set_bias_tee(cfg.bias_tee)
         };
-        if info.timed_out && info.n_samples == 0 {
-            timeouts += 1;
-            if timeouts >= 2 {
-                break Err(format!("{name}: no samples for 2 s"));
+        h.set_rate(cfg.rate_hz).and_then(|()| h.set_freq(&cfg.tune_request(cfg.center_hz)).map(drop)).and_then(|()| gain(&mut h)).map_err(|e| format!("{name}: {e}"))?;
+        log::info!("{name} ({}, firmware {version}): {:.4} MHz, {:.3} MSPS, {}", h.label(), cfg.center_hz / 1e6, cfg.rate_hz / 1e6, cfg.gain);
+        // (The driver's default transfers: 32 × 64 KiB in flight.)
+        let mut stream = h.into_stream(0, 0).map_err(|e| format!("{name}: {}", e.error))?;
+        stream.start().map_err(|e| format!("{name}: {e}"))?;
+        let mut check = StreamCheck::new(cfg.rate_hz);
+        let mut iq = vec![Iq::default(); stream.max_num_samps().max(16_384)];
+        let mut bytes = Vec::with_capacity(iq.len() * 2);
+        let mut timeouts = 0;
+        let result = loop {
+            if stop.load(Ordering::Relaxed) {
+                break Ok(());
             }
-            continue;
+            if let Some(c) = ctl {
+                match c.apply(&mut Live { stream: &stream, cfg }, cfg.center_hz, sink) {
+                    Err(e) => break Err(e),
+                    Ok(Applied::Closed) => break Ok(()),
+                    Ok(_) => {}
+                }
+            }
+            let info = match stream.recv_into(&mut iq, 1.0) {
+                Ok(i) => i,
+                Err(e) => break Err(format!("{name} USB: {e}")),
+            };
+            if info.timed_out && info.n_samples == 0 {
+                timeouts += 1;
+                if timeouts >= 2 {
+                    break Err(format!("{name}: no samples for 2 s"));
+                }
+                continue;
+            }
+            timeouts = 0;
+            let at = Instant::now();
+            // Back to the radio's own signed bytes (the driver widened them: `<< 8`).
+            bytes.clear();
+            bytes.extend(iq[..info.n_samples].iter().flat_map(|s| [(s.i >> 8) as u8, (s.q >> 8) as u8]));
+            if let Err(e) = check.block(&bytes, at) {
+                break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in"));
+            }
+            let dropped = info.link.map_or(0, |l| l.inferred_lost_samples);
+            if !sink.bytes(Wire::Signed, &bytes, dropped, at) {
+                break Ok(());
+            }
+        };
+        if let Ok(f) = stream.finish() {
+            log::debug!("{name}: stream finished: {:?}", f.report);
         }
-        timeouts = 0;
-        let at = Instant::now();
-        // Back to the radio's own signed bytes (the driver widened them: `<< 8`).
-        bytes.clear();
-        bytes.extend(iq[..info.n_samples].iter().flat_map(|s| [(s.i >> 8) as u8, (s.q >> 8) as u8]));
-        if let Err(e) = check.block(&bytes, at) {
-            break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in"));
-        }
-        let dropped = info.link.map_or(0, |l| l.inferred_lost_samples);
-        if !sink.bytes(Wire::Signed, &bytes, dropped, at) {
-            break Ok(());
-        }
-    };
-    if let Ok(f) = stream.finish() {
-        log::debug!("{name}: stream finished: {:?}", f.report);
+        result
     }
-    result
+
 }
 
 #[cfg(test)]
