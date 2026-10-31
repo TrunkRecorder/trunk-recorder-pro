@@ -264,24 +264,42 @@ whenever `change` fires.
 
 Plays the chunks from `on("audio")`: `player.play(chunk)`. Call
 `player.resume()` from a click or key press first; browsers won't start
-sound otherwise.
+sound otherwise. It's the dashboard's player too.
 
 | Option | Default | |
 |---|---|---|
-| `followCall` | `true` | one call at a time: the first heard, until quiet for `quietS`; overlapping calls are skipped |
+| `followCall` | `true` | one call at a time: the first heard, until quiet for `quietS`; overlapping calls are skipped. `false`: every chunk queued in turn, one after another (so for one call at a time; to hear calls at once, a player each, below) |
 | `quietS` | 1.5 | silence that ends a call, s |
 | `gain` | 2 | volume (the vocoders' output is quiet) |
 | `pan` | 0 | where the sound sits: left (-1) to right (1) |
-| `context` | — | an `AudioContext` to share: one player per call, each with its own `pan`, mix into it (`stop()` then releases only that player's part) |
+| `output` | the page's | an `AudioNode` the sound goes to: an interface's own EQ, meter (`AnalyserNode`), master volume… on the page's output (`audioOut()`) |
 | `onNowPlaying` | — | `(call \| null) => …` when the call playing changes |
 
-`player.nowPlaying` is `{ callId, system, talkgroup }` or `null`;
-`player.setGain(v)` and `player.setPan(v)` change the volume and the
-position while playing (a wall that puts each talkgroup in its own place
-sets the pan from `onNowPlaying`); `player.stop()` releases the audio
-output. To hear several calls at once, make a player per call with
-`followCall: false` and a shared `context`, give each its pan, and route
-each chunk by its `callId`.
+| | |
+|---|---|
+| `player.nowPlaying` | `{ callId, system, talkgroup }` or `null` |
+| `player.gain`, `player.pan` | the volume (0 mutes) and the place; set them while playing (they glide there) or before `resume()` |
+| `player.skip()` | drop the call playing, the rest of it too: the next call heard plays |
+| `player.stop()` | stop, and let go of this player's part of the output |
+
+Every player plays into the page's one audio output, `audioOut()` (an
+`AudioContext`, made on first use, kept for the page's life, woken by any
+click or key press when the browser suspends it). Build your own sounds
+on it too, and route a player through them with `output`:
+
+```js
+const ctx = audioOut();
+const meter = ctx.createAnalyser();
+meter.connect(ctx.destination);
+const player = new LivePlayer({ output: meter });
+```
+
+**Several calls at once:** a player each — a call's, a talkgroup's or a
+system's, whatever the interface places — each with its `pan`. They mix
+in the page's output. `wall.html?stereo` keeps a player per call, made at
+its first chunk (`followCall: false`), panned to its talkgroup's place,
+and stopped at its `onNowPlaying(null)`, when the call is quiet. A
+player per talkgroup can keep `followCall` and stay for good.
 
 **Helpers:** `duration(s)` gives `"1:05"`, `mhz(hz)` gives
 `"155.2000 MHz"`, `escapeHtml(s)`, and `parseTalkgroups(csv)` reads a
@@ -297,7 +315,7 @@ In [`examples/`](examples/). A recorder serves them at
 | | |
 |---|---|
 | [`scanner.html`](examples/scanner.html) | Everything in one file **without** client.js: systems, calls on the air, recorded calls, start / stop, live audio. Read it to see the protocol at work. |
-| [`wall.html`](examples/wall.html) | A wall display: calls on the air in large type, emergencies first and red, recent calls, live audio. `?talkgroups=101,202`, `?system=…` |
+| [`wall.html`](examples/wall.html) | A wall display: calls on the air in large type, emergencies first and red, recent calls, live audio. `?talkgroups=101,202`, `?system=…`, `?stereo` (every call at once, each talkgroup in its own place) |
 | [`talkgroup.html`](examples/talkgroup.html) | One talkgroup: pick it, see it on the air, listen live, play its recordings, play each new recording as it arrives. |
 | [`call-log.mjs`](examples/call-log.mjs) | A program (Node): append each recorded call to a CSV file, and POST it to a webhook. |
 

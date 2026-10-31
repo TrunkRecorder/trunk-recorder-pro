@@ -5,10 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **`client.js`'s `LivePlayer` has a panner.** `new LivePlayer({ pan })` puts the sound left (-1) to
-  right (1), and `setPan(v)` and `setGain(v)` change the position and the volume while playing,
-  so an interface can give each talkgroup its own place in the stereo field. Players can share
-  an `AudioContext` (`context`), one per call, to hear several calls at once.
+- **Live audio in stereo, through an interface's own sound chain.** `client.js`'s
+  `LivePlayer` has `pan` (left -1 to right 1) beside `gain`, both settable while playing
+  (`player.pan = -1`; they glide, no clicks), and `skip()` drops the call playing. It
+  plays into the page's one audio output, `audioOut()`, or into an `output` node an
+  interface builds on it (an EQ, a visualizer's analyser, a master volume), so players
+  mix: a player per call or per talkgroup, each with its pan, hears several calls at once
+  (`wall.html?stereo`). The dashboard now plays live audio with this same player, so
+  every interface gets its care for Safari (resampled, woken after tab switches) and
+  a backlog over 3 s is dropped instead of played late.
 
 ## [0.2.11] — 2026-10-27
 
