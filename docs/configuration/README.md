@@ -170,6 +170,13 @@ thousand at a time, when the app starts and every hour after. `0` keeps them all
 the calls' audio and JSON files: they stay where they were recorded (deleting recordings is issue
 #25).
 
+`registryRadios` (default 0) is how many radios the radio registry remembers for each system;
+past it, the least recently heard are forgotten (and talkgroups a quarter as many, 5,000 at
+least). The registry is held in memory, so `0` sizes it by the computer's: ten radios a MB,
+20,000 at least (a 1 GB Pi: 20,000; 2 GB: 20,480; 8 GB: 81,920; 64 GB: 655,360), about 2% of
+memory at most.
+The `summary` of `radioQuery` tells the figure chosen.
+
 `commitSeconds` (default 300, 10 to 3600) is how far apart the store's commits are when calls are
 coming in. Each commit writes whole pages, twice on SQLite (the log, then the database), so fewer
 commits write far less: on the Pi's eMMC, a busy system (a call a second) writes 0.21 GB a day at

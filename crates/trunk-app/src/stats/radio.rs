@@ -16,7 +16,7 @@ use trunk_core::dsp::inband::signal::Heard;
 use trunk_core::trunk::calls::Reason;
 use trunk_core::trunk::{Call, Message, MessageType};
 
-/// Caps per system.
+/// Caps per system: a small computer's ([`Caps`] sizes them to the computer).
 const MAX_TGS: usize = 5000;
 const MAX_UNITS: usize = 20_000;
 const MAX_PAIRS: usize = 50_000;
@@ -28,6 +28,49 @@ const MAX_RECENT_TX: usize = 30;
 const TOP_TGS: usize = 8;
 /// Ciphers (ALGID, key ID) kept per talkgroup.
 const MAX_CIPHERS: usize = 16;
+
+/// How many talkgroups, radios and radio pairs a system's registry keeps
+/// (past a cap, the least recently heard go). The registry is held in
+/// memory, so the computer's memory sizes it ([`Caps::for_memory`]), or the
+/// config pins the radios ([`Caps::radios`]); the defaults are a small
+/// computer's. Talkgroups are a quarter of the radios and pairs two and a
+/// half times them, as the defaults are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caps {
+    pub tgs: usize,
+    pub units: usize,
+    pub pairs: usize,
+}
+
+impl Default for Caps {
+    fn default() -> Self {
+        Caps { tgs: MAX_TGS, units: MAX_UNITS, pairs: MAX_PAIRS }
+    }
+}
+
+impl Caps {
+    /// Radios a megabyte of memory: 20,000 at 2 GB (the registry at its
+    /// caps is about 2% of memory: `registry_size`).
+    const RADIOS_PER_MB: u64 = 10;
+    /// Never more than this many radios, whatever the memory.
+    const MOST_RADIOS: usize = 2_000_000;
+
+    /// Caps for `units` radios (1,000 at least), the other tables in proportion.
+    pub fn radios(units: usize) -> Caps {
+        let units = units.max(1_000);
+        Caps { tgs: (units / 4).max(MAX_TGS), units, pairs: units * 5 / 2 }
+    }
+
+    /// Caps for a computer with `total_bytes` of memory: ten radios a MB,
+    /// the defaults at least (0: the defaults).
+    pub fn for_memory(total_bytes: u64) -> Caps {
+        let by_memory = (total_bytes / (1024 * 1024) * Self::RADIOS_PER_MB).min(Self::MOST_RADIOS as u64) as usize;
+        if by_memory <= MAX_UNITS {
+            return Caps::default();
+        }
+        Caps::radios(by_memory)
+    }
+}
 /// Hours of per-hour activity kept (a week).
 const HOURS: i64 = 168;
 /// A registry this young has no baseline: everything in it is "new".
@@ -152,6 +195,9 @@ pub struct SystemRadio {
     /// What changed since [`Registry::take_changes`] last took it (not saved).
     #[serde(skip)]
     changed: Changed,
+    /// The tables' caps (the registry's, [`Registry::set_caps`]; not saved).
+    #[serde(skip)]
+    pub caps: Caps,
 }
 
 /// What changed in a system's registry, by row: which talkgroups, radios,
@@ -255,6 +301,8 @@ pub struct Names<'a> {
 #[derive(Default)]
 pub struct Registry {
     pub systems: BTreeMap<String, SystemRadio>,
+    /// Every system's caps ([`Registry::set_caps`]).
+    caps: Caps,
 }
 
 fn pair_key(a: u32, b: u32) -> u64 {
@@ -343,7 +391,7 @@ impl SystemRadio {
 
     fn evict(&mut self) {
         let c = &mut self.changed;
-        let (tgs, units, pairs, freqs) = (evict(&mut self.tgs, MAX_TGS, |v| v.last), evict(&mut self.units, MAX_UNITS, |v| v.last), evict(&mut self.pairs, MAX_PAIRS, |v| v.last), evict(&mut self.freqs, MAX_FREQS, Freq::heard));
+        let (tgs, units, pairs, freqs) = (evict(&mut self.tgs, self.caps.tgs, |v| v.last), evict(&mut self.units, self.caps.units, |v| v.last), evict(&mut self.pairs, self.caps.pairs, |v| v.last), evict(&mut self.freqs, MAX_FREQS, Freq::heard));
         went(tgs, &mut c.tgs, &mut c.gone.tgs);
         went(units, &mut c.units, &mut c.gone.units);
         went(pairs, &mut c.pairs, &mut c.gone.pairs);
@@ -428,12 +476,27 @@ pub struct Firsts {
 
 impl Registry {
     fn sys(&mut self, name: &str, t: i64) -> &mut SystemRadio {
-        self.systems.entry(name.to_string()).or_insert_with(|| SystemRadio::new(t))
+        let caps = self.caps;
+        self.systems.entry(name.to_string()).or_insert_with(|| SystemRadio { caps, ..SystemRadio::new(t) })
     }
 
     /// Put system `name` as a store gave it.
-    pub fn put(&mut self, name: &str, s: SystemRadio) {
+    pub fn put(&mut self, name: &str, mut s: SystemRadio) {
+        s.caps = self.caps;
         self.systems.insert(name.to_string(), s);
+    }
+
+    /// Size every system's tables (now and as systems come); past a cap
+    /// the least recently heard go on the next change.
+    pub fn set_caps(&mut self, caps: Caps) {
+        self.caps = caps;
+        for s in self.systems.values_mut() {
+            s.caps = caps;
+        }
+    }
+
+    pub fn caps(&self) -> Caps {
+        self.caps
     }
 
     /// A call began (`t`: Unix s). Returns what was heard for the first time
@@ -645,12 +708,13 @@ impl Registry {
         let what = q["what"].as_str().unwrap_or("summary");
         if what == "summary" {
             let systems: serde_json::Map<String, Value> = self.systems.iter().map(|(n, s)| (n.clone(), summary(n, s, now, names))).collect();
-            return json!({ "what": what, "systems": systems });
+            return json!({ "what": what, "systems": systems, "caps": { "talkgroups": self.caps.tgs, "radios": self.caps.units } });
         }
         let Some(name) = q["system"].as_str() else { return json!({ "what": what, "error": "which system?" }) };
         let Some(s) = self.systems.get(name) else { return json!({ "what": what, "system": name, "rows": [] }) };
         let hours = q["hours"].as_i64().unwrap_or(24).clamp(1, HOURS);
-        let limit = q["limit"].as_u64().unwrap_or(500).min(5000) as usize;
+        // Up to the registry's own cap: a client may ask for every radio heard.
+        let limit = q["limit"].as_u64().unwrap_or(500).min(self.caps.units as u64) as usize;
         let key = q["key"].as_u64().map(|k| k as u32);
         let mut out = match what {
             "talkgroups" => talkgroups(name, s, now, hours, limit, names),
@@ -1199,6 +1263,42 @@ mod tests {
         // As a log's line, and back.
         let line = serde_json::to_string(c).unwrap();
         assert_eq!(serde_json::from_str::<RegistryChanges>(&line).unwrap().units.len(), c.units.len());
+    }
+
+    #[test]
+    fn caps_follow_the_computers_memory() {
+        let gb = |n: u64| n * 1024 * 1024 * 1024;
+        assert_eq!(Caps::for_memory(0), Caps::default(), "unknown: the defaults");
+        assert_eq!(Caps::for_memory(gb(1)), Caps::default(), "a small Pi: as ever");
+        assert_eq!(Caps::for_memory(gb(2)).units, 20_480, "a 2 GB Pi: all but as ever");
+        assert_eq!(Caps::for_memory(gb(8)), Caps { tgs: 20_480, units: 81_920, pairs: 204_800 });
+        assert_eq!(Caps::for_memory(gb(64)).units, 655_360);
+        assert_eq!(Caps::for_memory(gb(1024)).units, 2_000_000, "the most");
+        assert_eq!(Caps::radios(100), Caps { tgs: 5000, units: 1_000, pairs: 2_500 }, "pinned: 1,000 at least");
+        assert_eq!(Caps::radios(100_000), Caps { tgs: 25_000, units: 100_000, pairs: 250_000 });
+    }
+
+    #[test]
+    fn caps_bound_the_tables_and_the_query() {
+        let mut r = Registry::default();
+        r.set_caps(Caps::radios(1_000));
+        let t0 = 1_700_000_000;
+        for u in 1..=1_200u32 {
+            r.call_end("x", &call(100, &[(u, 0.0)], 0.0, 1.0), t0 + u as i64);
+        }
+        let n = r.systems["x"].units.len();
+        assert!((1_000..=1_100).contains(&n), "past the cap by a tenth, the least recently heard go: {n}");
+        assert!(!r.systems["x"].units.contains_key(&1) && r.systems["x"].units.contains_key(&1_200));
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let q = r.query(&json!({ "what": "units", "system": "x", "limit": 50_000 }), t0 + 1_300, &n);
+        assert_eq!(q["rows"].as_array().unwrap().len(), 1_000, "a limit past the cap is the cap");
+        let q = r.query(&json!({ "what": "summary" }), t0 + 1_300, &n);
+        assert_eq!(q["caps"], json!({ "talkgroups": 5000, "radios": 1_000 }));
+        // A system put from the store, and one made later, get the caps too.
+        r.put("y", SystemRadio::new(t0));
+        r.call_end("z", &call(100, &[(1, 0.0)], 0.0, 1.0), t0);
+        assert_eq!((r.systems["y"].caps, r.systems["z"].caps), (r.caps(), r.caps()));
     }
 
     #[test]

@@ -3425,6 +3425,23 @@
               },
               "description": "summary"
             },
+            "caps": {
+              "type": "object",
+              "properties": {
+                "talkgroups": {
+                  "type": "number"
+                },
+                "radios": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "talkgroups",
+                "radios"
+              ],
+              "additionalProperties": false,
+              "description": "summary: the registry's caps a system (a `limit` of `radios` is every radio heard)."
+            },
             "hours": {
               "type": "number",
               "description": "talkgroups, units, freqs, tones"
@@ -6829,6 +6846,10 @@
         "radioIndex": {
           "type": "boolean",
           "description": "Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system."
+        },
+        "registryRadios": {
+          "type": "number",
+          "description": "Radios the radio registry remembers a system (past it the least recently heard go); 0 or absent: sized by the computer's memory, 20,000 at least."
         },
         "talkgroupIndex": {
           "type": "boolean",

@@ -885,6 +885,14 @@ fn serve(a: &Args) {
     let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
     // (The systems first: everything kept is kept by their ids.)
     db.set_systems(&cfg);
+    // The registry's size: the computer's memory, unless the config pins it.
+    let caps = match cfg.storage.registry_radios {
+        0 => trunk_app::stats::radio::Caps::for_memory(platform::total_memory()),
+        n => trunk_app::stats::radio::Caps::radios(n as usize),
+    };
+    let sized_by = if cfg.storage.registry_radios == 0 { format!(" ({:.1} GB of memory)", platform::total_memory() as f64 / 1e9) } else { " (storage.registryRadios)".to_string() };
+    log::info!("Radio registry: up to {} radios and {} talkgroups a system{sized_by}", caps.units, caps.tgs);
+    shared.radio.lock().unwrap().set_caps(caps);
     kept::load_registry(&db, &shared);
     let series = Arc::new(Mutex::new(trunk_app::stats::History::new(statstore::memory_minutes(&db))));
     let store = statstore::Store::start(series.clone(), db.clone(), cfg.storage.stats_days, cfg.storage.low_write);

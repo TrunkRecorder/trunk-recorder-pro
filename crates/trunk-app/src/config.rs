@@ -1973,6 +1973,10 @@ pub struct StorageSettings {
     /// system (on the Pi's eMMC, a call a second: 1.6 GB a day with it, 0.8
     /// without; `db::tests::day_write_budget`).
     pub radio_index: bool,
+    /// Radios the radio registry remembers a system (past it, the least
+    /// recently heard go; talkgroups a quarter as many). 0 sizes it by the
+    /// computer's memory: ten a MB, 20,000 at least.
+    pub registry_radios: u32,
     /// Index each call by its talkgroup, for a talkgroup's call list (the
     /// same, asking by `talkgroup`); off, a talkgroup's list is its recent
     /// calls. About a third as costly as the radio index.
@@ -1986,7 +1990,7 @@ impl StorageSettings {
 
 impl Default for StorageSettings {
     fn default() -> Self {
-        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true, talkgroup_index: true }
+        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true, talkgroup_index: true, registry_radios: 0 }
     }
 }
 
@@ -2791,7 +2795,7 @@ mod tests {
     #[test]
     fn storage_defaults_to_300_second_commits_and_120_days() {
         let c = Config::from_value(serde_json::json!({})).unwrap();
-        assert_eq!((c.storage.commit_seconds, c.storage.retention_days), (300, 120));
+        assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.registry_radios), (300, 120, 0));
         let c = Config::from_value(serde_json::json!({ "storage": { "commitSeconds": 60, "retentionDays": 0 } })).unwrap();
         assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.backend), (60, 0, StorageBackend::Sqlite));
         let c = Config::from_value(serde_json::json!({ "storage": { "backend": "postgres", "url": "postgres://trp@db/trunk" } })).unwrap();
