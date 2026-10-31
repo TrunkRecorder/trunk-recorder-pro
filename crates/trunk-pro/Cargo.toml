@@ -34,8 +34,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 log = { version = "0.4", features = ["std"] }
 # The plugin store (plugins/store.rs): the registry and release downloads,
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
-ureq = "3"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+ureq = "3.5"
 symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "wav", "pcm"] }
 sha2 = "0.11"
 # The install's anonymous directory recorder ID (directory.rs).
