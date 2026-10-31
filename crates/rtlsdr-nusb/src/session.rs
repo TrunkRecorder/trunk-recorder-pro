@@ -146,10 +146,12 @@ impl<C: ControlBackend + 'static> Session<C> {
                 })),
             })
     }
+    /// Start or stop the chip's output ([`Hardware::output`]): stopped, the
+    /// samples the chip dropped while it ran.
     pub(crate) fn receiver_mode(
         self: &Arc<Self>,
         enabled: bool,
-    ) -> impl MaybeFuture<Output = Result<()>> + use<C> {
+    ) -> impl MaybeFuture<Output = Result<u64>> + use<C> {
         let shared = Arc::clone(self);
         operation(async move {
             if enabled {
@@ -157,10 +159,23 @@ impl<C: ControlBackend + 'static> Session<C> {
             }
             let mut lease = shared.lease()?;
             let hardware = lease.hardware.as_mut().expect("leased hardware");
-            // Record the cleanup intent even if an operation is canceled.
-            hardware.receiving = enabled;
-            Com(shared.control.as_ref()).receiver(enabled).await
+            hardware.output(&Com(shared.control.as_ref()), enabled).await
         })
+    }
+    /// Ready the chip to start ([`Hardware::arm`]).
+    pub(crate) fn receiver_arm(self: &Arc<Self>) -> impl MaybeFuture<Output = Result<()>> + use<C> {
+        let shared = Arc::clone(self);
+        operation(async move {
+            shared.ensure_configured()?;
+            let mut lease = shared.lease()?;
+            let hardware = lease.hardware.as_mut().expect("leased hardware");
+            hardware.arm(&Com(shared.control.as_ref())).await
+        })
+    }
+    /// What the control pipe has counted since open.
+    pub(crate) fn link_stats(&self) -> crate::LinkStats {
+        let link = self.control.link();
+        crate::LinkStats { stall_retries: link.stall_retries.load(Ordering::Relaxed), wake_reads: link.wake_reads.load(Ordering::Relaxed) }
     }
     fn begin_shutdown(&self) -> Result<bool> {
         let mut state = self.lock();
@@ -303,14 +318,14 @@ impl<C: ControlBackend + 'static> RxStreamClaim<C> {
             let operation = if self.begin_stop() {
                 Either::left(self.shared.receiver_mode(false))
             } else {
-                Either::right(ready(Ok(())))
+                Either::right(ready(Ok(0)))
             };
             operation.map(move |result| {
                 if result.is_ok() {
                     self.receiver = ReceiverState::Stopped;
                     self.release();
                 }
-                result
+                result.map(drop)
             })
         })
     }
@@ -323,7 +338,7 @@ impl<C: ControlBackend + 'static> RxStreamClaim<C> {
         let operation = if self.begin_stop() {
             Either::left(shared.receiver_mode(false))
         } else {
-            Either::right(ready(Ok(())))
+            Either::right(ready(Ok(0)))
         };
         operation.map(move |result| {
             let mut state = shared.lock();

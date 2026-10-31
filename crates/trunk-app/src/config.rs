@@ -15,31 +15,45 @@ use trunk_core::trunk::{
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
 
+/// A source: the radio or capture it reads ([`SourceKind`]), where and how fast.
+/// Stored flat — `{"type": "rtlsdr", "serial": "…", "centerHz": …}` — the
+/// kind's own keys beside these.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Source {
+    #[serde(flatten)]
+    pub kind: SourceKind,
+    /// Its centre, Hz; 0 = placed automatically over the channels it's for.
+    pub center_hz: f64,
+    pub rate_hz: f64,
+    /// Its frequency error, ppm (a file's: 0).
+    #[serde(default)]
+    pub ppm: f64,
+    /// Correct `ppm` from what's heard (AutoTune).
+    #[serde(default)]
+    pub auto_tune: bool,
+    /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
+    #[serde(default = "guard_default")]
+    pub guard_hz: f64,
+}
+
+/// What a [`Source`] reads, and the settings only that kind has.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum Source {
-    /// An RTL-SDR dongle. `serial` "" = the first free one; `center_hz` 0 =
-    /// auto. `agc`: the tuner's AGC instead of `gain_db`.
+pub enum SourceKind {
+    /// An RTL-SDR dongle. `serial` "" = the first free one. `agc`: the tuner's AGC instead of `gain_db`.
     #[serde(rename_all = "camelCase")]
     Rtlsdr {
         serial: String,
-        center_hz: f64,
-        rate_hz: f64,
         #[serde(default = "rtl_gain")]
         gain_db: f64,
         #[serde(default)]
         agc: bool,
-        ppm: i32,
-        #[serde(default)]
-        auto_tune: bool,
-        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
-        #[serde(default = "guard_default")]
-        guard_hz: f64,
         /// Bytes per USB transfer (Trunk Recorder's `buflen`): a multiple of 512;
-        /// 0 = the driver's 262144. Several dongles on one USB 2.0 bus want 65536.
+        /// 0 = the driver's 16384 (small ones interleave well with other dongles on one bus).
         #[serde(default)]
         buf_len: u32,
-        /// USB transfers kept in flight; 0 = enough for about 2 MiB (8 to 64).
+        /// USB transfers kept in flight; 0 = enough for about 2 MiB (the driver's 128 of 16 KiB).
         #[serde(default)]
         buffers: u32,
     },
@@ -51,21 +65,16 @@ pub enum Source {
     Usrp {
         #[serde(default)]
         args: String,
-        center_hz: f64,
-        rate_hz: f64,
         #[serde(default = "usrp_gain")]
         gain_db: f64,
         #[serde(default)]
         agc: bool,
         #[serde(default)]
         antenna: String,
-        #[serde(default)]
-        ppm: f64,
-        #[serde(default)]
-        auto_tune: bool,
-        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
-        #[serde(default = "guard_default")]
-        guard_hz: f64,
+        /// Samples on the wire: "sc16", "sc12" (B2xx), "sc8"; "" = sc16, or
+        /// sc12 for a B2xx on a USB 2.0 link above 8 MSPS.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        wire_format: String,
     },
     /// An Airspy R2 / Mini through libairspy (installed separately; loaded
     /// at run time). `serial` hex, "" = the first. Gain: a 0..21 step of
@@ -75,8 +84,6 @@ pub enum Source {
     Airspy {
         #[serde(default)]
         serial: String,
-        center_hz: f64,
-        rate_hz: f64,
         #[serde(default)]
         gain_mode: AirspyGain,
         #[serde(default = "airspy_gain")]
@@ -96,13 +103,6 @@ pub enum Source {
         /// Airspy at 10 MS/s nearly fills a USB 2.0 bus by itself).
         #[serde(default = "yes")]
         packing: bool,
-        #[serde(default)]
-        ppm: f64,
-        #[serde(default)]
-        auto_tune: bool,
-        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
-        #[serde(default = "guard_default")]
-        guard_hz: f64,
     },
     /// A bladeRF (2.0 micro xA4 / xA9, or the original x40 / x115) through
     /// libbladeRF 2.x (installed separately; loaded at run time). `serial`
@@ -113,8 +113,6 @@ pub enum Source {
     Bladerf {
         #[serde(default)]
         serial: String,
-        center_hz: f64,
-        rate_hz: f64,
         #[serde(default)]
         bandwidth_hz: f64,
         #[serde(default = "bladerf_gain")]
@@ -123,13 +121,23 @@ pub enum Source {
         agc: bool,
         #[serde(default)]
         bias_tee: bool,
+    },
+    /// A HackRF One, natively (nothing to install). `serial` "" = the first.
+    /// Gain by stage: the IF LNA 0–40 dB (8 dB steps), the baseband VGA 0–62
+    /// dB (2 dB steps), the +14 dB RF amp. `bias_tee`: power an LNA over the
+    /// antenna port.
+    #[serde(rename_all = "camelCase")]
+    Hackrf {
         #[serde(default)]
-        ppm: f64,
+        serial: String,
+        #[serde(default = "hackrf_lna")]
+        lna_db: u16,
+        #[serde(default = "hackrf_vga")]
+        vga_db: u16,
         #[serde(default)]
-        auto_tune: bool,
-        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
-        #[serde(default = "guard_default")]
-        guard_hz: f64,
+        amp: bool,
+        #[serde(default)]
+        bias_tee: bool,
     },
     /// Any SDR with a SoapySDR module (SoapySDR installed separately; loaded
     /// at run time). `args`: device arguments, "" = the first found
@@ -141,8 +149,6 @@ pub enum Source {
     Soapy {
         #[serde(default)]
         args: String,
-        center_hz: f64,
-        rate_hz: f64,
         #[serde(default = "yes")]
         agc: bool,
         #[serde(default)]
@@ -153,13 +159,6 @@ pub enum Source {
         antenna: String,
         #[serde(default)]
         settings: String,
-        #[serde(default)]
-        ppm: f64,
-        #[serde(default)]
-        auto_tune: bool,
-        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
-        #[serde(default = "guard_default")]
-        guard_hz: f64,
     },
     /// A capture on this machine: `format` "cu8" (rtl_sdr), "cs16" or "cf32"
     /// (GNU Radio / UHD complex float); left out, by the file's extension
@@ -167,16 +166,9 @@ pub enum Source {
     #[serde(rename_all = "camelCase")]
     File {
         path: String,
-        center_hz: f64,
-        rate_hz: f64,
         realtime: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         format: Option<SampleFormat>,
-        #[serde(default)]
-        auto_tune: bool,
-        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
-        #[serde(default = "guard_default")]
-        guard_hz: f64,
     },
 }
 
@@ -205,6 +197,12 @@ fn airspy_stage() -> u8 {
 }
 fn bladerf_gain() -> f64 {
     30.0
+}
+fn hackrf_lna() -> u16 {
+    16
+}
+fn hackrf_vga() -> u16 {
+    20
 }
 
 choice! {
@@ -245,50 +243,23 @@ impl SampleFormat {
 }
 
 impl Source {
-    pub fn center_hz(&self) -> f64 {
-        match self {
-            Source::Rtlsdr { center_hz, .. } | Source::Usrp { center_hz, .. } | Source::Airspy { center_hz, .. } | Source::Bladerf { center_hz, .. } | Source::Soapy { center_hz, .. } | Source::File { center_hz, .. } => *center_hz,
-        }
-    }
-    pub fn rate_hz(&self) -> f64 {
-        match self {
-            Source::Rtlsdr { rate_hz, .. } | Source::Usrp { rate_hz, .. } | Source::Airspy { rate_hz, .. } | Source::Bladerf { rate_hz, .. } | Source::Soapy { rate_hz, .. } | Source::File { rate_hz, .. } => *rate_hz,
-        }
-    }
-    /// The frequency correction set for it, ppm (a file: 0).
-    pub fn ppm(&self) -> f64 {
-        match self {
-            Source::Rtlsdr { ppm, .. } => *ppm as f64,
-            Source::Usrp { ppm, .. } | Source::Airspy { ppm, .. } | Source::Bladerf { ppm, .. } | Source::Soapy { ppm, .. } => *ppm,
-            Source::File { .. } => 0.0,
-        }
-    }
-    pub fn auto_tune(&self) -> bool {
-        match self {
-            Source::Rtlsdr { auto_tune, .. } | Source::Usrp { auto_tune, .. } | Source::Airspy { auto_tune, .. } | Source::Bladerf { auto_tune, .. } | Source::Soapy { auto_tune, .. } | Source::File { auto_tune, .. } => *auto_tune,
-        }
-    }
-    pub fn guard_hz(&self) -> f64 {
-        match self {
-            Source::Rtlsdr { guard_hz, .. } | Source::Usrp { guard_hz, .. } | Source::Airspy { guard_hz, .. } | Source::Bladerf { guard_hz, .. } | Source::Soapy { guard_hz, .. } | Source::File { guard_hz, .. } => *guard_hz,
-        }
-    }
     /// How far from its centre a channel may be, Hz.
     pub fn usable_half_width(&self) -> f64 {
-        usable_half_width(self.rate_hz(), self.guard_hz())
+        usable_half_width(self.rate_hz, self.guard_hz)
     }
     /// Whether the two may open the same radio (one program at a time can):
     /// of a kind and naming one device, or either "the first found". (A
     /// bladeRF may be named by the start of its serial.)
     pub fn may_be(&self, other: &Source) -> bool {
         let id = |s: &Source| -> Option<(u8, String)> {
-            match s {
-                Source::Rtlsdr { serial, .. } => Some((0, serial.trim().to_string())),
-                Source::Usrp { args, .. } => Some((1, args.trim().to_string())),
-                Source::Airspy { serial, .. } => Some((2, serial.trim().to_lowercase())),
-                Source::Bladerf { serial, .. } => Some((3, serial.trim().to_lowercase())),
-                Source::Soapy { args, .. } => Some((4, args.trim().to_string())),
-                Source::File { .. } => None,
+            match &s.kind {
+                SourceKind::Rtlsdr { serial, .. } => Some((0, serial.trim().to_string())),
+                SourceKind::Usrp { args, .. } => Some((1, args.trim().to_string())),
+                SourceKind::Airspy { serial, .. } => Some((2, serial.trim().to_lowercase())),
+                SourceKind::Bladerf { serial, .. } => Some((3, serial.trim().to_lowercase())),
+                SourceKind::Soapy { args, .. } => Some((4, args.trim().to_string())),
+                SourceKind::Hackrf { serial, .. } => Some((5, serial.trim().to_lowercase())),
+                SourceKind::File { .. } => None,
             }
         };
         match (id(self), id(other)) {
@@ -299,18 +270,19 @@ impl Source {
 
     /// For the interface: "RTL-SDR SN 200", "USRP serial=…", "file x.cu8".
     pub fn label(&self) -> String {
-        match self {
-            Source::Rtlsdr { serial, .. } => format!("RTL-SDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
-            Source::Usrp { args, .. } => {
+        match &self.kind {
+            SourceKind::Rtlsdr { serial, .. } => format!("RTL-SDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            SourceKind::Usrp { args, .. } => {
                 // Which device, not how it's driven: buffer sizes and the like
                 // would rename it (and start its stats history afresh).
                 let which: Vec<&str> = args.split(',').map(str::trim).filter(|kv| ["serial=", "addr=", "type=", "product=", "name="].iter().any(|k| kv.starts_with(k))).collect();
                 format!("USRP {}", if which.is_empty() { "(first)".to_string() } else { which.join(",") })
             }
-            Source::Airspy { serial, .. } => format!("Airspy {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
-            Source::Bladerf { serial, .. } => format!("bladeRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
-            Source::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
-            Source::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
+            SourceKind::Airspy { serial, .. } => format!("Airspy {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            SourceKind::Bladerf { serial, .. } => format!("bladeRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            SourceKind::Hackrf { serial, .. } => format!("HackRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            SourceKind::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
+            SourceKind::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
         }
     }
 }
@@ -1920,7 +1892,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             other: BTreeMap::new(),
-            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len: 0, buffers: 0 }],
+            sources: vec![Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
             systems: vec![],
             conventional: vec![],
             next_system_id: 0,
@@ -2067,7 +2039,7 @@ pub fn default_capture_dir() -> PathBuf {
 
 /// A source's `type` names its kind (the tag of [`Source`]), read in any case
 /// as the other closed choices are (`"RTLSDR"` is `"rtlsdr"`).
-const SOURCE_TYPES: [&str; 6] = ["rtlsdr", "usrp", "airspy", "bladerf", "soapy", "file"];
+const SOURCE_TYPES: [&str; 7] = ["rtlsdr", "usrp", "airspy", "bladerf", "hackrf", "soapy", "file"];
 
 fn source_types(v: &mut serde_json::Value) {
     for s in v.get_mut("sources").and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
@@ -2378,26 +2350,6 @@ impl Config {
         self.conventional.iter().filter(|v| v.enabled && v.channels.iter().any(|c| c.enabled))
     }
 
-    /// Advice for 4 or more RTL-SDRs at 2 MS/s or more left on the driver's
-    /// 256 KiB USB transfers: on one USB 2.0 bus each dongle waits too long
-    /// for its turn and its small FIFO overflows (losses the driver can't
-    /// see; the control channel suffers first, IMBE hides most of it in voice).
-    /// `most_on_a_bus`: the most RTL-SDRs plugged into one USB bus, if known
-    /// (spread over buses, there's nothing to say).
-    pub fn rtl_buflen_hint(&self, most_on_a_bus: Option<usize>) -> Option<String> {
-        let busy = self.sources.iter().filter(|s| matches!(s, Source::Rtlsdr { rate_hz, buf_len: 0, .. } if *rate_hz >= RTL_BUSY_RATE)).count();
-        if busy < RTL_BUSY_COUNT || most_on_a_bus.is_some_and(|n| n < RTL_BUSY_COUNT) {
-            return None;
-        }
-        let bus = match most_on_a_bus {
-            Some(n) => format!(", {n} of them on one USB bus"),
-            None => String::new(),
-        };
-        Some(format!(
-            "{busy} RTL-SDRs at 2 MS/s or more with the default 256 KiB USB transfers{bus}: dongles sharing a USB 2.0 bus can lose samples (an unreliable control channel is the usual sign). Set USB transfer size to 64 KiB on each in Setup → Sources (Trunk Recorder's buflen=65536)."
-        ))
-    }
-
     /// The sites being recorded, each with its system, in the engine's order
     /// — a call's `site` indexes this.
     pub fn active_sites(&self) -> impl Iterator<Item = (&System, &Site)> {
@@ -2431,7 +2383,7 @@ impl Config {
                 groups.push((conv.clone(), conv));
             }
         }
-        let mut centers: Vec<f64> = self.sources.iter().map(|s| s.center_hz()).collect();
+        let mut centers: Vec<f64> = self.sources.iter().map(|s| s.center_hz).collect();
         let covered = |centers: &[f64], f: f64| self.sources.iter().zip(centers).any(|(s, &c)| c > 0.0 && (f - c).abs() <= s.usable_half_width());
         for i in 0..self.sources.len() {
             if centers[i] > 0.0 {
@@ -2439,7 +2391,7 @@ impl Config {
             }
             let open: Vec<&(Vec<f64>, Vec<f64>)> = groups.iter().filter(|(_, need)| !need.iter().any(|&f| covered(&centers, f))).collect();
             let Some(first) = open.first() else { break };
-            let (rate, guard) = (self.sources[i].rate_hz(), self.sources[i].guard_hz());
+            let (rate, guard) = (self.sources[i].rate_hz, self.sources[i].guard_hz);
             let all: Vec<f64> = open.iter().flat_map(|g| g.0.iter().copied()).collect();
             let needed: Vec<f64> = open.iter().flat_map(|g| g.1.iter().copied()).collect();
             centers[i] = auto_center(&all, rate, guard)
@@ -2480,17 +2432,31 @@ impl Config {
         if self.sources.is_empty() {
             return Some("Add a source (a dongle or a capture file).".into());
         }
-        if self.sources.iter().any(|s| matches!(s, Source::File { path, .. } if path.trim().is_empty())) {
+        if self.sources.iter().any(|s| matches!(&s.kind, SourceKind::File { path, .. } if path.trim().is_empty())) {
             return Some("Choose the capture file to replay.".into());
         }
         for (i, s) in self.sources.iter().enumerate() {
-            if let Source::Rtlsdr { buf_len, buffers, .. } = *s {
-                if buf_len % 512 != 0 || buf_len > 16 << 20 {
-                    return Some(format!("Source {}: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB (65536 for several dongles on one bus).", i + 1));
+            match &s.kind {
+                SourceKind::Rtlsdr { buf_len, buffers, .. } => {
+                    if buf_len % 512 != 0 || *buf_len > 16 << 20 {
+                        return Some(format!("Source {}: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB.", i + 1));
+                    }
+                    if *buffers > 256 {
+                        return Some(format!("Source {}: at most 256 USB transfers in flight.", i + 1));
+                    }
                 }
-                if buffers > 256 {
-                    return Some(format!("Source {}: at most 256 USB transfers in flight.", i + 1));
+                SourceKind::Hackrf { lna_db, vga_db, .. } => {
+                    if !(1e6..=20e6).contains(&s.rate_hz) {
+                        return Some(format!("Source {}: a HackRF runs at 1 to 20 MSPS.", i + 1));
+                    }
+                    if *lna_db > 40 || lna_db % 8 != 0 || *vga_db > 62 || vga_db % 2 != 0 {
+                        return Some(format!("Source {}: a HackRF's LNA gain is 0–40 dB in 8 dB steps, its VGA gain 0–62 dB in 2 dB steps.", i + 1));
+                    }
                 }
+                SourceKind::Usrp { wire_format, .. } if !["", "sc16", "sc12", "sc8"].contains(&wire_format.trim()) => {
+                    return Some(format!("Source {}: the USRP's wire format is sc16, sc12 or sc8 (or empty, to choose).", i + 1));
+                }
+                _ => {}
             }
         }
         let trunked = self.active_systems().next().is_some();
@@ -2639,7 +2605,7 @@ impl Config {
         }
         EngineConfig {
             systems,
-            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz(), auto_tune: s.auto_tune(), guard_hz: s.guard_hz() }).collect(),
+            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz, auto_tune: s.auto_tune, guard_hz: s.guard_hz }).collect(),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
             epoch_ms_at_zero: epoch_ms,
@@ -2761,11 +2727,6 @@ pub fn plan_centers(sources: &[Placing], first: usize, first_center: f64, ccs: &
     }
     out
 }
-
-/// Several RTL-SDRs at this rate or more, on one USB 2.0 bus, want smaller transfers…
-const RTL_BUSY_RATE: f64 = 2_000_000.0;
-/// …once there are this many (Trunk Recorder users find trouble from 4 or 5).
-const RTL_BUSY_COUNT: usize = 4;
 
 #[cfg(test)]
 mod tests {
@@ -3141,23 +3102,19 @@ mod tests {
     }
 
     #[test]
-    fn rtl_usb_transfers_checked_and_hinted() {
-        let rtl = |rate_hz: f64, buf_len: u32| Source::Rtlsdr { serial: String::new(), center_hz: 851e6, rate_hz, gain_db: 30.0, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len, buffers: 0 };
-        let mut c = Config { sources: vec![rtl(2.4e6, 0); 3], systems: vec![system("s", &[851_012_500.0])], ..Default::default() };
-        assert_eq!(c.rtl_buflen_hint(None), None);
-        c.sources.push(rtl(1.2e6, 0));
-        assert_eq!(c.rtl_buflen_hint(None), None);
-        c.sources.push(rtl(2.4e6, 0));
-        assert!(c.rtl_buflen_hint(None).unwrap().starts_with("4 RTL-SDRs"));
-        assert!(c.rtl_buflen_hint(Some(5)).unwrap().contains("5 of them on one USB bus"));
-        assert_eq!(c.rtl_buflen_hint(Some(2)), None);
-        c.sources[0] = rtl(2.4e6, 65_536);
-        assert_eq!(c.rtl_buflen_hint(None), None);
+    fn rtl_usb_transfers_checked() {
+        let rtl = |rate_hz: f64, buf_len: u32| Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len, buffers: 0 }, center_hz: 851e6, rate_hz: rate_hz, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let mut c = Config { sources: vec![rtl(2.4e6, 65_536)], systems: vec![system("s", &[851_012_500.0])], ..Default::default() };
         assert_eq!(c.problem(), None);
         c.sources[0] = rtl(2.4e6, 65_000);
         assert!(c.problem().unwrap().contains("multiple of 512"));
+        let hackrf = |lna_db, vga_db| Source { kind: SourceKind::Hackrf { serial: String::new(), lna_db, vga_db, amp: false, bias_tee: false }, center_hz: 851e6, rate_hz: 8e6, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        c.sources[0] = hackrf(16, 20);
+        assert_eq!(c.problem(), None);
+        c.sources[0] = hackrf(20, 20);
+        assert!(c.problem().unwrap().contains("8 dB steps"));
         let back: Config = serde_json::from_str(r#"{"sources":[{"type":"rtlsdr","serial":"","centerHz":0,"rateHz":2400000,"ppm":0}]}"#).unwrap();
-        assert!(matches!(back.sources[0], Source::Rtlsdr { buf_len: 0, buffers: 0, .. }));
+        assert!(matches!(back.sources[0].kind, SourceKind::Rtlsdr { buf_len: 0, buffers: 0, .. }));
         let json = serde_json::to_value(&rtl(2.4e6, 65_536)).unwrap();
         assert_eq!((json["bufLen"].as_u64(), json["buffers"].as_u64()), (Some(65_536), Some(0)));
     }
@@ -3186,7 +3143,7 @@ mod tests {
 
     #[test]
     fn several_systems_centers_and_engine_config() {
-        let rtl = || Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: 30.0, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len: 0, buffers: 0 };
+        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
         let mut c = Config { sources: vec![rtl(), rtl()], ..Default::default() };
         let mut a = system("east", &[851_012_500.0]);
         a.sites[0].voice_channels_hz = vec![851_500_000.0, 852_000_000.0];
@@ -3348,14 +3305,42 @@ mod tests {
         assert!(back["conventional"][0].get("channelFileStatus").is_none(), "an empty status isn't written");
     }
 
+    /// A source is stored flat — its kind's keys beside the ones every
+    /// source has — and reads back the same, for every kind.
+    #[test]
+    fn sources_keep_their_flat_form() {
+        let kinds = [
+            serde_json::json!({ "type": "rtlsdr", "serial": "50", "centerHz": 496.4e6, "rateHz": 2.4e6, "gainDb": 16.6, "agc": false, "ppm": -2, "bufLen": 0, "buffers": 0 }),
+            serde_json::json!({ "type": "usrp", "args": "serial=31A", "centerHz": 858e6, "rateHz": 8e6, "gainDb": 32, "antenna": "TX/RX", "ppm": -1.98, "wireFormat": "sc12" }),
+            serde_json::json!({ "type": "airspy", "centerHz": 852e6, "rateHz": 6e6, "gainMode": "manual", "lnaStep": 12 }),
+            serde_json::json!({ "type": "bladerf", "centerHz": 857e6, "rateHz": 8e6 }),
+            serde_json::json!({ "type": "hackrf", "centerHz": 852e6, "rateHz": 8e6, "lnaDb": 24, "amp": true }),
+            serde_json::json!({ "type": "soapy", "args": "driver=sdrplay", "centerHz": 852e6, "rateHz": 8e6 }),
+            serde_json::json!({ "type": "file", "path": "a.cu8", "centerHz": 852e6, "rateHz": 2.4e6, "realtime": true }),
+        ];
+        for k in kinds {
+            let s: Source = serde_json::from_value(k.clone()).unwrap();
+            let back = serde_json::to_value(&s).unwrap();
+            for (key, v) in k.as_object().unwrap() {
+                assert_eq!(back[key].as_f64().or(back[key].as_str().map(|_| 0.0)), v.as_f64().or(v.as_str().map(|_| 0.0)), "{key} of {k}");
+                assert!(back.get(key).is_some(), "{key} of {k}");
+            }
+            assert!(back.get("kind").is_none(), "flat: {back}");
+            assert_eq!(serde_json::from_value::<Source>(back).unwrap(), s);
+        }
+        let c = Config::from_json(r#"{"sources":[{"type":"HackRF","centerHz":0,"rateHz":8e6},{"type":"RTLSDR","centerHz":0,"rateHz":2.4e6,"serial":"","ppm":-2}]}"#).unwrap();
+        assert!(matches!(c.sources[0].kind, SourceKind::Hackrf { lna_db: 16, vga_db: 20, amp: false, .. }), "type in any case");
+        assert_eq!((c.sources[1].ppm, c.sources[1].guard_hz), (-2.0, DEFAULT_GUARD_HZ));
+    }
+
     /// Every kind of source is named in [`SOURCE_TYPES`] (or its `type` wouldn't read in any case).
     #[test]
     fn every_source_type_is_known() {
         for t in SOURCE_TYPES {
-            let e = serde_json::from_value::<Source>(serde_json::json!({ "type": t })).unwrap_err().to_string();
+            let e = serde_json::from_value::<SourceKind>(serde_json::json!({ "type": t })).err().map(|e| e.to_string()).unwrap_or_default();
             assert!(!e.contains("unknown variant"), "{t}: {e}");
         }
-        let e = serde_json::from_value::<Source>(serde_json::json!({ "type": "nope" })).unwrap_err().to_string();
+        let e = serde_json::from_value::<SourceKind>(serde_json::json!({ "type": "nope" })).unwrap_err().to_string();
         for t in SOURCE_TYPES {
             assert!(e.contains(t), "the source kinds are {SOURCE_TYPES:?}, serde lists: {e}");
         }
@@ -3373,7 +3358,7 @@ mod tests {
         assert!(e.contains("p26") && e.contains("smartnet"), "names the value and the choices: {e}");
         let c = Config::from_json(r#"{ "sources": [{ "type": "RTLSDR", "serial": "", "centerHz": 0, "rateHz": 2.4e6, "ppm": 0 }], "log": { "level": "Warn", "frequencyFormat": "MHz", "talkgroupDisplayFormat": "ID_TAG" },
             "server": { "interfaces": { "city": { "port": 8090, "access": "Control" } } } }"#).unwrap();
-        assert!(matches!(c.sources[0], Source::Rtlsdr { .. }));
+        assert!(matches!(c.sources[0].kind, SourceKind::Rtlsdr { .. }));
         assert_eq!((c.log.level, c.log.frequency_format, c.log.talkgroup_display_format), (crate::log::Level::Warning, crate::log::FrequencyFormat::Mhz, crate::log::TalkgroupFormat::IdTag));
         assert_eq!(c.server.interfaces["city"].access, ApiAccess::Control);
         let saved = serde_json::to_string(&c).unwrap();

@@ -4,12 +4,16 @@
 # (trunk-pro detaches the kernel DVB driver itself; no blacklist needed.)
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0660", GROUP="plugdev", TAG+="uaccess"
-# Airspy R2 / Mini (libairspy) and USRP B200 / B210 / B200mini (UHD), for when
+# HackRF One (and Jawbreaker), opened natively like the RTL-SDRs.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="6089", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="604b", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+# Airspy R2 / Mini (libairspy) and USRP B200 / B210 / B200mini / B205mini / B206mini (UHD), for when
 # their drivers are installed — UHD's and libairspy's own packages usually
 # add these too.
 SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="60a1", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0020", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0021", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0022", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0023", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="3923", ATTRS{idProduct}=="7813", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="3923", ATTRS{idProduct}=="7814", MODE="0660", GROUP="plugdev", TAG+="uaccess"

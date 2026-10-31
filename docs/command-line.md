@@ -119,7 +119,7 @@ trunk-pro --log-level debug
 trunk-pro devices [--usrp [args]]
 ```
 
-Lists the RTL-SDRs it can see (model and serial number), then whether the optional Airspy
+Lists the RTL-SDRs it can see (model and serial number; one the app is recording from is shown as `recording`, not opened) and the HackRFs, then whether the optional Airspy
 (libairspy), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy and
 bladeRF it lists the devices: Airspys with their model (R2 or Mini) and the sample rates they run
 at, bladeRFs with their full serials; for

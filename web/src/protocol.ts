@@ -10,7 +10,8 @@
 export type SampleFormat = "cu8" | "cs16" | "cf32";
 
 /**
- * A radio, or a capture to replay (`type`). Every type may have `autoTune`: correct its
+ * A radio, or a capture to replay (`type`), its own keys beside the ones every
+ * source has: `centerHz`, `rateHz`, `ppm`, and `autoTune`: correct its
  * channels for the frequency error measured on the control channels (Trunk
  * Recorder's autoTune); the error is measured and shown either way. And
  * `guardHz`: left unused at each edge of its band, where the anti-alias filter
@@ -19,12 +20,15 @@ export type SampleFormat = "cu8" | "cs16" | "cf32";
 export type Source = (
   /**
    * `agc`: the tuner's AGC instead of `gainDb`. `bufLen`: bytes per USB transfer (Trunk Recorder's
-   * buflen), a multiple of 512, 0 = the driver's 262144; several dongles on one USB 2.0 bus want 65536.
-   * `buffers`: transfers in flight, 0 = enough for about 2 MiB. Desktop app only.
+   * buflen), a multiple of 512, 0 = the driver's 16384 bytes.
+   * `buffers`: transfers in flight, 0 = the driver's 128 (about 2 MiB). Desktop app only.
    */
-  | { type: "rtlsdr"; serial: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; ppm: number; bufLen?: number; buffers?: number }
-  /** USRP through UHD (desktop app, UHD installed). `args` "" = first found; `agc` the device's AGC (B200/B210). */
-  | { type: "usrp"; args: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; antenna: string; ppm: number }
+  | { type: "rtlsdr"; serial: string; gainDb: number; agc: boolean; bufLen?: number; buffers?: number }
+  /**
+   * USRP through UHD (desktop app, UHD installed). `args` "" = first found; `agc` the device's AGC (B200/B210).
+   * `wireFormat`: samples on the wire, "sc16", "sc12" (B2xx), "sc8"; "" or absent = sc16, or sc12 for a B2xx on USB 2.0 above 8 MSPS.
+   */
+  | { type: "usrp"; args: string; gainDb: number; agc: boolean; antenna: string; wireFormat?: string }
   /**
    * Airspy R2 / Mini through libairspy (desktop app). `gainStep`: a 0–21 step of the linearity or sensitivity
    * table (`gainMode`); "manual": each stage's step, LNA 0–14, mixer 0–15, VGA 0–15, with `agc` the Airspy's own on LNA and mixer.
@@ -32,8 +36,6 @@ export type Source = (
   | {
       type: "airspy";
       serial: string;
-      centerHz: number;
-      rateHz: number;
       gainMode: AirspyGainMode;
       gainStep: number;
       lnaStep: number;
@@ -43,21 +45,33 @@ export type Source = (
       biasTee: boolean;
       /** 12-bit samples packed on the USB: a quarter less of the bus (default true). */
       packing: boolean;
-      ppm: number;
     }
   /**
    * bladeRF 2.0 micro (xA4 / xA9) or original bladeRF through libbladeRF (desktop app). `serial` "" = the first;
    * `bandwidthHz` the analog filter, 0 = the sample rate; `agc` the board's AGC instead of `gainDb`; `biasTee` bladeRF 2.0 only.
    */
-  | { type: "bladerf"; serial: string; centerHz: number; rateHz: number; bandwidthHz: number; gainDb: number; agc: boolean; biasTee: boolean; ppm: number }
+  | { type: "bladerf"; serial: string; bandwidthHz: number; gainDb: number; agc: boolean; biasTee: boolean }
+  /**
+   * HackRF One, natively (desktop app; nothing to install). `serial` "" = the first. Gain by stage: `lnaDb` the IF LNA
+   * 0–40 (8 dB steps), `vgaDb` the baseband VGA 0–62 (2 dB steps), `amp` the +14 dB RF amp; `biasTee` powers an LNA on the antenna port.
+   */
+  | { type: "hackrf"; serial: string; lnaDb: number; vgaDb: number; amp: boolean; biasTee: boolean }
   /**
    * Any SDR with a SoapySDR module (desktop app). `args` "" = first found ("driver=hackrf,serial=…");
    * `agc` the device's AGC; else `gainDb` overall (null: left as it is), then each stage in `gains`
    * (HackRF LNA / VGA / AMP …); `settings` device settings ("biastee=true").
    */
-  | { type: "soapy"; args: string; centerHz: number; rateHz: number; agc: boolean; gainDb: number | null; gains: Record<string, number>; antenna: string; settings: string; ppm: number }
-  | { type: "file"; path: string; centerHz: number; rateHz: number; realtime: boolean; format?: SampleFormat }
-) & { autoTune?: boolean; guardHz?: number };
+  | { type: "soapy"; args: string; agc: boolean; gainDb: number | null; gains: Record<string, number>; antenna: string; settings: string }
+  | { type: "file"; path: string; realtime: boolean; format?: SampleFormat }
+) & {
+  /** Its centre, Hz; 0 = placed over the channels it's for. */
+  centerHz: number;
+  rateHz: number;
+  /** Its frequency error, ppm (a capture's: 0). */
+  ppm: number;
+  autoTune?: boolean;
+  guardHz?: number;
+};
 
 export type AirspyGainMode = "linearity" | "sensitivity" | "manual";
 
@@ -96,6 +110,8 @@ export interface SoapyState extends DriverState {
 }
 export interface Radios {
   usrp: DriverState;
+  /** Built in: always available. */
+  hackrf: DriverState;
   airspy: DriverState;
   bladerf: DriverState;
   soapy?: SoapyState;
@@ -758,6 +774,8 @@ export interface SourceStatus {
   ended: boolean;
   /** Its frequency error, ppm (+: signals come in high): the median of its last control channel and call measurements; null until measured. */
   errorPpm?: number | null;
+  /** The radio's crystal error, measured from its sample clock against this computer's clock, ppm (+: fast); null until measured (about 10 s). */
+  clockPpm?: number | null;
   /** The correction autoTune applies now, ppm. */
   tunePpm?: number;
   /** The correction is an earlier run's score (nothing measured yet). */

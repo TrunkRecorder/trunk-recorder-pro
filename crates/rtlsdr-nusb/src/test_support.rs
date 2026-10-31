@@ -29,6 +29,9 @@ pub(crate) struct FakeState {
     pub(crate) control_out_requests: Mutex<Vec<OutRequest>>,
     pub(crate) fail_control_out: AtomicBool,
     pub(crate) fail_control_out_at: AtomicUsize,
+    /// Control writes refused (STALL) from this call number on, this many times.
+    pub(crate) stall_control_out_at: AtomicUsize,
+    pub(crate) stall_control_out_times: AtomicUsize,
     pub(crate) pause_control_out_at: AtomicUsize,
     pub(crate) pause_clear_halt: AtomicBool,
     pub(crate) fail_bulk_completion: AtomicBool,
@@ -51,6 +54,8 @@ impl Default for FakeState {
             control_out_requests: Default::default(),
             fail_control_out: Default::default(),
             fail_control_out_at: Default::default(),
+            stall_control_out_at: Default::default(),
+            stall_control_out_times: Default::default(),
             pause_control_out_at: Default::default(),
             pause_clear_halt: Default::default(),
             fail_bulk_completion: Default::default(),
@@ -70,9 +75,13 @@ pub(crate) enum FakeEvent {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FakeTransport {
     pub(crate) state: Arc<FakeState>,
+    pub(crate) link: Arc<crate::usb::Link>,
 }
 
 impl ControlBackend for FakeTransport {
+    fn link(&self) -> &crate::usb::Link {
+        &self.link
+    }
     fn control_in(&self, request: InRequest) -> impl MaybeFuture<Output = Result<Vec<u8>>> + use<> {
         FakeTransportIn {
             state: Arc::clone(&self.state),
@@ -119,12 +128,22 @@ impl std::future::IntoFuture for FakeTransportOut {
                 }
             })
             .await;
+            let stall_at = self.state.stall_control_out_at.load(Ordering::SeqCst);
             if self.state.fail_control_out.load(Ordering::SeqCst)
                 || self.state.fail_control_out_at.load(Ordering::SeqCst) == call
             {
                 Err(nusb::transfer::TransferError::Fault.into())
+            } else if stall_at != 0
+                && call >= stall_at
+                && self
+                    .state
+                    .stall_control_out_times
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_ok()
+            {
+                Err(nusb::transfer::TransferError::Stall.into())
             } else {
-                if self.request.index == 0x210
+                if (self.request.index == 0x210 || self.request.index == 0x110)
                     && let Some(value) = self.request.data.first()
                 {
                     self.state
@@ -179,6 +198,7 @@ pub(crate) struct FakeBulkIn {
     pub(crate) submit_count: usize,
     pub(crate) pending_once: bool,
     pub(crate) fail_next: bool,
+    pub(crate) stall_next: bool,
     pub(crate) short_next: bool,
     pub(crate) timeout_next: bool,
     pub(crate) last_timeout: Option<Duration>,
@@ -199,7 +219,9 @@ impl FakeBulkIn {
             .submitted
             .pop_front()
             .expect("fake endpoint has submitted buffers");
-        let status = if std::mem::take(&mut self.fail_next)
+        let status = if std::mem::take(&mut self.stall_next) {
+            Err(nusb::transfer::TransferError::Stall.into())
+        } else if std::mem::take(&mut self.fail_next)
             || self
                 .state
                 .fail_bulk_completion
@@ -319,7 +341,7 @@ impl FakeTransportIn {
             }
             return Ok(data);
         }
-        if self.request.index == 0x200 {
+        if self.request.index == 0x200 || self.request.index == 0x100 {
             return Ok(vec![
                 *self
                     .state

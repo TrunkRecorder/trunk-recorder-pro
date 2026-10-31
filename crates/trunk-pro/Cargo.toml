@@ -19,8 +19,10 @@ trunk-app.workspace = true
 trunk-recorder-plugin.workspace = true
 serde_json.workspace = true
 rtlsdr-nusb = "0.3"
-# Asking whether a dongle is free (sdr::devices): the version rtlsdr-nusb uses.
+# Asking whether a dongle is free (radio::rtl::devices): the version rtlsdr-nusb uses.
 nusb = "0.2"
+# sdr-core for HackRF's types (and sdr-hackrf's).
+sdr-core = "0.1"
 # USRP (UHD) and Airspy (libairspy) are loaded at run time when installed.
 libloading = "0.8"
 num-complex.workspace = true
@@ -49,6 +51,11 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system", 
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+# HackRF, pure Rust over the same nusb (MimoCAD). Not on Windows: its control
+# transfers are the device's, which nusb has only through an interface there.
+[target.'cfg(not(windows))'.dependencies]
+sdr-hackrf = "0.1"
 
 [target."cfg(unix)".dependencies]
 libc = "0.2.190"

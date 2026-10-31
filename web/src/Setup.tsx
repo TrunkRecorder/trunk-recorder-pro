@@ -602,8 +602,8 @@ function DriverMissing(props: { kind: Source["type"]; detail: string }) {
   );
 }
 
-/** A radio picked by serial from those its driver found (Airspy, bladeRF). */
-function SerialPicker(props: { kind: "airspy" | "bladerf"; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
+/** A radio picked by serial from those its driver found (Airspy, bladeRF, HackRF). */
+function SerialPicker(props: { kind: "airspy" | "bladerf" | "hackrf"; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
   const s = useApp();
   const { kind, serial, used } = props;
   const k = SOURCE_KINDS[kind];
@@ -692,33 +692,24 @@ function PpmField(props: { src: Exclude<Source, { type: "file" }>; edit: EditSou
   );
 }
 
-/** USB transfer sizes offered (Trunk Recorder's buflen), bytes; 0 = the driver's 256 KiB. */
-const BUF_LENS = [0, 131_072, 65_536, 32_768, 16_384];
-/** As many RTL-SDRs as this at 2 MS/s or more get the advice (as `Config::rtl_buflen_hint`). */
-const RTL_BUSY_COUNT = 4;
+/** USB transfer sizes offered (Trunk Recorder's buflen), bytes; 0 = the driver's 16 KiB. */
+const BUF_LENS = [0, 262_144, 131_072, 65_536, 32_768];
 
 /**
- * An RTL-SDR's USB transfer size: smaller transfers let several dongles take
- * turns on one USB 2.0 bus without any of their small FIFOs overflowing.
+ * An RTL-SDR's USB transfer size. The driver's default (16 KiB, 128 in flight) needs no
+ * tuning for several dongles on one bus; a larger one is Trunk Recorder's buflen.
  */
-function UsbTransfers(props: { src: Extract<Source, { type: "rtlsdr" }>; sources: Source[]; devices: Device[]; edit: EditSource }) {
-  const { src, sources, devices, edit } = props;
+function UsbTransfers(props: { src: Extract<Source, { type: "rtlsdr" }>; edit: EditSource }) {
+  const { src, edit } = props;
   const len = src.bufLen ?? 0;
-  const busy = sources.filter((x) => x.type === "rtlsdr" && x.rateHz >= 2_000_000).length;
-  const mine = devices.find((d) => (src.serial ? d.serial === src.serial : true));
-  const onBus = mine?.bus ? devices.filter((d) => d.bus === mine.bus).length : null;
-  const crowded = busy >= RTL_BUSY_COUNT && (onBus === null || onBus >= RTL_BUSY_COUNT);
-  const hint =
-    crowded && len === 0
-      ? `${busy} dongles at full rate${onBus !== null ? `, ${onBus} on this USB bus` : ""}: 64 KiB recommended`
-      : "Smaller helps several dongles share one USB 2.0 bus (Trunk Recorder's buflen)";
+  const hint = "The default (16 KiB, 128 in flight, about 2 MiB) is right for one dongle or several; larger matches Trunk Recorder's buflen";
   const kib = (n: number) => `${n / 1024} KiB`;
   return (
     <Field label="USB transfer size" hint={hint}>
       <select value={len} onChange={(e) => edit((x) => x.type === "rtlsdr" && void (x.bufLen = Number(e.target.value)))}>
         {BUF_LENS.map((n) => (
           <option key={n} value={n}>
-            {n === 0 ? "256 KiB (default)" : kib(n)}
+            {n === 0 ? "16 KiB (default)" : kib(n)}
           </option>
         ))}
         {!BUF_LENS.includes(len) && <option value={len}>{len % 1024 ? `${len} bytes` : kib(len)}</option>}
@@ -842,6 +833,31 @@ function AirspyGainFields(props: { src: Extract<Source, { type: "airspy" }>; edi
   );
 }
 
+/** A HackRF's gain stages: the IF LNA (8 dB steps), the baseband VGA (2 dB steps) and the +14 dB RF amp. */
+function HackrfGainFields(props: { src: Extract<Source, { type: "hackrf" }>; edit: EditSource }) {
+  const { src, edit } = props;
+  const range = (max: number, step: number) => Array.from({ length: max / step + 1 }, (_, n) => n * step);
+  const pick = (k: "lnaDb" | "vgaDb", label: string, hint: string, max: number, step: number) => (
+    <Field label={label} hint={hint}>
+      <select value={src[k]} aria-label={label} onChange={(e) => edit((x) => x.type === "hackrf" && void (x[k] = Number(e.target.value)))}>
+        {!range(max, step).includes(src[k]) && <option value={src[k]}>{src[k]} dB</option>}
+        {range(max, step).map((n) => (
+          <option key={n} value={n}>
+            {n} dB
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+  return (
+    <>
+      {pick("lnaDb", "LNA (IF) gain", "0–40 dB in 8 dB steps; the stage that matters most", 40, 8)}
+      {pick("vgaDb", "VGA (baseband) gain", "0–62 dB in 2 dB steps", 62, 2)}
+      <Toggle label="Amp" hint="+14 dB — leave off near strong signals: it overloads easily" checked={src.amp} onChange={(v) => edit((x) => x.type === "hackrf" && void (x.amp = v))} />
+    </>
+  );
+}
+
 /** Stage names SoapySDR modules commonly have. */
 const SOAPY_STAGES = ["LNA", "VGA", "AMP", "MIX", "IF", "BB", "TIA", "PGA", "IFGR", "RFGR", "VGA1", "VGA2", "LNAGR"];
 
@@ -890,7 +906,7 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
 
 
 /** `fresh`: just added (measuring its roll-off is offered). */
-function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
+export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
   const s = useApp();
   const { c, i } = props;
   const src = c.sources[i];
@@ -988,7 +1004,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             </div>
           </Field>
         )}
-        {src.type === "rtlsdr" && can("drivers") && <UsbTransfers src={src} sources={c.sources} devices={s.devices} edit={edit} />}
+        {src.type === "rtlsdr" && can("drivers") && <UsbTransfers src={src} edit={edit} />}
         {missing && <DriverMissing kind={src.type} detail={driverState.detail} />}
         {src.type === "usrp" && !missing && (
             <Field
@@ -1027,14 +1043,24 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             <TextInput className="mono" value={src.antenna} placeholder="default" onChange={(v) => edit((x) => x.type === "usrp" && void (x.antenna = v))} />
           </Field>
         )}
-        {(src.type === "airspy" || src.type === "bladerf") && !missing && (
+        {src.type === "usrp" && (
+          <Field label="Wire format" hint="Samples on the USB or network link: sc12 and sc8 take less of it, at some cost in range">
+            <select value={src.wireFormat ?? ""} aria-label="Wire format" onChange={(e) => edit((x) => x.type === "usrp" && void (x.wireFormat = e.target.value || undefined))}>
+              <option value="">Auto — sc16, or sc12 for a B2xx on USB 2.0 above 8 MSPS</option>
+              <option value="sc16">sc16</option>
+              <option value="sc12">sc12 (B2xx)</option>
+              <option value="sc8">sc8</option>
+            </select>
+          </Field>
+        )}
+        {(src.type === "airspy" || src.type === "bladerf" || src.type === "hackrf") && !missing && (
           <SerialPicker
             kind={src.type}
             serial={src.serial}
             used={used}
             onChange={(v) =>
               edit((x) => {
-                if (x.type !== "airspy" && x.type !== "bladerf") return;
+                if (x.type !== "airspy" && x.type !== "bladerf" && x.type !== "hackrf") return;
                 x.serial = v;
                 // Radios of one kind can run at different rates (an Airspy R2 and a Mini): start at one the picked radio does.
                 x.rateHz = rateFor(x.rateHz, foundRadio(s.radios, x));
@@ -1055,6 +1081,9 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         )}
         {src.type === "bladerf" && (
           <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable (bladeRF 2.0)" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "bladerf" && void (x.biasTee = v))} />
+        )}
+        {src.type === "hackrf" && (
+          <Toggle label="Bias-T" hint="Powers an LNA via the antenna port (up to 50 mA)" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "hackrf" && void (x.biasTee = v))} />
         )}
         {src.type === "soapy" &&
           (missing ? null : (
@@ -1188,7 +1217,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         <Group
           title="Gain"
           hint={`${src.type === "airspy" ? "A preset, or each stage set by hand." : "Too little loses weak signals; too much overloads near strong ones."} ${
-            SOURCE_KINDS[src.type].liveAgc ? "Changes apply at once, also while recording." : "The gain in dB applies at once, also while recording; AGC on or off when recording starts."
+            SOURCE_KINDS[src.type].liveAgc || src.type === "hackrf" ? "Changes apply at once, also while recording." : "The gain in dB applies at once, also while recording; AGC on or off when recording starts."
           }`}
         >
           {src.type === "rtlsdr" && (
@@ -1216,6 +1245,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             </Field>
           )}
           {src.type === "airspy" && <AirspyGainFields src={src} edit={edit} />}
+          {src.type === "hackrf" && <HackrfGainFields src={src} edit={edit} />}
           {src.type === "soapy" && (
             <>
               <Field label="Gain, dB">

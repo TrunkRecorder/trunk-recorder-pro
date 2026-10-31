@@ -41,7 +41,6 @@ use serde_json::{json, Value};
 use crate::access::{self, Door};
 use crate::config::{ApiAccess, Config};
 use crate::runtime::{self, publish, Ctx, Out};
-use crate::sdr;
 
 #[derive(RustEmbed)]
 #[folder = "../../web/dist/"]
@@ -434,7 +433,7 @@ pub(crate) fn access_of(ctx: &Ctx, door: &Door) -> Option<ApiAccess> {
 }
 
 pub(crate) fn devices() -> ToClient {
-    ToClient::Devices { devices: json!(sdr::devices()) }
+    ToClient::Devices { devices: json!(crate::radio::rtl::devices()) }
 }
 
 /// The `dir` message, for the interface's folder picker: a folder on this
@@ -528,7 +527,7 @@ pub(crate) fn tr_config(path: &str) -> ToClient {
 /// connection gets the config without secrets ([`Out::of`]).
 pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
     let ctx2 = ctx.clone();
-    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(sdr::devices())), crate::radio::radios_json(false), runtime::history(&ctx2), kept_now(&ctx2))).await;
+    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(crate::radio::rtl::devices())), crate::radio::radios_json(false), runtime::history(&ctx2), kept_now(&ctx2))).await;
     let (devices, radios, history, kept) = found.unwrap_or((None, Value::Null, ToClient::History { entries: Vec::new(), next: None }, Vec::new()));
     let mut m = greeting_now(ctx, devices, radios, history, kept);
     if control {

@@ -28,6 +28,8 @@ function gainText(c: Source | undefined): string {
       return c.gainMode === "manual" ? (c.agc ? `AGC (VGA ${c.vgaStep})` : `LNA ${c.lnaStep} · mixer ${c.mixerStep} · VGA ${c.vgaStep}`) : `${c.gainMode} ${c.gainStep}`;
     case "bladerf":
       return c.agc ? "AGC" : `${c.gainDb} dB${c.biasTee ? " · bias-T" : ""}`;
+    case "hackrf":
+      return `LNA ${c.lnaDb} · VGA ${c.vgaDb}${c.amp ? " · amp" : ""}${c.biasTee ? " · bias-T" : ""}`;
     case "soapy":
       return c.agc ? "AGC" : c.gainDb !== null ? `${formatGain(c.gainDb)} dB` : Object.entries(c.gains ?? {}).map(([k, v]) => `${k} ${formatGain(v)}`).join(" · ") || "default";
     case "file":
@@ -68,7 +70,12 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           label="Frequency error"
           value={src.errorPpm == null ? "—" : signed(src.errorPpm, 2)}
           unit="ppm"
-          sub={autoTuneOf(cfg) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}${src.tuneSeeded ? " (last run's)" : ""}` : src.errorPpm == null ? "needs a digital call or control channel" : "not corrected (AutoTune off)"}
+          sub={
+            <>
+              {autoTuneOf(cfg) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}${src.tuneSeeded ? " (last run's)" : ""}` : src.errorPpm == null ? "needs a digital call or control channel" : "not corrected (AutoTune off)"}
+              {src.clockPpm != null && <div>Sample clock {signed(src.clockPpm, 2)} ppm against this computer</div>}
+            </>
+          }
           spark={small ? undefined : <LiveSpark k={K.src(src.label, "ppm")} color="var(--series-2)" minSpan={1} title="Measured error, last 10 min" />}
           hint="The median of the last 20 measurements, on control channels and digital calls (P25, NXDN). Steady: set ppm; drifting: temperature."
         />

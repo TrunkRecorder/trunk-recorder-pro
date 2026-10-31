@@ -114,7 +114,7 @@ what follows.
   another.
 - **Only one program can use a dongle.** Quit SDR#, SDR++, GQRX, `rtl_tcp`, another recorder, and
   `trunk-pro capture`.
-- **Linux: permission.** `install.sh` adds a udev rule for you. Without it, add one and replug the
+- **Linux: permission.** `install.sh` adds a udev rule for you (it covers HackRFs too). Without it, add one and replug the
   dongle:
 
   ```bash
@@ -156,6 +156,19 @@ USB trouble shows as `Source 0: <error>` (sources counted from 0) in the log and
 `USB: …`, `USB stream timed out`). The app reopens the dongle by itself after 2 seconds, so a
 dongle that was unplugged and plugged back in carries on. If it keeps happening, suspect the cable,
 the hub or the power supply (a Raspberry Pi with a weak supply is a common one).
+
+Opening a radio, and searching for one, gives up after a deadline (5 s for an RTL-SDR, HackRF or
+Airspy; 15 s for a bladeRF or SoapySDR device; 30 s for a USRP). A radio whose firmware is stuck says:
+
+```text
+<radio> isn't answering (its firmware is stuck): unplug it and plug it back in, or power-cycle its USB hub
+```
+
+Do that; the other radios keep opening meanwhile. An RTL-SDR or HackRF whose USB stream is stuck is
+reopened, with `keeps sending the same samples over and over (its USB stream is stuck, so the
+waterfall stands still)` or `sends samples at N× its sample rate …`.
+
+A HackRF with firmware older than 2021.03 is refused when opened: update it with `hackrf_spiflash`.
 
 ## The control channel isn't decoding
 
@@ -247,11 +260,19 @@ doesn't collect them in time, they're lost. Causes, most likely first:
 - **CPU.** Check the Platform page and **Decoding load** on the Overview. A lower sample rate,
   fewer sources, or a faster computer helps.
 - **USB.** Several dongles on one hub or one bus, a long or poor cable, or a Raspberry Pi with a weak
-  power supply. Spread dongles across ports. With 4 or more RTL-SDRs on one USB 2.0 bus, set
-  **USB transfer size** to 64 KiB on each (`bufLen: 65536`, Trunk Recorder's `buflen`): see
-  [several dongles on one USB bus](configuration/sources.md#type-rtlsdr). An RTL-SDR can't report
-  these losses itself; the recorder notices them as samples falling behind the clock and logs
-  "lost without its driver saying so".
+  power supply. Spread dongles across ports. An RTL-SDR reports the samples its chip dropped at each
+  retune or gain change; losses the driver doesn't report show up as samples falling behind the
+  clock and are logged as "lost without its driver saying so".
+- **A busy computer.** If the queue to the decoder is full, the block is dropped there and counted
+  (the gap is filled), rather than letting the radio's own buffer overflow unseen. Receive threads run
+  at real-time priority on macOS and Linux. On Linux that needs `CAP_SYS_NICE`; if it is refused, the log
+  says once "can't run at real-time priority". Allow it with
+  `sudo setcap cap_sys_nice+ep $(which trunk-pro)` (again after each update). A user systemd unit
+  can't grant it. File capabilities make the dynamic loader ignore `LD_LIBRARY_PATH`, so if UHD or
+  SoapySDR are found only through it (radioconda, `/opt` installs), name the library with
+  `TRUNK_PRO_UHD` / `TRUNK_PRO_SOAPY` (the path of the library file), or skip `setcap`.
+- **Linux: "usbfs_memory_mb".** A USB transfer refused for lack of memory means the radios' transfers
+  have used up Linux's USB memory (16 MB by default). The message gives the command to raise it.
 - **Something else on the computer** hogging it for a moment (a backup, a screen-sharing session).
 
 **Airspys** hand their samples over through libairspy, whose own thread drops a buffer
@@ -261,7 +282,7 @@ If an Airspy's channels ever look wrong (nothing decodes, or the spectrum looks 
 the recorder with `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` to have libairspy convert as before, and tell us.
 
 **USRPs** have a very small buffer by default, so the app asks UHD for a bigger one
-(`num_recv_frames=256`, about 65 ms) unless your device arguments set `num_recv_frames`
+(`num_recv_frames=1024`, about 260 ms at 8 MSPS) unless your device arguments set `num_recv_frames`
 themselves. Other USRP messages: `USRP can't run at … MSPS (it offers …); set that sample rate`
 (pick a rate the device supports) and `USRP: no samples for 3 s`.
 

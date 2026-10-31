@@ -25,10 +25,10 @@ use trunk_app::{Feeder, Output, Session};
 
 use crate::db::Change;
 use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
-use crate::config::{AirspyGain, Config, SampleFormat, Source};
+use crate::config::{AirspyGain, Config, SampleFormat, Source, SourceKind};
 use crate::plugins::{self, FileRules, PluginHost};
-use crate::radio::{airspy, bladerf, soapy, uhd};
-use crate::sdr::{self, Control, Gain, RtlConfig, SourceMsg};
+use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, uhd};
+use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
 
 /// A message for the connected browsers, serialized once for all of them.
 pub enum Out {
@@ -357,24 +357,28 @@ pub struct Runner {
 pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
     // `old` with `new`'s gain: equal to `new` when only the gain differs.
     let mut o = old.clone();
-    let gain = match (&mut o, new) {
-        (Source::Rtlsdr { gain_db, agc, .. }, Source::Rtlsdr { gain_db: g, agc: a, .. }) => {
+    let gain = match (&mut o.kind, &new.kind) {
+        (SourceKind::Rtlsdr { gain_db, agc, .. }, SourceKind::Rtlsdr { gain_db: g, agc: a, .. }) => {
             (*gain_db, *agc) = (*g, *a);
             if *a { Gain::Agc } else { Gain::Db(*g as f32) }
         }
         (
-            Source::Airspy { gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, .. },
-            Source::Airspy { gain_mode: m, gain_step: g, lna_step: l, mixer_step: x, vga_step: v, agc: a, .. },
+            SourceKind::Airspy { gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, .. },
+            SourceKind::Airspy { gain_mode: m, gain_step: g, lna_step: l, mixer_step: x, vga_step: v, agc: a, .. },
         ) => {
             (*gain_mode, *gain_step, *lna_step, *mixer_step, *vga_step, *agc) = (*m, *g, *l, *x, *v, *a);
-            Gain::Airspy(airspy_gain(*m, *g, *l, *x, *v, *a))
+            airspy_gain(*m, *g, *l, *x, *v, *a)
         }
-        (Source::Usrp { gain_db, agc: false, .. }, Source::Usrp { gain_db: g, agc: false, .. })
-        | (Source::Bladerf { gain_db, agc: false, .. }, Source::Bladerf { gain_db: g, agc: false, .. }) => {
+        (SourceKind::Usrp { gain_db, agc: false, .. }, SourceKind::Usrp { gain_db: g, agc: false, .. })
+        | (SourceKind::Bladerf { gain_db, agc: false, .. }, SourceKind::Bladerf { gain_db: g, agc: false, .. }) => {
             *gain_db = *g;
             Gain::Db(*g as f32)
         }
-        (Source::Soapy { gain_db, agc: false, .. }, Source::Soapy { gain_db: Some(g), agc: false, .. }) => {
+        (SourceKind::Hackrf { lna_db, vga_db, amp, .. }, SourceKind::Hackrf { lna_db: l, vga_db: v, amp: a, .. }) => {
+            (*lna_db, *vga_db, *amp) = (*l, *v, *a);
+            Gain::Stages(hackrf_gain(*l, *v, *a))
+        }
+        (SourceKind::Soapy { gain_db, agc: false, .. }, SourceKind::Soapy { gain_db: Some(g), agc: false, .. }) => {
             *gain_db = Some(*g);
             Gain::Db(*g as f32)
         }
@@ -476,11 +480,6 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_sharing(&kept::read(&ctx.db, Kind::Sharing, "").unwrap_or_default());
     session.load_tune(&kept::read(&ctx.db, Kind::Tune, "").unwrap_or_default());
     ctx.plugins.start(&cfg, plugin_calls(&ctx));
-    if cfg.sources.iter().any(|s| matches!(s, Source::Rtlsdr { .. })) {
-        if let Some(hint) = cfg.rtl_buflen_hint(sdr::rtl_most_on_a_bus()) {
-            log::warn!("{hint}");
-        }
-    }
     let stop = Arc::new(AtomicBool::new(false));
     // Each source's samples queue for its own decoding thread ([`feed_source`]).
     let mut queues = Vec::new();
@@ -636,23 +635,31 @@ pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &
 /// start their sources this way.
 pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<sdr::Control>>, name: &str) -> std::io::Result<JoinHandle<()>> {
     let src = src.clone();
-    std::thread::Builder::new().name(name.to_string()).spawn(move || match src {
-        Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, buf_len, buffers, .. } => {
-            sdr::run_with(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers }, tx, stop, ctl)
+    std::thread::Builder::new().name(name.to_string()).spawn(move || {
+        let Source { kind, rate_hz, ppm, .. } = src;
+        match kind {
+            SourceKind::Rtlsdr { serial, gain_db, agc, buf_len, buffers } => {
+                sdr::run_with(i, rtl::RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers }, tx, stop, ctl)
+            }
+            SourceKind::Usrp { args, gain_db, agc, antenna, wire_format } => {
+                sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm, wire_format }, tx, stop, ctl)
+            }
+            SourceKind::Hackrf { serial, lna_db, vga_db, amp, bias_tee } => {
+                sdr::run_with(i, hackrf::HackrfConfig { serial, center_hz: center, rate_hz, gain: hackrf_gain(lna_db, vga_db, amp), bias_tee, ppm }, tx, stop, ctl)
+            }
+            SourceKind::Airspy { serial, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing } => {
+                let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
+                sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
+            }
+            SourceKind::Bladerf { serial, bandwidth_hz, gain_db, agc, bias_tee } => {
+                sdr::run_with(i, bladerf::BladerfConfig { serial, center_hz: center, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm }, tx, stop, ctl)
+            }
+            SourceKind::Soapy { args, agc, gain_db, gains, antenna, settings } => {
+                let gains = gains.into_iter().collect();
+                sdr::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, ctl)
+            }
+            SourceKind::File { path, realtime, format } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
         }
-        Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop, ctl),
-        Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
-            let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
-            sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
-        }
-        Source::Bladerf { serial, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm, .. } => {
-            sdr::run_with(i, bladerf::BladerfConfig { serial, center_hz: center, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm }, tx, stop, ctl)
-        }
-        Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
-            let gains = gains.into_iter().collect();
-            sdr::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, ctl)
-        }
-        Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
     })
 }
 
@@ -669,7 +676,8 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
     let chunk = 32768 * bps;
     let t0 = Instant::now();
     let mut sent = 0u64;
-    let pool = crate::sdr::Pool::default();
+    // (Waits for room: a capture loses nothing, whatever its pace.)
+    let mut sink = sdr::Sink::new(source, tx.clone(), rate_hz, false);
     let mut buf = vec![0u8; chunk];
     while !stop.load(Ordering::Relaxed) {
         buf.resize(chunk, 0);
@@ -679,11 +687,11 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
         }
         buf.truncate(n - n % bps);
         sent += (buf.len() / bps) as u64;
-        let msg = match format {
-            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: pool.copy(&buf), dropped: 0, at: Instant::now() },
-            _ => SourceMsg::Iq { source, samples: trunk_app::samples::to_iq(format, &buf), dropped: 0, at: Instant::now() },
+        let open = match format {
+            SampleFormat::Cu8 => sink.bytes(sdr::Wire::Offset, &buf, 0, Instant::now()),
+            _ => sink.iq(&trunk_app::samples::to_iq(format, &buf), 0, Instant::now()),
         };
-        if tx.send(msg).is_err() {
+        if !open {
             return;
         }
         if realtime {
@@ -693,6 +701,7 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
             }
         }
     }
+    drop(sink);
     let _ = tx.send(SourceMsg::End { source });
 }
 
@@ -709,13 +718,19 @@ fn read_full(f: &mut fs::File, buf: &mut [u8]) -> usize {
 }
 
 /// An Airspy's gain settings, as its driver takes them.
-pub fn airspy_gain(mode: AirspyGain, gain: u8, lna: u8, mixer: u8, vga: u8, agc: bool) -> airspy::AirspyGain {
+/// An Airspy source's gain: a step of one of libairspy's tables, or its stages (its AGC running the LNA and mixer).
+pub fn airspy_gain(mode: AirspyGain, gain: u8, lna: u8, mixer: u8, vga: u8, agc: bool) -> Gain {
     match mode {
-        AirspyGain::Manual if agc => airspy::AirspyGain::Agc { vga },
-        AirspyGain::Manual => airspy::AirspyGain::Manual { lna, mixer, vga },
-        AirspyGain::Sensitivity => airspy::AirspyGain::Sensitivity(gain),
-        AirspyGain::Linearity => airspy::AirspyGain::Linearity(gain),
+        AirspyGain::Manual if agc => Gain::Stages(Stages::default().agc().with(Stage::Vga, vga as f32)),
+        AirspyGain::Manual => Gain::Stages(Stages::default().with(Stage::Lna, lna as f32).with(Stage::Mixer, mixer as f32).with(Stage::Vga, vga as f32)),
+        AirspyGain::Sensitivity => Gain::Preset(Preset::Sensitivity, gain),
+        AirspyGain::Linearity => Gain::Preset(Preset::Linearity, gain),
     }
+}
+
+/// A HackRF source's stages: LNA and VGA dB, the amp's 14 dB or none.
+pub fn hackrf_gain(lna_db: u16, vga_db: u16, amp: bool) -> Stages {
+    Stages::default().with(Stage::Lna, lna_db as f32).with(Stage::Vga, vga_db as f32).with(Stage::Amp, if amp { 14.0 } else { 0.0 })
 }
 
 pub(crate) fn local_offset(t: i64) -> i32 {
@@ -753,28 +768,30 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     // An instant on the same clock (when a driver handed samples over).
     let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
-    // (An Airspy's real samples become IQ here, on this thread: see [`crate::sdr::IqFrom`].)
-    let mut iqf = crate::sdr::IqFrom::default();
-    let mut take = |m: SourceMsg| match iqf.iq(m) {
-        SourceMsg::Data { source, bytes, dropped, at } => {
+    // (An Airspy's real samples become IQ here, on this thread.)
+    let mut rx = Inbox::new(rx);
+    let take = |m: SourceMsg| match m {
+        SourceMsg::Samples { source, block, dropped, at } => {
             debug_assert_eq!(source, feeder.source());
             air.keep_up(&stop);
-            feeder.push(&bytes, dropped, at_ms(at));
-            air.fed((bytes.len() / 2) as u64 + dropped);
+            match &block {
+                Block::U8(b) => feeder.push(b, dropped, at_ms(at)),
+                Block::Iq(b) => feeder.push_iq(b, dropped, at_ms(at)),
+                Block::Real16(_) => unreachable!("the inbox makes them I/Q"),
+            }
+            air.fed(block.len() as u64 + dropped);
         }
-        SourceMsg::Iq { source, samples, dropped, at } => {
-            debug_assert_eq!(source, feeder.source());
-            air.keep_up(&stop);
-            feeder.push_iq(&samples, dropped, at_ms(at));
-            air.fed(samples.len() as u64 + dropped);
-        }
+        // A change the radio halted for: quiet, not loss (recording ignores the retune itself).
+        SourceMsg::Tuned { gap, .. } => feeder.quiet(gap),
         m => {
             let _ = ctl.send(EngineCmd::Source(m));
         }
     };
     loop {
         if stop.load(Ordering::Relaxed) {
-            rx.try_iter().for_each(&mut take);
+            while let Ok(m) = rx.try_recv() {
+                take(m);
+            }
             return;
         }
         match rx.recv_timeout(Duration::from_millis(50)) {
@@ -844,11 +861,11 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         .map(|(i, q)| {
             let (f, ctl, stop) = (session.feeder(i), ctl_tx.clone(), stop.clone());
             let src = &cfg.sources[i];
-            let paced = !matches!(src, Source::File { realtime: false, .. });
+            let paced = !matches!(src.kind, SourceKind::File { realtime: false, .. });
             if paced {
                 at_ms[i].store(u64::MAX, Ordering::Relaxed);
             }
-            let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz(), samples: Default::default(), paced };
+            let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz, samples: Default::default(), paced };
             std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air)).expect("thread")
         })
         .collect();
@@ -1314,7 +1331,12 @@ mod live_tests {
         assert_eq!(live_gain(&blade(30.0, false), &blade(42.0, false)), Some(Gain::Db(42.0)), "a bladeRF's gain, live");
         assert_eq!(live_gain(&blade(30.0, false), &blade(30.0, true)), None, "bladeRF AGC waits for the start");
         let air = |lna: u8| src("airspy", json!({ "serial": "", "centerHz": 852e6, "rateHz": 6e6, "gainMode": "manual", "lnaStep": lna, "ppm": 0 }));
-        assert_eq!(live_gain(&air(10), &air(12)), Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 12, mixer: 10, vga: 10 })), "an Airspy's LNA, live");
+        assert_eq!(live_gain(&air(10), &air(12)), Some(airspy_gain(AirspyGain::Manual, 0, 12, 10, 10, false)), "an Airspy's LNA, live");
+        let hackrf = |lna: u16, amp: bool| src("hackrf", json!({ "serial": "", "centerHz": 852e6, "rateHz": 8e6, "lnaDb": lna, "vgaDb": 20, "amp": amp }));
+        let g = live_gain(&hackrf(16, false), &hackrf(24, true));
+        assert_eq!(g, Some(Gain::Stages(hackrf_gain(24, 20, true))), "a HackRF's stages, live");
+        assert_eq!(g.unwrap().to_string(), "AMP on · LNA 24 · VGA 20");
+        assert_eq!(airspy_gain(AirspyGain::Manual, 0, 0, 0, 7, true).to_string(), "AGC · VGA 7");
     }
 
     #[test]
@@ -1336,15 +1358,15 @@ mod live_tests {
         let old = [air("A1", 10), air("B2", 10), air("C3", 10)];
         // The second's LNA: only it.
         let one = r.live_sources(&old, &[air("A1", 10), air("B2", 14), air("C3", 10)]);
-        assert_eq!(one, vec![(1, Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 14, mixer: 10, vga: 10 })))]);
+        assert_eq!(one, vec![(1, Some(airspy_gain(AirspyGain::Manual, 0, 14, 10, 10, false)))]);
         assert_eq!((pending(0), pending(2)), (None, None), "the others are left alone");
         r.controls[1].take();
         // Two in one save, one of them to another mode: each its own.
         let two = r.live_sources(&old, &[lin("A1", 18), air("B2", 10), air("C3", 6)]);
         assert_eq!(two.len(), 2);
-        assert_eq!(pending(0), Some(Gain::Airspy(airspy::AirspyGain::Linearity(18))));
+        assert_eq!(pending(0), Some(Gain::Preset(Preset::Linearity, 18)));
         assert_eq!(pending(1), None);
-        assert_eq!(pending(2), Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 6, mixer: 10, vga: 10 })));
+        assert_eq!(pending(2), Some(airspy_gain(AirspyGain::Manual, 0, 6, 10, 10, false)));
         (r.controls[0].take(), r.controls[2].take());
         // Two swapped in Setup: another radio in each place, not a gain change.
         assert_eq!(r.live_sources(&old, &[air("B2", 10), air("A1", 10), air("C3", 10)]), vec![(0, None), (1, None)]);
