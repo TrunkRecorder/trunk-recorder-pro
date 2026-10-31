@@ -14,8 +14,6 @@ use std::time::{Duration, Instant};
 
 use num_complex::Complex32;
 
-use crate::radio::airspy::AirspyGain;
-use crate::radio::hackrf::HackrfGain;
 use crate::radio::priority;
 
 /// What a source thread sends.
@@ -290,17 +288,68 @@ pub struct Control {
     pub current_gain: Mutex<Option<Gain>>,
 }
 
+pub use sdr_core::gain::Stage;
+
 /// A gain for a running radio.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Gain {
-    /// Its AGC (RTL-SDR; an Airspy's is one of its [`Gain::Airspy`] settings).
+    /// Its AGC (an RTL-SDR's tuner AGC; an Airspy's runs its LNA and mixer, see [`Stages::agc`]).
     Agc,
-    /// A manual gain, dB.
+    /// One overall gain, dB: the radio spreads it over its stages.
     Db(f32),
-    /// An Airspy's preset or stages.
-    Airspy(AirspyGain),
-    /// A HackRF's stages.
-    Hackrf(HackrfGain),
+    /// Stage by stage (an Airspy's, a HackRF's).
+    Stages(Stages),
+    /// A step of one of the radio's own gain tables (libairspy's).
+    Preset(Preset, u8),
+}
+
+/// A radio's own table of gains, one step setting every stage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Preset {
+    Linearity,
+    Sensitivity,
+}
+
+/// Gain stage by stage ([`Stage`]: sdr-core's names), each in the radio's
+/// own count — an Airspy's steps (LNA 0–14, mixer and VGA 0–15), a HackRF's
+/// dB (its amp 0 or 14) — and whether its AGC runs the stages left out.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Stages {
+    levels: [Option<f32>; 5],
+    pub agc: bool,
+}
+
+impl Stages {
+    /// These, with `stage` at `level`.
+    pub fn with(mut self, stage: Stage, level: f32) -> Stages {
+        self.levels[stage.index()] = Some(level);
+        self
+    }
+    /// These, the radio's AGC running the stages left out.
+    pub fn agc(mut self) -> Stages {
+        self.agc = true;
+        self
+    }
+    /// The level set for `stage`, if any.
+    pub fn get(&self, stage: Stage) -> Option<f32> {
+        self.levels[stage.index()]
+    }
+}
+
+impl std::fmt::Display for Stages {
+    /// "AGC · VGA 10", "LNA 16 · VGA 20 · AMP on".
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut parts: Vec<String> = self.agc.then(|| "AGC".to_string()).into_iter().collect();
+        for s in Stage::ALL {
+            if let Some(v) = self.get(s) {
+                parts.push(match s {
+                    Stage::Amp => format!("AMP {}", if v > 0.0 { "on" } else { "off" }),
+                    _ => format!("{} {v}", s.label()),
+                });
+            }
+        }
+        write!(f, "{}", parts.join(" · "))
+    }
 }
 
 impl std::fmt::Display for Gain {
@@ -308,8 +357,9 @@ impl std::fmt::Display for Gain {
         match self {
             Gain::Agc => write!(f, "AGC"),
             Gain::Db(db) => write!(f, "{db} dB"),
-            Gain::Airspy(g) => write!(f, "{g}"),
-            Gain::Hackrf(g) => write!(f, "{g}"),
+            Gain::Stages(s) => write!(f, "{s}"),
+            Gain::Preset(Preset::Linearity, step) => write!(f, "linearity {step}"),
+            Gain::Preset(Preset::Sensitivity, step) => write!(f, "sensitivity {step}"),
         }
     }
 }

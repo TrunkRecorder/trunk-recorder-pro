@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use sdr_core::TuneRequest;
 
-use crate::sdr::{Control, Gain, Radio, Sink};
+use crate::sdr::{Control, Gain, Radio, Sink, Stage, Stages};
 
 #[derive(Clone, Debug)]
 pub struct HackrfConfig {
@@ -18,31 +18,24 @@ pub struct HackrfConfig {
     pub serial: String,
     pub center_hz: f64,
     pub rate_hz: f64,
-    pub gain: HackrfGain,
+    /// The IF LNA ([`Stage::Lna`], 0–40 dB in 8 dB steps), the baseband VGA
+    /// ([`Stage::Vga`], 0–62 dB in 2 dB steps), the +14 dB RF amp ([`Stage::Amp`],
+    /// on when above 0: off near strong signals, it overloads easily).
+    pub gain: Stages,
     /// Power an LNA over the antenna port.
     pub bias_tee: bool,
     pub ppm: f64,
 }
 
-/// A HackRF's gain, stage by stage.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct HackrfGain {
-    /// The IF LNA, 0–40 dB in 8 dB steps.
-    pub lna_db: u16,
-    /// The baseband VGA, 0–62 dB in 2 dB steps.
-    pub vga_db: u16,
-    /// The RF amp (+14 dB). Off near strong signals: it overloads easily.
-    pub amp: bool,
-}
-
-impl std::fmt::Display for HackrfGain {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "LNA {} · VGA {} dB{}", self.lna_db, self.vga_db, if self.amp { " · amp" } else { "" })
-    }
-}
-
 /// The oldest firmware that answers what a change while streaming needs (its
 /// byte count, sdr-hackrf's `m0_state`): 2021.03.
+/// The stages as the HackRF takes them: LNA and VGA dB, the amp on or off.
+#[cfg_attr(windows, allow(dead_code))]
+fn levels(s: &Stages) -> (u16, u16, bool) {
+    let db = |stage| s.get(stage).unwrap_or(0.0).max(0.0) as u16;
+    (db(Stage::Lna), db(Stage::Vga), s.get(Stage::Amp).is_some_and(|a| a > 0.0))
+}
+
 #[cfg_attr(windows, allow(dead_code))]
 const FIRMWARE_MIN: (u32, u32) = (2021, 3);
 
@@ -90,8 +83,8 @@ impl Radio for HackrfConfig {
         self.center_hz = hz;
     }
     fn gain_to(&mut self, g: Gain) {
-        if let Gain::Hackrf(g) = g {
-            self.gain = g;
+        if let Gain::Stages(s) = g {
+            self.gain = s;
         }
     }
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
@@ -133,14 +126,17 @@ mod native {
         }
         fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
             let r = match g {
-                Gain::Hackrf(g) => self.stream.reconfigure(async |h| {
-                    h.set_lna_gain(g.lna_db).await?;
-                    h.set_vga_gain(g.vga_db).await?;
-                    h.set_amp(g.amp).await
-                }),
+                Gain::Stages(s) => {
+                    let (lna, vga, amp) = super::levels(&s);
+                    self.stream.reconfigure(async |h| {
+                        h.set_lna_gain(lna).await?;
+                        h.set_vga_gain(vga).await?;
+                        h.set_amp(amp).await
+                    })
+                }
                 // (The survey's one number, split across the stages by the driver.)
                 Gain::Db(db) => self.stream.set_gain(db as f64).map(|b| ((), b)),
-                Gain::Agc | Gain::Airspy(_) => return Ok(0),
+                Gain::Agc | Gain::Preset(..) => return Ok(0),
             };
             r.map(|_| 0).map_err(|e| format!("gain {g}: {e}"))
         }
@@ -158,10 +154,11 @@ mod native {
                 FIRMWARE_MIN.0, FIRMWARE_MIN.1
             ));
         }
+        let (lna, vga, amp) = super::levels(&cfg.gain);
         let gain = |h: &mut HackRf| -> sdr_core::Result<()> {
-            h.set_lna_gain(cfg.gain.lna_db)?;
-            h.set_vga_gain(cfg.gain.vga_db)?;
-            h.set_amp(cfg.gain.amp)?;
+            h.set_lna_gain(lna)?;
+            h.set_vga_gain(vga)?;
+            h.set_amp(amp)?;
             h.set_bias_tee(cfg.bias_tee)
         };
         h.set_rate(cfg.rate_hz).and_then(|()| h.set_freq(&cfg.tune_request(cfg.center_hz)).map(drop)).and_then(|()| gain(&mut h)).map_err(|e| format!("{name}: {e}"))?;

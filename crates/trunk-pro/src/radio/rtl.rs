@@ -114,7 +114,7 @@ impl Radio for RtlConfig {
         match g {
             Gain::Agc => self.gain_db = None,
             Gain::Db(db) => self.gain_db = Some(db),
-            Gain::Airspy(_) | Gain::Hackrf(_) => {}
+            Gain::Stages(_) | Gain::Preset(..) => {}
         }
     }
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
@@ -155,7 +155,7 @@ impl Tunable for Rtl<'_> {
         let gain = match g {
             Gain::Agc => GainConfig::Auto,
             Gain::Db(db) => GainConfig::Manual(db),
-            Gain::Airspy(_) | Gain::Hackrf(_) => return Ok(0),
+            Gain::Stages(_) | Gain::Preset(..) => return Ok(0),
         };
         self.halted(|dev| dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}")))
     }

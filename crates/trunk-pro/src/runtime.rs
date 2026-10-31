@@ -28,7 +28,7 @@ use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, uhd};
-use crate::sdr::{self, Block, Control, Gain, Inbox, SourceMsg};
+use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
 
 /// A message for the connected browsers, serialized once for all of them.
 pub enum Out {
@@ -367,7 +367,7 @@ pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
             Source::Airspy { gain_mode: m, gain_step: g, lna_step: l, mixer_step: x, vga_step: v, agc: a, .. },
         ) => {
             (*gain_mode, *gain_step, *lna_step, *mixer_step, *vga_step, *agc) = (*m, *g, *l, *x, *v, *a);
-            Gain::Airspy(airspy_gain(*m, *g, *l, *x, *v, *a))
+            airspy_gain(*m, *g, *l, *x, *v, *a)
         }
         (Source::Usrp { gain_db, agc: false, .. }, Source::Usrp { gain_db: g, agc: false, .. })
         | (Source::Bladerf { gain_db, agc: false, .. }, Source::Bladerf { gain_db: g, agc: false, .. }) => {
@@ -376,7 +376,7 @@ pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
         }
         (Source::Hackrf { lna_db, vga_db, amp, .. }, Source::Hackrf { lna_db: l, vga_db: v, amp: a, .. }) => {
             (*lna_db, *vga_db, *amp) = (*l, *v, *a);
-            Gain::Hackrf(hackrf::HackrfGain { lna_db: *l, vga_db: *v, amp: *a })
+            Gain::Stages(hackrf_gain(*l, *v, *a))
         }
         (Source::Soapy { gain_db, agc: false, .. }, Source::Soapy { gain_db: Some(g), agc: false, .. }) => {
             *gain_db = Some(*g);
@@ -643,7 +643,7 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
             sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm, wire_format }, tx, stop, ctl)
         }
         Source::Hackrf { serial, rate_hz, lna_db, vga_db, amp, bias_tee, ppm, .. } => {
-            sdr::run_with(i, hackrf::HackrfConfig { serial, center_hz: center, rate_hz, gain: hackrf::HackrfGain { lna_db, vga_db, amp }, bias_tee, ppm }, tx, stop, ctl)
+            sdr::run_with(i, hackrf::HackrfConfig { serial, center_hz: center, rate_hz, gain: hackrf_gain(lna_db, vga_db, amp), bias_tee, ppm }, tx, stop, ctl)
         }
         Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
             let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
@@ -715,13 +715,19 @@ fn read_full(f: &mut fs::File, buf: &mut [u8]) -> usize {
 }
 
 /// An Airspy's gain settings, as its driver takes them.
-pub fn airspy_gain(mode: AirspyGain, gain: u8, lna: u8, mixer: u8, vga: u8, agc: bool) -> airspy::AirspyGain {
+/// An Airspy source's gain: a step of one of libairspy's tables, or its stages (its AGC running the LNA and mixer).
+pub fn airspy_gain(mode: AirspyGain, gain: u8, lna: u8, mixer: u8, vga: u8, agc: bool) -> Gain {
     match mode {
-        AirspyGain::Manual if agc => airspy::AirspyGain::Agc { vga },
-        AirspyGain::Manual => airspy::AirspyGain::Manual { lna, mixer, vga },
-        AirspyGain::Sensitivity => airspy::AirspyGain::Sensitivity(gain),
-        AirspyGain::Linearity => airspy::AirspyGain::Linearity(gain),
+        AirspyGain::Manual if agc => Gain::Stages(Stages::default().agc().with(Stage::Vga, vga as f32)),
+        AirspyGain::Manual => Gain::Stages(Stages::default().with(Stage::Lna, lna as f32).with(Stage::Mixer, mixer as f32).with(Stage::Vga, vga as f32)),
+        AirspyGain::Sensitivity => Gain::Preset(Preset::Sensitivity, gain),
+        AirspyGain::Linearity => Gain::Preset(Preset::Linearity, gain),
     }
+}
+
+/// A HackRF source's stages: LNA and VGA dB, the amp's 14 dB or none.
+pub fn hackrf_gain(lna_db: u16, vga_db: u16, amp: bool) -> Stages {
+    Stages::default().with(Stage::Lna, lna_db as f32).with(Stage::Vga, vga_db as f32).with(Stage::Amp, if amp { 14.0 } else { 0.0 })
 }
 
 pub(crate) fn local_offset(t: i64) -> i32 {
@@ -1322,7 +1328,12 @@ mod live_tests {
         assert_eq!(live_gain(&blade(30.0, false), &blade(42.0, false)), Some(Gain::Db(42.0)), "a bladeRF's gain, live");
         assert_eq!(live_gain(&blade(30.0, false), &blade(30.0, true)), None, "bladeRF AGC waits for the start");
         let air = |lna: u8| src("airspy", json!({ "serial": "", "centerHz": 852e6, "rateHz": 6e6, "gainMode": "manual", "lnaStep": lna, "ppm": 0 }));
-        assert_eq!(live_gain(&air(10), &air(12)), Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 12, mixer: 10, vga: 10 })), "an Airspy's LNA, live");
+        assert_eq!(live_gain(&air(10), &air(12)), Some(airspy_gain(AirspyGain::Manual, 0, 12, 10, 10, false)), "an Airspy's LNA, live");
+        let hackrf = |lna: u16, amp: bool| src("hackrf", json!({ "serial": "", "centerHz": 852e6, "rateHz": 8e6, "lnaDb": lna, "vgaDb": 20, "amp": amp }));
+        let g = live_gain(&hackrf(16, false), &hackrf(24, true));
+        assert_eq!(g, Some(Gain::Stages(hackrf_gain(24, 20, true))), "a HackRF's stages, live");
+        assert_eq!(g.unwrap().to_string(), "AMP on · LNA 24 · VGA 20");
+        assert_eq!(airspy_gain(AirspyGain::Manual, 0, 0, 0, 7, true).to_string(), "AGC · VGA 7");
     }
 
     #[test]
@@ -1344,15 +1355,15 @@ mod live_tests {
         let old = [air("A1", 10), air("B2", 10), air("C3", 10)];
         // The second's LNA: only it.
         let one = r.live_sources(&old, &[air("A1", 10), air("B2", 14), air("C3", 10)]);
-        assert_eq!(one, vec![(1, Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 14, mixer: 10, vga: 10 })))]);
+        assert_eq!(one, vec![(1, Some(airspy_gain(AirspyGain::Manual, 0, 14, 10, 10, false)))]);
         assert_eq!((pending(0), pending(2)), (None, None), "the others are left alone");
         r.controls[1].take();
         // Two in one save, one of them to another mode: each its own.
         let two = r.live_sources(&old, &[lin("A1", 18), air("B2", 10), air("C3", 6)]);
         assert_eq!(two.len(), 2);
-        assert_eq!(pending(0), Some(Gain::Airspy(airspy::AirspyGain::Linearity(18))));
+        assert_eq!(pending(0), Some(Gain::Preset(Preset::Linearity, 18)));
         assert_eq!(pending(1), None);
-        assert_eq!(pending(2), Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 6, mixer: 10, vga: 10 })));
+        assert_eq!(pending(2), Some(airspy_gain(AirspyGain::Manual, 0, 6, 10, 10, false)));
         (r.controls[0].take(), r.controls[2].take());
         // Two swapped in Setup: another radio in each place, not a gain change.
         assert_eq!(r.live_sources(&old, &[air("B2", 10), air("A1", 10), air("C3", 10)]), vec![(0, None), (1, None)]);

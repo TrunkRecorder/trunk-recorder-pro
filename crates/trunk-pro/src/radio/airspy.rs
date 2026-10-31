@@ -14,7 +14,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{ppm_corrected, Caps, Deadline, DriverInfo, Rates};
-use crate::sdr::{Applied, Control, Gain, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Control, Gain, Preset, Retuned, Sink, Stage, Stages, Tunable};
 
 type Dev = *mut c_void;
 
@@ -277,35 +277,12 @@ pub struct AirspyConfig {
     pub serial: String,
     pub center_hz: f64,
     pub rate_hz: f64,
-    pub gain: AirspyGain,
+    /// A [`Gain::Preset`], or [`Gain::Stages`] (LNA 0–14, mixer 0–15, VGA 0–15 steps; with `agc`, the VGA alone).
+    pub gain: Gain,
     pub bias_tee: bool,
     /// 12-bit packing on the USB.
     pub packing: bool,
     pub ppm: f64,
-}
-
-/// How its gain is set.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum AirspyGain {
-    /// libairspy's linearity table, step 0..21.
-    Linearity(u8),
-    /// Its sensitivity table, step 0..21.
-    Sensitivity(u8),
-    /// Each stage: LNA 0..14, mixer 0..15, VGA 0..15.
-    Manual { lna: u8, mixer: u8, vga: u8 },
-    /// The Airspy's AGC on the LNA and mixer; the VGA as given.
-    Agc { vga: u8 },
-}
-
-impl std::fmt::Display for AirspyGain {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            AirspyGain::Linearity(g) => write!(f, "linearity {g}"),
-            AirspyGain::Sensitivity(g) => write!(f, "sensitivity {g}"),
-            AirspyGain::Manual { lna, mixer, vga } => write!(f, "LNA {lna} · mixer {mixer} · VGA {vga}"),
-            AirspyGain::Agc { vga } => write!(f, "AGC (VGA {vga})"),
-        }
-    }
 }
 
 impl crate::sdr::Radio for AirspyConfig {
@@ -314,7 +291,7 @@ impl crate::sdr::Radio for AirspyConfig {
         self.center_hz = hz;
     }
     fn gain_to(&mut self, g: Gain) {
-        if let Gain::Airspy(g) = g {
+        if matches!(g, Gain::Stages(_) | Gain::Preset(..)) {
             self.gain = g;
         }
     }
@@ -385,7 +362,6 @@ impl Tunable for Device {
     /// Its own settings, which libairspy takes while streaming (a survey's
     /// dB is left alone: the linearity gain stays as set).
     fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
-        let Gain::Airspy(g) = g else { return Ok(0) };
         // SAFETY: an open device.
         unsafe { set_gain(self.a, self.dev, g) }.map(|()| 0)
     }
@@ -403,26 +379,29 @@ impl Drop for Device {
     }
 }
 
-/// Set the gain as `g` says.
+/// Set the gain as `g` says: a table's step, or the stages (a survey's dB
+/// is left alone: the gain stays as set).
 ///
 /// SAFETY (callers): `dev` is open.
-unsafe fn set_gain(a: &Api, dev: Dev, g: AirspyGain) -> Result<(), String> {
+unsafe fn set_gain(a: &Api, dev: Dev, g: Gain) -> Result<(), String> {
+    let step = |s: &Stages, stage: Stage, most: u8| s.get(stage).unwrap_or(0.0).clamp(0.0, most as f32) as u8;
     unsafe {
         match g {
-            AirspyGain::Linearity(g) => check(a, "gain", (a.set_linearity_gain)(dev, g.min(21))),
-            AirspyGain::Sensitivity(g) => check(a, "gain", (a.set_sensitivity_gain)(dev, g.min(21))),
-            AirspyGain::Manual { lna, mixer, vga } => {
-                check(a, "LNA AGC off", (a.set_lna_agc)(dev, 0))?;
-                check(a, "mixer AGC off", (a.set_mixer_agc)(dev, 0))?;
-                check(a, "LNA gain", (a.set_lna_gain)(dev, lna.min(14)))?;
-                check(a, "mixer gain", (a.set_mixer_gain)(dev, mixer.min(15)))?;
-                check(a, "VGA gain", (a.set_vga_gain)(dev, vga.min(15)))
-            }
-            AirspyGain::Agc { vga } => {
+            Gain::Preset(Preset::Linearity, g) => check(a, "gain", (a.set_linearity_gain)(dev, g.min(21))),
+            Gain::Preset(Preset::Sensitivity, g) => check(a, "gain", (a.set_sensitivity_gain)(dev, g.min(21))),
+            Gain::Stages(s) if s.agc => {
                 check(a, "LNA AGC", (a.set_lna_agc)(dev, 1))?;
                 check(a, "mixer AGC", (a.set_mixer_agc)(dev, 1))?;
-                check(a, "VGA gain", (a.set_vga_gain)(dev, vga.min(15)))
+                check(a, "VGA gain", (a.set_vga_gain)(dev, step(&s, Stage::Vga, 15)))
             }
+            Gain::Stages(s) => {
+                check(a, "LNA AGC off", (a.set_lna_agc)(dev, 0))?;
+                check(a, "mixer AGC off", (a.set_mixer_agc)(dev, 0))?;
+                check(a, "LNA gain", (a.set_lna_gain)(dev, step(&s, Stage::Lna, 14)))?;
+                check(a, "mixer gain", (a.set_mixer_gain)(dev, step(&s, Stage::Mixer, 15)))?;
+                check(a, "VGA gain", (a.set_vga_gain)(dev, step(&s, Stage::Vga, 15)))
+            }
+            Gain::Agc | Gain::Db(_) => Ok(()),
         }
     }
 }
@@ -449,7 +428,7 @@ fn stream_once(cfg: &AirspyConfig, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl:
         check(a, "sample rate", (a.set_samplerate)(d.dev, want_iq))?;
         d.tune(cfg.center_hz)?;
         // (As a gain set while running is: a reopened radio comes back the same.)
-        d.set_gain(Gain::Airspy(cfg.gain))?;
+        d.set_gain(cfg.gain)?;
         check(a, "bias-T", (a.set_rf_bias)(d.dev, cfg.bias_tee as u8))?;
         // (Older firmware can't pack: it streams unpacked then, as it always did.)
         if cfg.packing && (a.set_packing)(d.dev, 1) != 0 {
