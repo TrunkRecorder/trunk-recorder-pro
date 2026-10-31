@@ -81,38 +81,17 @@ fn stream_once(
     tx: &Sender<EngineCmd>,
     stop: &Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("couldn't start HTTP runtime: {e}"))?;
-    runtime.block_on(stream_once_async(stream, system, tx, stop))
-}
-
-async fn stream_once_async(
-    stream: &AudioStream,
-    system: u16,
-    tx: &Sender<EngineCmd>,
-    stop: &Arc<AtomicBool>,
-) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_per_read(Some(Duration::from_secs(15)))
         .user_agent(concat!("trunk-pro/", env!("CARGO_PKG_VERSION")))
+        .http_status_as_error(false)
         .build()
-        .map_err(|_| "couldn't initialize HTTP client".to_string())?;
-    let request = client.get(&stream.url).send();
-    tokio::pin!(request);
-    let mut response = loop {
-        tokio::select! {
-            response = &mut request => {
-                break response.map_err(|e| format!("HTTP stream request failed: {}", e.without_url()))?;
-            }
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                if stop.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-            }
-        }
-    };
+        .into();
+    let response = agent
+        .get(&stream.url)
+        .call()
+        .map_err(|e| format!("HTTP stream request failed: {e}"))?;
     if !response.status().is_success() {
         return Err(format!(
             "HTTP stream server returned status {}",
@@ -149,26 +128,27 @@ async fn stream_once_async(
         })
         .map_err(|e| format!("couldn't start audio decoder thread: {e}"))?;
 
+    let mut response = response.into_body().into_reader();
     let mut icy = icy_metaint.map(IcyMetadataStripper::new);
+    let mut buffer = [0u8; 16 * 1024];
     let network_result = loop {
         if stop.load(Ordering::Relaxed) {
             break Ok(());
         }
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
-            chunk = response.chunk() => match chunk {
-                Ok(Some(chunk)) => {
-                    let audio = icy.as_mut().map_or_else(
-                        || chunk.to_vec(),
-                        |stripper| stripper.strip(&chunk),
-                    );
-                    if !audio.is_empty() && chunk_tx.send(audio).await.is_err() {
-                        break Err("audio decoder stopped unexpectedly".into());
-                    }
+        match response.read(&mut buffer) {
+            Ok(0) => break Err("stream ended".into()),
+            Ok(n) => {
+                let chunk = &buffer[..n];
+                let audio = icy.as_mut().map_or_else(
+                    || chunk.to_vec(),
+                    |stripper| stripper.strip(chunk),
+                );
+                if !audio.is_empty() && chunk_tx.blocking_send(audio).is_err() {
+                    break Err("audio decoder stopped unexpectedly".into());
                 }
-                Ok(None) => break Err("stream ended".into()),
-                Err(e) => break Err(format!("HTTP stream read failed: {}", e.without_url())),
             }
+            Err(_) if stop.load(Ordering::Relaxed) => break Ok(()),
+            Err(e) => break Err(format!("HTTP stream read failed: {e}")),
         }
     };
     drop(chunk_tx);
@@ -208,7 +188,7 @@ fn decode(
         MediaSourceStreamOptions::default(),
     );
     let mut hint = Hint::new();
-    let extension = reqwest::Url::parse(&stream.url)
+    let extension = stream.url.parse::<ureq::http::Uri>()
         .ok()
         .and_then(|url| url.path().rsplit('/').next().map(str::to_owned))
         .and_then(|name| {
@@ -816,16 +796,7 @@ mod tests {
             ..Default::default()
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        let result = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(stream_once_async(
-                &stream,
-                1,
-                &tx,
-                &Arc::new(AtomicBool::new(false)),
-            ));
+        let result = stream_once(&stream, 1, &tx, &Arc::new(AtomicBool::new(false)));
         server.join().unwrap();
 
         assert_eq!(result, Err("stream ended".into()));
