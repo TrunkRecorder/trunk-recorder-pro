@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Live audio in stereo, through an interface's own sound chain.** `client.js`'s
+  `LivePlayer` has `pan` (left -1 to right 1) beside `gain`, both settable while playing
+  (`player.pan = -1`; they glide, no clicks), and `skip()` drops the call playing. It
+  plays into the page's one audio output, `audioOut()`, or into an `output` node an
+  interface builds on it (an EQ, a visualizer's analyser, a master volume), so players
+  mix: a player per call or per talkgroup, each with its pan, hears several calls at once
+  (`wall.html?stereo`). The dashboard now plays live audio with this same player, so
+  every interface gets its care for Safari (resampled, woken after tab switches) and
+  a backlog over 3 s is dropped instead of played late.
 - **A call store: every recorded call indexed, and found by talkgroup, radio or time** (#100,
   from #102 and #103 by auggiesoft). Each finished call is a row in `trunk-pro.sqlite`, beside the
   config.
