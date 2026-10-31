@@ -5,6 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The radio registry's size and history are settings.** It used to keep 20,000 radios per
+  system on every machine, forgetting the least recently heard past that, and a statewide system
+  fills that in days. `radioQuery` also returned 5,000 rows at most.
+  - `storage.registryRadios` (default 20,000; `0` for no cap) is the radios kept per system.
+    Talkgroups and pairs follow it.
+  - `storage.registryDays` (default 365; `0` for never) forgets what hasn't been heard for that
+    long. That's saved to the store as anything else that goes.
+  - Both are in Setup → Data and apply at once, in both builds. Platform → Storage shows each
+    system's registry against them.
+  - A `radioQuery` `limit` goes up to the cap, and its `summary` gives the caps (`caps`).
+
 - **A call store: every recorded call indexed, and found by talkgroup, radio or time** (#100,
   from #102 and #103 by auggiesoft). Each finished call is a row in `trunk-pro.sqlite`, beside the
   config.

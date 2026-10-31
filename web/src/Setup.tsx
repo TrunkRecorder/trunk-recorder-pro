@@ -3007,6 +3007,14 @@ function DataTab(props: { c: Config }) {
             <NumberInput label="Write every, s" value={st?.commitSeconds ?? 300} onChange={(v) => set({ commitSeconds: Math.max(10, Math.min(3600, Math.round(v ?? 300))) })} />
           </Field>
         </Group>
+        <Group title="Radio registry" hint="Every talkgroup, radio and pair of radios each system has heard (the Radio page, first-heard alerts). It's held in memory, about 2 kB a radio, and saved as it changes. Past either limit, what was heard least recently is forgotten, and comes back as new if heard again.">
+          <Field label="Radios kept, per system" hint="Talkgroups a quarter as many (5,000 at least). 0: no limit but the days">
+            <NumberInput label="Radios kept, per system" value={st?.registryRadios ?? 20000} onChange={(v) => set({ registryRadios: Math.max(0, Math.round(v ?? 20000)) })} />
+          </Field>
+          <Field label="Forget after, days unheard" hint="A talkgroup, radio or pair not heard for this long. 0: never">
+            <NumberInput label="Forget after, days unheard" value={st?.registryDays ?? 365} onChange={(v) => set({ registryDays: Math.max(0, Math.round(v ?? 365)) })} />
+          </Field>
+        </Group>
         <Group title="How long">
           <Field label="Call history, days" hint="How long calls stay findable by talkgroup and radio; 0 keeps them all. Their files aren't touched">
             <NumberInput label="Call history, days" value={st?.retentionDays ?? 120} onChange={(v) => set({ retentionDays: Math.max(0, Math.round(v ?? 120)) })} />

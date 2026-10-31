@@ -130,7 +130,7 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
                 Some(b) => json!({ "bytes": b, "of": how }),
                 None => json!({ "why": how }),
             };
-            p["store"] = json!({ "backend": ctx.db.backend(), "radioIndex": ctx.db.indexes_radios(), "talkgroupIndex": ctx.db.indexes_talkgroups(), "sizes": s, "written": written });
+            p["store"] = json!({ "backend": ctx.db.backend(), "radioIndex": ctx.db.indexes_radios(), "talkgroupIndex": ctx.db.indexes_talkgroups(), "registry": ctx.shared.radio.lock().unwrap().fill(), "sizes": s, "written": written });
         }
         for d in p["disks"].as_array().into_iter().flatten() {
             let (Some(name), Some(total), Some(free)) = (d["name"].as_str(), d["totalBytes"].as_f64(), d["freeBytes"].as_f64()) else { continue };

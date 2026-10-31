@@ -203,7 +203,7 @@ impl Ctx {
     pub fn config_changed(&self, c: &Config) -> u64 {
         self.db.set_systems(c);
         let files = self.talkgroups.lock().unwrap().clone();
-        self.shared.names.lock().unwrap().set_config(c, &files);
+        self.shared.set_config(c, &files);
         let version = self.config_version.fetch_add(1, Ordering::SeqCst) + 1;
         publish(&self.hub, ToClient::Config { config: Box::new(c.clone()), version });
         version
@@ -570,7 +570,7 @@ pub fn set_talkgroups(ctx: &Ctx, system: &str, rows: Vec<TalkgroupRow>) -> Resul
     ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), rows: rows.clone() });
     // (The config first, then the names: as config_changed takes them.)
     let (cfg, lists) = (ctx.config.lock().unwrap().clone(), ctx.talkgroups.lock().unwrap().clone());
-    ctx.shared.names.lock().unwrap().set_config(&cfg, &lists);
+    ctx.shared.set_config(&cfg, &lists);
     publish(&ctx.hub, ToClient::Talkgroups { system: system.to_string(), talkgroups: rows });
     Ok(())
 }
@@ -617,11 +617,11 @@ fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
 }
 
 /// The names the radio registry answers with, as saved: each system's
-/// talkgroups (`cfg` with its talkgroup files) and talker aliases. A
-/// recording keeps them current from then on.
+/// talkgroups (`cfg` with its talkgroup files) and talker aliases; and the
+/// registry's caps. A recording keeps them current from then on.
 pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &trunk_app::config::TalkgroupLists, db: &crate::db::Db) {
+    shared.set_config(cfg, talkgroups);
     let mut book = shared.names.lock().unwrap();
-    book.set_config(cfg, talkgroups);
     for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
         if let Some(csv) = kept::read_units(db, n) {
             book.set_units(n, &csv);

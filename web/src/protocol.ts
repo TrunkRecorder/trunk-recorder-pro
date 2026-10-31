@@ -516,6 +516,10 @@ export interface StorageSettings {
   statsDays?: number;
   /** Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system. */
   radioIndex?: boolean;
+  /** Radios the radio registry keeps a system (default 20,000): past it, the least recently heard go (talkgroups a quarter as many, 5,000 at least). 0: no cap, `registryDays` alone bounding it. */
+  registryRadios?: number;
+  /** Days a talkgroup, radio or pair the registry hasn't heard is kept (default 365); 0 keeps it however old. */
+  registryDays?: number;
   /** Index calls by their talkgroups (default true), so a talkgroup's calls page back as far as the store keeps them; off, a talkgroup's list is its recent calls. */
   talkgroupIndex?: boolean;
 }
@@ -1523,6 +1527,8 @@ export interface PlatformInfo {
     backend: "sqlite" | "postgres";
     radioIndex: boolean;
     talkgroupIndex: boolean;
+    /** How full the radio registry is: each system's rows against the caps (null: none). */
+    registry: { caps: { talkgroups: number | null; radios: number | null; pairs: number | null; days: number | null }; systems: { system: string; talkgroups: number; radios: number; pairs: number }[] };
     sizes: StoreSizes;
     /** What it has written to disk: `of` "store" (SQLite's writer, counted by the OS: Linux), or "server" (PostgreSQL's write-ahead log, the whole server's); else `why` not. Its rate is the `store/written` series. */
     written: { bytes: number; of: "store" | "server" } | { why: string };
@@ -1730,6 +1736,8 @@ export interface RadioResultBody {
   system?: string;
   /** summary */
   systems?: Record<string, RadioSummary>;
+  /** summary: the registry's caps a system (null: none; a `limit` of `radios` is every radio heard), and the days an unheard row is kept. */
+  caps?: { talkgroups: number | null; radios: number | null; days: number | null };
   /** talkgroups, units, freqs, tones */
   hours?: number;
   total?: number;
@@ -1951,7 +1959,7 @@ export type ToRecorder =
   | { type: "callsQuery"; id: number; system?: string; talkgroup?: number; unit?: number; from?: number; to?: number; cursor?: string; limit?: number }
   /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited). */
   | { type: "pluginAction"; id: number; plugin: string; action: string; value: unknown }
-  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
+  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit"; `limit`: rows at most (default 500, up to the registry's cap: the summary's `caps`). */
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths" | "tones"; system?: string; key?: number; hours?: number; limit?: number }
   | { type: "quit" };
 
