@@ -1,44 +1,53 @@
 # Internet audio streams
 
-An HTTP or HTTPS MP3 or PCM WAV stream is an independent call system, recorded as silence-delimited
-calls without a radio or conventional system. The native desktop/server app decodes streams in
-Rust; no FFmpeg network support is needed. This source is not available in the browser-only build.
+An internet audio stream (a scanner feed: MP3 or PCM WAV over HTTP or HTTPS) is a row of a
+conventional system with mode `stream`: an address where a channel has a frequency. It needs no
+radio. A system can be streams alone, or streams beside its radio channels.
 
-In **Setup → Conventional systems**, choose **Add internet audio source**, enter the URL, set its
-system short name and talkgroup, and set how long silence ends a call. A 0.5-second pre-roll is
-kept before detected audio. Activity is detected at approximately −42 dBFS; the default silence
-hang is 3 seconds (configurable from 0.25 to 30 seconds). When the stream disconnects, an active
-call is finalized and the source reconnects.
-Calls are split into files after 120 seconds by default. After 600 seconds of continuous audio
-(five default-size files), recording pauses until the configured silence timeout is reached;
-then detection resumes. Both duration limits can be changed per stream in Setup.
+In **Setup → Conventional systems**, press **Add a stream** in a system's channel list (or pick
+**Internet stream** as a row's mode). Enter its address, which of a stereo stream's channels to
+record (both mixed, left or right; a feed may carry one scanner on each), and the TG Number its
+calls are filed under. A stream has no frequency to file them under otherwise, so the TG Number is
+required.
 
-Calls follow the normal recording finalizer: WAV and JSON files, the stream system's recording
-rules, live audio subscribers, and call-concluded plugins. Configure plugin settings, delays and
-signals in the stream's own Plugins section. The stream has no RF frequency, so its call records
-use `freq: 0`.
+Its audio makes calls as a channel's does:
 
-The equivalent configuration is:
+- A call opens when the audio is louder than about −42 dBFS (the stream's stand-in for a
+  carrier), with the conventional pre-roll of audio from before. The pauses between words are
+  kept (half a second after the last loud audio); the call ends after the system's call timeout
+  (`callTimeoutS`) with nothing loud.
+- A call longer than the system's longest call (`maxCallS`) is saved and carries on in a new
+  one, as a stuck carrier's would.
+- The call is saved, played live, uploaded and passed to plugins by the system's rules, as any
+  conventional call: its plugin settings and delays, its recording rules, its talkgroup names.
+- The system's [signals](../guides/signals.md) are listened for in it: a two-tone page on a feed
+  is named as one on the air would be.
+
+A call's `voice_mode` is `stream` and its `freq` is 0.
+
+**Its clock is its samples.** A stream's time runs by the audio received (8 kHz), not the wall
+clock, so a stream that arrives slower or faster than the air keeps its own time. When it
+connects, and while it's disconnected, silence fills in up to now: the time it was away passes,
+and a call in progress ends. A stream that ends or fails is connected again every 2 s; why is in
+the log.
+
+The address may hold the feed's user and password. It is kept in the config file, and isn't sent
+to listen-only [interfaces](../guides/interface.md). The desktop and server apps decode streams
+themselves (no FFmpeg needed); the browser-only version has no streams.
 
 ```json
 {
   "sources": [],
-  "audioStreams": [
+  "conventional": [
     {
-      "url": "https://provider.example/feed.mp3",
-      "shortName": "dispatch_stream",
-      "talkgroup": 1,
-      "channel": "mix",
-      "enabled": true,
-      "silenceTimeoutS": 3,
-      "maxCallS": 120,
-      "maxContinuousS": 600
+      "shortName": "county",
+      "channels": [
+        { "freqHz": 0, "mode": "stream", "url": "https://user:pass@feeds.example/county.mp3", "stereo": "left", "talkgroup": 1, "name": "County Fire" }
+      ]
     }
   ]
 }
 ```
 
-The URL may include provider authentication. It is stored in the config file and hidden from
-listen-only interfaces. Protect the config file and only grant control access to trusted users.
-
-Set `enabled` to `false` to keep a stream configured without starting it.
+In a [channel file](conventional.md#channel-file-channelfile), a stream row has `stream` as its
+Mode, an empty Frequency, and its address in a `URL` column (and `Stereo`, when not both).

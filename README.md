@@ -23,7 +23,8 @@ The same engine also runs in the browser with nothing to install. On a Raspberry
   a three-site networked system; ProVoice on synthesized signals.
 - **Conventional channels**: analog FM and AM (airband), P25, DMR and NXDN, split by CTCSS / DCS tone, NAC, colour
   code or RAN
-- **Internet audio streams**: HTTP/HTTPS audio decoded and split into calls on silence, then recorded and sent to plugins
+- **Internet audio streams**: an MP3 or WAV feed over HTTP(S) as a conventional channel, with no radio: its calls
+  recorded, played live, matched to signals and sent to plugins like any channel's
 - Several systems and several sites at once; a call heard on more than one site is saved once,
   from the best copy
 

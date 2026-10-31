@@ -124,3 +124,26 @@ test("a system with several sites: Conversations suggested off, in its own Recor
   assert.doesNotMatch(text(renderToString(<SystemCard c={c} i={0} />)), /suggested/);
   assert.doesNotMatch(text(renderToString(<ConventionalPanel c={c} k={0} />)), /Conversations/, "conventional channels: not theirs");
 });
+
+test("Setup's channels: a stream row has an address and a stereo channel where a frequency has its frequency and bandwidth", () => {
+  const c = defaultConfig();
+  c.conventional.push(
+    newConventional(c, {
+      shortName: "feed",
+      channels: [row(0, "stream", { url: "https://feed.example/live.mp3", stereo: "left", talkgroup: 7, name: "County Fire" }), row(154_325_000, "fm", { name: "Town" })],
+    }),
+  );
+  // (The desktop app: the browser version has no streams to add.)
+  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers"] }] as const) {
+    transport.onMessage(m as never);
+  }
+  const html = renderToString(<ConventionalPanel c={c} k={0} />);
+  assert.match(html, /aria-label="Stream address"[^>]*value="https:\/\/feed.example\/live.mp3"|value="https:\/\/feed.example\/live.mp3"[^>]*aria-label="Stream address"/);
+  assert.match(html, /aria-label="Stereo channel"/);
+  assert.match(html, /<option value="left" selected="">Left<\/option>/);
+  assert.equal((html.match(/aria-label="Frequency, MHz"/g) ?? []).length, 1, "only the radio row has a frequency");
+  assert.equal((html.match(/aria-label="Bandwidth"/g) ?? []).length, 1);
+  assert.match(text(html), /Add a stream/);
+  const chips = [...html.matchAll(/class="match-line[^"]*"[^>]*>(.*?)<\/button>/g)].map((m) => text(m[1]).trim());
+  assert.deepEqual(chips, ["everything", "everything"]);
+});

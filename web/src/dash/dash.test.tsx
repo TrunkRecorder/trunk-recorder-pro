@@ -7,7 +7,7 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
-import { coverage, dashSystems, pageHealth, rangesFor, systemHealth } from "./data.ts";
+import { coverage, pageHealth, rangesFor } from "./data.ts";
 import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
@@ -61,32 +61,6 @@ test("Overview: a card per system; one of several sites has a row per site", () 
   assert.match(page, /Control channels .* 2 sites/);
   assert.match(page, /dcfd 851\.0+ .* south 851\.5+/);
   assert.match(page, /other P25 Control channel — msg\/s … · 852\.0+ MHz/, "a system of one site, as before");
-});
-
-test("Overview: enabled internet audio sources appear as independent systems", () => {
-  const c = defaultConfig();
-  c.audioStreams.push(
-    { url: "https://example.test/live.mp3", shortName: "dispatch-stream", talkgroup: 1, enabled: true, silenceTimeoutS: 3 },
-    { url: "https://example.test/off.mp3", shortName: "disabled-stream", talkgroup: 1, enabled: false, silenceTimeoutS: 3 },
-  );
-  running(c, [{ ...system(0, "dispatch-stream", []), connected: true }]);
-  assert.deepEqual(dashSystems(snapshot()).map((x) => [x.name, x.kind]), [["dispatch-stream", "audio"]]);
-  setView("overview");
-  const page = text(renderToString(<Overview />));
-  assert.match(page, /dispatch-stream Internet audio Calls — this run .*Internet audio/);
-  assert.match(page, /Connected/);
-  assert.doesNotMatch(page, /disabled-stream/);
-});
-
-test("internet audio connection failures are visible and lower system health", () => {
-  const c = defaultConfig();
-  c.audioStreams.push({ url: "https://example.test/live.mp3", shortName: "dispatch-stream", talkgroup: 1, enabled: true, silenceTimeoutS: 3 });
-  running(c, [{ ...system(0, "dispatch-stream", []), connected: false, lastError: "ffmpeg exited with status 8" }]);
-  const s = snapshot();
-  const x = dashSystems(s)[0];
-  assert.equal(systemHealth(s, x).level, "warn");
-  setView("decode", x.name);
-  assert.match(text(renderToString(<DecodePage />)), /Reconnecting ffmpeg exited with status 8/);
 });
 
 test("Decode: a card per site; a system's page picks the site", () => {

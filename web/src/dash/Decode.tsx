@@ -6,7 +6,7 @@
 import { Fragment, useState } from "react";
 import { formatMhz } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
-import { BackBar, Card, Choice, HeatStrip, Light, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
+import { BackBar, Card, Choice, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, FreqRow, SeriesData } from "../protocol.ts";
 import { change, coverage, dashSystems, K, KIND_LABEL, perLive, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useRanges, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
@@ -41,7 +41,7 @@ export const BAD_MAX = 20;
 const PHASE_WARN = 15;
 const PHASE_BAD = 20;
 
-const MODE_LABEL: Record<NonNullable<ChannelSnapshot["mode"]>, string> = { fm: "FM", am: "AM", p25: "P25", dmr: "DMR", nxdn48: "NXDN 4800", nxdn96: "NXDN 9600" };
+const MODE_LABEL: Record<NonNullable<ChannelSnapshot["mode"]>, string> = { fm: "FM", am: "AM", p25: "P25", dmr: "DMR", nxdn48: "NXDN 4800", nxdn96: "NXDN 9600", stream: "Stream" };
 
 /** What a channel is: a trunked one's role, a conventional one's mode and names ("P25 · Fire Dispatch"). */
 export function channelWhat(c: ChannelSnapshot): string {
@@ -115,7 +115,7 @@ function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x
       actions={<span className="badge-kind">{st?.modulation ? `${KIND_LABEL[x.kind]} · ${st.modulation}` : KIND_LABEL[x.kind]}</span>}
     >
       <div className="src-grid">
-        {x.kind !== "conventional" && x.kind !== "audio" && (
+        {x.kind !== "conventional" && (
           <>
             <Stat
               label="Control messages"
@@ -175,17 +175,13 @@ function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x
             )}
           </>
         )}
-        {(x.kind === "conventional" || x.kind === "audio") && (
+        {x.kind === "conventional" && (
           <Stat
             label="Calls"
             value={x.status ? compact(x.status.callsConcluded) : "—"}
             unit="this run"
             spark={<LiveSpark k={k("calls")} mul={60} lo={0} title="Calls a minute, last 10 min" />}
-            sub={
-              x.kind === "audio"
-                ? `${x.status?.connected ? "Connected" : x.status?.lastError ? `Reconnecting · ${x.status.lastError}` : "Connecting"} · ${x.status?.activeCalls ?? 0} on the air`
-                : x.status ? `${x.status.activeCalls} on the air now · ${num((recentAvg(k("calls"), 600) ?? 0) * 60, 1)}/min` : "not recording"
-            }
+            sub={x.status ? `${x.status.activeCalls} on the air now · ${num((recentAvg(k("calls"), 600) ?? 0) * 60, 1)}/min` : "not recording"}
           />
         )}
         {voice && <Stat
@@ -246,16 +242,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
       <BackBar to="All systems" onBack={() => setView("decode")}>
         {x.sites.length > 1 && site && <Choice value={site.name} options={x.sites.map((y) => ({ v: y.name, label: y.name }))} onChange={(v) => setView("decode", name, v)} label="Site" />}
       </BackBar>
-      <DecodeCard s={s} x={x} site={site} usual={usual[cc("good")]} freqs={rows} voice={x.kind !== "audio"} />
-      {x.kind === "audio" && x.status && (
-        <div className="kv small">
-          <span>
-            <Light level={x.status.connected ? "ok" : x.status.lastError ? "warn" : "idle"} />
-            {x.status.connected ? " Connected" : x.status.lastError ? " Reconnecting" : " Connecting"}
-          </span>
-          {x.status.lastError && <span className="muted">{x.status.lastError}</span>}
-        </div>
-      )}
+      <DecodeCard s={s} x={x} site={site} usual={usual[cc("good")]} freqs={rows} />
       {st && x.kind !== "dmr" && x.kind !== "nxdn" && (
         <div className="kv small">
           <span>
@@ -287,7 +274,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
           </span>
         </div>
       )}
-      {(x.kind === "conventional" || x.kind === "audio") && x.status && (
+      {x.kind === "conventional" && x.status && (
         <div className="kv small">
           <span>
             {x.status.callsConcluded} calls saved this run · {x.status.activeCalls} active
@@ -332,7 +319,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
         <Choice value={range} options={ranges} onChange={setRange} label="Span" />
       </div>
       <div className="columns">
-        {x.kind !== "conventional" && x.kind !== "audio" && (
+        {x.kind !== "conventional" && (
           <Card title="Control channel">
             <TimeSeries
               lines={[line(cc("good"), "Decoded /s", "var(--series-1)", { band: true }), line(cc("bad"), "Lost /s", "var(--serious)", { band: true })]}
@@ -354,7 +341,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
             />
           </Card>
         )}
-        {(x.kind === "conventional" || x.kind === "audio") && (
+        {x.kind === "conventional" && (
           <Card title="Calls">
             {/* Calls a minute, and seconds on the air a minute (every channel's
                 together: 60 is one channel busy the whole minute), each on its
@@ -373,12 +360,12 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
         <Card title="Voice frames lost">
           <TimeSeries lines={[{ label: "Lost, %", color: "var(--serious)", data: ratio(hist?.[k("voice/bad")], hist?.[k("voice/frames")], 100) }]} zero fmt={(v) => v.toFixed(1)} empty="No voice decoded yet." />
         </Card>
-        {x.kind !== "conventional" && x.kind !== "audio" && (
+        {x.kind !== "conventional" && (
           <Card title="Signal and demodulation">
             <TimeSeries lines={[line(cc("snr"), "SNR, dB", "var(--series-1)"), x.kind === "p25" && (hist?.[cc("sep")] == null || st?.modulation === "CQPSK") ? line(cc("phaseErr"), "Phase error, °", "var(--series-3)", { right: true }) : line(cc("sep"), "Eye opening", "var(--series-3)", { right: true })]} />
           </Card>
         )}
-        {x.kind !== "conventional" && x.kind !== "audio" && (
+        {x.kind !== "conventional" && (
           <Card title="Carrier offset">
             <TimeSeries lines={[line(cc("offset"), "Hz from nominal", "var(--series-2)", { band: true })]} fmt={(v) => v.toFixed(0)} />
           </Card>
@@ -460,7 +447,7 @@ export function DecodePage() {
           const rows = freqs?.find((f) => f.system === x.name)?.rows as FreqRow[] | undefined;
           return x.sites.length
             ? x.sites.map((y, i) => <DecodeCard key={`${x.name}/${y.name}`} s={s} x={x} site={y} usual={usual[K.cc(y, "good")]} freqs={rows} voice={i === 0} />)
-            : [<DecodeCard key={x.name} s={s} x={x} usual={null} freqs={rows} voice={x.kind !== "audio"} />];
+            : [<DecodeCard key={x.name} s={s} x={x} usual={null} freqs={rows} />];
         })}
       </div>
     </div>

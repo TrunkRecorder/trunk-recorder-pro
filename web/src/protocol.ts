@@ -75,24 +75,6 @@ export type Source = (
 
 export type AirspyGainMode = "linearity" | "sensitivity" | "manual";
 
-/** An independent authenticated HTTP audio call system, silence-delimited without an RF source. */
-export interface AudioStream {
-  url: string;
-  shortName: string;
-  talkgroup: number;
-  channel?: "left" | "right" | "mix";
-  enabled: boolean;
-  silenceTimeoutS: number;
-  /** Maximum duration of one saved call segment, seconds (default: 120). */
-  maxCallS?: number;
-  /** Maximum activity before waiting for a full silence timeout, seconds (default: 600). */
-  maxContinuousS?: number;
-  plugins?: Record<string, SystemPluginValues>;
-  pluginDelays?: DelayRule[];
-  signals?: SignalDef[];
-  recording?: RecordingOverride;
-}
-
 /** An optional driver (desktop app) and what it found; `devices` null = not searched. */
 export interface DriverState {
   available: boolean;
@@ -142,7 +124,8 @@ export interface Radios {
  */
 export interface Channel {
   freqHz: number;
-  mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96";
+  /** "stream": an internet audio stream (`url`), not a frequency (`freqHz` 0): it needs no radio. */
+  mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96" | "stream";
   name: string;
   talkgroup?: number;
   /** The code it records: FM's CTCSS tone or DCS code ("151.4", "D023N"), P25's NAC ("293"), DMR's colour code ("1"), NXDN's RAN ("5"); absent / "": any. */
@@ -160,6 +143,10 @@ export interface Channel {
   enabled: boolean;
   /** Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off. */
   autoTune?: boolean;
+  /** A stream row: the HTTP(S) address of its audio (MP3 or WAV). It may hold the feed's credentials: listen-only interfaces aren't sent it. */
+  url?: string;
+  /** A stream row: which of a stereo stream's channels it records (absent: both, mixed). */
+  stereo?: "mix" | "left" | "right";
 }
 
 /** How a conventional system's analog channels are demodulated; each left out is the default. */
@@ -503,7 +490,6 @@ export interface KeySource {
 
 export interface Config {
   sources: Source[];
-  audioStreams: AudioStream[];
   systems: System[];
   conventional: Conventional[];
   /** The next system id the recorder gives: above every one given, so none is given twice. */
@@ -673,7 +659,7 @@ export interface PhaseState {
   ended: boolean;
 }
 
-/** One system being recorded: trunked (with a site running), conventional, or internet audio. `index` is what calls and audio carry as `system`. */
+/** One system being recorded: trunked (with a site running) or conventional. `index` is what calls and audio carry as `system`. */
 export interface SystemStatus {
   index: number;
   shortName: string;
@@ -684,11 +670,7 @@ export interface SystemStatus {
   callsConcluded: number;
   /** Its sharing with the community directory; null when it isn't shared. */
   share?: ShareStatus | null;
-  /** An internet audio source: FFmpeg has returned decoded audio. */
-  connected?: boolean;
-  /** The latest connection failure, cleared when audio resumes. */
-  lastError?: string | null;
-  /** Its sites following their control channels, in order (conventional and audio: none). */
+  /** Its sites following their control channels, in order (conventional: none). */
   sites: SiteStatus[];
 }
 
@@ -778,7 +760,7 @@ export interface EngineStatus {
   conventionalOpen: number;
   callsConcluded: number;
   systems: SystemStatus[];
-  /** Every system's short name, by the number its calls and live audio carry as `system` (trunked, conventional, then audio streams). */
+  /** Every system's short name, by the number its calls and live audio carry as `system` (trunked systems first, then conventional). */
   systemNames: string[];
 }
 
@@ -908,7 +890,7 @@ export interface CallRecord {
   /** The kind of system it came on (absent in calls saved before). */
   system_type?: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional";
   /** What its voice was: a conventional row's mode, or a trunked grant's (absent in calls saved before). */
-  voice_mode?: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96" | "provoice" | "fm" | "am";
+  voice_mode?: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96" | "provoice" | "fm" | "am" | "stream";
   /** Conventional analog: the tone it was matched on ("ctcss" / "dcs"), "search" (identified, not required), else "off". */
   tone_mode: "ctcss" | "dcs" | "search" | "off";
   /** The tone heard ("151.4 Hz", "D023N"), or "". */

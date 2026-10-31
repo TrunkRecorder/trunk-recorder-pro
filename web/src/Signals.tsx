@@ -50,7 +50,7 @@ export const signalRef = (system: string, id: string) => `${system}:${id}`;
 
 /** Every system's named signals, as choices (a plugin's `x-signals`). */
 export function signalChoices(c: Config): { value: string; label: string }[] {
-  return [...c.systems, ...c.conventional, ...c.audioStreams].flatMap((x) =>
+  return [...c.systems, ...c.conventional].flatMap((x) =>
     (x.signals ?? []).filter((d) => d.id).map((d) => ({ value: signalRef(x.shortName, d.id), label: d.name ? `${d.name} (${signalRef(x.shortName, d.id)})` : signalRef(x.shortName, d.id) })),
   );
 }

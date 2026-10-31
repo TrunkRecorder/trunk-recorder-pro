@@ -19,72 +19,6 @@
       ],
       "description": "What a page may do with the recorder's API. \"listen\": see what the recorder does and play its calls, change nothing (its config comes without plugin settings and key sources). \"control\": everything the built-in interface can."
     },
-    "AudioStream": {
-      "type": "object",
-      "properties": {
-        "url": {
-          "type": "string"
-        },
-        "shortName": {
-          "type": "string"
-        },
-        "talkgroup": {
-          "type": "number"
-        },
-        "channel": {
-          "type": "string",
-          "enum": [
-            "left",
-            "right",
-            "mix"
-          ]
-        },
-        "enabled": {
-          "type": "boolean"
-        },
-        "silenceTimeoutS": {
-          "type": "number"
-        },
-        "maxCallS": {
-          "type": "number",
-          "description": "Maximum duration of one saved call segment, seconds (default: 120)."
-        },
-        "maxContinuousS": {
-          "type": "number",
-          "description": "Maximum activity before waiting for a full silence timeout, seconds (default: 600)."
-        },
-        "plugins": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/definitions/SystemPluginValues"
-          }
-        },
-        "pluginDelays": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/DelayRule"
-          }
-        },
-        "signals": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/SignalDef"
-          }
-        },
-        "recording": {
-          "$ref": "#/definitions/RecordingOverride"
-        }
-      },
-      "required": [
-        "url",
-        "shortName",
-        "talkgroup",
-        "enabled",
-        "silenceTimeoutS"
-      ],
-      "additionalProperties": false,
-      "description": "An independent authenticated HTTP audio call system, silence-delimited without an RF source."
-    },
     "CallEntry": {
       "type": "object",
       "properties": {
@@ -256,7 +190,8 @@
             "nxdn96",
             "provoice",
             "fm",
-            "am"
+            "am",
+            "stream"
           ],
           "description": "What its voice was: a conventional row's mode, or a trunked grant's (absent in calls saved before)."
         },
@@ -838,8 +773,10 @@
             "p25",
             "dmr",
             "nxdn48",
-            "nxdn96"
-          ]
+            "nxdn96",
+            "stream"
+          ],
+          "description": "\"stream\": an internet audio stream (`url`), not a frequency (`freqHz` 0): it needs no radio."
         },
         "name": {
           "type": "string"
@@ -881,6 +818,19 @@
         "autoTune": {
           "type": "boolean",
           "description": "Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off."
+        },
+        "url": {
+          "type": "string",
+          "description": "A stream row: the HTTP(S) address of its audio (MP3 or WAV). It may hold the feed's credentials: listen-only interfaces aren't sent it."
+        },
+        "stereo": {
+          "type": "string",
+          "enum": [
+            "mix",
+            "left",
+            "right"
+          ],
+          "description": "A stream row: which of a stereo stream's channels it records (absent: both, mixed)."
         }
       },
       "required": [
@@ -960,7 +910,8 @@
             "p25",
             "dmr",
             "nxdn48",
-            "nxdn96"
+            "nxdn96",
+            "stream"
           ],
           "description": "A conventional channel: its mode."
         },
@@ -1254,12 +1205,6 @@
             "$ref": "#/definitions/Source"
           }
         },
-        "audioStreams": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/AudioStream"
-          }
-        },
         "systems": {
           "type": "array",
           "items": {
@@ -1355,7 +1300,6 @@
       },
       "required": [
         "sources",
-        "audioStreams",
         "systems",
         "conventional",
         "recording",
@@ -1761,7 +1705,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Every system's short name, by the number its calls and live audio carry as `system` (trunked, conventional, then audio streams)."
+          "description": "Every system's short name, by the number its calls and live audio carry as `system` (trunked systems first, then conventional)."
         }
       },
       "required": [
@@ -7977,23 +7921,12 @@
           ],
           "description": "Its sharing with the community directory; null when it isn't shared."
         },
-        "connected": {
-          "type": "boolean",
-          "description": "An internet audio source: FFmpeg has returned decoded audio."
-        },
-        "lastError": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The latest connection failure, cleared when audio resumes."
-        },
         "sites": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/SiteStatus"
           },
-          "description": "Its sites following their control channels, in order (conventional and audio: none)."
+          "description": "Its sites following their control channels, in order (conventional: none)."
         }
       },
       "required": [
@@ -8006,7 +7939,7 @@
         "sites"
       ],
       "additionalProperties": false,
-      "description": "One system being recorded: trunked (with a site running), conventional, or internet audio. `index` is what calls and audio carry as `system`."
+      "description": "One system being recorded: trunked (with a site running) or conventional. `index` is what calls and audio carry as `system`."
     },
     "Talkgroup": {
       "type": "object",

@@ -142,10 +142,8 @@ pub struct Ctx {
 pub enum EngineCmd {
     /// A source's error or end, by way of its decoding thread.
     Source(SourceMsg),
-    AudioFrame(crate::audio_stream::AudioFrame),
-    AudioCall(crate::audio_stream::AudioCall),
-    AudioStreamStatus { short_name: String, connected: bool, error: Option<String> },
-    AudioStreamEnded,
+    /// Stream row `stream` couldn't be fetched or decoded (`crate::audio_stream`; it's tried again).
+    StreamError { stream: usize, error: String },
     /// What the connected browsers watch changed.
     Topics(trunk_app::stats::Topics),
     /// A system's talkgroups changed (loaded, pasted, edited in Setup).
@@ -444,15 +442,6 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     if let Some(p) = cfg.problem() {
         return Err(p);
     }
-    let stream_systems: Option<Vec<u16>> = cfg
-        .audio_streams
-        .iter()
-        .filter(|stream| stream.enabled)
-        .map(|stream| cfg.call_systems().into_iter().find(|system| system.short_name == stream.short_name).map(|system| system.index))
-        .collect();
-    let Some(stream_systems) = stream_systems else {
-        return Err("An internet audio stream names a system that isn't enabled.".into());
-    };
     // Encryption keys: a file that can't be read, or a bad key in it, stops the start.
     let keys = cfg.load_keys(&ctx.config_path, &|name| crate::unlock::held(&ctx, &cfg, name))?;
     warn_readable_keys(&ctx, &cfg);
@@ -522,8 +511,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     // The engine's commands: open before its thread is, so none sent meanwhile is lost.
     let ctl = mpsc::channel::<EngineCmd>();
     *ctx.engine.lock().unwrap() = Some(ctl.0.clone());
-    for (i, (stream, system)) in cfg.audio_streams.iter().filter(|stream| stream.enabled).cloned().zip(stream_systems.iter().copied()).enumerate() {
-        match crate::audio_stream::spawn(stream, system, ctl.0.clone(), stop.clone(), &format!("audio-stream-{i}")) {
+    // Each stream row's audio, pushed into the engine from a thread of its own (as a source's samples are).
+    for (k, row) in cfg.streams().into_iter().enumerate() {
+        match crate::audio_stream::spawn(row.clone(), k, session.stream_feeder(k), ctl.0.clone(), stop.clone(), (epoch_ms, epoch_at)) {
             Ok(t) => threads.push(t),
             Err(e) => {
                 *ctx.engine.lock().unwrap() = None;
@@ -531,8 +521,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             }
         }
     }
-    let stream_count = stream_systems.len();
-    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, stop2, (epoch_ms, epoch_at), ctl, stream_count));
+    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, stop2, (epoch_ms, epoch_at), ctl));
     match spawned {
         Ok(t) => threads.push(t),
         Err(e) => {
@@ -870,7 +859,7 @@ impl Air {
 /// instant, for the session's clock. `ctl`: everything for this thread — the
 /// sources' errors and ends (by way of their decoding threads), and the
 /// browsers' and the server's changes ([`Ctx::engine`] holds its sender).
-fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>), mut audio_streams_remaining: usize) {
+fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
     ctx.set_phase("running", None, false);
     // Calls are stamped by this clock: the clock's health watches it against the wall clock.
     ctx.clock.recording(Some(epoch));
@@ -894,7 +883,6 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         .collect();
     drop(ctl_tx);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
-    let recordings = cfg.recordings();
     // Each system's file rules, by a call's `system` (trunked or conventional).
     let rules = {
         let (each, all) = (cfg.recordings().iter().map(FileRules::of).collect::<Vec<_>>(), FileRules::of(&cfg.recording));
@@ -937,7 +925,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     let mut out = Vec::new();
     let mut ended_all = false;
     loop {
-        if stop.load(Ordering::Relaxed) && audio_streams_remaining == 0 {
+        if stop.load(Ordering::Relaxed) {
             break;
         }
         // (What the sources decoded meanwhile is collected below, every 20 ms at most.)
@@ -946,6 +934,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         while let Some(c) = next {
             match c {
                 EngineCmd::Source(SourceMsg::Error { source, error }) => session.source_error(source, &error),
+                EngineCmd::StreamError { stream, error } => session.stream_error(stream, &error),
                 EngineCmd::Source(SourceMsg::End { source }) => {
                     if session.source_ended(source) {
                         // (Not "ended" when the user stopped it: the file thread ends on stop too.)
@@ -953,94 +942,6 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     }
                 }
                 EngineCmd::Source(_) => {}
-                EngineCmd::AudioFrame(frame) => {
-                    session.audio_stream_frame(frame.system, frame.call_num);
-                    let mut bytes = Vec::with_capacity(11 + frame.samples.len() * 2);
-                    bytes.push(2u8);
-                    bytes.extend_from_slice(&frame.system.to_le_bytes());
-                    bytes.extend_from_slice(&frame.call_num.to_le_bytes());
-                    bytes.extend_from_slice(&frame.talkgroup.to_le_bytes());
-                    for sample in frame.samples {
-                        bytes.extend_from_slice(&((sample.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
-                    }
-                    if let Some(plugins) = ctx.plugins.host() {
-                        plugins.audio_frame(&bytes, false);
-                    }
-                    let _ = ctx.hub.send(Arc::new(Out::Audio { short_name: frame.short_name, tg: frame.talkgroup, frame: bytes }));
-                }
-                EngineCmd::AudioCall(call) => {
-                    let now = now_ms();
-                    let elapsed_ms = Instant::now().saturating_duration_since(call.started_at).as_secs_f64() * 1000.0;
-                    let start_ms = (now - elapsed_ms).round() as i64;
-                    let stop_ms = now.round() as i64;
-                    let length_s = call.samples.len() as f64 / 8000.0;
-                    let talkgroup = ctx.shared.names.lock().unwrap().tg(&call.short_name, call.talkgroup);
-                    let recording = recordings.get(call.system as usize);
-                    let save = recording.is_some_and(|recording| {
-                        !talkgroup.as_ref().is_some_and(|info| info.ignore)
-                            && (talkgroup.is_some() || recording.record_unknown)
-                            && length_s >= recording.min_call_s
-                            && length_s >= recording.min_transmission_s
-                    });
-                    if !session.audio_stream_call(
-                        call.system,
-                        call.call_num,
-                        call.talkgroup,
-                        start_ms as f64 / 1000.0,
-                        stop_ms as f64 / 1000.0,
-                        call.samples.len(),
-                        talkgroup.as_ref().map_or("", |info| info.alpha_tag.as_str()),
-                        save,
-                    ) {
-                        log::error!("Internet audio call resolved to missing session system {}", call.system);
-                    }
-                    if let Some(recording) = recording {
-                        if save {
-                            let mut record = trunk_recorder_plugin::CallRecord {
-                                call_num: call.call_num as u64,
-                                start_time: start_ms.div_euclid(1000),
-                                stop_time: stop_ms.div_euclid(1000),
-                                start_time_ms: start_ms,
-                                stop_time_ms: stop_ms,
-                                call_length: length_s,
-                                call_length_ms: (length_s * 1000.0).round() as i64,
-                                talkgroup: call.talkgroup,
-                                talkgroup_tag: talkgroup.map_or_else(String::new, |info| info.alpha_tag),
-                                audio_type: "analog".into(),
-                                system_type: "conventional".into(),
-                                voice_mode: "internet".into(),
-                                short_name: call.short_name.clone(),
-                                ..Default::default()
-                            };
-                            let record_json = serde_json::to_value(&record).unwrap_or_default();
-                            let format = recording.filename_format.as_str();
-                            let offset = local_offset(start_ms.div_euclid(1000));
-                            let rel = if format.trim().is_empty() {
-                                let base = format!("{}-{}_{}", call.talkgroup, start_ms.div_euclid(1000), record.freq);
-                                let path = trunk_app::filename::default_path(&call.short_name, &base, start_ms.div_euclid(1000), offset);
-                                trunk_app::filename::numbered(&path, call.call_num as u64)
-                            } else {
-                                trunk_app::filename::render(format, &record_json, call.system, offset)
-                            };
-                            record.clock_off = ctx.clock.off();
-                            fin(Finish {
-                                rel,
-                                system: call.system,
-                                wav: trunk_core::wav::encode(&call.samples, 8000),
-                                record,
-                                frames: None,
-                                rules: rules(call.system),
-                                decrypted: false,
-                            });
-                        }
-                    } else {
-                        log::error!("Internet audio stream resolved to missing system {}", call.system);
-                    }
-                }
-                EngineCmd::AudioStreamStatus { short_name, connected, error } => {
-                    session.audio_stream_status(&short_name, connected, error);
-                }
-                EngineCmd::AudioStreamEnded => audio_streams_remaining = audio_streams_remaining.saturating_sub(1),
                 EngineCmd::Topics(t) => session.set_topics(t),
                 EngineCmd::Talkgroups { short_name, rows } => {
                     if session.set_talkgroups(&short_name, &rows) {
@@ -1063,7 +964,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
             }
             next = rx.try_recv().ok();
         }
-        if ended_all && audio_streams_remaining == 0 {
+        if ended_all {
             break;
         }
         // (The plugins can be swapped meanwhile: their settings changed. This iteration's, held by no lock.)

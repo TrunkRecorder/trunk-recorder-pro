@@ -82,8 +82,8 @@ Notes:
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `freqHz` | ✓ | | number | The frequency, Hz |
-| `mode` | | `"fm"` | string | `"fm"` (analog FM), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"` (any case; anything else is refused when the config is read) |
+| `freqHz` | ✓ | | number | The frequency, Hz (a `stream` row: `0`) |
+| `mode` | | `"fm"` | string | `"fm"` (analog FM), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"`, `"nxdn96"`, or `"stream"` (an [internet audio stream](audio-streams.md): `url` instead of a frequency) (any case; anything else is refused when the config is read) |
 | `name` | | `""` | string | Alpha tag, written to the call JSON |
 | `description` | | `""` | string | Description in the call JSON |
 | `tag` | | `""` | string | Tag in the call JSON |
@@ -96,6 +96,8 @@ Notes:
 | `bandwidthKhz` | | the mode's | number | `fm` and `am`: the channel filter's width, kHz, 4–20. FM: 11 (12.5 kHz channels), 16 for wide FM (25 kHz). AM: 11 below 225 MHz, 16 from 225 MHz (UHF military air); 6 for 8.33 kHz channels. Rows sharing a frequency need the same |
 | `enabled` | | `true` | bool | `false` keeps the row without recording it |
 | `autoTune` | | `false` | bool | `p25`, `dmr`, `nxdn`: its calls' carrier offsets correct its source's AutoTune (a repeater output to trust; see [Frequency correction](../guides/conventional.md#frequency-correction)) |
+| `url` | `stream` | | string | `stream`: the HTTP or HTTPS address of its audio, MP3 or WAV. [audio-streams.md](audio-streams.md) |
+| `stereo` | | `"mix"` | string | `stream`: which of a stereo stream's channels it records, `"mix"`, `"left"` or `"right"` |
 
 ### Talkgroup numbers
 
