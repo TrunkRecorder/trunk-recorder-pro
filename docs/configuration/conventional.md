@@ -36,6 +36,7 @@ anywhere a source covers, including alongside a trunked system. Analog channels 
 | `channelFile` | | `""` | string | A CSV to read the channels from instead (desktop app only). Absolute, or relative to the config file's folder. See [Channel file](#channel-file-channelfile) |
 | `recording` | | `{}` | object | Its own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
 | `unitNames` | | empty | object | Names for the radios heard on it. See [systems.md](systems.md#unit-names) |
+| `sources` | | `[]` | array | The sources it may be received on, by position in `sources` counting from 0 (as a call's `source_num`). Empty: whichever source covers a channel. See [How channels are shared out](../guides/radios.md#how-channels-are-shared-out) |
 | `keys` | | `""` | string | The encryption keys its P25 channels decrypt with, a key source's name. See [systems.md](systems.md#encryption-keys-keys) |
 | `plugins` | | `{}` | object | Its plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
 | `pluginDelays` | | `[]` | array | How long plugins wait for its calls. See [plugins.md](plugins.md#delays) |

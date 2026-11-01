@@ -102,6 +102,11 @@ pub fn usable_half_width(rate_hz: f64, guard_hz: f64) -> f64 {
     (rate_hz / 2.0 - guard_hz.max(0.0)).max(rate_hz / 4.0)
 }
 
+/// The first source that covers `hz`, of the `pinned` ones (none pinned: of all).
+fn source_covering(cfgs: &[SourceConfig], pinned: &[usize], hz: f64) -> Option<usize> {
+    cfgs.iter().enumerate().position(|(i, s)| (pinned.is_empty() || pinned.contains(&i)) && (hz - s.center_hz).abs() <= s.usable_half_width())
+}
+
 
 /// A system: what it decides about its calls, once for all of it, and where
 /// they come from — its sites, each a control channel to follow, or (none)
@@ -122,6 +127,9 @@ pub struct SystemConfig {
     pub sites: Vec<SiteConfig>,
     /// The tone signals it sends, by id.
     pub signals: Vec<Signal>,
+    /// The sources it may be received on, by position in [`EngineConfig::sources`];
+    /// none: whichever covers a channel.
+    pub sources: Vec<usize>,
 }
 
 impl SystemConfig {
@@ -141,6 +149,7 @@ impl SystemConfig {
             keys: None,
             sites: Vec::new(),
             signals: Vec::new(),
+            sources: Vec::new(),
         }
     }
 
@@ -821,6 +830,8 @@ struct Radio {
     rx: Arc<Vec<Mutex<SourceRx>>>,
     /// The sources' settings (each source's own, without its lock).
     cfgs: Arc<[SourceConfig]>,
+    /// Each system's pinned sources ([`SystemConfig::sources`]), by system.
+    pins: Vec<Vec<usize>>,
     recordings: HashMap<CallId, Recording>,
     free_nums: Vec<u32>,
     next_num: u32,
@@ -836,8 +847,9 @@ struct Radio {
 }
 
 impl Radio {
-    fn source_for(&self, hz: f64) -> Option<usize> {
-        self.cfgs.iter().position(|s| (hz - s.center_hz).abs() <= s.usable_half_width())
+    /// The source `system` receives a channel at `hz` on.
+    fn source_for(&self, system: usize, hz: f64) -> Option<usize> {
+        source_covering(&self.cfgs, self.pins.get(system).map_or(&[], Vec::as_slice), hz)
     }
 
     fn rx(&self, source: usize) -> MutexGuard<'_, SourceRx> {
@@ -970,7 +982,7 @@ impl SysHost<'_> {
     /// Record `call`: a recorder of the pool, its voice channel opened.
     fn take_recorder(&mut self, call: &Call) -> Result<(), Reason> {
         let r = &mut *self.radio;
-        let Some(src) = r.source_for(call.freq_hz as f64) else {
+        let Some(src) = r.source_for(call.system as usize, call.freq_hz as f64) else {
             return Err(Reason::NoSource);
         };
         let recorder_num = r.free_nums.pop().unwrap_or_else(|| {
@@ -1012,7 +1024,7 @@ impl RecorderHost for SysHost<'_> {
         if call.voice.analog() || r.recordings.len() + r.followed >= r.max_recorders {
             return false;
         }
-        let Some(src) = r.source_for(call.freq_hz as f64) else {
+        let Some(src) = r.source_for(call.system as usize, call.freq_hz as f64) else {
             return false;
         };
         self.open_channel(call, src);
@@ -1028,7 +1040,7 @@ impl RecorderHost for SysHost<'_> {
             return;
         }
         let key = (self.site, call.freq_hz);
-        let Some(src) = self.radio.source_for(call.freq_hz as f64) else { return };
+        let Some(src) = self.radio.source_for(call.system as usize, call.freq_hz as f64) else { return };
         let mut rx = self.radio.rx(src);
         let Some(ch) = rx.channels.get_mut(&key) else { return };
         for c in ch.calls.iter_mut() {
@@ -1184,7 +1196,7 @@ impl Trunk {
 
     /// Hunting: open the control channel `index` (of those a source covers).
     fn tune(&mut self, radio: &mut Radio, sys: &SystemConfig, cutoff_hz: f64, index: usize, events: &mut Vec<Event>) -> Result<(), String> {
-        let list: Vec<(f64, usize)> = self.cfg.control_channels.iter().filter_map(|&f| radio.source_for(f).map(|s| (f, s))).collect();
+        let list: Vec<(f64, usize)> = self.cfg.control_channels.iter().filter_map(|&f| radio.source_for(self.system as usize, f).map(|s| (f, s))).collect();
         if list.is_empty() {
             return Err(format!("{}: no control channel falls inside a source's bandwidth — move the center frequency.", sys.short_name));
         }
@@ -1236,7 +1248,7 @@ impl Trunk {
         let mut heads = Vec::new();
         let mut outside = Vec::new();
         for &hz in carriers {
-            let Some(src) = radio.source_for(hz) else {
+            let Some(src) = radio.source_for(self.system as usize, hz) else {
                 outside.push(format!("{:.5}", hz / 1e6));
                 continue;
             };
@@ -1539,6 +1551,7 @@ impl Core {
         let mut radio = Radio {
             rx: Arc::new(rx),
             cfgs: cfgs.clone(),
+            pins: cfg.systems.iter().map(|s| s.sources.clone()).collect(),
             recordings: HashMap::new(),
             free_nums: Vec::new(),
             next_num: 0,
@@ -1717,7 +1730,7 @@ impl Core {
             .conv
             .channels()
             .filter_map(|c| {
-                let src = self.radio.source_for(c.freq_hz)?;
+                let src = self.radio.source_for(c.system as usize, c.freq_hz)?;
                 Some(Want {
                     system: c.system as u16,
                     site: None,
@@ -2567,6 +2580,19 @@ mod tests {
     use super::*;
     use super::super::calls::Voice;
     use super::super::voice::VoiceKind;
+
+    #[test]
+    fn a_system_pinned_to_sources_uses_only_those() {
+        let src = |center_hz| SourceConfig { center_hz, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        // Sources 0 and 1 overlap at 851 MHz; source 2 is elsewhere.
+        let cfgs = [src(850.5e6), src(851.5e6), src(770e6)];
+        assert_eq!(source_covering(&cfgs, &[], 851.0e6), Some(0), "unpinned: the first that covers it");
+        assert_eq!(source_covering(&cfgs, &[1], 851.0e6), Some(1), "pinned to the second");
+        assert_eq!(source_covering(&cfgs, &[1, 2], 851.0e6), Some(1));
+        assert_eq!(source_covering(&cfgs, &[2], 851.0e6), None, "pinned to a source that doesn't cover it");
+        assert_eq!(source_covering(&cfgs, &[0, 1], 770e6), None, "nor does an unpinned source stand in");
+        assert_eq!(source_covering(&cfgs, &[7], 851.0e6), None, "a source that isn't there");
+    }
 
     fn tuned_source(auto_tune: bool) -> Source {
         let cfg = SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune, guard_hz: DEFAULT_GUARD_HZ };

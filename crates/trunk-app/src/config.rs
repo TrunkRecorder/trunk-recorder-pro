@@ -312,6 +312,10 @@ pub struct System {
     /// What people call it ("County Public Safety"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// The sources it may be received on, by position in `sources` (counting from 0, as a
+    /// call's `source_num` does); empty: whichever source covers a channel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<usize>,
     /// Its FCC licenses by frequency: see [`FccLicenses`].
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub fcc: FccLicenses,
@@ -878,6 +882,7 @@ impl Default for System {
             keys: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
+            sources: Vec::new(),
             share: false,
             directory: None,
             fcc: BTreeMap::new(),
@@ -989,6 +994,10 @@ pub struct Conventional {
     /// What people call it ("County Fire"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// The sources it may be received on, by position in `sources` (counting from 0, as a
+    /// call's `source_num` does); empty: whichever source covers a channel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<usize>,
     /// Its channels' FCC licenses by frequency (they can be different
     /// licensees'): see [`FccLicenses`].
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -1068,6 +1077,7 @@ impl Default for Conventional {
             keys: String::new(),
             short_name: "conv".into(),
             name: String::new(),
+            sources: Vec::new(),
             fcc: BTreeMap::new(),
             enabled: true,
             squelch_db: ConvConfig::default().squelch_db,
@@ -2435,6 +2445,12 @@ impl Config {
         if self.sources.iter().any(|s| matches!(&s.kind, SourceKind::File { path, .. } if path.trim().is_empty())) {
             return Some("Choose the capture file to replay.".into());
         }
+        let pinned = self.active_systems().map(|s| (&s.short_name, &s.sources)).chain(self.active_conventional().map(|v| (&v.short_name, &v.sources)));
+        for (name, pins) in pinned {
+            if let Some(n) = pins.iter().find(|&&n| n >= self.sources.len()) {
+                return Some(format!("{name}: it is set to receive on source {n} (counting from 0), and there are {} sources.", self.sources.len()));
+            }
+        }
         for (i, s) in self.sources.iter().enumerate() {
             match &s.kind {
                 SourceKind::Rtlsdr { buf_len, buffers, .. } => {
@@ -2585,6 +2601,7 @@ impl Config {
                     talkgroups: tg(&sys.short_name),
                     unit_tags: sys.unit_names.engine(),
                     signals: engine_signals(&sys.signals),
+                    sources: sys.sources.clone(),
                     ..SystemConfig::trunked(&sys.short_name, sites)
                 }
             })
@@ -2600,6 +2617,7 @@ impl Config {
                 talkgroups: tg(&v.short_name),
                 unit_tags: v.unit_names.engine(),
                 signals: engine_signals(&v.signals),
+                sources: v.sources.clone(),
                 ..SystemConfig::conventional(&v.short_name)
             });
         }
@@ -3375,5 +3393,25 @@ mod tests {
         assert_eq!(std::fs::read_to_string(talkgroups_path(&dir, "a")).unwrap(), "1,a", "the file is there before the config is saved back without it");
         assert!(!serde_json::to_string(&c).unwrap().contains("talkgroupsCsv"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_system_can_be_pinned_to_sources() {
+        let mut c: Config = serde_json::from_str(
+            r#"{
+                "conventional": [{ "shortName": "conv", "sources": [1], "channels": [{ "freqHz": 154430000, "mode": "fm", "name": "A" }] }],
+                "sources": [
+                    { "type": "file", "path": "a.cu8", "centerHz": 154000000, "rateHz": 2400000, "realtime": false },
+                    { "type": "file", "path": "b.cu8", "centerHz": 154000000, "rateHz": 2400000, "realtime": false }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(c.engine_config(0.0, &Default::default()).systems[0].sources, [1]);
+        assert_eq!(c.problem(), None);
+        c.conventional[0].sources = vec![2];
+        assert!(c.problem().unwrap().starts_with("conv: it is set to receive on source 2"), "{:?}", c.problem());
+        // Unpinned is how a config was always written.
+        c.conventional[0].sources.clear();
+        assert!(!serde_json::to_string(&c.conventional[0]).unwrap().contains("sources"));
     }
 }

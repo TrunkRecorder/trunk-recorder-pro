@@ -1305,6 +1305,13 @@
           "type": "string",
           "description": "What people call it; the short name is its folder."
         },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers a channel."
+        },
         "fcc": {
           "$ref": "#/definitions/FccLicenses",
           "description": "Its channels' FCC licenses by frequency (they can be different licensees'): see FccLicenses."
@@ -7764,6 +7771,13 @@
         "name": {
           "type": "string",
           "description": "What people call it (\"County Public Safety\"); the short name is its folder."
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers a channel."
         },
         "fcc": {
           "$ref": "#/definitions/FccLicenses",

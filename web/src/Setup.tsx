@@ -907,6 +907,33 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
 
 
 /** `fresh`: just added (measuring its roll-off is offered). */
+/** Which sources a system may be received on: none ticked, any that covers its channels. Shown with two or more sources. */
+function SourcePins(props: { c: Config; pinned: number[] | undefined; onChange: (pins: number[] | undefined) => void }) {
+  const pinned = props.pinned ?? [];
+  if (props.c.sources.length < 2) return null;
+  return (
+    <div className="field wide">
+      <span className="field-label">Receive on</span>
+      <div className="row">
+        {props.c.sources.map((_, n) => (
+          <label key={n} className="toggle">
+            <input
+              type="checkbox"
+              checked={pinned.includes(n)}
+              onChange={(e) => {
+                const next = (e.target.checked ? [...pinned, n] : pinned.filter((x) => x !== n)).sort((a, b) => a - b);
+                props.onChange(next.length ? next : undefined);
+              }}
+            />
+            <span className="small">Source {n + 1}</span>
+          </label>
+        ))}
+      </div>
+      <span className="field-hint">{pinned.length ? "Only these sources are used for it." : "Any source that covers it."}</span>
+    </div>
+  );
+}
+
 export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
   const s = useApp();
   const { c, i } = props;
@@ -1473,6 +1500,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
         <Field label="Name">
           <TextInput value={conv.name ?? ""} placeholder="County Fire" onChange={(v) => edit((x) => void (v ? (x.name = v) : delete x.name))} />
         </Field>
+        <SourcePins c={c} pinned={conv.sources} onChange={(p) => edit((x) => void (p ? (x.sources = p) : delete x.sources))} />
         <Field needs={need(`squelch-${name}`)} anchor={`squelch-${name}`} label="Squelch, dB above noise" hint="For channels without their own">
           <NumberInput label="Squelch, dB above noise" value={conv.squelchDb} onChange={(v) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, v ?? 8))))} />
         </Field>
@@ -2490,6 +2518,7 @@ export function SystemCard(props: { c: Config; i: number }) {
         <Field label="Name">
           <TextInput value={sys.name ?? ""} placeholder="County Public Safety" onChange={(v) => edit((x) => void (x.name = v))} />
         </Field>
+        <SourcePins c={props.c} pinned={sys.sources} onChange={(p) => edit((x) => void (p ? (x.sources = p) : delete x.sources))} />
         <Field label="Type">
           <select
             value={sys.type}

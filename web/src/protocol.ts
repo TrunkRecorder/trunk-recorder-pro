@@ -214,6 +214,8 @@ export interface System {
   shortName: string;
   /** What people call it ("County Public Safety"); the short name is its folder. */
   name?: string;
+  /** The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers a channel. */
+  sources?: number[];
   /** Its FCC licenses by frequency (control, voice): see FccLicenses. */
   fcc?: FccLicenses;
   /** Share it with the community directory (trunkrecorder.pro/directory): its sites, channels, and the
@@ -443,6 +445,8 @@ export interface Conventional {
   shortName: string;
   /** What people call it; the short name is its folder. */
   name?: string;
+  /** The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers a channel. */
+  sources?: number[];
   /** Its channels' FCC licenses by frequency (they can be different licensees'): see FccLicenses. */
   fcc?: FccLicenses;
   enabled: boolean;
