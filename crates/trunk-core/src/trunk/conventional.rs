@@ -429,8 +429,9 @@ pub enum ConvOut {
     Event(Event),
     /// A call is over: the engine saves it. `recorder_num`: the index of the
     /// channel (frequency) it came on.
+    /// `source`: the source it was heard on (the call JSON's `source_num`).
     /// `tune_source`: its frequency scores this source's AutoTune ([`ConvChannel::tune_ref`]).
-    End { call: Call, rec: Recorded, recorder_num: u32, tune_source: Option<usize> },
+    End { call: Call, rec: Recorded, recorder_num: u32, source: usize, tune_source: Option<usize> },
     /// A radio's talker alias, heard on a P25 channel of system `.0` ([`Call::system`]).
     Alias(u16, Alias),
     /// A key of system `.0` that decrypts its voice to noise.
@@ -884,11 +885,11 @@ impl Conventional {
                 }
             }
             // Wind down.
-            let tune = ch.tune_ref.then_some(ch.source);
+            let (source, tune) = (ch.source, ch.tune_ref.then_some(ch.source));
             let o = ch.open.as_mut().unwrap();
             for live in o.live.iter_mut() {
                 if live.as_ref().is_some_and(|l| now_s - l.call.last_audio_s > rules.call_timeout_s) {
-                    Self::end(live.take().unwrap(), idx as u32, tune, out);
+                    Self::end(live.take().unwrap(), idx as u32, source, tune, out);
                 }
             }
             let o = ch.open.as_ref().unwrap();
@@ -1128,7 +1129,7 @@ impl Conventional {
             let new_row = l.row != r && (ch.mode.analog() || air_tg.is_some());
             if too_long || new_tg || new_row {
                 let l = o.live[slot].take().unwrap();
-                Self::end(l, num, ch.tune_ref.then_some(ch.source), out);
+                Self::end(l, num, ch.source, ch.tune_ref.then_some(ch.source), out);
             } else if air_tg.is_some() && l.air_tg.is_none() {
                 let info = Self::names(row, tg, rules.talkgroups);
                 let l = o.live[slot].as_mut().unwrap();
@@ -1247,14 +1248,14 @@ impl Conventional {
         row.info.clone().map(|t| Talkgroup { number: tg, ..t }).or_else(|| talkgroups.get(&tg).cloned())
     }
 
-    fn end(mut l: Live, num: u32, tune_source: Option<usize>, out: &mut Vec<ConvOut>) {
+    fn end(mut l: Live, num: u32, source: usize, tune_source: Option<usize>, out: &mut Vec<ConvOut>) {
         // What it ended on.
         let patterns = l.rec.finish().patterns;
         if !patterns.is_empty() {
             let heard = l.rec.talkers(&l.call.sources, patterns);
             out.push(ConvOut::Patterns { call: l.call.clone(), heard, decrypted: l.call.encrypted || l.call.decrypted, now_s: l.call.last_audio_s });
         }
-        out.push(ConvOut::End { call: l.call, rec: l.rec, recorder_num: num, tune_source });
+        out.push(ConvOut::End { call: l.call, rec: l.rec, recorder_num: num, source, tune_source });
     }
 
     /// End of input: flush the receivers and end every call.
@@ -1275,7 +1276,7 @@ impl Conventional {
             }
             let o = ch.open.take().unwrap();
             for l in o.live.into_iter().flatten() {
-                Self::end(l, idx as u32, ch.tune_ref.then_some(ch.source), out);
+                Self::end(l, idx as u32, ch.source, ch.tune_ref.then_some(ch.source), out);
             }
         }
     }

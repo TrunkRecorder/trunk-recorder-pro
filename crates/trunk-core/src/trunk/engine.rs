@@ -1891,12 +1891,11 @@ impl Core {
         for o in out.drain(..) {
             match o {
                 ConvOut::Event(e) => self.events.push(e),
-                ConvOut::End { call, rec, recorder_num, tune_source } => {
+                ConvOut::End { call, rec, recorder_num, source, tune_source } => {
                     if let Some(src) = tune_source {
                         self.radio.score_call(src, &call, rec.freq_error_hz());
                     }
-                    let source_num = self.radio.source_for(call.freq_hz as f64).unwrap_or(0) as u32;
-                    self.write_call(Held { call: call.clone(), rec, recorder_num, source_num }, None);
+                    self.write_call(Held { call: call.clone(), rec, recorder_num, source_num: source as u32 }, None);
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
