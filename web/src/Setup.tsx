@@ -43,6 +43,7 @@ import {
   rateOk,
   ratesText,
   SOURCE_KINDS,
+  sourceTitle,
 } from "./config.ts";
 import {
   can,
@@ -943,7 +944,7 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
       head={
         <>
           <div className="set-card-title">
-            <h3>Source {i + 1}</h3>
+            <h3>{sourceTitle(src, i)}</h3>
             <span className="set-card-sub">
               {kindLabel}
               {tuned ? ` · ${formatMhz(tuned, 3)} MHz` : ""} · {(src.rateHz / 1e6).toFixed(src.rateHz % 1e5 ? 3 : 1)} MSPS
@@ -968,6 +969,9 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
       note={needs && <div className="field-needs set-card-needs">{needs}</div>}
     >
       <Group title="Device" hint={src.type === "file" ? "A capture to replay instead of a radio." : "Which radio, and how it is connected."}>
+        <Field label="Name" hint="Optional: what it is for, such as the antenna it is on">
+          <TextInput value={src.name ?? ""} placeholder="none" onChange={(v) => edit((x) => void (x.name = v || undefined))} />
+        </Field>
         <div className="field wide">
           <span className="field-label">Kind</span>
           <div className="seg small" role="radiogroup" aria-label={`Source ${i + 1} kind`}>

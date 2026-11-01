@@ -6434,6 +6434,10 @@
             "guardHz": {
               "type": "number"
             },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Whip\", \"Multicoupler\"); absent: none."
+            },
             "type": {
               "type": "string",
               "const": "rtlsdr"
@@ -6484,6 +6488,10 @@
             },
             "guardHz": {
               "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Whip\", \"Multicoupler\"); absent: none."
             },
             "type": {
               "type": "string",
@@ -6536,6 +6544,10 @@
             },
             "guardHz": {
               "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Whip\", \"Multicoupler\"); absent: none."
             },
             "type": {
               "type": "string",
@@ -6607,6 +6619,10 @@
             "guardHz": {
               "type": "number"
             },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Whip\", \"Multicoupler\"); absent: none."
+            },
             "type": {
               "type": "string",
               "const": "bladerf"
@@ -6660,6 +6676,10 @@
             "guardHz": {
               "type": "number"
             },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Whip\", \"Multicoupler\"); absent: none."
+            },
             "type": {
               "type": "string",
               "const": "hackrf"
@@ -6712,6 +6732,10 @@
             },
             "guardHz": {
               "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Whip\", \"Multicoupler\"); absent: none."
             },
             "type": {
               "type": "string",
@@ -6776,6 +6800,10 @@
             "guardHz": {
               "type": "number"
             },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Whip\", \"Multicoupler\"); absent: none."
+            },
             "type": {
               "type": "string",
               "const": "file"
@@ -6800,7 +6828,7 @@
           ]
         }
       ],
-      "description": "A radio, or a capture to replay (`type`), its own keys beside the ones every source has: `centerHz`, `rateHz`, `ppm`, and `autoTune`: correct its channels for the frequency error measured on the control channels (Trunk Recorder's autoTune); the error is measured and shown either way. And `guardHz`: left unused at each edge of its band, where the anti-alias filter rolls off (default 75 000; Setup can measure it — `profileSource`)."
+      "description": "A radio, or a capture to replay (`type`), its own keys beside the ones every source has: `centerHz`, `rateHz`, `ppm`, and `autoTune`: correct its channels for the frequency error measured on the control channels (Trunk Recorder's autoTune); the error is measured and shown either way. And `guardHz`: left unused at each edge of its band, where the anti-alias filter rolls off (default 75 000; Setup can measure it — `profileSource`). And `name`: what to call it beside its number."
     },
     "SourceStatus": {
       "type": "object",

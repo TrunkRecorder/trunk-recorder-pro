@@ -22,6 +22,13 @@ Anything else is refused when the file is read.
 
 These work the same way on every type; each type's table below repeats them with that type's default.
 
+### Name
+
+`name` is optional. It is shown beside the source's number ("Source 2 (Whip)") in Setup, the RF page and
+the log, so you can tell radios apart by what they are for (an antenna, a band) as well as by their
+position in the list. It changes nothing about how the source records, and changing it while recording
+needs no restart.
+
 ### Center frequency and Auto
 
 `centerHz` is the frequency in the middle of the block of spectrum the source receives, in Hz.

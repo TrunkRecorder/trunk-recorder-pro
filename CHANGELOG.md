@@ -5,6 +5,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A source can have a name.** `name` on a source (**Name** in Setup) is shown beside its number, as
+  "Source 2 (Whip)", in Setup, the RF page and the log. Renaming one while recording needs no restart.
+
 - **Live audio in stereo, through an interface's own sound chain.** `client.js`'s
   `LivePlayer` has `pan` (left -1 to right 1) beside `gain`, both settable while playing
   (`player.pan = -1`; they glide, no clicks), and `skip()` drops the call playing. It

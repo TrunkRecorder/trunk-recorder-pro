@@ -5,7 +5,7 @@
 // time.
 
 import { useState } from "react";
-import { formatGain, formatMhz, systemColor, usableHalfWidth } from "../config.ts";
+import { formatGain, formatMhz, sourceTitle, systemColor, usableHalfWidth } from "../config.ts";
 import { setView, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
@@ -428,7 +428,7 @@ export function RfPage() {
       <div className="page">
         <p className="empty">Start recording to see the sources.</p>
         {s.config?.sources.map((src, k) => (
-          <Card key={k} title={`Source ${k + 1}`}>
+          <Card key={k} title={sourceTitle(src, k)}>
             <div className="kv small">
               <span>
                 {src.type} · {mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s · gain {gainText(src)}

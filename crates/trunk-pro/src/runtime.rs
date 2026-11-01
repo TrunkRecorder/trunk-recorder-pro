@@ -404,7 +404,9 @@ impl Runner {
         if old.len() != new.len() {
             return vec![];
         }
-        old.iter().zip(new).enumerate().filter(|(_, (o, n))| o != n).map(|(i, (o, n))| (i, self.live_source(i, o, n))).collect()
+        // (A new name changes nothing the radio does.)
+        let changed = |o: &Source, n: &Source| Source { name: n.name.clone(), ..o.clone() } != *n;
+        old.iter().zip(new).enumerate().filter(|(_, (o, n))| changed(o, n)).map(|(i, (o, n))| (i, self.live_source(i, o, n))).collect()
     }
 
     /// The engine has stopped by itself (every capture file ended).

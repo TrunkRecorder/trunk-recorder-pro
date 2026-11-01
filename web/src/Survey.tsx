@@ -13,7 +13,7 @@
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, needsDriver, siteNameOf, SOURCE_KINDS, sourceKey, systemWithChannel } from "./config.ts";
+import { deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, needsDriver, siteNameOf, SOURCE_KINDS, sourceKey, sourceTitle, systemWithChannel } from "./config.ts";
 import {
   can,
   addDmrSite,
@@ -632,7 +632,7 @@ export function SurveyPanel(props: { c: Config }) {
                 <select value={radioKey} onChange={(e) => setRadioPick(e.target.value)}>
                   {c.sources.map((x, i) => (
                     <option key={i} value={i} disabled={recording}>
-                      Source {i + 1} ({SOURCE_KINDS[x.type].label}){recording ? " — recording" : ""}
+                      {sourceTitle(x, i)} ({SOURCE_KINDS[x.type].label}){recording ? " — recording" : ""}
                     </option>
                   ))}
                   {spares.map((x) => (

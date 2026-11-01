@@ -300,6 +300,9 @@ export function formatFromPath(path: string): "cu8" | "cs16" | "cf32" {
   return ["cf32", "cfile", "fc32", "complex"].includes(ext) ? "cf32" : ["cs16", "sc16"].includes(ext) ? "cs16" : "cu8";
 }
 
+/** What the app calls a source: "Source 2", or "Source 2 (Whip)" once it has a `name`. */
+export const sourceTitle = (s: { name?: string }, i: number) => (s.name?.trim() ? `Source ${i + 1} (${s.name.trim()})` : `Source ${i + 1}`);
+
 /** Left unused at each edge of a source's band unless it says otherwise (`guardHz`), Hz. */
 /** The conventional channels being recorded: switched on, in a system that is. */
 export function enabledChannels(c: Config): Channel[] {
