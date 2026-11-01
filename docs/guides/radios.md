@@ -231,11 +231,13 @@ the Radios tab, whose usable range covers it**. Control channels are the same: e
 the first source that covers it. Where two radios overlap, the one higher in the list gets the
 channels in the overlap.
 
-To keep a system on particular radios (a band on one antenna, say), tick them under **Receive on** in
+To keep a trunked system on particular radios (a band on one antenna, say), tick them under **Receive on** in
 its Setup page, or list their positions in its `sources` (counting from 0, as a call's `source_num`).
-Its channels are then taken only from those radios, still the first that covers each, and a channel
-none of them covers isn't recorded. Left empty, it can use any. Auto placement doesn't know about
-this: set a center of your own for a radio a system is kept on.
+Its control and voice channels are then taken only from those radios, still the first that covers each,
+and a channel none of them covers isn't recorded. A conventional system is kept to radios channel by
+channel instead: each row's **Source** (its `sources`), shared by the rows on one frequency. Left empty,
+either can use any. Auto placement doesn't know about this: set a center of your own for a radio
+something is kept on.
 
 A call whose frequency no source covers isn't recorded; a system's page under **Radio system** says *outside tuned
 range*, and the **Radio system** page counts these as *Out of band* (*No source covers the

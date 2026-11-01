@@ -1729,19 +1729,16 @@ impl Core {
         let conv = self
             .conv
             .channels()
-            .filter_map(|c| {
-                let src = self.radio.source_for(c.system as usize, c.freq_hz)?;
-                Some(Want {
-                    system: c.system as u16,
-                    site: None,
-                    hz: c.freq_hz,
-                    src,
-                    kind: ChannelKind::Conventional(c.mode),
-                    offset_hz: c.offset_hz,
-                    quality: c.quality,
-                    calls: c.calls,
-                    names: c.names.iter().map(|n| n.to_string()).collect(),
-                })
+            .map(|c| Want {
+                system: c.system as u16,
+                site: None,
+                hz: c.freq_hz,
+                src: c.source,
+                kind: ChannelKind::Conventional(c.mode),
+                offset_hz: c.offset_hz,
+                quality: c.quality,
+                calls: c.calls,
+                names: c.names.iter().map(|n| n.to_string()).collect(),
             })
             .collect();
         (control, conv)

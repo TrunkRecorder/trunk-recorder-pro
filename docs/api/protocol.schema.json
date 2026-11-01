@@ -812,6 +812,13 @@
         "enabled": {
           "type": "boolean"
         },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers it. Rows sharing a frequency share them."
+        },
         "autoTune": {
           "type": "boolean",
           "description": "Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off."
@@ -1304,13 +1311,6 @@
         "name": {
           "type": "string",
           "description": "What people call it; the short name is its folder."
-        },
-        "sources": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers a channel."
         },
         "fcc": {
           "$ref": "#/definitions/FccLicenses",

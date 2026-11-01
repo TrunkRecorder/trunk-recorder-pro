@@ -218,6 +218,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             match_talkgroup,
             enabled,
             auto_tune,
+            sources: Vec::new(),
         });
     }
     if old {
@@ -352,7 +353,7 @@ mod tests {
                 code: "D023N".into(),
                 slot: None,
                 match_talkgroup: None,
-                enabled: true, auto_tune: false,
+                enabled: true, auto_tune: false, sources: Vec::new(),
             },
             Channel {
                 freq_hz: 460_125_000.0,
@@ -367,7 +368,7 @@ mod tests {
                 code: "293".into(),
                 slot: None,
                 match_talkgroup: Some(1),
-                enabled: false, auto_tune: false,
+                enabled: false, auto_tune: false, sources: Vec::new(),
             },
             Channel {
                 freq_hz: 451_500_000.0,
@@ -382,7 +383,7 @@ mod tests {
                 code: "1".into(),
                 slot: Some(1),
                 match_talkgroup: Some(1),
-                enabled: true, auto_tune: false,
+                enabled: true, auto_tune: false, sources: Vec::new(),
             },
         ];
         let csv = write(&chans);

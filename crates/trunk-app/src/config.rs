@@ -994,10 +994,6 @@ pub struct Conventional {
     /// What people call it ("County Fire"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// The sources it may be received on, by position in `sources` (counting from 0, as a
-    /// call's `source_num` does); empty: whichever source covers a channel.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<usize>,
     /// Its channels' FCC licenses by frequency (they can be different
     /// licensees'): see [`FccLicenses`].
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -1077,7 +1073,6 @@ impl Default for Conventional {
             keys: String::new(),
             short_name: "conv".into(),
             name: String::new(),
-            sources: Vec::new(),
             fcc: BTreeMap::new(),
             enabled: true,
             squelch_db: ConvConfig::default().squelch_db,
@@ -1258,6 +1253,10 @@ pub struct Channel {
     pub bandwidth_khz: Option<f64>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// The sources it may be received on, by position in `sources` (counting from 0, as a call's
+    /// `source_num` does); empty: whichever source covers it. Rows sharing a frequency share them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<usize>,
     /// Its calls' carrier offsets score its source's AutoTune (digital rows;
     /// a repeater output to trust, not radios on simplex). Off by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1354,6 +1353,7 @@ impl Channel {
             access: self.parsed_access().ok().flatten(),
             system: 0,
             analog: Demod::default().tuning(self),
+            sources: self.sources.clone(),
         }
     }
 }
@@ -2445,7 +2445,10 @@ impl Config {
         if self.sources.iter().any(|s| matches!(&s.kind, SourceKind::File { path, .. } if path.trim().is_empty())) {
             return Some("Choose the capture file to replay.".into());
         }
-        let pinned = self.active_systems().map(|s| (&s.short_name, &s.sources)).chain(self.active_conventional().map(|v| (&v.short_name, &v.sources)));
+        let pinned = self
+            .active_systems()
+            .map(|s| (s.short_name.clone(), &s.sources))
+            .chain(self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).map(|c| (format!("{} {:.5} MHz", v.short_name, c.freq_hz / 1e6), &c.sources))));
         for (name, pins) in pinned {
             if let Some(n) = pins.iter().find(|&&n| n >= self.sources.len()) {
                 return Some(format!("{name}: it is set to receive on source {n} (counting from 0), and there are {} sources.", self.sources.len()));
@@ -2617,7 +2620,6 @@ impl Config {
                 talkgroups: tg(&v.short_name),
                 unit_tags: v.unit_names.engine(),
                 signals: engine_signals(&v.signals),
-                sources: v.sources.clone(),
                 ..SystemConfig::conventional(&v.short_name)
             });
         }
@@ -3220,7 +3222,7 @@ mod tests {
             code: tone.into(),
             slot: None,
             match_talkgroup: None,
-            enabled: true, auto_tune: false,
+            enabled: true, auto_tune: false, sources: Vec::new(),
         };
         let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
         c.conventional[0].channels = vec![row("", None), row("D023N", None), row("151.4", Some(500)), row("94.8", None)];
@@ -3273,7 +3275,7 @@ mod tests {
             code: String::new(),
             slot: None,
             match_talkgroup: None,
-            enabled: true, auto_tune: false,
+            enabled: true, auto_tune: false, sources: Vec::new(),
         }];
         // Linking a new path writes the current list there.
         c.link_channel_file(0, &cfg_path, "channels.csv").unwrap();
@@ -3396,22 +3398,31 @@ mod tests {
     }
 
     #[test]
-    fn a_system_can_be_pinned_to_sources() {
+    fn a_system_or_channel_can_be_pinned_to_sources() {
         let mut c: Config = serde_json::from_str(
             r#"{
-                "conventional": [{ "shortName": "conv", "sources": [1], "channels": [{ "freqHz": 154430000, "mode": "fm", "name": "A" }] }],
+                "systems": [{ "shortName": "trunked", "sources": [1], "sites": [{ "controlChannelsHz": [154200000] }] }],
+                "conventional": [{ "shortName": "conv", "channels": [
+                    { "freqHz": 154430000, "mode": "fm", "name": "A", "sources": [1] },
+                    { "freqHz": 154325000, "mode": "fm", "name": "B" }] }],
                 "sources": [
                     { "type": "file", "path": "a.cu8", "centerHz": 154000000, "rateHz": 2400000, "realtime": false },
                     { "type": "file", "path": "b.cu8", "centerHz": 154000000, "rateHz": 2400000, "realtime": false }]
             }"#,
         )
         .unwrap();
-        assert_eq!(c.engine_config(0.0, &Default::default()).systems[0].sources, [1]);
+        let e = c.engine_config(0.0, &Default::default());
+        assert_eq!(e.systems[0].sources, [1], "a trunked system is pinned as a whole");
+        assert_eq!(e.conventional.iter().map(|x| x.sources.clone()).collect::<Vec<_>>(), [vec![1], vec![]], "a conventional channel by itself");
         assert_eq!(c.problem(), None);
-        c.conventional[0].sources = vec![2];
-        assert!(c.problem().unwrap().starts_with("conv: it is set to receive on source 2"), "{:?}", c.problem());
+        c.conventional[0].channels[0].sources = vec![2];
+        assert!(c.problem().unwrap().starts_with("conv 154.43000 MHz: it is set to receive on source 2"), "{:?}", c.problem());
+        c.conventional[0].channels[0].sources = vec![];
+        c.systems[0].sources = vec![3];
+        assert!(c.problem().unwrap().starts_with("trunked: it is set to receive on source 3"), "{:?}", c.problem());
         // Unpinned is how a config was always written.
-        c.conventional[0].sources.clear();
-        assert!(!serde_json::to_string(&c.conventional[0]).unwrap().contains("sources"));
+        c.systems[0].sources.clear();
+        assert!(!serde_json::to_string(&c.systems[0]).unwrap().contains("sources"));
+        assert!(!serde_json::to_string(&c.conventional[0].channels[1]).unwrap().contains("sources"));
     }
 }

@@ -5,11 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **A system can be kept on particular sources.** `sources` on a trunked or conventional system
-  (**Receive on** in Setup, with two or more sources) lists the sources, by position, it may be received
-  on; its control channels, voice channels and conventional channels are taken only from those. Empty,
-  as before, is any source that covers them. A `sources` entry for a source that isn't there stops
-  recording from starting.
+- **A system or a conventional channel can be kept on particular sources.** `sources` on a trunked
+  system (**Receive on** in Setup, with two or more sources) lists the sources, by position, its control
+  channels and voice channels may be received on; on a conventional channel (a **Source** column in its
+  table) it is that frequency's. Empty, as before, is any source that covers it. A `sources` entry for a
+  source that isn't there stops recording from starting.
 
 - **Live audio in stereo, through an interface's own sound chain.** `client.js`'s
   `LivePlayer` has `pan` (left -1 to right 1) beside `gain`, both settable while playing

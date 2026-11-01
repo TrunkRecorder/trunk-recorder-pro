@@ -36,7 +36,6 @@ anywhere a source covers, including alongside a trunked system. Analog channels 
 | `channelFile` | | `""` | string | A CSV to read the channels from instead (desktop app only). Absolute, or relative to the config file's folder. See [Channel file](#channel-file-channelfile) |
 | `recording` | | `{}` | object | Its own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
 | `unitNames` | | empty | object | Names for the radios heard on it. See [systems.md](systems.md#unit-names) |
-| `sources` | | `[]` | array | The sources it may be received on, by position in `sources` counting from 0 (as a call's `source_num`). Empty: whichever source covers a channel. See [How channels are shared out](../guides/radios.md#how-channels-are-shared-out) |
 | `keys` | | `""` | string | The encryption keys its P25 channels decrypt with, a key source's name. See [systems.md](systems.md#encryption-keys-keys) |
 | `plugins` | | `{}` | object | Its plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
 | `pluginDelays` | | `[]` | array | How long plugins wait for its calls. See [plugins.md](plugins.md#delays) |
@@ -96,6 +95,7 @@ Notes:
 | `squelchDb` | | the system's | number | This channel's own squelch, dB above the noise floor |
 | `bandwidthKhz` | | the mode's | number | `fm` and `am`: the channel filter's width, kHz, 4–20. FM: 11 (12.5 kHz channels), 16 for wide FM (25 kHz). AM: 11 below 225 MHz, 16 from 225 MHz (UHF military air); 6 for 8.33 kHz channels. Rows sharing a frequency need the same |
 | `enabled` | | `true` | bool | `false` keeps the row without recording it |
+| `sources` | | `[]` | array | The sources it may be received on, by position in `sources` counting from 0 (as a call's `source_num`). Empty: whichever source covers it. Rows sharing a frequency need the same ones. Not set by a linked channel file. See [How channels are shared out](../guides/radios.md#how-channels-are-shared-out) |
 | `autoTune` | | `false` | bool | `p25`, `dmr`, `nxdn`: its calls' carrier offsets correct its source's AutoTune (a repeater output to trust; see [Frequency correction](../guides/conventional.md#frequency-correction)) |
 
 ### Talkgroup numbers

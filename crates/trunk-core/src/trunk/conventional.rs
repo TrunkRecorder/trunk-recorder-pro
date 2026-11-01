@@ -172,6 +172,9 @@ pub struct ConvChannel {
     /// Its calls' carrier offsets score its source's AutoTune (digital
     /// rows: a repeater output to trust, not radios on simplex).
     pub tune_ref: bool,
+    /// The sources it may be received on, by position in the engine's sources
+    /// (none: whichever covers it). Rows sharing a frequency share them.
+    pub sources: Vec<usize>,
 }
 
 /// How a row picks its transmissions out of a frequency's (the channel's
@@ -381,7 +384,7 @@ impl ConvChannel {
     pub fn new(freq_hz: f64, mode: ConvMode) -> Self {
         let analog = if mode == ConvMode::Am { AnalogTuning::am(freq_hz) } else { AnalogTuning::default() };
         let default_talkgroup = Self::default_talkgroup(freq_hz);
-        ConvChannel { freq_hz, mode, talkgroup: None, default_talkgroup, info: None, squelch_db: None, access: None, system: 0, analog, tune_ref: false }
+        ConvChannel { freq_hz, mode, talkgroup: None, default_talkgroup, info: None, squelch_db: None, access: None, system: 0, analog, tune_ref: false, sources: Vec::new() }
     }
 
     /// Its names, when the number they go with is known before a call is
@@ -540,6 +543,8 @@ pub struct ConvNow<'a> {
     pub freq_hz: f64,
     pub system: usize,
     pub mode: ConvMode,
+    /// The source it is received on (its position in the engine's sources).
+    pub source: usize,
     /// Its rows' names (alpha tags), each once, in order.
     pub names: Vec<&'a str>,
     /// A signal is on it now.
@@ -674,7 +679,7 @@ impl Conventional {
             let c = &rows[0];
             let squelch_db = rows.iter().filter_map(|r| r.squelch_db).reduce(f64::min);
             let routed = rows.len() > 1 || c.access.is_some();
-            let Some(src) = sources.iter().position(|&(center, _, half)| (c.freq_hz - center).abs() <= half) else {
+            let Some(src) = sources.iter().enumerate().position(|(i, &(center, _, half))| (c.sources.is_empty() || c.sources.contains(&i)) && (c.freq_hz - center).abs() <= half) else {
                 outside.push(format!("{:.5}", c.freq_hz / 1e6));
                 continue;
             };
@@ -722,6 +727,9 @@ impl Conventional {
         }
         if rows.iter().any(|r| r.mode != rows[0].mode) {
             return Err(format!("Conventional channel {mhz} MHz is listed with different modes — rows sharing a frequency need the same one."));
+        }
+        if rows.iter().any(|r| r.sources != rows[0].sources) {
+            return Err(format!("Conventional channel {mhz} MHz is listed with different sources — rows sharing a frequency need the same ones."));
         }
         if rows.iter().any(|r| r.analog.half_bw_hz != rows[0].analog.half_bw_hz) {
             return Err(format!("Conventional channel {mhz} MHz is listed with different bandwidths — rows sharing a frequency need the same one."));
@@ -784,6 +792,7 @@ impl Conventional {
                 freq_hz: c.freq_hz,
                 system: c.system,
                 mode: c.mode,
+                source: c.source,
                 names,
                 open: open.is_some(),
                 calls: open.map_or(0, |o| o.live.iter().flatten().count()),
@@ -1467,6 +1476,20 @@ mod tests {
         assert_eq!(got, [(1, 0, true), (2, 1, true)], "EMS's 2 s call is under its minimum");
         assert!(calls.iter().any(|(k, _, j)| k.talkgroup == 2 && j.contains(r#""short_name":"police""#)));
         assert!(calls.iter().all(|(k, _, _)| k.site.is_none()), "a conventional call has no site");
+    }
+
+    #[test]
+    fn a_channel_is_received_on_the_sources_it_is_pinned_to() {
+        // Two sources overlap around 155.1 MHz.
+        let spans = [(155.0e6, 2.4e6, 1.0e6), (155.2e6, 2.4e6, 1.0e6)];
+        let new = |channels: &[ConvChannel]| Conventional::new(channels, &spans, ConvConfig::default(), BankConfig::default(), false);
+        let on = |channels: &[ConvChannel]| new(channels).unwrap().channels().map(|c| c.source).collect::<Vec<_>>();
+        assert_eq!(on(&[fm(155.1e6, 1), fm(155.15e6, 2)]), [0, 0], "unpinned: the first that covers it");
+        let pinned = |hz, sources: Vec<usize>| ConvChannel { sources, ..fm(hz, 3) };
+        assert_eq!(on(&[fm(155.1e6, 1), pinned(155.15e6, vec![1])]), [0, 1], "pinned to the second");
+        assert!(new(&[pinned(156.1e6, vec![0])]).is_err(), "pinned to a source that doesn't reach it");
+        let mixed = Conventional::check(&[pinned(155.1e6, vec![0]), pinned(155.1e6, vec![1])]).unwrap_err();
+        assert!(mixed.contains("different sources"), "{mixed}");
     }
 
     /// Airband: AM calls on 25 kHz channels beside each other, one 2 kHz off

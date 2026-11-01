@@ -448,12 +448,14 @@ function RowEditor(props: {
   onName: (field: NameField, value: string) => void;
   onAutoTune: (on: boolean) => void;
   onDone: () => void;
+  /** Columns the table has beside the first. */
+  span: number;
 }) {
   const { ch } = props;
   return (
     <tr className="rule-edit">
       <td />
-      <td colSpan={8}>
+      <td colSpan={props.span}>
         <div className="row-editor">
           <fieldset>
             <legend>Records</legend>
@@ -507,7 +509,7 @@ const SHOWN_CODES = 8;
  * codes), most heard first, each with an Add that makes a row for it — the
  * way to find a frequency's codes without knowing them.
  */
-function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (p: AccessParts) => void }) {
+function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (p: AccessParts) => void; span: number }) {
   const mode = props.rows[0].mode;
   // Only what this mode's Tone can say (NXDN's RAN 0 is any: "RAN 0 TG 201" is "TG 201").
   const nxdn = mode === "nxdn48" || mode === "nxdn96";
@@ -523,7 +525,7 @@ function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean;
   return (
     <tr className="heard-row">
       <td />
-      <td colSpan={8}>
+      <td colSpan={props.span}>
         <span className="muted small">Heard:</span>
         {shown.map((h) => (
           <span key={h.code} className="heard-code" title={`Last heard ${new Date(h.lastMs).toLocaleString()}`}>
@@ -931,6 +933,23 @@ function SourcePins(props: { c: Config; pinned: number[] | undefined; onChange: 
       </div>
       <span className="field-hint">{pinned.length ? "Only these sources are used for it." : "Any source that covers it."}</span>
     </div>
+  );
+}
+
+/** Which source a conventional channel is received on: any that covers it, or the one picked (a longer list from a hand-edited config is kept and shown). */
+function SourceSelect(props: { c: Config; ch: Channel; disabled?: boolean; onChange: (sources: number[] | undefined) => void }) {
+  const value = (props.ch.sources ?? []).join(",");
+  const listed = props.c.sources.some((_, n) => String(n) === value);
+  return (
+    <select value={value} disabled={props.disabled} aria-label="Source" onChange={(e) => props.onChange(e.target.value ? e.target.value.split(",").map(Number) : undefined)}>
+      <option value="">Any</option>
+      {props.c.sources.map((_, n) => (
+        <option key={n} value={String(n)}>
+          Source {n + 1}
+        </option>
+      ))}
+      {value && !listed && <option value={value}>Sources {value.split(",").map((n) => Number(n) + 1).join(", ")}</option>}
+    </select>
   );
 }
 
@@ -1374,6 +1393,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
   const need = useNeed();
   const conv = c.conventional[k];
   const chans = conv.channels;
+  const multi = c.sources.length > 1;
   const name = conv.shortName;
   const dupName = c.conventional.some((x, j) => j !== k && x.shortName === name);
   // Stable row keys (each edit clones the config; a frequency input keeps its own text).
@@ -1500,7 +1520,6 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
         <Field label="Name">
           <TextInput value={conv.name ?? ""} placeholder="County Fire" onChange={(v) => edit((x) => void (v ? (x.name = v) : delete x.name))} />
         </Field>
-        <SourcePins c={c} pinned={conv.sources} onChange={(p) => edit((x) => void (p ? (x.sources = p) : delete x.sources))} />
         <Field needs={need(`squelch-${name}`)} anchor={`squelch-${name}`} label="Squelch, dB above noise" hint="For channels without their own">
           <NumberInput label="Squelch, dB above noise" value={conv.squelchDb} onChange={(v) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, v ?? 8))))} />
         </Field>
@@ -1627,6 +1646,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                     <th>Name</th>
                     <th title="Calls are filed under it. Empty: digital modes the talkgroup the air names, else the frequency in kHz. The air's is kept in the call's JSON as talkgroup_ota">TG Number</th>
                     <th title="dB above the noise floor">Squelch</th>
+                    {multi && <th title="Which source receives it: any that covers it, or just the one picked">Source</th>}
                     <th />
                   </tr>
                 </thead>
@@ -1730,6 +1750,23 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           }
                         />
                       </td>
+                      {multi && (
+                        <td>
+                          <SourceSelect
+                            c={c}
+                            ch={ch}
+                            onChange={(sources) =>
+                              edit((x) => {
+                                // Rows sharing the frequency share them.
+                                for (const r of x.channels.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)) {
+                                  if (sources === undefined) delete r.sources;
+                                  else r.sources = sources;
+                                }
+                              })
+                            }
+                          />
+                        </td>
+                      )}
                       <td>
                         <span className="row-actions">
                           <button
@@ -1770,6 +1807,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           onName={(f, v) => editRow(i, (x) => void (v ? (x[f] = v) : delete x[f]))}
                           onAutoTune={(on) => editRow(i, (x) => void (on ? (x.autoTune = true) : delete x.autoTune))}
                           onDone={() => setEditing((e) => (e.delete(ids.current[i]) ? new Set(e) : e))}
+                          span={multi ? 9 : 8}
                         />
                       )}
                       {lastOfFreq(i) === i && heard[String(Math.round(ch.freqHz))] && (
@@ -1778,6 +1816,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           heard={heard[String(Math.round(ch.freqHz))]}
                           linked={linked}
                           onAdd={(p) => addRule(i, p)}
+                          span={multi ? 9 : 8}
                         />
                       )}
                     </Fragment>

@@ -140,6 +140,8 @@ export interface Channel {
   /** FM / AM: the channel filter's width, kHz (4–20); absent = the mode's (FM 11, AM 11 or 16 from 225 MHz). */
   bandwidthKhz?: number;
   enabled: boolean;
+  /** The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers it. Rows sharing a frequency share them. */
+  sources?: number[];
   /** Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off. */
   autoTune?: boolean;
 }
@@ -445,8 +447,6 @@ export interface Conventional {
   shortName: string;
   /** What people call it; the short name is its folder. */
   name?: string;
-  /** The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers a channel. */
-  sources?: number[];
   /** Its channels' FCC licenses by frequency (they can be different licensees'): see FccLicenses. */
   fcc?: FccLicenses;
   enabled: boolean;
