@@ -1895,7 +1895,8 @@ impl Core {
                     if let Some(src) = tune_source {
                         self.radio.score_call(src, &call, rec.freq_error_hz());
                     }
-                    self.write_call(Held { call: call.clone(), rec, recorder_num }, None);
+                    let source_num = self.radio.source_for(call.freq_hz as f64).unwrap_or(0) as u32;
+                    self.write_call(Held { call: call.clone(), rec, recorder_num, source_num }, None);
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
@@ -2145,7 +2146,7 @@ impl Core {
                 call.encrypted = true;
                 call.decrypted = true;
             }
-            let mut h = Held { call, rec: r.rec, recorder_num: r.recorder_num };
+            let mut h = Held { call, rec: r.rec, recorder_num: r.recorder_num, source_num: r.source as u32 };
             // Now, so copies of a multi-site call are ranked by the audio they'd be saved with.
             h.trim(self.systems.get(h.call.system as usize).map_or(0.0, |s| s.cfg.save.min_transmission_s));
             h
