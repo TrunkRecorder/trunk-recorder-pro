@@ -2,10 +2,10 @@
 
 import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitNames } from "./protocol.ts";
 import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
-import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
+import { defaultConfig, parseChannelCsv, readConfig, receivers, sourceLabels, usableHalfWidth } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
-export { bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, readConfig, resolvedCenters, startProblem, usableHalfWidth } from "./rules.ts";
+export { receivers, sourceLabels, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, readConfig, resolvedCenters, startProblem, usableHalfWidth } from "./rules.ts";
 
 /**
  * The settings the recorder reads only when it starts. Left out are those it
@@ -635,19 +635,19 @@ export function systemWithChannel(c: Config, hz: number): System | undefined {
 export const autoTuneOn = (x: Source | undefined): boolean => !!x && "autoTune" in x && !!x.autoTune;
 
 /**
- * Config source `i` as it's running: the running source on the same radio
- * (the nth of its kind and device, for two "first found"), not the one at
+ * Config source `i` as it's running: the running source on the same radio,
+ * by its label (the nth of that label, for two "first found"), not the one at
  * its place, since Setup may have added, removed or moved sources since Start.
  */
-export function runningSource(running: SourceStatus[], sources: Source[], i: number): SourceStatus | undefined {
-  const key = sourceKey(sources[i]);
-  const nth = sources.slice(0, i).filter((x) => sourceKey(x) === key).length;
-  return running.filter((x) => sourceKey(x.settings) === key)[nth];
+export function runningSource(running: SourceStatus[], c: Config, i: number): SourceStatus | undefined {
+  const labels = sourceLabels(c);
+  const nth = labels.slice(0, i).filter((x) => x === labels[i]).length;
+  return running.filter((x) => x.label === labels[i])[nth];
 }
 
 /** The config's source on running source `st`'s radio ([`runningSource`]'s other way), if it's still there. */
-export function configSource(running: SourceStatus[], sources: Source[], st: SourceStatus): Source | undefined {
-  return sources.find((_, k) => runningSource(running, sources, k) === st);
+export function configSource(running: SourceStatus[], c: Config, st: SourceStatus): Source | undefined {
+  return c.sources.find((_, k) => runningSource(running, c, k) === st);
 }
 
 /** Whether a source of `s`'s rate and guard tuned to `center` reaches `hz` (Source::reaches). */
@@ -655,9 +655,9 @@ export function reaches(s: { rateHz: number; guardHz?: number }, center: number,
   return Math.abs(hz - center) <= usableHalfWidth(s.rateHz, s.guardHz);
 }
 
-/** The source (index) whose usable band holds `hz`, or -1. */
-export function sourceCovering(c: Config, centers: (number | null)[], hz: number): number {
-  return c.sources.findIndex((s, i) => centers[i] != null && reaches(s, centers[i]!, hz));
+/** The source system `system`'s frequency `hz` is received on (the recorder's choice: the first of those it may be received on that reaches it), or -1. */
+export function receiverOf(c: Config, system: string, hz: number): number {
+  return receivers(c).find((r) => r.system === system && r.hz === hz)?.source ?? -1;
 }
 
 /** A conventional channel's talkgroup when none is given: its frequency in kHz. */

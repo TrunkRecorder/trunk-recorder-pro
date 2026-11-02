@@ -812,12 +812,12 @@
         "enabled": {
           "type": "boolean"
         },
-        "sources": {
+        "receiveOn": {
           "type": "array",
           "items": {
-            "type": "number"
+            "type": "string"
           },
-          "description": "The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers it. Rows sharing a frequency share them."
+          "description": "The sources it may be received on, by label (\"RTL-SDR SN 200\", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches it. Rows sharing a frequency share them."
         },
         "autoTune": {
           "type": "boolean",
@@ -7792,12 +7792,12 @@
           "type": "string",
           "description": "What people call it (\"County Public Safety\"); the short name is its folder."
         },
-        "sources": {
+        "receiveOn": {
           "type": "array",
           "items": {
-            "type": "number"
+            "type": "string"
           },
-          "description": "The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers a channel."
+          "description": "The sources its channels may be received on, by label (\"RTL-SDR SN 200\", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches them."
         },
         "fcc": {
           "$ref": "#/definitions/FccLicenses",

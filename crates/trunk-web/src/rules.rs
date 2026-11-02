@@ -76,9 +76,24 @@ pub fn config_centers(json: &str) -> Vec<f64> {
     read(json).map_or_else(|_| Vec::new(), |c| c.resolved_centers())
 }
 
+/// Each source's label ([`trunk_app::config::Source::label`]): what a
+/// system's or channel's `receiveOn` names it by, and its status by.
+#[wasm_bindgen(js_name = configSourceLabels)]
+pub fn config_source_labels(json: &str) -> Vec<String> {
+    read(json).map_or_else(|_| Vec::new(), |c| c.sources.iter().map(|s| s.label()).collect())
+}
+
+/// The source each frequency the config lists is received on, as the engine
+/// will choose it ([`Config::receivers`]): JSON `[{ system, hz, source }]`
+/// (`source` null: none it may be received on reaches it).
+#[wasm_bindgen(js_name = configReceivers)]
+pub fn config_receivers(json: &str) -> String {
+    read(json).map_or_else(|_| "[]".into(), |c| serde_json::json!(c.receivers()).to_string())
+}
+
 /// Where to tune each source ([`trunk_app::place::place_sources`], as Start
 /// places auto sources). JSON in `{ sources: [{ rateHz, guardHz?, fixedHz? }],
-/// targets: { channels: [{ hz, weight }], needs: [[hz]] } }`; out a centre
+/// targets: { groups: [{ channels: [{ hz, weight }], need?: [hz], pins? }] } }`; out a centre
 /// (Hz) or null per source.
 #[wasm_bindgen(js_name = placeSources)]
 pub fn place_sources_js(json: &str) -> String {

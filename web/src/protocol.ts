@@ -140,8 +140,8 @@ export interface Channel {
   /** FM / AM: the channel filter's width, kHz (4–20); absent = the mode's (FM 11, AM 11 or 16 from 225 MHz). */
   bandwidthKhz?: number;
   enabled: boolean;
-  /** The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers it. Rows sharing a frequency share them. */
-  sources?: number[];
+  /** The sources it may be received on, by label ("RTL-SDR SN 200", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches it. Rows sharing a frequency share them. */
+  receiveOn?: string[];
   /** Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off. */
   autoTune?: boolean;
 }
@@ -216,8 +216,8 @@ export interface System {
   shortName: string;
   /** What people call it ("County Public Safety"); the short name is its folder. */
   name?: string;
-  /** The sources it may be received on, by position in `sources` (from 0, as a call's `source_num`); absent: whichever covers a channel. */
-  sources?: number[];
+  /** The sources its channels may be received on, by label ("RTL-SDR SN 200", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches them. */
+  receiveOn?: string[];
   /** Its FCC licenses by frequency (control, voice): see FccLicenses. */
   fcc?: FccLicenses;
   /** Share it with the community directory (trunkrecorder.pro/directory): its sites, channels, and the

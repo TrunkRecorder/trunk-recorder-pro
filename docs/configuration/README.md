@@ -333,7 +333,7 @@ Recording won't start if:
 - there is nothing to record: no trunked system that is enabled and has a control channel, and no
   enabled channel in an enabled conventional system;
 - a system, trunked or conventional, has an empty `shortName`, or two share one (enabled or not);
-- a recorded system's `sources`, or an enabled conventional channel's, names a source that isn't there;
+- a recorded system's `receiveOn`, or an enabled conventional channel's, names a source that isn't there (a radio taken out or renamed: choose its sources again);
 - an Auto source (`centerHz: 0`) can't be placed: nothing is left for it to cover, or the channels it
   would have to cover don't fit in its bandwidth;
 - a SmartNet system's `bandplan` isn't one it knows, or `400_custom` lacks `bandplanBaseHz`,

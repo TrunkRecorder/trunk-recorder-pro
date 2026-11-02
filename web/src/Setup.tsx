@@ -29,7 +29,8 @@ import {
   sameOnTheAir,
   siteActive,
   siteNameOf,
-  sourceCovering,
+  receiverOf,
+  sourceLabels,
   systemColor,
   usableHalfWidth,
   siteLockFields,
@@ -732,7 +733,7 @@ function UsbTransfers(props: { src: Extract<Source, { type: "rtlsdr" }>; edit: E
 function AutoTune(props: { c: Config; src: Source; i: number; edit: EditSource }) {
   const { c, src, i, edit } = props;
   const s = useApp();
-  const st = runningSource(s.sources, c.sources, i);
+  const st = runningSource(s.sources, c, i);
   const err = st?.errorPpm ?? null;
   const apply = src.type !== "file" && err !== null && Math.abs(err) >= 0.3 ? st?.ppmApply ?? null : null;
   return (
@@ -917,46 +918,58 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
 
 
 /** `fresh`: just added (measuring its roll-off is offered). */
-/** Which sources a system may be received on: none ticked, any that covers its channels. Shown with two or more sources. */
-function SourcePins(props: { c: Config; pinned: number[] | undefined; onChange: (pins: number[] | undefined) => void }) {
-  const pinned = props.pinned ?? [];
-  if (props.c.sources.length < 2) return null;
+/**
+ * The sources a system or channel may be received on, as Setup offers them:
+ * each radio by its label (what receiveOn names it by, wherever it is in the
+ * list), then any it names that isn't a source now, to take off.
+ */
+function receiveChoices(c: Config, on: string[] | undefined): { label: string; name: string; gone: boolean }[] {
+  const labels = sourceLabels(c);
+  const here = [...new Set(labels)].map((label) => ({ label, name: `Source ${labels.flatMap((l, n) => (l === label ? [n + 1] : [])).join(", ")} · ${label}`, gone: false }));
+  return [...here, ...(on ?? []).filter((l) => !labels.includes(l)).map((label) => ({ label, name: `${label} (not a source now)`, gone: true }))];
+}
+
+/** A system's sources: none ticked, any that reaches its channels. Shown with two or more sources. */
+function ReceiveOn(props: { c: Config; on: string[] | undefined; onChange: (on: string[] | undefined) => void }) {
+  const on = props.on ?? [];
+  if (props.c.sources.length < 2 && !on.length) return null;
   return (
     <div className="field wide">
       <span className="field-label">Receive on</span>
       <div className="row">
-        {props.c.sources.map((_, n) => (
-          <label key={n} className="toggle">
+        {receiveChoices(props.c, on).map((x) => (
+          <label key={x.label} className={`toggle${x.gone ? " bad" : ""}`}>
             <input
               type="checkbox"
-              checked={pinned.includes(n)}
+              checked={on.includes(x.label)}
               onChange={(e) => {
-                const next = (e.target.checked ? [...pinned, n] : pinned.filter((x) => x !== n)).sort((a, b) => a - b);
+                const next = e.target.checked ? [...on, x.label] : on.filter((l) => l !== x.label);
                 props.onChange(next.length ? next : undefined);
               }}
             />
-            <span className="small">Source {n + 1}</span>
+            <span className="small">{x.name}</span>
           </label>
         ))}
       </div>
-      <span className="field-hint">{pinned.length ? "Only these sources are used for it." : "Any source that covers it."}</span>
+      <span className="field-hint">{on.length ? "Only these sources are used for it." : "Any source that reaches it."}</span>
     </div>
   );
 }
 
-/** Which source a conventional channel is received on: any that covers it, or the one picked (a longer list from a hand-edited config is kept and shown). */
-function SourceSelect(props: { c: Config; ch: Channel; disabled?: boolean; onChange: (sources: number[] | undefined) => void }) {
-  const value = (props.ch.sources ?? []).join(",");
-  const listed = props.c.sources.some((_, n) => String(n) === value);
+/** A conventional channel's source: any that reaches it, or the one picked (a longer list from a hand-edited config is kept and shown). */
+function ReceiveOnSelect(props: { c: Config; ch: Channel; disabled?: boolean; onChange: (on: string[] | undefined) => void }) {
+  const on = props.ch.receiveOn ?? [];
+  const value = JSON.stringify(on);
+  const choices = receiveChoices(props.c, on);
   return (
-    <select value={value} disabled={props.disabled} aria-label="Source" onChange={(e) => props.onChange(e.target.value ? e.target.value.split(",").map(Number) : undefined)}>
+    <select value={on.length ? value : ""} disabled={props.disabled} aria-label="Source" onChange={(e) => props.onChange(e.target.value ? (JSON.parse(e.target.value) as string[]) : undefined)}>
       <option value="">Any</option>
-      {props.c.sources.map((_, n) => (
-        <option key={n} value={String(n)}>
-          Source {n + 1}
+      {choices.map((x) => (
+        <option key={x.label} value={JSON.stringify([x.label])}>
+          {x.name}
         </option>
       ))}
-      {value && !listed && <option value={value}>Sources {value.split(",").map((n) => Number(n) + 1).join(", ")}</option>}
+      {on.length > 1 && <option value={value}>{on.join(", ")}</option>}
     </select>
   );
 }
@@ -1760,15 +1773,15 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                       </td>
                       {multi && (
                         <td>
-                          <SourceSelect
+                          <ReceiveOnSelect
                             c={c}
                             ch={ch}
-                            onChange={(sources) =>
+                            onChange={(on) =>
                               edit((x) => {
                                 // Rows sharing the frequency share them.
                                 for (const r of x.channels.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)) {
-                                  if (sources === undefined) delete r.sources;
-                                  else r.sources = sources;
+                                  if (on === undefined) delete r.receiveOn;
+                                  else r.receiveOn = on;
                                 }
                               })
                             }
@@ -2256,9 +2269,8 @@ function SiteCoverage(props: { c: Config; sys: System; sites: Site[] }) {
   const ccs = sites.flatMap((x) => x.controlChannelsHz);
   const voice = sites.flatMap((x) => x.voiceChannelsHz);
   if (!ccs.length && !voice.length) return null;
-  const centers = resolvedCenters(c);
-  const ccOn = [...new Set(ccs.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
-  const voiceIn = voice.filter((f) => sourceCovering(c, centers, f) >= 0).length;
+  const ccOn = [...new Set(ccs.map((f) => receiverOf(c, sys.shortName, f)).filter((k) => k >= 0))];
+  const voiceIn = voice.filter((f) => receiverOf(c, sys.shortName, f) >= 0).length;
   return (
     <>
       {ccs.length > 0 &&
@@ -2565,7 +2577,7 @@ export function SystemCard(props: { c: Config; i: number }) {
         <Field label="Name">
           <TextInput value={sys.name ?? ""} placeholder="County Public Safety" onChange={(v) => edit((x) => void (x.name = v))} />
         </Field>
-        <SourcePins c={props.c} pinned={sys.sources} onChange={(p) => edit((x) => void (p ? (x.sources = p) : delete x.sources))} />
+        <ReceiveOn c={props.c} on={sys.receiveOn} onChange={(on) => edit((x) => void (on ? (x.receiveOn = on) : delete x.receiveOn))} />
         <Field label="Type">
           <select
             value={sys.type}

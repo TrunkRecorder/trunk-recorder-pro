@@ -5,11 +5,22 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **A system or a conventional channel can be kept on particular sources.** `sources` on a trunked
-  system (**Receive on** in Setup, with two or more sources) lists the sources, by position, its control
-  channels and voice channels may be received on; on a conventional channel (a **Source** column in its
-  table) it is that frequency's. Empty, as before, is any source that covers it. A `sources` entry for a
-  source that isn't there stops recording from starting.
+- **A system or a conventional channel can be kept on particular sources.** `receiveOn` on a trunked
+  system (**Receive on** in Setup, with two or more sources) names the radios, by label (`"RTL-SDR SN 200"`),
+  its control channels and voice channels may be received on; on a conventional channel (a **Source** column
+  in its table) it is that frequency's. Empty, as before, is any source that reaches it. A pin follows its
+  radio when sources are moved; one naming a radio no longer there stops Start (rather than another
+  standing in). Auto placement, Start's checks, Setup's coverage chips and the dashboard all go by it.
+- **Auto mode places every radio a wide site needs.** Start's auto centres, the first-run guide and the
+  survey's suggested centre are one placement: control channels first, then the most channels still out
+  of reach, then a spare alongside the others. A site wider than one radio (an 800 MHz P25 system needing
+  four RTLs at 2.4 MSPS) gets them all, where sources after the first used to be left without a centre.
+- **The dashboard notes a source nothing needs**: one that reaches no listed channel the others don't, and
+  that no call has used this run, says it can probably be removed.
+- **AutoTune's "Set correction to" is offered once.** It's the recorder's figure, against the ppm the radio
+  runs with, so clicking it again doesn't move it again; a new ppm says it applies from the next Start.
+  The dashboard and Setup show each source's own radio's settings and measurements after sources are
+  added, removed or moved, and the restart banner knows a page opened after an edit.
 
 ## [0.3.0] — 2026-11-01
 

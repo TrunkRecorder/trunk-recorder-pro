@@ -1407,11 +1407,20 @@ once (the guide: by the calls seen on it); of windows taking in as much, the one
 rest the fewest windows. So a site wider than one radio gets every radio it needs. With
 everything reached, a spare radio goes alongside the others, on the side with more of the
 channels. Each centre is then centred on what it reaches and stepped to either side in widening
-12.5 kHz steps until no channel is within 25 kHz of DC (`off_dc`). `Config::placement` also
-says how many listed frequencies each source is the first to reach (`listed_reached`, the
-engine's own rule: a channel opens on the first source that reaches it); a source at 0 that
-has opened no voice channel this run is `unused` in its status, and the dashboard says it can
-probably be removed.
+12.5 kHz steps until no channel is within 25 kHz of DC (`off_dc`).
+
+**Which source receives a frequency.** A system or a conventional channel may be kept on
+particular sources (`receiveOn`, by `Source::label`: the radio, not its place in the list;
+`Config::pins` turns it into the engine's `Pins` by position, none when the radio named is gone,
+which `problem` reports). `Pins::first` is the one choice: the first source allowed that reaches
+the frequency. The engine opens channels by it (`Radio::source_for`, `Conventional::new`), and
+the app asks the same of the centres Start places (`place::receiver`): placement's targets are
+groups (a site, a conventional system's channels on the same sources) carrying their pins, so a
+source is placed only for what it may receive; `Config::receivers` says the source of each
+listed frequency (Setup's coverage chips and to-dos, `configReceivers`); `problem` checks control
+and conventional channels by it; and `Config::placement` counts how many listed frequencies each
+source receives (`listed_reached`). A source at 0 that has opened no voice channel this run is
+`unused` in its status, and the dashboard says it can probably be removed.
 
 ### 10.12 Companion files (in the config's folder)
 
@@ -1678,7 +1687,8 @@ WebAssembly, in both builds (the desktop app's page too). `crates/trunk-web/src/
 exports, over trunk-app's `config.rs`: `configNormalize` (a config as the recorder reads it,
 an older one upgraded, with its `notes`), `configTalkgroups` (the talkgroup files an older
 config held), `configProblem` (`Config::problem`), `configNameProblem`, `configCenters`
-(`resolved_centers`), `placeSources` (`place_sources`), `usableHalfWidth`, `channelsParse` /
+(`resolved_centers`), `configReceivers` (`Config::receivers`), `configSourceLabels`,
+`placeSources` (`place_sources`), `usableHalfWidth`, `channelsParse` /
 `channelsWrite` (the channel CSV) and `bandplanProblem`. `web/src/rules.ts` loads them before
 the page renders (`loadRules`) and keeps each answer for the store's config until it is replaced
 (`configReplaced`). So the dashboard needs a browser with WebAssembly SIMD (Safari 16.4,

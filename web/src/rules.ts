@@ -101,6 +101,12 @@ export const startProblem = perConfig((j) => rules().configProblem(j) ?? null);
 /** Two systems sharing a short name, or one without, or two sites of a system one name (Config::name_problem), or null. */
 export const nameProblem = perConfig((j) => rules().configNameProblem(j) ?? null);
 
+/** Each source's label (Source::label, "RTL-SDR SN 200"): what a system's or channel's receiveOn names it by, and its status by. */
+export const sourceLabels = perConfig((j) => Array.from(rules().configSourceLabels(j)) as string[]);
+
+/** The source each frequency the config lists is received on, as Start will choose it, pins and all (Config::receivers); source null: none it may be received on reaches it. */
+export const receivers = perConfig((j) => JSON.parse(rules().configReceivers(j)) as { system: string; hz: number; source: number | null }[]);
+
 /** Each source's centre: as set, or (0 = auto) where Start places it; null where nothing fits (Config::resolved_centers). */
 export const resolvedCenters = perConfig((j) => Array.from(rules().configCenters(j), (c) => c || null));
 
@@ -117,13 +123,13 @@ export interface Placing {
 }
 
 /**
- * What radios are placed to reach (place::Targets): channels, each with how
- * much it counts (calls seen; 1 when unknown), and groups a radio reaches one
- * of before any channel counts (a site's control channels).
+ * What radios are placed to reach (place::Targets): groups of channels, each
+ * with how much it counts (calls seen; 1 when unknown), what a radio reaches
+ * one of before any channel counts (a site's control channels), and on any
+ * source (the guide's are).
  */
 export interface Targets {
-  channels: { hz: number; weight: number }[];
-  needs: number[][];
+  groups: { channels: { hz: number; weight: number }[]; need?: number[] }[];
 }
 
 /**

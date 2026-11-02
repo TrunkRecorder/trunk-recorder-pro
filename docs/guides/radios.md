@@ -232,12 +232,15 @@ the first source that covers it. Where two radios overlap, the one higher in the
 channels in the overlap.
 
 To keep a trunked system on particular radios (a band on one antenna, say), tick them under **Receive on** in
-its Setup page, or list their positions in its `sources` (counting from 0, as a call's `source_num`).
-Its control and voice channels are then taken only from those radios, still the first that covers each,
-and a channel none of them covers isn't recorded. A conventional system is kept to radios channel by
-channel instead: each row's **Source** (its `sources`), shared by the rows on one frequency. Left empty,
-either can use any. Auto placement doesn't know about this: set a center of your own for a radio
-something is kept on.
+its Setup page, or list their labels in its `receiveOn` (`["RTL-SDR SN 200"]`, as the dashboard names
+them). A pin names the radio, so moving it in the list keeps it; taking it out stops Start until the
+system's sources are chosen again, rather than letting another radio stand in. Its control and voice
+channels are then taken only from those radios, still the first that reaches each, and a channel none of
+them reaches isn't recorded. A conventional system is kept to radios channel by channel instead: each
+row's **Source** (its `receiveOn`), shared by the rows on one frequency. Left empty, either can use any.
+Auto placement follows these: a radio something is kept on is placed for it, and one nothing else may
+use isn't placed for what's kept elsewhere. Setup's coverage chips and the dashboard's "not needed"
+note go by the same choice.
 
 A call whose frequency no source covers isn't recorded; a system's page under **Radio system** says *outside tuned
 range*, and the **Radio system** page counts these as *Out of band* (*No source covers the
