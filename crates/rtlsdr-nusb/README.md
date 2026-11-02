@@ -39,7 +39,7 @@ R828D/Blog V4, direct sampling and bias power switching need hardware validation
 E4000 (zero IF): about 52–2200 MHz with a gap where its PLL does not lock
 (1090–1230 MHz on the unit tested; here capped at 1.766 GHz like the others);
 manual gain is librtlsdr's nearest step from -1 to 42 dB; its IF filters
-follow the sample rate. Validated on hardware on Windows (`tests/hardware_e4000.rs`:
+follow the sample rate. Validated on hardware on Windows (`tests/hardware.rs`, `e4000_p25_bands_gain_and_lock_range`:
 136–870 MHz P25 bands, gain steps, I/Q balance, lock range). Other tuners
 (FC0012/13, FC2580) and EEPROM programming are not implemented.
 No Seify integration is included.

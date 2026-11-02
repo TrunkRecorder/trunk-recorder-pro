@@ -14,18 +14,16 @@
 
 //! Elonics E4000 tuner (zero IF), after osmocom librtlsdr's `tuner_e4k.c`.
 //!
-//! Unlike the R82xx path, registers are read-modify-written as librtlsdr does
-//! (no shadow): several E4000 registers carry status bits (SYNTH1's PLL lock)
-//! that the chip changes on its own. The E4000 runs off the RTL2832U's
-//! 28.8 MHz crystal, so the ppm-corrected crystal is its PLL reference.
+//! librtlsdr read-modify-writes every register; here they are kept as
+//! written ([`Registers`]), as the R82xx's are, but for the ones whose bits
+//! the chip changes itself — SYNTH1 (PLL lock), MASTER1 (power-on reset
+//! flag) and GAIN1 (the LNA gain its AGC runs) — which are read each time.
+//! The E4000 runs off the RTL2832U's 28.8 MHz crystal, so the ppm-corrected
+//! crystal is its PLL reference.
 
+use super::i2c::{Reads, Registers};
+use super::{TunerKind, XTAL_HZ};
 use crate::{Error, GainConfig, Result, protocol::Com, usb::ControlBackend};
-
-/// 8-bit I2C address (librtlsdr's `E4K_I2C_ADDR`).
-pub(crate) const ADDRESS: u8 = 0xc8;
-/// Chip-ID register and the value an E4000 answers with.
-const CHECK_REG: u8 = 0x02;
-const CHECK_VAL: u8 = 0x40;
 
 const MASTER1: u8 = 0x00;
 const CLK_INP: u8 = 0x05;
@@ -120,10 +118,6 @@ const CHAN_FILTER_KHZ: [u64; 32] = [
     3000, 2950, 2900, 2800, 2750, 2700, 2600, 2550, 2500, 2450, 2400, 2300, 2280, 2240, 2200, 2150,
 ];
 
-/// librtlsdr's E4000 gain steps (tenths of a dB): LNA + mixer.
-pub(crate) const GAINS_TENTHS_DB: [i32; 14] = [
-    -10, 15, 40, 65, 90, 115, 140, 165, 190, 215, 240, 290, 340, 420,
-];
 /// (LNA gain in tenths of a dB, GAIN1 code).
 const LNA_GAIN: [(i32, u8); 13] = [
     (-50, 0),
@@ -141,112 +135,116 @@ const LNA_GAIN: [(i32, u8); 13] = [
     (300, 14),
 ];
 
-/// Whether an E4000 answers at its address. A NAK (STALL) is "no".
-pub(crate) async fn probe<C: ControlBackend>(com: &Com<'_, C>) -> Result<bool> {
-    match com.i2c_read(ADDRESS, CHECK_REG, 1).await {
-        Ok(data) => Ok(data[0] == CHECK_VAL),
-        Err(Error::Transfer(nusb::transfer::TransferError::Stall)) => Ok(false),
-        Err(error) => Err(error),
-    }
+/// The mixer's gain (GAIN2 bit 0): 4 dB, or 12 dB at the top step.
+const MIXER_TENTHS_DB: [i32; 2] = [40, 120];
+
+/// An E4000's registers and the reference its PLL runs from.
+#[derive(Debug)]
+pub(crate) struct E4000 {
+    pub crystal_hz: u64,
+    regs: Registers,
 }
 
-async fn read<C: ControlBackend>(com: &Com<'_, C>, reg: u8) -> Result<u8> {
-    Ok(com.i2c_read(ADDRESS, reg, 1).await?[0])
-}
-async fn write<C: ControlBackend>(com: &Com<'_, C>, reg: u8, value: u8) -> Result<()> {
-    com.i2c_write(ADDRESS, reg, value).await
-}
-/// Read-modify-write, skipping the write when the field already holds `value`.
-async fn set_mask<C: ControlBackend>(com: &Com<'_, C>, reg: u8, mask: u8, value: u8) -> Result<()> {
-    let current = read(com, reg).await?;
-    if current & mask == value & mask {
-        return Ok(());
-    }
-    write(com, reg, (current & !mask) | (value & mask)).await
-}
-
-/// librtlsdr's `e4k_init`: reset, clock setup, magic values, moderate IF
-/// gains, narrow IF filters (widened by [`set_bandwidth`]), auto gain.
-pub(crate) async fn open<C: ControlBackend>(com: &Com<'_, C>) -> Result<()> {
-    // The first transaction after power-up is not acknowledged (librtlsdr's dummy read).
-    let _ = read(com, 0).await;
-    write(
-        com,
-        MASTER1,
-        MASTER1_RESET | MASTER1_NORM_STBY | MASTER1_POR_DET,
-    )
-    .await?;
-    write(com, CLK_INP, 0x00).await?;
-    // No clock output.
-    write(com, REF_CLK, 0x00).await?;
-    write(com, CLKOUT_PWDN, 0x96).await?;
-    for &(reg, value) in MAGIC {
-        write(com, reg, value).await?;
-    }
-    // LNA AGC thresholds and loop rate.
-    write(com, AGC4, 0x10).await?;
-    write(com, AGC5, 0x04).await?;
-    write(com, AGC6, 0x1a).await?;
-    set_mask(com, AGC1, AGC1_MOD_MASK, AGC_MOD_SERIAL).await?;
-    set_mask(com, AGC7, AGC7_MIX_GAIN_AUTO, 0).await?;
-    set_gain(com, GainConfig::Auto).await?;
-    // IF stages: 1 = +6 dB, 2-4 = 0 dB, 5-6 = +9 dB (librtlsdr's defaults).
-    set_mask(com, GAIN3, 0x01, 1).await?;
-    set_mask(com, GAIN3, 0x06, 0).await?;
-    set_mask(com, GAIN3, 0x18, 0).await?;
-    set_mask(com, GAIN3, 0x60, 0).await?;
-    set_mask(com, GAIN4, 0x07, 2).await?;
-    set_mask(com, GAIN4, 0x38, 2 << 3).await?;
-    set_filters(com, 1_900_000, 1_000_000, 2_150_000).await?;
-    set_mask(com, FILT3, FILT3_DISABLE, 0).await?;
-    // Time-variant DC correction and its LUT off.
-    set_mask(com, DC5, 0x03, 0).await?;
-    set_mask(com, DCTIME1, 0x03, 0).await?;
-    set_mask(com, DCTIME2, 0x03, 0).await
-}
-
-pub(crate) async fn standby<C: ControlBackend>(com: &Com<'_, C>) -> Result<()> {
-    set_mask(com, MASTER1, MASTER1_NORM_STBY, 0).await
-}
-
-pub(crate) async fn set_gain<C: ControlBackend>(com: &Com<'_, C>, gain: GainConfig) -> Result<()> {
-    match gain {
-        GainConfig::Auto => {
-            set_mask(com, AGC1, AGC1_MOD_MASK, AGC_MOD_IF_SERIAL_LNA_AUTON).await?;
-            set_mask(com, AGC7, AGC7_MIX_GAIN_AUTO, AGC7_MIX_GAIN_AUTO).await?;
-            set_mask(com, GAIN1, 0x0f, 0).await
-        }
-        GainConfig::Manual(db) => {
-            let (lna, mixer) = gain_steps(db);
-            set_mask(com, AGC1, AGC1_MOD_MASK, AGC_MOD_SERIAL).await?;
-            set_mask(com, AGC7, AGC7_MIX_GAIN_AUTO, 0).await?;
-            set_mask(com, GAIN1, 0x0f, lna).await?;
-            set_mask(com, GAIN2, 0x01, mixer).await
+impl E4000 {
+    pub fn new() -> Self {
+        Self {
+            crystal_hz: XTAL_HZ,
+            regs: Registers::new(TunerKind::E4000.address(), Reads::Each, &[MASTER1, SYNTH1, GAIN1]),
         }
     }
+    /// librtlsdr's `e4k_init`: reset, clock setup, magic values, moderate IF
+    /// gains, narrow IF filters (widened by [`E4000::set_bandwidth`]), auto gain.
+    pub async fn open<C: ControlBackend>(&mut self, com: &Com<'_, C>) -> Result<()> {
+        // The first transaction after power-up is not acknowledged (librtlsdr's dummy read).
+        let _ = self.regs.read(com, 0).await;
+        self.regs.put(com, MASTER1, MASTER1_RESET | MASTER1_NORM_STBY | MASTER1_POR_DET).await?;
+        self.regs.put(com, CLK_INP, 0x00).await?;
+        // No clock output.
+        self.regs.put(com, REF_CLK, 0x00).await?;
+        self.regs.put(com, CLKOUT_PWDN, 0x96).await?;
+        for &(reg, value) in MAGIC {
+            self.regs.put(com, reg, value).await?;
+        }
+        // LNA AGC thresholds and loop rate.
+        self.regs.put(com, AGC4, 0x10).await?;
+        self.regs.put(com, AGC5, 0x04).await?;
+        self.regs.put(com, AGC6, 0x1a).await?;
+        self.regs.write_many(com, &[(AGC1, AGC_MOD_SERIAL, AGC1_MOD_MASK), (AGC7, 0, AGC7_MIX_GAIN_AUTO)]).await?;
+        self.set_gain(com, GainConfig::Auto).await?;
+        // IF stages: 1 = +6 dB, 2-4 = 0 dB, 5-6 = +9 dB (librtlsdr's defaults).
+        self.regs.write_many(com, &[(GAIN3, 1, 0x01), (GAIN3, 0, 0x06), (GAIN3, 0, 0x18), (GAIN3, 0, 0x60), (GAIN4, 2, 0x07), (GAIN4, 2 << 3, 0x38)]).await?;
+        self.set_filters(com, 1_900_000, 1_000_000, 2_150_000).await?;
+        // The channel filter on; time-variant DC correction and its LUT off.
+        self.regs.write_many(com, &[(FILT3, 0, FILT3_DISABLE), (DC5, 0, 0x03), (DCTIME1, 0, 0x03), (DCTIME2, 0, 0x03)]).await
+    }
+    pub async fn standby<C: ControlBackend>(&mut self, com: &Com<'_, C>) -> Result<()> {
+        self.regs.write(com, MASTER1, 0, MASTER1_NORM_STBY).await
+    }
+    pub async fn set_gain<C: ControlBackend>(&mut self, com: &Com<'_, C>, gain: GainConfig) -> Result<()> {
+        match gain {
+            GainConfig::Auto => {
+                let rows = [(AGC1, AGC_MOD_IF_SERIAL_LNA_AUTON, AGC1_MOD_MASK), (AGC7, AGC7_MIX_GAIN_AUTO, AGC7_MIX_GAIN_AUTO), (GAIN1, 0, 0x0f)];
+                self.regs.write_many(com, &rows).await
+            }
+            GainConfig::Manual(db) => {
+                let (_, lna, mixer) = nearest_gain(db);
+                let rows = [(AGC1, AGC_MOD_SERIAL, AGC1_MOD_MASK), (AGC7, 0, AGC7_MIX_GAIN_AUTO), (GAIN1, lna, 0x0f), (GAIN2, mixer, 0x01)];
+                self.regs.write_many(com, &rows).await
+            }
+        }
+    }
+    /// IF filters for `hz` of bandwidth (librtlsdr sets them to the sample rate).
+    pub async fn set_bandwidth<C: ControlBackend>(&mut self, com: &Com<'_, C>, hz: u64) -> Result<()> {
+        self.set_filters(com, hz, hz, hz).await
+    }
+    async fn set_filters<C: ControlBackend>(&mut self, com: &Com<'_, C>, mix: u64, rc: u64, chan: u64) -> Result<()> {
+        let rows = [
+            (FILT2, closest(&MIX_FILTER_KHZ, 1000, mix) << 4, 0xf0),
+            (FILT2, closest(&RC_FILTER_KHZ, 1000, rc), 0x0f),
+            (FILT3, closest(&CHAN_FILTER_KHZ, 1000, chan), 0x1f),
+        ];
+        self.regs.write_many(com, &rows).await
+    }
+    /// Tune the LO to `hz` (zero IF: the LO is the center) and check lock.
+    /// Returns the LO actually programmed.
+    pub async fn tune<C: ControlBackend>(&mut self, com: &Com<'_, C>, hz: u64) -> Result<u64> {
+        let p = pll(hz, self.crystal_hz)?;
+        let band = band(p.flo);
+        let rows = [
+            (SYNTH7, p.synth7, 0xff),
+            (SYNTH3, p.z, 0xff),
+            (SYNTH4, p.x as u8, 0xff),
+            (SYNTH5, (p.x >> 8) as u8, 0xff),
+            (BIAS, if band == Band::L { 0 } else { 3 }, 0xff),
+            // librtlsdr's workaround: clear the band before setting it, or 325-350 MHz won't lock.
+            (SYNTH1, 0, 0x06),
+            (SYNTH1, (band as u8) << 1, 0x06),
+            (FILT1, rf_filter(band, p.flo), 0x0f),
+        ];
+        self.regs.write_many(com, &rows).await?;
+        // The VCO calibrates itself; a second look gives it a moment more.
+        for _ in 0..2 {
+            if self.regs.read(com, SYNTH1).await? & SYNTH1_PLL_LOCK != 0 {
+                return Ok(p.flo);
+            }
+        }
+        Err(Error::PllUnlocked)
+    }
 }
 
-/// The E4000 step nearest `db` (above 42 dB: 42 dB), in tenths of a dB.
-pub(crate) fn nearest_gain_tenths(db: f32) -> i32 {
+/// librtlsdr's E4000 gain steps, in tenths of a dB, with the GAIN1 LNA code
+/// and GAIN2 mixer bit each is: every LNA step with the mixer at 4 dB, then
+/// the top LNA step with it at 12 dB (-1 to 42 dB in all).
+fn gain_steps() -> impl Iterator<Item = (i32, u8, u8)> {
+    let (top, top_code) = LNA_GAIN[LNA_GAIN.len() - 1];
+    LNA_GAIN.iter().map(|&(lna, code)| (lna + MIXER_TENTHS_DB[0], code, 0)).chain([(top + MIXER_TENTHS_DB[1], top_code, 1)])
+}
+
+/// The step nearest `db` (above 42 dB: 42 dB; first of equals, as librtlsdr):
+/// (tenths of a dB, GAIN1 LNA code, GAIN2 mixer bit).
+fn nearest_gain(db: f32) -> (i32, u8, u8) {
     let tenths = (db * 10.0).round() as i32;
-    *GAINS_TENTHS_DB
-        .iter()
-        .min_by_key(|&&g| (g - tenths).abs())
-        .expect("non-empty table")
-}
-
-/// (GAIN1 LNA code, GAIN2 mixer bit) for the step nearest `db`, as
-/// librtlsdr's `e4000_set_gain`: mixer +12 dB above 34 dB, else +4 dB.
-fn gain_steps(db: f32) -> (u8, u8) {
-    let gain = nearest_gain_tenths(db);
-    let (mixer_tenths, mixer_bit) = if gain > 340 { (120, 1) } else { (40, 0) };
-    let lna = (gain - mixer_tenths).min(300);
-    let code = LNA_GAIN
-        .iter()
-        .find(|&&(g, _)| g == lna)
-        .map(|&(_, code)| code)
-        .expect("every table step has an LNA setting");
-    (code, mixer_bit)
+    gain_steps().min_by_key(|&(g, ..)| (g - tenths).abs()).expect("a step at least")
 }
 
 fn closest(table: &[u64], scale: u64, hz: u64) -> u8 {
@@ -260,40 +258,21 @@ fn closest(table: &[u64], scale: u64, hz: u64) -> u8 {
     best as u8
 }
 
-async fn set_filters<C: ControlBackend>(
-    com: &Com<'_, C>,
-    mix: u64,
-    rc: u64,
-    chan: u64,
-) -> Result<()> {
-    set_mask(com, FILT2, 0xf0, closest(&MIX_FILTER_KHZ, 1000, mix) << 4).await?;
-    set_mask(com, FILT2, 0x0f, closest(&RC_FILTER_KHZ, 1000, rc)).await?;
-    set_mask(com, FILT3, 0x1f, closest(&CHAN_FILTER_KHZ, 1000, chan)).await
-}
-
-/// IF filters for `hz` of bandwidth (librtlsdr sets them to the sample rate).
-pub(crate) async fn set_bandwidth<C: ControlBackend>(com: &Com<'_, C>, hz: u64) -> Result<()> {
-    set_filters(com, hz, hz, hz).await
-}
-
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct Pll {
-    pub synth7: u8,
-    pub z: u8,
-    pub x: u16,
+struct Pll {
+    synth7: u8,
+    z: u8,
+    x: u16,
     /// The LO these words give.
-    pub flo: u64,
+    flo: u64,
 }
 
 /// librtlsdr's `e4k_compute_pll_params`: Fvco = Fosc · (Z + X/65536) = Flo · R.
-pub(crate) fn pll(hz: u64, fosc: u64) -> Result<Pll> {
+fn pll(hz: u64, fosc: u64) -> Result<Pll> {
     if hz == 0 || !(16_000_000..=30_000_000).contains(&fosc) {
         return Err(Error::PllUnlocked);
     }
-    let (synth7, r) = PLL_VARS
-        .iter()
-        .find(|row| hz < row.0)
-        .map_or((0, 2), |&(_, synth7, r)| (synth7, r));
+    let (synth7, r) = PLL_VARS.iter().find(|row| hz < row.0).map_or((0, 2), |&(_, synth7, r)| (synth7, r));
     let fvco = hz * r;
     let z = fvco / fosc;
     if !(1..=255).contains(&z) {
@@ -301,12 +280,7 @@ pub(crate) fn pll(hz: u64, fosc: u64) -> Result<Pll> {
     }
     let x = (fvco - fosc * z) * PLL_Y / fosc;
     let flo = (fosc * z + fosc * x / PLL_Y) / r;
-    Ok(Pll {
-        synth7,
-        z: z as u8,
-        x: x as u16,
-        flo,
-    })
+    Ok(Pll { synth7, z: z as u8, x: x as u16, flo })
 }
 
 fn band(flo: u64) -> Band {
@@ -329,29 +303,6 @@ fn rf_filter(band: Band, flo: u64) -> u8 {
     }
 }
 
-/// Tune the LO to `hz` (zero IF: the LO is the center) and check lock.
-/// Returns the LO actually programmed.
-pub(crate) async fn tune<C: ControlBackend>(com: &Com<'_, C>, hz: u64, fosc: u64) -> Result<u64> {
-    let p = pll(hz, fosc)?;
-    write(com, SYNTH7, p.synth7).await?;
-    write(com, SYNTH3, p.z).await?;
-    write(com, SYNTH4, p.x as u8).await?;
-    write(com, SYNTH5, (p.x >> 8) as u8).await?;
-    let band = band(p.flo);
-    write(com, BIAS, if band == Band::L { 0 } else { 3 }).await?;
-    // librtlsdr's workaround: clear the band before setting it, or 325-350 MHz won't lock.
-    set_mask(com, SYNTH1, 0x06, 0).await?;
-    set_mask(com, SYNTH1, 0x06, (band as u8) << 1).await?;
-    set_mask(com, FILT1, 0x0f, rf_filter(band, p.flo)).await?;
-    // The VCO calibrates itself; a second look gives it a moment more.
-    for _ in 0..2 {
-        if read(com, SYNTH1).await? & SYNTH1_PLL_LOCK != 0 {
-            return Ok(p.flo);
-        }
-    }
-    Err(Error::PllUnlocked)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,24 +314,11 @@ mod tests {
 
     fn e4k() -> FakeTransport {
         let control = FakeTransport::default();
-        control.state.tuner_address.store(ADDRESS, Ordering::SeqCst);
+        control.state.tuner_address.store(TunerKind::E4000.address(), Ordering::SeqCst);
         control
     }
     fn reg(control: &FakeTransport, reg: u8) -> u8 {
-        control
-            .state
-            .e4k_registers
-            .lock()
-            .unwrap()
-            .get(&reg)
-            .copied()
-            .unwrap_or(0)
-    }
-
-    #[test]
-    fn probe_answers_only_for_an_e4000() {
-        assert!(block_on(probe(&Com(&e4k()))).unwrap());
-        assert!(!block_on(probe(&Com(&FakeTransport::default()))).unwrap());
+        control.state.tuner_registers.lock().unwrap().get(&reg).copied().unwrap_or(0)
     }
 
     #[test]
@@ -416,17 +354,18 @@ mod tests {
     fn tune_sets_pll_band_and_rf_filter() {
         let control = e4k();
         let com = Com(&control);
-        let flo = block_on(tune(&com, 851_012_500, XTAL)).unwrap();
+        let mut e4k = E4000::new();
+        let flo = block_on(e4k.tune(&com, 851_012_500)).unwrap();
         assert!(851_012_500 - flo < 500);
         assert_eq!(reg(&control, SYNTH7), 1);
         assert_eq!(reg(&control, SYNTH3), 118);
         assert_eq!(reg(&control, BIAS), 3);
         assert_eq!(reg(&control, SYNTH1) & 0x06, (Band::Uhf as u8) << 1);
         assert_eq!(reg(&control, FILT1) & 0x0f, 13, "840 MHz RF filter");
-        block_on(tune(&com, 155_000_000, XTAL)).unwrap();
+        block_on(e4k.tune(&com, 155_000_000)).unwrap();
         assert_eq!(reg(&control, SYNTH1) & 0x06, (Band::Vhf3 as u8) << 1);
         assert_eq!(reg(&control, FILT1) & 0x0f, 0);
-        block_on(tune(&com, 1_575_420_000, XTAL)).unwrap();
+        block_on(e4k.tune(&com, 1_575_420_000)).unwrap();
         assert_eq!(reg(&control, BIAS), 0);
         assert_eq!(reg(&control, SYNTH1) & 0x06, (Band::L as u8) << 1);
     }
@@ -436,37 +375,39 @@ mod tests {
         let control = e4k();
         control.state.pll_locked.store(false, Ordering::SeqCst);
         assert!(matches!(
-            block_on(tune(&Com(&control), 851_012_500, XTAL)),
+            block_on(E4000::new().tune(&Com(&control), 851_012_500)),
             Err(Error::PllUnlocked)
         ));
     }
 
     #[test]
     fn gain_follows_librtlsdr_steps() {
-        assert_eq!(nearest_gain_tenths(0.0), -10);
-        assert_eq!(nearest_gain_tenths(30.0), 290);
-        assert_eq!(nearest_gain_tenths(40.0), 420);
-        assert_eq!(nearest_gain_tenths(52.5), 420);
-        // Every step resolves to an LNA code (no panic) with the right mixer.
-        for &g in &GAINS_TENTHS_DB {
-            let (_, mixer) = gain_steps(g as f32 / 10.0);
-            assert_eq!(mixer, u8::from(g > 340));
+        // The steps, as librtlsdr's e4k_gains[] lists them.
+        let steps: Vec<i32> = gain_steps().map(|(g, ..)| g).collect();
+        assert_eq!(steps, [-10, 15, 40, 65, 90, 115, 140, 165, 190, 215, 240, 290, 340, 420]);
+        for (g, _, mixer) in gain_steps() {
+            assert_eq!(mixer, u8::from(g > 340), "{g}");
         }
-        assert_eq!(gain_steps(-1.0), (0, 0));
-        assert_eq!(gain_steps(29.0), (13, 0));
-        assert_eq!(gain_steps(34.0), (14, 0));
-        assert_eq!(gain_steps(42.0), (14, 1));
+        assert_eq!(nearest_gain(0.0).0, -10);
+        assert_eq!(nearest_gain(30.0).0, 290);
+        assert_eq!(nearest_gain(40.0).0, 420);
+        assert_eq!(nearest_gain(52.5).0, 420);
+        assert_eq!(nearest_gain(-1.0), (-10, 0, 0));
+        assert_eq!(nearest_gain(29.0), (290, 13, 0));
+        assert_eq!(nearest_gain(34.0), (340, 14, 0));
+        assert_eq!(nearest_gain(42.0), (420, 14, 1));
 
         let control = e4k();
         let com = Com(&control);
-        block_on(set_gain(&com, GainConfig::Manual(42.0))).unwrap();
+        let mut e4k = E4000::new();
+        block_on(e4k.set_gain(&com, GainConfig::Manual(42.0))).unwrap();
         assert_eq!(reg(&control, AGC1) & 0x0f, AGC_MOD_SERIAL);
         assert_eq!(reg(&control, AGC7) & 1, 0);
         assert_eq!(
             (reg(&control, GAIN1) & 0x0f, reg(&control, GAIN2) & 1),
             (14, 1)
         );
-        block_on(set_gain(&com, GainConfig::Auto)).unwrap();
+        block_on(e4k.set_gain(&com, GainConfig::Auto)).unwrap();
         assert_eq!(reg(&control, AGC1) & 0x0f, AGC_MOD_IF_SERIAL_LNA_AUTON);
         assert_eq!(reg(&control, AGC7) & 1, 1);
     }
@@ -475,16 +416,17 @@ mod tests {
     fn open_initializes_and_bandwidth_follows_sample_rate() {
         let control = e4k();
         let com = Com(&control);
-        block_on(open(&com)).unwrap();
+        let mut e4k = E4000::new();
+        block_on(e4k.open(&com)).unwrap();
         assert_eq!(reg(&control, CLKOUT_PWDN), 0x96);
         assert_eq!(reg(&control, GAIN3), 0x01);
         assert_eq!(reg(&control, GAIN4), 0x12);
         assert_eq!(reg(&control, FILT2), 0xff, "narrowest mixer and RC filters");
         assert_eq!(reg(&control, FILT3), 31, "2.15 MHz channel filter, enabled");
-        block_on(set_bandwidth(&com, 2_400_000)).unwrap();
+        block_on(e4k.set_bandwidth(&com, 2_400_000)).unwrap();
         assert_eq!(reg(&control, FILT2), (14 << 4) | 12);
         assert_eq!(reg(&control, FILT3), 26);
-        block_on(standby(&com)).unwrap();
+        block_on(e4k.standby(&com)).unwrap();
         assert_eq!(reg(&control, MASTER1) & MASTER1_NORM_STBY, 0);
     }
 }

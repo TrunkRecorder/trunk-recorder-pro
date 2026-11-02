@@ -13,7 +13,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   1090–1230 MHz where its PLL doesn't lock; every P25 band is clear. Tuning to the gap is an
   error, as before for frequencies a tuner can't reach. The tuner code is ported from osmocom
   librtlsdr's `tuner_e4k.c` and is GPL-2.0-or-later (`crates/rtlsdr-nusb/LICENSE-GPL-2.0`).
-  `cargo test -p rtlsdr-nusb --test hardware_e4000 -- --ignored` checks an attached one.
+  `cargo test -p rtlsdr-nusb --test hardware e4000 -- --ignored` checks an attached one.
 - **Live audio in stereo, through an interface's own sound chain.** `client.js`'s
   `LivePlayer` has `pan` (left -1 to right 1) beside `gain`, both settable while playing
   (`player.pan = -1`; they glide, no clicks), and `skip()` drops the call playing. It

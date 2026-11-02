@@ -4,7 +4,7 @@ use crate::{
     DeviceDescriptor, DirectSampling, Error, GainConfig, Result,
     config::Settings,
     protocol::{Com, DROPPED_BLOCKS, DROPPED_BLOCK_SAMPLES},
-    tuners::{Tuner, TunerKind, XTAL_HZ},
+    tuners::{Output, Tuner, TunerKind, XTAL_HZ},
     usb::ControlBackend,
 };
 
@@ -64,6 +64,43 @@ const START_BIT: u8 = 0x80;
 /// After the start bit is cleared, before the FIFO is reset: its last packets out.
 #[cfg(not(target_arch = "wasm32"))]
 const DRAIN: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// How the demodulator takes its input: the registers that differ between
+/// a tuner's low IF, a tuner's zero IF (I and Q at baseband: the E4000) and
+/// direct sampling (the ADC alone).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DemodInput {
+    /// Page 1 0xB1: en_bbin (baseband in) with DC and IQ correction.
+    en_bbin: u8,
+    /// Page 0 0x08: the ADCs (0xcd: I and Q; 0x4d: I alone).
+    adc: u8,
+    /// Page 1 0x15: spectrum inversion.
+    spec_inv: u8,
+    /// Page 0 0x06 without the start bit (0x10: direct sampling's Q branch).
+    output_mode: u8,
+    /// Page 0 0x19: the stream's enable, with the digital AGC (0x25) or without.
+    agc: u8,
+}
+
+impl DemodInput {
+    /// A tuner's IF, librtlsdr's defaults for each.
+    fn from(output: Output) -> Self {
+        match output {
+            Output::LowIf(_) => Self { en_bbin: 0x1a, adc: 0x4d, spec_inv: 1, output_mode: 0, agc: 5 },
+            Output::ZeroIf => Self { en_bbin: 0x1b, adc: 0xcd, spec_inv: 0, output_mode: 0, agc: 5 },
+        }
+    }
+    /// The ADC's I or Q branch alone, its gain the digital AGC's or none.
+    fn direct(branch: DirectSampling, gain: GainConfig) -> Self {
+        Self {
+            en_bbin: 0x1a,
+            adc: 0xcd,
+            spec_inv: 0,
+            output_mode: if branch == DirectSampling::I { 0 } else { 0x10 },
+            agc: if gain == GainConfig::Auto { 0x25 } else { 5 },
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct Hardware {
@@ -177,7 +214,7 @@ impl Hardware {
         }
         let crystal = corrected_crystal(config.correction_ppm);
         let tuner = self.tuner.as_mut().ok_or(Error::UnsupportedTuner)?;
-        tuner.crystal_hz = crystal;
+        tuner.set_crystal_hz(crystal);
         let direct = config.frequency_hz < XTAL_HZ && config.direct_sampling != DirectSampling::Off;
         com.i2c_gate(true).await?;
         let opened = reinitialize || (self.direct && !direct);
@@ -186,44 +223,17 @@ impl Hardware {
         }
         // While streaming, the start bit stays set through a reconfiguration.
         let start = if self.receiving && !reinitialize { START_BIT } else { 0 };
-        if direct {
-            if !self.direct {
-                tuner.standby(com).await?;
-            }
-            com.demod(1, 0xb1, 0x1a, 1).await?;
-            // Enable both ADC inputs so the selected I/Q physical path is usable.
-            com.demod(0, 0x08, 0xcd, 1).await?;
-            com.demod(1, 0x15, 0, 1).await?;
-            self.output_mode = if config.direct_sampling == DirectSampling::I { 0 } else { 0x10 };
-            com.demod(0, 0x06, u16::from(self.output_mode | start), 1).await?;
-            com.demod(
-                0,
-                0x19,
-                if config.gain == GainConfig::Auto {
-                    0x25
-                } else {
-                    5
-                },
-                1,
-            )
-            .await?;
-        } else if tuner.zero_if() {
-            // E4000: zero IF (en_bbin + DC/IQ correction), I and Q ADCs, no
-            // spectrum inversion; IF 0 below (librtlsdr's baseband defaults).
-            com.demod(1, 0xb1, 0x1b, 1).await?;
-            com.demod(0, 0x08, 0xcd, 1).await?;
-            com.demod(1, 0x15, 0, 1).await?;
-            self.output_mode = 0;
-            com.demod(0, 0x06, u16::from(start), 1).await?;
-            com.demod(0, 0x19, 5, 1).await?;
-            tuner.set_gain(com, config.gain).await?;
-        } else {
-            com.demod(1, 0xb1, 0x1a, 1).await?;
-            com.demod(0, 0x08, 0x4d, 1).await?;
-            com.demod(1, 0x15, 1, 1).await?;
-            self.output_mode = 0;
-            com.demod(0, 0x06, u16::from(start), 1).await?;
-            com.demod(0, 0x19, 5, 1).await?;
+        let input = if direct { DemodInput::direct(config.direct_sampling, config.gain) } else { DemodInput::from(tuner.output()) };
+        if direct && !self.direct {
+            tuner.standby(com).await?;
+        }
+        com.demod(1, 0xb1, u16::from(input.en_bbin), 1).await?;
+        com.demod(0, 0x08, u16::from(input.adc), 1).await?;
+        com.demod(1, 0x15, u16::from(input.spec_inv), 1).await?;
+        self.output_mode = input.output_mode;
+        com.demod(0, 0x06, u16::from(self.output_mode | start), 1).await?;
+        com.demod(0, 0x19, u16::from(input.agc), 1).await?;
+        if !direct {
             tuner.set_gain(com, config.gain).await?;
         }
         self.direct = direct;
@@ -245,7 +255,11 @@ impl Hardware {
         } else {
             tuner.tune(com, config.frequency_hz).await?
         };
-        let if_frequency = if direct { config.frequency_hz } else { tuner.if_hz() };
+        let if_frequency = match tuner.output() {
+            _ if direct => config.frequency_hz,
+            Output::LowIf(hz) => hz,
+            Output::ZeroIf => 0,
+        };
         let word = if_word(if_frequency, crystal);
         com.demod(1, 0x19, ((word >> 16) & 0x3f) as u16, 1).await?;
         com.demod(1, 0x1a, ((word >> 8) & 0xff) as u16, 1).await?;
@@ -376,7 +390,7 @@ mod tests {
                     .unwrap();
             assert_eq!(applied.sample_rate_hz, 2_048_000);
             assert_eq!(
-                hardware.tuner.as_ref().unwrap().crystal_hz,
+                hardware.tuner.as_ref().unwrap().crystal_hz(),
                 corrected_crystal(ppm)
             );
             let writes = control.state.control_out_requests.lock().unwrap();
@@ -474,7 +488,7 @@ mod tests {
         let mut hardware = Hardware::default();
         let mut config = Settings { frequency_hz: 851_012_500, sample_rate_hz: 2_400_000, ..Settings::default() };
         let applied = futures_lite::future::block_on(hardware.configure(&control, &config, &descriptor)).unwrap();
-        assert_eq!(hardware.tuner.as_ref().unwrap().kind, TunerKind::E4000);
+        assert_eq!(hardware.tuner.as_ref().unwrap().kind(), TunerKind::E4000);
         assert!(851_012_500 - applied.frequency_hz < 500);
         {
             let writes = control.state.control_out_requests.lock().unwrap();
@@ -486,7 +500,7 @@ mod tests {
                 assert_eq!(last(1, reg), [0], "IF register {reg:#x}");
             }
         }
-        let e4k = |reg: u8| *control.state.e4k_registers.lock().unwrap().get(&reg).unwrap_or(&0);
+        let e4k = |reg: u8| *control.state.tuner_registers.lock().unwrap().get(&reg).unwrap_or(&0);
         assert_eq!(e4k(0x11), (14 << 4) | 12, "IF filters at 2.4 MS/s");
         config.frequency_hz = 155_000_000;
         config.gain = GainConfig::Manual(29.0);
