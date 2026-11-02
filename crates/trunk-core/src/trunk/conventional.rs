@@ -946,16 +946,17 @@ impl Conventional {
                 let percentile = levels.len().saturating_sub(1) / 5;
                 let (_, floor, _) = levels.select_nth_unstable_by(percentile, f32::total_cmp);
                 st.quiet_dbfs = *floor;
-                if now_s - st.last_level_log_s >= STREAM_LEVEL_LOG_S {
-                    let row = &st.rows[0];
-                    let label = row.info.as_ref().map(|info| info.alpha_tag.trim()).filter(|name| !name.is_empty()).unwrap_or_else(|| system(row.system).short_name.as_str());
-                    let threshold = (st.quiet_dbfs + STREAM_OPEN_MARGIN_DB).clamp(STREAM_MIN_OPEN_DBFS, STREAM_MAX_OPEN_DBFS);
-                    log::debug!(
-                        "Stream {label}: quiet audio level {level_dbfs:.1} dBFS; quiet floor {:.1} dBFS, call threshold {threshold:.1} dBFS",
-                        st.quiet_dbfs
-                    );
-                    st.last_level_log_s = now_s;
-                }
+            }
+            if !gap && now_s - st.last_level_log_s >= STREAM_LEVEL_LOG_S {
+                let row = &st.rows[0];
+                let label = row.info.as_ref().map(|info| info.alpha_tag.trim()).filter(|name| !name.is_empty()).unwrap_or_else(|| system(row.system).short_name.as_str());
+                let threshold = (st.quiet_dbfs + STREAM_OPEN_MARGIN_DB).clamp(STREAM_MIN_OPEN_DBFS, STREAM_MAX_OPEN_DBFS);
+                log::debug!(
+                    "Stream {label}: audio level {level_dbfs:.1} dBFS ({}, call threshold {threshold:.1} dBFS; quiet floor {:.1} dBFS)",
+                    if loud { "above threshold" } else { "below threshold" },
+                    st.quiet_dbfs
+                );
+                st.last_level_log_s = now_s;
             }
             if now_s - st.loud_s <= STREAM_HANG_S {
                 let mut h = Heard::default();
