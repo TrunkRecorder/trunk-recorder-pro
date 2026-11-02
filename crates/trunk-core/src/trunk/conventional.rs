@@ -57,6 +57,7 @@ use num_complex::Complex32;
 use super::calls::{Call, CallIds, CallManager, Flags, Voice, STUCK_CALL_S};
 use super::engine::{Event, Pins, SystemConfig, Tuning};
 use super::inband::InBandSpec;
+use super::record::RecordedOn;
 use super::recorded::Recorded;
 use super::voice::CipherId;
 use super::talkgroups::{Talkgroup, Talkgroups};
@@ -431,9 +432,8 @@ pub enum ConvOut {
     Event(Event),
     /// A call is over: the engine saves it. `recorder_num`: the index of the
     /// channel (frequency) it came on.
-    /// `source`: the source it was heard on (the call JSON's `source_num`).
     /// `tune_source`: its frequency scores this source's AutoTune ([`ConvChannel::tune_ref`]).
-    End { call: Call, rec: Recorded, recorder_num: u32, source: usize, tune_source: Option<usize> },
+    End { call: Call, rec: Recorded, on: RecordedOn, tune_ref: bool },
     /// A radio's talker alias, heard on a P25 channel of system `.0` ([`Call::system`]).
     Alias(u16, Alias),
     /// A key of system `.0` that decrypts its voice to noise.
@@ -593,6 +593,11 @@ struct Chan {
 }
 
 impl Chan {
+    /// Where a call on it (channel `idx`) is recorded.
+    fn on(&self, idx: usize) -> RecordedOn {
+        RecordedOn { recorder: idx as u32, source: self.source }
+    }
+
     fn base_db(&self, dflt: f64) -> f64 {
         self.squelch_db.unwrap_or(dflt)
     }
@@ -893,11 +898,11 @@ impl Conventional {
                 }
             }
             // Wind down.
-            let (source, tune) = (ch.source, ch.tune_ref.then_some(ch.source));
+            let (on, tune) = (ch.on(idx), ch.tune_ref);
             let o = ch.open.as_mut().unwrap();
             for live in o.live.iter_mut() {
                 if live.as_ref().is_some_and(|l| now_s - l.call.last_audio_s > rules.call_timeout_s) {
-                    Self::end(live.take().unwrap(), idx as u32, source, tune, out);
+                    Self::end(live.take().unwrap(), on, tune, out);
                 }
             }
             let o = ch.open.as_ref().unwrap();
@@ -1121,6 +1126,7 @@ impl Conventional {
         if h.audio.is_empty() && h.infos.is_empty() {
             return;
         }
+        let (on, tune) = (ch.on(num as usize), ch.tune_ref);
         let o = ch.open.as_mut().unwrap();
         // The talkgroup: the row's, else the air's, else the row's default.
         let r = h.row.unwrap_or(0);
@@ -1137,7 +1143,7 @@ impl Conventional {
             let new_row = l.row != r && (ch.mode.analog() || air_tg.is_some());
             if too_long || new_tg || new_row {
                 let l = o.live[slot].take().unwrap();
-                Self::end(l, num, ch.source, ch.tune_ref.then_some(ch.source), out);
+                Self::end(l, on, tune, out);
             } else if air_tg.is_some() && l.air_tg.is_none() {
                 let info = Self::names(row, tg, rules.talkgroups);
                 let l = o.live[slot].as_mut().unwrap();
@@ -1256,14 +1262,14 @@ impl Conventional {
         row.info.clone().map(|t| Talkgroup { number: tg, ..t }).or_else(|| talkgroups.get(&tg).cloned())
     }
 
-    fn end(mut l: Live, num: u32, source: usize, tune_source: Option<usize>, out: &mut Vec<ConvOut>) {
+    fn end(mut l: Live, on: RecordedOn, tune_ref: bool, out: &mut Vec<ConvOut>) {
         // What it ended on.
         let patterns = l.rec.finish().patterns;
         if !patterns.is_empty() {
             let heard = l.rec.talkers(&l.call.sources, patterns);
             out.push(ConvOut::Patterns { call: l.call.clone(), heard, decrypted: l.call.encrypted || l.call.decrypted, now_s: l.call.last_audio_s });
         }
-        out.push(ConvOut::End { call: l.call, rec: l.rec, recorder_num: num, source, tune_source });
+        out.push(ConvOut::End { call: l.call, rec: l.rec, on, tune_ref });
     }
 
     /// End of input: flush the receivers and end every call.
@@ -1284,7 +1290,7 @@ impl Conventional {
             }
             let o = ch.open.take().unwrap();
             for l in o.live.into_iter().flatten() {
-                Self::end(l, idx as u32, ch.source, ch.tune_ref.then_some(ch.source), out);
+                Self::end(l, ch.on(idx), ch.tune_ref, out);
             }
         }
     }
@@ -1328,10 +1334,15 @@ mod tests {
 
     /// [`run_systems`], with `gap` = (air time, seconds): that long of
     /// samples that never came ([`Engine::push_gap`]) at that point of the air.
-    fn run_gapped(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, systems: Vec<SystemConfig>, mut gap: Option<(f64, f64)>) -> Run {
+    fn run_gapped(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, systems: Vec<SystemConfig>, gap: Option<(f64, f64)>) -> Run {
+        run_on(1, fs, secs, txs, channels, systems, gap)
+    }
+
+    /// [`run_gapped`] with `n` sources, all tuned alike and fed the same air.
+    fn run_on(sources: usize, fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, systems: Vec<SystemConfig>, mut gap: Option<(f64, f64)>) -> Run {
         let center = 155_000_000.0;
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }; sources],
             conventional: channels,
             systems,
             ..Default::default()
@@ -1370,10 +1381,14 @@ mod tests {
                 }
                 *v = x;
             }
-            e.push_iq(0, &buf[..n]);
+            for src in 0..sources {
+                e.push_iq(src, &buf[..n]);
+            }
             i0 += n;
             if let Some((_, len)) = gap.filter(|&(at, _)| i0 as f64 / fs >= at) {
-                e.push_gap(0, (len * fs) as u64);
+                for src in 0..sources {
+                    e.push_gap(src, (len * fs) as u64);
+                }
                 gap = None;
             }
             for ev in e.drain_events() {
@@ -1497,6 +1512,20 @@ mod tests {
     /// that isn't a channel. (The source's centre is 155 MHz, so the AM
     /// channels take the VHF filter, as 118–137 MHz would. AM channels open
     /// from 3 s, once they know the spurs.)
+    /// A call's `source_num` is the source its channel is received on: the
+    /// second, for a channel kept on it, though the first reaches it too.
+    #[test]
+    fn a_call_names_the_source_it_was_heard_on() {
+        let tx = || Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.0)], ph: 0.0, am: false, audio: Vec::new() };
+        let num = |pins: Pins| {
+            let (calls, _, _) = run_on(2, 2_400_000.0, 3.5, &mut [tx()], vec![ConvChannel { pins, ..fm(155_200_000.0, 1) }], vec![conv_system("conv")], None);
+            assert_eq!(calls.len(), 1);
+            calls[0].2.split("\"source_num\":").nth(1).and_then(|x| x.split(',').next()).unwrap().to_string()
+        };
+        assert_eq!(num(Pins::any()), "0", "the first that reaches it");
+        assert_eq!(num(Pins::only(vec![1])), "1");
+    }
+
     #[test]
     fn am_calls_detected_beside_fm_and_neighbours() {
         let fs = 2_400_000.0;
