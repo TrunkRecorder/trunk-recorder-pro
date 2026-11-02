@@ -44,6 +44,7 @@ import type { LicenseLookup } from "./controller.ts";
 import { IdentifyBar, LicenseCell, licensesOn } from "./Identify.tsx";
 import { BiasT } from "./inputs.tsx";
 import { Waterfall } from "./Waterfall.tsx";
+import { roaming, siteId } from "./dash/Systems.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
 
@@ -423,10 +424,11 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
               {m.adjacent.map((a) => {
                 const have = systemWithChannel(c, a.freqHz);
                 return (
-                  <span key={`${a.rfss}-${a.site}`} className="chip">
+                  <span key={`${a.wacn}/${a.sysId}/${a.rfss}-${a.site}`} className="chip">
                     <span className="mono">
-                      site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
+                      {siteId(a.wacn || id.wacn || 0, a.sysId, a.rfss, a.site)} · {formatMhz(a.freqHz)}
                     </span>
+                    {roaming(id, a) !== "intra-system" && <span className="badge">{roaming(id, a)}</span>}
                     {soughtOn(sought, a.freqHz) && <Sought l={soughtOn(sought, a.freqHz)!} />}
                     {have ? (
                       <span>· in {have.shortName}</span>

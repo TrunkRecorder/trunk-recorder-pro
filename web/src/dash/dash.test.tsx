@@ -87,8 +87,35 @@ test("Decode: a system's page shows what its sites announce (decodeDetail), not 
   });
   const page = text(renderToString(<DecodePage />));
   assert.ok(page.includes("SG 60001") && page.includes("Fire Dispatch (100) + 200"), page);
-  assert.ok(page.includes("site 1-9"), page);
-  assert.match(page, /SysID 954 · site 1-1 · 854\.0+ other system/, "a neighbouring system's site");
+  assert.ok(page.includes("BEE00:1A2:1-9 · 853"), page);
+  assert.match(page, /BEE00:954:1-1 · 854\.0+ inter-system/, "a neighbouring system's site, by its address");
+});
+
+test("RF: the control channels of adjacent sites on a source, faint, by address; not those running or off every source", () => {
+  transport.onMessage({ type: "state", phase: "starting", error: null, ended: false, restartNeeded: false });
+  twoSites();
+  const systems = [system(0, "dcfd", [site(0, "dcfd", { site: 1 }), site(1, "south", { site: 2 })]), system(1, "other", [site(2, "other", { sysId: 0x999, site: 1 })])];
+  const radio = { type: "hackrf" as const, serial: "", centerHz: 852_000_000, rateHz: 4_000_000, lnaDb: 24, vgaDb: 30, amp: false, biasTee: false, ppm: 0 };
+  transport.onMessage({ type: "config", config: { ...snapshot().config!, sources: [radio] }, version: 2 });
+  const src: SourceStatus = { index: 0, label: "RTL", centerHz: 852_000_000, rateHz: 4_000_000, rateMeasured: 4_000_000, dropped: 0, errors: 0, lastError: null, ended: false, clockPpm: null, settings: radio };
+  transport.onMessage({ type: "status", status: { systems, recording: 0 } as unknown as EngineStatus, sources: [src], load: 0, calls: [] });
+  setView("rf");
+  assert.doesNotMatch(text(renderToString(<RfPage />)), /adjacent site/, "nothing announced yet");
+  transport.onMessage({
+    type: "decodeDetail", system: "dcfd", channels: [], patches: [],
+    sites: [{ index: 1, name: "south", dmr: null, nxdn: null, adjacent: [
+      { wacn: 0, sysId: 0x1a2, rfss: 1, site: 1, freqHz: 851_000_000 },
+      { wacn: 0xbee00, sysId: 0x954, rfss: 1, site: 1, freqHz: 853_000_000 },
+      { wacn: 1, sysId: 0x97, rfss: 1, site: 1, freqHz: 853_500_000 },
+      { wacn: 0, sysId: 0x1a2, rfss: 1, site: 7, freqHz: 860_000_000 },
+    ] }],
+  });
+  const page = text(renderToString(<RfPage />));
+  assert.match(page, /BEE00:954:1-1/);
+  assert.match(page, /00001:097:1-1/, "another WACN's");
+  assert.match(page, /adjacent site\S+s control channel/);
+  assert.doesNotMatch(page, /BEE00:1A2:1-1/, "a site running here is drawn as itself");
+  assert.doesNotMatch(page, /1-7/, "off every source");
 });
 
 test("Decode: a site's FCC call sign, once its control channel has said it", () => {

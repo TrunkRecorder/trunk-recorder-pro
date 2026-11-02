@@ -12,7 +12,7 @@ import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall } from "../Waterfall.tsx";
 import { K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE, useHistory, useRanges, val } from "./data.ts";
-import { ccMarks } from "./Systems.tsx";
+import { adjacentCcMarks, ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
 
@@ -128,12 +128,18 @@ function bandOf(hz: number): string {
   return b ? b.label : `${Math.floor(hz / 1e8) * 100} MHz`;
 }
 
+/** Watches a system's decoding (decodeDetail), for as long as it's drawn. */
+function WatchDecode({ name }: { name: string }) {
+  useTopic(`decode:${name}`);
+  return null;
+}
+
 /** One band's row: its sources' passbands, with the control channels, conventional channels and calls in it. */
 function BandRow({ s, label, sources, ccs, conv, calls }: {
   s: AppState;
   label: string;
   sources: SourceStatus[];
-  ccs: { hz: number; name: string }[];
+  ccs: { hz: number; name: string; adjacent?: { label: string; title: string } }[];
   conv: { hz: number; name: string; label: string }[];
   calls: AppState["calls"];
 }) {
@@ -172,13 +178,24 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
           <title>{`${c.systemName} TG ${c.alphaTag || c.talkgroup} · ${mhz(c.freqHz)} MHz · ${c.state}`}</title>
         </line>
       ))}
-      {ccs.map((c) => (
-        <g key={`${c.name}${c.hz}`}>
-          <line x1={x(c.hz)} x2={x(c.hz)} y1={14} y2={56} stroke={systemColor(s.config, c.name)} strokeWidth={3} vectorEffect="non-scaling-stroke">
-            <title>{`${c.name} control channel · ${mhz(c.hz)} MHz`}</title>
-          </line>
-        </g>
-      ))}
+      {ccs.map((c) =>
+        c.adjacent ? (
+          <g key={`a${c.hz}`}>
+            <line x1={x(c.hz)} x2={x(c.hz)} y1={14} y2={56} stroke={systemColor(s.config, c.name)} strokeWidth={2} className="band-adj" vectorEffect="non-scaling-stroke">
+              <title>{`${c.adjacent.title} · ${mhz(c.hz)} MHz`}</title>
+            </line>
+            <text x={x(c.hz)} y={62} textAnchor={x(c.hz) > W - 80 ? "end" : "start"} className="axis band-adj-label">
+              {c.adjacent.label}
+            </text>
+          </g>
+        ) : (
+          <g key={`${c.name}${c.hz}`}>
+            <line x1={x(c.hz)} x2={x(c.hz)} y1={14} y2={56} stroke={systemColor(s.config, c.name)} strokeWidth={3} vectorEffect="non-scaling-stroke">
+              <title>{`${c.name} control channel · ${mhz(c.hz)} MHz`}</title>
+            </line>
+          </g>
+        ),
+      )}
       <text x={2} y={70} className="axis">
         {mhz(lo, 3)}
       </text>
@@ -196,7 +213,10 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
  */
 function BandOverview({ s }: { s: AppState }) {
   if (!s.sources.length) return null;
-  const ccs = s.status?.systems.flatMap((y) => y.sites.flatMap((x) => (x.controlChannelHz ? [{ hz: x.controlChannelHz, name: y.shortName }] : []))) ?? [];
+  const ccs: { hz: number; name: string; adjacent?: { label: string; title: string } }[] =
+    s.status?.systems.flatMap((y) => y.sites.flatMap((x) => (x.controlChannelHz ? [{ hz: x.controlChannelHz, name: y.shortName }] : []))) ?? [];
+  const adjacent = adjacentCcMarks(s);
+  for (const m of adjacent) ccs.push({ hz: m.hz, name: m.system ?? "", adjacent: { label: m.label, title: m.title ?? m.label } });
   const conv = (s.config?.conventional ?? []).flatMap((c) => c.channels.filter((ch) => ch.enabled).map((ch) => ({ hz: ch.freqHz, name: c.shortName, label: ch.name })));
   // The bands in use, low to high; a source straddling two goes in the one its center's in.
   const lows = new Map<string, number>();
@@ -227,6 +247,12 @@ function BandOverview({ s }: { s: AppState }) {
           <i className="sw-cc" />
           control channel
         </span>
+        {adjacent.length > 0 && (
+          <span>
+            <i className="sw-adj" />
+            adjacent site's control channel (WACN:System:RFSS-site)
+          </span>
+        )}
         <span>
           <i className="sw-rec" />
           call recording
@@ -326,7 +352,7 @@ function SourceWaterfall({ s, i, title }: { s: AppState; i: number; title?: stri
     >
       {on &&
         (s.spectra[i] ? (
-          <Waterfall radio={s.spectra[i]} label={src.label} ccs={ccMarks(s.config, runningSites(s.status?.systems ?? []))} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
+          <Waterfall radio={s.spectra[i]} label={src.label} ccs={[...ccMarks(s.config, runningSites(s.status?.systems ?? [])), ...adjacentCcMarks(s)]} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
         ) : (
           <div className="chart-empty">Waiting for the spectrum…</div>
         ))}
@@ -440,9 +466,18 @@ export function RfPage() {
       </div>
     );
   }
-  if (i !== null && s.sources[i]) return <SourceDetail s={s} i={i} />;
+  // (Watching the systems for their adjacent sites, to mark their control channels.)
+  const watch = (s.status?.systems ?? []).filter((y) => y.sites.length).map((y) => <WatchDecode key={y.shortName} name={y.shortName} />);
+  if (i !== null && s.sources[i])
+    return (
+      <>
+        {watch}
+        <SourceDetail s={s} i={i} />
+      </>
+    );
   return (
     <div className="page">
+      {watch}
       <BandOverview s={s} />
       {s.sources.map((src, k) => (
         <div key={k} className="src-row">

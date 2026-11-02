@@ -7,9 +7,46 @@ import { addSite, setNotice, type AppState } from "../controller.ts";
 import { num } from "../fmt.ts";
 import type { Config, DmrSiteStatus, NxdnSiteStatus, Patch, TalkgroupName } from "../protocol.ts";
 import type { CcMark } from "../Waterfall.tsx";
-import { K, recentAvg, siteHealth, val, type DashSystem, type DetailedSite, type RunningSite } from "./data.ts";
+import { K, recentAvg, runningSites, siteHealth, val, type DashSystem, type DetailedSite, type RunningSite } from "./data.ts";
 
 export const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
+
+/** A P25 site by its full address, WACN:System:RFSS-site (WACN and System ID in hex, as on the air). */
+export const siteId = (wacn: number, sysId: number, rfss: number, site: number) => `${hex(wacn).padStart(5, "0")}:${hex(sysId).padStart(3, "0")}:${rfss}-${site}`;
+
+/**
+ * What a radio of `from` crosses to reach an adjacent site, in TIA-102's
+ * roaming terms: another site or RFSS of its own system (intra-system),
+ * another system of its WACN (inter-system), or another WACN (inter-WACN).
+ */
+export function roaming(from: { wacn?: number | null; sysId?: number | null }, to: { wacn: number; sysId: number }): "intra-system" | "inter-system" | "inter-WACN" {
+  if ((to.wacn || from.wacn || 0) !== (from.wacn || 0)) return "inter-WACN";
+  return to.sysId !== from.sysId ? "inter-system" : "intra-system";
+}
+
+/**
+ * The control channels of the adjacent sites the running P25 sites announce
+ * (while their systems are watched: decodeDetail) that aren't sites running
+ * here, on a source's passband: faint markers named by site address.
+ */
+export function adjacentCcMarks(s: AppState): CcMark[] {
+  const sites = runningSites(s.status?.systems ?? []);
+  const running = (w: number, a: { sysId: number; rfss: number; site: number }) =>
+    sites.some((y) => (y.identity.wacn || 0) === w && y.identity.sysId === a.sysId && y.identity.rfss === a.rfss && y.identity.site === a.site);
+  const onSource = (hz: number) => s.sources.some((x) => Math.abs(hz - x.centerHz) <= x.rateHz / 2);
+  const at = new Map<number, CcMark>();
+  for (const y of s.status?.systems ?? [])
+    for (const d of s.decodeDetail[y.shortName]?.sites ?? []) {
+      const from = y.sites.find((x) => x.index === d.index);
+      if (!from) continue;
+      for (const a of d.adjacent) {
+        const w = a.wacn || from.identity.wacn || 0;
+        if (!a.freqHz || at.has(a.freqHz) || running(w, a) || sites.some((x) => x.controlChannelHz === a.freqHz) || !onSource(a.freqHz)) continue;
+        at.set(a.freqHz, { hz: a.freqHz, label: siteId(w, a.sysId, a.rfss, a.site), color: systemColor(s.config, y.shortName), system: y.shortName, faint: true, title: `Adjacent site ${siteId(w, a.sysId, a.rfss, a.site)} (${roaming(from.identity, { wacn: w, sysId: a.sysId })}), announced by ${y.shortName}/${from.name}` });
+      }
+    }
+  return [...at.values()];
+}
 
 /** One marker per control channel frequency (sites sharing one share a marker), coloured by system. */
 export function ccMarks(c: Config | null, sites: RunningSite[]): CcMark[] {
@@ -55,7 +92,8 @@ export function Neighbours(props: { s: AppState; sites: DetailedSite[] }) {
   if (!c) return null;
   type Adjacent = DetailedSite["adjacent"][number];
   const wacnOf = (a: Adjacent, from: DetailedSite) => a.wacn || from.identity.wacn || 0;
-  const other = (a: Adjacent, from: DetailedSite) => a.sysId !== from.identity.sysId || wacnOf(a, from) !== (from.identity.wacn || 0);
+  const kind = (a: Adjacent, from: DetailedSite) => roaming(from.identity, { wacn: wacnOf(a, from), sysId: a.sysId });
+  const other = (a: Adjacent, from: DetailedSite) => kind(a, from) !== "intra-system";
   const seen = new Map<string, { a: Adjacent; from: DetailedSite }>();
   for (const x of props.sites)
     for (const a of x.adjacent) {
@@ -77,16 +115,16 @@ export function Neighbours(props: { s: AppState; sites: DetailedSite[] }) {
       <summary className="panel-head">
         <h2>Neighbouring sites</h2>
         <span className="muted small">
-          {seen.size} announced, not recorded{systems ? ` · ${systems} of other systems` : ""}
+          {seen.size} announced, not recorded{systems ? ` · ${systems} of other systems (inter-system or inter-WACN)` : ""}
         </span>
       </summary>
       <div className="row">
         {rows.map(({ a, from }) => (
           <span key={`${wacnOf(a, from)}/${a.sysId}/${a.rfss}/${a.site}`} className="chip">
             <span className="mono">
-              {other(a, from) && wacnOf(a, from) !== (from.identity.wacn || 0) ? `WACN ${hex(wacnOf(a, from))} · ` : ""}SysID {hex(a.sysId)} · site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
+              {siteId(wacnOf(a, from), a.sysId, a.rfss, a.site)} · {formatMhz(a.freqHz)}
             </span>
-            {other(a, from) && <span className="badge">other system</span>}
+            {other(a, from) && <span className="badge" title="Another System ID of the WACN (inter-system), or another WACN (inter-WACN): its radios roam here">{kind(a, from)}</span>}
             <span className="muted">via {from.label}</span>
             <button className="btn ghost small" onClick={() => add(a, from)}>
               Add

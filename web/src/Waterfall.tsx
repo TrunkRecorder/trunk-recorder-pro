@@ -14,6 +14,11 @@ export interface CcMark {
   hz: number;
   label: string;
   color: string;
+  /** An adjacent site's, not one followed here: drawn fainter. */
+  faint?: boolean;
+  /** Its system's short name (an adjacent site's: the system announcing it). */
+  system?: string;
+  title?: string;
 }
 
 const ROWS = 160;
@@ -145,7 +150,7 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
           {props.ccs
             .filter((m) => inView(pos(m.hz)))
             .map((m) => (
-              <span key={`${m.label}-${m.hz}`} className="mk mk-cc" style={{ left: `${pos(m.hz)}%`, borderLeftColor: m.color }} title={`Control channel ${m.label}`}>
+              <span key={`${m.label}-${m.hz}`} className={`mk mk-cc${m.faint ? " faint" : ""}`} style={{ left: `${pos(m.hz)}%`, borderLeftColor: m.color }} title={m.title ?? `Control channel ${m.label}`}>
                 <i style={{ color: m.color }}>{m.label}</i>
               </span>
             ))}
