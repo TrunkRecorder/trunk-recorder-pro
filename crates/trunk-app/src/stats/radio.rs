@@ -55,9 +55,30 @@ pub struct Tg {
     pub ciphers: Vec<(u8, u16, u32, i64)>,
     /// (hour = Unix s / 3600, calls, seconds), oldest first, last week only.
     pub hours: VecDeque<(i64, (u32, f32))>,
+    /// By the hour as `hours`: its encrypted calls, and the ciphers they
+    /// named ((ALGID, key ID, calls)), for a query's hours.
+    pub enc_hours: VecDeque<(i64, u32)>,
+    pub cipher_hours: VecDeque<(i64, HourCiphers)>,
 }
 
+/// An hour's ciphers: (ALGID, key ID, calls).
+pub type HourCiphers = Vec<(u8, u16, u32)>;
+
 impl Tg {
+    /// Kept before encrypted calls were counted by the hour: its hours'
+    /// share of them as its calls overall were, and each cipher's calls in
+    /// the hour it was last heard.
+    fn with_enc_hours(mut self) -> Self {
+        if self.enc > 0 && self.enc_hours.is_empty() && self.cipher_hours.is_empty() {
+            let share = self.enc.min(self.calls) as f64 / self.calls.max(1) as f64;
+            self.enc_hours = self.hours.iter().map(|&(h, (n, _))| (h, (n as f64 * share).round() as u32)).filter(|x| x.1 > 0).collect();
+            for &(a, k, n, t) in self.ciphers.iter().rev() {
+                bump_hour(&mut self.cipher_hours, t.div_euclid(3600), |v: &mut HourCiphers| v.push((a, k, n)), Vec::new);
+            }
+        }
+        self
+    }
+
     /// A call of it began or ended: keep the name it carried, if any.
     fn note_name(&mut self, c: &Call) {
         if let Some(t) = c.talkgroup_info.as_ref().filter(|t| !t.alpha_tag.is_empty()) {
@@ -409,7 +430,7 @@ impl SystemRadio {
         for k in &c.gone.freqs {
             self.freqs.remove(k);
         }
-        self.tgs.extend(c.tgs.iter().cloned());
+        self.tgs.extend(c.tgs.iter().map(|(k, g)| (*k, g.clone().with_enc_hours())));
         self.units.extend(c.units.iter().cloned());
         self.pairs.extend(c.pairs.iter().cloned());
         self.freqs.extend(c.freqs.iter().cloned());
@@ -482,8 +503,15 @@ impl Registry {
             g.calls += 1;
             g.secs += secs;
             g.enc += c.encrypted as u32;
+            if c.encrypted {
+                bump_hour(&mut g.enc_hours, h, |n: &mut u32| *n += 1, || 0);
+            }
             if let Some(cp) = c.cipher {
                 note_cipher(&mut g.ciphers, cp.algid, cp.keyid, t);
+                bump_hour(&mut g.cipher_hours, h, |v: &mut HourCiphers| match v.iter_mut().find(|x| (x.0, x.1) == (cp.algid, cp.keyid)) {
+                    Some(x) => x.2 += 1,
+                    None => v.push((cp.algid, cp.keyid, 1)),
+                }, Vec::new);
             }
             // Its air in the hours it was on (a channel held open past the hour isn't all the last one's); the call in the last.
             for hh in start.div_euclid(3600).max(h - HOURS + 1)..=h {
@@ -718,20 +746,38 @@ fn hourly(g: &Tg, now: i64, hours: i64) -> (Vec<u32>, Vec<f32>) {
     (c, sec)
 }
 
+/// A talkgroup's ciphers in the last `hours`: (ALGID, key ID, calls, last
+/// heard), most recent first.
+fn ciphers_in(g: &Tg, now: i64, hours: i64) -> Vec<(u8, u16, u32, i64)> {
+    let mut out: Vec<(u8, u16, u32, i64)> = Vec::new();
+    for (_, v) in window(&g.cipher_hours, now, hours) {
+        for &(a, k, n) in v {
+            match out.iter_mut().find(|x| (x.0, x.1) == (a, k)) {
+                Some(x) => x.2 += n,
+                None => out.push((a, k, n, g.ciphers.iter().find(|x| (x.0, x.1) == (a, k)).map_or(0, |x| x.3))),
+            }
+        }
+    }
+    out.sort_by_key(|x| std::cmp::Reverse(x.3));
+    out
+}
+
 fn tg_row(name: &str, s: &SystemRadio, tg: u32, g: &Tg, now: i64, hours: i64, names: &Names) -> Value {
     let info = (names.tg)(name, tg);
     let (c, sec) = hourly(g, now, hours);
+    let calls = c.iter().sum::<u32>();
+    let enc: u32 = window(&g.enc_hours, now, hours).map(|(_, &n)| n).sum();
     json!({
         "tg": tg,
         "alphaTag": tg_alpha(name, s, tg, names),
         "known": info.is_some(),
         "ignore": info.as_ref().is_some_and(|i| i.ignore),
         "first": g.first, "last": g.last,
-        "calls": c.iter().sum::<u32>(), "secs": (sec.iter().sum::<f32>() as f64 * 10.0).round() / 10.0,
+        "calls": calls, "secs": (sec.iter().sum::<f32>() as f64 * 10.0).round() / 10.0,
         "totalCalls": g.calls,
-        "encPct": if g.calls > 0 { (g.enc as f64 * 1000.0 / g.calls as f64).round() / 10.0 } else { 0.0 },
+        "encPct": if calls > 0 { (enc.min(calls) as f64 * 1000.0 / calls as f64).round() / 10.0 } else { 0.0 },
         "new": is_new(s, g.first, now),
-        "ciphers": g.ciphers.iter().map(|&(a, k, n, t)| json!({ "algid": a, "keyId": k, "name": algid_name(a), "calls": n, "last": t })).collect::<Vec<_>>(),
+        "ciphers": ciphers_in(g, now, hours).into_iter().map(|(a, k, n, t)| json!({ "algid": a, "keyId": k, "name": algid_name(a), "calls": n, "last": t })).collect::<Vec<_>>(),
         "hourly": c,
     })
 }
@@ -1225,6 +1271,41 @@ mod tests {
         assert_eq!(q["row"]["ciphers"][1], json!({ "algid": 0xAA, "keyId": 0x1B50, "name": "ADP", "calls": 2, "last": t0 + 20 }));
     }
 
+    #[test]
+    fn enc_pct_and_ciphers_are_of_the_querys_hours() {
+        let mut r = Registry::default();
+        let t0 = 1_700_000_000;
+        let adp = CipherId { algid: 0xAA, keyid: 0x1B50 };
+        // Two days ago: four encrypted calls. Now: one encrypted in four.
+        for i in 0..4 {
+            r.call_end("dcfd", &Call { encrypted: true, cipher: Some(adp), ..call(100, &[], 0.0, 5.0) }, t0 + i);
+        }
+        let now = t0 + 2 * 86_400;
+        for i in 0..4 {
+            r.call_end("dcfd", &Call { encrypted: i == 0, ..call(100, &[], 0.0, 5.0) }, now - 100 + i);
+        }
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let row = |r: &Registry, hours: i64| r.query(&json!({ "what": "tg", "system": "dcfd", "key": 100, "hours": hours }), now, &n)["row"].clone();
+        let day = row(&r, 24);
+        assert_eq!((day["calls"].as_u64(), day["encPct"].as_f64(), day["totalCalls"].as_u64()), (Some(4), Some(25.0), Some(8)));
+        assert_eq!(day["ciphers"], json!([]), "ADP wasn't heard in the last day");
+        let week = row(&r, 168);
+        assert_eq!(week["encPct"].as_f64(), Some(62.5));
+        assert_eq!(week["ciphers"][0]["calls"], 4);
+
+        // Kept before the hours were counted: its share and ciphers from what it had.
+        for i in 0..3 {
+            r.call_end("dcfd", &Call { encrypted: true, cipher: Some(adp), ..call(200, &[], 0.0, 5.0) }, now - 50 + i);
+        }
+        let mut old = r.systems["dcfd"].tgs[&200].clone();
+        (old.enc_hours, old.cipher_hours) = Default::default();
+        let mut again = Registry::default();
+        again.put("dcfd", SystemRadio::from_changes(&RegistryChanges { created: t0, tgs: vec![(200, old)], ..Default::default() }));
+        let q = again.query(&json!({ "what": "tg", "system": "dcfd", "key": 200, "hours": 24 }), now, &n);
+        assert_eq!((q["row"]["encPct"].as_f64(), q["row"]["ciphers"][0]["calls"].as_u64()), (Some(100.0), Some(3)));
+    }
+
     /// How big a system's registry file gets, and how long turning it into
     /// JSON and copying it take: at every cap (a week of a very large
     /// system), and at about half. `cargo test --release -p trunk-app --lib
@@ -1237,7 +1318,7 @@ mod tests {
             let mut s = SystemRadio::new(t);
             let hours = |n: usize| (0..n as i64).map(|h| (t / 3600 - h, (12u32, 95.5f32))).collect::<VecDeque<_>>();
             for g in 0..tgs as u32 {
-                s.tgs.insert(10_000 + g, Tg { first: t, last: t + 600_000, name: format!("TG {g} Dispatch"), calls: 4321, secs: 98_765.5, enc: 12, ciphers: vec![(0x84, 0x1234, 40, t)], hours: hours(HOURS as usize) });
+                s.tgs.insert(10_000 + g, Tg { first: t, last: t + 600_000, name: format!("TG {g} Dispatch"), calls: 4321, secs: 98_765.5, enc: 12, ciphers: vec![(0x84, 0x1234, 40, t)], hours: hours(HOURS as usize), ..Default::default() });
             }
             for u in 0..units as u32 {
                 let recent = (0..MAX_RECENT_TX as i64).map(|k| (t + k * 60, 10_000 + u % 500, 4.25f32)).collect();
