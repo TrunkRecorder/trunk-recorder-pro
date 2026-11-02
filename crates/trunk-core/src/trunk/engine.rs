@@ -2959,6 +2959,29 @@ mod tests {
         assert!(lengths[..2].iter().all(|&s| (s - 4.0).abs() < 0.4), "{lengths:?}");
     }
 
+    #[test]
+    fn a_stream_adapts_its_call_threshold_to_quiet_audio() {
+        use super::super::conventional::{ConvChannel, ConvMode};
+        let row = ConvChannel { talkgroup: Some(7), ..ConvChannel::new(0.0, ConvMode::Stream) };
+        let e = Engine::new(EngineConfig {
+            systems: vec![SystemConfig::conventional("feed")],
+            conventional: vec![row],
+            ..Default::default()
+        })
+        .unwrap();
+        let sine = |amplitude: f32, seconds: f64| {
+            (0..(seconds * 8000.0) as usize)
+                .map(|i| amplitude * (i as f32 * 0.785).sin())
+                .collect::<Vec<_>>()
+        };
+        e.push_audio(0, &sine(0.0001, 1.0));
+        e.push_audio(0, &sine(0.002, 1.0));
+        assert!(
+            e.drain_events().iter().any(|event| matches!(event, Event::CallStart(call) if call.talkgroup == 7)),
+            "a quiet feed's audio above its measured idle level should open a call"
+        );
+    }
+
     /// A stream's calls are listened to for the system's signals, as a frequency's are.
     #[test]
     fn a_stream_rows_page_is_its_systems_signal() {

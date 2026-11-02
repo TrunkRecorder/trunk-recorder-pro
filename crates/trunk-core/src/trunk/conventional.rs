@@ -98,8 +98,15 @@ const CLOSE_HANG_S: f64 = 0.5;
 const TONE_WAIT_S: f64 = 1.0;
 /// A stream's audio is taken in frames of this many samples (20 ms).
 const STREAM_FRAME: usize = 160;
-/// A stream frame this loud (RMS, dBFS) is someone talking: the stream's carrier.
-const STREAM_OPEN_DBFS: f32 = -42.0;
+/// The rolling window used to estimate a stream's quiet level.
+const STREAM_LEVEL_WINDOW_FRAMES: usize = 250;
+/// The stream's call threshold is this far above its quiet level, dB.
+const STREAM_OPEN_MARGIN_DB: f32 = 8.0;
+/// Keep adaptive thresholds in this range, dBFS.
+const STREAM_MIN_OPEN_DBFS: f32 = -70.0;
+const STREAM_MAX_OPEN_DBFS: f32 = -30.0;
+/// Debug level meter interval, seconds.
+const STREAM_LEVEL_LOG_S: f64 = 10.0;
 /// A call's quiet frames go on being recorded for this long after it was last
 /// loud (the pauses between words), s; after that only the call timeout runs.
 const STREAM_HANG_S: f64 = 0.5;
@@ -669,6 +676,10 @@ struct Stream {
     samples: u64,
     /// Samples short of a frame, for the next push.
     partial: Vec<f32>,
+    /// Recent idle-frame levels (dBFS), used to track the quiet floor.
+    quiet_levels: std::collections::VecDeque<f32>,
+    quiet_dbfs: f32,
+    last_level_log_s: f64,
     /// The air before its call: a pre-roll's worth.
     pre: std::collections::VecDeque<f32>,
     /// When it was last loud, and when its call began to be heard.
@@ -732,7 +743,18 @@ impl Conventional {
         let mut outside = Vec::new();
         let mut groups: Vec<Vec<ConvChannel>> = Vec::new();
         let (streams, channels): (Vec<&ConvChannel>, Vec<&ConvChannel>) = channels.iter().partition(|c| c.mode == ConvMode::Stream);
-        let streams = streams.into_iter().map(|c| Stream { rows: [c.clone()], samples: 0, partial: Vec::new(), pre: Default::default(), loud_s: f64::NEG_INFINITY, opened_s: 0.0, live: None }).collect();
+        let streams = streams.into_iter().map(|c| Stream {
+            rows: [c.clone()],
+            samples: 0,
+            partial: Vec::new(),
+            quiet_levels: Default::default(),
+            quiet_dbfs: -70.0,
+            last_level_log_s: 0.0,
+            pre: Default::default(),
+            loud_s: f64::NEG_INFINITY,
+            opened_s: 0.0,
+            live: None,
+        }).collect();
         for &c in &channels {
             match groups.iter_mut().find(|g| (g[0].freq_hz - c.freq_hz).abs() < 1.0) {
                 Some(g) => g.push(c.clone()),
@@ -902,7 +924,6 @@ impl Conventional {
         let Some(st) = self.streams.get_mut(stream) else { return 0.0 };
         let rules = &CallRules::of(system(st.rows[0].system), capture_frames);
         let max_call_s = if rules.max_call_s > 0.0 { rules.max_call_s } else { STUCK_CALL_S };
-        let open_at = 10f32.powf(STREAM_OPEN_DBFS / 20.0);
         st.partial.extend_from_slice(audio);
         let mut at = 0;
         while st.partial.len() - at >= STREAM_FRAME {
@@ -911,8 +932,30 @@ impl Conventional {
             st.samples += STREAM_FRAME as u64;
             let now_s = st.samples as f64 / fm::AUDIO_RATE;
             let rms = (frame.iter().map(|x| x * x).sum::<f32>() / STREAM_FRAME as f32).sqrt();
-            if !gap && rms > open_at {
+            let level_dbfs = if rms > 0.0 { 20.0 * rms.log10() } else { -120.0 };
+            let open_dbfs = (st.quiet_dbfs + STREAM_OPEN_MARGIN_DB).clamp(STREAM_MIN_OPEN_DBFS, STREAM_MAX_OPEN_DBFS);
+            let loud = !gap && level_dbfs > open_dbfs;
+            if loud {
                 st.loud_s = now_s;
+            } else if !gap && st.live.is_none() {
+                st.quiet_levels.push_back(level_dbfs);
+                if st.quiet_levels.len() > STREAM_LEVEL_WINDOW_FRAMES {
+                    st.quiet_levels.pop_front();
+                }
+                let mut levels = st.quiet_levels.iter().copied().collect::<Vec<_>>();
+                let percentile = levels.len().saturating_sub(1) / 5;
+                let (_, floor, _) = levels.select_nth_unstable_by(percentile, f32::total_cmp);
+                st.quiet_dbfs = *floor;
+                if now_s - st.last_level_log_s >= STREAM_LEVEL_LOG_S {
+                    let row = &st.rows[0];
+                    let label = row.info.as_ref().map(|info| info.alpha_tag.trim()).filter(|name| !name.is_empty()).unwrap_or_else(|| system(row.system).short_name.as_str());
+                    let threshold = (st.quiet_dbfs + STREAM_OPEN_MARGIN_DB).clamp(STREAM_MIN_OPEN_DBFS, STREAM_MAX_OPEN_DBFS);
+                    log::debug!(
+                        "Stream {label}: quiet audio level {level_dbfs:.1} dBFS; quiet floor {:.1} dBFS, call threshold {threshold:.1} dBFS",
+                        st.quiet_dbfs
+                    );
+                    st.last_level_log_s = now_s;
+                }
             }
             if now_s - st.loud_s <= STREAM_HANG_S {
                 let mut h = Heard::default();

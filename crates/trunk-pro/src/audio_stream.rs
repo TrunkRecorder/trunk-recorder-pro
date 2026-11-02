@@ -492,6 +492,11 @@ mod tests {
             [0.5, 0.5]
         );
         assert_eq!(
+            select_channel(&[0.2, 0.2, 0.4, 0.4], 2, Stereo::Mix),
+            [0.2, 0.4],
+            "mixing identical stereo channels preserves their mono level"
+        );
+        assert_eq!(
             select_channel(&[0.4, 0.6], 1, Stereo::Right),
             [0.4, 0.6]
         );

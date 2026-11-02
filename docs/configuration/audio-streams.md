@@ -10,12 +10,18 @@ record (both mixed, left or right; a feed may carry one scanner on each), and th
 calls are filed under. A stream has no frequency to file them under otherwise, so the TG Number is
 required.
 
+The default `stereo: "mix"` averages the left and right channels. If both carry the same audio,
+mixing them preserves its level; choose `left` or `right` only if you need one channel by itself.
+Set `log.level` to `"debug"` (or run with `--log-level debug`) to see periodic quiet-level
+measurements.
+
 Its audio makes calls as a channel's does:
 
-- A call opens when the audio is louder than about −42 dBFS (the stream's stand-in for a
-  carrier), with the conventional pre-roll of audio from before. The pauses between words are
-  kept (half a second after the last loud audio); the call ends after the system's call timeout
-  (`callTimeoutS`) with nothing loud.
+- A call opens when audio rises about 8 dB above the stream's measured quiet level, with the
+  threshold kept between −70 and −30 dBFS. The quiet level is measured from recent idle audio;
+  debug logging reports the level and threshold every 10 seconds during quiet intervals. The
+  conventional pre-roll is kept. Pauses between words are included (half a second after the last
+  loud audio); the call ends after the system's call timeout (`callTimeoutS`) with nothing loud.
 - A call longer than the system's longest call (`maxCallS`) is saved and carries on in a new
   one, as a stuck carrier's would.
 - The call is saved, played live, uploaded and passed to plugins by the system's rules, as any

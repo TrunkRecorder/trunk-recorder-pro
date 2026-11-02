@@ -2409,6 +2409,7 @@ version = "0.3.0"
 dependencies = [
  "aes",
  "des",
+ "log",
  "num-complex",
  "regex-lite",
  "rustfft",
