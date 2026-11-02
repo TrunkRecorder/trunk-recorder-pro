@@ -143,6 +143,8 @@ export interface Channel {
   /** FM / AM: the channel filter's width, kHz (4–20); absent = the mode's (FM 11, AM 11 or 16 from 225 MHz). */
   bandwidthKhz?: number;
   enabled: boolean;
+  /** The sources it may be received on, by label ("RTL-SDR SN 200", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches it. Rows sharing a frequency share them. */
+  receiveOn?: string[];
   /** Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off. */
   autoTune?: boolean;
 }
@@ -217,6 +219,8 @@ export interface System {
   shortName: string;
   /** What people call it ("County Public Safety"); the short name is its folder. */
   name?: string;
+  /** The sources its channels may be received on, by label ("RTL-SDR SN 200", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches them. */
+  receiveOn?: string[];
   /** Its FCC licenses by frequency (control, voice): see FccLicenses. */
   fcc?: FccLicenses;
   /** Share it with the community directory (trunkrecorder.pro/directory): its sites, channels, and the
@@ -775,8 +779,16 @@ export interface SourceStatus {
   /** When it was, Unix seconds. */
   lastErrorS?: number | null;
   ended: boolean;
-  /** Its frequency error, ppm (+: signals come in high): the median of its last control channel and call measurements; null until measured. */
+  /** The settings it runs with (Setup's may have changed since Start: they apply at the next). */
+  settings: Source;
+  /** Its frequency error, ppm (+: signals come in high), against `settings.ppm`: the median of its last control channel and call measurements; null until measured. */
   errorPpm?: number | null;
+  /** Voice channels opened on it this run. */
+  voiceChannels?: number;
+  /** Nothing the config lists needs it (other sources reach all it does, or it was placed alongside them) and no call has used it this run: it can probably be removed. */
+  unused?: boolean;
+  /** The ppm that removes `errorPpm` (`settings.ppm` less it, as the radio takes it: an RTL-SDR whole ppm); null until measured. */
+  ppmApply?: number | null;
   /** The radio's crystal error, measured from its sample clock against this computer's clock, ppm (+: fast); null until measured (about 10 s). */
   clockPpm?: number | null;
   /** The correction autoTune applies now, ppm. */

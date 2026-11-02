@@ -2,7 +2,7 @@
 // config, the dongles and the drivers say), what each asks, and the setup
 // field it points at. An item closes by itself once its field is filled in.
 
-import { formatMhz, resolvedCenters, siteNameOf, SOURCE_KINDS, sourceCovering, type ImportTodo } from "./config.ts";
+import { formatMhz, receiverOf, siteNameOf, SOURCE_KINDS, type ImportTodo } from "./config.ts";
 import type { AppState } from "./controller.ts";
 
 export interface OpenTodo {
@@ -104,8 +104,7 @@ export function openTodos(s: AppState): OpenTodo[] {
         const sys = c.systems.find((x) => x.shortName === item.system);
         const sites = sys?.enabled ? sys.sites.filter((x) => x.enabled && x.controlChannelsHz.length) : [];
         if (!sys || !sites.length) break;
-        const centers = resolvedCenters(c);
-        if (sites.some((x) => x.controlChannelsHz.some((f) => sourceCovering(c, centers, f) >= 0))) break;
+        if (sites.some((x) => x.controlChannelsHz.some((f) => receiverOf(c, sys.shortName, f) >= 0))) break;
         const ccs = sites.flatMap((x) => x.controlChannelsHz);
         out.push({
           item,

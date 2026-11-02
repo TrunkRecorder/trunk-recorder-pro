@@ -812,6 +812,13 @@
         "enabled": {
           "type": "boolean"
         },
+        "receiveOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The sources it may be received on, by label (\"RTL-SDR SN 200\", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches it. Rows sharing a frequency share them."
+        },
         "autoTune": {
           "type": "boolean",
           "description": "Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off."
@@ -6871,12 +6878,31 @@
         "ended": {
           "type": "boolean"
         },
+        "settings": {
+          "$ref": "#/definitions/Source",
+          "description": "The settings it runs with (Setup's may have changed since Start: they apply at the next)."
+        },
         "errorPpm": {
           "type": [
             "number",
             "null"
           ],
-          "description": "Its frequency error, ppm (+: signals come in high): the median of its last control channel and call measurements; null until measured."
+          "description": "Its frequency error, ppm (+: signals come in high), against `settings.ppm`: the median of its last control channel and call measurements; null until measured."
+        },
+        "voiceChannels": {
+          "type": "number",
+          "description": "Voice channels opened on it this run."
+        },
+        "unused": {
+          "type": "boolean",
+          "description": "Nothing the config lists needs it (other sources reach all it does, or it was placed alongside them) and no call has used it this run: it can probably be removed."
+        },
+        "ppmApply": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The ppm that removes `errorPpm` (`settings.ppm` less it, as the radio takes it: an RTL-SDR whole ppm); null until measured."
         },
         "clockPpm": {
           "type": [
@@ -6903,7 +6929,8 @@
         "dropped",
         "errors",
         "lastError",
-        "ended"
+        "ended",
+        "settings"
       ],
       "additionalProperties": false
     },
@@ -7792,6 +7819,13 @@
         "name": {
           "type": "string",
           "description": "What people call it (\"County Public Safety\"); the short name is its folder."
+        },
+        "receiveOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The sources its channels may be received on, by label (\"RTL-SDR SN 200\", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches them."
         },
         "fcc": {
           "$ref": "#/definitions/FccLicenses",

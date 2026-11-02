@@ -36,7 +36,7 @@ ARM64, glibc 2.28 or newer, including the **Raspberry Pi** 4 and 5 with a 64-bit
 **Windows** 10 and 11 (64-bit), **Docker** on Linux, and **Chrome or Edge** for the browser
 version.
 
-...and SDRs: RTL-SDR dongles (R820T / R828D tuners natively, older tuners through SoapySDR), Ettus
+...and SDRs: RTL-SDR dongles (R820T / R828D / E4000 tuners natively, other older tuners through SoapySDR), Ettus
 USRPs through UHD, HackRF One (natively), Airspy R2 and Mini, and anything else with a SoapySDR module (SDRplay,
 LimeSDR...).
 

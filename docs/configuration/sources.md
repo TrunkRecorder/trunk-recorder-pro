@@ -97,8 +97,11 @@ changes only the tuner; the samples the chip dropped meanwhile (it counts them i
 as dropped. A USB stall is cleared in place, without reopening the dongle.
 
 The native driver handles R820T and R828D tuners (the RTL-SDR Blog V3 and V4, and most current
-dongles). For an older dongle with an E4000, FC0012, FC0013 or FC2580 tuner, use a `soapy` source
-with `"args": "driver=rtlsdr"`; see [other radios](../install/other-radios.md).
+dongles) and the older Elonics E4000. The E4000 runs at zero IF, so a small DC spike sits at the
+center frequency (keep a control channel off it); a manual `gain` is the nearest of its steps
+from -1 to 42 dB, and manual gain is better than AGC, which sits low. It can't tune about
+1090–1230 MHz. For a dongle with an FC0012, FC0013 or FC2580 tuner, use a `soapy` source with
+`"args": "driver=rtlsdr"`; see [other radios](../install/other-radios.md).
 
 Two dongles with the same serial can't be told apart. Give each its own with `rtl_eeprom -s`.
 

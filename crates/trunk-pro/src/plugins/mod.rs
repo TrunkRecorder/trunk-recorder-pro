@@ -175,53 +175,160 @@ pub fn executable_name(id: &str) -> String {
     }
 }
 
+/// How long `--describe` may take, try by try. The SDK prints the manifest
+/// straight away, but a busy machine (one just booted, its disk cold) can be
+/// slow to start a process, so one that runs out is asked again, for longer.
+const DESCRIBE_LIMITS: [Duration; 2] = [Duration::from_secs(10), Duration::from_secs(30)];
+
+/// Why an executable gave no manifest. `timed_out`: `--describe` didn't
+/// finish, which says more about the machine than the plugin: worth asking
+/// again later, not remembering.
+#[derive(Debug, Clone)]
+pub struct DescribeError {
+    pub text: String,
+    pub timed_out: bool,
+}
+
 /// Ask an executable for its manifest (`--describe`), and check that this
 /// recorder can run it.
 pub fn describe(exe: &Path) -> Result<Manifest, String> {
+    try_describe(exe).map_err(|e| e.text)
+}
+
+/// [`describe`], saying whether it failed by running out of time.
+pub fn try_describe(exe: &Path) -> Result<Manifest, DescribeError> {
+    let fail = |text: String| DescribeError { text, timed_out: false };
+    let mut late = Vec::new();
+    let (status, out, err) = loop {
+        match run_describe(exe, DESCRIBE_LIMITS[late.len()]) {
+            Ok(r) => break r,
+            Err(Run::Failed(e)) => return Err(fail(format!("{}: {e}", exe.display()))),
+            Err(Run::TimedOut(what)) => {
+                late.push(what);
+                if late.len() == DESCRIBE_LIMITS.len() {
+                    let text = format!("{}: --describe didn't finish ({}; {})", exe.display(), late.join("; asked again, "), machine_state());
+                    return Err(DescribeError { text, timed_out: true });
+                }
+            }
+        }
+    };
+    if !late.is_empty() {
+        log::warn!("{}: --describe didn't finish the first time ({}; {}); it did when asked again", exe.display(), late.join("; "), machine_state());
+    }
+    if !status.success() {
+        return Err(fail(format!("{}: --describe failed ({status}){}", exe.display(), said(&err))));
+    }
+    let m: Manifest = serde_json::from_str(&out).map_err(|e| fail(format!("{}: not a plugin manifest ({e}){}", exe.display(), said(&err))))?;
+    if m.id.is_empty() {
+        return Err(fail(format!("{}: its manifest has no id", exe.display())));
+    }
+    // The host speaks API_VERSION only. Plugins built for an older API are
+    // accepted because there is only one so far: when API_VERSION goes up,
+    // the host must speak each plugin's own `api` (or refuse older ones here).
+    if m.api == 0 {
+        return Err(fail(format!("{}: its manifest doesn't say which plugin API it speaks (\"api\"; this recorder has {API_VERSION})", m.id)));
+    }
+    if m.api > API_VERSION {
+        return Err(fail(format!("{} needs plugin API {}; this recorder has {API_VERSION} — update Trunk Recorder Pro", m.id, m.api)));
+    }
+    Ok(m)
+}
+
+/// How one run of `--describe` went wrong.
+enum Run {
+    /// It couldn't be started, or waited on.
+    Failed(String),
+    /// It ran past its limit and was killed: what it had done by then.
+    TimedOut(String),
+}
+
+/// Run `exe --describe` for at most `limit`: its exit status, stdout and stderr.
+fn run_describe(exe: &Path, limit: Duration) -> Result<(std::process::ExitStatus, String, String), Run> {
+    let t0 = Instant::now();
     let mut child = Command::new(exe)
         .arg("--describe")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("{}: {e}", exe.display()))?;
-    let mut out = String::new();
-    let reader = child.stdout.take().map(|mut o| {
-        std::thread::spawn(move || {
-            let _ = o.read_to_string(&mut out);
-            out
-        })
-    });
-    let t0 = Instant::now();
+        .map_err(|e| Run::Failed(e.to_string()))?;
+    let spawned = t0.elapsed();
+    // Both pipes are read as it goes, so neither can fill and stall it, and
+    // what came is there even if something it started keeps a pipe open.
+    type Pipe = (std::sync::Arc<std::sync::Mutex<Vec<u8>>>, std::sync::mpsc::Receiver<()>);
+    let read = |pipe: Option<Box<dyn Read + Send>>| -> Pipe {
+        let (buf, (tx, rx)) = (std::sync::Arc::new(std::sync::Mutex::new(Vec::new())), std::sync::mpsc::channel());
+        if let Some(mut p) = pipe {
+            let buf = buf.clone();
+            std::thread::spawn(move || {
+                let mut b = [0u8; 4096];
+                while let Ok(n @ 1..) = p.read(&mut b) {
+                    buf.lock().unwrap().extend_from_slice(&b[..n]);
+                }
+                let _ = tx.send(());
+            });
+        }
+        (buf, rx)
+    };
+    let out = read(child.stdout.take().map(|p| Box::new(p) as _));
+    let err = read(child.stderr.take().map(|p| Box::new(p) as _));
+    // (The end of each pipe, waited on until `by`: not for whatever still holds one.)
+    let got = |(buf, done): Pipe, by: Instant| {
+        let _ = done.recv_timeout(by.saturating_duration_since(Instant::now()));
+        let b = buf.lock().unwrap();
+        String::from_utf8_lossy(&b).into_owned()
+    };
     let status = loop {
-        if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
+        if let Some(s) = child.try_wait().map_err(|e| Run::Failed(e.to_string()))? {
             break s;
         }
-        if t0.elapsed() > Duration::from_secs(10) {
+        if t0.elapsed() > limit {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("{}: --describe didn't finish", exe.display()));
+            let by = Instant::now() + Duration::from_secs(1);
+            let (out, err) = (got(out, by), got(err, by));
+            let printed = match out.len() {
+                0 => "it printed nothing".to_string(),
+                n => format!("it printed {n} bytes but didn't exit"),
+            };
+            return Err(Run::TimedOut(format!("killed after {:.1} s, started in {:.2} s, {printed}{}", limit.as_secs_f64(), spawned.as_secs_f64(), said(&err))));
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let out = reader.and_then(|r| r.join().ok()).unwrap_or_default();
-    if !status.success() {
-        return Err(format!("{}: --describe failed ({status})", exe.display()));
+    let by = Instant::now() + Duration::from_secs(1);
+    Ok((status, got(out, by), got(err, by)))
+}
+
+/// What a plugin wrote to stderr, the end of it, to add to an error ("" for nothing).
+fn said(stderr: &str) -> String {
+    let s = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.is_empty() {
+        return String::new();
     }
-    let m: Manifest = serde_json::from_str(&out).map_err(|e| format!("{}: not a plugin manifest ({e})", exe.display()))?;
-    if m.id.is_empty() {
-        return Err(format!("{}: its manifest has no id", exe.display()));
+    let n = s.chars().count();
+    let tail: String = s.chars().skip(n.saturating_sub(300)).collect();
+    format!("; it said \"{}{tail}\"", if n > 300 { "…" } else { "" })
+}
+
+/// How busy the machine is, for errors that may be its fault: load and
+/// uptime where the system says (Linux), the CPU count everywhere.
+fn machine_state() -> String {
+    let cpus = std::thread::available_parallelism().map_or(0, |n| n.get());
+    let load = std::fs::read_to_string("/proc/loadavg").ok().map(|l| l.split_whitespace().take(3).collect::<Vec<_>>().join(" "));
+    let up = std::fs::read_to_string("/proc/uptime").ok().and_then(|u| u.split_whitespace().next()?.parse::<f64>().ok());
+    let mut s = format!("{cpus} CPUs");
+    if let Some(l) = load {
+        s += &format!(", load average {l}");
     }
-    // The host speaks API_VERSION only. Plugins built for an older API are
-    // accepted because there is only one so far: when API_VERSION goes up,
-    // the host must speak each plugin's own `api` (or refuse older ones here).
-    if m.api == 0 {
-        return Err(format!("{}: its manifest doesn't say which plugin API it speaks (\"api\"; this recorder has {API_VERSION})", m.id));
+    if let Some(u) = up {
+        let u = u as u64;
+        s += &match u {
+            0..=119 => format!(", the system up {u} s"),
+            120..=7199 => format!(", the system up {} min", u / 60),
+            _ => format!(", the system up {} h", u / 3600),
+        };
     }
-    if m.api > API_VERSION {
-        return Err(format!("{} needs plugin API {}; this recorder has {API_VERSION} — update Trunk Recorder Pro", m.id, m.api));
-    }
-    Ok(m)
+    s
 }
 
 /// Every system calls can come from, as plugins know them (settings not filled in).
@@ -418,5 +525,33 @@ mod tests {
         assert_eq!(copy_label("openmhz", 1), "openmhz#2");
         assert_eq!(parse_label("openmhz#2"), ("openmhz", 1));
         assert_eq!(parse_label("openmhz"), ("openmhz", 0));
+    }
+
+    /// A plugin that hangs on `--describe` is killed at the limit, and the
+    /// error says what it had done (printed, said on stderr); one that fails
+    /// says what it said too.
+    #[cfg(unix)]
+    #[test]
+    fn describe_says_what_the_plugin_did() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-describe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let hangs = script("hangs", "echo '{\"id\":'; echo 'waiting on something' >&2; sleep 5");
+        let t0 = Instant::now();
+        let Err(Run::TimedOut(what)) = run_describe(&hangs, Duration::from_secs(2)) else { panic!("it should time out") };
+        assert!(t0.elapsed() < Duration::from_secs(4), "killed, not waited out");
+        assert!(what.contains("killed after") && what.contains("printed 7 bytes but didn't exit"), "{what}");
+        assert!(what.contains("it said \"waiting on something\""), "{what}");
+        let fails = script("fails", "echo 'no config here' >&2; exit 3");
+        let e = try_describe(&fails).unwrap_err();
+        assert!(!e.timed_out && e.text.contains("--describe failed") && e.text.contains("it said \"no config here\""), "{}", e.text);
+        assert!(machine_state().contains("CPUs"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

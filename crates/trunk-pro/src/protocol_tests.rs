@@ -240,6 +240,24 @@ fn autotune_starts_from_the_saved_score() {
     let status = msgs.iter().find(|m| m["type"] == "status").expect("a status");
     let src = &status["sources"][0];
     assert_eq!((src["tunePpm"].as_f64(), src["tuneSeeded"].as_bool()), (Some(4.0), Some(true)), "{src}");
+    // The settings it runs with; no ppm to set until something is measured.
+    assert_eq!((src["settings"]["ppm"].as_f64(), src["settings"]["autoTune"].as_bool()), (Some(2.0), Some(true)), "{src}");
+    assert!(src["ppmApply"].is_null(), "{src}");
+}
+
+/// A source the config's channels don't need, and no call has used, says so.
+#[test]
+fn a_source_nothing_needs_is_unused() {
+    let mut cfg = conventional_config();
+    let spare: trunk_app::config::Source = serde_json::from_value(json!({ "type": "rtlsdr", "serial": "2", "centerHz": 460000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 })).unwrap();
+    cfg.sources.push(spare);
+    let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+    let (mut out, mut msgs) = (Vec::new(), Vec::new());
+    s.poll(1.75e12, &mut out);
+    texts(&mut out, &mut msgs);
+    let status = msgs.iter().find(|m| m["type"] == "status").expect("a status");
+    let unused: Vec<_> = status["sources"].as_array().unwrap().iter().map(|x| x["unused"].as_bool()).collect();
+    assert_eq!(unused, [Some(false), Some(true)], "{status}");
 }
 
 /// Without subscriptions, the costly messages aren't made.
