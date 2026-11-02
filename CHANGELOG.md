@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A plugin slow to describe itself is asked again, not written off.** On a busy or just-booted
+  machine a plugin can take longer than 10 s to answer `--describe`; it's now asked again with 30 s,
+  and a run out of time isn't remembered (it's asked once more next time) as a broken plugin was
+  until it changed. When it fails, the message says what it printed and wrote to stderr, and how
+  busy the machine was (CPUs; on Linux the load average and uptime).
 - **RTL-SDR dongles with an Elonics E4000 tuner open natively.** The built-in driver
   (`rtlsdr-nusb`) now drives the E4000 as well as the R820T and R828D, so these dongles no longer
   need a SoapySDR source. It runs the E4000 at zero IF, as librtlsdr does; its IF filters follow

@@ -26,3 +26,4 @@ research/cpu-vs-trunk-recorder
 
 # docker compose: settings, plugins and recordings
 /data/
+.wrangler/cache/wrangler-account.json
