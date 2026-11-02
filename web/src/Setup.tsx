@@ -24,6 +24,8 @@ import {
   newSiteName,
   newSystem,
   resolvedCenters,
+  runningSource,
+  autoTuneOn,
   sameOnTheAir,
   siteActive,
   siteNameOf,
@@ -723,16 +725,16 @@ function UsbTransfers(props: { src: Extract<Source, { type: "rtlsdr" }>; edit: E
 
 /**
  * AutoTune (Trunk Recorder's): correct the source's channels for the error its
- * control channels show. While recording, what was measured, and the ppm that
- * would remove it.
+ * control channels show. While recording, what was measured on its radio, and
+ * the ppm that would remove it — the recorder's, against the ppm the radio
+ * runs with, so setting it twice doesn't move it twice.
  */
-function AutoTune(props: { src: Source; i: number; edit: EditSource }) {
-  const { src, i, edit } = props;
-  const st = useApp().sources.find((x) => x.index === i);
+function AutoTune(props: { c: Config; src: Source; i: number; edit: EditSource }) {
+  const { c, src, i, edit } = props;
+  const s = useApp();
+  const st = runningSource(s.sources, c.sources, i);
   const err = st?.errorPpm ?? null;
-  const ppm = src.type === "file" ? null : src.ppm;
-  // Measured against the ppm set now: setting ppm − error removes it.
-  const better = err !== null && ppm !== null ? (src.type === "rtlsdr" ? Math.round(ppm - err) : Math.round((ppm - err) * 10) / 10) : null;
+  const apply = src.type !== "file" && err !== null && Math.abs(err) >= 0.3 ? st?.ppmApply ?? null : null;
   return (
     <div className="field wide">
       <Toggle
@@ -746,17 +748,21 @@ function AutoTune(props: { src: Source; i: number; edit: EditSource }) {
           })
         }
       />
-      {err !== null && (
+      {st && err !== null && (
         <span className="field-hint">
-          Measured error: <span className="mono">{err >= 0 ? "+" : ""}{err.toFixed(2)} ppm</span>
-          {src.autoTune && st?.tunePpm !== undefined && <> · corrected by <span className="mono">{st.tunePpm >= 0 ? "+" : ""}{st.tunePpm.toFixed(2)} ppm</span></>}
-          {better !== null && better !== ppm && Math.abs(err) >= 0.3 && (
+          Measured error: <span className="mono">{signedPpm(err)} ppm</span>
+          {autoTuneOn(st.settings) && st.tunePpm !== undefined && <> · corrected by <span className="mono">{signedPpm(st.tunePpm)} ppm</span></>}
+          {apply !== null && src.type !== "file" && apply !== st.settings.ppm && (
             <>
               {" "}
               ·{" "}
-              <button className="btn ghost small" onClick={() => edit((x) => x.type !== "file" && void (x.ppm = better))}>
-                Set correction to {better} ppm
-              </button>
+              {src.ppm === apply ? (
+                <>correction set to {apply} ppm, from the next Start</>
+              ) : (
+                <button className="btn ghost small" onClick={() => edit((x) => x.type !== "file" && void (x.ppm = apply))}>
+                  Set correction to {apply} ppm
+                </button>
+              )}
             </>
           )}
         </span>
@@ -764,6 +770,8 @@ function AutoTune(props: { src: Source; i: number; edit: EditSource }) {
     </div>
   );
 }
+
+const signedPpm = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
 
 /**
  * A gain slider: moves as it's dragged, saved once it's let go (the pointer
@@ -1300,7 +1308,7 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
       )}
       <Group title="Frequency correction" hint="Its crystal's error, so channels land where they should.">
         {src.type !== "file" && <PpmField src={src} edit={edit} />}
-        <AutoTune src={src} i={i} edit={edit} />
+        <AutoTune c={c} src={src} i={i} edit={edit} />
       </Group>
     </Card>
   );

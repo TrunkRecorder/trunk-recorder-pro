@@ -31,7 +31,7 @@ use super::hold::Hold;
 use super::host::Notes;
 use super::store::{self, Catalog};
 use crate::store::Shelf;
-use super::{describe, executable, plugins_dir, Archive, Encoder, Note, PluginHost, Spec};
+use super::{executable, plugins_dir, try_describe, DescribeError, Archive, Encoder, Note, PluginHost, Spec};
 use crate::config::{Config, PluginSetup};
 use crate::runtime::{publish, Hub};
 
@@ -281,9 +281,12 @@ impl Plugins {
                 return m.clone();
             }
         }
-        let m = if exe.is_file() { describe(exe) } else { Err(format!("{} isn't there", exe.display())) };
-        self.manifests.lock().unwrap().insert(exe.to_path_buf(), (mtime, m.clone()));
-        m
+        let m = if exe.is_file() { try_describe(exe) } else { Err(DescribeError { text: format!("{} isn't there", exe.display()), timed_out: false }) };
+        // (Not finishing in time is the machine's state, not the build's: asked again next time.)
+        if !matches!(&m, Err(e) if e.timed_out) {
+            self.manifests.lock().unwrap().insert(exe.to_path_buf(), (mtime, m.clone().map_err(|e| e.text)));
+        }
+        m.map_err(|e| e.text)
     }
 
     /// The `plugins` message: what's installed and what each is. (Their

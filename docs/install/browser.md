@@ -54,8 +54,8 @@ The browser has to be allowed to open the dongle, the same as any SDR program:
   `sudo rmmod dvb_usb_rtl28xxu` (or blacklist it so it never loads).
 - **macOS:** nothing to do. Quit any other SDR program that holds the dongle.
 
-Only dongles with an **R820T or R828D** tuner work in the browser (nearly all of them; the RTL-SDR
-Blog V3 and V4 included). Older E4000, FC0012, FC0013 and FC2580 dongles can only be used by the
+Dongles with an **R820T, R828D or E4000** tuner work in the browser (nearly all of them; the
+RTL-SDR Blog V3 and V4 included). Older FC0012, FC0013 and FC2580 dongles can only be used by the
 desktop app, through SoapySDR.
 
 ## Hosting it yourself
@@ -108,7 +108,7 @@ is in front: switch tabs or apps on a phone and the browser may pause it.
 
 Compared with the desktop app, the browser version:
 
-- drives **RTL-SDRs only** (R820T / R828D). There are no USRP, Airspy or SoapySDR sources;
+- drives **RTL-SDRs only** (R820T / R828D / E4000). There are no USRP, Airspy or SoapySDR sources;
 - has **no plugins**, so nothing is uploaded (no OpenMHz, Broadcastify and so on) and there is no
   **Plugins** page;
 - makes **no M4A files**, keeps no log files, and has no RAM spool;

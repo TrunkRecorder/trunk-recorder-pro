@@ -42,7 +42,8 @@ impl SampleMode for F32Iq {
 }
 
 /// Tuner gain policy. Manual gain is approximate, using the reference driver's
-/// measured 2.3 dB LNA and 1.2 dB mixer steps with a fixed VGA setting.
+/// measured 2.3 dB LNA and 1.2 dB mixer steps with a fixed VGA setting. On an
+/// E4000 it is librtlsdr's nearest LNA + mixer step (-1 to 42 dB; above 42: 42).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum GainConfig {
     /// Let the tuner control LNA and mixer gain automatically.

@@ -409,8 +409,8 @@ pub struct Status {
     /// Each system being recorded (a trunked one with a site running, a
     /// conventional one with channels), in order; its sites are in `sites`.
     pub systems: Vec<SystemStatus>,
-    /// Each source's frequency error, as measured and as corrected.
-    pub sources: Vec<SourceTune>,
+    /// Each source's frequency error, as measured and as corrected, and its voice channels.
+    pub sources: Vec<SourceReport>,
 }
 
 /// A system being recorded, trunked or conventional, as [`Engine::status`] reports it.
@@ -498,9 +498,9 @@ fn slice_at(p: &[f64], s: &Source, hz: f64) -> f64 {
     p[floor_slice(p.len(), s.cfg().rate_hz, hz - s.cfg().center_hz)]
 }
 
-/// A source's frequency error (Trunk Recorder's autoTune report).
+/// A source's frequency error (Trunk Recorder's autoTune report), and what it was used for.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SourceTune {
+pub struct SourceReport {
     /// Its running score, ppm, against the source's ppm as set (+ = signals
     /// come in high): setting the source's ppm to `ppm − error_ppm` removes it
     /// (as Setup suggests). The median of its last measurements, control
@@ -510,6 +510,8 @@ pub struct SourceTune {
     pub applied_ppm: f64,
     /// The correction comes from an earlier run's score (nothing measured yet).
     pub seeded: bool,
+    /// Voice channels opened on it this run.
+    pub voice_channels: u64,
 }
 
 /// Measurements kept, control channels' and calls' together (Trunk Recorder
@@ -558,6 +560,8 @@ struct Source {
     seed: Option<f64>,
     /// The correction new channels get, ppm.
     tune_ppm: f64,
+    /// Voice channels opened on it this run.
+    voice_channels: u64,
     /// Being fed silence for samples that never came ([`Engine::push_gap`]).
     in_gap: bool,
     /// u8 IQ: an I byte whose Q comes in the next buffer.
@@ -570,7 +574,7 @@ struct Source {
 impl Source {
     fn new(cfgs: &Arc<[SourceConfig]>, index: usize, history_s: f64) -> Source {
         let rate = cfgs[index].rate_hz;
-        Source { cfgs: cfgs.clone(), index, chz: Channelizer::new(rate, MIN_CHANNEL_RATE, history_s), errors: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }
+        Source { cfgs: cfgs.clone(), index, chz: Channelizer::new(rate, MIN_CHANNEL_RATE, history_s), errors: VecDeque::new(), seed: None, tune_ppm: 0.0, voice_channels: 0, in_gap: false, half: None, clock_offset_s: 0.0 }
     }
     /// Its settings.
     fn cfg(&self) -> &SourceConfig {
@@ -944,6 +948,7 @@ impl SysHost<'_> {
             rx.src.chz.remove_head(old.head);
         }
         let s = &mut rx.src;
+        s.voice_channels += 1;
         let rate = s.chz.output_rate();
         let cutoff = kind.cutoff_hz();
         let tuning = s.tuning();
@@ -2438,7 +2443,7 @@ impl Engine {
             .iter()
             .map(|r| {
                 let s = &r.lock().unwrap().src;
-                SourceTune { error_ppm: s.error_ppm(), applied_ppm: s.tune_ppm, seeded: s.seed.is_some() && s.errors.is_empty() }
+                SourceReport { error_ppm: s.error_ppm(), applied_ppm: s.tune_ppm, seeded: s.seed.is_some() && s.errors.is_empty(), voice_channels: s.voice_channels }
             })
             .collect();
         st

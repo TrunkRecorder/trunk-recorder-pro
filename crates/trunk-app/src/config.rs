@@ -14,6 +14,7 @@ use trunk_core::trunk::{
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
+use crate::place::{listed_reached, place_sources, Placing, Targets, Weighted};
 
 /// A source: the radio or capture it reads ([`SourceKind`]), where and how fast.
 /// Stored flat — `{"type": "rtlsdr", "serial": "…", "centerHz": …}` — the
@@ -242,10 +243,35 @@ impl SampleFormat {
     }
 }
 
+/// Where a source goes ([`Config::placement`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
+    /// Its centre, Hz (0: nothing to place it by).
+    pub center_hz: f64,
+    /// The frequencies the config lists that it is the first to reach.
+    pub listed: usize,
+}
+
 impl Source {
     /// How far from its centre a channel may be, Hz.
     pub fn usable_half_width(&self) -> f64 {
         usable_half_width(self.rate_hz, self.guard_hz)
+    }
+    /// Whether tuned to `center` it reaches `hz`.
+    pub fn reaches(&self, center: f64, hz: f64) -> bool {
+        self.placing().reaches(center, hz)
+    }
+    /// `ppm` as it can be set on it: an RTL-SDR takes whole ppm, the others hundredths.
+    pub fn settable_ppm(&self, ppm: f64) -> f64 {
+        if matches!(self.kind, SourceKind::Rtlsdr { .. }) {
+            ppm.round()
+        } else {
+            (ppm * 100.0).round() / 100.0
+        }
+    }
+    /// It to place: its centre stays when set.
+    pub fn placing(&self) -> Placing {
+        Placing { rate_hz: self.rate_hz, guard_hz: self.guard_hz, fixed_hz: (self.center_hz > 0.0).then_some(self.center_hz) }
     }
     /// Whether the two may open the same radio (one program at a time can):
     /// of a kind and naming one device, or either "the first found". (A
@@ -2371,46 +2397,44 @@ impl Config {
         self.active_sites().nth(site as usize)
     }
 
-    /// Each source's centre: as set, or (0 = auto) placed over what the
-    /// sources before it don't cover yet — every system (control and known
-    /// voice channels) and the conventional channels if they fit together,
-    /// else the control and conventional channels, else the first uncovered
-    /// system, else its control channels alone.
+    /// Each source's centre: as set, or (0 = auto) where [`place_sources`]
+    /// puts it — over a site's control channels (or a conventional system's
+    /// channels) not reached yet, then the most channels still out of reach,
+    /// else alongside the others; 0 when there's nothing to place it by.
     pub fn resolved_centers(&self) -> Vec<f64> {
-        // Groups to cover: (all its channels, the ones it can't do without).
-        let mut groups: Vec<(Vec<f64>, Vec<f64>)> = self
-            .active_sites()
-            .map(|(sys, s)| {
-                // A DMR / NXDN site's watched frequencies are all needed.
-                let watched = s.watched_channels(sys);
-                let need: Vec<f64> = s.control_channels_hz.iter().chain(&watched).copied().collect();
-                (need.iter().chain(&s.voice_channels_hz).copied().collect(), need)
-            })
-            .collect();
+        self.placement().into_iter().map(|p| p.center_hz).collect()
+    }
+
+    /// Each source's centre ([`Config::resolved_centers`]) and how many of
+    /// the frequencies the config lists it is the first to reach (where the
+    /// engine opens them): 0 for one nothing listed needs.
+    pub fn placement(&self) -> Vec<Placed> {
+        let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
+        let t = self.targets();
+        let centers = place_sources(&sources, &t);
+        let listed = listed_reached(&sources, &centers, &t);
+        centers.iter().zip(listed).map(|(c, listed)| Placed { center_hz: c.unwrap_or(0.0), listed }).collect()
+    }
+
+    /// What the radios are placed to reach: each active site's control (and
+    /// watched) channels, one of which it needs, and its voice channels; each
+    /// conventional system's channels, one of which it needs.
+    pub fn targets(&self) -> Targets {
+        let mut t = Targets::default();
+        let mut add = |need: Vec<f64>, more: &[f64]| {
+            t.channels.extend(need.iter().chain(more).map(|&hz| Weighted { hz, weight: 1.0 }));
+            t.needs.push(need);
+        };
+        for (sys, s) in self.active_sites() {
+            add(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), &s.voice_channels_hz);
+        }
         for v in self.conventional.iter().filter(|v| v.enabled) {
             let conv: Vec<f64> = v.channels.iter().filter(|c| c.enabled).map(|c| c.freq_hz).filter(|&f| f > 0.0).collect();
             if !conv.is_empty() {
-                groups.push((conv.clone(), conv));
+                add(conv, &[]);
             }
         }
-        let mut centers: Vec<f64> = self.sources.iter().map(|s| s.center_hz).collect();
-        let covered = |centers: &[f64], f: f64| self.sources.iter().zip(centers).any(|(s, &c)| c > 0.0 && (f - c).abs() <= s.usable_half_width());
-        for i in 0..self.sources.len() {
-            if centers[i] > 0.0 {
-                continue;
-            }
-            let open: Vec<&(Vec<f64>, Vec<f64>)> = groups.iter().filter(|(_, need)| !need.iter().any(|&f| covered(&centers, f))).collect();
-            let Some(first) = open.first() else { break };
-            let (rate, guard) = (self.sources[i].rate_hz, self.sources[i].guard_hz);
-            let all: Vec<f64> = open.iter().flat_map(|g| g.0.iter().copied()).collect();
-            let needed: Vec<f64> = open.iter().flat_map(|g| g.1.iter().copied()).collect();
-            centers[i] = auto_center(&all, rate, guard)
-                .or_else(|| auto_center(&needed, rate, guard))
-                .or_else(|| auto_center(&first.0, rate, guard))
-                .or_else(|| auto_center(&first.1, rate, guard))
-                .unwrap_or(0.0);
-        }
-        centers
+        t
     }
 
     /// A short name is a system's identity — its folder, its band plan and
@@ -2496,7 +2520,7 @@ impl Config {
                 i + 1
             ));
         }
-        let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= s.usable_half_width());
+        let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| s.reaches(c, f));
         for (sys, s) in self.active_sites() {
             // "dcfd", or "dcfd (site south)" for a site with its own name.
             let key = trunk_core::trunk::SiteKey { system: &sys.short_name, site: sys.site_name(s) };
@@ -2656,96 +2680,6 @@ pub fn talkgroups_of(rows: &[trunk_core::trunk::TalkgroupRow]) -> trunk_core::tr
 /// the config (in `dir`).
 pub fn talkgroups_path(dir: &Path, short_name: &str) -> PathBuf {
     dir.join(format!("{short_name}.talkgroups.csv"))
-}
-
-/// A centre that puts every control channel inside one source (and off the
-/// DC spike), or None if they span too much.
-pub fn auto_center(ccs: &[f64], rate_hz: f64, guard_hz: f64) -> Option<f64> {
-    if ccs.is_empty() {
-        return None;
-    }
-    let lo = ccs.iter().copied().fold(f64::INFINITY, f64::min);
-    let hi = ccs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let half = usable_half_width(rate_hz, guard_hz);
-    if hi - lo > 2.0 * half - 50_000.0 {
-        return None;
-    }
-    let mid = ((lo + hi) / 2.0 / 1000.0).round() * 1000.0;
-    off_dc(mid, ccs, |c| ccs.iter().all(|f| (f - c).abs() <= half - 10_000.0))
-}
-
-/// How far a channel is kept from a source's centre (its DC spike).
-const DC_CLEAR_HZ: f64 = 25_000.0;
-
-/// `c` off the DC spike: moved to either side in widening 12.5 kHz steps
-/// until no channel of `hz` is within [`DC_CLEAR_HZ`] of it and `keep(c)`
-/// (what it must still reach). None if 40 steps don't find one. Every
-/// centre the recorder or Setup picks goes through this.
-fn off_dc(mut c: f64, hz: &[f64], keep: impl Fn(f64) -> bool) -> Option<f64> {
-    for step in 0..=40 {
-        if hz.iter().all(|f| (f - c).abs() >= DC_CLEAR_HZ) && keep(c) {
-            return Some(c);
-        }
-        c += if step % 2 == 1 { -1.0 } else { 1.0 } * 12_500.0 * (step + 1) as f64;
-    }
-    None
-}
-
-/// A source to place ([`plan_centers`]): its rate and guard, and its centre
-/// if it can't be moved (a capture file).
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Placing {
-    pub rate_hz: f64,
-    #[serde(default = "guard_default")]
-    pub guard_hz: f64,
-    #[serde(default)]
-    pub fixed_hz: Option<f64>,
-}
-
-/// Where to tune each source for a system found on the air (Setup's
-/// first-run guide): source `first` at `first_center` (it covers the control
-/// channels `ccs`), each other over the busiest voice channels (`voice`: Hz
-/// and calls seen) still out of reach, or, when every one is reached,
-/// alongside `first` on the side with more of the system. A fixed source
-/// stays; every centre is off the DC spike as [`auto_center`]'s are.
-pub fn plan_centers(sources: &[Placing], first: usize, first_center: f64, ccs: &[f64], voice: &[(f64, f64)]) -> Vec<Option<f64>> {
-    let half = |s: &Placing| usable_half_width(s.rate_hz, s.guard_hz);
-    let mut out: Vec<Option<f64>> = sources.iter().map(|s| s.fixed_hz).collect();
-    if let Some(o) = out.get_mut(first) {
-        o.get_or_insert(first_center);
-    }
-    let all: Vec<f64> = ccs.iter().copied().chain(voice.iter().map(|v| v.0)).collect();
-    for k in 0..sources.len() {
-        if out[k].is_some() {
-            continue;
-        }
-        let h = half(&sources[k]);
-        let reached = |hz: f64| out.iter().zip(sources).any(|(c, s)| c.is_some_and(|c| (hz - c).abs() <= half(s)));
-        let left: Vec<(f64, f64)> = voice.iter().copied().filter(|v| !reached(v.0)).collect();
-        let best = if let Some(&(lowest, _)) = left.first() {
-            // Each channel still out of reach as the window's low edge: the window that takes in the most calls.
-            let score = |c: f64| left.iter().filter(|o| (o.0 - c).abs() <= h).map(|o| o.1).sum::<f64>();
-            let mut best = (lowest + h - 1000.0, -1.0);
-            for v in &left {
-                let c = v.0 + h - 1000.0;
-                let sc = score(c);
-                if sc > best.1 {
-                    best = (c, sc);
-                }
-            }
-            best.0
-        } else {
-            let mid = all.iter().sum::<f64>() / all.len().max(1) as f64;
-            let beside = sources.get(first).map_or(h, half) + h;
-            first_center + if mid >= first_center { beside } else { -beside }
-        };
-        let best = (best / 1000.0).round() * 1000.0;
-        let n = |c: f64| all.iter().filter(|f| (*f - c).abs() <= h).count();
-        let want = n(best);
-        out[k] = Some(off_dc(best, &all, |c| n(c) >= want).unwrap_or(best));
-    }
-    out
 }
 
 #[cfg(test)]
@@ -3122,6 +3056,13 @@ mod tests {
     }
 
     #[test]
+    fn ppm_is_set_as_the_radio_takes_it() {
+        let rtl: Source = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        let airspy: Source = serde_json::from_value(serde_json::json!({ "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "ppm": 0 })).unwrap();
+        assert_eq!((rtl.settable_ppm(2.0 - 3.6), airspy.settable_ppm(2.0 - 3.614)), (-2.0, -1.61));
+    }
+
+    #[test]
     fn rtl_usb_transfers_checked() {
         let rtl = |rate_hz: f64, buf_len: u32| Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len, buffers: 0 }, center_hz: 851e6, rate_hz: rate_hz, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
         let mut c = Config { sources: vec![rtl(2.4e6, 65_536)], systems: vec![system("s", &[851_012_500.0])], ..Default::default() };
@@ -3143,22 +3084,25 @@ mod tests {
         System::one_site(name, Site { control_channels_hz: ccs.to_vec(), ..Default::default() })
     }
 
+    /// Four auto RTLs for one 800 MHz P25 site wider than one of them: Start
+    /// places all four, over every voice channel; knowing only the control
+    /// channel, the spares go alongside rather than stopping Start.
     #[test]
-    fn a_first_run_plan_covers_the_busiest_channels() {
-        let rtl = |fixed_hz| Placing { rate_hz: 2_400_000.0, guard_hz: DEFAULT_GUARD_HZ, fixed_hz };
-        let ccs = [851_000_000.0];
-        // Busy voice channels 3–4 MHz up, a quiet one further: the second radio takes the busy ones.
-        let voice = [(854_000_000.0, 50.0), (854_500_000.0, 40.0), (856_900_000.0, 1.0), (851_200_000.0, 9.0)];
-        let plan = plan_centers(&[rtl(None), rtl(None)], 0, 851_400_000.0, &ccs, &voice);
-        assert_eq!(plan[0], Some(851_400_000.0));
-        let c = plan[1].unwrap();
-        let half = usable_half_width(2_400_000.0, DEFAULT_GUARD_HZ);
-        assert!((854_000_000.0 - c).abs() <= half && (854_500_000.0 - c).abs() <= half, "{c}");
-        assert!(voice.iter().chain([(851_000_000.0, 0.0)].iter()).all(|v| (v.0 - c).abs() >= DC_CLEAR_HZ), "off the DC spike: {c}");
-        // A capture file stays where it is; with everything reached, a spare radio goes alongside.
-        let plan = plan_centers(&[rtl(None), rtl(Some(853_000_000.0)), rtl(None)], 0, 851_400_000.0, &ccs, &voice[..2]);
-        assert_eq!(plan[1], Some(853_000_000.0));
-        assert!(plan[2].unwrap() > 851_400_000.0 + 2.0 * half - 100_000.0, "{plan:?}");
+    fn every_auto_source_is_placed_over_a_wide_site() {
+        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let mut sys = system("p25", &[856_237_500.0]);
+        sys.sites[0].voice_channels_hz = (0..=30).map(|k| 851_012_500.0 + k as f64 * 262_500.0).collect();
+        let mut c = Config { sources: vec![rtl(), rtl(), rtl(), rtl()], systems: vec![sys], ..Default::default() };
+        assert_eq!(c.problem(), None);
+        let centers = c.resolved_centers();
+        for f in c.systems[0].sites[0].voice_channels_hz.iter().chain(&c.systems[0].sites[0].control_channels_hz) {
+            assert!(c.sources.iter().zip(&centers).any(|(s, &x)| s.reaches(x, *f)), "{f} not reached by {centers:?}");
+        }
+        assert!(c.placement().iter().all(|p| p.listed > 0), "each is needed");
+        c.systems[0].sites[0].voice_channels_hz.clear();
+        assert_eq!(c.problem(), None, "{:?}", c.resolved_centers());
+        // Only the control channel known: the spares are placed, but nothing listed needs them.
+        assert_eq!(c.placement().iter().map(|p| p.listed).collect::<Vec<_>>(), [1, 0, 0, 0]);
     }
 
     #[test]

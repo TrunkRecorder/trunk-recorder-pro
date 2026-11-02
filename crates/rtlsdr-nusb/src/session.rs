@@ -129,7 +129,7 @@ impl<C: ControlBackend + 'static> Session<C> {
                         .as_ref()
                         .and_then(|h| h.tuner.as_ref())
                         .expect("initialized tuner")
-                        .kind;
+                        .kind();
                     shared
                         .info
                         .set(DeviceInfo {

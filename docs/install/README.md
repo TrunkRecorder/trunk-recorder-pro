@@ -52,10 +52,10 @@ lists the differences.
 ### A radio
 
 - **RTL-SDR dongles** work out of the box on every platform. Trunk Recorder Pro drives them
-  itself (no `librtlsdr`), which works for dongles with an **R820T or R828D** tuner. That is
-  nearly every dongle sold today, including the RTL-SDR Blog V3 and V4.
+  itself (no `librtlsdr`), which works for dongles with an **R820T, R828D or E4000** tuner. That is
+  nearly every dongle sold today, including the RTL-SDR Blog V3 and V4, and older E4000 ones.
 - **HackRF One** works out of the box too (firmware 2021.03 or newer), also in Docker.
-- **Older RTL-SDRs** with an E4000, FC0012, FC0013 or FC2580 tuner, **USRPs**, **Airspy R2 / Mini**
+- **Older RTL-SDRs** with an FC0012, FC0013 or FC2580 tuner, **USRPs**, **Airspy R2 / Mini**
   and anything with a **SoapySDR** module (SDRplay, LimeSDR, ...) work too, once you have
   installed their makers' drivers. See [Other radios](other-radios.md). These are desktop-only.
 

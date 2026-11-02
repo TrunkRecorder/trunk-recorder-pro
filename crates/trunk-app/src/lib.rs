@@ -15,6 +15,7 @@ pub mod keys;
 pub mod licenses;
 pub mod log;
 pub mod migrate;
+pub mod place;
 pub mod profile;
 pub mod protocol;
 pub mod samples;

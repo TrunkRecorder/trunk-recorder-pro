@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 use trunk_core::sitecheck::{self, Site};
 use trunk_core::survey::{Command, GainState, Kind, Receivers, Stage, Survey, SurveyConfig, BANDS};
 
-use crate::config::{auto_center, usable_half_width, Config, SiteIdentity, Source, SourceKind};
+use crate::config::{Config, SiteIdentity, Source, SourceKind};
+use crate::place::{busiest_window, Placing, Weighted};
 use crate::protocol::ToClient;
 #[cfg(test)]
 use crate::config::DEFAULT_GUARD_HZ;
@@ -188,7 +189,8 @@ pub struct SurveySession {
     /// The spare radio scanned with, for the interface ("RTL-SDR SN 200"); None: source `source`.
     spare: Option<String>,
     look_for: Option<LookFor>,
-    rtl: bool,
+    /// The radio scanned with (as set).
+    radio: Source,
     /// The source's guard band at each edge, Hz.
     guard_hz: f64,
     bands: Vec<String>,
@@ -207,7 +209,7 @@ impl SurveySession {
             source: req.source,
             spare: req.radio.as_ref().map(Source::label),
             look_for: req.look_for.clone(),
-            rtl: matches!(src.kind, SourceKind::Rtlsdr { .. }),
+            radio: src.clone(),
             guard_hz: src.guard_hz,
             bands: req.bands.clone(),
             error: None,
@@ -360,8 +362,7 @@ impl SurveySession {
             "bandplan": smartnet.map(plan_json),
             "controlChannels": ccs,
             "ppm": ppm.map(|p| (p * 100.0).round() / 100.0),
-            // An RTL-SDR takes whole ppm.
-            "ppmApply": ppm.map(|p| if self.rtl { p.round() } else { (p * 100.0).round() / 100.0 }),
+            "ppmApply": ppm.map(|p| self.radio.settable_ppm(p)),
             "gainDb": m.gain.best_db,
             "centerHz": center,
             "voiceCovered": covered,
@@ -386,24 +387,11 @@ fn plan_json(p: &trunk_core::smartnet::plan::PlanConfig) -> Value {
 /// channel and as many of the voice channels (and other control channels) as
 /// fit; and how many voice channels that covers.
 pub fn best_center(primary: f64, ccs: &[f64], voice: &[f64], rate_hz: f64, guard_hz: f64) -> (f64, usize) {
-    let w = 2.0 * usable_half_width(rate_hz, guard_hz) - 60_000.0;
-    let mut all: Vec<f64> = voice.iter().chain(ccs).copied().collect();
-    all.sort_by(f64::total_cmp);
-    let (mut best, mut best_n) = ((primary, primary), (0usize, 0usize));
-    for &lo in all.iter().filter(|&&f| f <= primary && f >= primary - w) {
-        let hi = lo + w;
-        let n_voice = voice.iter().filter(|&&f| f >= lo && f <= hi).count();
-        let n_cc = ccs.iter().filter(|&&f| f >= lo && f <= hi).count();
-        if (n_voice, n_cc) > best_n {
-            best_n = (n_voice, n_cc);
-            let inside: Vec<f64> = all.iter().copied().filter(|&f| f >= lo && f <= hi).collect();
-            best = (inside[0], *inside.last().unwrap());
-        }
-    }
-    let inside: Vec<f64> = all.iter().copied().filter(|&f| f >= best.0 && f <= best.1).collect();
-    let pts = if inside.is_empty() { vec![primary] } else { inside };
-    let center = auto_center(&pts, rate_hz, guard_hz).or_else(|| auto_center(&[primary], rate_hz, guard_hz)).unwrap_or(primary + 250_000.0);
-    (center, best_n.0)
+    let s = Placing { rate_hz, guard_hz, fixed_hz: None };
+    // Voice channels count; the other control channels only break a tie.
+    let chans: Vec<Weighted> = voice.iter().map(|&hz| Weighted { hz, weight: 1.0 }).chain(ccs.iter().chain([&primary]).map(|&hz| Weighted { hz, weight: 1e-3 })).collect();
+    let center = busiest_window(&chans, &s, Some(&[primary])).unwrap_or(primary + 250_000.0);
+    (center, voice.iter().filter(|&&f| s.reaches(center, f)).count())
 }
 
 #[cfg(test)]
@@ -418,7 +406,7 @@ mod tests {
         assert_eq!(n, 5);
         assert!((c - 851.5e6).abs() > 20_000.0, "on DC");
         for f in &voice[..5] {
-            assert!((f - c).abs() <= usable_half_width(2_400_000.0, DEFAULT_GUARD_HZ), "{f} outside {c}");
+            assert!(Placing { rate_hz: 2_400_000.0, guard_hz: DEFAULT_GUARD_HZ, fixed_hz: None }.reaches(c, *f), "{f} outside {c}");
         }
     }
 
