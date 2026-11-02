@@ -6854,6 +6854,14 @@
           ],
           "description": "Its frequency error, ppm (+: signals come in high), against `settings.ppm`: the median of its last control channel and call measurements; null until measured."
         },
+        "voiceChannels": {
+          "type": "number",
+          "description": "Voice channels opened on it this run."
+        },
+        "unused": {
+          "type": "boolean",
+          "description": "Nothing the config lists needs it (other sources reach all it does, or it was placed alongside them) and no call has used it this run: it can probably be removed."
+        },
         "ppmApply": {
           "type": [
             "number",

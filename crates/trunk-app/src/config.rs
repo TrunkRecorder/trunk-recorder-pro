@@ -14,7 +14,7 @@ use trunk_core::trunk::{
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
-use crate::place::{place_sources, Placing, Targets, Weighted};
+use crate::place::{listed_reached, place_sources, Placing, Targets, Weighted};
 
 /// A source: the radio or capture it reads ([`SourceKind`]), where and how fast.
 /// Stored flat — `{"type": "rtlsdr", "serial": "…", "centerHz": …}` — the
@@ -241,6 +241,15 @@ impl SampleFormat {
             SampleFormat::Cf32 => 8,
         }
     }
+}
+
+/// Where a source goes ([`Config::placement`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
+    /// Its centre, Hz (0: nothing to place it by).
+    pub center_hz: f64,
+    /// The frequencies the config lists that it is the first to reach.
+    pub listed: usize,
 }
 
 impl Source {
@@ -2383,8 +2392,18 @@ impl Config {
     /// channels) not reached yet, then the most channels still out of reach,
     /// else alongside the others; 0 when there's nothing to place it by.
     pub fn resolved_centers(&self) -> Vec<f64> {
+        self.placement().into_iter().map(|p| p.center_hz).collect()
+    }
+
+    /// Each source's centre ([`Config::resolved_centers`]) and how many of
+    /// the frequencies the config lists it is the first to reach (where the
+    /// engine opens them): 0 for one nothing listed needs.
+    pub fn placement(&self) -> Vec<Placed> {
         let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
-        place_sources(&sources, &self.targets()).into_iter().map(|c| c.unwrap_or(0.0)).collect()
+        let t = self.targets();
+        let centers = place_sources(&sources, &t);
+        let listed = listed_reached(&sources, &centers, &t);
+        centers.iter().zip(listed).map(|(c, listed)| Placed { center_hz: c.unwrap_or(0.0), listed }).collect()
     }
 
     /// What the radios are placed to reach: each active site's control (and
@@ -3059,8 +3078,11 @@ mod tests {
         for f in c.systems[0].sites[0].voice_channels_hz.iter().chain(&c.systems[0].sites[0].control_channels_hz) {
             assert!(c.sources.iter().zip(&centers).any(|(s, &x)| s.reaches(x, *f)), "{f} not reached by {centers:?}");
         }
+        assert!(c.placement().iter().all(|p| p.listed > 0), "each is needed");
         c.systems[0].sites[0].voice_channels_hz.clear();
         assert_eq!(c.problem(), None, "{:?}", c.resolved_centers());
+        // Only the control channel known: the spares are placed, but nothing listed needs them.
+        assert_eq!(c.placement().iter().map(|p| p.listed).collect::<Vec<_>>(), [1, 0, 0, 0]);
     }
 
     #[test]

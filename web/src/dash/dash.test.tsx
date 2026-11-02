@@ -417,6 +417,19 @@ test("RF: a HackRF's stages, and the sample clock's error once measured", () => 
   assert.match(text(renderToString(<RfPage />)), /LNA 24 · VGA 30 · amp/);
 });
 
+test("RF: a source nothing needs says it can probably go; one in use doesn't", () => {
+  const c = defaultConfig();
+  const rtl = (serial: string, centerHz: number): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, centerHz, rateHz: 2_400_000, ppm: 0 });
+  c.sources = [rtl("1", 851_000_000), rtl("2", 853_000_000)];
+  running(c, []);
+  const src = (i: number, unused: boolean): SourceStatus => ({ index: i, label: `RTL-SDR SN ${i + 1}`, centerHz: c.sources[i].centerHz, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: c.sources[i], voiceChannels: 0, unused });
+  transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [src(0, false), src(1, true)], load: 0, calls: [] });
+  setView("rf");
+  const page = text(renderToString(<RfPage />));
+  assert.equal(page.split("You can probably remove it").length - 1, 1, "on the spare's card only");
+  assert.match(page, /RTL-SDR SN 2 .*Not needed so far: the other sources reach every channel the config lists, and no call has used this one/);
+});
+
 test("History spans: a week from memory or files; further as the store keeps the dashboard's history", () => {
   const spans = (st: Parameters<typeof rangesFor>[0], history = true) => rangesFor(st, history).map((r) => r.v).join(" ");
   const store = { backend: "sqlite" as const, retentionDays: 120, commitSeconds: 300 };

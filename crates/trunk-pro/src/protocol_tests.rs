@@ -245,6 +245,21 @@ fn autotune_starts_from_the_saved_score() {
     assert!(src["ppmApply"].is_null(), "{src}");
 }
 
+/// A source the config's channels don't need, and no call has used, says so.
+#[test]
+fn a_source_nothing_needs_is_unused() {
+    let mut cfg = conventional_config();
+    let spare: trunk_app::config::Source = serde_json::from_value(json!({ "type": "rtlsdr", "serial": "2", "centerHz": 460000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 })).unwrap();
+    cfg.sources.push(spare);
+    let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+    let (mut out, mut msgs) = (Vec::new(), Vec::new());
+    s.poll(1.75e12, &mut out);
+    texts(&mut out, &mut msgs);
+    let status = msgs.iter().find(|m| m["type"] == "status").expect("a status");
+    let unused: Vec<_> = status["sources"].as_array().unwrap().iter().map(|x| x["unused"].as_bool()).collect();
+    assert_eq!(unused, [Some(false), Some(true)], "{status}");
+}
+
 /// Without subscriptions, the costly messages aren't made.
 #[test]
 fn unwatched_topics_are_not_sent() {

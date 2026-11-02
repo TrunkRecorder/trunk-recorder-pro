@@ -776,6 +776,10 @@ export interface SourceStatus {
   settings: Source;
   /** Its frequency error, ppm (+: signals come in high), against `settings.ppm`: the median of its last control channel and call measurements; null until measured. */
   errorPpm?: number | null;
+  /** Voice channels opened on it this run. */
+  voiceChannels?: number;
+  /** Nothing the config lists needs it (other sources reach all it does, or it was placed alongside them) and no call has used it this run: it can probably be removed. */
+  unused?: boolean;
   /** The ppm that removes `errorPpm` (`settings.ppm` less it, as the radio takes it: an RTL-SDR whole ppm); null until measured. */
   ppmApply?: number | null;
   /** The radio's crystal error, measured from its sample clock against this computer's clock, ppm (+: fast); null until measured (about 10 s). */

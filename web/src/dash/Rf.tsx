@@ -11,7 +11,7 @@ import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWid
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall } from "../Waterfall.tsx";
-import { K, recentAvg, running, runningSites, sourceHealth, useHistory, useRanges, val } from "./data.ts";
+import { K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE, useHistory, useRanges, val } from "./data.ts";
 import { ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
@@ -85,6 +85,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           hint="Lost by the driver (USB or CPU); calls lose audio."
         />
       </div>
+      {src.unused && <Hint>{UNUSED_SOURCE}</Hint>}
       {!small && (
         <div className="kv small">
           <span>

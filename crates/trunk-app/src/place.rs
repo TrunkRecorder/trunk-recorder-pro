@@ -74,7 +74,7 @@ pub fn place_sources(sources: &[Placing], t: &Targets) -> Vec<Option<f64>> {
         if out[k].is_some() {
             continue;
         }
-        let reached = |hz: f64| out.iter().zip(sources).any(|(c, s)| c.is_some_and(|c| s.reaches(c, hz)));
+        let reached = |hz: f64| first_to_reach(sources, &out, hz).is_some();
         let open: Vec<&Vec<f64>> = t.needs.iter().filter(|g| !g.iter().any(|&f| reached(f))).collect();
         let need = 1.0 + t.channels.iter().map(|c| c.weight).sum::<f64>();
         let left: Vec<Weighted> = t
@@ -92,6 +92,28 @@ pub fn place_sources(sources: &[Placing], t: &Targets) -> Vec<Option<f64>> {
         out[k] = center;
     }
     out
+}
+
+/// The first of `sources` (tuned to `centers`) that reaches `hz`: the one
+/// the engine opens a channel there on.
+pub fn first_to_reach(sources: &[Placing], centers: &[Option<f64>], hz: f64) -> Option<usize> {
+    sources.iter().zip(centers).position(|(s, c)| c.is_some_and(|c| s.reaches(c, hz)))
+}
+
+/// How many of `t`'s frequencies each source (tuned to `centers`) is the
+/// first to reach: 0 for one that nothing listed needs (the others reach
+/// all it does, or it's beside them).
+pub fn listed_reached(sources: &[Placing], centers: &[Option<f64>], t: &Targets) -> Vec<usize> {
+    let mut hz: Vec<f64> = t.channels.iter().map(|c| c.hz).chain(t.needs.iter().flatten().copied()).collect();
+    hz.sort_by(f64::total_cmp);
+    hz.dedup();
+    let mut n = vec![0; sources.len()];
+    for f in hz {
+        if let Some(k) = first_to_reach(sources, centers, f) {
+            n[k] += 1;
+        }
+    }
+    n
 }
 
 /// The centre for `s` whose usable band takes in the most weight of `chans`
@@ -238,6 +260,8 @@ mod tests {
         assert!(RTL.reaches(c[0], 851_000_000.0) && RTL.reaches(c[0], 851_600_000.0), "{c:?}");
         let h = RTL.half();
         assert!((c[1] - c[0]).abs() > 1.5 * h && (c[2] - c[1]).abs() > 1.5 * h && (c[2] - c[0]).abs() > 1.5 * h, "{c:?}");
+        // The spares reach nothing the first doesn't.
+        assert_eq!(listed_reached(&[RTL; 3], &plan, &t), [3, 0, 0]);
         // Nothing to place by: nothing placed.
         assert_eq!(place_sources(&[RTL], &Targets::default()), [None]);
     }

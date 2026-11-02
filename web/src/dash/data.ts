@@ -270,7 +270,10 @@ export function coverage(s: AppState, hz: number): { src: SourceStatus; depth: n
   return best && { src: best.src, depth: Math.max(0, best.d), beyondHz: best.beyondHz };
 }
 
-/** A source: drops, clipping, frequency error, sample rate. */
+/** What a source nothing needs says (SourceStatus.unused). */
+export const UNUSED_SOURCE = "Not needed so far: the other sources reach every channel the config lists, and no call has used this one. You can probably remove it.";
+
+/** A source: drops, clipping, frequency error, sample rate; nothing wrong but nothing for it to do. */
 export function sourceHealth(s: AppState, src: SourceStatus): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   if (src.ended) return { level: "idle", why: "Ended" };
@@ -284,7 +287,7 @@ export function sourceHealth(s: AppState, src: SourceStatus): Health {
   if (src.errorPpm != null && !autoTuneOn(src.settings) && Math.abs(src.errorPpm - (src.tunePpm ?? 0)) > 2)
     return { level: "warn", why: `Its frequency is off by ${num(src.errorPpm, 1)} ppm. Set the source's ppm${src.ppmApply != null ? ` to ${src.ppmApply}` : ""}, or turn on AutoTune.` };
   if (src.rateMeasured > 0 && Math.abs(src.rateMeasured / src.rateHz - 1) > 0.05) return { level: "warn", why: `Delivering ${num(src.rateMeasured / 1e6, 2)} MS/s of ${num(src.rateHz / 1e6, 2)}.` };
-  return OK("Clean");
+  return OK(src.unused ? UNUSED_SOURCE : "Clean");
 }
 
 export function pluginHealth(p: PluginInfo, on: boolean): Health {

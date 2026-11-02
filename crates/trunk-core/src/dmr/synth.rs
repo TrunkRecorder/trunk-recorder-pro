@@ -245,12 +245,17 @@ mod tests {
     }
 
     fn run(cfg: EngineConfig, iq: &[Complex32]) -> Vec<crate::trunk::Concluded> {
+        run_on(cfg, iq).0
+    }
+
+    /// What `run` concludes, and the engine after.
+    fn run_on(cfg: EngineConfig, iq: &[Complex32]) -> (Vec<crate::trunk::Concluded>, Engine) {
         let e = Engine::new(cfg).unwrap();
         for c in iq.chunks(8192) {
             e.push_iq(0, c);
         }
         e.finish();
-        e.drain_events().into_iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some(k) } else { None }).collect()
+        (e.drain_events().into_iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some(k) } else { None }).collect(), e)
     }
 
     fn wideband(fs: f64, offset: f64) -> Vec<Complex32> {
@@ -397,10 +402,11 @@ mod tests {
             systems: vec![SystemConfig::trunked("cap", vec![SiteConfig { control_channels: vec![freq], protocol: crate::trunk::Protocol::Dmr(Default::default()), ..Default::default() }])],
             ..Default::default()
         };
-        let done = run(cfg, &iq);
+        let (done, e) = run_on(cfg, &iq);
         assert_eq!(done.len(), 1);
         let c = &done[0].call;
         assert_eq!((c.system, c.talkgroup, c.voice.slot(), c.voice.color_code(), c.freq_hz), (0, 4321, Some(1), Some(5), 460_050_000));
+        assert_eq!(e.status().sources[0].voice_channels, 1, "the source says it carried a voice channel");
         // The voice head opens at the LC with a second of pre-roll: the whole transmission.
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");

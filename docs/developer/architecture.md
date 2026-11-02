@@ -1407,7 +1407,11 @@ once (the guide: by the calls seen on it); of windows taking in as much, the one
 rest the fewest windows. So a site wider than one radio gets every radio it needs. With
 everything reached, a spare radio goes alongside the others, on the side with more of the
 channels. Each centre is then centred on what it reaches and stepped to either side in widening
-12.5 kHz steps until no channel is within 25 kHz of DC (`off_dc`).
+12.5 kHz steps until no channel is within 25 kHz of DC (`off_dc`). `Config::placement` also
+says how many listed frequencies each source is the first to reach (`listed_reached`, the
+engine's own rule: a channel opens on the first source that reaches it); a source at 0 that
+has opened no voice channel this run is `unused` in its status, and the dashboard says it can
+probably be removed.
 
 ### 10.12 Companion files (in the config's folder)
 
