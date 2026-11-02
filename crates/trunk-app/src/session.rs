@@ -561,8 +561,9 @@ impl Session {
             s.last_error = Some(error.to_string());
             s.last_error_s = self.meas.now();
         }
-        self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": format!("source {source}: {error}") }));
-        self.records.push(Record::text(Level::Error, None, format!("{}: {error}", self.cfg.sources.get(source).map_or_else(|| format!("Source {source}"), |s| s.title(source)))));
+        let text = format!("{}: {error}", self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source)));
+        self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": text }));
+        self.records.push(Record::text(Level::Error, None, text));
     }
 
     /// A finite source ran out; true when all have.

@@ -5,7 +5,7 @@
 import { withEdit } from "../talkgroups.ts";
 import init, { calls_page, directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { CallEntry, Config, FromRecorder, HeardCode, Talkgroup, ToRecorder } from "../protocol.ts";
-import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, trpBase } from "../config.ts";
+import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, sourceTitle, trpBase } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
 /** Page → worker: the protocol's commands (those it can't do get an `error`), and its own setup. */
@@ -376,11 +376,11 @@ async function start(): Promise<void> {
         rtls.push(rtl);
         void pumpRtl(i, rtl);
       } else if (needsDriver(s)) {
-        throw new Error(`Source ${i + 1}: ${SOURCE_KINDS[s.type].label} needs the desktop app.`);
+        throw new Error(`${sourceTitle(cfg, i)}: ${SOURCE_KINDS[s.type].label} needs the desktop app.`);
       } else {
-        if (s.format && s.format !== "cu8") throw new Error(`Source ${i + 1}: the browser version reads rtl_sdr (cu8) captures only.`);
+        if (s.format && s.format !== "cu8") throw new Error(`${sourceTitle(cfg, i)}: the browser version reads rtl_sdr (cu8) captures only.`);
         const f = files[i];
-        if (!f) throw new Error(`Source ${i + 1}: choose the capture file again (the browser forgets it on reload).`);
+        if (!f) throw new Error(`${sourceTitle(cfg, i)}: choose the capture file again (the browser forgets it on reload).`);
         void pumpFile(i, f, s.rateHz, s.realtime);
       }
     }

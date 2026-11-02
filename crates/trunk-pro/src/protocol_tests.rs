@@ -322,7 +322,7 @@ fn a_spare_radio_is_one_no_source_names() {
     let ctx = ctx(cfg.clone(), &dir);
     let req = Request::from_json(&json!({ "source": 0, "radio": { "type": "rtlsdr", "serial": "1", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 } }));
     let e = ctx.begin_survey(cfg, req).unwrap_err();
-    assert!(e.contains("is source 1 of the recorder"), "{e}");
+    assert!(e.contains("is Source 1 of the recorder"), "{e}");
     let rtl = |serial: &str| -> trunk_app::config::Source { serde_json::from_value(json!({ "type": "rtlsdr", "serial": serial, "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 })).unwrap() };
     assert!(rtl("1").may_be(&rtl("1")) && rtl("").may_be(&rtl("2")) && !rtl("1").may_be(&rtl("2")));
 }

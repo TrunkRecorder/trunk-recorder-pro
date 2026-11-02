@@ -153,6 +153,9 @@ test("sourcesChanged: the sources the recorder says it runs with against the con
   assert.equal(sourcesChanged({ ...c, sources: [{ ...rtl, ppm: -2 }] }, [st(rtl)], true), true, "a new ppm waits for the next Start");
   assert.equal(sourcesChanged({ ...c, sources: [{ ...rtl, gainDb: 10 } as Source] }, [st(rtl)], true), false, "the desktop recorder takes a gain at once");
   assert.equal(sourcesChanged({ ...c, sources: [rtl, rtl] }, [st(rtl)], true), true, "a source added");
+  // A name only names it: no restart, here or for the page's own run.
+  assert.equal(sourcesChanged({ ...c, sources: [{ ...rtl, name: "Whip" }] }, [st(rtl)], false), false, "a name");
+  assert.equal(restartKey({ ...c, sources: [{ ...rtl, name: "Whip" }] }, false), restartKey(c, false));
 });
 
 test("foundRadio: what the picked radio runs at, once its driver has asked it; a new source starts at one of them", () => {

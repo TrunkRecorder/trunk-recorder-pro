@@ -76,11 +76,14 @@ pub fn config_centers(json: &str) -> Vec<f64> {
     read(json).map_or_else(|_| Vec::new(), |c| c.resolved_centers())
 }
 
-/// Each source's label ([`trunk_app::config::Source::label`]): what a
-/// system's or channel's `receiveOn` names it by, and its status by.
-#[wasm_bindgen(js_name = configSourceLabels)]
-pub fn config_source_labels(json: &str) -> Vec<String> {
-    read(json).map_or_else(|_| Vec::new(), |c| c.sources.iter().map(|s| s.label()).collect())
+/// Each source's label and title: JSON `[{ label, title }]`. The label
+/// ([`trunk_app::config::Source::label`], "RTL-SDR SN 200") is the radio: what
+/// a system's or channel's `receiveOn` names it by, and its status by. The
+/// title ([`trunk_app::config::Source::title`], "Source 2 (Whip)") is what it's called.
+#[wasm_bindgen(js_name = configSources)]
+pub fn config_sources(json: &str) -> String {
+    let named = |c: Config| c.sources.iter().enumerate().map(|(i, s)| serde_json::json!({ "label": s.label(), "title": s.title(i) })).collect::<Vec<_>>();
+    read(json).map_or_else(|_| "[]".into(), |c| serde_json::json!(named(c)).to_string())
 }
 
 /// The source each frequency the config lists is received on, as the engine

@@ -255,7 +255,7 @@ impl Ctx {
         match &req.radio {
             Some(r) => {
                 if let Some(i) = cfg.sources.iter().position(|s| s.may_be(r)) {
-                    return Err(format!("{} is source {} of the recorder: scan with that source, or pick a radio no source uses.", r.label(), i + 1));
+                    return Err(format!("{} is {} of the recorder: scan with that source, or pick a radio no source uses.", r.label(), cfg.sources[i].title(i)));
                 }
             }
             None => self.free_radios(&mut l, "the scan")?,
@@ -355,8 +355,8 @@ pub struct Runner {
 /// The gain in dB always; AGC on or off only on an RTL-SDR or an Airspy (the
 /// others take that at the next start).
 pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
-    // `old` with `new`'s gain: equal to `new` when only the gain differs.
-    let mut o = old.clone();
+    // `old` with `new`'s gain: equal to `new` when only the gain differs (a name aside).
+    let (mut o, new) = (old.radio(), &new.radio());
     let gain = match (&mut o.kind, &new.kind) {
         (SourceKind::Rtlsdr { gain_db, agc, .. }, SourceKind::Rtlsdr { gain_db: g, agc: a, .. }) => {
             (*gain_db, *agc) = (*g, *a);
@@ -404,9 +404,7 @@ impl Runner {
         if old.len() != new.len() {
             return vec![];
         }
-        // (A new name changes nothing the radio does.)
-        let changed = |o: &Source, n: &Source| Source { name: n.name.clone(), ..o.clone() } != *n;
-        old.iter().zip(new).enumerate().filter(|(_, (o, n))| changed(o, n)).map(|(i, (o, n))| (i, self.live_source(i, o, n))).collect()
+        old.iter().zip(new).enumerate().filter(|(_, (o, n))| o.radio() != n.radio()).map(|(i, (o, n))| (i, self.live_source(i, o, n))).collect()
     }
 
     /// The engine has stopped by itself (every capture file ended).
@@ -1326,6 +1324,8 @@ mod live_tests {
         let rtl = |gain: f64, agc: bool| src("rtlsdr", json!({ "serial": "1000", "centerHz": 453e6, "rateHz": 2.4e6, "gainDb": gain, "agc": agc, "ppm": 0 }));
         assert_eq!(live_gain(&rtl(33.8, false), &rtl(22.9, false)), Some(Gain::Db(22.9)));
         assert_eq!(live_gain(&rtl(33.8, false), &rtl(33.8, true)), Some(Gain::Agc), "an RTL-SDR's AGC, live");
+        let named = trunk_app::config::Source { name: "Whip".into(), ..rtl(22.9, false) };
+        assert_eq!(live_gain(&rtl(33.8, false), &named), Some(Gain::Db(22.9)), "named in the same edit: still live");
         let usrp = |gain: f64, agc: bool| src("usrp", json!({ "args": "", "antenna": "", "centerHz": 853e6, "rateHz": 8e6, "gainDb": gain, "agc": agc, "ppm": 0 }));
         assert_eq!(live_gain(&usrp(40.0, false), &usrp(30.0, false)), Some(Gain::Db(30.0)));
         assert_eq!(live_gain(&usrp(40.0, false), &usrp(40.0, true)), None, "USRP AGC waits for the start");

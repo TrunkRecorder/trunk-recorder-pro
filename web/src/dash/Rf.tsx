@@ -5,7 +5,7 @@
 // time.
 
 import { useState } from "react";
-import { autoTuneOn, configSource, formatGain, formatMhz, systemColor, usableHalfWidth } from "../config.ts";
+import { autoTuneOn, configIndex, formatGain, formatMhz, sourceTitle, systemColor, usableHalfWidth } from "../config.ts";
 import { setView, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
@@ -40,12 +40,14 @@ function gainText(c: Source | undefined): string {
 /** One source: floor, headroom, frequency error, drops. `compact`: the overview's size. */
 export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: SourceStatus; i: number; compact?: boolean }) {
   const h = sourceHealth(s, src);
+  // Its place in Setup now, for its name and gain (both taken while recording).
+  const k = s.config ? configIndex(s.sources, s.config, src) : -1;
   const noise = val(s, K.src(src.label, "noise"));
   const peak = val(s, K.src(src.label, "peak"));
   const clip = val(s, K.src(src.label, "clipPct"));
   const drops = recentAvg(K.src(src.label, "dropped"), 60) ?? 0;
   return (
-    <Card title={src.label} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<span className="badge-kind">{mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s</span>}>
+    <Card title={k >= 0 ? `${sourceTitle(s.config!, k)} · ${src.label}` : src.label} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<span className="badge-kind">{mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s</span>}>
       <div className={small ? "src-grid small" : "src-grid"}>
         <Stat
           label="Noise floor"
@@ -90,7 +92,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
         <div className="kv small">
           <span>
             {/* (Setup's: the desktop recorder takes a new gain while recording.) */}
-            Gain <b>{gainText((s.config && configSource(s.sources, s.config, src)) || src.settings)}</b>
+            Gain <b>{gainText(k >= 0 ? s.config!.sources[k] : src.settings)}</b>
           </span>
           <span>
             Rate <b>{num(src.rateMeasured / 1e6, 3)}</b> of {num(src.rateHz / 1e6, 3)} MS/s
@@ -427,7 +429,7 @@ export function RfPage() {
       <div className="page">
         <p className="empty">Start recording to see the sources.</p>
         {s.config?.sources.map((src, k) => (
-          <Card key={k} title={sourceTitle(src, k)}>
+          <Card key={k} title={sourceTitle(s.config!, k)}>
             <div className="kv small">
               <span>
                 {src.type} · {mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s · gain {gainText(src)}

@@ -632,7 +632,7 @@ export function SurveyPanel(props: { c: Config }) {
                 <select value={radioKey} onChange={(e) => setRadioPick(e.target.value)}>
                   {c.sources.map((x, i) => (
                     <option key={i} value={i} disabled={recording}>
-                      {sourceTitle(x, i)} ({SOURCE_KINDS[x.type].label}){recording ? " — recording" : ""}
+                      {sourceTitle(c, i)} ({SOURCE_KINDS[x.type].label}){recording ? " — recording" : ""}
                     </option>
                   ))}
                   {spares.map((x) => (

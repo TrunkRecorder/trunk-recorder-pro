@@ -1687,7 +1687,7 @@ WebAssembly, in both builds (the desktop app's page too). `crates/trunk-web/src/
 exports, over trunk-app's `config.rs`: `configNormalize` (a config as the recorder reads it,
 an older one upgraded, with its `notes`), `configTalkgroups` (the talkgroup files an older
 config held), `configProblem` (`Config::problem`), `configNameProblem`, `configCenters`
-(`resolved_centers`), `configReceivers` (`Config::receivers`), `configSourceLabels`,
+(`resolved_centers`), `configReceivers` (`Config::receivers`), `configSources` (each source's label and `Source::title`),
 `placeSources` (`place_sources`), `usableHalfWidth`, `channelsParse` /
 `channelsWrite` (the channel CSV) and `bandplanProblem`. `web/src/rules.ts` loads them before
 the page renders (`loadRules`) and keeps each answer for the store's config until it is replaced

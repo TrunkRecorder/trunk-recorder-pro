@@ -72,7 +72,7 @@ export type Source = (
   ppm: number;
   autoTune?: boolean;
   guardHz?: number;
-  /** A name for it, shown beside its number ("Whip", "Multicoupler"); absent: none. */
+  /** A name for it, shown beside its number ("Source 2 (Whip)"; "Whip", "Multicoupler"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label. */
   name?: string;
 };
 

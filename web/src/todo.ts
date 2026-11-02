@@ -2,7 +2,7 @@
 // config, the dongles and the drivers say), what each asks, and the setup
 // field it points at. An item closes by itself once its field is filled in.
 
-import { formatMhz, receiverOf, siteNameOf, SOURCE_KINDS, type ImportTodo } from "./config.ts";
+import { formatMhz, receiverOf, siteNameOf, SOURCE_KINDS, sourceTitle, type ImportTodo } from "./config.ts";
 import type { AppState } from "./controller.ts";
 
 export interface OpenTodo {
@@ -66,7 +66,7 @@ export function openTodos(s: AppState): OpenTodo[] {
         out.push({
           item,
           target: `src-${item.index}`,
-          title: `Source ${item.index + 1}`,
+          title: sourceTitle(c, item.index),
           text: dev ? `Dongle ${item.serial} is ${dev.busy}.` : `Dongle ${item.serial} isn't plugged in. Plug it in, or choose another dongle.`,
         });
         break;
@@ -75,7 +75,7 @@ export function openTodos(s: AppState): OpenTodo[] {
         const src = c.sources[item.index];
         const d = s.radios?.[item.driver];
         if (!src || src.type !== item.driver || !s.radios || d?.available) break;
-        out.push({ item, target: `src-${item.index}`, title: `Source ${item.index + 1}`, text: `Needs ${SOURCE_KINDS[item.driver].driver?.name} installed on this computer, then a restart.` });
+        out.push({ item, target: `src-${item.index}`, title: sourceTitle(c, item.index), text: `Needs ${SOURCE_KINDS[item.driver].driver?.name} installed on this computer, then a restart.` });
         break;
       }
       case "squelch":

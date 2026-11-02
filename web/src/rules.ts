@@ -101,8 +101,11 @@ export const startProblem = perConfig((j) => rules().configProblem(j) ?? null);
 /** Two systems sharing a short name, or one without, or two sites of a system one name (Config::name_problem), or null. */
 export const nameProblem = perConfig((j) => rules().configNameProblem(j) ?? null);
 
-/** Each source's label (Source::label, "RTL-SDR SN 200"): what a system's or channel's receiveOn names it by, and its status by. */
-export const sourceLabels = perConfig((j) => Array.from(rules().configSourceLabels(j)) as string[]);
+/** Each source's label (Source::label, "RTL-SDR SN 200"): the radio — what a system's or channel's receiveOn names it by, and its status by. A name doesn't change it. */
+export const sourceLabels = (c: Config): string[] => sourceNames(c).map((x) => x.label);
+
+/** Each source's label (as sourceLabels) and title ("Source 2 (Whip)", Source::title: what every message and page calls it). */
+export const sourceNames = perConfig((j) => JSON.parse(rules().configSources(j)) as { label: string; title: string }[]);
 
 /** The source each frequency the config lists is received on, as Start will choose it, pins and all (Config::receivers); source null: none it may be received on reaches it. */
 export const receivers = perConfig((j) => JSON.parse(rules().configReceivers(j)) as { system: string; hz: number; source: number | null }[]);

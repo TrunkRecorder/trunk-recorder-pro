@@ -6,7 +6,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 ## [Unreleased]
 
 - **A source can have a name.** `name` on a source (**Name** in Setup) is shown beside its number, as
-  "Source 2 (Whip)", in Setup, the RF page and the log. Renaming one while recording needs no restart.
+  "Source 2 (Whip)", wherever a source is named: Setup, the RF page, the survey, to-dos and the log (which
+  now count sources from 1 everywhere, as Setup does). It only names it: renaming one while recording takes
+  effect at once, with no restart, and pins (`receiveOn`) keep naming the radio by its label.
 - **A system or a conventional channel can be kept on particular sources.** `receiveOn` on a trunked
   system (**Receive on** in Setup, with two or more sources) names the radios, by label (`"RTL-SDR SN 200"`),
   its control channels and voice channels may be received on; on a conventional channel (a **Source** column
