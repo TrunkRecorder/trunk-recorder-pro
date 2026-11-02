@@ -946,7 +946,7 @@ pub(crate) async fn greeting(ctx: &Arc<Ctx>, access: ApiAccess, user: Option<Str
         m.push(ToClient::error(format!("The store couldn't be opened ({why}). Nothing is kept until it opens: talkgroups, aliases, the radio registry, the call index and the dashboard's history. Recording goes on.")));
     }
     m.push(ToClient::Hello {
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: crate::full_version(),
         platform: std::env::consts::OS.into(),
         api: crate::interfaces::API_VERSION,
         config_path: control.then(|| ctx.config_path.display().to_string()),

@@ -332,7 +332,7 @@ fn main() {
     // Finder may pass a process serial number (-psn_…) to an app bundle.
     let argv: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("-psn_")).collect();
     match argv.first().map(|s| s.as_str()) {
-        Some("--version" | "-V" | "version") => println!("trunk-pro {}", env!("CARGO_PKG_VERSION")),
+        Some("--version" | "-V" | "version") => println!("trunk-pro {}", full_version()),
         Some("--help" | "-h" | "help") => print!("{USAGE}"),
         None | Some("serve") => serve(&Args::parse(argv.get(1..).unwrap_or(&[]))),
         Some(s) if s.starts_with("--") => serve(&Args::parse(&argv)),
@@ -1161,7 +1161,7 @@ fn serve(a: &Args) {
     {
         let c = ctx.config.lock().unwrap();
         let l = &c.log;
-        log::info!("Trunk Recorder Pro {} — open {url}", env!("CARGO_PKG_VERSION"));
+        log::info!("Trunk Recorder Pro {} — open {url}", full_version());
         log::info!("Using Config file: {}", config_path.display());
         log::info!("Capture Directory: {}", c.recording.capture_dir);
         // (Checked here, so why it can't take calls is said next to where it is; the monitor checks it again as it runs.)
@@ -1226,4 +1226,12 @@ fn lcn_table(a: &Args) -> std::collections::BTreeMap<u32, u64> {
         .split(',')
         .filter_map(|e| e.split_once('=').and_then(|(l, h)| Some((l.trim().parse().ok()?, h.trim().parse::<f64>().ok()? as u64))))
         .collect()
+}
+
+/// The version, with the build's tag when it was built with one (`TRUNK_PRO_BUILD=custom-v26`: "0.3.0-custom-v26").
+pub(crate) fn full_version() -> String {
+    match option_env!("TRUNK_PRO_BUILD").filter(|t| !t.is_empty()) {
+        Some(t) => format!("{}-{t}", env!("CARGO_PKG_VERSION")),
+        None => env!("CARGO_PKG_VERSION").to_string(),
+    }
 }
