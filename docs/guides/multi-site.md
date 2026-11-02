@@ -108,7 +108,10 @@ the same talkgroup and began within 3 seconds of each other, one from each site.
 recorded. When the last one ends, the best copy is saved. Another copy is dropped only when the
 saved one holds all of it: the same time (give or take 3 seconds), the same talkers, and decoded at
 least as well (90% will do for the talkgroup's preferred site). Anything else is saved too: better
-a duplicate than a transmission lost. The log says which was dropped: "TG 101 FD Disp was heard on
+a duplicate than a transmission lost. Copies granted at the same moment (within a quarter of a
+second) are one grant: the same transmissions even when the sites name different talkers: an
+EDACS network names a transmission it carries to another site by an ID of that site's, not the
+radio that keyed up. The log says which was dropped: "TG 101 FD Disp was heard on
 east and west: saved east's copy". Every copy saved carries the same `transmission_id` in its
 call JSON.
 

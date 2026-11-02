@@ -38,6 +38,10 @@ use super::recorded::Recorded;
 pub const TWIN_WINDOW_S: f64 = 3.0;
 /// A preferred site's copy is kept while it has this share of the best copy's clean audio.
 pub const PREFERRED_SHARE: f64 = 0.9;
+/// Copies granted this close together are one grant carried to each site: their talkers are the
+/// same talkers, whatever IDs each site names. (An EDACS network names a transmission carried to
+/// another site by an ID of that site's, not the radio that keyed up.)
+pub const SAME_GRANT_S: f64 = 0.25;
 /// Live audio stays with one site until it has been quiet this long.
 const LEAD_HOLD_S: f64 = 0.5;
 
@@ -111,9 +115,13 @@ impl Kept {
     pub fn holds(&self, h: &Held) -> bool {
         let talkers = |c: &Call| c.sources.iter().map(|s| s.src).filter(|&s| s != 0).collect::<Vec<_>>();
         let (mine, theirs) = (talkers(&self.call), talkers(&h.call));
+        let (a, b) = (Span::of(&self.call), Span::of(&h.call));
+        // One grant on both sites: the same transmissions, however each site named their talkers
+        // (no more of them than this copy heard; a site may end its copy sooner or later).
+        let one_grant = (a.start_s - b.start_s).abs() <= SAME_GRANT_S && !theirs.is_empty() && theirs.len() <= mine.len();
         self.call.site != h.call.site
-            && Span::of(&self.call).holds(Span::of(&h.call))
-            && (mine.is_empty() || theirs.iter().all(|t| mine.contains(t)))
+            && a.holds(b)
+            && (mine.is_empty() || theirs.iter().all(|t| mine.contains(t)) || one_grant)
             && self.clean_s >= h.clean_s() * PREFERRED_SHARE
     }
 }
@@ -423,6 +431,15 @@ mod tests {
         assert!(!kept.holds(&copy(5, 1, 0.3, 12.0, &[7], 100)), "it went on after this one ended");
         assert!(!kept.holds(&copy(6, 1, 0.3, 5.1, &[9], 100)), "another talker");
         assert!(!kept.holds(&copy(7, 1, 0.3, 5.1, &[7], 120)), "it decoded more: a part this lost");
+        // One grant carried to another site that names its talker otherwise (an EDACS network: TG 799's
+        // radio 3817 on two sites, 6292 on a third, every transmission at the same instant): one transmission.
+        assert!(kept.holds(&copy(8, 1, 0.0, 5.0, &[9], 100)), "the same grant, its talker named otherwise");
+        assert!(kept.holds(&copy(9, 1, 0.2, 5.1, &[9], 100)), "the same grant, a moment apart");
+        assert!(!kept.holds(&copy(10, 1, 0.0, 5.0, &[9, 11], 100)), "two talkers on it: a conversation, not one grant");
+        let both = Kept::of(&copy(11, 0, 0.0, 9.0, &[7, 9], 100));
+        assert!(both.holds(&copy(12, 1, 0.0, 9.0, &[13, 14], 100)), "the same grant, both talkers named otherwise");
+        assert!(both.holds(&copy(14, 1, 0.0, 4.0, &[13], 100)), "the same grant, ended sooner on its site");
+        assert!(!both.holds(&copy(15, 1, 0.5, 9.0, &[13], 100)), "a talker the kept copy didn't hear, granted apart");
     }
 
     #[test]
