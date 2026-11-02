@@ -8,6 +8,7 @@ guides; these pages list what each key does.
 | Page | Covers |
 |---|---|
 | [sources.md](sources.md) | Radios and capture files (`sources`) |
+| [audio-streams.md](audio-streams.md) | Internet audio streams: conventional rows of mode `stream` |
 | [systems.md](systems.md) | Trunked systems (`systems`), talkgroup files, unit names, site lock |
 | [conventional.md](conventional.md) | Conventional systems and channels (`conventional`), the channel CSV |
 | [recording.md](recording.md) | Where and how calls are saved (`recording`), per-system rules, file names |

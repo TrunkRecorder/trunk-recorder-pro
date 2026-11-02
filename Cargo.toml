@@ -26,6 +26,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 # ~2x release and still debuggable.
 [profile.dev]
 opt-level = 1
+incremental = false
 
 [profile.release]
 opt-level = 3

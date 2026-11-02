@@ -23,6 +23,8 @@ The same engine also runs in the browser with nothing to install. On a Raspberry
   a three-site networked system; ProVoice on synthesized signals.
 - **Conventional channels**: analog FM and AM (airband), P25, DMR and NXDN, split by CTCSS / DCS tone, NAC, colour
   code or RAN
+- **Internet audio streams**: an MP3 or WAV feed over HTTP(S) as a conventional channel, with no radio: its calls
+  recorded, played live, matched to signals and sent to plugins like any channel's
 - Several systems and several sites at once; a call heard on more than one site is saved once,
   from the best copy
 
@@ -68,7 +70,7 @@ research a system on RadioReference and set gain and frequency correction.
 |---|---|
 | **Setting up** | [Getting started](docs/getting-started.md) · [Radios](docs/guides/radios.md) · [Find my system](docs/guides/find-my-system.md) |
 | **Radio systems** | [P25](docs/guides/p25.md) · [SmartNet](docs/guides/smartnet.md) · [DMR](docs/guides/dmr.md) · [NXDN](docs/guides/nxdn.md) · [Several systems and sites](docs/guides/multi-site.md) · [Talkgroups and units](docs/guides/talkgroups-and-units.md) |
-| **Conventional** | [Conventional channels](docs/guides/conventional.md) · [Tones, NACs and colour codes](docs/guides/tones.md) |
+| **Conventional** | [Conventional channels](docs/guides/conventional.md) · [Internet audio streams](docs/configuration/audio-streams.md) · [Tones, NACs and colour codes](docs/guides/tones.md) |
 | **Using it** | [The interface](docs/guides/interface.md) · [The dashboard](docs/guides/dashboard.md) · [Recordings](docs/guides/recordings.md) · [Troubleshooting](docs/troubleshooting.md) |
 | **Plugins** | [Using plugins](docs/plugins/README.md) · [OpenMHz](docs/plugins/openmhz.md) · [Broadcastify](docs/plugins/broadcastify.md) · [Rdio Scanner](docs/plugins/rdioscanner.md) · [simplestream](docs/plugins/simplestream.md) · [Upload script](docs/plugins/upload-script.md) |
 | **Reference** | [Configuration](docs/configuration/README.md) · [Command line](docs/command-line.md) |

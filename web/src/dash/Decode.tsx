@@ -41,7 +41,7 @@ export const BAD_MAX = 20;
 const PHASE_WARN = 15;
 const PHASE_BAD = 20;
 
-const MODE_LABEL: Record<NonNullable<ChannelSnapshot["mode"]>, string> = { fm: "FM", am: "AM", p25: "P25", dmr: "DMR", nxdn48: "NXDN 4800", nxdn96: "NXDN 9600" };
+const MODE_LABEL: Record<NonNullable<ChannelSnapshot["mode"]>, string> = { fm: "FM", am: "AM", p25: "P25", dmr: "DMR", nxdn48: "NXDN 4800", nxdn96: "NXDN 9600", stream: "Stream" };
 
 /** What a channel is: a trunked one's role, a conventional one's mode and names ("P25 · Fire Dispatch"). */
 export function channelWhat(c: ChannelSnapshot): string {

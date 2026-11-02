@@ -219,6 +219,7 @@ const MODE_OPTIONS: { mode: Channel["mode"]; label: string }[] = [
   { mode: "dmr", label: "DMR" },
   { mode: "nxdn48", label: "NXDN48 (6.25 kHz)" },
   { mode: "nxdn96", label: "NXDN96 (12.5 kHz)" },
+  { mode: "stream", label: "Internet stream" },
 ];
 
 const modeOptions = MODE_OPTIONS.map((o) => (
@@ -226,6 +227,8 @@ const modeOptions = MODE_OPTIONS.map((o) => (
     {o.label}
   </option>
 ));
+/** The modes a frequency can have (a stream has none). */
+const airModeOptions = modeOptions.filter((o) => o.key !== "stream");
 
 const CODE_HINT = {
   fm: { placeholder: "any", title: "CTCSS tone or DCS code (151.4 PL, 023 DPL). Empty: any." },
@@ -234,10 +237,13 @@ const CODE_HINT = {
   dmr: { placeholder: "any CC", title: "Colour code (1). Empty: any. RadioReference's CC1 TS2 TG201 fills Slot and Match TG too." },
   nxdn48: { placeholder: "any RAN", title: "RAN (5). Empty or 0: any. RAN 5 TG 201 fills Match TG too." },
   nxdn96: { placeholder: "any RAN", title: "RAN (5). Empty or 0: any. RAN 5 TG 201 fills Match TG too." },
+  stream: { placeholder: "—", title: "A stream carries no tone or code: every call on it." },
 };
 
 /** Digital modes: those whose transmissions name their talkgroup. */
-const digital = (mode: Channel["mode"]) => mode !== "fm" && mode !== "am";
+const digital = (mode: Channel["mode"]) => mode !== "fm" && mode !== "am" && mode !== "stream";
+/** Modes with no codes: every transmission is the row's. */
+const codeless = (mode: Channel["mode"]) => mode === "am" || mode === "stream";
 
 /** A row's access fields set to `p` (absent when empty). */
 function setAccess(x: Channel, p: AccessParts) {
@@ -273,7 +279,7 @@ function AccessInput(props: { ch: Channel; disabled?: boolean; onChange: (p: Acc
         value={code}
         codec={asTyped}
         placeholder={CODE_HINT[ch.mode].placeholder}
-        readOnly={ch.mode === "am" && !code}
+        readOnly={codeless(ch.mode) && !code}
         aria-label="Code"
         aria-invalid={!!error}
         title={error ?? CODE_HINT[ch.mode].title}
@@ -350,7 +356,7 @@ function matchChips(ch: Channel, shared: boolean): { kind: MatchKind; text: stri
   const bad = "error" in parsed ? parsed.error : undefined;
   const out: { kind: MatchKind; text: string; bad?: string }[] = [];
   if (code) {
-    const named = { fm: /^\d/.test(code) ? `${code} Hz` : code, am: code, p25: `NAC ${code}`, dmr: `CC ${code}`, nxdn48: `RAN ${code}`, nxdn96: `RAN ${code}` }[ch.mode];
+    const named = { fm: /^\d/.test(code) ? `${code} Hz` : code, am: code, stream: code, p25: `NAC ${code}`, dmr: `CC ${code}`, nxdn48: `RAN ${code}`, nxdn96: `RAN ${code}` }[ch.mode];
     // (What doesn't read is shown as typed.)
     out.push({ kind: ch.mode === "fm" ? "tone" : "code", text: bad ? code : named, bad });
   }
@@ -369,7 +375,7 @@ function MatchLine(props: { ch: Channel; shared: boolean; open: boolean; onToggl
       type="button"
       className={`match-line${props.open ? " open" : ""}`}
       aria-expanded={props.open}
-      title={ch.mode === "am" ? "AM has no codes: every transmission. Click to edit the row" : "What this row records — click to edit the row"}
+      title={codeless(ch.mode) ? `${ch.mode === "am" ? "AM" : "A stream"} has no codes: every transmission. Click to edit the row` : "What this row records — click to edit the row"}
       onClick={props.onToggle}
     >
       {chips.map((c, k) => (
@@ -457,7 +463,7 @@ function RowEditor(props: {
         <div className="row-editor">
           <fieldset>
             <legend>Records</legend>
-            {ch.mode === "am" ? <span className="muted small">Every transmission: AM carries no codes.</span> : <AccessInput ch={ch} disabled={props.disabled} onChange={props.onAccess} />}
+            {codeless(ch.mode) ? <span className="muted small">Every transmission: {ch.mode === "am" ? "AM" : "a stream"} carries no codes.</span> : <AccessInput ch={ch} disabled={props.disabled} onChange={props.onAccess} />}
           </fieldset>
           <fieldset>
             <legend>Names</legend>
@@ -488,7 +494,7 @@ function RowEditor(props: {
           </button>
         </div>
         <div className="field-hint">
-          {ch.mode !== "am" && CODE_HINT[ch.mode].title}
+          {!codeless(ch.mode) && CODE_HINT[ch.mode].title}
           {ch.mode === "dmr" && " Slot: either, or one."}
           {digital(ch.mode) && " Match TG: only transmissions naming this talkgroup (empty: any). Give the row a TG Number to file them under another; the air's stays in the call's JSON as talkgroup_ota."}
           {" "}Names go with every call the row takes, as a talkgroup file's do (empty: the talkgroup file's for the number filed under, if the row has no names at all).
@@ -499,7 +505,7 @@ function RowEditor(props: {
   );
 }
 
-const NONE_LABEL = { fm: "no tone", am: "no code", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code" };
+const NONE_LABEL = { fm: "no tone", am: "no code", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code", stream: "no code" };
 const SHOWN_CODES = 8;
 
 /**
@@ -1508,6 +1514,12 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                 Add a channel
               </button>
             )}
+            {/* (The desktop and server apps fetch streams; the browser version can't.) */}
+            {!linked && can("drivers") && (
+              <button className="btn ghost small" title="An internet audio stream (MP3 or WAV over HTTP): recorded as a channel, with no radio" onClick={() => add([{ freqHz: 0, mode: "stream", name: "", enabled: true, url: "" }])}>
+                Add a stream
+              </button>
+            )}
           </>
         }
       >
@@ -1562,7 +1574,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
             <div className="row">
               <input className="mono grow" value={bulk} placeholder="154.430, 155.100, 460.125" onChange={(e) => setBulk(e.target.value)} />
               <select value={bulkMode} onChange={(e) => setBulkMode(e.target.value as Channel["mode"])} aria-label="Mode for the added channels">
-                {modeOptions}
+                {airModeOptions}
               </select>
               <button
                 className="btn"
@@ -1610,7 +1622,21 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                         <input type="checkbox" disabled={linked} checked={ch.enabled} aria-label="Record this channel" onChange={(e) => editRow(i, (x) => void (x.enabled = e.target.checked))} />
                       </td>
                       <td>
-                        {linked ? <span className="mono">{mhzCell(ch.freqHz)}</span> : <DraftInput className="mono" codec={mhz} value={ch.freqHz} placeholder="MHz" aria-label="Frequency, MHz" onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />}
+                        {ch.mode === "stream" ? (
+                          <TextInput
+                            className="mono"
+                            value={ch.url ?? ""}
+                            disabled={linked}
+                            placeholder="https://…/feed.mp3"
+                            aria-label="Stream address"
+                            title="The stream's address: MP3 or WAV over HTTP or HTTPS (it may hold the feed's user and password)"
+                            onChange={(v) => editRow(i, (x) => void (x.url = v.trim()))}
+                          />
+                        ) : linked ? (
+                          <span className="mono">{mhzCell(ch.freqHz)}</span>
+                        ) : (
+                          <DraftInput className="mono" codec={mhz} value={ch.freqHz} placeholder="MHz" aria-label="Frequency, MHz" onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />
+                        )}
                       </td>
                       <td>
                         <select
@@ -1623,7 +1649,16 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                               // A bandwidth is the mode's (AM's and FM's mean different channels); AM has no codes.
                               delete x.bandwidthKhz;
                               // The code is the mode's; Match TG only digital modes', Slot only DMR's.
-                              if (x.mode === "am") delete x.code;
+                              if (codeless(x.mode)) delete x.code;
+                              // A stream has an address, not a frequency (nor a squelch); a frequency no address.
+                              if (x.mode === "stream") {
+                                x.freqHz = 0;
+                                x.url ??= "";
+                                delete x.squelchDb;
+                              } else {
+                                delete x.url;
+                                delete x.stereo;
+                              }
                               if (!digital(x.mode)) delete x.matchTalkgroup;
                               if (x.mode !== "dmr") delete x.slot;
                             })
@@ -1633,6 +1668,24 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                         </select>
                       </td>
                       <td>
+                        {ch.mode === "stream" ? (
+                          <select
+                            value={ch.stereo ?? "mix"}
+                            disabled={linked}
+                            aria-label="Stereo channel"
+                            title="Which of a stereo stream's channels it records (a scanner feed may carry one on each)"
+                            onChange={(e) =>
+                              editRow(i, (x) => {
+                                if (e.target.value === "mix") delete x.stereo;
+                                else x.stereo = e.target.value as "left" | "right";
+                              })
+                            }
+                          >
+                            <option value="mix">Both, mixed</option>
+                            <option value="left">Left</option>
+                            <option value="right">Right</option>
+                          </select>
+                        ) : (
                         <BandwidthSelect
                           ch={ch}
                           disabled={linked}
@@ -1646,6 +1699,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                             })
                           }
                         />
+                        )}
                       </td>
                       <td>
                         <MatchLine
@@ -1673,7 +1727,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           narrow
                           disabled={linked}
                           value={ch.talkgroup}
-                          placeholder={ch.freqHz ? (digital(ch.mode) ? "air's" : String(talkgroups[i])) : "auto"}
+                          placeholder={ch.mode === "stream" ? "needed" : ch.freqHz ? (digital(ch.mode) ? "air's" : String(talkgroups[i])) : "auto"}
                           label={
                             digital(ch.mode)
                               ? `TG Number: calls are filed under it; empty: the talkgroup the air names (${ch.freqHz ? talkgroups[i] : "the frequency in kHz"} when it names none)`
@@ -1688,6 +1742,11 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                         />
                       </td>
                       <td>
+                        {ch.mode === "stream" ? (
+                          <span className="muted" title="A stream's call opens when its audio is louder than −42 dBFS">
+                            —
+                          </span>
+                        ) : (
                         <NumberInput
                           narrow
                           disabled={linked}
@@ -1701,6 +1760,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                             })
                           }
                         />
+                        )}
                       </td>
                       <td>
                         <span className="row-actions">
@@ -1714,7 +1774,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           </button>
                         {!linked && (
                           <>
-                            {ch.freqHz > 0 && ch.mode !== "am" && (
+                            {ch.freqHz > 0 && !codeless(ch.mode) && (
                               <button
                                 className="btn ghost small"
                                 title={`Another ${{ fm: "tone", p25: "NAC or talkgroup", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode]} on this frequency`}

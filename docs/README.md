@@ -70,6 +70,7 @@ LimeSDR...).
 - [Several systems and sites](guides/multi-site.md)
 - [Talkgroups and unit names](guides/talkgroups-and-units.md)
 - [Conventional channels](guides/conventional.md)
+- [Internet audio streams](configuration/audio-streams.md): an MP3 or WAV feed as a conventional channel, no radio needed
 - [Tones, NACs and colour codes](guides/tones.md): splitting a shared frequency
 
 ### Using it
@@ -92,6 +93,7 @@ LimeSDR...).
 
 - [The config file](configuration/README.md):
   [sources](configuration/sources.md),
+  [internet audio streams](configuration/audio-streams.md),
   [trunked systems](configuration/systems.md),
   [conventional systems](configuration/conventional.md),
   [recording](configuration/recording.md),
