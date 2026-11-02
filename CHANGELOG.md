@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-11-01
+
 - **A plugin slow to describe itself is asked again, not written off.** On a busy or just-booted
   machine a plugin can take longer than 10 s to answer `--describe`; it's now asked again with 30 s,
   and a run out of time isn't remembered (it's asked once more next time) as a broken plugin was
