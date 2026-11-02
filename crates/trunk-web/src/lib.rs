@@ -433,7 +433,7 @@ impl WebRtl {
             b = b.serial(serial);
         }
         let dev = b.open().await.map_err(|e| match e {
-            rtlsdr_nusb::Error::UnsupportedTuner => err("this dongle's tuner isn't supported in the browser (only R820T / R828D; not E4000, FC0012, FC0013 or FC2580) — the desktop app can use it as a SoapySDR source with driver=rtlsdr"),
+            rtlsdr_nusb::Error::UnsupportedTuner => err("this dongle's tuner isn't supported in the browser (only R820T / R828D / E4000; not FC0012, FC0013 or FC2580) — the desktop app can use it as a SoapySDR source with driver=rtlsdr"),
             e => err(e),
         })?;
         let mut rx = dev.rx_stream().map_err(err)?;

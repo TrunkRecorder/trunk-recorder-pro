@@ -102,7 +102,7 @@ loop, which reopens a radio after an error once its back-off is up (RTL-SDR
 
 | Kind | Code | Notes |
 |---|---|---|
-| `rtlsdr` | `trunk-pro/src/sdr.rs` | Pure Rust over `rtlsdr-nusb`. R820T / R828D tuners only. Sends raw `u8` IQ (`SourceMsg::Data`). |
+| `rtlsdr` | `trunk-pro/src/sdr.rs` | Pure Rust over `rtlsdr-nusb`. R820T / R828D / E4000 tuners only. Sends raw `u8` IQ (`SourceMsg::Data`). |
 | `usrp` | `radio/uhd.rs` | UHD's C API, loaded with `libloading` at run time. Float IQ (`SourceMsg::Iq`). |
 | `airspy` | `radio/airspy.rs` | libairspy, loaded at run time. Its samples arrive on libairspy's own callback thread as real 16-bit samples (`SourceMsg::Real16`), made IQ on the source's dsp thread (`sdr::IqFrom`). |
 | `soapy` | `radio/soapy.rs` | SoapySDR 0.7 / 0.8, loaded at run time. Float IQ. |

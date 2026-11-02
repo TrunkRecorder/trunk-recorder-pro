@@ -44,8 +44,8 @@ impl RtlConfig {
     }
 }
 
-/// Opening a dongle whose tuner rtlsdr-nusb doesn't drive (only R820T / R828D).
-pub const UNSUPPORTED_TUNER: &str = "its tuner isn't supported natively (only R820T / R828D; not E4000, FC0012, FC0013 or FC2580) — add it as a SoapySDR source with device arguments driver=rtlsdr instead (needs SoapySDR's RTL-SDR module)";
+/// Opening a dongle whose tuner rtlsdr-nusb doesn't drive (only R820T / R828D / E4000).
+pub const UNSUPPORTED_TUNER: &str = "its tuner isn't supported natively (only R820T / R828D / E4000; not FC0012, FC0013 or FC2580) — add it as a SoapySDR source with device arguments driver=rtlsdr instead (needs SoapySDR's RTL-SDR module)";
 
 /// Serials of the dongles this program has open: a search for dongles
 /// reports them as recording rather than open them to ask.
