@@ -206,6 +206,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     device: "args",
     driver: { name: "SoapySDR and your radio's module", macos: "brew install soapysdr soapyhackrf", linux: "sudo apt install soapysdr0.8-module-all", windows: "PothosSDR or radioconda" },
     covers: "SDRplay, LimeSDR, PlutoSDR…",
+    liveAgc: true,
   },
   file: { label: "Capture file", fresh: newFile, get rates() { return sourceRates("file"); } },
 };

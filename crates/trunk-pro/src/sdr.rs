@@ -298,6 +298,18 @@ pub struct Control {
     /// The centre and gain last applied, so a reopened device comes back so.
     pub current_hz: Mutex<Option<f64>>,
     pub current_gain: Mutex<Option<Gain>>,
+    /// A SoapySDR radio's AGC, gain and named stages, changed in Setup while recording
+    /// (an SDRplay's IFGR / RFGR aren't stages [`Gain`] knows), and the ones last applied.
+    pub soapy: Mutex<Option<SoapyGain>>,
+    pub current_soapy: Mutex<Option<SoapyGain>>,
+}
+
+/// A SoapySDR radio's gain as Setup has it: its AGC, or (AGC off) an overall gain and each named stage.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SoapyGain {
+    pub agc: bool,
+    pub db: Option<f64>,
+    pub stages: Vec<(String, f64)>,
 }
 
 pub use sdr_core::gain::Stage;

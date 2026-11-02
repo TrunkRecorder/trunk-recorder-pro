@@ -338,7 +338,7 @@ pub fn find() -> Result<Vec<serde_json::Value>, String> {
     // SAFETY: n kwargs.
     let found: Vec<Vec<(String, String)>> = (0..n).map(|i| unsafe { kwargs(&*list.add(i)) }).collect();
     let mut out = Vec::new();
-    for (kv, args) in found.iter().zip(device_args(&found)) {
+    for (kv, args) in found.iter().zip(found_args(&found)) {
         let get = |k: &str| kv.iter().find(|(key, v)| key == k && !v.is_empty()).map(|(_, v)| v.clone());
         let driver = get("driver").unwrap_or_default();
         let mut label = get("label").unwrap_or_else(|| driver.clone());
@@ -360,7 +360,7 @@ pub fn find() -> Result<Vec<serde_json::Value>, String> {
 /// and serial, and, where several entries share them (an SDRplay RSPduo is
 /// listed once per tuner mode: `mode=ST`, `DT`, `MA` …), the keys that tell
 /// them apart. Without a serial: every key but the label.
-fn device_args(found: &[Vec<(String, String)>]) -> Vec<String> {
+fn found_args(found: &[Vec<(String, String)>]) -> Vec<String> {
     let get = |kv: &[(String, String)], k: &str| kv.iter().find(|(key, v)| key == k && !v.is_empty()).map(|(_, v)| v.clone());
     let base = |kv: &[(String, String)]| match (get(kv, "driver"), get(kv, "serial")) {
         (Some(d), Some(s)) => Some(format!("driver={d},serial={s}")),
@@ -509,6 +509,20 @@ impl Tunable for Device {
 }
 
 impl Device {
+    /// Its AGC, or (AGC off) an overall gain and each named stage: not both, as SDRplay
+    /// ignores stage gains while its AGC is on. The stages are kept, for a gain set later.
+    unsafe fn gains(&mut self, g: &crate::sdr::SoapyGain) -> Result<(), String> {
+        self.stages = g.stages.clone();
+        unsafe {
+            if g.agc {
+                if !(self.a.has_gain_mode)(self.dev, RX, 0) {
+                    return Err("this device has no AGC: set a gain instead".into());
+                }
+                return check(self.a, "AGC", (self.a.set_gain_mode)(self.dev, RX, 0, true));
+            }
+            self.gain(g.db)
+        }
+    }
     /// A manual gain: the AGC off, `db` overall (None: as the device has it),
     /// then each of its stages' — which an overall gain set alone would undo.
     unsafe fn gain(&self, db: Option<f64>) -> Result<(), String> {
@@ -608,20 +622,15 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
             let (ck, cv) = (CString::new(k.as_str()).map_err(|e| e.to_string())?, CString::new(v.as_str()).map_err(|e| e.to_string())?);
             check(a, &format!("setting {k}"), (a.write_setting)(d.dev, ck.as_ptr(), cv.as_ptr()))?;
         }
-        // AGC or the gains, not both: SDRplay ignores stage gains while its AGC is on.
-        let has_agc = (a.has_gain_mode)(d.dev, RX, 0);
-        if cfg.agc {
-            if !has_agc {
-                return Err("this device has no AGC: set a gain instead".into());
-            }
-            check(a, "AGC", (a.set_gain_mode)(d.dev, RX, 0, true))?;
-        } else {
-            d.stages = cfg.gains.clone();
-            d.gain(cfg.gain_db)?;
+        // The gain set while it last ran (Setup, while recording), else the config's.
+        let g = ctl
+            .and_then(|c| c.current_soapy.lock().unwrap().clone())
+            .unwrap_or_else(|| crate::sdr::SoapyGain { agc: cfg.agc, db: cfg.gain_db, stages: cfg.gains.clone() });
+        d.gains(&g)?;
         }
         d.tune(cfg.center_hz)?;
-        if !cfg.agc {
-            sink.gained(cfg.gain(), d.gain_set());
+        if !g.agc {
+            sink.gained(g.db.map(|db| Gain::Db(db as f32)), d.gain_set());
         }
 
         let chan = [0usize];
@@ -646,10 +655,19 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
         let mut overflowed = false;
         let mut timeouts = 0;
         while !stop.load(Ordering::Relaxed) {
-            if let Some(c) = ctl
-                && c.apply(&mut d, cfg.center_hz, sink)? == Applied::Closed
-            {
-                return Ok(());
+            if let Some(c) = ctl {
+                // AGC or gain stages changed in Setup: set now, and kept for a reopen.
+                let pending = c.soapy.lock().unwrap().take();
+                if let Some(g) = pending {
+                    d.gains(&g)?;
+                    if !g.agc {
+                        sink.gained(g.db.map(|db| Gain::Db(db as f32)), d.gain_set());
+                    }
+                    *c.current_soapy.lock().unwrap() = Some(g);
+                }
+                if c.apply(&mut d, cfg.center_hz, sink)? == Applied::Closed {
+                    return Ok(());
+                }
             }
             let mut buf = sink.iq_buffer(per);
             buf.vec().resize(per, Complex32::default());
@@ -810,7 +828,7 @@ mod tests {
     /// An RSPduo is listed once per tuner mode: each entry keeps its mode, so it
     /// opens that mode; a radio listed once is its driver and serial.
     #[test]
-    fn device_args_keep_what_tells_entries_apart() {
+    fn found_args_keep_what_tells_entries_apart() {
         let duo = |mode: &str, label: &str| kv(&[("driver", "sdrplay"), ("label", label), ("mode", mode), ("serial", "1809075332")]);
         let found = vec![
             duo("ST", "RSPduo - Single Tuner"),
@@ -819,7 +837,7 @@ mod tests {
             kv(&[("driver", "remote"), ("label", "x"), ("remote", "tcp://1.2.3.4")]),
         ];
         assert_eq!(
-            device_args(&found),
+            found_args(&found),
             [
                 "driver=sdrplay,serial=1809075332,mode=ST",
                 "driver=sdrplay,serial=1809075332,mode=DT",

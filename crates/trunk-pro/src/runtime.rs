@@ -459,6 +459,19 @@ pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
     (o == *new).then_some(gain)
 }
 
+/// A SoapySDR source whose only change is its AGC, gain or gain stages: those, to apply at once.
+pub fn live_soapy(old: &Source, new: &Source) -> Option<sdr::SoapyGain> {
+    let (mut o, new) = (old.radio(), &new.radio());
+    let g = match (&mut o.kind, &new.kind) {
+        (SourceKind::Soapy { agc, gain_db, gains, .. }, SourceKind::Soapy { agc: a, gain_db: d, gains: s, .. }) => {
+            (*agc, *gain_db, *gains) = (*a, *d, s.clone());
+            sdr::SoapyGain { agc: *a, db: *d, stages: s.iter().map(|(k, v)| (k.clone(), *v)).collect() }
+        }
+        _ => return None,
+    };
+    (o == *new).then_some(g)
+}
+
 impl Ctx {
     /// Setup's sources went from `old` to `now` while recording: each this
     /// edit changed, by its place in `now`, with the gain its radio took at
@@ -487,6 +500,14 @@ impl Ctx {
             };
             // (The run has it already: a gain the tuner kept.)
             if run.sources[k].radio() == s.radio() {
+                continue;
+            }
+            // A SoapySDR radio: its AGC and named stages too (an SDRplay's IFGR / RFGR).
+            if let (Some(sg), Some(c)) = (live_soapy(&run.sources[k], s), r.controls.get(k)) {
+                let shown = if sg.agc { Gain::Agc } else { sg.db.map_or(Gain::Stages(Default::default()), |d| Gain::Db(d as f32)) };
+                *c.soapy.lock().unwrap() = Some(sg);
+                run.sources[k] = s.clone();
+                out.push((i, Some(shown)));
                 continue;
             }
             let gain = live_gain(&run.sources[k], s).zip(r.controls.get(k)).map(|(g, c)| {
@@ -1722,6 +1743,15 @@ mod live_tests {
         assert_eq!(g, Some(Gain::Stages(hackrf_gain(24, 20, true))), "a HackRF's stages, live");
         assert_eq!(g.unwrap().to_string(), "AMP on · LNA 24 · VGA 20");
         assert_eq!(manual(0, 0, 7, true).to_string(), "AGC · VGA 7");
+        // A SoapySDR radio (an SDRplay RSPduo): AGC on or off and its named stages, live; a retune waits.
+        let duo = |agc: bool, ifgr: f64, hz: f64| src("soapy", json!({ "args": "driver=sdrplay,serial=1809075332,mode=ST", "centerHz": hz, "rateHz": 10e6, "agc": agc, "gains": { "IFGR": ifgr, "RFGR": 1.0 } }));
+        let s = live_soapy(&duo(false, 25.0, 857.5e6), &duo(false, 30.0, 857.5e6)).expect("a stage change goes live");
+        assert_eq!((s.agc, s.stages.clone()), (false, vec![("IFGR".to_string(), 30.0), ("RFGR".to_string(), 1.0)]));
+        assert!(live_soapy(&duo(false, 25.0, 857.5e6), &duo(true, 25.0, 857.5e6)).is_some_and(|s| s.agc), "AGC on, live");
+        assert!(live_soapy(&duo(true, 25.0, 857.5e6), &duo(false, 25.0, 857.5e6)).is_some_and(|s| !s.agc), "AGC off, live");
+        assert_eq!(live_soapy(&duo(false, 25.0, 857.5e6), &duo(false, 30.0, 858e6)), None, "a retune with it waits");
+        let dongle = |g: f64| src("rtlsdr", json!({ "serial": "1", "centerHz": 851000000, "rateHz": 2400000, "gainDb": g }));
+        assert_eq!(live_soapy(&dongle(30.0), &dongle(20.0)), None, "not a SoapySDR radio");
     }
 
     #[test]
