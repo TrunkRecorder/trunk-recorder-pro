@@ -29,7 +29,8 @@ import {
   sameOnTheAir,
   siteActive,
   siteNameOf,
-  sourceCovering,
+  receiverOf,
+  sourceLabels,
   systemColor,
   usableHalfWidth,
   siteLockFields,
@@ -450,12 +451,14 @@ function RowEditor(props: {
   onName: (field: NameField, value: string) => void;
   onAutoTune: (on: boolean) => void;
   onDone: () => void;
+  /** Columns the table has beside the first. */
+  span: number;
 }) {
   const { ch } = props;
   return (
     <tr className="rule-edit">
       <td />
-      <td colSpan={8}>
+      <td colSpan={props.span}>
         <div className="row-editor">
           <fieldset>
             <legend>Records</legend>
@@ -509,7 +512,7 @@ const SHOWN_CODES = 8;
  * codes), most heard first, each with an Add that makes a row for it — the
  * way to find a frequency's codes without knowing them.
  */
-function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (p: AccessParts) => void }) {
+function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (p: AccessParts) => void; span: number }) {
   const mode = props.rows[0].mode;
   // Only what this mode's Tone can say (NXDN's RAN 0 is any: "RAN 0 TG 201" is "TG 201").
   const nxdn = mode === "nxdn48" || mode === "nxdn96";
@@ -525,7 +528,7 @@ function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean;
   return (
     <tr className="heard-row">
       <td />
-      <td colSpan={8}>
+      <td colSpan={props.span}>
         <span className="muted small">Heard:</span>
         {shown.map((h) => (
           <span key={h.code} className="heard-code" title={`Last heard ${new Date(h.lastMs).toLocaleString()}`}>
@@ -730,7 +733,7 @@ function UsbTransfers(props: { src: Extract<Source, { type: "rtlsdr" }>; edit: E
 function AutoTune(props: { c: Config; src: Source; i: number; edit: EditSource }) {
   const { c, src, i, edit } = props;
   const s = useApp();
-  const st = runningSource(s.sources, c.sources, i);
+  const st = runningSource(s.sources, c, i);
   const err = st?.errorPpm ?? null;
   const apply = src.type !== "file" && err !== null && Math.abs(err) >= 0.3 ? st?.ppmApply ?? null : null;
   return (
@@ -915,6 +918,62 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
 
 
 /** `fresh`: just added (measuring its roll-off is offered). */
+/**
+ * The sources a system or channel may be received on, as Setup offers them:
+ * each radio by its label (what receiveOn names it by, wherever it is in the
+ * list), then any it names that isn't a source now, to take off.
+ */
+function receiveChoices(c: Config, on: string[] | undefined): { label: string; name: string; gone: boolean }[] {
+  const labels = sourceLabels(c);
+  const here = [...new Set(labels)].map((label) => ({ label, name: `Source ${labels.flatMap((l, n) => (l === label ? [n + 1] : [])).join(", ")} · ${label}`, gone: false }));
+  return [...here, ...(on ?? []).filter((l) => !labels.includes(l)).map((label) => ({ label, name: `${label} (not a source now)`, gone: true }))];
+}
+
+/** A system's sources: none ticked, any that reaches its channels. Shown with two or more sources. */
+function ReceiveOn(props: { c: Config; on: string[] | undefined; onChange: (on: string[] | undefined) => void }) {
+  const on = props.on ?? [];
+  if (props.c.sources.length < 2 && !on.length) return null;
+  return (
+    <div className="field wide">
+      <span className="field-label">Receive on</span>
+      <div className="row">
+        {receiveChoices(props.c, on).map((x) => (
+          <label key={x.label} className={`toggle${x.gone ? " bad" : ""}`}>
+            <input
+              type="checkbox"
+              checked={on.includes(x.label)}
+              onChange={(e) => {
+                const next = e.target.checked ? [...on, x.label] : on.filter((l) => l !== x.label);
+                props.onChange(next.length ? next : undefined);
+              }}
+            />
+            <span className="small">{x.name}</span>
+          </label>
+        ))}
+      </div>
+      <span className="field-hint">{on.length ? "Only these sources are used for it." : "Any source that reaches it."}</span>
+    </div>
+  );
+}
+
+/** A conventional channel's source: any that reaches it, or the one picked (a longer list from a hand-edited config is kept and shown). */
+function ReceiveOnSelect(props: { c: Config; ch: Channel; disabled?: boolean; onChange: (on: string[] | undefined) => void }) {
+  const on = props.ch.receiveOn ?? [];
+  const value = JSON.stringify(on);
+  const choices = receiveChoices(props.c, on);
+  return (
+    <select value={on.length ? value : ""} disabled={props.disabled} aria-label="Source" onChange={(e) => props.onChange(e.target.value ? (JSON.parse(e.target.value) as string[]) : undefined)}>
+      <option value="">Any</option>
+      {choices.map((x) => (
+        <option key={x.label} value={JSON.stringify([x.label])}>
+          {x.name}
+        </option>
+      ))}
+      {on.length > 1 && <option value={value}>{on.join(", ")}</option>}
+    </select>
+  );
+}
+
 export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
   const s = useApp();
   const { c, i } = props;
@@ -1355,6 +1414,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
   const need = useNeed();
   const conv = c.conventional[k];
   const chans = conv.channels;
+  const multi = c.sources.length > 1;
   const name = conv.shortName;
   const dupName = c.conventional.some((x, j) => j !== k && x.shortName === name);
   // Stable row keys (each edit clones the config; a frequency input keeps its own text).
@@ -1607,6 +1667,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                     <th>Name</th>
                     <th title="Calls are filed under it. Empty: digital modes the talkgroup the air names, else the frequency in kHz. The air's is kept in the call's JSON as talkgroup_ota">TG Number</th>
                     <th title="dB above the noise floor">Squelch</th>
+                    {multi && <th title="Which source receives it: any that covers it, or just the one picked">Source</th>}
                     <th />
                   </tr>
                 </thead>
@@ -1710,6 +1771,23 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           }
                         />
                       </td>
+                      {multi && (
+                        <td>
+                          <ReceiveOnSelect
+                            c={c}
+                            ch={ch}
+                            onChange={(on) =>
+                              edit((x) => {
+                                // Rows sharing the frequency share them.
+                                for (const r of x.channels.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)) {
+                                  if (on === undefined) delete r.receiveOn;
+                                  else r.receiveOn = on;
+                                }
+                              })
+                            }
+                          />
+                        </td>
+                      )}
                       <td>
                         <span className="row-actions">
                           <button
@@ -1750,6 +1828,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           onName={(f, v) => editRow(i, (x) => void (v ? (x[f] = v) : delete x[f]))}
                           onAutoTune={(on) => editRow(i, (x) => void (on ? (x.autoTune = true) : delete x.autoTune))}
                           onDone={() => setEditing((e) => (e.delete(ids.current[i]) ? new Set(e) : e))}
+                          span={multi ? 9 : 8}
                         />
                       )}
                       {lastOfFreq(i) === i && heard[String(Math.round(ch.freqHz))] && (
@@ -1758,6 +1837,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           heard={heard[String(Math.round(ch.freqHz))]}
                           linked={linked}
                           onAdd={(p) => addRule(i, p)}
+                          span={multi ? 9 : 8}
                         />
                       )}
                     </Fragment>
@@ -2189,9 +2269,8 @@ function SiteCoverage(props: { c: Config; sys: System; sites: Site[] }) {
   const ccs = sites.flatMap((x) => x.controlChannelsHz);
   const voice = sites.flatMap((x) => x.voiceChannelsHz);
   if (!ccs.length && !voice.length) return null;
-  const centers = resolvedCenters(c);
-  const ccOn = [...new Set(ccs.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
-  const voiceIn = voice.filter((f) => sourceCovering(c, centers, f) >= 0).length;
+  const ccOn = [...new Set(ccs.map((f) => receiverOf(c, sys.shortName, f)).filter((k) => k >= 0))];
+  const voiceIn = voice.filter((f) => receiverOf(c, sys.shortName, f) >= 0).length;
   return (
     <>
       {ccs.length > 0 &&
@@ -2498,6 +2577,7 @@ export function SystemCard(props: { c: Config; i: number }) {
         <Field label="Name">
           <TextInput value={sys.name ?? ""} placeholder="County Public Safety" onChange={(v) => edit((x) => void (x.name = v))} />
         </Field>
+        <ReceiveOn c={props.c} on={sys.receiveOn} onChange={(on) => edit((x) => void (on ? (x.receiveOn = on) : delete x.receiveOn))} />
         <Field label="Type">
           <select
             value={sys.type}

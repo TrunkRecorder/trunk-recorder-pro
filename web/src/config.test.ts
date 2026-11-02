@@ -90,7 +90,7 @@ test("the first-run guide places radios with the recorder's planner: the busiest
     { hz: 854_000_000, weight: 50 },
     { hz: 854_500_000, weight: 40 },
   ];
-  const [first, second, file] = placeSources([{ ...rtl, fixedHz: 851_400_000 }, rtl, { ...rtl, fixedHz: 860_000_000 }], { channels: voice, needs: [[851_000_000]] });
+  const [first, second, file] = placeSources([{ ...rtl, fixedHz: 851_400_000 }, rtl, { ...rtl, fixedHz: 860_000_000 }], { groups: [{ channels: voice, need: [851_000_000] }] });
   assert.equal(first, 851_400_000);
   assert.ok(second !== null && voice.every((v) => Math.abs(v.hz - second) <= usableHalfWidth(rtl.rateHz) && Math.abs(v.hz - second) >= 25_000), String(second));
   assert.equal(file, 860_000_000);

@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
+pub use trunk_core::trunk::{usable_half_width, Pins, DEFAULT_GUARD_HZ};
 
 /// How far a channel is kept from a source's centre (its DC spike).
 pub const DC_CLEAR_HZ: f64 = 25_000.0;
@@ -42,18 +42,37 @@ impl Placing {
     }
 }
 
-/// What the radios are placed to reach.
+/// What the radios are placed to reach: groups of channels, each received
+/// on the sources it may be.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Targets {
+    pub groups: Vec<Group>,
+}
+
+/// Channels received together: a site, or a conventional system's channels
+/// on the same sources.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Targets {
+pub struct Group {
     /// Every channel worth reaching, Hz, and how much it counts (calls seen
     /// on it; 1 when nothing is known).
     pub channels: Vec<Weighted>,
-    /// Groups a radio must reach one of before any other channel counts: a
+    /// What a radio must reach one of before any other channel counts: a
     /// site's control channels (and the DMR / NXDN frequencies it watches),
-    /// a conventional system's channels. Every channel of one that's out of
-    /// reach outweighs all of `channels`.
-    pub needs: Vec<Vec<f64>>,
+    /// a conventional system's channels. While none is reached, each
+    /// outweighs every channel. Empty: nothing.
+    #[serde(default)]
+    pub need: Vec<f64>,
+    /// The sources it may be received on.
+    #[serde(default)]
+    pub pins: Pins,
+}
+
+impl Group {
+    /// Its frequencies: its channels and what it needs.
+    fn hz(&self) -> impl Iterator<Item = f64> + '_ {
+        self.channels.iter().map(|c| c.hz).chain(self.need.iter().copied())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -62,30 +81,36 @@ pub struct Weighted {
     pub weight: f64,
 }
 
+/// The source a frequency of a group with these `pins` is received on, the
+/// sources tuned to `centers` (None: not placed): the first it allows that
+/// reaches it ([`Pins::first`], the engine's own choice).
+pub fn receiver(sources: &[Placing], centers: &[Option<f64>], pins: &Pins, hz: f64) -> Option<usize> {
+    pins.first(sources.len(), |i| centers[i].is_some_and(|c| sources[i].reaches(c, hz)))
+}
+
 /// Each source's centre: a fixed one stays; each other, in order, over what
-/// the ones before it don't reach yet ([`busiest_window`], a group of
-/// `needs` not reached first), or with everything reached, alongside them
-/// on the side with more of the channels. None only when there's nothing to
-/// place it by.
+/// of the groups it may receive the ones before it don't reach yet
+/// ([`busiest_window`], a group's need first), or with everything reached,
+/// alongside them on the side with more of those channels. None when it may
+/// receive nothing, or nothing is placed to be beside.
 pub fn place_sources(sources: &[Placing], t: &Targets) -> Vec<Option<f64>> {
     let mut out: Vec<Option<f64>> = sources.iter().map(|s| s.fixed_hz).collect();
-    let all: Vec<f64> = t.channels.iter().map(|c| c.hz).chain(t.needs.iter().flatten().copied()).collect();
+    let need = 1.0 + t.groups.iter().flat_map(|g| &g.channels).map(|c| c.weight).sum::<f64>();
     for k in 0..sources.len() {
         if out[k].is_some() {
             continue;
         }
-        let reached = |hz: f64| first_to_reach(sources, &out, hz).is_some();
-        let open: Vec<&Vec<f64>> = t.needs.iter().filter(|g| !g.iter().any(|&f| reached(f))).collect();
-        let need = 1.0 + t.channels.iter().map(|c| c.weight).sum::<f64>();
-        let left: Vec<Weighted> = t
-            .channels
+        let mine: Vec<&Group> = t.groups.iter().filter(|g| g.pins.allows(k)).collect();
+        let reached = |g: &Group, hz: f64| receiver(sources, &out, &g.pins, hz).is_some();
+        let open: Vec<&Group> = mine.iter().copied().filter(|g| !g.need.is_empty() && !g.need.iter().any(|&f| reached(g, f))).collect();
+        let left: Vec<Weighted> = mine
             .iter()
-            .filter(|c| !reached(c.hz))
-            .copied()
-            .chain(open.iter().flat_map(|g| g.iter()).map(|&hz| Weighted { hz, weight: need }))
+            .flat_map(|g| g.channels.iter().filter(|c| !reached(g, c.hz)).copied())
+            .chain(open.iter().flat_map(|g| &g.need).map(|&hz| Weighted { hz, weight: need }))
             .collect();
+        let all: Vec<f64> = mine.iter().flat_map(|g| g.hz()).collect();
         let s = &sources[k];
-        let center = match busiest_window(&left, s, open.first().map(|g| g.as_slice())) {
+        let center = match busiest_window(&left, s, open.first().map(|g| g.need.as_slice())) {
             Some(c) => Some(c),
             None => alongside(&out, sources, s, &all),
         };
@@ -94,23 +119,19 @@ pub fn place_sources(sources: &[Placing], t: &Targets) -> Vec<Option<f64>> {
     out
 }
 
-/// The first of `sources` (tuned to `centers`) that reaches `hz`: the one
-/// the engine opens a channel there on.
-pub fn first_to_reach(sources: &[Placing], centers: &[Option<f64>], hz: f64) -> Option<usize> {
-    sources.iter().zip(centers).position(|(s, c)| c.is_some_and(|c| s.reaches(c, hz)))
-}
-
-/// How many of `t`'s frequencies each source (tuned to `centers`) is the
-/// first to reach: 0 for one that nothing listed needs (the others reach
-/// all it does, or it's beside them).
+/// How many of `t`'s frequencies each source (tuned to `centers`) receives
+/// ([`receiver`]): 0 for one that nothing listed needs (the others reach all
+/// it does first, or it's beside them).
 pub fn listed_reached(sources: &[Placing], centers: &[Option<f64>], t: &Targets) -> Vec<usize> {
-    let mut hz: Vec<f64> = t.channels.iter().map(|c| c.hz).chain(t.needs.iter().flatten().copied()).collect();
-    hz.sort_by(f64::total_cmp);
-    hz.dedup();
     let mut n = vec![0; sources.len()];
-    for f in hz {
-        if let Some(k) = first_to_reach(sources, centers, f) {
-            n[k] += 1;
+    for g in &t.groups {
+        let mut hz: Vec<f64> = g.hz().collect();
+        hz.sort_by(f64::total_cmp);
+        hz.dedup();
+        for f in hz {
+            if let Some(k) = receiver(sources, centers, &g.pins, f) {
+                n[k] += 1;
+            }
         }
     }
     n
@@ -213,6 +234,10 @@ mod tests {
     fn chans(x: &[(f64, f64)]) -> Vec<Weighted> {
         x.iter().map(|&(hz, weight)| Weighted { hz, weight }).collect()
     }
+    /// One group: these channels, needing `need`, on any source.
+    fn one(channels: Vec<Weighted>, need: &[f64]) -> Targets {
+        Targets { groups: vec![Group { channels, need: need.to_vec(), pins: Pins::any() }] }
+    }
     fn off_dc_of(c: f64, hz: &[f64]) -> bool {
         hz.iter().all(|f| (f - c).abs() >= DC_CLEAR_HZ)
     }
@@ -221,14 +246,12 @@ mod tests {
     fn a_second_radio_takes_the_busiest_channels() {
         // Busy voice channels 3–4 MHz up, a quiet one further: the second radio takes the busy ones.
         let voice = chans(&[(854_000_000.0, 50.0), (854_500_000.0, 40.0), (856_900_000.0, 1.0), (851_200_000.0, 9.0)]);
-        let t = Targets { channels: voice.clone(), needs: vec![vec![851_000_000.0]] };
-        let plan = place_sources(&[fixed(851_400_000.0), RTL], &t);
+        let plan = place_sources(&[fixed(851_400_000.0), RTL], &one(voice.clone(), &[851_000_000.0]));
         let c = plan[1].unwrap();
         assert!(RTL.reaches(c, 854_000_000.0) && RTL.reaches(c, 854_500_000.0), "{c}");
         assert!(off_dc_of(c, &[854e6, 854.5e6, 856.9e6, 851.2e6, 851e6]), "off the DC spike: {c}");
         // A fixed source stays; what it reaches isn't placed for again.
-        let t = Targets { channels: voice[..2].to_vec(), ..t };
-        let plan = place_sources(&[fixed(851_400_000.0), fixed(853_000_000.0), RTL], &t);
+        let plan = place_sources(&[fixed(851_400_000.0), fixed(853_000_000.0), RTL], &one(voice[..2].to_vec(), &[851_000_000.0]));
         assert_eq!(plan[1], Some(853_000_000.0));
         assert!(RTL.reaches(plan[2].unwrap(), 854_500_000.0), "{plan:?}");
     }
@@ -239,8 +262,7 @@ mod tests {
     #[test]
     fn every_radio_is_placed_over_a_wide_site() {
         let voice: Vec<Weighted> = (0..=32).map(|k| Weighted { hz: 851_012_500.0 + k as f64 * 250_000.0, weight: 1.0 }).collect();
-        let t = Targets { channels: voice.clone(), needs: vec![vec![853_987_500.0]] };
-        let plan = place_sources(&[RTL; 4], &t);
+        let plan = place_sources(&[RTL; 4], &one(voice.clone(), &[853_987_500.0]));
         let centers: Vec<f64> = plan.iter().map(|c| c.expect("placed")).collect();
         assert!(RTL.reaches(centers[0], 853_987_500.0), "the control channel first: {centers:?}");
         for v in &voice {
@@ -254,7 +276,7 @@ mod tests {
     /// last, not all onto one place.
     #[test]
     fn spare_radios_go_side_by_side() {
-        let t = Targets { channels: chans(&[(851_200_000.0, 1.0), (851_600_000.0, 1.0)]), needs: vec![vec![851_000_000.0]] };
+        let t = one(chans(&[(851_200_000.0, 1.0), (851_600_000.0, 1.0)]), &[851_000_000.0]);
         let plan = place_sources(&[RTL; 3], &t);
         let c: Vec<f64> = plan.iter().map(|c| c.unwrap()).collect();
         assert!(RTL.reaches(c[0], 851_000_000.0) && RTL.reaches(c[0], 851_600_000.0), "{c:?}");
@@ -266,14 +288,33 @@ mod tests {
         assert_eq!(place_sources(&[RTL], &Targets::default()), [None]);
     }
 
-    /// A control channel is reached before busier voice channels elsewhere,
-    /// and each group of needs gets a radio before any voice channel does.
+    /// A control channel is reached before busier voice channels, and each
+    /// group's need gets a radio before any voice channel does.
     #[test]
     fn needs_come_first() {
-        let t = Targets { channels: chans(&[(851_000_000.0, 1.0), (860_000_000.0, 100.0), (860_200_000.0, 100.0)]), needs: vec![vec![851_000_000.0], vec![771_106_250.0]] };
-        let plan = place_sources(&[RTL; 3], &t);
+        let a = Group { channels: chans(&[(851_000_000.0, 1.0), (860_000_000.0, 100.0), (860_200_000.0, 100.0)]), need: vec![851_000_000.0], pins: Pins::any() };
+        let b = Group { need: vec![771_106_250.0], ..Default::default() };
+        let plan = place_sources(&[RTL; 3], &Targets { groups: vec![a, b] });
         assert!(RTL.reaches(plan[0].unwrap(), 851_000_000.0), "{plan:?}");
         assert!(RTL.reaches(plan[1].unwrap(), 771_106_250.0), "{plan:?}");
         assert!(RTL.reaches(plan[2].unwrap(), 860_000_000.0) && RTL.reaches(plan[2].unwrap(), 860_200_000.0), "{plan:?}");
+    }
+
+    /// A pinned group is placed for only by the sources it may be received
+    /// on, and they are the ones that receive it.
+    #[test]
+    fn a_pinned_group_is_placed_on_its_own_sources() {
+        // A site on any source, and one pinned to source 1 (a radio on another antenna).
+        let any = Group { channels: chans(&[(851_012_500.0, 1.0)]), need: vec![851_012_500.0], pins: Pins::any() };
+        let pinned = Group { channels: chans(&[(770_106_250.0, 1.0)]), need: vec![770_106_250.0], pins: Pins::only(vec![1]) };
+        let t = Targets { groups: vec![pinned, any] };
+        let plan = place_sources(&[RTL; 2], &t);
+        assert!(RTL.reaches(plan[0].unwrap(), 851_012_500.0), "source 0 may not take the pinned site: {plan:?}");
+        assert!(RTL.reaches(plan[1].unwrap(), 770_106_250.0), "{plan:?}");
+        assert_eq!(listed_reached(&[RTL; 2], &plan, &t), [1, 1]);
+        // Both tuned over the pinned site: source 1 receives it (and is needed), source 0 doesn't.
+        let both = [Some(770_100_000.0), Some(770_100_000.0)];
+        assert_eq!(receiver(&[RTL; 2], &both, &Pins::only(vec![1]), 770_106_250.0), Some(1));
+        assert_eq!(listed_reached(&[RTL; 2], &both, &Targets { groups: vec![t.groups[0].clone()] }), [0, 1]);
     }
 }

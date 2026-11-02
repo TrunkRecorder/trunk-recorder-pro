@@ -90,7 +90,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
         <div className="kv small">
           <span>
             {/* (Setup's: the desktop recorder takes a new gain while recording.) */}
-            Gain <b>{gainText(configSource(s.sources, s.config?.sources ?? [], src) ?? src.settings)}</b>
+            Gain <b>{gainText((s.config && configSource(s.sources, s.config, src)) || src.settings)}</b>
           </span>
           <span>
             Rate <b>{num(src.rateMeasured / 1e6, 3)}</b> of {num(src.rateHz / 1e6, 3)} MS/s

@@ -812,6 +812,13 @@
         "enabled": {
           "type": "boolean"
         },
+        "receiveOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The sources it may be received on, by label (\"RTL-SDR SN 200\", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches it. Rows sharing a frequency share them."
+        },
         "autoTune": {
           "type": "boolean",
           "description": "Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off."
@@ -7784,6 +7791,13 @@
         "name": {
           "type": "string",
           "description": "What people call it (\"County Public Safety\"); the short name is its folder."
+        },
+        "receiveOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The sources its channels may be received on, by label (\"RTL-SDR SN 200\", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches them."
         },
         "fcc": {
           "$ref": "#/definitions/FccLicenses",

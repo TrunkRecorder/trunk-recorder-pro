@@ -37,6 +37,7 @@ a system of its own.)
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
 | `unitNames` | | empty | object | Names for the system's radios. See [Unit names](#unit-names) |
+| `receiveOn` | | `[]` | array | The sources its control channels and voice channels may be received on, by label (`"RTL-SDR SN 200"`, as the dashboard names a source: the radio, wherever it is in `sources`). Empty: any source that reaches a channel. See [How channels are shared out](../guides/radios.md#how-channels-are-shared-out) |
 | `keys` | | `""` | string | P25: the encryption keys it decrypts with, a key source's name (desktop app only; not in the interface). See [Encryption keys](#encryption-keys-keys) |
 | `recording` | | `{}` | object | This system's own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
 | `plugins` | | `{}` | object | This system's plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |

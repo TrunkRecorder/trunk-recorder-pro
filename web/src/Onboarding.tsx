@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
+import { detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, receiverOf, resolvedCenters, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -1060,7 +1060,7 @@ function CoverageStep(props: { c: Config; found: Found | null; onNext: () => voi
   const recommended = useMemo(() => {
     // The radio the survey found the system on stays where it suggested.
     const at = (k: number) => fixed[k] ?? (k === first ? found?.sug?.centerHz || null : null);
-    return placeSources(c.sources.map((x, k) => ({ rateHz: x.rateHz, guardHz: x.guardHz, fixedHz: at(k) })), { channels: voice, needs: [ccs] });
+    return placeSources(c.sources.map((x, k) => ({ rateHz: x.rateHz, guardHz: x.guardHz, fixedHz: at(k) })), { groups: [{ channels: voice, need: ccs }] });
   }, [c.sources.length, found]);
   const [centers, setCenters] = useState<(number | null)[]>(recommended);
 
@@ -1843,10 +1843,9 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
   };
   const convCount = cfg.conventional.filter((v) => brings(v.shortName)).reduce((n, v) => n + v.channels.length, 0);
   // Systems whose control channel no radio hears (as the radios stand, swaps included).
-  const centers = resolvedCenters(cfg);
   const unheard = (x: System) => {
     const ccs = x.enabled ? x.sites.filter((y) => y.enabled).flatMap((y) => y.controlChannelsHz) : [];
-    return ccs.length > 0 && !ccs.some((f) => sourceCovering(cfg, centers, f) >= 0);
+    return ccs.length > 0 && !ccs.some((f) => receiverOf(cfg, x.shortName, f) >= 0);
   };
   const installed = (id: string) => {
     const p = s.plugins?.plugins.find((x) => x.id === id);

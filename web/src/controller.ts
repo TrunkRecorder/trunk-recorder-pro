@@ -69,7 +69,7 @@ import {
   sameSystem,
   shortNameFor,
   siteNameOf,
-  sourceCovering,
+  receiverOf,
   sourceKey,
   sourcesChanged,
   trpBase,
@@ -1554,11 +1554,10 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarg
         src.agc = false;
       }
       // Don't strand another site that only this source covers now.
-      const centers = resolvedCenters(c);
       const within = (f: number) => reaches(src, sug.centerHz, f);
-      const stranded = activeSites(c).some(({ site: x }) => {
+      const stranded = activeSites(c).some(({ sys: y, site: x }) => {
         if (x === site) return false;
-        const on = x.controlChannelsHz.map((f) => sourceCovering(c, centers, f));
+        const on = x.controlChannelsHz.map((f) => receiverOf(c, y.shortName, f));
         const onlyHere = on.includes(i) && !on.some((k) => k >= 0 && k !== i);
         return onlyHere && !x.controlChannelsHz.some(within);
       });
