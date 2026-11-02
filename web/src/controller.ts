@@ -64,14 +64,15 @@ import {
   newSystem,
   normalizeSite,
   resolvedCenters,
+  reaches,
   restartKey,
   sameSystem,
   shortNameFor,
   siteNameOf,
   sourceCovering,
   sourceKey,
+  sourcesChanged,
   trpBase,
-  usableHalfWidth,
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
@@ -248,6 +249,8 @@ let state: AppState = {
 const listeners = new Set<() => void>();
 /** restartKey of the config the current run started with (null: not running). */
 let runKey: string | null = null;
+/** The config differs from the run's in what takes a restart (restartKey against runKey). */
+let keyChanged = false;
 /** The desktop recorder takes a radio's gain while recording; the browser build doesn't. */
 const liveGain = import.meta.env.MODE !== "web";
 
@@ -258,7 +261,11 @@ function set(patch: Partial<AppState>): void {
   if (state.config !== was.config || state.phase !== was.phase) {
     const key = state.phase === "idle" || !state.config ? null : restartKey(state.config, liveGain);
     runKey = key && (runKey ?? key);
-    state.restartNeeded = key !== runKey;
+    keyChanged = key !== runKey;
+  }
+  // (runKey is this page's: one opened after an edit takes the edited config for the run's. The sources the recorder says it runs with catch that.)
+  if (state.config !== was.config || state.phase !== was.phase || state.sources !== was.sources) {
+    state.restartNeeded = keyChanged || (state.phase !== "idle" && !!state.config && sourcesChanged(state.config, state.sources, liveGain));
   }
   // (Its rules' answers last as long as the config does: rules.ts.)
   if ("config" in patch) configReplaced(state.config);
@@ -1548,7 +1555,7 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarg
       }
       // Don't strand another site that only this source covers now.
       const centers = resolvedCenters(c);
-      const within = (f: number) => Math.abs(f - sug.centerHz) <= usableHalfWidth(src.rateHz, src.guardHz);
+      const within = (f: number) => reaches(src, sug.centerHz, f);
       const stranded = activeSites(c).some(({ site: x }) => {
         if (x === site) return false;
         const on = x.controlChannelsHz.map((f) => sourceCovering(c, centers, f));
@@ -1651,6 +1658,7 @@ export function start(): void {
   flushConfig();
   // The recorder reads the config now: what it runs with from here.
   runKey = state.config ? restartKey(state.config, liveGain) : null;
+  keyChanged = false;
   set({ error: null, ended: false, restartNeeded: false });
   transport.send({ type: "start" });
   if (state.listen) void player.resume().catch(() => {});
