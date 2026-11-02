@@ -33,10 +33,16 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 pub fn spawn(row: Channel, stream: usize, feeder: StreamFeeder, ctl: Sender<EngineCmd>, stop: Arc<AtomicBool>, epoch: (f64, Instant)) -> io::Result<JoinHandle<()>> {
     let now_ms = move || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     std::thread::Builder::new().name(format!("stream-{stream}")).spawn(move || {
+        let name = if row.name.trim().is_empty() { format!("{}", stream + 1) } else { row.name.trim().to_string() };
+        let mut connected = false;
         while !stop.load(Ordering::Relaxed) {
             // (Its clock catches up as its audio starts: the time it took to connect.)
             let mut fresh = true;
             let result = stream_once(&row, &stop, &mut |audio| {
+                if !connected {
+                    log::info!("Stream {name}: connected; audio is flowing");
+                    connected = true;
+                }
                 if std::mem::take(&mut fresh) {
                     feeder.catch_up(now_ms());
                 }
@@ -44,7 +50,7 @@ pub fn spawn(row: Channel, stream: usize, feeder: StreamFeeder, ctl: Sender<Engi
             });
             if let (Err(error), false) = (result, stop.load(Ordering::Relaxed)) {
                 // (Not its address: it may hold the feed's password.)
-                let name = if row.name.trim().is_empty() { format!("{}", stream + 1) } else { row.name.trim().to_string() };
+                connected = false;
                 log::warn!("Stream {name}: {error}; reconnecting");
                 let _ = ctl.send(EngineCmd::StreamError { stream, error });
             }
