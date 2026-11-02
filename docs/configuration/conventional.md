@@ -95,6 +95,7 @@ Notes:
 | `squelchDb` | | the system's | number | This channel's own squelch, dB above the noise floor |
 | `bandwidthKhz` | | the mode's | number | `fm` and `am`: the channel filter's width, kHz, 4–20. FM: 11 (12.5 kHz channels), 16 for wide FM (25 kHz). AM: 11 below 225 MHz, 16 from 225 MHz (UHF military air); 6 for 8.33 kHz channels. Rows sharing a frequency need the same |
 | `enabled` | | `true` | bool | `false` keeps the row without recording it |
+| `receiveOn` | | `[]` | array | The sources it may be received on, by label (`"RTL-SDR SN 200"`, as the dashboard names a source: the radio, wherever it is in `sources`). Empty: any source that reaches it. Rows sharing a frequency need the same ones. Not set by a linked channel file. See [How channels are shared out](../guides/radios.md#how-channels-are-shared-out) |
 | `autoTune` | | `false` | bool | `p25`, `dmr`, `nxdn`: its calls' carrier offsets correct its source's AutoTune (a repeater output to trust; see [Frequency correction](../guides/conventional.md#frequency-correction)) |
 
 ### Talkgroup numbers

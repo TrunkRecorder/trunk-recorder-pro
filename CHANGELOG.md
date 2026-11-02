@@ -7,7 +7,39 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 - **A call's `source_num` is the radio it was heard on.** It was always 0; now it is the
   radio's position in `sources` (counting from 0), in the call JSON and the call store.
+- **A system or a conventional channel can be kept on particular sources.** `receiveOn` on a trunked
+  system (**Receive on** in Setup, with two or more sources) names the radios, by label (`"RTL-SDR SN 200"`),
+  its control channels and voice channels may be received on; on a conventional channel (a **Source** column
+  in its table) it is that frequency's. Empty, as before, is any source that reaches it. A pin follows its
+  radio when sources are moved; one naming a radio no longer there stops Start (rather than another
+  standing in). Auto placement, Start's checks, Setup's coverage chips and the dashboard all go by it.
+- **Auto mode places every radio a wide site needs.** Start's auto centres, the first-run guide and the
+  survey's suggested centre are one placement: control channels first, then the most channels still out
+  of reach, then a spare alongside the others. A site wider than one radio (an 800 MHz P25 system needing
+  four RTLs at 2.4 MSPS) gets them all, where sources after the first used to be left without a centre.
+- **The dashboard notes a source nothing needs**: one that reaches no listed channel the others don't, and
+  that no call has used this run, says it can probably be removed.
+- **AutoTune's "Set correction to" is offered once.** It's the recorder's figure, against the ppm the radio
+  runs with, so clicking it again doesn't move it again; a new ppm says it applies from the next Start.
+  The dashboard and Setup show each source's own radio's settings and measurements after sources are
+  added, removed or moved, and the restart banner knows a page opened after an edit.
 
+## [0.3.0] — 2026-11-01
+
+- **A plugin slow to describe itself is asked again, not written off.** On a busy or just-booted
+  machine a plugin can take longer than 10 s to answer `--describe`; it's now asked again with 30 s,
+  and a run out of time isn't remembered (it's asked once more next time) as a broken plugin was
+  until it changed. When it fails, the message says what it printed and wrote to stderr, and how
+  busy the machine was (CPUs; on Linux the load average and uptime).
+- **RTL-SDR dongles with an Elonics E4000 tuner open natively.** The built-in driver
+  (`rtlsdr-nusb`) now drives the E4000 as well as the R820T and R828D, so these dongles no longer
+  need a SoapySDR source. It runs the E4000 at zero IF, as librtlsdr does; its IF filters follow
+  the sample rate, and a manual gain is the nearest of librtlsdr's steps from -1 to 42 dB (prefer
+  manual: the tuner's own AGC sits low). It covers about 52–2200 MHz except a gap near
+  1090–1230 MHz where its PLL doesn't lock; every P25 band is clear. Tuning to the gap is an
+  error, as before for frequencies a tuner can't reach. The tuner code is ported from osmocom
+  librtlsdr's `tuner_e4k.c` and is GPL-2.0-or-later (`crates/rtlsdr-nusb/LICENSE-GPL-2.0`).
+  `cargo test -p rtlsdr-nusb --test hardware e4000 -- --ignored` checks an attached one.
 - **Live audio in stereo, through an interface's own sound chain.** `client.js`'s
   `LivePlayer` has `pan` (left -1 to right 1) beside `gain`, both settable while playing
   (`player.pan = -1`; they glide, no clicks), and `skip()` drops the call playing. It

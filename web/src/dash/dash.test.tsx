@@ -8,7 +8,7 @@ import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { coverage, pageHealth, rangesFor } from "./data.ts";
-import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
+import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
@@ -209,7 +209,8 @@ test("Radio: a warning of calls out of band links to the frequencies, on the Ove
 
 test("A frequency out of band: the nearest source, and how far past its usable edge", () => {
   twoSites();
-  const src = (index: number, label: string, centerHz: number): SourceStatus => ({ index, label, centerHz, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false });
+  const settings = (centerHz: number): Source => ({ type: "rtlsdr", serial: "", gainDb: 25, agc: false, centerHz, rateHz: 2_400_000, ppm: 0 });
+  const src = (index: number, label: string, centerHz: number): SourceStatus => ({ index, label, centerHz, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: settings(centerHz) });
   const s = { ...snapshot(), sources: [src(0, "rtl0", 851_000_000), src(1, "rtl1", 855_000_000)] };
   // (2.4 MS/s less the 75 kHz guard each side: 1.125 MHz either side is usable.)
   const inside = coverage(s, 851_200_000)!;
@@ -405,7 +406,7 @@ test("RF: a HackRF's stages, and the sample clock's error once measured", () => 
   const c = defaultConfig();
   c.sources = [{ type: "hackrf", serial: "", centerHz: 851_000_000, rateHz: 8_000_000, lnaDb: 24, vgaDb: 30, amp: true, biasTee: false, ppm: 0 }];
   running(c, []);
-  const src = (clockPpm: number | null): SourceStatus => ({ index: 0, label: "HackRF", centerHz: 851_000_000, rateHz: 8_000_000, rateMeasured: 8_000_000, dropped: 0, errors: 0, lastError: null, ended: false, clockPpm });
+  const src = (clockPpm: number | null): SourceStatus => ({ index: 0, label: "HackRF", centerHz: 851_000_000, rateHz: 8_000_000, rateMeasured: 8_000_000, dropped: 0, errors: 0, lastError: null, ended: false, clockPpm, settings: c.sources[0] });
   const status = (clockPpm: number | null) =>
     transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [src(clockPpm)], load: 0, calls: [] });
   setView("rf");
@@ -414,6 +415,19 @@ test("RF: a HackRF's stages, and the sample clock's error once measured", () => 
   status(1.234);
   assert.match(text(renderToString(<RfPage />)), /Sample clock \+1\.23 ppm against this computer/);
   assert.match(text(renderToString(<RfPage />)), /LNA 24 · VGA 30 · amp/);
+});
+
+test("RF: a source nothing needs says it can probably go; one in use doesn't", () => {
+  const c = defaultConfig();
+  const rtl = (serial: string, centerHz: number): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, centerHz, rateHz: 2_400_000, ppm: 0 });
+  c.sources = [rtl("1", 851_000_000), rtl("2", 853_000_000)];
+  running(c, []);
+  const src = (i: number, unused: boolean): SourceStatus => ({ index: i, label: `RTL-SDR SN ${i + 1}`, centerHz: c.sources[i].centerHz, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: c.sources[i], voiceChannels: 0, unused });
+  transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [src(0, false), src(1, true)], load: 0, calls: [] });
+  setView("rf");
+  const page = text(renderToString(<RfPage />));
+  assert.equal(page.split("You can probably remove it").length - 1, 1, "on the spare's card only");
+  assert.match(page, /RTL-SDR SN 2 .*Not needed so far: the other sources reach every channel the config lists, and no call has used this one/);
 });
 
 test("History spans: a week from memory or files; further as the store keeps the dashboard's history", () => {

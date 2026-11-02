@@ -5,13 +5,13 @@
 // time.
 
 import { useState } from "react";
-import { formatGain, formatMhz, systemColor, usableHalfWidth } from "../config.ts";
+import { autoTuneOn, configSource, formatGain, formatMhz, systemColor, usableHalfWidth } from "../config.ts";
 import { setView, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall } from "../Waterfall.tsx";
-import { K, recentAvg, running, runningSites, sourceGuard, sourceHealth, useHistory, useRanges, val } from "./data.ts";
+import { K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE, useHistory, useRanges, val } from "./data.ts";
 import { ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
@@ -37,12 +37,9 @@ function gainText(c: Source | undefined): string {
   }
 }
 
-const autoTuneOf = (c: Source | undefined) => !!c && "autoTune" in c && !!c.autoTune;
-
 /** One source: floor, headroom, frequency error, drops. `compact`: the overview's size. */
 export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: SourceStatus; i: number; compact?: boolean }) {
-  const cfg = s.config?.sources[i];
-  const h = sourceHealth(s, src, autoTuneOf(cfg));
+  const h = sourceHealth(s, src);
   const noise = val(s, K.src(src.label, "noise"));
   const peak = val(s, K.src(src.label, "peak"));
   const clip = val(s, K.src(src.label, "clipPct"));
@@ -72,7 +69,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           unit="ppm"
           sub={
             <>
-              {autoTuneOf(cfg) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}${src.tuneSeeded ? " (last run's)" : ""}` : src.errorPpm == null ? "needs a digital call or control channel" : "not corrected (AutoTune off)"}
+              {autoTuneOn(src.settings) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}${src.tuneSeeded ? " (last run's)" : ""}` : src.errorPpm == null ? "needs a digital call or control channel" : "not corrected (AutoTune off)"}
               {src.clockPpm != null && <div>Sample clock {signed(src.clockPpm, 2)} ppm against this computer</div>}
             </>
           }
@@ -88,10 +85,12 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           hint="Lost by the driver (USB or CPU); calls lose audio."
         />
       </div>
+      {src.unused && <Hint>{UNUSED_SOURCE}</Hint>}
       {!small && (
         <div className="kv small">
           <span>
-            Gain <b>{gainText(cfg)}</b>
+            {/* (Setup's: the desktop recorder takes a new gain while recording.) */}
+            Gain <b>{gainText((s.config && configSource(s.sources, s.config, src)) || src.settings)}</b>
           </span>
           <span>
             Rate <b>{num(src.rateMeasured / 1e6, 3)}</b> of {num(src.rateHz / 1e6, 3)} MS/s
@@ -151,7 +150,7 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
       </text>
       {sources.map((src, i) => {
         // Usable: half the band less the source's guard at each edge (as the recorder reckons it).
-        const half = usableHalfWidth(src.rateHz, sourceGuard(s, src));
+        const half = usableHalfWidth(src.rateHz, src.settings.guardHz);
         return (
           <g key={i}>
             <rect x={x(src.centerHz - src.rateHz / 2)} width={x(src.centerHz + src.rateHz / 2) - x(src.centerHz - src.rateHz / 2)} y={30} height={20} rx={4} className="band-src" />

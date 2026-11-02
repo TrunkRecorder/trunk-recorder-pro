@@ -101,6 +101,12 @@ export const startProblem = perConfig((j) => rules().configProblem(j) ?? null);
 /** Two systems sharing a short name, or one without, or two sites of a system one name (Config::name_problem), or null. */
 export const nameProblem = perConfig((j) => rules().configNameProblem(j) ?? null);
 
+/** Each source's label (Source::label, "RTL-SDR SN 200"): what a system's or channel's receiveOn names it by, and its status by. */
+export const sourceLabels = perConfig((j) => Array.from(rules().configSourceLabels(j)) as string[]);
+
+/** The source each frequency the config lists is received on, as Start will choose it, pins and all (Config::receivers); source null: none it may be received on reaches it. */
+export const receivers = perConfig((j) => JSON.parse(rules().configReceivers(j)) as { system: string; hz: number; source: number | null }[]);
+
 /** Each source's centre: as set, or (0 = auto) where Start places it; null where nothing fits (Config::resolved_centers). */
 export const resolvedCenters = perConfig((j) => Array.from(rules().configCenters(j), (c) => c || null));
 
@@ -109,12 +115,7 @@ export function usableHalfWidth(rateHz: number, guardHz: number = DEFAULT_GUARD_
   return rules().usableHalfWidth(rateHz, guardHz);
 }
 
-/** A centre that fits every one of `hz` in one source, off the DC spike, or null. */
-export function autoCenter(hz: number[], rateHz: number, guardHz: number = DEFAULT_GUARD_HZ): number | null {
-  return rules().autoCenter(Float64Array.from(hz), rateHz, guardHz) ?? null;
-}
-
-/** A source to place (planCenters): its rate and guard, and its centre if it can't move (a capture file). */
+/** A source to place (placeSources): its rate and guard, and its centre if it can't move (a capture file). */
 export interface Placing {
   rateHz: number;
   guardHz?: number;
@@ -122,12 +123,23 @@ export interface Placing {
 }
 
 /**
- * Where to tune each radio for a system found on the air (the recorder's
- * plan_centers): `first` at `firstCenter`, the others over the busiest voice
- * channels still out of reach, or alongside the first; each off the DC spike.
+ * What radios are placed to reach (place::Targets): groups of channels, each
+ * with how much it counts (calls seen; 1 when unknown), what a radio reaches
+ * one of before any channel counts (a site's control channels), and on any
+ * source (the guide's are).
  */
-export function planCenters(sources: Placing[], first: number, firstCenter: number, ccs: number[], voice: { hz: number; weight: number }[]): (number | null)[] {
-  return JSON.parse(rules().planCenters(JSON.stringify({ sources, first, firstCenter, ccs, voice })));
+export interface Targets {
+  groups: { channels: { hz: number; weight: number }[]; need?: number[] }[];
+}
+
+/**
+ * Where to tune each radio, as Start places auto ones (the recorder's
+ * place_sources): a fixed one stays, each other over a group of needs not
+ * reached yet, then the busiest channels still out of reach, else alongside;
+ * each off the DC spike.
+ */
+export function placeSources(sources: Placing[], targets: Targets): (number | null)[] {
+  return JSON.parse(rules().placeSources(JSON.stringify({ sources, targets })));
 }
 
 /** Why a SmartNet site's band plan can't be used, or null (smartnet::Bandplan::from_config). */
