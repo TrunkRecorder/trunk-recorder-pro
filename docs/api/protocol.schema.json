@@ -6055,6 +6055,9 @@
           "items": {
             "type": "object",
             "properties": {
+              "wacn": {
+                "type": "number"
+              },
               "sysId": {
                 "type": "number"
               },
@@ -6069,6 +6072,7 @@
               }
             },
             "required": [
+              "wacn",
               "sysId",
               "rfss",
               "site",
@@ -6076,7 +6080,7 @@
             ],
             "additionalProperties": false
           },
-          "description": "Neighbouring sites its control channel announces."
+          "description": "Neighbouring sites its control channel announces: its own system's, and other systems' (their WACN and System ID)."
         },
         "dmr": {
           "anyOf": [
@@ -7428,6 +7432,9 @@
           "items": {
             "type": "object",
             "properties": {
+              "wacn": {
+                "type": "number"
+              },
               "rfss": {
                 "type": "number"
               },
@@ -7442,13 +7449,15 @@
               }
             },
             "required": [
+              "wacn",
               "rfss",
               "site",
               "sysId",
               "freqHz"
             ],
             "additionalProperties": false
-          }
+          },
+          "description": "Neighbouring sites it announces: its own system's, and other systems' (their WACN and System ID)."
         },
         "voice": {
           "type": "array",

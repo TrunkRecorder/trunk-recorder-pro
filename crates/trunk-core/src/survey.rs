@@ -239,6 +239,8 @@ impl Candidate {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Adjacent {
+    /// Its system's WACN (another system's, for a neighbouring system).
+    pub wacn: u32,
     pub rfss: u32,
     pub site: u32,
     pub sys_id: u32,
@@ -1218,7 +1220,7 @@ struct Monitor {
     noise: Vec<f64>,
     snr: Option<f64>,
     secondary: BTreeSet<u64>,
-    adjacent: BTreeMap<(u32, u32, u32), Adjacent>,
+    adjacent: BTreeMap<(u32, u32, u32, u32), Adjacent>,
     voice: BTreeMap<u64, VoiceChannel>,
     info: SystemInfo,
     gains: Vec<f32>,
@@ -1415,8 +1417,8 @@ impl Monitor {
             // This site's control channel (RFSS and network status name it).
             MessageType::SysId | MessageType::Status if m.freq_hz != 0 => self.info.advertised_hz = Some(m.freq_hz),
             MessageType::Adjacent if m.freq_hz != 0 => {
-                let a = Adjacent { rfss: m.rfss, site: m.site, sys_id: m.sys_id, freq_hz: m.freq_hz };
-                self.adjacent.insert((a.sys_id, a.rfss, a.site), a);
+                let a = Adjacent { wacn: m.wacn, rfss: m.rfss, site: m.site, sys_id: m.sys_id, freq_hz: m.freq_hz };
+                self.adjacent.insert((a.wacn, a.sys_id, a.rfss, a.site), a);
             }
             MessageType::ControlChannel if m.freq_hz != 0 => {
                 self.secondary.insert(m.freq_hz);

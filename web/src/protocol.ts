@@ -710,8 +710,8 @@ export interface SiteStatus {
 export interface SiteDetail {
   index: number;
   name: string;
-  /** Neighbouring sites its control channel announces. */
-  adjacent: { sysId: number; rfss: number; site: number; freqHz: number }[];
+  /** Neighbouring sites its control channel announces: its own system's, and other systems' (their WACN and System ID). */
+  adjacent: { wacn: number; sysId: number; rfss: number; site: number; freqHz: number }[];
   /** A trunked DMR site. */
   dmr: DmrSiteStatus | null;
   /** An NXDN site. */
@@ -1048,7 +1048,8 @@ export interface SurveyMonitor {
   /** The frequency the control channel announces for itself. */
   advertisedHz: number | null;
   secondary: number[];
-  adjacent: { rfss: number; site: number; sysId: number; freqHz: number }[];
+  /** Neighbouring sites it announces: its own system's, and other systems' (their WACN and System ID). */
+  adjacent: { wacn: number; rfss: number; site: number; sysId: number; freqHz: number }[];
   voice: { freqHz: number; grants: number; tdma: boolean }[];
   idens: number;
   good: number;

@@ -320,7 +320,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
     props.onDone();
   };
   const neighbour = (a: SurveyMonitor["adjacent"][number]) => {
-    const name = addSite([a.freqHz], { wacn: id.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site });
+    const name = addSite([a.freqHz], { wacn: a.wacn || id.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site });
     setNotice(`Added ${name} (site ${a.rfss}-${a.site}, control channel ${formatMhz(a.freqHz)} MHz). It needs a source that covers it.`);
   };
   return (

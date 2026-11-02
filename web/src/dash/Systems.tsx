@@ -44,34 +44,49 @@ export function SiteRows(props: { s: AppState; x: DashSystem }) {
   );
 }
 
-/** Neighbouring sites the control channels announce that aren't set up yet — add one to record it too, as a site of its system (next Start). */
+/**
+ * Neighbouring sites the control channels announce that aren't set up yet —
+ * add one to record it too, as a site of its system (next Start). A
+ * neighbouring system's (another System ID or WACN: one its radios roam
+ * to) is added as a system of its own.
+ */
 export function Neighbours(props: { s: AppState; sites: DetailedSite[] }) {
   const c = props.s.config;
   if (!c) return null;
-  const seen = new Map<string, { a: DetailedSite["adjacent"][number]; from: DetailedSite }>();
+  type Adjacent = DetailedSite["adjacent"][number];
+  const wacnOf = (a: Adjacent, from: DetailedSite) => a.wacn || from.identity.wacn || 0;
+  const other = (a: Adjacent, from: DetailedSite) => a.sysId !== from.identity.sysId || wacnOf(a, from) !== (from.identity.wacn || 0);
+  const seen = new Map<string, { a: Adjacent; from: DetailedSite }>();
   for (const x of props.sites)
     for (const a of x.adjacent) {
-      const k = `${a.sysId}/${a.rfss}/${a.site}`;
-      const recorded = props.sites.some((y) => y.identity.sysId === a.sysId && y.identity.rfss === a.rfss && y.identity.site === a.site);
+      const k = `${wacnOf(a, x)}/${a.sysId}/${a.rfss}/${a.site}`;
+      const recorded = props.sites.some(
+        (y) => (y.identity.wacn || 0) === wacnOf(a, x) && y.identity.sysId === a.sysId && y.identity.rfss === a.rfss && y.identity.site === a.site,
+      );
       if (!recorded && !systemWithChannel(c, a.freqHz) && !seen.has(k)) seen.set(k, { a, from: x });
     }
   if (!seen.size) return null;
-  const add = (a: DetailedSite["adjacent"][number], from: DetailedSite) => {
-    const name = addSite([a.freqHz], { wacn: from.identity.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site });
+  const add = (a: Adjacent, from: DetailedSite) => {
+    const name = addSite([a.freqHz], { wacn: wacnOf(a, from), sysId: a.sysId, rfss: a.rfss, site: a.site });
     setNotice(`Added ${name} (site ${a.rfss}-${a.site}, ${formatMhz(a.freqHz)} MHz). It records from the next Start, if a source covers it.`);
   };
+  const rows = [...seen.values()].sort((x, y) => Number(other(x.a, x.from)) - Number(other(y.a, y.from)));
+  const systems = rows.filter((r) => other(r.a, r.from)).length;
   return (
     <details className="panel log">
       <summary className="panel-head">
         <h2>Neighbouring sites</h2>
-        <span className="muted small">{seen.size} announced, not recorded</span>
+        <span className="muted small">
+          {seen.size} announced, not recorded{systems ? ` · ${systems} of other systems` : ""}
+        </span>
       </summary>
       <div className="row">
-        {[...seen.values()].map(({ a, from }) => (
-          <span key={`${a.sysId}/${a.rfss}/${a.site}`} className="chip">
+        {rows.map(({ a, from }) => (
+          <span key={`${wacnOf(a, from)}/${a.sysId}/${a.rfss}/${a.site}`} className="chip">
             <span className="mono">
-              SysID {hex(a.sysId)} · site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
+              {other(a, from) && wacnOf(a, from) !== (from.identity.wacn || 0) ? `WACN ${hex(wacnOf(a, from))} · ` : ""}SysID {hex(a.sysId)} · site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
             </span>
+            {other(a, from) && <span className="badge">other system</span>}
             <span className="muted">via {from.label}</span>
             <button className="btn ghost small" onClick={() => add(a, from)}>
               Add

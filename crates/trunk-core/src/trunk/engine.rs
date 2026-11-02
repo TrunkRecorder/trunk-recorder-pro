@@ -366,6 +366,8 @@ pub struct PatternHeard {
 /// A neighbouring site a control channel announces.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AdjacentSite {
+    /// Its system's WACN (another system's, for a neighbouring system).
+    pub wacn: u32,
     pub sys_id: u32,
     pub rfss: u32,
     pub site: u32,
@@ -1142,7 +1144,7 @@ struct Trunk {
     identity: Identity,
     /// Why this control channel is not ours, while it isn't.
     mismatch: Option<String>,
-    adjacent: std::collections::BTreeMap<(u32, u32, u32), AdjacentSite>,
+    adjacent: std::collections::BTreeMap<(u32, u32, u32, u32), AdjacentSite>,
     /// The call signs its base station IDs say, by the channel (Hz) each is for.
     callsigns: std::collections::BTreeMap<u64, String>,
     /// Its system's time, last said ([`SiteStatus::system_time`]).
@@ -1365,7 +1367,7 @@ impl Trunk {
         for (st, p) in cc.steps.into_iter().zip(cc.params) {
             self.identity = st.identity;
             for m in st.msgs.iter().filter(|m| m.kind == MessageType::Adjacent && m.freq_hz > 0) {
-                self.adjacent.insert((m.sys_id, m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
+                self.adjacent.insert((m.wacn, m.sys_id, m.rfss, m.site), AdjacentSite { wacn: m.wacn, sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
             }
             if let Some(m) = st.msgs.iter().rev().find(|m| m.system_time_ms.is_some()) {
                 self.system_time = m.system_time_ms.map(|(ms, valid)| (m.time_s, ms, valid));

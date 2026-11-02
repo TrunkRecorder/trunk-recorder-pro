@@ -288,6 +288,10 @@ pub struct P25Parser {
     /// The site's (WACN, System ID): a band plan for another system's
     /// channels (an extended IDEN_UP_TDMA naming it) isn't this one's.
     system: Option<(u32, u16)>,
+    /// Other systems' band plans, by (WACN, System ID): a site sends a
+    /// neighbouring system's so radios can find its control channel
+    /// (ADJ_STS_BCST_UNC names it in that system's plan).
+    others: BTreeMap<(u32, u16), BTreeMap<u8, Identifier>>,
 }
 
 impl P25Parser {
@@ -483,6 +487,7 @@ impl P25Parser {
                 } else {
                     let (w, s) = i.system.unwrap_or_default();
                     m.meta += &format!(" for system {w:x}.{s:x}: not this one's");
+                    self.others.entry((w, s)).or_default().insert(i.iden, *i);
                 }
             }
             Msg::RfssStatus { site: s, networked } => {
@@ -500,13 +505,15 @@ impl P25Parser {
                 m.meta = format!("Network status wacn {wacn:x} sysid {:x} CC {} MHz", s.sys_id, mhz(m.freq_hz));
             }
             Msg::AdjacentStatus { site: s, own_plan, conventional, failed, valid, .. } => {
-                // A neighbour on another band plan (ADJ_STS_BCST_UNC) has a
-                // channel this one can't resolve.
-                if *own_plan {
-                    self.on(&mut m, s.ch);
-                }
                 (m.sys_id, m.rfss, m.site) = (s.sys_id as u32, s.rfss as u32, s.site as u32);
                 m.wacn = s.wacn.or(self.system.map(|(w, _)| w)).unwrap_or(0);
+                // A neighbour on another band plan (ADJ_STS_BCST_UNC): its
+                // channel is in its own system's, when the site sent that.
+                if *own_plan {
+                    self.on(&mut m, s.ch);
+                } else if let Some(i) = self.others.get(&(m.wacn, s.sys_id)).and_then(|t| t.get(&s.ch.iden())) {
+                    m.freq_hz = i.resolve(s.ch).0;
+                }
                 let mut flags = String::new();
                 for (on, f) in [(*conventional, " conventional"), (*failed, " failed"), (!*valid, " unverified")] {
                     if on {
@@ -685,6 +692,25 @@ mod tests {
         assert!(p.tables.is_empty(), "another system's");
         p.parse(&iden(0x9ef), 0x443, 0.0);
         assert_eq!(p.channel_to_hz(Channel(0x1000)), 762_006_250);
+    }
+
+    /// A neighbouring system's control channel (ADJ_STS_BCST_UNC) is in that
+    /// system's band plan, which the site sends too.
+    #[test]
+    fn a_neighbouring_systems_control_channel_by_its_band_plan() {
+        let mut p = P25Parser::default();
+        parse(&mut p, 0x3b, 0, [0x12, 0xbe, 0xe0, 0x03, 0xa9, 0x10, 0x01, 0x70]);
+        let mbt = |op: u8, addr: [u8; 3], tail: [u8; 2], data: Vec<u8>| {
+            let mut h = crate::p25::mbt::tests::ambtc_header(op, addr, tail);
+            h[2] = 0;
+            crate::p25::osp::from_mbt(&crate::p25::mbt::Mbt { header: h, data })
+        };
+        let unc = mbt(0x3e, [0x12, 0x29, 0x54], [1, 1], vec![0x10, 0x00, 0x10, 0x00, 0x70, 0xbe, 0xe0, 0x00, 0, 0, 0, 0]);
+        let m = p.parse(&unc, 0x443, 0.0).pop().unwrap();
+        assert_eq!((m.kind, m.wacn, m.sys_id, m.rfss, m.site, m.freq_hz), (MessageType::Adjacent, 0xbee00, 0x954, 1, 1, 0), "its band plan not heard yet");
+        p.parse(&mbt(0x33, [0x11, 0xbe, 0xe0], [0x09, 0x54], vec![0x09, 0x15, 0x75, 0x62, 0xcb, 0x00, 0x32, 0]), 0x443, 0.0);
+        assert!(p.tables.is_empty(), "not this system's");
+        assert_eq!(p.parse(&unc, 0x443, 0.0).pop().unwrap().freq_hz, 762_006_250);
     }
 
     /// SCCB_EXP is one channel: Channel (T), then Channel (R), the FNE's receive (not another CC).

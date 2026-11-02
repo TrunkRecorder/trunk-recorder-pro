@@ -82,12 +82,13 @@ test("Decode: a system's page shows what its sites announce (decodeDetail), not 
   const tg = (talkgroup: number, alphaTag = "") => ({ talkgroup, alphaTag });
   transport.onMessage({
     type: "decodeDetail", system: "dcfd", channels: [],
-    sites: [{ index: 1, name: "south", adjacent: [{ sysId: 0x1a2, rfss: 1, site: 9, freqHz: 853_000_000 }], dmr: null, nxdn: null }],
+    sites: [{ index: 1, name: "south", adjacent: [{ wacn: 0, sysId: 0x1a2, rfss: 1, site: 9, freqHz: 853_000_000 }, { wacn: 0xbee00, sysId: 0x954, rfss: 1, site: 1, freqHz: 854_000_000 }], dmr: null, nxdn: null }],
     patches: [{ supergroup: tg(60001), members: [tg(100, "Fire Dispatch"), tg(200)] }],
   });
   const page = text(renderToString(<DecodePage />));
   assert.ok(page.includes("SG 60001") && page.includes("Fire Dispatch (100) + 200"), page);
   assert.ok(page.includes("site 1-9"), page);
+  assert.match(page, /SysID 954 · site 1-1 · 854\.0+ other system/, "a neighbouring system's site");
 });
 
 test("Decode: a site's FCC call sign, once its control channel has said it", () => {
