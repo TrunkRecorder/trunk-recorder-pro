@@ -136,7 +136,8 @@ export class TrunkClient {
   /**
    * Costly messages come only when asked for, while you show them:
    * subscribe(["log", "spectrum:0"]) — the control channel log, a radio's
-   * waterfall (also "rf:<source>", "decode:<shortName>", "platform").
+   * waterfall (also "rf:<source>", "decode:<shortName>", "platform", and
+   * "activity": the frequent monitorEvent kinds, every grant and affiliation).
    * Replaces the last; kept across reconnects. subscribe([]) stops them.
    */
   subscribe(topics) {

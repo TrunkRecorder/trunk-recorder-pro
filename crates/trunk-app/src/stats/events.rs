@@ -92,8 +92,13 @@ pub enum MonitorEvent {
     ClockStep { by_ms: f64 },
 }
 
+/// The topic a connection subscribes to for the frequent events, which the
+/// feed leaves out: `{"type": "subscribe", "topics": ["activity"]}`.
+pub const ACTIVITY: &str = "activity";
+
 impl MonitorEvent {
-    /// Made on every call or more often: built only for watchers.
+    /// Made on every call or more often: built only for watchers and the
+    /// [`ACTIVITY`] topic's subscribers.
     pub fn frequent(&self) -> bool {
         matches!(self, MonitorEvent::TgActive { .. } | MonitorEvent::UnitActive { .. } | MonitorEvent::UnitAffiliated { .. } | MonitorEvent::CallVolume { .. })
     }
@@ -137,12 +142,22 @@ pub const RECENT: usize = 200;
 pub struct Monitor {
     watchers: Vec<Box<dyn Watcher>>,
     recent: Ring<Value>,
+    /// Someone subscribes to the [`ACTIVITY`] topic.
+    subscribed: bool,
 }
 
 impl Default for Monitor {
     fn default() -> Self {
-        Monitor { watchers: Vec::new(), recent: Ring::new(RECENT) }
+        Monitor { watchers: Vec::new(), recent: Ring::new(RECENT), subscribed: false }
     }
+}
+
+/// Where an emitted event goes: the feed (every connection, and kept as
+/// recent) or the [`ACTIVITY`] topic (its subscribers alone).
+#[derive(Debug)]
+pub enum Emitted {
+    Feed(Value),
+    Activity(Value),
 }
 
 impl Monitor {
@@ -150,23 +165,29 @@ impl Monitor {
         self.watchers.push(w);
     }
 
-    /// Someone acts on per-call events (build them).
-    pub fn wants_frequent(&self) -> bool {
-        !self.watchers.is_empty()
+    /// Whether anyone subscribes to the [`ACTIVITY`] topic.
+    pub fn set_subscribed(&mut self, on: bool) {
+        self.subscribed = on;
     }
 
-    /// Hand `e` to the watchers; returns its message when it is one for
-    /// the feed (frequent ones aren't).
-    pub fn emit(&mut self, t: f64, e: MonitorEvent) -> Option<Value> {
+    /// Someone acts on per-call events (build them).
+    pub fn wants_frequent(&self) -> bool {
+        !self.watchers.is_empty() || self.subscribed
+    }
+
+    /// Hand `e` to the watchers; returns its message and where it goes:
+    /// the feed, or (a frequent one) the [`ACTIVITY`] topic when someone
+    /// subscribes to it.
+    pub fn emit(&mut self, t: f64, e: MonitorEvent) -> Option<Emitted> {
         for w in self.watchers.iter_mut() {
             w.event(t, &e);
         }
         if e.frequent() {
-            return None;
+            return self.subscribed.then(|| Emitted::Activity(e.to_json(t)));
         }
         let v = e.to_json(t);
         self.recent.push(v.clone());
-        Some(v)
+        Some(Emitted::Feed(v))
     }
 
     /// Newest last.
@@ -194,12 +215,34 @@ mod tests {
         assert!(!m.wants_frequent());
         m.add_watcher(Box::new(Count(seen.clone())));
         assert!(m.wants_frequent());
-        let v = m.emit(100.0, MonitorEvent::ControlLost { system: "dcfd".into(), site: None, freq_hz: Some(851_000_000) }).unwrap();
+        let Some(Emitted::Feed(v)) = m.emit(100.0, MonitorEvent::ControlLost { system: "dcfd".into(), site: None, freq_hz: Some(851_000_000) }) else { panic!("not for the feed") };
         assert_eq!(v["kind"], "controlLost");
         assert_eq!(v["level"], "bad");
         assert_eq!(v["freqHz"], 851_000_000);
         assert!(m.emit(101.0, MonitorEvent::TgActive { system: "dcfd".into(), talkgroup: 1, units: vec![] }).is_none());
         assert_eq!(seen.lock().unwrap().len(), 2);
         assert_eq!(m.recent().len(), 1);
+    }
+
+    /// A subscriber to the `activity` topic gets the frequent events as
+    /// `monitorEvent`s for the topic; they stay out of the recent ones.
+    #[test]
+    fn activity_subscribers_get_the_frequent_events() {
+        let mut m = Monitor::default();
+        let tg_active = || MonitorEvent::TgActive { system: "dcfd".into(), talkgroup: 1, units: vec![7] };
+        assert!(!m.wants_frequent());
+        assert!(m.emit(100.0, tg_active()).is_none());
+        m.set_subscribed(true);
+        assert!(m.wants_frequent());
+        let Some(Emitted::Activity(v)) = m.emit(101.0, tg_active()) else { panic!("not for the topic") };
+        assert_eq!(v["type"], "monitorEvent");
+        assert_eq!(v["kind"], "tgActive");
+        assert_eq!(v["units"], serde_json::json!([7]));
+        assert_eq!(v["t"], 101.0);
+        assert_eq!(m.recent().len(), 0, "frequent events aren't recent ones");
+        assert!(matches!(m.emit(102.0, MonitorEvent::ClockOk {}), Some(Emitted::Feed(_))), "the feed is as it was");
+        m.set_subscribed(false);
+        assert!(!m.wants_frequent());
+        assert!(m.emit(103.0, tg_active()).is_none());
     }
 }
