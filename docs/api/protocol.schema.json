@@ -6843,12 +6843,23 @@
         "ended": {
           "type": "boolean"
         },
+        "settings": {
+          "$ref": "#/definitions/Source",
+          "description": "The settings it runs with (Setup's may have changed since Start: they apply at the next)."
+        },
         "errorPpm": {
           "type": [
             "number",
             "null"
           ],
-          "description": "Its frequency error, ppm (+: signals come in high): the median of its last control channel and call measurements; null until measured."
+          "description": "Its frequency error, ppm (+: signals come in high), against `settings.ppm`: the median of its last control channel and call measurements; null until measured."
+        },
+        "ppmApply": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The ppm that removes `errorPpm` (`settings.ppm` less it, as the radio takes it: an RTL-SDR whole ppm); null until measured."
         },
         "clockPpm": {
           "type": [
@@ -6875,7 +6886,8 @@
         "dropped",
         "errors",
         "lastError",
-        "ended"
+        "ended",
+        "settings"
       ],
       "additionalProperties": false
     },

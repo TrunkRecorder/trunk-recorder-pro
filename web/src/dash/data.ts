@@ -3,7 +3,7 @@
 // health rules — plain functions returning a level and why, the why worded as
 // a hint (what it means, what to try).
 
-import { activeSystems, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
+import { activeSystems, autoTuneOn, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
 import { can, setView, snapshot, statsQuery, useApp, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
 import { keyPart, num, pct } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
@@ -251,11 +251,6 @@ export function siteHealth(s: AppState, site: DashSite, usualRate?: Usual | null
   return OK(`${num(rate)} msg/s, ${Math.round(100 - badPct)}% decoded`);
 }
 
-/** A source: drops, clipping, frequency error, sample rate. */
-/** A running source's guardHz, from the config (undefined = the default): its usable band is usableHalfWidth(rate, guard) each side. */
-export function sourceGuard(s: AppState, src: SourceStatus): number | undefined {
-  return s.config?.sources[src.index]?.guardHz;
-}
 
 /**
  * Where `hz` falls among the sources: the one it's deepest in, `depth` how
@@ -267,7 +262,7 @@ export function sourceGuard(s: AppState, src: SourceStatus): number | undefined 
 export function coverage(s: AppState, hz: number): { src: SourceStatus; depth: number; beyondHz: number } | null {
   let best: { src: SourceStatus; d: number; beyondHz: number } | null = null;
   for (const src of s.sources) {
-    const half = usableHalfWidth(src.rateHz, sourceGuard(s, src));
+    const half = usableHalfWidth(src.rateHz, src.settings.guardHz);
     const off = Math.abs(hz - src.centerHz);
     const d = 1 - off / half;
     if (!best || d > best.d) best = { src, d, beyondHz: Math.max(0, off - half) };
@@ -275,7 +270,8 @@ export function coverage(s: AppState, hz: number): { src: SourceStatus; depth: n
   return best && { src: best.src, depth: Math.max(0, best.d), beyondHz: best.beyondHz };
 }
 
-export function sourceHealth(s: AppState, src: SourceStatus, autoTune: boolean): Health {
+/** A source: drops, clipping, frequency error, sample rate. */
+export function sourceHealth(s: AppState, src: SourceStatus): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   if (src.ended) return { level: "idle", why: "Ended" };
   const drops = recentAvg(K.src(src.label, "dropped"), 10) ?? 0;
@@ -285,8 +281,8 @@ export function sourceHealth(s: AppState, src: SourceStatus, autoTune: boolean):
   if (src.lastError && src.lastErrorS && Date.now() / 1000 - src.lastErrorS < 60) return { level: "bad", why: src.lastError };
   if (clip > 0.5) return { level: "warn", why: `${num(clip, 1)}% of samples at full scale: the gain is too high (or a strong signal nearby). Lower it a few dB.` };
   if (peak !== null && peak > -1) return { level: "warn", why: "Peaks reach full scale: little headroom left. Lower the gain a little." };
-  if (src.errorPpm != null && !autoTune && Math.abs(src.errorPpm - (src.tunePpm ?? 0)) > 2)
-    return { level: "warn", why: `Its frequency is off by ${num(src.errorPpm, 1)} ppm. Set the source's ppm, or turn on AutoTune.` };
+  if (src.errorPpm != null && !autoTuneOn(src.settings) && Math.abs(src.errorPpm - (src.tunePpm ?? 0)) > 2)
+    return { level: "warn", why: `Its frequency is off by ${num(src.errorPpm, 1)} ppm. Set the source's ppm${src.ppmApply != null ? ` to ${src.ppmApply}` : ""}, or turn on AutoTune.` };
   if (src.rateMeasured > 0 && Math.abs(src.rateMeasured / src.rateHz - 1) > 0.05) return { level: "warn", why: `Delivering ${num(src.rateMeasured / 1e6, 2)} MS/s of ${num(src.rateHz / 1e6, 2)}.` };
   return OK("Clean");
 }
@@ -348,11 +344,7 @@ export function platformHealth(s: AppState): Health {
 
 export function rfHealth(s: AppState): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  const auto = (i: number) => {
-    const c = s.config?.sources[i];
-    return !!c && "autoTune" in c && !!c.autoTune;
-  };
-  return worstOf(s.sources.map((x, i) => ({ x, i })), ({ x }) => x.label, ({ x, i }) => sourceHealth(s, x, auto(i)));
+  return worstOf(s.sources, (x) => x.label, (x) => sourceHealth(s, x));
 }
 
 export function decodeHealth(s: AppState): Health {

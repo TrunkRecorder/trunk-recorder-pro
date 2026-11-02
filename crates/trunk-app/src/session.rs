@@ -1195,6 +1195,10 @@ impl Session {
                 json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured,
                         "dropped": ss.dropped, "errors": ss.errors, "lastError": recent, "lastErrorS": recent.filter(|_| ss.last_error_s > 0.0).map(|_| ss.last_error_s.round()), "ended": ss.ended,
                         "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm, "tuneSeeded": tune.seeded,
+                        // The ppm that removes the error: it was measured against the ppm this run opened the radio with.
+                        "ppmApply": tune.error_ppm.map(|e| s.settable_ppm(s.ppm - e)),
+                        // The settings it runs with: Setup's may have changed since Start.
+                        "settings": s,
                         "clockPpm": ss.clock.ppm().map(|p| (p * 100.0).round() / 100.0) })
             })
             .collect();

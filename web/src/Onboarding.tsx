@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { autoCenter, detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newSystem, parseFreqList, planCenters, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
+import { detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -1044,8 +1044,6 @@ interface Chan {
   weight: number;
 }
 
-const covers = (center: number, rate: number, hz: number, guard?: number) => Math.abs(hz - center) <= usableHalfWidth(rate, guard);
-
 function CoverageStep(props: { c: Config; found: Found | null; onNext: () => void; onBack: () => void }) {
   const { c, found } = props;
   const sys = found ? c.systems[found.system] : undefined;
@@ -1060,14 +1058,15 @@ function CoverageStep(props: { c: Config; found: Found | null; onNext: () => voi
   const fixed = c.sources.map((x) => (x.type === "file" ? x.centerHz || null : null));
   const first = found && c.sources[found.source] ? found.source : 0;
   const recommended = useMemo(() => {
-    const firstCenter = found?.sug?.centerHz || autoCenter(ccs, rates[first] ?? 2_400_000, guards[first]) || ccs[0] || 0;
-    return planCenters(c.sources.map((x, k) => ({ rateHz: x.rateHz, guardHz: x.guardHz, fixedHz: fixed[k] })), first, firstCenter, ccs, voice);
+    // The radio the survey found the system on stays where it suggested.
+    const at = (k: number) => fixed[k] ?? (k === first ? found?.sug?.centerHz || null : null);
+    return placeSources(c.sources.map((x, k) => ({ rateHz: x.rateHz, guardHz: x.guardHz, fixedHz: at(k) })), { channels: voice, needs: [ccs] });
   }, [c.sources.length, found]);
   const [centers, setCenters] = useState<(number | null)[]>(recommended);
 
   if (!sys || !ccs.length) return <Missing onBack={props.onBack} />;
 
-  const reached = (hz: number) => centers.some((ctr, k) => ctr !== null && rates[k] !== null && covers(ctr, rates[k]!, hz, guards[k]));
+  const reached = (hz: number) => centers.some((ctr, k) => ctr !== null && c.sources[k] && reaches(c.sources[k], ctr, hz));
   const ccOk = ccs.some(reached);
   const inVoice = voice.filter((v) => reached(v.hz));
   const allWeight = voice.reduce((a, v) => a + v.weight, 0);

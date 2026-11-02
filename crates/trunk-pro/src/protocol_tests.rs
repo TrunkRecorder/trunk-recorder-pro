@@ -240,6 +240,9 @@ fn autotune_starts_from_the_saved_score() {
     let status = msgs.iter().find(|m| m["type"] == "status").expect("a status");
     let src = &status["sources"][0];
     assert_eq!((src["tunePpm"].as_f64(), src["tuneSeeded"].as_bool()), (Some(4.0), Some(true)), "{src}");
+    // The settings it runs with; no ppm to set until something is measured.
+    assert_eq!((src["settings"]["ppm"].as_f64(), src["settings"]["autoTune"].as_bool()), (Some(2.0), Some(true)), "{src}");
+    assert!(src["ppmApply"].is_null(), "{src}");
 }
 
 /// Without subscriptions, the costly messages aren't made.
