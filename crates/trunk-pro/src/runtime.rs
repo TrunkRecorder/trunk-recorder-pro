@@ -226,6 +226,7 @@ impl Ctx {
             return Ok(());
         }
         if let Some(r) = l.recording.take() {
+            log::info!("Replacing the current recording session");
             r.stop();
         }
         if l.survey.as_ref().is_some_and(|s| s.uses_any(&cfg.sources)) {
@@ -299,7 +300,9 @@ impl Ctx {
     /// Stop recording, if it is (a survey on a spare radio goes on).
     pub fn stop_recording(&self) {
         if let Some(r) = self.lifecycle.lock().unwrap().recording.take() {
+            log::info!("Recording stop requested");
             r.stop();
+            log::info!("Recording stopped");
         }
     }
 
@@ -982,6 +985,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         }
     }
     *ctx.engine.lock().unwrap() = None;
+    if ended_all {
+        log::info!("Recording stopped because all finite sources ended");
+    }
     ctx.set_phase("stopping", None, false);
     // The decoding threads finish what their sources had already sent
     // ([`feed_source`]); once the sources are gone (stopped, or files at their end).

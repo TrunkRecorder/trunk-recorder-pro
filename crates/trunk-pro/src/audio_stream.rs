@@ -6,7 +6,7 @@
 //! at each (re)connect, and while it's away, silence fills in up to now.
 
 use std::io::{self, Cursor, Read};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -25,6 +25,37 @@ use symphonia::core::meta::MetadataOptions;
 use trunk_app::session::StreamFeeder;
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+const STREAM_READ_POLL: Duration = Duration::from_secs(1);
+const STREAM_STAGE_IDLE: u8 = 0;
+const STREAM_STAGE_READ: u8 = 1;
+const STREAM_STAGE_DECODE_QUEUE: u8 = 2;
+const STREAM_STAGE_ENGINE: u8 = 3;
+
+struct StreamProgress {
+    started: Instant,
+    stage: AtomicU8,
+    stage_started_ms: AtomicU64,
+}
+
+impl StreamProgress {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            stage: AtomicU8::new(STREAM_STAGE_IDLE),
+            stage_started_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn set(&self, stage: u8) {
+        if self.stage.load(Ordering::Relaxed) != stage {
+            self.stage_started_ms.store(
+                self.started.elapsed().as_millis() as u64,
+                Ordering::Relaxed,
+            );
+            self.stage.store(stage, Ordering::Release);
+        }
+    }
+}
 
 /// Stream row `stream` ([`crate::config::Config::streams`]) on a thread of
 /// its own until `stop`: fetched, and fetched again after a failure (told
@@ -38,16 +69,21 @@ pub fn spawn(row: Channel, stream: usize, feeder: StreamFeeder, ctl: Sender<Engi
         while !stop.load(Ordering::Relaxed) {
             // (Its clock catches up as its audio starts: the time it took to connect.)
             let mut fresh = true;
-            let result = stream_once(&row, &stop, &mut |audio| {
-                if !connected {
-                    log::info!("Stream {name}: connected; audio is flowing");
-                    connected = true;
-                }
-                if std::mem::take(&mut fresh) {
-                    feeder.catch_up(now_ms());
-                }
-                feeder.push(audio);
-            });
+            let result = stream_once(
+                &row,
+                &stop,
+                &mut |audio| {
+                    if !connected {
+                        log::info!("Stream {name}: connected; audio is flowing");
+                        connected = true;
+                    }
+                    if std::mem::take(&mut fresh) {
+                        feeder.catch_up(now_ms());
+                    }
+                    feeder.push(audio);
+                },
+                &mut || feeder.catch_up(now_ms()),
+            );
             if let (Err(error), false) = (result, stop.load(Ordering::Relaxed)) {
                 // (Not its address: it may hold the feed's password.)
                 connected = false;
@@ -66,11 +102,16 @@ pub fn spawn(row: Channel, stream: usize, feeder: StreamFeeder, ctl: Sender<Engi
 
 /// One connection: its audio to `push` (8 kHz) until it ends, fails or `stop`.
 /// `Ok` only when stopped (a stream that ends is tried again).
-fn stream_once(row: &Channel, stop: &Arc<AtomicBool>, push: &mut dyn FnMut(&[f32])) -> Result<(), String> {
+fn stream_once(
+    row: &Channel,
+    stop: &Arc<AtomicBool>,
+    push: &mut dyn FnMut(&[f32]),
+    idle: &mut dyn FnMut(),
+) -> Result<(), String> {
     let (url, authorization) = request_url(row.url.trim())?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(15)))
-        .timeout_per_read(Some(Duration::from_secs(15)))
+        .timeout_per_read(Some(STREAM_READ_POLL))
         .user_agent(concat!("trunk-pro/", env!("CARGO_PKG_VERSION")))
         .http_status_as_error(false)
         .build()
@@ -85,6 +126,11 @@ fn stream_once(row: &Channel, stop: &Arc<AtomicBool>, push: &mut dyn FnMut(&[f32
     if !response.status().is_success() {
         return Err(format!("the server answered {}", response.status()));
     }
+    log::info!(
+        "Stream {}: connected to server (HTTP {})",
+        row.name,
+        response.status()
+    );
     let icy_metaint = response
         .headers()
         .get("icy-metaint")
@@ -101,25 +147,123 @@ fn stream_once(row: &Channel, stop: &Arc<AtomicBool>, push: &mut dyn FnMut(&[f32
     let mut body = response.into_body().into_reader();
     let mut icy = icy_metaint.map(IcyMetadataStripper::new);
     let mut buffer = [0u8; 16 * 1024];
+    let mut network_bytes = 0_u64;
+    let mut network_reads = 0_u64;
+    let mut read_timeouts = 0_u64;
+    let mut last_network_log = Instant::now();
+    let mut last_clock_tick = Instant::now();
+    let progress = Arc::new(StreamProgress::new());
+    let watchdog_stop = Arc::new(AtomicBool::new(false));
+    let watchdog_progress = progress.clone();
+    let watchdog_done = watchdog_stop.clone();
+    let watchdog_name = row.name.clone();
+    let watchdog = std::thread::spawn(move || {
+        let mut last_warning = Instant::now();
+        while !watchdog_done.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_secs(1));
+            let stage = watchdog_progress.stage.load(Ordering::Acquire);
+            if stage != STREAM_STAGE_IDLE {
+                let began = watchdog_progress
+                    .stage_started_ms
+                    .load(Ordering::Relaxed);
+                let now = watchdog_progress.started.elapsed().as_millis() as u64;
+                if now.saturating_sub(began) >= 5_000
+                    && last_warning.elapsed() >= Duration::from_secs(10)
+                {
+                    let label = match stage {
+                        STREAM_STAGE_READ => "HTTP body read",
+                        STREAM_STAGE_DECODE_QUEUE => "sending bytes to decoder",
+                        STREAM_STAGE_ENGINE => "feeding decoded audio to engine",
+                        _ => "unknown operation",
+                    };
+                    log::warn!(
+                        "Stream {watchdog_name}: still blocked in {label} for at least 5 seconds"
+                    );
+                    last_warning = Instant::now();
+                }
+            }
+        }
+    });
     let network = loop {
-        for audio in audio_rx.try_iter() {
-            push(&audio);
+        drain_stream_audio(
+            &audio_rx,
+            push,
+            idle,
+            &progress,
+            &mut last_clock_tick,
+        );
+        if last_clock_tick.elapsed() >= STREAM_READ_POLL {
+            progress.set(STREAM_STAGE_ENGINE);
+            idle();
+            progress.set(STREAM_STAGE_IDLE);
+            last_clock_tick = Instant::now();
         }
         if stop.load(Ordering::Relaxed) {
             break Ok(());
         }
+        progress.set(STREAM_STAGE_READ);
         match body.read(&mut buffer) {
-            Ok(0) => break Err("the stream ended".to_string()),
+            Ok(0) => {
+                progress.set(STREAM_STAGE_IDLE);
+                break Err("the stream ended".to_string());
+            }
             Ok(n) => {
+                progress.set(STREAM_STAGE_IDLE);
+                network_bytes += n as u64;
+                network_reads += 1;
+                log_network_progress(
+                    row,
+                    &mut network_bytes,
+                    &mut network_reads,
+                    &mut read_timeouts,
+                    &mut last_network_log,
+                );
                 let bytes = icy.as_mut().map_or_else(|| buffer[..n].to_vec(), |s| s.strip(&buffer[..n]));
-                if !bytes.is_empty() && chunk_tx.send(bytes).is_err() {
-                    break Err("its decoder stopped".into());
+                if !bytes.is_empty() {
+                    match send_chunk_while_draining_audio(
+                        &chunk_tx,
+                        bytes,
+                        &audio_rx,
+                        stop,
+                        push,
+                        idle,
+                        &progress,
+                        &mut last_clock_tick,
+                    ) {
+                        Ok(()) => {}
+                        Err(error) => break Err(error),
+                    }
                 }
             }
-            Err(_) if stop.load(Ordering::Relaxed) => break Ok(()),
-            Err(e) => break Err(format!("reading it failed: {e}")),
+            Err(_) if stop.load(Ordering::Relaxed) => {
+                progress.set(STREAM_STAGE_IDLE);
+                break Ok(());
+            }
+            Err(e) if is_stream_read_timeout(&e) => {
+                progress.set(STREAM_STAGE_IDLE);
+                read_timeouts += 1;
+                log_network_progress(
+                    row,
+                    &mut network_bytes,
+                    &mut network_reads,
+                    &mut read_timeouts,
+                    &mut last_network_log,
+                );
+            }
+            Err(e) => {
+                progress.set(STREAM_STAGE_IDLE);
+                break Err(format!("reading it failed: {e}"));
+            }
         }
     };
+    watchdog_stop.store(true, Ordering::Relaxed);
+    let _ = watchdog.join();
+    if network_bytes > 0 || network_reads > 0 || read_timeouts > 0 {
+        log::info!(
+            "Stream {}: final HTTP body counts: {network_bytes} bytes in {network_reads} reads; {read_timeouts} read timeouts",
+            row.name,
+        );
+    }
     drop(chunk_tx);
     let decoded = decoder.join().map_err(|_| "its decoder failed".to_string())?;
     for audio in audio_rx.try_iter() {
@@ -130,6 +274,97 @@ fn stream_once(row: &Channel, stop: &Arc<AtomicBool>, push: &mut dyn FnMut(&[f32
     }
     decoded?;
     network
+}
+
+fn drain_stream_audio(
+    audio_rx: &Receiver<Vec<f32>>,
+    push: &mut dyn FnMut(&[f32]),
+    idle: &mut dyn FnMut(),
+    progress: &StreamProgress,
+    last_clock_tick: &mut Instant,
+) -> usize {
+    let mut drained = 0;
+    for audio in audio_rx.try_iter() {
+        if last_clock_tick.elapsed() >= STREAM_READ_POLL {
+            progress.set(STREAM_STAGE_ENGINE);
+            idle();
+            progress.set(STREAM_STAGE_IDLE);
+        }
+        progress.set(STREAM_STAGE_ENGINE);
+        push(&audio);
+        progress.set(STREAM_STAGE_IDLE);
+        *last_clock_tick = Instant::now();
+        drained += 1;
+    }
+    drained
+}
+
+fn send_chunk_while_draining_audio(
+    chunk_tx: &SyncSender<Vec<u8>>,
+    mut bytes: Vec<u8>,
+    audio_rx: &Receiver<Vec<f32>>,
+    stop: &AtomicBool,
+    push: &mut dyn FnMut(&[f32]),
+    idle: &mut dyn FnMut(),
+    progress: &StreamProgress,
+    last_clock_tick: &mut Instant,
+) -> Result<(), String> {
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        progress.set(STREAM_STAGE_DECODE_QUEUE);
+        match chunk_tx.try_send(bytes) {
+            Ok(()) => {
+                progress.set(STREAM_STAGE_IDLE);
+                return Ok(());
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                progress.set(STREAM_STAGE_IDLE);
+                return Err("its decoder stopped".into());
+            }
+            Err(std::sync::mpsc::TrySendError::Full(pending)) => {
+                progress.set(STREAM_STAGE_IDLE);
+                bytes = pending;
+                let drained = drain_stream_audio(audio_rx, push, idle, progress, last_clock_tick);
+                if drained == 0 {
+                    if last_clock_tick.elapsed() >= STREAM_READ_POLL {
+                        progress.set(STREAM_STAGE_ENGINE);
+                        idle();
+                        progress.set(STREAM_STAGE_IDLE);
+                        *last_clock_tick = Instant::now();
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+    }
+}
+
+fn log_network_progress(
+    row: &Channel,
+    bytes: &mut u64,
+    reads: &mut u64,
+    timeouts: &mut u64,
+    last_log: &mut Instant,
+) {
+    if last_log.elapsed() >= Duration::from_secs(10) {
+        log::info!(
+            "Stream {}: HTTP body progress: {bytes} bytes in {reads} reads; {timeouts} read timeouts",
+            row.name
+        );
+        *bytes = 0;
+        *reads = 0;
+        *timeouts = 0;
+        *last_log = Instant::now();
+    }
+}
+
+fn is_stream_read_timeout(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<ureq::Error>())
+        .is_some_and(|error| matches!(error, ureq::Error::Timeout(ureq::Timeout::PerRead)))
 }
 
 fn request_url(url: &str) -> Result<(String, Option<String>), String> {
@@ -206,42 +441,81 @@ fn decode(input: impl Read + Send + Sync + 'static, row: &Channel, stop: &Atomic
         .map_err(|e| format!("unsupported audio codec: {e}"))?;
     let mut resampler: Option<StreamResampler> = None;
     let mut pcm = Vec::new();
-    loop {
+    let name = if row.name.trim().is_empty() {
+        "unnamed"
+    } else {
+        row.name.trim()
+    };
+    let mut packets_seen = 0_u64;
+    let mut decoded_packets = 0_u64;
+    let mut decode_errors = 0_u64;
+    let mut decoded_samples = 0_u64;
+    let mut last_decode_error = None;
+    let mut last_decode_progress_log = Instant::now();
+    let result = loop {
         if stop.load(Ordering::Relaxed) {
-            return Ok(());
+            break Ok(());
         }
         let packet = match format.next_packet() {
             Ok(Some(packet)) => packet,
-            Ok(None) => return Ok(()),
-            Err(SymphoniaError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(SymphoniaError::ResetRequired) => return Err("its format changed".into()),
-            Err(e) => return Err(format!("couldn't read it: {e}")),
+            Ok(None) => break Ok(()),
+            Err(SymphoniaError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => break Ok(()),
+            Err(SymphoniaError::ResetRequired) => break Err("its format changed".into()),
+            Err(e) => break Err(format!("couldn't read it: {e}")),
         };
         if packet.track_id != track_id {
             continue;
         }
+        packets_seen += 1;
         let decoded = match decoder.decode(&packet) {
-            Ok(decoded) => decoded,
-            Err(SymphoniaError::DecodeError(_)) => continue,
-            Err(e) => return Err(format!("couldn't decode it: {e}")),
+            Ok(decoded) => {
+                decoded_packets += 1;
+                Some(decoded)
+            }
+            Err(SymphoniaError::DecodeError(error)) => {
+                decode_errors += 1;
+                last_decode_error = Some(error.to_string());
+                None
+            }
+            Err(e) => break Err(format!("couldn't decode it: {e}")),
         };
-        let (rate, channels) = (decoded.spec().rate(), decoded.spec().channels().count());
-        if rate == 0 || channels == 0 {
-            return Err("it has an invalid sample format".into());
+        if let Some(decoded) = decoded {
+            let (rate, channels) = (decoded.spec().rate(), decoded.spec().channels().count());
+            if rate == 0 || channels == 0 {
+                break Err("it has an invalid sample format".into());
+            }
+            let mut interleaved = Vec::with_capacity(decoded.samples_interleaved());
+            decoded.copy_to_vec_interleaved(&mut interleaved);
+            let mono = select_channel(&interleaved, channels, row.stereo);
+            let converter = resampler.get_or_insert_with(|| StreamResampler::new(rate));
+            if converter.sample_rate != rate {
+                *converter = StreamResampler::new(rate);
+            }
+            pcm.clear();
+            converter.process(&mono, &mut pcm);
+            if !pcm.is_empty() {
+                decoded_samples += pcm.len() as u64;
+                push(&pcm);
+            }
         }
-        let mut interleaved = Vec::with_capacity(decoded.samples_interleaved());
-        decoded.copy_to_vec_interleaved(&mut interleaved);
-        let mono = select_channel(&interleaved, channels, row.stereo);
-        let converter = resampler.get_or_insert_with(|| StreamResampler::new(rate));
-        if converter.sample_rate != rate {
-            *converter = StreamResampler::new(rate);
+        if last_decode_progress_log.elapsed() >= Duration::from_secs(10) {
+            log::info!(
+                "Stream {name}: audio packets: {packets_seen} received, {decoded_packets} decoded, {decode_errors} failed; {decoded_samples} output samples{}",
+                last_decode_error.map_or_else(String::new, |error| format!("; latest decoder error: {error}"))
+            );
+            packets_seen = 0;
+            decoded_packets = 0;
+            decode_errors = 0;
+            decoded_samples = 0;
+            last_decode_error = None;
+            last_decode_progress_log = Instant::now();
         }
-        pcm.clear();
-        converter.process(&mono, &mut pcm);
-        if !pcm.is_empty() {
-            push(&pcm);
-        }
-    }
+    };
+    log::info!(
+        "Stream {name}: final audio packet counts: {packets_seen} received, {decoded_packets} decoded, {decode_errors} failed; {decoded_samples} output samples{}",
+        last_decode_error.map_or_else(String::new, |error| format!("; latest decoder error: {error}"))
+    );
+    result
 }
 
 fn select_channel(samples: &[f32], channels: usize, selection: Stereo) -> Vec<f32> {
@@ -459,22 +733,64 @@ mod tests {
             assert!(request_target_is_clean);
             write!(
                 client,
-                "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n{:X}\r\n",
                 bytes.len()
             )
             .unwrap();
             client.write_all(&bytes).unwrap();
+            client.write_all(b"\r\n").unwrap();
+            client.flush().unwrap();
+            std::thread::sleep(STREAM_READ_POLL + Duration::from_millis(100));
+            client.write_all(b"0\r\n\r\n").unwrap();
         });
 
         let mut got = 0;
+        let idle_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let idle_count_clone = idle_count.clone();
         let result = stream_once(
             &row(&format!("http://user:pass@{address}/fixture.mp3")),
             &Arc::new(AtomicBool::new(false)),
             &mut |audio| got += audio.len(),
+            &mut || {
+                idle_count_clone.fetch_add(1, Ordering::Relaxed);
+            },
         );
         server.join().unwrap();
         assert_eq!(result, Err("the stream ended".into()));
         assert!(got > 0, "its audio came through");
+        assert!(
+            idle_count.load(Ordering::Relaxed) > 0,
+            "idle time advances the stream clock"
+        );
+    }
+
+    #[test]
+    fn sending_to_a_full_decoder_queue_keeps_draining_audio() {
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::sync_channel(1);
+        chunk_tx.send(vec![0]).unwrap();
+        let consumer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(chunk_rx.recv().unwrap(), [0]);
+            assert_eq!(chunk_rx.recv().unwrap(), [1]);
+        });
+        let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel(1);
+        audio_tx.send(vec![0.25; 4]).unwrap();
+        drop(audio_tx);
+        let mut audio_samples = 0;
+        let mut last_clock_tick = Instant::now();
+        send_chunk_while_draining_audio(
+            &chunk_tx,
+            vec![1],
+            &audio_rx,
+            &AtomicBool::new(false),
+            &mut |audio| audio_samples += audio.len(),
+            &mut || {},
+            &StreamProgress::new(),
+            &mut last_clock_tick,
+        )
+        .unwrap();
+        consumer.join().unwrap();
+        assert_eq!(audio_samples, 4);
     }
 
     #[test]

@@ -103,7 +103,7 @@ const STREAM_LEVEL_WINDOW_FRAMES: usize = 250;
 /// The stream's call threshold is this far above its quiet level, dB.
 const STREAM_OPEN_MARGIN_DB: f32 = 8.0;
 /// Keep adaptive thresholds in this range, dBFS.
-const STREAM_MIN_OPEN_DBFS: f32 = -70.0;
+const STREAM_MIN_OPEN_DBFS: f32 = -100.0;
 const STREAM_MAX_OPEN_DBFS: f32 = -30.0;
 /// Debug level meter interval, seconds.
 const STREAM_LEVEL_LOG_S: f64 = 10.0;
@@ -932,12 +932,13 @@ impl Conventional {
             st.samples += STREAM_FRAME as u64;
             let now_s = st.samples as f64 / fm::AUDIO_RATE;
             let rms = (frame.iter().map(|x| x * x).sum::<f32>() / STREAM_FRAME as f32).sqrt();
-            let level_dbfs = if rms > 0.0 { 20.0 * rms.log10() } else { -120.0 };
+            let level_dbfs = if rms > 0.0 { (20.0 * rms.log10()).max(-120.0) } else { -120.0 };
             let open_dbfs = (st.quiet_dbfs + STREAM_OPEN_MARGIN_DB).clamp(STREAM_MIN_OPEN_DBFS, STREAM_MAX_OPEN_DBFS);
             let loud = !gap && level_dbfs > open_dbfs;
             if loud {
                 st.loud_s = now_s;
-            } else if !gap && st.live.is_none() {
+            }
+            if !gap {
                 st.quiet_levels.push_back(level_dbfs);
                 if st.quiet_levels.len() > STREAM_LEVEL_WINDOW_FRAMES {
                     st.quiet_levels.pop_front();
@@ -951,8 +952,18 @@ impl Conventional {
                 let row = &st.rows[0];
                 let label = row.info.as_ref().map(|info| info.alpha_tag.trim()).filter(|name| !name.is_empty()).unwrap_or_else(|| system(row.system).short_name.as_str());
                 let threshold = (st.quiet_dbfs + STREAM_OPEN_MARGIN_DB).clamp(STREAM_MIN_OPEN_DBFS, STREAM_MAX_OPEN_DBFS);
-                log::debug!(
-                    "Stream {label}: audio level {level_dbfs:.1} dBFS ({}, call threshold {threshold:.1} dBFS; quiet floor {:.1} dBFS)",
+                let call_state = st.live.as_ref().map_or_else(
+                    || "no active call".to_string(),
+                    |live| {
+                        format!(
+                            "call active for {:.1}s; last audio {:.1}s ago",
+                            now_s - live.call.start_s,
+                            now_s - live.call.last_audio_s
+                        )
+                    },
+                );
+                log::info!(
+                    "Stream {label}: audio level {level_dbfs:.1} dBFS ({}, call threshold {threshold:.1} dBFS; quiet floor {:.1} dBFS; {call_state})",
                     if loud { "above threshold" } else { "below threshold" },
                     st.quiet_dbfs
                 );

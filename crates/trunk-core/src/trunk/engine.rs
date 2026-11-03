@@ -2982,6 +2982,100 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_stream_updates_its_noise_floor_during_a_call() {
+        use super::super::conventional::{ConvChannel, ConvMode};
+        let mut system = SystemConfig::conventional("feed");
+        system.calls.call_timeout_s = 1.0;
+        let row = ConvChannel { talkgroup: Some(7), ..ConvChannel::new(0.0, ConvMode::Stream) };
+        let engine = Engine::new(EngineConfig {
+            systems: vec![system],
+            conventional: vec![row],
+            ..Default::default()
+        })
+        .unwrap();
+        let sine = |dbfs: f32, seconds: f64| {
+            let amplitude = std::f32::consts::SQRT_2 * 10.0_f32.powf(dbfs / 20.0);
+            (0..(seconds * 8000.0) as usize)
+                .map(|i| amplitude * (i as f32 * 0.785).sin())
+                .collect::<Vec<_>>()
+        };
+        engine.push_audio(0, &vec![0.0; 12_000]);
+        engine.push_audio(0, &sine(-101.0, 3.5));
+        engine.push_audio(0, &sine(-80.0, 1.0));
+        assert!(
+            engine.drain_events().iter().any(|event| matches!(event, Event::CallStart(call) if call.talkgroup == 7)),
+            "the strong signal opens a call"
+        );
+
+        let mut background = Vec::new();
+        for _ in 0..10 {
+            background.extend(sine(-101.0, 0.48));
+            background.extend(sine(-98.0, 0.02));
+        }
+        engine.push_audio(0, &background);
+        assert!(
+            engine.drain_events().iter().any(|event| matches!(event, Event::Concluded(_))),
+            "the measured background level raises the threshold so intermittent noise peaks don't keep a call open"
+        );
+    }
+
+    #[test]
+    fn a_stream_adapts_to_continuous_background_and_detects_louder_audio() {
+        use super::super::conventional::{ConvChannel, ConvMode};
+        let mut system = SystemConfig::conventional("feed");
+        system.calls.call_timeout_s = 1.0;
+        let row = ConvChannel { talkgroup: Some(7), ..ConvChannel::new(0.0, ConvMode::Stream) };
+        let engine = Engine::new(EngineConfig {
+            systems: vec![system],
+            conventional: vec![row],
+            ..Default::default()
+        })
+        .unwrap();
+        let sine = |dbfs: f32, seconds: f64| {
+            let amplitude = std::f32::consts::SQRT_2 * 10.0_f32.powf(dbfs / 20.0);
+            (0..(seconds * 8000.0) as usize)
+                .map(|i| amplitude * (i as f32 * 0.785).sin())
+                .collect::<Vec<_>>()
+        };
+
+        engine.push_audio(0, &sine(-50.0, 10.0));
+        let noise_events = engine.drain_events();
+        assert!(
+            noise_events.iter().any(|event| matches!(event, Event::Concluded(_))),
+            "a continuous background level should raise the call threshold and let the false call end"
+        );
+
+        engine.push_audio(0, &sine(-20.0, 1.0));
+        assert!(
+            engine.drain_events().iter().any(|event| matches!(event, Event::CallStart(call) if call.talkgroup == 7)),
+            "audio clearly above the continuous background should start a new call"
+        );
+    }
+
+    #[test]
+    fn a_stream_detects_audio_below_the_previous_threshold_floor() {
+        use super::super::conventional::{ConvChannel, ConvMode};
+        let row = ConvChannel { talkgroup: Some(7), ..ConvChannel::new(0.0, ConvMode::Stream) };
+        let e = Engine::new(EngineConfig {
+            systems: vec![SystemConfig::conventional("feed")],
+            conventional: vec![row],
+            ..Default::default()
+        })
+        .unwrap();
+        let sine = |amplitude: f32, seconds: f64| {
+            (0..(seconds * 8000.0) as usize)
+                .map(|i| amplitude * (i as f32 * 0.785).sin())
+                .collect::<Vec<_>>()
+        };
+        e.push_audio(0, &sine(0.000007, 1.0));
+        e.push_audio(0, &sine(0.000056, 1.0));
+        assert!(
+            e.drain_events().iter().any(|event| matches!(event, Event::CallStart(call) if call.talkgroup == 7)),
+            "audio around -88 dBFS should open against a quiet floor around -103 dBFS"
+        );
+    }
+
     /// A stream's calls are listened to for the system's signals, as a frequency's are.
     #[test]
     fn a_stream_rows_page_is_its_systems_signal() {
