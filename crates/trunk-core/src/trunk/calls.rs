@@ -681,6 +681,22 @@ impl CallManager {
         self.calls.push(c);
     }
 
+    /// Call `id`'s voice channel named another talkgroup (Phase 2 MAC_PTT):
+    /// the site gave its slot to that one, by a grant not heard. The call
+    /// is over, as for a grant ([`Self::grant`]), or that talkgroup's
+    /// cipher and talkers would be taken for its own. A supergroup and a
+    /// talkgroup patched into it are one conversation.
+    pub fn voice_named(&mut self, id: CallId, group: u32, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+        let Some(i) = self.calls.iter().position(|c| c.id == id) else { return };
+        let c = &self.calls[i];
+        if c.unit_to_unit || c.talkgroup == group || c.patched_talkgroups.contains(&group) || self.patches.members_of(group).contains(&c.talkgroup) {
+            return;
+        }
+        let c = self.calls.remove(i);
+        host.release(&c);
+        ev.push(CallEvent::End(c));
+    }
+
     /// Record, follow or skip a call: Trunk Recorder's start_recorder()
     /// gates, in its order. A talkgroup not in the file is recorded while
     /// it's patched with one that is.
@@ -956,6 +972,25 @@ mod tests {
         // A supergroup granted the channel of a talkgroup patched into it: the same conversation.
         m.handle(&[patch(3.0, 65001, [301, 0, 0]), Message { voice: slot(0), ..msg(MessageType::Grant, 3.0, 65001) }], &mut Host, &mut ev);
         assert_eq!(m.calls.iter().map(|c| c.talkgroup).collect::<Vec<_>>(), [301, 11501, 65001]);
+    }
+
+    /// A call's voice channel naming another talkgroup (its grant not
+    /// heard) ends the call; a patched one, or its own, doesn't.
+    #[test]
+    fn a_calls_voice_naming_another_talkgroup_ends_it() {
+        let slot = |s| Voice::P25Tdma { slot: s };
+        let mut m = Sys::new(CallConfig::default(), Talkgroups::default());
+        let mut ev = Vec::new();
+        m.handle(&[patch(0.0, 65001, [301, 0, 0]), Message { voice: slot(1), ..msg(MessageType::Grant, 0.0, 401) }, Message { voice: slot(0), ..msg(MessageType::Grant, 0.0, 301) }], &mut Host, &mut ev);
+        let id = |m: &Sys, tg: u32| m.m.calls.iter().find(|c| c.talkgroup == tg).unwrap().id;
+        ev.clear();
+        let (a, b) = (id(&m, 401), id(&m, 301));
+        m.m.voice_named(a, 401, &mut Host, &mut ev);
+        m.m.voice_named(b, 65001, &mut Host, &mut ev);
+        assert!(ev.is_empty(), "its own talkgroup, and its supergroup");
+        m.m.voice_named(a, 11501, &mut Host, &mut ev);
+        assert!(matches!(&ev[..], [CallEvent::End(c)] if c.talkgroup == 401));
+        assert_eq!(m.m.calls.iter().map(|c| c.talkgroup).collect::<Vec<_>>(), [301]);
     }
 
     /// The talkgroup file's mode "A" (Trunk Recorder's) says a Phase 1 grant is of analog voice; a two-slot grant keeps its slot.

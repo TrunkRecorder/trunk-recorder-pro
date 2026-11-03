@@ -202,6 +202,14 @@ impl Slot {
         }
     }
 
+    /// The voice channel named `group` for the transmission: told when the
+    /// slot was granted for another talkgroup.
+    fn named(&self, c: usize, group: u32, out: &mut Vec<(usize, TrackerOut)>) {
+        if group != 0 && self.granted.is_some_and(|g| g != group) {
+            out.push((c, TrackerOut::Talkgroup(group)));
+        }
+    }
+
     /// A talker named (MAC_PTT, a voice channel user message) and what the
     /// message said (its service options): told when it is new, or says
     /// something new. (Encrypted as the voice is: a sync overrules a
@@ -435,6 +443,8 @@ impl TdmaTracker {
                 let cipher = if ptt.algid == ALGID_CLEAR { s.voice == Encryption::Clear } else { s.cipher == Some(CipherId { algid: ptt.algid, keyid: ptt.keyid }) };
                 let same = s.active && cipher && radio(ptt.source) == s.talker && (ptt.group != 0).then_some(ptt.group) == s.talkgroup;
                 if !(sacch && same) {
+                    // (First, so the call it isn't for ends before its cipher and talker are taken.)
+                    s.named(c, ptt.group, out);
                     s.start(t, keys);
                     s.talkgroup = (ptt.group != 0).then_some(ptt.group);
                     s.set_voice(Encryption::from_sync(&es), c, out);
@@ -467,6 +477,9 @@ impl TdmaTracker {
                     // The 4th superframe's SACCH names the inbound talker, for
                     // it to check: listeners take the first three's (BBAC §3.2.2).
                     if !(sacch && p.ultraframe == Some(3)) {
+                        if let Mac::GroupVoiceUser { group, .. } = m.decode() {
+                            s.named(c, group as u32, out);
+                        }
                         s.talker(c, m.talker().and_then(radio), opts.into(), out);
                     }
                     if opts.protected() {
@@ -673,6 +686,23 @@ mod tests {
         outs(&mut t, &[(tx.mac_packet(11, BURST_SACCH_S, &ptt, Some(0)), 0.0)]);
         assert_eq!(t.slots[0].first4v, Some(1));
         assert_eq!((t.slots[0].talker, t.slots[0].talkgroup), (Some(0x123456), Some(0x089f)));
+    }
+
+    /// A MAC_PTT naming another talkgroup than the slot's grant says so,
+    /// before the cipher and talker it brings; its own says nothing.
+    #[test]
+    fn a_mac_ptt_for_another_talkgroup_is_told_first() {
+        let tx = tx(None, 1);
+        let ptt = pdu(MAC_PTT, 1, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0x84, 0x12, 0x34, 0x12, 0x34, 0x56, 0x08, 0x9f]);
+        let heard = |granted: u32| {
+            let mut t = tracker();
+            t.listen([Some(granted), None]);
+            outs(&mut t, &[(tx.mac_packet(11, BURST_SACCH_S, &ptt, Some(0)), 0.0)])
+        };
+        assert!(!heard(0x089f).iter().any(|o| matches!(o, TrackerOut::Talkgroup(_))));
+        let o = heard(401);
+        assert!(matches!(o.first(), Some(TrackerOut::Talkgroup(0x089f))), "{o:?}");
+        assert!(o.iter().any(|o| matches!(o, TrackerOut::Cipher(_))));
     }
 
     /// Hangtime ends the transmission (BBAC-1 §7.3.4): the next one isn't

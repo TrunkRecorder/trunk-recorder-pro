@@ -966,7 +966,8 @@ impl Conventional {
                 TrackerOut::Alias(a) => out.push(ConvOut::Alias(ch.system as u16, a)),
                 TrackerOut::Position(p) => h.positions.push(p),
                 TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(ch.system as u16, c)),
-                TrackerOut::AliasLc(_) => {}
+                // (A conventional channel has no grants: the air's talkgroup is its own.)
+                TrackerOut::AliasLc(_) | TrackerOut::Talkgroup(_) => {}
                 TrackerOut::BaseStationId(call_sign) => out.push(ConvOut::Event(Event::CallSign { system: ch.system as u16, freq_hz: ch.freq_hz.round() as u64, call_sign })),
             }
         }
