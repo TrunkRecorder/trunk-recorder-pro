@@ -1196,6 +1196,7 @@ const TOPIC_NAMES: Record<string, string> = {
   audio: "live audio",
   status: "system status",
   tone_pattern: "tone patterns heard",
+  log: "TRP's log",
 };
 
 function PluginLog(props: { p: PluginInfo }) {

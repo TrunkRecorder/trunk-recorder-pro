@@ -169,6 +169,34 @@ pub fn reopen() {
     }
 }
 
+/// What's handed every line logged (the plugins that take the `log` topic): its level, system,
+/// text (after the time and level) and whole line, as the console has them without colour.
+pub type Tap = std::sync::Arc<dyn Fn(Level, Option<&str>, &str, &str) + Send + Sync>;
+
+static TAP: RwLock<Option<(u64, Tap)>> = RwLock::new(None);
+static TAPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    /// This thread is handing a line to the tap: what's logged meanwhile (a plugin fallen
+    /// behind, say) isn't handed to it again.
+    static TAPPING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Hand every line logged from now on to `f` (in place of any before it). The id to [`untap`] it with.
+pub fn tap(f: Tap) -> u64 {
+    let id = TAPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    *TAP.write().unwrap() = Some((id, f));
+    id
+}
+
+/// Stop handing lines to tap `id` (if it's still the one).
+pub fn untap(id: u64) {
+    let mut t = TAP.write().unwrap();
+    if t.as_ref().is_some_and(|(i, _)| *i == id) {
+        *t = None;
+    }
+}
+
 /// Log a record from the session (or anywhere).
 pub fn record(r: &Record) {
     let l = logger();
@@ -177,6 +205,8 @@ pub fn record(r: &Record) {
         return;
     }
     let time = Local::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string();
+    let tapped = TAP.read().unwrap().as_ref().map(|(_, f)| f.clone()).filter(|_| !TAPPING.with(|t| t.get()));
+    let tapped = tapped.map(|f| (f, trunk_app::log::line(r, &s.format, false), full_line(&time, r, &s.format, false)));
     if s.console {
         let _ = writeln!(std::io::stderr().lock(), "{}", full_line(&time, r, &s.format, s.console_color));
     }
@@ -190,6 +220,13 @@ pub fn record(r: &Record) {
             // The system log has its own time and severity.
             y.send(r.level, &trunk_app::log::line(r, &s.format, false));
         }
+    }
+    drop(s);
+    // (No lock held: what it does may log.)
+    if let Some((f, text, line)) = tapped {
+        TAPPING.with(|t| t.set(true));
+        f(r.level, r.system.as_deref(), &text, &line);
+        TAPPING.with(|t| t.set(false));
     }
 }
 
@@ -294,4 +331,32 @@ impl Syslog {
     }
     #[cfg(not(unix))]
     fn send(&self, _: Level, _: &str) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Every line logged is handed to the tap, as the console has it; what the tap logs itself isn't
+    /// handed back to it; untapped, nothing more is.
+    #[test]
+    fn lines_logged_reach_the_tap_once() {
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        let s2 = seen.clone();
+        let id = tap(Arc::new(move |level, system, text, line| {
+            if text.contains("tap-test") {
+                s2.lock().unwrap().push((format!("{} {}", level.as_str(), system.unwrap_or("-")), line.to_string()));
+                record(&Record::text(Level::Warning, None, "tap-test: from inside the tap"));
+            }
+        }));
+        record(&Record::text(Level::Info, Some("clmrn-I"), "tap-test: a line"));
+        record(&Record::text(Level::Debug, None, "tap-test: below the log's level"));
+        untap(id);
+        record(&Record::text(Level::Info, None, "tap-test: after"));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].0, "info clmrn-I");
+        assert!(seen[0].1.ends_with("(info)   [clmrn-I]\ttap-test: a line"), "{}", seen[0].1);
+    }
 }

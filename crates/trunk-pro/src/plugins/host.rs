@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
-    format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
+    format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, LogLine, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
     SystemInfo, API_VERSION, EXIT_CONFIG,
 };
 
@@ -120,6 +120,8 @@ pub struct PluginHost {
     pub audio: bool,
     /// Each system's short name, by its number (for audio chunks).
     names: BTreeMap<u16, String>,
+    /// The log's tap that hands its lines to the plugins taking `log` ([`crate::logging::tap`]).
+    log_tap: Option<u64>,
     done: bool,
 }
 
@@ -319,7 +321,16 @@ impl PluginHost {
             .collect();
         let encoder = encoder.map(|e| (e, audio.bitrate_kbps.clamp(8, 320)));
         let names = systems.iter().map(|y| (y.index, y.short_name.clone())).collect();
-        PluginHost { shared, encoder, supervisors, topics, audio: live_audio, names, done: false }
+        // (These plugins' from now on: the ones they replace stop taking the lines.)
+        let log_tap = shared.plugins.iter().any(|p| p.manifest.subscribes(topic::LOG)).then(|| {
+            let sh = Arc::downgrade(&shared);
+            crate::logging::tap(Arc::new(move |level, system, text, whole| {
+                if let Some(sh) = sh.upgrade() {
+                    sh.log_line(level, system, text, whole);
+                }
+            }))
+        });
+        PluginHost { shared, encoder, supervisors, topics, audio: live_audio, names, log_tap, done: false }
     }
 
     /// Each plugin's process: drops, restarts, uptime.
@@ -471,6 +482,9 @@ impl PluginHost {
     pub fn shutdown(&mut self, grace: Duration) {
         if std::mem::replace(&mut self.done, true) {
             return;
+        }
+        if let Some(id) = self.log_tap.take() {
+            crate::logging::untap(id);
         }
         let sh = &self.shared;
         sh.stopping.store(true, Ordering::Relaxed);
@@ -648,6 +662,21 @@ impl Shared {
         }
         let saves = self.saves.as_ref().ok_or("there's no config to save them to here")?;
         saves(id, settings)
+    }
+
+    /// A line TRP logged: to each plugin taking `log`, but not its own lines (its notes
+    /// are logged as "[its id] …").
+    fn log_line(&self, level: trunk_app::log::Level, system: Option<&str>, text: &str, whole: &str) {
+        let m = HostMessage::Log(LogLine { time: crate::clock::unix_s(), level: level.as_str().into(), system: system.unwrap_or_default().into(), text: text.into(), line: whole.into() });
+        let l = line(&m);
+        for p in self.plugins.iter().filter(|p| p.manifest.subscribes(topic::LOG)) {
+            if text.strip_prefix('[').and_then(|t| t.strip_prefix(p.id.as_str())).is_some_and(|t| t.starts_with("] ")) {
+                continue;
+            }
+            if self.give(p, &l) == Offer::Full {
+                self.dropped(p);
+            }
+        }
     }
 
     /// Put `l` in `p`'s queue.
@@ -1161,6 +1190,35 @@ mod tests {
         let host = PluginHost::start(vec![spec("stop", "stopped")], &audio, &[], &dir, notes);
         wait(&|| host.shared.plugins[0].tx.lock().unwrap().is_none());
         assert!(!host.settle("live", &json!({ "server": "https://c" })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A plugin taking `log` is sent TRP's lines, not its own.
+    #[cfg(unix)]
+    #[test]
+    fn the_log_reaches_plugins_that_take_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-host-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("logger");
+        let manifest = r#"{"id":"logger","name":"L","version":"1.0.0","api":1,"subscribe":["log"]}"#;
+        std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\nwhile read l; do echo \"$l\" >> lines.jsonl; done\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let spec = Spec { id: "logger".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
+        let mut host = PluginHost::start(vec![spec], &super::super::AudioSettings::default(), &[], &dir, super::super::notes_to_log());
+        crate::logging::text(trunk_app::log::Level::Warning, "info", "log-topic-test: TRP said");
+        crate::logging::text(trunk_app::log::Level::Info, "plugin", "[logger] log-topic-test: its own");
+        let t0 = Instant::now();
+        let lines = || std::fs::read_to_string(dir.join("data/lines.jsonl")).unwrap_or_default();
+        while !lines().contains("TRP said") && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        host.shutdown(Duration::from_secs(1));
+        let got: Vec<Value> = lines().lines().filter(|l| l.contains("log-topic-test")).filter_map(|l| serde_json::from_str(l).ok()).collect();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!((got[0]["type"].as_str(), got[0]["level"].as_str(), got[0]["text"].as_str()), (Some("log"), Some("warning"), Some("log-topic-test: TRP said")));
+        assert!(got[0]["line"].as_str().unwrap().contains("(warning)   log-topic-test"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -40,7 +40,11 @@ pub mod topic {
     /// alert tone, DTMF string and Morse ID heard, named by the system's signals or not.
     pub const TONE_PATTERN: &str = "tone_pattern";
 
-    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE_PATTERN];
+    /// Each line TRP logs, as its console shows it ([`super::LogLine`]): to send on
+    /// elsewhere. A plugin isn't sent its own lines.
+    pub const LOG: &str = "log";
+
+    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE_PATTERN, LOG];
 }
 
 /// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
@@ -168,6 +172,8 @@ pub enum HostMessage {
     Status(Status),
     #[serde(rename = "tone_pattern")]
     TonePattern(TonePatternEvent),
+    #[serde(rename = "log")]
+    Log(LogLine),
     /// Someone pressed one of the plugin's buttons (`x-actions` in its
     /// settings schema): answer with [`PluginMessage::ActionResult`]. Only
     /// a plugin that has actions is sent one.
@@ -889,6 +895,24 @@ impl AudioChunk {
         let b = base64::decode(&self.pcm);
         b.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()
     }
+}
+
+/// A line TRP logged ([`topic::LOG`]), at the level its log is set to.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LogLine {
+    /// Unix seconds.
+    pub time: f64,
+    /// `trace`, `debug`, `info`, `warning`, `error` or `fatal`.
+    pub level: String,
+    /// The system it's about (its short name), when it's one's.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub system: String,
+    /// What it says, as the console has it after the time and level (`[clmrn-I]\t12C\tTG: …`).
+    pub text: String,
+    /// The whole line, as the console prints it (without colour):
+    /// `[2026-11-04 14:02:11.123456] (info)   …`.
+    pub line: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

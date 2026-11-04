@@ -42,6 +42,9 @@ pub trait Plugin: Sized {
     fn status(&mut self, _status: Status) {}
     /// A call's tones made a pattern: every one heard (subscribe to `tone_pattern`).
     fn tone_pattern(&mut self, _t: TonePatternEvent) {}
+    /// A line TRP logged (subscribe to `log`): its own, not the plugin's. Don't log
+    /// for each one, or two plugins that pass lines on can keep each other busy.
+    fn log_line(&mut self, _line: LogLine) {}
     /// One of the plugin's buttons was pressed (`x-actions` in its settings
     /// schema). Answer through `reply`, now or from another thread once the
     /// work is done; a reply dropped unsent answers that it failed.
@@ -332,6 +335,7 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
             HostMessage::Audio(a) => p.audio(a),
             HostMessage::Status(s) => p.status(s),
             HostMessage::TonePattern(t) => p.tone_pattern(t),
+            HostMessage::Log(l) => p.log_line(l),
             HostMessage::Action(a) => {
                 let reply = Reply { host: host.clone(), request: a.request, sent: false };
                 p.action(a, reply)
