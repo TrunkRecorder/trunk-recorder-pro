@@ -812,6 +812,13 @@
         "enabled": {
           "type": "boolean"
         },
+        "receiveOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The sources it may be received on, by label (\"RTL-SDR SN 200\", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches it. Rows sharing a frequency share them."
+        },
         "autoTune": {
           "type": "boolean",
           "description": "Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off."
@@ -6434,6 +6441,10 @@
             "guardHz": {
               "type": "number"
             },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
+            },
             "type": {
               "type": "string",
               "const": "rtlsdr"
@@ -6484,6 +6495,10 @@
             },
             "guardHz": {
               "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
             },
             "type": {
               "type": "string",
@@ -6536,6 +6551,10 @@
             },
             "guardHz": {
               "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
             },
             "type": {
               "type": "string",
@@ -6607,6 +6626,10 @@
             "guardHz": {
               "type": "number"
             },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
+            },
             "type": {
               "type": "string",
               "const": "bladerf"
@@ -6660,6 +6683,10 @@
             "guardHz": {
               "type": "number"
             },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
+            },
             "type": {
               "type": "string",
               "const": "hackrf"
@@ -6712,6 +6739,10 @@
             },
             "guardHz": {
               "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
             },
             "type": {
               "type": "string",
@@ -6776,6 +6807,10 @@
             "guardHz": {
               "type": "number"
             },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
+            },
             "type": {
               "type": "string",
               "const": "file"
@@ -6800,7 +6835,7 @@
           ]
         }
       ],
-      "description": "A radio, or a capture to replay (`type`), its own keys beside the ones every source has: `centerHz`, `rateHz`, `ppm`, and `autoTune`: correct its channels for the frequency error measured on the control channels (Trunk Recorder's autoTune); the error is measured and shown either way. And `guardHz`: left unused at each edge of its band, where the anti-alias filter rolls off (default 75 000; Setup can measure it — `profileSource`)."
+      "description": "A radio, or a capture to replay (`type`), its own keys beside the ones every source has: `centerHz`, `rateHz`, `ppm`, and `autoTune`: correct its channels for the frequency error measured on the control channels (Trunk Recorder's autoTune); the error is measured and shown either way. And `guardHz`: left unused at each edge of its band, where the anti-alias filter rolls off (default 75 000; Setup can measure it — `profileSource`). And `name`: what to call it beside its number."
     },
     "SourceStatus": {
       "type": "object",
@@ -6843,12 +6878,31 @@
         "ended": {
           "type": "boolean"
         },
+        "settings": {
+          "$ref": "#/definitions/Source",
+          "description": "The settings it runs with (Setup's may have changed since Start: they apply at the next)."
+        },
         "errorPpm": {
           "type": [
             "number",
             "null"
           ],
-          "description": "Its frequency error, ppm (+: signals come in high): the median of its last control channel and call measurements; null until measured."
+          "description": "Its frequency error, ppm (+: signals come in high), against `settings.ppm`: the median of its last control channel and call measurements; null until measured."
+        },
+        "voiceChannels": {
+          "type": "number",
+          "description": "Voice channels opened on it this run."
+        },
+        "unused": {
+          "type": "boolean",
+          "description": "Nothing the config lists needs it (other sources reach all it does, or it was placed alongside them) and no call has used it this run: it can probably be removed."
+        },
+        "ppmApply": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The ppm that removes `errorPpm` (`settings.ppm` less it, as the radio takes it: an RTL-SDR whole ppm); null until measured."
         },
         "clockPpm": {
           "type": [
@@ -6875,7 +6929,8 @@
         "dropped",
         "errors",
         "lastError",
-        "ended"
+        "ended",
+        "settings"
       ],
       "additionalProperties": false
     },
@@ -7764,6 +7819,13 @@
         "name": {
           "type": "string",
           "description": "What people call it (\"County Public Safety\"); the short name is its folder."
+        },
+        "receiveOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The sources its channels may be received on, by label (\"RTL-SDR SN 200\", as a source's status names it: the radio, wherever it is in `sources`); absent: any that reaches them."
         },
         "fcc": {
           "$ref": "#/definitions/FccLicenses",

@@ -199,7 +199,7 @@ fn a_late_radio_keeps_to_the_wall_clock() {
     assert!((radio - 3500.0).abs() < 100.0, "the call starts {radio} ms in");
     // A capture played as fast as it can be keeps its own time.
     let mut replay = conventional_config();
-    replay.sources = vec![trunk_app::config::Source { kind: crate::config::SourceKind::File { path: "x.cu8".into(), realtime: false, format: None }, center_hz: 155_000_000.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: trunk_app::config::DEFAULT_GUARD_HZ }];
+    replay.sources = vec![trunk_app::config::Source { kind: crate::config::SourceKind::File { path: "x.cu8".into(), realtime: false, format: None }, center_hz: 155_000_000.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: trunk_app::config::DEFAULT_GUARD_HZ, name: String::new() }];
     let file = start_of(replay);
     assert!((file - 500.0).abs() < 100.0, "the replayed call starts {file} ms in");
 }
@@ -240,6 +240,24 @@ fn autotune_starts_from_the_saved_score() {
     let status = msgs.iter().find(|m| m["type"] == "status").expect("a status");
     let src = &status["sources"][0];
     assert_eq!((src["tunePpm"].as_f64(), src["tuneSeeded"].as_bool()), (Some(4.0), Some(true)), "{src}");
+    // The settings it runs with; no ppm to set until something is measured.
+    assert_eq!((src["settings"]["ppm"].as_f64(), src["settings"]["autoTune"].as_bool()), (Some(2.0), Some(true)), "{src}");
+    assert!(src["ppmApply"].is_null(), "{src}");
+}
+
+/// A source the config's channels don't need, and no call has used, says so.
+#[test]
+fn a_source_nothing_needs_is_unused() {
+    let mut cfg = conventional_config();
+    let spare: trunk_app::config::Source = serde_json::from_value(json!({ "type": "rtlsdr", "serial": "2", "centerHz": 460000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 })).unwrap();
+    cfg.sources.push(spare);
+    let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+    let (mut out, mut msgs) = (Vec::new(), Vec::new());
+    s.poll(1.75e12, &mut out);
+    texts(&mut out, &mut msgs);
+    let status = msgs.iter().find(|m| m["type"] == "status").expect("a status");
+    let unused: Vec<_> = status["sources"].as_array().unwrap().iter().map(|x| x["unused"].as_bool()).collect();
+    assert_eq!(unused, [Some(false), Some(true)], "{status}");
 }
 
 /// Without subscriptions, the costly messages aren't made.
@@ -304,7 +322,7 @@ fn a_spare_radio_is_one_no_source_names() {
     let ctx = ctx(cfg.clone(), &dir);
     let req = Request::from_json(&json!({ "source": 0, "radio": { "type": "rtlsdr", "serial": "1", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 } }));
     let e = ctx.begin_survey(cfg, req).unwrap_err();
-    assert!(e.contains("is source 1 of the recorder"), "{e}");
+    assert!(e.contains("is Source 1 of the recorder"), "{e}");
     let rtl = |serial: &str| -> trunk_app::config::Source { serde_json::from_value(json!({ "type": "rtlsdr", "serial": serial, "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 })).unwrap() };
     assert!(rtl("1").may_be(&rtl("1")) && rtl("").may_be(&rtl("2")) && !rtl("1").may_be(&rtl("2")));
 }

@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, normalizeSystem } from "./config.ts";
 import { transport } from "./controller.ts";
-import type { Channel } from "./protocol.ts";
+import type { Channel, Config } from "./protocol.ts";
 import { ConventionalPanel, SystemCard } from "./Setup.tsx";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
@@ -123,4 +123,23 @@ test("a system with several sites: Conversations suggested off, in its own Recor
   transport.onMessage({ type: "config", config: c, version: 2 } as never);
   assert.doesNotMatch(text(renderToString(<SystemCard c={c} i={0} />)), /suggested/);
   assert.doesNotMatch(text(renderToString(<ConventionalPanel c={c} k={0} />)), /Conversations/, "conventional channels: not theirs");
+});
+
+test("a system kept on a source: Setup offers the radios by name, and says the one it's received on — the recorder's choice, pins and all", () => {
+  const c = defaultConfig();
+  const rtl = (serial: string) => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0 }) as Config["sources"][number];
+  c.sources = [rtl("1"), { ...rtl("2"), name: "Whip" }];
+  c.systems = [{ ...normalizeSystem({ shortName: "dc", type: "p25", controlChannelsHz: [851_012_500] } as never), receiveOn: ["RTL-SDR SN 2"] }];
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const card = renderToString(<SystemCard c={c} i={0} />);
+  // Both radios reach it; it's kept on SN 2 (named Whip: still pinned by its label), so that's the one.
+  assert.match(text(card), /control channel on source 2/);
+  assert.match(text(card), /Receive on Source 1 · RTL-SDR SN 1 Source 2 \(Whip\) · RTL-SDR SN 2 Only these sources are used for it/);
+  assert.match(card, /<input type="checkbox" checked=""\/><span class="small">Source 2 \(Whip\) · RTL-SDR SN 2/);
+  // SN 2 taken out: still named (to untick), and not received anywhere else.
+  const gone = { ...c, sources: [rtl("1")] };
+  transport.onMessage({ type: "config", config: gone, version: 2 } as never);
+  const page = text(renderToString(<SystemCard c={gone} i={0} />));
+  assert.match(page, /RTL-SDR SN 2 \(not a source now\)/);
+  assert.doesNotMatch(page, /control channel on source/);
 });

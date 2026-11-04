@@ -1,11 +1,11 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, Talkgroup, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitNames } from "./protocol.ts";
 import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
-import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
+import { defaultConfig, parseChannelCsv, readConfig, receivers, sourceLabels, sourceNames, usableHalfWidth } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
-export { autoCenter, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, planCenters, readConfig, resolvedCenters, startProblem, usableHalfWidth } from "./rules.ts";
+export { receivers, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, readConfig, resolvedCenters, startProblem, usableHalfWidth } from "./rules.ts";
 
 /**
  * The settings the recorder reads only when it starts. Left out are those it
@@ -16,7 +16,7 @@ export { autoCenter, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUAR
  */
 export function restartKey(c: Config, liveGain: boolean): string {
   return JSON.stringify({
-    sources: liveGain ? c.sources.map(withoutLiveGain) : c.sources,
+    sources: c.sources.map((x) => asRun(x, liveGain)),
     // (Sharing and the directory's link apply live: a first share saves the link.)
     systems: c.systems.map(({ plugins: _a, pluginDelays: _d, share: _s, directory: _l, ...s }) => ({ ...s, sites: s.sites.map(({ directoryId: _i, ...x }) => x) })),
     conventional: c.conventional.map(({ plugins: _a, pluginDelays: _d, channelFileStatus: _f, ...s }) => s),
@@ -24,12 +24,32 @@ export function restartKey(c: Config, liveGain: boolean): string {
   });
 }
 
-/** A source without the gain settings a running recorder takes from it (as runtime::live_gain decides). */
-function withoutLiveGain(x: Source): Source {
+/**
+ * Whether the sources recording (as the status gives their settings) differ
+ * from the config's in what takes a restart: known from the recorder, so a
+ * page opened after the edit knows too. False until a status comes.
+ */
+export function sourcesChanged(c: Config, running: SourceStatus[], liveGain: boolean): boolean {
+  if (!running.length) return false;
+  // (Key order aside, and a setting left out the same as at its zero.)
+  const plain = (x: Source) => {
+    const y = asRun(x, liveGain) as Record<string, unknown>;
+    return JSON.stringify(Object.keys(y).filter((k) => y[k] !== undefined && y[k] !== null && y[k] !== false && y[k] !== 0 && y[k] !== "").sort().map((k) => [k, y[k]]));
+  };
+  return running.length !== c.sources.length || running.some((st, i) => plain(st.settings) !== plain(c.sources[i]));
+}
+
+/**
+ * A source as a restart sees it: without what only names it (Source::radio:
+ * its `name`) and, with `liveGain`, the gain settings a running recorder takes
+ * from it (as runtime::live_gain decides).
+ */
+function asRun(x: Source, liveGain: boolean): Source {
+  const { name: _n, ...radio } = x;
   const k = SOURCE_KINDS[x.type];
   const agc = "agc" in x && x.agc;
-  if (!k.liveGain || (agc && !k.liveAgc)) return x;
-  const y: Record<string, unknown> = { ...x };
+  if (!liveGain || !k.liveGain || (agc && !k.liveAgc)) return radio as Source;
+  const y: Record<string, unknown> = { ...radio };
   for (const f of [...k.liveGain, ...(k.liveAgc ? ["agc"] : [])]) delete y[f];
   return y as Source;
 }
@@ -299,6 +319,9 @@ export function formatFromPath(path: string): "cu8" | "cs16" | "cf32" {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   return ["cf32", "cfile", "fc32", "complex"].includes(ext) ? "cf32" : ["cs16", "sc16"].includes(ext) ? "cs16" : "cu8";
 }
+
+/** What source `i` is called: "Source 2", or "Source 2 (Whip)" once it has a `name` (the recorder's Source::title). */
+export const sourceTitle = (c: Config, i: number): string => sourceNames(c)[i]?.title ?? "";
 
 /** Left unused at each edge of a source's band unless it says otherwise (`guardHz`), Hz. */
 /** The conventional channels being recorded: switched on, in a system that is. */
@@ -616,9 +639,33 @@ export function systemWithChannel(c: Config, hz: number): System | undefined {
   return c.systems.find((sys) => sys.sites.some((x) => [...x.controlChannelsHz, ...watchedChannels(sys, x)].some((f) => Math.abs(f - hz) < 6_000)));
 }
 
-/** The source (index) whose usable band holds `hz`, or -1. */
-export function sourceCovering(c: Config, centers: (number | null)[], hz: number): number {
-  return c.sources.findIndex((s, i) => centers[i] !== null && Math.abs(hz - (centers[i] ?? 0)) <= usableHalfWidth(s.rateHz, s.guardHz));
+/** Whether its calls and control channels correct its frequency error (Trunk Recorder's autoTune). */
+export const autoTuneOn = (x: Source | undefined): boolean => !!x && "autoTune" in x && !!x.autoTune;
+
+/**
+ * Config source `i` as it's running: the running source on the same radio,
+ * by its label (the nth of that label, for two "first found"), not the one at
+ * its place, since Setup may have added, removed or moved sources since Start.
+ */
+export function runningSource(running: SourceStatus[], c: Config, i: number): SourceStatus | undefined {
+  const labels = sourceLabels(c);
+  const nth = labels.slice(0, i).filter((x) => x === labels[i]).length;
+  return running.filter((x) => x.label === labels[i])[nth];
+}
+
+/** Where in the config running source `st`'s radio is ([`runningSource`]'s other way), or -1 when it's gone. */
+export function configIndex(running: SourceStatus[], c: Config, st: SourceStatus): number {
+  return c.sources.findIndex((_, k) => runningSource(running, c, k) === st);
+}
+
+/** Whether a source of `s`'s rate and guard tuned to `center` reaches `hz` (Source::reaches). */
+export function reaches(s: { rateHz: number; guardHz?: number }, center: number, hz: number): boolean {
+  return Math.abs(hz - center) <= usableHalfWidth(s.rateHz, s.guardHz);
+}
+
+/** The source system `system`'s frequency `hz` is received on (the recorder's choice: the first of those it may be received on that reaches it), or -1. */
+export function receiverOf(c: Config, system: string, hz: number): number {
+  return receivers(c).find((r) => r.system === system && r.hz === hz)?.source ?? -1;
 }
 
 /** A conventional channel's talkgroup when none is given: its frequency in kHz. */

@@ -5,6 +5,31 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A source can have a name.** `name` on a source (**Name** in Setup) is shown beside its number, as
+  "Source 2 (Whip)", wherever a source is named: Setup, the RF page, the survey, to-dos and the log (which
+  now count sources from 1 everywhere, as Setup does). It only names it: renaming one while recording takes
+  effect at once, with no restart, and pins (`receiveOn`) keep naming the radio by its label.
+- **A call's `source_num` is the radio it was heard on.** It was always 0; now it is the
+  radio's position in `sources` (counting from 0: Setup's Source 1 is 0), in the call JSON, the call
+  store, plugins' calls and the file name's `{source_num}`. A call on a system or channel kept on a
+  source names that source, though another reaches it too.
+- **A system or a conventional channel can be kept on particular sources.** `receiveOn` on a trunked
+  system (**Receive on** in Setup, with two or more sources) names the radios, by label (`"RTL-SDR SN 200"`),
+  its control channels and voice channels may be received on; on a conventional channel (a **Source** column
+  in its table) it is that frequency's. Empty, as before, is any source that reaches it. A pin follows its
+  radio when sources are moved; one naming a radio no longer there stops Start (rather than another
+  standing in). Auto placement, Start's checks, Setup's coverage chips and the dashboard all go by it.
+- **Auto mode places every radio a wide site needs.** Start's auto centres, the first-run guide and the
+  survey's suggested centre are one placement: control channels first, then the most channels still out
+  of reach, then a spare alongside the others. A site wider than one radio (an 800 MHz P25 system needing
+  four RTLs at 2.4 MSPS) gets them all, where sources after the first used to be left without a centre.
+- **The dashboard notes a source nothing needs**: one that reaches no listed channel the others don't, and
+  that no call has used this run, says it can probably be removed.
+- **AutoTune's "Set correction to" is offered once.** It's the recorder's figure, against the ppm the radio
+  runs with, so clicking it again doesn't move it again; a new ppm says it applies from the next Start.
+  The dashboard and Setup show each source's own radio's settings and measurements after sources are
+  added, removed or moved, and the restart banner knows a page opened after an edit.
+
 ## [0.3.0] — 2026-11-01
 
 - **A plugin slow to describe itself is asked again, not written off.** On a busy or just-booted

@@ -35,7 +35,7 @@ use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Po
 use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
 use super::message::{Message, MessageType};
 use super::multisite::{Held, Kept, MultiSite};
-use super::record::{save_call, SaveContext};
+use super::record::{save_call, RecordedOn, SaveContext};
 use super::recorded::Recorded;
 use super::inband::InBandSpec;
 use super::record::{Concluded, SaveRules};
@@ -102,6 +102,31 @@ pub fn usable_half_width(rate_hz: f64, guard_hz: f64) -> f64 {
     (rate_hz / 2.0 - guard_hz.max(0.0)).max(rate_hz / 4.0)
 }
 
+/// The sources a system or a conventional channel may be received on, by
+/// position in [`EngineConfig::sources`]: any (the default), or only those
+/// listed (none, when the radios it names aren't there).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Pins(Option<Vec<usize>>);
+
+impl Pins {
+    pub fn any() -> Pins {
+        Pins(None)
+    }
+    pub fn only(sources: Vec<usize>) -> Pins {
+        Pins(Some(sources))
+    }
+    pub fn allows(&self, source: usize) -> bool {
+        self.0.as_ref().is_none_or(|v| v.contains(&source))
+    }
+    /// The first of `n` sources it allows that `reaches`: where a channel
+    /// opens. Every choice of a source for a frequency is this one — the
+    /// engine's, conventional channels', placing sources, Setup's.
+    pub fn first(&self, n: usize, reaches: impl Fn(usize) -> bool) -> Option<usize> {
+        (0..n).find(|&i| self.allows(i) && reaches(i))
+    }
+}
+
 
 /// A system: what it decides about its calls, once for all of it, and where
 /// they come from — its sites, each a control channel to follow, or (none)
@@ -122,6 +147,8 @@ pub struct SystemConfig {
     pub sites: Vec<SiteConfig>,
     /// The tone signals it sends, by id.
     pub signals: Vec<Signal>,
+    /// The sources its channels may be received on.
+    pub pins: Pins,
 }
 
 impl SystemConfig {
@@ -141,6 +168,7 @@ impl SystemConfig {
             keys: None,
             sites: Vec::new(),
             signals: Vec::new(),
+            pins: Pins::any(),
         }
     }
 
@@ -400,8 +428,8 @@ pub struct Status {
     /// Each system being recorded (a trunked one with a site running, a
     /// conventional one with channels), in order; its sites are in `sites`.
     pub systems: Vec<SystemStatus>,
-    /// Each source's frequency error, as measured and as corrected.
-    pub sources: Vec<SourceTune>,
+    /// Each source's frequency error, as measured and as corrected, and its voice channels.
+    pub sources: Vec<SourceReport>,
 }
 
 /// A system being recorded, trunked or conventional, as [`Engine::status`] reports it.
@@ -489,9 +517,9 @@ fn slice_at(p: &[f64], s: &Source, hz: f64) -> f64 {
     p[floor_slice(p.len(), s.cfg().rate_hz, hz - s.cfg().center_hz)]
 }
 
-/// A source's frequency error (Trunk Recorder's autoTune report).
+/// A source's frequency error (Trunk Recorder's autoTune report), and what it was used for.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SourceTune {
+pub struct SourceReport {
     /// Its running score, ppm, against the source's ppm as set (+ = signals
     /// come in high): setting the source's ppm to `ppm − error_ppm` removes it
     /// (as Setup suggests). The median of its last measurements, control
@@ -501,6 +529,8 @@ pub struct SourceTune {
     pub applied_ppm: f64,
     /// The correction comes from an earlier run's score (nothing measured yet).
     pub seeded: bool,
+    /// Voice channels opened on it this run.
+    pub voice_channels: u64,
 }
 
 /// Measurements kept, control channels' and calls' together (Trunk Recorder
@@ -549,6 +579,8 @@ struct Source {
     seed: Option<f64>,
     /// The correction new channels get, ppm.
     tune_ppm: f64,
+    /// Voice channels opened on it this run.
+    voice_channels: u64,
     /// Being fed silence for samples that never came ([`Engine::push_gap`]).
     in_gap: bool,
     /// u8 IQ: an I byte whose Q comes in the next buffer.
@@ -561,7 +593,7 @@ struct Source {
 impl Source {
     fn new(cfgs: &Arc<[SourceConfig]>, index: usize, history_s: f64) -> Source {
         let rate = cfgs[index].rate_hz;
-        Source { cfgs: cfgs.clone(), index, chz: Channelizer::new(rate, MIN_CHANNEL_RATE, history_s), errors: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }
+        Source { cfgs: cfgs.clone(), index, chz: Channelizer::new(rate, MIN_CHANNEL_RATE, history_s), errors: VecDeque::new(), seed: None, tune_ppm: 0.0, voice_channels: 0, in_gap: false, half: None, clock_offset_s: 0.0 }
     }
     /// Its settings.
     fn cfg(&self) -> &SourceConfig {
@@ -635,10 +667,8 @@ impl OnSlot {
 /// A call taking a recorder of the pool.
 struct Recording {
     rec: Recorded,
-    /// Its slot in the recorder pool (reused once free): the call JSON's `recorder_num`.
-    recorder_num: u32,
-    /// The source it is on (AutoTune).
-    source: usize,
+    /// Its slot in the recorder pool (reused once free), and the source it is on.
+    on: RecordedOn,
     /// Some of its voice was decrypted: kept here as well as on the call, which may be gone by the time the voice
     /// arrives (a call that expires in the same block), so the audio and the saved call are still known for what they are.
     decrypted: bool,
@@ -821,6 +851,8 @@ struct Radio {
     rx: Arc<Vec<Mutex<SourceRx>>>,
     /// The sources' settings (each source's own, without its lock).
     cfgs: Arc<[SourceConfig]>,
+    /// Each system's sources ([`SystemConfig::pins`]), by system.
+    pins: Vec<Pins>,
     recordings: HashMap<CallId, Recording>,
     free_nums: Vec<u32>,
     next_num: u32,
@@ -836,8 +868,10 @@ struct Radio {
 }
 
 impl Radio {
-    fn source_for(&self, hz: f64) -> Option<usize> {
-        self.cfgs.iter().position(|s| (hz - s.center_hz).abs() <= s.usable_half_width())
+    /// The source `system` receives a channel at `hz` on.
+    fn source_for(&self, system: usize, hz: f64) -> Option<usize> {
+        let any = Pins::any();
+        self.pins.get(system).unwrap_or(&any).first(self.cfgs.len(), |i| (hz - self.cfgs[i].center_hz).abs() <= self.cfgs[i].usable_half_width())
     }
 
     fn rx(&self, source: usize) -> MutexGuard<'_, SourceRx> {
@@ -932,6 +966,7 @@ impl SysHost<'_> {
             rx.src.chz.remove_head(old.head);
         }
         let s = &mut rx.src;
+        s.voice_channels += 1;
         let rate = s.chz.output_rate();
         let cutoff = kind.cutoff_hz();
         let tuning = s.tuning();
@@ -970,7 +1005,7 @@ impl SysHost<'_> {
     /// Record `call`: a recorder of the pool, its voice channel opened.
     fn take_recorder(&mut self, call: &Call) -> Result<(), Reason> {
         let r = &mut *self.radio;
-        let Some(src) = r.source_for(call.freq_hz as f64) else {
+        let Some(src) = r.source_for(call.system as usize, call.freq_hz as f64) else {
             return Err(Reason::NoSource);
         };
         let recorder_num = r.free_nums.pop().unwrap_or_else(|| {
@@ -983,8 +1018,7 @@ impl SysHost<'_> {
                 // Analog: who is talking, by the unit IDs it sends (no sub-audible tone: a SmartNet
                 // channel's connect tone would read as one).
                 rec: Recorded::new(r.capture_frames, InBandSpec { units: call.voice.analog().then_some(self.analog.deemph_tau_s), subaudible: false }),
-                recorder_num,
-                source: src,
+                on: RecordedOn { recorder: recorder_num, source: src },
                 decrypted: false,
             },
         );
@@ -1012,7 +1046,7 @@ impl RecorderHost for SysHost<'_> {
         if call.voice.analog() || r.recordings.len() + r.followed >= r.max_recorders {
             return false;
         }
-        let Some(src) = r.source_for(call.freq_hz as f64) else {
+        let Some(src) = r.source_for(call.system as usize, call.freq_hz as f64) else {
             return false;
         };
         self.open_channel(call, src);
@@ -1028,7 +1062,7 @@ impl RecorderHost for SysHost<'_> {
             return;
         }
         let key = (self.site, call.freq_hz);
-        let Some(src) = self.radio.source_for(call.freq_hz as f64) else { return };
+        let Some(src) = self.radio.source_for(call.system as usize, call.freq_hz as f64) else { return };
         let mut rx = self.radio.rx(src);
         let Some(ch) = rx.channels.get_mut(&key) else { return };
         for c in ch.calls.iter_mut() {
@@ -1184,7 +1218,7 @@ impl Trunk {
 
     /// Hunting: open the control channel `index` (of those a source covers).
     fn tune(&mut self, radio: &mut Radio, sys: &SystemConfig, cutoff_hz: f64, index: usize, events: &mut Vec<Event>) -> Result<(), String> {
-        let list: Vec<(f64, usize)> = self.cfg.control_channels.iter().filter_map(|&f| radio.source_for(f).map(|s| (f, s))).collect();
+        let list: Vec<(f64, usize)> = self.cfg.control_channels.iter().filter_map(|&f| radio.source_for(self.system as usize, f).map(|s| (f, s))).collect();
         if list.is_empty() {
             return Err(format!("{}: no control channel falls inside a source's bandwidth — move the center frequency.", sys.short_name));
         }
@@ -1236,7 +1270,7 @@ impl Trunk {
         let mut heads = Vec::new();
         let mut outside = Vec::new();
         for &hz in carriers {
-            let Some(src) = radio.source_for(hz) else {
+            let Some(src) = radio.source_for(self.system as usize, hz) else {
                 outside.push(format!("{:.5}", hz / 1e6));
                 continue;
             };
@@ -1539,6 +1573,7 @@ impl Core {
         let mut radio = Radio {
             rx: Arc::new(rx),
             cfgs: cfgs.clone(),
+            pins: cfg.systems.iter().map(|s| s.pins.clone()).collect(),
             recordings: HashMap::new(),
             free_nums: Vec::new(),
             next_num: 0,
@@ -1716,19 +1751,16 @@ impl Core {
         let conv = self
             .conv
             .channels()
-            .filter_map(|c| {
-                let src = self.radio.source_for(c.freq_hz)?;
-                Some(Want {
-                    system: c.system as u16,
-                    site: None,
-                    hz: c.freq_hz,
-                    src,
-                    kind: ChannelKind::Conventional(c.mode),
-                    offset_hz: c.offset_hz,
-                    quality: c.quality,
-                    calls: c.calls,
-                    names: c.names.iter().map(|n| n.to_string()).collect(),
-                })
+            .map(|c| Want {
+                system: c.system as u16,
+                site: None,
+                hz: c.freq_hz,
+                src: c.source,
+                kind: ChannelKind::Conventional(c.mode),
+                offset_hz: c.offset_hz,
+                quality: c.quality,
+                calls: c.calls,
+                names: c.names.iter().map(|n| n.to_string()).collect(),
             })
             .collect();
         (control, conv)
@@ -1891,11 +1923,11 @@ impl Core {
         for o in out.drain(..) {
             match o {
                 ConvOut::Event(e) => self.events.push(e),
-                ConvOut::End { call, rec, recorder_num, tune_source } => {
-                    if let Some(src) = tune_source {
-                        self.radio.score_call(src, &call, rec.freq_error_hz());
+                ConvOut::End { call, rec, on, tune_ref } => {
+                    if tune_ref {
+                        self.radio.score_call(on.source, &call, rec.freq_error_hz());
                     }
-                    self.write_call(Held { call: call.clone(), rec, recorder_num }, None);
+                    self.write_call(Held { call: call.clone(), rec, on }, None);
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
@@ -2143,9 +2175,9 @@ impl Core {
             // What it ended on: news now, before the call is trimmed.
             let news = r.rec.finish();
             rest = r.rec.talkers(&call.sources, news.patterns);
-            self.radio.free_nums.push(r.recorder_num);
+            self.radio.free_nums.push(r.on.recorder);
             // AutoTune: every call (each site's copy, encrypted ones too).
-            self.radio.score_call(r.source, call, r.rec.freq_error_hz());
+            self.radio.score_call(r.on.source, call, r.rec.freq_error_hz());
             // (A call whose record never learned it was decrypted, because it was already gone when the news came, is saved
             // as the decrypted call it is.)
             let mut call = call.clone();
@@ -2153,7 +2185,7 @@ impl Core {
                 call.encrypted = true;
                 call.decrypted = true;
             }
-            let mut h = Held { call, rec: r.rec, recorder_num: r.recorder_num };
+            let mut h = Held { call, rec: r.rec, on: r.on };
             // Now, so copies of a multi-site call are ranked by the audio they'd be saved with.
             h.trim(self.systems.get(h.call.system as usize).map_or(0.0, |s| s.cfg.save.min_transmission_s));
             h
@@ -2436,7 +2468,7 @@ impl Engine {
             .iter()
             .map(|r| {
                 let s = &r.lock().unwrap().src;
-                SourceTune { error_ppm: s.error_ppm(), applied_ppm: s.tune_ppm, seeded: s.seed.is_some() && s.errors.is_empty() }
+                SourceReport { error_ppm: s.error_ppm(), applied_ppm: s.tune_ppm, seeded: s.seed.is_some() && s.errors.is_empty(), voice_channels: s.voice_channels }
             })
             .collect();
         st
@@ -2575,6 +2607,18 @@ mod tests {
     use super::*;
     use super::super::calls::Voice;
     use super::super::voice::VoiceKind;
+
+    #[test]
+    fn pins_choose_the_first_allowed_source_that_reaches() {
+        // Sources 0 and 1 reach 851 MHz; source 2 doesn't.
+        let reaches = |i: usize| i < 2;
+        assert_eq!(Pins::any().first(3, reaches), Some(0), "unpinned: the first that reaches it");
+        assert_eq!(Pins::only(vec![1]).first(3, reaches), Some(1), "pinned to the second");
+        assert_eq!(Pins::only(vec![1, 2]).first(3, reaches), Some(1));
+        assert_eq!(Pins::only(vec![2]).first(3, reaches), None, "pinned to a source that doesn't reach it");
+        assert_eq!(Pins::only(vec![7]).first(3, reaches), None, "a source that isn't there");
+        assert_eq!(Pins::only(vec![]).first(3, reaches), None, "none: not any");
+    }
 
     fn tuned_source(auto_tune: bool) -> Source {
         let cfg = SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune, guard_hz: DEFAULT_GUARD_HZ };

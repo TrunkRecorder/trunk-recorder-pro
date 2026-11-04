@@ -306,6 +306,10 @@ pub struct RadioClock {
 pub struct Session {
     cfg: Config,
     engine: Engine,
+    /// How many of the frequencies the config lists each source is the
+    /// first to reach ([`Config::placement`]): 0, and no voice channel on
+    /// it this run, and it isn't needed.
+    listed: Vec<usize>,
     /// (Each behind a lock: a source's [`Feeder`] updates it from its thread.)
     stats: Vec<Arc<Mutex<SourceStats>>>,
     /// Time each source's feeder spent decoding, µs (the load figure: the busiest's).
@@ -382,6 +386,7 @@ impl Session {
         }
         let mut session = Session {
             meas,
+            listed: cfg.placement().iter().map(|p| p.listed).collect(),
             cfg,
             engine,
             stats,
@@ -524,7 +529,7 @@ impl Session {
             };
             if new > 0 {
                 let ms = new as f64 / self.engine.sources()[i].rate_hz * 1000.0;
-                let text = format!("Source {i}: about {new} samples ({ms:.0} ms) lost without its driver saying so — the USB bus or the computer couldn't keep up");
+                let text = format!("{}: about {new} samples ({ms:.0} ms) lost without its driver saying so — the USB bus or the computer couldn't keep up", self.cfg.sources[i].title(i));
                 self.records.push(Record::text(Level::Warning, None, text));
             }
             let rate = self.engine.sources()[i].rate_hz;
@@ -532,7 +537,7 @@ impl Session {
             let Some((offset, step)) = steered else { continue };
             if step {
                 let moved = offset - self.engine.clock_offset(i);
-                self.records.push(Record::text(Level::Info, None, format!("Source {i}: clock re-anchored to the wall clock ({:+.3} s)", moved)));
+                self.records.push(Record::text(Level::Info, None, format!("{}: clock re-anchored to the wall clock ({:+.3} s)", self.cfg.sources[i].title(i), moved)));
             }
             self.engine.set_clock_offset(i, offset);
         }
@@ -556,8 +561,9 @@ impl Session {
             s.last_error = Some(error.to_string());
             s.last_error_s = self.meas.now();
         }
-        self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": format!("source {source}: {error}") }));
-        self.records.push(Record::text(Level::Error, None, format!("Source {source}: {error}")));
+        let text = format!("{}: {error}", self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source)));
+        self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": text }));
+        self.records.push(Record::text(Level::Error, None, text));
     }
 
     /// A finite source ran out; true when all have.
@@ -1195,6 +1201,13 @@ impl Session {
                 json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured,
                         "dropped": ss.dropped, "errors": ss.errors, "lastError": recent, "lastErrorS": recent.filter(|_| ss.last_error_s > 0.0).map(|_| ss.last_error_s.round()), "ended": ss.ended,
                         "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm, "tuneSeeded": tune.seeded,
+                        // The ppm that removes the error: it was measured against the ppm this run opened the radio with.
+                        "ppmApply": tune.error_ppm.map(|e| s.settable_ppm(s.ppm - e)),
+                        // The settings it runs with: Setup's may have changed since Start.
+                        "settings": s,
+                        "voiceChannels": tune.voice_channels,
+                        // Nothing listed needs it and no call has used it: it can probably go.
+                        "unused": self.listed.get(i) == Some(&0) && tune.voice_channels == 0,
                         "clockPpm": ss.clock.ppm().map(|p| (p * 100.0).round() / 100.0) })
             })
             .collect();

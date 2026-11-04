@@ -5,13 +5,13 @@
 // time.
 
 import { useState } from "react";
-import { formatGain, formatMhz, systemColor, usableHalfWidth } from "../config.ts";
+import { autoTuneOn, configIndex, formatGain, formatMhz, sourceTitle, systemColor, usableHalfWidth } from "../config.ts";
 import { setView, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall } from "../Waterfall.tsx";
-import { K, recentAvg, running, runningSites, sourceGuard, sourceHealth, useHistory, useRanges, val } from "./data.ts";
+import { K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE, useHistory, useRanges, val } from "./data.ts";
 import { ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
@@ -37,18 +37,17 @@ function gainText(c: Source | undefined): string {
   }
 }
 
-const autoTuneOf = (c: Source | undefined) => !!c && "autoTune" in c && !!c.autoTune;
-
 /** One source: floor, headroom, frequency error, drops. `compact`: the overview's size. */
 export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: SourceStatus; i: number; compact?: boolean }) {
-  const cfg = s.config?.sources[i];
-  const h = sourceHealth(s, src, autoTuneOf(cfg));
+  const h = sourceHealth(s, src);
+  // Its place in Setup now, for its name and gain (both taken while recording).
+  const k = s.config ? configIndex(s.sources, s.config, src) : -1;
   const noise = val(s, K.src(src.label, "noise"));
   const peak = val(s, K.src(src.label, "peak"));
   const clip = val(s, K.src(src.label, "clipPct"));
   const drops = recentAvg(K.src(src.label, "dropped"), 60) ?? 0;
   return (
-    <Card title={src.label} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<span className="badge-kind">{mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s</span>}>
+    <Card title={k >= 0 ? `${sourceTitle(s.config!, k)} · ${src.label}` : src.label} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<span className="badge-kind">{mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s</span>}>
       <div className={small ? "src-grid small" : "src-grid"}>
         <Stat
           label="Noise floor"
@@ -72,7 +71,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           unit="ppm"
           sub={
             <>
-              {autoTuneOf(cfg) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}${src.tuneSeeded ? " (last run's)" : ""}` : src.errorPpm == null ? "needs a digital call or control channel" : "not corrected (AutoTune off)"}
+              {autoTuneOn(src.settings) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}${src.tuneSeeded ? " (last run's)" : ""}` : src.errorPpm == null ? "needs a digital call or control channel" : "not corrected (AutoTune off)"}
               {src.clockPpm != null && <div>Sample clock {signed(src.clockPpm, 2)} ppm against this computer</div>}
             </>
           }
@@ -88,10 +87,12 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           hint="Lost by the driver (USB or CPU); calls lose audio."
         />
       </div>
+      {src.unused && <Hint>{UNUSED_SOURCE}</Hint>}
       {!small && (
         <div className="kv small">
           <span>
-            Gain <b>{gainText(cfg)}</b>
+            {/* (Setup's: the desktop recorder takes a new gain while recording.) */}
+            Gain <b>{gainText(k >= 0 ? s.config!.sources[k] : src.settings)}</b>
           </span>
           <span>
             Rate <b>{num(src.rateMeasured / 1e6, 3)}</b> of {num(src.rateHz / 1e6, 3)} MS/s
@@ -151,7 +152,7 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
       </text>
       {sources.map((src, i) => {
         // Usable: half the band less the source's guard at each edge (as the recorder reckons it).
-        const half = usableHalfWidth(src.rateHz, sourceGuard(s, src));
+        const half = usableHalfWidth(src.rateHz, src.settings.guardHz);
         return (
           <g key={i}>
             <rect x={x(src.centerHz - src.rateHz / 2)} width={x(src.centerHz + src.rateHz / 2) - x(src.centerHz - src.rateHz / 2)} y={30} height={20} rx={4} className="band-src" />
@@ -428,7 +429,7 @@ export function RfPage() {
       <div className="page">
         <p className="empty">Start recording to see the sources.</p>
         {s.config?.sources.map((src, k) => (
-          <Card key={k} title={`Source ${k + 1}`}>
+          <Card key={k} title={sourceTitle(s.config!, k)}>
             <div className="kv small">
               <span>
                 {src.type} · {mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s · gain {gainText(src)}
