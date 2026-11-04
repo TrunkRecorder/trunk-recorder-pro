@@ -4,7 +4,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { startProblem } from "./config.ts";
 import { ARRIVED_TO_IMPORT, DirectoryImport } from "./directoryImport.tsx";
-import { can, closeGuide, dismissError, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
+import { isRecording, can, closeGuide, dismissError, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
 import { PluginPage, PluginsPage, usePluginPages } from "./Plugins.tsx";
@@ -112,6 +112,7 @@ export function App() {
     config: x.config,
     version: x.version,
     error: x.error,
+    runError: x.runError,
     notice: x.notice,
     ended: x.ended,
     guide: x.guide,
@@ -121,7 +122,7 @@ export function App() {
   const own = usePluginPages();
   // The lights: recomputed with what they depend on, a few times a second at most.
   const health = useSelect((x) => pageHealth(x), (a, b) => Object.keys(a).every((k) => a[k].level === b[k].level && a[k].why === b[k].why));
-  const running = s.phase === "running" || s.phase === "starting";
+  const running = isRecording(s.phase);
   // The browser build records in this tab: keep the screen (and so the tab) awake.
   useWakeLock(!!web && running);
   const problem = s.config ? startProblem(s.config) : "Connecting to the recorder…";
@@ -200,9 +201,9 @@ export function App() {
         </header>
         <div className="banners">
           {!s.connected && <div className="banner bad">Not connected to trunk-pro. Retrying…</div>}
-          {s.error && (
+          {(s.error ?? s.runError) && (
             <div className="banner bad" role="alert">
-              <span>{s.error}</span>
+              <span>{s.error ?? s.runError}</span>
               <button className="btn ghost small" onClick={dismissError}>
                 Dismiss
               </button>
@@ -222,7 +223,7 @@ export function App() {
             </div>
           )}
           {s.ended && s.phase === "idle" && <div className="banner">Replay finished.</div>}
-          {!running && problem && s.connected && !s.error && s.view !== "setup" && (
+          {!running && problem && s.connected && !s.error && !s.runError && s.view !== "setup" && (
             <div className="banner subtle">
               <span>{problem}</span>
               <button className="btn ghost small" onClick={() => setView("setup")}>

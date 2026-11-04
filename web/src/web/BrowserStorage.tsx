@@ -2,7 +2,7 @@
 // much, and copies them out to a real folder or a zip (Trunk Recorder's layout).
 
 import { useEffect, useState } from "react";
-import { forgetHistory, setNotice, useApp } from "../controller.ts";
+import { holdsRadios, forgetHistory, setNotice, useApp } from "../controller.ts";
 import { clearCalls, exportCalls, storageEstimate, zipCalls } from "./opfs.ts";
 
 const mb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e7 ? `${(b / 1e6).toFixed(0)} MB` : `${(b / 1e6).toFixed(1)} MB`);
@@ -88,7 +88,7 @@ export function BrowserStorage() {
           <button className="btn ghost small" onClick={() => void downloadZip()} disabled={!s.history.length}>
             Download zip
           </button>
-          <button className="btn ghost small" onClick={() => void clearAll()} disabled={!s.history.length || s.phase !== "idle"}>
+          <button className="btn ghost small" onClick={() => void clearAll()} disabled={!s.history.length || holdsRadios(s.phase)}>
             Delete all
           </button>
         </>

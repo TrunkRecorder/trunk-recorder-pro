@@ -659,6 +659,8 @@ export interface PhaseState {
   phase: Phase;
   error: string | null;
   ended: boolean;
+  /** The config was edited, since Start, in what a run reads only when it starts (the recorder's Config::needs_restart): Stop, then Start, to take it. */
+  restartNeeded: boolean;
 }
 
 /** One system being recorded: trunked (with a site running) or conventional. `index` is what calls and audio carry as `system`. */

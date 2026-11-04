@@ -32,7 +32,7 @@ function twoSites(): void {
   transport.onConnection(true);
   // The greeting: how things are, then hello.
   const greeting: FromRecorder[] = [
-    { type: "state", phase: "running", error: null, ended: false },
+    { type: "state", phase: "running", error: null, ended: false, restartNeeded: false },
     { type: "config", config: c, version: 1 },
     { type: "history", entries: [] },
     { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys"] },

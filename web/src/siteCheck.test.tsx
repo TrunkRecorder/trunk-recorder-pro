@@ -33,7 +33,7 @@ function connected(c: Config, phase: "idle" | "running" = "idle", serials: strin
   transport.onMessage({ type: "config", config: c, version: 1 });
   transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, surveyBands: BANDS, capabilities: ["drivers"] });
   transport.onMessage({ type: "devices", devices: serials.map((serial, index) => ({ index, serial, product: "RTL2838UHIDIR", busy: null })) });
-  transport.onMessage({ type: "state", phase, error: null, ended: false });
+  transport.onMessage({ type: "state", phase, error: null, ended: false, restartNeeded: false });
   if (survey) transport.onMessage(survey);
   return sent;
 }

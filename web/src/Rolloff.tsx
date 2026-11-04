@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { activeSites, DEFAULT_GUARD_HZ, enabledChannels, formatMhz, resolvedCenters, siteNameOf, watchedChannels } from "./config.ts";
-import { profileSource, updateConfig, useApp } from "./controller.ts";
+import { isRecording, profileSource, updateConfig, useApp } from "./controller.ts";
 import { decimal, type TextCodec } from "./fieldText.ts";
 import { DraftInput } from "./inputs.tsx";
 import type { Config, Source, SourceProfile } from "./protocol.ts";
@@ -106,7 +106,7 @@ function Profiler(props: { c: Config; i: number; src: Source; guard: number; onA
   const busy = s.profiling === i;
   const profile = s.profile?.source === i ? s.profile : null;
   const result = profile && "suggestedGuardHz" in profile ? profile : null;
-  const recording = s.phase === "running" || s.phase === "starting";
+  const recording = isRecording(s.phase);
   const [draft, setDraft] = useState(guard);
   // A new measurement proposes its suggestion.
   useEffect(() => {

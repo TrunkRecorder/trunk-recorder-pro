@@ -33,6 +33,7 @@ import {
   type AppState,
   type PluginActionResult,
   type SystemRef,
+  isRecording,
 } from "./controller.ts";
 import { activeSystems } from "./config.ts";
 import { EveryDelays, PluginDelay } from "./Delays.tsx";
@@ -803,7 +804,7 @@ const held = new Map<string, PluginValues>();
 const heldViews = new Set<() => void>();
 
 function Held(props: { id: string; name: string; saved: PluginValues; save: (v: PluginValues) => void; restarts: boolean; children: (values: PluginValues, change: (v: PluginValues) => void) => ReactNode }) {
-  const recording = useSelect((x) => x.phase === "running" || x.phase === "starting");
+  const recording = useSelect((x) => isRecording(x.phase));
   const [, redraw] = useState(0);
   useEffect(() => {
     const f = () => redraw((n) => n + 1);
@@ -858,7 +859,7 @@ export function usePluginPages(): { id: string; title: string }[] {
 function usePluginStatus(p: PluginInfo, c: Config) {
   const s = useApp();
   const on = pluginOn(c, p.id);
-  const recording = s.phase === "running" || s.phase === "starting";
+  const recording = isRecording(s.phase);
   const st = stateOf(p, on, recording);
   const needs = p.manifest ? pluginNeeds(p.manifest, c, p.id) : [];
   return { on, recording, st, needs, state: needs.length && on ? "Needs setting up" : st.text };
@@ -1248,7 +1249,7 @@ function PluginStorePanel(props: { list: PluginsList }) {
 export function PluginsPage() {
   const s: AppState = useApp();
   const list = s.plugins;
-  const recording = s.phase === "running" || s.phase === "starting";
+  const recording = isRecording(s.phase);
   if (!list) return <p className="muted">Loading…</p>;
   const on = (p: PluginInfo) => Number(pluginOn(s.config, p.id));
   const plugins = [...list.plugins].sort((a, b) => on(b) - on(a) || (a.manifest?.name ?? a.id).localeCompare(b.manifest?.name ?? b.id));
