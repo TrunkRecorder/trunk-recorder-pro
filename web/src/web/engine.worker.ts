@@ -3,7 +3,7 @@
 // server, so the interface is identical. Calls are stored in OPFS.
 
 import { withEdit } from "../talkgroups.ts";
-import init, { calls_page, directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
+import init, { calls_page, configNeedsRestart, directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { CallEntry, Config, FromRecorder, HeardCode, Talkgroup, ToRecorder } from "../protocol.ts";
 import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, sourceTitle, trpBase } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
@@ -30,7 +30,9 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
 /** `system`: a short name. */
 let listen: { on: boolean; system: string | null; talkgroup: number | null } = { on: false, system: null, talkgroup: null };
-let phase: FromRecorder & { type: "state" } = { type: "state", phase: "idle", error: null, ended: false };
+let phase: FromRecorder & { type: "state" } = { type: "state", phase: "idle", error: null, ended: false, restartNeeded: false };
+/** The config the recording started with: what an edit is held against (restartCheck). */
+let runConfig: Config | null = null;
 /** What the page watches (applied to each new session). */
 let topics: string[] = [];
 /** The radio registry, saved between runs: one file, `{shortName: registry}`. */
@@ -44,8 +46,19 @@ function callsPage(calls: CallEntry[], q: Omit<Extract<ToRecorder, { type: "call
 }
 
 function setPhase(p: "idle" | "starting" | "running" | "stopping", error: string | null = null, ended = false): void {
-  phase = { type: "state", phase: p, error, ended };
+  if (p === "idle") runConfig = null;
+  // (Starting: the config is the run's.)
+  phase = { type: "state", phase: p, error, ended, restartNeeded: phase.restartNeeded && p !== "idle" && p !== "starting" };
   post(phase);
+}
+
+/** The config changed: whether it waits for the next Start (the recorder's rule, Config::needs_restart), told with the phase when that changes. */
+function restartCheck(): void {
+  const need = !!runConfig && !!config && configNeedsRestart(JSON.stringify(config), JSON.stringify(runConfig));
+  if (need !== phase.restartNeeded) {
+    phase = { ...phase, restartNeeded: need };
+    post(phase);
+  }
 }
 
 async function devices() {
@@ -67,6 +80,7 @@ function deliver(outs: { t: string; json?: string; system?: number; shortName?: 
       if (learned) {
         config = JSON.parse(learned) as Config;
         post({ type: "config", config, version: ++configVersion });
+        restartCheck();
       }
     }
     else if (o.t === "share") void share(o.shortName!, o.json!, o.siteNames!);
@@ -214,6 +228,7 @@ async function share(shortName: string, observation: string, siteNames: string):
       if (linked) {
         config = JSON.parse(linked) as Config;
         post({ type: "config", config, version: ++configVersion });
+        restartCheck();
       }
       id = v.system;
       rev = v.rev ?? 0;
@@ -348,6 +363,7 @@ async function start(): Promise<void> {
   try {
     await ready;
     const cfg = config;
+    runConfig = cfg;
     // Each system's band plan from the last run.
     const plans: Record<string, string> = {};
     for (const x of activeSystems(cfg)) {
@@ -483,6 +499,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       const before = config;
       config = m.config;
       post({ type: "configSaved", version: ++configVersion });
+      restartCheck();
       // Sharing switched on or off (or what it uses changed, like licenses): at once, as on the desktop.
       for (const x of m.config.systems) {
         const was = before?.systems.find((y) => y.shortName === x.shortName);

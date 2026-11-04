@@ -2015,6 +2015,10 @@
             "ended": {
               "type": "boolean"
             },
+            "restartNeeded": {
+              "type": "boolean",
+              "description": "The config was edited, since Start, in what a run reads only when it starts (the recorder's Config::needs_restart): Stop, then Start, to take it."
+            },
             "type": {
               "type": "string",
               "const": "state"
@@ -2024,6 +2028,7 @@
             "ended",
             "error",
             "phase",
+            "restartNeeded",
             "type"
           ]
         },

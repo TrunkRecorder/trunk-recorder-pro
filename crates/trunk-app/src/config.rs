@@ -2248,7 +2248,7 @@ impl Config {
 
     /// Some system that records names encryption keys.
     pub fn has_keys(&self) -> bool {
-        self.active_systems().any(|s| !s.keys.trim().is_empty()) || self.conventional.iter().any(|c| c.enabled && !c.keys.trim().is_empty())
+        self.key_users().next().is_some()
     }
 
     /// Read the key sources the systems name, each once: its keys and the
@@ -2279,7 +2279,7 @@ impl Config {
     /// (A system that records, the key source it names), for each that names one.
     fn key_users(&self) -> impl Iterator<Item = (&String, &str)> {
         let trunked = self.active_systems().map(|s| (&s.short_name, s.keys.trim()));
-        trunked.chain(self.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, c.keys.trim()))).filter(|(_, k)| !k.is_empty())
+        trunked.chain(self.active_conventional().map(|c| (&c.short_name, c.keys.trim()))).filter(|(_, k)| !k.is_empty())
     }
 
     /// The key sources the systems name that are unlocked from the interface (a
@@ -2495,6 +2495,41 @@ impl Config {
         let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
         let placed: Vec<Option<f64>> = centers.iter().map(|&c| (c > 0.0).then_some(c)).collect();
         move |receive_on, hz| receiver(&sources, &placed, &self.pins(receive_on), hz)
+    }
+
+    /// What a run reads only when it starts: its sources as the radios take
+    /// them ([`Source::radio`]), the systems and conventional systems without
+    /// what applies while recording (plugins and their delays, sharing and
+    /// its directory link, FCC call signs — the recorder learns them as it
+    /// hears them — a channel file's status), and the recording rules.
+    fn at_start(&self) -> serde_json::Value {
+        let mut c = self.clone();
+        for s in &mut c.systems {
+            (s.plugins, s.plugin_delays, s.share, s.directory, s.fcc) = Default::default();
+            for x in &mut s.sites {
+                x.directory_id.clear();
+            }
+        }
+        for v in &mut c.conventional {
+            (v.plugins, v.plugin_delays, v.fcc, v.channel_file_status) = Default::default();
+        }
+        serde_json::json!({ "sources": c.sources.iter().map(Source::radio).collect::<Vec<_>>(), "systems": c.systems, "conventional": c.conventional, "recording": c.recording })
+    }
+
+    /// Whether this config, edited since `run` (the one recording started
+    /// with, and what its radios have taken since: a gain set live), waits
+    /// for the next Start. The desktop recorder's server and the browser
+    /// build's worker both say so ([`crate::protocol::ToClient::State`]).
+    pub fn needs_restart(&self, run: &Config) -> bool {
+        self.at_start() != run.at_start()
+    }
+
+    /// Where source `i` of this config is among `others`: the same radio, by
+    /// its label (the nth of that label, for two "first found"), wherever it is.
+    pub fn same_radio(&self, i: usize, others: &[Source]) -> Option<usize> {
+        let label = self.sources.get(i)?.label();
+        let nth = self.sources[..i].iter().filter(|s| s.label() == label).count();
+        others.iter().enumerate().filter(|(_, s)| s.label() == label).nth(nth).map(|(k, _)| k)
     }
 
     /// A short name is a system's identity — its folder, its band plan and
@@ -3123,6 +3158,59 @@ mod tests {
         let rtl: Source = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "ppm": 0 })).unwrap();
         let airspy: Source = serde_json::from_value(serde_json::json!({ "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "ppm": 0 })).unwrap();
         assert_eq!((rtl.settable_ppm(2.0 - 3.6), airspy.settable_ppm(2.0 - 3.614)), (-2.0, -1.61));
+    }
+
+    /// What a run reads only when it starts needs a restart; what applies
+    /// while recording doesn't: plugins, sharing and its link, FCC call signs
+    /// the recorder learns, a source's name.
+    #[test]
+    fn an_edit_needs_a_restart_only_for_what_a_run_reads_at_start() {
+        let mut run: Config = serde_json::from_value(serde_json::json!({
+            "sources": [{ "type": "rtlsdr", "serial": "200", "centerHz": 851000000, "rateHz": 2400000, "gainDb": 30 }],
+            "systems": [{ "shortName": "dcfd", "sites": [{ "controlChannelsHz": [851012500] }] }],
+            "conventional": [{ "shortName": "town", "channels": [{ "freqHz": 851500000, "mode": "fm" }] }]
+        }))
+        .unwrap();
+        run.assign_system_ids();
+        let edit = |f: &dyn Fn(&mut Config)| {
+            let mut c = run.clone();
+            f(&mut c);
+            c.needs_restart(&run)
+        };
+        assert!(!edit(&|_| {}));
+        assert!(!edit(&|c| {
+            c.systems[0].share = true;
+            c.systems[0].directory = Some(Default::default());
+            c.systems[0].sites[0].directory_id = "site_n".into();
+            c.systems[0].plugins.insert("x".into(), serde_json::json!({}));
+        }), "sharing and plugins apply live");
+        assert!(!edit(&|c| assert!(c.learn_call_sign("dcfd", 851_012_500.0, "KNJE616"))), "a call sign heard");
+        assert!(!edit(&|c| assert!(c.learn_call_sign("town", 851_500_000.0, "KQX123"))));
+        assert!(!edit(&|c| c.sources[0].name = "Whip".into()), "a name");
+        assert!(edit(&|c| c.sources[0].center_hz = 852e6), "a retune");
+        assert!(edit(&|c| c.systems[0].sites[0].control_channels_hz.push(851_212_500.0)));
+        assert!(edit(&|c| c.recording.min_call_s = 9.0));
+        // A gain waits for the next Start, unless the run took it live (it then has it too).
+        assert!(edit(&|c| if let SourceKind::Rtlsdr { gain_db, .. } = &mut c.sources[0].kind { *gain_db = 20.0 }));
+    }
+
+    /// Keys are read for the systems that record: not for a conventional
+    /// system with no channel on, whatever key source it names.
+    #[test]
+    fn keys_are_for_the_systems_that_record() {
+        let mut c: Config = serde_json::from_value(serde_json::json!({ "conventional": [{ "shortName": "town", "keys": "gone", "channels": [{ "freqHz": 851500000, "mode": "p25", "enabled": false }] }] })).unwrap();
+        assert!(!c.has_keys());
+        c.conventional[0].channels[0].enabled = true;
+        assert!(c.has_keys());
+    }
+
+    #[test]
+    fn a_radio_is_found_by_its_label_wherever_it_is() {
+        let rtl = |serial: &str| -> Source { serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": serial, "centerHz": 0, "rateHz": 2400000 })).unwrap() };
+        let c = Config { sources: vec![rtl("1"), rtl("2"), rtl(""), rtl("")], ..Default::default() };
+        let moved = [rtl(""), rtl("2"), rtl(""), rtl("1")];
+        assert_eq!((0..4).map(|i| c.same_radio(i, &moved)).collect::<Vec<_>>(), [Some(3), Some(1), Some(0), Some(2)], "two \"first found\": in order");
+        assert_eq!(c.same_radio(0, &moved[..3]), None, "taken out");
     }
 
     #[test]

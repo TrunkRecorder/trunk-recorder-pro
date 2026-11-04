@@ -1378,6 +1378,17 @@ then active conventional systems (enabled, with an enabled channel). It is the o
 number is worked out; the engine, plugins, status (`status.systemNames`) and the interface all go
 by it. There is no limit on conventional systems.
 
+**Edits while recording.** The recorder keeps the config a run started with (`Ctx.run`; the
+browser build's worker keeps its own), and what its radios have taken since. An edit is held
+against it, not against the edit before: `Ctx::live_sources` finds each source's radio in the run
+by its label (`Config::same_radio`), wherever Setup has moved it, sets a gain the radio takes live
+(`live_gain`), and the run then has it. `Config::needs_restart` compares what a run reads only
+when it starts — the sources as their radios take them (without a `name`), the systems and
+conventional systems without what applies live (plugins and delays, sharing and its link, FCC
+call signs, a channel file's status), the recording rules — and the `state` message carries the
+verdict as `restartNeeded`, with the phase (`idle`, `starting`, `running`, `stopping`). The
+interface shows it; it doesn't work it out.
+
 ### 10.11 Validation at Start (`Config::problem`, first failure wins)
 
 1. No sources.

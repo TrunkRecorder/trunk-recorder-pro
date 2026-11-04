@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **"Change requires restart" is the recorder's call, and right.** The recorder holds each edit against
+  the config the run started with and tells the page, so the banner no longer comes up when the recorder
+  learns an FCC call sign mid-run, and is right in a page opened after the edit (the browser build's worker
+  does the same). A gain changed while recording goes to the radio it names even after sources were moved
+  in Setup, and a source added in the same save no longer holds it back. A run's error clears when the
+  recorder starts again, from another browser too. A conventional system with no channel on no longer
+  has its key source read at Start.
 - **A source can have a name.** `name` on a source (**Name** in Setup) is shown beside its number, as
   "Source 2 (Whip)", wherever a source is named: Setup, the RF page, the survey, to-dos and the log (which
   now count sources from 1 everywhere, as Setup does). It only names it: renaming one while recording takes

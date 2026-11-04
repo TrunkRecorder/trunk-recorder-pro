@@ -35,6 +35,7 @@ import {
   updateConfig,
   useApp,
   type SurveyTarget,
+  holdsRadios,
 } from "./controller.ts";
 import { findExisting, openImport, toFind } from "./directoryImport.tsx";
 import { defaultListenS, lookedFreqs, type LookingFor } from "./lookFor.ts";
@@ -552,7 +553,7 @@ export function SurveyPanel(props: { c: Config }) {
   const s = useApp();
   const { c } = props;
   const sv = s.survey;
-  const recording = s.phase !== "idle";
+  const recording = holdsRadios(s.phase);
   const [open, setOpen] = useState(() => c.systems.length === 0);
   const [picked, setPicked] = useState<string[] | null>(null);
   const [findGain, setFindGain] = useState(true);

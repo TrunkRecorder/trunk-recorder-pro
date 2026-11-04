@@ -70,6 +70,14 @@ pub fn config_name_problem(json: &str) -> Option<String> {
     read(json).map_or_else(Some, |c| c.name_problem())
 }
 
+/// Whether config `json`, edited since `run_json` (the one recording started
+/// with), waits for the next Start ([`Config::needs_restart`]): the browser
+/// build's worker tells the page so, as the desktop recorder's server does.
+#[wasm_bindgen(js_name = configNeedsRestart)]
+pub fn config_needs_restart(json: &str, run_json: &str) -> bool {
+    matches!((read(json), read(run_json)), (Ok(c), Ok(run)) if c.needs_restart(&run))
+}
+
 /// Each source's centre, Hz: as set, or where Start places it (0: nowhere it fits).
 #[wasm_bindgen(js_name = configCenters)]
 pub fn config_centers(json: &str) -> Vec<f64> {

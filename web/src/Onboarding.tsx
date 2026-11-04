@@ -31,6 +31,7 @@ import {
   useApp,
   web,
   type AppState,
+  holdsRadios,
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
@@ -129,9 +130,9 @@ export function SetupGuide(props: { mode: "start" | "import"; onClose: () => voi
       </header>
       <main className="ob-body">
         {!s.connected && <div className="ob-note bad">Waiting for the recorder… is Trunk Recorder Pro running?</div>}
-        {s.error && (
+        {(s.error ?? s.runError) && (
           <div className="ob-note bad" role="alert">
-            <span>{s.error}</span>
+            <span>{s.error ?? s.runError}</span>
             <button className="ob-link" onClick={dismissError}>
               Dismiss
             </button>
@@ -795,7 +796,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
         </div>
         {unsupported && <div className="ob-note bad">This radio needs the desktop app to scan.</div>}
         <div className="ob-center-actions">
-          <button className="ob-btn primary big" disabled={!s.connected || s.phase !== "idle" || unsupported || !picked.length || !s.surveyBands.length} onClick={scan}>
+          <button className="ob-btn primary big" disabled={!s.connected || holdsRadios(s.phase) || unsupported || !picked.length || !s.surveyBands.length} onClick={scan}>
             Start scan
           </button>
           <button className="ob-link" onClick={() => setManual(true)}>

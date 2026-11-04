@@ -65,13 +65,11 @@ import {
   normalizeSite,
   resolvedCenters,
   reaches,
-  restartKey,
   sameSystem,
   shortNameFor,
   siteNameOf,
   receiverOf,
   sourceKey,
-  sourcesChanged,
   trpBase,
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
@@ -89,6 +87,8 @@ export interface AppState {
   configPath: string;
   phase: Phase;
   error: string | null;
+  /** The recording's own error (a Start refused, a run that failed), as the recorder last said with its phase: replaced, not kept, by each. */
+  runError: string | null;
   notice: string | null;
   ended: boolean;
   config: Config | null;
@@ -132,7 +132,7 @@ export interface AppState {
   /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
   profile: SourceProfile | null;
   profiling: number | null;
-  /** Settings changed since this run started that only apply after a restart. */
+  /** Settings changed since this run started that only apply after a restart: the recorder's verdict (Config::needs_restart), with its phase. */
   restartNeeded: boolean;
   /** This browser's changes: being saved, all saved, or the last one wasn't (`saveError`: why); idle before any. */
   saveStatus: "idle" | "saving" | "saved" | "failed";
@@ -196,6 +196,7 @@ let state: AppState = {
   configPath: "",
   phase: "idle",
   error: null,
+  runError: null,
   notice: null,
   ended: false,
   config: null,
@@ -246,27 +247,15 @@ let state: AppState = {
   setupTab: loadSetupTab(),
 };
 
+/** Recording, or about to be: calls are coming (Starting or Running; not while Stopping). */
+export const isRecording = (p: Phase): boolean => p === "running" || p === "starting";
+/** The radios are in use: from Start until the run has let them go (any phase but Idle). */
+export const holdsRadios = (p: Phase): boolean => p !== "idle";
+
 const listeners = new Set<() => void>();
-/** restartKey of the config the current run started with (null: not running). */
-let runKey: string | null = null;
-/** The config differs from the run's in what takes a restart (restartKey against runKey). */
-let keyChanged = false;
-/** The desktop recorder takes a radio's gain while recording; the browser build doesn't. */
-const liveGain = import.meta.env.MODE !== "web";
 
 function set(patch: Partial<AppState>): void {
-  const was = state;
   state = { ...state, ...patch };
-  // (Only when the config or phase changed: spectrum and stats come many times a second.)
-  if (state.config !== was.config || state.phase !== was.phase) {
-    const key = state.phase === "idle" || !state.config ? null : restartKey(state.config, liveGain);
-    runKey = key && (runKey ?? key);
-    keyChanged = key !== runKey;
-  }
-  // (runKey is this page's: one opened after an edit takes the edited config for the run's. The sources the recorder says it runs with catch that.)
-  if (state.config !== was.config || state.phase !== was.phase || state.sources !== was.sources) {
-    state.restartNeeded = keyChanged || (state.phase !== "idle" && !!state.config && sourcesChanged(state.config, state.sources, liveGain));
-  }
   // (Its rules' answers last as long as the config does: rules.ts.)
   if ("config" in patch) configReplaced(state.config);
   for (const l of listeners) l();
@@ -378,7 +367,7 @@ function take(m: FromRecorder): void {
       for (const u of unanswered) transport.send({ type: "setTalkgroup", system: u.system, talkgroup: u.tg, edit: u.edit });
       break;
     case "state":
-      set({ phase: m.phase, error: m.error ?? state.error, ended: m.ended, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
+      set({ phase: m.phase, runError: m.error, ended: m.ended, restartNeeded: m.restartNeeded, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
       if (m.phase === "idle") set({ nowPlaying: null, stats: null });
       break;
     case "config":
@@ -1109,7 +1098,7 @@ export function settingsOpened(): void {
 }
 
 export function dismissError(): void {
-  set({ error: null });
+  set({ error: null, runError: null });
 }
 export function setNotice(notice: string | null): void {
   set({ notice });
@@ -1237,9 +1226,9 @@ export function findOnAir(l: LookingFor): string | null {
   setView("setup");
   const src = state.config?.sources[0];
   // (Idle, a source; recording, or none set up yet, a spare radio.)
-  const spare = state.phase === "idle" && src ? undefined : spareRadios(state)[0];
+  const spare = !holdsRadios(state.phase) && src ? undefined : spareRadios(state)[0];
   if (!state.connected) return "Not connected to the recorder.";
-  if (state.phase !== "idle" && !spare) return "Recording has the radios: stop recording to scan, or plug in a spare radio to scan with meanwhile.";
+  if (holdsRadios(state.phase) && !spare) return "Recording has the radios: stop recording to scan, or plug in a spare radio to scan with meanwhile.";
   if (!src && !spare) return "Add a radio first (Setup → Radios).";
   const radio = spare ?? src!;
   if (needsDriver(radio) && !can("drivers")) return "Its radio needs the desktop app.";
@@ -1655,17 +1644,14 @@ export function unlockKeys(source: string, password: string | null): void {
 
 export function start(): void {
   flushConfig();
-  // The recorder reads the config now: what it runs with from here.
-  runKey = state.config ? restartKey(state.config, liveGain) : null;
-  keyChanged = false;
-  set({ error: null, ended: false, restartNeeded: false });
+  set({ error: null, runError: null, ended: false });
   transport.send({ type: "start" });
   if (state.listen) void player.resume().catch(() => {});
 }
 
 /** Stop recording and end the desktop app (the web build has nothing to quit). */
 export function quitApp(): void {
-  if ((state.phase === "running" || state.phase === "starting") && !confirm("Recording is running. Quit anyway? Calls in progress are saved.")) return;
+  if (isRecording(state.phase) && !confirm("Recording is running. Quit anyway? Calls in progress are saved.")) return;
   flushConfig();
   transport.send({ type: "quit" });
 }

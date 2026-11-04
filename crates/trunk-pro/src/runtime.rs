@@ -26,6 +26,7 @@ use trunk_app::{Feeder, Output, Session};
 use crate::db::Change;
 use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use crate::config::{AirspyGain, Config, SampleFormat, Source, SourceKind};
+use trunk_app::protocol::Phase;
 use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, uhd};
 use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
@@ -73,15 +74,16 @@ pub fn publish(hub: &Hub, m: ToClient) {
 
 #[derive(Clone, Debug, Default)]
 pub struct PhaseInfo {
-    /// "idle" | "starting" | "running" | "stopping"
-    pub phase: &'static str,
+    pub phase: Phase,
     pub error: Option<String>,
     pub ended: bool,
+    /// The config waits for the next Start ([`Ctx::restart_check`]).
+    pub restart_needed: bool,
 }
 
 impl PhaseInfo {
     pub fn message(&self) -> ToClient {
-        ToClient::State { phase: self.phase, error: self.error.clone(), ended: self.ended }
+        ToClient::State { phase: self.phase, error: self.error.clone(), ended: self.ended, restart_needed: self.restart_needed }
     }
 }
 
@@ -100,6 +102,11 @@ pub struct Ctx {
     pub lifecycle: Mutex<Lifecycle>,
     /// The phase the browsers are told (the engine thread reports it as it goes).
     pub phase: Mutex<PhaseInfo>,
+    /// The config the recording started with, and what its radios took
+    /// since (a gain set live): what an edit is held against
+    /// ([`Config::needs_restart`], [`Ctx::live_sources`]). None when idle.
+    /// (Never held while another lock is taken.)
+    pub run: Mutex<Option<Config>>,
     /// The calls concluded lately (newest first), as sent to the browser:
     /// the live list (`history`, `callFiles`), kept whether or not the call
     /// store is open. The store keeps the record; queries merge the two.
@@ -206,13 +213,30 @@ impl Ctx {
         self.shared.names.lock().unwrap().set_config(c, &files);
         let version = self.config_version.fetch_add(1, Ordering::SeqCst) + 1;
         publish(&self.hub, ToClient::Config { config: Box::new(c.clone()), version });
+        self.restart_check(c);
         version
     }
 
-    pub fn set_phase(&self, phase: &'static str, error: Option<String>, ended: bool) {
-        let p = PhaseInfo { phase, error, ended };
+    /// Whether the config as it is now (`now`) waits for the next Start:
+    /// told the browsers, with the phase, when that changes.
+    pub fn restart_check(&self, now: &Config) {
+        let need = self.run.lock().unwrap().as_ref().is_some_and(|run| now.needs_restart(run));
+        let mut p = self.phase.lock().unwrap();
+        if p.restart_needed != need {
+            p.restart_needed = need;
+            publish(&self.hub, p.message());
+        }
+    }
+
+    pub fn set_phase(&self, phase: Phase, error: Option<String>, ended: bool) {
+        if phase == Phase::Idle {
+            *self.run.lock().unwrap() = None;
+        }
+        let mut p = self.phase.lock().unwrap();
+        // (Starting: the config is the run's.)
+        let restart_needed = p.restart_needed && !matches!(phase, Phase::Idle | Phase::Starting);
+        *p = PhaseInfo { phase, error, ended, restart_needed };
         publish(&self.hub, p.message());
-        *self.phase.lock().unwrap() = p;
     }
 
     /// Start recording with `cfg`, in place of whatever the radios were
@@ -229,7 +253,7 @@ impl Ctx {
         if l.survey.as_ref().is_some_and(|s| s.uses_any(&cfg.sources)) {
             self.end_survey(&mut l);
         }
-        self.set_phase("starting", None, false);
+        self.set_phase(Phase::Starting, None, false);
         match start(self.clone(), cfg) {
             Ok(r) => {
                 l.recording = Some(r);
@@ -237,7 +261,7 @@ impl Ctx {
                 Ok(())
             }
             Err(e) => {
-                self.set_phase("idle", Some(e.clone()), false);
+                self.set_phase(Phase::Idle, Some(e.clone()), false);
                 Err(e)
             }
         }
@@ -387,26 +411,39 @@ pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
     (o == *new).then_some(gain)
 }
 
-impl Runner {
-    /// Source `i`'s settings went from `old` to `new` in Setup: its gain is
-    /// applied at once when that's all that changed and the radio can take it
-    /// live ([`live_gain`]): that gain, or None when the change waits for the next start.
-    pub fn live_source(&self, i: usize, old: &Source, new: &Source) -> Option<Gain> {
-        let (c, g) = (self.controls.get(i)?, live_gain(old, new)?);
-        *c.gain.lock().unwrap() = Some(g);
-        Some(g)
-    }
-
-    /// The sources went from `old` to `new` in Setup: each changed one, by its
-    /// place, with the gain it took at once ([`Runner::live_source`]) or None.
-    /// Sources added, removed or moved wait for the next start (all of them).
-    pub fn live_sources(&self, old: &[Source], new: &[Source]) -> Vec<(usize, Option<Gain>)> {
-        if old.len() != new.len() {
-            return vec![];
+impl Ctx {
+    /// Setup's sources went from `old` to `now` while recording: each this
+    /// edit changed, by its place in `now`, with the gain its radio took at
+    /// once or None when the change waits for the next Start. A radio is
+    /// matched to the run's by its label ([`Config::same_radio`]), wherever
+    /// either list has it, and is held against what it runs with: a gain it
+    /// can take live ([`live_gain`]) is set, and the run then has it.
+    pub fn live_sources(&self, old: &Config, now: &Config) -> Vec<(usize, Option<Gain>)> {
+        let l = self.lifecycle.lock().unwrap();
+        let Some(r) = l.recording.as_ref().filter(|r| !r.finished()) else { return vec![] };
+        let mut run = self.run.lock().unwrap();
+        let Some(run) = run.as_mut() else { return vec![] };
+        let mut out = Vec::new();
+        for (i, s) in now.sources.iter().enumerate() {
+            if now.same_radio(i, &old.sources).is_some_and(|j| old.sources[j].radio() == s.radio()) {
+                continue;
+            }
+            let Some(k) = now.same_radio(i, &run.sources) else {
+                out.push((i, None));
+                continue;
+            };
+            let gain = live_gain(&run.sources[k], s).zip(r.controls.get(k)).map(|(g, c)| {
+                *c.gain.lock().unwrap() = Some(g);
+                run.sources[k] = s.clone();
+                g
+            });
+            out.push((i, gain));
         }
-        old.iter().zip(new).enumerate().filter(|(_, (o, n))| o.radio() != n.radio()).map(|(i, (o, n))| (i, self.live_source(i, o, n))).collect()
+        out
     }
+}
 
+impl Runner {
     /// The engine has stopped by itself (every capture file ended).
     pub fn finished(&self) -> bool {
         self.threads.last().is_some_and(|t| t.is_finished())
@@ -440,6 +477,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     if let Some(p) = cfg.problem() {
         return Err(p);
     }
+    // What edits from here are held against ([`Ctx::restart_check`], [`Ctx::live_sources`]).
+    *ctx.run.lock().unwrap() = Some(cfg.clone());
     // Encryption keys: a file that can't be read, or a bad key in it, stops the start.
     let keys = cfg.load_keys(&ctx.config_path, &|name| crate::unlock::held(&ctx, &cfg, name))?;
     warn_readable_keys(&ctx, &cfg);
@@ -848,7 +887,7 @@ impl Air {
 /// sources' errors and ends (by way of their decoding threads), and the
 /// browsers' and the server's changes ([`Ctx::engine`] holds its sender).
 fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
-    ctx.set_phase("running", None, false);
+    ctx.set_phase(Phase::Running, None, false);
     // Calls are stamped by this clock: the clock's health watches it against the wall clock.
     ctx.clock.recording(Some(epoch));
     let mut radio_at = Instant::now();
@@ -969,7 +1008,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         }
     }
     *ctx.engine.lock().unwrap() = None;
-    ctx.set_phase("stopping", None, false);
+    ctx.set_phase(Phase::Stopping, None, false);
     // The decoding threads finish what their sources had already sent
     // ([`feed_source`]); once the sources are gone (stopped, or files at their end).
     for f in feeders {
@@ -991,7 +1030,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     }
     ctx.clock.recording(None);
     stop.store(true, Ordering::Relaxed);
-    ctx.set_phase("idle", None, ended_all);
+    ctx.set_phase(Phase::Idle, None, ended_all);
 }
 
 /// A concluded call, for [`finish_calls`] to store.
@@ -1319,6 +1358,47 @@ mod live_tests {
         serde_json::from_value(v).unwrap()
     }
 
+    /// A recorder recording `run` (no radios open: their controls to look at).
+    fn recording(run: &Config, name: &str) -> (Arc<Ctx>, Vec<Arc<Control>>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-live-{name}-{}", std::process::id()));
+        let ctx = crate::protocol_tests::ctx(run.clone(), &dir);
+        *ctx.run.lock().unwrap() = Some(run.clone());
+        ctx.phase.lock().unwrap().phase = Phase::Running;
+        let controls: Vec<Arc<Control>> = run.sources.iter().map(|_| Arc::default()).collect();
+        ctx.lifecycle.lock().unwrap().recording = Some(Runner { stop: Arc::default(), threads: Vec::new(), controls: controls.clone() });
+        (ctx, controls, dir)
+    }
+
+    /// While recording, a gain edit reaches the radio it names, wherever
+    /// Setup has moved it since Start, and the run then has it: no restart.
+    /// What waits for the next Start says so, edit after edit.
+    #[test]
+    fn live_edits_go_to_the_radio_they_name() {
+        let rtl = |serial: &str, gain: f64| src("rtlsdr", json!({ "serial": serial, "centerHz": 851000000, "rateHz": 2400000, "gainDb": gain }));
+        let run = Config { sources: vec![rtl("1", 30.0), rtl("2", 30.0)], ..Default::default() };
+        let (ctx, controls, dir) = recording(&run, "rtl");
+        let needs = |c: &Config| {
+            ctx.restart_check(c);
+            ctx.phase.lock().unwrap().restart_needed
+        };
+        // SN 2's gain, in the same edit as a name: applied to SN 2.
+        let named = Config { sources: vec![rtl("1", 30.0), Source { name: "Roof".into(), ..rtl("2", 20.0) }], ..Default::default() };
+        assert_eq!(ctx.live_sources(&run, &named), [(1, Some(Gain::Db(20.0)))]);
+        assert_eq!((*controls[0].gain.lock().unwrap(), *controls[1].gain.lock().unwrap()), (None, Some(Gain::Db(20.0))));
+        assert!(!needs(&named), "taken live: nothing waits");
+        // Moved in Setup (that waits for the next Start), then SN 2's gain again: still SN 2's radio.
+        let moved = Config { sources: vec![named.sources[1].clone(), rtl("1", 30.0)], ..Default::default() };
+        assert!(needs(&moved));
+        let lower = Config { sources: vec![Source { name: "Roof".into(), ..rtl("2", 10.0) }, rtl("1", 30.0)], ..Default::default() };
+        assert_eq!(ctx.live_sources(&moved, &lower), [(0, Some(Gain::Db(10.0)))]);
+        assert_eq!(*controls[1].gain.lock().unwrap(), Some(Gain::Db(10.0)), "the run's SN 2");
+        assert!(*controls[0].gain.lock().unwrap() != Some(Gain::Db(10.0)));
+        // Idle: nothing is held against the config.
+        ctx.set_phase(Phase::Idle, None, false);
+        assert!(!needs(&lower) && ctx.run.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_gain_change_goes_live_when_the_radio_can_take_it() {
         let rtl = |gain: f64, agc: bool| src("rtlsdr", json!({ "serial": "1000", "centerHz": 453e6, "rateHz": 2.4e6, "gainDb": gain, "agc": agc, "ppm": 0 }));
@@ -1355,27 +1435,32 @@ mod live_tests {
     fn several_airspys_each_take_their_own_gain() {
         let air = |serial: &str, lna: u8| src("airspy", json!({ "serial": serial, "centerHz": 852e6, "rateHz": 6e6, "gainMode": "manual", "lnaStep": lna, "ppm": 0 }));
         let lin = |serial: &str, step: u8| src("airspy", json!({ "serial": serial, "centerHz": 852e6, "rateHz": 6e6, "gainMode": "linearity", "gainStep": step, "ppm": 0 }));
-        let r = Runner { stop: Arc::default(), threads: vec![], controls: (0..3).map(|_| Arc::default()).collect() };
-        let pending = |i: usize| *r.controls[i].gain.lock().unwrap();
-        let old = [air("A1", 10), air("B2", 10), air("C3", 10)];
+        let cfg = |sources: Vec<Source>| Config { sources, ..Default::default() };
+        let old = cfg(vec![air("A1", 10), air("B2", 10), air("C3", 10)]);
+        let (ctx, controls, dir) = recording(&old, "airspy");
+        let pending = |i: usize| *controls[i].gain.lock().unwrap();
         // The second's LNA: only it.
-        let one = r.live_sources(&old, &[air("A1", 10), air("B2", 14), air("C3", 10)]);
+        let one = ctx.live_sources(&old, &cfg(vec![air("A1", 10), air("B2", 14), air("C3", 10)]));
         assert_eq!(one, vec![(1, Some(airspy_gain(AirspyGain::Manual, 0, 14, 10, 10, false)))]);
         assert_eq!((pending(0), pending(2)), (None, None), "the others are left alone");
-        r.controls[1].take();
-        // Two in one save, one of them to another mode: each its own.
-        let two = r.live_sources(&old, &[lin("A1", 18), air("B2", 10), air("C3", 6)]);
-        assert_eq!(two.len(), 2);
+        controls[1].take();
+        // Three in one save, one of them to another mode: each its own (B2 back to 10 from the 14 it took).
+        let now = cfg(vec![lin("A1", 18), air("B2", 10), air("C3", 6)]);
+        let two = ctx.live_sources(&cfg(vec![air("A1", 10), air("B2", 14), air("C3", 10)]), &now);
+        assert_eq!(two.len(), 3);
         assert_eq!(pending(0), Some(Gain::Preset(Preset::Linearity, 18)));
-        assert_eq!(pending(1), None);
+        assert_eq!(pending(1), Some(airspy_gain(AirspyGain::Manual, 0, 10, 10, 10, false)));
         assert_eq!(pending(2), Some(airspy_gain(AirspyGain::Manual, 0, 6, 10, 10, false)));
-        (r.controls[0].take(), r.controls[2].take());
-        // Two swapped in Setup: another radio in each place, not a gain change.
-        assert_eq!(r.live_sources(&old, &[air("B2", 10), air("A1", 10), air("C3", 10)]), vec![(0, None), (1, None)]);
+        (controls[0].take(), controls[1].take(), controls[2].take());
+        // Two swapped in Setup: the same radios, nothing to set (the swap waits for the start).
+        let swapped = cfg(vec![air("B2", 10), lin("A1", 18), air("C3", 6)]);
+        assert!(ctx.live_sources(&now, &swapped).is_empty());
         assert!((0..3).all(|i| pending(i).is_none()));
-        // One added: everything waits for the start.
-        assert!(r.live_sources(&old, &[air("A1", 12), air("B2", 10), air("C3", 10), air("D4", 10)]).is_empty());
-        assert!(pending(0).is_none());
+        // One added: it waits for the start; a gain beside it is still set at once.
+        let added = cfg(vec![air("B2", 10), lin("A1", 12), air("C3", 6), air("D4", 10)]);
+        assert_eq!(ctx.live_sources(&swapped, &added), vec![(1, Some(Gain::Preset(Preset::Linearity, 12))), (3, None)]);
+        assert_eq!(pending(0), Some(Gain::Preset(Preset::Linearity, 12)), "A1, wherever Setup has it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

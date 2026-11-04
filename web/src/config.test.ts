@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, restartKey, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, sourcesChanged, startProblem } from "./config.ts";
+import { activeSites, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -115,10 +115,6 @@ test("a new HackRF source: the driver's gain defaults, a native kind with a devi
   const radios: Radios = { usrp: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] }, airspy: none, bladerf: none };
   assert.equal(foundRadio(radios, h)?.serial, "0000a1", "the first, when none is named");
   assert.equal(detectRadios([], radios)[0].kind, "hackrf");
-  // Its stages apply while recording, as an Airspy's do.
-  const c = (x: Source) => ({ ...defaultConfig(), sources: [x] });
-  assert.equal(restartKey(c({ ...h, lnaDb: 32, vgaDb: 40, amp: true } as Source), true), restartKey(c(h), true));
-  assert.notEqual(restartKey(c({ ...h, rateHz: 10e6 }), true), restartKey(c(h), true));
 });
 
 test("importing a bladeRF already set up keeps one source", () => {
@@ -126,36 +122,6 @@ test("importing a bladeRF already set up keeps one source", () => {
   const once = importTrunkRecorderConfig(tr, defaultConfig()).config;
   const twice = importTrunkRecorderConfig(tr, once, {}, true).config;
   assert.equal(twice.sources.filter((x) => x.type === "bladerf").length, 1);
-});
-
-test("restartKey: a radio's gain doesn't need a restart on the desktop recorder; other settings do", () => {
-  const base = defaultConfig();
-  const c = (src: Partial<Source> & { type: Source["type"] }) => ({ ...base, sources: [{ ...SOURCE_KINDS[src.type].fresh(), ...src } as Source] });
-  const rtl = c({ type: "rtlsdr", gainDb: 30 });
-  assert.equal(restartKey(c({ type: "rtlsdr", gainDb: 20 }), true), restartKey(rtl, true), "an RTL-SDR's gain");
-  assert.equal(restartKey(c({ type: "rtlsdr", agc: true }), true), restartKey(rtl, true), "an RTL-SDR's AGC");
-  assert.notEqual(restartKey(c({ type: "rtlsdr", gainDb: 20 }), false), restartKey(rtl, false), "the browser build restarts for it");
-  assert.notEqual(restartKey(c({ type: "rtlsdr", gainDb: 30, centerHz: 851e6 }), true), restartKey(rtl, true), "a retune");
-  const blade = c({ type: "bladerf", gainDb: 30 });
-  assert.equal(restartKey(c({ type: "bladerf", gainDb: 42 }), true), restartKey(blade, true), "a bladeRF's gain");
-  assert.notEqual(restartKey(c({ type: "bladerf", gainDb: 30, agc: true }), true), restartKey(blade, true), "a bladeRF's AGC waits for the start");
-});
-
-test("sourcesChanged: the sources the recorder says it runs with against the config's, so a page opened after an edit sees it too", () => {
-  const rtl = { ...SOURCE_KINDS.rtlsdr.fresh(), serial: "200", ppm: 2 } as Source;
-  const c = { ...defaultConfig(), sources: [rtl] };
-  const st = (settings: Source) => ({ index: 0, label: "", centerHz: 0, rateHz: 0, rateMeasured: 0, dropped: 0, errors: 0, lastError: null, ended: false, settings });
-  assert.equal(sourcesChanged(c, [], true), false, "nothing known yet");
-  assert.equal(sourcesChanged(c, [st(rtl)], true), false);
-  // As the recorder writes it: its own key order, a setting at its zero left out.
-  const { ppm: _p, ...noPpm } = { ...rtl, ppm: 0 };
-  assert.equal(sourcesChanged({ ...c, sources: [{ ...rtl, ppm: 0 }] }, [st(Object.fromEntries(Object.entries(noPpm).reverse()) as Source)], true), false);
-  assert.equal(sourcesChanged({ ...c, sources: [{ ...rtl, ppm: -2 }] }, [st(rtl)], true), true, "a new ppm waits for the next Start");
-  assert.equal(sourcesChanged({ ...c, sources: [{ ...rtl, gainDb: 10 } as Source] }, [st(rtl)], true), false, "the desktop recorder takes a gain at once");
-  assert.equal(sourcesChanged({ ...c, sources: [rtl, rtl] }, [st(rtl)], true), true, "a source added");
-  // A name only names it: no restart, here or for the page's own run.
-  assert.equal(sourcesChanged({ ...c, sources: [{ ...rtl, name: "Whip" }] }, [st(rtl)], false), false, "a name");
-  assert.equal(restartKey({ ...c, sources: [{ ...rtl, name: "Whip" }] }, false), restartKey(c, false));
 });
 
 test("foundRadio: what the picked radio runs at, once its driver has asked it; a new source starts at one of them", () => {

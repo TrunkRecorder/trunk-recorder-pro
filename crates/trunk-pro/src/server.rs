@@ -889,16 +889,15 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                     }
                 }
                 // A radio's gain changed while recording: it takes it now (the ones that can), the
-                // rest at the next start, which the log says.
-                if let Some(r) = &ctx.lifecycle.lock().unwrap().recording {
-                    for (i, g) in r.live_sources(&old.sources, &c.sources) {
-                        if let Some(g) = g {
-                            log::info!("{}: gain changed while recording, applied now: {g}", c.sources[i].title(i));
-                        } else {
-                            log::info!("{}: changed while recording; the change applies when recording starts next (Stop, then Start)", c.sources[i].title(i));
-                        }
+                // rest at the next start, which the log says; the banner says whether a restart waits.
+                for (i, g) in ctx.live_sources(&old, &c) {
+                    if let Some(g) = g {
+                        log::info!("{}: gain changed while recording, applied now: {g}", c.sources[i].title(i));
+                    } else {
+                        log::info!("{}: changed while recording; the change applies when recording starts next (Stop, then Start)", c.sources[i].title(i));
                     }
                 }
+                ctx.restart_check(&c);
                 // Interfaces turned on or off, moved, added: served so at once.
                 if old.server.interfaces != c.server.interfaces {
                     tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));

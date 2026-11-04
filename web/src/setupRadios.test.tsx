@@ -64,7 +64,7 @@ test("Setup's AutoTune: the ppm to set is measured against the radio's as runnin
       load: 0,
       calls: [],
     });
-  transport.onMessage({ type: "state", phase: "running", error: null, ended: false });
+  transport.onMessage({ type: "state", phase: "running", error: null, ended: false, restartNeeded: false });
   status(c.sources);
   assert.match(text(renderToString(<SourceCard c={c} i={0} />)), /Measured error: \+3\.60 ppm · corrected by \+3\.60 ppm · Set correction to -2 ppm/);
   // Set: the radio still runs at 2 and measures the same, and nothing more is offered — it applies at the next Start.

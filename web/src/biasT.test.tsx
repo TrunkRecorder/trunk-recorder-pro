@@ -26,7 +26,7 @@ function connected(phase: "idle" | "running", radios: Radios | null, serials: st
   transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, surveyBands: [{ id: "800", label: "800 MHz", loHz: 851e6, hiHz: 869e6, defaultOn: true }], capabilities: ["drivers"] });
   transport.onMessage({ type: "devices", devices: serials.map((serial, index) => ({ index, serial, product: "RTL2838UHIDIR", busy: null })) });
   if (radios) transport.onMessage({ type: "radios", radios });
-  transport.onMessage({ type: "state", phase, error: null, ended: false });
+  transport.onMessage({ type: "state", phase, error: null, ended: false, restartNeeded: false });
   transport.onMessage({ type: "survey", stage: "idle" });
   return sent;
 }

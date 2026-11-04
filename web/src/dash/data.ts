@@ -4,7 +4,7 @@
 // a hint (what it means, what to try).
 
 import { activeSystems, autoTuneOn, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
-import { can, setView, snapshot, statsQuery, useApp, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
+import { isRecording, can, setView, snapshot, statsQuery, useApp, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
 import { keyPart, num, pct } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
 import type { Level } from "../charts.tsx";
@@ -99,7 +99,7 @@ export function runningSites(systems: SystemStatus[]): RunningSite[] {
 
 export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS", conventional: "Conventional" };
 
-export const running = (s: AppState) => s.phase === "running" || s.phase === "starting";
+export const running = (s: AppState) => isRecording(s.phase);
 
 // ── history ──────────────────────────────────────────────────────────────────
 

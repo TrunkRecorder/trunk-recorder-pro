@@ -32,6 +32,18 @@ pub fn body(v: Value) -> Body {
     }
 }
 
+/// Where a recording run is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Phase {
+    #[default]
+    Idle,
+    Starting,
+    Running,
+    /// Its sources are closed; the calls in flight are being saved.
+    Stopping,
+}
+
 /// A message to an interface (protocol.ts's `FromRecorder`).
 #[derive(Clone, Debug, Serialize, strum::IntoStaticStr, strum::VariantNames)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -66,8 +78,9 @@ pub enum ToClient {
     /// Which key containers are unlocked.
     Keys { sources: Value },
     Radios { radios: Value },
-    /// The recording's phase.
-    State { phase: &'static str, error: Option<String>, ended: bool },
+    /// The recording's phase; `restart_needed`: the config was edited, since
+    /// Start, in what a run reads only when it starts ([`crate::config::Config::needs_restart`]).
+    State { phase: Phase, error: Option<String>, ended: bool, restart_needed: bool },
     /// The config, and its version: the number an edit of it is sent with.
     Config { config: Box<Config>, version: u64 },
     /// Answers setConfig: the config's version now; `error` when the edit
