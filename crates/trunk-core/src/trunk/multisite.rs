@@ -87,8 +87,8 @@ impl Kept {
 pub struct Held {
     pub call: Call,
     pub rec: Recorded,
-    /// The call JSON's `recorder_num` ([`super::record::ConcludeInfo::recorder_num`]).
-    pub recorder_num: u32,
+    /// Where it was recorded.
+    pub on: super::record::RecordedOn,
 }
 
 impl Held {
@@ -302,7 +302,7 @@ mod tests {
             rec.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind, tone: None });
         }
         rec.audio = vec![0.1; (good + bad) * FRAME_SAMPLES];
-        Held { call: call(id, site, id as f64 * 0.1), rec, recorder_num: 0 }
+        Held { call: call(id, site, id as f64 * 0.1), rec, on: Default::default() }
     }
 
     #[test]

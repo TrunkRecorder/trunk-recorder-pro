@@ -9,6 +9,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   "Source 2 (Whip)", wherever a source is named: Setup, the RF page, the survey, to-dos and the log (which
   now count sources from 1 everywhere, as Setup does). It only names it: renaming one while recording takes
   effect at once, with no restart, and pins (`receiveOn`) keep naming the radio by its label.
+- **A call's `source_num` is the radio it was heard on.** It was always 0; now it is the
+  radio's position in `sources` (counting from 0: Setup's Source 1 is 0), in the call JSON, the call
+  store, plugins' calls and the file name's `{source_num}`. A call on a system or channel kept on a
+  source names that source, though another reaches it too.
 - **A system or a conventional channel can be kept on particular sources.** `receiveOn` on a trunked
   system (**Receive on** in Setup, with two or more sources) names the radios, by label (`"RTL-SDR SN 200"`),
   its control channels and voice channels may be received on; on a conventional channel (a **Source** column

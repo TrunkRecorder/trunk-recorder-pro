@@ -1146,7 +1146,7 @@ tag, encrypted, freq_hz }>`, `body: Body` (`Text`, `Recording`, `NotRecording`, 
 ### 9.6 Call JSON (`CallRecord`, made by `record::call_record`)
 
 Trunk Recorder's keys plus reception figures, in this order: `call_num`, `freq`,
-`freq_error`, `signal`, `noise`, `snr`, `clean_voice_pct`, `source_num` (always 0),
+`freq_error`, `signal`, `noise`, `snr`, `clean_voice_pct`, `source_num` (the radio's position in `sources`),
 `recorder_num`, `tdma_slot`, `phase2_tdma`, `start_time`, `stop_time`, `start_time_ms`,
 `stop_time_ms`, `emergency`, `priority`, `mode`, `duplex`, `encrypted`, `algid`, `key_id` (−1 if
 none), `decrypted`, `call_length`, `call_length_ms`, `talkgroup`, `talkgroup_ota`

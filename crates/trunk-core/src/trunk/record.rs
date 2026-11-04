@@ -31,9 +31,8 @@ pub struct ConcludeInfo<'a> {
     pub patterns: &'a [inband::pattern::Pattern],
     /// The system's signals, which name its tones' patterns.
     pub signals: &'a [Signal],
-    /// Written as `recorder_num`: the recorder pool slot of a trunked call;
-    /// for a conventional call, the index of the channel (frequency) it came on.
-    pub recorder_num: u32,
+    /// Where it was recorded: written as `recorder_num` and `source_num`.
+    pub on: RecordedOn,
     pub end_s: f64,
     /// The system's talker aliases (each source's `tag_ota`).
     pub units: Option<&'a UnitAliases>,
@@ -202,8 +201,8 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
         noise: info.reception.noise_db(),
         snr: info.reception.snr_db(),
         clean_voice_pct: info.errors.clean_share().map(|c| c * 100.0),
-        source_num: 0,
-        recorder_num: info.recorder_num as i64,
+        source_num: info.on.source as i64,
+        recorder_num: info.on.recorder as i64,
         tdma_slot: call.voice.slot().unwrap_or(0) as i64,
         phase2_tdma: call.voice.tdma(),
         start_time: start_ms.div_euclid(1000),
@@ -435,7 +434,7 @@ mod tests {
             tones: &[],
             patterns: &[],
             signals: &[],
-            recorder_num: 0,
+            on: RecordedOn { recorder: 0, source: 2 },
             end_s: 1.0,
             units: None,
             unit_tags: None,
@@ -445,6 +444,7 @@ mod tests {
         };
         let json = call_record(&call, &info).0.to_json();
         assert!(json.contains("\"src\":7,") && json.matches("\"lat\"").count() == 1, "{json}");
+        assert!(json.contains("\"source_num\":2,"), "the radio it was heard on: {json}");
         // What it was and what the air carried: its system's kind, its voice, its NAC (P25 only).
         call.nac = Some(0x293);
         let r = call_record(&call, &info).0;
@@ -581,6 +581,15 @@ fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: 
     }
 }
 
+/// Where a call was recorded: its recorder (the call JSON's `recorder_num`:
+/// a trunked call's slot in the recorder pool, a conventional call's channel)
+/// and the source it was heard on (`source_num`: its position in `sources`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecordedOn {
+    pub recorder: u32,
+    pub source: usize,
+}
+
 /// A finished call made ready to save: transmissions shorter than its
 /// rules allow left out, its loudness and level set, Trunk Recorder's call
 /// JSON written. `Err(call)` when it isn't kept (silent, or shorter than
@@ -591,7 +600,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
     // "audio" is a few frames vocoded before the cipher was known: noise).
     h.trim(rules.min_transmission_s);
     let freq_error_hz = h.rec.freq_error_hz();
-    let Held { call, rec, recorder_num } = h;
+    let Held { call, rec, on } = h;
     let Recorded { mut audio, frames, inband, reception, .. } = rec;
     let short = (audio.len() as f64) < rules.min_call_s * mbe::SAMPLE_RATE as f64 && !audio.is_empty();
     if (audio.is_empty() && !(rules.keep_silent || call.encrypted && rules.keep_encrypted)) || short {
@@ -615,7 +624,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
             tones: inband.segs(),
             patterns: inband.patterns(),
             signals: cx.signals,
-            recorder_num,
+            on,
             end_s: call.last_audio_s,
             units: cx.units,
             unit_tags: cx.unit_tags,

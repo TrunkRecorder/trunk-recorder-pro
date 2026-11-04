@@ -131,7 +131,7 @@ It is written on a single line.
 | `signal`, `noise` | The channel's power during the call and the noise floor under it, dBFS, one decimal; `null` if not measured |
 | `snr` | `signal` minus `noise`, dB |
 | `clean_voice_pct` | Share of vocoder frames decoded cleanly, %; `null` for analog calls |
-| `source_num` | Always `0` |
+| `source_num` | The radio it was heard on: its position in `sources`, counting from 0 |
 | `recorder_num` | Trunked: the recorder slot. Conventional: the index of the channel (frequency) it came on |
 | `tdma_slot`, `phase2_tdma` | The slot, and `1` for a P25 Phase 2 call |
 | `start_time`, `stop_time` | Start and end, seconds since 1970 |

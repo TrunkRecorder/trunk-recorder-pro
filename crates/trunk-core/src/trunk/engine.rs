@@ -35,7 +35,7 @@ use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Po
 use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
 use super::message::{Message, MessageType};
 use super::multisite::{Held, Kept, MultiSite};
-use super::record::{save_call, SaveContext};
+use super::record::{save_call, RecordedOn, SaveContext};
 use super::recorded::Recorded;
 use super::inband::InBandSpec;
 use super::record::{Concluded, SaveRules};
@@ -667,10 +667,8 @@ impl OnSlot {
 /// A call taking a recorder of the pool.
 struct Recording {
     rec: Recorded,
-    /// Its slot in the recorder pool (reused once free): the call JSON's `recorder_num`.
-    recorder_num: u32,
-    /// The source it is on (AutoTune).
-    source: usize,
+    /// Its slot in the recorder pool (reused once free), and the source it is on.
+    on: RecordedOn,
     /// Some of its voice was decrypted: kept here as well as on the call, which may be gone by the time the voice
     /// arrives (a call that expires in the same block), so the audio and the saved call are still known for what they are.
     decrypted: bool,
@@ -1020,8 +1018,7 @@ impl SysHost<'_> {
                 // Analog: who is talking, by the unit IDs it sends (no sub-audible tone: a SmartNet
                 // channel's connect tone would read as one).
                 rec: Recorded::new(r.capture_frames, InBandSpec { units: call.voice.analog().then_some(self.analog.deemph_tau_s), subaudible: false }),
-                recorder_num,
-                source: src,
+                on: RecordedOn { recorder: recorder_num, source: src },
                 decrypted: false,
             },
         );
@@ -1926,11 +1923,11 @@ impl Core {
         for o in out.drain(..) {
             match o {
                 ConvOut::Event(e) => self.events.push(e),
-                ConvOut::End { call, rec, recorder_num, tune_source } => {
-                    if let Some(src) = tune_source {
-                        self.radio.score_call(src, &call, rec.freq_error_hz());
+                ConvOut::End { call, rec, on, tune_ref } => {
+                    if tune_ref {
+                        self.radio.score_call(on.source, &call, rec.freq_error_hz());
                     }
-                    self.write_call(Held { call: call.clone(), rec, recorder_num }, None);
+                    self.write_call(Held { call: call.clone(), rec, on }, None);
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
@@ -2170,9 +2167,9 @@ impl Core {
             // What it ended on: news now, before the call is trimmed.
             let news = r.rec.finish();
             rest = r.rec.talkers(&call.sources, news.patterns);
-            self.radio.free_nums.push(r.recorder_num);
+            self.radio.free_nums.push(r.on.recorder);
             // AutoTune: every call (each site's copy, encrypted ones too).
-            self.radio.score_call(r.source, call, r.rec.freq_error_hz());
+            self.radio.score_call(r.on.source, call, r.rec.freq_error_hz());
             // (A call whose record never learned it was decrypted, because it was already gone when the news came, is saved
             // as the decrypted call it is.)
             let mut call = call.clone();
@@ -2180,7 +2177,7 @@ impl Core {
                 call.encrypted = true;
                 call.decrypted = true;
             }
-            let mut h = Held { call, rec: r.rec, recorder_num: r.recorder_num };
+            let mut h = Held { call, rec: r.rec, on: r.on };
             // Now, so copies of a multi-site call are ranked by the audio they'd be saved with.
             h.trim(self.systems.get(h.call.system as usize).map_or(0.0, |s| s.cfg.save.min_transmission_s));
             h
