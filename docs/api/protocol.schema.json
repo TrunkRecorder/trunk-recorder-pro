@@ -8129,14 +8129,15 @@
           "type": "number"
         },
         "encPct": {
-          "type": "number"
+          "type": "number",
+          "description": "Its calls in the query's hours that were encrypted, as a percentage."
         },
         "ciphers": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/CipherSeen"
           },
-          "description": "The ciphers its calls' encryption sync named, most recent first."
+          "description": "The ciphers its calls' encryption sync named in the query's hours, most recent first."
         },
         "new": {
           "type": "boolean",

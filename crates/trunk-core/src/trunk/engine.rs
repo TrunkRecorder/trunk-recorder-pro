@@ -1989,6 +1989,12 @@ impl Core {
                     id = next;
                 }
             }
+            // Its voice channel names another talkgroup: the call is over.
+            if let TrackerOut::Talkgroup(group) = o {
+                let mut host = t.host(&mut self.radio, &self.systems[system as usize].cfg);
+                t.calls.voice_named(id, group, &mut host, &mut self.call_events);
+                continue;
+            }
             // The call it's for, found once (gone already: it expired in this same block).
             let call = t.calls.calls.iter_mut().find(|c| c.id == id);
             let rec = self.radio.recordings.get_mut(&id);
@@ -2066,6 +2072,8 @@ impl Core {
                 }
                 // (Only conventional FM asks for it.)
                 TrackerOut::Subaudible(_) => {}
+                // (Handled above.)
+                TrackerOut::Talkgroup(_) => {}
                 TrackerOut::Position(p) => {
                     if let Some(c) = call {
                         if CallManager::note_position(c, &p) {

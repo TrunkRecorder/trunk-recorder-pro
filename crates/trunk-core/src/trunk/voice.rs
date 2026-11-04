@@ -118,6 +118,10 @@ pub enum TrackerOut {
     /// The FCC call sign the voice channel identifies itself by (Motorola's
     /// LC_MOT_BSI / MAC_MOT_BSI).
     BaseStationId(String),
+    /// The voice channel named another talkgroup than the one the slot was
+    /// granted for (Phase 2 MAC_PTT, Group Voice Channel User): the site
+    /// gave it to that talkgroup, by a grant not heard.
+    Talkgroup(u32),
 }
 
 /// What a P25 transmission's voice is, as far as is known.

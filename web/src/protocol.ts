@@ -1661,8 +1661,9 @@ export interface TgRow {
   calls: number;
   secs: number;
   totalCalls: number;
+  /** Its calls in the query's hours that were encrypted, as a percentage. */
   encPct: number;
-  /** The ciphers its calls' encryption sync named, most recent first. */
+  /** The ciphers its calls' encryption sync named in the query's hours, most recent first. */
   ciphers: CipherSeen[];
   /** First heard in the last day (once the system has a baseline). */
   new: boolean;
