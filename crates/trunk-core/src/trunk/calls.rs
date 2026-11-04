@@ -112,6 +112,17 @@ impl Voice {
     fn same_place(self, other: Voice) -> bool {
         self.tdma() == other.tdma() && self.slot().unwrap_or(0) == other.slot().unwrap_or(0)
     }
+
+    /// Two calls on one frequency use the same air: unless both are on a
+    /// slot of their own (P25 Phase 2, DMR), different slots. (A Phase 1
+    /// call and a Phase 2 one share it: P25 Dynamic Dual Mode moves a
+    /// frequency between them.)
+    fn shares_channel(self, other: Voice) -> bool {
+        match (self.slot(), other.slot()) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        }
+    }
 }
 
 /// Hands out call ids; clones share the sequence (one per engine).
@@ -499,9 +510,7 @@ impl CallManager {
             let quiet_cc = now_s - c.heard_s > t;
             let quiet_audio = now_s - c.last_audio_s > t;
             if quiet_cc && (!c.recording || quiet_audio) {
-                let c = self.calls.remove(i);
-                host.release(&c);
-                ev.push(CallEvent::End(c));
+                Self::close(self.calls.remove(i), host, ev);
             } else if c.recording && now_s - c.start_s >= max {
                 // The one talking now carries on.
                 let talking = c.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect();
@@ -561,9 +570,7 @@ impl CallManager {
             Ok(()) => c.recording = true,
             Err(r) => c.reason = Some(r),
         }
-        let old = self.calls.remove(i);
-        host.release(&old);
-        ev.push(CallEvent::End(old));
+        Self::close(self.calls.remove(i), host, ev);
         ev.push(CallEvent::Start(c.clone()));
         let id = c.id;
         self.calls.push(c);
@@ -573,8 +580,35 @@ impl CallManager {
     /// End everything (source stopped).
     pub fn end_all(&mut self, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         for c in std::mem::take(&mut self.calls) {
-            host.release(&c);
-            ev.push(CallEvent::End(c));
+            Self::close(c, host, ev);
+        }
+    }
+
+    /// A call taken out of the list is over: its recorder released, its end told.
+    fn close(c: Call, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+        host.release(&c);
+        ev.push(CallEvent::End(c));
+    }
+
+    /// Whether talkgroup `tg` is call `c`'s conversation: its own, or one
+    /// patched with it (a supergroup and the talkgroups patched into it).
+    fn one_conversation(&self, c: &Call, tg: u32) -> bool {
+        c.talkgroup == tg || c.patched_talkgroups.contains(&tg) || self.patches.members_of(tg).contains(&c.talkgroup)
+    }
+
+    /// The site gave `freq_hz` (`voice`'s place on it) to talkgroup `tg`:
+    /// calls still holding that air for another conversation (quiet, waiting
+    /// out their timeout) are over, or `tg`'s voice, cipher and talkers would
+    /// be taken for theirs when its own call isn't recorded or followed
+    /// (Trunk Recorder ends them too).
+    fn reassigned(&mut self, freq_hz: u64, voice: Voice, tg: u32, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+        let mut i = self.calls.len();
+        while i > 0 {
+            i -= 1;
+            let c = &self.calls[i];
+            if c.freq_hz == freq_hz && c.voice.shares_channel(voice) && !self.one_conversation(c, tg) {
+                Self::close(self.calls.remove(i), host, ev);
+            }
         }
     }
 
@@ -618,22 +652,7 @@ impl CallManager {
             }
             return;
         }
-        // The site gave the channel to another talkgroup: a call still holding
-        // it (quiet, waiting out its timeout) is over, or the next talkgroup's
-        // voice, cipher and talkers would be taken for its own when the new
-        // call isn't recorded or followed (Trunk Recorder ends it too). A
-        // supergroup and a talkgroup patched into it are one conversation.
-        let members = self.patches.members_of(m.talkgroup);
-        let mut i = self.calls.len();
-        while i > 0 {
-            i -= 1;
-            let c = &self.calls[i];
-            if c.freq_hz == m.freq_hz && c.voice.same_place(m.voice) && !members.contains(&c.talkgroup) && !c.patched_talkgroups.contains(&m.talkgroup) {
-                let c = self.calls.remove(i);
-                host.release(&c);
-                ev.push(CallEvent::End(c));
-            }
-        }
+        self.reassigned(m.freq_hz, m.voice, m.talkgroup, host, ev);
         let tg = p.talkgroups.get(&m.talkgroup).cloned();
         let mut c = Call {
             id: self.ids.next(),
@@ -682,19 +701,13 @@ impl CallManager {
     }
 
     /// Call `id`'s voice channel named another talkgroup (Phase 2 MAC_PTT):
-    /// the site gave its slot to that one, by a grant not heard. The call
-    /// is over, as for a grant ([`Self::grant`]), or that talkgroup's
-    /// cipher and talkers would be taken for its own. A supergroup and a
-    /// talkgroup patched into it are one conversation.
+    /// the site gave its slot to that one, by a grant not heard — as a grant
+    /// would ([`Self::reassigned`]), that ends the call there. (A private
+    /// call's voice names no group.)
     pub fn voice_named(&mut self, id: CallId, group: u32, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
-        let Some(i) = self.calls.iter().position(|c| c.id == id) else { return };
-        let c = &self.calls[i];
-        if c.unit_to_unit || c.talkgroup == group || c.patched_talkgroups.contains(&group) || self.patches.members_of(group).contains(&c.talkgroup) {
-            return;
-        }
-        let c = self.calls.remove(i);
-        host.release(&c);
-        ev.push(CallEvent::End(c));
+        let Some(c) = self.calls.iter().find(|c| c.id == id && !c.unit_to_unit) else { return };
+        let (freq_hz, voice) = (c.freq_hz, c.voice);
+        self.reassigned(freq_hz, voice, group, host, ev);
     }
 
     /// Record, follow or skip a call: Trunk Recorder's start_recorder()
@@ -972,6 +985,24 @@ mod tests {
         // A supergroup granted the channel of a talkgroup patched into it: the same conversation.
         m.handle(&[patch(3.0, 65001, [301, 0, 0]), Message { voice: slot(0), ..msg(MessageType::Grant, 3.0, 65001) }], &mut Host, &mut ev);
         assert_eq!(m.calls.iter().map(|c| c.talkgroup).collect::<Vec<_>>(), [301, 11501, 65001]);
+    }
+
+    /// P25 Dynamic Dual Mode moves a frequency between Phase 1 and Phase 2:
+    /// a grant of it either way for another talkgroup ends the call there.
+    /// DMR's two slots are two channels, as Phase 2's are.
+    #[test]
+    fn a_grant_of_the_frequency_in_the_other_phase_ends_the_call_there() {
+        let mut m = Sys::new(CallConfig::default(), Talkgroups::default());
+        let mut ev = Vec::new();
+        m.handle(&[msg(MessageType::Grant, 0.0, 401)], &mut Host, &mut ev);
+        m.handle(&[Message { voice: Voice::P25Tdma { slot: 0 }, ..msg(MessageType::Grant, 2.0, 11501) }], &mut Host, &mut ev);
+        assert_eq!(m.calls.iter().map(|c| c.talkgroup).collect::<Vec<_>>(), [11501], "Phase 1 401 ended by a Phase 2 grant");
+        m.handle(&[Message { voice: Voice::P25, ..msg(MessageType::Grant, 4.0, 401) }], &mut Host, &mut ev);
+        assert_eq!(m.calls.iter().map(|c| c.talkgroup).collect::<Vec<_>>(), [401], "and back");
+        let dmr = |slot| Voice::Dmr { slot, color_code: Some(1) };
+        let mut m = Sys::new(CallConfig::default(), Talkgroups::default());
+        m.handle(&[Message { voice: dmr(1), ..msg(MessageType::Grant, 0.0, 1) }, Message { voice: dmr(2), ..msg(MessageType::Grant, 0.0, 2) }], &mut Host, &mut ev);
+        assert_eq!(m.calls.len(), 2, "one on each slot");
     }
 
     /// A call's voice channel naming another talkgroup (its grant not
