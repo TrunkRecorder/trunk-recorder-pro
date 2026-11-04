@@ -281,6 +281,42 @@ pub struct Call {
 }
 
 impl Call {
+    /// The call that carries on from this one on its channel at `now_s`
+    /// (it ran too long, or a new transmission began), `sources` talking: a
+    /// new id, not recorded until it's taken, timed from `now_s`.
+    pub fn continued(&self, id: CallId, now_s: f64, sources: Vec<CallSource>) -> Call {
+        Call {
+            id,
+            recording: false,
+            followed: false,
+            reason: None,
+            start_s: now_s,
+            last_update_s: self.last_update_s.max(now_s),
+            heard_s: now_s,
+            last_audio_s: now_s,
+            sources,
+            ..self.clone()
+        }
+    }
+
+    /// What the air said of the whole call (a grant or update, link
+    /// control): encrypted, an emergency, as long as it lasts. Whether that
+    /// changed it.
+    pub fn latch(&mut self, f: Flags) -> bool {
+        let changed = (f.encrypted && !self.encrypted) || (f.emergency && !self.emergency);
+        self.encrypted |= f.encrypted;
+        self.emergency |= f.emergency;
+        changed
+    }
+
+    /// Its voice was encrypted, and what's heard of it decrypted (live
+    /// audio, tone patterns, as saved): digital voice the air said is
+    /// encrypted or the recorder decrypted (`recorded_decrypted`: its
+    /// recording found so after the call itself had gone).
+    pub fn decrypted_voice(&self, recorded_decrypted: bool) -> bool {
+        !self.voice.analog() && (self.encrypted || self.decrypted || recorded_decrypted)
+    }
+
     /// Audio of it was heard at `time_s`.
     pub fn note_audio(&mut self, time_s: f64) {
         self.last_audio_s = self.last_audio_s.max(time_s);
@@ -325,6 +361,66 @@ impl Default for CallConfig {
 /// The longest a call goes on with no `max_call_s` set: one longer (a stuck
 /// carrier, a channel left keyed) is saved in parts this long, s.
 pub const STUCK_CALL_S: f64 = 600.0;
+
+/// When a call is over, split or a transmission of its own: one rule for
+/// trunked calls ([`CallManager`]) and conventional ones.
+impl CallConfig {
+    /// The longest a recorded call runs before it is saved and carries on
+    /// in a new one, s.
+    pub fn max_len_s(&self) -> f64 {
+        if self.max_call_s > 0.0 { self.max_call_s } else { STUCK_CALL_S }
+    }
+
+    /// Call `c` is over at `now_s`: nothing heard of it for the call timeout
+    /// by the recorder's clock (`heard_s`: the air's times run behind it,
+    /// [`Call::heard_s`]), and, while it records, no audio either.
+    pub fn quiet(&self, c: &Call, now_s: f64) -> bool {
+        let t = self.call_timeout_s;
+        now_s - c.heard_s > t && (!c.recording || now_s - c.last_audio_s > t)
+    }
+
+    /// Recorded call `c` has run as long as a call may: it is saved and
+    /// carries on in a new one ([`Call::continued`]).
+    pub fn too_long(&self, c: &Call, now_s: f64) -> bool {
+        c.recording && now_s - c.start_s >= self.max_len_s()
+    }
+
+    /// Conversation mode off: recorded call `c`'s audio, again from `from_s`,
+    /// is a new transmission — after a gap ([`super::record::TRANSMISSION_GAP_S`]),
+    /// with the talkers announced since (a grant comes before its voice); or
+    /// a new talker heard while the audio ran on (analog hang time, a quick
+    /// handover), once the last had talked that long. Where in its `sources`
+    /// the new one's talkers start; None: the same transmission.
+    pub fn new_transmission(&self, c: &Call, from_s: f64) -> Option<usize> {
+        const GAP: f64 = super::record::TRANSMISSION_GAP_S;
+        if self.conversation || !c.recording {
+            return None;
+        }
+        if from_s - c.last_audio_s > GAP {
+            return Some(c.sources.iter().position(|s| s.time_s > c.last_audio_s).unwrap_or(c.sources.len()));
+        }
+        match c.sources.as_slice() {
+            [.., last, new] if new.time_s - last.time_s > GAP => Some(c.sources.len() - 1),
+            _ => None,
+        }
+    }
+
+    /// Why call `c` isn't recorded (Trunk Recorder's start_recorder() gates,
+    /// in its order), or None: record it. A talkgroup not in the file is
+    /// recorded while it's patched with one that is.
+    pub fn gate(&self, c: &Call, p: Policy) -> Option<Reason> {
+        let known = c.talkgroup_info.is_some() || c.patched_talkgroups.iter().any(|g| p.talkgroups.contains_key(g));
+        if c.talkgroup_info.as_ref().is_some_and(|t| t.ignore) {
+            Some(Reason::Ignored)
+        } else if !known && !self.record_unknown && !p.talkgroups.is_empty() {
+            Some(Reason::UnknownTg)
+        } else if c.encrypted && !self.record_encrypted && !(p.can_decrypt && c.voice.decryptable()) {
+            Some(Reason::Encrypted)
+        } else {
+            None
+        }
+    }
+}
 
 /// What the manager asks of whoever owns the radio: a call's voice channel
 /// opened to record it ([`record`](Self::record)) or only to follow it
@@ -461,16 +557,7 @@ impl CallManager {
                 tx.mark_encrypted(now_s);
             }
         }
-        let mut changed = false;
-        if flags.encrypted && !c.encrypted {
-            c.encrypted = true;
-            changed = true;
-        }
-        if flags.emergency && !c.emergency {
-            c.emergency = true;
-            changed = true;
-        }
-        changed | Self::note_source(c, source, now_s, flags)
+        c.latch(flags) | Self::note_source(c, source, now_s, flags)
     }
 
     /// Unit IDs its voice carried (analog: MDC1200, FleetSync), at `now_s`:
@@ -501,17 +588,13 @@ impl CallManager {
     /// Advance the clock: end calls that have gone quiet, and split those
     /// past the length limit.
     pub fn tick(&mut self, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
-        let t = self.cfg.call_timeout_s;
-        let max = if self.cfg.max_call_s > 0.0 { self.cfg.max_call_s } else { STUCK_CALL_S };
         let mut i = self.calls.len();
         while i > 0 {
             i -= 1;
             let c = &self.calls[i];
-            let quiet_cc = now_s - c.heard_s > t;
-            let quiet_audio = now_s - c.last_audio_s > t;
-            if quiet_cc && (!c.recording || quiet_audio) {
+            if self.cfg.quiet(c, now_s) {
                 Self::close(self.calls.remove(i), host, ev);
-            } else if c.recording && now_s - c.start_s >= max {
+            } else if self.cfg.too_long(c, now_s) {
                 // The one talking now carries on.
                 let talking = c.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect();
                 self.split(i, now_s, talking, host, ev);
@@ -529,21 +612,9 @@ impl CallManager {
     /// had, and a new call on its channel takes the new transmission. The new
     /// call's id; None: the same transmission, or no such call.
     pub fn next_transmission(&mut self, id: CallId, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) -> Option<CallId> {
-        const GAP: f64 = super::record::TRANSMISSION_GAP_S;
-        if self.cfg.conversation {
-            return None;
-        }
-        let i = self.calls.iter().position(|c| c.id == id && c.recording)?;
-        let c = &mut self.calls[i];
-        let next = if now_s - c.last_audio_s > GAP {
-            c.sources.iter().position(|s| s.time_s > c.last_audio_s).unwrap_or(c.sources.len())
-        } else {
-            match c.sources.as_slice() {
-                [.., last, new] if new.time_s - last.time_s > GAP => c.sources.len() - 1,
-                _ => return None,
-            }
-        };
-        let talking = c.sources.split_off(next);
+        let i = self.calls.iter().position(|c| c.id == id)?;
+        let next = self.cfg.new_transmission(&self.calls[i], now_s)?;
+        let talking = self.calls[i].sources.split_off(next);
         Some(self.split(i, now_s, talking, host, ev))
     }
 
@@ -553,18 +624,7 @@ impl CallManager {
     /// call's id.
     fn split(&mut self, i: usize, now_s: f64, sources: Vec<CallSource>, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) -> CallId {
         let old = &self.calls[i];
-        let mut c = Call {
-            id: self.ids.next(),
-            recording: false,
-            followed: false,
-            reason: None,
-            start_s: now_s,
-            last_update_s: old.last_update_s.max(now_s),
-            heard_s: now_s,
-            last_audio_s: now_s,
-            sources,
-            ..old.clone()
-        };
+        let mut c = old.continued(self.ids.next(), now_s, sources);
         // (Only a recorded call is split: it carries on recorded.)
         match host.record_continued(old, &c) {
             Ok(()) => c.recording = true,
@@ -620,14 +680,7 @@ impl CallManager {
         c.last_update_s = m.time_s;
         c.heard_s = now_s;
         let mut changed = c.note_patch(patches.members_of(c.talkgroup));
-        if m.encrypted && !c.encrypted {
-            c.encrypted = true;
-            changed = true;
-        }
-        if m.emergency && !c.emergency {
-            c.emergency = true;
-            changed = true;
-        }
+        changed |= c.latch(Flags::of(m));
         if m.source > 0 {
             changed |= Self::note_source(c, Some(m.source as u32), m.time_s, Flags::of(m));
         }
@@ -714,22 +767,16 @@ impl CallManager {
     /// gates, in its order. A talkgroup not in the file is recorded while
     /// it's patched with one that is.
     fn admit(c: &mut Call, cfg: &CallConfig, p: Policy, host: &mut dyn RecorderHost) {
-        c.reason = None;
-        let known = c.talkgroup_info.is_some() || c.patched_talkgroups.iter().any(|g| p.talkgroups.contains_key(g));
-        if c.talkgroup_info.as_ref().is_some_and(|t| t.ignore) {
-            c.reason = Some(Reason::Ignored);
-        } else if !known && !cfg.record_unknown && !p.talkgroups.is_empty() {
-            c.reason = Some(Reason::UnknownTg);
-        } else if c.encrypted && !cfg.record_encrypted && !(p.can_decrypt && c.voice.decryptable()) {
+        c.reason = cfg.gate(c, p);
+        match c.reason {
             // No audio to record, but its terminators' link control is in
             // the clear: who spoke, and their talker aliases.
-            c.reason = Some(Reason::Encrypted);
-            c.followed = host.follow(c);
-        } else {
-            match host.record(c) {
+            Some(Reason::Encrypted) => c.followed = host.follow(c),
+            Some(_) => {}
+            None => match host.record(c) {
                 Ok(()) => c.recording = true,
                 Err(r) => c.reason = Some(r),
-            }
+            },
         }
     }
 }
@@ -985,6 +1032,32 @@ mod tests {
         // A supergroup granted the channel of a talkgroup patched into it: the same conversation.
         m.handle(&[patch(3.0, 65001, [301, 0, 0]), Message { voice: slot(0), ..msg(MessageType::Grant, 3.0, 65001) }], &mut Host, &mut ev);
         assert_eq!(m.calls.iter().map(|c| c.talkgroup).collect::<Vec<_>>(), [301, 11501, 65001]);
+    }
+
+    /// The rules trunked and conventional calls share, on one call.
+    #[test]
+    fn one_rule_for_when_a_call_is_over_split_or_a_transmission() {
+        let cfg = CallConfig { call_timeout_s: 1.0, max_call_s: 5.0, conversation: false, ..Default::default() };
+        let mut m = Sys::new(cfg.clone(), Talkgroups::default());
+        m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut Vec::new());
+        let mut c = m.calls[0].clone();
+        (c.recording, c.heard_s, c.last_audio_s) = (true, 10.0, 9.6);
+        // Over by the recorder's clock: the air's (0.4 s behind) would end it early.
+        assert!(!cfg.quiet(&c, 10.9) && cfg.quiet(&c, 11.1));
+        assert!(!cfg.too_long(&c, 4.9) && cfg.too_long(&c, 5.0));
+        assert_eq!(CallConfig { max_call_s: 0.0, ..cfg.clone() }.max_len_s(), STUCK_CALL_S);
+        // Audio again after the gap: a new transmission, with the talkers heard since.
+        c.sources = vec![CallSource { src: 7, time_s: 9.3, ..Default::default() }, CallSource { src: 8, time_s: 9.7, ..Default::default() }];
+        assert_eq!(cfg.new_transmission(&c, 9.8), None);
+        assert_eq!(cfg.new_transmission(&c, 10.2), Some(1));
+        assert_eq!(CallConfig { conversation: true, ..cfg.clone() }.new_transmission(&c, 10.2), None, "a conversation");
+        // The air's flags last as long as the call; decrypted voice is digital.
+        assert!(c.latch(Flags { encrypted: true, ..Default::default() }) && !c.latch(Flags { encrypted: true, ..Default::default() }));
+        assert!(c.decrypted_voice(false));
+        assert!(!Call { voice: Voice::Fm, ..c.clone() }.decrypted_voice(true), "analog voice isn't decrypted");
+        let id = CallIds::default().next();
+        let next = c.continued(id, 12.0, vec![]);
+        assert_eq!((next.id, next.start_s, next.recording, next.talkgroup), (id, 12.0, false, 101));
     }
 
     /// P25 Dynamic Dual Mode moves a frequency between Phase 1 and Phase 2:

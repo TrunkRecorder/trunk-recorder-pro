@@ -1657,7 +1657,6 @@ impl Recording {
     fn save_rules(&self) -> SaveRules {
         SaveRules {
             keep_silent: self.keep_silent_calls,
-            keep_encrypted: self.record_encrypted,
             min_call_s: self.min_call_s.max(0.0),
             min_transmission_s: self.min_transmission_s.max(0.0),
             normalize: self.normalize_audio,

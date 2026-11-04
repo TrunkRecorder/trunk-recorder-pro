@@ -422,7 +422,6 @@ fn replay(a: &Args) {
     };
     let save = SaveRules {
         keep_silent: a.flag("keep-silent"),
-        keep_encrypted: a.flag("record-encrypted"),
         min_call_s: a.num("min-call", 0.0),
         min_transmission_s: a.num("min-transmission", 0.0),
         ..Default::default()
