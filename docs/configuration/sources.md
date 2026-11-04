@@ -22,6 +22,16 @@ Anything else is refused when the file is read.
 
 These work the same way on every type; each type's table below repeats them with that type's default.
 
+### Name
+
+`name` is optional. It is shown beside the source's number ("Source 2 (Whip)") wherever a source is
+named: Setup, the RF page, the survey, to-dos and the log. That way you can tell radios apart by what
+they are for (an antenna, a band) as well as by their position in the list. It only names the source: it
+changes nothing about how the source records, and changing it while recording takes effect at once, with
+no restart. A system kept on particular sources (`receiveOn`) names the radio by its label
+(`"RTL-SDR SN 200"`, shown beside the title on the RF page), so renaming a source never moves anything
+off it.
+
 ### Center frequency and Auto
 
 `centerHz` is the frequency in the middle of the block of spectrum the source receives, in Hz.

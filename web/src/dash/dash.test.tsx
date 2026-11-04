@@ -430,6 +430,22 @@ test("RF: a source nothing needs says it can probably go; one in use doesn't", (
   assert.match(page, /RTL-SDR SN 2 .*Not needed so far: the other sources reach every channel the config lists, and no call has used this one/);
 });
 
+test("RF: a source's card is called as Setup calls it, a new name at once; its radio by its label", () => {
+  const c = defaultConfig();
+  const rtl = (serial: string, name?: string): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0, ...(name ? { name } : {}) });
+  c.sources = [rtl("1"), rtl("2", "Whip")];
+  running(c, []);
+  const st = (i: number): SourceStatus => ({ index: i, label: `RTL-SDR SN ${i + 1}`, centerHz: 851_000_000, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: rtl(String(i + 1)) });
+  transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [st(0), st(1)], load: 0, calls: [] });
+  setView("rf");
+  assert.match(text(renderToString(<RfPage />)), /Source 2 \(Whip\) · RTL-SDR SN 2/);
+  // Renamed (and moved first) while recording: the card follows its radio and its new name.
+  transport.onMessage({ type: "config", config: { ...c, sources: [rtl("2", "Roof"), rtl("1")] }, version: 2 });
+  const page = text(renderToString(<RfPage />));
+  assert.match(page, /Source 1 \(Roof\) · RTL-SDR SN 2/);
+  assert.match(page, /Source 2 · RTL-SDR SN 1/);
+});
+
 test("History spans: a week from memory or files; further as the store keeps the dashboard's history", () => {
   const spans = (st: Parameters<typeof rangesFor>[0], history = true) => rangesFor(st, history).map((r) => r.v).join(" ");
   const store = { backend: "sqlite" as const, retentionDays: 120, commitSeconds: 300 };

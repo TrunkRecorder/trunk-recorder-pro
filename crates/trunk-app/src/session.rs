@@ -529,7 +529,7 @@ impl Session {
             };
             if new > 0 {
                 let ms = new as f64 / self.engine.sources()[i].rate_hz * 1000.0;
-                let text = format!("Source {i}: about {new} samples ({ms:.0} ms) lost without its driver saying so — the USB bus or the computer couldn't keep up");
+                let text = format!("{}: about {new} samples ({ms:.0} ms) lost without its driver saying so — the USB bus or the computer couldn't keep up", self.cfg.sources[i].title(i));
                 self.records.push(Record::text(Level::Warning, None, text));
             }
             let rate = self.engine.sources()[i].rate_hz;
@@ -537,7 +537,7 @@ impl Session {
             let Some((offset, step)) = steered else { continue };
             if step {
                 let moved = offset - self.engine.clock_offset(i);
-                self.records.push(Record::text(Level::Info, None, format!("Source {i}: clock re-anchored to the wall clock ({:+.3} s)", moved)));
+                self.records.push(Record::text(Level::Info, None, format!("{}: clock re-anchored to the wall clock ({:+.3} s)", self.cfg.sources[i].title(i), moved)));
             }
             self.engine.set_clock_offset(i, offset);
         }
@@ -561,8 +561,9 @@ impl Session {
             s.last_error = Some(error.to_string());
             s.last_error_s = self.meas.now();
         }
-        self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": format!("source {source}: {error}") }));
-        self.records.push(Record::text(Level::Error, None, format!("Source {source}: {error}")));
+        let text = format!("{}: {error}", self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source)));
+        self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": text }));
+        self.records.push(Record::text(Level::Error, None, text));
     }
 
     /// A finite source ran out; true when all have.

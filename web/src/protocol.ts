@@ -15,7 +15,8 @@ export type SampleFormat = "cu8" | "cs16" | "cf32";
  * channels for the frequency error measured on the control channels (Trunk
  * Recorder's autoTune); the error is measured and shown either way. And
  * `guardHz`: left unused at each edge of its band, where the anti-alias filter
- * rolls off (default 75 000; Setup can measure it — `profileSource`).
+ * rolls off (default 75 000; Setup can measure it — `profileSource`). And `name`:
+ * what to call it beside its number.
  */
 export type Source = (
   /**
@@ -71,6 +72,8 @@ export type Source = (
   ppm: number;
   autoTune?: boolean;
   guardHz?: number;
+  /** A name for it, shown beside its number ("Source 2 (Whip)"; "Whip", "Multicoupler"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label. */
+  name?: string;
 };
 
 export type AirspyGainMode = "linearity" | "sensitivity" | "manual";

@@ -893,9 +893,9 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 if let Some(r) = &ctx.lifecycle.lock().unwrap().recording {
                     for (i, g) in r.live_sources(&old.sources, &c.sources) {
                         if let Some(g) = g {
-                            log::info!("Source {}: gain changed while recording, applied now: {g}", i + 1);
+                            log::info!("{}: gain changed while recording, applied now: {g}", c.sources[i].title(i));
                         } else {
-                            log::info!("Source {}: changed while recording; the change applies when recording starts next (Stop, then Start)", i + 1);
+                            log::info!("{}: changed while recording; the change applies when recording starts next (Stop, then Start)", c.sources[i].title(i));
                         }
                     }
                 }

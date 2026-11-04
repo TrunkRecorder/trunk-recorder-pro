@@ -31,6 +31,7 @@ import {
   siteNameOf,
   receiverOf,
   sourceLabels,
+  sourceNames,
   systemColor,
   usableHalfWidth,
   siteLockFields,
@@ -46,6 +47,7 @@ import {
   rateOk,
   ratesText,
   SOURCE_KINDS,
+  sourceTitle,
 } from "./config.ts";
 import {
   can,
@@ -924,8 +926,9 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
  * list), then any it names that isn't a source now, to take off.
  */
 function receiveChoices(c: Config, on: string[] | undefined): { label: string; name: string; gone: boolean }[] {
-  const labels = sourceLabels(c);
-  const here = [...new Set(labels)].map((label) => ({ label, name: `Source ${labels.flatMap((l, n) => (l === label ? [n + 1] : [])).join(", ")} · ${label}`, gone: false }));
+  const named = sourceNames(c);
+  const labels = named.map((x) => x.label);
+  const here = [...new Set(labels)].map((label) => ({ label, name: `${named.filter((x) => x.label === label).map((x) => x.title).join(", ")} · ${label}`, gone: false }));
   return [...here, ...(on ?? []).filter((l) => !labels.includes(l)).map((label) => ({ label, name: `${label} (not a source now)`, gone: true }))];
 }
 
@@ -1010,7 +1013,7 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
       head={
         <>
           <div className="set-card-title">
-            <h3>Source {i + 1}</h3>
+            <h3>{sourceTitle(c, i)}</h3>
             <span className="set-card-sub">
               {kindLabel}
               {tuned ? ` · ${formatMhz(tuned, 3)} MHz` : ""} · {(src.rateHz / 1e6).toFixed(src.rateHz % 1e5 ? 3 : 1)} MSPS
@@ -1035,9 +1038,12 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
       note={needs && <div className="field-needs set-card-needs">{needs}</div>}
     >
       <Group title="Device" hint={src.type === "file" ? "A capture to replay instead of a radio." : "Which radio, and how it is connected."}>
+        <Field label="Name" hint="Optional: what it is for, such as the antenna it is on">
+          <TextInput value={src.name ?? ""} placeholder="none" onChange={(v) => edit((x) => void (x.name = v || undefined))} />
+        </Field>
         <div className="field wide">
           <span className="field-label">Kind</span>
-          <div className="seg small" role="radiogroup" aria-label={`Source ${i + 1} kind`}>
+          <div className="seg small" role="radiogroup" aria-label={`${sourceTitle(c, i)} kind`}>
             {(Object.keys(SOURCE_KINDS) as Source["type"][])
               .filter((k) => !SOURCE_KINDS[k].driver || can("drivers"))
               .map((k) => (

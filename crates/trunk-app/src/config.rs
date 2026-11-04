@@ -37,6 +37,9 @@ pub struct Source {
     /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
     #[serde(default = "guard_default")]
     pub guard_hz: f64,
+    /// A name for it, shown beside its number ("Whip", "Multicoupler"); empty: none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
 }
 
 /// What a [`Source`] reads, and the settings only that kind has.
@@ -267,6 +270,21 @@ impl Source {
     /// How far from its centre a channel may be, Hz.
     pub fn usable_half_width(&self) -> f64 {
         usable_half_width(self.rate_hz, self.guard_hz)
+    }
+    /// What it's called, at `index` in `sources`: "Source 2", or "Source 2
+    /// (Whip)" with a `name` — counted from 1, as Setup shows it. Every
+    /// message and the interface (`configSources`) name a source so.
+    pub fn title(&self, index: usize) -> String {
+        match self.name.trim() {
+            "" => format!("Source {}", index + 1),
+            name => format!("Source {} ({name})", index + 1),
+        }
+    }
+    /// It as the radio takes it: without what only names it (`name`, which
+    /// changes nothing it records). A running radio, a restart and AutoTune's
+    /// file go by this; its identity is [`Source::label`], which a name doesn't change.
+    pub fn radio(&self) -> Source {
+        Source { name: String::new(), ..self.clone() }
     }
     /// Whether tuned to `center` it reaches `hz`.
     pub fn reaches(&self, center: f64, hz: f64) -> bool {
@@ -1939,7 +1957,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             other: BTreeMap::new(),
-            sources: vec![Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            sources: vec![Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() }],
             systems: vec![],
             conventional: vec![],
             next_system_id: 0,
@@ -2525,22 +2543,22 @@ impl Config {
             match &s.kind {
                 SourceKind::Rtlsdr { buf_len, buffers, .. } => {
                     if buf_len % 512 != 0 || *buf_len > 16 << 20 {
-                        return Some(format!("Source {}: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB.", i + 1));
+                        return Some(format!("{}: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB.", s.title(i)));
                     }
                     if *buffers > 256 {
-                        return Some(format!("Source {}: at most 256 USB transfers in flight.", i + 1));
+                        return Some(format!("{}: at most 256 USB transfers in flight.", s.title(i)));
                     }
                 }
                 SourceKind::Hackrf { lna_db, vga_db, .. } => {
                     if !(1e6..=20e6).contains(&s.rate_hz) {
-                        return Some(format!("Source {}: a HackRF runs at 1 to 20 MSPS.", i + 1));
+                        return Some(format!("{}: a HackRF runs at 1 to 20 MSPS.", s.title(i)));
                     }
                     if *lna_db > 40 || lna_db % 8 != 0 || *vga_db > 62 || vga_db % 2 != 0 {
-                        return Some(format!("Source {}: a HackRF's LNA gain is 0–40 dB in 8 dB steps, its VGA gain 0–62 dB in 2 dB steps.", i + 1));
+                        return Some(format!("{}: a HackRF's LNA gain is 0–40 dB in 8 dB steps, its VGA gain 0–62 dB in 2 dB steps.", s.title(i)));
                     }
                 }
                 SourceKind::Usrp { wire_format, .. } if !["", "sc16", "sc12", "sc8"].contains(&wire_format.trim()) => {
-                    return Some(format!("Source {}: the USRP's wire format is sc16, sc12 or sc8 (or empty, to choose).", i + 1));
+                    return Some(format!("{}: the USRP's wire format is sc16, sc12 or sc8 (or empty, to choose).", s.title(i)));
                 }
                 _ => {}
             }
@@ -3109,12 +3127,12 @@ mod tests {
 
     #[test]
     fn rtl_usb_transfers_checked() {
-        let rtl = |rate_hz: f64, buf_len: u32| Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len, buffers: 0 }, center_hz: 851e6, rate_hz: rate_hz, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let rtl = |rate_hz: f64, buf_len: u32| Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len, buffers: 0 }, center_hz: 851e6, rate_hz: rate_hz, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         let mut c = Config { sources: vec![rtl(2.4e6, 65_536)], systems: vec![system("s", &[851_012_500.0])], ..Default::default() };
         assert_eq!(c.problem(), None);
         c.sources[0] = rtl(2.4e6, 65_000);
         assert!(c.problem().unwrap().contains("multiple of 512"));
-        let hackrf = |lna_db, vga_db| Source { kind: SourceKind::Hackrf { serial: String::new(), lna_db, vga_db, amp: false, bias_tee: false }, center_hz: 851e6, rate_hz: 8e6, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let hackrf = |lna_db, vga_db| Source { kind: SourceKind::Hackrf { serial: String::new(), lna_db, vga_db, amp: false, bias_tee: false }, center_hz: 851e6, rate_hz: 8e6, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         c.sources[0] = hackrf(16, 20);
         assert_eq!(c.problem(), None);
         c.sources[0] = hackrf(20, 20);
@@ -3134,7 +3152,7 @@ mod tests {
     /// channel, the spares go alongside rather than stopping Start.
     #[test]
     fn every_auto_source_is_placed_over_a_wide_site() {
-        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         let mut sys = system("p25", &[856_237_500.0]);
         sys.sites[0].voice_channels_hz = (0..=30).map(|k| 851_012_500.0 + k as f64 * 262_500.0).collect();
         let mut c = Config { sources: vec![rtl(), rtl(), rtl(), rtl()], systems: vec![sys], ..Default::default() };
@@ -3152,7 +3170,7 @@ mod tests {
 
     #[test]
     fn several_systems_centers_and_engine_config() {
-        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         let mut c = Config { sources: vec![rtl(), rtl()], ..Default::default() };
         let mut a = system("east", &[851_012_500.0]);
         a.sites[0].voice_channels_hz = vec![851_500_000.0, 852_000_000.0];
@@ -3387,6 +3405,21 @@ mod tests {
     }
 
     #[test]
+    fn a_source_can_be_named() {
+        let named: Source = serde_json::from_str(r#"{"type":"rtlsdr","serial":"","centerHz":851000000,"rateHz":2400000,"name":" Whip "}"#).unwrap();
+        assert_eq!(named.title(1), "Source 2 (Whip)");
+        assert_eq!(named.label(), "RTL-SDR (first)", "a name isn't its identity");
+        assert_eq!(named.radio(), Source { name: String::new(), ..named.clone() });
+        assert!(serde_json::to_string(&named).unwrap().contains("\"name\":\" Whip \""));
+        let plain: Source = serde_json::from_str(r#"{"type":"rtlsdr","serial":"","centerHz":851000000,"rateHz":2400000}"#).unwrap();
+        assert_eq!(plain.title(1), "Source 2");
+        assert!(!serde_json::to_string(&plain).unwrap().contains("name"), "an unnamed source is saved as it was");
+        let mut c = Config::default();
+        c.sources = vec![Source { name: "Whip".into(), kind: SourceKind::Hackrf { serial: String::new(), lna_db: 4, vga_db: 20, amp: false, bias_tee: false }, ..plain }];
+        assert!(c.problem().unwrap().starts_with("Source 1 (Whip): "), "{:?}", c.problem());
+    }
+
+    #[test]
     fn a_system_or_channel_can_be_pinned_to_sources() {
         let mut c: Config = serde_json::from_str(
             r#"{
@@ -3425,7 +3458,7 @@ mod tests {
     /// what a pinned one is received on.
     #[test]
     fn auto_placement_and_the_start_check_follow_pins() {
-        let rtl = |serial: &str| Source { kind: SourceKind::Rtlsdr { serial: serial.into(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let rtl = |serial: &str| Source { kind: SourceKind::Rtlsdr { serial: serial.into(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         let mut far = system("far", &[771_106_250.0]);
         far.receive_on = vec!["RTL-SDR SN 2".into()];
         let mut c = Config { sources: vec![rtl("1"), rtl("2")], systems: vec![far, system("near", &[851_012_500.0])], ..Default::default() };

@@ -199,7 +199,7 @@ fn a_late_radio_keeps_to_the_wall_clock() {
     assert!((radio - 3500.0).abs() < 100.0, "the call starts {radio} ms in");
     // A capture played as fast as it can be keeps its own time.
     let mut replay = conventional_config();
-    replay.sources = vec![trunk_app::config::Source { kind: crate::config::SourceKind::File { path: "x.cu8".into(), realtime: false, format: None }, center_hz: 155_000_000.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: trunk_app::config::DEFAULT_GUARD_HZ }];
+    replay.sources = vec![trunk_app::config::Source { kind: crate::config::SourceKind::File { path: "x.cu8".into(), realtime: false, format: None }, center_hz: 155_000_000.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: trunk_app::config::DEFAULT_GUARD_HZ, name: String::new() }];
     let file = start_of(replay);
     assert!((file - 500.0).abs() < 100.0, "the replayed call starts {file} ms in");
 }
@@ -322,7 +322,7 @@ fn a_spare_radio_is_one_no_source_names() {
     let ctx = ctx(cfg.clone(), &dir);
     let req = Request::from_json(&json!({ "source": 0, "radio": { "type": "rtlsdr", "serial": "1", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 } }));
     let e = ctx.begin_survey(cfg, req).unwrap_err();
-    assert!(e.contains("is source 1 of the recorder"), "{e}");
+    assert!(e.contains("is Source 1 of the recorder"), "{e}");
     let rtl = |serial: &str| -> trunk_app::config::Source { serde_json::from_value(json!({ "type": "rtlsdr", "serial": serial, "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 })).unwrap() };
     assert!(rtl("1").may_be(&rtl("1")) && rtl("").may_be(&rtl("2")) && !rtl("1").may_be(&rtl("2")));
 }
