@@ -5296,6 +5296,14 @@
         "x-secret": {
           "type": "boolean"
         },
+        "readOnly": {
+          "type": "boolean",
+          "description": "Filled in by the plugin (`settings.save`), not typed: shown, not edited."
+        },
+        "x-open": {
+          "type": "string",
+          "description": "A read-only web address: its open button's label (\"Open\" when not given)."
+        },
         "x-multiline": {
           "type": "boolean"
         },

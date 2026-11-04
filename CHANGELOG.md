@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A plugin can save its own settings.** `settings.save` (SDK 0.10.0: `Host::save_settings`, answered to
+  `Plugin::settings_saved`) saves some of a plugin's settings as if they were typed in on its form: the
+  config is written, every browser's form shows them at once, and the plugin gets them back as
+  `settings`. A plugin that sets itself up from elsewhere (a chat bot's own setup commands) keeps the
+  form in step, and one can fill in names for the IDs a user gives. Only plugins that take settings as
+  they run may. Fields marked `readOnly` are shown on the form, not edited; a read-only web address
+  has a button that opens it in a new tab (labelled by `x-open`) and one that copies it.
 - **"Change requires restart" is the recorder's call, and right.** The recorder holds each edit against
   the config the run started with and tells the page, so the banner no longer comes up when the recorder
   learns an FCC call sign mid-run, and is right in a page opened after the edit (the browser build's worker

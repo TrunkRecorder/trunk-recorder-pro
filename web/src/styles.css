@@ -1444,3 +1444,6 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .store-sizes .bar { display: block; height: 8px; border-radius: 4px; background: var(--series-1); min-width: 2px; }
 .store-sizes .bar.alt { background: var(--series-2); opacity: 0.8; }
 .store-sizes .index-use { font-family: var(--font, inherit); opacity: 0.8; }
+.readonly-link { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.readonly-link code { font: 12px/1.5 var(--mono); overflow-wrap: anywhere; min-width: 0; flex: 1 1 16em; }
+.readonly-link a.btn { text-decoration: none; }

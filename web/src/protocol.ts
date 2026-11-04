@@ -1164,6 +1164,10 @@ export interface PluginSchema {
   "x-enum-labels"?: string[];
   format?: string;
   "x-secret"?: boolean;
+  /** Filled in by the plugin (`settings.save`), not typed: shown, not edited. */
+  readOnly?: boolean;
+  /** A read-only web address: its open button's label ("Open" when not given). */
+  "x-open"?: string;
   "x-multiline"?: boolean;
   minimum?: number;
   maximum?: number;

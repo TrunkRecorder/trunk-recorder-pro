@@ -58,6 +58,10 @@ pub type Notes = Arc<dyn Fn(Note) + Send + Sync>;
 /// Answers a plugin's `calls.query` (the recorder's [`crate::runtime::calls`]).
 pub type Calls = Arc<dyn Fn(&CallsQuery) -> CallsPage + Send + Sync>;
 
+/// Saves a plugin's `settings.save` (by its id: the settings it gives, each key replacing that
+/// setting) to the config, as TRP's own edits are saved. Err: why it wasn't.
+pub type Saves = Arc<dyn Fn(&str, serde_json::Map<String, Value>) -> Result<(), String> + Send + Sync>;
+
 /// Messages waiting for a plugin; beyond this it's behind, and loses them.
 const QUEUE: usize = 1024;
 
@@ -97,6 +101,8 @@ struct Shared {
     requests: AtomicU64,
     /// Answers `calls.query` (None: no recorder to ask, as in `plugin test`).
     calls: Option<Calls>,
+    /// Saves `settings.save` (None: no config to save it to, as in `plugin test`).
+    saves: Option<Saves>,
 }
 
 /// How long `shutdown` waits for a plugin to read what was queued before
@@ -158,13 +164,13 @@ impl PluginHost {
     /// Start `specs`. `systems`: every system calls come from (their `config` is filled in here).
     /// A plugin that can't start is reported and left out.
     pub fn start(specs: Vec<Spec>, audio: &super::AudioSettings, systems: &[SystemInfo], capture_dir: &Path, notes: Notes) -> PluginHost {
-        Self::start_when(specs, audio, systems, capture_dir, notes, Arc::new(AtomicBool::new(true)), None, None)
+        Self::start_when(specs, audio, systems, capture_dir, notes, Arc::new(AtomicBool::new(true)), None, None, None)
     }
 
     /// `start`, with the processes held back until `go` is set (events queue
     /// meanwhile): the plugins they replace share their data folders. What
     /// a plugin is to have late goes to `hold` (None: everything goes now).
-    /// `calls` answers the plugins' `calls.query`.
+    /// `calls` answers the plugins' `calls.query`, `saves` their `settings.save`.
     #[allow(clippy::too_many_arguments)]
     pub fn start_when(
         specs: Vec<Spec>,
@@ -175,6 +181,7 @@ impl PluginHost {
         go: Arc<AtomicBool>,
         hold: Option<Arc<Hold>>,
         calls: Option<Calls>,
+        saves: Option<Saves>,
     ) -> PluginHost {
         let mut ready = Vec::new();
         for mut s in specs {
@@ -301,7 +308,7 @@ impl PluginHost {
                 audio_held_said: AtomicBool::new(false),
             });
         }
-        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold, answers: Default::default(), requests: AtomicU64::new(0), calls });
+        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold, answers: Default::default(), requests: AtomicU64::new(0), calls, saves });
         let supervisors = queues
             .into_iter()
             .enumerate()
@@ -629,6 +636,20 @@ impl Shared {
         }
     }
 
+    /// `p`'s `settings.save`: only a plugin that takes settings as it runs (another would be
+    /// restarted by its own save), and its first copy (a copy's settings are its plugin's).
+    fn save(&self, p: &Plugin, settings: serde_json::Map<String, Value>) -> Result<(), String> {
+        let (id, copy) = super::parse_label(&p.id);
+        if !p.manifest.live_settings {
+            return Err("only a plugin with live_settings can save its settings".into());
+        }
+        if copy > 0 {
+            return Err("a copy can't save the settings: they're its plugin's".into());
+        }
+        let saves = self.saves.as_ref().ok_or("there's no config to save them to here")?;
+        saves(id, settings)
+    }
+
     /// Put `l` in `p`'s queue.
     fn give(&self, p: &Plugin, l: &Arc<str>) -> Offer {
         let Some(tx) = p.tx.lock().unwrap().clone() else {
@@ -807,6 +828,21 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
                 }
                 continue;
             }
+            // (Answered on its own queue, behind the settings the save sends it.)
+            Ok(PluginMessage::SettingsSave { request, settings }) => {
+                let saved = sh.save(p, settings);
+                if let Err(e) = &saved {
+                    sh.note_log(&p.id, Level::Warn, format!("couldn't save its settings: {e}"));
+                }
+                let (ok, message) = match saved {
+                    Ok(()) => (true, String::new()),
+                    Err(e) => (false, e),
+                };
+                if let Some(tx) = p.tx.lock().unwrap().as_ref() {
+                    let _ = tx.send(line(&HostMessage::SettingsSaved { request, ok, message }));
+                }
+                continue;
+            }
             Ok(PluginMessage::Unknown) => continue,
             // Not the protocol (a stray print): keep it as a log line.
             Err(_) => Note::Log { plugin: p.id.clone(), level: Level::Info, text: l },
@@ -902,6 +938,7 @@ mod tests {
             answers: Default::default(),
             requests: AtomicU64::new(0),
             calls: None,
+            saves: None,
         };
         let msg: Arc<str> = "x\n".into();
         let (clear, decrypted) = (About { system: "dcfd".into(), ..Default::default() }, About { system: "dcfd".into(), decrypted: true, ..Default::default() });
@@ -961,7 +998,7 @@ mod tests {
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let spec = Spec { id: "asker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
         let calls: Calls = Arc::new(|q| CallsPage { next: (q.talkgroup == Some(101)).then(|| "42:x".into()), ..Default::default() });
-        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, Some(calls));
+        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, Some(calls), None);
         let answer = dir.join("data/answer.json");
         let t0 = Instant::now();
         while !answer.exists() && t0.elapsed() < Duration::from_secs(5) {
@@ -994,7 +1031,7 @@ mod tests {
         let systems = vec![SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() }];
         let spec = Spec { id: "taker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
         let notes: Notes = Arc::new(|_| {});
-        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()), None);
+        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()), None, None);
         hold.attach(Some(host.outlet()));
         let call = |rel: &str, tg: u32| {
             host.concluded(0, rel, CallRecord { talkgroup: tg, short_name: "dcfd".into(), ..Default::default() }, CallFiles::default(), false);
@@ -1124,6 +1161,51 @@ mod tests {
         let host = PluginHost::start(vec![spec("stop", "stopped")], &audio, &[], &dir, notes);
         wait(&|| host.shared.plugins[0].tx.lock().unwrap().is_none());
         assert!(!host.settle("live", &json!({ "server": "https://c" })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A plugin saves some of its settings: they're handed to what saves them, and it's told how
+    /// that went (by the request number it gave); one without live settings is refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_plugin_saves_its_settings() {
+        use serde_json::json;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-host-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = |name: &str, live: bool| {
+            let exe = dir.join(name);
+            let manifest = format!(r#"{{"id":"{name}","name":"N","version":"1.0.0","api":1,"subscribe":["tone_pattern"],"live_settings":{live}}}"#);
+            let save = r#"{"type":"settings.save","request":7,"settings":{"serverName":"LolWut","old":null}}"#;
+            std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\necho '{save}'\nwhile read l; do echo \"$l\" >> lines.jsonl; done\n")).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Spec { id: name.into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join(name).with_extension("d")), share_decrypted: false }
+        };
+        let saved: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
+        let s2 = saved.clone();
+        let saves: Saves = Arc::new(move |id, m| {
+            s2.lock().unwrap().push((id.to_string(), Value::Object(m)));
+            Ok(())
+        });
+        let audio = super::super::AudioSettings::default();
+        let mut host = PluginHost::start_when(vec![script("namer", true), script("fixed", false)], &audio, &[], &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, None, Some(saves));
+        let answer = |name: &str| -> Option<Value> {
+            let t0 = Instant::now();
+            while t0.elapsed() < Duration::from_secs(5) {
+                let lines = std::fs::read_to_string(dir.join(name).with_extension("d").join("lines.jsonl")).unwrap_or_default();
+                if let Some(l) = lines.lines().find(|l| l.contains("settings.saved")) {
+                    return serde_json::from_str(l).ok();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            None
+        };
+        assert_eq!(answer("namer"), Some(json!({ "type": "settings.saved", "request": 7, "ok": true })));
+        let refused = answer("fixed").expect("answered");
+        assert_eq!((refused["request"].as_u64(), refused["ok"].as_bool()), (Some(7), Some(false)));
+        assert_eq!(*saved.lock().unwrap(), [("namer".to_string(), json!({ "serverName": "LolWut", "old": null }))], "only the plugin that may");
+        host.shutdown(Duration::from_secs(1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

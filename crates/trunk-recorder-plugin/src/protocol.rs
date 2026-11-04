@@ -177,6 +177,14 @@ pub enum HostMessage {
     /// plugin with [`Manifest::live_settings`] is sent one; others restart.
     #[serde(rename = "settings")]
     Settings(Hello),
+    /// The answer to a [`PluginMessage::SettingsSave`] (the same `request`): saved, or why not.
+    #[serde(rename = "settings.saved")]
+    SettingsSaved {
+        request: u64,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        message: String,
+    },
     /// The answer to a [`PluginMessage::CallsQuery`] (the same `request`).
     #[serde(rename = "calls")]
     Calls {
@@ -1048,6 +1056,16 @@ pub enum PluginMessage {
         #[serde(flatten)]
         query: CallsQuery,
     },
+    /// Save some of its own settings, as if typed in on its settings form: each key of
+    /// `settings` replaces that setting (null removes it), the rest stay. TRP writes
+    /// them to the config, shows them on the form at once, and sends them back as `settings`;
+    /// then answers with [`HostMessage::SettingsSaved`]. Only a plugin with
+    /// [`Manifest::live_settings`] may (another would be restarted by its own save), and only
+    /// its first copy. For what the plugin learns that the user would otherwise type (names
+    /// for IDs, say: mark those fields `readOnly`) or changes made through it elsewhere. Not
+    /// for state: that goes in its data folder.
+    #[serde(rename = "settings.save")]
+    SettingsSave { request: u64, settings: Map<String, Value> },
     /// How an [`Action`] went: shown by the button that was pressed.
     #[serde(rename = "action.result")]
     ActionResult {

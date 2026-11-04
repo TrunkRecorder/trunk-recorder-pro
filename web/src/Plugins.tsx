@@ -175,6 +175,28 @@ function Ticks(props: { id: string; options: { value: string; label: string }[];
   );
 }
 
+/** A read-only web address: shown in full, a button to open it in a new tab (labelled `x-open`), and one to copy it. */
+function ReadOnlyLink(props: { url: string; open?: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard?.writeText(props.url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <span className="readonly-link">
+      <a className="btn small primary" href={props.url} target="_blank" rel="noopener noreferrer">
+        {props.open || "Open"} ↗
+      </a>
+      <code>{props.url}</code>
+      <button type="button" className="btn small" onClick={copy}>
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </span>
+  );
+}
+
 /** An object's buttons (`x-actions`): each sends the plugin the object as it is now, and shows how it went (the plugin's answer, to this browser). */
 function ActionButtons(props: { schema: PluginSchema | undefined; value: unknown }) {
   const root = useContext(FormRoot);
@@ -345,6 +367,18 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
   const root = useContext(FormRoot);
   const fallback = emptyValue(inherited) ? f.default : inherited;
   const needed = !!props.required && emptyValue(value) && emptyValue(inherited);
+
+  // What the plugin fills in itself (a name it looked up): said, not edited. A web address: opened, or copied.
+  if (f.readOnly && f.type !== "object" && f.type !== "array") {
+    const known = value === undefined || value === null || value === "" ? undefined : String(value);
+    return (
+      <div className="field">
+        <span className="field-label">{label}</span>
+        {known && f.format === "uri" && isUrl(known) ? <ReadOnlyLink url={known} open={f["x-open"]} /> : <span className={known ? "" : "muted"}>{known ?? "Not known yet"}</span>}
+        {hint && <span className="field-hint">{hint}</span>}
+      </div>
+    );
+  }
 
   if (f.type === "object") {
     const obj = (value && typeof value === "object" ? value : {}) as PluginValues;

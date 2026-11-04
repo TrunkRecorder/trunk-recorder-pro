@@ -518,7 +518,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_heard(&kept::read(&ctx.db, Kind::Heard, "").unwrap_or_default());
     session.load_sharing(&kept::read(&ctx.db, Kind::Sharing, "").unwrap_or_default());
     session.load_tune(&kept::read(&ctx.db, Kind::Tune, "").unwrap_or_default());
-    ctx.plugins.start(&cfg, plugin_calls(&ctx));
+    ctx.plugins.start(&cfg, plugin_calls(&ctx), plugin_saves(&ctx));
     let stop = Arc::new(AtomicBool::new(false));
     // Each source's samples queue for its own decoding thread ([`feed_source`]).
     let mut queues = Vec::new();
@@ -1332,6 +1332,30 @@ fn plugin_calls(ctx: &Arc<Ctx>) -> crate::plugins::Calls {
     Arc::new(move |q| match ctx.upgrade() {
         Some(ctx) => calls(&ctx, q),
         None => CallsPage { error: Some("the recorder is stopping".into()), ..Default::default() },
+    })
+}
+
+/// What saves a plugin's `settings.save`: into its settings in the config, as an edit of the
+/// application's own ([`crate::server::edit_config`]): saved, sent to every browser, and to the
+/// plugin as its new settings.
+fn plugin_saves(ctx: &Arc<Ctx>) -> crate::plugins::Saves {
+    let ctx = Arc::downgrade(ctx);
+    Arc::new(move |id, given| {
+        let ctx = ctx.upgrade().ok_or("TRP is stopping")?;
+        let mut keys: Vec<String> = Vec::new();
+        let mut there = false;
+        crate::server::edit_config(&ctx, |cfg| {
+            let Some(p) = cfg.plugins.get_mut(id) else { return };
+            there = true;
+            keys = crate::plugins::merge_settings(&mut p.settings, given);
+        })?;
+        if !there {
+            return Err(format!("the config has no plugin \"{id}\""));
+        }
+        if !keys.is_empty() {
+            log::info!(target: "plugin", "[{id}] saved its settings: {}", keys.join(", "));
+        }
+        Ok(())
     })
 }
 
