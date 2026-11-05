@@ -259,7 +259,7 @@ fn open(a: &'static Api, serial: &str) -> Result<Device, String> {
                 check(a, "open", (a.open_sn)(&mut dev, sn))?;
             }
         }
-        Ok(Device { a, dev, streaming: false, ppm: 0.0 })
+        Ok(Device { a, dev, streaming: false, ppm: 0.0, off_ant: false })
     })
 }
 
@@ -405,6 +405,9 @@ struct Device {
     dev: Dev,
     streaming: bool,
     ppm: f64,
+    /// It was set to an input other than ANT: put back as it closes. The RFOne keeps its
+    /// input after it's closed, and a program that doesn't pick one would hear CABLE1.
+    off_ant: bool,
 }
 
 // SAFETY: libhydrasdr's handle is used from one thread at a time ([`super::open`]'s hands it over).
@@ -430,6 +433,9 @@ impl Drop for Device {
         unsafe {
             if self.streaming {
                 (self.a.stop_rx)(self.dev);
+            }
+            if self.off_ant && (self.a.set_rf_port)(self.dev, 0) != 0 {
+                log::warn!("HydraSDR: couldn't put its input back to ANT as it closed");
             }
             (self.a.close)(self.dev);
         }
@@ -499,6 +505,7 @@ fn stream_once(cfg: &HydrasdrConfig, sink: &mut Sink, stop: &Arc<AtomicBool>, ct
         // (As a gain set while running is: a reopened radio comes back the same.)
         d.set_gain(cfg.gain)?;
         if info.features & CAP_RF_PORT_SELECT != 0 {
+            d.off_ant = cfg.rf_port != 0;
             check(a, "input", (a.set_rf_port)(d.dev, cfg.rf_port as c_int))?;
         }
         if info.features & CAP_BIAS_TEE != 0 {
@@ -576,7 +583,7 @@ mod tests {
     }
 
     /// On a real RFOne (`TRP_HYDRASDR_SERIAL`, else the first): each rate streams at that rate,
-    /// with something in it, and the bias-T on a cable input is refused before it opens.
+    /// with something in it; CABLE1 streams (and is put back to ANT as it closes), and the bias-T on a cable input is refused.
     /// `cargo test -p trunk-pro streams_from_an_rfone -- --ignored --nocapture`
     #[test]
     #[ignore]
