@@ -322,6 +322,11 @@ fn devices(a: &Args) {
     for d in radio::airspy::devices() {
         println!("  {}{}", d["label"].as_str().unwrap_or(""), radio::rates_shown(&d));
     }
+    let hi = radio::hydrasdr::info();
+    println!("HydraSDR: {}", hi.detail);
+    for d in radio::hydrasdr::devices() {
+        println!("  {}{}", d["label"].as_str().unwrap_or(""), radio::rates_shown(&d));
+    }
     let bi = radio::bladerf::info();
     println!("bladeRF: {}", bi.detail);
     for d in radio::bladerf::devices() {

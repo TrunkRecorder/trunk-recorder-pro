@@ -218,10 +218,13 @@ fn key(serial: u64) -> String {
 }
 
 /// "R2" or "Mini", from the firmware string, else from the rates (an R2 does 2.5 MSPS,
-/// a Mini 6); "" when neither says.
+/// a Mini 6); "" when neither says. A HydraSDR RFOne (which libairspy opens as "the
+/// first" when it comes before an Airspy, and does 2.5 MSPS too) is "HydraSDR RFOne".
 fn model_of(version: &str, rates_iq: &[u32]) -> &'static str {
     let v = version.to_ascii_uppercase();
-    if v.contains("MINI") {
+    if v.contains("HYDRASDR") {
+        HYDRASDR
+    } else if v.contains("MINI") {
         "Mini"
     } else if v.contains("NOS") || rates_iq.contains(&2_500_000) {
         "R2"
@@ -232,9 +235,16 @@ fn model_of(version: &str, rates_iq: &[u32]) -> &'static str {
     }
 }
 
+/// An RFOne's model, as libairspy finds it.
+const HYDRASDR: &str = "HydraSDR RFOne";
+
 /// "Airspy R2", or "Airspy" when the model isn't known.
 fn name(model: &str) -> String {
-    if model.is_empty() { "Airspy".to_string() } else { format!("Airspy {model}") }
+    match model {
+        "" => "Airspy".to_string(),
+        HYDRASDR => HYDRASDR.to_string(),
+        m => format!("Airspy {m}"),
+    }
 }
 
 /// A found Airspy for the interface: serial and label; model and rates once known.
@@ -250,7 +260,9 @@ fn describe(serial: u64, caps: Option<&Caps>) -> serde_json::Value {
 /// Attached Airspys: [{serial (hex), label, model ("R2" / "Mini"), rates (IQ, Hz)}]. One not
 /// opened yet in this run is opened for a moment to ask (as airspy_info does), once. One
 /// streaming for a source is shown as it said when it opened — or isn't listed at all: on
-/// Windows libairspy's own listing can't open it to read its serial.
+/// Windows libairspy's own listing can't open it to read its serial. (A HydraSDR RFOne
+/// isn't listed: its USB serial string isn't an Airspy's. libairspy may still open one as
+/// "the first".)
 pub fn devices() -> Vec<serde_json::Value> {
     let Ok(a) = api() else { return vec![] };
     let found = super::open("Airspy search", Deadline::Quick, true, move || {
@@ -472,6 +484,10 @@ mod tests {
         assert_eq!(model_of("", &[10_000_000, 2_500_000]), "R2");
         assert_eq!(model_of("", &[6_000_000, 3_000_000, 10_000_000]), "Mini");
         assert_eq!(model_of("", &[]), "");
+        // An RFOne, through libairspy: its own name, not an R2's.
+        assert_eq!(model_of("HydraSDR RFOne v1.0.0-rc2 2024-09-15", &[10_000_000, 5_000_000, 2_500_000]), "HydraSDR RFOne");
+        assert_eq!(name("HydraSDR RFOne"), "HydraSDR RFOne");
+        assert_eq!(name("R2"), "Airspy R2");
     }
 
     #[test]

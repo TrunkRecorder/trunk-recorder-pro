@@ -26,7 +26,7 @@ The same engine also runs in the browser with nothing to install. On a Raspberry
 - Several systems and several sites at once; a call heard on more than one site is saved once,
   from the best copy
 
-**With:** RTL-SDR dongles and HackRF Ones (nothing else to install), Ettus USRPs, Airspy R2 / Mini, and anything
+**With:** RTL-SDR dongles and HackRF Ones (nothing else to install), Ettus USRPs, Airspy R2 / Mini, HydraSDR RFOne, and anything
 with a SoapySDR module (SDRplay, LimeSDR…).
 
 ## Install
@@ -43,7 +43,7 @@ Download the package for your system from the
 | Docker (Linux hosts) | [`robotastic/trunk-recorder-pro`](https://hub.docker.com/r/robotastic/trunk-recorder-pro) | [Run in Docker](docs/install/docker.md) |
 | Chrome or Edge | `trunk-pro-<version>-browser.zip`, or [trunkrecorder.pro/app](https://trunkrecorder.pro/app/) | [Run in the browser](docs/install/browser.md) |
 
-USRP, Airspy, bladeRF and SoapySDR radios need their makers' drivers: see
+USRP, Airspy, HydraSDR, bladeRF and SoapySDR radios need their makers' drivers: see
 [Other radios](docs/install/other-radios.md).
 
 ## Quick start

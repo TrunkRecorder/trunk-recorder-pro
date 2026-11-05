@@ -48,6 +48,25 @@ export type Source = (
       packing: boolean;
     }
   /**
+   * HydraSDR RFOne through libhydrasdr 1.1+ (desktop app). Its gain is set as an Airspy's is (the same
+   * stages and tables). `rfPort`: the input, 0 ANT (the one with the bias-T), 1 CABLE1, 2 CABLE2.
+   */
+  | {
+      type: "hydrasdr";
+      serial: string;
+      gainMode: AirspyGainMode;
+      gainStep: number;
+      lnaStep: number;
+      mixerStep: number;
+      vgaStep: number;
+      agc: boolean;
+      /** On the ANT port only (the source won't start with it on another). */
+      biasTee: boolean;
+      /** 12-bit samples packed on the USB (default true). */
+      packing: boolean;
+      rfPort: number;
+    }
+  /**
    * bladeRF 2.0 micro (xA4 / xA9) or original bladeRF through libbladeRF (desktop app). `serial` "" = the first;
    * `bandwidthHz` the analog filter, 0 = the sample rate; `agc` the board's AGC instead of `gainDb`; `biasTee` bladeRF 2.0 only.
    */
@@ -86,8 +105,8 @@ export interface DriverState {
 }
 /**
  * A radio its driver found. Once it has been opened in this run (by a source, or to ask
- * it — an Airspy is), it also says its `model` ("R2", "Mini", "bladeRF 2.0") and the sample
- * rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`).
+ * it — an Airspy or a HydraSDR is), it also says its `model` ("R2", "Mini", "RFOne", "bladeRF 2.0")
+ * and the sample rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`).
  */
 export interface FoundRadio {
   args?: string;
@@ -116,6 +135,7 @@ export interface Radios {
   /** Built in: always available. */
   hackrf: DriverState;
   airspy: DriverState;
+  hydrasdr: DriverState;
   bladerf: DriverState;
   soapy?: SoapyState;
 }

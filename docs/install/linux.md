@@ -71,7 +71,7 @@ adds gives the `plugdev` group, and whoever is logged in at the machine's screen
 
 - RTL-SDRs (USB IDs `0bda:2832` and `0bda:2838`);
 - HackRF One (`1d50:6089` and `604b`);
-- Airspy R2 / Mini (`1d50:60a1`);
+- Airspy R2 / Mini (`1d50:60a1`), and the HydraSDR RFOne (`38af:0001`, or the Airspy's ID with older firmware);
 - USRP B200 / B210 / B200mini / B206mini (Ettus `2500:0020`–`0023`, NI `3923:7813` and `7814`).
 
 For a service or an SSH session (nobody "at the screen"), your user must be in `plugdev`.

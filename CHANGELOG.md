@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **HydraSDR RFOne sources.** A new source type, `hydrasdr` (**HydraSDR** in Setup), drives an RFOne through
+  libhydrasdr 1.1 or newer, loaded at run time like libairspy (`TRUNK_PRO_HYDRASDR` names the file). It takes
+  an Airspy's gain settings (linearity or sensitivity step, or each stage with AGC), runs at 10, 5 or 2.5 MSPS
+  or a lower rate the library decimates to, and picks its input (`rfPort`: ANT, CABLE1 or CABLE2). The bias-T
+  is on ANT only, and a source asking for it on another input won't start. `trunk-pro devices` and Setup list
+  RFOnes with their rates, and a Trunk Recorder config with a `hydrasdr` device imports as one. The udev rule
+  covers the RFOne's own USB ID (`38af:0001`). An RFOne that libairspy opens as an Airspy source's "first" is
+  now called a HydraSDR RFOne, not an Airspy R2.
 - **"Change requires restart" is the recorder's call, and right.** The recorder holds each edit against
   the config the run started with and tells the page, so the banner no longer comes up when the recorder
   learns an FCC call sign mid-run, and is right in a page opened after the edit (the browser build's worker

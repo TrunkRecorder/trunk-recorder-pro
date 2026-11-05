@@ -12,7 +12,7 @@ several radios, see the [radios guide](../guides/radios.md).
 ```
 
 A source receives a block of spectrum `rateHz` wide, centered on `centerHz`. Every source has a
-`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"bladerf"`, `"hackrf"`, `"soapy"` or `"file"` (any case). Any other
+`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"hydrasdr"`, `"bladerf"`, `"hackrf"`, `"soapy"` or `"file"` (any case). Any other
 `type`, or none, makes the file unreadable.
 
 The fixed choices below (`gainMode`, `format`) are read in any case, and an empty string is the default.
@@ -176,6 +176,30 @@ An Airspy R2 or Mini, through libairspy. libairspy must be installed separately.
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 
 The Airspy gains are the driver's steps, not dB.
+
+## `"type": "hydrasdr"`
+
+A HydraSDR RFOne, through libhydrasdr 1.1 or newer (from [hydrasdr-host](https://github.com/hydrasdr/hydrasdr-host),
+installed separately). Its tuner and gain stages are an Airspy R2's, so its gain is set the same way.
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `type` | ✓ | | string | `"hydrasdr"` |
+| `serial` | | `""` | string | Serial number in hex. `""` = the first found |
+| `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
+| `rateHz` | ✓ | | number | 10 000 000, 5 000 000 or 2 500 000; or a lower one libhydrasdr decimates to (1 250 000, 625 000, …) |
+| `gainMode` | | `"linearity"` | string | `"linearity"`, `"sensitivity"` or `"manual"`, as an Airspy's |
+| `gainStep` | | `14` | integer | Linearity or sensitivity step, 0–21 |
+| `lnaStep` | | `10` | integer | Manual mode: LNA step, 0–14 |
+| `mixerStep` | | `10` | integer | Manual mode: mixer step, 0–15 |
+| `vgaStep` | | `10` | integer | Manual mode: VGA (IF) step, 0–15 |
+| `agc` | | `false` | bool | Manual mode: the RFOne's AGC sets the LNA and mixer (the VGA step still applies) |
+| `rfPort` | | `0` | integer | The input: `0` ANT, `1` CABLE1, `2` CABLE2 |
+| `biasTee` | | `false` | bool | Power an LNA through the ANT port (4.5 V, up to 300 mA). Only on ANT: with another `rfPort` the source won't start |
+| `packing` | | `true` | bool | Send 12-bit samples packed over USB |
+| `ppm` | | `0` | number | Frequency correction, ppm |
+| `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
+| `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 
 ## `"type": "bladerf"`
 
