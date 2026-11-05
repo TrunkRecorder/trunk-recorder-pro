@@ -5,6 +5,19 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A control channel is alive only when it says so, every protocol alike.** One rule for a good block
+  (something decoded cleanly, an idle one too, or a message): DMR's idle control blocks now count, so its
+  site stays locked between calls. A watched site of another system no longer counts as locked or feeds
+  AutoTune, and an EDACS site whose control channel goes quiet is lost after 1.5 s, as DMR's and NXDN's
+  are, where it stayed "locked" forever. An EDACS site is believed once its ID has been heard three
+  times in a row, not from the first (a misread one could say it was another system).
+- **On a P25 system, a Phase 1 voice channel naming another talkgroup ends the call there**, as Phase 2's does: the
+  site gave the channel away by a grant not heard, and the next talkgroup's talkers and cipher would
+  otherwise be taken for the call's.
+- **DMR and NXDN share their channel rules.** A frequency is one channel everywhere it's learned (a DMR
+  channel announcement could leave two channels on one frequency, and a kept table was read back without
+  the check); a voice carrier counts as the site's by the same rule (NXDN took any carrier before it knew
+  the site's RAN).
 - **Conventional calls follow the system's recording rules, as trunked calls do.** A talkgroup the
   talkgroup file marks Ignore isn't recorded (its call is still shown), nor an unlisted one with
   `recordUnknown` off (a row's own name lists it); `conversationMode` off makes each transmission a

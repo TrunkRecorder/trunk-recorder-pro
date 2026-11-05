@@ -23,6 +23,106 @@ pub fn table_from_str<K: std::str::FromStr>(s: &str) -> impl Iterator<Item = (K,
     })
 }
 
+/// Whether a carrier carrying code `got` (DMR colour code, NXDN RAN) is
+/// its site's: once the site's code `want` is known, the same code; before
+/// it is, a `control` carrier of the site's only (any, at a site with none:
+/// `has_control` false) — a neighbour on a listed frequency, a stray, isn't.
+pub fn site_code<T: PartialEq>(want: Option<T>, got: Option<T>, control: bool, has_control: bool) -> bool {
+    match want {
+        Some(w) => got == Some(w),
+        None => control || !has_control,
+    }
+}
+
+/// The call last reported on a voice channel (a DMR carrier's slot, an
+/// NXDN carrier): its link control or SACCH repeats while it goes on, so it's
+/// reported as a grant, then as an update at most each `refresh_s`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LastCall(Option<(u32, u32, f64)>);
+
+/// How long a voice channel's call stays on the dashboard after it was last heard, s.
+pub const CALL_SHOW_S: f64 = 3.0;
+
+impl LastCall {
+    /// Talkgroup `tg`, talker `src` (0: not said) heard at `t`: report it?
+    /// Some(update): yes — `update` when it's the call reported before (the
+    /// same talkgroup, its talker or none named) — None: a repeat within
+    /// `refresh_s`. The talker is kept when a repeat names none.
+    pub fn heard(&mut self, tg: u32, src: u32, t: f64, refresh_s: f64) -> Option<bool> {
+        let prev = self.0;
+        let repeat = prev.is_some_and(|(g, s, _)| g == tg && (s == src || src == 0));
+        if repeat && prev.is_some_and(|(_, _, at)| t - at < refresh_s) {
+            return None;
+        }
+        self.0 = Some((tg, if src != 0 { src } else { prev.map_or(0, |p| p.1) }, t));
+        Some(repeat)
+    }
+
+    /// The channel's call ended (a terminator, the carrier gone).
+    pub fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    /// Its call heard within [`CALL_SHOW_S`] of `now` (the dashboard's): (talkgroup, talker).
+    pub fn shown(&self, now: f64) -> Option<(u32, u32)> {
+        self.0.filter(|l| now - l.2 < CALL_SHOW_S).map(|l| (l.0, l.1))
+    }
+}
+
+/// A site's channel numbers' frequencies (DMR LCNs, NXDN channels): the
+/// config's, which stand, and what the air taught, kept between runs.
+#[derive(Clone, Debug, Default)]
+pub struct ChannelTable {
+    configured: BTreeMap<u32, u64>,
+    learned: BTreeMap<u32, u64>,
+}
+
+impl ChannelTable {
+    pub fn new(configured: BTreeMap<u32, u64>) -> Self {
+        ChannelTable { configured, learned: BTreeMap::new() }
+    }
+
+    /// Channel `n`'s frequency: the config's, else the air's.
+    pub fn resolve(&self, n: u32) -> Option<u64> {
+        self.configured.get(&n).or_else(|| self.learned.get(&n)).copied()
+    }
+
+    /// Channel `n`'s frequency was learned (the config doesn't have it).
+    pub fn is_learned(&self, n: u32) -> bool {
+        self.learned.contains_key(&n) && !self.configured.contains_key(&n)
+    }
+
+    /// What the air taught, beyond the config.
+    pub fn learned(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+        self.learned.iter().filter(|(n, _)| !self.configured.contains_key(n)).map(|(&n, &hz)| (n, hz))
+    }
+
+    /// The air says channel `n` is on `hz` (a grant's voice came up there, a
+    /// channel announced): learned, unless the config has it or it already
+    /// is so. A frequency is one channel: what said otherwise is dropped.
+    /// Whether that's news.
+    pub fn learn(&mut self, n: u32, hz: u64) -> bool {
+        if self.configured.contains_key(&n) || self.learned.get(&n) == Some(&hz) {
+            return false;
+        }
+        self.learned.retain(|_, h| *h != hz);
+        self.learned.insert(n, hz);
+        true
+    }
+
+    /// What was learned, to keep: `channel=hz` lines ([`table_to_string`]).
+    pub fn saved(&self) -> String {
+        table_to_string(&self.learned)
+    }
+
+    /// A kept table read back, each entry learned as the air would teach it.
+    pub fn load(&mut self, s: &str) {
+        for (n, hz) in table_from_str(s) {
+            self.learn(n, hz);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MessageType {
     Grant,
@@ -62,6 +162,19 @@ pub enum MessageType {
     BaseStationId,
     #[default]
     Unknown,
+}
+
+impl MessageType {
+    /// A voice call's grant (`update`: one repeated for a call going on),
+    /// for a talkgroup (`group`) or between two radios.
+    pub fn voice(group: bool, update: bool) -> MessageType {
+        match (group, update) {
+            (true, false) => MessageType::Grant,
+            (true, true) => MessageType::Update,
+            (false, false) => MessageType::UuVGrant,
+            (false, true) => MessageType::UuVUpdate,
+        }
+    }
 }
 
 impl MessageType {
@@ -599,6 +712,44 @@ fn mfid(o: &Osp) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One rule for a carrier being its site's: its code once known; before,
+    /// a control carrier only (any, at a site with none).
+    #[test]
+    fn a_carrier_is_the_sites_by_its_code() {
+        assert!(site_code(Some(5u8), Some(5), false, true) && !site_code(Some(5u8), Some(6), true, true));
+        assert!(site_code(None::<u8>, Some(6), true, true), "a control carrier, before the code is known");
+        assert!(!site_code(None::<u8>, Some(6), false, true), "not another carrier");
+        assert!(site_code(None::<u8>, Some(6), false, false), "at a site with no control channel, any");
+    }
+
+    /// A voice channel's call: a grant first, an update for it at most each
+    /// refresh, a repeat between dropped, its talker kept when unnamed.
+    #[test]
+    fn a_voice_channels_call_is_reported_once_and_refreshed() {
+        let mut l = LastCall::default();
+        assert_eq!(l.heard(100, 7, 0.0, 1.0), Some(false), "new: a grant");
+        assert_eq!(l.heard(100, 0, 0.5, 1.0), None, "a repeat");
+        assert_eq!(l.heard(100, 0, 1.2, 1.0), Some(true), "refreshed: an update");
+        assert_eq!(l.shown(2.0), Some((100, 7)), "its talker kept");
+        assert_eq!(l.heard(200, 8, 1.3, 1.0), Some(false), "another call");
+        assert_eq!(l.shown(1.3 + CALL_SHOW_S + 0.1), None);
+    }
+
+    /// One rule for a site's channel table: the config stands, a frequency
+    /// is one channel, and a kept table is read back by the same rule.
+    #[test]
+    fn a_channel_table_learns_one_frequency_per_channel() {
+        let mut t = ChannelTable::new([(1, 452_175_000)].into_iter().collect());
+        assert!(!t.learn(1, 460_000_000), "the config's stands");
+        assert!(t.learn(2, 452_275_000) && !t.learn(2, 452_275_000));
+        assert!(t.learn(3, 452_275_000), "the same frequency, another channel");
+        assert_eq!((t.resolve(2), t.resolve(3), t.is_learned(1)), (None, Some(452_275_000), false));
+        let mut kept = ChannelTable::new([(1, 452_175_000)].into_iter().collect());
+        kept.load("2=452275000\n3=452275000\n1=999\n");
+        assert_eq!(kept.learned().collect::<Vec<_>>(), [(3, 452_275_000)], "deduplicated as heard, the config's left alone");
+        assert_eq!(kept.saved(), "3=452275000\n");
+    }
 
     /// SYNC_BCST's time to the micro-slot, as Unix ms (checked against Python's UTC calendar).
     #[test]
