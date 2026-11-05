@@ -493,6 +493,65 @@ mod tests {
         let signals: Vec<_> = r.src_list.iter().map(|s| (s.src, s.signal_system.as_str())).collect();
         assert_eq!(signals, [(7, ""), (8, ""), (7187, "MDC1200"), (1_011_270, "FLEETSYNC")]);
     }
+
+    /// Hiss at `db` for `secs` (a fixed pseudo-random series).
+    fn hiss(db: f32, secs: f64, seed: &mut u32) -> Vec<f32> {
+        let a = 10f32.powf(db / 20.0) * 1.7;
+        (0..(secs * 8000.0) as usize)
+            .map(|_| {
+                *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                a * ((*seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5)
+            })
+            .collect()
+    }
+
+    /// Syllables of a 600 Hz tone at `db` over hiss at `floor`.
+    fn talk(db: f32, floor: f32, secs: f64, seed: &mut u32) -> Vec<f32> {
+        let a = 10f32.powf(db / 20.0) * std::f32::consts::SQRT_2;
+        let mut v = hiss(floor, secs, seed);
+        for (i, x) in v.iter_mut().enumerate() {
+            let t = i as f32 / 8000.0;
+            if (t * 4.0).fract() < 0.7 {
+                *x += a * (std::f32::consts::TAU * 600.0 * t).sin();
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn an_analog_calls_silent_tail_is_cut() {
+        let mut seed = 1;
+        // EDACS: 2 s of speech, then 3 s of the channel held with nothing on it.
+        let mut a = talk(-15.0, -50.0, 2.0, &mut seed);
+        a.extend(hiss(-50.0, 3.0, &mut seed));
+        let cut = trim_tail(&mut a, 8000);
+        assert!((2.4..=2.7).contains(&cut), "cut {cut} s");
+        assert!((2.3..=2.6).contains(&(a.len() as f64 / 8000.0)), "left {} s", a.len() as f64 / 8000.0);
+        assert_eq!(*a.last().unwrap(), 0.0, "faded out");
+        // A weak site: loud hiss, speech a little over it.
+        let mut w = talk(-22.0, -33.0, 1.5, &mut seed);
+        w.extend(hiss(-33.0, 3.0, &mut seed));
+        let cut = trim_tail(&mut w, 8000);
+        assert!(cut > 2.0, "weak: cut {cut} s");
+    }
+
+    #[test]
+    fn speech_to_the_end_and_calls_of_hiss_are_left_whole() {
+        let mut seed = 7;
+        let mut a = talk(-15.0, -50.0, 4.0, &mut seed);
+        assert_eq!(trim_tail(&mut a, 8000), 0.0);
+        assert_eq!(a.len(), 32000);
+        let mut h = hiss(-35.0, 4.0, &mut seed);
+        assert_eq!(trim_tail(&mut h, 8000), 0.0, "nothing stands out: nothing cut");
+        // A short tail stays.
+        let mut s = talk(-15.0, -50.0, 2.0, &mut seed);
+        s.extend(hiss(-50.0, 0.7, &mut seed));
+        assert_eq!(trim_tail(&mut s, 8000), 0.0);
+        // Weak speech last, after loud: kept (6 dB over the floor counts).
+        let mut c = talk(-15.0, -45.0, 1.5, &mut seed);
+        c.extend(talk(-36.0, -45.0, 1.5, &mut seed));
+        assert_eq!(trim_tail(&mut c, 8000), 0.0, "the weak talker isn't cut");
+    }
 }
 
 /// What becomes of a finished call's audio: which calls are kept, and how
@@ -641,6 +700,56 @@ pub struct Unsaved {
     pub reception: Reception,
 }
 
+/// Speech: a 20 ms frame this far over the call's floor (its quietest
+/// tenth), and over [`TAIL_SPEECH_DBFS`], for [`TAIL_SPEECH_FRAMES`] in a row.
+const TAIL_OVER_FLOOR_DB: f32 = 6.0;
+const TAIL_SPEECH_DBFS: f32 = -50.0;
+const TAIL_SPEECH_FRAMES: usize = 5;
+/// Kept after the last speech, and the least tail worth cutting, s.
+const TAIL_KEEP_S: f64 = 0.4;
+const TAIL_MIN_S: f64 = 0.5;
+
+/// Cut an analog call's tail: what follows its last speech when the channel
+/// stays up with nothing on it (EDACS's hang time after the talker unkeys, a
+/// carrier left on), keeping [`TAIL_KEEP_S`] after the speech and fading out.
+/// Nothing is cut when no speech stands out (a call all hiss or all weak), or
+/// the tail is short. Seconds cut.
+pub fn trim_tail(audio: &mut Vec<f32>, rate: usize) -> f64 {
+    let f = rate / 50;
+    let n = audio.len() / f.max(1);
+    if f == 0 || n < 50 {
+        return 0.0;
+    }
+    let lv: Vec<f32> = audio.chunks_exact(f).map(|c| 10.0 * ((c.iter().map(|x| x * x).sum::<f32>() / f as f32) + 1e-18).log10()).collect();
+    // Gated silence (exact zeros) isn't the floor.
+    let mut live: Vec<f32> = lv.iter().copied().filter(|v| *v > -90.0).collect();
+    if live.len() < 10 {
+        return 0.0;
+    }
+    live.sort_by(|a, b| a.total_cmp(b));
+    let floor = live[live.len() / 10];
+    let mut run = 0;
+    let mut last = None;
+    for (i, v) in lv.iter().enumerate() {
+        run = if *v > floor + TAIL_OVER_FLOOR_DB && *v > TAIL_SPEECH_DBFS { run + 1 } else { 0 };
+        if run >= TAIL_SPEECH_FRAMES {
+            last = Some(i + 1);
+        }
+    }
+    let Some(last) = last else { return 0.0 };
+    let keep = last * f + (TAIL_KEEP_S * rate as f64) as usize;
+    if audio.len() < keep + (TAIL_MIN_S * rate as f64) as usize {
+        return 0.0;
+    }
+    let cut = audio.len() - keep;
+    audio.truncate(keep);
+    let fade = f.min(keep);
+    for (k, x) in audio[keep - fade..].iter_mut().enumerate() {
+        *x *= 1.0 - (k + 1) as f32 / fade as f32;
+    }
+    cut as f64 / rate as f64
+}
+
 /// A finished call made ready to save: transmissions shorter than its
 /// rules allow left out, its loudness and level set, Trunk Recorder's call
 /// JSON written. `Err` when it isn't kept (silent, or shorter than its
@@ -664,6 +773,8 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Unsaved> {
     } else {
         loudness::gain(&mut audio, mbe::SAMPLE_RATE, gain_db);
     }
+    // A trunked analog call's silent tail (a repeater's hang time): cut.
+    let trimmed_s = if call.voice.analog() && call.site.is_some() { trim_tail(&mut audio, mbe::SAMPLE_RATE as usize) } else { 0.0 };
     let (record, base_name) = call_record(
         &call,
         &ConcludeInfo {
@@ -680,7 +791,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Unsaved> {
             patterns: inband.patterns(),
             signals: cx.signals,
             on,
-            end_s: call.last_audio_s,
+            end_s: call.last_audio_s - trimmed_s,
             units: cx.units,
             unit_tags: cx.unit_tags,
             reception,
