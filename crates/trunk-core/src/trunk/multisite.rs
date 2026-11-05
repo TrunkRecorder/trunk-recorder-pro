@@ -34,6 +34,16 @@ use super::engine::Event;
 use super::recorded::Recorded;
 
 
+/// Two sites' copies whose audio was on the air together for this share of
+/// the shorter one are one transmission: a talkgroup has one talker at a time.
+pub const ONE_TALK_SHARE: f64 = 0.8;
+
+/// A late site's copy began at least this long before the other's audio ended
+/// (whose last [`super::record::TAIL_KEEP_S`] is after the speech)...
+pub const LATE_JOIN_S: f64 = 0.5;
+/// ... and the two ended within this of each other.
+pub const ENDED_TOGETHER_S: f64 = 1.0;
+
 /// Grants for one call reach each site's control channel at nearly the same time.
 pub const TWIN_WINDOW_S: f64 = 3.0;
 /// A preferred site's copy is kept while it has this share of the best copy's clean audio.
@@ -100,11 +110,13 @@ impl Span {
 pub struct Kept {
     pub call: Call,
     clean_s: f64,
+    /// When its audio was on the air ([`Held::air_span`]).
+    air: Option<(f64, f64)>,
 }
 
 impl Kept {
     pub fn of(h: &Held) -> Kept {
-        Kept { call: h.call.clone(), clean_s: h.clean_s() }
+        Kept { call: h.call.clone(), clean_s: h.clean_s(), air: h.air_span() }
     }
 
     /// `h` is a duplicate of this: another site's copy of the same time, the
@@ -119,9 +131,23 @@ impl Kept {
         // One grant on both sites: the same transmissions, however each site named their talkers
         // (no more of them than this copy heard; a site may end its copy sooner or later).
         let one_grant = (a.start_s - b.start_s).abs() <= SAME_GRANT_S && !theirs.is_empty() && theirs.len() <= mine.len();
+        // On the air together, however far apart the sites granted it (an EDACS network's
+        // second site can be seconds behind) and whatever they named the talker: a
+        // talkgroup has one talker at a time, and a reply starts after the last speech.
+        let one_talk = match (self.air, h.air_span()) {
+            (Some((a0, a1)), Some((b0, b1))) => {
+                let shorter = (a1 - a0).min(b1 - b0);
+                let ((_, e1), (l0, l1)) = if a0 <= b0 { ((a0, a1), (b0, b1)) } else { ((b0, b1), (a0, a1)) };
+                // Mostly on the air together; or a site that joined late: its audio began
+                // while the other's speech went on, and the two ended together.
+                (shorter > 0.5 && a1.min(b1) - a0.max(b0) >= ONE_TALK_SHARE * shorter)
+                    || (l0 <= e1 - LATE_JOIN_S && (l1 - e1).abs() <= ENDED_TOGETHER_S)
+            }
+            _ => false,
+        };
         self.call.site != h.call.site
             && a.holds(b)
-            && (mine.is_empty() || theirs.iter().all(|t| mine.contains(t)) || one_grant)
+            && (mine.is_empty() || theirs.iter().all(|t| mine.contains(t)) || one_grant || one_talk)
             && self.clean_s >= h.clean_s() * PREFERRED_SHARE
     }
 }
@@ -139,6 +165,20 @@ impl Held {
     /// Leave out what the saved call won't have ([`Recorded::trim`]).
     pub fn trim(&mut self, min_tx_s: f64) {
         self.rec.trim(&mut self.call.sources, min_tx_s);
+    }
+
+    /// When its audio was on the air (None: no audio).
+    pub fn air_span(&self) -> Option<(f64, f64)> {
+        self.rec.tx.air_span(self.rec.audio.len(), crate::mbe::SAMPLE_RATE as f64)
+    }
+
+    /// A trunked analog copy's silent tail (a repeater's hang time) cut now, so
+    /// copies are weighed by the audio they'd be saved with ([`super::record::trim_tail`]).
+    pub fn trim_tail(&mut self) {
+        if self.call.voice.analog() && self.call.site.is_some() {
+            let cut = super::record::trim_tail(&mut self.rec.audio, crate::mbe::SAMPLE_RATE as usize);
+            self.call.last_audio_s -= cut;
+        }
     }
 
     /// Seconds of audio decoded cleanly ([`Recorded::clean_s`]).
@@ -440,6 +480,33 @@ mod tests {
         assert!(both.holds(&copy(12, 1, 0.0, 9.0, &[13, 14], 100)), "the same grant, both talkers named otherwise");
         assert!(both.holds(&copy(14, 1, 0.0, 4.0, &[13], 100)), "the same grant, ended sooner on its site");
         assert!(!both.holds(&copy(15, 1, 0.5, 9.0, &[13], 100)), "a talker the kept copy didn't hear, granted apart");
+    }
+
+    /// An EDACS network grants a second site seconds after the first, and names
+    /// the talker its own way: copies on the air together are one transmission;
+    /// a reply on another site, after the last speech, isn't.
+    #[test]
+    fn copies_on_the_air_together_are_one_transmission() {
+        // Analog audio from `from` to `to` (air time), as it arrived: a piece every 100 ms.
+        let aired = |id, site: u16, start_s: f64, from: f64, to: f64, talker: u32| {
+            let mut rec = Recorded::new(false, InBandSpec::default());
+            let n = ((to - from) * 10.0).round() as usize;
+            for k in 0..n {
+                rec.tx.note(k * 800, from + k as f64 * 0.1);
+            }
+            rec.audio = vec![0.1; n * 800];
+            let call = Call { start_s, last_audio_s: to, sources: vec![CallSource { src: talker, ..Default::default() }], ..call(id, site, start_s) };
+            Held { call, rec, recorder_num: 0 }
+        };
+        let kept = Kept::of(&aired(1, 0, 0.0, 0.5, 6.5, 3817));
+        assert!(kept.holds(&aired(2, 1, 2.4, 2.6, 6.6, 6292)), "granted 2.4 s later on its site, on the air with it");
+        assert!(!kept.holds(&aired(3, 1, 2.4, 7.0, 9.0, 6292)), "a reply: after the last speech");
+        assert!(!kept.holds(&aired(4, 1, 2.4, 5.5, 9.0, 6292)), "on the air together for only a part of it");
+        assert!(!kept.holds(&aired(5, 0, 1.0, 1.0, 6.0, 6292)), "the same site: another channel's call");
+        // A short transmission a site joined late: on the air together for half of its copy, ending with it.
+        let short = Kept::of(&aired(6, 0, 0.0, 0.0, 1.4, 8762));
+        assert!(short.holds(&aired(7, 1, 0.9, 0.9, 1.9, 6292)), "joined late, ended together");
+        assert!(!short.holds(&aired(8, 1, 1.2, 1.6, 3.0, 6292)), "a quick reply: began after the speech");
     }
 
     #[test]

@@ -129,6 +129,14 @@ pub struct Transmissions {
 }
 
 impl Transmissions {
+    /// When the first `len` samples of audio were on the air: from the first
+    /// piece appended to the end of the last one in them (`rate`: samples a second).
+    pub fn air_span(&self, len: usize, rate: f64) -> Option<(f64, f64)> {
+        let &(t0, _) = self.marks.first()?;
+        let &(t, at) = self.marks.iter().rev().find(|&&(_, at)| at < len)?;
+        Some((t0, t + (len - at) as f64 / rate))
+    }
+
     /// Audio is about to be appended at `at` (the call's sample count), at time `t_s`.
     pub fn note(&mut self, at: usize, t_s: f64) {
         if self.last_s.is_none_or(|l| t_s - l > TRANSMISSION_GAP_S) && self.txs.last().is_none_or(|x| x.start != at) {
@@ -706,7 +714,7 @@ const TAIL_OVER_FLOOR_DB: f32 = 6.0;
 const TAIL_SPEECH_DBFS: f32 = -50.0;
 const TAIL_SPEECH_FRAMES: usize = 5;
 /// Kept after the last speech, and the least tail worth cutting, s.
-const TAIL_KEEP_S: f64 = 0.4;
+pub const TAIL_KEEP_S: f64 = 0.4;
 const TAIL_MIN_S: f64 = 0.5;
 
 /// Cut an analog call's tail: what follows its last speech when the channel
