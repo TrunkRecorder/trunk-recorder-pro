@@ -109,6 +109,36 @@ pub enum SourceKind {
         #[serde(default = "yes")]
         packing: bool,
     },
+    /// A HydraSDR RFOne through libhydrasdr (installed separately; loaded at
+    /// run time). Its tuner and gain stages are an Airspy R2's, so its gain is
+    /// set as an Airspy's is. `rf_port`: which input, 0 ANT (the one with a
+    /// bias-T), 1 CABLE1, 2 CABLE2.
+    #[serde(rename_all = "camelCase")]
+    Hydrasdr {
+        #[serde(default)]
+        serial: String,
+        #[serde(default)]
+        gain_mode: AirspyGain,
+        #[serde(default = "airspy_gain")]
+        gain_step: u8,
+        /// Manual: LNA 0..14, mixer 0..15, VGA (IF) 0..15.
+        #[serde(default = "airspy_stage")]
+        lna_step: u8,
+        #[serde(default = "airspy_stage")]
+        mixer_step: u8,
+        #[serde(default = "airspy_stage")]
+        vga_step: u8,
+        #[serde(default)]
+        agc: bool,
+        /// On the ANT port only.
+        #[serde(default)]
+        bias_tee: bool,
+        /// 12-bit samples packed on the USB.
+        #[serde(default = "yes")]
+        packing: bool,
+        #[serde(default)]
+        rf_port: u8,
+    },
     /// A bladeRF (2.0 micro xA4 / xA9, or the original x40 / x115) through
     /// libbladeRF 2.x (installed separately; loaded at run time). `serial`
     /// "" = the first. `bandwidth_hz`: the analog filter, 0 = the sample
@@ -310,7 +340,8 @@ impl Source {
             match &s.kind {
                 SourceKind::Rtlsdr { serial, .. } => Some((0, serial.trim().to_string())),
                 SourceKind::Usrp { args, .. } => Some((1, args.trim().to_string())),
-                SourceKind::Airspy { serial, .. } => Some((2, serial.trim().to_lowercase())),
+                // (libairspy opens an RFOne as "the first" when it comes first.)
+                SourceKind::Airspy { serial, .. } | SourceKind::Hydrasdr { serial, .. } => Some((2, serial.trim().to_lowercase())),
                 SourceKind::Bladerf { serial, .. } => Some((3, serial.trim().to_lowercase())),
                 SourceKind::Soapy { args, .. } => Some((4, args.trim().to_string())),
                 SourceKind::Hackrf { serial, .. } => Some((5, serial.trim().to_lowercase())),
@@ -334,6 +365,7 @@ impl Source {
                 format!("USRP {}", if which.is_empty() { "(first)".to_string() } else { which.join(",") })
             }
             SourceKind::Airspy { serial, .. } => format!("Airspy {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            SourceKind::Hydrasdr { serial, .. } => format!("HydraSDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Bladerf { serial, .. } => format!("bladeRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Hackrf { serial, .. } => format!("HackRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
@@ -2104,7 +2136,7 @@ pub fn default_capture_dir() -> PathBuf {
 
 /// A source's `type` names its kind (the tag of [`Source`]), read in any case
 /// as the other closed choices are (`"RTLSDR"` is `"rtlsdr"`).
-const SOURCE_TYPES: [&str; 7] = ["rtlsdr", "usrp", "airspy", "bladerf", "hackrf", "soapy", "file"];
+const SOURCE_TYPES: [&str; 8] = ["rtlsdr", "usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "soapy", "file"];
 
 fn source_types(v: &mut serde_json::Value) {
     for s in v.get_mut("sources").and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
@@ -3158,6 +3190,33 @@ mod tests {
         let rtl: Source = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "ppm": 0 })).unwrap();
         let airspy: Source = serde_json::from_value(serde_json::json!({ "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "ppm": 0 })).unwrap();
         assert_eq!((rtl.settable_ppm(2.0 - 3.6), airspy.settable_ppm(2.0 - 3.614)), (-2.0, -1.61));
+    }
+
+    /// A HydraSDR source reads with an Airspy's gain defaults and the ANT input; it may be the
+    /// radio an Airspy source opens as "the first" (libairspy opens an RFOne), not one by another serial.
+    #[test]
+    fn a_hydrasdr_source() {
+        let src = |v: serde_json::Value| -> Source { serde_json::from_value(v).unwrap() };
+        let h = src(serde_json::json!({ "type": "hydrasdr", "serial": "1A2B3C4D5E6F7081", "centerHz": 0, "rateHz": 5000000 }));
+        assert_eq!(
+            h.kind,
+            SourceKind::Hydrasdr {
+                serial: "1A2B3C4D5E6F7081".into(),
+                gain_mode: AirspyGain::Linearity,
+                gain_step: 14,
+                lna_step: 10,
+                mixer_step: 10,
+                vga_step: 10,
+                agc: false,
+                bias_tee: false,
+                packing: true,
+                rf_port: 0,
+            }
+        );
+        assert_eq!(h.label(), "HydraSDR SN 1A2B3C4D5E6F7081");
+        let airspy = |serial: &str| src(serde_json::json!({ "type": "airspy", "serial": serial, "centerHz": 0, "rateHz": 10000000 }));
+        assert!(h.may_be(&airspy("")) && h.may_be(&airspy("1a2b3c4d5e6f7081")));
+        assert!(!h.may_be(&airspy("735863DC2F650AE3")));
     }
 
     /// What a run reads only when it starts needs a restart; what applies

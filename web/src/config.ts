@@ -31,6 +31,15 @@ export function newUsrp(): Source {
 export function newAirspy(): Source {
   return { type: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, packing: true, ppm: 0 };
 }
+/** HydraSDR RFOne: 10 / 5 / 2.5 MSPS, and below that decimated by libhydrasdr (the radio lists them). */
+export const HYDRASDR_RATES = [10_000_000, 5_000_000, 2_500_000, 1_250_000];
+/** Its inputs, by `rfPort`: the bias-T is on ANT. */
+export const HYDRASDR_PORTS = ["ANT", "CABLE1", "CABLE2"];
+export function newHydrasdr(): Source {
+  return { type: "hydrasdr", serial: "", centerHz: 0, rateHz: 5_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, packing: true, rfPort: 0, ppm: 0 };
+}
+/** A source whose gain is set as an Airspy's: libairspy's tables, or its three stages (an Airspy, a HydraSDR). */
+export const airspyGains = (x: Source): x is Extract<Source, { type: "airspy" | "hydrasdr" }> => x.type === "airspy" || x.type === "hydrasdr";
 /** Offered for a bladeRF (any rate 0.52–61.44 MSPS can be typed; above ~40 MSPS needs USB 3 and a fast CPU). */
 export const BLADERF_RATES = [2_400_000, 4_000_000, 5_000_000, 6_000_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000, 25_000_000, 30_720_000];
 export function newBladerf(): Source {
@@ -113,6 +122,22 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll (from airspy-tools) next to trunk-pro.exe" },
     soapyDriver: "airspy",
     biasT: "Powers an LNA via the antenna cable",
+    liveAgc: true,
+  },
+  hydrasdr: {
+    label: "HydraSDR",
+    fresh: newHydrasdr,
+    rates: HYDRASDR_RATES,
+    rateHint: "RFOne: 10, 5 or 2.5 (lower ones decimated)",
+    device: "serial",
+    driver: {
+      name: "libhydrasdr 1.1+",
+      macos: "libhydrasdr.1.dylib from the hydrasdr-host release",
+      linux: "the hydrasdr-host-tools package from the hydrasdr-host release",
+      windows: "put hydrasdr.dll and libusb-1.0.dll (from the hydrasdr-host release) next to trunk-pro.exe",
+    },
+    soapyDriver: "hydrasdr",
+    biasT: "Powers an LNA via the ANT port (4.5 V, up to 300 mA)",
     liveAgc: true,
   },
   bladerf: {
@@ -1017,17 +1042,19 @@ export function importTrunkRecorderConfig(
       notes.push(`bladeRF source imported (${agc ? "AGC" : `gain ${gain ?? full ?? 30} dB`}): it needs libbladeRF 2.x and the board's FPGA image installed on this computer.`);
       continue;
     }
-    if (/airspy/.test(dev)) {
-      const sn = /airspy=(0x)?([0-9a-fA-F]{8,16})/.exec(dev)?.[2] ?? "";
-      const rate = typeof s.rate === "number" && AIRSPY_RATES.includes(s.rate) ? s.rate : 6_000_000;
+    // (gr-osmosdr's HydraSDR source takes an Airspy's settings, and opens the first one.)
+    const hydra = /hydrasdr/i.test(dev);
+    if (hydra || /airspy/.test(dev)) {
+      const sn = /(?:airspy|hydrasdr)=(0x)?([0-9a-fA-F]{8,16})/i.exec(dev)?.[2] ?? "";
+      const rates = hydra ? HYDRASDR_RATES : AIRSPY_RATES;
+      const rate = typeof s.rate === "number" && rates.includes(s.rate) ? s.rate : hydra ? 5_000_000 : 6_000_000;
       // Trunk Recorder sets the Airspy's stages by name (LNA, MIX, IF = VGA); else one overall gain, read here as the linearity step.
       const lna = stage(s.lnaGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.LNA);
       const mix = stage(s.mixGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.MIX);
       const vga = stage(s.ifGain) ?? stage(s.vgaGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.IF);
       const manual = lna !== undefined || mix !== undefined || vga !== undefined;
       const clamp = (v: number | undefined, max: number) => Math.max(0, Math.min(max, Math.round(v ?? 10)));
-      imported.push({
-        type: "airspy",
+      const gains = {
         serial: sn.toUpperCase(),
         centerHz: center,
         rateHz: rate,
@@ -1041,9 +1068,10 @@ export function importTrunkRecorderConfig(
         packing: true,
         ppm,
         ...autoTune,
-      });
+      } as const;
+      imported.push(hydra ? { type: "hydrasdr", ...gains, rfPort: 0 } : { type: "airspy", ...gains });
       notes.push(
-        `Airspy source imported (${manual ? "its LNA, mixer and VGA stages" : agc ? "AGC" : "gain as the linearity step 0–21"}): it needs libairspy installed on this computer.`,
+        `${hydra ? "HydraSDR" : "Airspy"} source imported (${manual ? "its LNA, mixer and VGA stages" : agc ? "AGC" : "gain as the linearity step 0–21"}): it needs ${hydra ? "libhydrasdr" : "libairspy"} installed on this computer.`,
       );
       continue;
     }

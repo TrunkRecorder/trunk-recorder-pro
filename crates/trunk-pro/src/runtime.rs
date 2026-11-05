@@ -28,7 +28,7 @@ use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use crate::config::{AirspyGain, Config, SampleFormat, Source, SourceKind};
 use trunk_app::protocol::Phase;
 use crate::plugins::{self, FileRules, PluginHost};
-use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, uhd};
+use crate::radio::{airspy, bladerf, hackrf, hydrasdr, rtl, soapy, uhd};
 use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
 
 /// A message for the connected browsers, serialized once for all of them.
@@ -376,8 +376,8 @@ pub struct Runner {
 
 /// The gain to set on a source running with `old` now that it is `new`:
 /// when the gain is all that changed and the radio takes it while running.
-/// The gain in dB always; AGC on or off only on an RTL-SDR or an Airspy (the
-/// others take that at the next start).
+/// The gain in dB always; AGC on or off only on an RTL-SDR, an Airspy or a
+/// HydraSDR (the others take that at the next start).
 pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
     // `old` with `new`'s gain: equal to `new` when only the gain differs (a name aside).
     let (mut o, new) = (old.radio(), &new.radio());
@@ -389,6 +389,13 @@ pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
         (
             SourceKind::Airspy { gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, .. },
             SourceKind::Airspy { gain_mode: m, gain_step: g, lna_step: l, mixer_step: x, vga_step: v, agc: a, .. },
+        ) => {
+            (*gain_mode, *gain_step, *lna_step, *mixer_step, *vga_step, *agc) = (*m, *g, *l, *x, *v, *a);
+            airspy_gain(*m, *g, *l, *x, *v, *a)
+        }
+        (
+            SourceKind::Hydrasdr { gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, .. },
+            SourceKind::Hydrasdr { gain_mode: m, gain_step: g, lna_step: l, mixer_step: x, vga_step: v, agc: a, .. },
         ) => {
             (*gain_mode, *gain_step, *lna_step, *mixer_step, *vga_step, *agc) = (*m, *g, *l, *x, *v, *a);
             airspy_gain(*m, *g, *l, *x, *v, *a)
@@ -690,6 +697,10 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
                 let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
                 sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
             }
+            SourceKind::Hydrasdr { serial, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, rf_port } => {
+                let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
+                sdr::run_with(i, hydrasdr::HydrasdrConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, rf_port, ppm }, tx, stop, ctl)
+            }
             SourceKind::Bladerf { serial, bandwidth_hz, gain_db, agc, bias_tee } => {
                 sdr::run_with(i, bladerf::BladerfConfig { serial, center_hz: center, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm }, tx, stop, ctl)
             }
@@ -756,8 +767,7 @@ fn read_full(f: &mut fs::File, buf: &mut [u8]) -> usize {
     n
 }
 
-/// An Airspy's gain settings, as its driver takes them.
-/// An Airspy source's gain: a step of one of libairspy's tables, or its stages (its AGC running the LNA and mixer).
+/// An Airspy (or HydraSDR) source's gain: a step of one of libairspy's tables, or its stages (its AGC running the LNA and mixer).
 pub fn airspy_gain(mode: AirspyGain, gain: u8, lna: u8, mixer: u8, vga: u8, agc: bool) -> Gain {
     match mode {
         AirspyGain::Manual if agc => Gain::Stages(Stages::default().agc().with(Stage::Vga, vga as f32)),

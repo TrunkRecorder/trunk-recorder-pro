@@ -16,7 +16,7 @@ function setup(c: Config): void {
   const greeting: FromRecorder[] = [
     { type: "config", config: c, version: 1 },
     { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers"] },
-    { type: "radios", radios: { usrp: none, airspy: none, bladerf: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] } } },
+    { type: "radios", radios: { usrp: none, airspy: none, hydrasdr: none, bladerf: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] } } },
   ];
   for (const m of greeting) transport.onMessage(m);
 }
