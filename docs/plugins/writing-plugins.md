@@ -265,6 +265,7 @@ The form understands:
 | `"x-title": "<field>"` on an object in an array | Each item is titled by that field and opened to edit, one at a time, rather than all shown at once |
 | `"x-when": {"<field>": <value or [values]>}` | Shown only while the object's other fields are so (a webhook's URL only for `"type": "webhook"`); hidden, it keeps its value |
 | `"readOnly": true` | Shown, not edited: what the plugin fills in itself with `settings.save` (a name it looked up). Mark it with `#[schemars(extend("readOnly" = true))]`. One that's also `"format": "uri"` shows the address with a button that opens it in a new tab and one that copies it |
+| `"x-slider": true` | A number drawn as a slider from `minimum` to `maximum`, in steps of `multipleOf`, its value shown beside it (both bounds needed) |
 | `"x-open": "…"` | A read-only web address's open button's label (default "Open") |
 | `"x-actions": [{"id", "label", "hint"}]` on an object | Buttons under it (an array's item, or the whole settings): pressed, the plugin is sent `action` with the object as edited |
 

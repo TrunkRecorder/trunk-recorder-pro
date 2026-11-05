@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Plugin settings can be sliders.** A number marked `x-slider`, with a `minimum`, `maximum` and
+  `multipleOf`, is drawn as a slider in those steps with its value beside it (a volume in 0.5 dB steps).
 - **Plugins can take TRP's log.** The `log` topic (SDK 0.10.0: `Plugin::log_line`) sends each line
   TRP logs, at the log's level, as the console prints it, with its time, level and system: a
   plugin can pass the log on, to MQTT or a chat channel. A plugin isn't sent its own lines.

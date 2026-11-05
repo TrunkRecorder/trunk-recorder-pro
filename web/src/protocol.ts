@@ -1171,6 +1171,10 @@ export interface PluginSchema {
   "x-multiline"?: boolean;
   minimum?: number;
   maximum?: number;
+  /** A number's step (a slider's, with `x-slider`). */
+  multipleOf?: number;
+  /** A number drawn as a slider, from `minimum` to `maximum` in steps of `multipleOf`. */
+  "x-slider"?: boolean;
   items?: PluginSchema;
   /** Fields that have to be filled in (of an object). */
   required?: string[];

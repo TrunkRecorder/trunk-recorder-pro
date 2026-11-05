@@ -5313,6 +5313,14 @@
         "maximum": {
           "type": "number"
         },
+        "multipleOf": {
+          "type": "number",
+          "description": "A number's step (a slider's, with `x-slider`)."
+        },
+        "x-slider": {
+          "type": "boolean",
+          "description": "A number drawn as a slider, from `minimum` to `maximum` in steps of `multipleOf`."
+        },
         "items": {
           "$ref": "#/definitions/PluginSchema"
         },

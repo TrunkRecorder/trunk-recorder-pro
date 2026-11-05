@@ -1447,3 +1447,6 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .readonly-link { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .readonly-link code { font: 12px/1.5 var(--mono); overflow-wrap: anywhere; min-width: 0; flex: 1 1 16em; }
 .readonly-link a.btn { text-decoration: none; }
+.plugin-slider { display: flex; align-items: center; gap: 10px; }
+.plugin-slider input[type="range"] { flex: 1 1 200px; min-width: 0; accent-color: var(--accent); }
+.plugin-slider output { min-width: 4ch; text-align: right; }

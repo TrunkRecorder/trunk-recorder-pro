@@ -432,6 +432,20 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
         ))}
       </select>
     );
+  } else if ((f.type === "integer" || f.type === "number") && f["x-slider"] && f.minimum !== undefined && f.maximum !== undefined) {
+    // A slider (`x-slider`), in steps of `multipleOf`, with its value beside it.
+    const cur = typeof value === "number" ? value : typeof fallback === "number" ? fallback : f.minimum;
+    const step = f.multipleOf ?? (f.type === "integer" ? 1 : (f.maximum - f.minimum) / 100);
+    const digits = String(step).split(".")[1]?.length ?? 0;
+    control = (
+      <span className="plugin-slider">
+        <input id={id} type="range" min={f.minimum} max={f.maximum} step={step} value={cur} aria-label={label} onChange={(e) => onChange(Number(e.target.value))} />
+        <output htmlFor={id} className="mono">
+          {cur > 0 && f.minimum < 0 ? "+" : ""}
+          {cur.toFixed(digits)}
+        </output>
+      </span>
+    );
   } else if (f.type === "integer" || f.type === "number") {
     control = (
       <NumberInput
