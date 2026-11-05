@@ -241,11 +241,14 @@ pub struct SiteConfig {
     pub expect: Identity,
     /// Its trunking protocol (P25 by default).
     pub protocol: Protocol,
+    /// Multi-site: keep this site's copy of a call heard on several sites,
+    /// for talkgroups that name no preferred site of their own.
+    pub preferred: bool,
 }
 
 impl Default for SiteConfig {
     fn default() -> Self {
-        SiteConfig { name: String::new(), control_channels: vec![], bank: BankConfig::default(), expect: Identity::default(), protocol: Protocol::P25 }
+        SiteConfig { name: String::new(), control_channels: vec![], bank: BankConfig::default(), expect: Identity::default(), protocol: Protocol::P25, preferred: false }
     }
 }
 
@@ -1174,9 +1177,12 @@ impl Trunk {
         Event::Note { system: self.system, site: Some(self.site), level, text }
     }
 
-    /// The talkgroup file names this site as the one to keep `tg`'s calls
-    /// from: by its name, or by its NAC or RFSS and site number.
-    fn preferred_for(&self, tg: &super::talkgroups::Talkgroup) -> bool {
+    /// This site is the one to keep a talkgroup's calls from: the talkgroup
+    /// file names it (by its name, or by its NAC or RFSS and site number), or,
+    /// for a talkgroup that names no site (or has no entry: `tg` is None),
+    /// the site is set to be preferred. A talkgroup that names a site decides.
+    fn preferred_for(&self, tg: Option<&super::talkgroups::Talkgroup>) -> bool {
+        let Some(tg) = tg.filter(|tg| !tg.preferred_site.is_empty() || tg.preferred_nac != 0) else { return self.cfg.preferred };
         let id = &self.identity;
         let by_name = !tg.preferred_site.is_empty() && tg.preferred_site.eq_ignore_ascii_case(&self.cfg.name);
         let n = tg.preferred_nac;
@@ -2833,16 +2839,16 @@ mod tests {
     /// Three sites grant TG 101: east and west of one system, far of another.
     /// East decodes `east_good` clean frames, west 100. What gets saved?
     fn two_sites(east_good: usize, prefer: &str, dedupe: bool) -> (Vec<Event>, [CallId; 3]) {
-        two_sites_with(east_good, prefer, dedupe, 100, 0.0)
+        two_sites_with(east_good, prefer, dedupe, 100, 0.0, false)
     }
 
     /// [`two_sites`], east's copy keeping audio for only `east_audio` of its
     /// frames, and calls kept from `min_call_s`.
-    fn two_sites_with(east_good: usize, prefer: &str, dedupe: bool, east_audio: usize, min_call_s: f64) -> (Vec<Event>, [CallId; 3]) {
+    fn two_sites_with(east_good: usize, prefer: &str, dedupe: bool, east_audio: usize, min_call_s: f64, east_preferred: bool) -> (Vec<Event>, [CallId; 3]) {
         use super::super::frames::{Codec, VoiceFrame};
         let tgs: Talkgroups = [(101, super::super::talkgroups::Talkgroup { number: 101, preferred_site: prefer.into(), ..Default::default() })].into_iter().collect();
         let save = SaveRules { normalize: false, min_call_s, ..Default::default() };
-        let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], ..Default::default() };
+        let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], preferred: east_preferred && n == "east", ..Default::default() };
         let sys = |name: &str, sites| SystemConfig { talkgroups: tgs.clone(), save, ..SystemConfig::trunked(name, sites) };
         let cfg = EngineConfig {
             systems: vec![sys("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6)]), sys("md", vec![site("far", 851.4125e6)])],
@@ -2992,12 +2998,21 @@ mod tests {
         // The talkgroup prefers east, and east has 90 % of west's clean audio.
         let (ev, [east, _, far]) = two_sites(95, "EAST", true);
         assert_eq!(saved(&ev), [far, east]);
+        // The site itself is preferred (east, for every talkgroup): the same, with no talkgroup naming one.
+        let (ev, [east, _, far]) = two_sites_with(95, "", true, 100, 0.0, true);
+        assert_eq!(saved(&ev), [far, east]);
+        // With under 90 % of west's clean audio, west's copy is kept all the same.
+        let (ev, [_, west, far]) = two_sites_with(80, "", true, 100, 0.0, true);
+        assert_eq!(saved(&ev), [far, west]);
+        // A talkgroup that names a site decides: it names west, so east's being preferred doesn't count.
+        let (ev, [_, west, far]) = two_sites_with(95, "WEST", true, 100, 0.0, true);
+        assert_eq!(saved(&ev), [far, west]);
         // Switched off: every copy.
         let (ev, [east, west, far]) = two_sites(80, "", false);
         assert_eq!(saved(&ev), [east, far, west]);
         assert!(!ev.iter().any(|x| matches!(x, Event::Duplicate { .. })));
         // East decodes best, but kept too little audio to be saved: west's copy is.
-        let (ev, [east, west, far]) = two_sites_with(100, "", true, 10, 1.0);
+        let (ev, [east, west, far]) = two_sites_with(100, "", true, 10, 1.0, false);
         assert_eq!(saved(&ev), [far, west]);
         assert!(ev.iter().any(|x| matches!(x, Event::NotSaved(c) if c.id == east)));
         assert!(!ev.iter().any(|x| matches!(x, Event::Duplicate { .. })));

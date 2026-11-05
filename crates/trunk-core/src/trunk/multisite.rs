@@ -249,9 +249,10 @@ impl MultiSite {
     /// recorded). When it was the last of its copies: all of them, the one
     /// to save first ([`pick`]), then the others, best first — the next to
     /// try when one isn't kept (too short for its site's rules).
-    /// `prefers(site, tg)`: whether `site` is the one the talkgroup file
-    /// wants `tg` from.
-    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(Option<u16>, &Talkgroup) -> bool) -> Option<Vec<Held>> {
+    /// `prefers(site, tg)`: whether `site` is the one wanted for `tg` (the
+    /// talkgroup file's, else the site's own setting; `tg` None when no copy's
+    /// talkgroup is in a file).
+    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(Option<u16>, Option<&Talkgroup>) -> bool) -> Option<Vec<Held>> {
         let mut copies = match self.end(id, held) {
             Ended::Alone(None) | Ended::Waiting => return None,
             Ended::Alone(Some(h)) => vec![h],
@@ -259,7 +260,7 @@ impl MultiSite {
         };
         // The talkgroup's preferred site, by any site's talkgroup file.
         let prefs: Vec<&Talkgroup> = copies.iter().filter_map(|h| h.call.talkgroup_info.as_ref()).collect();
-        let preferred: Vec<bool> = copies.iter().map(|h| prefs.iter().any(|tg| prefers(h.call.site, tg))).collect();
+        let preferred: Vec<bool> = copies.iter().map(|h| if prefs.is_empty() { prefers(h.call.site, None) } else { prefs.iter().any(|tg| prefers(h.call.site, Some(tg))) }).collect();
         let k = pick(&copies, &preferred)?;
         let first = copies.remove(k);
         copies.sort_by(|a, b| b.clean_s().total_cmp(&a.clean_s()));

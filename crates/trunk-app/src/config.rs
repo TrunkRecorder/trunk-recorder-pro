@@ -547,6 +547,12 @@ pub struct Site {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub directory_id: String,
     pub enabled: bool,
+    /// Multi-site: keep this site's copy of a call heard on several sites
+    /// when it has at least 90 % of the best copy's clean audio, for the
+    /// talkgroups that name no preferred site (a talkgroup file's Preferred
+    /// Site or NAC decides for its own).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub preferred: bool,
     pub control_channels_hz: Vec<f64>,
     pub modulation: Modulation,
     /// Only follow a control channel with this identity (fields left out
@@ -961,6 +967,7 @@ impl Default for Site {
             name: String::new(),
             directory_id: String::new(),
             enabled: true,
+            preferred: false,
             control_channels_hz: vec![],
             modulation: Modulation::Auto,
             expect: SiteIdentity::default(),
@@ -2718,7 +2725,7 @@ impl Config {
                 let rules = self.recording.with(&sys.recording);
                 let sites = sys
                     .active_sites()
-                    .map(|s| SiteConfig { name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: s.expect.engine(), protocol: s.protocol(sys) })
+                    .map(|s| SiteConfig { name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: s.expect.engine(), protocol: s.protocol(sys), preferred: s.preferred })
                     .collect();
                 SystemConfig {
                     calls: rules.call_config(),

@@ -292,6 +292,9 @@ export interface Site {
   /** The community directory's ID for it, from the system's last share. */
   directoryId?: string;
   enabled: boolean;
+  /** Multi-site: keep this site's copy of a call heard on several sites (when it has at least 90 % of the
+   *  best copy's clean audio) for talkgroups that name no preferred site. */
+  preferred?: boolean;
   controlChannelsHz: number[];
   modulation: "auto" | "fsk4" | "qpsk";
   /** Only follow a control channel with this identity (this site, not a neighbour). */

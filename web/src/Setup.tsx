@@ -2365,6 +2365,20 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
             }
           />
         </Field>
+        {(sys.sites?.length ?? 0) > 1 && (
+          <Field label="Prefer this site" hint="A call heard on several sites keeps this site's copy while it has 90 % of the best copy's clean audio, for talkgroups that name no preferred site">
+            <Switch
+              label="Prefer"
+              checked={site.preferred ?? false}
+              onChange={(v) =>
+                edit((x) => {
+                  if (v) x.preferred = true;
+                  else delete x.preferred;
+                })
+              }
+            />
+          </Field>
+        )}
         {sys.type !== "dmr" && sys.type !== "nxdn" && sys.type !== "edacs" && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
             <select value={site.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as Site["modulation"]))}>
