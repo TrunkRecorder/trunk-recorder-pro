@@ -129,8 +129,10 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
 ### HydraSDR
 
 - **HydraSDR**: pick it from the list (blank is the first one found), listed as
-  "HydraSDR RFOne · SN …". An RFOne with the old USB ID (`1d50:60a1`, the Airspy's) is opened by
-  libairspy too, as "the first": give an Airspy source its serial when both are plugged in.
+  "HydraSDR RFOne · SN …". Either firmware works: the one RFOnes shipped with (v1.0.0-rc2)
+  enumerates with the Airspy's USB ID, `1d50:60a1`, and updated firmware (v1.0.2) with HydraSDR's
+  own, `38af:0001`. With the shipped firmware libairspy opens it too, as "the first": give an
+  Airspy source its serial when both are plugged in.
 - **Sample rate**: 10, 5 or 2.5 MSPS, or a lower one that libhydrasdr decimates to (1.25, 0.625 …).
   libhydrasdr turns the samples into IQ itself, on a thread of its own.
 - **Gain**: as an Airspy's: **Linearity** or **Sensitivity** (one step, 0–21), or **Each stage**

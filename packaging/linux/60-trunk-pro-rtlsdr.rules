@@ -11,7 +11,8 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="604b", MODE="0660"
 # their drivers are installed — UHD's and libairspy's own packages usually
 # add these too.
 SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="60a1", MODE="0660", GROUP="plugdev", TAG+="uaccess"
-# HydraSDR RFOne (libhydrasdr): its own USB ID; with older firmware it has the Airspy's, above.
+# HydraSDR RFOne (libhydrasdr): its own USB ID with updated firmware (v1.0.2); with the
+# v1.0.0-rc2 it shipped with it has the Airspy's, above.
 SUBSYSTEM=="usb", ATTRS{idVendor}=="38af", ATTRS{idProduct}=="0001", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0020", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0021", MODE="0660", GROUP="plugdev", TAG+="uaccess"

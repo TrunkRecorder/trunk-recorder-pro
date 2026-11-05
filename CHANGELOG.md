@@ -11,7 +11,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   or a lower rate the library decimates to, and picks its input (`rfPort`: ANT, CABLE1 or CABLE2). The bias-T
   is on ANT only, and a source asking for it on another input won't start. `trunk-pro devices` and Setup list
   RFOnes with their rates, and a Trunk Recorder config with a `hydrasdr` device imports as one. The udev rule
-  covers the RFOne's own USB ID (`38af:0001`). An RFOne that libairspy opens as an Airspy source's "first" is
+  covers the RFOne's own USB ID (`38af:0001`, with updated firmware, v1.0.2) as well as the Airspy's, which it has
+  with the v1.0.0-rc2 it shipped with; both firmwares are tested. An RFOne that libairspy opens as an Airspy source's "first" is
   now called a HydraSDR RFOne, not an Airspy R2.
 - **"Change requires restart" is the recorder's call, and right.** The recorder holds each edit against
   the config the run started with and tells the page, so the banner no longer comes up when the recorder

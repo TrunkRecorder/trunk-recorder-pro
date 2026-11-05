@@ -6,7 +6,9 @@
 //! itself, on a thread of its own apart from the one draining the USB (and decimates below
 //! 2.5 MSPS), so it hands over float IQ.
 //!
-//! An RFOne with the old USB ID shares the Airspy's (1d50:60a1). libairspy doesn't list it (its
+//! Both firmwares work: v1.0.0-rc2, which RFOnes shipped with, enumerates with the Airspy's USB ID
+//! (1d50:60a1, board id 0), and updated firmware (v1.0.2) with HydraSDR's own (38af:0001, board id
+//! 1); libhydrasdr knows both. With the Airspy's, libairspy doesn't list it (its
 //! serial string isn't an Airspy's) but opens it as "the first" when it comes first; libhydrasdr
 //! opens only HydraSDR firmware, never an Airspy.
 
