@@ -12,6 +12,12 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::message::Patch;
 
+/// Talkgroups are patched two or more together: `n` of them make a patch
+/// (a supergroup left alone, or one talkgroup, doesn't).
+pub fn patched(n: usize) -> bool {
+    n >= 2
+}
+
 /// How long a patch member lasts unrepeated, P25 (Trunk Recorder's 10 s).
 pub const P25_HOLD_S: f64 = 10.0;
 /// … and SmartNet. WMATA repeats a standing patch every 0.4 s (at most 2 s
@@ -57,8 +63,8 @@ impl Patches {
             for tg in named {
                 g.remove(&tg);
             }
-            // Only the supergroup left: nothing is patched.
-            if g.keys().all(|&t| t == p.sg) {
+            // One left (the supergroup, say): nothing is patched.
+            if !patched(g.len()) {
                 self.groups.remove(&p.sg);
             }
         }
@@ -69,7 +75,7 @@ impl Patches {
         let hold = self.hold_s;
         self.groups.retain(|_, g| {
             g.retain(|_, &mut t| now_s - t <= hold);
-            g.len() > 1
+            patched(g.len())
         });
     }
 
@@ -78,7 +84,7 @@ impl Patches {
         let mut out: Vec<u32> = self.groups.values().filter(|g| g.contains_key(&tg)).flat_map(|g| g.keys().copied()).collect();
         out.sort_unstable();
         out.dedup();
-        if out.len() < 2 {
+        if !patched(out.len()) {
             out.clear();
         }
         out
@@ -89,7 +95,7 @@ impl Patches {
         let mut out: Vec<(u32, Vec<u32>)> = self
             .groups
             .iter()
-            .filter(|(_, g)| g.len() > 1)
+            .filter(|(_, g)| patched(g.len()))
             .map(|(&sg, g)| (sg, g.keys().copied().filter(|&t| t != sg).collect()))
             .collect();
         out.sort_unstable_by_key(|p| p.0);
