@@ -12,7 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use super::osw::Osw;
-use crate::trunk::message::{Message, MessageType, Patch};
+use crate::trunk::message::{Message, MessageType, Patch, UNSAID_PRIORITY};
 use crate::trunk::Voice;
 
 /// Three-OSW messages, two idles slipped in, and a reset marker.
@@ -186,7 +186,7 @@ impl Parser {
     }
 
     fn msg(&self, kind: MessageType, t: f64) -> Message {
-        Message { kind, time_s: t, sys_id: self.sys_id.unwrap_or(0), site: self.site.unwrap_or(0), source: -1, priority: 3, ..Default::default() }
+        Message { kind, time_s: t, sys_id: self.sys_id.unwrap_or(0), site: self.site.unwrap_or(0), source: -1, priority: UNSAID_PRIORITY, ..Default::default() }
     }
 
     fn voice(&mut self, kind: MessageType, t: f64, freq_hz: u64, addr: u16, src: Option<u16>, analog: Option<bool>) -> Message {

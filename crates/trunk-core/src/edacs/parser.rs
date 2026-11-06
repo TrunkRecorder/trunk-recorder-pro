@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::trunk::message::UNSAID_PRIORITY;
 use crate::trunk::{Message, MessageType, Voice};
 
 /// What an EDACS site needs to be followed.
@@ -91,7 +92,7 @@ impl Parser {
     }
 
     fn msg(&self, kind: MessageType, t: f64) -> Message {
-        Message { kind, time_s: t, site: self.site.unwrap_or(0), source: -1, priority: 3, ..Default::default() }
+        Message { kind, time_s: t, site: self.site.unwrap_or(0), source: -1, priority: UNSAID_PRIORITY, ..Default::default() }
     }
 
     /// The frequency of channel `lcn`, or None (and a note, once) when the

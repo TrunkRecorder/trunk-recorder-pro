@@ -23,6 +23,12 @@ pub fn table_from_str<K: std::str::FromStr>(s: &str) -> impl Iterator<Item = (K,
     })
 }
 
+/// The priority a call takes where the air carries none: SmartNet and
+/// EDACS grants say nothing of it (SmartNet's talkgroup status bits are
+/// encrypted, emergency and patch), and Trunk Recorder gives them this
+/// (its SmartNet parser's TGID_DEFAULT_PRIO), so their call JSON reads the same.
+pub const UNSAID_PRIORITY: u8 = 3;
+
 /// Whether a carrier carrying code `got` (DMR colour code, NXDN RAN) is
 /// its site's: once the site's code `want` is known, the same code; before
 /// it is, a `control` carrier of the site's only (any, at a site with none:
