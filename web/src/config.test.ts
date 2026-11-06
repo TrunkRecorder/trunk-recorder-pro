@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { activeSites, adjacentIdentity, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -28,12 +28,27 @@ test("activeSites: the recorder's order; site names unique in a system; new site
   assert.match(nameProblem(c) ?? "", /Two sites of a are named "a"/);
 });
 
+test("a neighbouring site: by the fields its protocol states, and how a radio roams to it", () => {
+  const p25 = adjacentIdentity({ wacn: 0xbee00, sysId: 0x954, rfss: 1, site: 1, freqHz: 854_000_000 });
+  assert.equal(siteAddress(p25), "BEE00:954:1-1");
+  assert.equal(siteAddress(adjacentIdentity({ wacn: 1, sysId: 0x97, rfss: 1, site: 1, freqHz: 0 })), "00001:097:1-1");
+  const here = { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 2 };
+  assert.equal(roaming(here, p25), "inter-system");
+  assert.equal(roaming(here, { ...p25, wacn: 1 }), "inter-WACN");
+  assert.equal(roaming(here, { ...p25, sysId: 0x1a2 }), "intra-system");
+  assert.ok(sameSite(here, { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 2 }) && !sameSite(here, { wacn: 1, sysId: 0x1a2, rfss: 1, site: 2 }));
+  const nxdn = adjacentIdentity({ wacn: 0, sysId: 0x1a, rfss: 0, site: 5, freqHz: 0 }, "nxdn");
+  assert.deepEqual(nxdn, { sysId: 0x1a, site: 5 }, "no WACN or RFSS to lock on");
+  assert.equal(siteAddress(nxdn), "SysID 1A · site 5");
+  assert.equal(roaming({ sysId: 0x1a, site: 4 }, nxdn), "intra-system");
+});
+
 test("sameOnTheAir: systems set up apart whose sites announce one system", () => {
   const c: Config = defaultConfig();
   c.systems.push(newSystem(c, { shortName: "dcfd" }), newSystem(c, { shortName: "dcfd2" }), newSystem(c, { shortName: "other", expect: { wacn: 0xbee00, sysId: 0x9 } }), newSystem(c, { shortName: "cm", type: "dmr" }));
   const id = (x: Partial<SiteIdentity>): SiteIdentity => ({ nac: null, wacn: null, sysId: null, rfss: null, site: null, ...x });
   const site = (name: string, identity: Partial<SiteIdentity>): SiteStatus =>
-    ({ index: 0, name, nowS: 0, controlChannelHz: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null });
+    ({ index: 0, name, nowS: 0, controlChannelHz: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [] });
   const sys = (shortName: string, sites: SiteStatus[]): SystemStatus => ({ index: 0, shortName, activeCalls: 0, recording: 0, conventionalOpen: 0, callsConcluded: 0, sites });
   assert.deepEqual(sameOnTheAir(c, []), []);
   const live = [sys("dcfd", [site("dcfd", { wacn: 0xbee00, sysId: 0x1a2, site: 1 })]), sys("dcfd2", [site("dcfd2", { wacn: 0xbee00, sysId: 0x1a2, site: 2 })])];
