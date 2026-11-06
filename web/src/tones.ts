@@ -98,8 +98,8 @@ export interface AccessParts {
  * `CC1 TS2 TG201`, `CC 1 TG 201 SL 2`); NXDN's RAN and group (`RAN 5`, `5`,
  * `ran5 tg 201`; RAN 0 = any).
  */
-export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96", text: string): AccessParts | { error: string } {
-  if (mode === "fm") {
+export function parseAccess(mode: "fm" | "discriminator" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96", text: string): AccessParts | { error: string } {
+  if (mode === "fm" || mode === "discriminator") {
     const t = parseTone(text);
     return "tone" in t ? { code: t.tone } : t;
   }

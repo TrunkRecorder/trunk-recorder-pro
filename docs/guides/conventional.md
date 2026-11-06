@@ -17,6 +17,7 @@ Each channel has a mode:
 | Mode | Config value | What it is |
 |---|---|---|
 | Analog FM | `fm` | FM voice, narrowband (12.5 kHz) or wide (25 kHz) |
+| Discriminator | `discriminator` | FM voice plus raw S16LE mono 22.05 kHz `.raw` captures for external data decoders such as multimon-ng |
 | Analog AM | `am` | AM voice: VHF airband (118–137 MHz) and UHF military air (225–400 MHz) |
 | P25 | `p25` | P25 Phase 1, C4FM or CQPSK |
 | DMR | `dmr` | DMR Tier II; both slots, each recording its own calls (the channel is opened 6.25 kHz wide, as for trunked DMR) |
@@ -139,12 +140,12 @@ TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,S
 ```
 
 - `Frequency` is MHz when it has a decimal point, otherwise Hz.
-- `Mode` is `fm`, `am`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Code` holds
+- `Mode` is `fm`, `discriminator`, `am`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Code` holds
   a NAC (then `p25`), a colour code (`dmr`) or a RAN (`nxdn48`). An old `Tone` column still reads,
   as `Code`. A combined string such as `CC1 TS2 TG201` in `Code` is split into `Code`, `Slot` and
   `Match TG`.
 - `Squelch dB` is 3-40 dB above the noise floor; empty uses the system's.
-- `Bandwidth kHz` is an `fm` or `am` row's filter width, 4-20; empty uses the mode's default.
+- `Bandwidth kHz` is an `fm`, `discriminator` or `am` row's filter width, 4-20; empty uses the mode's default.
 - `Enable` set to `false`, `no`, `0` or `off` turns a row off.
 - `AutoTune` set to `true`, `yes`, `1` or `on` lets a digital row's calls correct its source's
   frequency error; empty is off. See [Frequency correction](#frequency-correction).
@@ -208,7 +209,7 @@ Here is what happens, step by step:
    was leakage or a spur: the receiver closes, and that channel's threshold is raised to 3 dB above
    whatever set it off until the band quietens down again. This stops a neighbour from reopening the
    channel over and over.
-5. **The audio is decoded.** Analog FM and AM are demodulated to 8 kHz audio. Audio passes only while the
+5. **The audio is decoded.** Analog FM and AM are demodulated to 8 kHz audio. A `discriminator` row also saves raw signed 16-bit little-endian mono PCM at 22,050 Hz, before de-emphasis and the voice high-/low-pass filters. Captures are saved independently of voice calls and of the WAV, M4A, and JSON retention settings, so data transmissions that produce no playable voice WAV are still captured and remain available after plugins finish; voice calls keep their regular WAV and may also have a `.raw` sidecar. Raw captures use `discriminator-<frequency>-<start time in ms>.raw` in the system's dated recordings folder. Long-running captures are split into one-minute files. For example, `multimon-ng -t raw -a POCSAG1200 discriminator-154830000-....raw` decodes a POCSAG 1200 capture. Audio passes only while the
    carrier, measured through that channel filter, stays above a level 3 dB lower than the squelch
    (and never lower than 3 dB above the floor), so the gaps between transmissions are cut out.
    P25, DMR and NXDN go through the same decoders trunked calls use, and the same level decides

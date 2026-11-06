@@ -768,6 +768,7 @@
           "type": "string",
           "enum": [
             "fm",
+            "discriminator",
             "am",
             "p25",
             "dmr",
@@ -783,7 +784,7 @@
         },
         "code": {
           "type": "string",
-          "description": "The code it records: FM's CTCSS tone or DCS code (\"151.4\", \"D023N\"), P25's NAC (\"293\"), DMR's colour code (\"1\"), NXDN's RAN (\"5\"); absent / \"\": any."
+          "description": "The code it records: FM / discriminator CTCSS tone or DCS code (\"151.4\", \"D023N\"), P25's NAC (\"293\"), DMR's colour code (\"1\"), NXDN's RAN (\"5\"); absent / \"\": any."
         },
         "slot": {
           "type": "number",
@@ -890,6 +891,7 @@
           "type": "string",
           "enum": [
             "fm",
+            "discriminator",
             "am",
             "p25",
             "dmr",

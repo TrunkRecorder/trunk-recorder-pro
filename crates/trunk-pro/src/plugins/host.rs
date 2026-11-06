@@ -9,7 +9,7 @@
 //! late (its delays) goes to the [`Hold`] instead, which gives it to the
 //! plugin when it's due.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -66,6 +66,8 @@ struct Plugin {
     manifest: Manifest,
     exe: PathBuf,
     data_dir: PathBuf,
+    /// Systems this copy is configured for; `None` means global-only.
+    system_scope: Option<BTreeSet<String>>,
     /// What it starts with (changed by new settings it took live).
     hello: Mutex<Hello>,
     tx: Mutex<Option<SyncSender<Arc<str>>>>,
@@ -280,6 +282,7 @@ impl PluginHost {
                 data_dir: data_dir.clone(),
                 audio_formats: formats,
             };
+            let system_scope = (!s.systems.is_empty()).then(|| s.systems.keys().cloned().collect());
             // The queue outlives the process: events wait through a (re)start.
             let (tx, rx) = mpsc::sync_channel::<Arc<str>>(QUEUE);
             queues.push(rx);
@@ -288,6 +291,7 @@ impl PluginHost {
                 manifest: m,
                 exe: s.exe,
                 data_dir,
+                system_scope,
                 hello: Mutex::new(hello),
                 tx: Mutex::new(Some(tx)),
                 child: Mutex::new(None),
@@ -423,16 +427,27 @@ impl PluginHost {
     /// The plugins that take concluded calls (each reports on every one);
     /// not one that gave up (a config error).
     /// (`decrypted`: a call decrypted with our keys, which only plugins with `shareDecrypted` take.)
-    pub fn call_takers(&self, decrypted: bool) -> usize {
-        self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some() && (!decrypted || p.share_decrypted)).count()
+    pub fn call_takers(&self, decrypted: bool, system: u16) -> usize {
+        let Some(name) = self.names.get(&system) else { return 0 };
+        self.shared
+            .plugins
+            .iter()
+            .filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.takes_system(name) && p.tx.lock().unwrap().is_some() && (!decrypted || p.share_decrypted))
+            .count()
     }
 
     /// What the plugins take of a finished call (`decrypted`: one decrypted
     /// with our keys, which only plugins with `shareDecrypted` take): how
     /// many, and whether one takes the WAV, one wants an .m4a
     /// ([`super::archive::plan`] says what's written for them).
-    pub fn plugin_audio(&self, decrypted: bool) -> super::archive::PluginAudio {
-        let takers: Vec<&Plugin> = self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some() && (!decrypted || p.share_decrypted)).collect();
+    pub fn plugin_audio(&self, decrypted: bool, system: u16) -> super::archive::PluginAudio {
+        let Some(name) = self.names.get(&system) else { return Default::default() };
+        let takers: Vec<&Plugin> = self
+            .shared
+            .plugins
+            .iter()
+            .filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.takes_system(name) && p.tx.lock().unwrap().is_some() && (!decrypted || p.share_decrypted))
+            .collect();
         super::archive::PluginAudio { takers: takers.len(), wav: takers.iter().any(|p| takes_wav(&p.manifest)), m4a: takers.iter().any(|p| p.manifest.wants_format(format::M4A)) }
     }
 
@@ -446,7 +461,7 @@ impl PluginHost {
     /// finish thread wrote what [`super::archive::plan`] said): to the
     /// plugins that take it. `decrypted`: some of it was decrypted with our keys.
     pub fn concluded(&self, system: u16, rel: &str, record: CallRecord, files: CallFiles, decrypted: bool) {
-        if self.call_takers(decrypted) == 0 {
+        if self.call_takers(decrypted, system) == 0 {
             if decrypted {
                 self.shared.say_all_withheld(topic::CALL_CONCLUDED);
             }
@@ -607,7 +622,7 @@ impl Shared {
     /// a call decrypted with our keys (or its audio) goes only to plugins with
     /// `shareDecrypted`; `call`: it's that finished call.
     fn dispatch(&self, t: &str, l: &Arc<str>, about: &About, call: Option<&str>) {
-        for p in self.plugins.iter().filter(|p| p.manifest.subscribes(t)) {
+        for p in self.plugins.iter().filter(|p| p.manifest.subscribes(t) && (t != topic::CALL_CONCLUDED || p.takes_system(&about.system))) {
             if about.decrypted && !p.share_decrypted {
                 self.say_withheld(p);
                 continue;
@@ -649,6 +664,12 @@ impl Shared {
             *last = Some(Instant::now());
             self.note_log(&p.id, Level::Warn, format!("is falling behind: {n} event(s) dropped so far"));
         }
+    }
+}
+
+impl Plugin {
+    fn takes_system(&self, system: &str) -> bool {
+        self.system_scope.as_ref().is_none_or(|systems| systems.contains(system))
     }
 }
 
@@ -868,6 +889,7 @@ mod tests {
             exe: PathBuf::new(),
             data_dir: PathBuf::new(),
             hello: Mutex::new(Hello::default()),
+            system_scope: None,
             tx: Mutex::new(Some(tx)),
             child: Mutex::new(None),
             dropped: AtomicU64::new(0),
@@ -880,6 +902,50 @@ mod tests {
             audio_held_said: AtomicBool::new(false),
         };
         (p, rx)
+    }
+
+    #[test]
+    fn concluded_calls_only_reach_plugins_configured_for_the_system() {
+        let (mut milton, milton_rx) = test_plugin("rdioscanner", false);
+        milton.system_scope = Some(BTreeSet::from(["MiltonFD".to_string()]));
+        let (mut halton, halton_rx) = test_plugin("psrn-transcriber", false);
+        halton.system_scope = Some(BTreeSet::from(["HALTON".to_string()]));
+        let (global, global_rx) = test_plugin("global", false);
+        let notes: Notes = Arc::new(|_| {});
+        let shared = Arc::new(Shared {
+            plugins: vec![milton, halton, global],
+            stopping: AtomicBool::new(false),
+            go: Arc::new(AtomicBool::new(true)),
+            notes,
+            hold: None,
+            answers: Default::default(),
+            requests: AtomicU64::new(0),
+            calls: None,
+        });
+        let host = PluginHost {
+            shared,
+            encoder: None,
+            supervisors: Vec::new(),
+            topics: PluginTopics::default(),
+            audio: false,
+            names: BTreeMap::from([(0, "MiltonFD".to_string()), (1, "HALTON".to_string())]),
+            done: false,
+        };
+        let msg: Arc<str> = "call\n".into();
+
+        assert_eq!(host.call_takers(false, 0), 2);
+        assert_eq!(host.call_takers(false, 1), 2);
+        assert_eq!(host.plugin_audio(false, 0).takers, 2);
+        assert_eq!(host.plugin_audio(false, 1).takers, 2);
+        host.shared.dispatch(topic::CALL_CONCLUDED, &msg, &About { system: "MiltonFD".into(), ..Default::default() }, Some("milton-call"));
+        assert!(milton_rx.try_recv().is_ok());
+        assert!(global_rx.try_recv().is_ok());
+        assert!(halton_rx.try_recv().is_err());
+
+        host.shared.dispatch(topic::CALL_CONCLUDED, &msg, &About { system: "HALTON".into(), ..Default::default() }, Some("halton-call"));
+        assert!(halton_rx.try_recv().is_ok());
+        assert!(global_rx.try_recv().is_ok());
+        assert!(milton_rx.try_recv().is_err());
     }
 
     /// A decrypted call (or its live audio) reaches only the plugins allowed it; a clear one reaches all.

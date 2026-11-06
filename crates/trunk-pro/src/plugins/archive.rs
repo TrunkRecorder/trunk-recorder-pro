@@ -317,7 +317,7 @@ fn settle(x: &Pending) -> (bool, bool) {
     let (keep_wav, keep_m4a) = (r.archive_wav || keep_all || (r.archive_m4a && !m4a), r.archive_m4a || keep_all || (r.archive_wav && !wav));
     let audio = r.archive_wav || r.archive_m4a || keep_all;
     let json = r.call_log || keep_all;
-    let keep = [("wav", keep_wav), ("sdr", audio), ("frames.jsonl", audio), ("m4a", keep_m4a), ("json", json)];
+    let keep = [("wav", keep_wav), ("sdr", audio), ("frames.jsonl", audio), ("raw", true), ("m4a", keep_m4a), ("json", json)];
     for (ext, kept) in keep {
         if !kept {
             for p in places(ext) {
@@ -351,7 +351,7 @@ mod tests {
         }
     }
     fn left(base: &Path) -> Vec<&'static str> {
-        ["wav", "sdr", "m4a", "json"].into_iter().filter(|e| Path::new(&format!("{}.{e}", base.display())).exists()).collect()
+        ["wav", "sdr", "raw", "m4a", "json"].into_iter().filter(|e| Path::new(&format!("{}.{e}", base.display())).exists()).collect()
     }
     fn rules(wav: bool, m4a: bool, json: bool, on_failure: bool) -> FileRules {
         FileRules { archive_wav: wav, archive_m4a: m4a, call_log: json, archive_files_on_failure: on_failure }
@@ -383,6 +383,21 @@ mod tests {
         next.release("dcfd/b", "openmhz", 5000);
         next.result_at("dcfd/b", "openmhz", Outcome::Ok, None, 26_000);
         assert_eq!((next.timing("openmhz").age_ms, next.timing("openmhz").held_ms, next.timing("openmhz").uploads), (6000, 5000, 0));
+    }
+
+    #[test]
+    fn raw_sidecar_is_retained_independently_of_audio_and_json() {
+        let dir = folder("raw-sidecar");
+        let kept = dir.join("kept");
+        write(&kept, &["wav", "raw"]);
+        Archive::default().expect("kept", 0, rules(true, false, false, false), &kept, None, Some(true), None);
+        assert_eq!(left(&kept), ["wav", "raw"]);
+
+        let discarded = dir.join("discarded");
+        write(&discarded, &["wav", "raw"]);
+        Archive::default().expect("discarded", 0, rules(false, false, false, false), &discarded, None, Some(true), None);
+        assert_eq!(left(&discarded), ["raw"]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     const BOOLS: [bool; 2] = [false, true];

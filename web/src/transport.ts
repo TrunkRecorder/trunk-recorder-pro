@@ -4,7 +4,7 @@
 
 import { decodeAudioFrame, type AudioChunk, type FromRecorder, type ToRecorder } from "./protocol.ts";
 
-export type CallExt = "wav" | "m4a" | "json";
+export type CallExt = "wav" | "m4a" | "raw" | "json";
 
 export interface Transport {
   readonly kind: "desktop" | "web";

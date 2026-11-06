@@ -109,6 +109,8 @@ pub enum TrackerOut {
     /// Analog FM: the same audio before the 300 Hz high-pass (CTCSS / DCS
     /// still in it), when asked for ([`VoiceSpec::subaudible`]).
     Subaudible(Vec<f32>),
+    /// Conventional FM: signed samples from the discriminator before de-emphasis.
+    Discriminator(Vec<i16>),
     /// A radio's talker alias, heard during the call.
     Alias(Alias),
     /// What a terminator / MAC message showed of talker aliases (counted).
@@ -198,6 +200,8 @@ pub struct VoiceSpec {
     /// Analog FM: also hand out the audio below 300 Hz (CTCSS / DCS) as
     /// [`TrackerOut::Subaudible`].
     pub subaudible: bool,
+    /// Conventional FM: also capture raw discriminator PCM for external decoders.
+    pub capture_discriminator: bool,
     /// Analog: bandwidth, de-emphasis, AM level, squelch timing.
     pub analog: AnalogTuning,
     /// AM: bands (Hz from the centre) with a steady line in them (a spur),
@@ -277,13 +281,14 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
         VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
         VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
         VoiceKind::Analog => Box::new(Analog {
-            demod: Demod::Fm(Nbfm::with(spec.rate, &spec.analog)),
+            demod: Demod::Fm(Nbfm::with_discriminator(spec.rate, &spec.analog, spec.capture_discriminator)),
             squelch: spec.squelch,
             subaudible: spec.subaudible,
+            capture_discriminator: spec.capture_discriminator,
             carrier: false,
         }),
         VoiceKind::ProVoice => Box::new(ProVoice { pv: crate::edacs::ProVoice::new(spec.rate, spec.seed, spec.vocoder), t0: spec.t0, air: None }),
-        VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, carrier: false }),
+        VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, capture_discriminator: false, carrier: false }),
     }
 }
 
@@ -548,6 +553,7 @@ struct Analog {
     demod: Demod,
     squelch: f32,
     subaudible: bool,
+    capture_discriminator: bool,
     carrier: bool,
 }
 
@@ -561,8 +567,15 @@ impl VoiceDecoder for Analog {
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
         let mut audio = Vec::new();
         let mut low = Vec::new();
+        let mut discriminator = Vec::new();
         self.carrier = match &mut self.demod {
-            Demod::Fm(fm) => fm.push_low(iq, self.squelch, &mut audio, self.subaudible.then_some(&mut low)),
+            Demod::Fm(fm) => fm.push_capture(
+                iq,
+                self.squelch,
+                &mut audio,
+                self.subaudible.then_some(&mut low),
+                self.capture_discriminator.then_some(&mut discriminator),
+            ),
             Demod::Am(am) => am.push(iq, self.squelch, &mut audio),
         };
         if !audio.is_empty() {
@@ -570,6 +583,9 @@ impl VoiceDecoder for Analog {
         }
         if !low.is_empty() {
             out.push(VoiceOut { slot: 0, out: TrackerOut::Subaudible(low) });
+        }
+        if !discriminator.is_empty() {
+            out.push(VoiceOut { slot: 0, out: TrackerOut::Discriminator(discriminator) });
         }
     }
     fn set_squelch(&mut self, open_power: f32) {

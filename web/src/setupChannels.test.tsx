@@ -84,6 +84,14 @@ test("Setup's channels: a digital row can correct its source's AutoTune; an anal
   assert.match(text(html), /AutoTune p25, dmr, nxdn: true lets its calls correct/);
 });
 
+test("Setup offers discriminator capture for multimon-ng-compatible raw PCM", () => {
+  const c = defaultConfig();
+  c.conventional.push(newConventional(c, { shortName: "pager", channels: [row(152_480_000, "discriminator")] }));
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const html = renderToString(<ConventionalPanel c={c} k={0} />);
+  assert.match(text(html), /Discriminator \(raw PCM\)/);
+});
+
 test("Setup's signals: a disclosure on the system's card, a row each with its kind and what's wrong with it, as the recorder says", () => {
   const c = defaultConfig();
   c.conventional.push(

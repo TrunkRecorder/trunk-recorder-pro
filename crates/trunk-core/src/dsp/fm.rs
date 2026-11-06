@@ -29,6 +29,8 @@ use super::AnalogTuning;
 
 /// Audio output rate, Hz.
 pub const AUDIO_RATE: f64 = 8000.0;
+/// Raw discriminator output rate used for external data decoders, Hz.
+pub const DISCRIMINATOR_RATE: f64 = 22050.0;
 /// One-sided passband of the channel filter / carrier meter, Hz (narrowband).
 pub const CHANNEL_HALF_BW: f64 = 5500.0;
 /// Peak deviation mapped to full scale ±1 (before de-emphasis gain), Hz.
@@ -140,7 +142,12 @@ const ARING: usize = 256;
 impl AudioResampler {
     /// Low-pass at `cutoff_hz` for channel rate `rate`.
     pub fn new(rate: f64, cutoff_hz: f64) -> Self {
-        AudioResampler { taps: lowpass(128, cutoff_hz / rate), ring: vec![0.0; ARING], n_in: 0, t_next: 0.0, step: rate / AUDIO_RATE }
+        Self::at_rate(rate, cutoff_hz, AUDIO_RATE)
+    }
+
+    /// Low-pass at `cutoff_hz` and resample to `output_rate`.
+    pub fn at_rate(rate: f64, cutoff_hz: f64, output_rate: f64) -> Self {
+        AudioResampler { taps: lowpass(128, cutoff_hz / rate), ring: vec![0.0; ARING], n_in: 0, t_next: 0.0, step: rate / output_rate }
     }
 
     #[inline]
@@ -183,6 +190,7 @@ pub struct Nbfm {
     de_y: f32,
     de_gain: f32,
     audio: AudioResampler,
+    discriminator: Option<AudioResampler>,
     hpf: [Biquad; HPF_SOS.len()],
     gate: Gate,
     data: Option<DataBurst>,
@@ -269,6 +277,11 @@ impl Nbfm {
 
     /// With `t`'s bandwidth, de-emphasis and squelch timing.
     pub fn with(rate: f64, t: &AnalogTuning) -> Self {
+        Self::with_discriminator(rate, t, false)
+    }
+
+    /// With `t`'s tuning, optionally capturing pre-emphasis discriminator audio.
+    pub fn with_discriminator(rate: f64, t: &AnalogTuning, capture: bool) -> Self {
         let tau = t.deemph_tau_s;
         let (de_a, de_gain) = if tau > 0.0 {
             // De-emphasis gain at 1 kHz, undone so a 1 kHz tone keeps its level.
@@ -284,6 +297,7 @@ impl Nbfm {
             de_y: 0.0,
             de_gain: de_gain as f32,
             audio: AudioResampler::new(rate, 3400.0),
+            discriminator: capture.then(|| AudioResampler::at_rate(rate, 10000.0, DISCRIMINATOR_RATE)),
             hpf: HPF_SOS.map(Biquad::new),
             gate: Gate::new(rate, t.squelch, FAST_S),
             data: t.data_mute.then(|| DataBurst::new(rate)),
@@ -299,9 +313,21 @@ impl Nbfm {
 
     /// [`Nbfm::push`], also appending to `low` each output sample as it was
     /// before the high-pass and the gate's ramp (CTCSS and DCS still in it).
-    pub fn push_low(&mut self, iq: &[Complex32], open_power: f32, out: &mut Vec<f32>, mut low: Option<&mut Vec<f32>>) -> bool {
+    pub fn push_low(&mut self, iq: &[Complex32], open_power: f32, out: &mut Vec<f32>, low: Option<&mut Vec<f32>>) -> bool {
+        self.push_capture(iq, open_power, out, low, None)
+    }
+
+    /// [`Nbfm::push_low`], optionally collecting 22.05 kHz signed discriminator samples.
+    pub fn push_capture(
+        &mut self,
+        iq: &[Complex32],
+        open_power: f32,
+        out: &mut Vec<f32>,
+        mut low: Option<&mut Vec<f32>>,
+        mut discriminator: Option<&mut Vec<i16>>,
+    ) -> bool {
         let mut carrier = false;
-        let Nbfm { filter, last, disc_gain, de_a, de_y, de_gain, audio, hpf, gate, data } = self;
+        let Nbfm { filter, last, disc_gain, de_a, de_y, de_gain, audio, discriminator: resampler, hpf, gate, data } = self;
         for &x in iq {
             let y = filter.step(x);
             let up = filter.power() > open_power;
@@ -309,6 +335,9 @@ impl Nbfm {
             gate.meter(y, up, open_power);
             let d = (y * last.conj()).arg() * *disc_gain;
             *last = y;
+            if let (Some(resampler), Some(samples)) = (resampler.as_mut(), discriminator.as_deref_mut()) {
+                resampler.push(d, |s| samples.push((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16));
+            }
             if let Some(db) = data {
                 let on = db.step(d);
                 gate.mute(on, db.back);
@@ -378,6 +407,24 @@ mod tests {
         // 2.5 kHz / 5 kHz full scale → amplitude 0.5 → power 0.125.
         assert!((10.0 * (p1k / 0.125).log10()).abs() < 1.0, "1 kHz level {:.1} dB", 10.0 * (p1k / 0.125).log10());
         assert!(10.0 * (p100 / p1k).log10() < -40.0, "CTCSS {:.1} dB below voice", 10.0 * (p1k / p100).log10());
+    }
+
+    #[test]
+    fn discriminator_capture_is_raw_s16_at_multimon_rate() {
+        let rate = 39_062.5;
+        let iq = fm_tone(rate, 1200.0, 4000.0, rate as usize, 0.5);
+        let mut fm = Nbfm::with_discriminator(rate, &AnalogTuning::default(), true);
+        let mut audio = Vec::new();
+        let mut raw = Vec::new();
+        fm.push_capture(&iq, 1e-4, &mut audio, None, Some(&mut raw));
+        assert!(raw.len().abs_diff(DISCRIMINATOR_RATE as usize) < 100, "{} samples", raw.len());
+        assert!(raw.iter().any(|&s| s != 0));
+        assert!(raw.iter().all(|&s| s != i16::MIN));
+
+        let mut fm = Nbfm::with_discriminator(rate, &AnalogTuning::default(), false);
+        let mut unused = Vec::new();
+        fm.push_capture(&iq, 1e-4, &mut audio, None, Some(&mut unused));
+        assert!(unused.is_empty());
     }
 
     #[test]

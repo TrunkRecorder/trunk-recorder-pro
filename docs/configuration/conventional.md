@@ -83,7 +83,7 @@ Notes:
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `freqHz` | ✓ | | number | The frequency, Hz |
-| `mode` | | `"fm"` | string | `"fm"` (analog FM), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"` (any case; anything else is refused when the config is read) |
+| `mode` | | `"fm"` | string | `"fm"` (analog FM), `"discriminator"` (FM with raw PCM captures for external data decoders, independent of voice calls), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"` (any case; anything else is refused when the config is read) |
 | `name` | | `""` | string | Alpha tag, written to the call JSON |
 | `description` | | `""` | string | Description in the call JSON |
 | `tag` | | `""` | string | Tag in the call JSON |

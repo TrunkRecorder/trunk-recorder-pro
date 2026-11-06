@@ -124,10 +124,10 @@ export interface Radios {
  */
 export interface Channel {
   freqHz: number;
-  mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96";
+  mode: "fm" | "discriminator" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96";
   name: string;
   talkgroup?: number;
-  /** The code it records: FM's CTCSS tone or DCS code ("151.4", "D023N"), P25's NAC ("293"), DMR's colour code ("1"), NXDN's RAN ("5"); absent / "": any. */
+  /** The code it records: FM / discriminator CTCSS tone or DCS code ("151.4", "D023N"), P25's NAC ("293"), DMR's colour code ("1"), NXDN's RAN ("5"); absent / "": any. */
   code?: string;
   /** DMR: record only this slot (1, 2). */
   slot?: number;

@@ -1178,6 +1178,8 @@ choice! {
         /// Analog FM (narrowband unless its bandwidth says wide).
         #[default]
         Fm = "fm",
+        /// FM discriminator capture for external data decoders.
+        Discriminator = "discriminator",
         /// Analog AM (airband).
         Am = "am",
         /// P25 Phase 1.
@@ -1195,6 +1197,7 @@ impl ChannelMode {
     pub fn conv(self) -> ConvMode {
         match self {
             ChannelMode::Fm => ConvMode::Fm,
+            ChannelMode::Discriminator => ConvMode::Discriminator,
             ChannelMode::Am => ConvMode::Am,
             ChannelMode::P25 => ConvMode::P25,
             ChannelMode::Dmr => ConvMode::Dmr,
@@ -1302,7 +1305,7 @@ impl Channel {
 
     /// FM or AM.
     pub fn analog(&self) -> bool {
-        matches!(self.mode, ChannelMode::Fm | ChannelMode::Am)
+        matches!(self.mode, ChannelMode::Fm | ChannelMode::Discriminator | ChannelMode::Am)
     }
 
     /// What it records (code, slot and talkgroup), read for its mode.

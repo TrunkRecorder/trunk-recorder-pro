@@ -959,7 +959,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
         session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
         session.poll(now_ms(), &mut out);
-        deliver(&ctx, &mut out, plugins.as_deref(), &rules, &fin);
+        deliver(&ctx, &mut out, &dir, plugins.as_deref(), &rules, &fin);
         drop(plugins);
         // (Learned band plans and DMR channel tables, talker aliases, …: a crash or kill loses little.)
         save_due(&ctx, &mut session, now_ms(), false);
@@ -977,7 +977,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     }
     session.poll(now_ms(), &mut out);
     session.finish(&mut out);
-    deliver(&ctx, &mut out, ctx.plugins.host().as_deref(), &rules, &fin);
+    deliver(&ctx, &mut out, &dir, ctx.plugins.host().as_deref(), &rules, &fin);
     drop(fin_tx);
     for f in finishers {
         let _ = f.join();
@@ -999,6 +999,7 @@ struct Finish {
     rel: String,
     system: u16,
     wav: Vec<u8>,
+    raw_pcm: Option<Vec<u8>>,
     record: trunk_recorder_plugin::CallRecord,
     frames: Option<trunk_core::trunk::Capture>,
     rules: FileRules,
@@ -1031,22 +1032,25 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
     let host = ctx.plugins.host();
     let r = f.rules;
-    let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.decrypted));
+    let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.decrypted, f.system));
     let p = plugins::plan(r, to_plugins, encoder.is_some());
     let (keep_wav, keep_m4a, keep_json, keep_audio) = (p.keep_wav, p.keep_m4a, p.keep_json, p.keep_audio);
+    let write_raw = f.raw_pcm.is_some();
     let base = dir.join(&f.rel);
     // Stamped while the clock was off: said with it, for whoever matches it with others' calls.
     f.record.clock_off = ctx.clock.off();
     // (The record written once, as the .json file has it.)
     let json = f.record.to_json();
-    let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_wav { f.wav.len() } else { 0 };
+    let need = json.len() + f.wav.len() / 4 + f.raw_pcm.as_ref().map_or(0, Vec::len) + if p.write_wav && !keep_wav { f.wav.len() } else { 0 };
     let spooled = spool.filter(|s| p.spool && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
     let at = |kept: bool, ext: &str| PathBuf::from(format!("{}.{ext}", if kept { &base } else { spooled.as_ref().unwrap_or(&base) }.display()));
     let (wav_at, json_at, frames_at, m4a_at) = (at(keep_wav, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
-    for d in [&wav_at, &json_at, &m4a_at].into_iter().filter_map(|p| p.parent()) {
+    let raw_at = at(true, "raw");
+    for d in [&wav_at, &json_at, &m4a_at, &raw_at].into_iter().filter_map(|p| p.parent()) {
         let _ = fs::create_dir_all(d);
     }
     let ok = (!p.write_wav || fs::write(&wav_at, &f.wav).is_ok())
+        && (!write_raw || f.raw_pcm.as_ref().is_none_or(|raw| fs::write(&raw_at, raw).is_ok()))
         && (!p.write_json || fs::write(&json_at, &json).is_ok())
         && f.frames.as_ref().filter(|_| p.write_frames).is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
     if !ok {
@@ -1109,7 +1113,7 @@ fn share(ctx: &Arc<Ctx>, short_name: String, observation: serde_json::Value, sit
 }
 
 /// Forward everything to the browsers and plugins; calls go to be stored.
-fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish)) {
+fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, dir: &Path, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish)) {
     for o in out.drain(..) {
         match o {
             Output::Message(m) => {
@@ -1150,7 +1154,15 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
                 let ctx = ctx.clone();
                 let _ = std::thread::Builder::new().name("share".into()).spawn(move || share(&ctx, short_name, observation, site_names));
             }
-            Output::File { rel, system, wav, record, frames, decrypted } => finish(Finish { rel, system, wav, record, frames, rules: rules(system), decrypted }),
+            Output::File { rel, system, wav, raw_pcm, record, frames, decrypted } => finish(Finish { rel, system, wav, raw_pcm, record, frames, rules: rules(system), decrypted }),
+            Output::RawFile { rel, raw_pcm, .. } => {
+                let path = dir.join(format!("{rel}.raw"));
+                let result = path.parent().map_or_else(|| Err(std::io::Error::other("raw capture path has no parent")), std::fs::create_dir_all)
+                    .and_then(|()| std::fs::write(&path, raw_pcm));
+                if let Err(e) = result {
+                    log::warn!("Couldn't write discriminator capture {}: {e}", path.display());
+                }
+            }
         }
     }
 }
@@ -1312,6 +1324,24 @@ pub fn systems_for(cfg: &Config, name: &str) -> Vec<String> {
 mod live_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn raw_capture_is_kept_when_audio_and_json_are_not() {
+        let dir = crate::db::TestDir::new("discriminator-raw");
+        let ctx = test_ctx(&dir);
+        let rel = "MiltonFD/2026/11/4/discriminator-154830000-1793823138000";
+        let bytes = vec![1, 0, 255, 255];
+        let mut out = vec![Output::RawFile { rel: rel.into(), system: 0, raw_pcm: bytes.clone() }];
+        let rules = |_: u16| FileRules { archive_wav: false, archive_m4a: false, call_log: false, archive_files_on_failure: false };
+        deliver(&ctx, &mut out, &dir, None, &rules, &|_| {});
+        assert_eq!(std::fs::read(dir.join(format!("{rel}.raw"))).unwrap(), bytes);
+
+        let discarded = "MiltonFD/2026/11/4/discarded";
+        let mut out = vec![Output::RawFile { rel: discarded.into(), system: 0, raw_pcm: vec![1, 0] }];
+        let rules = |_: u16| FileRules { archive_wav: false, archive_m4a: false, call_log: true, archive_files_on_failure: false };
+        deliver(&ctx, &mut out, &dir, None, &rules, &|_| {});
+        assert_eq!(std::fs::read(dir.join(format!("{discarded}.raw"))).unwrap(), [1, 0]);
+    }
 
     /// A source of kind `kind` with the keys in `v`.
     fn src(kind: &str, mut v: serde_json::Value) -> Source {

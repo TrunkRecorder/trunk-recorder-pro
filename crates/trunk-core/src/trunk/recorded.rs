@@ -15,6 +15,8 @@ use crate::mbe::SAMPLE_RATE;
 #[derive(Clone, Debug)]
 pub struct Recorded {
     pub audio: Vec<f32>,
+    /// Optional raw FM discriminator samples, mono S16 at 22,050 Hz.
+    pub discriminator: Vec<i16>,
     pub frames: CallFrames,
     /// Where each transmission starts in `audio`.
     pub tx: Transmissions,
@@ -28,7 +30,11 @@ pub struct Recorded {
 
 impl Recorded {
     pub fn new(capture_frames: bool, inband: InBandSpec) -> Self {
-        Recorded { audio: Vec::new(), frames: CallFrames::new(capture_frames), tx: Transmissions::default(), inband: InBand::new(inband), reception: Reception::default(), freq_error: (0.0, 0) }
+        Recorded { audio: Vec::new(), discriminator: Vec::new(), frames: CallFrames::new(capture_frames), tx: Transmissions::default(), inband: InBand::new(inband), reception: Reception::default(), freq_error: (0.0, 0) }
+    }
+
+    pub fn push_discriminator(&mut self, samples: &[i16]) {
+        self.discriminator.extend_from_slice(samples);
     }
 
     /// Voice heard by air time `now_s`: `samples`, and (digital) the frames
@@ -112,5 +118,21 @@ impl Recorded {
         }
         let good: u32 = iv.iter().map(|i| i.frames - i.bad_frames).sum();
         good as f64 * crate::mbe::FRAME_SAMPLES as f64 / SAMPLE_RATE as f64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_raw_discriminator_timeline_when_audio_is_trimmed() {
+        let mut r = Recorded::new(false, InBandSpec::default());
+        r.audio = vec![0.0; 8000];
+        r.discriminator = (0..22050).map(|s| s as i16).collect();
+        r.keep(&[100..200, 400..500]);
+        assert_eq!(r.audio.len(), 200);
+        assert_eq!(r.discriminator.len(), 22050);
+        assert_eq!(r.discriminator[0], 0);
     }
 }

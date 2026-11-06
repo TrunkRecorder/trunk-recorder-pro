@@ -116,6 +116,7 @@ make folders (`{time:%Y/%m}`).
 | `<name>.json` | The [call JSON](#the-call-json) |
 | `<name>.m4a` | With **Keep .m4a**, or when an upload plugin wants M4A (then deleted once the plugins are done, unless kept) |
 | `<name>.sdr` | With **Save vocoder frames**, for digital calls (NXDN: `<name>.frames.jsonl`) |
+| `discriminator-<frequency>-<start-ms>.raw` | For conventional channels in Discriminator mode, including transmissions that don't produce voice calls; retained independently of **Keep .wav**, **Keep .m4a**, and **Keep call JSON** |
 
 ## The call JSON
 

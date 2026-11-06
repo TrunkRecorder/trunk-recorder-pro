@@ -39,7 +39,10 @@ pub enum Output {
     /// once the files are stored.
     /// `frames`: the frame capture, for `<rel>.sdr` (NXDN: `<rel>.frames.jsonl`).
     /// `decrypted`: some of it was decrypted with our keys.
-    File { rel: String, system: u16, wav: Vec<u8>, record: trunk_recorder_plugin::CallRecord, frames: Option<trunk_core::trunk::Capture>, decrypted: bool },
+    /// `raw_pcm`: optional discriminator sidecar, S16LE mono at 22,050 Hz, saved as `<rel>.raw`.
+    File { rel: String, system: u16, wav: Vec<u8>, raw_pcm: Option<Vec<u8>>, record: trunk_recorder_plugin::CallRecord, frames: Option<trunk_core::trunk::Capture>, decrypted: bool },
+    /// A discriminator capture that did not correspond to a decoded voice call.
+    RawFile { rel: String, system: u16, raw_pcm: Vec<u8> },
     /// An event for plugins (only those [`Session::plugin_topics`] asks for).
     Plugin(HostMessage),
     /// A line for the log (the platform's logger formats and routes it).
@@ -1043,6 +1046,16 @@ impl Session {
                 }
                 out.push(Output::Audio { system, short_name: self.system_name(system).to_string(), tg: talkgroup, frame, decrypted });
             }
+            Event::RawCapture { system, freq_hz, start_s, samples } => {
+                let short_name = self.system_name(system).to_string();
+                let start_ms = (self.wall(start_s) * 1000.0).round() as i64;
+                let start_s = start_ms.div_euclid(1000);
+                let offset = (self.local_offset)(start_s);
+                let base_name = format!("discriminator-{freq_hz}-{start_ms}");
+                let rel = filename::default_path(&short_name, &base_name, start_s, offset);
+                let raw_pcm = samples.into_iter().flat_map(i16::to_le_bytes).collect();
+                out.push(Output::RawFile { rel, system, raw_pcm });
+            }
             Event::ConvSkipped { freq_hz, code } => {
                 let ms = self.wall(self.engine.status().now_s) * 1000.0;
                 self.heard.note(freq_hz, &code, false, ms);
@@ -1065,7 +1078,8 @@ impl Session {
                     filename::render(format, &serde_json::to_value(r).unwrap_or_default(), k.call.system, offset)
                 };
                 let body = Body::Concluded { length_s: k.audio.len() as f64 / 8000.0, signal_db: r.signal, noise_db: r.noise, snr_db: r.snr, clean_pct: r.clean_voice_pct };
-                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), record: k.record, frames: k.frames, decrypted: k.call.decrypted });
+                let raw_pcm = k.discriminator.map(|samples| samples.into_iter().flat_map(i16::to_le_bytes).collect());
+                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), raw_pcm, record: k.record, frames: k.frames, decrypted: k.call.decrypted });
                 let r = self.call_record(Level::Info, &k.call, body);
                 self.records.push(r);
             }
@@ -1171,6 +1185,7 @@ impl Session {
             Event::CallStart(c) | Event::CallEnd(c) if c.twin => None,
             Event::CallStart(c) | Event::CallEnd(c) | Event::NotSaved(c) => Some(c.system),
             Event::Concluded(k) => Some(k.call.system),
+            Event::RawCapture { system, .. } => Some(*system),
             Event::Duplicate { call, .. } => Some(call.system),
             Event::TonePattern(t) => Some(t.system),
             _ => None,

@@ -18,7 +18,7 @@
 //!   and `Bandwidth kHz` are additions.
 //! - `Frequency`: MHz when it has a decimal point (and is under 10 000), else Hz.
 //! - `Mode`: `fm` / `analog` / `A`, `am`, `p25` / `digital` / `D`, `dmr`,
-//!   `nxdn48` (or `nxdn`) / `nxdn96`; empty = fm.
+//!   `nxdn48` (or `nxdn`) / `nxdn96`, `discriminator`; empty = fm.
 //! - `TG Number`: what calls are filed under; empty = the talkgroup the air
 //!   names (p25, dmr, nxdn), else the frequency in kHz (further rows on the
 //!   same frequency: that and a digit, 1543251, 1543252 …).
@@ -146,6 +146,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             "" if raw.to_uppercase().starts_with("CC") => ChannelMode::Dmr,
             "" if raw.to_uppercase().starts_with("RAN") => ChannelMode::Nxdn48,
             "" | "fm" | "nfm" | "analog" | "a" => ChannelMode::Fm,
+            "discriminator" | "disc" => ChannelMode::Discriminator,
             "am" => ChannelMode::Am,
             "p25" | "digital" | "d" => ChannelMode::P25,
             "dmr" => ChannelMode::Dmr,
@@ -180,7 +181,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         let bandwidth_khz = match at(c_bw) {
             "" => None,
             s => match (if decimal_comma { s.replace(',', ".") } else { s.to_string() }).parse::<f64>() {
-                Ok(v) if (lo..=hi).contains(&v) && matches!(mode, ChannelMode::Fm | ChannelMode::Am) => Some(v),
+                Ok(v) if (lo..=hi).contains(&v) && matches!(mode, ChannelMode::Fm | ChannelMode::Discriminator | ChannelMode::Am) => Some(v),
                 _ => {
                     bad_bw.push(row);
                     None
@@ -230,7 +231,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         out.notes.push(format!("Skipped row(s) {} — no usable frequency.", rows_list(&bad_freq)));
     }
     if !bad_mode.is_empty() {
-        out.notes.push(format!("Row(s) {}: unknown Mode (use fm, am, p25, dmr, nxdn48 or nxdn96) — read as fm.", rows_list(&bad_mode)));
+        out.notes.push(format!("Row(s) {}: unknown Mode (use fm, discriminator, am, p25, dmr, nxdn48 or nxdn96) — read as fm.", rows_list(&bad_mode)));
     }
     if !bad_tg.is_empty() {
         out.notes.push(format!("Row(s) {}: TG Number isn't a positive whole number — using the default.", rows_list(&bad_tg)));
@@ -282,6 +283,7 @@ pub fn write(channels: &[Channel]) -> String {
             c.match_talkgroup.map_or(String::new(), |t| t.to_string()),
             match c.mode {
                 ChannelMode::Fm => "fm".into(),
+                ChannelMode::Discriminator => "discriminator".into(),
                 ChannelMode::Am => "am".into(),
                 ChannelMode::P25 => "p25".into(),
                 ChannelMode::Dmr => "dmr".into(),
@@ -436,5 +438,13 @@ mod tests {
         assert!(p.notes.iter().any(|n| n.contains("Row(s) 5: Bandwidth")), "{:?}", p.notes);
         let back = parse(&write(&p.channels)).unwrap();
         assert_eq!(back.channels, p.channels);
+    }
+
+    #[test]
+    fn discriminator_mode_round_trips() {
+        let parsed = parse("Frequency,Mode\n154.5,discriminator\n").unwrap();
+        assert_eq!(parsed.channels[0].mode, ChannelMode::Discriminator);
+        assert_eq!(parsed.channels[0].conv_mode(), trunk_core::trunk::ConvMode::Discriminator);
+        assert_eq!(parse(&write(&parsed.channels)).unwrap().channels, parsed.channels);
     }
 }

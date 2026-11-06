@@ -505,6 +505,8 @@ pub struct Concluded {
     pub base_name: String,
     /// 8 kHz mono in [−1, 1].
     pub audio: Vec<f32>,
+    /// Optional raw FM discriminator samples, mono S16 at 22,050 Hz.
+    pub discriminator: Option<Vec<i16>>,
     /// With [`EngineConfig::capture_frames`]: the vocoder frames behind
     /// `audio` (None for analog: there are none).
     pub frames: Option<Capture>,
@@ -592,7 +594,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
     h.trim(rules.min_transmission_s);
     let freq_error_hz = h.rec.freq_error_hz();
     let Held { call, rec, recorder_num } = h;
-    let Recorded { mut audio, frames, inband, reception, .. } = rec;
+    let Recorded { mut audio, discriminator, frames, inband, reception, .. } = rec;
     let short = (audio.len() as f64) < rules.min_call_s * mbe::SAMPLE_RATE as f64 && !audio.is_empty();
     if (audio.is_empty() && !(rules.keep_silent || call.encrypted && rules.keep_encrypted)) || short {
         return Err(call);
@@ -625,5 +627,5 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
         },
     );
     let frames = frames.captured.filter(|f| !audio.is_empty() && !f.is_empty()).map(|f| capture(&call, &f, audio.len(), freq_error_hz, &reception, cx));
-    Ok(Concluded { call, record, short_name: cx.short_name.to_string(), site: cx.site.to_string(), base_name, audio, frames })
+    Ok(Concluded { call, record, short_name: cx.short_name.to_string(), site: cx.site.to_string(), base_name, audio, discriminator: (!discriminator.is_empty()).then_some(discriminator), frames })
 }

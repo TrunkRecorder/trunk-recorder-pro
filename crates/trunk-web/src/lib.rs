@@ -96,11 +96,19 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 set(&obj, "frame", Uint8Array::from(frame.as_slice()));
             }
             // (No frame capture in the browser: the setting is desktop-only.)
-            Output::File { rel, wav, record, .. } => {
+            Output::File { rel, wav, raw_pcm, record, .. } => {
                 set(&obj, "t", "file");
                 set(&obj, "wav", Uint8Array::from(wav.as_slice()));
+                if let Some(raw) = raw_pcm {
+                    set(&obj, "raw", Uint8Array::from(raw.as_slice()));
+                }
                 set(&obj, "json", record.to_json());
                 set(&obj, "entry", trunk_app::session::call_entry(&rel, &record).to_string());
+                set(&obj, "rel", rel);
+            }
+            Output::RawFile { rel, raw_pcm, .. } => {
+                set(&obj, "t", "rawFile");
+                set(&obj, "raw", Uint8Array::from(raw_pcm.as_slice()));
                 set(&obj, "rel", rel);
             }
         }

@@ -214,6 +214,7 @@ function KeyContainer(props: { k: LockableKeys }) {
 /** A conventional channel's modes, as the mode menus list them. */
 const MODE_OPTIONS: { mode: Channel["mode"]; label: string }[] = [
   { mode: "fm", label: "Analog FM" },
+  { mode: "discriminator", label: "Discriminator (raw PCM)" },
   { mode: "am", label: "Analog AM" },
   { mode: "p25", label: "P25" },
   { mode: "dmr", label: "DMR" },
@@ -229,6 +230,7 @@ const modeOptions = MODE_OPTIONS.map((o) => (
 
 const CODE_HINT = {
   fm: { placeholder: "any", title: "CTCSS tone or DCS code (151.4 PL, 023 DPL). Empty: any." },
+  discriminator: { placeholder: "any", title: "FM discriminator capture; writes independent S16LE mono 22.05 kHz .raw files, including data transmissions without voice calls. Voice calls may also have a .raw sidecar. CTCSS tone or DCS matching is available." },
   am: { placeholder: "—", title: "AM carries no tone or code." },
   p25: { placeholder: "any NAC", title: "NAC, hex (293). Empty: any. NAC 293 TG 1 fills Match TG too." },
   dmr: { placeholder: "any CC", title: "Colour code (1). Empty: any. RadioReference's CC1 TS2 TG201 fills Slot and Match TG too." },
@@ -237,7 +239,7 @@ const CODE_HINT = {
 };
 
 /** Digital modes: those whose transmissions name their talkgroup. */
-const digital = (mode: Channel["mode"]) => mode !== "fm" && mode !== "am";
+const digital = (mode: Channel["mode"]) => mode !== "fm" && mode !== "discriminator" && mode !== "am";
 
 /** A row's access fields set to `p` (absent when empty). */
 function setAccess(x: Channel, p: AccessParts) {
@@ -321,7 +323,7 @@ const CSV_EXAMPLE = `TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Categ
 /** Column, what it holds, what empty means. */
 const CSV_COLUMNS: [string, React.ReactNode, string][] = [
   ["Frequency", <>MHz with a decimal point (<code>154.4300</code>), else Hz. Required.</>, "row skipped"],
-  ["Mode", <><code>fm</code>, <code>am</code>, <code>p25</code>, <code>dmr</code>, <code>nxdn48</code>, <code>nxdn96</code></>, "fm, or what Code says (a NAC p25, CC dmr, RAN nxdn48)"],
+  ["Mode", <><code>fm</code>, <code>discriminator</code>, <code>am</code>, <code>p25</code>, <code>dmr</code>, <code>nxdn48</code>, <code>nxdn96</code></>, "fm, or what Code says (a NAC p25, CC dmr, RAN nxdn48)"],
   ["Code", <>The code it records: a tone <code>151.4</code> or DCS <code>D023N</code> (fm), a NAC <code>293</code> (p25), a colour code <code>1</code> (dmr), a RAN <code>5</code> (nxdn)</>, "any"],
   ["Slot", <>dmr: <code>1</code> or <code>2</code></>, "either"],
   ["Match TG", <>p25, dmr, nxdn: only transmissions naming this talkgroup</>, "any"],
@@ -350,9 +352,9 @@ function matchChips(ch: Channel, shared: boolean): { kind: MatchKind; text: stri
   const bad = "error" in parsed ? parsed.error : undefined;
   const out: { kind: MatchKind; text: string; bad?: string }[] = [];
   if (code) {
-    const named = { fm: /^\d/.test(code) ? `${code} Hz` : code, am: code, p25: `NAC ${code}`, dmr: `CC ${code}`, nxdn48: `RAN ${code}`, nxdn96: `RAN ${code}` }[ch.mode];
+    const named = { fm: /^\d/.test(code) ? `${code} Hz` : code, discriminator: /^\d/.test(code) ? `${code} Hz` : code, am: code, p25: `NAC ${code}`, dmr: `CC ${code}`, nxdn48: `RAN ${code}`, nxdn96: `RAN ${code}` }[ch.mode];
     // (What doesn't read is shown as typed.)
-    out.push({ kind: ch.mode === "fm" ? "tone" : "code", text: bad ? code : named, bad });
+    out.push({ kind: ch.mode === "fm" || ch.mode === "discriminator" ? "tone" : "code", text: bad ? code : named, bad });
   }
   if (ch.slot !== undefined) out.push({ kind: "slot", text: `slot ${ch.slot}` });
   if (ch.matchTalkgroup !== undefined) out.push({ kind: "tg", text: `TG ${ch.matchTalkgroup}` });
@@ -386,7 +388,7 @@ function MatchLegend(props: { modes: Set<Channel["mode"]> }) {
   const m = props.modes;
   const dig = [...m].some(digital);
   const kinds: [MatchKind, string][] = [
-    ...(m.has("fm") ? [["tone", "tone / DCS"] as [MatchKind, string]] : []),
+    ...([...m].some((x) => x === "fm" || x === "discriminator") ? [["tone", "tone / DCS"] as [MatchKind, string]] : []),
     ...(dig ? [["code", [m.has("p25") && "NAC", m.has("dmr") && "colour code", (m.has("nxdn48") || m.has("nxdn96")) && "RAN"].filter(Boolean).join(" / ")] as [MatchKind, string]] : []),
     ...(m.has("dmr") ? [["slot", "slot"] as [MatchKind, string]] : []),
     ...(dig ? [["tg", "talkgroup"] as [MatchKind, string]] : []),
@@ -499,7 +501,7 @@ function RowEditor(props: {
   );
 }
 
-const NONE_LABEL = { fm: "no tone", am: "no code", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code" };
+const NONE_LABEL = { fm: "no tone", discriminator: "no tone", am: "no code", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code" };
 const SHOWN_CODES = 8;
 
 /**
@@ -518,7 +520,7 @@ function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean;
   if (!codes.length) return null;
   // Already recorded by a row of its own (not just by the catch-all).
   const listed = (p: AccessParts) => props.rows.some((r) => sameAccess({ code: r.code ?? "", slot: r.slot, matchTalkgroup: r.matchTalkgroup }, p));
-  const label = (code: string) => (!code ? NONE_LABEL[mode] : mode === "fm" && /^\d/.test(code) ? `${code} Hz` : code);
+  const label = (code: string) => (!code ? NONE_LABEL[mode] : (mode === "fm" || mode === "discriminator") && /^\d/.test(code) ? `${code} Hz` : code);
   const shown = codes.slice(0, SHOWN_CODES);
   return (
     <tr className="heard-row">
@@ -1483,7 +1485,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
         foldKey={`fcc:conv:${name}`}
         hint="Optional: who is licensed on each channel's frequency (they can be different licensees'). Identify looks them up; Motorola P25 channels say theirs on the air."
       />
-      {chans.some((c) => c.mode !== "fm" && c.mode !== "am") && (
+      {chans.some((c) => digital(c.mode)) && (
         <Group title="Talkgroup names" hint="For the talkgroups its P25, DMR and NXDN channels name on the air (a row's own name is for calls filed under its talkgroup).">
           <TalkgroupsField sys={conv} />
         </Group>
@@ -1717,11 +1719,11 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                             {ch.freqHz > 0 && ch.mode !== "am" && (
                               <button
                                 className="btn ghost small"
-                                title={`Another ${{ fm: "tone", p25: "NAC or talkgroup", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode]} on this frequency`}
+                                title={`Another ${{ fm: "tone", discriminator: "tone", p25: "NAC or talkgroup", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode]} on this frequency`}
                                 aria-label="Add a row on this frequency"
                                 onClick={() => addRule(i)}
                               >
-                                {ch.mode === "fm" ? "+ tone" : "+ rule"}
+                                {ch.mode === "fm" || ch.mode === "discriminator" ? "+ tone" : "+ rule"}
                               </button>
                             )}
                             <button className="btn ghost small danger" title="Remove" aria-label="Remove channel" onClick={() => remove(i)}>
@@ -1840,7 +1842,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
           </ul>
         </details>
       </Group>
-      {chans.some((ch) => ch.mode === "fm" || ch.mode === "am") && (
+      {chans.some((ch) => ch.mode === "fm" || ch.mode === "discriminator" || ch.mode === "am") && (
         <DemodGroup
           conv={conv}
           edit={(fn) =>
@@ -1896,8 +1898,9 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
 /** An analog channel's filter width: the mode's default, or a preset (or what a file set). */
 function BandwidthSelect(props: { ch: Channel; disabled: boolean; onChange: (khz: number | undefined) => void }) {
   const { ch } = props;
-  if (ch.mode !== "fm" && ch.mode !== "am") return <span className="muted">—</span>;
-  const presets = BANDWIDTH_PRESETS[ch.mode];
+  if (ch.mode !== "fm" && ch.mode !== "discriminator" && ch.mode !== "am") return <span className="muted">—</span>;
+  const bandMode = ch.mode === "discriminator" ? "fm" : ch.mode;
+  const presets = BANDWIDTH_PRESETS[bandMode];
   const value = ch.bandwidthKhz === undefined ? "" : String(ch.bandwidthKhz);
   const custom = ch.bandwidthKhz !== undefined && !presets.some((p) => p.khz === ch.bandwidthKhz);
   return (
@@ -1906,7 +1909,7 @@ function BandwidthSelect(props: { ch: Channel; disabled: boolean; onChange: (khz
       disabled={props.disabled}
       aria-label="Bandwidth"
       title={
-        ch.mode === "fm"
+        bandMode === "fm"
           ? "The channel filter: narrow for 12.5 kHz channels, wide FM for 25 kHz ones (±5 kHz deviation)."
           : "The channel filter: 8.33 kHz or 25 kHz airband channels, or wide for UHF military air and a transmitter that is off frequency."
       }
@@ -1926,7 +1929,7 @@ function BandwidthSelect(props: { ch: Channel; disabled: boolean; onChange: (khz
 /** A conventional system's demodulation settings, for the analog modes it has; each left at Default is left out. */
 function DemodGroup(props: { conv: Conventional; edit: (fn: (d: Demod) => void) => void }) {
   const d = props.conv.demod ?? {};
-  const fm = props.conv.channels.some((ch) => ch.mode === "fm");
+  const fm = props.conv.channels.some((ch) => ch.mode === "fm" || ch.mode === "discriminator");
   const am = props.conv.channels.some((ch) => ch.mode === "am");
   const set = <K extends keyof Demod>(k: K, v: Demod[K] | undefined) =>
     props.edit((x) => {

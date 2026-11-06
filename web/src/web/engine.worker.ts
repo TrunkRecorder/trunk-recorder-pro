@@ -6,7 +6,7 @@ import { withEdit } from "../talkgroups.ts";
 import init, { calls_page, directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { CallEntry, Config, FromRecorder, HeardCode, Talkgroup, ToRecorder } from "../protocol.ts";
 import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, trpBase } from "../config.ts";
-import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
+import { listCalls, readText, saveCall, saveRawCapture, writeText } from "./opfs.ts";
 
 /** Page → worker: the protocol's commands (those it can't do get an `error`), and its own setup. */
 export type ToWorker = ToRecorder | { type: "init"; config: Config; talkgroups: Record<string, Talkgroup[]> } | { type: "files"; files: (File | null)[] };
@@ -58,7 +58,7 @@ async function devices() {
 }
 
 /** Hand the session's outputs to the page / storage. */
-function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string; freqHz?: number; callSign?: string; siteNames?: string }[]): void {
+function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; raw?: Uint8Array; entry?: string; freqHz?: number; callSign?: string; siteNames?: string }[]): void {
   for (const o of outs) {
     if (o.t === "text") post(JSON.parse(o.json!) as FromRecorder);
     else if (o.t === "callSign") {
@@ -78,9 +78,13 @@ function deliver(outs: { t: string; json?: string; system?: number; shortName?: 
     } else if (o.t === "file") {
       // Announced once it's stored, as the desktop app does.
       const entry = JSON.parse(o.entry!);
-      void saveCall(o.rel!, o.wav!, o.json!, entry).then(
+      void saveCall(o.rel!, o.wav!, o.json!, entry, o.raw).then(
         () => post({ type: "concluded", entry }),
         (e) => post({ type: "log", lines: [{ timeS: 0, kind: "error", text: `couldn't store ${o.rel}: ${e instanceof Error ? e.message : String(e)}` }] }),
+      );
+    } else if (o.t === "rawFile") {
+      void saveRawCapture(o.rel!, o.raw!).catch((e: unknown) =>
+        post({ type: "log", lines: [{ timeS: 0, kind: "error", text: `couldn't store ${o.rel}.raw: ${e instanceof Error ? e.message : String(e)}` }] }),
       );
     }
   }
@@ -573,4 +577,3 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       post({ type: "error", message: `The browser version can't do "${m.type}": that needs the desktop app.` });
   }
 };
-

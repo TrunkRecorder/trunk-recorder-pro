@@ -304,6 +304,8 @@ pub enum Event {
     /// A radio on a call of system `system` gave a new GPS position (decimal degrees).
     UnitPosition { system: u16, unit: u32, lat: f64, lon: f64, talkgroup: u32 },
     Concluded(Concluded),
+    /// Raw discriminator audio captured on a conventional channel, whether or not voice was decoded.
+    RawCapture { system: u16, freq_hz: u64, start_s: f64, samples: Vec<i16> },
     /// A recorded call wasn't saved: no audio, or less than its system's minimum.
     NotSaved(Call),
     /// Multi-site: `call` was another site's copy of `kept` (saved instead).
@@ -952,6 +954,7 @@ impl SysHost<'_> {
             // Analog squelch: this far above the noise under the channel.
             squelch: s.chz.threshold(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth(), ANALOG_SQUELCH_DB),
             subaudible: false,
+            capture_discriminator: false,
             analog: self.analog,
             ignore_hz: Vec::new(),
             keys: self.keys.clone(),
@@ -1898,6 +1901,9 @@ impl Core {
                     self.write_call(Held { call: call.clone(), rec, recorder_num }, None);
                     self.events.push(Event::CallEnd(call));
                 }
+                ConvOut::RawCapture { system, freq_hz, start_s, samples } => {
+                    self.events.push(Event::RawCapture { system, freq_hz, start_s, samples });
+                }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
                 ConvOut::Patterns { call, heard, decrypted, now_s } => self.tone_patterns(&call, heard, decrypted, now_s),
                 ConvOut::WrongKey(system, c) => Self::wrong_key(&mut self.wrong_keys, &mut self.events, system, None, c, None),
@@ -2034,6 +2040,7 @@ impl Core {
                 }
                 // (Only conventional FM asks for it.)
                 TrackerOut::Subaudible(_) => {}
+                TrackerOut::Discriminator(_) => {}
                 TrackerOut::Position(p) => {
                     if let Some(c) = call {
                         if CallManager::note_position(c, &p) {
