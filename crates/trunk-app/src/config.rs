@@ -2390,7 +2390,7 @@ impl Config {
 
     /// What conventional rows name talkgroups known before a call is heard
     /// ([`ConvChannel::names_ahead`]), by system short name: the dashboard's
-    /// names for them, ahead of the talkgroup file's, as a call's are. (A
+    /// names for them, ahead of the system's talkgroups', as a call's are. (A
     /// number that comes from the air is named by the calls that carry it.)
     pub fn row_talkgroups(&self) -> HashMap<String, Talkgroups> {
         let names: Vec<&str> = self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|v| v.short_name.as_str())).collect();
@@ -2731,7 +2731,7 @@ impl Config {
             })
             .collect();
         // A conventional system's P25 / DMR / NXDN channels name the talkgroups
-        // they hear by its own talkgroup file (a row's own name comes from the
+        // they hear by its own talkgroups (a row's own name comes from the
         // channel list).
         for v in self.active_conventional() {
             let r = self.recording.with(&v.recording);
