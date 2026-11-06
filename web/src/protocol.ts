@@ -1179,9 +1179,17 @@ export interface PluginSchema {
   "x-enum-labels"?: string[];
   format?: string;
   "x-secret"?: boolean;
+  /** Filled in by the plugin (`settings.save`), not typed: shown, not edited. */
+  readOnly?: boolean;
+  /** A read-only web address: its open button's label ("Open" when not given). */
+  "x-open"?: string;
   "x-multiline"?: boolean;
   minimum?: number;
   maximum?: number;
+  /** A number's step (a slider's, with `x-slider`). */
+  multipleOf?: number;
+  /** A number drawn as a slider, from `minimum` to `maximum` in steps of `multipleOf`. */
+  "x-slider"?: boolean;
   items?: PluginSchema;
   /** Fields that have to be filled in (of an object). */
   required?: string[];

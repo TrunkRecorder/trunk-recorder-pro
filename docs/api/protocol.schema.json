@@ -5325,6 +5325,14 @@
         "x-secret": {
           "type": "boolean"
         },
+        "readOnly": {
+          "type": "boolean",
+          "description": "Filled in by the plugin (`settings.save`), not typed: shown, not edited."
+        },
+        "x-open": {
+          "type": "string",
+          "description": "A read-only web address: its open button's label (\"Open\" when not given)."
+        },
         "x-multiline": {
           "type": "boolean"
         },
@@ -5333,6 +5341,14 @@
         },
         "maximum": {
           "type": "number"
+        },
+        "multipleOf": {
+          "type": "number",
+          "description": "A number's step (a slider's, with `x-slider`)."
+        },
+        "x-slider": {
+          "type": "boolean",
+          "description": "A number drawn as a slider, from `minimum` to `maximum` in steps of `multipleOf`."
         },
         "items": {
           "$ref": "#/definitions/PluginSchema"

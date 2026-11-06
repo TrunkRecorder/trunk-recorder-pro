@@ -35,7 +35,7 @@ import {
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
-import { BiasT, FileInput, TextInput } from "./inputs.tsx";
+import { BiasT, CopyButton, FileInput, TextInput } from "./inputs.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { parseRadioReferencePaste, readTalkgroupFile, type Talkgroup } from "./talkgroups.ts";
@@ -655,21 +655,12 @@ function Troubleshooter(props: { s: AppState; found: number; onFound: () => void
 }
 
 function Command(props: { cmd: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
   if (!props.cmd) return null;
-  const copy = () => {
-    void navigator.clipboard?.writeText(props.cmd).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
   return (
     <div className="ob-cmd">
       {props.label && <span className="ob-cmd-label">{props.label}</span>}
       <pre>{props.cmd}</pre>
-      <button className="ob-btn small" onClick={copy}>
-        {copied ? "Copied" : "Copy"}
-      </button>
+      <CopyButton text={props.cmd} className="ob-btn small" />
     </div>
   );
 }

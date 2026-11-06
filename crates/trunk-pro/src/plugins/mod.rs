@@ -41,7 +41,7 @@ mod timing;
 
 pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
-pub use host::{Calls, Note, PluginHost, Spec};
+pub use host::{Calls, Note, PluginHost, Saves, Spec};
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -361,18 +361,33 @@ pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::Sys
         .collect()
 }
 
+/// A plugin's `settings.save` into its settings (`settings`, an object or null): each key given
+/// replaces that setting, a null removes it, the others stay. The keys that changed.
+pub fn merge_settings(settings: &mut serde_json::Value, given: serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    use serde_json::Value;
+    let mut have = match std::mem::take(settings) {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    let mut changed = Vec::new();
+    for (k, v) in given {
+        let was = if v.is_null() { have.remove(&k) } else { have.insert(k.clone(), v.clone()) };
+        if was.as_ref() != Some(&v) && !(v.is_null() && was.is_none()) {
+            changed.push(k);
+        }
+    }
+    *settings = Value::Object(have);
+    changed
+}
+
 /// Plugin notes as log lines, which the log shows the browsers too
-/// ([`crate::logging::text`]; the plugins view follows each plugin's state
-/// and results in its `pluginRuntime`).
+/// ([`crate::logging::plugin_note`]; the plugins view follows each plugin's
+/// state and results in its `pluginRuntime`).
 pub fn notes_to_log() -> host::Notes {
     use trunk_recorder_plugin::{Level, Outcome, State};
     let log = |plugin: &str, error: bool, text: &str| {
-        let text = if plugin.is_empty() { format!("Plugins: {text}") } else { format!("[{plugin}] {text}") };
-        if error {
-            log::error!(target: "plugin", "{text}");
-        } else {
-            log::info!(target: "plugin", "{text}");
-        }
+        use trunk_app::log::Level as L;
+        crate::logging::plugin_note(plugin, if error { L::Error } else { L::Info }, text);
     };
     std::sync::Arc::new(move |n: Note| match n {
         Note::Log { plugin, level, text } => {
@@ -399,6 +414,20 @@ pub fn notes_to_log() -> host::Notes {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A plugin's save replaces the keys it gives, removes those it gives as null, keeps the rest.
+    #[test]
+    fn a_plugins_save_merges_into_its_settings() {
+        let mut s = json!({ "token": "t", "servers": [{ "id": "1" }], "old": 1 });
+        let given = json!({ "servers": [{ "id": "1", "name": "LolWut" }], "old": null, "gone": null, "token": "t" });
+        let mut changed = merge_settings(&mut s, given.as_object().unwrap().clone());
+        changed.sort();
+        assert_eq!(s, json!({ "token": "t", "servers": [{ "id": "1", "name": "LolWut" }] }));
+        assert_eq!(changed, ["old", "servers"], "only what changed is said");
+        let mut none = serde_json::Value::Null;
+        merge_settings(&mut none, json!({ "a": 1 }).as_object().unwrap().clone());
+        assert_eq!(none, json!({ "a": 1 }));
+    }
 
     /// Allowing a plugin decrypted calls, or no longer, restarts the plugins.
     #[test]
