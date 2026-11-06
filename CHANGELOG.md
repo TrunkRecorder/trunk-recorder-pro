@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A tone on a conventional channel names its talkgroup.** Plugins' `tone_pattern` events took the
+  talkgroup's name from the system's talkgroup list, which a conventional system's channel names
+  aren't in, so a page there came with no name ("TG 1") while its recording had one. The tone now
+  takes the name its call has.
 - **Conventional calls follow the system's recording rules, as trunked calls do.** A talkgroup the
   talkgroup file marks Ignore isn't recorded (its call is still shown), nor an unlisted one with
   `recordUnknown` off (a row's own name lists it); `conversationMode` off makes each transmission a
