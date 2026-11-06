@@ -21,6 +21,7 @@ pub mod tdma;
 pub mod tracker;
 pub mod units;
 pub mod voice;
+pub mod wall;
 
 pub use calls::{Call, CallConfig, CallId, CallSource, Flags, Policy, Voice};
 pub use control::{Protocol, ProtocolStatus};

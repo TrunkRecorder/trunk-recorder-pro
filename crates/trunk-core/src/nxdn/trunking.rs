@@ -36,7 +36,7 @@ use crate::dsp::c4fm::C4fm;
 use crate::dsp::{Receiver, Symbol};
 use crate::trunk::engine::NoteLevel;
 use crate::trunk::identity::{IdField, Identity};
-use crate::trunk::message::{table_from_str, table_to_string, Message, MessageType};
+use crate::trunk::message::{site_code, ChannelTable, LastCall, Message, MessageType};
 use crate::trunk::Voice;
 
 /// A grant waits this long for its group to show up on a watched carrier.
@@ -45,8 +45,6 @@ const LEARN_WINDOW_S: f64 = 4.0;
 const CALL_REFRESH_S: f64 = 1.0;
 /// A carrier counts as a control channel this long after its last CAC.
 const CONTROL_HOLD_S: f64 = 2.0;
-/// A carrier's call shows on the dashboard this long after it was last heard.
-const CALL_SHOW_S: f64 = 3.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Kind {
@@ -150,7 +148,7 @@ pub struct Carrier {
     sf: SacchAssembler,
     state: CallState,
     /// The call last reported (group, source, when).
-    last: Option<(u32, u32, f64)>,
+    last: LastCall,
     pub control_s: f64,
     /// Last frame with a valid LICH heard on it, s.
     pub heard_s: f64,
@@ -170,7 +168,7 @@ pub struct Site {
     pub carriers: Vec<Carrier>,
     cfg: NxdnConfig,
     /// Channel number → frequency, learned from the air.
-    pub learned: BTreeMap<u32, u64>,
+    pub table: ChannelTable,
     pending: Vec<Pending>,
     unknown: std::collections::BTreeSet<u32>,
     access: Option<ChannelAccess>,
@@ -203,7 +201,7 @@ impl Site {
                 frames: Vec::new(),
                 sf: SacchAssembler::default(),
                 state: CallState::default(),
-                last: None,
+                last: LastCall::default(),
                 control_s: f64::NEG_INFINITY,
                 heard_s: f64::NEG_INFINITY,
                 ran: None,
@@ -215,8 +213,8 @@ impl Site {
         Site {
             carriers,
             ran: cfg.ran,
+            table: ChannelTable::new(cfg.channel_table.clone()),
             cfg,
-            learned: BTreeMap::new(),
             pending: Vec::new(),
             unknown: Default::default(),
             access: None,
@@ -243,7 +241,7 @@ impl Site {
 
     pub fn status(&self) -> SiteStatus {
         let mut channels: Vec<ChannelEntry> = self.cfg.channel_table.iter().map(|(&number, &hz)| ChannelEntry { number, hz, configured: true }).collect();
-        channels.extend(self.learned.iter().filter(|(n, _)| !self.cfg.channel_table.contains_key(n)).map(|(&number, &hz)| ChannelEntry { number, hz, configured: false }));
+        channels.extend(self.table.learned().map(|(number, hz)| ChannelEntry { number, hz, configured: false }));
         channels.sort_by_key(|c| c.number);
         let carriers = self
             .carriers
@@ -252,7 +250,7 @@ impl Site {
                 hz: c.hz,
                 control: self.now_s - c.control_s < CONTROL_HOLD_S,
                 ran: c.ran,
-                call: c.last.filter(|l| self.now_s - l.2 < CALL_SHOW_S).map(|l| (l.0, l.1)),
+                call: c.last.shown(self.now_s),
                 repeater: c.repeater,
             })
             .collect();
@@ -274,7 +272,7 @@ impl Site {
 
     /// The frequency of channel `n`: configured, else heard.
     pub fn resolve(&self, n: u32) -> Option<u64> {
-        self.cfg.channel_table.get(&n).or_else(|| self.learned.get(&n)).copied()
+        self.table.resolve(n)
     }
 
     /// The carrier sending CAC now; on Type-D (no control channel), the
@@ -300,10 +298,10 @@ impl Site {
 
     /// The learned table as `channel=hz` lines.
     pub fn map_to_string(&self) -> String {
-        table_to_string(&self.learned)
+        self.table.saved()
     }
     pub fn map_from_str(&mut self, s: &str) {
-        self.learned.extend(table_from_str(s));
+        self.table.load(s);
     }
 
     /// Carrier `idx`'s channel IQ; `t0` + sample / `rate` is a sample's air time (s).
@@ -369,15 +367,14 @@ impl Site {
     /// channel's RAN becomes the site's.
     fn ran_ok(&mut self, idx: usize, ran: u8) -> bool {
         self.carriers[idx].ran = Some(ran);
-        match self.ran {
-            Some(want) => ran == want,
-            None if idx < self.n_control => {
-                self.ran = Some(ran);
-                self.notes.push((NoteLevel::Info, format!("RAN {ran}")));
-                true
-            }
-            None => true,
+        let control = idx < self.n_control;
+        // The site's RAN, from its control channel.
+        if self.ran.is_none() && control {
+            self.ran = Some(ran);
+            self.notes.push((NoteLevel::Info, format!("RAN {ran}")));
         }
+        // Another system's carrier (a neighbour on a listed frequency, or a stray): not followed.
+        site_code(self.ran, Some(ran), control, self.n_control > 0)
     }
 
     fn control(&mut self, idx: usize, m: L3, t: f64, out: &mut Vec<Message>) {
@@ -435,20 +432,16 @@ impl Site {
     }
 
     fn set_learned(&mut self, n: u32, hz: u64, why: &str) {
-        if self.cfg.channel_table.contains_key(&n) || self.learned.get(&n) == Some(&hz) {
-            return;
+        if self.table.learn(n, hz) {
+            self.notes.push((NoteLevel::Info, format!("Channel {n} is {} ({why})", mhz(hz))));
         }
-        // A frequency is one channel: drop what said otherwise.
-        self.learned.retain(|_, h| *h != hz);
-        self.learned.insert(n, hz);
-        self.notes.push((NoteLevel::Info, format!("Channel {n} is {} ({why})", mhz(hz))));
     }
 
     /// A group's call on a watched carrier: the frequency of a channel a recent grant sent it to.
     fn learn(&mut self, tg: u32, hz: u64) {
         if let Some(i) = self.pending.iter().position(|p| p.tg == tg) {
             let p = self.pending.remove(i);
-            if self.resolve(p.channel).is_none() || (self.learned.contains_key(&p.channel) && !self.cfg.channel_table.contains_key(&p.channel)) {
+            if self.resolve(p.channel).is_none() || self.table.is_learned(p.channel) {
                 self.set_learned(p.channel, hz, &format!("group {tg} granted there came up on it"));
             }
         }
@@ -475,12 +468,7 @@ impl Site {
                 (self.access.and_then(|a| a.dfa_hz(ofn)).map(|h| h.round() as u64), if bandwidth == 1 { Rate::N96 } else { Rate::N48 }, ofn as u32)
             }
         };
-        let kind = match (head.group(), dup) {
-            (true, false) => MessageType::Grant,
-            (true, true) => MessageType::Update,
-            (false, false) => MessageType::UuVGrant,
-            (false, true) => MessageType::UuVUpdate,
-        };
+        let kind = MessageType::voice(head.group(), dup);
         let mut m = self.base(kind, t);
         m.freq_hz = hz.unwrap_or(0);
         m.talkgroup = tg;
@@ -558,7 +546,7 @@ impl Site {
             }
             L3::TxRel { .. } | L3::TxRelEx { .. } | L3::Disc { .. } => {
                 self.carriers[idx].state = CallState::default();
-                self.carriers[idx].last = None;
+                self.carriers[idx].last.clear();
             }
             _ => {}
         }
@@ -573,13 +561,13 @@ impl Site {
                 // Idle / free repeater / site ID: no call on it.
                 if s.short_id() == 2046 {
                     c.state = CallState::default();
-                    c.last = None;
+                    c.last.clear();
                 }
             }
             2 | 4 if !special && s.short_id() != 0 => {
                 if s.repeater() == 31 {
                     c.state = CallState::default();
-                    c.last = None;
+                    c.last.clear();
                     return;
                 }
                 if s.info() == 2 && s.repeater() != 0 && c.repeater != Some(s.repeater()) {
@@ -600,20 +588,9 @@ impl Site {
         let Some(tg) = st.tg else { return };
         let hz = self.carriers[idx].hz;
         self.learn(tg, hz);
-        let c = &mut self.carriers[idx];
         let src = st.src.unwrap_or(0);
-        let prev = c.last;
-        let repeat = prev.is_some_and(|(g, s, _)| g == tg && (s == src || src == 0));
-        if repeat && prev.is_some_and(|(_, _, at)| t - at < CALL_REFRESH_S) {
-            return;
-        }
-        c.last = Some((tg, if src != 0 { src } else { prev.map_or(0, |p| p.1) }, t));
-        let kind = match (st.group, repeat) {
-            (true, false) => MessageType::Grant,
-            (true, true) => MessageType::Update,
-            (false, false) => MessageType::UuVGrant,
-            (false, true) => MessageType::UuVUpdate,
-        };
+        let Some(repeat) = self.carriers[idx].last.heard(tg, src, t, CALL_REFRESH_S) else { return };
+        let kind = MessageType::voice(st.group, repeat);
         let rate = match st.rate9600 {
             Some(true) => Rate::N96,
             Some(false) => Rate::N48,

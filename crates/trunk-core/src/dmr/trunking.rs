@@ -30,7 +30,7 @@ use super::slot::{Channel, Csbk, LcFrom, SlotEvent, FID_MOTOROLA, FID_STANDARD};
 use crate::bits::field;
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::{Receiver, Symbol};
-use crate::trunk::message::{table_from_str, table_to_string, Message, MessageType};
+use crate::trunk::message::{site_code, ChannelTable, LastCall, Message, MessageType};
 use crate::trunk::Voice;
 
 pub const FID_CONNECT_PLUS: u8 = 0x06;
@@ -124,7 +124,7 @@ pub struct Carrier {
     bursts: Vec<Burst>,
     ev: Vec<(u8, SlotEvent)>,
     /// Per slot: the call link control last reported (talkgroup, source, when).
-    last: [Option<(u32, u32, f64)>; 2],
+    last: [LastCall; 2],
     /// Per slot: an MBC header waiting for its continuation.
     mbc: [Option<Csbk>; 2],
     /// Last control block (CSBK) heard on it, s.
@@ -150,7 +150,7 @@ pub struct Site {
     pub variant: Option<Variant>,
     cfg: DmrConfig,
     /// Logical channel → frequency, from the air (announced or learned).
-    pub learned: BTreeMap<u32, u64>,
+    pub table: ChannelTable,
     pending: Vec<Pending>,
     /// Capacity Plus: the rest channel's logical slot number and frequency.
     pub rest: Option<(u32, u64)>,
@@ -188,7 +188,7 @@ impl Site {
                 syms: Vec::new(),
                 bursts: Vec::new(),
                 ev: Vec::new(),
-                last: [None, None],
+                last: Default::default(),
                 mbc: [None, None],
                 control_s: f64::NEG_INFINITY,
                 status_s: [f64::NEG_INFINITY; 2],
@@ -199,8 +199,8 @@ impl Site {
             carriers,
             variant: None,
             color_code: cfg.color_code,
+            table: ChannelTable::new(cfg.lcn_table.clone()),
             cfg,
-            learned: BTreeMap::new(),
             pending: Vec::new(),
             rest: None,
             keyed: false,
@@ -214,7 +214,7 @@ impl Site {
     /// For the dashboard: what the site looks like now.
     pub fn status(&self) -> SiteStatus {
         let mut channels: Vec<ChannelEntry> = self.cfg.lcn_table.iter().map(|(&lcn, &hz)| ChannelEntry { lcn, hz, configured: true }).collect();
-        channels.extend(self.learned.iter().filter(|(l, _)| !self.cfg.lcn_table.contains_key(l)).map(|(&lcn, &hz)| ChannelEntry { lcn, hz, configured: false }));
+        channels.extend(self.table.learned().map(|(lcn, hz)| ChannelEntry { lcn, hz, configured: false }));
         channels.sort_by_key(|c| c.lcn);
         let carriers = self
             .carriers
@@ -224,7 +224,7 @@ impl Site {
                 control: self.now_s - c.control_s < CONTROL_HOLD_S,
                 color_code: c.chan.slots.iter().find_map(|s| s.color_code),
                 // A slot's call: its link control in the last few seconds.
-                slots: std::array::from_fn(|i| c.last[i].filter(|l| self.now_s - l.2 < 3.0).map(|l| (l.0, l.1))),
+                slots: std::array::from_fn(|i| c.last[i].shown(self.now_s)),
             })
             .collect();
         SiteStatus { variant: self.variant, color_code: self.color_code, rest: self.rest, keyed: self.keyed, channels, carriers }
@@ -242,7 +242,7 @@ impl Site {
 
     /// The frequency of logical channel `lcn`: configured, else heard.
     pub fn resolve(&self, lcn: u32) -> Option<u64> {
-        self.cfg.lcn_table.get(&lcn).or_else(|| self.learned.get(&lcn)).copied()
+        self.table.resolve(lcn)
     }
 
     /// The carrier sending control blocks now (control or rest channel).
@@ -266,10 +266,10 @@ impl Site {
 
     /// The learned table as `lcn=hz` lines.
     pub fn map_to_string(&self) -> String {
-        table_to_string(&self.learned)
+        self.table.saved()
     }
     pub fn map_from_str(&mut self, s: &str) {
-        self.learned.extend(table_from_str(s));
+        self.table.load(s);
     }
 
     /// Carrier `idx`'s channel IQ; `t0` + sample / `rate` is a sample's air time (s).
@@ -320,12 +320,9 @@ impl Site {
                 self.notes.push(format!("Colour code {c}"));
             }
         }
-        // Another system's carrier (a neighbour on a listed frequency, or a
-        // stray): until the site's colour code is known, only the control channels count.
-        match self.color_code {
-            Some(want) if cc != Some(want) => return,
-            None if idx >= self.n_control && self.n_control > 0 => return,
-            _ => {}
+        // Another system's carrier (a neighbour on a listed frequency, or a stray): not followed.
+        if !site_code(self.color_code, cc, idx < self.n_control, self.n_control > 0) {
+            return;
         }
         match e {
             SlotEvent::Lc { lc, from } => {
@@ -334,7 +331,7 @@ impl Site {
                     // The end of a transmission still says where the talkgroup was.
                     let hz = self.carriers[idx].hz;
                     self.learn(lc.target(), slot, hz);
-                    self.carriers[idx].last[slot as usize] = None;
+                    self.carriers[idx].last[slot as usize].clear();
                     return;
                 }
                 if let Some(n) = lc.rest_lsn().filter(|&n| n != 0) {
@@ -345,19 +342,8 @@ impl Site {
                 let (tg, src) = (lc.target(), lc.source());
                 let hz = self.carriers[idx].hz;
                 self.learn(tg, slot, hz);
-                let c = &mut self.carriers[idx];
-                let prev = c.last[slot as usize];
-                let repeat = prev.is_some_and(|(g, s, _)| g == tg && (s == src || src == 0));
-                if repeat && prev.is_some_and(|(_, _, at)| t - at < LC_REFRESH_S) {
-                    return;
-                }
-                c.last[slot as usize] = Some((tg, if src != 0 { src } else { prev.map_or(0, |p| p.1) }, t));
-                let kind = match (group, repeat) {
-                    (true, false) => MessageType::Grant,
-                    (true, true) => MessageType::Update,
-                    (false, false) => MessageType::UuVGrant,
-                    (false, true) => MessageType::UuVUpdate,
-                };
+                let Some(repeat) = self.carriers[idx].last[slot as usize].heard(tg, src, t, LC_REFRESH_S) else { return };
+                let kind = MessageType::voice(group, repeat);
                 let mut m = self.base(idx, slot, kind, t);
                 m.freq_hz = hz;
                 m.talkgroup = tg;
@@ -414,13 +400,9 @@ impl Site {
     }
 
     fn set_learned(&mut self, lcn: u32, hz: u64, why: &str) {
-        if self.cfg.lcn_table.contains_key(&lcn) || self.learned.get(&lcn) == Some(&hz) {
-            return;
+        if self.table.learn(lcn, hz) {
+            self.notes.push(format!("Channel {lcn} is {} ({why})", mhz(hz)));
         }
-        // A frequency is one logical channel: drop what said otherwise.
-        self.learned.retain(|_, h| *h != hz);
-        self.learned.insert(lcn, hz);
-        self.notes.push(format!("Channel {lcn} is {} ({why})", mhz(hz)));
     }
 
     /// A talkgroup's link control on a watched carrier's slot: the frequency
@@ -429,7 +411,7 @@ impl Site {
         let hit = self.pending.iter().position(|p| p.slot == slot && if p.low8 { p.talkgroup == tg & 0xff } else { p.talkgroup == tg });
         if let Some(i) = hit {
             let p = self.pending.remove(i);
-            if self.resolve(p.lcn).is_none() || (self.learned.contains_key(&p.lcn) && !self.cfg.lcn_table.contains_key(&p.lcn)) {
+            if self.resolve(p.lcn).is_none() || self.table.is_learned(p.lcn) {
                 self.set_learned(p.lcn, hz, &format!("talkgroup {tg} granted there came up on it"));
             }
         }
@@ -446,12 +428,7 @@ impl Site {
             self.pending.retain(|p| !(p.lcn == lcn && p.slot == slot));
             self.pending.push(Pending { lcn, slot, talkgroup: tg, low8: false, t });
         }
-        let kind = match (group, update) {
-            (true, false) => MessageType::Grant,
-            (true, true) => MessageType::Update,
-            (false, false) => MessageType::UuVGrant,
-            (false, true) => MessageType::UuVUpdate,
-        };
+        let kind = MessageType::voice(group, update);
         let mut m = self.base(idx, slot_of_block, kind, t);
         m.freq_hz = hz.unwrap_or(0);
         // (The colour code of the slot the grant came on; the slot it grants.)
@@ -533,10 +510,7 @@ impl Site {
                     if let Some(c) = cont {
                         let lcn = field(c, 22, 34);
                         if let Some(hz) = absolute_downlink(c) {
-                            if !self.cfg.lcn_table.contains_key(&lcn) && self.learned.get(&lcn) != Some(&hz) {
-                                self.learned.insert(lcn, hz);
-                                self.notes.push(format!("Channel {lcn} is {} (announced)", mhz(hz)));
-                            }
+                            self.set_learned(lcn, hz, "announced");
                         }
                     }
                 }

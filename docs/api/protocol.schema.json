@@ -1037,7 +1037,7 @@
             "number",
             "null"
           ],
-          "description": "While recording: the wall clock less the clock calls are stamped by (the wall clock at Start, carried on monotonically), ms."
+          "description": "While recording: the wall clock less the recording's own clock (the wall clock at Start, carried on monotonically), ms. Shown, not judged: call times are corrected for it."
         },
         "radio": {
           "type": "array",
@@ -1069,7 +1069,7 @@
             ],
             "additionalProperties": false
           },
-          "description": "The radio systems' own clocks (P25 SYNC_BCST) against the recording's: offsetMs > 0 when the recording's is behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by)."
+          "description": "The radio systems' own clocks (P25 SYNC_BCST) against the calls' times: offsetMs > 0 when the calls' are behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by)."
         },
         "server": {
           "type": [
@@ -1137,7 +1137,6 @@
                   "type": "string",
                   "enum": [
                     "clock",
-                    "recording",
                     "radio",
                     "os"
                   ]

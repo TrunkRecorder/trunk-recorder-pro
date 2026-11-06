@@ -62,6 +62,14 @@ impl Protocol {
             Protocol::Edacs(_) => "edacs",
         }
     }
+
+    /// Its grants number talkgroups as its voice channels do (P25): a voice
+    /// channel naming another than its grant's was given away
+    /// ([`super::voice::reassigned`]). A SmartNet system's P25 voice names
+    /// its own numbers.
+    pub fn voice_names_grants(&self) -> bool {
+        matches!(self, Protocol::P25)
+    }
 }
 
 /// What a system's protocol has to show beyond what every system shows.
@@ -92,11 +100,22 @@ pub enum CarrierPlan {
 /// system checks against its site lock before following.
 #[derive(Clone, Debug)]
 pub struct Step {
-    /// Something decoded cleanly (it shows the control channel is alive).
+    /// Something decoded cleanly (it shows the control channel is alive):
+    /// [`Step::new`], the one rule every protocol's steps go by.
     pub good: bool,
     pub msgs: Vec<Message>,
     /// What the site has said about itself, as of these messages.
     pub identity: Identity,
+}
+
+impl Step {
+    /// What a block of the control channel came to: `msgs`, and the site's
+    /// `identity`. It's good — the control channel is alive — when the
+    /// protocol `decoded` something cleanly in it (its good count rose: an
+    /// idle block counts) or it said anything.
+    pub fn new(msgs: Vec<Message>, identity: Identity, decoded: bool) -> Step {
+        Step { good: decoded || !msgs.is_empty(), msgs, identity }
+    }
 }
 
 /// One trunking protocol's control channel(s): IQ in, [`Step`]s out.
@@ -245,7 +264,7 @@ impl P25 {
                         _ => {}
                     }
                 }
-                out.push(Step { good: true, msgs, identity: self.identity.clone() });
+                out.push(Step::new(msgs, self.identity.clone(), true));
             }
         }
     }
@@ -374,7 +393,7 @@ impl ControlChannel for Smartnet {
         self.bad += bad - bad0;
         self.identity.set_opt(IdField::SysId, cc.parser.sys_id);
         self.identity.set_opt(IdField::Site, cc.parser.site);
-        out.push(Step { good: good > good0, msgs, identity: self.identity.clone() });
+        out.push(Step::new(msgs, self.identity.clone(), good > good0));
     }
     fn forget_site(&mut self) {
         self.identity = Identity::default();
@@ -424,12 +443,13 @@ impl ControlChannel for Edacs {
         let (good0, _) = self.site.counts();
         let mut msgs = Vec::new();
         self.site.push(carrier, iq, t0, rate, &mut msgs);
-        let good = self.site.counts().0 > good0;
+        let decoded = self.site.counts().0 > good0;
         self.identity.set_opt(IdField::Site, self.site.parser.site);
-        out.push(Step { good: good || !msgs.is_empty(), msgs, identity: self.identity.clone() });
+        out.push(Step::new(msgs, self.identity.clone(), decoded));
     }
     fn forget_site(&mut self) {
         self.identity = Identity::default();
+        self.site.parser.forget_site();
     }
     fn counts(&self) -> (u64, u64) {
         self.site.counts()
@@ -486,9 +506,11 @@ impl ControlChannel for Dmr {
         CarrierPlan::Watch { carriers: self.site.carriers.iter().map(|c| c.hz as f64).collect(), cutoff_hz: dmr::CHANNEL_CUTOFF_HZ, note: self.note.clone() }
     }
     fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
+        let good0 = self.counts().0;
         let mut msgs = Vec::new();
         self.site.push(carrier, iq, t0, rate, &mut msgs);
-        out.push(Step { good: !msgs.is_empty(), msgs, identity: Identity::default() });
+        let decoded = self.counts().0 > good0;
+        out.push(Step::new(msgs, Identity::default(), decoded));
     }
     fn counts(&self) -> (u64, u64) {
         // Blocks (CSBKs, link control) decoded and lost, on every carrier.
@@ -543,8 +565,8 @@ impl ControlChannel for Nxdn {
         let (good0, _) = self.site.counts();
         let mut msgs = Vec::new();
         self.site.push(carrier, iq, t0, rate, &mut msgs);
-        let good = self.site.counts().0 > good0;
-        out.push(Step { good: good || !msgs.is_empty(), msgs, identity: self.site.identity().clone() });
+        let decoded = self.site.counts().0 > good0;
+        out.push(Step::new(msgs, self.site.identity().clone(), decoded));
     }
     fn counts(&self) -> (u64, u64) {
         self.site.counts()
@@ -582,5 +604,20 @@ impl ControlChannel for Nxdn {
     }
     fn status(&self) -> ProtocolStatus {
         ProtocolStatus::Nxdn(self.site.status())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A voice channel naming another talkgroup ends a call only where grants
+    /// number talkgroups as the voice does: a SmartNet system's P25 voice
+    /// names its own (the reference capture's calls were cut into pieces).
+    #[test]
+    fn only_p25_voice_names_its_grants_talkgroups() {
+        assert!(Protocol::P25.voice_names_grants());
+        let bandplan = crate::smartnet::Bandplan::from_config("400_custom", 459_000_000.0, 10_000.0, 380, 461_000_000.0).unwrap();
+        assert!(!Protocol::SmartNet(SmartnetConfig { bandplan, analog_default: false }).voice_names_grants());
     }
 }

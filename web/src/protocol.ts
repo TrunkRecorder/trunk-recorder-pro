@@ -1598,9 +1598,9 @@ export interface ClockInfo {
   os: { synced: boolean; maxErrorMs: number } | null;
   /** The time service keeping the clock, when it says (Linux: chrony, systemd-timesyncd). lastSync: Unix s. */
   service: { name: string; server: string | null; stratum: number | null; lastSync: number | null } | null;
-  /** While recording: the wall clock less the clock calls are stamped by (the wall clock at Start, carried on monotonically), ms. */
+  /** While recording: the wall clock less the recording's own clock (the wall clock at Start, carried on monotonically), ms. Shown, not judged: call times are corrected for it. */
   driftMs: number | null;
-  /** The radio systems' own clocks (P25 SYNC_BCST) against the recording's: offsetMs > 0 when the recording's is behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by). */
+  /** The radio systems' own clocks (P25 SYNC_BCST) against the calls' times: offsetMs > 0 when the calls' are behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by). */
   radio: { site: string; offsetMs: number; at: number; sane: boolean; valid: boolean }[];
   /** The time server asked (null: none set, or not asked yet). */
   server: string | null;
@@ -1609,7 +1609,7 @@ export interface ClockInfo {
   /** Why the last query failed, while it fails. */
   error: string | null;
   /** What's wrong with the clock, decided by the recorder (the light and the events go by it). */
-  problem: { level: "warn" | "bad"; cause: "clock" | "recording" | "radio" | "os"; why: string } | null;
+  problem: { level: "warn" | "bad"; cause: "clock" | "radio" | "os"; why: string } | null;
   /** The time server's check: tries, failures, last answer. */
   check: ProbeRow | null;
 }
