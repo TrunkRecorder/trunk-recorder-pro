@@ -1513,6 +1513,7 @@ export interface MonitorEventBody {
   /** Control channel events: the site's own name, when it has one other than its system's. */
   site?: string;
   talkgroup?: number;
+  /** Its talkgroup's name, as its call has it (tgFirstSeen, tonePattern; "": none). */
   alphaTag?: string;
   unit?: number;
   alias?: string;

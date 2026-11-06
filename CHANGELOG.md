@@ -11,6 +11,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   the Decode page's patches and carriers named a talkgroup from the system's talkgroups alone,
   missing what a conventional row names it. Both now go through the one name book the Radio pages
   use.
+- **A tone names its talkgroup, as its call does.** Plugins' `tone_pattern` events took the
+  talkgroup's name from the system's talkgroup list, which a conventional system's channel names
+  aren't in, so a page there came with no name ("TG 1") while its recording had one. The tone now
+  takes the name its call has, and the log line and the dashboard's event feed name it too.
 - **A control channel is alive only when it says so, every protocol alike.** One rule for a good block
   (something decoded cleanly, an idle one too, or a message): DMR's idle control blocks now count, so its
   site stays locked between calls. A watched site of another system no longer counts as locked or feeds

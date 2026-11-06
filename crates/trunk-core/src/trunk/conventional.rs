@@ -1772,11 +1772,14 @@ mod tests {
         let mut txs = vec![Tx { offset_hz: 200_000.0, snr_db: 25.0, on: vec![(0.5, 0.5 + secs)], ph: 0.0, am: false, audio }];
         let page = Signal { id: "FD_PAGE".into(), pattern: PatternKind::TwoTone, hz: vec![470.5, 1034.7], digits: String::new(), knox: false, extra_pct: 0.0, talkgroups: vec!["1".into()] };
         let sys = SystemConfig { signals: vec![page], ..conv_system("wood") };
-        let (calls, _, _) = run_systems(2_400_000.0, secs + 3.0, &mut txs, vec![fm(c + 200_000.0, 1)], vec![sys]);
+        // (The channel's row names it: a conventional system's talkgroup list doesn't.)
+        let row = ConvChannel { info: Some(crate::trunk::Talkgroup { alpha_tag: "Fire Dispatch".into(), ..Default::default() }), ..fm(c + 200_000.0, 1) };
+        let (calls, _, _) = run_systems(2_400_000.0, secs + 3.0, &mut txs, vec![row], vec![sys]);
         let tones = TONES.with(|v| v.borrow().clone());
         let pages: Vec<_> = tones.iter().filter(|t| t.pattern.kind == PatternKind::TwoTone).collect();
         assert_eq!(pages.len(), 1, "{tones:?}");
         assert_eq!((pages[0].signals.clone(), pages[0].talkgroup), (vec!["FD_PAGE".to_string()], 1));
+        assert_eq!(pages[0].alpha_tag, "Fire Dispatch", "the tone names its talkgroup as the call does");
         assert_eq!(pages[0].pattern.format, Some("Quick Call II"));
         assert!((pages[0].pattern.hz[0] - 467.2).abs() < 3.0 && (pages[0].pattern.hz[1] - 1032.3).abs() < 5.0, "{:?}", pages[0].pattern);
         assert_eq!(calls.len(), 1);

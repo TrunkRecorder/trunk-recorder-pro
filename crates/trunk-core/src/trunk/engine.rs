@@ -357,6 +357,9 @@ pub struct PatternHeard {
     pub site: Option<u16>,
     pub call_id: CallId,
     pub talkgroup: u32,
+    /// The talkgroup's name, as the call has it ("": none). A conventional channel's comes from
+    /// its row, which the system's talkgroup list doesn't hold.
+    pub alpha_tag: String,
     /// The radio talking where it starts (0: not known).
     pub src: u32,
     pub pattern: Pattern,
@@ -2117,7 +2120,18 @@ impl Core {
         let signals: &[Signal] = self.systems.get(call.system as usize).map_or(&[], |s| &s.cfg.signals);
         for (pattern, src) in heard.into_iter().filter(|(p, _)| p.kind != PatternKind::Beep) {
             let signals = matching(signals, &pattern, call.talkgroup).map(String::from).collect();
-            self.events.push(Event::TonePattern(PatternHeard { system: call.system, site: call.site, call_id: call.id, talkgroup: call.talkgroup, src, pattern, signals, decrypted, time_s: now }));
+            self.events.push(Event::TonePattern(PatternHeard {
+                system: call.system,
+                site: call.site,
+                call_id: call.id,
+                talkgroup: call.talkgroup,
+                alpha_tag: call.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
+                src,
+                pattern,
+                signals,
+                decrypted,
+                time_s: now,
+            }));
         }
     }
 
