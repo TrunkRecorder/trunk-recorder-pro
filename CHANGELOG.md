@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Call times follow the computer's clock while recording: no more "Stop and Start again".** A
+  recording runs on its own clock, the clock at Start carried on by one that never jumps. On macOS
+  that clock runs at the crystal's rate rather than the corrected one, so on a busy, long-running Mac
+  call times crept seconds away from the right time (a red Platform light past 5 s) until the next
+  Start. Now the times given out (calls, their talkers, unit events, status, plugins) are corrected
+  to the clock as it is now, on every platform. A call keeps the correction it began with until it
+  ends, so its length, its talkers' times and its copies' shared name (multi-site) hold even when the
+  clock is stepped during it. The drift is still shown on the Platform page, but no longer warns.
+
 - **Conventional calls follow the system's recording rules, as trunked calls do.** A talkgroup the
   talkgroup file marks Ignore isn't recorded (its call is still shown), nor an unlisted one with
   `recordUnknown` off (a row's own name lists it); `conversationMode` off makes each transmission a

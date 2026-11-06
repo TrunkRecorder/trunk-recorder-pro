@@ -316,18 +316,19 @@ test("Platform: the time service, the recording's clock and the radio systems' c
   host({
     os: synced, server: "pool.ntp.org", service: { name: "systemd-timesyncd", server: "2.debian.pool.ntp.org (45.33.53.84)", stratum: 2, lastSync: now() - 120 }, driftMs: 1800, warnMs: 500,
     radio: [{ site: "dcfd", offsetMs: -12, at: now() - 30, sane: true, valid: false }, { site: "other", offsetMs: -4 * 3600e3, at: now() - 30, sane: false, valid: true }],
-    problem: { level: "warn", cause: "recording", why: "Calls are being stamped 1.8 s behind the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it" },
   });
   const html = renderToString(<PlatformPage />);
-  assert.match(html, /<p class="small warn"[^>]*>Calls are stamped by the clock as it was at Start/, "amber by the recorder's verdict (its cause), not a rule of its own");
+  // Call times are corrected for the drift: it's shown, never a warning — no Stop and Start.
+  assert.match(html, /<p class="small"[^>]*>The recording(?:'|&#x27;)s own clock/);
+  assert.doesNotMatch(html, /Stop and Start/);
   const page = text(html);
   assert.match(page, /Kept by systemd-timesyncd from 2\.debian\.pool\.ntp\.org \(45\.33\.53\.84\), stratum 2, last synchronized 2 m/);
   // (driftMs: the wall clock less the recording's: the recording's is behind.)
-  assert.match(page, /Calls are stamped by the clock as it was at Start: 1\.8 s behind the clock now/);
+  assert.match(page, /The recording(?:'|&#x27;)s own clock: 1\.8 s behind the clock now — call times are corrected for it/);
   assert.match(page, /The radio systems(?:'|&#x27;) own clocks, against the calls(?:'|&#x27;) time: dcfd 12 ms behind them \(the system marks its time not valid: shown, not gone by\)/);
   assert.match(page, /other set to another time \(its local time\?\): not compared/);
   assert.match(page, /A warning at 500 ms off/);
-  assert.equal(pageHealth(snapshot()).platform.level, "warn");
+  assert.equal(pageHealth(snapshot()).platform.level, "ok", "however far the recording's clock has drifted");
 });
 
 test("Platform: a RAM spool deleted while running (systemd's RemoveIPC at logout) says how to stop it, not that it's full", () => {
