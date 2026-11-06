@@ -360,4 +360,126 @@ mod tests {
             assert_eq!(get_as(&ctx, door.clone(), p).await.0, 404, "{p}");
         }
     }
+
+    /// A conventional system's calls are one more system's: an analog FM
+    /// call (filed under its frequency in kHz, no radios, no NAC, no site)
+    /// and a DMR one (the air's talkgroup, a colour code, a slot, radios)
+    /// index, filter and read back as a trunked system's do.
+    #[tokio::test]
+    async fn conventional_calls_index_and_filter_like_trunked_ones() {
+        use trunk_recorder_plugin::{CallRecord, SrcEntry};
+        let dir = TestDir::new("api-v1-conv");
+        let ctx = runtime::test_ctx(&dir.join("api-v1-conv-cap"));
+        let fm = CallRecord {
+            short_name: "county-fire".into(),
+            system_type: "conventional".into(),
+            talkgroup: 154_325,
+            start_time_ms: 1_700_000_000_000,
+            start_time: 1_700_000_000,
+            stop_time_ms: 1_700_000_006_500,
+            call_length_ms: 6_500,
+            call_length: 6.5,
+            freq: 154_325_000,
+            audio_type: "analog".into(),
+            tone_mode: "ctcss".into(),
+            tone_detected: "151.4".into(),
+            ..Default::default()
+        };
+        let dmr = CallRecord {
+            short_name: "county-fire".into(),
+            system_type: "conventional".into(),
+            talkgroup: 201,
+            start_time_ms: 1_700_000_010_000,
+            start_time: 1_700_000_010,
+            stop_time_ms: 1_700_000_013_000,
+            call_length_ms: 3_000,
+            call_length: 3.0,
+            freq: 461_050_000,
+            audio_type: "digital tdma".into(),
+            color_code: 1,
+            tdma_slot: 2,
+            src_list: vec![SrcEntry {
+                src: 3001,
+                time: 1_700_000_010,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(
+            fm.nac.is_empty() && fm.site.is_empty() && fm.src_list.is_empty(),
+            "an FM call names no NAC, site or radio"
+        );
+        runtime::index_call(
+            &ctx,
+            "county-fire/2023/11/14/154325-1700000000_154325000",
+            &fm,
+            true,
+            true,
+        );
+        runtime::index_call(
+            &ctx,
+            "county-fire/2023/11/14/201-1700000010_461050000",
+            &dmr,
+            true,
+            true,
+        );
+        let r = crate::db::row::tests::record(9179, 1_700_000_005_000);
+        runtime::index_call(&ctx, "ohmarcs/a", &r, true, true);
+        ctx.db.flush().unwrap();
+
+        let entries = |body: &str| json_of(body)["entries"].as_array().unwrap().clone();
+        assert_eq!(entries(&get(&ctx, "/api/v1/calls").await.1).len(), 3);
+        let conv = entries(&get(&ctx, "/api/v1/calls?system=county-fire").await.1);
+        assert_eq!(
+            conv.iter()
+                .map(|e| e["record"]["talkgroup"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![201, 154_325],
+            "newest first"
+        );
+        let by_khz = entries(&get(&ctx, "/api/v1/calls?talkgroup=154325").await.1);
+        assert_eq!(by_khz.len(), 1);
+        let rec = &by_khz[0]["record"];
+        assert_eq!(
+            (
+                rec["audio_type"].as_str(),
+                rec["tone_detected"].as_str(),
+                rec["srcList"].as_array().map(Vec::len)
+            ),
+            (Some("analog"), Some("151.4"), Some(0))
+        );
+        let by_unit = entries(&get(&ctx, "/api/v1/calls?unit=3001").await.1);
+        assert_eq!(by_unit.len(), 1);
+        assert_eq!(
+            (
+                by_unit[0]["record"]["talkgroup"].as_u64(),
+                by_unit[0]["record"]["tdma_slot"].as_i64(),
+                by_unit[0]["record"]["color_code"].as_i64()
+            ),
+            (Some(201), Some(2), Some(1))
+        );
+        let (code, body) = get(
+            &ctx,
+            "/api/v1/calls/county-fire/2023/11/14/154325-1700000000_154325000",
+        )
+        .await;
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(json_of(&body)["record"]["system_type"], "conventional");
+        // The WebSocket's query takes the same filters.
+        let q = trunk_app::protocol::CallsQuery {
+            system: Some("county-fire".into()),
+            talkgroup: Some(201),
+            unit: None,
+            from: None,
+            to: None,
+            cursor: None,
+            limit: None,
+        };
+        let trunk_app::protocol::ToClient::CallsResult { page, .. } =
+            runtime::calls_query(&ctx, json!(1), &q)
+        else {
+            panic!()
+        };
+        assert_eq!(page.entries.len(), 1);
+    }
 }
