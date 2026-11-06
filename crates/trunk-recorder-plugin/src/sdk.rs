@@ -35,6 +35,8 @@ pub trait Plugin: Sized {
     fn start(host: Host, setup: Setup<Self::Config, Self::SystemConfig>) -> Result<Self, String>;
 
     fn call_start(&mut self, _call: CallInfo) {}
+    /// A call changed while it runs (another radio talking, an emergency): the call as it is now.
+    fn call_update(&mut self, _call: CallInfo) {}
     fn call_end(&mut self, _call: CallInfo) {}
     fn call_concluded(&mut self, _call: ConcludedCall) {}
     fn unit(&mut self, _event: UnitEvent) {}
@@ -329,6 +331,7 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
         match msg {
             HostMessage::Hello(_) => host.warn("a second hello, ignored"),
             HostMessage::CallStart(c) => p.call_start(c),
+            HostMessage::CallUpdate(c) => p.call_update(c),
             HostMessage::CallEnd(c) => p.call_end(c),
             HostMessage::CallConcluded(c) => p.call_concluded(c),
             HostMessage::Unit(u) => p.unit(u),

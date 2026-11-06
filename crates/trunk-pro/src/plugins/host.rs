@@ -263,6 +263,7 @@ impl PluginHost {
         let mut queues = Vec::new();
         for (s, m, settings) in ready {
             topics.calls |= m.subscribes(topic::CALL_START) || m.subscribes(topic::CALL_END);
+            topics.call_updates |= m.subscribes(topic::CALL_UPDATE);
             topics.units |= m.subscribes(topic::UNIT);
             topics.status |= m.subscribes(topic::STATUS);
             topics.tone_patterns |= m.subscribes(topic::TONE_PATTERN);
@@ -366,6 +367,7 @@ impl PluginHost {
         let on = |system: &str, talkgroup: Option<u32>| About { system: system.to_string(), talkgroup, decrypted: false };
         let (t, about) = match m {
             HostMessage::CallStart(c) => (topic::CALL_START, on(&c.short_name, Some(c.talkgroup))),
+            HostMessage::CallUpdate(c) => (topic::CALL_UPDATE, on(&c.short_name, Some(c.talkgroup))),
             HostMessage::CallEnd(c) => (topic::CALL_END, on(&c.short_name, Some(c.talkgroup))),
             HostMessage::Unit(u) => (topic::UNIT, on(&u.short_name, u.talkgroup)),
             // (Its tones may have been heard in decrypted voice: only plugins allowed that get it.)

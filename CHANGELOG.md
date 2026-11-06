@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Plugins can follow a call as it runs.** The `call.update` topic (SDK 0.10.0: `Plugin::call_update`)
+  sends a call again whenever it changes before it ends: another radio talking (its `sources` gain
+  it), or it's found to be an emergency or encrypted. TRP had these all along (its own pages use
+  them); only `call.start` and `call.end` reached plugins, so one showing who's talking learned of
+  the second talker only once the call was over.
 - **Plugin settings can be sliders.** A number marked `x-slider`, with a `minimum`, `maximum` and
   `multipleOf`, is drawn as a slider in those steps with its value beside it (a volume in 0.5 dB steps).
 - **Plugins can take TRP's log.** The `log` topic (SDK 0.10.0: `Plugin::log_line`) sends each line

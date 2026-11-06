@@ -83,6 +83,7 @@ const MAX_GAP_S: f64 = 10.0;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PluginTopics {
     pub calls: bool,
+    pub call_updates: bool,
     pub units: bool,
     pub status: bool,
     pub tone_patterns: bool,
@@ -1165,7 +1166,12 @@ impl Session {
                     out.push(Output::Plugin(HostMessage::CallEnd(self.call_info(&c))));
                 }
             }
-            Event::CallUpdate(_) => {}
+            // (A call heard on several sites: told of by its first copy, as its start and end are.)
+            Event::CallUpdate(c) => {
+                if self.plugin_topics.call_updates && !c.twin {
+                    out.push(Output::Plugin(HostMessage::CallUpdate(self.call_info(&c))));
+                }
+            }
         }
     }
 
@@ -1480,5 +1486,35 @@ mod unreported_tests {
         let n = run(180.0, 90.0, 0.02);
         let want = (0.02 * 2_400_000.0) as u64;
         assert!(n.abs_diff(want) < want / 10, "found {n} of {want} lost");
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+
+    /// A call changing as it runs (another radio talking) is told to plugins that take
+    /// `call.update`, and only to them; a second site's copy of it isn't.
+    #[test]
+    fn a_calls_changes_reach_plugins_that_take_them() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let mut call = trunk_core::trunk::Call { talkgroup: 1001, ..Default::default() };
+        call.sources.push(trunk_core::trunk::CallSource { src: 1234567, time_s: 1.0, audio_pos: None, flags: Default::default(), position: None });
+        let updates = |s: &mut Session, c: &trunk_core::trunk::Call| {
+            let mut out = Vec::new();
+            s.handle(Event::CallUpdate(c.clone()), &mut out);
+            out.into_iter().filter_map(|o| if let Output::Plugin(HostMessage::CallUpdate(c)) = o { Some(c) } else { None }).collect::<Vec<_>>()
+        };
+        assert!(updates(&mut s, &call).is_empty(), "no plugin asked");
+        s.plugin_topics.call_updates = true;
+        let got = updates(&mut s, &call);
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].talkgroup, got[0].sources.iter().map(|x| x.unit).collect::<Vec<_>>()), (1001, vec![1234567]));
+        assert!(updates(&mut s, &trunk_core::trunk::Call { twin: true, ..call }).is_empty(), "a second site's copy");
     }
 }

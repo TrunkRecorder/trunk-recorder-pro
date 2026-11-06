@@ -28,6 +28,9 @@ pub mod topic {
     pub const CALL_START: &str = "call.start";
     /// A call ended ([`super::CallInfo`]); its files follow in `call.concluded`.
     pub const CALL_END: &str = "call.end";
+    /// A call changed while it runs ([`super::CallInfo`], all of it as it is now): another radio
+    /// talking (`sources` gains it), or the call found to be an emergency or encrypted.
+    pub const CALL_UPDATE: &str = "call.update";
     /// A recorded call's files are on disk ([`super::ConcludedCall`]).
     pub const CALL_CONCLUDED: &str = "call.concluded";
     /// A radio registered, affiliated, … ([`super::UnitEvent`]).
@@ -44,7 +47,7 @@ pub mod topic {
     /// elsewhere. A plugin isn't sent its own lines.
     pub const LOG: &str = "log";
 
-    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE_PATTERN, LOG];
+    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE_PATTERN, LOG];
 }
 
 /// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
@@ -160,6 +163,8 @@ pub enum HostMessage {
     Hello(Hello),
     #[serde(rename = "call.start")]
     CallStart(CallInfo),
+    #[serde(rename = "call.update")]
+    CallUpdate(CallInfo),
     #[serde(rename = "call.end")]
     CallEnd(CallInfo),
     #[serde(rename = "call.concluded")]

@@ -1205,6 +1205,7 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
 const TOPIC_NAMES: Record<string, string> = {
   "call.concluded": "recorded calls",
   "call.start": "calls starting",
+  "call.update": "calls changing (who's talking)",
   "call.end": "calls ending",
   unit: "radio activity",
   audio: "live audio",
