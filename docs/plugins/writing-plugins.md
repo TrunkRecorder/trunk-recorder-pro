@@ -91,7 +91,7 @@ far behind loses events (counted on the dashboard) rather than slowing the recor
 | Topic | Message | When |
 |---|---|---|
 | `call.start` | `CallInfo` | A call starts: talkgroup and its tag, frequency, TDMA slot, analog / encrypted / emergency flags and the grant's duplex / packet / priority, whether it's recorded (and why not), the radios heard so far (`sources`: each with what its own transmission said of itself — emergency, encrypted, duplex, packet, priority), patched talkgroups |
-| `call.update` | `CallInfo` | A call changes while it runs, the whole of it as it is now: another radio talking (`sources` gains it, as the voice channel or a grant update names it), or it's found to be an emergency or encrypted |
+| `call.update` | `CallInfo` | A call changes while it runs, the whole of it as it is now, whenever any of it does: another radio talking (`sources` gains it, as the voice channel or a grant update names it), its flags (an emergency, encrypted), its patched talkgroups, whether it's recorded, its key or its decryption, a radio's position; on a conventional channel, its talkgroup from the air or its tone. Delayed as its `call.start` is (`pluginDelays`). (Since SDK 0.10.0.) |
 | `call.end` | `CallInfo` | A call ends; its files follow in `call.concluded` |
 | `call.concluded` | `ConcludedCall` | A recorded call's files are on disk: its path key, its call JSON (Trunk Recorder's format, as a typed `CallRecord`: every field the recorder writes is a named field) and the paths of its `.json`, `.wav` and, when asked for, `.m4a` |
 | `unit` | `UnitEvent` | A radio registered, deregistered, affiliated, acknowledged, reported its location, got a data grant, or sent an answer request or call alert |
@@ -118,7 +118,7 @@ entry per site, with its `site_name`. A call heard on several sites of a system 
 | `call.result` | What became of a concluded call: `ok`, `skipped` or `failed`, a message, optionally a URL, and optionally `took_ms`, how long your work on it took (an upload's last try) |
 | `metrics` | Figures for the Health tab: queue depth, retries, in flight, bytes sent, latency, the services it talks to (up, degraded, down), and any of its own |
 | `action.result` | How one of its buttons went (an `action`, below): `ok`, and a message shown beside the button |
-| `settings.save` | Some of its own settings, saved as if typed in on its form: `settings` (each key replaces that setting, `null` removes it, the rest stay) and a `request` number. Answered with `settings.saved` (below). Needs `live_settings` |
+| `settings.save` | Some of its own settings, saved as if typed in on its form: `settings` (each key replaces that setting, `null` removes it, the rest stay) and a `request` number. Answered with `settings.saved` (below). Refused if it would restart the plugin (see below) |
 | `calls.query` | Recorded calls, asked of the recorder: any of `system`, `talkgroup`, `unit`, `from` / `to` (Unix ms), `before` (the last page's), `limit` (1 to 500), and a `request` number. Answered with `calls` (below) |
 
 Lines on stdout that aren't protocol messages become log lines, and so does everything on stderr.
@@ -136,8 +136,9 @@ tables are the recorder's own and change between versions.
 that adds a destination) by sending `settings.save`. TRP writes the settings to its config
 as an edit of its own: the form shows them at once, in every browser, and they come back to the
 plugin as `settings`. Then it answers `settings.saved` with the same `request`: `ok`, and a
-`message` saying why not. Only a plugin with `live_settings` may save (another would be restarted by
-its own save), and only its first copy; each save that changes something is logged. Mark the
+`message` saying why not. A save is refused when it would restart the plugin: it has to take its
+settings as it runs (`live_settings`), run as one copy, have no per-system settings, and keep every
+setting it needs set; the `message` says which. Each save that changes something is logged. Mark the
 fields it fills in `readOnly` so the form shows them rather than letting them be typed over. This is
 for settings, which the user sees and edits; a plugin's own state goes in its data folder. In the
 Rust SDK, `host.save_settings(&value)` sends it (your `Config` whole is fine) and the answer
@@ -266,7 +267,7 @@ The form understands:
 | `"x-title": "<field>"` on an object in an array | Each item is titled by that field and opened to edit, one at a time, rather than all shown at once |
 | `"x-when": {"<field>": <value or [values]>}` | Shown only while the object's other fields are so (a webhook's URL only for `"type": "webhook"`); hidden, it keeps its value |
 | `"readOnly": true` | Shown, not edited: what the plugin fills in itself with `settings.save` (a name it looked up). Mark it with `#[schemars(extend("readOnly" = true))]`. One that's also `"format": "uri"` shows the address with a button that opens it in a new tab and one that copies it |
-| `"x-slider": true` | A number drawn as a slider from `minimum` to `maximum`, in steps of `multipleOf`, its value shown beside it (both bounds needed) |
+| `"x-slider": true` | A number drawn as a slider from `minimum` to `maximum`, in steps of `multipleOf`, its value shown beside it (both bounds needed); saved once it's let go, not at each step |
 | `"x-open": "…"` | A read-only web address's open button's label (default "Open") |
 | `"x-actions": [{"id", "label", "hint"}]` on an object | Buttons under it (an array's item, or the whole settings): pressed, the plugin is sent `action` with the object as edited |
 

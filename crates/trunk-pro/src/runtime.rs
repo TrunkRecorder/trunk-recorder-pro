@@ -1364,7 +1364,7 @@ fn plugin_saves(ctx: &Arc<Ctx>) -> crate::plugins::Saves {
             return Err(format!("the config has no plugin \"{id}\""));
         }
         if !keys.is_empty() {
-            log::info!(target: "plugin", "[{id}] saved its settings: {}", keys.join(", "));
+            crate::logging::plugin_note(id, trunk_app::log::Level::Info, &format!("saved its settings: {}", keys.join(", ")));
         }
         Ok(())
     })

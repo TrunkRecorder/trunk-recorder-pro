@@ -35,7 +35,8 @@ pub trait Plugin: Sized {
     fn start(host: Host, setup: Setup<Self::Config, Self::SystemConfig>) -> Result<Self, String>;
 
     fn call_start(&mut self, _call: CallInfo) {}
-    /// A call changed while it runs (another radio talking, an emergency): the call as it is now.
+    /// A call changed while it runs (another radio talking, an emergency, a patch, …: see
+    /// [`topic::CALL_UPDATE`](crate::protocol::topic::CALL_UPDATE)): the call as it is now.
     fn call_update(&mut self, _call: CallInfo) {}
     fn call_end(&mut self, _call: CallInfo) {}
     fn call_concluded(&mut self, _call: ConcludedCall) {}
@@ -155,8 +156,9 @@ impl Host {
     }
 
     /// Save some of its own settings, as if typed in on its form ([`PluginMessage::SettingsSave`]):
-    /// each top-level key of `settings` replaces that setting, the others stay. Needs
-    /// [`Manifest::live_settings`]. They come back to [`Plugin::settings`], and the answer to
+    /// each top-level key of `settings` replaces that setting, the others stay. Refused when it
+    /// would restart the plugin (it needs [`Manifest::live_settings`], one copy, no per-system
+    /// settings, and what it requires set). They come back to [`Plugin::settings`], and the answer to
     /// [`Plugin::settings_saved`] with the request number this gives. (Its `Config` type, whole,
     /// is fine; a value that isn't an object is answered as refused.)
     pub fn save_settings(&self, settings: &impl serde::Serialize) -> u64 {

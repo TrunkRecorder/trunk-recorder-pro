@@ -6,12 +6,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 ## [Unreleased]
 
 - **Plugins can follow a call as it runs.** The `call.update` topic (SDK 0.10.0: `Plugin::call_update`)
-  sends a call again whenever it changes before it ends: another radio talking (its `sources` gain
-  it), or it's found to be an emergency or encrypted. TRP had these all along (its own pages use
+  sends a call again whenever any of it changes before it ends: another radio talking (its `sources`
+  gain it), an emergency, encryption, a patch, whether it's recorded. TRP had these all along (its own pages use
   them); only `call.start` and `call.end` reached plugins, so one showing who's talking learned of
   the second talker only once the call was over.
 - **Plugin settings can be sliders.** A number marked `x-slider`, with a `minimum`, `maximum` and
-  `multipleOf`, is drawn as a slider in those steps with its value beside it (a volume in 0.5 dB steps).
+  `multipleOf`, is drawn as a slider in those steps with its value beside it (a volume in 0.5 dB steps),
+  saved once it's let go, as Setup's gain sliders are.
 - **Plugins can take TRP's log.** The `log` topic (SDK 0.10.0: `Plugin::log_line`) sends each line
   TRP logs, at the log's level, as the console prints it, with its time, level and system: a
   plugin can pass the log on, to MQTT or a chat channel. A plugin isn't sent its own lines.
@@ -19,8 +20,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   `Plugin::settings_saved`) saves some of a plugin's settings as if they were typed in on its form: the
   config is written, every browser's form shows them at once, and the plugin gets them back as
   `settings`. A plugin that sets itself up from elsewhere (a chat bot's own setup commands) keeps the
-  form in step, and one can fill in names for the IDs a user gives. Only plugins that take settings as
-  they run may. Fields marked `readOnly` are shown on the form, not edited; a read-only web address
+  form in step, and one can fill in names for the IDs a user gives. A save that would restart the
+  plugin is refused (it takes settings as it runs, runs as one copy, has no per-system settings, and
+  keeps what it needs set), the same rule that decides whether a user's edit restarts it. Fields marked `readOnly` are shown on the form, not edited; a read-only web address
   has a button that opens it in a new tab (labelled by `x-open`) and one that copies it.
 - **Talkgroups and radios are named one way everywhere.** The Radio pages named a radio by the
   aliases heard alone, ignoring a system's unit tags and their mode (user names first, aliases

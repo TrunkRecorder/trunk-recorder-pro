@@ -28,8 +28,10 @@ pub mod topic {
     pub const CALL_START: &str = "call.start";
     /// A call ended ([`super::CallInfo`]); its files follow in `call.concluded`.
     pub const CALL_END: &str = "call.end";
-    /// A call changed while it runs ([`super::CallInfo`], all of it as it is now): another radio
-    /// talking (`sources` gains it), or the call found to be an emergency or encrypted.
+    /// A call changed while it runs ([`super::CallInfo`], all of it as it is now): whenever any of
+    /// it does — another radio talking (`sources` gains it), its flags (an emergency, encrypted),
+    /// its patched talkgroups, whether it's recorded, its key or its decryption, a radio's
+    /// position; on a conventional channel, its talkgroup from the air or its tone.
     pub const CALL_UPDATE: &str = "call.update";
     /// A recorded call's files are on disk ([`super::ConcludedCall`]).
     pub const CALL_CONCLUDED: &str = "call.concluded";
@@ -1088,9 +1090,9 @@ pub enum PluginMessage {
     /// Save some of its own settings, as if typed in on its settings form: each key of
     /// `settings` replaces that setting (null removes it), the rest stay. TRP writes
     /// them to the config, shows them on the form at once, and sends them back as `settings`;
-    /// then answers with [`HostMessage::SettingsSaved`]. Only a plugin with
-    /// [`Manifest::live_settings`] may (another would be restarted by its own save), and only
-    /// its first copy. For what the plugin learns that the user would otherwise type (names
+    /// then answers with [`HostMessage::SettingsSaved`]. Refused when it would restart the
+    /// plugin: it has to take settings as it runs ([`Manifest::live_settings`]), run as one copy,
+    /// have no per-system settings, and keep every setting it needs set. For what the plugin learns that the user would otherwise type (names
     /// for IDs, say: mark those fields `readOnly`) or changes made through it elsewhere. Not
     /// for state: that goes in its data folder.
     #[serde(rename = "settings.save")]

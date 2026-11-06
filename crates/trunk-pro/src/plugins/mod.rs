@@ -361,9 +361,6 @@ pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::Sys
         .collect()
 }
 
-/// Plugin notes as log lines, which the log shows the browsers too
-/// ([`crate::logging::text`]; the plugins view follows each plugin's state
-/// and results in its `pluginRuntime`).
 /// A plugin's `settings.save` into its settings (`settings`, an object or null): each key given
 /// replaces that setting, a null removes it, the others stay. The keys that changed.
 pub fn merge_settings(settings: &mut serde_json::Value, given: serde_json::Map<String, serde_json::Value>) -> Vec<String> {
@@ -383,15 +380,14 @@ pub fn merge_settings(settings: &mut serde_json::Value, given: serde_json::Map<S
     changed
 }
 
+/// Plugin notes as log lines, which the log shows the browsers too
+/// ([`crate::logging::plugin_note`]; the plugins view follows each plugin's
+/// state and results in its `pluginRuntime`).
 pub fn notes_to_log() -> host::Notes {
     use trunk_recorder_plugin::{Level, Outcome, State};
     let log = |plugin: &str, error: bool, text: &str| {
-        let text = if plugin.is_empty() { format!("Plugins: {text}") } else { format!("[{plugin}] {text}") };
-        if error {
-            log::error!(target: "plugin", "{text}");
-        } else {
-            log::info!(target: "plugin", "{text}");
-        }
+        use trunk_app::log::Level as L;
+        crate::logging::plugin_note(plugin, if error { L::Error } else { L::Info }, text);
     };
     std::sync::Arc::new(move |n: Note| match n {
         Note::Log { plugin, level, text } => {

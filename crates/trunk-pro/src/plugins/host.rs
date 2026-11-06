@@ -325,9 +325,9 @@ impl PluginHost {
         // (These plugins' from now on: the ones they replace stop taking the lines.)
         let log_tap = shared.plugins.iter().any(|p| p.manifest.subscribes(topic::LOG)).then(|| {
             let sh = Arc::downgrade(&shared);
-            crate::logging::tap(Arc::new(move |level, system, text, whole| {
+            crate::logging::tap(Arc::new(move |t: &crate::logging::Tapped| {
                 if let Some(sh) = sh.upgrade() {
-                    sh.log_line(level, system, text, whole);
+                    sh.log_line(t);
                 }
             }))
         });
@@ -384,19 +384,11 @@ impl PluginHost {
     }
 
     /// Plugin `id` takes `config` as its settings while it runs, if it can
-    /// (`live_settings`, one copy, no system's overrides of them, every
-    /// setting it needs set). False: it has to be restarted for them, as one
+    /// ([`Shared::live`]). False: it has to be restarted for them, as one
     /// that stopped over its settings (exit 78) waits to be.
     pub fn settle(&self, id: &str, config: &Value) -> bool {
-        let copies: Vec<&Plugin> = self.shared.plugins.iter().filter(|p| super::parse_label(&p.id).0 == id).collect();
-        let [p] = copies[..] else { return false };
-        if !p.manifest.live_settings || !unset_required(p.manifest.config.as_ref(), config).is_empty() {
-            return false;
-        }
+        let Ok(p) = self.shared.live(id, config) else { return false };
         let mut hello = p.hello.lock().unwrap();
-        if hello.systems.iter().any(|s| !s.settings.is_null() || !s.config.is_null()) {
-            return false;
-        }
         let h = Hello { config: config.clone(), ..hello.clone() };
         if self.shared.give(p, &line(&HostMessage::Settings(h.clone()))) != Offer::Sent {
             return false;
@@ -652,27 +644,43 @@ impl Shared {
         }
     }
 
-    /// `p`'s `settings.save`: only a plugin that takes settings as it runs (another would be
-    /// restarted by its own save), and its first copy (a copy's settings are its plugin's).
-    fn save(&self, p: &Plugin, settings: serde_json::Map<String, Value>) -> Result<(), String> {
-        let (id, copy) = super::parse_label(&p.id);
+    /// Whether plugin `id` can take `config` as its settings while it runs, rather than be
+    /// restarted for them: it takes settings live (`live_settings`), runs as one copy, its
+    /// systems don't override them, and every setting it needs is set. Err: why not. The one
+    /// rule for [`PluginHost::settle`] and a plugin's own [`Self::save`].
+    fn live(&self, id: &str, config: &Value) -> Result<&Plugin, String> {
+        let copies: Vec<&Plugin> = self.plugins.iter().filter(|p| super::parse_label(&p.id).0 == id).collect();
+        let [p] = copies[..] else { return Err("it runs as several copies, which share its settings".into()) };
         if !p.manifest.live_settings {
-            return Err("only a plugin with live_settings can save its settings".into());
+            return Err("it doesn't take settings as it runs (live_settings)".into());
         }
-        if copy > 0 {
-            return Err("a copy can't save the settings: they're its plugin's".into());
+        let unset = unset_required(p.manifest.config.as_ref(), config);
+        if !unset.is_empty() {
+            return Err(format!("{} would be unset", unset.join(", ")));
         }
+        if p.hello.lock().unwrap().systems.iter().any(|s| !s.settings.is_null() || !s.config.is_null()) {
+            return Err("its systems have settings of their own".into());
+        }
+        Ok(p)
+    }
+
+    /// `p`'s `settings.save`: only what it can take as it runs ([`Self::live`], on its settings
+    /// as the save leaves them), so a plugin is never restarted by its own save.
+    fn save(&self, p: &Plugin, settings: serde_json::Map<String, Value>) -> Result<(), String> {
+        let (id, _) = super::parse_label(&p.id);
+        let mut merged = p.hello.lock().unwrap().config.clone();
+        super::merge_settings(&mut merged, settings.clone());
+        self.live(id, &merged).map_err(|e| format!("saving would restart it: {e}"))?;
         let saves = self.saves.as_ref().ok_or("there's no config to save them to here")?;
         saves(id, settings)
     }
 
-    /// A line TRP logged: to each plugin taking `log`, but not its own lines (its notes
-    /// are logged as "[its id] …").
-    fn log_line(&self, level: trunk_app::log::Level, system: Option<&str>, text: &str, whole: &str) {
-        let m = HostMessage::Log(LogLine { time: crate::clock::unix_s(), level: level.as_str().into(), system: system.unwrap_or_default().into(), text: text.into(), line: whole.into() });
+    /// A line TRP logged: to each plugin taking `log`, but not its own notes.
+    fn log_line(&self, t: &crate::logging::Tapped) {
+        let m = HostMessage::Log(LogLine { time: t.time, level: t.level.as_str().into(), system: t.system.unwrap_or_default().into(), text: t.text.into(), line: t.line.into() });
         let l = line(&m);
         for p in self.plugins.iter().filter(|p| p.manifest.subscribes(topic::LOG)) {
-            if text.strip_prefix('[').and_then(|t| t.strip_prefix(p.id.as_str())).is_some_and(|t| t.starts_with("] ")) {
+            if t.plugin == Some(p.id.as_str()) {
                 continue;
             }
             if self.give(p, &l) == Offer::Full {
@@ -1210,7 +1218,7 @@ mod tests {
         let spec = Spec { id: "logger".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
         let mut host = PluginHost::start(vec![spec], &super::super::AudioSettings::default(), &[], &dir, super::super::notes_to_log());
         crate::logging::text(trunk_app::log::Level::Warning, "info", "log-topic-test: TRP said");
-        crate::logging::text(trunk_app::log::Level::Info, "plugin", "[logger] log-topic-test: its own");
+        crate::logging::plugin_note("logger", trunk_app::log::Level::Info, "log-topic-test: its own");
         let t0 = Instant::now();
         let lines = || std::fs::read_to_string(dir.join("data/lines.jsonl")).unwrap_or_default();
         while !lines().contains("TRP said") && t0.elapsed() < Duration::from_secs(5) {
@@ -1225,7 +1233,8 @@ mod tests {
     }
 
     /// A plugin saves some of its settings: they're handed to what saves them, and it's told how
-    /// that went (by the request number it gave); one without live settings is refused.
+    /// that went (by the request number it gave). One the save would restart is refused: one
+    /// without live settings, or a save that unsets a setting it needs.
     #[cfg(unix)]
     #[test]
     fn a_plugin_saves_its_settings() {
@@ -1234,13 +1243,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("trunk-pro-host-save-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let script = |name: &str, live: bool| {
+        let script = |name: &str, live: bool, save: &str| {
             let exe = dir.join(name);
-            let manifest = format!(r#"{{"id":"{name}","name":"N","version":"1.0.0","api":1,"subscribe":["tone_pattern"],"live_settings":{live}}}"#);
-            let save = r#"{"type":"settings.save","request":7,"settings":{"serverName":"LolWut","old":null}}"#;
+            let schema = r#"{"type":"object","properties":{"token":{"type":"string"}},"required":["token"]}"#;
+            let manifest = format!(r#"{{"id":"{name}","name":"N","version":"1.0.0","api":1,"subscribe":["tone_pattern"],"live_settings":{live},"config":{schema}}}"#);
+            let save = format!(r#"{{"type":"settings.save","request":7,"settings":{save}}}"#);
             std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\necho '{save}'\nwhile read l; do echo \"$l\" >> lines.jsonl; done\n")).unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-            Spec { id: name.into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join(name).with_extension("d")), share_decrypted: false }
+            Spec { id: name.into(), copy: 0, exe, config: json!({ "token": "t" }), systems: BTreeMap::new(), data_dir: Some(dir.join(name).with_extension("d")), share_decrypted: false }
         };
         let saved: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
         let s2 = saved.clone();
@@ -1249,7 +1259,9 @@ mod tests {
             Ok(())
         });
         let audio = super::super::AudioSettings::default();
-        let mut host = PluginHost::start_when(vec![script("namer", true), script("fixed", false)], &audio, &[], &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, None, Some(saves));
+        let named = r#"{"serverName":"LolWut","old":null}"#;
+        let specs = vec![script("namer", true, named), script("fixed", false, named), script("needy", true, r#"{"token":null}"#)];
+        let mut host = PluginHost::start_when(specs, &audio, &[], &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, None, Some(saves));
         let answer = |name: &str| -> Option<Value> {
             let t0 = Instant::now();
             while t0.elapsed() < Duration::from_secs(5) {
@@ -1264,6 +1276,10 @@ mod tests {
         assert_eq!(answer("namer"), Some(json!({ "type": "settings.saved", "request": 7, "ok": true })));
         let refused = answer("fixed").expect("answered");
         assert_eq!((refused["request"].as_u64(), refused["ok"].as_bool()), (Some(7), Some(false)));
+        assert!(refused["message"].as_str().unwrap().contains("live_settings"), "{refused}");
+        let needy = answer("needy").expect("answered");
+        assert_eq!(needy["ok"].as_bool(), Some(false));
+        assert!(needy["message"].as_str().unwrap().contains("token would be unset"), "{needy}");
         assert_eq!(*saved.lock().unwrap(), [("namer".to_string(), json!({ "serverName": "LolWut", "old": null }))], "only the plugin that may");
         host.shutdown(Duration::from_secs(1));
         let _ = std::fs::remove_dir_all(&dir);
