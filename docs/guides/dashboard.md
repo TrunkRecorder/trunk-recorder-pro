@@ -263,10 +263,12 @@ macOS) keeps it. Nothing extra needs installing, and nothing runs with privilege
 Under them, when they're known:
 - **Kept by…**: the time service and the server it follows, its stratum and when it last
   synchronized (Linux: chrony or systemd-timesyncd).
-- **Calls are stamped by the clock as it was at Start**: while recording. Calls are stamped by the
-  clock as it was when recording started, carried on by a clock that never jumps, so a call's times
-  never go backwards. A correction the time service makes after Start reaches them only at the
-  next Start: this line says how far apart the two are now.
+- **The recording's own clock**: while recording. The recording runs on the clock as it was at
+  Start, carried on by a clock that never jumps (on macOS one that runs at the crystal's rate, so it
+  parts from the corrected clock by up to a few seconds a day). Call times are corrected to the clock
+  as it is now all the same, with no Stop and Start: this line only says how far apart the two are.
+  A call keeps the correction it began with until it ends, so its length and its talkers' times
+  are as on the air even when the clock is stepped during it.
 - **The radio systems' clocks**: P25 systems (Phase 2) broadcast their own time, to 7.5 ms,
   usually from GPS. Each site's line says how far its system's clock is ahead of or behind the
   calls' time ("3.0 s behind them": the system's clock is three seconds slow). Times are in ms under

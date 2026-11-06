@@ -76,6 +76,9 @@ const QUIET_MS: f64 = 1000.0;
 const RATE_WINDOW_MS: f64 = 5000.0;
 /// A source's last error is shown this long after it, s.
 const ERROR_SHOWN_S: f64 = 300.0;
+/// A move of the wall clock this big or more is logged, ms
+/// ([`Session::correct_wall_clock`]): a step, not drift.
+const STEP_TOLD_MS: f64 = 500.0;
 /// The most silence fed for one gap, s: a driver's count of samples lost.
 const MAX_GAP_S: f64 = 10.0;
 
@@ -331,8 +334,12 @@ pub struct Session {
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
     recordings: Vec<crate::config::Recording>,
     pub plugin_topics: PluginTopics,
-    /// Wall clock (Unix ms) at the engine's time 0.
+    /// Wall clock (Unix ms) at the engine's time 0, as at Start: the clock
+    /// sources are measured against. What times are given out by is the
+    /// engine's ([`Session::correct_wall_clock`]).
     epoch_ms: f64,
+    /// The wall clock's correction last applied, ms ([`Session::correct_wall_clock`]).
+    wall_correction_ms: f64,
     last_plugin_status_ms: f64,
     plugin_good: Vec<u64>,
     /// The codes conventional frequencies carried ([`crate::heard`]).
@@ -403,6 +410,7 @@ impl Session {
             recordings,
             plugin_topics: PluginTopics::default(),
             epoch_ms,
+            wall_correction_ms: 0.0,
             last_plugin_status_ms: 0.0,
             plugin_good: Vec::new(),
             heard: HeardCodes::default(),
@@ -844,7 +852,36 @@ impl Session {
 
     /// Unix seconds of engine time `s`.
     fn wall(&self, s: f64) -> f64 {
-        self.epoch_ms / 1000.0 + s
+        self.wall_of(s, s)
+    }
+
+    /// Unix seconds of engine time `s`, a time of a call begun at
+    /// `start_s`: by the epoch it began under, as its record is.
+    fn wall_of(&self, s: f64, start_s: f64) -> f64 {
+        (self.engine.wall_epoch_at(start_s) + s * 1000.0) / 1000.0
+    }
+
+    /// The host's wall clock now reads `correction_ms` more than the clock
+    /// `poll` is given (the epoch at Start carried on by a monotonic clock):
+    /// a time service corrected it, or the monotonic clock runs at its
+    /// crystal's rate (macOS's). Times given out from now on — calls begun
+    /// from now, units, status — are by the corrected clock; calls up keep
+    /// the epoch they began under. The engine's own time, and the sources'
+    /// clocks, are untouched. A capture played as fast as it can be has no
+    /// wall clock to keep to: ignored. True when it moved.
+    pub fn correct_wall_clock(&mut self, correction_ms: f64) -> bool {
+        if !correction_ms.is_finite() || self.cfg.sources.iter().any(|s| matches!(s.kind, SourceKind::File { realtime: false, .. })) {
+            return false;
+        }
+        if !self.engine.set_wall_epoch(self.epoch_ms + correction_ms) {
+            return false;
+        }
+        let moved = correction_ms - std::mem::replace(&mut self.wall_correction_ms, correction_ms);
+        // (Drift moves it a ms at a time; a step is worth saying.)
+        if moved.abs() >= STEP_TOLD_MS {
+            self.records.push(Record::text(Level::Info, None, format!("The wall clock moved {:+.3} s: times are by it from now on", moved / 1000.0)));
+        }
+        true
     }
 
     /// The radio systems' own clocks (P25's SYNC_BCST, on Phase 2 systems)
@@ -940,14 +977,14 @@ impl Session {
             priority: c.priority,
             recording: c.recording,
             reason: c.reason.map(|r| r.as_str().to_string()),
-            start_time: self.wall(c.start_s),
+            start_time: self.wall_of(c.start_s, c.start_s),
             units: c.sources.iter().map(|s| s.src).collect(),
             sources: c
                 .sources
                 .iter()
                 .map(|s| {
                     let f = s.flags;
-                    trunk_recorder_plugin::CallSource { unit: s.src, tag: self.unit_tag(c.system, s.src), time: self.wall(s.time_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
+                    trunk_recorder_plugin::CallSource { unit: s.src, tag: self.unit_tag(c.system, s.src), time: self.wall_of(s.time_s, c.start_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
                 })
                 .collect(),
             patched_talkgroups: c.patched_talkgroups.clone(),
@@ -1055,7 +1092,7 @@ impl Session {
             }
             Event::Concluded(k) => {
                 if let Some(code) = heard_code(&k.call) {
-                    self.heard.note(k.call.freq_hz, &code, true, self.wall(k.call.start_s) * 1000.0);
+                    self.heard.note(k.call.freq_hz, &code, true, self.wall_of(k.call.start_s, k.call.start_s) * 1000.0);
                 }
                 // Trunk Recorder's layout: <shortName>/<year>/<month>/<day>/, local time; or the system's filename format.
                 let r = &k.record;
@@ -1480,5 +1517,42 @@ mod unreported_tests {
         let n = run(180.0, 90.0, 0.02);
         let want = (0.02 * 2_400_000.0) as u64;
         assert!(n.abs_diff(want) < want / 10, "found {n} of {want} lost");
+    }
+}
+
+#[cfg(test)]
+mod wall_tests {
+    use super::*;
+
+    /// What plugins are told of a call up across a wall clock correction:
+    /// all its times by the epoch it began under, so a talker who came on
+    /// after the correction is still where it was in the call.
+    #[test]
+    fn a_calls_live_times_keep_the_epoch_it_began_under() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire" }] }]
+        }))
+        .unwrap();
+        let epoch = 1.75e12;
+        let mut s = Session::new(cfg, &Default::default(), epoch, &|_| None, |_| 0).unwrap();
+        // 2 s of samples: the engine's time is 2 s.
+        s.push_iq(0, &vec![Complex32::new(0.0, 0.0); 4_800_000], 0, epoch + 2000.0);
+        let mut out = Vec::new();
+        s.poll(epoch + 2000.0, &mut out);
+        assert!(s.engine.status().now_s >= 1.9, "{}", s.engine.status().now_s);
+        assert!(s.correct_wall_clock(10_000.0));
+        // Begun at 1 s, under the old epoch; a second talker at 2.5 s, after the correction.
+        let src = |src: u32, time_s: f64| trunk_core::trunk::calls::CallSource { src, time_s, ..Default::default() };
+        let call = Call { start_s: 1.0, sources: vec![src(7, 1.0), src(9, 2.5)], ..Default::default() };
+        let info = s.call_info(&call);
+        assert_eq!(info.start_time, 1_750_000_001.0);
+        assert_eq!(info.sources.iter().map(|x| x.time).collect::<Vec<_>>(), [1_750_000_001.0, 1_750_000_002.5]);
+        // One begun after it is by the new epoch.
+        let later = Call { start_s: 3.0, sources: vec![src(7, 3.0)], ..Default::default() };
+        assert_eq!(s.call_info(&later).start_time, 1_750_000_013.0);
+        // Unit events, status and the like: by the epoch at their own time.
+        assert_eq!(s.wall(3.0), 1_750_000_013.0);
+        assert_eq!(s.wall(0.5), 1_750_000_000.5);
     }
 }
