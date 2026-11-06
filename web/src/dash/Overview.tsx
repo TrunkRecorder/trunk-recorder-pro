@@ -218,7 +218,7 @@ export function eventText(e: MonitorEvent): string {
     case "unitFirstSeen":
       return `${e.system}: radio ${e.alias || e.unit} heard for the first time`;
     case "tonePattern":
-      return `${e.system}: ${e.signals?.length ? `${e.signals.join(", ")} (${e.text})` : e.text} on talkgroup ${e.talkgroup}`;
+      return `${e.system}: ${e.signals?.length ? `${e.signals.join(", ")} (${e.text})` : e.text} on talkgroup ${e.alphaTag || e.talkgroup}`;
     case "controlLost":
       return `${e.system}${e.site ? ` site ${e.site}` : ""}: lost its control channel${e.freqHz ? ` (${mhz(e.freqHz)} MHz)` : ""}`;
     case "controlRegained":

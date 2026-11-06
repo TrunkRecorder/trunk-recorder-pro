@@ -3245,7 +3245,8 @@
               "type": "number"
             },
             "alphaTag": {
-              "type": "string"
+              "type": "string",
+              "description": "Its talkgroup's name, as its call has it (tgFirstSeen, tonePattern; \"\": none)."
             },
             "unit": {
               "type": "number"

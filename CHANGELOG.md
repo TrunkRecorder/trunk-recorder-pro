@@ -5,10 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **A tone on a conventional channel names its talkgroup.** Plugins' `tone_pattern` events took the
+- **A tone names its talkgroup, as its call does.** Plugins' `tone_pattern` events took the
   talkgroup's name from the system's talkgroup list, which a conventional system's channel names
   aren't in, so a page there came with no name ("TG 1") while its recording had one. The tone now
-  takes the name its call has.
+  takes the name its call has, and the log line and the dashboard's event feed name it too.
 - **A control channel is alive only when it says so, every protocol alike.** One rule for a good block
   (something decoded cleanly, an idle one too, or a message): DMR's idle control blocks now count, so its
   site stays locked between calls. A watched site of another system no longer counts as locked or feeds

@@ -366,7 +366,7 @@ impl Stats {
                 self.shared.radio.lock().unwrap().tone_pattern(name, h.talkgroup, &p, t);
                 // One of the system's signals always; any other pattern only when a watcher wants it.
                 if !h.signals.is_empty() || self.shared.monitor.lock().unwrap().wants_frequent() {
-                    self.emit(MonitorEvent::TonePattern { system: name.to_string(), talkgroup: h.talkgroup, text: p.text, signals: h.signals.clone() }, out);
+                    self.emit(MonitorEvent::TonePattern { system: name.to_string(), talkgroup: h.talkgroup, alpha_tag: h.alpha_tag.clone(), text: p.text, signals: h.signals.clone() }, out);
                 }
             }
             Event::Concluded(k) => {

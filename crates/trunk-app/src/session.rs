@@ -1127,12 +1127,13 @@ impl Session {
                 let name = self.system_name(t.system).to_string();
                 let pattern = trunk_core::trunk::record::tone_pattern(&t.pattern, t.src, t.signals.clone());
                 let named = t.signals.iter().map(|s| format!("{name}:{s}")).collect::<Vec<_>>().join(", ");
-                let text = format!("TG {}: {}{}", t.talkgroup, pattern.text, if named.is_empty() { String::new() } else { format!(" = {named}") });
+                // Its talkgroup named as its call is (a conventional channel's by its row).
+                let tag = if t.alpha_tag.is_empty() { String::new() } else { format!(" {}", t.alpha_tag) };
+                let text = format!("TG {}{tag}: {}{}", t.talkgroup, pattern.text, if named.is_empty() { String::new() } else { format!(" = {named}") });
                 self.records.push(Record::text(Level::Info, Some(&self.site_label(t.system, t.site)), text.clone()));
                 self.log.push(json!({ "timeS": t.time_s, "kind": "tonePattern", "text": text, "system": name, "site": self.site_name(t.site) }));
                 if self.plugin_topics.tone_patterns {
-                    // (The call's own name first: a conventional channel's isn't in the system's list.)
-                    let alpha_tag = if t.alpha_tag.is_empty() { self.alpha_tag(t.system, t.talkgroup) } else { t.alpha_tag.clone() };
+                    let alpha_tag = t.alpha_tag.clone();
                     let time = (self.wall(t.time_s) * 1000.0).round() / 1000.0;
                     let ev = trunk_recorder_plugin::TonePatternEvent { short_name: name, site: self.site_name(t.site), call_num: t.call_id as u64, talkgroup: t.talkgroup, alpha_tag, src_tag: self.unit_tag(t.system, t.src), decrypted: t.decrypted, time, pattern };
                     out.push(Output::Plugin(HostMessage::TonePattern(ev)));
@@ -1555,5 +1556,32 @@ mod wall_tests {
         // Unit events, status and the like: by the epoch at their own time.
         assert_eq!(s.wall(3.0), 1_750_000_013.0);
         assert_eq!(s.wall(0.5), 1_750_000_000.5);
+    }
+}
+#[cfg(test)]
+mod tone_tests {
+    use super::*;
+
+    /// A tone on a conventional channel names its talkgroup as its call does
+    /// (by the channel's row): in the log, the dashboard's feed and plugins' event.
+    #[test]
+    fn a_tone_names_its_talkgroup_everywhere_it_goes() {
+        use trunk_core::dsp::inband::{pattern::{Pattern, PatternKind}, Origin};
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "wood", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire Dispatch" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        s.plugin_topics.tone_patterns = true;
+        let pattern = Pattern { kind: PatternKind::TwoTone, hz: vec![470.5, 1034.7], lengths: vec![1.0, 3.0], digits: String::new(), knox: false, cycles: 0, format: Some("Quick Call II"), start: 0, len: 0, origin: Origin::Audio };
+        let heard = trunk_core::trunk::PatternHeard { system: 0, site: None, call_id: 7, talkgroup: 1, alpha_tag: "Fire Dispatch".into(), src: 0, pattern, signals: vec!["FD_PAGE".into()], decrypted: false, time_s: 1.0 };
+        let mut out = Vec::new();
+        s.handle(Event::TonePattern(heard), &mut out);
+        assert!(s.log.iter().any(|l| l["kind"] == "tonePattern" && l["text"].as_str().is_some_and(|t| t.starts_with("TG 1 Fire Dispatch: "))), "{:?}", s.log);
+        let plugin = out.iter().find_map(|o| match o { Output::Plugin(HostMessage::TonePattern(e)) => Some(e.alpha_tag.clone()), _ => None });
+        assert_eq!(plugin.as_deref(), Some("Fire Dispatch"));
+        let feed = out.iter().find_map(|o| match o { Output::Message(ToClient::MonitorEvent(b)) => b.get("alphaTag").cloned(), _ => None });
+        assert_eq!(feed, Some(json!("Fire Dispatch")));
     }
 }

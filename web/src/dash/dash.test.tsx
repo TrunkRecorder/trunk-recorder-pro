@@ -189,6 +189,7 @@ test("Radio: a system's Tones card names its signals and goes to them in Setup; 
   assert.match(lines[0], /^Norwalk EMS 1 20341 two-tone 781\.25 → 875 Hz, 0\.98 \+ 2\.98 s \(Quick Call II\) QC2 126\/128 3 .* E7 ▶ NORWALK_EMS$/, "the recorder's text and its signal");
   assert.match(lines[1], /^20342 DTMF 12# — 3 .* ▶ Add$/, "not a signal yet: Add");
   assert.equal(eventText({ type: "monitorEvent", t: 0, level: "info", kind: "tonePattern", system: "dcfd", talkgroup: 20341, text: "two-tone 781.25 → 875 Hz", signals: ["NORWALK_EMS"] }), "dcfd: NORWALK_EMS (two-tone 781.25 → 875 Hz) on talkgroup 20341");
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "info", kind: "tonePattern", system: "wood", talkgroup: 1, alphaTag: "Fire Dispatch", text: "two-tone 470.5 → 1034.7 Hz", signals: [] }), "wood: two-tone 470.5 → 1034.7 Hz on talkgroup Fire Dispatch", "by its call's name");
 });
 
 test("Radio: a warning of calls out of band links to the frequencies, on the Overview and the system's page", () => {
