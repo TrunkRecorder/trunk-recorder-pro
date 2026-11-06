@@ -258,6 +258,40 @@ pub struct Message {
     pub meta: String,
 }
 
+/// A neighbouring site a control channel announces, by its address: P25's
+/// WACN, System ID, RFSS and site (another system's, for a neighbouring
+/// system); NXDN's system and site (WACN and RFSS 0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdjacentSite {
+    pub wacn: u32,
+    pub sys_id: u32,
+    pub rfss: u32,
+    pub site: u32,
+    pub freq_hz: u64,
+}
+
+/// The neighbouring sites a control channel has announced
+/// ([`MessageType::Adjacent`] with a channel), each once by its address.
+#[derive(Clone, Debug, Default)]
+pub struct Neighbours(BTreeMap<(u32, u32, u32, u32), AdjacentSite>);
+
+impl Neighbours {
+    /// Takes `m`'s neighbour, if it announces one whose channel resolved.
+    pub fn hear(&mut self, m: &Message) {
+        if m.kind == MessageType::Adjacent && m.freq_hz != 0 {
+            let a = AdjacentSite { wacn: m.wacn, sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz };
+            self.0.insert((a.wacn, a.sys_id, a.rfss, a.site), a);
+        }
+    }
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+    pub fn list(&self) -> Vec<AdjacentSite> {
+        self.0.values().copied().collect()
+    }
+}
+
 
 /// A date and time to the micro-slot (7.5 ms; 8000 a minute) as Unix ms,
 /// None when a field is out of range. P25's system time is UTC (its local
@@ -407,18 +441,38 @@ pub struct P25Parser {
     /// The site's (WACN, System ID): a band plan for another system's
     /// channels (an extended IDEN_UP_TDMA naming it) isn't this one's.
     system: Option<(u32, u16)>,
+    /// Other systems' band plans, by (WACN, System ID): a site sends a
+    /// neighbouring system's so radios can find its control channel
+    /// (ADJ_STS_BCST_UNC names it in that system's plan). Until the site's
+    /// network status says which system it is, its own is here too.
+    others: BTreeMap<(u32, u16), BTreeMap<u8, Identifier>>,
 }
 
 impl P25Parser {
     /// A channel's carrier frequency (0: its band plan unknown yet) and, on a
     /// TDMA carrier, its slot.
     pub fn resolve(&self, ch: Channel) -> (u64, Option<u8>) {
-        match self.tables.get(&ch.iden()) {
+        Self::resolve_on(&self.tables, ch)
+    }
+
+    /// [`Self::resolve`] on `plan`: this system's or another's.
+    fn resolve_on(plan: &BTreeMap<u8, Identifier>, ch: Channel) -> (u64, Option<u8>) {
+        match plan.get(&ch.iden()) {
             Some(i) => {
                 let (hz, slot) = i.resolve(ch);
                 (hz, (i.slots > 1).then_some(slot))
             }
             None => (0, None),
+        }
+    }
+
+    /// The band plan of system (WACN, System ID), when heard: this one's, or
+    /// one the site sent for a neighbouring system.
+    fn plan(&self, system: (u32, u16)) -> Option<&BTreeMap<u8, Identifier>> {
+        if Some(system) == self.system {
+            Some(&self.tables)
+        } else {
+            self.others.get(&system)
         }
     }
 
@@ -602,6 +656,7 @@ impl P25Parser {
                 } else {
                     let (w, s) = i.system.unwrap_or_default();
                     m.meta += &format!(" for system {w:x}.{s:x}: not this one's");
+                    self.others.entry((w, s)).or_default().insert(i.iden, Identifier { system: None, ..*i });
                 }
             }
             Msg::RfssStatus { site: s, networked } => {
@@ -614,29 +669,41 @@ impl P25Parser {
                 // the site lock (and a band plan for this system) through.
                 let wacn = s.wacn.unwrap_or(0);
                 self.system = Some((wacn, s.sys_id));
+                // Its band plan, if sent before this said whose it was.
+                if let Some(t) = self.others.remove(&(wacn, s.sys_id)) {
+                    self.tables.extend(t);
+                }
                 self.on(&mut m, s.ch);
                 (m.kind, m.wacn, m.sys_id) = (MessageType::Status, wacn, s.sys_id as u32);
                 m.meta = format!("Network status wacn {wacn:x} sysid {:x} CC {} MHz", s.sys_id, mhz(m.freq_hz));
             }
             Msg::AdjacentStatus { site: s, own_plan, conventional, failed, valid, .. } => {
-                // A neighbour on another band plan (ADJ_STS_BCST_UNC) has a
-                // channel this one can't resolve.
+                // Its WACN: the extended forms say it; the short ADJ_STS_BCST
+                // is this site's, which its network status says.
+                let own = self.system.map(|(w, _)| w);
+                let wacn = s.wacn.or(own);
+                (m.wacn, m.sys_id, m.rfss, m.site) = (wacn.unwrap_or(0), s.sys_id as u32, s.rfss as u32, s.site as u32);
+                // Its channel: on this system's band plan, or (ADJ_STS_BCST_UNC)
+                // on its own system's, when the site has sent that.
                 if *own_plan {
                     self.on(&mut m, s.ch);
+                } else if let Some(plan) = wacn.and_then(|w| self.plan((w, s.sys_id))) {
+                    m.freq_hz = Self::resolve_on(plan, s.ch).0;
                 }
-                (m.sys_id, m.rfss, m.site) = (s.sys_id as u32, s.rfss as u32, s.site as u32);
-                m.wacn = s.wacn.or(self.system.map(|(w, _)| w)).unwrap_or(0);
                 let mut flags = String::new();
-                for (on, f) in [(*conventional, " conventional"), (*failed, " failed"), (!*valid, " unverified")] {
+                for (on, f) in [(*conventional, " conventional"), (*failed, " failed"), (!*valid, " unverified"), (wacn.is_none(), " (WACN not heard yet)")] {
                     if on {
                         flags += f;
                     }
                 }
-                // A site radios can move to: a trunked one that is up.
-                if !conventional && !failed {
+                // A site radios can move to: a trunked one that is up, by its
+                // whole address (not until its WACN is known: else it would be
+                // another neighbour once it is).
+                if !conventional && !failed && wacn.is_some() {
                     m.kind = MessageType::Adjacent;
                 }
-                m.meta = format!("Adjacent site {:x}.{} {} CC {} MHz{flags}", s.sys_id, s.rfss, s.site, mhz(m.freq_hz));
+                let of = wacn.filter(|&w| Some(w) != own).map_or(String::new(), |w| format!(" of WACN {w:x}"));
+                m.meta = format!("Adjacent site {:x}.{} {}{of} CC {} MHz{flags}", s.sys_id, s.rfss, s.site, mhz(m.freq_hz));
             }
             Msg::SecondaryControl { rfss, site, channels } => {
                 for c in channels {
@@ -844,6 +911,38 @@ mod tests {
         assert_eq!(p.channel_to_hz(Channel(0x1000)), 762_006_250);
     }
 
+    /// The band plan before the network status: kept aside, then taken
+    /// once the network status says it's this system's.
+    #[test]
+    fn the_band_plan_before_the_network_status() {
+        let mut p = P25Parser::default();
+        let mut h = crate::p25::mbt::tests::ambtc_header(0x33, [0x11, 0xbe, 0xe0], [0x09, 0xef]);
+        h[2] = 0;
+        p.parse(&crate::p25::osp::from_mbt(&crate::p25::mbt::Mbt { header: h, data: vec![0x09, 0x15, 0x75, 0x62, 0xcb, 0x00, 0x32, 0] }), 0x443, 0.0);
+        assert!(p.tables.is_empty(), "whose it is not known yet");
+        parse(&mut p, 0x3b, 0, [0x12, 0xbe, 0xe0, 0x09, 0xef, 0x10, 0x01, 0x70]);
+        assert_eq!(p.channel_to_hz(Channel(0x1000)), 762_006_250);
+    }
+
+    /// A neighbouring system's control channel (ADJ_STS_BCST_UNC) is in that
+    /// system's band plan, which the site sends too.
+    #[test]
+    fn a_neighbouring_systems_control_channel_by_its_band_plan() {
+        let mut p = P25Parser::default();
+        parse(&mut p, 0x3b, 0, [0x12, 0xbe, 0xe0, 0x03, 0xa9, 0x10, 0x01, 0x70]);
+        let mbt = |op: u8, addr: [u8; 3], tail: [u8; 2], data: Vec<u8>| {
+            let mut h = crate::p25::mbt::tests::ambtc_header(op, addr, tail);
+            h[2] = 0;
+            crate::p25::osp::from_mbt(&crate::p25::mbt::Mbt { header: h, data })
+        };
+        let unc = mbt(0x3e, [0x12, 0x29, 0x54], [1, 1], vec![0x10, 0x00, 0x10, 0x00, 0x70, 0xbe, 0xe0, 0x00, 0, 0, 0, 0]);
+        let m = p.parse(&unc, 0x443, 0.0).pop().unwrap();
+        assert_eq!((m.kind, m.wacn, m.sys_id, m.rfss, m.site, m.freq_hz), (MessageType::Adjacent, 0xbee00, 0x954, 1, 1, 0), "its band plan not heard yet");
+        p.parse(&mbt(0x33, [0x11, 0xbe, 0xe0], [0x09, 0x54], vec![0x09, 0x15, 0x75, 0x62, 0xcb, 0x00, 0x32, 0]), 0x443, 0.0);
+        assert!(p.tables.is_empty(), "not this system's");
+        assert_eq!(p.parse(&unc, 0x443, 0.0).pop().unwrap().freq_hz, 762_006_250);
+    }
+
     /// SCCB_EXP is one channel: Channel (T), then Channel (R), the FNE's receive (not another CC).
     #[test]
     fn sccb_exp_is_one_control_channel() {
@@ -860,12 +959,16 @@ mod tests {
         assert_eq!(msg(0x2b, 0, [0x03, 0x01, 0x01, 1, 7, 0x0a, 0x0b, 0x0c]).kind, MessageType::Unknown);
     }
 
-    /// A neighbour radios can move to; a failed or conventional one isn't.
+    /// A neighbour radios can move to; a failed or conventional one isn't,
+    /// nor (ADJ_STS_BCST names no WACN) one before the site's WACN is heard.
     #[test]
     fn adjacent_sites() {
         let mut p = with_band_plan();
-        let m = parse(&mut p, 0x3c, 0, [0x12, 0x33, 0xa9, 1, 7, 0x10, 0x01, 0x70]).pop().unwrap();
-        assert_eq!((m.kind, m.sys_id, m.rfss, m.site, m.freq_hz), (MessageType::Adjacent, 0x3a9, 1, 7, 851_012_500));
+        let adj = [0x12, 0x33, 0xa9, 1, 7, 0x10, 0x01, 0x70];
+        assert_ne!(parse(&mut p, 0x3c, 0, adj).pop().unwrap().kind, MessageType::Adjacent, "its WACN not heard yet");
+        parse(&mut p, 0x3b, 0, [0x12, 0xbe, 0xe0, 0x03, 0xa9, 0x10, 0x01, 0x70]);
+        let m = parse(&mut p, 0x3c, 0, adj).pop().unwrap();
+        assert_eq!((m.kind, m.wacn, m.sys_id, m.rfss, m.site, m.freq_hz), (MessageType::Adjacent, 0xbee00, 0x3a9, 1, 7, 851_012_500));
         assert_ne!(parse(&mut p, 0x3c, 0, [0x12, 0x73, 0xa9, 1, 7, 0x10, 0x01, 0x70]).pop().unwrap().kind, MessageType::Adjacent);
         assert_ne!(parse(&mut p, 0x3c, 0, [0x12, 0xb3, 0xa9, 1, 7, 0x10, 0x01, 0x70]).pop().unwrap().kind, MessageType::Adjacent);
     }

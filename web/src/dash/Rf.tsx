@@ -10,9 +10,9 @@ import { setView, useApp, useTopic, type AppState, type StatsRange } from "../co
 import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
-import { Waterfall } from "../Waterfall.tsx";
+import { Waterfall, type CcMark } from "../Waterfall.tsx";
 import { K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE, useHistory, useRanges, val } from "./data.ts";
-import { ccMarks } from "./Systems.tsx";
+import { adjacentCcMarks, ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
 
@@ -133,7 +133,7 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
   s: AppState;
   label: string;
   sources: SourceStatus[];
-  ccs: { hz: number; name: string }[];
+  ccs: CcMark[];
   conv: { hz: number; name: string; label: string }[];
   calls: AppState["calls"];
 }) {
@@ -173,10 +173,15 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
         </line>
       ))}
       {ccs.map((c) => (
-        <g key={`${c.name}${c.hz}`}>
-          <line x1={x(c.hz)} x2={x(c.hz)} y1={14} y2={56} stroke={systemColor(s.config, c.name)} strokeWidth={3} vectorEffect="non-scaling-stroke">
-            <title>{`${c.name} control channel · ${mhz(c.hz)} MHz`}</title>
+        <g key={`${c.faint ? "a" : "cc"}${c.hz}`}>
+          <line x1={x(c.hz)} x2={x(c.hz)} y1={14} y2={56} stroke={c.color} strokeWidth={c.faint ? 2 : 3} className={c.faint ? "band-adj" : undefined} vectorEffect="non-scaling-stroke">
+            <title>{`${c.title ?? `Control channel ${c.label}`} · ${mhz(c.hz)} MHz`}</title>
           </line>
+          {c.faint && (
+            <text x={x(c.hz)} y={62} textAnchor={x(c.hz) > W - 80 ? "end" : "start"} className="axis band-adj-label">
+              {c.label}
+            </text>
+          )}
         </g>
       ))}
       <text x={2} y={70} className="axis">
@@ -196,7 +201,8 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
  */
 function BandOverview({ s }: { s: AppState }) {
   if (!s.sources.length) return null;
-  const ccs = s.status?.systems.flatMap((y) => y.sites.flatMap((x) => (x.controlChannelHz ? [{ hz: x.controlChannelHz, name: y.shortName }] : []))) ?? [];
+  const adjacent = adjacentCcMarks(s);
+  const ccs = [...ccMarks(s.config, runningSites(s.status?.systems ?? [])), ...adjacent];
   const conv = (s.config?.conventional ?? []).flatMap((c) => c.channels.filter((ch) => ch.enabled).map((ch) => ({ hz: ch.freqHz, name: c.shortName, label: ch.name })));
   // The bands in use, low to high; a source straddling two goes in the one its center's in.
   const lows = new Map<string, number>();
@@ -227,6 +233,12 @@ function BandOverview({ s }: { s: AppState }) {
           <i className="sw-cc" />
           control channel
         </span>
+        {adjacent.length > 0 && (
+          <span>
+            <i className="sw-adj" />
+            adjacent site's control channel (WACN:System:RFSS-site)
+          </span>
+        )}
         <span>
           <i className="sw-rec" />
           call recording
@@ -326,7 +338,7 @@ function SourceWaterfall({ s, i, title }: { s: AppState; i: number; title?: stri
     >
       {on &&
         (s.spectra[i] ? (
-          <Waterfall radio={s.spectra[i]} label={src.label} ccs={ccMarks(s.config, runningSites(s.status?.systems ?? []))} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
+          <Waterfall radio={s.spectra[i]} label={src.label} ccs={[...ccMarks(s.config, runningSites(s.status?.systems ?? [])), ...adjacentCcMarks(s)]} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
         ) : (
           <div className="chart-empty">Waiting for the spectrum…</div>
         ))}

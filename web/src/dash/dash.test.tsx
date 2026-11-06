@@ -8,7 +8,7 @@ import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { coverage, pageHealth, rangesFor } from "./data.ts";
-import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
+import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
@@ -19,10 +19,10 @@ import { PluginHealthPage } from "./PluginHealth.tsx";
 import { StorageView, tablesOf } from "./Storage.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
 
-const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
+const site = (index: number, name: string, identity: Partial<SiteIdentity>, adjacent: AdjacentSite[] = []): SiteStatus => ({
   index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
   identity: { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: null, ...identity },
-  good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null,
+  good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent,
 });
 const system = (index: number, shortName: string, sites: SiteStatus[]): SystemStatus => ({ index, shortName, activeCalls: 0, recording: 0, conventionalOpen: 0, callsConcluded: 0, sites });
 
@@ -41,13 +41,18 @@ function running(c: Config, systems: SystemStatus[], calls: Partial<CallView>[] 
 }
 
 /** dcfd, a system of two sites (dcfd and south), and another of one. */
-function twoSites(calls: Partial<CallView>[] = []): void {
+/** dcfd (sites dcfd and south) and other, running; south announcing `adjacent`. */
+function twoSites(calls: Partial<CallView>[] = [], adjacent: AdjacentSite[] = []): void {
   const c = defaultConfig();
   const dcfd = newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_000_000] });
   dcfd.sites.push({ ...dcfd.sites[0], name: "south", controlChannelsHz: [851_500_000] });
   c.systems.push(dcfd, newSystem(c, { shortName: "other", controlChannelsHz: [852_000_000] }));
-  running(c, [system(0, "dcfd", [site(0, "dcfd", { site: 1 }), site(1, "south", { site: 2 })]), system(1, "other", [site(2, "other", { sysId: 0x999, site: 1 })])], calls);
+  running(c, twoSitesRunning(adjacent), calls);
 }
+const twoSitesRunning = (adjacent: AdjacentSite[] = []) => [
+  system(0, "dcfd", [site(0, "dcfd", { site: 1 }), site(1, "south", { site: 2 }, adjacent)]),
+  system(1, "other", [site(2, "other", { sysId: 0x999, site: 1 })]),
+];
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 const titles = (html: string) => [...html.matchAll(/<h3>(.*?)<\/h3>/g)].map((m) => text(m[1]).trim());
@@ -74,20 +79,54 @@ test("Decode: a card per site; a system's page picks the site", () => {
   assert.doesNotMatch(page, /No system called/);
 });
 
-test("Decode: a system's page shows what its sites announce (decodeDetail), not before", () => {
-  twoSites();
+test("Decode: a site's neighbours by address (status); its patches once watched (decodeDetail)", () => {
+  twoSites([], [
+    { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 9, freqHz: 853_000_000 },
+    { wacn: 0xbee00, sysId: 0x954, rfss: 1, site: 1, freqHz: 854_000_000 },
+    { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 1, freqHz: 855_000_000 },
+  ]);
   setView("decode", "dcfd", "south");
   const before = text(renderToString(<DecodePage />));
-  assert.ok(!before.includes("Patches") && !before.includes("Neighbouring sites"));
+  assert.ok(!before.includes("Patches"));
+  assert.ok(before.includes("BEE00:1A2:1-9 · 853"), before);
+  assert.match(before, /BEE00:954:1-1 · 854\.0+ inter-system/, "a neighbouring system's site, by its address");
+  assert.doesNotMatch(before, /BEE00:1A2:1-1 /, "a site running here (dcfd), on another channel");
+  assert.match(before, /2 announced, not recorded · 1 of other systems/);
   const tg = (talkgroup: number, alphaTag = "") => ({ talkgroup, alphaTag });
   transport.onMessage({
     type: "decodeDetail", system: "dcfd", channels: [],
-    sites: [{ index: 1, name: "south", adjacent: [{ sysId: 0x1a2, rfss: 1, site: 9, freqHz: 853_000_000 }], dmr: null, nxdn: null }],
+    sites: [{ index: 1, name: "south", dmr: null, nxdn: null }],
     patches: [{ supergroup: tg(60001), members: [tg(100, "Fire Dispatch"), tg(200)] }],
   });
   const page = text(renderToString(<DecodePage />));
   assert.ok(page.includes("SG 60001") && page.includes("Fire Dispatch (100) + 200"), page);
-  assert.ok(page.includes("site 1-9"), page);
+});
+
+test("RF: the control channels of adjacent sites on a source, faint, by address; not those running or off every source", () => {
+  transport.onMessage({ type: "state", phase: "starting", error: null, ended: false, restartNeeded: false });
+  twoSites();
+  const radio = { type: "hackrf" as const, serial: "", centerHz: 852_000_000, rateHz: 4_000_000, lnaDb: 24, vgaDb: 30, amp: false, biasTee: false, ppm: 0 };
+  transport.onMessage({ type: "config", config: { ...snapshot().config!, sources: [radio] }, version: 2 });
+  const src: SourceStatus = { index: 0, label: "RTL", centerHz: 852_000_000, rateHz: 4_000_000, rateMeasured: 4_000_000, dropped: 0, errors: 0, lastError: null, ended: false, clockPpm: null, settings: radio };
+  const status = (adjacent: AdjacentSite[]) =>
+    transport.onMessage({ type: "status", status: { systems: twoSitesRunning(adjacent), recording: 0 } as unknown as EngineStatus, sources: [src], load: 0, calls: [] });
+  status([]);
+  setView("rf");
+  assert.doesNotMatch(text(renderToString(<RfPage />)), /adjacent site/, "nothing announced yet");
+  status([
+    { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 1, freqHz: 851_000_000 },
+    { wacn: 0xbee00, sysId: 0x954, rfss: 1, site: 1, freqHz: 853_000_000 },
+    { wacn: 1, sysId: 0x97, rfss: 1, site: 1, freqHz: 853_500_000 },
+    { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 8, freqHz: 853_950_000 },
+    { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 7, freqHz: 860_000_000 },
+  ]);
+  const page = text(renderToString(<RfPage />));
+  assert.match(page, /BEE00:954:1-1/);
+  assert.match(page, /00001:097:1-1/, "another WACN's");
+  assert.match(page, /adjacent site\S+s control channel/);
+  assert.doesNotMatch(page, /BEE00:1A2:1-1/, "a site running here is drawn as itself");
+  assert.doesNotMatch(page, /1-8/, "in the source's guard band");
+  assert.doesNotMatch(page, /1-7/, "off every source");
 });
 
 test("Decode: a site's FCC call sign, once its control channel has said it", () => {

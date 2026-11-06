@@ -13,7 +13,7 @@
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, needsDriver, siteNameOf, SOURCE_KINDS, sourceKey, sourceTitle, systemWithChannel } from "./config.ts";
+import { adjacentIdentity, deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, needsDriver, siteNameOf, SOURCE_KINDS, sourceKey, sourceTitle, roaming, siteAddress, systemWithChannel } from "./config.ts";
 import {
   can,
   addDmrSite,
@@ -320,8 +320,8 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
     props.onDone();
   };
   const neighbour = (a: SurveyMonitor["adjacent"][number]) => {
-    const name = addSite([a.freqHz], { wacn: id.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site });
-    setNotice(`Added ${name} (site ${a.rfss}-${a.site}, control channel ${formatMhz(a.freqHz)} MHz). It needs a source that covers it.`);
+    const name = addSite([a.freqHz], adjacentIdentity(a));
+    setNotice(`Added ${name} (site ${siteAddress(adjacentIdentity(a))}, control channel ${formatMhz(a.freqHz)} MHz). It needs a source that covers it.`);
   };
   return (
     <div className="stack">
@@ -423,10 +423,11 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
               {m.adjacent.map((a) => {
                 const have = systemWithChannel(c, a.freqHz);
                 return (
-                  <span key={`${a.rfss}-${a.site}`} className="chip">
+                  <span key={siteAddress(adjacentIdentity(a))} className="chip">
                     <span className="mono">
-                      site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
+                      {siteAddress(adjacentIdentity(a))} · {formatMhz(a.freqHz)}
                     </span>
+                    {roaming(id, adjacentIdentity(a)) !== "intra-system" && <span className="badge">{roaming(id, adjacentIdentity(a))}</span>}
                     {soughtOn(sought, a.freqHz) && <Sought l={soughtOn(sought, a.freqHz)!} />}
                     {have ? (
                       <span>· in {have.shortName}</span>
