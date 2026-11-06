@@ -98,53 +98,10 @@ pub(crate) fn split_csv_on(line: &str, delim: char) -> Vec<String> {
     out
 }
 
+/// A talkgroup file as the engine looks it up, by number: its rows as
+/// [`read_rows`] reads them (the one reader of the file).
 pub fn parse_csv(text: &str) -> Talkgroups {
-    let lines: Vec<&str> = csv_lines(text).collect();
-    let mut out = Talkgroups::new();
-    let Some(&head) = lines.first() else { return out };
-    let delim = csv_delimiter(head);
-    // Headers in any case, as spreadsheets save them, and RadioReference's DEC and Group.
-    let first: Vec<String> = split_csv_on(head, delim)
-        .iter()
-        .map(|c| match c.trim().to_ascii_lowercase().as_str() {
-            "dec" => "decimal".to_string(),
-            "group" => "category".to_string(),
-            "alphatag" => "alpha tag".to_string(),
-            h => h.to_string(),
-        })
-        .collect();
-    let headed = first.first().map(|s| s.as_str()) == Some("decimal");
-    let col = |name: &str| first.iter().position(|c| c.eq_ignore_ascii_case(name));
-    for line in if headed { &lines[1..] } else { &lines[..] } {
-        let f = split_csv_on(line, delim);
-        let get = |name: &str, legacy: usize| -> Option<&str> {
-            if headed {
-                col(name).and_then(|i| f.get(i)).map(|s| s.as_str())
-            } else {
-                f.get(legacy).map(|s| s.as_str())
-            }
-        };
-        let Some(number) = get("Decimal", 0).and_then(|s| s.parse::<u32>().ok()) else { continue };
-        let s = |name: &str, legacy: usize| get(name, legacy).unwrap_or("").to_string();
-        let priority = get("Priority", 7).and_then(|v| v.parse().ok()).unwrap_or(1);
-        let marked = get("Ignore", 99).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "y" | "1" | "x" | "ignore"));
-        out.insert(
-            number,
-            Talkgroup {
-                number,
-                mode: s("Mode", 2),
-                alpha_tag: s("Alpha Tag", 3),
-                description: s("Description", 4),
-                tag: s("Tag", 5),
-                group: s("Category", 6),
-                priority,
-                preferred_nac: get("Preferred NAC", 99).and_then(|v| v.parse().ok()).unwrap_or(0),
-                preferred_site: s("Preferred Site", 99),
-                ignore: marked || priority < 0,
-            },
-        );
-    }
-    out
+    read_rows(text).talkgroups.into_iter().map(|r| (r.tg.number, r.tg)).collect()
 }
 
 /// A system's talkgroup, as kept and as the interfaces have it: its
@@ -190,8 +147,8 @@ pub fn parse_rows(text: &str) -> Vec<TalkgroupRow> {
     read_rows(text).talkgroups
 }
 
-/// A talkgroup file's rows, in its order (the headed or the legacy format,
-/// read as [`parse_csv`] reads it), and what was passed over. A comment
+/// A talkgroup file's rows, in its order (the headed or the legacy format),
+/// and what was passed over. A comment
 /// line directly above a row is that row's; others (before the header,
 /// after a blank line) are dropped. A talkgroup in two rows: the later
 /// one, where the first was.

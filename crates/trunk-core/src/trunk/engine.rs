@@ -1914,7 +1914,7 @@ impl Core {
         }
         self.emit_call_events();
         let mut out = std::mem::take(&mut self.conv_out);
-        self.conv.finish(&mut out);
+        self.conv.finish(self.now_s, &self.call_ids, &|i| &self.systems[i].cfg, &mut out);
         self.emit_conv(out);
     }
 
@@ -1924,10 +1924,13 @@ impl Core {
             match o {
                 ConvOut::Event(e) => self.events.push(e),
                 ConvOut::End { call, rec, on, tune_ref } => {
-                    if tune_ref {
-                        self.radio.score_call(on.source, &call, rec.freq_error_hz());
+                    // (A call not recorded — an ignored talkgroup, say — took in no audio: nothing to save, nothing to score.)
+                    if call.recording {
+                        if tune_ref {
+                            self.radio.score_call(on.source, &call, rec.freq_error_hz());
+                        }
+                        self.write_call(Held { call: call.clone(), rec, on }, None);
                     }
-                    self.write_call(Held { call: call.clone(), rec, on }, None);
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
@@ -2016,7 +2019,7 @@ impl Core {
                             if CallManager::note_units(c, &mut rec.rec.tx, &news.units, now) {
                                 self.call_events.push(CallEvent::Update(c.clone()));
                             }
-                            let decrypted = digital && (c.encrypted || c.decrypted || rec.decrypted);
+                            let decrypted = c.decrypted_voice(rec.decrypted);
                             if !news.patterns.is_empty() {
                                 heard.push((c.clone(), rec.rec.talkers(&c.sources, news.patterns), decrypted, now));
                             }
@@ -2128,7 +2131,13 @@ impl Core {
                     c.twin = self.link_twins(&c);
                     self.events.push(Event::CallStart(c));
                 }
-                CallEvent::Update(c) => self.events.push(Event::CallUpdate(c)),
+                CallEvent::Update(c) => {
+                    // The control channel said it's encrypted: its transmission then is, as its voice's link control would say.
+                    if let Some(r) = self.radio.recordings.get_mut(&c.id).filter(|_| c.encrypted) {
+                        r.rec.tx.mark_encrypted(c.heard_s);
+                    }
+                    self.events.push(Event::CallUpdate(c));
+                }
                 CallEvent::End(c) => {
                     self.conclude(&c);
                     self.events.push(Event::CallEnd(c));
@@ -2190,7 +2199,8 @@ impl Core {
             h.trim(self.systems.get(h.call.system as usize).map_or(0.0, |s| s.cfg.save.min_transmission_s));
             h
         });
-        let decrypted = call.encrypted || call.decrypted;
+        // (As it is saved: decrypted, though its record learned so only after it had gone.)
+        let decrypted = held.as_ref().map_or(call, |h| &h.call).decrypted_voice(false);
         self.tone_patterns(call, rest, decrypted, call.last_audio_s);
         let trunks = &self.trunks;
         let Some(copies) = self.multisite.conclude(call.id, held, |site, tg| site.and_then(|s| trunks.get(s as usize)).is_some_and(|t| t.preferred_for(tg))) else { return };
@@ -2222,6 +2232,7 @@ impl Core {
             h,
             &SaveContext {
                 rules: sys.cfg.save,
+                keep_encrypted: sys.cfg.calls.record_encrypted,
                 short_name: &sys.cfg.short_name,
                 system_type: trunk.map_or("conventional", |t| t.cfg.protocol.kind()),
                 site: trunk.map_or("", |t| &t.cfg.name),

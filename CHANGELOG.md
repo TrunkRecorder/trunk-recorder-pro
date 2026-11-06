@@ -22,6 +22,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   form in step, and one can fill in names for the IDs a user gives. Only plugins that take settings as
   they run may. Fields marked `readOnly` are shown on the form, not edited; a read-only web address
   has a button that opens it in a new tab (labelled by `x-open`) and one that copies it.
+- **Conventional calls follow the system's recording rules, as trunked calls do.** A talkgroup the
+  talkgroup file marks Ignore isn't recorded (its call is still shown), nor an unlisted one with
+  `recordUnknown` off (a row's own name lists it); `conversationMode` off makes each transmission a
+  call; a call past `maxCallS` carries on in the next with its talker; a call ends `callTimeoutS` after
+  the recorder last heard it, not up to 0.4 s early by the air's clock; and a capture's last frames
+  bring their talkers, cipher and decryption with them, not only their audio.
+- **"Decrypted" and "encrypted" are one rule each.** Live audio, tone patterns and the saved call say
+  the same about a call's decryption (a call's last tone pattern could say otherwise); a grant or update
+  saying a call is encrypted leaves that transmission out of the audio, as the voice's own link control
+  does.
 - **"Change requires restart" is the recorder's call, and right.** The recorder holds each edit against
   the config the run started with and tells the page, so the banner no longer comes up when the recorder
   learns an FCC call sign mid-run, and is right in a page opened after the edit (the browser build's worker
