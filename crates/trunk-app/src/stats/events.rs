@@ -34,7 +34,7 @@ pub enum MonitorEvent {
     /// A call's tones made a pattern: one of the system's signals (always),
     /// or any other (watchers only).
     #[serde(rename_all = "camelCase")]
-    TonePattern { system: String, talkgroup: u32, text: String, signals: Vec<String> },
+    TonePattern { system: String, talkgroup: u32, alpha_tag: String, text: String, signals: Vec<String> },
     /// A site's control channel stopped decoding (`site`: its own name, if it has one).
     #[serde(rename_all = "camelCase")]
     ControlLost {
