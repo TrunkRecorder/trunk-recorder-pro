@@ -78,6 +78,10 @@ const MIN_CHANNEL_RATE: f64 = 24_000.0;
 pub const DEFAULT_GUARD_HZ: f64 = 75_000.0;
 /// No good control message for this long → hunt to the next control channel.
 const CC_HUNT_S: f64 = 5.0;
+/// A control channel is locked, on the dashboard, with something good from it this recently, s.
+const LOCKED_S: f64 = 2.0;
+/// AutoTune measures a control channel only with something good from it this recently, s.
+const MEASURE_GOOD_S: f64 = 1.0;
 
 #[derive(Clone, Debug, Default)]
 pub struct SourceConfig {
@@ -1341,9 +1345,7 @@ impl Trunk {
             self.cc_hz = Some(hz);
             events.push(Event::ControlChannel { site: self.site, freq_hz: hz });
         }
-        if cc.control_hz.is_some() {
-            self.last_good_s = self.now_s;
-        }
+        // (Alive is what a step says, once it's known to be this system's: follow().)
         self.cc_offset_hz = cc.offset_hz;
         self.follow(radio, sys, cc, events, call_events);
         if self.now_s - self.measured_s >= TUNE_EVERY_S {
@@ -1425,7 +1427,7 @@ impl Trunk {
         let now = self.now_s;
         let Some(hz) = self.cc_hz else { return };
         self.measured_s = now;
-        if now - self.last_good_s > 1.0 {
+        if now - self.last_good_s > MEASURE_GOOD_S {
             return;
         }
         let (Some(off), reopens) = (self.cc_offset_hz, self.reopens) else { return };
@@ -1792,7 +1794,7 @@ impl Core {
             let mut cc = Scoped::new(&mut k, "cc");
             cc.counter("good", t.good);
             cc.counter("bad", t.bad);
-            cc.gauge("locked", (t.now_s - t.last_good_s < 2.0 && t.mismatch.is_none()) as u8 as f64);
+            cc.gauge("locked", (t.now_s - t.last_good_s < LOCKED_S && t.mismatch.is_none()) as u8 as f64);
             // What its protocol measures (framing, eye opening, deviation…).
             t.cc().report(&mut cc);
             if let Some((src, hz)) = t.hunted() {
@@ -1994,10 +1996,12 @@ impl Core {
                     id = next;
                 }
             }
-            // Its voice channel names another talkgroup: the call is over.
+            // Its voice channel names another talkgroup: the call is over (on a system whose grants and voice number them alike).
             if let TrackerOut::Talkgroup(group) = o {
-                let mut host = t.host(&mut self.radio, &self.systems[system as usize].cfg);
-                t.calls.voice_named(id, group, &mut host, &mut self.call_events);
+                if t.cfg.protocol.voice_names_grants() {
+                    let mut host = t.host(&mut self.radio, &self.systems[system as usize].cfg);
+                    t.calls.voice_named(id, group, &mut host, &mut self.call_events);
+                }
                 continue;
             }
             // The call it's for, found once (gone already: it expired in this same block).
