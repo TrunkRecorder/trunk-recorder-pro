@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Talkgroups and radios are named one way everywhere.** The Radio pages named a radio by the
+  aliases heard alone, ignoring a system's unit tags and their mode (user names first, aliases
+  first, user names only), so they could show an alias the calls didn't. Plugins' unit events and
+  the Decode page's patches and carriers named a talkgroup from the system's talkgroups alone,
+  missing what a conventional row names it. Both now go through the one name book the Radio pages
+  use.
 - **A tone names its talkgroup, as its call does.** Plugins' `tone_pattern` events took the
   talkgroup's name from the system's talkgroup list, which a conventional system's channel names
   aren't in, so a page there came with no name ("TG 1") while its recording had one. The tone now

@@ -15,7 +15,7 @@ use trunk_core::dsp::inband::subaudible::Tone;
 use trunk_core::Complex32;
 
 use crate::config::{Config, SourceKind};
-use crate::stats::{Rollup, SampleMeter, Shared, Stats, Topics};
+use crate::stats::{NameBook, Rollup, SampleMeter, Shared, Stats, Topics};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -457,7 +457,7 @@ impl Session {
         set
     }
 
-    /// One talkgroup of the system named `short_name`, as its file now has it (none: not in it).
+    /// One talkgroup of the system named `short_name`, as it is now (none: not one of its talkgroups).
     pub fn set_talkgroup(&mut self, short_name: &str, number: u32, row: Option<trunk_core::trunk::Talkgroup>) -> bool {
         self.meas.shared().names.lock().unwrap().set_talkgroup(short_name, number, row.clone());
         self.engine.set_talkgroup(short_name, number, row)
@@ -835,17 +835,20 @@ impl Session {
         trunk_core::trunk::SiteKey { system: self.system_name(system), site: &self.site_name(site) }.to_string()
     }
 
-    /// Talkgroups as the interface shows them: number and alpha tag (from system `system`'s file; "" when not in it).
+    /// Talkgroups as the interface shows them: number and alpha tag ([`NameBook::tg`]; "": none).
     fn tg_names(&self, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-        tg_names(&self.engine, system, tgs)
+        tg_names(&self.meas.shared().names.lock().unwrap(), self.system_name(system), tgs)
     }
 
-    /// Talkgroup `tg`'s name in system `system`'s file ("": none), as plugins' events give it (`alpha_tag`).
+    /// Talkgroup `tg`'s name in system `system` ([`NameBook::tg`]; "": none), as plugins' events give it (`alpha_tag`).
+    /// (Where there's a call, its own name: a conventional row names its calls more closely than a number can.)
     fn alpha_tag(&self, system: u16, tg: u32) -> String {
-        alpha_tag(&self.engine, system, tg)
+        self.meas.shared().names.lock().unwrap().alpha_tag(self.system_name(system), tg)
     }
 
-    /// Radio `unit`'s name ("": none), as a call's JSON gives it (`tag`).
+    /// Radio `unit`'s name ("": none), as a call's JSON gives it (`tag`): by
+    /// the rule [`NameBook::unit`] names it by, on the engine's aliases (an
+    /// alias heard is the engine's at once, the book's when next saved).
     fn unit_tag(&self, system: u16, unit: u32) -> String {
         self.engine.unit_name(system, unit).unwrap_or_default()
     }
@@ -1368,23 +1371,17 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
 }
 
 
-/// Talkgroups with their names in system `system`'s talkgroup file.
-fn tg_names(engine: &Engine, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-    tgs.into_iter().map(|tg| json!({ "talkgroup": tg, "alphaTag": alpha_tag(engine, system, tg) })).collect()
-}
-
-/// Talkgroup `tg`'s name in system `system`'s talkgroup file ("": not in it).
-fn alpha_tag(engine: &Engine, system: u16, tg: u32) -> String {
-    engine.systems().get(system as usize).and_then(|s| s.talkgroups.get(&tg)).map_or(String::new(), |t| t.alpha_tag.clone())
+/// Talkgroups of system `system` with their names ([`NameBook::tg`]).
+fn tg_names(names: &NameBook, system: &str, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
+    tgs.into_iter().map(|tg| json!({ "talkgroup": tg, "alphaTag": names.alpha_tag(system, tg) })).collect()
 }
 
 /// A system's `decodeDetail` beyond its channels: each running site's
 /// DMR / NXDN channels and carriers, and the system's patches
 /// (each site hears them: once each).
-fn decode_sites(engine: &Engine, system: &str) -> (Vec<Value>, Vec<Value>) {
+fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>, Vec<Value>) {
     let (mut sites, mut patches) = (Vec::new(), Vec::<Value>::new());
     for y in engine.status().sites.iter().filter(|y| y.short_name == system) {
-        let at = y.system;
         sites.push(json!({
             "index": y.site, "name": y.site_name,
             "dmr": match &y.protocol { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
@@ -1396,7 +1393,7 @@ fn decode_sites(engine: &Engine, system: &str) -> (Vec<Value>, Vec<Value>) {
                     "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
                     "carriers": d.carriers.iter().map(|c| json!({
                         "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
-                        "slots": c.slots.iter().map(|s| s.map(|(tg, src)| json!({ "talkgroup": tg_names(engine, at, [tg])[0], "source": src }))).collect::<Vec<_>>(),
+                        "slots": c.slots.iter().map(|s| s.map(|(tg, src)| json!({ "talkgroup": tg_names(names, system, [tg])[0], "source": src }))).collect::<Vec<_>>(),
                     })).collect::<Vec<_>>(),
                 })
             }),
@@ -1411,13 +1408,13 @@ fn decode_sites(engine: &Engine, system: &str) -> (Vec<Value>, Vec<Value>) {
                     "unknownChannels": n.unknown,
                     "carriers": n.carriers.iter().map(|c| json!({
                         "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
-                        "call": c.call.map(|(tg, src)| json!({ "talkgroup": tg_names(engine, at, [tg])[0], "source": src })),
+                        "call": c.call.map(|(tg, src)| json!({ "talkgroup": tg_names(names, system, [tg])[0], "source": src })),
                     })).collect::<Vec<_>>(),
                 })
             }),
         }));
         for (sg, members) in &y.patches {
-            let p = json!({ "supergroup": tg_names(engine, at, [*sg])[0], "members": tg_names(engine, at, members.iter().copied()) });
+            let p = json!({ "supergroup": tg_names(names, system, [*sg])[0], "members": tg_names(names, system, members.iter().copied()) });
             if !patches.iter().any(|h| h["supergroup"] == p["supergroup"]) {
                 patches.push(p);
             }
@@ -1583,5 +1580,24 @@ mod tone_tests {
         assert_eq!(plugin.as_deref(), Some("Fire Dispatch"));
         let feed = out.iter().find_map(|o| match o { Output::Message(ToClient::MonitorEvent(b)) => b.get("alphaTag").cloned(), _ => None });
         assert_eq!(feed, Some(json!("Fire Dispatch")));
+    }
+}
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    /// A talkgroup a conventional row names is named so where there's no call
+    /// at hand (plugins' unit events, decodeDetail), as the Radio pages name
+    /// it: the one lookup, not the system's talkgroups alone.
+    #[test]
+    fn a_conventional_rows_talkgroup_is_named_by_the_book() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "wood", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire Dispatch" }] }]
+        }))
+        .unwrap();
+        let s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        assert_eq!(s.alpha_tag(0, 155_200), "Fire Dispatch");
+        assert_eq!(s.tg_names(0, [155_200, 7]), [json!({ "talkgroup": 155_200, "alphaTag": "Fire Dispatch" }), json!({ "talkgroup": 7, "alphaTag": "" })]);
     }
 }
