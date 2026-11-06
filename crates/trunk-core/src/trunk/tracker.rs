@@ -268,6 +268,10 @@ impl VoiceTracker {
     fn voice_user(&mut self, lc: &LinkControl, clear: bool, t: f64, out: &mut Vec<TrackerOut>) {
         let group = lc.group().filter(|&g| g != 0);
         let patch = matches!(lc.msg, Lc::PatchVoiceUser { .. });
+        // (First, so the call it isn't for ends before its talker is taken.)
+        if let Some(o) = group.filter(|_| clear).and_then(|g| super::voice::reassigned(self.granted, g)) {
+            out.push(o);
+        }
         if let (Some(cur), Some(g)) = (self.tgid, group) {
             // Another group mid-transmission: a new one, its HDU lost. (Not
             // a patch's supergroup word between its member's: one call.)
@@ -666,6 +670,25 @@ mod tests {
         assert_eq!(t.talker, None);
         t.link_control(lc::parse(&[0x49, 0, 0xbe, 0xe0, 0x03, 0xa9, 0x01, 0x02, 0x03]), 0.0, &mut out);
         assert_eq!(t.talker, Some(0x010203));
+    }
+
+    /// Link control naming another group than the channel's grant says so
+    /// before its talker (the site gave the channel away, by a grant not
+    /// heard), as Phase 2's MAC_PTT does; its own group says nothing.
+    #[test]
+    fn link_control_for_another_group_is_told_first() {
+        let heard = |granted: u32| {
+            let mut t = tracker(None);
+            t.set_granted(Some(granted));
+            t.start(0.0, None);
+            let mut out = Vec::new();
+            // Group voice user: group 100, talker 0x010203.
+            t.link_control(lc::parse(&[0x00, 0x00, 0x00, 0x00, 0x00, 100, 0x01, 0x02, 0x03]), 0.0, &mut out);
+            out
+        };
+        assert!(!heard(100).iter().any(|o| matches!(o, TrackerOut::Talkgroup(_))));
+        let o = heard(401);
+        assert_eq!(o.first(), Some(&TrackerOut::Talkgroup(100)), "{o:?}");
     }
 
     /// Motorola's LC_MOT_BSI on a voice channel: its call sign, once heard; an empty one is none.

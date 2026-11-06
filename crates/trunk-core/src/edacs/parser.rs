@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::trunk::message::UNSAID_PRIORITY;
 use crate::trunk::{Message, MessageType, Voice};
 
 /// What an EDACS site needs to be followed.
@@ -76,6 +77,11 @@ pub struct Parser {
 }
 
 impl Parser {
+    /// Another control channel: the site it said is to be heard again.
+    pub fn forget_site(&mut self) {
+        (self.site, self.site_believed, self.site_heard, self.site_run) = (None, None, None, 0);
+    }
+
     pub fn new(cfg: EdacsConfig) -> Self {
         Parser { cfg, site: None, cc_lcn: None, cc_hz: None, site_heard: None, site_run: 0, site_believed: None, failsoft: false, failsoft_run: 0, last_assigned: None, corrected: false, to_cc_said: false, missing: BTreeSet::new(), notes: Vec::new(), granted: Vec::new() }
     }
@@ -86,7 +92,7 @@ impl Parser {
     }
 
     fn msg(&self, kind: MessageType, t: f64) -> Message {
-        Message { kind, time_s: t, site: self.site.unwrap_or(0), source: -1, priority: 3, ..Default::default() }
+        Message { kind, time_s: t, site: self.site.unwrap_or(0), source: -1, priority: UNSAID_PRIORITY, ..Default::default() }
     }
 
     /// The frequency of channel `lcn`, or None (and a note, once) when the
@@ -261,9 +267,7 @@ impl Parser {
                                 self.learn_cc(site, cc_lcn);
                             }
                         }
-                        if self.site.is_none() {
-                            self.site = Some(site);
-                        }
+                        // (Only a site believed: one misread ID would say this isn't the system.)
                         if self.site == Some(site) {
                             self.failsoft_run = if failsoft { self.failsoft_run + 1 } else { 0 };
                             let since = *self.last_assigned.get_or_insert(t);
@@ -338,7 +342,16 @@ mod tests {
         let mut p = Parser::new(cfg());
         let s = parse(&mut p, site_id(2, 1));
         assert_eq!((s[0].kind, s[0].site, s[0].freq_hz), (MessageType::SysId, 2, 856_187_500));
-        assert_eq!(p.site, Some(2));
+        assert_eq!(p.site, None, "one ID (it may be misread): not yet the site");
+        for _ in 1..SITE_AGREE {
+            parse(&mut p, site_id(2, 1));
+        }
+        assert_eq!(p.site, Some(2), "said the same {SITE_AGREE} times in a row");
+        p.forget_site();
+        assert_eq!(p.site, None, "another control channel: heard again");
+        for _ in 0..SITE_AGREE {
+            parse(&mut p, site_id(2, 1));
+        }
         // DC 911 Police 1: AFS 03-091 = 457, analog, from LID 12345, on LCN 5.
         let g = parse(&mut p, group_grant(457, 12345, 5, false, false));
         assert_eq!((g[0].kind, g[0].talkgroup, g[0].source, g[0].freq_hz, g[0].voice), (MessageType::Grant, 457, 12345, 856_687_500, Voice::Fm));

@@ -43,7 +43,7 @@ pub struct Tg {
     pub first: i64,
     pub last: i64,
     /// The alpha tag its last named call carried: what it's called when
-    /// neither a row nor the talkgroup file names its number (a conventional
+    /// neither a row nor the system's talkgroups name its number (a conventional
     /// row that files under the air's talkgroup names every one it hears).
     pub name: String,
     pub calls: u32,
@@ -109,7 +109,7 @@ impl Tg {
 }
 
 /// What talkgroup `tg` of system `name` is called: by a conventional row or
-/// the talkgroup file ([`Names::tg`]), else as its last named call was.
+/// the system's talkgroups ([`Names::tg`]), else as its last named call was.
 fn tg_alpha(name: &str, s: &SystemRadio, tg: u32, names: &Names) -> String {
     (names.tg)(name, tg)
         .map(|i| i.alpha_tag)
@@ -283,8 +283,8 @@ pub struct TgInfo {
     pub ignore: bool,
 }
 
-/// Lookups the queries need from outside: a talkgroup's entry in the
-/// system's file, a radio's name.
+/// Lookups the queries need from outside ([`super::NameBook`]'s): a
+/// talkgroup's name and Ignore flag, a radio's name.
 pub struct Names<'a> {
     pub tg: &'a dyn Fn(&str, u32) -> Option<TgInfo>,
     pub unit: &'a dyn Fn(&str, u32) -> Option<String>,

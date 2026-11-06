@@ -22,6 +22,38 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   form in step, and one can fill in names for the IDs a user gives. Only plugins that take settings as
   they run may. Fields marked `readOnly` are shown on the form, not edited; a read-only web address
   has a button that opens it in a new tab (labelled by `x-open`) and one that copies it.
+- **Talkgroups and radios are named one way everywhere.** The Radio pages named a radio by the
+  aliases heard alone, ignoring a system's unit tags and their mode (user names first, aliases
+  first, user names only), so they could show an alias the calls didn't. Plugins' unit events and
+  the Decode page's patches and carriers named a talkgroup from the system's talkgroups alone,
+  missing what a conventional row names it. Both now go through the one name book the Radio pages
+  use.
+- **A tone names its talkgroup, as its call does.** Plugins' `tone_pattern` events took the
+  talkgroup's name from the system's talkgroup list, which a conventional system's channel names
+  aren't in, so a page there came with no name ("TG 1") while its recording had one. The tone now
+  takes the name its call has, and the log line and the dashboard's event feed name it too.
+- **A control channel is alive only when it says so, every protocol alike.** One rule for a good block
+  (something decoded cleanly, an idle one too, or a message): DMR's idle control blocks now count, so its
+  site stays locked between calls. A watched site of another system no longer counts as locked or feeds
+  AutoTune, and an EDACS site whose control channel goes quiet is lost after 1.5 s, as DMR's and NXDN's
+  are, where it stayed "locked" forever. An EDACS site is believed once its ID has been heard three
+  times in a row, not from the first (a misread one could say it was another system).
+- **On a P25 system, a Phase 1 voice channel naming another talkgroup ends the call there**, as Phase 2's does: the
+  site gave the channel away by a grant not heard, and the next talkgroup's talkers and cipher would
+  otherwise be taken for the call's.
+- **DMR and NXDN share their channel rules.** A frequency is one channel everywhere it's learned (a DMR
+  channel announcement could leave two channels on one frequency, and a kept table was read back without
+  the check); a voice carrier counts as the site's by the same rule (NXDN took any carrier before it knew
+  the site's RAN).
+- **Call times follow the computer's clock while recording: no more "Stop and Start again".** A
+  recording runs on its own clock, the clock at Start carried on by one that never jumps. On macOS
+  that clock runs at the crystal's rate rather than the corrected one, so on a busy, long-running Mac
+  call times crept seconds away from the right time (a red Platform light past 5 s) until the next
+  Start. Now the times given out (calls, their talkers, unit events, status, plugins) are corrected
+  to the clock as it is now, on every platform. A call keeps the correction it began with until it
+  ends, so its length, its talkers' times and its copies' shared name (multi-site) hold even when the
+  clock is stepped during it. The drift is still shown on the Platform page, but no longer warns.
+
 - **Conventional calls follow the system's recording rules, as trunked calls do.** A talkgroup the
   talkgroup file marks Ignore isn't recorded (its call is still shown), nor an unlisted one with
   `recordUnknown` off (a row's own name lists it); `conversationMode` off makes each transmission a

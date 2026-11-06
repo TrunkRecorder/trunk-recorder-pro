@@ -15,7 +15,7 @@ use trunk_core::dsp::inband::subaudible::Tone;
 use trunk_core::Complex32;
 
 use crate::config::{Config, SourceKind};
-use crate::stats::{Rollup, SampleMeter, Shared, Stats, Topics};
+use crate::stats::{NameBook, Rollup, SampleMeter, Shared, Stats, Topics};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -76,6 +76,9 @@ const QUIET_MS: f64 = 1000.0;
 const RATE_WINDOW_MS: f64 = 5000.0;
 /// A source's last error is shown this long after it, s.
 const ERROR_SHOWN_S: f64 = 300.0;
+/// A move of the wall clock this big or more is logged, ms
+/// ([`Session::correct_wall_clock`]): a step, not drift.
+const STEP_TOLD_MS: f64 = 500.0;
 /// The most silence fed for one gap, s: a driver's count of samples lost.
 const MAX_GAP_S: f64 = 10.0;
 
@@ -332,8 +335,12 @@ pub struct Session {
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
     recordings: Vec<crate::config::Recording>,
     pub plugin_topics: PluginTopics,
-    /// Wall clock (Unix ms) at the engine's time 0.
+    /// Wall clock (Unix ms) at the engine's time 0, as at Start: the clock
+    /// sources are measured against. What times are given out by is the
+    /// engine's ([`Session::correct_wall_clock`]).
     epoch_ms: f64,
+    /// The wall clock's correction last applied, ms ([`Session::correct_wall_clock`]).
+    wall_correction_ms: f64,
     last_plugin_status_ms: f64,
     plugin_good: Vec<u64>,
     /// The codes conventional frequencies carried ([`crate::heard`]).
@@ -404,6 +411,7 @@ impl Session {
             recordings,
             plugin_topics: PluginTopics::default(),
             epoch_ms,
+            wall_correction_ms: 0.0,
             last_plugin_status_ms: 0.0,
             plugin_good: Vec::new(),
             heard: HeardCodes::default(),
@@ -450,7 +458,7 @@ impl Session {
         set
     }
 
-    /// One talkgroup of the system named `short_name`, as its file now has it (none: not in it).
+    /// One talkgroup of the system named `short_name`, as it is now (none: not one of its talkgroups).
     pub fn set_talkgroup(&mut self, short_name: &str, number: u32, row: Option<trunk_core::trunk::Talkgroup>) -> bool {
         self.meas.shared().names.lock().unwrap().set_talkgroup(short_name, number, row.clone());
         self.engine.set_talkgroup(short_name, number, row)
@@ -828,24 +836,56 @@ impl Session {
         trunk_core::trunk::SiteKey { system: self.system_name(system), site: &self.site_name(site) }.to_string()
     }
 
-    /// Talkgroups as the interface shows them: number and alpha tag (from system `system`'s file; "" when not in it).
+    /// Talkgroups as the interface shows them: number and alpha tag ([`NameBook::tg`]; "": none).
     fn tg_names(&self, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-        tg_names(&self.engine, system, tgs)
+        tg_names(&self.meas.shared().names.lock().unwrap(), self.system_name(system), tgs)
     }
 
-    /// Talkgroup `tg`'s name in system `system`'s file ("": none), as plugins' events give it (`alpha_tag`).
+    /// Talkgroup `tg`'s name in system `system` ([`NameBook::tg`]; "": none), as plugins' events give it (`alpha_tag`).
+    /// (Where there's a call, its own name: a conventional row names its calls more closely than a number can.)
     fn alpha_tag(&self, system: u16, tg: u32) -> String {
-        alpha_tag(&self.engine, system, tg)
+        self.meas.shared().names.lock().unwrap().alpha_tag(self.system_name(system), tg)
     }
 
-    /// Radio `unit`'s name ("": none), as a call's JSON gives it (`tag`).
+    /// Radio `unit`'s name ("": none), as a call's JSON gives it (`tag`): by
+    /// the rule [`NameBook::unit`] names it by, on the engine's aliases (an
+    /// alias heard is the engine's at once, the book's when next saved).
     fn unit_tag(&self, system: u16, unit: u32) -> String {
         self.engine.unit_name(system, unit).unwrap_or_default()
     }
 
     /// Unix seconds of engine time `s`.
     fn wall(&self, s: f64) -> f64 {
-        self.epoch_ms / 1000.0 + s
+        self.wall_of(s, s)
+    }
+
+    /// Unix seconds of engine time `s`, a time of a call begun at
+    /// `start_s`: by the epoch it began under, as its record is.
+    fn wall_of(&self, s: f64, start_s: f64) -> f64 {
+        (self.engine.wall_epoch_at(start_s) + s * 1000.0) / 1000.0
+    }
+
+    /// The host's wall clock now reads `correction_ms` more than the clock
+    /// `poll` is given (the epoch at Start carried on by a monotonic clock):
+    /// a time service corrected it, or the monotonic clock runs at its
+    /// crystal's rate (macOS's). Times given out from now on — calls begun
+    /// from now, units, status — are by the corrected clock; calls up keep
+    /// the epoch they began under. The engine's own time, and the sources'
+    /// clocks, are untouched. A capture played as fast as it can be has no
+    /// wall clock to keep to: ignored. True when it moved.
+    pub fn correct_wall_clock(&mut self, correction_ms: f64) -> bool {
+        if !correction_ms.is_finite() || self.cfg.sources.iter().any(|s| matches!(s.kind, SourceKind::File { realtime: false, .. })) {
+            return false;
+        }
+        if !self.engine.set_wall_epoch(self.epoch_ms + correction_ms) {
+            return false;
+        }
+        let moved = correction_ms - std::mem::replace(&mut self.wall_correction_ms, correction_ms);
+        // (Drift moves it a ms at a time; a step is worth saying.)
+        if moved.abs() >= STEP_TOLD_MS {
+            self.records.push(Record::text(Level::Info, None, format!("The wall clock moved {:+.3} s: times are by it from now on", moved / 1000.0)));
+        }
+        true
     }
 
     /// The radio systems' own clocks (P25's SYNC_BCST, on Phase 2 systems)
@@ -941,14 +981,14 @@ impl Session {
             priority: c.priority,
             recording: c.recording,
             reason: c.reason.map(|r| r.as_str().to_string()),
-            start_time: self.wall(c.start_s),
+            start_time: self.wall_of(c.start_s, c.start_s),
             units: c.sources.iter().map(|s| s.src).collect(),
             sources: c
                 .sources
                 .iter()
                 .map(|s| {
                     let f = s.flags;
-                    trunk_recorder_plugin::CallSource { unit: s.src, tag: self.unit_tag(c.system, s.src), time: self.wall(s.time_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
+                    trunk_recorder_plugin::CallSource { unit: s.src, tag: self.unit_tag(c.system, s.src), time: self.wall_of(s.time_s, c.start_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
                 })
                 .collect(),
             patched_talkgroups: c.patched_talkgroups.clone(),
@@ -1056,7 +1096,7 @@ impl Session {
             }
             Event::Concluded(k) => {
                 if let Some(code) = heard_code(&k.call) {
-                    self.heard.note(k.call.freq_hz, &code, true, self.wall(k.call.start_s) * 1000.0);
+                    self.heard.note(k.call.freq_hz, &code, true, self.wall_of(k.call.start_s, k.call.start_s) * 1000.0);
                 }
                 // Trunk Recorder's layout: <shortName>/<year>/<month>/<day>/, local time; or the system's filename format.
                 let r = &k.record;
@@ -1091,11 +1131,13 @@ impl Session {
                 let name = self.system_name(t.system).to_string();
                 let pattern = trunk_core::trunk::record::tone_pattern(&t.pattern, t.src, t.signals.clone());
                 let named = t.signals.iter().map(|s| format!("{name}:{s}")).collect::<Vec<_>>().join(", ");
-                let text = format!("TG {}: {}{}", t.talkgroup, pattern.text, if named.is_empty() { String::new() } else { format!(" = {named}") });
+                // Its talkgroup named as its call is (a conventional channel's by its row).
+                let tag = if t.alpha_tag.is_empty() { String::new() } else { format!(" {}", t.alpha_tag) };
+                let text = format!("TG {}{tag}: {}{}", t.talkgroup, pattern.text, if named.is_empty() { String::new() } else { format!(" = {named}") });
                 self.records.push(Record::text(Level::Info, Some(&self.site_label(t.system, t.site)), text.clone()));
                 self.log.push(json!({ "timeS": t.time_s, "kind": "tonePattern", "text": text, "system": name, "site": self.site_name(t.site) }));
                 if self.plugin_topics.tone_patterns {
-                    let alpha_tag = self.alpha_tag(t.system, t.talkgroup);
+                    let alpha_tag = t.alpha_tag.clone();
                     let time = (self.wall(t.time_s) * 1000.0).round() / 1000.0;
                     let ev = trunk_recorder_plugin::TonePatternEvent { short_name: name, site: self.site_name(t.site), call_num: t.call_id as u64, talkgroup: t.talkgroup, alpha_tag, src_tag: self.unit_tag(t.system, t.src), decrypted: t.decrypted, time, pattern };
                     out.push(Output::Plugin(HostMessage::TonePattern(ev)));
@@ -1225,6 +1267,7 @@ impl Session {
                 "good": y.good, "bad": y.bad, "modulation": if y.modulation.is_empty() { None } else { Some(y.modulation) },
                 "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
                 "mismatch": y.mismatch,
+                "adjacent": y.adjacent,
                 "callsigns": y.callsigns.iter().map(|(c, hz)| json!({ "callSign": c, "freqHz": if *hz == 0 { None } else { Some(hz) } })).collect::<Vec<_>>(),
                 "radioClock": self.radio_clock(y).map(|r| json!({ "offsetMs": (r.offset_ms * 10.0).round() / 10.0, "at": r.at_s.round(), "valid": r.valid })),
             })
@@ -1334,26 +1377,19 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
 }
 
 
-/// Talkgroups with their names in system `system`'s talkgroup file.
-fn tg_names(engine: &Engine, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-    tgs.into_iter().map(|tg| json!({ "talkgroup": tg, "alphaTag": alpha_tag(engine, system, tg) })).collect()
-}
-
-/// Talkgroup `tg`'s name in system `system`'s talkgroup file ("": not in it).
-fn alpha_tag(engine: &Engine, system: u16, tg: u32) -> String {
-    engine.systems().get(system as usize).and_then(|s| s.talkgroups.get(&tg)).map_or(String::new(), |t| t.alpha_tag.clone())
+/// Talkgroups of system `system` with their names ([`NameBook::tg`]).
+fn tg_names(names: &NameBook, system: &str, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
+    tgs.into_iter().map(|tg| json!({ "talkgroup": tg, "alphaTag": names.alpha_tag(system, tg) })).collect()
 }
 
 /// A system's `decodeDetail` beyond its channels: each running site's
-/// neighbours and DMR / NXDN channels and carriers, and the system's patches
+/// DMR / NXDN channels and carriers, and the system's patches
 /// (each site hears them: once each).
-fn decode_sites(engine: &Engine, system: &str) -> (Vec<Value>, Vec<Value>) {
+fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>, Vec<Value>) {
     let (mut sites, mut patches) = (Vec::new(), Vec::<Value>::new());
     for y in engine.status().sites.iter().filter(|y| y.short_name == system) {
-        let at = y.system;
         sites.push(json!({
             "index": y.site, "name": y.site_name,
-            "adjacent": y.adjacent.iter().map(|a| json!({ "sysId": a.sys_id, "rfss": a.rfss, "site": a.site, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
             "dmr": match &y.protocol { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
                 json!({
                     "variant": d.variant.map(|v| v.name()),
@@ -1363,7 +1399,7 @@ fn decode_sites(engine: &Engine, system: &str) -> (Vec<Value>, Vec<Value>) {
                     "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
                     "carriers": d.carriers.iter().map(|c| json!({
                         "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
-                        "slots": c.slots.iter().map(|s| s.map(|(tg, src)| json!({ "talkgroup": tg_names(engine, at, [tg])[0], "source": src }))).collect::<Vec<_>>(),
+                        "slots": c.slots.iter().map(|s| s.map(|(tg, src)| json!({ "talkgroup": tg_names(names, system, [tg])[0], "source": src }))).collect::<Vec<_>>(),
                     })).collect::<Vec<_>>(),
                 })
             }),
@@ -1378,13 +1414,13 @@ fn decode_sites(engine: &Engine, system: &str) -> (Vec<Value>, Vec<Value>) {
                     "unknownChannels": n.unknown,
                     "carriers": n.carriers.iter().map(|c| json!({
                         "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
-                        "call": c.call.map(|(tg, src)| json!({ "talkgroup": tg_names(engine, at, [tg])[0], "source": src })),
+                        "call": c.call.map(|(tg, src)| json!({ "talkgroup": tg_names(names, system, [tg])[0], "source": src })),
                     })).collect::<Vec<_>>(),
                 })
             }),
         }));
         for (sg, members) in &y.patches {
-            let p = json!({ "supergroup": tg_names(engine, at, [*sg])[0], "members": tg_names(engine, at, members.iter().copied()) });
+            let p = json!({ "supergroup": tg_names(names, system, [*sg])[0], "members": tg_names(names, system, members.iter().copied()) });
             if !patches.iter().any(|h| h["supergroup"] == p["supergroup"]) {
                 patches.push(p);
             }
@@ -1486,6 +1522,89 @@ mod unreported_tests {
         let n = run(180.0, 90.0, 0.02);
         let want = (0.02 * 2_400_000.0) as u64;
         assert!(n.abs_diff(want) < want / 10, "found {n} of {want} lost");
+    }
+}
+
+#[cfg(test)]
+mod wall_tests {
+    use super::*;
+
+    /// What plugins are told of a call up across a wall clock correction:
+    /// all its times by the epoch it began under, so a talker who came on
+    /// after the correction is still where it was in the call.
+    #[test]
+    fn a_calls_live_times_keep_the_epoch_it_began_under() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire" }] }]
+        }))
+        .unwrap();
+        let epoch = 1.75e12;
+        let mut s = Session::new(cfg, &Default::default(), epoch, &|_| None, |_| 0).unwrap();
+        // 2 s of samples: the engine's time is 2 s.
+        s.push_iq(0, &vec![Complex32::new(0.0, 0.0); 4_800_000], 0, epoch + 2000.0);
+        let mut out = Vec::new();
+        s.poll(epoch + 2000.0, &mut out);
+        assert!(s.engine.status().now_s >= 1.9, "{}", s.engine.status().now_s);
+        assert!(s.correct_wall_clock(10_000.0));
+        // Begun at 1 s, under the old epoch; a second talker at 2.5 s, after the correction.
+        let src = |src: u32, time_s: f64| trunk_core::trunk::calls::CallSource { src, time_s, ..Default::default() };
+        let call = Call { start_s: 1.0, sources: vec![src(7, 1.0), src(9, 2.5)], ..Default::default() };
+        let info = s.call_info(&call);
+        assert_eq!(info.start_time, 1_750_000_001.0);
+        assert_eq!(info.sources.iter().map(|x| x.time).collect::<Vec<_>>(), [1_750_000_001.0, 1_750_000_002.5]);
+        // One begun after it is by the new epoch.
+        let later = Call { start_s: 3.0, sources: vec![src(7, 3.0)], ..Default::default() };
+        assert_eq!(s.call_info(&later).start_time, 1_750_000_013.0);
+        // Unit events, status and the like: by the epoch at their own time.
+        assert_eq!(s.wall(3.0), 1_750_000_013.0);
+        assert_eq!(s.wall(0.5), 1_750_000_000.5);
+    }
+}
+#[cfg(test)]
+mod tone_tests {
+    use super::*;
+
+    /// A tone on a conventional channel names its talkgroup as its call does
+    /// (by the channel's row): in the log, the dashboard's feed and plugins' event.
+    #[test]
+    fn a_tone_names_its_talkgroup_everywhere_it_goes() {
+        use trunk_core::dsp::inband::{pattern::{Pattern, PatternKind}, Origin};
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "wood", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire Dispatch" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        s.plugin_topics.tone_patterns = true;
+        let pattern = Pattern { kind: PatternKind::TwoTone, hz: vec![470.5, 1034.7], lengths: vec![1.0, 3.0], digits: String::new(), knox: false, cycles: 0, format: Some("Quick Call II"), start: 0, len: 0, origin: Origin::Audio };
+        let heard = trunk_core::trunk::PatternHeard { system: 0, site: None, call_id: 7, talkgroup: 1, alpha_tag: "Fire Dispatch".into(), src: 0, pattern, signals: vec!["FD_PAGE".into()], decrypted: false, time_s: 1.0 };
+        let mut out = Vec::new();
+        s.handle(Event::TonePattern(heard), &mut out);
+        assert!(s.log.iter().any(|l| l["kind"] == "tonePattern" && l["text"].as_str().is_some_and(|t| t.starts_with("TG 1 Fire Dispatch: "))), "{:?}", s.log);
+        let plugin = out.iter().find_map(|o| match o { Output::Plugin(HostMessage::TonePattern(e)) => Some(e.alpha_tag.clone()), _ => None });
+        assert_eq!(plugin.as_deref(), Some("Fire Dispatch"));
+        let feed = out.iter().find_map(|o| match o { Output::Message(ToClient::MonitorEvent(b)) => b.get("alphaTag").cloned(), _ => None });
+        assert_eq!(feed, Some(json!("Fire Dispatch")));
+    }
+}
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    /// A talkgroup a conventional row names is named so where there's no call
+    /// at hand (plugins' unit events, decodeDetail), as the Radio pages name
+    /// it: the one lookup, not the system's talkgroups alone.
+    #[test]
+    fn a_conventional_rows_talkgroup_is_named_by_the_book() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "wood", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire Dispatch" }] }]
+        }))
+        .unwrap();
+        let s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        assert_eq!(s.alpha_tag(0, 155_200), "Fire Dispatch");
+        assert_eq!(s.tg_names(0, [155_200, 7]), [json!({ "talkgroup": 155_200, "alphaTag": "Fire Dispatch" }), json!({ "talkgroup": 7, "alphaTag": "" })]);
     }
 }
 

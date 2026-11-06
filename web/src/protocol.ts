@@ -700,18 +700,32 @@ export interface SiteStatus {
   callsConcluded: number;
   /** The control channel is another system's / site's: why (its grants are not followed). */
   mismatch: string | null;
+  /** Neighbouring sites its control channel announces (once each, with a channel). */
+  adjacent: AdjacentSite[];
   /** Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel). */
   callsigns?: { callSign: string; freqHz: number | null }[];
   /** P25 SYNC_BCST: the system's own clock less the recording's, ms (positive: the recording's is behind), and when it was heard, Unix s. */
   radioClock?: { offsetMs: number; at: number; valid: boolean } | null;
 }
 
+/**
+ * A neighbouring site a control channel announces, by its address: P25's
+ * WACN, System ID, RFSS and site (another system's, for a neighbouring
+ * system: another System ID or WACN); NXDN's System ID and site (WACN and
+ * RFSS 0). See `adjacentIdentity`.
+ */
+export interface AdjacentSite {
+  wacn: number;
+  sysId: number;
+  rfss: number;
+  site: number;
+  freqHz: number;
+}
+
 /** One running site's detail (decodeDetail): what its control channel announces. */
 export interface SiteDetail {
   index: number;
   name: string;
-  /** Neighbouring sites its control channel announces. */
-  adjacent: { sysId: number; rfss: number; site: number; freqHz: number }[];
   /** A trunked DMR site. */
   dmr: DmrSiteStatus | null;
   /** An NXDN site. */
@@ -1048,7 +1062,8 @@ export interface SurveyMonitor {
   /** The frequency the control channel announces for itself. */
   advertisedHz: number | null;
   secondary: number[];
-  adjacent: { rfss: number; site: number; sysId: number; freqHz: number }[];
+  /** Neighbouring sites it announces. */
+  adjacent: AdjacentSite[];
   voice: { freqHz: number; grants: number; tdma: boolean }[];
   idens: number;
   good: number;
@@ -1506,6 +1521,7 @@ export interface MonitorEventBody {
   /** Control channel events: the site's own name, when it has one other than its system's. */
   site?: string;
   talkgroup?: number;
+  /** Its talkgroup's name, as its call has it (tgFirstSeen, tonePattern; "": none). */
   alphaTag?: string;
   unit?: number;
   alias?: string;
@@ -1606,9 +1622,9 @@ export interface ClockInfo {
   os: { synced: boolean; maxErrorMs: number } | null;
   /** The time service keeping the clock, when it says (Linux: chrony, systemd-timesyncd). lastSync: Unix s. */
   service: { name: string; server: string | null; stratum: number | null; lastSync: number | null } | null;
-  /** While recording: the wall clock less the clock calls are stamped by (the wall clock at Start, carried on monotonically), ms. */
+  /** While recording: the wall clock less the recording's own clock (the wall clock at Start, carried on monotonically), ms. Shown, not judged: call times are corrected for it. */
   driftMs: number | null;
-  /** The radio systems' own clocks (P25 SYNC_BCST) against the recording's: offsetMs > 0 when the recording's is behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by). */
+  /** The radio systems' own clocks (P25 SYNC_BCST) against the calls' times: offsetMs > 0 when the calls' are behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by). */
   radio: { site: string; offsetMs: number; at: number; sane: boolean; valid: boolean }[];
   /** The time server asked (null: none set, or not asked yet). */
   server: string | null;
@@ -1617,7 +1633,7 @@ export interface ClockInfo {
   /** Why the last query failed, while it fails. */
   error: string | null;
   /** What's wrong with the clock, decided by the recorder (the light and the events go by it). */
-  problem: { level: "warn" | "bad"; cause: "clock" | "recording" | "radio" | "os"; why: string } | null;
+  problem: { level: "warn" | "bad"; cause: "clock" | "radio" | "os"; why: string } | null;
   /** The time server's check: tries, failures, last answer. */
   check: ProbeRow | null;
 }

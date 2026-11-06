@@ -73,7 +73,7 @@ impl Shared {
     pub fn radio_query(&self, q: &Value, now: i64) -> ToClient {
         let book = self.names.lock().unwrap();
         let tg = |sys: &str, t: u32| book.tg(sys, t);
-        let unit = |sys: &str, u: u32| book.units.get(sys).and_then(|a| a.get(u)).map(str::to_string);
+        let unit = |sys: &str, u: u32| book.unit(sys, u);
         let signals = |sys: &str, h: &Heard, tg: u32| book.signals(sys, h, tg);
         let mut out = self.radio.lock().unwrap().query(q, now, &Names { tg: &tg, unit: &unit, signals: &signals });
         out["id"] = q["id"].clone();
@@ -81,17 +81,21 @@ impl Shared {
     }
 }
 
-/// The names the radio registry's answers use ([`Shared::radio_query`]):
-/// each system's talkgroups (its talkgroup file's, and what a conventional
-/// system's rows name) and talker aliases, by short name. A running session keeps
-/// them as its engine has them; the desktop app fills them from its files
-/// when it starts and when they change.
+/// The one place a talkgroup or a radio is named by its number, by system
+/// short name: the radio registry's answers ([`Shared::radio_query`]), and
+/// the session's events, status and plugins' events where there's no call to
+/// name it ([`Self::tg`], [`Self::unit`]). It holds each system's talkgroups
+/// (as loaded from the store), what its conventional rows name, its talker
+/// aliases and its unit tags. A running session keeps them as its engine has
+/// them; the desktop app fills them when it starts and when they change.
 #[derive(Default)]
 pub struct NameBook {
     talkgroups: HashMap<String, trunk_core::trunk::Talkgroups>,
     /// Conventional rows' names for the numbers they file under ([`Config::row_talkgroups`]).
     rows: HashMap<String, trunk_core::trunk::Talkgroups>,
     units: HashMap<String, trunk_core::trunk::UnitAliases>,
+    /// The config's unit tags (names by pattern, and whose name comes first).
+    unit_tags: HashMap<String, trunk_core::trunk::UnitTags>,
     signals: HashMap<String, Vec<Signal>>,
 }
 
@@ -108,7 +112,7 @@ impl NameBook {
     }
 
     /// Talkgroup `tg` of `system`: named as its calls are — by a row, else
-    /// by the talkgroup file (whose Ignore flag it keeps either way).
+    /// by the system's talkgroups (whose Ignore flag it keeps either way).
     pub fn tg(&self, system: &str, tg: u32) -> Option<TgInfo> {
         let file = tg_info(&self.talkgroups, system, tg);
         match self.rows.get(system).and_then(|r| r.get(&tg)) {
@@ -117,7 +121,18 @@ impl NameBook {
         }
     }
 
-    /// One talkgroup of `system`, as its file now has it (none: not in it).
+    /// [`Self::tg`]'s name ("": none).
+    pub fn alpha_tag(&self, system: &str, tg: u32) -> String {
+        self.tg(system, tg).map_or(String::new(), |t| t.alpha_tag)
+    }
+
+    /// Radio `unit` of `system`, named as its calls' talkers are
+    /// ([`trunk_core::trunk::UnitTags::name`]: its unit tags and the aliases heard).
+    pub fn unit(&self, system: &str, unit: u32) -> Option<String> {
+        trunk_core::trunk::UnitTags::name(self.unit_tags.get(system), self.units.get(system), unit)
+    }
+
+    /// One talkgroup of `system`, as it is now (none: not one of its talkgroups).
     pub fn set_talkgroup(&mut self, system: &str, number: u32, row: Option<trunk_core::trunk::Talkgroup>) {
         let table = self.talkgroups.entry(system.to_string()).or_default();
         match row {
@@ -126,9 +141,10 @@ impl NameBook {
         };
     }
 
-    /// Each system's talkgroups and signals, from an engine's systems.
+    /// Each system's talkgroups, unit tags and signals, from an engine's systems.
     pub fn set_systems(&mut self, systems: &[trunk_core::trunk::SystemConfig]) {
         self.talkgroups = systems.iter().map(|s| (s.short_name.clone(), s.talkgroups.clone())).collect();
+        self.unit_tags = systems.iter().map(|s| (s.short_name.clone(), s.unit_tags.clone())).collect();
         self.signals = systems.iter().map(|s| (s.short_name.clone(), s.signals.clone())).collect();
     }
 
@@ -366,7 +382,7 @@ impl Stats {
                 self.shared.radio.lock().unwrap().tone_pattern(name, h.talkgroup, &p, t);
                 // One of the system's signals always; any other pattern only when a watcher wants it.
                 if !h.signals.is_empty() || self.shared.monitor.lock().unwrap().wants_frequent() {
-                    self.emit(MonitorEvent::TonePattern { system: name.to_string(), talkgroup: h.talkgroup, text: p.text, signals: h.signals.clone() }, out);
+                    self.emit(MonitorEvent::TonePattern { system: name.to_string(), talkgroup: h.talkgroup, alpha_tag: h.alpha_tag.clone(), text: p.text, signals: h.signals.clone() }, out);
                 }
             }
             Event::Concluded(k) => {
@@ -510,14 +526,14 @@ impl Stats {
         }
         for name in decode {
             let chans: Vec<Value> = channels.iter().filter(|c| site_names(c.system, c.site).0 == name).map(ch_json).collect();
-            let (sites, patches) = decode_sites(engine, name);
+            let (sites, patches) = decode_sites(engine, &self.shared.names.lock().unwrap(), name);
             out.push(Output::Topic { topic: format!("decode:{name}"), msg: ToClient::DecodeDetail { system: name.to_string(), channels: chans, sites, patches } });
         }
     }
 }
 
-/// A system's (by short name) `decodeDetail` sites and patches.
-pub type DecodeSites = fn(&Engine, &str) -> (Vec<Value>, Vec<Value>);
+/// A system's (by short name) `decodeDetail` sites and patches, their talkgroups named by the [`NameBook`].
+pub type DecodeSites = fn(&Engine, &NameBook, &str) -> (Vec<Value>, Vec<Value>);
 
 /// A talkgroup's name and Ignore flag from parsed tables.
 pub fn tg_info(tables: &HashMap<String, trunk_core::trunk::Talkgroups>, system: &str, tg: u32) -> Option<TgInfo> {
@@ -527,6 +543,21 @@ pub fn tg_info(tables: &HashMap<String, trunk_core::trunk::Talkgroups>, system: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A radio is named by its unit tags and the aliases heard, by the tags'
+    /// mode, as its calls' talkers are (the Radio pages took the aliases alone).
+    #[test]
+    fn the_book_names_a_radio_as_its_calls_do() {
+        use trunk_core::trunk::{SystemConfig, UnitTags, UnitTagsMode};
+        let mut book = NameBook::default();
+        let tags = |mode| UnitTags::parse_csv("1234,Engine 12\n", mode).0;
+        book.set_units("x", "1234,Heard 1234\n5678,Heard 5678\n");
+        assert_eq!((book.unit("x", 1234), book.unit("x", 5678)), (Some("Heard 1234".into()), Some("Heard 5678".into())), "no tags: the aliases");
+        book.set_systems(&[SystemConfig { unit_tags: tags(UnitTagsMode::UserFirst), ..SystemConfig::conventional("x") }]);
+        assert_eq!((book.unit("x", 1234), book.unit("x", 5678)), (Some("Engine 12".into()), Some("Heard 5678".into())), "the user's first");
+        book.set_systems(&[SystemConfig { unit_tags: tags(UnitTagsMode::UserOnly), ..SystemConfig::conventional("x") }]);
+        assert_eq!((book.unit("x", 1234), book.unit("x", 5678)), (Some("Engine 12".into()), None), "the user's only");
+    }
 
     #[test]
     fn a_long_calls_air_counts_in_the_minutes_it_was_on() {

@@ -882,6 +882,15 @@ impl Air {
     }
 }
 
+/// The wall clock now less `recording_ms`, the recording's clock now, ms:
+/// what the session corrects the times it gives out by
+/// ([`Session::correct_wall_clock`]). The recording's clock never jumps and,
+/// on macOS, runs at the crystal's rate; the wall clock is the one its time
+/// service keeps right.
+fn wall_less(recording_ms: f64) -> f64 {
+    crate::clock::unix_s() * 1000.0 - recording_ms
+}
+
 /// `queues`: each source's samples. `epoch`: the wall clock (Unix ms) at an
 /// instant, for the session's clock. `ctl`: everything for this thread — the
 /// sources' errors and ends (by way of their decoding threads), and the
@@ -997,6 +1006,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         let plugins = ctx.plugins.host();
         session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
         session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
+        session.correct_wall_clock(wall_less(now_ms()));
         session.poll(now_ms(), &mut out);
         deliver(&ctx, &mut out, plugins.as_deref(), &rules, &fin);
         drop(plugins);
@@ -1014,6 +1024,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     for f in feeders {
         let _ = f.join();
     }
+    session.correct_wall_clock(wall_less(now_ms()));
     session.poll(now_ms(), &mut out);
     session.finish(&mut out);
     deliver(&ctx, &mut out, ctx.plugins.host().as_deref(), &rules, &fin);
