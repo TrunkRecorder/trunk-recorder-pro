@@ -340,7 +340,9 @@ pub fn observation(recorder: &str, app: &str, sys: &System, sites: &[&SiteStatus
                     "identity": id,
                     "controlChannelHz": st.control_channel_hz,
                     "voice": ev.voice.iter().filter(|((s, _), _)| *s == st.site).map(|((_, hz), v)| json!({ "freqHz": hz, "grants": v.grants, "outOfBand": v.out_of_band })).collect::<Vec<_>>(),
-                    "neighbours": st.adjacent.iter().filter(|a| a.freq_hz > 0).map(|a| json!({ "sysId": a.sys_id, "rfss": a.rfss, "site": a.site, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
+                    // (Its own WACN's only, for now: the directory places a
+                    // neighbour by the sharing site's WACN, not the one sent.)
+                    "neighbours": st.adjacent.iter().filter(|a| st.identity.wacn().is_none_or(|w| a.wacn == w)).collect::<Vec<_>>(),
                     "callSigns": call_signs.iter().filter(|(hz, _)| **hz > 0).map(|(hz, c)| json!({ "freqHz": hz, "callSign": c })).collect::<Vec<_>>(),
                     "good": st.good,
                     "bad": st.bad,

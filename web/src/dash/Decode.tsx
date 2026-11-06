@@ -229,9 +229,9 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
   const line = (key: string, label: string, c: string, extra: Partial<Line> = {}): Line => ({ label, color: c, data: hist?.[key] ?? null, ...extra });
   if (!x) return <p className="empty">No system called {name}.</p>;
   const st = site?.status;
-  // The site shown, with its detail (while watched: what its control channel announces).
-  const here = runningSites(x.status ? [x.status] : [])
-    .filter((y) => y.name === site?.name)
+  // The site shown, and with its detail (while watched: its DMR / NXDN channels and carriers).
+  const shown = runningSites(x.status ? [x.status] : []).filter((y) => y.name === site?.name);
+  const here = shown
     .flatMap((y) => {
       const d = live?.sites.find((z) => z.index === y.index);
       return d ? [{ ...y, ...d }] : [];
@@ -421,7 +421,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
           </div>
         )}
       </Card>
-      {st && <Neighbours s={s} sites={here} />}
+      {st && <Neighbours s={s} sites={shown} />}
       {live && <Patches patches={live.patches} />}
       {here.some((y) => y.dmr) && <DmrSites sites={here} />}
       {here.some((y) => y.nxdn) && <NxdnSites sites={here} />}

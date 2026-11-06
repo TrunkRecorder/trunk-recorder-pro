@@ -47,7 +47,7 @@ use crate::p25::frame::{LDU1, LDU2};
 use crate::trunk::identity::{IdField, Identity};
 use crate::smartnet::plan::{self, PlanConfig, PlanFinder};
 use crate::smartnet::{self as sn, Word};
-use crate::trunk::{Message, MessageType, P25Parser};
+use crate::trunk::{AdjacentSite, Message, MessageType, Neighbours, P25Parser};
 
 /// One-sided channel filter cutoff for P25, Hz.
 const CUTOFF_HZ: f64 = 7000.0;
@@ -238,16 +238,6 @@ impl Candidate {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Adjacent {
-    /// Its system's WACN (another system's, for a neighbouring system).
-    pub wacn: u32,
-    pub rfss: u32,
-    pub site: u32,
-    pub sys_id: u32,
-    pub freq_hz: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceChannel {
     pub freq_hz: u64,
     pub grants: u32,
@@ -292,7 +282,7 @@ pub struct SystemInfo {
     pub advertised_hz: Option<u64>,
     /// Secondary (alternate) control channels of this site.
     pub secondary: Vec<u64>,
-    pub adjacent: Vec<Adjacent>,
+    pub adjacent: Vec<AdjacentSite>,
     /// Voice channels seen in grants, by frequency.
     pub voice: Vec<VoiceChannel>,
     /// Band plan entries (IDEN_UP*) heard, and the plan as text.
@@ -1220,7 +1210,7 @@ struct Monitor {
     noise: Vec<f64>,
     snr: Option<f64>,
     secondary: BTreeSet<u64>,
-    adjacent: BTreeMap<(u32, u32, u32, u32), Adjacent>,
+    adjacent: Neighbours,
     voice: BTreeMap<u64, VoiceChannel>,
     info: SystemInfo,
     gains: Vec<f32>,
@@ -1258,7 +1248,7 @@ impl Monitor {
             noise: vec![0.0; 64],
             snr: None,
             secondary: BTreeSet::new(),
-            adjacent: BTreeMap::new(),
+            adjacent: Neighbours::default(),
             voice: BTreeMap::new(),
             info,
             gains: cfg.gains.clone(),
@@ -1368,7 +1358,7 @@ impl Monitor {
         i.idens = self.dec.parser.tables.len();
         i.bandplan = self.dec.parser.bandplan_to_string();
         i.secondary = self.secondary.iter().copied().collect();
-        i.adjacent = self.adjacent.values().copied().collect();
+        i.adjacent = self.adjacent.list();
         i.voice = self.voice.values().copied().collect();
     }
 
@@ -1416,10 +1406,7 @@ impl Monitor {
         match m.kind {
             // This site's control channel (RFSS and network status name it).
             MessageType::SysId | MessageType::Status if m.freq_hz != 0 => self.info.advertised_hz = Some(m.freq_hz),
-            MessageType::Adjacent if m.freq_hz != 0 => {
-                let a = Adjacent { wacn: m.wacn, rfss: m.rfss, site: m.site, sys_id: m.sys_id, freq_hz: m.freq_hz };
-                self.adjacent.insert((a.wacn, a.sys_id, a.rfss, a.site), a);
-            }
+            MessageType::Adjacent => self.adjacent.hear(m),
             MessageType::ControlChannel if m.freq_hz != 0 => {
                 self.secondary.insert(m.freq_hz);
             }

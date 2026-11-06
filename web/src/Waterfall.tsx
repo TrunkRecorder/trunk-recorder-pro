@@ -14,10 +14,9 @@ export interface CcMark {
   hz: number;
   label: string;
   color: string;
-  /** An adjacent site's, not one followed here: drawn fainter. */
+  /** An adjacent site's, not one followed here: drawn fainter, its label below. */
   faint?: boolean;
-  /** Its system's short name (an adjacent site's: the system announcing it). */
-  system?: string;
+  /** What hovering it says (absent: "Control channel <label>"). */
   title?: string;
 }
 

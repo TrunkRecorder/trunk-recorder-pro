@@ -1219,6 +1219,7 @@ impl Session {
                 "good": y.good, "bad": y.bad, "modulation": if y.modulation.is_empty() { None } else { Some(y.modulation) },
                 "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
                 "mismatch": y.mismatch,
+                "adjacent": y.adjacent,
                 "callsigns": y.callsigns.iter().map(|(c, hz)| json!({ "callSign": c, "freqHz": if *hz == 0 { None } else { Some(hz) } })).collect::<Vec<_>>(),
                 "radioClock": self.radio_clock(y).map(|r| json!({ "offsetMs": (r.offset_ms * 10.0).round() / 10.0, "at": r.at_s.round(), "valid": r.valid })),
             })
@@ -1339,7 +1340,7 @@ fn alpha_tag(engine: &Engine, system: u16, tg: u32) -> String {
 }
 
 /// A system's `decodeDetail` beyond its channels: each running site's
-/// neighbours and DMR / NXDN channels and carriers, and the system's patches
+/// DMR / NXDN channels and carriers, and the system's patches
 /// (each site hears them: once each).
 fn decode_sites(engine: &Engine, system: &str) -> (Vec<Value>, Vec<Value>) {
     let (mut sites, mut patches) = (Vec::new(), Vec::<Value>::new());
@@ -1347,7 +1348,6 @@ fn decode_sites(engine: &Engine, system: &str) -> (Vec<Value>, Vec<Value>) {
         let at = y.system;
         sites.push(json!({
             "index": y.site, "name": y.site_name,
-            "adjacent": y.adjacent.iter().map(|a| json!({ "wacn": a.wacn, "sysId": a.sys_id, "rfss": a.rfss, "site": a.site, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
             "dmr": match &y.protocol { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
                 json!({
                     "variant": d.variant.map(|v| v.name()),

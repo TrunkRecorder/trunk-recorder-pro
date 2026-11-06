@@ -3,6 +3,35 @@
   "title": "Trunk Recorder Pro interface protocol",
   "description": "The JSON messages on the WebSocket /api/ws. FromRecorder: server → client; ToRecorder: client → server. Generated from web/src/protocol.ts — see docs/api/README.md.",
   "definitions": {
+    "AdjacentSite": {
+      "type": "object",
+      "properties": {
+        "wacn": {
+          "type": "number"
+        },
+        "sysId": {
+          "type": "number"
+        },
+        "rfss": {
+          "type": "number"
+        },
+        "site": {
+          "type": "number"
+        },
+        "freqHz": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "wacn",
+        "sysId",
+        "rfss",
+        "site",
+        "freqHz"
+      ],
+      "additionalProperties": false,
+      "description": "A neighbouring site a control channel announces, by its address: P25's WACN, System ID, RFSS and site (another system's, for a neighbouring system: another System ID or WACN); NXDN's System ID and site (WACN and RFSS 0). See `adjacentIdentity`."
+    },
     "AirspyGainMode": {
       "type": "string",
       "enum": [
@@ -6050,38 +6079,6 @@
         "name": {
           "type": "string"
         },
-        "adjacent": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "wacn": {
-                "type": "number"
-              },
-              "sysId": {
-                "type": "number"
-              },
-              "rfss": {
-                "type": "number"
-              },
-              "site": {
-                "type": "number"
-              },
-              "freqHz": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "wacn",
-              "sysId",
-              "rfss",
-              "site",
-              "freqHz"
-            ],
-            "additionalProperties": false
-          },
-          "description": "Neighbouring sites its control channel announces: its own system's, and other systems' (their WACN and System ID)."
-        },
         "dmr": {
           "anyOf": [
             {
@@ -6108,7 +6105,6 @@
       "required": [
         "index",
         "name",
-        "adjacent",
         "dmr",
         "nxdn"
       ],
@@ -6202,6 +6198,13 @@
           ],
           "description": "The control channel is another system's / site's: why (its grants are not followed)."
         },
+        "adjacent": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AdjacentSite"
+          },
+          "description": "Neighbouring sites its control channel announces (once each, with a channel)."
+        },
         "callsigns": {
           "type": "array",
           "items": {
@@ -6266,7 +6269,8 @@
         "activeCalls",
         "recording",
         "callsConcluded",
-        "mismatch"
+        "mismatch",
+        "adjacent"
       ],
       "additionalProperties": false,
       "description": "One running site, as its control channel describes it. `index` is what calls carry as `site`."
@@ -7430,34 +7434,9 @@
         "adjacent": {
           "type": "array",
           "items": {
-            "type": "object",
-            "properties": {
-              "wacn": {
-                "type": "number"
-              },
-              "rfss": {
-                "type": "number"
-              },
-              "site": {
-                "type": "number"
-              },
-              "sysId": {
-                "type": "number"
-              },
-              "freqHz": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "wacn",
-              "rfss",
-              "site",
-              "sysId",
-              "freqHz"
-            ],
-            "additionalProperties": false
+            "$ref": "#/definitions/AdjacentSite"
           },
-          "description": "Neighbouring sites it announces: its own system's, and other systems' (their WACN and System ID)."
+          "description": "Neighbouring sites it announces."
         },
         "voice": {
           "type": "array",

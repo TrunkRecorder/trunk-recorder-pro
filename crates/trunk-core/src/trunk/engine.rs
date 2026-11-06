@@ -33,7 +33,7 @@ use num_complex::Complex32;
 
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Policy, Reason, RecorderHost};
 use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
-use super::message::{Message, MessageType};
+use super::message::{AdjacentSite, Message, MessageType, Neighbours};
 use super::multisite::{Held, Kept, MultiSite};
 use super::record::{save_call, RecordedOn, SaveContext};
 use super::recorded::Recorded;
@@ -361,17 +361,6 @@ pub struct PatternHeard {
     pub decrypted: bool,
     /// Sample-clock seconds.
     pub time_s: f64,
-}
-
-/// A neighbouring site a control channel announces.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AdjacentSite {
-    /// Its system's WACN (another system's, for a neighbouring system).
-    pub wacn: u32,
-    pub sys_id: u32,
-    pub rfss: u32,
-    pub site: u32,
-    pub freq_hz: u64,
 }
 
 /// One site's state, for the interface.
@@ -1144,7 +1133,7 @@ struct Trunk {
     identity: Identity,
     /// Why this control channel is not ours, while it isn't.
     mismatch: Option<String>,
-    adjacent: std::collections::BTreeMap<(u32, u32, u32, u32), AdjacentSite>,
+    adjacent: Neighbours,
     /// The call signs its base station IDs say, by the channel (Hz) each is for.
     callsigns: std::collections::BTreeMap<u64, String>,
     /// Its system's time, last said ([`SiteStatus::system_time`]).
@@ -1366,8 +1355,8 @@ impl Trunk {
         let lock = !fields.is_empty();
         for (st, p) in cc.steps.into_iter().zip(cc.params) {
             self.identity = st.identity;
-            for m in st.msgs.iter().filter(|m| m.kind == MessageType::Adjacent && m.freq_hz > 0) {
-                self.adjacent.insert((m.wacn, m.sys_id, m.rfss, m.site), AdjacentSite { wacn: m.wacn, sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
+            for m in &st.msgs {
+                self.adjacent.hear(m);
             }
             if let Some(m) = st.msgs.iter().rev().find(|m| m.system_time_ms.is_some()) {
                 self.system_time = m.system_time_ms.map(|(ms, valid)| (m.time_s, ms, valid));
@@ -1483,7 +1472,7 @@ impl Trunk {
             recording: self.calls.calls.iter().filter(|c| radio.recordings.contains_key(&c.id)).count(),
             calls_concluded: self.concluded,
             mismatch: self.mismatch.clone(),
-            adjacent: self.adjacent.values().copied().collect(),
+            adjacent: self.adjacent.list(),
             callsigns: if self.mismatch.is_none() { self.callsigns.iter().map(|(&hz, c)| (c.clone(), hz)).collect() } else { vec![] },
             system_time: self.system_time.filter(|_| self.mismatch.is_none()),
             patches: self.calls.patches.active(),
