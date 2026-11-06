@@ -4,11 +4,13 @@
 //! offset itself), and what the radio systems' own clocks say — read, never
 //! set: the OS's time service keeps the clock, this only watches it.
 //!
-//! Calls aren't stamped by the wall clock as it is now but by the recording's
-//! clock: the wall clock at Start, carried on by a monotonic clock so that it
-//! never jumps. The two part when the time service corrects the clock during
-//! a recording ([`Health::drift_ms`]), and what call times are off by is the
-//! recording clock's error: [`Health::problem`] judges that.
+//! A recording runs on its own clock: the wall clock at Start, carried on by
+//! a monotonic clock so that it never jumps. The two part as the time service
+//! corrects the wall clock, and on macOS steadily (its monotonic clock runs at
+//! the crystal's rate, uncorrected) ([`Health::drift_ms`]). Times given out
+//! follow the wall clock all the same: the engine thread hands the session
+//! the difference each poll (`Session::correct_wall_clock`), so what call
+//! times are off by is the wall clock's error, which [`Health::problem`] judges.
 //!
 //! [`Clock`] (`ctx.clock`) keeps the latest of it all and the one verdict
 //! ([`Health::problem`]) the dashboard, its events and every finished call go by.
@@ -107,8 +109,6 @@ pub struct Service {
 pub enum Cause {
     /// The clock itself, measured against the time server.
     Clock,
-    /// The clock calls are stamped by: right at Start, corrected since.
-    Recording,
     /// Against the radio systems' clocks (no time server answer).
     Radio,
     /// The OS says it isn't synchronized.
@@ -136,8 +136,10 @@ pub struct Health {
     pub measured: Option<(Measured, f64)>,
     /// Why the last query failed, while it fails.
     pub error: Option<String>,
-    /// While recording: the wall clock less the recording's, ms (positive:
-    /// the wall clock was set ahead since Start, or the computer slept).
+    /// While recording: the wall clock less the recording's own, ms
+    /// (positive: the wall clock was set ahead since Start, the computer
+    /// slept, or the monotonic clock runs slow). Shown, not judged: call
+    /// times are corrected by it.
     pub drift_ms: Option<f64>,
     /// The radio systems' clocks, each site's latest.
     pub radio: Vec<RadioClock>,
@@ -188,10 +190,6 @@ impl Health {
             let o = m.offset_ms;
             if o.abs() >= warn {
                 return off(o, Cause::Clock, format!("The clock is {} {} {}: call times are off by as much", amount(o), way(o), self.server.as_deref().unwrap_or("the time server")));
-            }
-            // The clock is right now; the recording's may not be.
-            if let Some(rec) = self.drift_ms.map(|d| o + d).filter(|r| r.abs() >= warn) {
-                return off(rec, Cause::Recording, format!("Calls are being stamped {} {} the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it", amount(rec), way(rec)));
             }
         } else if let Some((site, r)) = self.radio_reference(now).filter(|(_, r)| r.abs() >= warn) {
             return off(r, Cause::Radio, format!("Calls are being stamped {} {} {site}'s radio system clock: is this computer's clock synchronized?", amount(r), way(r)));
@@ -632,11 +630,15 @@ mod tests {
             drift_ms,
             ..Default::default()
         };
-        // The clock was 2 s ahead at Start, then set right (back 2 s): it's right now, calls aren't.
-        assert_eq!(server(10.0, Some(-2000.0)).said(now), Some((false, "Calls are being stamped 2.0 s ahead of the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it".into())));
-        assert_eq!(server(10.0, Some(-100.0)).said(now), None, "within the warning");
-        assert_eq!(server(10.0, Some(-2000.0)).problem(now).map(|p| p.cause), Some(Cause::Recording), "the interface points at the recording's clock");
+        // The clock was 2 s ahead at Start, then set right (back 2 s), or a
+        // day of a Mac's raw clock running slow: calls follow the wall clock
+        // all the same, so the drift is no problem — however large.
+        for drift in [-2000.0, -100.0, 6000.0, -86_400e3, 0.0] {
+            assert_eq!(server(10.0, Some(drift)).said(now), None, "drift {drift} ms");
+        }
         assert_eq!(server(10.0, None).said(now), None, "not recording");
+        // What is judged is the wall clock: off by the time server, whatever the drift.
+        assert_eq!(server(6000.0, Some(-6000.0)).problem(now).map(|p| (p.cause, p.bad)), Some((Cause::Clock, true)));
         // No time server answer: the radio systems' clocks are the reference.
         let radio = |offsets: &[f64], ago: f64| Health {
             radio: offsets.iter().enumerate().map(|(i, o)| RadioClock { site: format!("site{i}"), offset_ms: *o, at_s: now - ago, valid: true }).collect(),

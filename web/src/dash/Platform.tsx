@@ -379,9 +379,9 @@ function ClockCard({ c, offsets, osMissing, checksOff }: { c: ClockInfo; offsets
         </p>
       )}
       {c.driftMs !== null && (
-        <p className={`small${c.problem?.cause === "recording" ? " warn" : ""}`} title="Calls are stamped by the clock as it was when recording started, carried on by a clock that never jumps: a correction since then doesn't reach them until the next Start.">
-          Calls are stamped by the clock as it was at Start:{" "}
-          {Math.abs(c.driftMs) < 1 ? "the same as the clock now" : `${offsetText(c.driftMs).by} ${offsetText(c.driftMs).way} the clock now`}.
+        <p className="small" title="The recording runs on its own clock, which never jumps: the clock at Start, carried on by a monotonic clock (on macOS, one that runs at the crystal's rate, uncorrected). Call times are corrected to the clock as it is now all the same; this is only how far the two have parted.">
+          The recording's own clock:{" "}
+          {Math.abs(c.driftMs) < 1 ? "the same as the clock now" : `${offsetText(c.driftMs).by} ${offsetText(c.driftMs).way} the clock now — call times are corrected for it`}.
         </p>
       )}
       {c.radio.length > 0 && (

@@ -41,6 +41,7 @@ use super::inband::InBandSpec;
 use super::record::{Concluded, SaveRules};
 use super::talkgroups::Talkgroups;
 
+use super::wall::WallEpoch;
 use super::voice::TrackerOut;
 use super::units::{UnitAlias, UnitAliases, UnitTags};
 use super::identity::{IdField, Identity};
@@ -1517,8 +1518,9 @@ struct Core {
     now_s: f64,
     events: Vec<Event>,
     call_events: Vec<CallEvent>,
-    /// Wall-clock epoch ms at sample-clock time 0 ([`EngineConfig::epoch_ms_at_zero`]).
-    epoch_ms_at_zero: f64,
+    /// Wall-clock epoch ms at sample-clock time 0, as it has moved
+    /// ([`EngineConfig::epoch_ms_at_zero`] at first; [`Engine::set_wall_epoch`]).
+    wall: WallEpoch,
     /// One copy of a call heard on several sites ([`EngineConfig::drop_duplicates`]).
     drop_duplicates: bool,
 }
@@ -1637,7 +1639,7 @@ impl Core {
             now_s: 0.0,
             events,
             call_events: Vec::new(),
-            epoch_ms_at_zero: cfg.epoch_ms_at_zero,
+            wall: WallEpoch::new(cfg.epoch_ms_at_zero),
             drop_duplicates: cfg.drop_duplicates,
         })
     }
@@ -1700,7 +1702,7 @@ impl Core {
         let learned = UnitAlias {
             alias: a.alias.clone(),
             source: a.source.to_string(),
-            time: ((self.epoch_ms_at_zero + now_s * 1000.0) / 1000.0) as i64,
+            time: (self.wall.ms(now_s, now_s) / 1000.0) as i64,
             wacn: hex(wacn, 5),
             sys: hex(sys_id, 3),
             talkgroup: tg,
@@ -2232,6 +2234,8 @@ impl Core {
         let (site, system) = (h.call.site, h.call.system);
         let Some(sys) = self.systems.get(system as usize) else { return false };
         let trunk = site.and_then(|s| self.trunks.get(s as usize));
+        // One epoch for all of a call's times (and its copies'): the one it began under.
+        let epoch_ms = self.wall.at(first_s.unwrap_or(h.call.start_s));
         let saved = save_call(
             h,
             &SaveContext {
@@ -2240,7 +2244,7 @@ impl Core {
                 short_name: &sys.cfg.short_name,
                 system_type: trunk.map_or("conventional", |t| t.cfg.protocol.kind()),
                 site: trunk.map_or("", |t| &t.cfg.name),
-                epoch_ms_at_zero: self.epoch_ms_at_zero,
+                epoch_ms_at_zero: epoch_ms,
                 units: Some(&sys.aliases),
                 unit_tags: Some(&sys.cfg.unit_tags).filter(|t| !t.is_empty() || t.mode != Default::default()),
                 wacn: trunk.and_then(|t| t.identity.wacn()),
@@ -2512,6 +2516,22 @@ impl Engine {
         if let Some(r) = self.shared.rx.get(source) {
             r.lock().unwrap().src.clock_offset_s = offset_s;
         }
+    }
+
+    /// The wall clock (Unix ms) at the engine's time 0 is `epoch_ms` from
+    /// now on: the host's wall clock was corrected since Start ([`WallEpoch`]).
+    /// Calls up now keep the epoch they began under. False when it moved by
+    /// too little to matter.
+    pub fn set_wall_epoch(&self, epoch_ms: f64) -> bool {
+        let mut core = self.shared.core.lock().unwrap();
+        let now_s = core.now_s;
+        core.wall.set(now_s, epoch_ms)
+    }
+
+    /// The wall-clock epoch (Unix ms) in effect at engine time `t_s`: Unix ms
+    /// of a time `s` of a call begun at `t_s` is this plus `s * 1000`.
+    pub fn wall_epoch_at(&self, t_s: f64) -> f64 {
+        self.shared.core.lock().unwrap().wall.at(t_s)
     }
 
     /// The offset [`set_clock_offset`](Self::set_clock_offset) last set, s.
@@ -2997,6 +3017,114 @@ mod tests {
         for (call, kept) in dups {
             assert!(call.site != kept.site && call.sources[0].src == kept.sources[0].src, "a copy of the same talker's, from the other site");
         }
+    }
+
+    /// Voice on site `i`'s call on `f`, at `t`, and the call events it makes.
+    fn voice_at(e: &mut Core, i: usize, f: u64, t: f64) {
+        use super::super::frames::{Codec, VoiceFrame};
+        let id = e.trunks[i].calls.calls.iter().find(|c| c.freq_hz == f).unwrap().id;
+        let frame = VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: mbe::Kind::Voice, tone: None };
+        e.trunks[i].now_s = t;
+        e.radio.pending.push((i as u16, id, TrackerOut::Audio(vec![0.1; mbe::FRAME_SAMPLES * 5], frame)));
+        e.apply_pending();
+        e.emit_call_events();
+    }
+
+    fn concluded(ev: &[Event]) -> Vec<&Concluded> {
+        let mut v: Vec<&Concluded> = ev.iter().filter_map(|x| if let Event::Concluded(k) = x { Some(k) } else { None }).collect();
+        v.sort_by(|a, b| a.call.start_s.total_cmp(&b.call.start_s));
+        v
+    }
+
+    /// The host's wall clock corrected while a call is up ([`WallEpoch`]):
+    /// the call keeps the epoch it began under from start to stop — its
+    /// length, and its talkers' places in it, as on the air — and the next
+    /// call is by the new one.
+    #[test]
+    fn a_call_keeps_the_wall_epoch_it_began_under() {
+        const EPOCH: f64 = 1_700_000_000_000.0;
+        // Two calls, the second at 50 s; `step`: the wall clock is corrected 30 s ahead mid-way through the first.
+        let run = |step: Option<f64>| {
+            let mut cfg = one_site("d", |s| s.save.normalize = false);
+            cfg.epoch_ms_at_zero = EPOCH;
+            let mut e = Core::new(cfg).unwrap();
+            let grant = |e: &mut Core, t: f64, src: i64| handle(e, 0, &[Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: 851_500_000, source: src, ..Default::default() }]);
+            grant(&mut e, 10.0, 7);
+            e.emit_call_events();
+            voice_at(&mut e, 0, 851_500_000, 10.5);
+            if let Some(ms) = step {
+                assert!(e.wall.set(11.0, EPOCH + ms));
+            }
+            voice_at(&mut e, 0, 851_500_000, 11.5);
+            grant(&mut e, 12.0, 9);
+            voice_at(&mut e, 0, 851_500_000, 12.5);
+            tick(&mut e, 0, 40.0);
+            e.emit_call_events();
+            grant(&mut e, 50.0, 11);
+            e.emit_call_events();
+            voice_at(&mut e, 0, 851_500_000, 50.5);
+            tick(&mut e, 0, 80.0);
+            e.emit_call_events();
+            let ev = e.drain_events();
+            let saved = concluded(&ev);
+            assert_eq!(saved.len(), 2);
+            (saved[0].record.clone(), saved[1].record.clone(), saved[0].base_name.clone(), saved[1].call.start_s)
+        };
+        let (plain, plain_next, plain_name, next_start_s) = run(None);
+        for ms in [30_000.0, -2_000.0, 0.05e-3 * 86_400e3] {
+            let (first, next, name, _) = run(Some(ms));
+            // Start, stop, length, talkers' times, file name: as if the clock hadn't moved.
+            assert_eq!(first.to_json(), plain.to_json(), "the call up when it moved ({ms} ms)");
+            assert_eq!(name, plain_name);
+            assert_eq!(next.start_time_ms, (EPOCH + ms + next_start_s * 1000.0).round() as i64, "the next by the corrected clock ({ms} ms)");
+            assert_eq!(next.stop_time_ms - next.start_time_ms, plain_next.stop_time_ms - plain_next.start_time_ms, "its length unchanged");
+        }
+        assert_eq!(plain.start_time_ms, (EPOCH + 10_000.0) as i64);
+    }
+
+    /// Copies of one transmission heard on two sites, the wall clock corrected
+    /// between their grants: they share one epoch (the first copy's), so the
+    /// copy kept is named as the other would have been — which is how the
+    /// copies of a call are matched up, here and between recorders.
+    #[test]
+    fn copies_on_two_sites_share_the_first_copys_epoch() {
+        let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], ..Default::default() };
+        let mut sys = SystemConfig { save: SaveRules { normalize: false, ..Default::default() }, ..SystemConfig::trunked("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6)]) };
+        sys.calls.conversation = false;
+        let cfg = EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() };
+        let mut e = Core::new(cfg).unwrap();
+        let grant = |e: &mut Core, i: usize, t: f64, f: u64, src: i64| handle(e, i, &[Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: f, source: src, ..Default::default() }]);
+        let (east, west) = (851_500_000, 851_600_000);
+        grant(&mut e, 0, 1.0, east, 7);
+        // Between the copies' grants: 250 ms ahead.
+        assert!(e.wall.set(1.1, 250.0));
+        grant(&mut e, 1, 1.2, west, 7);
+        e.emit_call_events();
+        for t in [1.5, 1.7, 1.9] {
+            voice_at(&mut e, 0, east, t);
+            // (West's copy is the better heard, so it's the one kept.)
+            voice_at(&mut e, 1, west, t + 0.1);
+            voice_at(&mut e, 1, west, t + 0.15);
+        }
+        for i in [0, 1] {
+            tick(&mut e, i, 20.0);
+            e.emit_call_events();
+        }
+        let ev = e.drain_events();
+        let saved = concluded(&ev);
+        assert_eq!(saved.len(), 1, "saved once");
+        let k = saved[0];
+        assert_eq!(k.record.transmission_id, "dc-101-7-1000", "the first copy's start, by its epoch: not 1250");
+        assert_eq!(k.record.start_time_ms, (k.call.start_s * 1000.0).round() as i64, "the copy kept by the first's epoch too");
+    }
+
+    #[test]
+    fn the_engine_takes_a_corrected_wall_epoch_from_its_own_time_on() {
+        let e = Engine::new(EngineConfig { epoch_ms_at_zero: 1000.0, ..one_site("d", |_| ()) }).unwrap();
+        assert_eq!(e.wall_epoch_at(0.0), 1000.0);
+        assert!(!e.set_wall_epoch(1000.4), "less than a ms");
+        assert!(e.set_wall_epoch(1500.0));
+        assert_eq!((e.wall_epoch_at(-1.0), e.wall_epoch_at(0.0), e.wall_epoch_at(99.0)), (1000.0, 1500.0, 1500.0));
     }
 
     #[test]
