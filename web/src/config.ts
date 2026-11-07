@@ -5,7 +5,8 @@ import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
 import { defaultConfig, parseChannelCsv, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
-export { receivers, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, rateFor, rateOk, readConfig, resolvedCenters, sourceRates, startProblem, usableHalfWidth } from "./rules.ts";
+export { receivers, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, rateFor, rateOk, readConfig, resolvedCenters, sourceAdvice, sourceRates, startProblem, usableHalfWidth } from "./rules.ts";
+export type { Advice, AdviceScore } from "./rules.ts";
 
 /** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
 export const RTL_DEFAULT_GAIN_DB = 25.4;

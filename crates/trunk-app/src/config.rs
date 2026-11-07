@@ -14,7 +14,7 @@ use trunk_core::trunk::{
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
-use crate::place::{coverage, place_sources, receiver, Coverage, Group, Placing, Targets, Weighted};
+use crate::place::{advise, coverage, place_sources, receiver, Advice, Choices, Coverage, Group, Placing, Targets, Weighted};
 use trunk_core::trunk::Pins;
 
 /// A source: the radio or capture it reads ([`SourceKind`]), where and how fast.
@@ -301,6 +301,28 @@ impl Source {
     /// It to place: its centre stays when set.
     pub fn placing(&self) -> Placing {
         Placing { rate_hz: self.rate_hz, guard_hz: self.guard_hz, fixed_hz: (self.center_hz > 0.0).then_some(self.center_hz) }
+    }
+    /// Its `type` ("rtlsdr", "airspy", …), as the config names it.
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            SourceKind::Rtlsdr { .. } => "rtlsdr",
+            SourceKind::Usrp { .. } => "usrp",
+            SourceKind::Airspy { .. } => "airspy",
+            SourceKind::Bladerf { .. } => "bladerf",
+            SourceKind::Hackrf { .. } => "hackrf",
+            SourceKind::Soapy { .. } => "soapy",
+            SourceKind::File { .. } => "file",
+        }
+    }
+    /// What advice may change about it ([`place::advise`]): a centre typed
+    /// in, and the rates it may run at (`found`: what its radio said). A
+    /// capture file's are the recording's: neither.
+    pub fn choices(&self, found: Option<&crate::rates::Rates>) -> Choices {
+        if matches!(self.kind, SourceKind::File { .. }) {
+            return Choices::default();
+        }
+        let kind = self.kind_name();
+        Choices { movable: true, rates: crate::rates::offered(kind, found), steady_max: crate::rates::steady_max(kind) }
     }
     /// Whether the two may open the same radio (one program at a time can):
     /// of a kind and naming one device, or either "the first found". (A
@@ -2461,6 +2483,15 @@ impl Config {
         (centers, cov)
     }
 
+    /// Better centres and rates for the sources than they have, if there are
+    /// ([`place::advise`], for [`Config::targets`]): `found` is what each
+    /// source's radio said it runs at (None, or missing: not known).
+    pub fn advice(&self, found: &[Option<crate::rates::Rates>]) -> Option<Advice> {
+        let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
+        let choices: Vec<Choices> = self.sources.iter().enumerate().map(|(k, s)| s.choices(found.get(k).and_then(Option::as_ref))).collect();
+        advise(&sources, &choices, &self.targets())
+    }
+
     /// What the radios are placed to reach, and what Start needs reached:
     /// each active site's control (and watched) channels and its voice
     /// channels — one control channel needed (a DMR, NXDN or EDACS site:
@@ -3173,6 +3204,28 @@ mod tests {
         // No channel list: nothing to follow calls with.
         c.systems[0].sites[0].lcn_table_hz.clear();
         assert!(c.problem().unwrap().contains("channel list"), "{:?}", c.problem());
+    }
+
+    /// Advice for a config: a centre typed in that misses the site's voice
+    /// channels moves (and can go back to auto); a capture file never does;
+    /// an Airspy is advised only rates it runs at.
+    #[test]
+    fn advice_for_the_sources_a_config_has() {
+        let mut c: Config = serde_json::from_value(serde_json::json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 849500000, "rateHz": 2400000, "ppm": 0 }],
+            "systems": [{ "shortName": "dcfd", "sites": [{ "controlChannelsHz": [851012500], "voiceChannelsHz": [851512500, 852012500] }] }]
+        }))
+        .unwrap();
+        let a = c.advice(&[]).expect("advice");
+        let s = &a.sources[0];
+        assert!(s.changed && s.auto && a.after.reached > a.before.reached, "{a:?}");
+        // As a capture file: nothing.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "file", "path": "x.cu8", "realtime": true, "centerHz": 849500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        assert_eq!(c.advice(&[]), None);
+        // An Airspy that said it runs at 10 / 2.5 MSPS: 2.5 covers it all.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "ppm": 0 })).unwrap();
+        let a = c.advice(&[Some(crate::rates::Rates::List(vec![10_000_000, 2_500_000]))]).expect("advice");
+        assert_eq!(a.sources[0].rate_hz, 2_500_000.0, "{a:?}");
     }
 
     #[test]

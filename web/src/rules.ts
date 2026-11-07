@@ -146,6 +146,43 @@ export function placeSources(sources: Placing[], targets: Targets): (number | nu
   return JSON.parse(rules().placeSources(JSON.stringify({ sources, targets })));
 }
 
+/** How good a way of tuning the sources is (place::Score), compared in this order. */
+export interface AdviceScore {
+  /** Systems (sites, conventional systems) whose control channel, or channels, no source reaches. */
+  unmet: number;
+  /** The weight of channels reached (one each; calls heard, when known). */
+  reached: number;
+  /** Sources something needs. */
+  needed: number;
+  /** Of those, the ones past their dependable top rate (an RTL-SDR past 2.56 MSPS). */
+  unsteady: number;
+  /** Their sample rates together, Hz. */
+  rateHz: number;
+  /** Sources whose centre or rate changes. */
+  changes: number;
+}
+
+/** Better centres and rates for the sources (place::Advice): how they do now and with it, and each source as advised. */
+export interface Advice {
+  before: AdviceScore;
+  after: AdviceScore;
+  sources: {
+    centerHz: number | null;
+    rateHz: number;
+    /** Its centre or rate is other than now. */
+    changed: boolean;
+    /** Taken alone, it can be on auto (it is, or goes back to it) rather than set to `centerHz`. */
+    auto: boolean;
+    /** Something needs it, with the advice; false: it can go. */
+    needed: boolean;
+  }[];
+}
+
+/** Better centres and rates for `c`'s sources than they have, or null (Config::advice): `found` is each source's found radio. */
+export function sourceAdvice(c: Config, found: (FoundRadio | undefined)[]): Advice | null {
+  return JSON.parse(rules().configAdvice(JSON.stringify(c), JSON.stringify(found.map((f) => f ?? null))));
+}
+
 /** A found radio, by what it says it runs at (`rates` or `rateRange`), as the rules read it. */
 type Found = FoundRadio | undefined;
 
