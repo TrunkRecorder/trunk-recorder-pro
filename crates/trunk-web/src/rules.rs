@@ -118,12 +118,14 @@ pub fn place_sources_js(json: &str) -> String {
 }
 
 /// Better centres and rates for the sources than they have ([`trunk_app::config::Config::advice`]):
-/// `found` a JSON array, each source's found radio (`{ rates?, rateRange? }`, or null). Out the
+/// `found` a JSON array, each source's found radio (`{ rates?, rateRange? }`, or null); `heard`
+/// JSON `{ <shortName>: [{ hz, weight }] }`, what each system was heard on (its calls). Out the
 /// advice's JSON, or `null` when there's none.
 #[wasm_bindgen(js_name = configAdvice)]
-pub fn config_advice(json: &str, found: &str) -> String {
+pub fn config_advice(json: &str, found: &str, heard: &str) -> String {
     let found: Vec<Option<trunk_app::rates::Rates>> = serde_json::from_str::<Vec<serde_json::Value>>(found).unwrap_or_default().iter().map(trunk_app::rates::Rates::from_found).collect();
-    read(json).ok().and_then(|c| c.advice(&found)).map_or_else(|| "null".into(), |a| serde_json::json!(a).to_string())
+    let heard: trunk_app::config::Heard = serde_json::from_str(heard).unwrap_or_default();
+    read(json).ok().and_then(|c| c.advice(&found, &heard)).map_or_else(|| "null".into(), |a| serde_json::json!(a).to_string())
 }
 
 /// What a found radio's JSON (`{ rates?, rateRange? }`; "" or `null`: not known) says it runs at.

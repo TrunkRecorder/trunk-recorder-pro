@@ -178,9 +178,16 @@ export interface Advice {
   }[];
 }
 
-/** Better centres and rates for `c`'s sources than they have, or null (Config::advice): `found` is each source's found radio. */
-export function sourceAdvice(c: Config, found: (FoundRadio | undefined)[]): Advice | null {
-  return JSON.parse(rules().configAdvice(JSON.stringify(c), JSON.stringify(found.map((f) => f ?? null))));
+/** What each system was heard on, by short name: each frequency and its calls (out of band too), to weigh advice by. */
+export type Heard = Record<string, { hz: number; weight: number }[]>;
+
+/**
+ * Better centres and rates for `c`'s sources than they have, or null
+ * (Config::advice): `found` is each source's found radio, `heard` what each
+ * system was heard on.
+ */
+export function sourceAdvice(c: Config, found: (FoundRadio | undefined)[], heard: Heard = {}): Advice | null {
+  return JSON.parse(rules().configAdvice(JSON.stringify(c), JSON.stringify(found.map((f) => f ?? null)), JSON.stringify(heard)));
 }
 
 /** A found radio, by what it says it runs at (`rates` or `rateRange`), as the rules read it. */

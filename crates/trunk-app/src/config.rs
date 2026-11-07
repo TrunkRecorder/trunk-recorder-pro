@@ -257,6 +257,11 @@ pub struct Receiving {
     pub source: Option<usize>,
 }
 
+/// What each system was heard on, by short name: each frequency and how many
+/// calls it carried (out of band too), as the radio registry counts them
+/// ([`Config::targets_with`]).
+pub type Heard = BTreeMap<String, Vec<Weighted>>;
+
 /// Where a source goes ([`Config::placement`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placed {
@@ -2484,12 +2489,28 @@ impl Config {
     }
 
     /// Better centres and rates for the sources than they have, if there are
-    /// ([`place::advise`], for [`Config::targets`]): `found` is what each
-    /// source's radio said it runs at (None, or missing: not known).
-    pub fn advice(&self, found: &[Option<crate::rates::Rates>]) -> Option<Advice> {
+    /// ([`place::advise`], for [`Config::targets_with`] what's `heard`):
+    /// `found` is what each source's radio said it runs at (None, or
+    /// missing: not known).
+    pub fn advice(&self, found: &[Option<crate::rates::Rates>], heard: &Heard) -> Option<Advice> {
         let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
         let choices: Vec<Choices> = self.sources.iter().enumerate().map(|(k, s)| s.choices(found.get(k).and_then(Option::as_ref))).collect();
-        advise(&sources, &choices, &self.targets())
+        advise(&sources, &choices, &self.targets_with(heard))
+    }
+
+    /// [`Config::targets`], and what each trunked system was heard on: a
+    /// group of its own (needing nothing, on the system's sources), each
+    /// frequency weighed by its calls — those no source covered too — so a
+    /// voice channel granted on the air counts though the config doesn't
+    /// list it, and a busy one more than a quiet one.
+    pub fn targets_with(&self, heard: &Heard) -> Targets {
+        let mut t = self.targets();
+        for sys in self.active_systems() {
+            if let Some(chans) = heard.get(&sys.short_name).filter(|c| !c.is_empty()) {
+                t.groups.push(Group { channels: chans.clone(), pins: self.pins(&sys.receive_on), ..Default::default() });
+            }
+        }
+        t
     }
 
     /// What the radios are placed to reach, and what Start needs reached:
@@ -3216,16 +3237,29 @@ mod tests {
             "systems": [{ "shortName": "dcfd", "sites": [{ "controlChannelsHz": [851012500], "voiceChannelsHz": [851512500, 852012500] }] }]
         }))
         .unwrap();
-        let a = c.advice(&[]).expect("advice");
+        let a = c.advice(&[], &Heard::new()).expect("advice");
         let s = &a.sources[0];
         assert!(s.changed && s.auto && a.after.reached > a.before.reached, "{a:?}");
         // As a capture file: nothing.
         c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "file", "path": "x.cu8", "realtime": true, "centerHz": 849500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
-        assert_eq!(c.advice(&[]), None);
+        assert_eq!(c.advice(&[], &Heard::new()), None);
         // An Airspy that said it runs at 10 / 2.5 MSPS: 2.5 covers it all.
         c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "ppm": 0 })).unwrap();
-        let a = c.advice(&[Some(crate::rates::Rates::List(vec![10_000_000, 2_500_000]))]).expect("advice");
+        let a = c.advice(&[Some(crate::rates::Rates::List(vec![10_000_000, 2_500_000]))], &Heard::new()).expect("advice");
         assert_eq!(a.sources[0].rate_hz, 2_500_000.0, "{a:?}");
+        // Heard granting a busy voice channel the config doesn't list, 3 MHz up: 10 MSPS reaches it, 2.5 doesn't.
+        let heard: Heard = [("dcfd".to_string(), vec![Weighted { hz: 855_012_500.0, weight: 300.0 }])].into();
+        let a = c.advice(&[Some(crate::rates::Rates::List(vec![10_000_000, 2_500_000]))], &heard);
+        assert_eq!(a, None, "10 MSPS already reaches it, and 2.5 wouldn't: {a:?}");
+        // An RTL-SDR set over the listed channels; a busy one heard just past its band: moved over it too.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 851500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        let a = c.advice(&[], &Heard::new()).expect("advice");
+        assert_eq!((a.sources[0].rate_hz, a.sources[0].center_hz), (1_920_000.0, Some(851_500_000.0)), "it reaches what the config lists, and at 1.92 MSPS still would: {a:?}");
+        let heard: Heard = [("dcfd".to_string(), vec![Weighted { hz: 852_900_000.0, weight: 300.0 }])].into();
+        let a = c.advice(&[], &heard).expect("advice");
+        let s = &a.sources[0];
+        assert!(a.after.reached >= a.before.reached + 300.0 && c.sources[0].reaches(s.center_hz.unwrap(), 852_900_000.0), "{a:?}");
+        assert!([851_012_500.0, 851_512_500.0, 852_012_500.0].iter().all(|&f| c.sources[0].reaches(s.center_hz.unwrap(), f)), "and still the listed ones: {a:?}");
     }
 
     #[test]
