@@ -141,6 +141,7 @@ a link to the system's page in the directory. The directory's answer is kept as 
 |---|:---:|---|---|---|
 | `name` | | the system's `shortName` | string | The site's name, unique in its system: what the talkgroup file's `Preferred Site` names, the `site` in call JSON and the log. Leave it out for a system of one site |
 | `enabled` | | `true` | bool | `false` keeps the site without recording from it (**Record** on its card) |
+| `preferred` | | `false` | bool | Multi-site: keep this site's copy of a call heard on several sites while it has at least 90 % of the best copy's clean audio, for the talkgroups that name no preferred site. See [Multi-site](#multi-site) |
 | `directoryId` | | `""` | string | Set by [sharing](#sharing-with-the-directory): the directory's ID for the site |
 | `controlChannelsHz` | | `[]` | array of numbers | P25 and SmartNet: the control channel and its alternates, Hz. The recorder hunts through them, moving on when one goes quiet for 5 s. DMR and NXDN: every frequency listed is watched at once (NXDN Type-D: the repeaters) |
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |
@@ -267,7 +268,9 @@ transmission by transmission (suggested for a system with several sites).
 Only the sites listed under one system are copies of each other. Two systems are never joined while
 recording, whatever their control channels announce; when two systems announce the same system on
 the air, Setup offers **Make them one system**. To prefer a site for a talkgroup, use the talkgroup
-file's `Preferred Site` or `Preferred NAC` column.
+file's `Preferred Site` or `Preferred NAC` column; to prefer one for every talkgroup that names none
+(a site whose antenna is better, until the other's is fixed), set the site's `preferred`. A talkgroup
+that names a site decides for itself.
 
 ```json
 { "shortName": "capmax", "type": "dmr",
