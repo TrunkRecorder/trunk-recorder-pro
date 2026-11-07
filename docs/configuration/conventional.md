@@ -74,6 +74,11 @@ Notes:
   digital channels) — so a digital row with no names lets the file name each talkgroup the air sends. A
   conventional system doesn't borrow the names, or the settings, of a trunked system: give it its
   own file. The file's format is the [talkgroup file](systems.md#talkgroup-file)'s.
+- **Recording rules.** A conventional call is recorded, ended and split by its system's rules as a
+  trunked call is: a talkgroup the file marks Ignore isn't recorded (its call is still shown), nor
+  one it doesn't list when `recordUnknown` is off (a row's own name lists it); the call ends
+  `callTimeoutS` after the recorder last heard it; with `conversationMode` off each transmission is
+  a call of its own; and one longer than `maxCallS` carries on in the next, its talker with it.
 - **Frequency error.** A conventional call's `freq_error` is measured as a trunked call's is, from
   the decoder's offset (P25, DMR and NXDN: analog receivers don't measure one).
 - **Channel width.** A conventional DMR channel is opened 6.25 kHz wide, as a trunked one is.

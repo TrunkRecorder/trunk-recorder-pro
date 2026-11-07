@@ -8,7 +8,7 @@ import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { coverage, pageHealth, rangesFor } from "./data.ts";
-import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
+import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
@@ -19,10 +19,10 @@ import { PluginHealthPage } from "./PluginHealth.tsx";
 import { StorageView, tablesOf } from "./Storage.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
 
-const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
+const site = (index: number, name: string, identity: Partial<SiteIdentity>, adjacent: AdjacentSite[] = []): SiteStatus => ({
   index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
   identity: { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: null, ...identity },
-  good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null,
+  good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent,
 });
 const system = (index: number, shortName: string, sites: SiteStatus[]): SystemStatus => ({ index, shortName, activeCalls: 0, recording: 0, conventionalOpen: 0, callsConcluded: 0, sites });
 
@@ -41,13 +41,18 @@ function running(c: Config, systems: SystemStatus[], calls: Partial<CallView>[] 
 }
 
 /** dcfd, a system of two sites (dcfd and south), and another of one. */
-function twoSites(calls: Partial<CallView>[] = []): void {
+/** dcfd (sites dcfd and south) and other, running; south announcing `adjacent`. */
+function twoSites(calls: Partial<CallView>[] = [], adjacent: AdjacentSite[] = []): void {
   const c = defaultConfig();
   const dcfd = newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_000_000] });
   dcfd.sites.push({ ...dcfd.sites[0], name: "south", controlChannelsHz: [851_500_000] });
   c.systems.push(dcfd, newSystem(c, { shortName: "other", controlChannelsHz: [852_000_000] }));
-  running(c, [system(0, "dcfd", [site(0, "dcfd", { site: 1 }), site(1, "south", { site: 2 })]), system(1, "other", [site(2, "other", { sysId: 0x999, site: 1 })])], calls);
+  running(c, twoSitesRunning(adjacent), calls);
 }
+const twoSitesRunning = (adjacent: AdjacentSite[] = []) => [
+  system(0, "dcfd", [site(0, "dcfd", { site: 1 }), site(1, "south", { site: 2 }, adjacent)]),
+  system(1, "other", [site(2, "other", { sysId: 0x999, site: 1 })]),
+];
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 const titles = (html: string) => [...html.matchAll(/<h3>(.*?)<\/h3>/g)].map((m) => text(m[1]).trim());
@@ -74,20 +79,54 @@ test("Decode: a card per site; a system's page picks the site", () => {
   assert.doesNotMatch(page, /No system called/);
 });
 
-test("Decode: a system's page shows what its sites announce (decodeDetail), not before", () => {
-  twoSites();
+test("Decode: a site's neighbours by address (status); its patches once watched (decodeDetail)", () => {
+  twoSites([], [
+    { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 9, freqHz: 853_000_000 },
+    { wacn: 0xbee00, sysId: 0x954, rfss: 1, site: 1, freqHz: 854_000_000 },
+    { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 1, freqHz: 855_000_000 },
+  ]);
   setView("decode", "dcfd", "south");
   const before = text(renderToString(<DecodePage />));
-  assert.ok(!before.includes("Patches") && !before.includes("Neighbouring sites"));
+  assert.ok(!before.includes("Patches"));
+  assert.ok(before.includes("BEE00:1A2:1-9 · 853"), before);
+  assert.match(before, /BEE00:954:1-1 · 854\.0+ inter-system/, "a neighbouring system's site, by its address");
+  assert.doesNotMatch(before, /BEE00:1A2:1-1 /, "a site running here (dcfd), on another channel");
+  assert.match(before, /2 announced, not recorded · 1 of other systems/);
   const tg = (talkgroup: number, alphaTag = "") => ({ talkgroup, alphaTag });
   transport.onMessage({
     type: "decodeDetail", system: "dcfd", channels: [],
-    sites: [{ index: 1, name: "south", adjacent: [{ sysId: 0x1a2, rfss: 1, site: 9, freqHz: 853_000_000 }], dmr: null, nxdn: null }],
+    sites: [{ index: 1, name: "south", dmr: null, nxdn: null }],
     patches: [{ supergroup: tg(60001), members: [tg(100, "Fire Dispatch"), tg(200)] }],
   });
   const page = text(renderToString(<DecodePage />));
   assert.ok(page.includes("SG 60001") && page.includes("Fire Dispatch (100) + 200"), page);
-  assert.ok(page.includes("site 1-9"), page);
+});
+
+test("RF: the control channels of adjacent sites on a source, faint, by address; not those running or off every source", () => {
+  transport.onMessage({ type: "state", phase: "starting", error: null, ended: false, restartNeeded: false });
+  twoSites();
+  const radio = { type: "hackrf" as const, serial: "", centerHz: 852_000_000, rateHz: 4_000_000, lnaDb: 24, vgaDb: 30, amp: false, biasTee: false, ppm: 0 };
+  transport.onMessage({ type: "config", config: { ...snapshot().config!, sources: [radio] }, version: 2 });
+  const src: SourceStatus = { index: 0, label: "RTL", centerHz: 852_000_000, rateHz: 4_000_000, rateMeasured: 4_000_000, dropped: 0, errors: 0, lastError: null, ended: false, clockPpm: null, settings: radio };
+  const status = (adjacent: AdjacentSite[]) =>
+    transport.onMessage({ type: "status", status: { systems: twoSitesRunning(adjacent), recording: 0 } as unknown as EngineStatus, sources: [src], load: 0, calls: [] });
+  status([]);
+  setView("rf");
+  assert.doesNotMatch(text(renderToString(<RfPage />)), /adjacent site/, "nothing announced yet");
+  status([
+    { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 1, freqHz: 851_000_000 },
+    { wacn: 0xbee00, sysId: 0x954, rfss: 1, site: 1, freqHz: 853_000_000 },
+    { wacn: 1, sysId: 0x97, rfss: 1, site: 1, freqHz: 853_500_000 },
+    { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 8, freqHz: 853_950_000 },
+    { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 7, freqHz: 860_000_000 },
+  ]);
+  const page = text(renderToString(<RfPage />));
+  assert.match(page, /BEE00:954:1-1/);
+  assert.match(page, /00001:097:1-1/, "another WACN's");
+  assert.match(page, /adjacent site\S+s control channel/);
+  assert.doesNotMatch(page, /BEE00:1A2:1-1/, "a site running here is drawn as itself");
+  assert.doesNotMatch(page, /1-8/, "in the source's guard band");
+  assert.doesNotMatch(page, /1-7/, "off every source");
 });
 
 test("Decode: a site's FCC call sign, once its control channel has said it", () => {
@@ -189,6 +228,7 @@ test("Radio: a system's Tones card names its signals and goes to them in Setup; 
   assert.match(lines[0], /^Norwalk EMS 1 20341 two-tone 781\.25 → 875 Hz, 0\.98 \+ 2\.98 s \(Quick Call II\) QC2 126\/128 3 .* E7 ▶ NORWALK_EMS$/, "the recorder's text and its signal");
   assert.match(lines[1], /^20342 DTMF 12# — 3 .* ▶ Add$/, "not a signal yet: Add");
   assert.equal(eventText({ type: "monitorEvent", t: 0, level: "info", kind: "tonePattern", system: "dcfd", talkgroup: 20341, text: "two-tone 781.25 → 875 Hz", signals: ["NORWALK_EMS"] }), "dcfd: NORWALK_EMS (two-tone 781.25 → 875 Hz) on talkgroup 20341");
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "info", kind: "tonePattern", system: "wood", talkgroup: 1, alphaTag: "Fire Dispatch", text: "two-tone 470.5 → 1034.7 Hz", signals: [] }), "wood: two-tone 470.5 → 1034.7 Hz on talkgroup Fire Dispatch", "by its call's name");
 });
 
 test("Radio: a warning of calls out of band links to the frequencies, on the Overview and the system's page", () => {
@@ -276,6 +316,13 @@ test("Platform → Storage: each table with its rows, its indexes under it, bigg
   page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, sizes, written: { bytes: 5e9, of: "store" } }} />));
   assert.match(page, /5\.00 GB since it started/);
   assert.match(page, /Written to disk/);
+  const registry = { caps: { talkgroups: 5000, radios: 20000, pairs: 50000, days: 365 }, systems: [{ system: "dcfd", talkgroups: 23, radios: 20000, pairs: 900 }] };
+  page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: true, registry, sizes, written: { bytes: 5e9, of: "store" } }} />));
+  assert.match(page, /Radio registry\s*System\s*Talkgroups\s*Radios\s*Pairs\s*dcfd\s*23 of 5,?000\s*20,?000 of 20,?000\s*900 of 50,?000/);
+  assert.match(page, /Forgotten after 365 days unheard/);
+  const uncapped = { caps: { talkgroups: null, radios: null, pairs: null, days: null }, systems: [{ system: "dcfd", talkgroups: 23, radios: 507, pairs: 900 }] };
+  page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: true, registry: uncapped, sizes }} />));
+  assert.match(page, /dcfd\s*23\s*507\s*900\s*Kept however long ago it was heard/);
   page = text(renderToString(<StorageView store={{ backend: "sqlite", radioIndex: false, talkgroupIndex: false, sizes, written: { bytes: 5e9, of: "store" } }} />));
   assert.match(page, /Calls aren\S{1,6}t indexed by talkgroup or radio/);
   assert.match(page, /transmissions_radio · the calls a radio talked on, newest first/);
@@ -316,18 +363,19 @@ test("Platform: the time service, the recording's clock and the radio systems' c
   host({
     os: synced, server: "pool.ntp.org", service: { name: "systemd-timesyncd", server: "2.debian.pool.ntp.org (45.33.53.84)", stratum: 2, lastSync: now() - 120 }, driftMs: 1800, warnMs: 500,
     radio: [{ site: "dcfd", offsetMs: -12, at: now() - 30, sane: true, valid: false }, { site: "other", offsetMs: -4 * 3600e3, at: now() - 30, sane: false, valid: true }],
-    problem: { level: "warn", cause: "recording", why: "Calls are being stamped 1.8 s behind the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it" },
   });
   const html = renderToString(<PlatformPage />);
-  assert.match(html, /<p class="small warn"[^>]*>Calls are stamped by the clock as it was at Start/, "amber by the recorder's verdict (its cause), not a rule of its own");
+  // Call times are corrected for the drift: it's shown, never a warning — no Stop and Start.
+  assert.match(html, /<p class="small"[^>]*>The recording(?:'|&#x27;)s own clock/);
+  assert.doesNotMatch(html, /Stop and Start/);
   const page = text(html);
   assert.match(page, /Kept by systemd-timesyncd from 2\.debian\.pool\.ntp\.org \(45\.33\.53\.84\), stratum 2, last synchronized 2 m/);
   // (driftMs: the wall clock less the recording's: the recording's is behind.)
-  assert.match(page, /Calls are stamped by the clock as it was at Start: 1\.8 s behind the clock now/);
+  assert.match(page, /The recording(?:'|&#x27;)s own clock: 1\.8 s behind the clock now — call times are corrected for it/);
   assert.match(page, /The radio systems(?:'|&#x27;) own clocks, against the calls(?:'|&#x27;) time: dcfd 12 ms behind them \(the system marks its time not valid: shown, not gone by\)/);
   assert.match(page, /other set to another time \(its local time\?\): not compared/);
   assert.match(page, /A warning at 500 ms off/);
-  assert.equal(pageHealth(snapshot()).platform.level, "warn");
+  assert.equal(pageHealth(snapshot()).platform.level, "ok", "however far the recording's clock has drifted");
 });
 
 test("Platform: a RAM spool deleted while running (systemd's RemoveIPC at logout) says how to stop it, not that it's full", () => {

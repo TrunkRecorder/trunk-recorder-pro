@@ -855,8 +855,9 @@ mod tests {
         db.flush().unwrap();
         db.checkpoint();
         db.flush().unwrap();
+        // (Linux counts what reached the disk: 0 on tmpfs, or until the kernel writes it back. That it's counted is the point.)
         if cfg!(target_os = "linux") {
-            assert!(db.written().is_some_and(|b| b > 0), "{:?}", db.written());
+            assert!(db.written().is_some(), "{:?}", db.written());
         } else {
             assert_eq!(db.written(), None);
         }
@@ -944,8 +945,7 @@ mod tests {
     #[ignore]
     fn write_budget() {
         let written = || -> u64 {
-            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
-            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+            writer::io_written("/proc/self/io").unwrap_or(0)
         };
         let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         let mut seed = 0x2545_f491_4f6c_dd1du64;
@@ -999,8 +999,7 @@ mod tests {
     fn stats_write_budget() {
         use trunk_app::stats::{HourRow, Rollup};
         let written = || -> u64 {
-            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
-            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+            writer::io_written("/proc/self/io").unwrap_or(0)
         };
         let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         let path = dir.join("trp-stats-budget.sqlite");
@@ -1053,8 +1052,7 @@ mod tests {
         use trunk_app::stats::{HourRow, Rollup};
         use trunk_core::trunk::{Call, CallSource, Message, MessageType};
         let written = || -> u64 {
-            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
-            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+            writer::io_written("/proc/self/io").unwrap_or(0)
         };
         let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         let cfg = trunk_app::Config::from_json(r#"{"systems":[{"shortName":"ohmarcs","id":1}]}"#).unwrap();
@@ -1131,8 +1129,7 @@ mod tests {
         use trunk_app::stats::radio::Registry;
         use trunk_core::trunk::{Call, CallSource, Message, MessageType};
         let written = || -> u64 {
-            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
-            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+            writer::io_written("/proc/self/io").unwrap_or(0)
         };
         let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         let mut seed = 0x2545_f491_4f6c_dd1du64;

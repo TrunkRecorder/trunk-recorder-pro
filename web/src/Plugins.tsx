@@ -39,7 +39,7 @@ import { activeSystems } from "./config.ts";
 import { EveryDelays, PluginDelay } from "./Delays.tsx";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
 import { showTodo } from "./Setup.tsx";
-import { DraftInput, NumberInput, TextArea, TextInput, Toggle } from "./inputs.tsx";
+import { CopyButton, DraftInput, NumberInput, ReleaseSlider, TextArea, TextInput, Toggle } from "./inputs.tsx";
 import { numberList, talkgroupList, talkgroupProblem, textList } from "./fieldText.ts";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { Card } from "./charts.tsx";
@@ -172,6 +172,19 @@ function Ticks(props: { id: string; options: { value: string; label: string }[];
         );
       })}
     </div>
+  );
+}
+
+/** A read-only web address: shown in full, a button to open it in a new tab (labelled `x-open`), and one to copy it. */
+function ReadOnlyLink(props: { url: string; open?: string }) {
+  return (
+    <span className="readonly-link">
+      <a className="btn small primary" href={props.url} target="_blank" rel="noopener noreferrer">
+        {props.open || "Open"} ↗
+      </a>
+      <code>{props.url}</code>
+      <CopyButton text={props.url} />
+    </span>
   );
 }
 
@@ -346,6 +359,18 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
   const fallback = emptyValue(inherited) ? f.default : inherited;
   const needed = !!props.required && emptyValue(value) && emptyValue(inherited);
 
+  // What the plugin fills in itself (a name it looked up): said, not edited. A web address: opened, or copied.
+  if (f.readOnly && f.type !== "object" && f.type !== "array") {
+    const known = value === undefined || value === null || value === "" ? undefined : String(value);
+    return (
+      <div className="field">
+        <span className="field-label">{label}</span>
+        {known && f.format === "uri" && isUrl(known) ? <ReadOnlyLink url={known} open={f["x-open"]} /> : <span className={known ? "" : "muted"}>{known ?? "Not known yet"}</span>}
+        {hint && <span className="field-hint">{hint}</span>}
+      </div>
+    );
+  }
+
   if (f.type === "object") {
     const obj = (value && typeof value === "object" ? value : {}) as PluginValues;
     return (
@@ -398,6 +423,14 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
         ))}
       </select>
     );
+  } else if ((f.type === "integer" || f.type === "number") && f["x-slider"] && f.minimum !== undefined && f.maximum !== undefined) {
+    // A slider (`x-slider`), in steps of `multipleOf`, with its value beside it: saved once let go.
+    const cur = typeof value === "number" ? value : typeof fallback === "number" ? fallback : f.minimum;
+    const step = f.multipleOf ?? (f.type === "integer" ? 1 : (f.maximum - f.minimum) / 100);
+    const digits = String(step).split(".")[1]?.length ?? 0;
+    const signed = f.minimum < 0;
+    const text = (v: number) => `${signed && v > 0 ? "+" : ""}${v.toFixed(digits)}`;
+    control = <ReleaseSlider id={id} className="plugin-slider" min={f.minimum} max={f.maximum} step={step} value={cur} label={label} text={text} onChange={onChange} />;
   } else if (f.type === "integer" || f.type === "number") {
     control = (
       <NumberInput
@@ -474,7 +507,7 @@ function wide(f: PluginSchema): boolean {
   return f.type === "object" || isList(f) || (f.type === "array" && (!!f["x-tones"] || choosesFrom(f))) || !!f["x-multiline"];
 }
 
-function SchemaFields(props: {
+export function SchemaFields(props: {
   schema: PluginSchema | undefined;
   values: PluginValues;
   onChange: (v: PluginValues) => void;
@@ -1157,11 +1190,13 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
 const TOPIC_NAMES: Record<string, string> = {
   "call.concluded": "recorded calls",
   "call.start": "calls starting",
+  "call.update": "calls changing (who's talking)",
   "call.end": "calls ending",
   unit: "radio activity",
   audio: "live audio",
   status: "system status",
   tone_pattern: "tone patterns heard",
+  log: "TRP's log",
 };
 
 function PluginLog(props: { p: PluginInfo }) {

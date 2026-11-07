@@ -178,3 +178,66 @@ export function NumberInput(props: Omit<InputProps, "className"> & { value: numb
   const { label, hex: isHex, gain: isGain, narrow, ...rest } = props;
   return <DraftInput {...rest} className={`mono${narrow ? " narrow" : ""}`} aria-label={label} codec={isHex ? hex : isGain ? gain : decimal} />;
 }
+
+/**
+ * A slider: moves as it's dragged, saved once it's let go (the pointer up, a
+ * key up, or leaving it) — one save per setting, not one per step dragged
+ * through: a radio's gain is set while recording, and a plugin's settings are
+ * sent to it (or it's restarted) at each save. `text`: its value as shown.
+ */
+export function ReleaseSlider(props: {
+  min?: number;
+  max: number;
+  step?: number;
+  value: number;
+  disabled?: boolean;
+  label: string;
+  id?: string;
+  className?: string;
+  text?: (v: number) => string;
+  onChange: (v: number) => void;
+}) {
+  const [draft, setDraft] = useState<number | null>(null);
+  const shown = draft ?? props.value;
+  const text = props.text ? props.text(shown) : String(shown);
+  const done = () => {
+    if (draft !== null && draft !== props.value) props.onChange(draft);
+    setDraft(null);
+  };
+  return (
+    <span className={props.className ?? "row"}>
+      <input
+        id={props.id}
+        type="range"
+        min={props.min ?? 0}
+        max={props.max}
+        step={props.step}
+        value={shown}
+        disabled={props.disabled}
+        aria-label={props.label}
+        aria-valuetext={text}
+        onChange={(e) => setDraft(Number(e.target.value))}
+        onPointerUp={done}
+        onKeyUp={done}
+        onBlur={done}
+      />
+      <span className="mono small">{text}</span>
+    </span>
+  );
+}
+
+/** A button that copies `text` to the clipboard, and says so for a moment. */
+export function CopyButton(props: { text: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard?.writeText(props.text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <button type="button" className={props.className ?? "btn small"} onClick={copy}>
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}

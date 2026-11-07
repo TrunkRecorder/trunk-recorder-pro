@@ -35,6 +35,9 @@ pub trait Plugin: Sized {
     fn start(host: Host, setup: Setup<Self::Config, Self::SystemConfig>) -> Result<Self, String>;
 
     fn call_start(&mut self, _call: CallInfo) {}
+    /// A call changed while it runs (another radio talking, an emergency, a patch, …: see
+    /// [`topic::CALL_UPDATE`](crate::protocol::topic::CALL_UPDATE)): the call as it is now.
+    fn call_update(&mut self, _call: CallInfo) {}
     fn call_end(&mut self, _call: CallInfo) {}
     fn call_concluded(&mut self, _call: ConcludedCall) {}
     fn unit(&mut self, _event: UnitEvent) {}
@@ -42,6 +45,9 @@ pub trait Plugin: Sized {
     fn status(&mut self, _status: Status) {}
     /// A call's tones made a pattern: every one heard (subscribe to `tone_pattern`).
     fn tone_pattern(&mut self, _t: TonePatternEvent) {}
+    /// A line TRP logged (subscribe to `log`): its own, not the plugin's. Don't log
+    /// for each one, or two plugins that pass lines on can keep each other busy.
+    fn log_line(&mut self, _line: LogLine) {}
     /// One of the plugin's buttons was pressed (`x-actions` in its settings
     /// schema). Answer through `reply`, now or from another thread once the
     /// work is done; a reply dropped unsent answers that it failed.
@@ -51,6 +57,9 @@ pub trait Plugin: Sized {
     /// The answer to [`Host::calls`]: a page of recorded calls, for the
     /// `request` it gave.
     fn calls(&mut self, _request: u64, _page: CallsPage) {}
+    /// The answer to [`Host::save_settings`], for the `request` it gave: saved, or why not.
+    /// (Saved, the settings come to [`Plugin::settings`] first.)
+    fn settings_saved(&mut self, _request: u64, _ok: bool, _message: String) {}
     /// Its settings changed while it runs (set [`Manifest::live_settings`]
     /// for this to be called rather than the plugin restarted). An `Err` is
     /// shown as its status, and the settings it had stay.
@@ -143,6 +152,25 @@ impl Host {
     pub fn calls(&self, query: CallsQuery) -> u64 {
         let request = self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         self.send(&PluginMessage::CallsQuery { request, query });
+        request
+    }
+
+    /// Save some of its own settings, as if typed in on its form ([`PluginMessage::SettingsSave`]):
+    /// each top-level key of `settings` replaces that setting, the others stay. Refused when it
+    /// would restart the plugin (it needs [`Manifest::live_settings`], one copy, no per-system
+    /// settings, and what it requires set). They come back to [`Plugin::settings`], and the answer to
+    /// [`Plugin::settings_saved`] with the request number this gives. (Its `Config` type, whole,
+    /// is fine; a value that isn't an object is answered as refused.)
+    pub fn save_settings(&self, settings: &impl serde::Serialize) -> u64 {
+        let request = self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let settings = match serde_json::to_value(settings) {
+            Ok(Value::Object(m)) => m,
+            _ => {
+                self.warn("save_settings: its settings must be an object");
+                return request;
+            }
+        };
+        self.send(&PluginMessage::SettingsSave { request, settings });
         request
     }
 
@@ -305,17 +333,20 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
         match msg {
             HostMessage::Hello(_) => host.warn("a second hello, ignored"),
             HostMessage::CallStart(c) => p.call_start(c),
+            HostMessage::CallUpdate(c) => p.call_update(c),
             HostMessage::CallEnd(c) => p.call_end(c),
             HostMessage::CallConcluded(c) => p.call_concluded(c),
             HostMessage::Unit(u) => p.unit(u),
             HostMessage::Audio(a) => p.audio(a),
             HostMessage::Status(s) => p.status(s),
             HostMessage::TonePattern(t) => p.tone_pattern(t),
+            HostMessage::Log(l) => p.log_line(l),
             HostMessage::Action(a) => {
                 let reply = Reply { host: host.clone(), request: a.request, sent: false };
                 p.action(a, reply)
             }
             HostMessage::Calls { request, page } => p.calls(request, page),
+            HostMessage::SettingsSaved { request, ok, message } => p.settings_saved(request, ok, message),
             HostMessage::Settings(h) => match setup::<P>(h).and_then(|s| p.settings(s)) {
                 Ok(()) => host.status(State::Ok, ""),
                 Err(e) => host.status(State::Error, format!("new settings not taken: {e}")),
@@ -466,5 +497,36 @@ mod tests {
         assert_eq!(line, r#"{"type":"calls.query","request":1,"talkgroup":101,"limit":10}"#, "only what was asked goes on the wire");
         let said: Vec<String> = out.logs().into_iter().map(|(_, t)| t).collect();
         assert_eq!(said, ["request 1: 1 calls, next Some(\"1000:sys1/x\")"]);
+    }
+
+    /// Fills in a name it looked up, as it starts.
+    struct Namer(Host);
+
+    impl Plugin for Namer {
+        type Config = NoConfig;
+        type SystemConfig = NoConfig;
+        fn manifest() -> Manifest {
+            Manifest { id: "namer".into(), live_settings: true, ..Default::default() }
+        }
+        fn start(host: Host, _setup: Setup<NoConfig, NoConfig>) -> Result<Self, String> {
+            host.save_settings(&json!({ "serverName": "LolWut" }));
+            Ok(Namer(host))
+        }
+        fn settings_saved(&mut self, request: u64, ok: bool, message: String) {
+            self.0.info(format!("request {request}: {ok} {message}"));
+        }
+    }
+
+    /// A plugin saves some of its settings (`settings.save`, numbered), and the answer for that
+    /// number reaches `Plugin::settings_saved`.
+    #[test]
+    fn a_plugin_saves_its_settings_and_hears_how_it_went() {
+        let dir = testing::temp_dir("sdk-save");
+        let answer = HostMessage::SettingsSaved { request: 1, ok: false, message: "no".into() };
+        let out = testing::run::<Namer>([HostMessage::Hello(testing::hello(&dir, json!({}))), answer]);
+        let sent = out.messages.iter().find(|m| matches!(m, PluginMessage::SettingsSave { .. })).cloned().expect("settings.save sent");
+        assert_eq!(serde_json::to_string(&sent).unwrap(), r#"{"type":"settings.save","request":1,"settings":{"serverName":"LolWut"}}"#);
+        let said: Vec<String> = out.logs().into_iter().map(|(_, t)| t).collect();
+        assert_eq!(said, ["request 1: false no"]);
     }
 }

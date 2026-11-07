@@ -28,6 +28,11 @@ pub mod topic {
     pub const CALL_START: &str = "call.start";
     /// A call ended ([`super::CallInfo`]); its files follow in `call.concluded`.
     pub const CALL_END: &str = "call.end";
+    /// A call changed while it runs ([`super::CallInfo`], all of it as it is now): whenever any of
+    /// it does — another radio talking (`sources` gains it), its flags (an emergency, encrypted),
+    /// its patched talkgroups, whether it's recorded, its key or its decryption, a radio's
+    /// position; on a conventional channel, its talkgroup from the air or its tone.
+    pub const CALL_UPDATE: &str = "call.update";
     /// A recorded call's files are on disk ([`super::ConcludedCall`]).
     pub const CALL_CONCLUDED: &str = "call.concluded";
     /// A radio registered, affiliated, … ([`super::UnitEvent`]).
@@ -40,7 +45,11 @@ pub mod topic {
     /// alert tone, DTMF string and Morse ID heard, named by the system's signals or not.
     pub const TONE_PATTERN: &str = "tone_pattern";
 
-    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE_PATTERN];
+    /// Each line TRP logs, as its console shows it ([`super::LogLine`]): to send on
+    /// elsewhere. A plugin isn't sent its own lines.
+    pub const LOG: &str = "log";
+
+    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE_PATTERN, LOG];
 }
 
 /// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
@@ -156,6 +165,8 @@ pub enum HostMessage {
     Hello(Hello),
     #[serde(rename = "call.start")]
     CallStart(CallInfo),
+    #[serde(rename = "call.update")]
+    CallUpdate(CallInfo),
     #[serde(rename = "call.end")]
     CallEnd(CallInfo),
     #[serde(rename = "call.concluded")]
@@ -168,6 +179,8 @@ pub enum HostMessage {
     Status(Status),
     #[serde(rename = "tone_pattern")]
     TonePattern(TonePatternEvent),
+    #[serde(rename = "log")]
+    Log(LogLine),
     /// Someone pressed one of the plugin's buttons (`x-actions` in its
     /// settings schema): answer with [`PluginMessage::ActionResult`]. Only
     /// a plugin that has actions is sent one.
@@ -177,6 +190,14 @@ pub enum HostMessage {
     /// plugin with [`Manifest::live_settings`] is sent one; others restart.
     #[serde(rename = "settings")]
     Settings(Hello),
+    /// The answer to a [`PluginMessage::SettingsSave`] (the same `request`): saved, or why not.
+    #[serde(rename = "settings.saved")]
+    SettingsSaved {
+        request: u64,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        message: String,
+    },
     /// The answer to a [`PluginMessage::CallsQuery`] (the same `request`).
     #[serde(rename = "calls")]
     Calls {
@@ -883,6 +904,24 @@ impl AudioChunk {
     }
 }
 
+/// A line TRP logged ([`topic::LOG`]), at the level its log is set to.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LogLine {
+    /// Unix seconds.
+    pub time: f64,
+    /// `trace`, `debug`, `info`, `warning`, `error` or `fatal`.
+    pub level: String,
+    /// The system it's about (its short name), when it's one's.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub system: String,
+    /// What it says, as the console has it after the time and level (`[clmrn-I]\t12C\tTG: …`).
+    pub text: String,
+    /// The whole line, as the console prints it (without colour):
+    /// `[2026-11-04 14:02:11.123456] (info)   …`.
+    pub line: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Status {
@@ -1048,6 +1087,16 @@ pub enum PluginMessage {
         #[serde(flatten)]
         query: CallsQuery,
     },
+    /// Save some of its own settings, as if typed in on its settings form: each key of
+    /// `settings` replaces that setting (null removes it), the rest stay. TRP writes
+    /// them to the config, shows them on the form at once, and sends them back as `settings`;
+    /// then answers with [`HostMessage::SettingsSaved`]. Refused when it would restart the
+    /// plugin: it has to take settings as it runs ([`Manifest::live_settings`]), run as one copy,
+    /// have no per-system settings, and keep every setting it needs set. For what the plugin learns that the user would otherwise type (names
+    /// for IDs, say: mark those fields `readOnly`) or changes made through it elsewhere. Not
+    /// for state: that goes in its data folder.
+    #[serde(rename = "settings.save")]
+    SettingsSave { request: u64, settings: Map<String, Value> },
     /// How an [`Action`] went: shown by the button that was pressed.
     #[serde(rename = "action.result")]
     ActionResult {
