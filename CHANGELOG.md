@@ -5,6 +5,38 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-11-07
+
+- **Edit a talkgroup's or a radio's names on its page** (#130, #135). On the **Radio system** page,
+  open a talkgroup and click **Edit names** (**Name it** when it has none): its alpha tag,
+  description, tag and category are saved as you leave each box. Tag and Category suggest the ones the
+  system uses already. Open a radio to give it a name of its own; it goes ahead of any patterns in
+  the unit names, so it wins. Both apply at once, even while recording, to the live display, the
+  calls and plugins. The lists stay read-only, so a stray click can't rename anything.
+- **Each talkgroup and unit name says where it came from**: loaded from a file (by name), copied
+  from RadioReference, the systems directory, a Trunk Recorder import, or edited by hand, and when.
+  Only the last change is kept. A talkgroup's or radio's page says it under its heading, and Setup
+  counts them ("212 RadioReference · 3 edited"). Loading a file again only changes the rows whose
+  names it changes; Ignore isn't a name. **If a file would replace names you edited by hand, Setup
+  asks first.** Setup → Data exports the origins with the talkgroups.
+- **Unit names are kept in the store, like talkgroups**, not in the config, so naming a radio no
+  longer needs a restart. Setup's **Unit names** field loads, downloads and clears them as before;
+  the menu of which names come first stays in the config (`unitNames.mode`). **An existing
+  `unitNames.csv` moves into the store by itself** at the first start (the file it's written to
+  beside the config is then kept as `<shortName>.unit-names.csv.imported`). Setup → Data counts,
+  exports and deletes them.
+- **The store upgrades in place**: talkgroups, talker aliases, the radio registry and the dashboard's
+  history are kept.
+- **A system can prefer one of its sites** (#128). A multi-site system's **Preferred site** (in its
+  Sites group) keeps that site's copy of a call heard on several, for every talkgroup that names no
+  site of its own, as a talkgroup file's Preferred Site does for one: while it has at least 90 % of
+  the best copy's clean audio. Off by default.
+- **For interfaces and other tools:** unit names come in `unitNames` messages (rows of `unit`,
+  `name`, `origin`) and are set with `setUnitNames` and `setUnitName`; `unitNames.csv` is no longer
+  in the config. Talkgroup rows carry `origin`, `setTalkgroups` takes an optional `from`, and
+  `talkgroupEdited` says the `origin`. `client.js` has `unitNameRows`, `setUnitNames` and
+  `setUnitName`. The plugin SDK is 0.10.0 on crates.io.
+
 - **Export and delete what the store keeps (#140).** Setup → Data has a new card, Export and
   delete, for every system or one:
   - Each table downloads as a CSV file: calls, transmissions, talkgroups, talker aliases, radios
