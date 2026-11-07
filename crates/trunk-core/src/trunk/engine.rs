@@ -34,7 +34,7 @@ use num_complex::Complex32;
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Policy, Reason, RecorderHost};
 use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
 use super::message::{AdjacentSite, Message, MessageType, Neighbours};
-use super::multisite::{Held, Kept, LiveKey, MultiSite};
+use super::multisite::{Held, Kept, LiveKey, MultiSite, Recent};
 use super::record::{save_call, RecordedOn, SaveContext};
 use super::recorded::Recorded;
 use super::inband::InBandSpec;
@@ -1715,6 +1715,8 @@ struct Core {
     conv_out: Vec<ConvOut>,
     /// Copies of one call on several sites.
     multisite: MultiSite,
+    /// Copies saved lately, for those not linked to them.
+    recent: Recent,
     /// (system, ALGID, key ID) of keys found to decrypt to noise, told once.
     wrong_keys: BTreeSet<(u16, u8, u16)>,
     now_s: f64,
@@ -1841,6 +1843,7 @@ impl Core {
             call_ids: ids,
             conv_out: Vec::new(),
             multisite: MultiSite::default(),
+            recent: Recent::default(),
             wrong_keys: BTreeSet::new(),
             now_s: 0.0,
             events,
@@ -2477,11 +2480,14 @@ impl Core {
         let sites: Vec<u16> = copies.iter().filter_map(|h| h.call.site).collect();
         let mut kept: Vec<Kept> = Vec::new();
         for h in copies {
-            match kept.iter().find(|k| k.holds(&h)) {
+            match kept.iter().find(|k| k.holds(&h)).or_else(|| self.recent.holder(&h)) {
                 Some(k) => self.events.push(Event::Duplicate { call: h.call, kept: k.call.clone() }),
                 None => {
                     let k = Kept::of(&h);
                     if self.write_call(h, Some(first_s), Some(call_num), &sites) {
+                        if k.call.site.is_some() {
+                            self.recent.add(Kept::of_kept(&k));
+                        }
                         kept.push(k);
                     }
                 }
