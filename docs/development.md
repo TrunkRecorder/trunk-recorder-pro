@@ -142,6 +142,37 @@ threads and how the pieces connect.
 | `web/` | The browser interface (React + Vite), embedded in the binary; `src/web/` runs the engine in a worker for the browser version |
 | `research/native-bench` | Benchmarks, the C++ prototype, synthetic simulcast ground truth, comparison scripts — see its `RESULTS.md` |
 
+## CPU cost
+
+`perf/gate.py` counts the instructions each stage takes on synthetic IQ, which the binary makes
+with its own synthesizers (`tool p25synth`, `dmrsynth`, `nxdnsynth`):
+
+| Stage | What runs |
+|---|---|
+| `radio-rtl`, `radio-hackrf`, `radio-airspy` | A radio's read path (`tool perf`): its driver's per-block code, the sink, the queue |
+| `p25-conventional`, `dmr-conventional`, `nxdn-trunked` | A `replay` of a call: channelizer, receivers, framing, vocoder, WAV |
+
+It counts instructions rather than time because they don't change with clock speed, turbo, heat or
+whatever else the computer is doing. In CI, the `perf` job counts under Valgrind (exact, the same
+every run) and fails when a stage is more than 2 % above `perf/baseline.json`. A change that adds CPU
+on purpose updates the baseline: take the counts from the job's `perf-counts` artifact (or run
+`perf/gate.py --update` on Linux x86-64 with Valgrind and Rust 1.99.0, the version the job pins), so
+the increase shows in the diff. A new Rust version moves every count, so its baseline comes with
+the upgrade.
+
+Locally, compare two builds on this computer's hardware counter (`/usr/bin/time -l` on macOS,
+`perf stat` on Linux):
+
+```bash
+cp target/release/trunk-pro /tmp/trunk-pro-before   # before the change
+cargo build --release -p trunk-pro                   # after
+perf/gate.py --against /tmp/trunk-pro-before
+```
+
+Hardware counts vary by about 0.2 % from run to run, so each is the median of three (`--runs`).
+`perf/gate.py count --to FILE --name NAME -- CMD…` counts any one command, for scripts that replay
+real captures.
+
 ## Verified
 
 Against the archived TypeScript engine, the C++ prototype and Trunk Recorder,

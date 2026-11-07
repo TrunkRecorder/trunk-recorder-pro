@@ -11,7 +11,6 @@
 pub mod burst;
 pub mod fec;
 pub mod slot;
-#[cfg(test)]
 pub mod synth;
 pub mod trunking;
 pub mod voice;

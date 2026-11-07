@@ -6,11 +6,11 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sdr_core::TuneRequest;
 
-use crate::sdr::{Control, Gain, Radio, Sink, Stage, Stages};
+use crate::sdr::{Control, Gain, Radio, Sink, Stage, Stages, StreamCheck, Wire};
 
 #[derive(Clone, Debug)]
 pub struct HackrfConfig {
@@ -100,6 +100,17 @@ fn stream_once(cfg: &HackrfConfig, _: &mut Sink, _: &AtomicBool, _: Option<&Cont
 #[cfg(not(windows))]
 use native::stream_once;
 
+/// A block from the HackRF as it arrives: back to the radio's own signed
+/// bytes in `bytes` (its driver widened them: `<< 8`), checked
+/// ([`StreamCheck`]), sent on. Err once the stream is stuck; false once
+/// nobody takes them. (`tool perf hackrf` runs this on a capture.)
+pub(crate) fn take(check: &mut StreamCheck, sink: &mut Sink, bytes: &mut Vec<u8>, iq: &[sdr_core::Iq], dropped: u64, at: Instant) -> Result<bool, String> {
+    bytes.clear();
+    bytes.extend(iq.iter().flat_map(|s| [(s.i >> 8) as u8, (s.q >> 8) as u8]));
+    check.block(bytes, at)?;
+    Ok(sink.bytes(Wire::Signed, bytes, dropped, at))
+}
+
 #[cfg(not(windows))]
 mod native {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -110,7 +121,7 @@ mod native {
 
     use super::{release, HackrfConfig, FIRMWARE_MIN};
     use crate::radio::Deadline;
-    use crate::sdr::{Applied, Control, Gain, Retuned, Sink, StreamCheck, Tunable, Wire};
+    use crate::sdr::{Applied, Control, Gain, Retuned, Sink, StreamCheck, Tunable};
 
     /// A HackRF streaming, as [`Control`]'s requests change it. It keeps
     /// sampling through a change (placed by the firmware's own byte count): no gap.
@@ -193,16 +204,11 @@ mod native {
                 continue;
             }
             timeouts = 0;
-            let at = Instant::now();
-            // Back to the radio's own signed bytes (the driver widened them: `<< 8`).
-            bytes.clear();
-            bytes.extend(iq[..info.n_samples].iter().flat_map(|s| [(s.i >> 8) as u8, (s.q >> 8) as u8]));
-            if let Err(e) = check.block(&bytes, at) {
-                break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in"));
-            }
             let dropped = info.link.map_or(0, |l| l.inferred_lost_samples);
-            if !sink.bytes(Wire::Signed, &bytes, dropped, at) {
-                break Ok(());
+            match super::take(&mut check, sink, &mut bytes, &iq[..info.n_samples], dropped, Instant::now()) {
+                Err(e) => break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in")),
+                Ok(false) => break Ok(()),
+                Ok(true) => {}
             }
         };
         if let Ok(f) = stream.finish() {

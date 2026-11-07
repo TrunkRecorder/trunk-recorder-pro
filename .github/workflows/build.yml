@@ -99,6 +99,25 @@ jobs:
       - run: cargo test --release --workspace --locked
       - run: cargo check --release -p trunk-web --target wasm32-unknown-unknown --locked
 
+  # CPU cost: the instructions each stage takes on synthetic IQ, against
+  # perf/baseline.json (perf/gate.py; fails when one rises more than 2%).
+  # Valgrind's count is exact, so the compiler is pinned: a new Rust moves
+  # every count, and its baseline comes with the upgrade (perf-counts.json).
+  perf:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.99.0" }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: perf }
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq valgrind
+      - run: cargo build --release --locked -p trunk-pro
+      - run: perf/gate.py --counter cachegrind --summary "$GITHUB_STEP_SUMMARY" --json perf-counts.json
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: perf-counts, path: perf-counts.json, if-no-files-found: ignore }
+
   build:
     needs: [meta, web, test]
     strategy:
