@@ -127,12 +127,13 @@ export interface Placing {
 
 /**
  * What radios are placed to reach (place::Targets): groups of channels, each
- * with how much it counts (calls seen; 1 when unknown), what a radio reaches
- * one of before any channel counts (a site's control channels), and on any
+ * with how much it counts (calls seen; 1 when unknown), what it needs reached
+ * before any channel counts — one of `need` (a site's control channels), or
+ * with `all` every one (a conventional system's channels) — and on any
  * source (the guide's are).
  */
 export interface Targets {
-  groups: { channels: { hz: number; weight: number }[]; need?: number[] }[];
+  groups: { channels: { hz: number; weight: number }[]; need?: number[]; all?: boolean }[];
 }
 
 /**

@@ -14,7 +14,7 @@ use trunk_core::trunk::{
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
-use crate::place::{listed_reached, place_sources, receiver, Group, Placing, Targets, Weighted};
+use crate::place::{coverage, place_sources, receiver, Coverage, Group, Placing, Targets, Weighted};
 use trunk_core::trunk::Pins;
 
 /// A source: the radio or capture it reads ([`SourceKind`]), where and how fast.
@@ -2446,31 +2446,46 @@ impl Config {
     /// the frequencies the config lists it is the first to reach (where the
     /// engine opens them): 0 for one nothing listed needs.
     pub fn placement(&self) -> Vec<Placed> {
+        let (centers, cov) = self.placed();
+        centers.iter().zip(cov.listed).map(|(c, listed)| Placed { center_hz: c.unwrap_or(0.0), listed }).collect()
+    }
+
+    /// Each source's centre as Start places it ([`place_sources`]; None:
+    /// nothing to place it by), and what they receive of [`Config::targets`]
+    /// ([`coverage`]).
+    pub fn placed(&self) -> (Vec<Option<f64>>, Coverage) {
         let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
         let t = self.targets();
         let centers = place_sources(&sources, &t);
-        let listed = listed_reached(&sources, &centers, &t);
-        centers.iter().zip(listed).map(|(c, listed)| Placed { center_hz: c.unwrap_or(0.0), listed }).collect()
+        let cov = coverage(&sources, &centers, &t);
+        (centers, cov)
     }
 
-    /// What the radios are placed to reach: each active site's control (and
-    /// watched) channels, one of which it needs, and its voice channels; each
-    /// conventional system's channels, one of which it needs (a group for each
-    /// set of sources its rows may be received on). Each on its sources.
+    /// What the radios are placed to reach, and what Start needs reached:
+    /// each active site's control (and watched) channels and its voice
+    /// channels — one control channel needed (a DMR, NXDN or EDACS site:
+    /// every frequency it watches) — then each conventional system's
+    /// channels, every one needed (a group for each set of sources its rows
+    /// may be received on). Each on its sources. The sites' groups come
+    /// first, in [`Config::active_sites`]' order.
     pub fn targets(&self) -> Targets {
-        let group = |need: Vec<f64>, more: &[f64], receive_on: &[String]| Group {
+        let group = |need: Vec<f64>, all: bool, more: &[f64], receive_on: &[String]| Group {
             channels: need.iter().chain(more).map(|&hz| Weighted { hz, weight: 1.0 }).collect(),
             need,
+            all,
             pins: self.pins(receive_on),
         };
-        let mut groups: Vec<Group> = self.active_sites().map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), &s.voice_channels_hz, &sys.receive_on)).collect();
+        let mut groups: Vec<Group> = self
+            .active_sites()
+            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.is_dmr() || sys.is_nxdn() || sys.is_edacs(), &s.voice_channels_hz, &sys.receive_on))
+            .collect();
         for v in self.conventional.iter().filter(|v| v.enabled) {
             let rows: Vec<&Channel> = v.channels.iter().filter(|c| c.enabled && c.freq_hz > 0.0).collect();
             let mut ons: Vec<&Vec<String>> = rows.iter().map(|c| &c.receive_on).collect();
             ons.sort();
             ons.dedup();
             for on in ons {
-                groups.push(group(rows.iter().filter(|c| &c.receive_on == on).map(|c| c.freq_hz).collect(), &[], on));
+                groups.push(group(rows.iter().filter(|c| &c.receive_on == on).map(|c| c.freq_hz).collect(), true, &[], on));
             }
         }
         Targets { groups }
@@ -2616,16 +2631,15 @@ impl Config {
         if let Some(p) = signals.filter_map(|(n, d)| signals_problem(n, d)).next() {
             return Some(p);
         }
-        let centers = self.resolved_centers();
-        if let Some(i) = centers.iter().position(|&c| c <= 0.0) {
+        let (centers, cov) = self.placed();
+        if let Some(i) = centers.iter().position(|c| c.is_none()) {
             return Some(format!(
                 "Set a center frequency for source {} — it couldn't be placed automatically (nothing left for it to cover, or the channels don't fit one source).",
                 i + 1
             ));
         }
-        let rx = self.receiving(&centers);
-        for (sys, s) in self.active_sites() {
-            let inside = |f: f64| rx(&sys.receive_on, f).is_some();
+        // (What's missed is the coverage's: the sites' groups first, in order.)
+        for ((sys, s), g) in self.active_sites().zip(&cov.groups) {
             let sources = if sys.receive_on.is_empty() { "every source's bandwidth" } else { "the bandwidth of the sources it receives on" };
             // "dcfd", or "dcfd (site south)" for a site with its own name.
             let key = trunk_core::trunk::SiteKey { system: &sys.short_name, site: sys.site_name(s) };
@@ -2636,13 +2650,13 @@ impl Config {
                 }
             }
             if sys.is_dmr() || sys.is_nxdn() || sys.is_edacs() {
-                let out: Vec<String> = s.control_channels_hz.iter().chain(&s.watched_channels(sys)).filter(|&&f| !inside(f)).map(|f| format!("{:.5}", f / 1e6)).collect();
+                let out: Vec<String> = g.need_missed.iter().map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
                     let what = if sys.is_dmr() { "DMR" } else if sys.is_nxdn() { "NXDN" } else { "EDACS" };
                     return Some(format!("{name}: {what} frequencies outside {sources}: {} MHz — move a center frequency or add a source.", out.join(", ")));
                 }
             }
-            if !s.control_channels_hz.iter().any(|&f| inside(f)) {
+            if !s.control_channels_hz.iter().any(|f| !g.need_missed.contains(f)) {
                 return Some(format!("No control channel of {name} falls inside {} — move a center frequency or add a source.", if sys.receive_on.is_empty() { "any source's bandwidth" } else { sources }));
             }
             if sys.is_edacs() && s.edacs().lcns.is_empty() {
@@ -2662,7 +2676,8 @@ impl Config {
         if self.enabled_channels().any(|c| c.freq_hz <= 0.0) {
             return Some("A conventional channel has no frequency yet.".into());
         }
-        let outside: Vec<String> = self.enabled_channels().filter(|c| rx(&c.receive_on, c.freq_hz).is_none()).map(|c| format!("{:.5}", c.freq_hz / 1e6)).collect();
+        let missed: Vec<f64> = cov.groups.iter().skip(self.active_sites().count()).flat_map(|g| g.need_missed.iter().copied()).collect();
+        let outside: Vec<String> = self.enabled_channels().filter(|c| missed.contains(&c.freq_hz)).map(|c| format!("{:.5}", c.freq_hz / 1e6)).collect();
         if !outside.is_empty() {
             return Some(format!("Conventional channel(s) outside the bandwidth of every source they may be received on: {} MHz — move a center frequency or disable them.", outside.join(", ")));
         }
