@@ -90,6 +90,22 @@ test("talkgroups follow their system's name once the edit is saved, not onto ano
   );
 });
 
+test("a system's preferred site follows the system's name when that's the site's", async () => {
+  connect();
+  await sent(() =>
+    updateConfig((x) => {
+      const s = x.systems[0];
+      s.sites.push({ ...s.sites[0], name: "alpha-south" });
+      s.preferredSite = "alpha";
+    }),
+  );
+  await sent(() => updateConfig((x) => renameSystem(x, x.systems[0], "delta")));
+  assert.equal(snapshot().config!.systems[0].preferredSite, "delta", "the unnamed site goes by the system's name");
+  await sent(() => updateConfig((x) => void (x.systems[0].preferredSite = "alpha-south")));
+  await sent(() => updateConfig((x) => renameSystem(x, x.systems[0], "epsilon")));
+  assert.equal(snapshot().config!.systems[0].preferredSite, "alpha-south", "a site with its own name keeps it");
+});
+
 /** Whether talkgroup `tg` of `system` is ignored, as this browser shows it. */
 const ignored = (system: string, tg: number) => snapshot().talkgroups[system]?.find((t) => t.number === tg)?.ignore ?? false;
 

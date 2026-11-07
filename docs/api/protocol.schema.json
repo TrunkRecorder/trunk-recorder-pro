@@ -8024,6 +8024,10 @@
           },
           "description": "The tone signals it sends (pages, alerts, digit strings, Morse IDs): see SignalDef."
         },
+        "preferredSite": {
+          "type": "string",
+          "description": "Multi-site: the site (by name) whose copy of a call is kept for the talkgroups whose row names none."
+        },
         "sites": {
           "type": "array",
           "items": {

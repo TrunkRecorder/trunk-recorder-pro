@@ -704,10 +704,12 @@ export function setTalkgroups(system: string, rows: Talkgroup[]): void {
  * updateConfig: its talkgroups move with it, and plugin settings that
  * name it follow. Setup and the first-run guide both rename this way.
  */
-export function renameSystem(x: Config, sys: { shortName: string }, to: string): void {
+export function renameSystem(x: Config, sys: System | Conventional, to: string): void {
   if (sys.shortName === to) return;
   moveTalkgroups(sys.shortName, to, [...x.systems, ...x.conventional].some((s) => s !== sys && s.shortName === to));
   renameSystemRefs(x, sys.shortName, to, state.plugins?.plugins ?? []);
+  // A site without a name of its own goes by the system's: so does the system's preferred site.
+  if ("sites" in sys && sys.preferredSite === sys.shortName && sys.sites.some((s) => !s.name?.trim())) sys.preferredSite = to;
   sys.shortName = to;
 }
 

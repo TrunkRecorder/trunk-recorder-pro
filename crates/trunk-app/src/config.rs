@@ -440,6 +440,10 @@ pub struct System {
     /// The tone signals it sends (pages, alerts, digit strings, Morse IDs): see [`SignalDef`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<SignalDef>,
+    /// Multi-site: the site (by its name) whose copy of a call is kept for
+    /// the talkgroups whose file row names none (Preferred Site, Preferred NAC).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub preferred_site: String,
     /// Where it is recorded from: one site, or several of one system.
     pub sites: Vec<Site>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
@@ -977,6 +981,7 @@ impl Default for System {
             plugins: BTreeMap::new(),
             plugin_delays: vec![],
             signals: vec![],
+            preferred_site: String::new(),
             sites: vec![],
         }
     }
@@ -2829,6 +2834,7 @@ impl Config {
                     unit_tags: sys.unit_names.engine(),
                     signals: engine_signals(&sys.signals),
                     pins: self.pins(&sys.receive_on),
+                    preferred_site: sys.preferred_site.clone(),
                     ..SystemConfig::trunked(&sys.short_name, sites)
                 }
             })

@@ -253,6 +253,8 @@ export interface System {
   pluginDelays?: DelayRule[];
   /** The tone signals it sends (pages, alerts, digit strings, Morse IDs): see SignalDef. */
   signals?: SignalDef[];
+  /** Multi-site: the site (by name) whose copy of a call is kept for the talkgroups whose row names none. */
+  preferredSite?: string;
   /** Where it is recorded from: one site, or several of one system. */
   sites: Site[];
 }
