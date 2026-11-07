@@ -5,6 +5,20 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Export and delete what the store keeps (#140).** Setup → Data has a new card, Export and
+  delete, for every system or one:
+  - Each table downloads as a CSV file: calls, transmissions, talkgroups, talker aliases, radios
+    heard (with their IDs, names, first and last heard), talkgroups heard and the dashboard's
+    history. The file is named for the system (or `all`), the table, and the date and time.
+  - Ticked kinds are deleted: calls, talkgroups, talker aliases, the radio registry, the dashboard's
+    history. They go from the store and from what the running recorder holds. Recordings stay on
+    disk, and deleted calls aren't indexed again from them at the next start.
+  - Systems removed from the config are listed while the store still keeps their data.
+  - Removing a system now asks whether to delete its data too. Yes is the default.
+  - **Compact DB** gives the space deleted data left inside the store back to the disk (SQLite
+    `VACUUM`, PostgreSQL `VACUUM FULL`), and says the store's size before and after.
+  - For other tools: `GET /api/v1/export/{table}` (`?system=<id>`), and the `dataSummary` and
+    `deleteData` commands.
 - **Setup suggests each source's center and sample rate** (issue #139). For centers typed in as well as
   Auto ones, and for sample rates: whatever reaches every system's needs, then more channels (listed,
   and what each system was heard granting this week, by its calls), then with fewer radios, then at a

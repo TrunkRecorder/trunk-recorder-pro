@@ -1871,6 +1871,31 @@ export interface TalkgroupEdit {
   ignore?: boolean;
 }
 
+/** A table of the store's, as Setup → Data exports it: `GET /api/v1/export/{table}` (`?system=<id>`), a CSV file. */
+export type DataTable = "calls" | "transmissions" | "talkgroups" | "talker-aliases" | "radios" | "heard-talkgroups" | "dashboard-history";
+
+/** A kind of the store's data, as Setup → Data deletes it. `calls`: the call index and each call's transmissions (the recordings stay); `registry`: the radios, talkgroups, pairs and frequencies heard. */
+export type DataKind = "calls" | "talkgroups" | "talkerAliases" | "registry" | "dashboardHistory";
+
+/** How many of each the store has (dataSummary) or deleted (dataDeleted). */
+export interface DataCounts {
+  calls: number;
+  talkgroups: number;
+  talkerAliases: number;
+  /** The radio registry's radios and talkgroups heard. */
+  radios: number;
+  heardTalkgroups: number;
+  /** The dashboard's series. */
+  historySeries: number;
+}
+
+/** A system the store keeps data of: one of the config's (`inConfig`), or one removed whose data stayed. */
+export interface DataSystem extends DataCounts {
+  id: number;
+  shortName: string;
+  inConfig: boolean;
+}
+
 export type FromRecorder =
   /**
    * The last message of a connection's greeting. Every message before it said
@@ -1957,6 +1982,12 @@ export type FromRecorder =
   | ({ type: "radioResult" } & RadioResultBody)
   /** Answers callsQuery: newest first (by start, then path); `next`: more remain, ask again with it as the `cursor`; `error`: only the recent calls (the call store is off). */
   | { type: "callsResult"; id: number; entries: CallEntry[]; next?: string; error?: string }
+  /** Answers dataSummary: what the store keeps of each system it has (the config's, and those removed from it whose data stayed); `error`: it couldn't say. */
+  | { type: "dataSummary"; id: number; systems: DataSystem[]; error?: string }
+  /** Answers deleteData: how much went; `error`: not all of it did. */
+  | { type: "dataDeleted"; id: number; deleted: DataCounts; error?: string }
+  /** Answers compactData: the store's size in bytes before and after (SQLite: its files; PostgreSQL: its tables and indexes); `error`: it couldn't. */
+  | { type: "dataCompacted"; id: number; beforeBytes: number; afterBytes: number; error?: string }
   | { type: "quit" };
 
 export type ToRecorder =
@@ -2021,6 +2052,12 @@ export type ToRecorder =
   | { type: "pluginAction"; id: number; plugin: string; action: string; value: unknown }
   /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit"; `limit`: rows at most (default 500, up to the registry's cap: the summary's `caps`). */
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths" | "tones"; system?: string; key?: number; hours?: number; limit?: number }
+  /** What the store keeps of each system (answered with dataSummary). A table's CSV is `GET /api/v1/export/{table}` (`?system=<id>`: one system's). */
+  | { type: "dataSummary"; id: number }
+  /** Delete these kinds of system `system`'s data (its id; none: every system's) from the store and from what the recorder holds; recordings stay on disk. Answered with dataDeleted. */
+  | { type: "deleteData"; id: number; kinds: DataKind[]; system?: number }
+  /** Give the space deleted data left in the store back to the disk (SQLite: VACUUM; PostgreSQL: VACUUM FULL); writes wait meanwhile. Answered with dataCompacted. */
+  | { type: "compactData"; id: number }
   | { type: "quit" };
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */

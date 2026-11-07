@@ -1410,6 +1410,99 @@
       "additionalProperties": false,
       "description": "A conventional system (Trunk Recorder's conventional / conventionalP25 / conventionalDMR): energy-detected channels with their own short name, squelch, channel file, recording rules, unit names and upload settings. A frequency belongs to one system."
     },
+    "DataCounts": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "number"
+        },
+        "talkgroups": {
+          "type": "number"
+        },
+        "talkerAliases": {
+          "type": "number"
+        },
+        "radios": {
+          "type": "number",
+          "description": "The radio registry's radios and talkgroups heard."
+        },
+        "heardTalkgroups": {
+          "type": "number"
+        },
+        "historySeries": {
+          "type": "number",
+          "description": "The dashboard's series."
+        }
+      },
+      "required": [
+        "calls",
+        "talkgroups",
+        "talkerAliases",
+        "radios",
+        "heardTalkgroups",
+        "historySeries"
+      ],
+      "additionalProperties": false,
+      "description": "How many of each the store has (dataSummary) or deleted (dataDeleted)."
+    },
+    "DataKind": {
+      "type": "string",
+      "enum": [
+        "calls",
+        "talkgroups",
+        "talkerAliases",
+        "registry",
+        "dashboardHistory"
+      ],
+      "description": "A kind of the store's data, as Setup → Data deletes it. `calls`: the call index and each call's transmissions (the recordings stay); `registry`: the radios, talkgroups, pairs and frequencies heard."
+    },
+    "DataSystem": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "number"
+        },
+        "talkgroups": {
+          "type": "number"
+        },
+        "talkerAliases": {
+          "type": "number"
+        },
+        "radios": {
+          "type": "number",
+          "description": "The radio registry's radios and talkgroups heard."
+        },
+        "heardTalkgroups": {
+          "type": "number"
+        },
+        "historySeries": {
+          "type": "number",
+          "description": "The dashboard's series."
+        },
+        "id": {
+          "type": "number"
+        },
+        "shortName": {
+          "type": "string"
+        },
+        "inConfig": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "calls",
+        "heardTalkgroups",
+        "historySeries",
+        "id",
+        "inConfig",
+        "radios",
+        "shortName",
+        "talkerAliases",
+        "talkgroups"
+      ],
+      "additionalProperties": false,
+      "description": "A system the store keeps data of: one of the config's (`inConfig`), or one removed whose data stayed."
+    },
     "DelayRule": {
       "type": "object",
       "properties": {
@@ -3744,6 +3837,85 @@
             "type",
             "id",
             "entries"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dataSummary"
+            },
+            "id": {
+              "type": "number"
+            },
+            "systems": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/DataSystem"
+              }
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "systems"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dataDeleted"
+            },
+            "id": {
+              "type": "number"
+            },
+            "deleted": {
+              "$ref": "#/definitions/DataCounts"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "deleted"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dataCompacted"
+            },
+            "id": {
+              "type": "number"
+            },
+            "beforeBytes": {
+              "type": "number"
+            },
+            "afterBytes": {
+              "type": "number"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "beforeBytes",
+            "afterBytes"
           ],
           "additionalProperties": false
         },
@@ -9181,6 +9353,67 @@
             "type",
             "id",
             "what"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dataSummary"
+            },
+            "id": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "deleteData"
+            },
+            "id": {
+              "type": "number"
+            },
+            "kinds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/DataKind"
+              }
+            },
+            "system": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "kinds"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "compactData"
+            },
+            "id": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id"
           ],
           "additionalProperties": false
         },

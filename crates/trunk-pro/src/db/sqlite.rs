@@ -98,6 +98,13 @@ impl Backend for SqliteBackend {
         out
     }
 
+    fn compact(&self) -> Result<(), String> {
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute_batch("vacuum").map_err(|e| format!("vacuum failed: {e}"))?;
+        // (Vacuumed, the whole store went through the WAL: let it go too.)
+        conn.query_row("pragma wal_checkpoint(truncate)", [], |_| Ok(())).map_err(|e| format!("checkpoint failed: {e}"))
+    }
+
     fn checkpoint(&self) {
         if let Err(e) = self.writer.lock().unwrap_or_else(|e| e.into_inner()).query_row("pragma wal_checkpoint(truncate)", [], |_| Ok(())) {
             log::warn!("Call store: checkpoint failed: {e}");

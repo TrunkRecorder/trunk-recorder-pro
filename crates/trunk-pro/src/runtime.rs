@@ -161,6 +161,11 @@ pub enum EngineCmd {
     ShareSystem(trunk_app::config::System),
     /// How a system's share went.
     Shared { short_name: String, result: Result<Option<trunk_app::share::Linked>, String> },
+    /// Forget system `system`'s (none: every system's) talker aliases and
+    /// radio registry, as `units` and `registry` say (deleted in Setup →
+    /// Data): here, so nothing the session holds of them is saved after.
+    /// Answered with the radios and talkgroups the registry forgot.
+    Forget { system: Option<String>, units: bool, registry: bool, done: mpsc::Sender<(usize, usize)> },
 }
 
 impl Ctx {
@@ -640,6 +645,27 @@ pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::prot
     Ok(())
 }
 
+/// Forget system `system`'s (none: every system's) talker aliases and radio
+/// registry, as `units` and `registry` say, from what the recorder holds:
+/// the recording's session first, if one is running, so it saves nothing of
+/// them after ([`EngineCmd::Forget`]). The radios and talkgroups the
+/// registry forgot.
+pub fn forget(ctx: &Ctx, system: Option<&str>, units: bool, registry: bool) -> (usize, usize) {
+    let (done, answer) = mpsc::channel();
+    let told = ctx.engine.lock().unwrap().as_ref().is_some_and(|tx| tx.send(EngineCmd::Forget { system: system.map(str::to_string), units, registry, done }).is_ok());
+    let by_session = if told { answer.recv_timeout(Duration::from_secs(10)).unwrap_or_default() } else { (0, 0) };
+    // (Between runs, or the run ended meanwhile: what outlives it.)
+    if units {
+        let cfg = ctx.config.lock().unwrap().clone();
+        let mut book = ctx.shared.names.lock().unwrap();
+        for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)).filter(|n| system.is_none_or(|s| s == n.as_str())) {
+            book.set_units(n, "");
+        }
+    }
+    let gone = if registry { ctx.shared.radio.lock().unwrap().forget(system) } else { (0, 0) };
+    (by_session.0 + gone.0, by_session.1 + gone.1)
+}
+
 /// Hand what's due to be kept between runs ([`Session::due`]: it says when
 /// each is) to the store's writer ([`kept`]); `all`:
 /// everything that changed (the recording's end).
@@ -996,6 +1022,13 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     session.set_share(&sys);
                 }
                 EngineCmd::Shared { short_name, result } => session.share_done(&short_name, now_ms(), result),
+                EngineCmd::Forget { system, units, registry, done } => {
+                    if units {
+                        session.forget_units(system.as_deref());
+                    }
+                    let gone = if registry { ctx.shared.radio.lock().unwrap().forget(system.as_deref()) } else { (0, 0) };
+                    let _ = done.send(gone);
+                }
             }
             next = rx.try_recv().ok();
         }

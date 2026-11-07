@@ -671,6 +671,16 @@ impl Session {
         }
     }
 
+    /// Forget the talker aliases of system `system` (none: every system's),
+    /// as deleted from the store: none is saved again unless heard again.
+    pub fn forget_units(&mut self, system: Option<&str>) {
+        let mut book = self.meas.shared().names.lock().unwrap();
+        for n in self.engine.systems().iter().map(|s| s.short_name.clone()).filter(|n| system.is_none_or(|s| s == n)) {
+            self.engine.load_units(&n, "");
+            book.set_units(&n, "");
+        }
+    }
+
     /// (short name, talker alias CSV) of each system that learned an alias
     /// since the last call, to save; the names the dashboard shows take them.
     fn units_changed(&mut self) -> Vec<(String, String)> {

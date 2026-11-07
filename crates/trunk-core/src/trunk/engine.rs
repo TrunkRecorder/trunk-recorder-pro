@@ -211,7 +211,7 @@ impl<'a> SiteKey<'a> {
     /// Where its control channel's stats go: `sys/<system>`, or
     /// `sys/<system>/site/<site>` for a site with a name of its own.
     pub fn stats_key(&self) -> String {
-        let sys = format!("sys/{}", metrics::key_part(self.system));
+        let sys = metrics::system_key(self.system);
         self.own_name().map_or_else(|| sys.clone(), |s| format!("{sys}/site/{}", metrics::key_part(s)))
     }
 
@@ -1774,7 +1774,7 @@ impl Core {
         for (i, s) in self.systems.iter().enumerate().filter(|(_, s)| !s.cfg.is_conventional()) {
             let calls = self.trunks.iter().filter(|t| t.system as usize == i).flat_map(|t| t.calls.calls.iter());
             let (active, recording) = calls.fold((0, 0), |(a, r), c| (a + 1, r + self.radio.recordings.contains_key(&c.id) as usize));
-            let mut k = Scoped::new(sink, format!("sys/{}", metrics::key_part(&s.cfg.short_name)));
+            let mut k = Scoped::new(sink, metrics::system_key(&s.cfg.short_name));
             k.gauge("active", active as f64);
             k.gauge("recording", recording as f64);
         }

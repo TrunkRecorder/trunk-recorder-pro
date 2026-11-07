@@ -12,6 +12,7 @@ use std::sync::Arc;
 use trunk_recorder_plugin::CallRecord;
 
 use super::row::call_row;
+use super::store::deleted_before_key;
 use super::writer::MAX_BATCH;
 use super::{Change, Db};
 use crate::config::Config;
@@ -197,6 +198,10 @@ pub fn run(
         recent_folders.iter().map(PathBuf::as_path).collect()
     };
     let floor_ms = (retention_days > 0).then(|| db.retention_cutoff(retention_days, now_ms));
+    // (Calls deleted in Setup → Data: none that started before then comes back from its files.)
+    let deleted_at = |id: Option<i64>| meta(db, &deleted_before_key(id)).and_then(|v| v.parse::<i64>().ok());
+    let deleted_all = deleted_at(None);
+    let deleted: std::collections::HashMap<i64, i64> = db.system_ids().into_iter().filter_map(|id| Some((id, deleted_at(Some(id))?))).collect();
     let mut stats = Stats::default();
     let walked: Result<(), String> = (|| {
         walk(&roots, &mut |found| {
@@ -247,7 +252,8 @@ pub fn run(
                     return Ok(());
                 }
             };
-            if floor_ms.is_some_and(|f| record.start_time_ms < f) {
+            let deleted_before = deleted_all.max(db.system_id(&record.short_name).and_then(|id| deleted.get(&id).copied()));
+            if floor_ms.into_iter().chain(deleted_before).any(|f| record.start_time_ms < f) {
                 stats.skipped += 1;
                 return Ok(());
             }
@@ -383,6 +389,24 @@ mod tests {
         let (db, _) = Db::for_test("backfill-retention");
         let s = run(&db, &dir, &[], 120, now);
         assert_eq!((s.indexed, s.skipped), (1, 1));
+    }
+
+    /// Calls deleted in Setup → Data stay deleted: none that started before
+    /// then is indexed again from its files, a system's or every system's.
+    #[test]
+    fn deleted_calls_are_not_indexed_again() {
+        use trunk_app::protocol::DataKind;
+        let (db, _) = Db::for_test("backfill-deleted");
+        let id = db.system_id("ohmarcs").unwrap();
+        db.delete(&[DataKind::Calls], Some(id), false, 3000).unwrap();
+        let a = capture("deleted-a", &[("s/old", 1, 1000), ("s/new", 1, 5000)]);
+        assert_eq!(run(&db, &a, &[], 0, 10_000).indexed, 1);
+        db.delete(&[DataKind::Calls], None, false, 8000).unwrap();
+        let b = capture("deleted-b", &[("s/older", 1, 7000), ("s/newer", 1, 9000)]);
+        let s = run(&db, &b, &[], 0, 10_000);
+        db.flush().unwrap();
+        assert_eq!((s.indexed, s.skipped), (1, 1));
+        assert_eq!(count(&db, "select count(*) from calls"), 1, "only the one after");
     }
 
     #[test]

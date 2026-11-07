@@ -22,6 +22,8 @@ import type {
   Device,
   DirListing,
   EngineStatus,
+  DataKind,
+  DataTable,
   FromRecorder,
   LogLine,
   Phase,
@@ -489,6 +491,9 @@ function take(m: FromRecorder): void {
     case "statsResult":
     case "radioResult":
     case "callsResult":
+    case "dataSummary":
+    case "dataDeleted":
+    case "dataCompacted":
     case "pluginActionResult": {
       const r = pending.get(m.id);
       pending.delete(m.id);
@@ -576,14 +581,14 @@ export function useTopic(topic: string | null): void {
 let nextId = 1;
 const pending = new Map<number, (m: FromRecorder) => void>();
 
-function ask<T extends FromRecorder>(msg: ToRecorder & { id: number }): Promise<T> {
+function ask<T extends FromRecorder>(msg: ToRecorder & { id: number }, waitMs = 20_000): Promise<T> {
   return new Promise((resolve) => {
     pending.set(msg.id, (m) => resolve(m as T));
     transport.send(msg);
     // Never answered (the connection dropped): let it go.
     setTimeout(() => {
       if (pending.delete(msg.id)) resolve({ type: "error", message: "no answer" } as unknown as T);
-    }, 20_000);
+    }, waitMs);
   });
 }
 
@@ -611,6 +616,40 @@ export type CallsResult = Extract<FromRecorder, { type: "callsResult" }>;
 /** Recorded calls by system, talkgroup, radio and time, newest first: a page, and `before` for the next. */
 export function callsQuery(q: Omit<Extract<ToRecorder, { type: "callsQuery" }>, "type" | "id">): Promise<CallsResult> {
   return ask<CallsResult>({ type: "callsQuery", id: nextId++, ...q });
+}
+
+export type DataSummary = Extract<FromRecorder, { type: "dataSummary" }>;
+export type DataDeleted = Extract<FromRecorder, { type: "dataDeleted" }>;
+
+/** What the store keeps of each system it has (the config's, and those removed whose data stayed). */
+export function dataSummary(): Promise<DataSummary | { type: "error"; message: string }> {
+  return ask<DataSummary>({ type: "dataSummary", id: nextId++ });
+}
+
+/** Every kind of data the store keeps, as deleteData takes them. */
+export const DATA_KINDS: DataKind[] = ["calls", "talkgroups", "talkerAliases", "registry", "dashboardHistory"];
+
+/**
+ * Delete `kinds` of system `system`'s data (its id; none: every system's)
+ * from the store, after any config edit waiting to be sent (a system just
+ * removed is gone from the config first, and the store forgets it too).
+ * A big store takes a while: waited for up to 10 minutes.
+ */
+export function deleteData(kinds: DataKind[], system?: number): Promise<DataDeleted | { type: "error"; message: string }> {
+  flushConfig();
+  return ask<DataDeleted>({ type: "deleteData", id: nextId++, kinds, ...(system === undefined ? {} : { system }) }, 600_000);
+}
+
+export type DataCompacted = Extract<FromRecorder, { type: "dataCompacted" }>;
+
+/** Give the space deleted data left in the store back to the disk: waited for up to 30 minutes (it rewrites the whole store). */
+export function compactData(): Promise<DataCompacted | { type: "error"; message: string }> {
+  return ask<DataCompacted>({ type: "compactData", id: nextId++ }, 1_800_000);
+}
+
+/** Where a table's CSV file is (every system's, or system `system`'s): the recorder names it by the system, the table and the time. */
+export function exportUrl(table: DataTable, system?: number): string {
+  return `/api/v1/export/${table}${system === undefined ? "" : `?system=${system}`}`;
 }
 
 export type PluginActionResult = Extract<FromRecorder, { type: "pluginActionResult" }>;
