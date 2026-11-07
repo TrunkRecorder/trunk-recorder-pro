@@ -98,6 +98,7 @@
 mod access;
 mod api_v1;
 mod clock;
+mod data;
 mod directory;
 mod dmrtool;
 mod interfaces;

@@ -916,6 +916,19 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             failed(tokio::task::spawn_blocking(move || runtime::set_talkgroups(&ctx2, &system, talkgroups)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
+        // (Counting and deleting read and write the store: off the async workers.)
+        Command::DataSummary { id } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::data::summary(&ctx2, id)).await.ok()
+        }
+        Command::DeleteData { id, kinds, system } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::data::delete(&ctx2, id, &kinds, system)).await.ok()
+        }
+        Command::CompactData { id } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::data::compact(&ctx2, id)).await.ok()
+        }
         Command::SetTalkgroup { system, talkgroup, edit } => {
             let ctx2 = ctx.clone();
             failed(tokio::task::spawn_blocking(move || runtime::set_talkgroup(&ctx2, &system, talkgroup, edit)).await.unwrap_or_else(|e| Err(e.to_string())))

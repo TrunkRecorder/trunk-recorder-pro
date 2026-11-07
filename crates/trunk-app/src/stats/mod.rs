@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use trunk_core::metrics::{key_part, Scoped, Sink};
+use trunk_core::metrics::{key_part, system_key, Scoped, Sink};
 use trunk_core::dsp::inband::signal::{Heard, Signal};
 use trunk_core::trunk::{CallId, Engine, Event, MessageType};
 
@@ -331,7 +331,7 @@ impl Stats {
     /// One of the session's events. `name`: the short name of the event's system.
     pub fn observe(&mut self, ev: &Event, name: &str, engine: &Engine, out: &mut Vec<Output>) {
         let t = self.now as i64;
-        let sys = format!("sys/{}", key_part(name));
+        let sys = system_key(name);
         match ev {
             Event::CallStart(c) => {
                 let why = if c.recording { "recorded" } else { c.reason.map_or("monitored", |r| r.as_str()) };
@@ -461,7 +461,7 @@ impl Stats {
     /// The air time of the calls in progress since the last tick.
     fn count_air(&mut self, engine: &Engine, site_names: &dyn Fn(u16, Option<u16>) -> (String, String)) {
         let calls = engine.active_calls().into_iter().filter(|c| !c.twin);
-        let on = calls.map(|c| (c.id, format!("sys/{}", key_part(&site_names(c.system, c.site).0)), ((c.last_update_s - c.start_s).max(0.0) * 1000.0) as u64));
+        let on = calls.map(|c| (c.id, system_key(&site_names(c.system, c.site).0), ((c.last_update_s - c.start_s).max(0.0) * 1000.0) as u64));
         for (sys, ms) in air_since(&mut self.air, on) {
             self.add_air(&sys, ms);
         }

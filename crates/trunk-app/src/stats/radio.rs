@@ -767,6 +767,13 @@ impl Registry {
         self.systems.iter_mut().filter_map(|(n, s)| s.take_changes().map(|c| (n.clone(), c))).collect()
     }
 
+    /// Forget system `system` (none: every system), what it changed since
+    /// it was last taken too; the radios and talkgroups it had heard.
+    pub fn forget(&mut self, system: Option<&str>) -> (usize, usize) {
+        let gone: Vec<String> = self.systems.keys().filter(|n| system.is_none_or(|s| s == n.as_str())).cloned().collect();
+        gone.iter().filter_map(|n| self.systems.remove(n)).fold((0, 0), |(u, t), s| (u + s.units.len(), t + s.tgs.len()))
+    }
+
     /// Load a system kept whole ([`SystemRadio::whole`], as JSON; a bad one is ignored).
     pub fn load(&mut self, system: &str, json: &str) {
         if let Ok(c) = serde_json::from_str::<RegistryChanges>(json) {
