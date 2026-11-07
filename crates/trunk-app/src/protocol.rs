@@ -11,6 +11,7 @@
 //! What a connection may hear and send by its access (listen or control) is
 //! decided here too: [`ToClient::audience`], [`Command::listen_may_send`].
 
+use trunk_core::trunk::Origin;
 use serde::{Deserialize, Serialize};
 pub use crate::calls::{CallsPage, CallsQuery, StoredCall};
 use serde_json::{Map, Value};
@@ -91,8 +92,15 @@ pub enum ToClient {
     /// each on connecting, and again whenever a system's are set.
     Talkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
     /// One talkgroup of system `system` edited ([`Command::SetTalkgroup`]):
-    /// each interface makes the same edit to its copy (`talkgroupsEdit`).
-    TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit },
+    /// each interface makes the same edit to its copy (`talkgroupsEdit`),
+    /// with the origin it was given.
+    TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit, origin: Origin },
+    /// A system's own names for its radios, in their order (none: it has
+    /// none): one for each on connecting, and again whenever a system's are set.
+    UnitNames { system: String, unit_names: Vec<trunk_core::trunk::UnitNameRow> },
+    /// Radio `unit` of system `system` named `name` ([`Command::SetUnitName`]):
+    /// each interface makes the same edit to its copy (`unitNamesEdit`).
+    UnitNameEdited { system: String, unit: u32, name: String, origin: Origin },
     Status { status: Value, sources: Vec<Value>, load: f64, calls: Vec<Value> },
     Spectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
     Log { lines: Vec<Value> },
@@ -164,6 +172,8 @@ pub enum DataTable {
     Transmissions,
     /// The talkgroups each system was given (its talkgroup file).
     Talkgroups,
+    /// The names each system was given for its radios (its unit names file).
+    UnitNames,
     /// Talker aliases heard over the air.
     TalkerAliases,
     /// The radio registry's radios: every radio heard.
@@ -190,6 +200,8 @@ pub enum DataKind {
     /// The call index and each call's transmissions (the recordings stay).
     Calls,
     Talkgroups,
+    /// Each system's own names for its radios.
+    UnitNames,
     TalkerAliases,
     /// The radio registry: the radios, talkgroups, pairs and frequencies heard.
     Registry,
@@ -206,6 +218,7 @@ impl DataKind {
 pub struct DataCounts {
     pub calls: i64,
     pub talkgroups: i64,
+    pub unit_names: i64,
     pub talker_aliases: i64,
     /// The radio registry's radios and talkgroups.
     pub radios: i64,
@@ -371,7 +384,14 @@ pub enum Command {
     /// System `system`'s talkgroups, in their order (none: it has none). A
     /// talkgroup file is read into them, and written from them, by the
     /// recorder's own code (the page's `talkgroupsFromCsv` / `talkgroupsToCsv`).
-    SetTalkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
+    /// `from`: where they came from, the origin of the rows that change
+    /// (`at` is the recorder's); none: the rows keep their own (moved).
+    SetTalkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow>, #[serde(default)] from: Option<Origin> },
+    /// System `system`'s own names for its radios, as [`Command::SetTalkgroups`].
+    SetUnitNames { system: String, unit_names: Vec<trunk_core::trunk::UnitNameRow>, #[serde(default)] from: Option<Origin> },
+    /// Radio `unit` of system `system` named `name` (blank: its own name
+    /// taken out). Answered to every interface with `unitNameEdited`.
+    SetUnitName { system: String, unit: u32, name: String },
     /// One talkgroup of system `system`: only the cells `edit` sets change
     /// (a row added when there's none). Answered to every interface with
     /// `talkgroupEdited`.

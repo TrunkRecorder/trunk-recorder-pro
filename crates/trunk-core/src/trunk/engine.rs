@@ -43,7 +43,7 @@ use super::talkgroups::Talkgroups;
 
 use super::wall::WallEpoch;
 use super::voice::TrackerOut;
-use super::units::{UnitAlias, UnitAliases, UnitTags};
+use super::units::{UnitAlias, UnitAliases, UnitNameRow, UnitTags};
 use super::identity::{IdField, Identity};
 use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus, Step};
 use super::voice::{self, ChannelQuality, CipherId, VoiceDecoder, VoiceParams, VoiceSpec};
@@ -1828,6 +1828,14 @@ impl Core {
         true
     }
 
+    /// The names the system named `short_name` gives its radios, in its
+    /// mode: calls from now on are named by them. False when there's no such system.
+    pub fn set_unit_names(&mut self, short_name: &str, rows: &[UnitNameRow]) -> bool {
+        let Some(s) = self.systems.iter_mut().find(|s| s.cfg.short_name == short_name) else { return false };
+        s.cfg.unit_tags = UnitTags::new(rows, s.cfg.unit_tags.mode);
+        true
+    }
+
     /// The encryption keys of the system named `short_name`: its voice
     /// channels decrypt with them, those open now from their next encryption
     /// sync (with none, at once). False when there's no such system.
@@ -2485,6 +2493,13 @@ impl Engine {
     pub fn set_talkgroup(&self, short_name: &str, number: u32, row: Option<super::Talkgroup>) -> bool {
         let mut c = self.core();
         let ok = c.set_talkgroup(short_name, number, row);
+        *self.shared.systems.lock().unwrap() = Arc::new(c.system_configs());
+        ok
+    }
+    /// The names the system named `short_name` gives its radios ([`Engine::set_unit_names`]).
+    pub fn set_unit_names(&self, short_name: &str, rows: &[UnitNameRow]) -> bool {
+        let mut c = self.core();
+        let ok = c.set_unit_names(short_name, rows);
         *self.shared.systems.lock().unwrap() = Arc::new(c.system_configs());
         ok
     }

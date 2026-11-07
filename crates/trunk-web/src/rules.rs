@@ -31,6 +31,13 @@ pub fn config_talkgroups(json: &str) -> String {
     serde_json::from_str::<serde_json::Value>(json).map_or_else(|_| "{}".into(), |v| serde_json::json!(trunk_app::migrate::talkgroups_of(&v)).to_string())
 }
 
+/// The unit names files an older stored config (JSON) held, `{shortName:
+/// csv}`: moved out before it is read ([`trunk_app::migrate::unit_names_of`]).
+#[wasm_bindgen(js_name = configUnitNames)]
+pub fn config_unit_names(json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(json).map_or_else(|_| "{}".into(), |v| serde_json::json!(trunk_app::migrate::unit_names_of(&v)).to_string())
+}
+
 /// A talkgroup file (Trunk Recorder's CSV, or one saved by a spreadsheet)
 /// read as the recorder reads one: JSON `{ talkgroups: [Talkgroup], legacy,
 /// skipped, unknownColumns, missing }` (trunk_core::trunk::read_rows).
@@ -46,16 +53,81 @@ pub fn talkgroups_to_csv(json: &str) -> String {
     trunk_core::trunk::rows_csv(&serde_json::from_str::<Vec<trunk_core::trunk::TalkgroupRow>>(json).unwrap_or_default())
 }
 
-/// Talkgroups (JSON `[Talkgroup]`) with talkgroup `number`'s cells set
-/// (JSON `[[column, value]]`, by Trunk Recorder's column names): the same
-/// edit the recorder makes for `setTalkgroup`. JSON `[Talkgroup]`.
+/// Talkgroups (JSON `[Talkgroup]`) with talkgroup `number` edited as
+/// `edit_json` (a `TalkgroupEdit`) says, by `origin_json` (an `Origin`):
+/// the same edit the recorder makes for `setTalkgroup`. JSON `[Talkgroup]`.
 #[wasm_bindgen(js_name = talkgroupsEdit)]
-pub fn talkgroups_edit(json: &str, number: u32, cells_json: &str) -> String {
+pub fn talkgroups_edit(json: &str, number: u32, edit_json: &str, origin_json: &str) -> String {
     let mut rows: Vec<trunk_core::trunk::TalkgroupRow> = serde_json::from_str(json).unwrap_or_default();
-    let cells: Vec<(String, String)> = serde_json::from_str(cells_json).unwrap_or_default();
-    let cells: Vec<(&str, &str)> = cells.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    trunk_core::trunk::edit_rows(&mut rows, number, &cells);
+    let edit: trunk_app::protocol::TalkgroupEdit = serde_json::from_str(edit_json).unwrap_or_default();
+    trunk_core::trunk::edit_rows(&mut rows, number, &edit.cells(), &origin(origin_json));
     serde_json::to_string(&rows).unwrap_or_default()
+}
+
+fn origin(json: &str) -> trunk_core::trunk::Origin {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+/// Rows (JSON) `new_json` in place of `old_json`, as the recorder takes a
+/// `setTalkgroups` or `setUnitNames` (`from_json`: its `from`, `at` set;
+/// "": none): [`trunk_core::trunk::replace_rows`].
+fn replace<R: trunk_core::trunk::NameRow + serde::Serialize + serde::de::DeserializeOwned>(old_json: &str, new_json: &str, from_json: &str) -> String {
+    let old: Vec<R> = serde_json::from_str(old_json).unwrap_or_default();
+    let new: Vec<R> = serde_json::from_str(new_json).unwrap_or_default();
+    let from: Option<trunk_core::trunk::Origin> = serde_json::from_str(from_json).ok();
+    serde_json::to_string(&trunk_core::trunk::replace_rows(&old, new, from.as_ref())).unwrap_or_default()
+}
+
+/// Talkgroups (JSON) in place of others ([`replace`]).
+#[wasm_bindgen(js_name = talkgroupsReplace)]
+pub fn talkgroups_replace(old_json: &str, new_json: &str, from_json: &str) -> String {
+    replace::<trunk_core::trunk::TalkgroupRow>(old_json, new_json, from_json)
+}
+
+/// Radio names (JSON) in place of others ([`replace`]).
+#[wasm_bindgen(js_name = unitNamesReplace)]
+pub fn unit_names_replace(old_json: &str, new_json: &str, from_json: &str) -> String {
+    replace::<trunk_core::trunk::UnitNameRow>(old_json, new_json, from_json)
+}
+
+/// A unit names file (Trunk Recorder's unitTagsFile) read as the recorder
+/// reads one: JSON `{ unitNames: [UnitName], bad }` (trunk_core::trunk::read_unit_names).
+#[wasm_bindgen(js_name = unitNamesFromCsv)]
+pub fn unit_names_from_csv(text: &str) -> String {
+    serde_json::to_string(&trunk_core::trunk::read_unit_names(text)).unwrap_or_default()
+}
+
+/// Radio names (JSON `[UnitName]`) as a unit names file.
+#[wasm_bindgen(js_name = unitNamesToCsv)]
+pub fn unit_names_to_csv(json: &str) -> String {
+    trunk_core::trunk::unit_names_csv(&serde_json::from_str::<Vec<trunk_core::trunk::UnitNameRow>>(json).unwrap_or_default())
+}
+
+/// Radio names (JSON `[UnitName]`) with radio `unit` named `name` by
+/// `origin_json`: the same edit the recorder makes for `setUnitName`.
+#[wasm_bindgen(js_name = unitNamesEdit)]
+pub fn unit_names_edit(json: &str, unit: u32, name: &str, origin_json: &str) -> String {
+    let mut rows: Vec<trunk_core::trunk::UnitNameRow> = serde_json::from_str(json).unwrap_or_default();
+    trunk_core::trunk::edit_unit_names(&mut rows, unit, name, &origin(origin_json));
+    serde_json::to_string(&rows).unwrap_or_default()
+}
+
+/// A system's radio names as the recorder looks them up: by its rows, in
+/// its unit names mode (`"user"`, `"ota"`, `"user_only"`, `"none"`).
+#[wasm_bindgen]
+pub struct UnitNamer(trunk_core::trunk::UnitTags);
+
+#[wasm_bindgen]
+impl UnitNamer {
+    #[wasm_bindgen(constructor)]
+    pub fn new(unit_names_json: &str, mode: &str) -> UnitNamer {
+        let rows: Vec<trunk_core::trunk::UnitNameRow> = serde_json::from_str(unit_names_json).unwrap_or_default();
+        UnitNamer(trunk_core::trunk::UnitTags::new(&rows, trunk_core::trunk::UnitTagsMode::from_name(mode)))
+    }
+    /// Radio `unit`'s name, `heard` the talker alias heard for it, as its calls' talkers are named.
+    pub fn name(&self, unit: u32, heard: Option<String>) -> Option<String> {
+        trunk_core::trunk::UnitTags::name_heard(Some(&self.0), heard.as_deref(), unit)
+    }
 }
 
 /// Why Start would refuse this config, or none.

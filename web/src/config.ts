@@ -1,7 +1,9 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { AdjacentSite, Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitNames } from "./protocol.ts";
+import type { AdjacentSite, Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitName, UnitNames, Origin } from "./protocol.ts";
 import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
+import { readUnitNamesFile } from "./units.ts";
+import { fromNow } from "./origins.ts";
 import { defaultConfig, parseChannelCsv, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
@@ -426,7 +428,7 @@ export function normalizeSystem(x: SystemInput): System {
     ...(type === "smartnet" && x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),
     enabled: x.enabled ?? true,
     ...(x.recording && Object.keys(x.recording).length ? { recording: x.recording } : {}),
-    ...(x.unitNames && (x.unitNames.csv || x.unitNames.mode) ? { unitNames: x.unitNames } : {}),
+    ...(x.unitNames?.mode ? { unitNames: { mode: x.unitNames.mode } } : {}),
     ...(x.keys?.trim() ? { keys: x.keys } : {}),
     ...(plain(x.plugins) && Object.keys(x.plugins!).length ? { plugins: x.plugins } : {}),
     ...(x.pluginDelays?.length ? { pluginDelays: x.pluginDelays } : {}),
@@ -852,20 +854,22 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
   return { plugins: [...out.values()], other };
 }
 
-/** A Trunk Recorder system's unitTagsFile (from `files`, else a to-do) and unitTagsMode. */
-function trUnitNames(sys: Record<string, unknown>, files: Record<string, string>, shortName: string, todo: ImportTodo[]): UnitNames | undefined {
-  const out: UnitNames = {};
+/** A Trunk Recorder system's unitTagsMode (for the config), and its unitTagsFile's names (from `files`, else a to-do; kept beside the config: setUnitNames). */
+function trUnitNames(sys: Record<string, unknown>, files: Record<string, string>, shortName: string, todo: ImportTodo[]): { mode?: UnitNames; rows?: UnitName[] } {
   const mode = sys.unitTagsMode;
-  if (mode === "ota" || mode === "user_only" || mode === "none") out.mode = mode;
+  const out: { mode?: UnitNames; rows?: UnitName[] } = mode === "ota" || mode === "user_only" || mode === "none" ? { mode: { mode } } : {};
   if (typeof sys.unitTagsFile === "string" && sys.unitTagsFile) {
     const csv = files[sys.unitTagsFile];
     if (csv === undefined) todo.push({ kind: "units", system: shortName, file: sys.unitTagsFile });
-    else {
-      out.csv = csv;
-      out.name = baseName(sys.unitTagsFile);
-    }
+    else out.rows = fromTrunkRecorder(readUnitNamesFile(csv).unitNames, sys.unitTagsFile);
   }
-  return out.csv || out.mode ? out : undefined;
+  return out;
+}
+
+/** `rows`, read from Trunk Recorder's file `file`, with that as where they came from. */
+function fromTrunkRecorder<R extends { origin?: Origin }>(rows: R[], file: string): R[] {
+  const origin = fromNow({ kind: "trunkRecorder", name: baseName(file) });
+  return rows.map((r) => ({ ...r, origin }));
 }
 
 /**
@@ -933,7 +937,7 @@ export function importTrunkRecorderConfig(
   base: Config,
   files: Record<string, string> = {},
   merge = false,
-): { config: Config; talkgroups: Record<string, Talkgroup[]>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
+): { config: Config; talkgroups: Record<string, Talkgroup[]>; unitNames: Record<string, UnitName[]>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
   // A byte-order mark (Windows editors add one) is not JSON; Trunk Recorder skips it, so do we.
   const j = JSON.parse(text.replace(/^\uFEFF/, "")) as Record<string, unknown>;
   const notes: string[] = [];
@@ -942,8 +946,9 @@ export function importTrunkRecorderConfig(
   const names = new Map<string, string>();
   const systemNames = new Map<unknown, string>();
   const cfg: Config = structuredClone(base);
-  // Each system's talkgroups (read from its file), by its short name here (kept beside the config: setTalkgroups).
+  // Each system's talkgroups and radio names (read from its files), by its short name here (kept beside the config: setTalkgroups, setUnitNames), each row from its file.
   const talkgroups: Record<string, Talkgroup[]> = {};
+  const unitNames: Record<string, UnitName[]> = {};
   const sources = (j.sources as Record<string, unknown>[] | undefined) ?? [];
   const systems = (j.systems as Record<string, unknown>[] | undefined) ?? [];
   const imported: Source[] = [];
@@ -1131,7 +1136,8 @@ export function importTrunkRecorderConfig(
     const own = trRecording(sys);
     if (Object.keys(own).length) x.recording = own;
     const units = trUnitNames(sys, files, x.shortName, todo);
-    if (units) x.unitNames = units;
+    if (units.mode) x.unitNames = units.mode;
+    if (units.rows) unitNames[x.shortName] = units.rows;
     cfg.conventional.push(x);
     mine.push(x);
     if (channels.length) todo.push({ kind: "squelch", system: x.shortName });
@@ -1181,14 +1187,16 @@ export function importTrunkRecorderConfig(
         const csv = files[sys.talkgroupsFile];
         const had = talkgroups[x.shortName];
         if (x !== one && had) {
-          if (csv !== undefined && JSON.stringify(readTalkgroupFile(csv).talkgroups) !== JSON.stringify(had)) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
+          const rows = (t: Talkgroup[]) => JSON.stringify(t.map(({ origin: _, ...r }) => r));
+          if (csv !== undefined && rows(readTalkgroupFile(csv).talkgroups) !== rows(had)) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
         } else if (csv === undefined) todo.push({ kind: "talkgroups", system: x.shortName, file: sys.talkgroupsFile });
-        else talkgroups[x.shortName] = readTalkgroupFile(csv).talkgroups;
+        else talkgroups[x.shortName] = fromTrunkRecorder(readTalkgroupFile(csv).talkgroups, sys.talkgroupsFile);
       }
       if (sys.siteId !== undefined && sys.siteId !== null && sys.siteId !== "") todo.push({ kind: "siteLock", system: x.shortName, siteId: String(sys.siteId), site });
       if (x === one) {
         const units = trUnitNames(sys, files, x.shortName, todo);
-        if (units) x.unitNames = units;
+        if (units.mode) x.unitNames = units.mode;
+        if (units.rows) unitNames[x.shortName] = units.rows;
       }
     }
     const joined = [...made.values()].filter((x) => x.sites.length > 1);
@@ -1234,7 +1242,7 @@ export function importTrunkRecorderConfig(
   const { plugins, other } = trPlugins(j, names, systemNames);
   if (other.length) todo.push({ kind: "plugins", names: other });
   const added = { sources: addedSources, systems: mine.map((o) => (o as System | Conventional).shortName) };
-  if (merge) return { config: cfg, talkgroups, notes, todo, plugins, added };
+  if (merge) return { config: cfg, talkgroups, unitNames, notes, todo, plugins, added };
   if (typeof j.captureDir === "string") cfg.recording.captureDir = j.captureDir;
   if (typeof j.callTimeout === "number") cfg.recording.callTimeoutS = j.callTimeout;
   if (typeof j.recordUUVCalls === "boolean") cfg.recording.recordUnitToUnit = j.recordUUVCalls;
@@ -1255,5 +1263,5 @@ export function importTrunkRecorderConfig(
   if (tgFormat) log.talkgroupDisplayFormat = tgFormat as LogSettings["talkgroupDisplayFormat"];
   if (log.file && log.dir && !log.dir.startsWith("/")) notes.push(`The log folder "${log.dir}" is now next to the config file.`);
   cfg.log = log;
-  return { config: cfg, talkgroups, notes, todo, plugins, added };
+  return { config: cfg, talkgroups, unitNames, notes, todo, plugins, added };
 }

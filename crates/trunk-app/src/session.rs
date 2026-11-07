@@ -364,12 +364,12 @@ pub struct Session {
 impl Session {
     /// `bandplan`: the band plan saved for a site, by its key
     /// ([`Session::bandplans`], [`bandplan_key`]).
-    /// `talkgroups`: each system's talkgroups ([`crate::config::TalkgroupLists`]).
-    pub fn new(cfg: Config, talkgroups: &crate::config::TalkgroupLists, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
+    /// `names`: each system's talkgroups and radio names ([`crate::config::NameLists`]).
+    pub fn new(cfg: Config, names: &crate::config::NameLists, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
-        let engine = Engine::new(cfg.engine_config(epoch_ms, talkgroups))?;
+        let engine = Engine::new(cfg.engine_config(epoch_ms, names))?;
         let systems = engine.systems();
         let mut sites = Vec::new();
         for (i, (system, s)) in trunk_core::trunk::sites(&systems).enumerate() {
@@ -463,6 +463,13 @@ impl Session {
     pub fn set_talkgroup(&mut self, short_name: &str, number: u32, row: Option<trunk_core::trunk::Talkgroup>) -> bool {
         self.meas.shared().names.lock().unwrap().set_talkgroup(short_name, number, row.clone());
         self.engine.set_talkgroup(short_name, number, row)
+    }
+
+    /// The system named `short_name`'s own names for its radios are now `rows`: calls from now on are named by them.
+    pub fn set_unit_names(&mut self, short_name: &str, rows: &[trunk_core::trunk::UnitNameRow]) -> bool {
+        let set = self.engine.set_unit_names(short_name, rows);
+        self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
+        set
     }
 
     /// The encryption keys of the system named `short_name` (trunked or

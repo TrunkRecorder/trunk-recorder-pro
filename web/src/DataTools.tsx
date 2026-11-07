@@ -25,9 +25,16 @@ const KINDS: { kind: DataKind; label: string; hint: string; count: (c: DataCount
   {
     kind: "talkgroups",
     label: "Talkgroups",
-    hint: "The talkgroups each system was given (loaded from a file or edited).",
+    hint: "The talkgroups each system was given (loaded from a file or edited), each with where its names came from.",
     count: (c) => `${c.talkgroups.toLocaleString()} talkgroups`,
     tables: [{ table: "talkgroups", label: "Talkgroups" }],
+  },
+  {
+    kind: "unitNames",
+    label: "Unit names",
+    hint: "The names each system was given for its radios (loaded from a file or edited), each with where it came from.",
+    count: (c) => `${c.unitNames.toLocaleString()} names`,
+    tables: [{ table: "unit-names", label: "Unit names" }],
   },
   {
     kind: "talkerAliases",
@@ -55,7 +62,7 @@ const KINDS: { kind: DataKind; label: string; hint: string; count: (c: DataCount
   },
 ];
 
-const ZERO: DataCounts = { calls: 0, talkgroups: 0, talkerAliases: 0, radios: 0, heardTalkgroups: 0, historySeries: 0 };
+const ZERO: DataCounts = { calls: 0, talkgroups: 0, unitNames: 0, talkerAliases: 0, radios: 0, heardTalkgroups: 0, historySeries: 0 };
 
 /** Every system's counts added up. */
 function total(systems: DataSystem[]): DataCounts {
@@ -69,6 +76,7 @@ export function deletedText(d: DataCounts): string {
   const parts = [
     [d.calls, "call", "calls"],
     [d.talkgroups, "talkgroup", "talkgroups"],
+    [d.unitNames, "unit name", "unit names"],
     [d.talkerAliases, "talker alias", "talker aliases"],
     [d.radios, "radio", "radios"],
     [d.heardTalkgroups, "talkgroup heard", "talkgroups heard"],

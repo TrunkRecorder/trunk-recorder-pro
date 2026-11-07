@@ -3,7 +3,8 @@
 // another list's talkgroups merged in without replacing the user's. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { editCells, ignoreEdit, mergeTalkgroups, readTalkgroupFile, talkgroup, talkgroupFileText, withEdit } from "./talkgroups.ts";
+import { talkgroupsReplace } from "./rules.ts";
+import { ignoreEdit, mergeTalkgroups, sameEdit, readTalkgroupFile, talkgroup, talkgroupFileText, withEdit } from "./talkgroups.ts";
 
 const names = (rows: { number: number; alphaTag: string }[]) => rows.map((t) => [t.number, t.alphaTag]);
 
@@ -32,16 +33,18 @@ test("download: Trunk Recorder's headed CSV, with comments and columns of its ow
   assert.equal(talkgroupFileText([]), "");
 });
 
+const BY_HAND = { kind: "edited" as const, at: 1_762_500_000 };
+
 // The same edits as trunk-core's: this copy of the rows stays the recorder's.
 test("withEdit: one row's cells, as the recorder sets them", () => {
   const rows = [talkgroup(101, { alphaTag: "Fire Disp" }), talkgroup(102, { alphaTag: "Tac" })];
-  const named = withEdit(rows, 101, { alphaTag: "FIRE4A", tag: "Fire, Tac" });
+  const named = withEdit(rows, 101, { alphaTag: "FIRE4A", tag: "Fire, Tac" }, BY_HAND);
   assert.deepEqual([named[0].alphaTag, named[0].tag], ["FIRE4A", "Fire, Tac"]);
   assert.deepEqual(named[1], rows[1], "the other row as it was");
-  assert.equal(withEdit(rows, 102, { ignore: true })[1].ignore, true);
-  assert.deepEqual(names(withEdit(rows, 205, { ignore: true, alphaTag: "Data" })), [[101, "Fire Disp"], [102, "Tac"], [205, "Data"]], "a row added");
-  assert.equal(withEdit(rows, 205, { ignore: false }).length, 2, "none for nothing set");
-  const old = withEdit([talkgroup(104, { priority: -1, ignore: true })], 104, { ignore: false });
+  assert.equal(withEdit(rows, 102, { ignore: true }, BY_HAND)[1].ignore, true);
+  assert.deepEqual(names(withEdit(rows, 205, { ignore: true, alphaTag: "Data" }, BY_HAND)), [[101, "Fire Disp"], [102, "Tac"], [205, "Data"]], "a row added");
+  assert.equal(withEdit(rows, 205, { ignore: false }, BY_HAND).length, 2, "none for nothing set");
+  const old = withEdit([talkgroup(104, { priority: -1, ignore: true })], 104, { ignore: false }, BY_HAND);
   assert.deepEqual([old[0].ignore, old[0].priority], [false, 1], "un-ignored: Trunk Recorder's priority -1 undone");
 });
 
@@ -49,7 +52,27 @@ test("ignoreEdit: named too when the talkgroup has no row", () => {
   const rows = [talkgroup(101, { alphaTag: "Dispatch" })];
   assert.deepEqual(ignoreEdit(rows, 101, true, "Other"), { ignore: true });
   assert.deepEqual(ignoreEdit(rows, 7, true, "Data"), { alphaTag: "Data", ignore: true });
-  assert.deepEqual(editCells({ alphaTag: " A ", ignore: false }), [["Alpha Tag", "A"], ["Ignore", ""]]);
+});
+
+test("sameEdit: the same cells to the same values, as sent and as the recorder answers", () => {
+  assert.ok(sameEdit({ alphaTag: " A ", ignore: false }, { ignore: false, alphaTag: "A" }));
+  assert.ok(!sameEdit({ alphaTag: "A" }, { alphaTag: "A", ignore: true }));
+});
+
+// Where each row's names came from: the last change, by the recorder's own code (names.rs).
+test("origins: a names edit makes it the row's, an Ignore doesn't; a list loaded keeps the rows it doesn't change", () => {
+  const rr = { kind: "radioReference" as const, at: 100 };
+  const rows = talkgroupsReplace([], [talkgroup(101, { alphaTag: "Fire Disp" }), talkgroup(102, { alphaTag: "Tac" })], rr);
+  assert.deepEqual(rows.map((t) => t.origin?.kind), ["radioReference", "radioReference"]);
+  const ignored = withEdit(rows, 101, { ignore: true }, BY_HAND);
+  assert.equal(ignored[0].origin?.kind, "radioReference", "Ignore isn't a name");
+  const named = withEdit(rows, 101, { alphaTag: "FIRE4A" }, BY_HAND);
+  assert.deepEqual(named[0].origin, BY_HAND);
+  const file = { kind: "file" as const, name: "dc.csv", at: 200 };
+  const loaded = talkgroupsReplace(named, [talkgroup(101, { alphaTag: "FIRE4A" }), talkgroup(102, { alphaTag: "Tac 2" })], file);
+  assert.deepEqual(loaded.map((t) => t.origin?.kind), ["edited", "file"], "the edit stands where the file agrees");
+  assert.deepEqual(talkgroupsReplace([], named, undefined), named, "moved: each its own");
+  assert.equal(readTalkgroupFile(talkgroupFileText(named)).talkgroups[0].origin, undefined, "not written to the file");
 });
 
 test("merge: the talkgroups it lacks, after its own; its own as they are", () => {

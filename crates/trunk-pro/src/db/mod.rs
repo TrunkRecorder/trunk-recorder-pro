@@ -412,6 +412,12 @@ impl Db {
         self.store()?.talkgroups(id)
     }
 
+    /// A system's stored names for its radios, in their order.
+    pub fn unit_names(&self, system: &str) -> Result<Vec<trunk_core::trunk::UnitNameRow>, String> {
+        let Some(id) = self.system_id(system) else { return Ok(Vec::new()) };
+        self.store()?.unit_names(id)
+    }
+
     /// A system's stored talker aliases.
     pub fn units(&self, system: &str) -> Result<Vec<(u32, trunk_core::trunk::UnitAlias)>, String> {
         let Some(id) = self.system_id(system) else { return Ok(Vec::new()) };
@@ -707,7 +713,8 @@ mod tests {
             db.send(Change::Talkgroups { system_id: a, rows: rows.clone() });
             let t = std::time::Instant::now();
             db.send(Change::Talkgroups { system_id: b, rows: parse_rows("1,x\n") });
-            let edited = edit_rows(&mut rows, 102, &[("Ignore", "x")]).unwrap();
+            let edited = edit_rows(&mut rows, 102, &[("Alpha Tag", "Tac 2"), ("Ignore", "x")], &trunk_core::trunk::Origin::edited(1_762_500_000)).unwrap();
+            assert!(edited.origin.is_some());
             db.send(Change::Talkgroup { system_id: a, row: edited, order: 1 });
             // (People's edits commit at once, whatever the interval.)
             while db.talkgroups("a").unwrap() != rows {

@@ -3,16 +3,25 @@
 // server, so the interface is identical. Calls are stored in OPFS.
 
 import { withEdit } from "../talkgroups.ts";
+import { withUnitName } from "../units.ts";
+import { editedNow, fromNow } from "../origins.ts";
+import { talkgroupsReplace, unitNamesReplace } from "../rules.ts";
 import init, { calls_page, configNeedsRestart, directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
-import type { CallEntry, Config, FromRecorder, HeardCode, Talkgroup, ToRecorder } from "../protocol.ts";
+import type { CallEntry, Config, FromRecorder, HeardCode, Talkgroup, ToRecorder, UnitName } from "../protocol.ts";
 import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, sourceTitle, trpBase } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
 /** Page → worker: the protocol's commands (those it can't do get an `error`), and its own setup. */
-export type ToWorker = ToRecorder | { type: "init"; config: Config; talkgroups: Record<string, Talkgroup[]> } | { type: "files"; files: (File | null)[] };
+export type ToWorker = ToRecorder | { type: "init"; config: Config; names: KeptNames } | { type: "files"; files: (File | null)[] };
 
-/** Worker → page: a protocol message, or a live audio frame. */
-export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number };
+/** Worker → page: a protocol message, a live audio frame, or the names to keep (stored by the page). */
+export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number } | { keep: KeptNames };
+
+/** Each system's names, by list and short name, as the page stores them. */
+export interface KeptNames {
+  talkgroups: Record<string, Talkgroup[]>;
+  unitNames: Record<string, UnitName[]>;
+}
 
 const post = (msg: FromRecorder) => postMessage({ msg } satisfies FromWorker);
 /** Unix ms on a monotonic clock (the session's `now_ms`). */
@@ -21,8 +30,27 @@ const wallMs = () => performance.timeOrigin + performance.now();
 let config: Config | null = null;
 /** The config's version (one page edits it: every edit is taken). */
 let configVersion = 1;
-/** Each system's talkgroups, by short name (the page keeps them). */
-let talkgroups: Record<string, Talkgroup[]> = {};
+/** Each system's names, as the desktop recorder keeps them (the page stores them). */
+let names: KeptNames = { talkgroups: {}, unitNames: {} };
+
+/** System `system`'s list `list` is now `rows`: kept, the recording told, the page given them to store. */
+function keepNames<L extends keyof KeptNames>(list: L, system: string, rows: KeptNames[L][string]): void {
+  const next = { ...names[list] } as Record<string, unknown[]>;
+  if (rows.length) next[system] = rows;
+  else delete next[system];
+  names = { ...names, [list]: next };
+  if (list === "talkgroups") session?.set_talkgroups(system, JSON.stringify(rows));
+  else session?.set_unit_names(system, JSON.stringify(rows));
+  postMessage({ keep: names } satisfies FromWorker);
+}
+
+/** The names as the session takes them (trunk_app::config::NameLists): by system. */
+function sessionNames(): Record<string, { talkgroups?: Talkgroup[]; unitNames?: UnitName[] }> {
+  const out: Record<string, { talkgroups?: Talkgroup[]; unitNames?: UnitName[] }> = {};
+  for (const [s, t] of Object.entries(names.talkgroups)) (out[s] ??= {}).talkgroups = t;
+  for (const [s, u] of Object.entries(names.unitNames)) (out[s] ??= {}).unitNames = u;
+  return out;
+}
 let files: (File | null)[] = [];
 let session: WebSession | null = null;
 let rtls: WebRtl[] = [];
@@ -371,7 +399,7 @@ async function start(): Promise<void> {
       if (p) plans[x.shortName] = p;
     }
     // The session's clock: Unix ms that never jump (performance.now() from the page's start).
-    session = new WebSession(JSON.stringify(cfg), JSON.stringify(talkgroups), wallMs(), JSON.stringify(plans));
+    session = new WebSession(JSON.stringify(cfg), JSON.stringify(sessionNames()), wallMs(), JSON.stringify(plans));
     session.load_units(JSON.stringify(await savedUnits(cfg)));
     session.load_heard((await readText(heardFile(cfg))) ?? "");
     session.load_sharing((await readText(SHARING_FILE)) ?? "");
@@ -474,11 +502,12 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
   switch (m.type) {
     case "init":
       config = m.config;
-      talkgroups = m.talkgroups;
+      names = m.names;
       // The greeting, as the desktop app's (crates/trunk-pro server.rs): how things are, then hello.
       post(phase);
       post({ type: "config", config: m.config, version: configVersion });
-      for (const [system, rows] of Object.entries(m.talkgroups)) post({ type: "talkgroups", system, talkgroups: rows });
+      for (const [system, rows] of Object.entries(m.names.talkgroups)) post({ type: "talkgroups", system, talkgroups: rows });
+      for (const [system, rows] of Object.entries(m.names.unitNames)) post({ type: "unitNames", system, unitNames: rows });
       for (const [system, csv] of Object.entries(await savedUnits(m.config))) post({ type: "units", system, csv });
       post({ type: "heard", heard: await savedHeard(m.config) });
       post({ type: "history", ...callsPage(await listCalls(Number.MAX_SAFE_INTEGER), { limit: 300 }) });
@@ -510,23 +539,34 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       }
       break;
     }
+    // Names, set and edited as the desktop recorder sets and edits them (crates/trunk-pro runtime.rs set_names), by the same code.
+    // (A recording takes them at once: an Ignore flag set, a tag fixed.)
     case "setTalkgroups": {
-      // (A recording takes it at once: an Ignore flag set, a tag fixed.)
-      // (A number twice: the later row, in the first's place, as the desktop recorder keeps them.)
-      const rows = [...new Map(m.talkgroups.map((t) => [t.number, t])).values()];
-      if (rows.length) talkgroups[m.system] = rows;
-      else delete talkgroups[m.system];
-      session?.set_talkgroups(m.system, JSON.stringify(rows));
+      await ready;
+      const rows = talkgroupsReplace(names.talkgroups[m.system] ?? [], m.talkgroups, fromNow(m.from));
+      keepNames("talkgroups", m.system, rows);
       post({ type: "talkgroups", system: m.system, talkgroups: rows });
       break;
     }
     case "setTalkgroup": {
-      // One row, edited as the desktop recorder edits it (talkgroups.ts withEdit).
       await ready;
-      const rows = withEdit(talkgroups[m.system] ?? [], m.talkgroup, m.edit);
-      talkgroups[m.system] = rows;
-      session?.set_talkgroups(m.system, JSON.stringify(rows));
-      post({ type: "talkgroupEdited", system: m.system, talkgroup: m.talkgroup, edit: m.edit });
+      const origin = editedNow();
+      keepNames("talkgroups", m.system, withEdit(names.talkgroups[m.system] ?? [], m.talkgroup, m.edit, origin));
+      post({ type: "talkgroupEdited", system: m.system, talkgroup: m.talkgroup, edit: m.edit, origin });
+      break;
+    }
+    case "setUnitNames": {
+      await ready;
+      const rows = unitNamesReplace(names.unitNames[m.system] ?? [], m.unitNames, fromNow(m.from));
+      keepNames("unitNames", m.system, rows);
+      post({ type: "unitNames", system: m.system, unitNames: rows });
+      break;
+    }
+    case "setUnitName": {
+      await ready;
+      const origin = editedNow();
+      keepNames("unitNames", m.system, withUnitName(names.unitNames[m.system] ?? [], m.unit, m.name, origin));
+      post({ type: "unitNameEdited", system: m.system, unit: m.unit, name: m.name, origin });
       break;
     }
     case "subscribe":

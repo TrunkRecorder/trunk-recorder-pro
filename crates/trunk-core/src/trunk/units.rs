@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
+use super::names::{stamp, NameRow, Origin};
 use super::talkgroups::{csv_lines, split_csv_line};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -142,10 +143,112 @@ impl UnitTagsMode {
     }
 }
 
-/// A system's own names for its radios — Trunk Recorder's unitTagsFile:
-/// headerless CSV `unit,name`, `#` comments. The unit is a number, or a
-/// regular expression between slashes whose groups the name can use:
-/// `/^1(\d{3})$/,Engine $1` names 1123 "Engine 123". The first match wins.
+/// One of a system's own names for its radios — a line of Trunk Recorder's
+/// unitTagsFile (headerless CSV `unit,name`): the radio's unit ID, or a
+/// regular expression between slashes whose groups the name can use
+/// (`/^1(\d{3})$/,Engine $1` names 1123 "Engine 123"). The first row that
+/// matches names it.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UnitNameRow {
+    pub unit: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+}
+
+impl UnitNameRow {
+    /// A pattern (many radios), not one radio's ID.
+    pub fn is_pattern(&self) -> bool {
+        self.unit.starts_with('/')
+    }
+}
+
+impl NameRow for UnitNameRow {
+    type Key = String;
+    fn key(&self) -> String {
+        self.unit.clone()
+    }
+    fn origin(&self) -> &Option<Origin> {
+        &self.origin
+    }
+    fn origin_mut(&mut self) -> &mut Option<Origin> {
+        &mut self.origin
+    }
+    fn same_names(&self, other: &Self) -> bool {
+        (&self.unit, &self.name) == (&other.unit, &other.name)
+    }
+}
+
+/// A unit names file read ([`read_unit_names`]): its rows, in order, and
+/// the patterns that aren't regular expressions (kept; they name nothing).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitNamesFile {
+    pub unit_names: Vec<UnitNameRow>,
+    pub bad: Vec<String>,
+}
+
+/// A unit names file's rows (`#` comments and lines without both a unit and
+/// a name passed over). A unit in two rows: the first, as the first match
+/// names a radio.
+pub fn read_unit_names(text: &str) -> UnitNamesFile {
+    let mut out = UnitNamesFile::default();
+    let mut seen = std::collections::HashSet::new();
+    for line in csv_lines(text).map(str::trim) {
+        let f = split_csv_line(line);
+        let (Some(unit), Some(name)) = (f.first().map(|s| s.trim()), f.get(1).map(|s| s.trim())) else { continue };
+        if unit.is_empty() || name.is_empty() || !seen.insert(unit.to_string()) {
+            continue;
+        }
+        if pattern(unit).is_none() {
+            out.bad.push(unit.to_string());
+        }
+        out.unit_names.push(UnitNameRow { unit: unit.into(), name: name.into(), origin: None });
+    }
+    out
+}
+
+/// `rows` as a unit names file: a `unit,name` line each, in their order.
+pub fn unit_names_csv(rows: &[UnitNameRow]) -> String {
+    rows.iter().map(|r| format!("{},{}\n", field(&r.unit), field(&r.name))).collect()
+}
+
+/// Radio `unit` named `name` among `rows` (blank: its own row taken out, so
+/// a pattern may name it). A radio's own row goes before the patterns, so
+/// it wins. A change makes `by` its origin. Its row as it is now (none:
+/// none of its own).
+pub fn edit_unit_names(rows: &mut Vec<UnitNameRow>, unit: u32, name: &str, by: &Origin) -> Option<UnitNameRow> {
+    let (key, name) = (unit.to_string(), name.trim());
+    let at = rows.iter().position(|r| r.unit == key);
+    if name.is_empty() {
+        if let Some(i) = at {
+            rows.remove(i);
+        }
+        return None;
+    }
+    let i = at.unwrap_or_else(|| {
+        let i = rows.iter().position(UnitNameRow::is_pattern).unwrap_or(rows.len());
+        rows.insert(i, UnitNameRow { unit: key, ..Default::default() });
+        i
+    });
+    let before = at.map(|_| rows[i].clone());
+    rows[i].name = name.to_string();
+    stamp(&mut rows[i], before.as_ref(), by);
+    Some(rows[i].clone())
+}
+
+/// A row's unit as a regular expression (none: a pattern that isn't one).
+fn pattern(unit: &str) -> Option<regex_lite::Regex> {
+    let re = match unit.strip_prefix('/').and_then(|p| p.strip_suffix('/')) {
+        Some(r) => r.to_string(),
+        None => format!("^{}$", regex_lite::escape(unit)),
+    };
+    regex_lite::Regex::new(&re).ok()
+}
+
+/// A system's own names for its radios ([`UnitNameRow`]s) as the engine
+/// looks them up, and which come first ([`UnitTagsMode`]).
 #[derive(Clone, Debug, Default)]
 pub struct UnitTags {
     tags: Vec<(regex_lite::Regex, String)>,
@@ -153,27 +256,11 @@ pub struct UnitTags {
 }
 
 impl UnitTags {
-    /// The names in `text`, and the patterns that aren't regular expressions.
-    pub fn parse_csv(text: &str, mode: UnitTagsMode) -> (UnitTags, Vec<String>) {
-        let mut tags = Vec::new();
-        let mut bad = Vec::new();
-        for line in csv_lines(text).map(str::trim) {
-            let f = split_csv_line(line);
-            let (Some(pat), Some(name)) = (f.first().map(|s| s.trim()), f.get(1).map(|s| s.trim())) else { continue };
-            if pat.is_empty() || name.is_empty() {
-                continue;
-            }
-            let re = match pat.strip_prefix('/').and_then(|p| p.strip_suffix('/')) {
-                Some(r) => r.to_string(),
-                None => format!("^{}$", regex_lite::escape(pat)),
-            };
-            match regex_lite::Regex::new(&re) {
-                // Trunk Recorder's (boost's) replacements: $1 and \1 alike.
-                Ok(r) => tags.push((r, sed_groups(name))),
-                Err(_) => bad.push(pat.to_string()),
-            }
-        }
-        (UnitTags { tags, mode }, bad)
+    /// `rows` to look names up by (a pattern that isn't a regular expression names nothing).
+    pub fn new(rows: &[UnitNameRow], mode: UnitTagsMode) -> UnitTags {
+        // Trunk Recorder's (boost's) replacements: $1 and \1 alike.
+        let tags = rows.iter().filter_map(|r| Some((pattern(&r.unit)?, sed_groups(&r.name)))).collect();
+        UnitTags { tags, mode }
     }
 
     pub fn len(&self) -> usize {
@@ -183,17 +270,21 @@ impl UnitTags {
         self.tags.is_empty()
     }
 
-    /// The name the file gives `unit`.
+    /// The name the rows give `unit`.
     pub fn user(&self, unit: u32) -> Option<String> {
         let id = unit.to_string();
         self.tags.iter().find(|(r, _)| r.is_match(&id)).map(|(r, name)| r.replace(&id, name.as_str()).into_owned())
     }
 
     /// A unit's name by the mode (Trunk Recorder's `tag` in srcList): the
-    /// file's or the alias heard, whichever comes first. No unit names
-    /// file: the alias heard.
+    /// rows' or the alias heard, whichever comes first. No rows: the alias heard.
     pub fn name(tags: Option<&UnitTags>, heard: Option<&UnitAliases>, unit: u32) -> Option<String> {
-        let ota = || heard.and_then(|h| h.get(unit)).map(str::to_string);
+        UnitTags::name_heard(tags, heard.and_then(|h| h.get(unit)), unit)
+    }
+
+    /// [`UnitTags::name`], `heard` the alias heard for it.
+    pub fn name_heard(tags: Option<&UnitTags>, heard: Option<&str>, unit: u32) -> Option<String> {
+        let ota = || heard.filter(|h| !h.is_empty()).map(str::to_string);
         let Some(t) = tags else { return ota() };
         let user = || t.user(unit);
         match t.mode {
@@ -230,8 +321,11 @@ mod tests {
 
     #[test]
     fn unit_names_file() {
-        let (t, bad) = UnitTags::parse_csv("# names\n1234,Engine 12\n/^7(\\d{3})$/,Medic $1\n/^8(\\d)(\\d)$/,Car \\2-\\1x\n/[/,broken\n", UnitTagsMode::UserFirst);
-        assert_eq!((t.len(), bad), (3, vec!["/[/".to_string()]));
+        let f = read_unit_names("# names\n1234,Engine 12\n/^7(\\d{3})$/,Medic $1\n/^8(\\d)(\\d)$/,Car \\2-\\1x\n/[/,broken\n1234,Second\n");
+        assert_eq!((f.unit_names.len(), f.bad.clone()), (4, vec!["/[/".to_string()]), "a unit twice: the first");
+        assert_eq!(read_unit_names(&unit_names_csv(&f.unit_names)), f, "the file written reads back the same");
+        let t = UnitTags::new(&f.unit_names, UnitTagsMode::UserFirst);
+        assert_eq!(t.len(), 3);
         assert_eq!(t.user(1234).as_deref(), Some("Engine 12"));
         assert_eq!(t.user(12345), None, "a plain number matches only itself");
         assert_eq!(t.user(7042).as_deref(), Some("Medic 042"));
@@ -244,6 +338,22 @@ mod tests {
         let only = UnitTags { mode: UnitTagsMode::UserOnly, ..t.clone() };
         assert_eq!(UnitTags::name(Some(&only), Some(&heard), 555), None);
         assert_eq!(UnitTags::name(None, Some(&heard), 555).as_deref(), Some("HEARD"));
+    }
+
+    /// A radio named on its page: its own row, ahead of the patterns, or
+    /// taken out when the name is cleared; the origin changes with the name.
+    #[test]
+    fn a_radio_named_and_unnamed() {
+        let mut rows = read_unit_names("/^7(\\d{3})$/,Medic $1\n").unit_names;
+        let by = Origin::edited(50);
+        let r = edit_unit_names(&mut rows, 7042, "Bus 14", &by).unwrap();
+        assert_eq!((rows[0].unit.as_str(), r.origin.as_ref()), ("7042", Some(&by)));
+        assert_eq!(UnitTags::new(&rows, UnitTagsMode::UserFirst).user(7042).as_deref(), Some("Bus 14"), "its own row wins");
+        assert_eq!(edit_unit_names(&mut rows, 7042, " Bus 14 ", &Origin::edited(60)).unwrap().origin, Some(by.clone()), "the same name: unchanged");
+        assert_eq!(edit_unit_names(&mut rows, 7042, "", &by), None);
+        assert_eq!(UnitTags::new(&rows, UnitTagsMode::UserFirst).user(7042).as_deref(), Some("Medic 042"));
+        assert_eq!(edit_unit_names(&mut rows, 5, "", &by), None, "nothing to take out");
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]

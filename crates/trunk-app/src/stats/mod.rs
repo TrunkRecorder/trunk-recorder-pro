@@ -61,8 +61,8 @@ impl Shared {
     /// The config is now `cfg`, each system's talkgroups `talkgroups`: the
     /// names the registry and calls answer with, and how much of what it
     /// heard the registry keeps ([`radio::Caps::of`] `cfg.storage`).
-    pub fn set_config(&self, cfg: &crate::Config, talkgroups: &crate::config::TalkgroupLists) {
-        self.names.lock().unwrap().set_config(cfg, talkgroups);
+    pub fn set_config(&self, cfg: &crate::Config, names: &crate::config::NameLists) {
+        self.names.lock().unwrap().set_config(cfg, names);
         self.radio.lock().unwrap().set_caps(radio::Caps::of(&cfg.storage));
     }
 
@@ -102,15 +102,15 @@ pub struct NameBook {
     /// Conventional rows' names for the numbers they file under ([`Config::row_talkgroups`]).
     rows: HashMap<String, trunk_core::trunk::Talkgroups>,
     units: HashMap<String, trunk_core::trunk::UnitAliases>,
-    /// The config's unit tags (names by pattern, and whose name comes first).
+    /// Each system's unit tags (its own names for its radios, and whose name comes first).
     unit_tags: HashMap<String, trunk_core::trunk::UnitTags>,
     signals: HashMap<String, Vec<Signal>>,
 }
 
 impl NameBook {
-    /// Each system's talkgroups, as an engine built from `cfg` and these talkgroup files has them.
-    pub fn set_config(&mut self, cfg: &Config, files: &crate::config::TalkgroupLists) {
-        self.set_systems(&cfg.engine_config(0.0, files).systems);
+    /// Each system's talkgroups and radio names, as an engine built from `cfg` and these names has them.
+    pub fn set_config(&mut self, cfg: &Config, names: &crate::config::NameLists) {
+        self.set_systems(&cfg.engine_config(0.0, names).systems);
         self.set_rows(cfg);
     }
 
@@ -558,7 +558,7 @@ mod tests {
     fn the_book_names_a_radio_as_its_calls_do() {
         use trunk_core::trunk::{SystemConfig, UnitTags, UnitTagsMode};
         let mut book = NameBook::default();
-        let tags = |mode| UnitTags::parse_csv("1234,Engine 12\n", mode).0;
+        let tags = |mode| UnitTags::new(&trunk_core::trunk::read_unit_names("1234,Engine 12\n").unit_names, mode);
         book.set_units("x", "1234,Heard 1234\n5678,Heard 5678\n");
         assert_eq!((book.unit("x", 1234), book.unit("x", 5678)), (Some("Heard 1234".into()), Some("Heard 5678".into())), "no tags: the aliases");
         book.set_systems(&[SystemConfig { unit_tags: tags(UnitTagsMode::UserFirst), ..SystemConfig::conventional("x") }]);

@@ -12,10 +12,10 @@ const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g,
 test("Setup → Data: every kind can be ticked to delete, and each table exported as a CSV file", () => {
   const html = renderToString(<ManageData />);
   const page = text(html);
-  for (const kind of ["Calls", "Talkgroups", "Talker aliases", "Radio registry", "Dashboard history"]) assert.match(page, new RegExp(kind));
+  for (const kind of ["Calls", "Talkgroups", "Unit names", "Talker aliases", "Radio registry", "Dashboard history"]) assert.match(page, new RegExp(kind));
   assert.match(page, /All systems/);
   const links = [...html.matchAll(/href="([^"]+)" download=""/g)].map((m) => m[1]);
-  assert.deepEqual(links, ["calls", "transmissions", "talkgroups", "talker-aliases", "radios", "heard-talkgroups", "dashboard-history"].map((t) => `/api/v1/export/${t}`));
+  assert.deepEqual(links, ["calls", "transmissions", "talkgroups", "unit-names", "talker-aliases", "radios", "heard-talkgroups", "dashboard-history"].map((t) => `/api/v1/export/${t}`));
   assert.match(html, /<button class="btn danger" disabled="">Delete what&#x27;s ticked…<\/button>/, "nothing ticked yet");
   assert.equal(exportUrl("radios", 3), "/api/v1/export/radios?system=3");
   assert.match(html, /<button class="btn ghost">Compact DB…<\/button>/, "the whole store compacts");
@@ -30,6 +30,6 @@ test("Removing a system asks whether its data goes too, yes unless unticked", ()
 });
 
 test("What a delete took, in words", () => {
-  assert.equal(deletedText({ calls: 1204, talkgroups: 1, talkerAliases: 0, radios: 3, heardTalkgroups: 0, historySeries: 2 }), "1,204 calls, 1 talkgroup, 3 radios, 2 dashboard series");
-  assert.equal(deletedText({ calls: 0, talkgroups: 0, talkerAliases: 0, radios: 0, heardTalkgroups: 0, historySeries: 0 }), "nothing");
+  assert.equal(deletedText({ calls: 1204, talkgroups: 1, unitNames: 4, talkerAliases: 0, radios: 3, heardTalkgroups: 0, historySeries: 2 }), "1,204 calls, 1 talkgroup, 4 unit names, 3 radios, 2 dashboard series");
+  assert.equal(deletedText({ calls: 0, talkgroups: 0, unitNames: 0, talkerAliases: 0, radios: 0, heardTalkgroups: 0, historySeries: 0 }), "nothing");
 });

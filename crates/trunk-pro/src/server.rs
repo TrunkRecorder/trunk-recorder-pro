@@ -580,7 +580,10 @@ fn kept_now(ctx: &Ctx) -> Vec<ToClient> {
 pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, history: ToClient, kept: Vec<ToClient>) -> Vec<ToClient> {
     let config = ctx.config.lock().unwrap().clone();
     let mut m = vec![ctx.phase.lock().unwrap().message(), ToClient::Config { config: Box::new(config.clone()), version: ctx.config_version.load(Ordering::SeqCst) }];
-    m.extend(ctx.talkgroups.lock().unwrap().iter().map(|(system, rows)| ToClient::Talkgroups { system: system.clone(), talkgroups: rows.clone() }));
+    for (system, n) in ctx.names.lock().unwrap().iter() {
+        m.push(ToClient::Talkgroups { system: system.clone(), talkgroups: n.talkgroups.clone() });
+        m.push(ToClient::UnitNames { system: system.clone(), unit_names: n.unit_names.clone() });
+    }
     // Each system's talker aliases; the codes conventional frequencies carried: as last told, else as saved.
     let (heard, units): (Vec<ToClient>, Vec<ToClient>) = kept.into_iter().partition(|k| matches!(k, ToClient::Heard { .. }));
     m.extend(units);
@@ -912,9 +915,17 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         },
         // (Written beside the config; a recording takes it at once.)
         // (Off the async workers: the store's queue can be full, and the edit holds the talkgroups' lock while it hands over.)
-        Command::SetTalkgroups { system, talkgroups } => {
+        Command::SetTalkgroups { system, talkgroups, from } => {
             let ctx2 = ctx.clone();
-            failed(tokio::task::spawn_blocking(move || runtime::set_talkgroups(&ctx2, &system, talkgroups)).await.unwrap_or_else(|e| Err(e.to_string())))
+            failed(tokio::task::spawn_blocking(move || runtime::set_names(&ctx2, &system, talkgroups, from)).await.unwrap_or_else(|e| Err(e.to_string())))
+        }
+        Command::SetUnitNames { system, unit_names, from } => {
+            let ctx2 = ctx.clone();
+            failed(tokio::task::spawn_blocking(move || runtime::set_names(&ctx2, &system, unit_names, from)).await.unwrap_or_else(|e| Err(e.to_string())))
+        }
+        Command::SetUnitName { system, unit, name } => {
+            let ctx2 = ctx.clone();
+            failed(tokio::task::spawn_blocking(move || runtime::set_unit_name(&ctx2, &system, unit, name)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
         // (Counting and deleting read and write the store: off the async workers.)
         Command::DataSummary { id } => {

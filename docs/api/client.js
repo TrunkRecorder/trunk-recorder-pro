@@ -70,13 +70,15 @@ export class TrunkClient {
     this.talkgroupRows = {};
     /** Edits of single talkgroups since each system's rows came (`talkgroupEdited`): talkgroups() includes them. */
     this.talkgroupEdits = {};
+    /** Each system's own names for its radios (`unitNames` messages, with `unitNameEdited` made: rows { unit, name, origin }, in order), by short name. */
+    this.unitNameRows = {};
     this.log = [];
     /** `calls` asked and not answered yet: id → resolve. */
     this._asked = new Map();
     this._nextId = 1;
     /** Talker aliases heard on the air (saved ones, then live): short name → { unit: alias }. */
     this.aliases = {};
-    this._unitCache = new Map();
+    this._unitCache = new WeakMap();
     /** The latest `error` message from the recorder (a command that failed). */
     this.error = null;
     /** The recorder said it was exiting (`quit`); cleared when it's back. */
@@ -174,14 +176,14 @@ export class TrunkClient {
   /**
    * A radio's name on system `shortName` (trunked or conventional), as the
    * system's `unitNames.mode` picks it: "user" (the default) its unit names
-   * (`unitNames.csv`: `unit,name` lines; a unit between slashes is a regular
-   * expression, `/^1(\d{3})$/,Engine $1`) then the talker alias heard, "ota"
-   * the alias first, "user_only", "none". "" when there's none.
+   * (`unitNameRows`: a unit ID, or a regular expression between slashes,
+   * `/^1(\d{3})$/` named `Engine $1`; the first match) then the talker alias
+   * heard, "ota" the alias first, "user_only", "none". "" when there's none.
    */
   unitName(shortName, unit) {
     const sys = this.config?.systems.find((s) => s.shortName === shortName) ?? this.config?.conventional?.find((s) => s.shortName === shortName);
     const names = sys?.unitNames;
-    const user = () => userUnitName(this._unitCache, names?.csv ?? "", unit);
+    const user = () => userUnitName(this._unitCache, this.unitNameRows[shortName] ?? [], unit);
     const heard = () => this.aliases[shortName]?.[unit] || undefined;
     const mode = names?.mode || "user";
     const name = mode === "ota" ? heard() ?? user() : mode === "user_only" ? user() : mode === "none" ? undefined : user() ?? heard();
@@ -225,6 +227,20 @@ export class TrunkClient {
   /** Change one talkgroup of system `shortName`: `edit` sets any of alphaTag, description, tag, category, ignore. Needs control access. */
   setTalkgroup(shortName, talkgroup, edit) {
     this.send({ type: "setTalkgroup", system: shortName, talkgroup, edit });
+  }
+
+  /**
+   * Replace system `shortName`'s own names for its radios: rows { unit, name }
+   * ([] for none). `from` (optional): where they came from, { kind: "file",
+   * name: "units.csv" } — the rows that change get it. Needs control access.
+   */
+  setUnitNames(shortName, rows, from) {
+    this.send({ type: "setUnitNames", system: shortName, unitNames: rows, ...(from ? { from } : {}) });
+  }
+
+  /** Name radio `unit` of system `shortName` ("": its own name taken out). Needs control access. */
+  setUnitName(shortName, unit, name) {
+    this.send({ type: "setUnitName", system: shortName, unit, name });
   }
 
   /** A recorded call's file: entry (or its path), "wav" | "json" | "m4a". */
@@ -327,6 +343,12 @@ export class TrunkClient {
       case "talkgroupEdited":
         this.talkgroupEdits = { ...this.talkgroupEdits, [m.system]: [...(this.talkgroupEdits[m.system] ?? []), { talkgroup: m.talkgroup, edit: m.edit }] };
         break;
+      case "unitNames":
+        this.unitNameRows = { ...this.unitNameRows, [m.system]: m.unitNames };
+        break;
+      case "unitNameEdited":
+        this.unitNameRows = { ...this.unitNameRows, [m.system]: withUnitName(this.unitNameRows[m.system] ?? [], m.unit, m.name, m.origin) };
+        break;
       case "history":
         this.history = m.entries.slice(0, this.historyLimit);
         break;
@@ -396,23 +418,31 @@ export function parseUnitAliases(csv) {
   return out;
 }
 
-/** The name a unit names CSV gives `unit` (first match; `$1` / `\1` take a pattern's groups), or undefined. */
-function userUnitName(cache, csv, unit) {
-  if (!csv) return undefined;
-  let rows = cache.get(csv);
+/** `rows` with radio `unit` named `name` by `origin`, as the recorder edits them: its own row (ahead of the patterns), or taken out when `name` is "". */
+function withUnitName(rows, unit, name, origin) {
+  const key = String(unit);
+  const rest = rows.filter((r) => r.unit !== key);
+  if (!name.trim()) return rest;
+  const had = rows.find((r) => r.unit === key);
+  const row = { unit: key, name: name.trim(), origin: had && had.name === name.trim() ? had.origin : origin };
+  const at = had ? rows.indexOf(had) : rest.findIndex((r) => r.unit.startsWith("/"));
+  const i = at < 0 ? rest.length : at;
+  return [...rest.slice(0, i), row, ...rest.slice(i)];
+}
+
+/** The name `rows` (a system's unit names) give `unit` (first match; `$1` / `\1` take a pattern's groups), or undefined. */
+function userUnitName(cache, names, unit) {
+  if (!names.length) return undefined;
+  let rows = cache.get(names);
   if (!rows) {
     rows = [];
-    for (const line of csv.split(/\r?\n/)) {
-      const t = line.trim();
-      if (!t || t.startsWith("#")) continue;
-      const [pat = "", name = ""] = splitCsv(t);
-      if (!pat || !name) continue;
+    for (const { unit: pat, name } of names) {
       try {
         const re = pat.length > 1 && pat.startsWith("/") && pat.endsWith("/") ? new RegExp(pat.slice(1, -1)) : new RegExp(`^${pat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
         rows.push([re, name.replace(/\\(\d+)/g, "$$$1")]);
       } catch {}
     }
-    cache.set(csv, rows);
+    cache.set(names, rows);
   }
   const id = String(unit);
   const hit = rows.find(([re]) => re.test(id));

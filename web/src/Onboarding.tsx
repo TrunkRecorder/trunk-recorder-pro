@@ -21,6 +21,7 @@ import {
   readTrConfig,
   refreshDevices,
   setTalkgroups,
+  setUnitNames,
   setTodo,
   start,
   startSurvey,
@@ -36,7 +37,7 @@ import {
 import { cleanShortName } from "./fieldText.ts";
 import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
 import { BiasT, CopyButton, FileInput, TextInput } from "./inputs.tsx";
-import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
+import type { Config, OriginFrom, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { parseRadioReferencePaste, readTalkgroupFile, type Talkgroup } from "./talkgroups.ts";
 import { openTodos } from "./todo.ts";
@@ -1438,10 +1439,10 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
   const [paste, setPaste] = useState("");
   const parsed = useMemo(() => parseRadioReferencePaste(paste), [paste]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const setList = (next: Talkgroup[]) => setTalkgroups(sys.shortName, next);
+  const setList = (next: Talkgroup[], from?: OriginFrom) => setTalkgroups(sys.shortName, next, from);
   const onFile = async (f: File | undefined) => {
     if (!f) return;
-    setList(readTalkgroupFile(await f.text()).talkgroups);
+    setList(readTalkgroupFile(await f.text()).talkgroups, { kind: "file", name: f.name });
     props.onNext();
   };
   const id = sys.sites[0]?.expect ?? {};
@@ -1532,7 +1533,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
                       <button
                         className="ob-btn primary"
                         onClick={() => {
-                          setList(parsed);
+                          setList(parsed, { kind: "radioReference" });
                           props.onNext();
                         }}
                       >
@@ -1865,8 +1866,9 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
       }
       x.plugins = plugins;
     });
-    // Each system's talkgroups, beside the config.
+    // Each system's talkgroups and radio names, beside the config (each row from its Trunk Recorder file).
     for (const [system, rows] of Object.entries(result.talkgroups)) if (brings(system)) setTalkgroups(system, rows);
+    for (const [system, rows] of Object.entries(result.unitNames)) if (brings(system)) setUnitNames(system, rows);
     // Radios that aren't ready yet join what's left to do.
     const radios: ImportTodo[] = cfg.sources.flatMap((src, index): ImportTodo[] => {
       if (!bringsSource(index)) return [];
