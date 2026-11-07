@@ -1,21 +1,65 @@
 // The running systems as their control channels describe them: sites and
 // their decoding, neighbours not recorded yet, patches, DMR and NXDN carriers.
 
-import { formatMhz, systemColor, systemWithChannel } from "../config.ts";
+import { adjacentIdentity, formatMhz, reaches, roaming, sameSite, siteAddress, systemColor, systemWithChannel } from "../config.ts";
 import { Light } from "../charts.tsx";
 import { addSite, setNotice, type AppState } from "../controller.ts";
 import { num } from "../fmt.ts";
-import type { Config, DmrSiteStatus, NxdnSiteStatus, Patch, TalkgroupName } from "../protocol.ts";
+import type { AdjacentSite, Config, DmrSiteStatus, NxdnSiteStatus, Patch, SiteIdentity, TalkgroupName } from "../protocol.ts";
 import type { CcMark } from "../Waterfall.tsx";
-import { K, recentAvg, siteHealth, val, type DashSystem, type DetailedSite, type RunningSite } from "./data.ts";
+import { K, recentAvg, runningSites, siteHealth, val, type DashSystem, type DetailedSite, type RunningSite } from "./data.ts";
 
 export const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
+
+/** A neighbouring site announced and not set up here: its identity, and the site announcing it. */
+export interface Neighbour {
+  a: AdjacentSite;
+  id: SiteIdentity;
+  from: RunningSite;
+}
+
+/**
+ * The neighbouring sites `from` announce that aren't set up here: no
+ * running site is one or is on its control channel, and no system has that
+ * channel. Each once, by its address.
+ */
+export function neighbours(c: Config, from: RunningSite[], running: RunningSite[]): Neighbour[] {
+  const out = new Map<string, Neighbour>();
+  for (const x of from) {
+    const type = c.systems.find((y) => y.shortName === x.shortName)?.type;
+    for (const a of x.adjacent) {
+      const id = adjacentIdentity(a, type);
+      const k = siteAddress(id);
+      const here = running.some((y) => sameSite(y.identity, id) || (y.controlChannelHz != null && Math.abs(y.controlChannelHz - a.freqHz) < 6_000));
+      if (!out.has(k) && !here && !systemWithChannel(c, a.freqHz)) out.set(k, { a, id, from: x });
+    }
+  }
+  return [...out.values()];
+}
+
+/** The control channels of the neighbouring sites not set up here that a source reaches: faint markers named by address. */
+export function adjacentCcMarks(s: AppState): CcMark[] {
+  if (!s.config) return [];
+  const running = runningSites(s.status?.systems ?? []);
+  const at = new Map<number, CcMark>();
+  for (const { a, id, from } of neighbours(s.config, running, running)) {
+    if (at.has(a.freqHz) || !s.sources.some((x) => reaches({ rateHz: x.rateHz, guardHz: x.settings.guardHz }, x.centerHz, a.freqHz))) continue;
+    const address = siteAddress(id);
+    at.set(a.freqHz, { hz: a.freqHz, label: address, color: systemColor(s.config, from.shortName), faint: true, title: `Adjacent site ${address} (${roaming(from.identity, id)}), announced by ${from.label}` });
+  }
+  return [...at.values()];
+}
 
 /** One marker per control channel frequency (sites sharing one share a marker), coloured by system. */
 export function ccMarks(c: Config | null, sites: RunningSite[]): CcMark[] {
   const at = new Map<number, RunningSite[]>();
   for (const x of sites) if (x.controlChannelHz) at.set(x.controlChannelHz, [...(at.get(x.controlChannelHz) ?? []), x]);
-  return [...at].map(([hz, xs]) => ({ hz, label: sites.length > 1 ? xs.map((x) => x.label).join(" · ") : "CC", color: systemColor(c, xs[0].shortName) }));
+  return [...at].map(([hz, xs]) => ({
+    hz,
+    label: sites.length > 1 ? xs.map((x) => x.label).join(" · ") : "CC",
+    color: systemColor(c, xs[0].shortName),
+    title: `${xs.map((x) => x.label).join(", ")} control channel`,
+  }));
 }
 
 /** A system of several sites: a row each — its control channel, how it decodes, its health. */
@@ -44,36 +88,40 @@ export function SiteRows(props: { s: AppState; x: DashSystem }) {
   );
 }
 
-/** Neighbouring sites the control channels announce that aren't set up yet — add one to record it too, as a site of its system (next Start). */
-export function Neighbours(props: { s: AppState; sites: DetailedSite[] }) {
+/**
+ * Neighbouring sites the control channels announce that aren't set up yet —
+ * add one to record it too, as a site of its system (next Start). A
+ * neighbouring system's (another System ID or WACN: one its radios roam
+ * to) is added as a system of its own.
+ */
+export function Neighbours(props: { s: AppState; sites: RunningSite[] }) {
   const c = props.s.config;
   if (!c) return null;
-  const seen = new Map<string, { a: DetailedSite["adjacent"][number]; from: DetailedSite }>();
-  for (const x of props.sites)
-    for (const a of x.adjacent) {
-      const k = `${a.sysId}/${a.rfss}/${a.site}`;
-      const recorded = props.sites.some((y) => y.identity.sysId === a.sysId && y.identity.rfss === a.rfss && y.identity.site === a.site);
-      if (!recorded && !systemWithChannel(c, a.freqHz) && !seen.has(k)) seen.set(k, { a, from: x });
-    }
-  if (!seen.size) return null;
-  const add = (a: DetailedSite["adjacent"][number], from: DetailedSite) => {
-    const name = addSite([a.freqHz], { wacn: from.identity.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site });
-    setNotice(`Added ${name} (site ${a.rfss}-${a.site}, ${formatMhz(a.freqHz)} MHz). It records from the next Start, if a source covers it.`);
+  const kind = (n: Neighbour) => roaming(n.from.identity, n.id);
+  const rows = neighbours(c, props.sites, runningSites(props.s.status?.systems ?? [])).sort((x, y) => Number(kind(x) !== "intra-system") - Number(kind(y) !== "intra-system"));
+  if (!rows.length) return null;
+  const add = ({ a, id }: Neighbour) => {
+    const name = addSite([a.freqHz], id);
+    setNotice(`Added ${name} (site ${siteAddress(id)}, ${formatMhz(a.freqHz)} MHz). It records from the next Start, if a source covers it.`);
   };
+  const others = rows.filter((n) => kind(n) !== "intra-system").length;
   return (
     <details className="panel log">
       <summary className="panel-head">
         <h2>Neighbouring sites</h2>
-        <span className="muted small">{seen.size} announced, not recorded</span>
+        <span className="muted small">
+          {rows.length} announced, not recorded{others ? ` · ${others} of other systems (inter-system or inter-WACN)` : ""}
+        </span>
       </summary>
       <div className="row">
-        {[...seen.values()].map(({ a, from }) => (
-          <span key={`${a.sysId}/${a.rfss}/${a.site}`} className="chip">
+        {rows.map((n) => (
+          <span key={siteAddress(n.id)} className="chip">
             <span className="mono">
-              SysID {hex(a.sysId)} · site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
+              {siteAddress(n.id)} · {formatMhz(n.a.freqHz)}
             </span>
-            <span className="muted">via {from.label}</span>
-            <button className="btn ghost small" onClick={() => add(a, from)}>
+            {kind(n) !== "intra-system" && <span className="badge" title="Another System ID of the WACN (inter-system), or another WACN (inter-WACN): its radios roam here">{kind(n)}</span>}
+            <span className="muted">via {n.from.label}</span>
+            <button className="btn ghost small" onClick={() => add(n)}>
               Add
             </button>
           </span>

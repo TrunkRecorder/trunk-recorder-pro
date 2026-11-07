@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitNames } from "./protocol.ts";
+import type { AdjacentSite, Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitNames } from "./protocol.ts";
 import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
 import { defaultConfig, parseChannelCsv, readConfig, receivers, sourceLabels, sourceNames, usableHalfWidth } from "./rules.ts";
 
@@ -545,6 +545,33 @@ export function shortNameFor(c: Config, id: SiteIdentity, smartnet = false): str
 /** Sites of one system: the same WACN and System ID (both known). */
 export function sameSystem(a: SiteIdentity, b: SiteIdentity): boolean {
   return a.wacn != null && a.sysId != null && a.wacn === b.wacn && a.sysId === b.sysId;
+}
+
+/** One site: the same System ID and site, and no WACN or RFSS that both state and disagree on. */
+export function sameSite(a: SiteIdentity, b: SiteIdentity): boolean {
+  const agree = (x: number | null | undefined, y: number | null | undefined) => x == null || y == null || x === y;
+  return a.sysId != null && a.site != null && a.sysId === b.sysId && a.site === b.site && agree(a.wacn, b.wacn) && agree(a.rfss, b.rfss);
+}
+
+/** A neighbouring site's identity, in the fields a site of `type` states: P25 all four, NXDN its System ID and site. */
+export function adjacentIdentity(a: AdjacentSite, type: System["type"] = "p25"): SiteIdentity {
+  return type === "p25" ? { wacn: a.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site } : { sysId: a.sysId, site: a.site };
+}
+
+/** A site by its address: P25's WACN:System:RFSS-site (WACN and System ID in hex, as on the air); else its System ID and site. */
+export function siteAddress(id: SiteIdentity): string {
+  const h = (v: number | null | undefined, n: number) => (v ?? 0).toString(16).toUpperCase().padStart(n, "0");
+  return id.wacn != null ? `${h(id.wacn, 5)}:${h(id.sysId, 3)}:${id.rfss ?? 0}-${id.site ?? "?"}` : `SysID ${h(id.sysId, 1)} · site ${id.site ?? "?"}`;
+}
+
+/**
+ * What a radio of `from` crosses to reach site `to`, in TIA-102's roaming
+ * terms: another site or RFSS of its own system (intra-system), another
+ * system of its WACN (inter-system), or another WACN (inter-WACN).
+ */
+export function roaming(from: SiteIdentity, to: SiteIdentity): "intra-system" | "inter-system" | "inter-WACN" {
+  if (from.wacn != null && to.wacn != null && from.wacn !== to.wacn) return "inter-WACN";
+  return from.sysId !== to.sysId ? "inter-system" : "intra-system";
 }
 
 /**

@@ -539,6 +539,10 @@ export interface StorageSettings {
   statsDays?: number;
   /** Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system. */
   radioIndex?: boolean;
+  /** Radios the radio registry keeps a system (default 20,000): past it, the least recently heard go (talkgroups a quarter as many, 5,000 at least). 0: no cap, `registryDays` alone bounding it. */
+  registryRadios?: number;
+  /** Days a talkgroup, radio or pair the registry hasn't heard is kept (default 365); 0 keeps it however old. */
+  registryDays?: number;
   /** Index calls by their talkgroups (default true), so a talkgroup's calls page back as far as the store keeps them; off, a talkgroup's list is its recent calls. */
   talkgroupIndex?: boolean;
 }
@@ -700,18 +704,32 @@ export interface SiteStatus {
   callsConcluded: number;
   /** The control channel is another system's / site's: why (its grants are not followed). */
   mismatch: string | null;
+  /** Neighbouring sites its control channel announces (once each, with a channel). */
+  adjacent: AdjacentSite[];
   /** Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel). */
   callsigns?: { callSign: string; freqHz: number | null }[];
   /** P25 SYNC_BCST: the system's own clock less the recording's, ms (positive: the recording's is behind), and when it was heard, Unix s. */
   radioClock?: { offsetMs: number; at: number; valid: boolean } | null;
 }
 
+/**
+ * A neighbouring site a control channel announces, by its address: P25's
+ * WACN, System ID, RFSS and site (another system's, for a neighbouring
+ * system: another System ID or WACN); NXDN's System ID and site (WACN and
+ * RFSS 0). See `adjacentIdentity`.
+ */
+export interface AdjacentSite {
+  wacn: number;
+  sysId: number;
+  rfss: number;
+  site: number;
+  freqHz: number;
+}
+
 /** One running site's detail (decodeDetail): what its control channel announces. */
 export interface SiteDetail {
   index: number;
   name: string;
-  /** Neighbouring sites its control channel announces. */
-  adjacent: { sysId: number; rfss: number; site: number; freqHz: number }[];
   /** A trunked DMR site. */
   dmr: DmrSiteStatus | null;
   /** An NXDN site. */
@@ -1048,7 +1066,8 @@ export interface SurveyMonitor {
   /** The frequency the control channel announces for itself. */
   advertisedHz: number | null;
   secondary: number[];
-  adjacent: { rfss: number; site: number; sysId: number; freqHz: number }[];
+  /** Neighbouring sites it announces. */
+  adjacent: AdjacentSite[];
   voice: { freqHz: number; grants: number; tdma: boolean }[];
   idens: number;
   good: number;
@@ -1164,9 +1183,17 @@ export interface PluginSchema {
   "x-enum-labels"?: string[];
   format?: string;
   "x-secret"?: boolean;
+  /** Filled in by the plugin (`settings.save`), not typed: shown, not edited. */
+  readOnly?: boolean;
+  /** A read-only web address: its open button's label ("Open" when not given). */
+  "x-open"?: string;
   "x-multiline"?: boolean;
   minimum?: number;
   maximum?: number;
+  /** A number's step (a slider's, with `x-slider`). */
+  multipleOf?: number;
+  /** A number drawn as a slider, from `minimum` to `maximum` in steps of `multipleOf`. */
+  "x-slider"?: boolean;
   items?: PluginSchema;
   /** Fields that have to be filled in (of an object). */
   required?: string[];
@@ -1498,6 +1525,7 @@ export interface MonitorEventBody {
   /** Control channel events: the site's own name, when it has one other than its system's. */
   site?: string;
   talkgroup?: number;
+  /** Its talkgroup's name, as its call has it (tgFirstSeen, tonePattern; "": none). */
   alphaTag?: string;
   unit?: number;
   alias?: string;
@@ -1558,6 +1586,8 @@ export interface PlatformInfo {
     backend: "sqlite" | "postgres";
     radioIndex: boolean;
     talkgroupIndex: boolean;
+    /** How full the radio registry is: each system's rows against the caps (null: none). */
+    registry: { caps: { talkgroups: number | null; radios: number | null; pairs: number | null; days: number | null }; systems: { system: string; talkgroups: number; radios: number; pairs: number }[] };
     sizes: StoreSizes;
     /** What it has written to disk: `of` "store" (SQLite's writer, counted by the OS: Linux), or "server" (PostgreSQL's write-ahead log, the whole server's); else `why` not. Its rate is the `store/written` series. */
     written: { bytes: number; of: "store" | "server" } | { why: string };
@@ -1598,9 +1628,9 @@ export interface ClockInfo {
   os: { synced: boolean; maxErrorMs: number } | null;
   /** The time service keeping the clock, when it says (Linux: chrony, systemd-timesyncd). lastSync: Unix s. */
   service: { name: string; server: string | null; stratum: number | null; lastSync: number | null } | null;
-  /** While recording: the wall clock less the clock calls are stamped by (the wall clock at Start, carried on monotonically), ms. */
+  /** While recording: the wall clock less the recording's own clock (the wall clock at Start, carried on monotonically), ms. Shown, not judged: call times are corrected for it. */
   driftMs: number | null;
-  /** The radio systems' own clocks (P25 SYNC_BCST) against the recording's: offsetMs > 0 when the recording's is behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by). */
+  /** The radio systems' own clocks (P25 SYNC_BCST) against the calls' times: offsetMs > 0 when the calls' are behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by). */
   radio: { site: string; offsetMs: number; at: number; sane: boolean; valid: boolean }[];
   /** The time server asked (null: none set, or not asked yet). */
   server: string | null;
@@ -1609,7 +1639,7 @@ export interface ClockInfo {
   /** Why the last query failed, while it fails. */
   error: string | null;
   /** What's wrong with the clock, decided by the recorder (the light and the events go by it). */
-  problem: { level: "warn" | "bad"; cause: "clock" | "recording" | "radio" | "os"; why: string } | null;
+  problem: { level: "warn" | "bad"; cause: "clock" | "radio" | "os"; why: string } | null;
   /** The time server's check: tries, failures, last answer. */
   check: ProbeRow | null;
 }
@@ -1766,6 +1796,8 @@ export interface RadioResultBody {
   system?: string;
   /** summary */
   systems?: Record<string, RadioSummary>;
+  /** summary: the registry's caps a system (null: none; a `limit` of `radios` is every radio heard), and the days an unheard row is kept. */
+  caps?: { talkgroups: number | null; radios: number | null; days: number | null };
   /** talkgroups, units, freqs, tones */
   hours?: number;
   total?: number;
@@ -1987,7 +2019,7 @@ export type ToRecorder =
   | { type: "callsQuery"; id: number; system?: string; talkgroup?: number; unit?: number; from?: number; to?: number; cursor?: string; limit?: number }
   /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited). */
   | { type: "pluginAction"; id: number; plugin: string; action: string; value: unknown }
-  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
+  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit"; `limit`: rows at most (default 500, up to the registry's cap: the summary's `caps`). */
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths" | "tones"; system?: string; key?: number; hours?: number; limit?: number }
   | { type: "quit" };
 

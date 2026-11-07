@@ -33,7 +33,7 @@ use num_complex::Complex32;
 
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Policy, Reason, RecorderHost};
 use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
-use super::message::{Message, MessageType};
+use super::message::{AdjacentSite, Message, MessageType, Neighbours};
 use super::multisite::{Held, Kept, MultiSite};
 use super::record::{save_call, RecordedOn, SaveContext};
 use super::recorded::Recorded;
@@ -41,6 +41,7 @@ use super::inband::InBandSpec;
 use super::record::{Concluded, SaveRules};
 use super::talkgroups::Talkgroups;
 
+use super::wall::WallEpoch;
 use super::voice::TrackerOut;
 use super::units::{UnitAlias, UnitAliases, UnitTags};
 use super::identity::{IdField, Identity};
@@ -77,6 +78,10 @@ const MIN_CHANNEL_RATE: f64 = 24_000.0;
 pub const DEFAULT_GUARD_HZ: f64 = 75_000.0;
 /// No good control message for this long → hunt to the next control channel.
 const CC_HUNT_S: f64 = 5.0;
+/// A control channel is locked, on the dashboard, with something good from it this recently, s.
+const LOCKED_S: f64 = 2.0;
+/// AutoTune measures a control channel only with something good from it this recently, s.
+const MEASURE_GOOD_S: f64 = 1.0;
 
 #[derive(Clone, Debug, Default)]
 pub struct SourceConfig {
@@ -352,6 +357,9 @@ pub struct PatternHeard {
     pub site: Option<u16>,
     pub call_id: CallId,
     pub talkgroup: u32,
+    /// The talkgroup's name, as the call has it ("": none). A conventional channel's comes from
+    /// its row, which the system's talkgroup list doesn't hold.
+    pub alpha_tag: String,
     /// The radio talking where it starts (0: not known).
     pub src: u32,
     pub pattern: Pattern,
@@ -361,15 +369,6 @@ pub struct PatternHeard {
     pub decrypted: bool,
     /// Sample-clock seconds.
     pub time_s: f64,
-}
-
-/// A neighbouring site a control channel announces.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AdjacentSite {
-    pub sys_id: u32,
-    pub rfss: u32,
-    pub site: u32,
-    pub freq_hz: u64,
 }
 
 /// One site's state, for the interface.
@@ -1142,7 +1141,7 @@ struct Trunk {
     identity: Identity,
     /// Why this control channel is not ours, while it isn't.
     mismatch: Option<String>,
-    adjacent: std::collections::BTreeMap<(u32, u32, u32), AdjacentSite>,
+    adjacent: Neighbours,
     /// The call signs its base station IDs say, by the channel (Hz) each is for.
     callsigns: std::collections::BTreeMap<u64, String>,
     /// Its system's time, last said ([`SiteStatus::system_time`]).
@@ -1340,9 +1339,7 @@ impl Trunk {
             self.cc_hz = Some(hz);
             events.push(Event::ControlChannel { site: self.site, freq_hz: hz });
         }
-        if cc.control_hz.is_some() {
-            self.last_good_s = self.now_s;
-        }
+        // (Alive is what a step says, once it's known to be this system's: follow().)
         self.cc_offset_hz = cc.offset_hz;
         self.follow(radio, sys, cc, events, call_events);
         if self.now_s - self.measured_s >= TUNE_EVERY_S {
@@ -1364,8 +1361,8 @@ impl Trunk {
         let lock = !fields.is_empty();
         for (st, p) in cc.steps.into_iter().zip(cc.params) {
             self.identity = st.identity;
-            for m in st.msgs.iter().filter(|m| m.kind == MessageType::Adjacent && m.freq_hz > 0) {
-                self.adjacent.insert((m.sys_id, m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
+            for m in &st.msgs {
+                self.adjacent.hear(m);
             }
             if let Some(m) = st.msgs.iter().rev().find(|m| m.system_time_ms.is_some()) {
                 self.system_time = m.system_time_ms.map(|(ms, valid)| (m.time_s, ms, valid));
@@ -1424,7 +1421,7 @@ impl Trunk {
         let now = self.now_s;
         let Some(hz) = self.cc_hz else { return };
         self.measured_s = now;
-        if now - self.last_good_s > 1.0 {
+        if now - self.last_good_s > MEASURE_GOOD_S {
             return;
         }
         let (Some(off), reopens) = (self.cc_offset_hz, self.reopens) else { return };
@@ -1481,7 +1478,7 @@ impl Trunk {
             recording: self.calls.calls.iter().filter(|c| radio.recordings.contains_key(&c.id)).count(),
             calls_concluded: self.concluded,
             mismatch: self.mismatch.clone(),
-            adjacent: self.adjacent.values().copied().collect(),
+            adjacent: self.adjacent.list(),
             callsigns: if self.mismatch.is_none() { self.callsigns.iter().map(|(&hz, c)| (c.clone(), hz)).collect() } else { vec![] },
             system_time: self.system_time.filter(|_| self.mismatch.is_none()),
             patches: self.calls.patches.active(),
@@ -1515,8 +1512,9 @@ struct Core {
     now_s: f64,
     events: Vec<Event>,
     call_events: Vec<CallEvent>,
-    /// Wall-clock epoch ms at sample-clock time 0 ([`EngineConfig::epoch_ms_at_zero`]).
-    epoch_ms_at_zero: f64,
+    /// Wall-clock epoch ms at sample-clock time 0, as it has moved
+    /// ([`EngineConfig::epoch_ms_at_zero`] at first; [`Engine::set_wall_epoch`]).
+    wall: WallEpoch,
     /// One copy of a call heard on several sites ([`EngineConfig::drop_duplicates`]).
     drop_duplicates: bool,
 }
@@ -1635,7 +1633,7 @@ impl Core {
             now_s: 0.0,
             events,
             call_events: Vec::new(),
-            epoch_ms_at_zero: cfg.epoch_ms_at_zero,
+            wall: WallEpoch::new(cfg.epoch_ms_at_zero),
             drop_duplicates: cfg.drop_duplicates,
         })
     }
@@ -1698,7 +1696,7 @@ impl Core {
         let learned = UnitAlias {
             alias: a.alias.clone(),
             source: a.source.to_string(),
-            time: ((self.epoch_ms_at_zero + now_s * 1000.0) / 1000.0) as i64,
+            time: (self.wall.ms(now_s, now_s) / 1000.0) as i64,
             wacn: hex(wacn, 5),
             sys: hex(sys_id, 3),
             talkgroup: tg,
@@ -1790,7 +1788,7 @@ impl Core {
             let mut cc = Scoped::new(&mut k, "cc");
             cc.counter("good", t.good);
             cc.counter("bad", t.bad);
-            cc.gauge("locked", (t.now_s - t.last_good_s < 2.0 && t.mismatch.is_none()) as u8 as f64);
+            cc.gauge("locked", (t.now_s - t.last_good_s < LOCKED_S && t.mismatch.is_none()) as u8 as f64);
             // What its protocol measures (framing, eye opening, deviation…).
             t.cc().report(&mut cc);
             if let Some((src, hz)) = t.hunted() {
@@ -1914,7 +1912,7 @@ impl Core {
         }
         self.emit_call_events();
         let mut out = std::mem::take(&mut self.conv_out);
-        self.conv.finish(&mut out);
+        self.conv.finish(self.now_s, &self.call_ids, &|i| &self.systems[i].cfg, &mut out);
         self.emit_conv(out);
     }
 
@@ -1924,10 +1922,13 @@ impl Core {
             match o {
                 ConvOut::Event(e) => self.events.push(e),
                 ConvOut::End { call, rec, on, tune_ref } => {
-                    if tune_ref {
-                        self.radio.score_call(on.source, &call, rec.freq_error_hz());
+                    // (A call not recorded — an ignored talkgroup, say — took in no audio: nothing to save, nothing to score.)
+                    if call.recording {
+                        if tune_ref {
+                            self.radio.score_call(on.source, &call, rec.freq_error_hz());
+                        }
+                        self.write_call(Held { call: call.clone(), rec, on }, None);
                     }
-                    self.write_call(Held { call: call.clone(), rec, on }, None);
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
@@ -1989,10 +1990,12 @@ impl Core {
                     id = next;
                 }
             }
-            // Its voice channel names another talkgroup: the call is over.
+            // Its voice channel names another talkgroup: the call is over (on a system whose grants and voice number them alike).
             if let TrackerOut::Talkgroup(group) = o {
-                let mut host = t.host(&mut self.radio, &self.systems[system as usize].cfg);
-                t.calls.voice_named(id, group, &mut host, &mut self.call_events);
+                if t.cfg.protocol.voice_names_grants() {
+                    let mut host = t.host(&mut self.radio, &self.systems[system as usize].cfg);
+                    t.calls.voice_named(id, group, &mut host, &mut self.call_events);
+                }
                 continue;
             }
             // The call it's for, found once (gone already: it expired in this same block).
@@ -2016,7 +2019,7 @@ impl Core {
                             if CallManager::note_units(c, &mut rec.rec.tx, &news.units, now) {
                                 self.call_events.push(CallEvent::Update(c.clone()));
                             }
-                            let decrypted = digital && (c.encrypted || c.decrypted || rec.decrypted);
+                            let decrypted = c.decrypted_voice(rec.decrypted);
                             if !news.patterns.is_empty() {
                                 heard.push((c.clone(), rec.rec.talkers(&c.sources, news.patterns), decrypted, now));
                             }
@@ -2117,7 +2120,18 @@ impl Core {
         let signals: &[Signal] = self.systems.get(call.system as usize).map_or(&[], |s| &s.cfg.signals);
         for (pattern, src) in heard.into_iter().filter(|(p, _)| p.kind != PatternKind::Beep) {
             let signals = matching(signals, &pattern, call.talkgroup).map(String::from).collect();
-            self.events.push(Event::TonePattern(PatternHeard { system: call.system, site: call.site, call_id: call.id, talkgroup: call.talkgroup, src, pattern, signals, decrypted, time_s: now }));
+            self.events.push(Event::TonePattern(PatternHeard {
+                system: call.system,
+                site: call.site,
+                call_id: call.id,
+                talkgroup: call.talkgroup,
+                alpha_tag: call.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
+                src,
+                pattern,
+                signals,
+                decrypted,
+                time_s: now,
+            }));
         }
     }
 
@@ -2128,7 +2142,13 @@ impl Core {
                     c.twin = self.link_twins(&c);
                     self.events.push(Event::CallStart(c));
                 }
-                CallEvent::Update(c) => self.events.push(Event::CallUpdate(c)),
+                CallEvent::Update(c) => {
+                    // The control channel said it's encrypted: its transmission then is, as its voice's link control would say.
+                    if let Some(r) = self.radio.recordings.get_mut(&c.id).filter(|_| c.encrypted) {
+                        r.rec.tx.mark_encrypted(c.heard_s);
+                    }
+                    self.events.push(Event::CallUpdate(c));
+                }
                 CallEvent::End(c) => {
                     self.conclude(&c);
                     self.events.push(Event::CallEnd(c));
@@ -2190,7 +2210,8 @@ impl Core {
             h.trim(self.systems.get(h.call.system as usize).map_or(0.0, |s| s.cfg.save.min_transmission_s));
             h
         });
-        let decrypted = call.encrypted || call.decrypted;
+        // (As it is saved: decrypted, though its record learned so only after it had gone.)
+        let decrypted = held.as_ref().map_or(call, |h| &h.call).decrypted_voice(false);
         self.tone_patterns(call, rest, decrypted, call.last_audio_s);
         let trunks = &self.trunks;
         let Some(copies) = self.multisite.conclude(call.id, held, |site, tg| site.and_then(|s| trunks.get(s as usize)).is_some_and(|t| t.preferred_for(tg))) else { return };
@@ -2218,14 +2239,17 @@ impl Core {
         let (site, system) = (h.call.site, h.call.system);
         let Some(sys) = self.systems.get(system as usize) else { return false };
         let trunk = site.and_then(|s| self.trunks.get(s as usize));
+        // One epoch for all of a call's times (and its copies'): the one it began under.
+        let epoch_ms = self.wall.at(first_s.unwrap_or(h.call.start_s));
         let saved = save_call(
             h,
             &SaveContext {
                 rules: sys.cfg.save,
+                keep_encrypted: sys.cfg.calls.record_encrypted,
                 short_name: &sys.cfg.short_name,
                 system_type: trunk.map_or("conventional", |t| t.cfg.protocol.kind()),
                 site: trunk.map_or("", |t| &t.cfg.name),
-                epoch_ms_at_zero: self.epoch_ms_at_zero,
+                epoch_ms_at_zero: epoch_ms,
                 units: Some(&sys.aliases),
                 unit_tags: Some(&sys.cfg.unit_tags).filter(|t| !t.is_empty() || t.mode != Default::default()),
                 wacn: trunk.and_then(|t| t.identity.wacn()),
@@ -2497,6 +2521,22 @@ impl Engine {
         if let Some(r) = self.shared.rx.get(source) {
             r.lock().unwrap().src.clock_offset_s = offset_s;
         }
+    }
+
+    /// The wall clock (Unix ms) at the engine's time 0 is `epoch_ms` from
+    /// now on: the host's wall clock was corrected since Start ([`WallEpoch`]).
+    /// Calls up now keep the epoch they began under. False when it moved by
+    /// too little to matter.
+    pub fn set_wall_epoch(&self, epoch_ms: f64) -> bool {
+        let mut core = self.shared.core.lock().unwrap();
+        let now_s = core.now_s;
+        core.wall.set(now_s, epoch_ms)
+    }
+
+    /// The wall-clock epoch (Unix ms) in effect at engine time `t_s`: Unix ms
+    /// of a time `s` of a call begun at `t_s` is this plus `s * 1000`.
+    pub fn wall_epoch_at(&self, t_s: f64) -> f64 {
+        self.shared.core.lock().unwrap().wall.at(t_s)
     }
 
     /// The offset [`set_clock_offset`](Self::set_clock_offset) last set, s.
@@ -2982,6 +3022,114 @@ mod tests {
         for (call, kept) in dups {
             assert!(call.site != kept.site && call.sources[0].src == kept.sources[0].src, "a copy of the same talker's, from the other site");
         }
+    }
+
+    /// Voice on site `i`'s call on `f`, at `t`, and the call events it makes.
+    fn voice_at(e: &mut Core, i: usize, f: u64, t: f64) {
+        use super::super::frames::{Codec, VoiceFrame};
+        let id = e.trunks[i].calls.calls.iter().find(|c| c.freq_hz == f).unwrap().id;
+        let frame = VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: mbe::Kind::Voice, tone: None };
+        e.trunks[i].now_s = t;
+        e.radio.pending.push((i as u16, id, TrackerOut::Audio(vec![0.1; mbe::FRAME_SAMPLES * 5], frame)));
+        e.apply_pending();
+        e.emit_call_events();
+    }
+
+    fn concluded(ev: &[Event]) -> Vec<&Concluded> {
+        let mut v: Vec<&Concluded> = ev.iter().filter_map(|x| if let Event::Concluded(k) = x { Some(k) } else { None }).collect();
+        v.sort_by(|a, b| a.call.start_s.total_cmp(&b.call.start_s));
+        v
+    }
+
+    /// The host's wall clock corrected while a call is up ([`WallEpoch`]):
+    /// the call keeps the epoch it began under from start to stop — its
+    /// length, and its talkers' places in it, as on the air — and the next
+    /// call is by the new one.
+    #[test]
+    fn a_call_keeps_the_wall_epoch_it_began_under() {
+        const EPOCH: f64 = 1_700_000_000_000.0;
+        // Two calls, the second at 50 s; `step`: the wall clock is corrected 30 s ahead mid-way through the first.
+        let run = |step: Option<f64>| {
+            let mut cfg = one_site("d", |s| s.save.normalize = false);
+            cfg.epoch_ms_at_zero = EPOCH;
+            let mut e = Core::new(cfg).unwrap();
+            let grant = |e: &mut Core, t: f64, src: i64| handle(e, 0, &[Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: 851_500_000, source: src, ..Default::default() }]);
+            grant(&mut e, 10.0, 7);
+            e.emit_call_events();
+            voice_at(&mut e, 0, 851_500_000, 10.5);
+            if let Some(ms) = step {
+                assert!(e.wall.set(11.0, EPOCH + ms));
+            }
+            voice_at(&mut e, 0, 851_500_000, 11.5);
+            grant(&mut e, 12.0, 9);
+            voice_at(&mut e, 0, 851_500_000, 12.5);
+            tick(&mut e, 0, 40.0);
+            e.emit_call_events();
+            grant(&mut e, 50.0, 11);
+            e.emit_call_events();
+            voice_at(&mut e, 0, 851_500_000, 50.5);
+            tick(&mut e, 0, 80.0);
+            e.emit_call_events();
+            let ev = e.drain_events();
+            let saved = concluded(&ev);
+            assert_eq!(saved.len(), 2);
+            (saved[0].record.clone(), saved[1].record.clone(), saved[0].base_name.clone(), saved[1].call.start_s)
+        };
+        let (plain, plain_next, plain_name, next_start_s) = run(None);
+        for ms in [30_000.0, -2_000.0, 0.05e-3 * 86_400e3] {
+            let (first, next, name, _) = run(Some(ms));
+            // Start, stop, length, talkers' times, file name: as if the clock hadn't moved.
+            assert_eq!(first.to_json(), plain.to_json(), "the call up when it moved ({ms} ms)");
+            assert_eq!(name, plain_name);
+            assert_eq!(next.start_time_ms, (EPOCH + ms + next_start_s * 1000.0).round() as i64, "the next by the corrected clock ({ms} ms)");
+            assert_eq!(next.stop_time_ms - next.start_time_ms, plain_next.stop_time_ms - plain_next.start_time_ms, "its length unchanged");
+        }
+        assert_eq!(plain.start_time_ms, (EPOCH + 10_000.0) as i64);
+    }
+
+    /// Copies of one transmission heard on two sites, the wall clock corrected
+    /// between their grants: they share one epoch (the first copy's), so the
+    /// copy kept is named as the other would have been — which is how the
+    /// copies of a call are matched up, here and between recorders.
+    #[test]
+    fn copies_on_two_sites_share_the_first_copys_epoch() {
+        let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], ..Default::default() };
+        let mut sys = SystemConfig { save: SaveRules { normalize: false, ..Default::default() }, ..SystemConfig::trunked("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6)]) };
+        sys.calls.conversation = false;
+        let cfg = EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() };
+        let mut e = Core::new(cfg).unwrap();
+        let grant = |e: &mut Core, i: usize, t: f64, f: u64, src: i64| handle(e, i, &[Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: f, source: src, ..Default::default() }]);
+        let (east, west) = (851_500_000, 851_600_000);
+        grant(&mut e, 0, 1.0, east, 7);
+        // Between the copies' grants: 250 ms ahead.
+        assert!(e.wall.set(1.1, 250.0));
+        grant(&mut e, 1, 1.2, west, 7);
+        e.emit_call_events();
+        for t in [1.5, 1.7, 1.9] {
+            voice_at(&mut e, 0, east, t);
+            // (West's copy is the better heard, so it's the one kept.)
+            voice_at(&mut e, 1, west, t + 0.1);
+            voice_at(&mut e, 1, west, t + 0.15);
+        }
+        for i in [0, 1] {
+            tick(&mut e, i, 20.0);
+            e.emit_call_events();
+        }
+        let ev = e.drain_events();
+        let saved = concluded(&ev);
+        assert_eq!(saved.len(), 1, "saved once");
+        let k = saved[0];
+        assert_eq!(k.record.transmission_id, "dc-101-7-1000", "the first copy's start, by its epoch: not 1250");
+        assert_eq!(k.record.start_time_ms, (k.call.start_s * 1000.0).round() as i64, "the copy kept by the first's epoch too");
+    }
+
+    #[test]
+    fn the_engine_takes_a_corrected_wall_epoch_from_its_own_time_on() {
+        let e = Engine::new(EngineConfig { epoch_ms_at_zero: 1000.0, ..one_site("d", |_| ()) }).unwrap();
+        assert_eq!(e.wall_epoch_at(0.0), 1000.0);
+        assert!(!e.set_wall_epoch(1000.4), "less than a ms");
+        assert!(e.set_wall_epoch(1500.0));
+        assert_eq!((e.wall_epoch_at(-1.0), e.wall_epoch_at(0.0), e.wall_epoch_at(99.0)), (1000.0, 1500.0, 1500.0));
     }
 
     #[test]

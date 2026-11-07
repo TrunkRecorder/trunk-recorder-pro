@@ -67,7 +67,13 @@ macos)
   docs "$work/dmg"
   dmg="$out/trunk-pro-$version-macos.dmg"
   rm -f "$dmg"
-  hdiutil create -quiet -volname "Trunk Recorder Pro" -srcfolder "$work/dmg" -fs HFS+ -format UDZO -ov "$dmg"
+  # (hdiutil fails now and then on a CI runner — "Resource busy" — and succeeds when asked again; its error is shown.)
+  for try in 1 2 3 4 5; do
+    hdiutil create -volname "Trunk Recorder Pro" -srcfolder "$work/dmg" -fs HFS+ -format UDZO -ov "$dmg" && break
+    [ "$try" = 5 ] && { echo "hdiutil create failed $try times" >&2; exit 1; }
+    echo "hdiutil create failed (try $try): again in $((try * 5)) s" >&2
+    sleep $((try * 5))
+  done
   if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
     codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$dmg"
     if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then

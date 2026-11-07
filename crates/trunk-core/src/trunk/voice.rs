@@ -118,10 +118,19 @@ pub enum TrackerOut {
     /// The FCC call sign the voice channel identifies itself by (Motorola's
     /// LC_MOT_BSI / MAC_MOT_BSI).
     BaseStationId(String),
-    /// The voice channel named another talkgroup than the one the slot was
-    /// granted for (Phase 2 MAC_PTT, Group Voice Channel User): the site
-    /// gave it to that talkgroup, by a grant not heard.
+    /// The voice channel named another talkgroup than the one it was granted
+    /// for (Phase 1 link control, Phase 2 MAC_PTT and Group Voice Channel
+    /// User): the site gave it to that talkgroup, by a grant not heard
+    /// ([`reassigned`]).
     Talkgroup(u32),
+}
+
+/// The voice channel, granted for `granted` (None: not a trunked call),
+/// named `group` for a transmission: [`TrackerOut::Talkgroup`] when it's
+/// another talkgroup, which ends the call there (a patch's supergroup and
+/// its members are one conversation: the calls decide).
+pub fn reassigned(granted: Option<u32>, group: u32) -> Option<TrackerOut> {
+    (group != 0 && granted.is_some_and(|g| g != group)).then_some(TrackerOut::Talkgroup(group))
 }
 
 /// What a P25 transmission's voice is, as far as is known.

@@ -88,7 +88,7 @@ import { findOnAir, siteFrequencies, type FccTarget } from "./controller.ts";
 import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
-import { BiasT, DraftInput, Field, FileInput, NumberInput, TextInput, Toggle } from "./inputs.tsx";
+import { BiasT, DraftInput, Field, FileInput, NumberInput, ReleaseSlider, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
 import { openTodos } from "./todo.ts";
@@ -776,38 +776,6 @@ function AutoTune(props: { c: Config; src: Source; i: number; edit: EditSource }
 
 const signedPpm = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
 
-/**
- * A gain slider: moves as it's dragged, saved once it's let go (the pointer
- * up, a key up, or leaving it) — each save sets the radio's gain while
- * recording, so one per setting, not one per step dragged through.
- */
-function ReleaseSlider(props: { max: number; value: number; disabled: boolean; label: string; onChange: (v: number) => void }) {
-  const [draft, setDraft] = useState<number | null>(null);
-  const shown = draft ?? props.value;
-  const done = () => {
-    if (draft !== null && draft !== props.value) props.onChange(draft);
-    setDraft(null);
-  };
-  return (
-    <div className="row">
-      <input
-        type="range"
-        min={0}
-        max={props.max}
-        value={shown}
-        disabled={props.disabled}
-        aria-label={props.label}
-        aria-valuetext={String(shown)}
-        onChange={(e) => setDraft(Number(e.target.value))}
-        onPointerUp={done}
-        onKeyUp={done}
-        onBlur={done}
-      />
-      <span className="mono small">{props.disabled ? "auto" : shown}</span>
-    </div>
-  );
-}
-
 const AIRSPY_MODES: { mode: AirspyGainMode; label: string; hint: string }[] = [
   { mode: "linearity", label: "Linearity", hint: "Best near transmitters" },
   { mode: "sensitivity", label: "Sensitivity", hint: "Best for weak signals" },
@@ -819,7 +787,7 @@ function AirspyGainFields(props: { src: Extract<Source, { type: "airspy" }>; edi
   const set = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", v: number) => edit((x) => x.type === "airspy" && void (x[k] = v));
   const slider = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", label: string, max: number, disabled = false) => (
     <Field label={label}>
-      <ReleaseSlider max={max} value={src[k]} disabled={disabled} label={label} onChange={(v) => set(k, v)} />
+      <ReleaseSlider max={max} value={src[k]} disabled={disabled} label={label} text={(v) => (disabled ? "auto" : String(v))} onChange={(v) => set(k, v)} />
     </Field>
   );
   return (
@@ -3122,6 +3090,14 @@ function DataTab(props: { c: Config }) {
           </Field>
           <Field label="Write every, s" hint="Longer writes less; calls show at once either way">
             <NumberInput label="Write every, s" value={st?.commitSeconds ?? 300} onChange={(v) => set({ commitSeconds: Math.max(10, Math.min(3600, Math.round(v ?? 300))) })} />
+          </Field>
+        </Group>
+        <Group title="Radio registry" hint="Every talkgroup, radio and pair of radios each system has heard (the Radio page, first-heard alerts). It's held in memory, about 2 kB a radio, and saved as it changes. Past either limit, what was heard least recently is forgotten, and comes back as new if heard again.">
+          <Field label="Radios kept, per system" hint="Talkgroups a quarter as many (5,000 at least). 0: no limit but the days">
+            <NumberInput label="Radios kept, per system" value={st?.registryRadios ?? 20000} onChange={(v) => set({ registryRadios: Math.max(0, Math.round(v ?? 20000)) })} />
+          </Field>
+          <Field label="Forget after, days unheard" hint="A talkgroup, radio or pair not heard for this long. 0: never">
+            <NumberInput label="Forget after, days unheard" value={st?.registryDays ?? 365} onChange={(v) => set({ registryDays: Math.max(0, Math.round(v ?? 365)) })} />
           </Field>
         </Group>
         <Group title="How long">

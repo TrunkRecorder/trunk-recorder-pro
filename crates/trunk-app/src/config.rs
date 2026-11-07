@@ -1657,7 +1657,6 @@ impl Recording {
     fn save_rules(&self) -> SaveRules {
         SaveRules {
             keep_silent: self.keep_silent_calls,
-            keep_encrypted: self.record_encrypted,
             min_call_s: self.min_call_s.max(0.0),
             min_transmission_s: self.min_transmission_s.max(0.0),
             normalize: self.normalize_audio,
@@ -2010,6 +2009,14 @@ pub struct StorageSettings {
     /// system (on the Pi's eMMC, a call a second: 1.6 GB a day with it, 0.8
     /// without; `db::tests::day_write_budget`).
     pub radio_index: bool,
+    /// Radios the radio registry keeps a system: past it, the least
+    /// recently heard go (talkgroups a quarter as many, 5,000 at least).
+    /// It's held in memory: about 2 kB a radio. 0: no cap (`registry_days`
+    /// alone bounds it).
+    pub registry_radios: u32,
+    /// Days a talkgroup, radio or pair the registry hasn't heard is kept;
+    /// 0 keeps it however old.
+    pub registry_days: u32,
     /// Index each call by its talkgroup, for a talkgroup's call list (the
     /// same, asking by `talkgroup`); off, a talkgroup's list is its recent
     /// calls. About a third as costly as the radio index.
@@ -2023,7 +2030,7 @@ impl StorageSettings {
 
 impl Default for StorageSettings {
     fn default() -> Self {
-        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true, talkgroup_index: true }
+        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true, talkgroup_index: true, registry_radios: 20_000, registry_days: 365 }
     }
 }
 
@@ -2391,7 +2398,7 @@ impl Config {
 
     /// What conventional rows name talkgroups known before a call is heard
     /// ([`ConvChannel::names_ahead`]), by system short name: the dashboard's
-    /// names for them, ahead of the talkgroup file's, as a call's are. (A
+    /// names for them, ahead of the system's talkgroups', as a call's are. (A
     /// number that comes from the air is named by the calls that carry it.)
     pub fn row_talkgroups(&self) -> HashMap<String, Talkgroups> {
         let names: Vec<&str> = self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|v| v.short_name.as_str())).collect();
@@ -2732,7 +2739,7 @@ impl Config {
             })
             .collect();
         // A conventional system's P25 / DMR / NXDN channels name the talkgroups
-        // they hear by its own talkgroup file (a row's own name comes from the
+        // they hear by its own talkgroups (a row's own name comes from the
         // channel list).
         for v in self.active_conventional() {
             let r = self.recording.with(&v.recording);
@@ -2804,7 +2811,7 @@ mod tests {
     #[test]
     fn storage_defaults_to_300_second_commits_and_120_days() {
         let c = Config::from_value(serde_json::json!({})).unwrap();
-        assert_eq!((c.storage.commit_seconds, c.storage.retention_days), (300, 120));
+        assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.registry_radios, c.storage.registry_days), (300, 120, 20_000, 365));
         let c = Config::from_value(serde_json::json!({ "storage": { "commitSeconds": 60, "retentionDays": 0 } })).unwrap();
         assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.backend), (60, 0, StorageBackend::Sqlite));
         let c = Config::from_value(serde_json::json!({ "storage": { "backend": "postgres", "url": "postgres://trp@db/trunk" } })).unwrap();

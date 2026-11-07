@@ -143,6 +143,8 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .mk i { position: absolute; top: 4px; left: 3px; font-style: normal; font-size: 11px; padding: 1px 5px; border-radius: 4px; background: var(--panel); border: 1px solid var(--line); white-space: nowrap; }
 .mk-cc { border-left-color: var(--accent); }
 .mk-cc i { color: var(--accent); }
+.mk-cc.faint { opacity: 0.55; border-left-style: dotted; }
+.mk-cc.faint i { top: 64px; font-size: 10px; }
 .mk-recording { border-left: 2px solid var(--rec); }
 .mk-recording i { color: var(--rec); top: 24px; }
 .mk-monitoring i { top: 44px; color: var(--muted); }
@@ -1105,6 +1107,9 @@ table.calls tr.ignored td { opacity: 0.55; }
 .sw-src, .sw-cc, .sw-rec, .sw-mon, .sw-conv { display: inline-block; width: 12px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 .sw-src { background: color-mix(in srgb, var(--series-1) 30%, transparent); }
 .sw-cc { background: var(--accent); width: 3px; }
+.sw-adj { display: inline-block; height: 10px; margin-right: 5px; vertical-align: -1px; width: 0; border-left: 2px dotted var(--accent); opacity: 0.55; }
+.band-adj { stroke-dasharray: 2 3; opacity: 0.55; }
+.band-adj-label { font-size: 10px; opacity: 0.7; }
 .sw-rec { background: var(--rec); width: 2px; }
 .sw-mon { background: var(--muted); width: 2px; }
 .sw-conv { background: var(--series-3); width: 2px; }
@@ -1444,3 +1449,9 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .store-sizes .bar { display: block; height: 8px; border-radius: 4px; background: var(--series-1); min-width: 2px; }
 .store-sizes .bar.alt { background: var(--series-2); opacity: 0.8; }
 .store-sizes .index-use { font-family: var(--font, inherit); opacity: 0.8; }
+.readonly-link { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.readonly-link code { font: 12px/1.5 var(--mono); overflow-wrap: anywhere; min-width: 0; flex: 1 1 16em; }
+.readonly-link a.btn { text-decoration: none; }
+.plugin-slider { display: flex; align-items: center; gap: 10px; }
+.plugin-slider input[type="range"] { flex: 1 1 200px; min-width: 0; accent-color: var(--accent); }
+.plugin-slider > .mono { min-width: 4ch; text-align: right; }

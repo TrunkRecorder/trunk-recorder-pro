@@ -384,6 +384,23 @@ it).
    `Cipher` shows there's no key; a `keys` field in the web UI; publish
    the SDK.
 
+## Open: a Phase 2 key check (found 2026-11-05)
+
+Phase 1 decides a key by its voice (`KeyCheck`, with `imbe_voice`: the IMBE
+pitch b0 is one the encoder sends): a wrong key is reported (`WrongKey`) and
+its voice dropped, a right one reported `Decrypted` only once the check says
+so. Phase 2 (`tdma.rs`) reports `Decrypted` on the first frame it applies a
+keystream to, and has no wrong-key path: a wrong key's noise is recorded as
+decrypted voice. The same `KeyCheck` would do, given an AMBE+2 "could be
+voice" test — but the obvious one (half-rate b0 not 120–127, the
+erasure/silence/tone values) flags only ~6 % of a wrong key's frames, under
+`KeyCheck`'s 10 %: it would rarely decide. Needs a test with measured
+right/wrong rates on Phase 2 captures (decrypted and wrong-keyed), cross-
+checked against OP25 / dsd-fme as Phase 1's was; then one key-check state
+shared by `tracker.rs` and `tdma.rs` (with the rest of their near-copy sync
+state: `set_voice`, `set_es`, `report_cipher`, next-superframe MI, the 1 s
+quiet restart).
+
 ## Log
 
 - 2026-10-12: plan written; branch started.

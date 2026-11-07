@@ -205,9 +205,7 @@ impl Slot {
     /// The voice channel named `group` for the transmission: told when the
     /// slot was granted for another talkgroup.
     fn named(&self, c: usize, group: u32, out: &mut Vec<(usize, TrackerOut)>) {
-        if group != 0 && self.granted.is_some_and(|g| g != group) {
-            out.push((c, TrackerOut::Talkgroup(group)));
-        }
+        out.extend(super::voice::reassigned(self.granted, group).map(|o| (c, o)));
     }
 
     /// A talker named (MAC_PTT, a voice channel user message) and what the
