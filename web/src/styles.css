@@ -1455,3 +1455,9 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .plugin-slider { display: flex; align-items: center; gap: 10px; }
 .plugin-slider input[type="range"] { flex: 1 1 200px; min-width: 0; accent-color: var(--accent); }
 .plugin-slider > .mono { min-width: 4ch; text-align: right; }
+
+/* Setup → Data: each kind of data, its delete tick and its exports. */
+.data-kinds { display: flex; flex-direction: column; gap: 10px; }
+.data-kind { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: flex-start; justify-content: space-between; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.data-kind .toggle { flex: 1 1 280px; min-width: 0; }
+.data-exports { flex-wrap: wrap; gap: 6px; }

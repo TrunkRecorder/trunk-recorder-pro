@@ -9,7 +9,7 @@
 //! copy is recorded and the best kept once the last one ends — so a site
 //! that fades mid-call, or whose voice channel falls outside every source,
 //! doesn't cost the call. Best: the most cleanly decoded audio; a site the
-//! talkgroup prefers (talkgroup file) wins while its copy holds
+//! talkgroup prefers (its row's, else its system's) wins while its copy holds
 //! [`PREFERRED_SHARE`] of that. Live audio comes from one copy at a time.
 //!
 //! A copy is dropped only when one saved holds all of it ([`Kept::holds`]);
@@ -23,7 +23,6 @@ use std::collections::HashMap;
 
 use super::calls::{Call, CallId};
 use super::recorded::Recorded;
-use super::talkgroups::Talkgroup;
 
 
 /// Grants for one call reach each site's control channel at nearly the same time.
@@ -256,17 +255,15 @@ impl MultiSite {
     /// recorded). When it was the last of its copies: all of them, the one
     /// to save first ([`pick`]), then the others, best first — the next to
     /// try when one isn't kept (too short for its site's rules).
-    /// `prefers(site, tg)`: whether `site` is the one the talkgroup file
-    /// wants `tg` from.
-    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(Option<u16>, &Talkgroup) -> bool) -> Option<Vec<Held>> {
+    /// `prefers(call)`: whether the copy's site is the one its talkgroup is
+    /// wanted from.
+    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(&Call) -> bool) -> Option<Vec<Held>> {
         let mut copies = match self.end(id, held) {
             Ended::Alone(None) | Ended::Waiting => return None,
             Ended::Alone(Some(h)) => vec![h],
             Ended::Done(v) => v,
         };
-        // The talkgroup's preferred site, by any site's talkgroup file.
-        let prefs: Vec<&Talkgroup> = copies.iter().filter_map(|h| h.call.talkgroup_info.as_ref()).collect();
-        let preferred: Vec<bool> = copies.iter().map(|h| prefs.iter().any(|tg| prefers(h.call.site, tg))).collect();
+        let preferred: Vec<bool> = copies.iter().map(|h| prefers(&h.call)).collect();
         let k = pick(&copies, &preferred)?;
         let first = copies.remove(k);
         copies.sort_by(|a, b| b.clean_s().total_cmp(&a.clean_s()));

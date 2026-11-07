@@ -2,15 +2,15 @@
 
 import type { AdjacentSite, Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitNames } from "./protocol.ts";
 import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
-import { defaultConfig, parseChannelCsv, readConfig, receivers, sourceLabels, sourceNames, usableHalfWidth } from "./rules.ts";
+import { defaultConfig, parseChannelCsv, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
-export { receivers, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, readConfig, resolvedCenters, startProblem, usableHalfWidth } from "./rules.ts";
+export { receivers, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, rateFor, rateOk, readConfig, resolvedCenters, sourceAdvice, sourceRates, startProblem, usableHalfWidth } from "./rules.ts";
+export type { Advice, AdviceScore, Heard } from "./rules.ts";
 
 /** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
 export const RTL_DEFAULT_GAIN_DB = 25.4;
 
-export const SAMPLE_RATES = [2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_000, 1_024_000];
 
 /** A fresh config (the web build; the desktop app gets its own from the recorder). */
 /** The log's defaults (the recorder's LogSettings). */
@@ -18,9 +18,6 @@ export function defaultLog(): LogSettings {
   return defaultConfig().log!;
 }
 
-export const USRP_RATES = [2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000];
-/** Airspy R2: 10 / 2.5; Mini: 6 / 3 (and 10 with newer firmware). */
-export const AIRSPY_RATES = [10_000_000, 6_000_000, 3_000_000, 2_500_000];
 
 export function newDongle(): Source {
   return { type: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, bufLen: 0, buffers: 0 };
@@ -31,18 +28,12 @@ export function newUsrp(): Source {
 export function newAirspy(): Source {
   return { type: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, packing: true, ppm: 0 };
 }
-/** Offered for a bladeRF (any rate 0.52–61.44 MSPS can be typed; above ~40 MSPS needs USB 3 and a fast CPU). */
-export const BLADERF_RATES = [2_400_000, 4_000_000, 5_000_000, 6_000_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000, 25_000_000, 30_720_000];
 export function newBladerf(): Source {
   return { type: "bladerf", serial: "", centerHz: 0, rateHz: 10_000_000, bandwidthHz: 0, gainDb: 30, agc: false, biasTee: false, ppm: 0 };
 }
-/** Offered for a HackRF (1–20 MSPS can be typed). */
-export const HACKRF_RATES = [8_000_000, 10_000_000, 4_000_000, 2_000_000, 16_000_000, 20_000_000];
 export function newHackrf(): Source {
   return { type: "hackrf", serial: "", centerHz: 0, rateHz: 8_000_000, lnaDb: 16, vgaDb: 20, amp: false, biasTee: false, ppm: 0 };
 }
-/** Offered for SoapySDR devices; any rate the device takes can be typed. */
-export const SOAPY_RATES = [2_000_000, 2_400_000, 2_500_000, 3_000_000, 6_000_000, 8_000_000, 10_000_000];
 export function newSoapy(): Source {
   return { type: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, agc: true, gainDb: null, gains: {}, antenna: "", settings: "", ppm: 0 };
 }
@@ -93,11 +84,11 @@ export interface SourceKind {
 }
 
 export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
-  rtlsdr: { label: "RTL-SDR", fresh: newDongle, rates: SAMPLE_RATES, device: "serial", soapyDriver: "rtlsdr", liveAgc: true },
+  rtlsdr: { label: "RTL-SDR", fresh: newDongle, get rates() { return sourceRates("rtlsdr"); }, device: "serial", soapyDriver: "rtlsdr", liveAgc: true },
   usrp: {
     label: "USRP",
     fresh: newUsrp,
-    rates: USRP_RATES,
+    get rates() { return sourceRates("usrp"); },
     freeRate: true,
     rateHint: "MSPS; wider costs more CPU",
     device: "args",
@@ -107,7 +98,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
   airspy: {
     label: "Airspy",
     fresh: newAirspy,
-    rates: AIRSPY_RATES,
+    get rates() { return sourceRates("airspy"); },
     rateHint: "R2: 10 or 2.5; Mini: 6 or 3",
     device: "serial",
     driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll (from airspy-tools) next to trunk-pro.exe" },
@@ -118,7 +109,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
   bladerf: {
     label: "bladeRF",
     fresh: newBladerf,
-    rates: BLADERF_RATES,
+    get rates() { return sourceRates("bladerf"); },
     freeRate: true,
     rateHint: "MSPS, 0.52–61.44 (the original bladeRF: up to 40)",
     device: "serial",
@@ -129,7 +120,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
   hackrf: {
     label: "HackRF",
     fresh: newHackrf,
-    rates: HACKRF_RATES,
+    get rates() { return sourceRates("hackrf"); },
     freeRate: true,
     rateHint: "MSPS, 1–20",
     device: "serial",
@@ -140,14 +131,14 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
   soapy: {
     label: "SoapySDR",
     fresh: newSoapy,
-    rates: SOAPY_RATES,
+    get rates() { return sourceRates("soapy"); },
     freeRate: true,
     rateHint: "MSPS, one the device supports",
     device: "args",
     driver: { name: "SoapySDR and your radio's module", macos: "brew install soapysdr soapyhackrf", linux: "sudo apt install soapysdr0.8-module-all", windows: "PothosSDR or radioconda" },
     covers: "SDRplay, LimeSDR, PlutoSDR…",
   },
-  file: { label: "Capture file", fresh: newFile, rates: [...SAMPLE_RATES, 8_000_000, 10_000_000] },
+  file: { label: "Capture file", fresh: newFile, get rates() { return sourceRates("file"); } },
 };
 
 /** The kinds of source with a driver (installed, or built in) and so the desktop app: the recorder reports each in `radios`. */
@@ -189,20 +180,6 @@ export function foundRadio(radios: Radios | null | undefined, x: Source): FoundR
   return devices.find((d) => (x.type === "bladerf" ? !!d.serial?.toLowerCase().startsWith(id.toLowerCase()) : (d.serial ?? d.args) === id));
 }
 
-/** Whether the radio runs at `hz`, as it said when opened (true when that isn't known). */
-export function rateOk(hz: number, found: FoundRadio | undefined): boolean {
-  if (found?.rates?.length) return found.rates.includes(hz);
-  if (found?.rateRange) return hz >= found.rateRange[0] && hz <= found.rateRange[1];
-  return true;
-}
-
-/** `hz` if the radio runs at it (or that isn't known), else the nearest it does: its first rate, or the end of its range. */
-export function rateFor(hz: number, found: FoundRadio | undefined): number {
-  if (rateOk(hz, found)) return hz;
-  if (found?.rates?.length) return found.rates[0];
-  const [lo, hi] = found!.rateRange!;
-  return Math.min(Math.max(hz, lo), hi);
-}
 
 /** What the radio runs at, MSPS ("10 or 2.5", "0.52–61.44"), when it said; null when not. */
 export function ratesText(found: FoundRadio | undefined): string | null {
@@ -1046,7 +1023,7 @@ export function importTrunkRecorderConfig(
     }
     if (/airspy/.test(dev)) {
       const sn = /airspy=(0x)?([0-9a-fA-F]{8,16})/.exec(dev)?.[2] ?? "";
-      const rate = typeof s.rate === "number" && AIRSPY_RATES.includes(s.rate) ? s.rate : 6_000_000;
+      const rate = typeof s.rate === "number" && sourceRates("airspy").includes(s.rate) ? s.rate : 6_000_000;
       // Trunk Recorder sets the Airspy's stages by name (LNA, MIX, IF = VGA); else one overall gain, read here as the linearity step.
       const lna = stage(s.lnaGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.LNA);
       const mix = stage(s.mixGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.MIX);

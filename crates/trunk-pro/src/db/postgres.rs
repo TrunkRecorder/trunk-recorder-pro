@@ -94,6 +94,14 @@ impl Backend for PostgresBackend {
         tx.commit().map_err(|e| format!("commit failed: {}", said(e)))
     }
 
+    /// Each table rewritten without its dead rows (`vacuum full` takes each
+    /// one's lock while it does: reads of it wait too).
+    fn compact(&self) -> Result<(), String> {
+        let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let tables: Vec<&str> = super::schema::TABLES.iter().map(|t| t.name).collect();
+        w.client.batch_execute(&format!("vacuum (full, analyze) {}", tables.join(", "))).map_err(|e| format!("vacuum failed: {}", said(e)))
+    }
+
     /// `f` on a read connection from the pool (a new one when all are out,
     /// or the one taken had dropped).
     fn read(&self, f: &mut dyn FnMut(&mut dyn Exec) -> Result<(), String>) -> Result<(), String> {

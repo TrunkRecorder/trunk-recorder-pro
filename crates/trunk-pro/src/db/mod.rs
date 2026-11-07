@@ -423,6 +423,40 @@ impl Db {
         self.store()?.registry()
     }
 
+    /// System `system_id`'s stored radio registry (gone from the config: not in memory).
+    pub fn registry_of(&self, system_id: i64) -> Result<Option<trunk_app::stats::radio::SystemRadio>, String> {
+        self.store()?.registry_of(system_id)
+    }
+
+    /// Every system the store has (the config's and those gone from it), by id.
+    pub fn system_names(&self) -> Result<Vec<(i64, String)>, String> {
+        self.store()?.system_names()
+    }
+
+    /// Every system the store has, and how much of each it keeps ([`Store::data_systems`]).
+    pub fn data_systems(&self) -> Result<Vec<(i64, String, trunk_app::protocol::DataCounts)>, String> {
+        self.store()?.data_systems()
+    }
+
+    /// Delete `kinds` of a system's data (none: every system's), once
+    /// every write sent before has been committed ([`Store::delete`]).
+    pub fn delete(&self, kinds: &[trunk_app::protocol::DataKind], system_id: Option<i64>, forget: bool, now_ms: i64) -> Result<trunk_app::protocol::DataCounts, String> {
+        self.flush()?;
+        self.store()?.delete(kinds, system_id, forget, now_ms)
+    }
+
+    /// Give deleted rows' space back to the disk, once every write sent
+    /// before is committed: the store's size before and after ([`Store::compact`]).
+    pub fn compact(&self) -> Result<(i64, i64), String> {
+        self.flush()?;
+        self.store()?.compact()
+    }
+
+    /// A page of a table to export ([`Store::export`]).
+    pub fn export(&self, table: trunk_app::protocol::DataTable, system_id: Option<i64>, after: Option<&[sql::V]>, limit: usize) -> Result<store::ExportPage, String> {
+        self.store()?.export(table, system_id, after, limit)
+    }
+
     /// The bytes the store has written to disk since it opened: SQLite's
     /// writer thread's own count (Linux). None: not measured on this OS, or
     /// a PostgreSQL store (its server writes: [`Db::server_wal_bytes`]).
@@ -782,6 +816,77 @@ mod tests {
             assert!(one("select cast(start_at as text) from calls_report").starts_with("2023-11-14") && one("select cast(start_at as text) from calls_report").contains("12:00:00.123"), "{}", one("select cast(start_at as text) from calls_report"));
             assert_eq!(one("select unit_name from transmissions_report order by seq"), "ENGINE 1|");
             assert_eq!(one("select series from stats_report"), "cpu");
+        }
+    }
+
+    /// Setup → Data: each table exports a page at a time, every system's or
+    /// one's; a system's data deletes alone (the other's stays), its calls
+    /// marked for the backfill, and a system gone from the config with all
+    /// of it deleted is forgotten.
+    #[test]
+    fn data_exports_and_deletes_by_system() {
+        use trunk_app::protocol::{DataKind, DataTable};
+        use trunk_app::stats::HourRow;
+        for db in Db::for_each_backend("data-tools", Duration::from_millis(10)) {
+            let (a, b) = (db.system_id("a").unwrap(), db.system_id("b").unwrap());
+            for (sys, name) in [(a, "a"), (b, "b")] {
+                db.send(Change::Talkgroups { system_id: sys, rows: trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n1,One\n2,\"Two, too\"\n") });
+                db.send(Change::Units { system_id: sys, aliases: vec![(7, trunk_core::trunk::UnitAlias { alias: "E7".into(), time: 1000, ..Default::default() })] });
+                for i in 0..5 {
+                    let mut r = row::tests::record(1, 1_000_000 + i * 1000);
+                    r.short_name = name.into();
+                    db.send(Change::Call { row: row::call_row(&format!("{name}/{i}"), &r, true, true, None, 0), live: true });
+                }
+                let hour = |series: String, t: i64| HourRow { series, t, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 };
+                db.send(Change::StatsHours(vec![hour(format!("sys/{name}/calls"), 0), hour(format!("sys/{name}/calls"), 3600), hour(format!("sys/{name}"), 0)]));
+                db.send(Change::StatsMinute { t: 60, json: format!(r#"{{"t":60,"s":{{"sys/{name}/calls":[1,1,1],"cpu":[5,5,5]}}}}"#) });
+            }
+            db.send(Change::StatsHours(vec![HourRow { series: "sys/ab/calls".into(), t: 0, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 }, HourRow { series: "cpu".into(), t: 0, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 }]));
+            db.flush().unwrap();
+            let all = |table, system, limit| {
+                let (mut rows, mut after) = (Vec::new(), None);
+                loop {
+                    let p = db.export(table, system, after.as_deref(), limit).unwrap();
+                    rows.extend(p.rows);
+                    match p.next {
+                        Some(n) => after = Some(n),
+                        None => return rows,
+                    }
+                }
+            };
+            assert_eq!(all(DataTable::Calls, None, 3).len(), 10, "paged, every system's ({})", db.kind());
+            let mine = all(DataTable::Calls, Some(a), 2);
+            assert_eq!(mine.len(), 5);
+            assert!(mine.iter().all(|r| r[0] == sql::V::Text("a".into())), "{mine:?}");
+            assert_eq!(all(DataTable::Transmissions, Some(b), 1).len(), db.count(&format!("select count(*) from call_transmissions where system_id = {b}")) as usize);
+            let tgs = all(DataTable::Talkgroups, Some(a), 1);
+            assert_eq!(tgs.iter().map(|r| r[2].clone()).collect::<Vec<_>>(), [sql::V::Text("One".into()), sql::V::Text("Two, too".into())], "in their order, unpaged");
+            assert_eq!(all(DataTable::TalkerAliases, None, 1).len(), 2);
+            // (A system's series are its own and those under it, not "ab"'s.)
+            let hist = all(DataTable::DashboardHistory, Some(a), 1);
+            assert_eq!(hist.len(), 3, "{hist:?} ({})", db.kind());
+            assert_eq!(all(DataTable::DashboardHistory, None, 2).len(), 8);
+
+            let n = db.delete(DataKind::ALL, Some(a), false, 5_000_000).unwrap();
+            assert_eq!((n.calls, n.talkgroups, n.talker_aliases, n.history_series), (5, 2, 1, 2), "{}", db.kind());
+            assert_eq!(db.count(&format!("select count(*) from calls where system_id = {b}")), 5, "the other system's stay");
+            assert_eq!(db.count(&format!("select count(*) from call_transmissions where system_id = {a}")), 0, "with their calls");
+            assert_eq!(db.count("select count(*) from talkgroups"), 2);
+            assert_eq!(db.count("select count(*) from series"), 4, "b's, ab's and cpu");
+            assert_eq!(db.meta(&store::deleted_before_key(Some(a))).unwrap().as_deref(), Some("5000000"));
+            let minutes = db.stats_minutes(0).unwrap();
+            assert!(minutes.iter().all(|m| !m.contains("sys/a/")) && minutes.iter().filter(|m| m.contains("cpu")).count() == 2, "{minutes:?}");
+            assert_eq!(db.count(&format!("select count(*) from systems where id = {a}")), 1, "still the config's");
+
+            // Gone from the config, all of it deleted: forgotten too.
+            db.delete(DataKind::ALL, Some(b), true, 5_000_000).unwrap();
+            assert_eq!(db.count(&format!("select count(*) from systems where id = {b}")), 0, "{}", db.kind());
+            let n = db.delete(&[DataKind::DashboardHistory], None, false, 0).unwrap();
+            assert_eq!((n.history_series, db.count("select count(*) from stats_minutes")), (2, 0));
+            // Compacted, the space deleted rows left goes back (the tables stay).
+            let (before, after) = db.compact().unwrap();
+            assert!(after > 0 && after <= before, "{before} → {after} ({})", db.kind());
+            assert_eq!(db.count("select count(*) from calls"), 0);
         }
     }
 

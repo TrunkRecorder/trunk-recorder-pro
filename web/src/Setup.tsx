@@ -45,9 +45,11 @@ import {
   radioName,
   rateFor,
   rateOk,
+  sourceRates,
   ratesText,
   SOURCE_KINDS,
   sourceTitle,
+  type Advice,
 } from "./config.ts";
 import {
   can,
@@ -88,9 +90,11 @@ import { findOnAir, siteFrequencies, type FccTarget } from "./controller.ts";
 import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
+import { ManageData, RemoveSystem } from "./DataTools.tsx";
 import { BiasT, DraftInput, Field, FileInput, NumberInput, ReleaseSlider, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
+import { SourceSuggestion, SourcesAdvice, useSourceAdvice } from "./sourceAdvice.tsx";
 import { openTodos } from "./todo.ts";
 import { parseAccess, sameAccess, type AccessParts } from "./tones.ts";
 
@@ -945,7 +949,7 @@ function ReceiveOnSelect(props: { c: Config; ch: Channel; disabled?: boolean; on
   );
 }
 
-export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
+export function SourceCard(props: { c: Config; i: number; advice?: Advice | null; fresh?: boolean; onFreshDone?: () => void }) {
   const s = useApp();
   const { c, i } = props;
   const src = c.sources[i];
@@ -1231,7 +1235,7 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
             key={src.type}
             hz={src.rateHz}
             free={!!SOURCE_KINDS[src.type].freeRate || (src.type === "file" && can("service"))}
-            options={found?.rates?.length ? found.rates : SOURCE_KINDS[src.type].rates.filter((r) => rateOk(r, found))}
+            options={sourceRates(src.type, found)}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>
@@ -1240,6 +1244,9 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
             <DraftInput className="mono" codec={mhz} value={src.bandwidthHz} placeholder={formatMhz(src.rateHz, 2)} aria-label="Filter bandwidth, MHz" onChange={(hz) => edit((x) => x.type === "bladerf" && void (x.bandwidthHz = hz))} />
           </Field>
         )}
+        <div className="wide">
+          <SourceSuggestion c={c} i={i} advice={props.advice ?? null} />
+        </div>
         <GuardBand c={c} i={i} fresh={props.fresh} onFreshDone={props.onFreshDone} />
         {center ? (
           <div className="wide">
@@ -1397,6 +1404,8 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
   const csvRef = useRef<HTMLInputElement>(null);
   const [bulk, setBulk] = useState("");
   const [pending, setPending] = useState<{ name: string; channels: Channel[]; notes: string[] } | null>(null);
+  // (Asked in a dialog: whether its data in the store goes too.)
+  const [removing, setRemoving] = useState(false);
   const [filePath, setFilePath] = useState(`${conv.shortName || "conv"}-channels.csv`);
   const linked = can("service") && !!conv.channelFile;
   const [bulkMode, setBulkMode] = useState<Channel["mode"]>("fm");
@@ -1485,19 +1494,23 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
         <>
           <Switch label="Record" checked={conv.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
           <IdentifyFcc target={{ kind: "conventional", index: k }} what={conv.name || conv.shortName} freqs={[...new Set(chans.map((ch) => ch.freqHz).filter((f) => f > 0))]} fcc={conv.fcc} />
-          <button
-            className="btn ghost small"
-            onClick={() => {
-              if (window.confirm(`Remove ${name || "this conventional system"} and its ${chans.length} channel${chans.length === 1 ? "" : "s"}? Its recordings stay on disk.`)) {
+          <button className="btn ghost small" onClick={() => setRemoving(true)}>
+            Remove
+          </button>
+          {removing && (
+            <RemoveSystem
+              name={name || conv.shortName || "this conventional system"}
+              id={conv.id}
+              question={`Its ${chans.length} channel${chans.length === 1 ? " goes" : "s go"} with it; its recordings stay on disk.`}
+              onRemove={() =>
                 updateConfig((x) => {
                   x.conventional.splice(k, 1);
                   forgetTalkgroups(x, conv.shortName);
-                });
+                })
               }
-            }}
-          >
-            Remove
-          </button>
+              onClose={() => setRemoving(false)}
+            />
+          )}
           <FileInput inputRef={csvRef} accept=".csv,text/csv" onFile={(f) => void onCsv(f)} />
         </>
       }
@@ -2263,6 +2276,25 @@ function SiteCoverage(props: { c: Config; sys: System; sites: Site[] }) {
 }
 
 /** One site of system `i`: folded, its name, Record switch, control channels and coverage; open, how it is followed. */
+/** A multi-site system's preferred site: the one whose copy of a call is kept for talkgroups whose row names none. */
+function PreferredSite(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
+  const { sys, edit } = props;
+  const names = sys.sites.map((x) => siteNameOf(sys, x));
+  const value = names.find((n) => n.toLowerCase() === sys.preferredSite?.toLowerCase()) ?? "";
+  return (
+    <Field label="Preferred site" hint="Its copy of a call is kept unless another site's is clearly cleaner. A talkgroup's Preferred Site comes first">
+      <select value={value} onChange={(e) => edit((x) => void (e.target.value ? (x.preferredSite = e.target.value) : delete x.preferredSite))}>
+        <option value="">None: the cleanest copy</option>
+        {names.map((n) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
 function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () => void }) {
   const { c, i, k } = props;
   const sys = c.systems[i];
@@ -2288,7 +2320,11 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
   const remove = () => {
     if (sys.sites.length === 1) return props.onRemoveSystem();
     if (!confirm(`Remove the site ${name} from ${sys.shortName}?`)) return;
-    updateConfig((x) => void x.systems[i].sites.splice(k, 1));
+    updateConfig((x) => {
+      const s = x.systems[i];
+      if (s.preferredSite?.toLowerCase() === name.toLowerCase()) delete s.preferredSite;
+      s.sites.splice(k, 1);
+    });
   };
   return (
     <Card
@@ -2326,9 +2362,14 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
             value={site.name ?? ""}
             placeholder={sys.shortName}
             onChange={(v) =>
-              edit((x) => {
+              updateConfig((c) => {
+                const s = c.systems[i];
+                const x = s.sites[k];
+                const was = siteNameOf(s, x);
                 if (v) x.name = v;
                 else delete x.name;
+                // The system's preferred site follows its name.
+                if (s.preferredSite?.toLowerCase() === was.toLowerCase()) s.preferredSite = siteNameOf(s, x);
               })
             }
           />
@@ -2438,13 +2479,14 @@ export function SystemCard(props: { c: Config; i: number }) {
   // Systems set up apart that announce this one on the air.
   const same = sameOnTheAir(c, app.status?.systems ?? []).flatMap(([a, b]) => (a === sys ? [b] : b === sys ? [a] : []));
 
-  const remove = (lastSite = false) => {
-    if (!confirm(`${lastSite ? `This is ${sys.shortName}'s only site. ` : ""}Remove ${sys.shortName}? Its recordings stay on disk.`)) return;
+  // (Asked in a dialog: whether its data in the store goes too. `true`: removing its only site.)
+  const [removing, setRemoving] = useState<boolean | null>(null);
+  const remove = (lastSite = false) => setRemoving(lastSite);
+  const removed = () =>
     updateConfig((x) => {
       x.systems.splice(i, 1);
       forgetTalkgroups(x, sys.shortName);
     });
-  };
   const addSite = () => {
     edit((x) => {
       const n = newSiteOf(x, {});
@@ -2519,6 +2561,9 @@ export function SystemCard(props: { c: Config; i: number }) {
           <button className="btn ghost small" onClick={() => remove()}>
             Remove
           </button>
+          {removing !== null && (
+            <RemoveSystem name={sys.shortName} id={sys.id} question={`${removing ? `This is ${sys.shortName}'s only site. ` : ""}Its recordings stay on disk.`} onRemove={removed} onClose={() => setRemoving(null)} />
+          )}
         </>
       }
       note={
@@ -2605,6 +2650,7 @@ export function SystemCard(props: { c: Config; i: number }) {
         }
         cols={1}
       >
+        {sys.sites.length > 1 && <PreferredSite sys={sys} edit={edit} />}
         <div className="sites-list">
           {sys.sites.map((x, k) => (
             <SiteCard key={siteKey(sys, x)} c={c} i={i} k={k} onRemoveSystem={() => remove(true)} />
@@ -3109,6 +3155,7 @@ function DataTab(props: { c: Config }) {
           </Field>
         </Group>
       </section>
+      <ManageData />
     </Section>
   );
 }
@@ -3182,6 +3229,8 @@ export function Setup() {
   shownTab = tab;
   // A source just added on the Radios tab (measuring its roll-off is offered).
   const [freshSource, setFreshSource] = useState<number | null>(null);
+  // Better centres and rates for the sources, while they're shown.
+  const advice = useSourceAdvice(tab === "radios" ? c : null);
   if (!c) return <p className="muted">Connecting to the recorder…</p>;
 
   return (
@@ -3250,8 +3299,9 @@ export function Setup() {
             </>
           }
         >
+          <SourcesAdvice advice={advice} />
           {c.sources.map((x, i) => (
-            <SourceCard key={srcKey(x, i, c.sources)} c={c} i={i} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
+            <SourceCard key={srcKey(x, i, c.sources)} c={c} i={i} advice={advice} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
           ))}
           <details className="help">
             <summary>Dongle not showing up?</summary>
