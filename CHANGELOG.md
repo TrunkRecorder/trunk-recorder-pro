@@ -5,6 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Setup suggests each source's center and sample rate** (issue #139). For centers typed in as well as
+  Auto ones, and for sample rates: whatever reaches every system's needs, then more channels (listed,
+  and what each system was heard granting this week, by its calls), then with fewer radios, then at a
+  lower total rate (less CPU and USB), without an RTL-SDR past 2.56 MSPS unless that reaches more. Each
+  source's card says what to set, and **Use** takes it (back to Auto when Auto would put it there).
+  **Apply all** takes them all; the RF page says when there are suggestions, and Start's message names
+  the settings that reach what's missed. See [Suggested settings](docs/configuration/sources.md#suggested-settings).
+- **Placement needs what Start needs.** A conventional system's channels, and a DMR, NXDN or EDACS site's
+  frequencies, are all needed: Auto places a radio over the ones still missing before busier channels
+  elsewhere (it took one channel as enough, while Start wanted every one).
 - **The radio registry's size and history are settings.** It used to keep 20,000 radios per
   system on every machine, forgetting the least recently heard past that, and a statewide system
   fills that in days. `radioQuery` also returned 5,000 rows at most.

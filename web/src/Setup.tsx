@@ -45,9 +45,11 @@ import {
   radioName,
   rateFor,
   rateOk,
+  sourceRates,
   ratesText,
   SOURCE_KINDS,
   sourceTitle,
+  type Advice,
 } from "./config.ts";
 import {
   can,
@@ -91,6 +93,7 @@ import { TalkgroupsField } from "./TalkgroupsField.tsx";
 import { BiasT, DraftInput, Field, FileInput, NumberInput, ReleaseSlider, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
+import { SourceSuggestion, SourcesAdvice, useSourceAdvice } from "./sourceAdvice.tsx";
 import { openTodos } from "./todo.ts";
 import { parseAccess, sameAccess, type AccessParts } from "./tones.ts";
 
@@ -945,7 +948,7 @@ function ReceiveOnSelect(props: { c: Config; ch: Channel; disabled?: boolean; on
   );
 }
 
-export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
+export function SourceCard(props: { c: Config; i: number; advice?: Advice | null; fresh?: boolean; onFreshDone?: () => void }) {
   const s = useApp();
   const { c, i } = props;
   const src = c.sources[i];
@@ -1231,7 +1234,7 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
             key={src.type}
             hz={src.rateHz}
             free={!!SOURCE_KINDS[src.type].freeRate || (src.type === "file" && can("service"))}
-            options={found?.rates?.length ? found.rates : SOURCE_KINDS[src.type].rates.filter((r) => rateOk(r, found))}
+            options={sourceRates(src.type, found)}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>
@@ -1240,6 +1243,9 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
             <DraftInput className="mono" codec={mhz} value={src.bandwidthHz} placeholder={formatMhz(src.rateHz, 2)} aria-label="Filter bandwidth, MHz" onChange={(hz) => edit((x) => x.type === "bladerf" && void (x.bandwidthHz = hz))} />
           </Field>
         )}
+        <div className="wide">
+          <SourceSuggestion c={c} i={i} advice={props.advice ?? null} />
+        </div>
         <GuardBand c={c} i={i} fresh={props.fresh} onFreshDone={props.onFreshDone} />
         {center ? (
           <div className="wide">
@@ -3182,6 +3188,8 @@ export function Setup() {
   shownTab = tab;
   // A source just added on the Radios tab (measuring its roll-off is offered).
   const [freshSource, setFreshSource] = useState<number | null>(null);
+  // Better centres and rates for the sources, while they're shown.
+  const advice = useSourceAdvice(tab === "radios" ? c : null);
   if (!c) return <p className="muted">Connecting to the recorder…</p>;
 
   return (
@@ -3250,8 +3258,9 @@ export function Setup() {
             </>
           }
         >
+          <SourcesAdvice advice={advice} />
           {c.sources.map((x, i) => (
-            <SourceCard key={srcKey(x, i, c.sources)} c={c} i={i} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
+            <SourceCard key={srcKey(x, i, c.sources)} c={c} i={i} advice={advice} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
           ))}
           <details className="help">
             <summary>Dongle not showing up?</summary>

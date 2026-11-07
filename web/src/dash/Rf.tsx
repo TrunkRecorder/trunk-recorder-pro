@@ -11,6 +11,7 @@ import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWid
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall, type CcMark } from "../Waterfall.tsx";
+import { AdviceNote, useSourceAdvice } from "../sourceAdvice.tsx";
 import { K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE, useHistory, useRanges, val } from "./data.ts";
 import { adjacentCcMarks, ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
@@ -436,6 +437,8 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
 export function RfPage() {
   const s = useApp();
   const i = s.path[0] !== undefined ? Number(s.path[0]) : null;
+  // (Suggested settings for the sources: said here, taken in Setup.)
+  const advice = useSourceAdvice(running(s) && i === null ? s.config : null);
   if (!running(s) || !s.sources.length) {
     return (
       <div className="page">
@@ -455,6 +458,7 @@ export function RfPage() {
   if (i !== null && s.sources[i]) return <SourceDetail s={s} i={i} />;
   return (
     <div className="page">
+      <AdviceNote advice={advice} />
       <BandOverview s={s} />
       {s.sources.map((src, k) => (
         <div key={k} className="src-row">

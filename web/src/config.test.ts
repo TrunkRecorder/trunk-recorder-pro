@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, adjacentIdentity, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { activeSites, adjacentIdentity, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -170,4 +170,17 @@ test("foundRadio: what the picked radio runs at, once its driver has asked it; a
   assert.equal(sourceFor("airspy", mini.serial, mini).rateHz, 6_000_000);
   assert.equal(sourceFor("airspy", "C", busy).rateHz, 6_000_000, "not asked: the default");
   assert.equal(sourceFor("bladerf", blade.serial, blade).rateHz, 10_000_000, "in its range: the default");
+});
+
+test("advice for the sources (the recorder's Config::advice): a typed-in centre that misses the site's voice channels moves, and can go back to auto", () => {
+  const c = defaultConfig();
+  c.sources = [{ type: "rtlsdr", serial: "", centerHz: 849_500_000, rateHz: 2_400_000, gainDb: 25, agc: false, ppm: 0, bufLen: 0, buffers: 0 }];
+  c.systems.push(newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_012_500] }));
+  c.systems[0].sites[0].voiceChannelsHz = [851_512_500, 852_012_500];
+  const a = sourceAdvice(c, [undefined]);
+  assert.ok(a, "advice");
+  assert.ok(a.sources[0].changed && a.sources[0].auto && a.after.reached > a.before.reached, JSON.stringify(a));
+  c.sources[0].centerHz = a.sources[0].centerHz!;
+  c.sources[0].rateHz = a.sources[0].rateHz;
+  assert.equal(sourceAdvice(c, [undefined]), null, "taken: nothing more to say");
 });

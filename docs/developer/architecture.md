@@ -1412,9 +1412,10 @@ The interface runs this same code (section 13.3), so Setup says what Start will 
 **Auto-centring** (`trunk-app/src/place.rs`): one placement for Start's auto centres
 (`resolved_centers`), the first-run guide and the survey's suggested centre. Sources with
 `centerHz` 0 are placed in order (`place_sources`), each over the window (`busiest_window`) that
-takes in the most of what the ones before it don't reach: a site's control channels (or a
-conventional system's channels) not reached yet outweigh everything, then each channel counts
-once (the guide: by the calls seen on it); of windows taking in as much, the one that leaves the
+takes in the most of what the ones before it don't reach: what a group needs and isn't reached yet
+outweighs everything — one of a P25 or SmartNet site's control channels, or (`Group::all`) every
+control and watched frequency of a DMR, NXDN or EDACS site and every channel of a conventional
+system — then each channel counts once (the guide: by the calls seen on it); of windows taking in as much, the one that leaves the
 rest the fewest windows. So a site wider than one radio gets every radio it needs. With
 everything reached, a spare radio goes alongside the others, on the side with more of the
 channels. Each centre is then centred on what it reaches and stepped to either side in widening
@@ -1428,10 +1429,22 @@ the frequency. The engine opens channels by it (`Radio::source_for`, `Convention
 the app asks the same of the centres Start places (`place::receiver`): placement's targets are
 groups (a site, a conventional system's channels on the same sources) carrying their pins, so a
 source is placed only for what it may receive; `Config::receivers` says the source of each
-listed frequency (Setup's coverage chips and to-dos, `configReceivers`); `problem` checks control
-and conventional channels by it; and `Config::placement` counts how many listed frequencies each
-source receives (`listed_reached`). A source at 0 that has opened no voice channel this run is
-`unused` in its status, and the dashboard says it can probably be removed.
+listed frequency (Setup's coverage chips and to-dos, `configReceivers`); and `place::coverage`
+is the one account of what's received: per group whether its need is met and what's missed, per
+source how many listed frequencies it's the first to reach. `problem` reports what it misses
+(`Config::placed`: the sites' groups come first, in `active_sites` order), and `Config::placement`
+reads its counts. A source at 0 that has opened no voice channel this run is `unused` in its status,
+and the dashboard says it can probably be removed.
+
+**Advice** (`place::advise`, `Config::advice`; research/source-advice.md): better centres and rates
+than the sources have, by re-running `place_sources`. A source's `Choices` say whether its set centre
+may move (not a capture file's) and its rates (`rates::offered`: its radio's, else its kind's from
+`rates::of_kind`, the one list the web's `SOURCE_KINDS` reads too). Sources are released to auto
+(none, each alone, all) and each one's rates tried in turn; ways are compared by `Score` (needs met,
+weight reached, radios needed, past the dependable rate, total rate, changes), and only a strict
+improvement is advice. `Config::targets_with` weighs it by what's heard (the registry's calls per
+frequency, out of band too). Setup's Radios tab and the RF page show it (`web/src/sourceAdvice.tsx`);
+`problem` appends the settings that reach what it found missed (`advice_fix`).
 
 ### 10.12 Companion files (in the config's folder)
 
