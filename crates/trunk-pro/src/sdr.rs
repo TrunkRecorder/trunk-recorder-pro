@@ -466,13 +466,17 @@ pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>
 /// (whole USB packets; the RTL2832U's 3,760-byte FIFO replay, sdr-rtl
 /// findings 9) — is a radio replaying a buffer; and one that sends far
 /// faster than its rate is replaying its FIFO. Either for [`STUCK_FOR`]
-/// is an error (and so a reopen). A stuck radio replays every block, so a
-/// few blocks a second are looked at for replay, not all of them: searching
-/// each for a period cost most of a source thread.
+/// is an error (and so a reopen). A stuck radio replays every block, so
+/// one block a second is looked at for replay, with the block after it to
+/// compare, not all of them: searching each for a period, and keeping each
+/// to compare with the next, cost most of a source thread.
 pub struct StreamCheck {
     /// Bytes per second as set.
     rate: f64,
-    last: Vec<u8>,
+    /// The block last looked at, kept for the one after it; whether it
+    /// repeated itself.
+    looked: Vec<u8>,
+    held: Option<bool>,
     replay_since: Option<Instant>,
     /// When the next block is looked at for replay.
     next_look: Option<Instant>,
@@ -485,27 +489,29 @@ pub struct StreamCheck {
 const STUCK_FOR: Duration = Duration::from_secs(2);
 
 /// How often a block is looked at for replay.
-const LOOK_EVERY: Duration = Duration::from_millis(250);
+const LOOK_EVERY: Duration = Duration::from_secs(1);
 
 impl StreamCheck {
     /// For a radio sending `rate_hz` I/Q samples a second, 2 bytes each.
     pub fn new(rate_hz: f64) -> StreamCheck {
-        StreamCheck { rate: rate_hz * 2.0, last: Vec::new(), replay_since: None, next_look: None, window: None, fast_windows: 0 }
+        StreamCheck { rate: rate_hz * 2.0, looked: Vec::new(), held: None, replay_since: None, next_look: None, window: None, fast_windows: 0 }
     }
 
     /// Each block as it comes: Err once the stream is stuck.
     pub fn block(&mut self, b: &[u8], at: Instant) -> Result<(), String> {
-        if self.next_look.is_none_or(|t| at >= t) {
-            self.next_look = Some(at + LOOK_EVERY);
-            let again = b == self.last.as_slice() || periodic(b);
-            if !again {
+        if let Some(periodic) = self.held.take() {
+            // The block after a look: the looked-at one again, or that one a run of bytes over and over.
+            if !(periodic || b == self.looked.as_slice()) {
                 self.replay_since = None;
-            } else if self.replay_since.get_or_insert(at).elapsed() >= STUCK_FOR {
+            } else if at.saturating_duration_since(*self.replay_since.get_or_insert(at)) >= STUCK_FOR {
                 return Err("keeps sending the same samples over and over (its USB stream is stuck, so the waterfall stands still)".into());
             }
+        } else if self.next_look.is_none_or(|t| at >= t) {
+            self.next_look = Some(at + LOOK_EVERY);
+            self.held = Some(periodic(b));
+            self.looked.clear();
+            self.looked.extend_from_slice(b);
         }
-        self.last.clear();
-        self.last.extend_from_slice(b);
         // Seconds-long windows, two in a row past 1.5×: a backlog the
         // transfers held while this thread waited empties faster than that.
         let (start, n) = self.window.get_or_insert((at, 0));
@@ -547,7 +553,8 @@ mod tests {
 
     /// Fresh samples never count; a block sent again, or a run of bytes
     /// repeated within one (the chip's 3,760-byte replay too), count once
-    /// they've gone on for STUCK_FOR; so does a stream at 10× its rate.
+    /// they've gone on for STUCK_FOR (found within a look of that); so does
+    /// a stream at 10× its rate.
     #[test]
     fn stuck_streams_are_found() {
         assert!(!periodic(&noise(1 << 18, 1)));
@@ -561,12 +568,14 @@ mod tests {
         for k in 0..2000 {
             assert!(c.block(&noise(16384, k + 1), at(k)).is_ok());
         }
-        let same = noise(16384, 99);
-        let mut c = StreamCheck::new(2.4e6);
-        assert!(c.block(&same, t0).is_ok() && c.block(&same, t0 + LOOK_EVERY).is_ok(), "not at once");
-        c.replay_since = Some(t0 - STUCK_FOR);
-        assert!(c.block(&same, t0 + LOOK_EVERY / 2).is_ok(), "between looks");
-        assert!(c.block(&same, t0 + 2 * LOOK_EVERY).unwrap_err().contains("same samples"));
+        // Stuck: found at the first look STUCK_FOR after the first (each look a block and the one after it).
+        for (stuck, what) in [(noise(16384, 99), "the same block"), (noise(3760, 3).repeat(5)[..16384].to_vec(), "the FIFO replay")] {
+            let mut c = StreamCheck::new(2.4e6);
+            let (k, r) = (0..2000).map(|k| (k, c.block(&stuck, at(k)))).find(|(_, r)| r.is_err()).unwrap();
+            assert!(r.unwrap_err().contains("same samples"), "{what}");
+            let after = at(k) - t0;
+            assert!(after >= STUCK_FOR && after <= STUCK_FOR + LOOK_EVERY + Duration::from_millis(10), "{what}: {after:?}");
+        }
         let mut c = StreamCheck::new(2.4e6);
         let fast = |k: u32| t0 + Duration::from_micros(341) * k;
         let r = (0..20_000).map(|k| c.block(&noise(16384, k + 1), fast(k))).find(Result::is_err);
