@@ -36,6 +36,7 @@ a system of its own.)
 | `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"`, `"nxdn"` or `"edacs"` (any case). Anything else is refused when the config is read |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
+| `preferredSite` | | `""` | string | Multi-site: a site's `name` (a site with none: the system's `shortName`), the one to keep calls from for the talkgroups whose row names no `Preferred Site` or `Preferred NAC`. See [Multi-site](#multi-site) |
 | `unitNames` | | empty | object | Names for the system's radios. See [Unit names](#unit-names) |
 | `receiveOn` | | `[]` | array | The sources its control channels and voice channels may be received on, by label (`"RTL-SDR SN 200"`, as the dashboard names a source: the radio, wherever it is in `sources`). Empty: any source that reaches a channel. See [How channels are shared out](../guides/radios.md#how-channels-are-shared-out) |
 | `keys` | | `""` | string | P25: the encryption keys it decrypts with, a key source's name (desktop app only; not in the interface). See [Encryption keys](#encryption-keys-keys) |
@@ -141,7 +142,6 @@ a link to the system's page in the directory. The directory's answer is kept as 
 |---|:---:|---|---|---|
 | `name` | | the system's `shortName` | string | The site's name, unique in its system: what the talkgroup file's `Preferred Site` names, the `site` in call JSON and the log. Leave it out for a system of one site |
 | `enabled` | | `true` | bool | `false` keeps the site without recording from it (**Record** on its card) |
-| `preferred` | | `false` | bool | Multi-site: keep this site's copy of a call heard on several sites while it has at least 90 % of the best copy's clean audio, for the talkgroups that name no preferred site. See [Multi-site](#multi-site) |
 | `directoryId` | | `""` | string | Set by [sharing](#sharing-with-the-directory): the directory's ID for the site |
 | `controlChannelsHz` | | `[]` | array of numbers | P25 and SmartNet: the control channel and its alternates, Hz. The recorder hunts through them, moving on when one goes quiet for 5 s. DMR and NXDN: every frequency listed is watched at once (NXDN Type-D: the repeaters) |
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |
@@ -268,9 +268,9 @@ transmission by transmission (suggested for a system with several sites).
 Only the sites listed under one system are copies of each other. Two systems are never joined while
 recording, whatever their control channels announce; when two systems announce the same system on
 the air, Setup offers **Make them one system**. To prefer a site for a talkgroup, use the talkgroup
-file's `Preferred Site` or `Preferred NAC` column; to prefer one for every talkgroup that names none
-(a site whose antenna is better, until the other's is fixed), set the site's `preferred`. A talkgroup
-that names a site decides for itself.
+file's `Preferred Site` or `Preferred NAC` column; to prefer one for every talkgroup whose row names
+none, or that has no row (a site whose antenna is better, until the other's is fixed), set the
+system's `preferredSite` (**Preferred site** in Setup). A talkgroup's own column comes first.
 
 ```json
 { "shortName": "capmax", "type": "dmr",

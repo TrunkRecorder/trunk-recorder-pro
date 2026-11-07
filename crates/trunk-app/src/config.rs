@@ -413,6 +413,10 @@ pub struct System {
     /// The tone signals it sends (pages, alerts, digit strings, Morse IDs): see [`SignalDef`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<SignalDef>,
+    /// Multi-site: the site (by its name) whose copy of a call is kept for
+    /// the talkgroups whose file row names none (Preferred Site, Preferred NAC).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub preferred_site: String,
     /// Where it is recorded from: one site, or several of one system.
     pub sites: Vec<Site>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
@@ -547,12 +551,6 @@ pub struct Site {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub directory_id: String,
     pub enabled: bool,
-    /// Multi-site: keep this site's copy of a call heard on several sites
-    /// when it has at least 90 % of the best copy's clean audio, for the
-    /// talkgroups that name no preferred site (a talkgroup file's Preferred
-    /// Site or NAC decides for its own).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub preferred: bool,
     pub control_channels_hz: Vec<f64>,
     pub modulation: Modulation,
     /// Only follow a control channel with this identity (fields left out
@@ -956,6 +954,7 @@ impl Default for System {
             plugins: BTreeMap::new(),
             plugin_delays: vec![],
             signals: vec![],
+            preferred_site: String::new(),
             sites: vec![],
         }
     }
@@ -967,7 +966,6 @@ impl Default for Site {
             name: String::new(),
             directory_id: String::new(),
             enabled: true,
-            preferred: false,
             control_channels_hz: vec![],
             modulation: Modulation::Auto,
             expect: SiteIdentity::default(),
@@ -2732,7 +2730,7 @@ impl Config {
                 let rules = self.recording.with(&sys.recording);
                 let sites = sys
                     .active_sites()
-                    .map(|s| SiteConfig { name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: s.expect.engine(), protocol: s.protocol(sys), preferred: s.preferred })
+                    .map(|s| SiteConfig { name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: s.expect.engine(), protocol: s.protocol(sys) })
                     .collect();
                 SystemConfig {
                     calls: rules.call_config(),
@@ -2741,6 +2739,7 @@ impl Config {
                     unit_tags: sys.unit_names.engine(),
                     signals: engine_signals(&sys.signals),
                     pins: self.pins(&sys.receive_on),
+                    preferred_site: sys.preferred_site.clone(),
                     ..SystemConfig::trunked(&sys.short_name, sites)
                 }
             })

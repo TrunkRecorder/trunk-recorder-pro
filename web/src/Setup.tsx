@@ -2263,6 +2263,25 @@ function SiteCoverage(props: { c: Config; sys: System; sites: Site[] }) {
 }
 
 /** One site of system `i`: folded, its name, Record switch, control channels and coverage; open, how it is followed. */
+/** A multi-site system's preferred site: the one whose copy of a call is kept for talkgroups whose row names none. */
+function PreferredSite(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
+  const { sys, edit } = props;
+  const names = sys.sites.map((x) => siteNameOf(sys, x));
+  const value = names.find((n) => n.toLowerCase() === sys.preferredSite?.toLowerCase()) ?? "";
+  return (
+    <Field label="Preferred site" hint="Its copy of a call is kept unless another site's is clearly cleaner. A talkgroup's Preferred Site comes first">
+      <select value={value} onChange={(e) => edit((x) => void (e.target.value ? (x.preferredSite = e.target.value) : delete x.preferredSite))}>
+        <option value="">None: the cleanest copy</option>
+        {names.map((n) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
 function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () => void }) {
   const { c, i, k } = props;
   const sys = c.systems[i];
@@ -2288,7 +2307,11 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
   const remove = () => {
     if (sys.sites.length === 1) return props.onRemoveSystem();
     if (!confirm(`Remove the site ${name} from ${sys.shortName}?`)) return;
-    updateConfig((x) => void x.systems[i].sites.splice(k, 1));
+    updateConfig((x) => {
+      const s = x.systems[i];
+      if (s.preferredSite?.toLowerCase() === name.toLowerCase()) delete s.preferredSite;
+      s.sites.splice(k, 1);
+    });
   };
   return (
     <Card
@@ -2326,27 +2349,18 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
             value={site.name ?? ""}
             placeholder={sys.shortName}
             onChange={(v) =>
-              edit((x) => {
+              updateConfig((c) => {
+                const s = c.systems[i];
+                const x = s.sites[k];
+                const was = siteNameOf(s, x);
                 if (v) x.name = v;
                 else delete x.name;
+                // The system's preferred site follows its name.
+                if (s.preferredSite?.toLowerCase() === was.toLowerCase()) s.preferredSite = siteNameOf(s, x);
               })
             }
           />
         </Field>
-        {(sys.sites?.length ?? 0) > 1 && (
-          <Field label="Prefer this site" hint="A call heard on several sites keeps this site's copy while it has 90 % of the best copy's clean audio, for talkgroups that name no preferred site">
-            <Switch
-              label="Prefer"
-              checked={site.preferred ?? false}
-              onChange={(v) =>
-                edit((x) => {
-                  if (v) x.preferred = true;
-                  else delete x.preferred;
-                })
-              }
-            />
-          </Field>
-        )}
         {sys.type !== "dmr" && sys.type !== "nxdn" && sys.type !== "edacs" && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
             <select value={site.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as Site["modulation"]))}>
@@ -2619,6 +2633,7 @@ export function SystemCard(props: { c: Config; i: number }) {
         }
         cols={1}
       >
+        {sys.sites.length > 1 && <PreferredSite sys={sys} edit={edit} />}
         <div className="sites-list">
           {sys.sites.map((x, k) => (
             <SiteCard key={siteKey(sys, x)} c={c} i={i} k={k} onRemoveSystem={() => remove(true)} />
