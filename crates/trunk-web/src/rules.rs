@@ -117,6 +117,30 @@ pub fn place_sources_js(json: &str) -> String {
     serde_json::json!(place_sources(&a.sources, &a.targets)).to_string()
 }
 
+/// What a found radio's JSON (`{ rates?, rateRange? }`; "" or `null`: not known) says it runs at.
+fn found_rates(found: &str) -> Option<trunk_app::rates::Rates> {
+    serde_json::from_str::<serde_json::Value>(found).ok().and_then(|v| trunk_app::rates::Rates::from_found(&v))
+}
+
+/// The rates a source of kind `kind` may run at ([`trunk_app::rates::offered`]): its radio's
+/// (`found`, its JSON), else its kind's, the usual first.
+#[wasm_bindgen(js_name = sourceRates)]
+pub fn source_rates(kind: &str, found: &str) -> Vec<u32> {
+    trunk_app::rates::offered(kind, found_rates(found).as_ref())
+}
+
+/// Whether the radio (`found`, its JSON) runs at `hz`: true when it didn't say.
+#[wasm_bindgen(js_name = rateOk)]
+pub fn rate_ok(hz: f64, found: &str) -> bool {
+    found_rates(found).is_none_or(|r| r.allows(hz))
+}
+
+/// `hz` if the radio (`found`) runs at it or didn't say, else the nearest it does ([`trunk_app::rates::Rates::nearest`]).
+#[wasm_bindgen(js_name = rateFor)]
+pub fn rate_for(hz: f64, found: &str) -> f64 {
+    found_rates(found).map_or(hz, |r| r.nearest(hz))
+}
+
 /// How far from a source's centre a channel may be, Hz.
 #[wasm_bindgen(js_name = usableHalfWidth)]
 pub fn usable_half_width_js(rate_hz: f64, guard_hz: f64) -> f64 {

@@ -45,6 +45,7 @@ import {
   radioName,
   rateFor,
   rateOk,
+  sourceRates,
   ratesText,
   SOURCE_KINDS,
   sourceTitle,
@@ -1231,7 +1232,7 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
             key={src.type}
             hz={src.rateHz}
             free={!!SOURCE_KINDS[src.type].freeRate || (src.type === "file" && can("service"))}
-            options={found?.rates?.length ? found.rates : SOURCE_KINDS[src.type].rates.filter((r) => rateOk(r, found))}
+            options={sourceRates(src.type, found)}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>

@@ -12,7 +12,7 @@
 // each time.
 
 import init, * as wasm from "./web/pkg/trunk_web.js";
-import type { Channel, Config, SignalDef, Site, Talkgroup, TonePatternKind } from "./protocol.ts";
+import type { Channel, Config, FoundRadio, SignalDef, Site, Talkgroup, TonePatternKind } from "./protocol.ts";
 
 let ready = false;
 
@@ -144,6 +144,24 @@ export interface Targets {
  */
 export function placeSources(sources: Placing[], targets: Targets): (number | null)[] {
   return JSON.parse(rules().placeSources(JSON.stringify({ sources, targets })));
+}
+
+/** A found radio, by what it says it runs at (`rates` or `rateRange`), as the rules read it. */
+type Found = FoundRadio | undefined;
+
+/** The rates a source of kind `kind` may run at (rates::offered): its radio's (`found`), else its kind's, the usual first. */
+export function sourceRates(kind: string, found?: Found): number[] {
+  return Array.from(rules().sourceRates(kind, JSON.stringify(found ?? null)));
+}
+
+/** Whether the radio runs at `hz`, as it said when opened (true when it didn't say). */
+export function rateOk(hz: number, found: Found): boolean {
+  return rules().rateOk(hz, JSON.stringify(found ?? null));
+}
+
+/** `hz` if the radio runs at it (or didn't say), else the nearest it does: its first rate, or the end of its range. */
+export function rateFor(hz: number, found: Found): number {
+  return rules().rateFor(hz, JSON.stringify(found ?? null));
 }
 
 /** Why a SmartNet site's band plan can't be used, or null (smartnet::Bandplan::from_config). */
