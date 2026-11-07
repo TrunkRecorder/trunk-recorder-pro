@@ -58,6 +58,14 @@ impl Shared {
         Arc::new(Shared::default())
     }
 
+    /// The config is now `cfg`, each system's talkgroups `talkgroups`: the
+    /// names the registry and calls answer with, and how much of what it
+    /// heard the registry keeps ([`radio::Caps::of`] `cfg.storage`).
+    pub fn set_config(&self, cfg: &crate::Config, talkgroups: &crate::config::TalkgroupLists) {
+        self.names.lock().unwrap().set_config(cfg, talkgroups);
+        self.radio.lock().unwrap().set_caps(radio::Caps::of(&cfg.storage));
+    }
+
     /// Hand an event to the watchers; its `monitorEvent` message when it's one for the feed.
     pub fn emit(&self, t: f64, e: MonitorEvent) -> Option<Value> {
         self.monitor.lock().unwrap().emit(t, e)
