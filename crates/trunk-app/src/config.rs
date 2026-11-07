@@ -2498,6 +2498,34 @@ impl Config {
         advise(&sources, &choices, &self.targets_with(heard))
     }
 
+    /// What the sources' advice ([`Config::advice`], by the config alone)
+    /// sets to reach what Start found missed, to follow its message: "" when
+    /// the advice doesn't reach more of what's needed. As Apply all takes it:
+    /// a source on auto in the advice is set to auto.
+    fn advice_fix(&self) -> String {
+        let Some(a) = self.advice(&[], &Heard::new()).filter(|a| a.after.unmet < a.before.unmet) else { return String::new() };
+        let what: Vec<String> = a
+            .sources
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.changed)
+            .map(|(k, x)| {
+                let src = &self.sources[k];
+                let mut set = Vec::new();
+                if x.released && src.center_hz > 0.0 {
+                    set.push("on auto".to_string());
+                } else if let Some(c) = x.center_hz.filter(|c| src.center_hz > 0.0 && (c - src.center_hz).abs() >= 1000.0) {
+                    set.push(format!("{:.4} MHz", c / 1e6));
+                }
+                if (x.rate_hz - src.rate_hz).abs() >= 1.0 {
+                    set.push(format!("{} MSPS", x.rate_hz / 1e6));
+                }
+                format!("{} {}", src.title(k), set.join(" at "))
+            })
+            .collect();
+        format!(" Suggested settings reach it: {} (Setup → Radios).", what.join("; "))
+    }
+
     /// [`Config::targets`], and what each trunked system was heard on: a
     /// group of its own (needing nothing, on the system's sources), each
     /// frequency weighed by its calls — those no source covered too — so a
@@ -2705,11 +2733,11 @@ impl Config {
                 let out: Vec<String> = g.need_missed.iter().map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
                     let what = if sys.is_dmr() { "DMR" } else if sys.is_nxdn() { "NXDN" } else { "EDACS" };
-                    return Some(format!("{name}: {what} frequencies outside {sources}: {} MHz — move a center frequency or add a source.", out.join(", ")));
+                    return Some(format!("{name}: {what} frequencies outside {sources}: {} MHz — move a center frequency or add a source.{}", out.join(", "), self.advice_fix()));
                 }
             }
             if !s.control_channels_hz.iter().any(|f| !g.need_missed.contains(f)) {
-                return Some(format!("No control channel of {name} falls inside {} — move a center frequency or add a source.", if sys.receive_on.is_empty() { "any source's bandwidth" } else { sources }));
+                return Some(format!("No control channel of {name} falls inside {} — move a center frequency or add a source.{}", if sys.receive_on.is_empty() { "any source's bandwidth" } else { sources }, self.advice_fix()));
             }
             if sys.is_edacs() && s.edacs().lcns.is_empty() {
                 return Some(format!("{name}: an EDACS site needs its channel list — each LCN (1–25) and its frequency."));
@@ -2731,7 +2759,7 @@ impl Config {
         let missed: Vec<f64> = cov.groups.iter().skip(self.active_sites().count()).flat_map(|g| g.need_missed.iter().copied()).collect();
         let outside: Vec<String> = self.enabled_channels().filter(|c| missed.contains(&c.freq_hz)).map(|c| format!("{:.5}", c.freq_hz / 1e6)).collect();
         if !outside.is_empty() {
-            return Some(format!("Conventional channel(s) outside the bandwidth of every source they may be received on: {} MHz — move a center frequency or disable them.", outside.join(", ")));
+            return Some(format!("Conventional channel(s) outside the bandwidth of every source they may be received on: {} MHz — move a center frequency or disable them.{}", outside.join(", "), self.advice_fix()));
         }
         if let Some((c, e)) = self.enabled_channels().find_map(|c| c.parsed_access().err().map(|e| (c, e))) {
             return Some(format!("Conventional channel {:.5} MHz: {e}.", c.freq_hz / 1e6));
@@ -3251,6 +3279,10 @@ mod tests {
         let heard: Heard = [("dcfd".to_string(), vec![Weighted { hz: 855_012_500.0, weight: 300.0 }])].into();
         let a = c.advice(&[Some(crate::rates::Rates::List(vec![10_000_000, 2_500_000]))], &heard);
         assert_eq!(a, None, "10 MSPS already reaches it, and 2.5 wouldn't: {a:?}");
+        // Start says what the advice would set, after what it found missed.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 849500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        let p = c.problem().expect("the control channel isn't reached");
+        assert!(p.starts_with("No control channel of dcfd falls inside any source's bandwidth") && p.contains("Suggested settings reach it: Source 1 on auto") && p.ends_with("(Setup → Radios)."), "{p}");
         // An RTL-SDR set over the listed channels; a busy one heard just past its band: moved over it too.
         c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 851500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
         let a = c.advice(&[], &Heard::new()).expect("advice");

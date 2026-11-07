@@ -173,6 +173,8 @@ export interface Advice {
     changed: boolean;
     /** Taken alone, it can be on auto (it is, or goes back to it) rather than set to `centerHz`. */
     auto: boolean;
+    /** On auto in the advice: taking all of it, it is set to auto. */
+    released: boolean;
     /** Something needs it, with the advice; false: it can go. */
     needed: boolean;
   }[];

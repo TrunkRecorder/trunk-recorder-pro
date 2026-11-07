@@ -359,6 +359,9 @@ pub struct Suggested {
     /// now: taking the advice for it alone, it can be left on auto (it is,
     /// or set back to it) rather than set to `center_hz`.
     pub auto: bool,
+    /// On auto in the advice: taking all of it, it is set to auto (the
+    /// advice is where auto places them all).
+    pub released: bool,
     /// Something listed needs it, with the advice; false: it can go.
     pub needed: bool,
 }
@@ -440,7 +443,7 @@ pub fn advise(sources: &[Placing], choices: &[Choices], t: &Targets) -> Option<A
                 alone[k] = Placing { rate_hz: rates[k], fixed_hz: None, ..sources[k] };
                 place_sources(&alone, t)[k].zip(centers[k]).is_some_and(|(a, b)| (a - b).abs() < 1000.0)
             };
-            Suggested { center_hz: centers[k], rate_hz: rates[k], changed, auto, needed: cov.listed[k] > 0 }
+            Suggested { center_hz: centers[k], rate_hz: rates[k], changed, auto, released: advised[k].fixed_hz.is_none(), needed: cov.listed[k] > 0 }
         })
         .collect();
     Some(Advice { before, after, sources: suggested })
