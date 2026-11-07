@@ -2,27 +2,27 @@
   "counter": "cachegrind-x86_64",
   "stages": {
     "radio-rtl": {
-      "instructions": 93681321,
+      "instructions": 45525062,
       "air_s": 8.797
     },
     "radio-hackrf": {
-      "instructions": 142337982,
+      "instructions": 88236506,
       "air_s": 8.797
     },
     "radio-airspy": {
-      "instructions": 1995355739,
+      "instructions": 1995354854,
       "air_s": 8.797
     },
     "p25-conventional": {
-      "instructions": 3668653593,
+      "instructions": 3668653572,
       "air_s": 8.797
     },
     "dmr-conventional": {
-      "instructions": 2274627471,
+      "instructions": 2274632090,
       "air_s": 9.36
     },
     "nxdn-trunked": {
-      "instructions": 2001350152,
+      "instructions": 2001283320,
       "air_s": 7.1
     }
   }
