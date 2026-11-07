@@ -391,16 +391,39 @@ export interface RecordingRules {
 export type RecordingOverride = Partial<RecordingRules>;
 
 /**
- * Names for a system's radios: Trunk Recorder's unitTagsFile, kept as text
- * (headerless `unit,name`; a unit between slashes is a regular expression,
- * `/^1(\d{3})$/,Engine $1`), and unitTagsMode: "user" (these first, then the
- * aliases heard; the default), "ota" (the aliases first), "user_only", "none".
+ * Which names a system's radios go by — Trunk Recorder's unitTagsMode:
+ * "user" (its own names first, then the aliases heard; the default), "ota"
+ * (the aliases first), "user_only", "none". Its own names are kept beside
+ * the config ({@link UnitName}).
  */
 export interface UnitNames {
-  csv?: string;
-  name?: string;
   mode?: "" | "user" | "ota" | "user_only" | "none";
 }
+
+/**
+ * One of a system's own names for its radios: a line of Trunk Recorder's
+ * unitTagsFile, as the recorder keeps it. `unit`: the radio's ID, or a
+ * regular expression between slashes naming many (`/^1(\d{3})$/`, named
+ * `Engine $1`); the first row that matches names a radio.
+ */
+export interface UnitName {
+  unit: string;
+  name: string;
+  origin?: Origin;
+}
+
+/** How a talkgroup's or radio's names came in (crates/trunk-core/src/trunk/names.rs). */
+export type OriginKind = "file" | "radioReference" | "directory" | "trunkRecorder" | "edited";
+
+/** Where a row's names came from: its last change, not its history. `name`: the file's or directory's; `at`: Unix s. */
+export interface Origin {
+  kind: OriginKind;
+  name?: string;
+  at: number;
+}
+
+/** Where a list sent came from (`setTalkgroups`, `setUnitNames`): the recorder gives it the time. */
+export type OriginFrom = Omit<Origin, "at">;
 
 /** The log (desktop app), with Trunk Recorder's options (crates/trunk-app/src/config.rs LogSettings). */
 export interface LogSettings {
@@ -1861,6 +1884,8 @@ export interface Talkgroup {
   comment?: string;
   /** Columns this app doesn't know, [name, value]: kept for the file it's downloaded as. */
   extra?: [string, string][];
+  /** Where its names came from (not in the file). */
+  origin?: Origin;
 }
 
 /** What an edit of one talkgroup sets; what's left out stays as it is. */
@@ -1874,15 +1899,16 @@ export interface TalkgroupEdit {
 }
 
 /** A table of the store's, as Setup → Data exports it: `GET /api/v1/export/{table}` (`?system=<id>`), a CSV file. */
-export type DataTable = "calls" | "transmissions" | "talkgroups" | "talker-aliases" | "radios" | "heard-talkgroups" | "dashboard-history";
+export type DataTable = "calls" | "transmissions" | "talkgroups" | "unit-names" | "talker-aliases" | "radios" | "heard-talkgroups" | "dashboard-history";
 
 /** A kind of the store's data, as Setup → Data deletes it. `calls`: the call index and each call's transmissions (the recordings stay); `registry`: the radios, talkgroups, pairs and frequencies heard. */
-export type DataKind = "calls" | "talkgroups" | "talkerAliases" | "registry" | "dashboardHistory";
+export type DataKind = "calls" | "talkgroups" | "unitNames" | "talkerAliases" | "registry" | "dashboardHistory";
 
 /** How many of each the store has (dataSummary) or deleted (dataDeleted). */
 export interface DataCounts {
   calls: number;
   talkgroups: number;
+  unitNames: number;
   talkerAliases: number;
   /** The radio registry's radios and talkgroups heard. */
   radios: number;
@@ -1933,8 +1959,12 @@ export type FromRecorder =
   | { type: "configSaved"; version: number; error?: string }
   /** A system's talkgroups: one message for each system with some on connecting, and again whenever they change (setTalkgroups). Kept beside the config, not in it. */
   | { type: "talkgroups"; system: string; talkgroups: Talkgroup[] }
-  /** One talkgroup of system `system`'s edited (setTalkgroup): make the same edit to the talkgroups kept (talkgroups.ts withEdit). */
-  | { type: "talkgroupEdited"; system: string; talkgroup: number; edit: TalkgroupEdit }
+  /** One talkgroup of system `system`'s edited (setTalkgroup): make the same edit to the talkgroups kept, by `origin` (talkgroups.ts withEdit). */
+  | { type: "talkgroupEdited"; system: string; talkgroup: number; edit: TalkgroupEdit; origin: Origin }
+  /** A system's own names for its radios, as `talkgroups` (setUnitNames). */
+  | { type: "unitNames"; system: string; unitNames: UnitName[] }
+  /** Radio `unit` of system `system` named `name` (setUnitName; "": its own name taken out): make the same edit, by `origin` (units.ts withUnitName). */
+  | { type: "unitNameEdited"; system: string; unit: number; name: string; origin: Origin }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
   | ({ type: "spectrum" } & Spectrum)
   | { type: "log"; lines: LogLine[] }
@@ -1995,8 +2025,15 @@ export type FromRecorder =
 export type ToRecorder =
   /** The whole config, edited from `version` (the last `config` message's): refused when the config has changed since. */
   | { type: "setConfig"; config: Config; version: number }
-  /** System `system`'s talkgroups, all of them (`[]`: none; a number twice: the later row, in the first's place). Everyone gets them back as a `talkgroups` message. */
-  | { type: "setTalkgroups"; system: string; talkgroups: Talkgroup[] }
+  /**
+   * System `system`'s talkgroups, all of them (`[]`: none; a number twice: the later row, in the first's place). Everyone gets them back as a `talkgroups` message.
+   * `from`: where they came from, the origin of each row that changes; none: each keeps the origin it comes with (a system's moved to its new name).
+   */
+  | { type: "setTalkgroups"; system: string; talkgroups: Talkgroup[]; from?: OriginFrom }
+  /** System `system`'s own names for its radios, as `setTalkgroups` (a unit twice: the later row, in the first's place). Everyone gets them back as a `unitNames` message. */
+  | { type: "setUnitNames"; system: string; unitNames: UnitName[]; from?: OriginFrom }
+  /** Radio `unit` of system `system` named `name` ("": its own name taken out). Everyone gets it back as a `unitNameEdited` message. */
+  | { type: "setUnitName"; system: string; unit: number; name: string }
   /** One talkgroup of system `system`'s: only the cells `edit` sets change (a row added when it has none). Everyone gets it back as a `talkgroupEdited` message. */
   | { type: "setTalkgroup"; system: string; talkgroup: number; edit: TalkgroupEdit }
   | { type: "start" }

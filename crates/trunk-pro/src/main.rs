@@ -897,28 +897,32 @@ fn serve(a: &Args) {
         let hub = hub.clone();
         db.on_failure(move |why| runtime::publish(&hub, trunk_app::protocol::ToClient::error(why)));
     }
-    // TEMPORARY (trunk_app::migrate::talkgroup_files_into_store): talkgroup
-    // files an older version kept beside the config, into the store. Delete
-    // this block with it.
+    // TEMPORARY (trunk_app::migrate::files_into_store): talkgroup files and
+    // unit names an older version kept beside or in the config, into the
+    // store. Delete this block with it.
     if !db.is_disabled() {
-        let stored = |name: &str| db.talkgroups(name).is_ok_and(|rows| !rows.is_empty());
-        let mut keep = |name: &str, rows: Vec<trunk_core::trunk::TalkgroupRow>| {
-            kept::write_talkgroups(&db, name, rows.clone());
-            db.flush()?;
-            // (Renamed only once it reads back as it went in.)
-            if db.talkgroups(name)? == rows { Ok(()) } else { Err("not read back as written".into()) }
-        };
-        for n in trunk_app::migrate::talkgroup_files_into_store(&config_path, &cfg, &stored, &mut keep) {
-            log::info!("{n}");
+        fn import<R: runtime::NameList + PartialEq>(db: &db::Db, path: &std::path::Path, cfg: &config::Config, files: &trunk_app::migrate::OldFiles<R>) {
+            let stored = |name: &str| R::stored(db, name).is_ok_and(|rows| !rows.is_empty());
+            let mut keep = |name: &str, rows: Vec<R>| {
+                R::keep(db, name, rows.clone());
+                db.flush()?;
+                // (Renamed only once it reads back as it went in.)
+                if R::stored(db, name)? == rows { Ok(()) } else { Err("not read back as written".into()) }
+            };
+            for n in trunk_app::migrate::files_into_store(path, cfg, files, &stored, &mut keep) {
+                log::info!("{n}");
+            }
         }
+        import(&db, &config_path, &cfg, &trunk_app::migrate::TALKGROUP_FILES);
+        import(&db, &config_path, &cfg, &trunk_app::migrate::UNIT_NAME_FILES);
     }
-    let talkgroups = kept::load_talkgroups(&db, &cfg);
-    runtime::load_names(&shared, &cfg, &talkgroups, &db);
+    let names = kept::load_names(&db, &cfg);
+    runtime::load_names(&shared, &cfg, &names, &db);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
         config_version: std::sync::atomic::AtomicU64::new(1),
-        talkgroups: Mutex::new(talkgroups),
+        names: Mutex::new(names),
         hub: hub.clone(),
         lifecycle: Mutex::new(runtime::Lifecycle::default()),
         phase: Mutex::new(runtime::PhaseInfo::default()),

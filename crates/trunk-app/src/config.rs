@@ -412,7 +412,7 @@ pub struct System {
     #[serde(rename = "type")]
     pub kind: SystemKind,
     pub enabled: bool,
-    /// Its own names for its radios (Trunk Recorder's unitTagsFile, kept here as text): see [`UnitNames`].
+    /// Which names its radios go by ([`UnitNames`]; the names are kept beside the config: [`SystemNames`]).
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
     /// Its own recording rules; what's left out is as in [`Config::recording`].
@@ -1115,7 +1115,7 @@ pub struct Conventional {
     /// Their own recording rules; what's left out is as in [`Config::recording`].
     #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
     pub recording: RecordingOverride,
-    /// Names for the radios heard on them.
+    /// Which names the radios heard on them go by (as [`System::unit_names`]).
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
     /// The encryption keys its P25 channels decrypt with (as [`System::keys`]).
@@ -1127,18 +1127,13 @@ pub struct Conventional {
     pub other: BTreeMap<String, serde_json::Value>,
 }
 
-/// Names for a system's radios: Trunk Recorder's unitTagsFile (headerless
-/// `unit,name` lines; a unit between slashes is a regular expression) and
-/// unitTagsMode: "user" (these first, then the talker aliases heard),
-/// "ota" (the aliases first), "user_only" or "none".
+/// Which names a system's radios go by — Trunk Recorder's unitTagsMode:
+/// "user" (its own names first, then the talker aliases heard), "ota" (the
+/// aliases first), "user_only" or "none". Its own names (Trunk Recorder's
+/// unitTagsFile) are kept beside the config ([`SystemNames::unit_names`]).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct UnitNames {
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub csv: String,
-    /// The file it came from.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub name: String,
     #[serde(skip_serializing_if = "is_default")]
     pub mode: UnitNamesMode,
 }
@@ -1146,9 +1141,6 @@ pub struct UnitNames {
 impl UnitNames {
     pub fn is_empty(&self) -> bool {
         *self == UnitNames::default()
-    }
-    fn engine(&self) -> UnitTags {
-        UnitTags::parse_csv(&self.csv, self.mode.engine()).0
     }
 }
 
@@ -2204,9 +2196,9 @@ impl Config {
     /// defaults when there's no file yet. A file that isn't a config is an
     /// error, not the defaults (which would be saved over it).
     pub fn load(path: &Path) -> Result<Config, String> {
-        // An older config's talkgroup files are written beside it first: whoever
-        // reads it (the desktop app, its command lines) then saves it without them.
-        crate::migrate::move_talkgroups(path).map_err(|e| format!("{}: couldn't move its talkgroup files out of it ({e})", path.display()))?;
+        // An older config's talkgroup files and unit names are written beside it first:
+        // whoever reads it (the desktop app, its command lines) then saves it without them.
+        crate::migrate::move_files_out(path).map_err(|e| format!("{}: couldn't move its talkgroup files or unit names out of it ({e})", path.display()))?;
         let mut c: Config = match std::fs::read_to_string(path) {
             Ok(s) => Config::from_json(&s).map_err(|e| format!("{}: not a config this version reads ({e})", path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
@@ -2815,8 +2807,9 @@ impl Config {
     }
 
     /// The engine's config, with each system's talkgroups (kept apart from the config).
-    pub fn engine_config(&self, epoch_ms: f64, talkgroups: &TalkgroupLists) -> EngineConfig {
-        let tg = |short: &str| talkgroups.get(short).map_or_else(Default::default, |rows| talkgroups_of(rows));
+    pub fn engine_config(&self, epoch_ms: f64, names: &NameLists) -> EngineConfig {
+        let tg = |short: &str| names.get(short).map_or_else(Default::default, |n| talkgroups_of(&n.talkgroups));
+        let units = |short: &str, u: &UnitNames| UnitTags::new(names.get(short).map_or(&[][..], |n| &n.unit_names), u.mode.engine());
         let centers = self.resolved_centers();
         // (Keys are read by the app: [`Config::load_keys`].)
         let mut systems: Vec<SystemConfig> = self
@@ -2831,7 +2824,7 @@ impl Config {
                     calls: rules.call_config(),
                     save: rules.save_rules(),
                     talkgroups: tg(&sys.short_name),
-                    unit_tags: sys.unit_names.engine(),
+                    unit_tags: units(&sys.short_name, &sys.unit_names),
                     signals: engine_signals(&sys.signals),
                     pins: self.pins(&sys.receive_on),
                     preferred_site: sys.preferred_site.clone(),
@@ -2848,7 +2841,7 @@ impl Config {
                 calls: r.call_config(),
                 save: r.save_rules(),
                 talkgroups: tg(&v.short_name),
-                unit_tags: v.unit_names.engine(),
+                unit_tags: units(&v.short_name, &v.unit_names),
                 signals: engine_signals(&v.signals),
                 ..SystemConfig::conventional(&v.short_name)
             });
@@ -2870,12 +2863,44 @@ impl Config {
 }
 
 
-/// Each system's talkgroups, by its short name, in their order. Kept apart
-/// from the config: the desktop app's store, the browser's storage; the
-/// interface sets a system's with `setTalkgroups` and edits one with
-/// `setTalkgroup`. A talkgroup file (Trunk Recorder's CSV) is how they come
-/// in and go out (trunk_core::trunk::read_rows / rows_csv).
-pub type TalkgroupLists = BTreeMap<String, Vec<trunk_core::trunk::TalkgroupRow>>;
+/// A system's names, kept apart from the config (the desktop app's store,
+/// the browser's storage), each list in its order: its talkgroups (set with
+/// `setTalkgroups`, one edited with `setTalkgroup`) and its own names for
+/// its radios (`setUnitNames`, `setUnitName`). Files (Trunk Recorder's
+/// talkgroup CSV and unitTagsFile) are how they come in and go out
+/// (trunk_core::trunk::read_rows / rows_csv, read_unit_names / unit_names_csv).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SystemNames {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub talkgroups: Vec<trunk_core::trunk::TalkgroupRow>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unit_names: Vec<trunk_core::trunk::UnitNameRow>,
+}
+
+impl SystemNames {
+    pub fn is_empty(&self) -> bool {
+        self.talkgroups.is_empty() && self.unit_names.is_empty()
+    }
+}
+
+/// Each system's names ([`SystemNames`]), by its short name.
+pub type NameLists = BTreeMap<String, SystemNames>;
+
+/// `lists` with system `system`'s names, as `edit` leaves them: a system with none left has no entry.
+pub fn edit_names<T>(lists: &mut NameLists, system: &str, edit: impl FnOnce(&mut SystemNames) -> T) -> T {
+    let names = lists.entry(system.to_string()).or_default();
+    let out = edit(names);
+    if names.is_empty() {
+        lists.remove(system);
+    }
+    out
+}
+
+/// Talkgroups only, as [`NameLists`] (tests and examples).
+pub fn talkgroup_lists<'a>(lists: impl IntoIterator<Item = (&'a str, Vec<trunk_core::trunk::TalkgroupRow>)>) -> NameLists {
+    lists.into_iter().map(|(n, talkgroups)| (n.to_string(), SystemNames { talkgroups, ..Default::default() })).collect()
+}
 
 /// A system's talkgroups as the engine looks them up, by number.
 pub fn talkgroups_of(rows: &[trunk_core::trunk::TalkgroupRow]) -> trunk_core::trunk::Talkgroups {
@@ -3140,7 +3165,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let files: TalkgroupLists = [("county".to_string(), trunk_core::trunk::parse_rows("1,County TG\n")), ("fire".to_string(), trunk_core::trunk::parse_rows("7,Fire Ops\n"))].into();
+        let files = talkgroup_lists([("county", trunk_core::trunk::parse_rows("1,County TG\n")), ("fire", trunk_core::trunk::parse_rows("7,Fire Ops\n"))]);
         let e = c.engine_config(0.0, &files);
         let fire = e.systems.iter().find(|s| s.short_name == "fire").unwrap();
         assert!(fire.talkgroups.contains_key(&7) && !fire.talkgroups.contains_key(&1), "its own, not county's");
@@ -3171,7 +3196,7 @@ mod tests {
         assert_eq!(town[&46012].tag, "Law Dispatch");
         // Ahead of the talkgroup file, whose Ignore flag stays.
         let mut book = crate::stats::NameBook::default();
-        let files: TalkgroupLists = [("town".to_string(), trunk_core::trunk::parse_rows("46012,File name\n9,Nine,,,,,,,true\n"))].into();
+        let files = talkgroup_lists([("town", trunk_core::trunk::parse_rows("46012,File name\n9,Nine,,,,,,,true\n"))]);
         book.set_config(&c, &files);
         assert_eq!(book.tg("town", 46012).map(|t| t.alpha_tag), Some("Townville PD".into()));
         assert_eq!(book.tg("town", 154430).map(|t| t.alpha_tag), Some("Fire Dispatch".into()));

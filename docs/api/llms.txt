@@ -141,6 +141,8 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.setTalkgroups(shortName, rows) replace a system's talkgroups (Talkgroup rows; [] for none)
   rec.setTalkgroup(shortName, talkgroup, edit)  change one talkgroup's cells: any of
                                      { alphaTag, description, tag, category, ignore }
+  rec.setUnitNames(shortName, rows, from?)  replace a system's own radio names ({ unit, name } rows)
+  rec.setUnitName(shortName, unit, name)    name one radio ("": its own name taken out)
   await rec.calls(query)             recorded calls, newest first: query has any of system
                                      (short name), talkgroup, unit, from / to (start time,
                                      Unix ms), cursor, limit (1–500, default 100). Answers

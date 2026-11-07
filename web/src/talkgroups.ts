@@ -2,7 +2,7 @@
 // (protocol.ts Talkgroup), as the recorder keeps them. A file is read and
 // written by the recorder's own code (rules.ts, through wasm): CSV only at
 // Load CSV and Download.
-import type { Talkgroup, TalkgroupEdit } from "./protocol.ts";
+import type { Origin, Talkgroup, TalkgroupEdit } from "./protocol.ts";
 import { talkgroupsEdit, talkgroupsFromCsv, talkgroupsToCsv, type TalkgroupFileReport } from "./rules.ts";
 
 export type { Talkgroup };
@@ -126,28 +126,22 @@ export function talkgroupFileText(rows: Talkgroup[]): string {
   return talkgroupsToCsv(rows);
 }
 
-/** The cells an edit of one talkgroup sets, by the file's column names (trunk-app's `TalkgroupEdit::cells`). */
-export function editCells(e: TalkgroupEdit): [string, string][] {
-  const text: [string, string | undefined][] = [
-    ["Alpha Tag", e.alphaTag],
-    ["Description", e.description],
-    ["Tag", e.tag],
-    ["Category", e.category],
-  ];
-  const cells = text.filter((c): c is [string, string] => c[1] !== undefined).map(([c, v]): [string, string] => [c, v.trim()]);
-  if (e.ignore !== undefined) cells.push(["Ignore", e.ignore ? "x" : ""]);
-  return cells;
+/**
+ * `rows` with talkgroup `tg`'s row edited by `origin`: only the cells `edit`
+ * sets change; a talkgroup without a row gets one when a value is set.
+ * Clearing Ignore also undoes Trunk Recorder's way of ignoring, a priority
+ * of −1; a change to its names makes `origin` its origin. The recorder's own
+ * edit (trunk-core's `edit_rows`), so this copy holds what the recorder holds.
+ */
+export function withEdit(rows: Talkgroup[], tg: number, edit: TalkgroupEdit, origin: Origin): Talkgroup[] {
+  return talkgroupsEdit(rows, tg, edit, origin);
 }
 
-/**
- * `rows` with talkgroup `tg`'s row edited: only the cells `edit` sets
- * change; a talkgroup without a row gets one when a value is set. Clearing
- * Ignore also undoes Trunk Recorder's way of ignoring, a priority of −1. The
- * recorder's own edit (trunk-core's `edit_rows`), so this copy holds what
- * the recorder holds.
- */
-export function withEdit(rows: Talkgroup[], tg: number, edit: TalkgroupEdit): Talkgroup[] {
-  return talkgroupsEdit(rows, tg, editCells(edit));
+/** Whether two edits of a talkgroup set the same cells to the same values (as sent, and as the recorder answers). */
+export function sameEdit(a: TalkgroupEdit, b: TalkgroupEdit): boolean {
+  const keys: (keyof TalkgroupEdit)[] = ["alphaTag", "description", "tag", "category", "ignore"];
+  const v = (e: TalkgroupEdit, k: keyof TalkgroupEdit) => (typeof e[k] === "string" ? (e[k] as string).trim() : e[k]);
+  return keys.every((k) => v(a, k) === v(b, k));
 }
 
 /** The edit that marks talkgroup `tg` ignored or not: named `alphaTag` too when `rows` lack it. */

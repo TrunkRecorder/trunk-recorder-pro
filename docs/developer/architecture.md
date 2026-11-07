@@ -1208,7 +1208,7 @@ unlike the other messages).
   beside it (`config::talkgroups_path`; `TalkgroupFiles` by short name), written by
   `setTalkgroups` and taken by a recording at once (`EngineCmd::Talkgroups`). An older config's
   `talkgroupsCsv` / `talkgroupsName` are moved out into those files before it is read, by every
-  reader (`Config::load` → `migrate::move_talkgroups`). The browser keeps them in
+  reader (`Config::load` → `migrate::move_files_out`, which writes an older config's `unitNames.csv` out beside it too; `migrate::files_into_store` then takes both into the store). The browser keeps them in
   `localStorage["trp.talkgroups"]`.
 - Every upgrade of an older config is in `migrate.rs` (`migrate::config`, run by
   `Config::from_value`: key files named by systems, interfaces as a list and `server.home`, each

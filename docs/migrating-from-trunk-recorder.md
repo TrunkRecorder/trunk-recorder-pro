@@ -70,7 +70,7 @@ USRP, Airspy, bladeRF and SoapySDR sources need their driver installed on this c
 | `control_channels` | its site's `controlChannelsHz` |
 | `modulation: "qpsk"` / `"fsk4"` | its site's `modulation` the same; anything else, or no `modulation`, becomes `"auto"` |
 | `talkgroupsFile` | The system's talkgroup file, `<shortName>.talkgroups.csv` beside the config (not a config key). Semicolon, tab or bar delimiters become commas, header names are tidied |
-| `unitTagsFile`, `unitTagsMode` | `unitNames.csv` (contents), `unitNames.name`, `unitNames.mode` |
+| `unitTagsFile`, `unitTagsMode` | The system's unit names, kept in the recorder's store (not a config key), each named as from that file; `unitNames.mode` |
 | `bandplan` | its site's `bandplan` (default `800_standard`), and the keys below |
 | `bandplanBase`, `bandplanSpacing`, `bandplanHigh` (MHz) | `bandplanBaseHz`, `bandplanSpacingHz`, `bandplanHighHz` (Hz) |
 | `bandplanOffset` | `bandplanOffset` |
@@ -225,8 +225,9 @@ plugins are published. A Trunk Recorder MQTT status plugin entry isn't imported 
 
 The config is in the app's config folder ([where](configuration/README.md#where-the-file-is)), not
 the folder you run it from, and keys are camelCase with frequencies in Hz. Talkgroup files are copied into the
-recorder (its call store, or `<shortName>.talkgroups.csv` beside the config) and unit files stored **inside** it (`unitNames.csv`), so editing
-the original CSV afterwards changes nothing: load it again in Setup. A conventional system can stay linked to a
+recorder's store, and so are unit files, so editing the original CSV afterwards changes nothing: load it again in Setup,
+or edit one talkgroup or radio on its page. Each talkgroup and unit name remembers where it came from (the file it was
+imported from, until it's changed). A conventional system can stay linked to a
 channel CSV, though (`channelFile`), re-read at every Start.
 
 ### What stays compatible

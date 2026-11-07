@@ -18,6 +18,7 @@ use chrono::{Local, TimeZone};
 use serde_json::json;
 use trunk_app::protocol::{DataCounts, DataKind, DataSystem, DataTable, ToClient};
 use trunk_core::metrics::system_key;
+use trunk_core::trunk::{TalkgroupRow, UnitNameRow};
 
 use crate::access::Door;
 use crate::config::ApiAccess;
@@ -276,13 +277,13 @@ pub fn delete(ctx: &Ctx, id: u64, kinds: &[DataKind], system: Option<u32>) -> To
     }
     let forget = system_id.is_some() && !in_config && DataKind::ALL.iter().all(|k| has(*k));
     let stored = ctx.db.delete(kinds, system_id, forget, crate::clock::unix_ms() as i64);
-    // (People make talkgroups, the recording never: told to the recording and the interfaces once the store's are gone.)
-    if has(DataKind::Talkgroups) {
-        let held: Vec<String> = ctx.talkgroups.lock().unwrap().keys().filter(|k| mine(k)).cloned().collect();
-        for s in held {
-            if let Err(e) = runtime::set_talkgroups(ctx, &s, Vec::new()) {
-                log::warn!("Deleting {s}'s talkgroups: {e}");
-            }
+    // (People make talkgroups and radio names, the recording never: told to the recording and the interfaces once the store's are gone.)
+    let held: Vec<String> = ctx.names.lock().unwrap().keys().filter(|k| mine(k)).cloned().collect();
+    for s in held {
+        let talkgroups = if has(DataKind::Talkgroups) { runtime::set_names::<TalkgroupRow>(ctx, &s, Vec::new(), None) } else { Ok(()) };
+        let units = if has(DataKind::UnitNames) { runtime::set_names::<UnitNameRow>(ctx, &s, Vec::new(), None) } else { Ok(()) };
+        if let Err(e) = talkgroups.and(units) {
+            log::warn!("Deleting {s}'s names: {e}");
         }
     }
     if has(DataKind::Calls) {
@@ -355,7 +356,7 @@ mod tests {
         for i in 0..3 {
             runtime::index_call(&ctx, &format!("ohmarcs/{i}"), &crate::db::row::tests::record(9179, 1_700_000_000_000 + i * 1000), true, true);
         }
-        runtime::set_talkgroups(&ctx, "ohmarcs", trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n9179,\"FD, Disp\"\n")).unwrap();
+        runtime::set_names(&ctx, "ohmarcs", trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n9179,\"FD, Disp\"\n"), None).unwrap();
         let mut heard = trunk_app::stats::radio::SystemRadio::default();
         heard.units.insert(9001644, trunk_app::stats::radio::Unit { first: 1_700_000_000, last: 1_700_000_100, tx: 3, tgs: vec![(9179, 3)], ..Default::default() });
         ctx.shared.radio.lock().unwrap().put("ohmarcs", heard);
@@ -379,7 +380,7 @@ mod tests {
         assert_eq!(systems.iter().map(|s| (s.short_name.as_str(), s.in_config, s.counts.calls, s.counts.talkgroups, s.counts.radios)).collect::<Vec<_>>(), [("ohmarcs", true, 3, 1, 1)]);
         let ToClient::DataDeleted { deleted, error, .. } = delete(&ctx, 2, DataKind::ALL, Some(sid as u32)) else { panic!() };
         assert_eq!((deleted.calls, deleted.talkgroups, deleted.radios, error), (3, 1, 1, None));
-        assert!(ctx.recent.lock().unwrap().is_empty() && ctx.talkgroups.lock().unwrap().is_empty() && ctx.shared.radio.lock().unwrap().systems.is_empty());
+        assert!(ctx.recent.lock().unwrap().is_empty() && ctx.names.lock().unwrap().is_empty() && ctx.shared.radio.lock().unwrap().systems.is_empty());
         let ToClient::DataSummary { systems, .. } = summary(&ctx, 3) else { panic!() };
         assert_eq!(systems.iter().map(|s| (s.in_config, s.counts)).collect::<Vec<_>>(), [(true, DataCounts::default())], "still the config's, with nothing kept");
         let (_, _, body) = fetch(&ctx, Door::Builtin, "/api/v1/export/calls").await;

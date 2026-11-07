@@ -2,17 +2,17 @@
 // The page keeps the config (localStorage) and the chosen capture files, asks
 // for WebUSB access (it needs a click), and reads recorded calls from OPFS.
 
-import { withEdit } from "../talkgroups.ts";
-import { decodeAudioFrame, type AudioChunk, type Config, type FromRecorder, type Talkgroup, type ToRecorder } from "../protocol.ts";
+import { decodeAudioFrame, type AudioChunk, type Config, type FromRecorder, type Talkgroup, type ToRecorder, type UnitName } from "../protocol.ts";
 import type { CallExt, Transport } from "../transport.ts";
 import { defaultConfig, storedConfig } from "../config.ts";
-import { migrateTalkgroups } from "../migrate.ts";
-import type { FromWorker, ToWorker } from "./engine.worker.ts";
+import { migrateTalkgroups, migrateUnitNames } from "../migrate.ts";
+import type { FromWorker, KeptNames, ToWorker } from "./engine.worker.ts";
 import { callBlob } from "./opfs.ts";
 
 const CONFIG_KEY = "trp.config";
 /** Each system's talkgroups (JSON rows), by short name: kept beside the config, not in it. */
 const TALKGROUPS_KEY = "trp.talkgroups";
+const UNIT_NAMES_KEY = "trp.unitNames";
 
 function loadConfig(): Config {
   try {
@@ -24,13 +24,30 @@ function loadConfig(): Config {
   return defaultConfig();
 }
 
-function loadTalkgroups(): Record<string, Talkgroup[]> {
+/** Each system's names, as this browser stored them (the worker keeps them, and says when they change). */
+function loadNames(): KeptNames {
+  const read = <T>(key: string): Record<string, T> => {
+    try {
+      return JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, T>;
+    } catch {
+      return {};
+    }
+  };
   try {
-    const kept = JSON.parse(localStorage.getItem(TALKGROUPS_KEY) ?? "{}") as Record<string, Talkgroup[]>;
     // (With what an older version kept read in: migrate.ts.)
-    return migrateTalkgroups(JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}"), kept);
+    const raw = JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}");
+    return { talkgroups: migrateTalkgroups(raw, read<Talkgroup[]>(TALKGROUPS_KEY)), unitNames: migrateUnitNames(raw, read<UnitName[]>(UNIT_NAMES_KEY)) };
   } catch {
-    return {};
+    return { talkgroups: {}, unitNames: read<UnitName[]>(UNIT_NAMES_KEY) };
+  }
+}
+
+function saveNames(n: KeptNames): void {
+  try {
+    localStorage.setItem(TALKGROUPS_KEY, JSON.stringify(n.talkgroups));
+    localStorage.setItem(UNIT_NAMES_KEY, JSON.stringify(n.unitNames));
+  } catch {
+    /* not persisted; still used this session */
   }
 }
 
@@ -54,13 +71,13 @@ export class WorkerTransport implements Transport {
   onConnection: (connected: boolean) => void = () => {};
   private worker: Worker;
   private files: (File | null)[] = [];
-  private talkgroups: Record<string, Talkgroup[]> = {};
 
   constructor() {
     this.worker = new Worker(new URL("./engine.worker.ts", import.meta.url), { type: "module" });
     this.worker.onmessage = (ev: MessageEvent<FromWorker>) => {
       const d = ev.data;
-      if ("audio" in d) {
+      if ("keep" in d) saveNames(d.keep);
+      else if ("audio" in d) {
         const a = decodeAudioFrame(d.audio);
         if (a) this.onAudio(a);
       } else {
@@ -70,8 +87,7 @@ export class WorkerTransport implements Transport {
       }
     };
     this.worker.onerror = (e) => this.onMessage({ type: "error", message: `Engine worker crashed: ${e.message}` });
-    this.talkgroups = loadTalkgroups();
-    this.post({ type: "init", config: loadConfig(), talkgroups: this.talkgroups });
+    this.post({ type: "init", config: loadConfig(), names: loadNames() });
     queueMicrotask(() => this.onConnection(true));
   }
 
@@ -80,16 +96,6 @@ export class WorkerTransport implements Transport {
   }
 
   send(msg: ToRecorder): void {
-    if (msg.type === "setTalkgroups" || msg.type === "setTalkgroup") {
-      const rows = msg.type === "setTalkgroups" ? msg.talkgroups : withEdit(this.talkgroups[msg.system] ?? [], msg.talkgroup, msg.edit);
-      if (rows.length) this.talkgroups[msg.system] = rows;
-      else delete this.talkgroups[msg.system];
-      try {
-        localStorage.setItem(TALKGROUPS_KEY, JSON.stringify(this.talkgroups));
-      } catch {
-        /* not persisted; still used this session */
-      }
-    }
     if (msg.type === "setConfig") saveConfig(msg.config);
     if (msg.type === "start" || msg.type === "surveyStart" || msg.type === "profileSource") this.post({ type: "files", files: this.files });
     this.post(msg);

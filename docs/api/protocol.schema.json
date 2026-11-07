@@ -1419,6 +1419,9 @@
         "talkgroups": {
           "type": "number"
         },
+        "unitNames": {
+          "type": "number"
+        },
         "talkerAliases": {
           "type": "number"
         },
@@ -1437,6 +1440,7 @@
       "required": [
         "calls",
         "talkgroups",
+        "unitNames",
         "talkerAliases",
         "radios",
         "heardTalkgroups",
@@ -1450,6 +1454,7 @@
       "enum": [
         "calls",
         "talkgroups",
+        "unitNames",
         "talkerAliases",
         "registry",
         "dashboardHistory"
@@ -1463,6 +1468,9 @@
           "type": "number"
         },
         "talkgroups": {
+          "type": "number"
+        },
+        "unitNames": {
           "type": "number"
         },
         "talkerAliases": {
@@ -1498,7 +1506,8 @@
         "radios",
         "shortName",
         "talkerAliases",
-        "talkgroups"
+        "talkgroups",
+        "unitNames"
       ],
       "additionalProperties": false,
       "description": "A system the store keeps data of: one of the config's (`inConfig`), or one removed whose data stayed."
@@ -2233,13 +2242,70 @@
             },
             "edit": {
               "$ref": "#/definitions/TalkgroupEdit"
+            },
+            "origin": {
+              "$ref": "#/definitions/Origin"
             }
           },
           "required": [
             "type",
             "system",
             "talkgroup",
-            "edit"
+            "edit",
+            "origin"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "unitNames"
+            },
+            "system": {
+              "type": "string"
+            },
+            "unitNames": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/UnitName"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "unitNames"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "unitNameEdited"
+            },
+            "system": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "#/definitions/Origin"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "unit",
+            "name",
+            "origin"
           ],
           "additionalProperties": false
         },
@@ -4646,6 +4712,53 @@
         "carriers"
       ],
       "additionalProperties": false
+    },
+    "Origin": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/OriginKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "at": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "at"
+      ],
+      "additionalProperties": false,
+      "description": "Where a row's names came from: its last change, not its history. `name`: the file's or directory's; `at`: Unix s."
+    },
+    "OriginFrom": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/OriginKind"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "description": "Where a list sent came from (`setTalkgroups`, `setUnitNames`): the recorder gives it the time."
+    },
+    "OriginKind": {
+      "type": "string",
+      "enum": [
+        "file",
+        "radioReference",
+        "directory",
+        "trunkRecorder",
+        "edited"
+      ],
+      "description": "How a talkgroup's or radio's names came in (crates/trunk-core/src/trunk/names.rs)."
     },
     "OutOfBandRow": {
       "type": "object",
@@ -8337,6 +8450,10 @@
             "maxItems": 2
           },
           "description": "Columns this app doesn't know, [name, value]: kept for the file it's downloaded as."
+        },
+        "origin": {
+          "$ref": "#/definitions/Origin",
+          "description": "Where its names came from (not in the file)."
         }
       },
       "required": [
@@ -8647,12 +8764,67 @@
               "items": {
                 "$ref": "#/definitions/Talkgroup"
               }
+            },
+            "from": {
+              "$ref": "#/definitions/OriginFrom"
             }
           },
           "required": [
             "type",
             "system",
             "talkgroups"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setUnitNames"
+            },
+            "system": {
+              "type": "string"
+            },
+            "unitNames": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/UnitName"
+              }
+            },
+            "from": {
+              "$ref": "#/definitions/OriginFrom"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "unitNames"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setUnitName"
+            },
+            "system": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "unit",
+            "name"
           ],
           "additionalProperties": false
         },
@@ -9436,15 +9608,29 @@
         }
       ]
     },
-    "UnitNames": {
+    "UnitName": {
       "type": "object",
       "properties": {
-        "csv": {
+        "unit": {
           "type": "string"
         },
         "name": {
           "type": "string"
         },
+        "origin": {
+          "$ref": "#/definitions/Origin"
+        }
+      },
+      "required": [
+        "unit",
+        "name"
+      ],
+      "additionalProperties": false,
+      "description": "One of a system's own names for its radios: a line of Trunk Recorder's unitTagsFile, as the recorder keeps it. `unit`: the radio's ID, or a regular expression between slashes naming many (`/^1(\\d{3})$/`, named `Engine $1`); the first row that matches names a radio."
+    },
+    "UnitNames": {
+      "type": "object",
+      "properties": {
         "mode": {
           "type": "string",
           "enum": [
@@ -9457,7 +9643,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Names for a system's radios: Trunk Recorder's unitTagsFile, kept as text (headerless `unit,name`; a unit between slashes is a regular expression, `/^1(\\d{3})$/,Engine $1`), and unitTagsMode: \"user\" (these first, then the aliases heard; the default), \"ota\" (the aliases first), \"user_only\", \"none\"."
+      "description": "Which names a system's radios go by — Trunk Recorder's unitTagsMode: \"user\" (its own names first, then the aliases heard; the default), \"ota\" (the aliases first), \"user_only\", \"none\". Its own names are kept beside the config ( {@link  UnitName } )."
     },
     "UnitRow": {
       "type": "object",

@@ -7,11 +7,11 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
-import { coverage, pageHealth, rangesFor } from "./data.ts";
+import { coverage, dashSystems, pageHealth, rangesFor } from "./data.ts";
 import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
-import { RadioPage } from "./Radio.tsx";
+import { OriginNote, RadioPage, TalkgroupNamesEditor } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
 import { RfPage } from "./Rf.tsx";
 import { PlatformPage } from "./Platform.tsx";
@@ -172,6 +172,21 @@ test("Radio: a system's page has its calls on the air now, saying the site and t
   assert.match(page, /Active calls Listen live .*100 Fire · south also on dcfd/);
   assert.doesNotMatch(page, /Elsewhere/, "another system's call isn't here");
   assert.match(page, /Control channel log/);
+});
+
+test("Radio: a talkgroup's names are edited on its page, as its talkgroup file's row, the system's tags offered; and where they came from said", () => {
+  twoSites();
+  const origin = { kind: "radioReference" as const, at: Math.floor(Date.now() / 1000) - 7200 };
+  const row = { number: 100, mode: "D", alphaTag: "Fire", description: "Fire Dispatch", tag: "Fire Dispatch", category: "Fire", priority: 1, preferredNac: 0, preferredSite: "", ignore: false, origin };
+  transport.onMessage({ type: "talkgroups", system: "dcfd", talkgroups: [row, { ...row, number: 101, alphaTag: "EMS", tag: "EMS Dispatch", category: "EMS" }] });
+  const sys = dashSystems(snapshot()).find((x) => x.name === "dcfd")!;
+  const html = renderToString(<TalkgroupNamesEditor sys={sys} tg={100} />);
+  for (const [label, value] of [["Alpha tag", "Fire"], ["Description", "Fire Dispatch"], ["Tag", "Fire Dispatch"], ["Category", "Fire"]]) assert.match(html, new RegExp(`aria-label="${label}"[^>]*value="${value}"|value="${value}"[^>]*aria-label="${label}"`), label);
+  assert.match(html, /<datalist id="tg-tags-dcfd"><option value="EMS Dispatch"><\/option><option value="Fire Dispatch">/);
+  assert.match(text(renderToString(<TalkgroupNamesEditor sys={sys} tg={555} />)), /Alpha tag/, "a talkgroup with no row: blank, to name it");
+  assert.equal(text(renderToString(<OriginNote origin={origin} />)).trim(), "Copied from RadioReference, 2 h ago");
+  assert.equal(text(renderToString(<OriginNote origin={{ kind: "file", name: "dc.csv", at: 0 }} />)).trim(), "Loaded from dc.csv");
+  assert.equal(renderToString(<OriginNote origin={undefined} />), "");
 });
 
 test("Radio: each system's card opens its system from anywhere on it, without an Open link", () => {

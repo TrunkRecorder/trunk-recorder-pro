@@ -41,8 +41,8 @@ with `--config` files in different folders never share band plans, talker aliase
 - **Frequencies are in Hz, everywhere.** 857.9875 MHz is `857987500`. Keys carry their unit in the
   name: `…Hz`, `…Db`, `…S` (seconds), `…Kbps`, `…Mb`, `…PerS`. The Airspy gains are the driver's
   steps (`…Step`), not dB.
-- **A key ending in `Csv` holds a file's contents, not a path** (`unitNames.csv`).
-  A key ending in `File` holds a path (`channelFile`).
+- **A key ending in `File` holds a path** (`channelFile`). Talkgroups and unit names aren't in the
+  config at all: they're kept in the recorder's store, loaded and edited in Setup.
 - **A missing key takes its default**, listed in each table. The few marked ✓ in the Required column
   have no default: a source without its `centerHz`, for example, makes the file unreadable.
 - **A missing `sources` key gives one RTL-SDR** with default settings (first free dongle, Auto

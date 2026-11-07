@@ -12,7 +12,7 @@
 // each time.
 
 import init, * as wasm from "./web/pkg/trunk_web.js";
-import type { Channel, Config, FoundRadio, SignalDef, Site, Talkgroup, TonePatternKind } from "./protocol.ts";
+import type { Channel, Config, FoundRadio, Origin, SignalDef, Site, Talkgroup, TalkgroupEdit, TonePatternKind, UnitName } from "./protocol.ts";
 
 let ready = false;
 
@@ -42,6 +42,11 @@ export function configTalkgroups(json: string): string {
   return rules().configTalkgroups(json);
 }
 
+/** The unit names files an older config's JSON holds (`unitNames.csv`), as JSON by short name (migrate.ts). */
+export function configUnitNames(json: string): string {
+  return rules().configUnitNames(json);
+}
+
 /** A talkgroup file read ([`talkgroupsFromCsv`]): its rows, and what in it was passed over. */
 export interface TalkgroupFileReport {
   talkgroups: Talkgroup[];
@@ -65,9 +70,55 @@ export function talkgroupsToCsv(rows: Talkgroup[]): string {
   return rules().talkgroupsToCsv(JSON.stringify(rows));
 }
 
-/** `rows` with talkgroup `number`'s cells set ([column, value], Trunk Recorder's names): the recorder's own edit for setTalkgroup. */
-export function talkgroupsEdit(rows: Talkgroup[], number: number, cells: [string, string][]): Talkgroup[] {
-  return JSON.parse(rules().talkgroupsEdit(JSON.stringify(rows), number, JSON.stringify(cells))) as Talkgroup[];
+/** `rows` with talkgroup `number` edited as `edit` says, by `origin`: the recorder's own edit for setTalkgroup. */
+export function talkgroupsEdit(rows: Talkgroup[], number: number, edit: TalkgroupEdit, origin: Origin): Talkgroup[] {
+  return JSON.parse(rules().talkgroupsEdit(JSON.stringify(rows), number, JSON.stringify(edit), JSON.stringify(origin))) as Talkgroup[];
+}
+
+/** Talkgroups `next` in place of `rows`, as the recorder takes setTalkgroups (`from`: its `from`, with the time set): rows that change are `from`'s. */
+export function talkgroupsReplace(rows: Talkgroup[], next: Talkgroup[], from: Origin | undefined): Talkgroup[] {
+  return JSON.parse(rules().talkgroupsReplace(JSON.stringify(rows), JSON.stringify(next), from ? JSON.stringify(from) : "")) as Talkgroup[];
+}
+
+/** A unit names file read ([`unitNamesFromCsv`]): its rows, and the patterns that aren't regular expressions. */
+export interface UnitNamesFileReport {
+  unitNames: UnitName[];
+  bad: string[];
+}
+
+/** A unit names file (Trunk Recorder's unitTagsFile) read as the recorder reads one (trunk_core::trunk::read_unit_names). */
+export function unitNamesFromCsv(text: string): UnitNamesFileReport {
+  return JSON.parse(rules().unitNamesFromCsv(text)) as UnitNamesFileReport;
+}
+
+/** Radio names as a unit names file. */
+export function unitNamesToCsv(rows: UnitName[]): string {
+  return rules().unitNamesToCsv(JSON.stringify(rows));
+}
+
+/** `rows` with radio `unit` named `name` ("": its own name taken out), by `origin`: the recorder's own edit for setUnitName. */
+export function unitNamesEdit(rows: UnitName[], unit: number, name: string, origin: Origin): UnitName[] {
+  return JSON.parse(rules().unitNamesEdit(JSON.stringify(rows), unit, name, JSON.stringify(origin))) as UnitName[];
+}
+
+/** Radio names `next` in place of `rows`, as `talkgroupsReplace`. */
+export function unitNamesReplace(rows: UnitName[], next: UnitName[], from: Origin | undefined): UnitName[] {
+  return JSON.parse(rules().unitNamesReplace(JSON.stringify(rows), JSON.stringify(next), from ? JSON.stringify(from) : "")) as UnitName[];
+}
+
+/** Each system's names looked up, by its rows and mode: made once for each. */
+const namers = new WeakMap<UnitName[], Map<string, wasm.UnitNamer>>();
+
+/** Radio `unit`'s name by `rows` in `mode` (`heard`: the talker alias heard for it), as the recorder names its calls' talkers. */
+export function unitNameOf(rows: UnitName[], mode: string, unit: number, heard: string | undefined): string | undefined {
+  let byMode = namers.get(rows);
+  if (!byMode) namers.set(rows, (byMode = new Map()));
+  let namer = byMode.get(mode);
+  if (!namer) {
+    namer = new (rules().UnitNamer)(JSON.stringify(rows), mode);
+    byMode.set(mode, namer);
+  }
+  return namer.name(unit, heard);
 }
 
 /** The store's config now, and what has been worked out of it. */

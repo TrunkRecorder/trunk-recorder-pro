@@ -1390,6 +1390,9 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .row-editor .row-name { display: flex; flex-direction: column; gap: 2px; }
 .row-editor .row-name input { width: 15ch; }
 .row-editor .row-name:first-child input { width: 22ch; }
+/* A talkgroup's or radio's names, edited on its page (under its heading). */
+.hero .names-editor { flex-basis: 100%; }
+.names-editor .field-hint { flex-basis: 100%; }
 /* Under a row's name: its tag and category, opening its editor. */
 .row-meta { display: block; max-width: 24ch; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .row-meta:hover { color: var(--text); text-decoration: underline; }

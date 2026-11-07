@@ -58,8 +58,8 @@ import {
   dismissTodo,
   downloadText,
   findRadios,
-  forgetTalkgroups,
-  moveTalkgroups,
+  forgetNames,
+  moveNames,
   renameSystem,
   newSiteOf,
   openGuide,
@@ -80,7 +80,7 @@ import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { SystemSignals } from "./Signals.tsx";
 import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, StorageSettings, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, StorageSettings, System } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -89,11 +89,11 @@ import { ShareSystem } from "./ShareSystem.tsx";
 import { findOnAir, siteFrequencies, type FccTarget } from "./controller.ts";
 import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
-import { TalkgroupsField } from "./TalkgroupsField.tsx";
+import { TalkgroupsField, UnitNamesField } from "./TalkgroupsField.tsx";
+import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "./NameFields.tsx";
 import { ManageData, RemoveSystem } from "./DataTools.tsx";
 import { BiasT, DraftInput, Field, FileInput, NumberInput, ReleaseSlider, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
-import { unitNameCount } from "./units.ts";
 import { SourceSuggestion, SourcesAdvice, useSourceAdvice } from "./sourceAdvice.tsx";
 import { openTodos } from "./todo.ts";
 import { parseAccess, sameAccess, type AccessParts } from "./tones.ts";
@@ -419,21 +419,13 @@ function MatchLegend(props: { modes: Set<Channel["mode"]> }) {
 
 /** A row's names beside its alpha tag (the table's Name), as a talkgroup file has them. */
 type NameField = "description" | "tag" | "group";
-const NAME_FIELDS: [NameField, string, string][] = [
-  ["description", "Description", "Fire / EMS dispatch"],
-  ["tag", "Tag", "Fire Dispatch"],
-  ["group", "Category", "Fire"],
-];
+/** A row's names beside its name: a talkgroup's (its Category is the row's `group`). */
+const NAME_FIELDS: NameFieldDef<NameField>[] = TALKGROUP_NAME_FIELDS.filter((f) => f.key !== "alphaTag").map((f) => ({ ...f, key: f.key === "category" ? "group" : (f.key as NameField) }));
 
 /** The Tag and Category values a conventional system uses already (its rows', its talkgroups'), most used first: offered as each row's are typed. */
 function useNameSuggestions(conv: Conventional): { tag: string[]; group: string[] } {
   const file = useApp().talkgroups[conv.shortName];
   return useMemo(() => {
-    const ranked = (values: string[]) => {
-      const n = new Map<string, number>();
-      for (const v of values.map((v) => v.trim()).filter(Boolean)) n.set(v, (n.get(v) ?? 0) + 1);
-      return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([v]) => v);
-    };
     return {
       tag: ranked([...conv.channels.map((c) => c.tag ?? ""), ...(file ?? []).map((t) => t.tag)]),
       group: ranked([...conv.channels.map((c) => c.group ?? ""), ...(file ?? []).map((t) => t.category)]),
@@ -472,18 +464,7 @@ function RowEditor(props: {
           </fieldset>
           <fieldset>
             <legend>Names</legend>
-            {NAME_FIELDS.map(([field, label, placeholder]) => (
-              <label key={field} className="row-name">
-                <span className="small muted">{label}</span>
-                <TextInput
-                  value={ch[field] ?? ""}
-                  disabled={props.disabled}
-                  placeholder={placeholder}
-                  list={field === "description" ? undefined : props.lists[field]}
-                  onChange={(v) => props.onName(field, v)}
-                />
-              </label>
-            ))}
+            <NameFields fields={NAME_FIELDS} value={(f) => ch[f] ?? ""} lists={props.lists} disabled={props.disabled} onChange={props.onName} />
           </fieldset>
           {digital(ch.mode) && (
             <fieldset>
@@ -1505,7 +1486,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
               onRemove={() =>
                 updateConfig((x) => {
                   x.conventional.splice(k, 1);
-                  forgetTalkgroups(x, conv.shortName);
+                  forgetNames(x, conv.shortName);
                 })
               }
               onClose={() => setRemoving(false)}
@@ -1636,11 +1617,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
           <>
             <MatchLegend modes={new Set(chans.map((c) => c.mode))} />
             {(["tag", "group"] as const).map((f) => (
-              <datalist key={f} id={lists[f]}>
-                {suggest[f].map((v) => (
-                  <option key={v} value={v} />
-                ))}
-              </datalist>
+              <Suggestions key={f} id={lists[f]} values={suggest[f]} />
             ))}
             <div className="table-wrap channels-wrap">
               <table className="calls channels">
@@ -1930,6 +1907,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
       {chans.length > 0 && (
         <Group title="Units" hint="Names for the radios heard on these channels." cols={1}>
           <UnitNamesField
+            system={conv.shortName}
             value={conv.unitNames}
             anchor={`convunits-${name}`}
             needs={need(`convunits-${name}`)}
@@ -2485,7 +2463,7 @@ export function SystemCard(props: { c: Config; i: number }) {
   const removed = () =>
     updateConfig((x) => {
       x.systems.splice(i, 1);
-      forgetTalkgroups(x, sys.shortName);
+      forgetNames(x, sys.shortName);
     });
   const addSite = () => {
     edit((x) => {
@@ -2518,9 +2496,9 @@ export function SystemCard(props: { c: Config; i: number }) {
       if (from.enabled) to.enabled = true;
       // Plugin settings that named it name this one.
       renameSystemRefs(x, from.shortName, to.shortName, plugins);
-      if (!mine) moveTalkgroups(from.shortName, to.shortName);
+      if (!mine) moveNames(from.shortName, to.shortName);
       x.systems.splice(j, 1);
-      forgetTalkgroups(x, from.shortName);
+      forgetNames(x, from.shortName);
     });
     setNotice(`${other.shortName} is a part of ${sys.shortName} now.`);
   };
@@ -2667,6 +2645,7 @@ export function SystemCard(props: { c: Config; i: number }) {
       <Group title="Talkgroups and units" hint="Names for what is heard, and which talkgroups are recorded.">
         <TalkgroupsField sys={sys} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
         <UnitNamesField
+          system={sys.shortName}
           value={sys.unitNames}
           anchor={`units-${sys.shortName}`}
           needs={need(`units-${sys.shortName}`)}
@@ -2705,48 +2684,6 @@ export function SystemCard(props: { c: Config; i: number }) {
  * Names for a system's radios: Trunk Recorder's unitTagsFile (loaded into the
  * config) and unitTagsMode — which comes first, these or the aliases radios send.
  */
-function UnitNamesField(props: { value: UnitNames | undefined; onChange: (u: UnitNames | undefined) => void; anchor: string; needs?: string }) {
-  const ref = useRef<HTMLInputElement>(null);
-  const u = props.value ?? {};
-  const set = (patch: Partial<UnitNames>) => {
-    const n: UnitNames = { ...u, ...patch };
-    for (const k of Object.keys(n) as (keyof UnitNames)[]) if (!n[k]) delete n[k];
-    props.onChange(Object.keys(n).length ? n : undefined);
-  };
-  const count = u.csv ? unitNameCount(u.csv) : 0;
-  return (
-    <Field label="Unit names" needs={props.needs} anchor={props.anchor}>
-      <div className="row">
-        <button className="btn" onClick={() => ref.current?.click()}>
-          Load CSV…
-        </button>
-        <span className="mono">{count ? `${count} from ${u.name ?? "file"}` : "none"}</span>
-        {count > 0 && (
-          <button className="btn ghost" onClick={() => set({ csv: undefined, name: undefined })}>
-            Clear
-          </button>
-        )}
-        <select value={u.mode ?? ""} aria-label="Which names come first" onChange={(e) => set({ mode: e.target.value as UnitNames["mode"] })}>
-          <option value="">These first, then aliases heard</option>
-          <option value="ota">Aliases heard first</option>
-          <option value="user_only">Only these</option>
-          <option value="none">No names</option>
-        </select>
-      </div>
-      <FileInput
-        inputRef={ref}
-        accept=".csv,text/csv,text/plain"
-        onFile={async (f) => {
-          if (!f) return;
-          const csv = await f.text();
-          set({ csv, name: f.name });
-          setNotice(`Loaded ${unitNameCount(csv)} unit names from ${f.name}.`);
-        }}
-      />
-    </Field>
-  );
-}
-
 /** The log (desktop app): Trunk Recorder's options, applied at once. */
 function LogPanel(props: { c: Config }) {
   const l: LogSettings = props.c.log ?? defaultLog();

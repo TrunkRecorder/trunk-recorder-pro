@@ -5,10 +5,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
-import { callsQuery, radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
+import { callsQuery, editTalkgroup, nameUnit, radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
+import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "../NameFields.tsx";
+import { originText } from "../origins.ts";
+import { isPattern, ownUnitName } from "../units.ts";
 import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
-import type { CallEntry, CipherSeen, LengthHistogram, OutOfBandRow, RadioResult, TgRow, UnitRow } from "../protocol.ts";
+import type { CallEntry, CipherSeen, LengthHistogram, Origin, OutOfBandRow, RadioResult, TgRow, UnitRow } from "../protocol.ts";
 import { playable, playNow } from "../listen.ts";
 import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
 import { Tones } from "./Tones.tsx";
@@ -60,6 +63,53 @@ function IgnoreToggle({ sys, r }: { sys: DashSystem; r: TgRow }) {
       {r.ignore ? "Ignored ✕" : "Ignore"}
     </button>
   );
+}
+
+/** Where a row's names came from, and when: "Copied from RadioReference, 3 d ago" (none: not known). */
+export function OriginNote({ origin }: { origin: Origin | undefined }) {
+  const said = originText(origin);
+  if (!said || !origin) return null;
+  return <span title={origin.at ? new Date(origin.at * 1000).toLocaleString() : undefined}>{origin.at ? `${said}, ${ago(origin.at)}` : said}</span>;
+}
+
+/** A button that opens a row's names editor: "Name it" when it has none. */
+function NameButton(props: { named: boolean; open: boolean; onClick: () => void }) {
+  return (
+    <button className={`btn small${props.named ? " ghost" : ""}`} aria-expanded={props.open} onClick={props.onClick}>
+      {props.open ? "Done" : props.named ? "Edit names" : "Name it"}
+    </button>
+  );
+}
+
+/**
+ * Talkgroup `tg`'s names, edited (only here: the lists stay read-only), as
+ * its talkgroup file's row: each kept as its box is left, at once, for the
+ * recording, its calls and plugins too. Its Tag and Category offer the
+ * system's own.
+ */
+export function TalkgroupNamesEditor({ sys, tg }: { sys: DashSystem; tg: number }) {
+  const rows = useApp().talkgroups[sys.name];
+  const row = rows?.find((t) => t.number === tg);
+  const offered = useMemo(() => ({ tag: ranked((rows ?? []).map((t) => t.tag)), category: ranked((rows ?? []).map((t) => t.category)) }), [rows]);
+  const lists = { tag: `tg-tags-${sys.name}`, category: `tg-categories-${sys.name}` };
+  return (
+    <div className="row-editor names-editor">
+      <fieldset>
+        <legend>Names</legend>
+        <NameFields fields={TALKGROUP_NAME_FIELDS} value={(k) => row?.[k] ?? ""} lists={lists} onChange={(k, v) => editTalkgroup(sys.name, tg, { [k]: v })} />
+      </fieldset>
+      <Suggestions id={lists.tag} values={offered.tag} />
+      <Suggestions id={lists.category} values={offered.category} />
+      <span className="field-hint">Kept in {sys.name}'s talkgroups (Setup → Systems), as a talkgroup file's row: calls from now on carry them.</span>
+    </div>
+  );
+}
+
+/** Why a radio's own name may not be what it shows: its system's unit names mode puts the alias heard first, or shows none. */
+function unitNameHint(mode: string, heard: string | undefined): string | undefined {
+  if (mode === "none") return "This system shows no unit names (Setup → Systems → Unit names).";
+  if (mode === "ota" && heard) return `The alias heard (${heard}) comes first on this system (Setup → Systems → Unit names).`;
+  return undefined;
 }
 
 // ── the system ───────────────────────────────────────────────────────────────
@@ -394,6 +444,9 @@ function SystemView({ s, sys, focus }: { s: AppState; sys: DashSystem; focus?: s
 function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
   const r = usePolled(`tg:${sys.name}:${tg}`, () => radioQuery({ what: "tg", system: sys.name, key: tg, hours: 168 }), running(s) ? 30_000 : 0);
   const row = r?.row as TgRow | null | undefined;
+  const [naming, setNaming] = useState(false);
+  // Its names as kept (shown at once as they're edited), else as heard.
+  const kept = s.talkgroups[sys.name]?.find((t) => t.number === tg);
   if (!r) return <p className="empty">Loading…</p>;
   if (!row) return <p className="empty">Talkgroup {tg} hasn't been heard on {sys.name}.</p>;
   // The week's hours laid out by local day (a row each, today at the bottom) and local hour.
@@ -413,16 +466,20 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
     <div className="stack">
       <section className="hero">
         <div>
-          <h2 className="big">{row.alphaTag || `Talkgroup ${tg}`}</h2>
+          <h2 className="big">{(kept ? kept.alphaTag : row.alphaTag) || `Talkgroup ${tg}`}</h2>
           <p className="muted">
             TG {tg} · {sys.name} · first heard {clockAt(row.first)} · last {ago(row.last)}
-            {!row.known && " · not in the talkgroup file"}
+            {!kept && !row.known && " · not in the talkgroup file"}
+            {kept?.origin && " · "}
+            <OriginNote origin={kept?.origin} />
           </p>
         </div>
         <div className="row">
           {row.ignore && <span className="badge ign">IGNORED</span>}
+          {sys.kind !== "conventional" && <NameButton named={!!(kept?.alphaTag || row.alphaTag)} open={naming} onClick={() => setNaming(!naming)} />}
           <IgnoreToggle sys={sys} r={row} />
         </div>
+        {naming && sys.kind !== "conventional" && <TalkgroupNamesEditor sys={sys} tg={tg} />}
       </section>
       <div className="kpis">
         <Stat label="Calls, 7 days" value={compact(row.calls)} sub={`${row.totalCalls} since first heard`} />
@@ -572,12 +629,19 @@ function Ciphers({ ciphers }: { ciphers: CipherSeen[] }) {
 
 // ── one radio ────────────────────────────────────────────────────────────────
 
+/** A radio's name, as a unit names file's row. */
+const UNIT_NAME_FIELDS: NameFieldDef<"name">[] = [{ key: "name", label: "Name", placeholder: "Bus 14, Paddock" }];
+
 function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number }) {
+  const [naming, setNaming] = useState(false);
   const r = usePolled(`unit:${sys.name}:${unit}`, () => radioQuery({ what: "unit", system: sys.name, key: unit }), running(s) ? 15_000 : 0) as RadioResult | null;
   const row = r?.row as UnitRow | null | undefined;
   if (!r) return <p className="empty">Loading…</p>;
   if (!row) return <p className="empty">Radio {unit} hasn't been heard on {sys.name}.</p>;
   const alias = aliasOf(s, sys.name, unit) ?? row.alias;
+  const own = ownUnitName(s.unitNames[sys.name], unit);
+  const mode = (s.config?.systems.find((x) => x.shortName === sys.name)?.unitNames ?? s.config?.conventional.find((x) => x.shortName === sys.name)?.unitNames)?.mode || "user";
+  const hint = unitNameHint(mode, s.units[sys.name]?.[unit]);
   const tgs = r.tgs ?? [];
   const partners = r.partners ?? [];
   const affTag = row.aff !== null ? (tgs.find((t) => t.tg === row.aff)?.alphaTag ?? "") : "";
@@ -589,9 +653,26 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
           <p className="muted">
             Unit {unit} · {sys.name} · first heard {clockAt(row.first)} · last {ago(row.last)}
             {row.reg === false && " · deregistered"}
+            {own?.origin && " · "}
+            <OriginNote origin={own?.origin} />
           </p>
         </div>
-        {row.new && <span className="badge new">NEW</span>}
+        <div className="row">
+          {row.new && <span className="badge new">NEW</span>}
+          <NameButton named={!!own} open={naming} onClick={() => setNaming(!naming)} />
+        </div>
+        {naming && (
+          <div className="row-editor names-editor">
+            <fieldset>
+              <legend>Name</legend>
+              <NameFields fields={UNIT_NAME_FIELDS} value={() => own?.name ?? ""} onChange={(_, v) => nameUnit(sys.name, unit, v)} />
+            </fieldset>
+            <span className="field-hint">
+              Kept in {sys.name}'s unit names (Setup → Systems): its calls from now on carry it. Empty: none of its own{(s.unitNames[sys.name] ?? []).some(isPattern) ? " (a pattern may name it)" : ""}.
+              {hint && ` ${hint}`}
+            </span>
+          </div>
+        )}
       </section>
       <div className="kpis">
         <Stat label="Transmissions" value={compact(row.tx)} sub={dur(row.txSecs) + " on the air"} />
