@@ -670,22 +670,28 @@ mod tests {
 
     /// What's kept is kept by the config's system id: a renamed system
     /// keeps its talkgroups and calls, and a name not the config's has none.
+    /// A conventional system is numbered with the trunked ones and kept alike.
     #[test]
     fn a_renamed_system_keeps_what_is_kept_by_its_id() {
-        let cfg = |name: &str| trunk_app::Config::from_json(&format!(r#"{{"systems":[{{"shortName":"{name}","id":5}}]}}"#)).unwrap();
+        let cfg = |name: &str, conv: &str| trunk_app::Config::from_json(&format!(r#"{{"systems":[{{"shortName":"{name}","id":5}}],"conventional":[{{"shortName":"{conv}","id":6}}]}}"#)).unwrap();
         for db in Db::for_each_backend("rename", Duration::from_millis(10)) {
-            db.set_systems(&cfg("old"));
-            assert_eq!(db.system_id("old"), Some(5));
+            db.set_systems(&cfg("old", "fire"));
+            assert_eq!((db.system_id("old"), db.system_id("fire")), (Some(5), Some(6)), "the config's ids, not a test's stand-in");
             db.send(Change::Talkgroups { system_id: 5, rows: trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n1,A\n") });
-            let mut r = row::tests::record(1, 1000);
-            r.short_name = "old".into();
-            db.send(Change::Call { row: row::call_row("old/1", &r, true, true, None, 0), live: true });
+            for (system, path) in [("old", "old/1"), ("fire", "fire/1")] {
+                let mut r = row::tests::record(1, 1000);
+                r.short_name = system.into();
+                db.send(Change::Call { row: row::call_row(path, &r, true, true, None, 0), live: true });
+            }
             db.flush().unwrap();
-            db.set_systems(&cfg("new"));
+            db.set_systems(&cfg("new", "county-fire"));
             db.flush().unwrap();
             assert_eq!(db.talkgroups("new").unwrap().iter().map(|r| r.tg.alpha_tag.as_str()).collect::<Vec<_>>(), ["A"], "{}", db.kind());
-            assert_eq!(db.calls(&Default::default(), &[db.system_id("new").unwrap()]).unwrap().entries.len(), 1);
-            assert_eq!(db.count("select count(*) from systems where id = 5 and short_name = 'new'"), 1);
+            for system in ["new", "county-fire"] {
+                assert_eq!(db.calls(&Default::default(), &[db.system_id(system).unwrap()]).unwrap().entries.len(), 1, "{system} {}", db.kind());
+            }
+            assert_eq!(db.count("select count(*) from systems where id = 5 and short_name = 'new' and kind = 'p25'"), 1);
+            assert_eq!(db.count("select count(*) from systems where id = 6 and short_name = 'county-fire' and kind = 'conventional'"), 1);
         }
     }
 
