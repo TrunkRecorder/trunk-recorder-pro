@@ -215,3 +215,33 @@ pub fn run(a: &Args) {
         eprintln!("  {k}: {n}");
     }
 }
+
+/// `trunk-pro tool dmrsynth <out.cu8> [--center Hz] [--rate Hz] [--freq Hz]
+/// [--superframes 15] [--tg 101] [--source 1234] [--cc 1]` — a synthetic DMR
+/// repeater ([`dmr::synth`]): idle bursts, a voice transmission on slot 1,
+/// idle again; for `replay --dmr` (and perf/gate.sh).
+pub fn run_synth(a: &Args) {
+    use dmr::synth::{dibits, modulate, Tx};
+    let path = a.positional.get(1).unwrap_or_else(|| crate::die("tool dmrsynth: no output file"));
+    let center = a.num("center", 464_000_000.0);
+    let fs = a.num("rate", 2_400_000.0);
+    let freq = a.num("freq", center + 100_000.0);
+    let tx = Tx {
+        cc: a.num("cc", 1.0) as u8,
+        slot: 1,
+        talkgroup: a.num("tg", 101.0) as u32,
+        source: a.num("source", 1234.0) as u32,
+        superframes: a.num("superframes", 15.0) as usize,
+        idle_before: 20,
+        idle_after: 40,
+        csbks: Vec::new(),
+        mobile: false,
+    };
+    let mut ph = 0.0;
+    let mut iq = modulate(&dibits(&tx), fs, freq - center, 0.25, &mut ph);
+    let mut seed = 1;
+    trunk_core::nxdn::synth::add_noise(&mut iq, 0.01, &mut seed);
+    let bytes: Vec<u8> = iq.iter().flat_map(|v| [(v.re * 127.5 + 127.5).clamp(0.0, 255.0) as u8, (v.im * 127.5 + 127.5).clamp(0.0, 255.0) as u8]).collect();
+    std::fs::write(path, bytes).unwrap_or_else(|e| crate::die(&format!("{path}: {e}")));
+    eprintln!("{path}: {:.1} s at {fs} S/s, centre {center} Hz; DMR on {freq} Hz, CC {}, TG {} on slot 1, {} superframes", iq.len() as f64 / fs, tx.cc, tx.talkgroup, tx.superframes);
+}
