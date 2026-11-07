@@ -276,6 +276,47 @@ fn ty(d: Dialect, t: Ty) -> &'static str {
 pub fn ddl(d: Dialect) -> String {
     let mut out = String::new();
     for t in TABLES {
+        out.push_str(&table_ddl(d, t));
+    }
+    for i in INDEXES {
+        out.push_str(&format!("{};\n", i.create()));
+    }
+    for (name, sql) in VIEWS {
+        out.push_str(&format!("create view {name} as {};\n", timestamps(sql, d)));
+    }
+    if d == Dialect::Postgres {
+        // (The big tables, mostly appended and retired by age: vacuumed and
+        // analysed after 1% changes rather than 20%, so the planner keeps
+        // up with a day's calls.)
+        for t in ["calls", "call_transmissions"] {
+            out.push_str(&format!("alter table {t} set (autovacuum_vacuum_scale_factor = 0.01, autovacuum_analyze_scale_factor = 0.01);\n"));
+        }
+    }
+    out
+}
+
+/// Upgrading an older store in place — for a while only, as trunk-app's
+/// migrate.rs: the DDL that brings a store of version `from` to this one,
+/// when it only adds to it (none: it's set aside and made afresh, the
+/// rule). 8 → 9 (v0.3.1): each talkgroup's origin, and the systems' own
+/// names for their radios (`unit_names`). To drop it, delete this and its
+/// two uses (sqlite.rs, postgres.rs `prepare`) and its tests.
+pub fn upgrade(d: Dialect, from: u32) -> Option<String> {
+    if from != 8 || SCHEMA_VERSION != 9 {
+        return None;
+    }
+    let mut out = String::new();
+    for c in ["origin", "origin_name"] {
+        out.push_str(&format!("alter table talkgroups add column {c} text not null default '';\n"));
+    }
+    out.push_str(&format!("alter table talkgroups add column origin_at {} not null default 0;\n", ty(d, BigInt)));
+    out.push_str(&table_ddl(d, TABLES.iter().find(|t| t.name == "unit_names")?));
+    Some(out)
+}
+
+/// Table `t`'s `create table` in dialect `d`.
+fn table_ddl(d: Dialect, t: &Table) -> String {
+    {
         let mut lines: Vec<String> = t
             .cols
             .iter()
@@ -300,23 +341,8 @@ pub fn ddl(d: Dialect) -> String {
         }
         // (Keyed by what it's read by: the key is the table, in SQLite.)
         let rowid = if d == Dialect::Sqlite && !t.key.is_empty() { " without rowid" } else { "" };
-        out.push_str(&format!("create table {} (\n{}\n){rowid};\n", t.name, lines.join(",\n")));
+        format!("create table {} (\n{}\n){rowid};\n", t.name, lines.join(",\n"))
     }
-    for i in INDEXES {
-        out.push_str(&format!("{};\n", i.create()));
-    }
-    for (name, sql) in VIEWS {
-        out.push_str(&format!("create view {name} as {};\n", timestamps(sql, d)));
-    }
-    if d == Dialect::Postgres {
-        // (The big tables, mostly appended and retired by age: vacuumed and
-        // analysed after 1% changes rather than 20%, so the planner keeps
-        // up with a day's calls.)
-        for t in ["calls", "call_transmissions"] {
-            out.push_str(&format!("alter table {t} set (autovacuum_vacuum_scale_factor = 0.01, autovacuum_analyze_scale_factor = 0.01);\n"));
-        }
-    }
-    out
 }
 
 /// Views to report from, by hand or with a tool (Grafana, Metabase,
@@ -382,6 +408,14 @@ pub fn prepare(conn: &rusqlite::Connection) -> rusqlite::Result<Prepared> {
         return Ok(Prepared::Current);
     }
     let tables: i64 = conn.query_row("select count(*) from sqlite_master", [], |r| r.get(0))?;
+    if let Some(sql) = upgrade(Dialect::Sqlite, have).filter(|_| tables > 0) {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(&sql)?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()?;
+        log::info!("Call store: upgraded from schema version {have} to {SCHEMA_VERSION}");
+        return Ok(Prepared::Current);
+    }
     if have != 0 || tables > 0 {
         return Ok(Prepared::Other(have));
     }

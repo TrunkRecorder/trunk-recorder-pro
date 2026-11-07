@@ -347,6 +347,25 @@ mod tests {
         assert!(open(&other).is_ok());
     }
 
+    /// A version 8 store (v0.3.0's) is upgraded in place: its talkgroups
+    /// kept, with no origin, and a table for unit names.
+    #[test]
+    fn a_version_8_store_is_upgraded_in_place() {
+        let dir = TestDir::new("db-v8");
+        let path = dir.join("trunk-pro.sqlite");
+        let store = open(&path).unwrap();
+        store.batch_for_test("insert into systems (id, short_name, kind) values (1, 'a', 'p25');
+            insert into talkgroups (system_id, number, alpha_tag, mode, description, tag, category, priority, preferred_nac, preferred_site, ignore, sort_order, comment, origin, origin_name, origin_at)
+              values (1, 101, 'Fire', 'D', '', '', '', 1, 0, '', 0, 0, '', 'file', 'x.csv', 5);
+            drop table unit_names; alter table talkgroups drop column origin; alter table talkgroups drop column origin_name; alter table talkgroups drop column origin_at;
+            pragma user_version = 8;");
+        drop(store);
+        let store = open(&path).unwrap();
+        assert_eq!((store.scalar("pragma user_version"), aside_count(&dir)), (i64::from(schema::SCHEMA_VERSION), 0), "not set aside");
+        assert_eq!(store.talkgroups(1).unwrap().iter().map(|r| (r.tg.alpha_tag.as_str(), r.origin.is_none())).collect::<Vec<_>>(), [("Fire", true)]);
+        assert!(store.unit_names(1).unwrap().is_empty());
+    }
+
     #[test]
     fn a_corrupt_file_is_moved_aside_and_a_fresh_one_opened() {
         let dir = TestDir::new("db-corrupt");
