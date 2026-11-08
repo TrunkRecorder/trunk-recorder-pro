@@ -365,7 +365,7 @@ fn keep(v: &Value, keys: &[&str]) -> Value {
     Value::Object(keys.iter().filter_map(|k| v.get(*k).map(|x| (k.to_string(), x.clone()))).collect::<Map<_, _>>())
 }
 
-const RECORDING_KEYS: &[&str] = &["callTimeoutS", "conversationMode", "recordUnknown", "recordEncrypted", "recordUnitToUnit", "keepSilentCalls", "minCallS", "maxCallS", "minTransmissionS", "prerollS", "maxRecorders"];
+const RECORDING_KEYS: &[&str] = &["callTimeoutS", "conversationMode", "recordUnknown", "recordEncrypted", "recordUnitToUnit", "keepSilentCalls", "minCallS", "maxCallS", "minTransmissionS", "prerollS", "maxRecorders", "vocoder", "normalizeAudio", "digitalLevelDb", "analogLevelDb", "dropDuplicateCalls"];
 const SYSTEM_KEYS: &[&str] = &["shortName", "type", "enabled", "defaultMode", "nxdnType", "preferredSite", "receiveOn", "sites", "recording"];
 const SITE_KEYS: &[&str] = &["name", "enabled", "controlChannelsHz", "modulation", "expect", "voiceChannelsHz", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz", "lcnTableHz", "dmrChannelsHz", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran", "esk"];
 const CONVENTIONAL_KEYS: &[&str] = &["shortName", "enabled", "squelchDb", "demod", "channels", "recording"];
@@ -734,7 +734,7 @@ mod tests {
     fn secret_config() -> Config {
         Config::from_value(json!({
             "sources": [{ "type": "usrp", "args": "addr=SECRET-ADDRESS,serial=SECRET-SERIAL", "gainDb": 30, "centerHz": 858000000, "rateHz": 8000000, "name": "SECRET-RADIO-NAME" }],
-            "recording": { "captureDir": "/SECRET-PATH", "recordEncrypted": true },
+            "recording": { "captureDir": "/SECRET-PATH", "recordEncrypted": true, "vocoder": "mbelib", "normalizeAudio": false },
             "keys": { "a": { "file": "/SECRET-KEY-FILE" } },
             "systems": [{
                 "shortName": "dcfd", "name": "SECRET-SYSTEM-TITLE", "type": "p25", "keys": "a", "receiveOn": ["USRP addr=SECRET-ADDRESS,serial=SECRET-SERIAL"],
@@ -772,6 +772,8 @@ mod tests {
         assert_eq!(a.systems.len(), b.systems.len());
         assert_eq!(a.systems[0].sites[0].control_channels, b.systems[0].sites[0].control_channels);
         assert!(b.systems[0].calls.record_encrypted);
+        assert_eq!(b.vocoder, trunk_core::mbe::Profile::Mbelib, "the vocoder decides the audio");
+        assert!(!b.systems[0].save.normalize);
         assert!(b.systems[0].pins.allows(0), "still received on its radio");
         assert_eq!(a.sources[0].center_hz, b.sources[0].center_hz);
         assert_eq!(b.conventional.len(), 1);

@@ -10,6 +10,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   with what's needed to decode them again and nothing private. Nothing is sent anywhere.
   `trunk-pro replay <folder>` plays one back with the systems it was made with. See
   [Recordings](docs/guides/recordings.md#capture-a-known-good-sample).
+- **`trunk-pro tool corpus`** adds, downloads and replays the recordings regression tests run on, listed by
+  hash in `corpus/corpus.json`.
 
 ## [0.3.2] — 2026-11-07
 

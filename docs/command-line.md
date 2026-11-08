@@ -348,6 +348,7 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool nxdnsynth` | Make a synthetic NXDN capture |
 | `tool p25synth` | Make a synthetic P25 Phase 1 capture, encrypted with a key of yours or clear |
 | `tool perf` | One radio's read path over a capture, for counting its CPU cost |
+| `tool corpus` | The recordings regression tests run on: add, download and replay them |
 | `tool snr` | Weak-signal curves: decode a strong channel again with noise added |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
 | `tool sdr` | A saved `.sdr` call's metadata, or its frames |
@@ -472,6 +473,27 @@ driver hands over, through the driver's own per-block code (for an RTL-SDR or Ha
 a stuck stream) and out of the queue its decoding thread reads. Nothing else runs, so counting the
 process's instructions gives that path's cost; `--passes N` goes over the capture N times. It's what
 `perf/gate.py` measures; see [Development](development.md#cpu-cost).
+
+### tool corpus
+
+```
+trunk-pro tool corpus add <capture folder> --id ID --protocol P [--tier wideband]
+trunk-pro tool corpus fetch [--only a,b] [--tier t]
+trunk-pro tool corpus run --out dir [--only a,b] [--tier t]
+```
+
+The recordings regression tests run on, listed in `corpus/corpus.json` by SHA-256. `add` lists a SigMF
+capture and puts its files in the cache. `fetch` downloads what the cache lacks, resuming an interrupted
+download and keeping a file only if it matches its hash. `run` replays each capture into `<out>/<id>`, with
+what it printed in `<out>/<id>.stdout` and `.stderr`, and fails if any replay did.
+
+| Option | Default | What it does |
+|---|---|---|
+| `--manifest file` | `corpus/corpus.json` | The list of captures |
+| `--cache dir` | `TRP_CORPUS_CACHE`, or `captures/.corpus` | Where the files are kept |
+| `--base url` | `https://iq.trunkrecorder.pro/blobs/` | Where files are downloaded from, by hash |
+| `--only a,b` | all | Just these capture ids |
+| `--tier t` | all | Just this tier (`wideband`, `control`, `voice`) |
 
 ### tool snr
 

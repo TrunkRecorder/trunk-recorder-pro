@@ -7,9 +7,10 @@ Status (2026-11-08): being built on branch `iq-corpus`. The Cloudflare repo does
 - A "Capture known-good sample" button on the RF page, recording every radio for 30 to 120 s
   ([iq_capture.rs](../crates/trunk-pro/src/iq_capture.rs), part of phase 3).
 - The `sigmf-meta` writer with its allow-lists and leak test, and `docs/sigmf/trp.sigmf-ext.md`.
-- `replay` of SigMF captures, including collections and gaps (most of phase 1).
+- `replay` of SigMF captures, including collections and gaps, the manifest, `tool corpus`, and the
+  regression scenarios as metadata-only captures (phase 1, done).
 
-Not yet: `diagnostics.json`, the manifest, expected outcomes, and everything after phase 3.
+Not yet: `diagnostics.json`, expected outcomes, and everything after phase 3.
 
 Recordings are public. Anyone can download them to test their own build or help debug someone else's
 report. The only gate is on what counts as a regression test: promoting a recording needs GitHub write
@@ -53,14 +54,15 @@ gets us a recording of the problem when a user reports one.
 | Recordings are public, for community testing and debugging, with no complex access system | Decided |
 | Promotion into the regression tests needs GitHub write access to the TRP repo | Decided |
 | Expected output is stored per TRP version, so it can improve over time | Decided |
-| A Cloudflare-hosted page with a waterfall and a decode | Decided |
+| A Cloudflare-hosted page with a waterfall and decode counts | Decided |
 | Everything needed to decode and understand a file is in its `sigmf-meta` | Decided |
 | The rule language is flexible and expressive | Decided |
 | CEL as that language | Proposed |
-| Sanitized system info as a `diagnostics.json` the user attaches to an issue, never uploaded to the service | Proposed |
+| Sanitized system info as a `diagnostics.json`, stored and published beside the IQ | Decided |
+| Publish IQ, not decoded radio traffic | Decided |
 | Decode in a GitHub Action running the released `trunk-pro` | Proposed |
 | Promote by a `workflow_dispatch` workflow, which GitHub limits to users with write access | Proposed |
-| Expected output in this repo, as reviewable text, with `next` for unreleased changes | Proposed |
+| Expected output in this repo, as text of hashes and counts, with `next` for unreleased changes | Proposed |
 
 ## How it fits together
 
@@ -76,8 +78,8 @@ gets us a recording of the problem when a user reports one.
                      local review ──send──►   D1: submissions
                                                 │ dispatch
                                                 ▼
- captures/corpus/ (manifest, expected)        GitHub Action: released trunk-pro
-   ▲          │                                 └─ checks, decode, waterfall, audio
+ corpus/ (manifest, expected)        GitHub Action: released trunk-pro
+   ▲          │                                 └─ checks, decode counts, waterfall
    │          ▼
    │        trunk-pro tool corpus ◄── anyone, CI, forks (plain HTTPS)
    │
@@ -129,7 +131,10 @@ A submission is a folder:
   source-N.sigmf-meta         what the file is, and everything needed to decode it
   source-N.sigmf-data         one pair per radio
   capture.sigmf-collection    names them, even for one radio
+  diagnostics.json            sanitized host and application state
 ```
+
+A diagnostics-only submission, with no IQ, is valid.
 
 ### `sigmf-meta`
 
@@ -206,8 +211,8 @@ None is needed to decode. `core:geolocation` is off unless the contributor adds 
 
 ### `diagnostics.json`
 
-Sanitized system info, saved locally on its own and not part of a submission. The app shows it and offers
-a copy to attach to a GitHub issue, so it never needs a private path through the service.
+Sanitized system info, stored and published beside the IQ. Separate from the capture's metadata because it
+describes the machine rather than the recording, and can be sent alone.
 
 Contents: OS and architecture, CPU and memory, TRP version and build, USB layout and radio models,
 source statistics (drops, clipping, clock), per-stage timing if available, recent warnings and errors,
@@ -298,8 +303,7 @@ An advanced feature: **Setup → Diagnostics**, hidden until switched on. Rules 
 - **Captures:** the local folder. Each row shows tier, size, why it was captured and its state.
 
 **Local review, before every send:** a waterfall, the metadata in readable form, the size, and consent text
-saying the recording becomes public, will be decoded by anyone who wants to, and can't be recalled once
-others have copied it. Rules never send on their own.
+saying the recording and its diagnostics become public and can't be recalled once others have copied them. Rules never send on their own.
 
 **Sending:** resumable multipart straight to R2, on a background thread, throttled, retrying across
 restarts. The app shows a receipt ID, to quote on an issue or use to withdraw the submission.
@@ -328,22 +332,23 @@ result per capture, against the expected output for its TRP version:
 | `regressed` | Something expected is missing or worse |
 | `known-failing` | Tied to an open issue, still failing as expected |
 | `fixed` | Was known-failing, now meets its criteria |
+| `changed` | The same amount decoded, with different bits |
 | `no-baseline` | Nothing expected at this version: the capture was promoted later |
 
 | Tier | Compared | Regressed when |
 |---|---|---|
 | Control | CRC-passing messages, as a multiset | An expected message no longer decodes |
-| Voice (digital) | Call boundaries, error counts, and a 16-bit hash per 20 vocoder frames | Good frames fall below the baseline, past a per-capture tolerance (default 0) |
+| Voice (digital) | Call boundaries, error counts, and a hash per 20 vocoder frames | Good frames fall below the baseline, past a per-capture tolerance (default 0) |
 | Voice (analog) | Call boundaries, audio envelope correlation (as `tests/mimosdr.rs` does) | Correlation under a floor |
-| Wideband | Calls by talkgroup, frequency, slot and encryption, with start time ±0.5 s, plus message counts | An expected call is missing |
+| Wideband | Calls by a hash of talkgroup, slot and encryption, frequency, start time ±0.5 s, plus message hashes | An expected call is missing |
 
-CRC-passing messages are effectively ground truth, so new ones count as improvements. Frame hashes keep the
-files small enough for git.
+CRC-passing messages are effectively ground truth, so new ones count as improvements. Expected files hold hashes
+and counts, not decoded traffic, which also keeps them small enough for git.
 
 **Files live in this repo, as text, one per version the output changed in:**
 
 ```
-captures/corpus/
+corpus/
   corpus.json                     the manifest
   expected/<capture-id>/
     0.4.0.jsonl                   as of the release that promoted it
@@ -352,7 +357,7 @@ captures/corpus/
 ```
 
 Each file starts with a header line (capture, TRP version, commit, date), then sorted lines of one message
-or call each. Text means a pull request shows what changed: one more grant decoded, one call lost. A file
+hash or call each. Text means a pull request shows how much changed: one more message decoded, one call lost. A file
 appears only when the output changes, so a release that decodes a capture the same adds nothing.
 
 **Which one a run compares against:** `next.jsonl` if there is one, otherwise the newest version at or below
@@ -375,7 +380,7 @@ output at capture time is wrong by definition.
 
 ### The manifest
 
-`captures/corpus/corpus.json`:
+`corpus/corpus.json`:
 
 ```json
 {
@@ -397,7 +402,7 @@ output at capture time is wrong by definition.
 
 Each file is at `https://iq.trunkrecorder.pro/blobs/<sha256>`, so anyone can fetch it with `curl`.
 
-`trunk-pro tool corpus captures/corpus/corpus.json [--tier …] [--only …] [--against …]` downloads what it
+`trunk-pro tool corpus corpus/corpus.json [--tier …] [--only …] [--against …]` downloads what it
 doesn't have (resuming with range requests, into a local cache), verifies hashes, runs, and writes a report.
 Corpus files, like today's captures, stay out of git.
 
@@ -406,7 +411,7 @@ Corpus files, like today's captures, stay out of git.
 | When | What |
 |---|---|
 | Every push | Unchanged: the current build and tests |
-| Pull requests that touch decoding, or `captures/corpus/` | A small subset of the corpus |
+| Pull requests that touch decoding, or `corpus/` | A small subset of the corpus |
 | Nightly, `main` | The full corpus |
 
 The files are public, so fork PRs run this the same as anyone.
@@ -424,10 +429,9 @@ Cloudflare caches it and range requests work). Objects are keyed by content hash
 identical uploads are stored once and files can be cached forever.
 
 ```
-blobs/<sha256>                       sigmf-data, sigmf-meta, the collection
+blobs/<sha256>                       sigmf-data, sigmf-meta, the collection, diagnostics.json
 derived/<submission>/waterfall.png
-derived/<submission>/decode.json
-derived/<submission>/audio/<call>.m4a
+derived/<submission>/checks.json
 ```
 
 One D1 table holds submissions (receipt, install token, state, purpose, tier, files, check results), and a
@@ -440,7 +444,7 @@ small one holds install tokens and their quotas.
 | `ready` | | Yes | 90 days, or as long as the manifest lists it |
 | `failed` | | No | Deleted |
 
-"Promoted" isn't a state here. A scheduled Worker reads `captures/corpus/corpus.json` from this repo's `main`
+"Promoted" isn't a state here. A scheduled Worker reads `corpus/corpus.json` from this repo's `main`
 and keeps every blob it lists, so the service needs no sync with GitHub. Costs, at about $0.015 per GB-month
 with free egress: 1 TB is about $15 a month.
 
@@ -473,7 +477,8 @@ corpus repo, for free on a public repo, with no extra infrastructure:
    multipart doesn't do for us.
 3. It parses and validates the SigMF.
 4. It runs the same replay CI uses, with no keys, so encrypted traffic stays encrypted.
-5. It writes `decode.json`, a waterfall from `Channelizer::power_spectrum`, and audio.
+5. It writes a waterfall from `Channelizer::power_spectrum` and decode counts (messages, calls). Decoded audio and
+   message text stay out.
 6. It records the checks: hash and size against rate, clipping, gaps, whether the metadata agrees with what
    decoded, and near-duplicates of existing corpus entries.
 7. It reports to the Worker with a token that can only write that submission's results.
@@ -482,9 +487,9 @@ The upload is untrusted input, so this job has no write access to any repo.
 
 ### The public page
 
-No sign-in. A list by purpose, tier, protocol and age; for each submission its waterfall, metadata, decode
-(control messages, calls with audio), checks, and the linked issue. It gives the download URLs and the
-`trunk-pro replay` command, and for a promoted capture its score by TRP version.
+No sign-in. A list by purpose, tier, protocol and age; for each submission its waterfall, metadata, diagnostics,
+decode counts, checks, and the linked issue. It gives the download URLs and the `trunk-pro replay` command for
+anyone who wants to decode it themselves, and for a promoted capture its score by TRP version.
 
 ### Promoting, with GitHub permission
 
@@ -502,16 +507,18 @@ with a repo secret.
 |---|---|---|---|
 | `sigmf-data` | Raw IQ, everything in the passband | Everyone | While promoted, or 90 days |
 | `sigmf-meta` | System identity, talkgroups that aren't plain digital | Everyone | Same |
-| Decode and audio | Decoded voice and control traffic | Everyone | Same |
-| `captures/corpus/` in this repo | Manifest, control messages, voice as hashes | Everyone | In git history |
-| `diagnostics.json` | Machine details, allow-listed | Whoever the user shares it with | Not stored by the service |
+| `diagnostics.json` | Machine details, allow-listed | Everyone | Same |
+| Waterfall, check results, decode counts | No decoded traffic | Everyone | Same |
+| `corpus/` in this repo | Manifest, and expected output as hashes and counts | Everyone | In git history |
 
-The metadata allow-lists still apply: keys, plugin settings, paths and serial numbers never leave the machine,
-because those are secrets rather than radio traffic. Encrypted traffic stays encrypted.
+We publish IQ, not decoded radio traffic: no audio, message text, talkgroups or unit IDs are published by the
+service or in this repo. Anyone can run `trunk-pro replay` on a recording themselves.
 
-Publishing is what the consent text must say plainly, since a withdrawn recording can already have been copied.
-System identity also places a contributor in a general area. Publishing decoded radio traffic can be restricted
-by Section 705 of the Communications Act and by state law; the maintainer has weighed that and chosen to publish.
+The metadata and diagnostics allow-lists still apply: keys, plugin settings, paths and serial numbers never leave
+the machine.
+
+The consent text must say plainly that a recording becomes public, since a withdrawn one can already have been
+copied, and that system identity places a contributor in a general area.
 
 ## Phases
 
@@ -526,10 +533,13 @@ with capture off.**
 
 - Read SigMF in `replay`, including collections and `core:global_index` gaps. **Built.**
 - Write `docs/sigmf/trp.sigmf-ext.md`. **Built.**
-- Add `sigmf-meta` sidecars for today's eight captures (`core:dataset` points at the existing files).
-- Add `captures/corpus/corpus.json` and `tool corpus`.
+- Today's eight recordings as the seven regress scenarios, each a capture folder with its settings in
+  its metadata ([corpus/seed.py](../corpus/seed.py)). **Built.**
+- Add [corpus/corpus.json](../corpus/corpus.json) and `tool corpus`. **Built.** It lives in `corpus/` because
+  `captures/` is gitignored. Each scenario is a manifest entry, and shared recordings are stored once by hash.
 
 *Done when:* the seven regress scenarios run from metadata alone with output identical to the flag form.
+**Met 2026-11-08:** `tool corpus run` against `regress.sh`, identical across 152 files.
 
 ### Phase 2: Expected output, by version
 
@@ -571,7 +581,7 @@ on an Airspy, and the leak test passes.
 
 *New repo, plus workflows in this repo.*
 
-- The decode job and checks. Unvalidated uploads are deleted.
+- The decode job and checks. Unvalidated uploads are deleted. Only IQ, diagnostics, a waterfall and counts are published.
 - The public list and submission pages.
 - `corpus-promote` and `corpus-remove`.
 - The CI jobs in this repo, for PRs and nightly.
