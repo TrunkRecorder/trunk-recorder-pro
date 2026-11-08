@@ -245,10 +245,8 @@ fn begin(ctx: &Arc<Ctx>, cfg: &Config, taps: Vec<Arc<Tap>>, name: &str, seconds:
     let root = root(cfg);
     fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     let need: u64 = cfg.sources.iter().map(|s| (s.rate_hz * seconds as f64) as u64 * bytes_per_sample(&s.kind)).sum();
-    if let Some((_, free)) = crate::spool::statvfs(&root) {
-        if free < need + DISK_MARGIN {
-            return Err(format!("This capture takes about {} MB and leaves 1 GB free, but only {} MB is free on that disk.", need / 1_000_000, free / 1_000_000));
-        }
+    if let Some((_, free)) = crate::spool::statvfs(&root).filter(|d| d.1 < need + DISK_MARGIN) {
+        return Err(format!("This capture takes about {} MB and leaves 1 GB free, but only {} MB is free on that disk.", need / 1_000_000, free / 1_000_000));
     }
     let dir = root.join(name);
     fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -773,7 +771,7 @@ mod tests {
         let (a, b) = (cfg.engine_config(0.0, &Default::default()), back.engine_config(0.0, &Default::default()));
         assert_eq!(a.systems.len(), b.systems.len());
         assert_eq!(a.systems[0].sites[0].control_channels, b.systems[0].sites[0].control_channels);
-        assert_eq!(b.systems[0].calls.record_encrypted, true);
+        assert!(b.systems[0].calls.record_encrypted);
         assert!(b.systems[0].pins.allows(0), "still received on its radio");
         assert_eq!(a.sources[0].center_hz, b.sources[0].center_hz);
         assert_eq!(b.conventional.len(), 1);
