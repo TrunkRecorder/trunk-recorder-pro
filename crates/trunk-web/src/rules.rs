@@ -212,6 +212,12 @@ pub fn source_rates(kind: &str, found: &str) -> Vec<u32> {
     trunk_app::rates::offered(kind, found_rates(found).as_ref())
 }
 
+/// The inputs a source of kind `kind` picks from, by number (a HydraSDR's); none for the others.
+#[wasm_bindgen(js_name = sourceInputs)]
+pub fn source_inputs(kind: &str) -> Vec<String> {
+    if kind == "hydrasdr" { trunk_app::config::HYDRASDR_INPUTS.map(String::from).to_vec() } else { vec![] }
+}
+
 /// Whether the radio (`found`, its JSON) runs at `hz`: true when it didn't say.
 #[wasm_bindgen(js_name = rateOk)]
 pub fn rate_ok(hz: f64, found: &str) -> bool {

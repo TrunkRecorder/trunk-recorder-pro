@@ -54,13 +54,15 @@ const RTL: &[u32] = &[2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_000, 1_0
 
 /// The rates offered for a source of kind `kind` (its `type`: "rtlsdr", …),
 /// the usual first. Any other can be typed for a bladeRF, HackRF, SoapySDR
-/// device or capture file; an RTL-SDR, USRP or Airspy runs at these.
+/// device or capture file; an RTL-SDR, USRP, Airspy or HydraSDR runs at these.
 pub fn of_kind(kind: &str) -> &'static [u32] {
     match kind {
         "rtlsdr" => RTL,
         "usrp" => &[2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000],
         // Airspy R2: 10 / 2.5; Mini: 6 / 3 (and 10 with newer firmware).
         "airspy" => &[10_000_000, 6_000_000, 3_000_000, 2_500_000],
+        // HydraSDR RFOne: 10 / 5 / 2.5, and below that decimated by libhydrasdr (the radio lists them).
+        "hydrasdr" => &[10_000_000, 5_000_000, 2_500_000, 1_250_000],
         // (Up to 61.44 can be typed; past ~40 MSPS needs USB 3 and a fast CPU.)
         "bladerf" => &[2_400_000, 4_000_000, 5_000_000, 6_000_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000, 25_000_000, 30_720_000],
         "hackrf" => &[8_000_000, 10_000_000, 4_000_000, 2_000_000, 16_000_000, 20_000_000],

@@ -40,6 +40,10 @@ import {
   deviceKey,
   needsDriver,
   hasBiasT,
+  airspyGains,
+  pickedBySerial,
+  type SerialKind,
+  sourceInputs,
   sourceKey,
   foundRadio,
   radioName,
@@ -595,8 +599,8 @@ function DriverMissing(props: { kind: Source["type"]; detail: string }) {
   );
 }
 
-/** A radio picked by serial from those its driver found (Airspy, bladeRF, HackRF). */
-function SerialPicker(props: { kind: "airspy" | "bladerf" | "hackrf"; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
+/** A radio picked by serial from those its driver found (Airspy, HydraSDR, bladeRF, HackRF). */
+function SerialPicker(props: { kind: SerialKind; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
   const s = useApp();
   const { kind, serial, used } = props;
   const k = SOURCE_KINDS[kind];
@@ -767,9 +771,10 @@ const AIRSPY_MODES: { mode: AirspyGainMode; label: string; hint: string }[] = [
   { mode: "manual", label: "Each stage", hint: "LNA, mixer and VGA set separately" },
 ];
 
-function AirspyGainFields(props: { src: Extract<Source, { type: "airspy" }>; edit: EditSource }) {
+/** An Airspy's gain (a HydraSDR's too: the same stages and tables). */
+function AirspyGainFields(props: { src: Extract<Source, { type: "airspy" | "hydrasdr" }>; edit: EditSource }) {
   const { src, edit } = props;
-  const set = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", v: number) => edit((x) => x.type === "airspy" && void (x[k] = v));
+  const set = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", v: number) => edit((x) => airspyGains(x) && void (x[k] = v));
   const slider = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", label: string, max: number, disabled = false) => (
     <Field label={label}>
       <ReleaseSlider max={max} value={src[k]} disabled={disabled} label={label} text={(v) => (disabled ? "auto" : String(v))} onChange={(v) => set(k, v)} />
@@ -778,7 +783,7 @@ function AirspyGainFields(props: { src: Extract<Source, { type: "airspy" }>; edi
   return (
     <>
       <Field label="Gain" hint={AIRSPY_MODES.find((m) => m.mode === src.gainMode)?.hint}>
-        <select value={src.gainMode} onChange={(e) => edit((x) => x.type === "airspy" && void (x.gainMode = e.target.value as AirspyGainMode))}>
+        <select value={src.gainMode} onChange={(e) => edit((x) => airspyGains(x) && void (x.gainMode = e.target.value as AirspyGainMode))}>
           {AIRSPY_MODES.map((m) => (
             <option key={m.mode} value={m.mode}>
               {m.label}
@@ -790,7 +795,7 @@ function AirspyGainFields(props: { src: Extract<Source, { type: "airspy" }>; edi
         slider("gainStep", `${src.gainMode === "linearity" ? "Linearity" : "Sensitivity"} step`, 21)
       ) : (
         <>
-          <Toggle label="AGC" hint="LNA and mixer only" checked={src.agc} onChange={(v) => edit((x) => x.type === "airspy" && void (x.agc = v))} />
+          <Toggle label="AGC" hint="LNA and mixer only" checked={src.agc} onChange={(v) => edit((x) => airspyGains(x) && void (x.agc = v))} />
           {slider("lnaStep", "LNA", 14, src.agc)}
           {slider("mixerStep", "Mixer", 15, src.agc)}
           {slider("vgaStep", "VGA (IF)", 15)}
@@ -1080,14 +1085,14 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             </select>
           </Field>
         )}
-        {(src.type === "airspy" || src.type === "bladerf" || src.type === "hackrf") && !missing && (
+        {pickedBySerial(src) && !missing && (
           <SerialPicker
             kind={src.type}
             serial={src.serial}
             used={used}
             onChange={(v) =>
               edit((x) => {
-                if (x.type !== "airspy" && x.type !== "bladerf" && x.type !== "hackrf") return;
+                if (!pickedBySerial(x)) return;
                 x.serial = v;
                 // Radios of one kind can run at different rates (an Airspy R2 and a Mini): start at one the picked radio does.
                 x.rateHz = rateFor(x.rateHz, foundRadio(s.radios, x));
@@ -1095,13 +1100,24 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             }
           />
         )}
+        {src.type === "hydrasdr" && (
+          <Field label="Input" hint="Which antenna input it hears: the bias-T is on the first">
+            <select value={src.rfPort} aria-label="Input" onChange={(e) => edit((x) => x.type === "hydrasdr" && void (x.rfPort = Number(e.target.value)))}>
+              {sourceInputs(src.type).map((p, n) => (
+                <option key={p} value={n}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
         {hasBiasT(src) && <BiasT src={src} checked={src.biasTee} onChange={(v) => edit((x) => hasBiasT(x) && void (x.biasTee = v))} />}
-        {src.type === "airspy" && (
+        {airspyGains(src) && (
           <Toggle
             label="Pack samples"
             hint="12-bit samples on the USB: a quarter less of the bus (an Airspy at 10 MSPS nearly fills a USB 2.0 bus). Off only for old firmware"
             checked={src.packing ?? true}
-            onChange={(v) => edit((x) => x.type === "airspy" && void (x.packing = v))}
+            onChange={(v) => edit((x) => airspyGains(x) && void (x.packing = v))}
           />
         )}
         {src.type === "soapy" &&
@@ -1238,7 +1254,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
       {src.type !== "file" && (
         <Group
           title="Gain"
-          hint={`${src.type === "airspy" ? "A preset, or each stage set by hand." : "Too little loses weak signals; too much overloads near strong ones."} ${
+          hint={`${airspyGains(src) ? "A preset, or each stage set by hand." : "Too little loses weak signals; too much overloads near strong ones."} ${
             SOURCE_KINDS[src.type].liveAgc || src.type === "hackrf" ? "Changes apply at once, also while recording." : "The gain in dB applies at once, also while recording; AGC on or off when recording starts."
           }`}
         >
@@ -1266,7 +1282,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
               </div>
             </Field>
           )}
-          {src.type === "airspy" && <AirspyGainFields src={src} edit={edit} />}
+          {airspyGains(src) && <AirspyGainFields src={src} edit={edit} />}
           {src.type === "hackrf" && <HackrfGainFields src={src} edit={edit} />}
           {src.type === "soapy" && (
             <>

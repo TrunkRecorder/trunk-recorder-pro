@@ -26,6 +26,7 @@ function gainText(c: Source | undefined): string {
     case "usrp":
       return c.agc ? "AGC" : `${formatGain(c.gainDb)} dB${c.antenna ? ` · ${c.antenna}` : ""}`;
     case "airspy":
+    case "hydrasdr":
       return c.gainMode === "manual" ? (c.agc ? `AGC (VGA ${c.vgaStep})` : `LNA ${c.lnaStep} · mixer ${c.mixerStep} · VGA ${c.vgaStep}`) : `${c.gainMode} ${c.gainStep}`;
     case "bladerf":
       return c.agc ? "AGC" : `${c.gainDb} dB${c.biasTee ? " · bias-T" : ""}`;

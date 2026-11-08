@@ -30,23 +30,24 @@ export type Source = (
    * `wireFormat`: samples on the wire, "sc16", "sc12" (B2xx), "sc8"; "" or absent = sc16, or sc12 for a B2xx on USB 2.0 above 8 MSPS.
    */
   | { type: "usrp"; args: string; gainDb: number; agc: boolean; antenna: string; wireFormat?: string }
-  /**
-   * Airspy R2 / Mini through libairspy (desktop app). `gainStep`: a 0–21 step of the linearity or sensitivity
-   * table (`gainMode`); "manual": each stage's step, LNA 0–14, mixer 0–15, VGA 0–15, with `agc` the Airspy's own on LNA and mixer.
-   */
-  | {
+  /** Airspy R2 / Mini through libairspy (desktop app). */
+  | ({
       type: "airspy";
       serial: string;
-      gainMode: AirspyGainMode;
-      gainStep: number;
-      lnaStep: number;
-      mixerStep: number;
-      vgaStep: number;
-      agc: boolean;
       biasTee: boolean;
       /** 12-bit samples packed on the USB: a quarter less of the bus (default true). */
       packing: boolean;
-    }
+    } & AirspyGains)
+  /** HydraSDR RFOne through libhydrasdr 1.1+ (desktop app). `rfPort`: the input, 0 ANT (the one with the bias-T), 1 CABLE1, 2 CABLE2. */
+  | ({
+      type: "hydrasdr";
+      serial: string;
+      /** On the ANT input only (the source won't start with it on another). */
+      biasTee: boolean;
+      /** 12-bit samples packed on the USB (default true). */
+      packing: boolean;
+      rfPort: number;
+    } & AirspyGains)
   /**
    * bladeRF 2.0 micro (xA4 / xA9) or original bladeRF through libbladeRF (desktop app). `serial` "" = the first;
    * `bandwidthHz` the analog filter, 0 = the sample rate; `agc` the board's AGC instead of `gainDb`; `biasTee` bladeRF 2.0 only.
@@ -78,6 +79,18 @@ export type Source = (
 
 export type AirspyGainMode = "linearity" | "sensitivity" | "manual";
 
+/**
+ * An Airspy's gain (a HydraSDR's too: the same tuner and tables). `gainStep`: a 0–21 step of the linearity or
+ * sensitivity table (`gainMode`); "manual": each stage's step, LNA 0–14, mixer 0–15, VGA 0–15, with `agc` its own on LNA and mixer.
+ */
+export interface AirspyGains {
+  gainMode: AirspyGainMode;
+  gainStep: number;
+  lnaStep: number;
+  mixerStep: number;
+  vgaStep: number;
+  agc: boolean;
+}
 /** An optional driver (desktop app) and what it found; `devices` null = not searched. */
 export interface DriverState {
   available: boolean;
@@ -86,8 +99,8 @@ export interface DriverState {
 }
 /**
  * A radio its driver found. Once it has been opened in this run (by a source, or to ask
- * it — an Airspy is), it also says its `model` ("R2", "Mini", "bladeRF 2.0") and the sample
- * rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`).
+ * it — an Airspy or a HydraSDR is), it also says its `model` ("R2", "Mini", "RFOne", "bladeRF 2.0")
+ * and the sample rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`).
  */
 export interface FoundRadio {
   args?: string;
@@ -116,6 +129,7 @@ export interface Radios {
   /** Built in: always available. */
   hackrf: DriverState;
   airspy: DriverState;
+  hydrasdr: DriverState;
   bladerf: DriverState;
   soapy?: SoapyState;
 }

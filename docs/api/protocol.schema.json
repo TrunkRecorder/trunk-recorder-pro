@@ -1905,7 +1905,7 @@
         "label"
       ],
       "additionalProperties": false,
-      "description": "A radio its driver found. Once it has been opened in this run (by a source, or to ask it — an Airspy is), it also says its `model` (\"R2\", \"Mini\", \"bladeRF 2.0\") and the sample rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`)."
+      "description": "A radio its driver found. Once it has been opened in this run (by a source, or to ask it — an Airspy or a HydraSDR is), it also says its `model` (\"R2\", \"Mini\", \"RFOne\", \"bladeRF 2.0\") and the sample rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`)."
     },
     "FreqRow": {
       "type": "object",
@@ -5903,6 +5903,9 @@
         "airspy": {
           "$ref": "#/definitions/DriverState"
         },
+        "hydrasdr": {
+          "$ref": "#/definitions/DriverState"
+        },
         "bladerf": {
           "$ref": "#/definitions/DriverState"
         },
@@ -5914,6 +5917,7 @@
         "usrp",
         "hackrf",
         "airspy",
+        "hydrasdr",
         "bladerf"
       ],
       "additionalProperties": false
@@ -6975,13 +6979,6 @@
               "type": "string",
               "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
             },
-            "type": {
-              "type": "string",
-              "const": "airspy"
-            },
-            "serial": {
-              "type": "string"
-            },
             "gainMode": {
               "$ref": "#/definitions/AirspyGainMode"
             },
@@ -6999,6 +6996,13 @@
             },
             "agc": {
               "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "airspy"
+            },
+            "serial": {
+              "type": "string"
             },
             "biasTee": {
               "type": "boolean"
@@ -7019,6 +7023,85 @@
             "packing",
             "ppm",
             "rateHz",
+            "serial",
+            "type",
+            "vgaStep"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
+            "autoTune": {
+              "type": "boolean"
+            },
+            "guardHz": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
+            },
+            "gainMode": {
+              "$ref": "#/definitions/AirspyGainMode"
+            },
+            "gainStep": {
+              "type": "number"
+            },
+            "lnaStep": {
+              "type": "number"
+            },
+            "mixerStep": {
+              "type": "number"
+            },
+            "vgaStep": {
+              "type": "number"
+            },
+            "agc": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "hydrasdr"
+            },
+            "serial": {
+              "type": "string"
+            },
+            "biasTee": {
+              "type": "boolean",
+              "description": "On the ANT input only (the source won't start with it on another)."
+            },
+            "packing": {
+              "type": "boolean",
+              "description": "12-bit samples packed on the USB (default true)."
+            },
+            "rfPort": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "agc",
+            "biasTee",
+            "centerHz",
+            "gainMode",
+            "gainStep",
+            "lnaStep",
+            "mixerStep",
+            "packing",
+            "ppm",
+            "rateHz",
+            "rfPort",
             "serial",
             "type",
             "vgaStep"

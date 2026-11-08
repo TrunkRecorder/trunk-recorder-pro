@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **HydraSDR RFOne sources.** A new source type, `hydrasdr` (**HydraSDR** in Setup), drives an RFOne through
+  libhydrasdr 1.1 or newer, loaded at run time like libairspy (`TRUNK_PRO_HYDRASDR` names the file). It takes
+  an Airspy's gain settings (linearity or sensitivity step, or each stage with AGC), runs at 10, 5 or 2.5 MSPS
+  or a lower rate the library decimates to, and picks its input (`rfPort`: ANT, CABLE1 or CABLE2). The bias-T
+  is on ANT only, and a source asking for it on another input won't start. `trunk-pro devices` and Setup list
+  RFOnes with their rates, and a Trunk Recorder config with a `hydrasdr` device imports as one. The udev rule
+  covers the RFOne's own USB ID (`38af:0001`, with updated firmware, v1.0.2) as well as the Airspy's, which it has
+  with the v1.0.0-rc2 it shipped with; both firmwares are tested. An RFOne that libairspy opens as an Airspy source's "first" is
+  now called a HydraSDR RFOne, not an Airspy R2.
 - **Talkgroups' encrypted share is right again after upgrading.** v0.3.1 counts a talkgroup's
   encrypted calls by the hour, but the hours kept by v0.3.0 were read as all clear: a fully
   encrypted talkgroup showed a few percent on the Radio system page (and no ENC badge) until a

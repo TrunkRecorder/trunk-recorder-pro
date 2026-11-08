@@ -251,6 +251,11 @@ export function sourceRates(kind: string, found?: Found): number[] {
   return Array.from(rules().sourceRates(kind, JSON.stringify(found ?? null)));
 }
 
+/** The inputs a source of kind `kind` picks from, by number (a HydraSDR's); none for the others. */
+export function sourceInputs(kind: string): string[] {
+  return rules().sourceInputs(kind);
+}
+
 /** Whether the radio runs at `hz`, as it said when opened (true when it didn't say). */
 export function rateOk(hz: number, found: Found): boolean {
   return rules().rateOk(hz, JSON.stringify(found ?? null));

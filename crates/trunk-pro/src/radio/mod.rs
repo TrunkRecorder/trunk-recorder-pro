@@ -1,9 +1,9 @@
 //! Radios whose drivers are vendor C libraries — USRP (UHD), Airspy
-//! (libairspy), bladeRF (libbladeRF) and anything with a SoapySDR module. Nothing links against
-//! them: each library is looked for at run time, so the same binary records
+//! (libairspy), HydraSDR (libhydrasdr), bladeRF (libbladeRF) and anything with a SoapySDR module.
+//! Nothing links against them: each library is looked for at run time, so the same binary records
 //! from RTL-SDRs out of the box and from these once their driver is
-//! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_BLADERF` / `TRUNK_PRO_SOAPY` name a
-//! library file to use instead of searching.
+//! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_HYDRASDR` / `TRUNK_PRO_BLADERF` /
+//! `TRUNK_PRO_SOAPY` name a library file to use instead of searching.
 
 pub mod airspy;
 pub mod bladerf;
@@ -34,7 +34,7 @@ fn opening() -> MutexGuard<'static, ()> {
 /// How long an open (or a driver's search for radios) may take, by what it is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Deadline {
-    /// A radio that opens in well under a second (RTL-SDR, HackRF, Airspy) or a search: 5 s.
+    /// A radio that opens in well under a second (RTL-SDR, HackRF, Airspy, HydraSDR) or a search: 5 s.
     Quick,
     /// One that loads firmware or an FPGA image as it opens (bladeRF, a SoapySDR module): 15 s.
     Loads,
@@ -269,7 +269,7 @@ pub fn candidates(unix_name: &str, mac_name: &str, win_names: &[&'static str]) -
 }
 
 /// Drivers and the devices found through them, for the interface:
-/// `{usrp: {available, detail, devices}, airspy: {…}, bladerf: {…}, soapy: {…, modules}}`.
+/// `{usrp: {available, detail, devices}, airspy: {…}, hydrasdr: {…}, bladerf: {…}, soapy: {…, modules}}`.
 /// USRPs and SoapySDR devices are searched only with `search` (a device
 /// search can take seconds).
 pub fn radios_json(search: bool) -> serde_json::Value {
@@ -287,7 +287,7 @@ pub fn radios_json(search: bool) -> serde_json::Value {
         serde_json::Value::Null
     };
     let hackrf = serde_json::json!({ "available": true, "detail": "built in", "devices": hackrf::devices() });
-    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
+    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(airspy::Lib::Airspy), "hydrasdr": airspy_json(airspy::Lib::Hydrasdr), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
 }
 
 fn bladerf_json() -> serde_json::Value {
@@ -297,10 +297,10 @@ fn bladerf_json() -> serde_json::Value {
     j
 }
 
-fn airspy_json() -> serde_json::Value {
-    let a = airspy::info();
+fn airspy_json(lib: airspy::Lib) -> serde_json::Value {
+    let a = airspy::info(lib);
     let mut j = a.json();
-    j["devices"] = serde_json::Value::Array(if a.loaded { airspy::devices() } else { vec![] });
+    j["devices"] = serde_json::Value::Array(if a.loaded { airspy::devices(lib) } else { vec![] });
     j
 }
 
