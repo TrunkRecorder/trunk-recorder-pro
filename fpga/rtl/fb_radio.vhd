@@ -31,6 +31,10 @@ entity fb_radio is
         active_gen   : out unsigned(7 downto 0);
         saturated    : out unsigned(31 downto 0);
         dropped      : out unsigned(31 downto 0);
+        -- The ADC's: largest |I| or |Q| since `peak_read`, and samples at the rails.
+        adc_peak     : out unsigned(11 downto 0);
+        adc_clips    : out unsigned(31 downto 0);
+        peak_read    : in  std_logic;
 
         rx_clk       : in  std_logic;
         run          : in  std_logic;
@@ -54,6 +58,8 @@ architecture rtl of fb_radio is
     signal pace : unsigned(1 downto 0) := (others => '0');
     signal core_v : std_logic := '0';
     signal core_i, core_q : signed(11 downto 0) := (others => '0');
+    signal peak : unsigned(11 downto 0) := (others => '0');
+    signal clips : unsigned(31 downto 0) := (others => '0');
 
     signal run_sync, ready_sync : std_logic_vector(2 downto 0) := (others => '0');
     attribute altera_attribute : string;
@@ -85,13 +91,31 @@ begin
         );
 
     in_pop <= '1' when in_empty = '0' and pace = 0 else '0';
+    adc_peak <= peak;
+    adc_clips <= clips;
 
     process (clk)
+        function larger(a, b : signed(11 downto 0)) return unsigned is
+            variable x, y : signed(12 downto 0);
+        begin
+            x := abs(resize(a, 13));
+            y := abs(resize(b, 13));
+            if x > y then return unsigned(x(11 downto 0)); end if;
+            return unsigned(y(11 downto 0));
+        end function;
+        variable m : unsigned(11 downto 0);
     begin
         if rising_edge(clk) then
             core_v <= in_pop;
             core_i <= signed(in_q(11 downto 0));
             core_q <= signed(in_q(23 downto 12));
+            -- (peak_read wins over the sample of that clock: at most one sample's peak missed.)
+            if core_v = '1' then
+                m := larger(core_i, core_q);
+                if m > peak then peak <= m; end if;
+                if m >= 2028 then clips <= clips + 1; end if;
+            end if;
+            if peak_read = '1' then peak <= (others => '0'); end if;
             if in_pop = '1' then
                 pace <= to_unsigned(3, 2);
             elsif pace /= 0 then

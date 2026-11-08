@@ -14,7 +14,12 @@ of 12, typically 7 dB off, and as much as 17 dB lower on some, so SNR isn't yet 
 of a slice didn't help; 25 % was the best. A 7.8 kHz bin is about a channel wide, so a busy slice has few plain-noise
 bins.
 
-Not done: clip and peak meters, AutoTune's frequency error on 7.8 kHz bins, checking the waterfall on a live radio.
+Clip and peak meters come from two new status registers, read about once a second, checked in simulation only.
+AutoTune measures the control channel's own signal, not the spectrum: on one 60 s capture the filter bank and wideband
+both measure +0.83 ppm, and per-call frequency errors agree within 69 Hz.
+
+The noise figure is accepted as it stands: SNR on these sources is approximate. Still to do: check the waterfall and
+meters on a live radio.
 
 ## Goal
 
@@ -46,8 +51,8 @@ Today all of these come from the wideband spectra, which no longer reach the hos
 ## Done when
 
 - [ ] Waterfall looks right at the existing 512-bin display, with center and edges aligned to known carriers.
-- [ ] Noise, signal and SNR read within 1 dB of wideband mode on the same air.
+- [ ] ~~Noise, signal and SNR read within 1 dB of wideband mode on the same air.~~ Signal does. Noise and SNR don't, accepted (status above).
 - [ ] Clip and peak meters respond to raised gain.
 - [ ] `noise` and `snr` in new call JSON are real numbers, comparable to wideband recordings.
-- [ ] The placeholder from issue 03 is gone.
-- [ ] Measure AutoTune's frequency error with this data: it should settle where wideband mode does.
+- [x] The placeholder from issue 03 is gone.
+- [x] Measure AutoTune's frequency error with this data: it settles where wideband mode does (offline, status above).

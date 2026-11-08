@@ -521,6 +521,8 @@ const REG_COMMIT: u32 = 0x0C;
 const REG_SATURATED: u32 = 0x10;
 const REG_DROPPED: u32 = 0x14;
 const REG_RX_RATE: u32 = 0x18;
+const REG_ADC_PEAK: u32 = 0x1C;
+const REG_ADC_CLIPS: u32 = 0x20;
 const REG_TABLE: u32 = 0x400;
 /// The output gain shift the radios run with (issue 06's status).
 const GAIN_SHIFT: u32 = trunk_core::dsp::filter_bank::RADIO_GAIN_SHIFT;
@@ -797,6 +799,8 @@ fn stream_bank(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
             let version = calls.read(a, d.dev, REG_ID)?;
             log::info!("bladeRF {serial}: filter bank {version:#x}, {:.4} MHz, {} bins", center / 1e6, first.as_ref().map_or(0, Vec::len));
             let mut last_block = None;
+            let (mut metered, mut clips) = (Instant::now(), calls.read(a, d.dev, REG_ADC_CLIPS)?);
+            calls.read(a, d.dev, REG_ADC_PEAK)?;
             let (mut silent_since, mut checked, mut saturated, mut dropped) = (Instant::now(), Instant::now(), calls.read(a, d.dev, REG_SATURATED)?, calls.read(a, d.dev, REG_DROPPED)?);
             while !stop.load(Ordering::Relaxed) {
                 match rx.recv_timeout(Duration::from_millis(5)) {
@@ -809,7 +813,18 @@ fn stream_bank(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
                             continue;
                         }
                         let iq = sink.bank_buffer(&iq);
-                        if !sink.send(Block::Bank { bins, iq, power_start, power }, lost * SAMPLES_PER_BLOCK, at) {
+                        // The ADC's meters, about once a second: full scale is 2048.
+                        let meter = if metered.elapsed() >= Duration::from_secs(1) {
+                            let looked = (metered.elapsed().as_secs_f64() * cfg.rate_hz) as u64;
+                            metered = Instant::now();
+                            let (peak, now) = (calls.read(a, d.dev, REG_ADC_PEAK)?, calls.read(a, d.dev, REG_ADC_CLIPS)?);
+                            let clipped = now.wrapping_sub(clips) as u64;
+                            clips = now;
+                            Some(trunk_app::stats::meter::BankMeter { peak: peak as f32 / 2048.0, clipped, looked })
+                        } else {
+                            None
+                        };
+                        if !sink.send(Block::Bank { bins, iq, power_start, power, meter }, lost * SAMPLES_PER_BLOCK, at) {
                             return Ok(());
                         }
                     }

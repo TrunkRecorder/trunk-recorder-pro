@@ -1,6 +1,6 @@
 --- a/bladerf-p25chan.vhd
 +++ b/bladerf-p25chan.vhd
-@@ -181,20 +181,83 @@
+@@ -181,20 +181,92 @@
      signal wbm_wb_stb_o           : std_logic;
      signal wbm_wb_ack_i           : std_logic;
      signal wbm_wb_cyc_o           : std_logic;
@@ -16,6 +16,9 @@
 +    signal fb_tbl_bin             : unsigned(9 downto 0);
 +    signal fb_saturated           : unsigned(31 downto 0);
 +    signal fb_rx_div              : unsigned(7 downto 0) := (others => '0');
++    signal fb_adc_peak            : unsigned(11 downto 0);
++    signal fb_adc_clips           : unsigned(31 downto 0);
++    signal fb_peak_read           : std_logic;
  begin
  
 -    U_rx_pkt_gen : entity work.rx_packet_generator
@@ -47,7 +50,10 @@
 +            active_gen => fb_active_gen,
 +            saturated  => fb_saturated,
 +            dropped    => fb_dropped,
-+            rx_tick    => fb_rx_div(7)
++            rx_tick    => fb_rx_div(7),
++            adc_peak   => fb_adc_peak,
++            adc_clips  => fb_adc_clips,
++            peak_read  => fb_peak_read
 +        );
  
 -            rx_enable              => rx_enable,
@@ -67,6 +73,9 @@
 +            active_gen   => fb_active_gen,
 +            saturated    => fb_saturated,
 +            dropped      => fb_dropped,
++            adc_peak     => fb_adc_peak,
++            adc_clips    => fb_adc_clips,
++            peak_read    => fb_peak_read,
 +            rx_clk       => rx_clock,
 +            run          => rx_enable and packet_en_rx,
 +            sample_valid => adc_streams(0).data_v,
@@ -93,7 +102,7 @@
  
  
      -- ========================================================================
-@@ -545,66 +608,16 @@
+@@ -545,66 +617,16 @@
  
      tx_packet_ready <= '1';
  

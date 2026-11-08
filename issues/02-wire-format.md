@@ -46,6 +46,8 @@ DWORDs. Keep a test for this.
 | 0x10 | Read: saturation count |
 | 0x14 | Read: blocks dropped because the USB side wasn't ready |
 | 0x18 | Read: RX clock in Hz / 256 |
+| 0x1C | Read: largest ADC \|I\| or \|Q\| since the last read (read clears it) |
+| 0x20 | Read: ADC samples at the rails |
 | 0x400–0x4FC | Pending table: 64 bin indexes |
 
 The output gain shift stays adjustable on purpose: real signal levels will need tuning that a model can't

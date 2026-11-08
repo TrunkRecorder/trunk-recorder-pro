@@ -9,6 +9,15 @@ use trunk_core::Complex32;
 /// One sample in this many is looked at.
 pub const EVERY: usize = 16;
 
+/// What an FPGA filter bank's status registers say of the ADC since the last reading.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BankMeter {
+    /// The largest |I| or |Q|, full scale 1.
+    pub peak: f32,
+    pub clipped: u64,
+    pub looked: u64,
+}
+
 #[derive(Default, Clone)]
 pub struct SampleMeter {
     /// Since the last report: the largest |I| or |Q| (full scale 1), samples looked at, and clipped.
@@ -60,6 +69,17 @@ impl SampleMeter {
         self.looked += looked;
     }
 
+    /// A filter bank block: it stands for `samples` input samples. The radio's
+    /// own meters come now and then: [`BankMeter`].
+    pub fn bank(&mut self, samples: u64, meter: Option<BankMeter>) {
+        self.samples += samples;
+        if let Some(m) = meter {
+            self.peak = self.peak.max(m.peak);
+            self.clipped += m.clipped;
+            self.looked += m.looked;
+        }
+    }
+
     /// Report under the source's scope and start the next window: `peak`
     /// (dBFS), `clipPct` (% of samples at the rails), and the totals
     /// `samples` (→ the measured rate), `dropped`, `errors`.
@@ -90,6 +110,18 @@ mod tests {
         fn gauge(&mut self, n: &str, v: f64) {
             self.0.push((n.into(), v));
         }
+    }
+
+    #[test]
+    fn a_filter_banks_meter_reads_like_the_others() {
+        let mut m = SampleMeter::default();
+        m.bank(12288, None);
+        m.bank(12288, Some(BankMeter { peak: 0.5, clipped: 8, looked: 800 }));
+        let mut g = G::default();
+        m.report(&mut g);
+        let get = |n: &str| g.0.iter().find(|(k, _)| k == n).unwrap().1;
+        assert_eq!((get("samples"), get("clipPct")), (24576.0, 1.0));
+        assert!((get("peak") + 6.02).abs() < 0.01);
     }
 
     #[test]

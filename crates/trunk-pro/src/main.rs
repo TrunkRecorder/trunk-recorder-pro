@@ -546,6 +546,12 @@ fn replay(a: &Args) {
         written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
         let air_s = next as f64 * 12288.0 / trunk_core::dsp::filter_bank::FS;
         println!("\n{air_s:.1} s of air ({lost} blocks lost) in {:.2} s. {written} call(s) written to {out_dir}/", t0.elapsed().as_secs_f64());
+        let st = engine.status();
+        for (i, t) in st.sources.iter().enumerate() {
+            if let Some(e) = t.error_ppm {
+                println!("  source {}: frequency error {e:+.2} ppm, corrected by {:+.2} ppm", i + 1, t.applied_ppm);
+            }
+        }
         return;
     }
 
