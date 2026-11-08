@@ -2,10 +2,10 @@
 // the button that makes one and the list of those on disk.
 
 import { useEffect, useState } from "react";
-import { iqCaptureDelete, iqCaptures, iqCaptureStart, type IqCaptures } from "../controller.ts";
+import { iqCaptureDelete, iqCaptures, iqCaptureStart, iqRuleCheck, updateConfig, useApp, type IqCaptures } from "../controller.ts";
 import { Card, Choice, Hint } from "../charts.tsx";
 import { bytes } from "../fmt.ts";
-import type { IqCapture } from "../protocol.ts";
+import type { CaptureRule, IqCapture } from "../protocol.ts";
 
 const LENGTHS = ["30", "60", "120"] as const;
 type Length = (typeof LENGTHS)[number];
@@ -70,7 +70,7 @@ export function IqCaptureCard({ initial }: { initial?: IqCaptures }) {
         <ul className="iq-list">
           {list.captures.map((c) => (
             <li key={c.name}>
-              <strong>{c.name}</strong> {iqCaptureText(c)}
+              <strong>{c.name}</strong> {c.tier !== "wideband" && <span className="badge-kind">{c.tier}</span>} {c.rule && <span className="badge-kind">rule {c.rule}</span>} {iqCaptureText(c)}
               {c.lostSamples > 0 && <span className="warn"> · {c.lostSamples.toLocaleString("en-US")} samples lost</span>}
               {c.note && <div className="hint">{c.note}</div>}
               <div className="hint">{c.path}</div>
@@ -81,6 +81,74 @@ export function IqCaptureCard({ initial }: { initial?: IqCaptures }) {
           ))}
         </ul>
       )}
+      {list && <IqCaptureRules presets={list.presets} />}
     </Card>
+  );
+}
+
+/** What a preset is for, in words. */
+const PRESET_TEXT: Record<string, string> = {
+  "control-lost": "A control channel stops decoding",
+  "control-failing": "A control channel keeps failing to decode",
+  "channel-not-in-table": "A channel isn't in the band plan",
+  "poor-voice": "Calls keep coming through badly",
+  "no-audio": "A granted call has no audio",
+  clipping: "A radio is clipping",
+  "healthy-sample": "One sample of every radio a day",
+};
+
+/** The capture rules: presets to switch on, and any others as JSON. */
+export function IqCaptureRules({ presets }: { presets: CaptureRule[] }) {
+  const s = useApp();
+  const [text, setText] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
+  const rules = s.config?.diagnostics?.rules ?? [];
+  const on = (id: string) => rules.some((r) => r.id === id && r.enabled);
+  const setRules = (next: CaptureRule[]) => updateConfig((c) => void (c.diagnostics = { ...c.diagnostics, rules: next }));
+  const toggle = (p: CaptureRule) => setRules(on(p.id) ? rules.filter((r) => r.id !== p.id) : [...rules.filter((r) => r.id !== p.id), p]);
+  const others = rules.filter((r) => !presets.some((p) => p.id === r.id));
+  const add = () => {
+    let rule: CaptureRule;
+    try {
+      rule = { enabled: true, ...JSON.parse(text) } as CaptureRule;
+    } catch (e) {
+      setProblem(`That isn't JSON: ${(e as Error).message}`);
+      return;
+    }
+    void iqRuleCheck(rule).then((m) => {
+      const why = m.type === "iqRuleChecked" ? m.error : m.message;
+      if (why) return setProblem(why);
+      setRules([...rules.filter((r) => r.id !== rule.id), rule]);
+      setText("");
+      setProblem(null);
+    });
+  };
+  return (
+    <div className="iq-rules">
+      <h4>Capture automatically</h4>
+      <Hint>Keeps a recording here when something goes wrong, within a daily limit. Nothing is sent anywhere. Changes apply the next time recording starts.</Hint>
+      {presets.map((p) => (
+        <label key={p.id} className="row">
+          <input type="checkbox" checked={on(p.id)} onChange={() => toggle(p)} />
+          {PRESET_TEXT[p.id] ?? p.id}
+        </label>
+      ))}
+      {others.map((r) => (
+        <div key={r.id} className="row">
+          <code>{r.id}</code> on {r.on}
+          <button className="btn ghost small" onClick={() => setRules(rules.filter((x) => x.id !== r.id))}>
+            Remove
+          </button>
+        </div>
+      ))}
+      <details>
+        <summary>Add a rule</summary>
+        <textarea className="iq-rule" aria-label="Rule" rows={6} value={text} onChange={(e) => setText(e.target.value)} placeholder={'{ "id": "my-rule", "on": "call.end", "if": "call.snr < 6.0", "capture": [{ "tier": "voice" }] }'} />
+        <button className="btn ghost" disabled={!text.trim()} onClick={add}>
+          Add
+        </button>
+        {problem && <p className="warn">{problem}</p>}
+      </details>
+    </div>
   );
 }

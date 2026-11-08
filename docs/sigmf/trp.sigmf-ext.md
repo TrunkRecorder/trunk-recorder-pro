@@ -9,8 +9,10 @@ can open the recording and ignore these fields.
 
 | Name | Type | What it says |
 |---|---|---|
-| `trp:tier` | string | What the file holds: `wideband` |
-| `trp:purpose` | string | Why it was made: `healthy`, a recording of a system that was working well |
+| `trp:tier` | string | What the file holds: `wideband`, `control` or `voice` |
+| `trp:purpose` | string | Why it was made: `healthy`, a recording of a system that was working well, or `rule` |
+| `trp:rule` | object | The rule that made it: `id`, `on`, `if` |
+| `trp:channel` | object | A channel tape's: for `voice`, how its decoder is built (`spec`), `first` and `block` (its push sizes); for `control`, `site`, `carrier`, `block`, `t0_s`, `bandplan`  |
 | `trp:app` | object | The recorder that made it: `version` |
 | `trp:source` | object | How the radio was set: `type`, `rateHz`, `ppm`, `autoTune`, `guardHz` and its gain settings. No serial number or device address |
 | `trp:start_unix_ms` | double | When the first sample was received, Unix milliseconds (radios of a collection start together by it) |
@@ -23,6 +25,11 @@ can open the recording and ignore these fields.
 
 Samples lost while recording show as a jump in `core:global_index` from one segment to the next.
 A recording that changed frequency isn't saved.
+
+## Annotations
+
+On a voice tape, what its decoder was told and when: `trp:voice_params` (`tdma_key`, `nac`), `trp:slots` (which
+slots were being listened to, not which talkgroups) and `trp:squelch`.
 
 ## Collections
 

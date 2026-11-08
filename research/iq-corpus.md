@@ -16,6 +16,9 @@ Status (2026-11-08): being built on branch `iq-corpus`. The Cloudflare repo does
 - Channel tapes: voice and control channels' IQ with what their decoders need, `replay --tapes`, `tool channel`
   (phase 6).
 
+- Capture rules: CEL conditions, `repeat`, `tick`, schedules, budgets, wideband lookback, presets and their
+  controls on the RF page (phase 7).
+
 Tested on a real RTL-SDR pair; no Airspy is available here yet.
 
 Recordings are public. Anyone can download them to test their own build or help debug someone else's
@@ -275,7 +278,6 @@ new format.
 | `call.end` | `call.*`: `clean_voice_pct`, `snr`, `freq_error`, `call_length`, `encrypted`, `talkgroup`, … | `CallRecord` (the plugin-facing type; engine `Call` doesn't serialize) |
 | `call.not_saved` | `call.*` | `Event::NotSaved` |
 | `control.lost`, `control.regained` | `system`, `site`, `freq_hz` | `MonitorEvent` |
-| `control.message` | `msg.*` | `Event::Message`, mapped only if a rule subscribes |
 | `note.warning` | `system`, `site`, `text` | `Event::Note` |
 | `source.clipping`, `source.drops` | `source`, `pct`, `per_s` | `MonitorEvent` |
 | `tick` | `stats.*`: per-site decode and failure rates, per-source levels | Every 10 s |
@@ -299,8 +301,7 @@ healthy sample.
 
 ## In the app
 
-An advanced feature: **Setup → Diagnostics**, hidden until switched on. Rules live in the config under
-`diagnostics`. Capture commands are control-only, added to `Command::listen_may_send`'s refusals.
+A card on the RF page. Rules live in the config under `diagnostics`. Capture commands are control-only, added to `Command::listen_may_send`'s refusals.
 
 - **Contribute a sample:** pick a system, tier and duration, record, review, send. This is the path for
   healthy systems. Its `trp:purpose` is `healthy`.
@@ -621,18 +622,20 @@ slot that was never saved. Keeping tapes added no measurable time on the Phase 2
 
 *This repo.*
 
-- The rule object, CEL evaluation and fact mapping, with `repeat`, `tick` and budgets.
-- Presets, the editor and save-time checks.
-- Manual capture becomes a one-shot rule.
+- The rule object, CEL evaluation and fact mapping, with `repeat`, `tick` and budgets. **Built.**
+- Presets, the editor and save-time checks. **Built.** The editor is a JSON box for now.
+- Manual capture and rules take the same path (`begin_capture`). **Built.**
 
 *Done when:* each preset fires on a capture replayed to trigger it, a malformed rule is refused when saved,
 and with every preset on, DSP threads never wait on capture.
+**Met 2026-11-08** on a realtime replay of WMATA: voice, control and wideband rules each made a capture, the wideband
+one with 5 s of lookback that matched the source exactly, a bad rule was refused, and rule work runs off the DSP threads.
+Not every preset has been made to fire; each one compiles and runs against its event.
 
 ## To confirm before building
 
 | Item | Phase | Why |
 |---|---|---|
-| The `cel` crate: maintenance, size, whether it builds for WASM | 7 | MIT licensed, activity unconfirmed. The interface already reuses the config's rules as WASM, and rule checks should do the same |
 | R2 multipart limits, presigned URL expiry, and range requests on the public domain | 4 | Not confirmed |
 | A PR opened with `GITHUB_TOKEN` doesn't start CI, as far as I recall | 5 | The promote workflow may need a GitHub App or PAT for that |
 | GitHub-hosted runner disk and time for large captures and the full corpus | 5 | May need sharding, or a Cloudflare Container as a fallback |

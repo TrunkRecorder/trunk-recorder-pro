@@ -102,6 +102,7 @@ mod corpus;
 mod data;
 mod diagnostics;
 mod iq_capture;
+mod iq_rules;
 mod directory;
 mod dmrtool;
 mod interfaces;
@@ -749,7 +750,7 @@ fn site_tag(engine: &Engine, site: u16) -> String {
 fn write_tapes(engine: &Engine, dir: &std::path::Path, capture: Option<&iq_capture::Opened>) -> Result<(), String> {
     let voice = engine.take_voice_tapes();
     for (i, t) in voice.iter().enumerate() {
-        tape_file::write_voice(&dir.join(format!("voice-{i:03}-{}", t.freq_hz as u64)), t)?;
+        tape_file::write_voice(&dir.join(format!("voice-{i:03}-{}", t.freq_hz as u64)), t, serde_json::json!({ "trp:purpose": "healthy" }))?;
     }
     // (A control tape's decoder is built from its capture's systems.)
     let config = capture.and_then(|c| c.config_json.as_ref());
@@ -757,7 +758,7 @@ fn write_tapes(engine: &Engine, dir: &std::path::Path, capture: Option<&iq_captu
     let status = engine.status();
     for (i, t) in control.iter().enumerate() {
         let freq = status.sites.get(t.site as usize).and_then(|s| s.control_channel_hz).unwrap_or(0) as f64;
-        tape_file::write_control(&dir.join(format!("control-{i:02}-{}", freq as u64)), t, freq, config.unwrap(), &engine.bandplan(t.site as usize))?;
+        tape_file::write_control(&dir.join(format!("control-{i:02}-{}", freq as u64)), t, freq, config.unwrap(), &engine.bandplan(t.site as usize), serde_json::json!({ "trp:purpose": "healthy" }))?;
     }
     println!("{} voice and {} control channel tapes in {}", voice.len(), control.len(), dir.display());
     Ok(())

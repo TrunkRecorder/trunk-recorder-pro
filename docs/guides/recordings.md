@@ -393,6 +393,48 @@ A capture ends early, and isn't kept, if recording stops, the radio is retuned, 
 up. The card says which. Samples the radio lost are kept as gaps and shown in the list, and a capture
 with any isn't a good reference.
 
+## Capture rules
+
+**Capture automatically**, on the same card, keeps a recording when something goes wrong, within a daily limit:
+20 captures and 5 GB by default. Changes apply the next time recording starts, and nothing is sent anywhere.
+
+The presets cover the common problems. You can add your own as JSON, under `diagnostics.rules` in the config:
+
+```json
+{
+  "id": "weak-calls",
+  "enabled": true,
+  "on": "call.end",
+  "systems": ["county"],
+  "if": "call.call_length > 3.0 && !call.encrypted && call.clean_voice_pct < 70.0",
+  "repeat": { "count": 3, "within": "5m", "by": "call.freq" },
+  "capture": [{ "tier": "voice" }, { "tier": "control" }],
+  "limit": { "cooldown": "30m" }
+}
+```
+
+| Field | What it does |
+|---|---|
+| `on` | The event it's checked on (below) |
+| `systems` | Only these systems (left out: any) |
+| `if` | A condition in [CEL](https://github.com/google/cel-spec) on what's known of the event (left out: always) |
+| `repeat` | Only after `count` matches `within` a window, counted apart for each value of `by` |
+| `every` | A `schedule` rule: how often (`24h`) |
+| `capture` | What to keep: `tier` is `wideband` (every radio), `control` (the last minute of a control channel) or `voice` (the call's channel). A wideband capture can have `before` and `after` (`5s`); `before` needs memory while recording runs |
+| `limit` | `cooldown`: how long before it can fire again |
+
+| `on` | What a condition can name |
+|---|---|
+| `call.end`, `call.not_saved` | `call.system`, `site`, `talkgroup`, `freq`, `call_length`, `clean_voice_pct`, `snr`, `signal`, `noise`, `freq_error`, `encrypted`, `decrypted`, `emergency`, `analog`, `tdma_slot`, `units` |
+| `control.lost`, `control.regained` | `control.system`, `site`, `freq_hz` |
+| `source.clipping`, `source.drops` | `source.index`, `pct`, `per_s` |
+| `note.warning` | `note.system`, `site`, `text` |
+| `tick` (every 10 s, each site) | `site.system`, `name`, `good`, `bad`, `failed_pct`, `messages` |
+| `schedule` | nothing |
+
+A rule that can't run is refused when it's saved. `budget` beside `rules` sets `capturesPerDay`, `mbPerDay` and
+`ramMb`, the memory held for looking back.
+
 ## Vocoder and frame capture
 
 - **P25 voice decoder** (`vocoder`): which IMBE vocoder turns P25 Phase 1 voice into audio.

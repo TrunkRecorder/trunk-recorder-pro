@@ -17,6 +17,7 @@ import type {
   AudioChunk,
   CallEntry,
   CallView,
+  CaptureRule,
   Config,
   Conventional,
   Device,
@@ -504,6 +505,7 @@ function take(m: FromRecorder): void {
     case "radioResult":
     case "callsResult":
     case "iqCaptures":
+    case "iqRuleChecked":
     case "dataSummary":
     case "dataDeleted":
     case "dataCompacted":
@@ -642,6 +644,11 @@ export function iqCaptures(): Promise<IqAnswer> {
 /** Record every radio for `seconds`, while the recording is working well. */
 export function iqCaptureStart(seconds: number, note: string): Promise<IqAnswer> {
   return ask<IqCaptures>({ type: "iqCaptureStart", id: nextId++, seconds, note });
+}
+
+/** Why a capture rule can't run, if so. */
+export function iqRuleCheck(rule: CaptureRule): Promise<Extract<FromRecorder, { type: "iqRuleChecked" }> | { type: "error"; message: string }> {
+  return ask({ type: "iqRuleCheck", id: nextId++, rule });
 }
 
 export function iqCaptureDelete(name: string): Promise<IqAnswer> {

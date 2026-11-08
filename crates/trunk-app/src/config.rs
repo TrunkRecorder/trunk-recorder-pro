@@ -1944,6 +1944,9 @@ pub struct Config {
     pub storage: StorageSettings,
     /// The dashboard's watch on the computer (desktop app).
     pub monitor: MonitorSettings,
+    /// Rules that record what the radios receive when something happens (desktop app).
+    #[serde(skip_serializing_if = "Diagnostics::is_empty")]
+    pub diagnostics: Diagnostics,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -2030,6 +2033,7 @@ impl Default for Config {
             keys: BTreeMap::new(),
             log: LogSettings::default(),
             storage: StorageSettings::default(),
+            diagnostics: Diagnostics::default(),
             monitor: MonitorSettings::default(),
             notes: vec![],
             numbered: false,
@@ -2903,13 +2907,105 @@ impl Config {
             conventional: self.engine_channels(),
             conv: ConvConfig::default(),
             capture_frames: self.recording.capture_frames,
-            tapes: false,
+            tapes: self.diagnostics.needs_tapes(),
             drop_duplicates: self.recording.drop_duplicate_calls,
             vocoder: self.recording.vocoder.engine(),
         }
     }
 }
 
+
+/// What to keep when a capture rule fires.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureTarget {
+    /// `wideband`, `control` or `voice`.
+    pub tier: String,
+    /// How long before, and after, it fired (`30s`, `5m`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
+/// A rule fires only after this many matches in a window, counted apart for each value of `by`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureRepeat {
+    pub count: u32,
+    pub within: String,
+    pub by: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureLimit {
+    pub cooldown: String,
+}
+
+/// When to record what the radios receive: an event, a condition on it in
+/// CEL, and what to keep (trunk-pro's `iq_rules`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureRule {
+    pub id: String,
+    pub enabled: bool,
+    pub on: String,
+    /// Only these systems ([]: any).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub systems: Vec<String>,
+    #[serde(rename = "if", skip_serializing_if = "String::is_empty")]
+    pub condition: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<CaptureRepeat>,
+    /// A `schedule` rule: how often.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub every: Option<String>,
+    pub capture: Vec<CaptureTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<CaptureLimit>,
+}
+
+/// What capture rules may use.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureBudget {
+    pub captures_per_day: u32,
+    pub mb_per_day: u32,
+    /// Memory for samples held in case a rule wants them.
+    pub ram_mb: u32,
+}
+
+impl Default for CaptureBudget {
+    fn default() -> Self {
+        CaptureBudget { captures_per_day: 20, mb_per_day: 5000, ram_mb: 256 }
+    }
+}
+
+/// Capture rules (research/iq-corpus.md).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Diagnostics {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<CaptureRule>,
+    pub budget: CaptureBudget,
+}
+
+impl Diagnostics {
+    pub fn is_empty(&self) -> bool {
+        *self == Diagnostics::default()
+    }
+
+    /// A rule on keeps a channel's samples: the engine must hold them.
+    pub fn needs_tapes(&self) -> bool {
+        self.rules.iter().filter(|r| r.enabled).flat_map(|r| &r.capture).any(|c| c.tier != "wideband")
+    }
+
+    /// The most a rule on looks back at the radios' full samples, in seconds.
+    pub fn wideband_lookback(&self, seconds: impl Fn(&str) -> f64) -> f64 {
+        self.rules.iter().filter(|r| r.enabled).flat_map(|r| &r.capture).filter(|c| c.tier == "wideband").filter_map(|c| c.before.as_deref()).map(seconds).fold(0.0, f64::max)
+    }
+}
 
 /// A system's names, kept apart from the config (the desktop app's store,
 /// the browser's storage), each list in its order: its talkgroups (set with

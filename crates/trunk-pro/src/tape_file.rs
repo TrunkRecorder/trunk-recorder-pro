@@ -162,28 +162,37 @@ fn write_folder(dir: &Path, global: Value, freq_hz: f64, annotations: Vec<Value>
     fs::write(dir.join(COLLECTION), serde_json::to_string_pretty(&collection).map_err(|e| e.to_string())?).map_err(fail)
 }
 
-pub fn write_voice(dir: &Path, t: &VoiceTape) -> Result<(), String> {
-    let global = json!({
+/// `extra`: what else its metadata says (why it was made).
+pub fn write_voice(dir: &Path, t: &VoiceTape, extra: Value) -> Result<(), String> {
+    let mut global = json!({
         "core:sample_rate": t.spec.rate,
         "core:description": format!("{} voice channel", kind_name(t.spec.kind)),
         "trp:tier": "voice",
         "trp:channel": { "freq_hz": t.freq_hz, "first": t.first, "block": t.block, "truncated": t.truncated, "spec": spec_json(&t.spec) },
     });
+    merge(&mut global, extra);
     write_folder(dir, global, t.freq_hz, t.marks.iter().map(mark_json).collect(), &iq_bytes(t.iq.iter().copied()))
 }
 
 /// `config`: the systems it's of, as a capture's `trp:config`, its sources aside.
-pub fn write_control(dir: &Path, t: &ControlTape, freq_hz: f64, config: &Value, bandplan: &str) -> Result<(), String> {
+pub fn write_control(dir: &Path, t: &ControlTape, freq_hz: f64, config: &Value, bandplan: &str, extra: Value) -> Result<(), String> {
     let mut config = config.clone();
     config["sources"] = json!([{ "type": "file", "path": "source-0.sigmf-data", "format": "cf32", "realtime": false, "centerHz": freq_hz, "rateHz": t.rate, "name": "radio-0" }]);
-    let global = json!({
+    let mut global = json!({
         "core:sample_rate": t.rate,
         "core:description": "Control channel",
         "trp:tier": "control",
         "trp:channel": { "site": t.site, "carrier": t.carrier, "block": t.block, "t0_s": t.t0, "bandplan": bandplan },
         "trp:config": config,
     });
+    merge(&mut global, extra);
     write_folder(dir, global, freq_hz, vec![], &iq_bytes(t.iq.iter().copied()))
+}
+
+fn merge(a: &mut Value, b: Value) {
+    if let (Some(a), Value::Object(b)) = (a.as_object_mut(), b) {
+        a.extend(b);
+    }
 }
 
 fn read(dir: &Path) -> Result<(Value, Vec<Complex32>), String> {

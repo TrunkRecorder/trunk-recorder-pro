@@ -174,6 +174,10 @@ pub enum EngineCmd {
     Forget { system: Option<String>, units: bool, registry: bool, done: mpsc::Sender<(usize, usize)> },
     /// What a capture of the radios keeps of the session.
     IqLive { done: mpsc::Sender<crate::iq_capture::Live> },
+    /// The voice channels' tapes that have finished.
+    IqTapes { done: mpsc::Sender<Vec<trunk_core::trunk::tape::VoiceTape>> },
+    /// The control channels' latest tapes, and what a capture keeps of the session.
+    IqControl { done: mpsc::Sender<(Vec<trunk_core::trunk::tape::ControlTape>, crate::iq_capture::Live)> },
 }
 
 impl Ctx {
@@ -897,6 +901,11 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
 /// On stop, what the source had already sent is decoded first (up to the
 /// queue's 256 blocks: about 2.5 s of 10 ms USRP / Soapy blocks, about 14 s
 /// of RTL-SDR's at 2.4 MSPS): calls in progress keep it.
+fn iq_live(session: &Session) -> crate::iq_capture::Live {
+    let (status, bandplans) = session.status_and_bandplans();
+    crate::iq_capture::Live { status, bandplans, sources: session.source_counts() }
+}
+
 fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<EngineCmd>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air, tap: Arc<crate::iq_capture::Tap>) {
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     // An instant on the same clock (when a driver handed samples over).
@@ -1001,7 +1010,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     let (ctl_tx, rx) = ctl;
     session.set_topics(ctx.topics());
     let at_ms: Arc<Vec<AtomicU64>> = Arc::new(cfg.sources.iter().map(|_| AtomicU64::new(0)).collect());
-    let taps = ctx.iq.session_began(cfg.sources.len());
+    let taps = ctx.iq.session_began(&cfg);
+    ctx.iq.set_rules(crate::iq_rules::spawn(ctx.clone(), &cfg));
+    session.want_facts = ctx.iq.has_rules();
     let feeders: Vec<JoinHandle<()>> = queues
         .into_iter()
         .enumerate()
@@ -1109,8 +1120,13 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     let _ = done.send(gone);
                 }
                 EngineCmd::IqLive { done } => {
-                    let (status, bandplans) = session.status_and_bandplans();
-                    let _ = done.send(crate::iq_capture::Live { status, bandplans, sources: session.source_counts() });
+                    let _ = done.send(iq_live(&session));
+                }
+                EngineCmd::IqTapes { done } => {
+                    let _ = done.send(session.take_voice_tapes());
+                }
+                EngineCmd::IqControl { done } => {
+                    let _ = done.send((session.control_tapes(), iq_live(&session)));
                 }
             }
             next = rx.try_recv().ok();
@@ -1279,6 +1295,7 @@ fn share(ctx: &Arc<Ctx>, short_name: String, observation: serde_json::Value, sit
 fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish)) {
     for o in out.drain(..) {
         match o {
+            Output::Fact { on, facts } => ctx.iq.fact(crate::iq_rules::Fact { on, facts }),
             Output::Message(m) => {
                 if matches!(m, ToClient::Heard { .. }) {
                     *ctx.heard_last.lock().unwrap() = Some(m.clone());
@@ -1317,7 +1334,10 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
                 let ctx = ctx.clone();
                 let _ = std::thread::Builder::new().name("share".into()).spawn(move || share(&ctx, short_name, observation, site_names));
             }
-            Output::File { rel, system, wav, record, frames, decrypted } => finish(Finish { rel, system, wav, record, frames, rules: rules(system), decrypted }),
+            Output::File { rel, system, wav, record, frames, decrypted } => {
+                ctx.iq.fact(crate::iq_rules::Fact { on: "call.end", facts: crate::iq_rules::call_facts(&record) });
+                finish(Finish { rel, system, wav, record, frames, rules: rules(system), decrypted })
+            }
         }
     }
 }

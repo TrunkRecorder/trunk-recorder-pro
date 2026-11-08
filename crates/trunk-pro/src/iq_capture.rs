@@ -12,7 +12,7 @@
 //! no capture is running. A capture's samples queue for a writer thread; a
 //! writer that falls behind ends the capture, it never holds up decoding.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +26,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha512};
 use trunk_app::config::{Config, NameLists, SampleFormat, SourceKind, SystemNames};
 use trunk_app::protocol::{IqCapture, IqCaptureActive, ToClient};
+use trunk_core::trunk::tape::{ControlTape, VoiceTape};
 use trunk_core::trunk::{IdField, Status};
 
 use crate::runtime::{Ctx, EngineCmd};
@@ -71,11 +72,54 @@ struct Job {
     failed: Arc<Mutex<Option<String>>>,
 }
 
+/// A source's latest blocks, for a capture that looks back.
+struct Ring {
+    blocks: VecDeque<(Instant, u64, Chunk)>,
+    samples: u64,
+    /// The most kept.
+    room: u64,
+}
+
+impl Ring {
+    fn push(&mut self, at: Instant, dropped: u64, chunk: Chunk, n: u64) {
+        self.blocks.push_back((at, dropped, chunk));
+        self.samples += n;
+        while self.samples > self.room {
+            let Some((_, _, old)) = self.blocks.pop_front() else { break };
+            self.samples -= old.samples();
+        }
+    }
+}
+
+#[derive(Default)]
+struct TapState {
+    job: Option<Job>,
+    ring: Option<Ring>,
+}
+
 /// Where one source's samples can be taken from ([`Tap::samples`]).
 #[derive(Default)]
 pub struct Tap {
     armed: AtomicBool,
-    job: Mutex<Option<Job>>,
+    job: Mutex<TapState>,
+}
+
+impl Chunk {
+    fn samples(&self) -> u64 {
+        match self {
+            Chunk::Bytes(b) => b.len() as u64 / 2,
+            Chunk::Iq(v) => v.len() as u64,
+            _ => 0,
+        }
+    }
+
+    fn of(block: &Block, keep: usize) -> Chunk {
+        match block {
+            Block::U8(b) => Chunk::Bytes(b[..keep * 2].to_vec()),
+            Block::Iq(b) => Chunk::Iq(b[..keep].to_vec()),
+            Block::Real16(_) => unreachable!("the inbox makes them I/Q"),
+        }
+    }
 }
 
 impl Tap {
@@ -88,12 +132,16 @@ impl Tap {
     }
 
     fn take(&self, block: &Block, dropped: u64, at: Instant) {
-        let mut slot = self.job.lock().unwrap();
+        let mut state = self.job.lock().unwrap();
+        let n = block.len() as u64;
+        if let Some(r) = &mut state.ring {
+            r.push(at, dropped, Chunk::of(block, n as usize), n);
+        }
+        let slot = &mut state.job;
         let Some(j) = slot.as_mut() else { return };
         if at < j.not_before {
             return;
         }
-        let n = block.len() as u64;
         let mut sent = Ok(());
         if !j.started {
             j.started = true;
@@ -107,19 +155,15 @@ impl Tap {
         let keep = n.min(j.left) as usize;
         if sent.is_ok() && keep > 0 {
             j.left -= keep as u64;
-            sent = j.tx.try_send(match block {
-                Block::U8(b) => Chunk::Bytes(b[..keep * 2].to_vec()),
-                Block::Iq(b) => Chunk::Iq(b[..keep].to_vec()),
-                Block::Real16(_) => unreachable!("the inbox makes them I/Q"),
-            });
+            sent = j.tx.try_send(Chunk::of(block, keep));
         }
         if let Err(e) = sent {
             if matches!(e, TrySendError::Full(_)) {
                 *j.failed.lock().unwrap() = Some("The disk couldn't keep up with the radio, so the capture was given up.".into());
             }
-            self.end(&mut slot);
-        } else if job_done(&slot) {
-            self.end(&mut slot);
+            self.end(&mut state);
+        } else if job_done(&state.job) {
+            self.end(&mut state);
         }
     }
 
@@ -128,38 +172,70 @@ impl Tap {
         if !self.armed.load(Ordering::Relaxed) {
             return;
         }
-        let mut slot = self.job.lock().unwrap();
-        let Some(j) = slot.as_mut() else { return };
+        let mut state = self.job.lock().unwrap();
+        let Some(j) = state.job.as_mut() else { return };
         if (center_hz - j.center_hz).abs() > 1.0 {
             *j.failed.lock().unwrap() = Some("The radio was retuned during the capture.".into());
-            self.end(&mut slot);
+            self.end(&mut state);
         } else if j.started && gap > 0 {
             let lost = gap.min(j.left);
             j.left -= lost;
             let _ = j.tx.try_send(Chunk::Gap(lost));
-            if job_done(&slot) {
-                self.end(&mut slot);
+            if job_done(&state.job) {
+                self.end(&mut state);
             }
         }
     }
 
     fn arm(&self, job: Job) {
-        *self.job.lock().unwrap() = Some(job);
+        self.job.lock().unwrap().job = Some(job);
+        self.armed.store(true, Ordering::Relaxed);
+    }
+
+    /// Hand the writer the samples kept so far, then go on from them: `job` hasn't begun.
+    fn arm_after_lookback(&self, mut job: Job) {
+        // (The writer's queue may not take it all at once: this thread can wait, the source's can't.)
+        loop {
+            let blocks = self.job.lock().unwrap().ring.as_mut().map(|r| { r.samples = 0; std::mem::take(&mut r.blocks) }).unwrap_or_default();
+            let few = blocks.len() < 16;
+            for (at, dropped, chunk) in blocks {
+                if !job.started {
+                    job.started = true;
+                    let ms = job.clock.1 - job.clock.0.saturating_duration_since(at).as_secs_f64() * 1000.0 - chunk.samples() as f64 / job.rate_hz * 1000.0;
+                    let _ = job.tx.send(Chunk::Begin(ms));
+                } else if dropped > 0 {
+                    let _ = job.tx.send(Chunk::Gap(dropped));
+                }
+                let _ = job.tx.send(chunk);
+            }
+            if few {
+                break;
+            }
+        }
+        self.arm(job);
+    }
+
+    /// Keep this many of the source's latest samples, for a capture to look back on.
+    fn keep_lookback(&self, room: u64) {
+        self.job.lock().unwrap().ring = Some(Ring { blocks: VecDeque::new(), samples: 0, room });
         self.armed.store(true, Ordering::Relaxed);
     }
 
     /// No more samples: the writer sees its queue end.
-    fn end(&self, slot: &mut Option<Job>) {
-        self.armed.store(false, Ordering::Relaxed);
-        *slot = None;
+    fn end(&self, state: &mut TapState) {
+        state.job = None;
+        if state.ring.is_none() {
+            self.armed.store(false, Ordering::Relaxed);
+        }
     }
 
     fn cancel(&self, why: &str) {
-        let mut slot = self.job.lock().unwrap();
-        if let Some(j) = slot.as_ref() {
+        let mut state = self.job.lock().unwrap();
+        if let Some(j) = state.job.as_ref() {
             *j.failed.lock().unwrap() = Some(why.to_string());
         }
-        self.end(&mut slot);
+        state.ring = None;
+        self.end(&mut state);
     }
 }
 
@@ -179,18 +255,48 @@ pub struct Captures {
     taps: Mutex<Vec<Arc<Tap>>>,
     active: Mutex<Option<Active>>,
     last_error: Mutex<Option<String>>,
+    rules: Mutex<Option<SyncSender<crate::iq_rules::Fact>>>,
 }
 
 impl Captures {
-    /// A session began, with this many sources: a tap for each.
-    pub fn session_began(&self, sources: usize) -> Vec<Arc<Tap>> {
-        let taps: Vec<Arc<Tap>> = (0..sources).map(|_| Arc::default()).collect();
+    /// A session began: a tap for each source, keeping what a capture rule may look back on.
+    pub fn session_began(&self, cfg: &Config) -> Vec<Arc<Tap>> {
+        let taps: Vec<Arc<Tap>> = cfg.sources.iter().map(|_| Arc::default()).collect();
+        let look = cfg.diagnostics.wideband_lookback(|d| crate::iq_rules::seconds(d).unwrap_or(0.0));
+        if look > 0.0 {
+            // Held as a block of each radio's samples, in memory: the budget decides how far back.
+            let per_s: f64 = cfg.sources.iter().map(|s| s.rate_hz * memory_per_sample(&s.kind) as f64).sum();
+            let room_s = look.min(cfg.diagnostics.budget.ram_mb as f64 * 1e6 / per_s);
+            if room_s < look {
+                log::warn!("Capture rules look back {look:.0} s, but their memory budget holds {room_s:.1} s of these radios");
+            }
+            for (t, s) in taps.iter().zip(&cfg.sources) {
+                t.keep_lookback((s.rate_hz * room_s) as u64);
+            }
+        }
         *self.taps.lock().unwrap() = taps.clone();
         taps
     }
 
+    /// Where the session's capture rules take facts.
+    pub fn set_rules(&self, tx: Option<SyncSender<crate::iq_rules::Fact>>) {
+        *self.rules.lock().unwrap() = tx;
+    }
+
+    pub fn has_rules(&self) -> bool {
+        self.rules.lock().unwrap().is_some()
+    }
+
+    /// Tell the rules what happened; they're never waited for.
+    pub fn fact(&self, f: crate::iq_rules::Fact) {
+        if let Some(tx) = &*self.rules.lock().unwrap() {
+            let _ = tx.try_send(f);
+        }
+    }
+
     /// The session ended: a capture still running is given up.
     pub fn session_ended(&self) {
+        *self.rules.lock().unwrap() = None;
         for t in self.taps.lock().unwrap().drain(..) {
             t.cancel("Recording stopped during the capture.");
         }
@@ -220,11 +326,38 @@ fn bytes_per_sample(kind: &SourceKind) -> u64 {
     }
 }
 
-/// Capture every radio of the running session for `seconds`, in the background.
+/// What a block of a source's samples takes in memory, per sample.
+fn memory_per_sample(kind: &SourceKind) -> u64 {
+    if bytes_per_sample(kind) == 2 { 2 } else { 8 }
+}
+
+/// About how many bytes capturing every radio for `seconds` takes.
+pub fn estimate(cfg: &Config, seconds: f64) -> u64 {
+    cfg.sources.iter().map(|s| (s.rate_hz * seconds) as u64 * bytes_per_sample(&s.kind)).sum()
+}
+
+/// A capture of every radio.
+pub struct Request {
+    /// Seconds from now, and already received.
+    pub after_s: f64,
+    pub before_s: f64,
+    pub note: String,
+    /// `healthy` or `rule`.
+    pub purpose: &'static str,
+    pub rule: Option<Value>,
+}
+
+/// Capture every radio of the running session for `seconds`, in the background: the capture button.
 pub fn start(ctx: &Arc<Ctx>, seconds: u32, note: &str) -> Result<(), String> {
     if !(MIN_S..=MAX_S).contains(&seconds) {
         return Err(format!("A capture is {MIN_S} to {MAX_S} seconds long."));
     }
+    begin_capture(ctx, &Request { after_s: seconds as f64, before_s: 0.0, note: note.to_string(), purpose: "healthy", rule: None })
+}
+
+/// Capture every radio of the running session, in the background.
+pub fn begin_capture(ctx: &Arc<Ctx>, req: &Request) -> Result<(), String> {
+    let seconds = (req.after_s + req.before_s).ceil() as u32;
     let taps = ctx.iq.taps.lock().unwrap().clone();
     let cfg = ctx.run.lock().unwrap().clone().filter(|c| c.sources.len() == taps.len() && !taps.is_empty()).ok_or("Start recording first: a capture is of what the radios are receiving now.")?;
     let name = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
@@ -236,17 +369,18 @@ pub fn start(ctx: &Arc<Ctx>, seconds: u32, note: &str) -> Result<(), String> {
         *active = Some(Active { name: name.clone(), seconds, started: Instant::now() });
     }
     *ctx.iq.last_error.lock().unwrap() = None;
-    let begun = begin(ctx, &cfg, taps, &name, seconds, note);
+    let begun = begin(ctx, &cfg, taps, &name, req);
     if begun.is_err() {
         *ctx.iq.active.lock().unwrap() = None;
     }
     begun
 }
 
-fn begin(ctx: &Arc<Ctx>, cfg: &Config, taps: Vec<Arc<Tap>>, name: &str, seconds: u32, note: &str) -> Result<(), String> {
+fn begin(ctx: &Arc<Ctx>, cfg: &Config, taps: Vec<Arc<Tap>>, name: &str, req: &Request) -> Result<(), String> {
+    let seconds = req.after_s + req.before_s;
     let root = root(cfg);
     fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
-    let need: u64 = cfg.sources.iter().map(|s| (s.rate_hz * seconds as f64) as u64 * bytes_per_sample(&s.kind)).sum();
+    let need = estimate(cfg, seconds);
     if let Some((_, free)) = crate::spool::statvfs(&root).filter(|d| d.1 < need + DISK_MARGIN) {
         return Err(format!("This capture takes about {} MB and leaves 1 GB free, but only {} MB is free on that disk.", need / 1_000_000, free / 1_000_000));
     }
@@ -263,12 +397,17 @@ fn begin(ctx: &Arc<Ctx>, cfg: &Config, taps: Vec<Arc<Tap>>, name: &str, seconds:
         let path = dir.join(format!("source-{i}.sigmf-data"));
         writers.push(std::thread::Builder::new().name(format!("iq-{i}")).spawn(move || write_samples(rx, &path)).map_err(|e| e.to_string())?);
         let rate_hz = cfg.sources[i].rate_hz;
-        tap.arm(Job { tx, left: (rate_hz * seconds as f64) as u64, not_before, started: false, rate_hz, center_hz: centers[i], clock, failed: failed.clone() });
+        let job = Job { tx, left: (rate_hz * req.after_s) as u64, not_before, started: false, rate_hz, center_hz: centers[i], clock, failed: failed.clone() };
+        if req.before_s > 0.0 {
+            tap.arm_after_lookback(Job { not_before: Instant::now(), ..job });
+        } else {
+            tap.arm(job);
+        }
     }
-    let (ctx, cfg, dir, name, note) = (ctx.clone(), cfg.clone(), dir, name.to_string(), note.to_string());
+    let (ctx, cfg, dir, name, what) = (ctx.clone(), cfg.clone(), dir, name.to_string(), (req.note.clone(), req.purpose, req.rule.clone()));
     let finished = move || {
         let results: Vec<_> = writers.into_iter().map(|w| w.join().unwrap_or_else(|_| Err("A capture writer failed.".into()))).collect();
-        let saved = failed.lock().unwrap().take().map_or_else(|| save(&ctx, &cfg, &dir, seconds, &note, &before, results), Err);
+        let saved = failed.lock().unwrap().take().map_or_else(|| save(&ctx, &cfg, &dir, &what, &before, results), Err);
         match &saved {
             Ok(()) => log::info!("IQ capture saved: {}", dir.display()),
             Err(e) => {
@@ -295,6 +434,7 @@ struct Written {
     sha512: String,
 }
 
+#[cfg(test)]
 impl Written {
     fn lost(&self) -> u64 {
         self.gaps.iter().map(|g| g.1).sum()
@@ -468,13 +608,9 @@ fn live_summary(before: &Status, after: &Status) -> Value {
     json!({ "sites": sites, "calls": after.calls_concluded - before.calls_concluded })
 }
 
-fn save(ctx: &Ctx, cfg: &Config, dir: &Path, seconds: u32, note: &str, before: &Live, results: Vec<Result<Written, String>>) -> Result<(), String> {
+fn save(ctx: &Ctx, cfg: &Config, dir: &Path, what: &(String, &'static str, Option<Value>), before: &Live, results: Vec<Result<Written, String>>) -> Result<(), String> {
     let written = results.into_iter().collect::<Result<Vec<_>, _>>()?;
-    for (w, s) in written.iter().zip(&cfg.sources) {
-        if w.samples + w.lost() != (s.rate_hz * seconds as f64) as u64 {
-            return Err("A radio stopped before the capture ended.".into());
-        }
-    }
+    let (note, purpose, rule) = what;
     let after = live(ctx).ok_or("The recording ended during the capture.")?;
     let names = ctx.names.lock().unwrap().clone();
     let centers = cfg.resolved_centers();
@@ -483,6 +619,8 @@ fn save(ctx: &Ctx, cfg: &Config, dir: &Path, seconds: u32, note: &str, before: &
         "trp:talkgroups": decode_talkgroups(&names),
         "trp:bandplans": after.bandplans,
         "trp:live": live_summary(&before.status, &after.status),
+        "trp:purpose": purpose,
+        "trp:rule": rule,
     });
     let mut streams = Vec::new();
     for (i, w) in written.iter().enumerate() {
@@ -522,7 +660,6 @@ fn recording_meta(w: &Written, center_hz: f64, rate_hz: f64, source: Value, note
         "core:description": note,
         "core:extensions": [{ "name": "trp", "version": "0.1.0", "optional": true }],
         "trp:tier": "wideband",
-        "trp:purpose": "healthy",
         "trp:app": { "version": env!("CARGO_PKG_VERSION") },
         "trp:source": source,
         "trp:start_unix_ms": w.start_ms,
@@ -553,13 +690,20 @@ fn describe(dir: &Path) -> Option<IqCapture> {
         bytes += size;
         let last = m["captures"].as_array()?.last()?.clone();
         lost += last["core:global_index"].as_u64()? - last["core:sample_start"].as_u64()?;
-        let per = if m["global"]["core:datatype"] == "cu8" { 2 } else { 4 };
+        let per = match m["global"]["core:datatype"].as_str() {
+            Some("cu8") => 2,
+            Some("cf32_le") => 8,
+            _ => 4,
+        };
         samples = (size / per) as f64 / m["global"]["core:sample_rate"].as_f64()?;
     }
     let sum = |k: &str| g["trp:live"]["sites"].as_array().map_or(0, |a| a.iter().filter_map(|s| s[k].as_u64()).sum());
     Some(IqCapture {
         name,
         path: dir.display().to_string(),
+        tier: g["trp:tier"].as_str().unwrap_or("wideband").to_string(),
+        purpose: g["trp:purpose"].as_str().unwrap_or("").to_string(),
+        rule: g["trp:rule"]["id"].as_str().unwrap_or("").to_string(),
         seconds: samples.round() as u32,
         radios: streams.len() as u32,
         bytes,
@@ -578,7 +722,47 @@ pub fn listing(ctx: &Ctx, id: u64, error: Option<String>) -> ToClient {
     captures.sort_by(|a, b| b.name.cmp(&a.name));
     let active = ctx.iq.active.lock().unwrap().as_ref().map(|a| IqCaptureActive { name: a.name.clone(), seconds: a.seconds, elapsed_s: a.started.elapsed().as_secs_f64() });
     let error = error.or_else(|| ctx.iq.last_error.lock().unwrap().clone());
-    ToClient::IqCaptures { id, active, captures, root: root(&cfg).display().to_string(), recording: !ctx.iq.taps.lock().unwrap().is_empty(), error }
+    ToClient::IqCaptures { id, active, captures, root: root(&cfg).display().to_string(), recording: !ctx.iq.taps.lock().unwrap().is_empty(), presets: crate::iq_rules::presets(), error }
+}
+
+/// A folder for a channel tape a rule keeps: the capture directory's, named for what it is.
+fn tape_dir(ctx: &Ctx, kind: &str, freq: u64) -> PathBuf {
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f");
+    root(&ctx.config.lock().unwrap()).join(format!("{stamp}-{kind}-{freq}"))
+}
+
+fn add_diagnostics(ctx: &Ctx, dir: &Path, live: &Live) -> Result<(), String> {
+    let run = ctx.run.lock().unwrap().clone().ok_or("Recording has stopped")?;
+    let names = ctx.names.lock().unwrap().clone();
+    let d = crate::diagnostics::build(&run, &names, live, &ctx.shared.recent_events());
+    let path = dir.join(DIAGNOSTICS);
+    fs::write(&path, serde_json::to_string_pretty(&d).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Save a voice channel's tape, for rule `rule`.
+pub fn save_voice(ctx: &Ctx, t: &VoiceTape, rule: Value) -> Result<(), String> {
+    let dir = tape_dir(ctx, "voice", t.freq_hz as u64);
+    crate::tape_file::write_voice(&dir, t, json!({ "trp:purpose": "rule", "trp:rule": rule }))?;
+    let live = live(ctx).ok_or("The recording ended")?;
+    add_diagnostics(ctx, &dir, &live)?;
+    log::info!("Voice channel capture saved: {}", dir.display());
+    Ok(())
+}
+
+/// Save a control channel's tape, for rule `rule`.
+pub fn save_control(ctx: &Ctx, cfg: &Config, t: &ControlTape, live: &Live, rule: Value) -> Result<(), String> {
+    let freq = live.status.sites.get(t.site as usize).and_then(|s| s.control_channel_hz).unwrap_or(0);
+    let dir = tape_dir(ctx, "control", freq);
+    let config = decode_config(cfg, &vec_of_written(cfg.sources.len()));
+    let bandplan = live.bandplans.get(t.site as usize).map_or("", String::as_str);
+    crate::tape_file::write_control(&dir, t, freq as f64, &config, bandplan, json!({ "trp:purpose": "rule", "trp:rule": rule }))?;
+    add_diagnostics(ctx, &dir, live)?;
+    log::info!("Control channel capture saved: {}", dir.display());
+    Ok(())
+}
+
+fn vec_of_written(n: usize) -> Vec<Written> {
+    (0..n).map(|_| Written::default()).collect()
 }
 
 /// Delete a finished capture.

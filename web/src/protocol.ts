@@ -559,6 +559,8 @@ export interface Config {
   log?: LogSettings;
   /** What's kept on disk beside the config (desktop app): the call store. */
   storage?: StorageSettings;
+  /** Rules that record what the radios receive when something happens. */
+  diagnostics?: Diagnostics;
   /** What the dashboard watches on the computer (desktop app). */
   monitor?: MonitorSettings;
 }
@@ -1936,6 +1938,12 @@ export interface IqCapture {
   /** Its folder's name. */
   name: string;
   path: string;
+  /** What it's of. */
+  tier: "wideband" | "control" | "voice";
+  /** `healthy` (made by hand) or `rule`. */
+  purpose: string;
+  /** The rule that made it. */
+  rule?: string;
   seconds: number;
   radios: number;
   bytes: number;
@@ -1947,6 +1955,36 @@ export interface IqCapture {
   messagesBad: number;
   /** Calls that ended while it was made. */
   calls: number;
+}
+
+/** What to keep when a capture rule fires. */
+export interface CaptureTarget {
+  tier: "wideband" | "control" | "voice";
+  /** How long before, and after, it fired ("30s", "5m"). */
+  before?: string;
+  after?: string;
+}
+
+/** When to record what the radios receive: an event, a condition on it in CEL, and what to keep. */
+export interface CaptureRule {
+  id: string;
+  enabled: boolean;
+  on: string;
+  /** Only these systems (none: any). */
+  systems?: string[];
+  if?: string;
+  /** Fire only after this many matches in a window, counted apart for each value of `by`. */
+  repeat?: { count: number; within: string; by: string };
+  /** A `schedule` rule: how often. */
+  every?: string;
+  capture: CaptureTarget[];
+  limit?: { cooldown: string };
+}
+
+/** Capture rules and what they may use. */
+export interface Diagnostics {
+  rules?: CaptureRule[];
+  budget?: { capturesPerDay: number; mbPerDay: number; ramMb: number };
 }
 
 /** A capture being made. */
@@ -2053,8 +2091,10 @@ export type FromRecorder =
   | ({ type: "radioResult" } & RadioResultBody)
   /** Answers callsQuery: newest first (by start, then path); `next`: more remain, ask again with it as the `cursor`; `error`: only the recent calls (the call store is off). */
   | { type: "callsResult"; id: number; entries: CallEntry[]; next?: string; error?: string }
-  /** Answers iqCaptures, iqCaptureStart and iqCaptureDelete: the captures on disk in `root`, newest first; `active`: the one being made; `recording`: the radios are running; `error`: why the last request or capture failed. */
-  | { type: "iqCaptures"; id: number; active?: IqCaptureActive; captures: IqCapture[]; root: string; recording: boolean; error?: string }
+  /** Answers iqCaptures, iqCaptureStart and iqCaptureDelete: the captures on disk in `root`, newest first; `active`: the one being made; `recording`: the radios are running; `presets`: the capture rules shipped; `error`: why the last request or capture failed. */
+  | { type: "iqCaptures"; id: number; active?: IqCaptureActive; captures: IqCapture[]; root: string; recording: boolean; presets: CaptureRule[]; error?: string }
+  /** Answers iqRuleCheck: why the rule can't run, if so. */
+  | { type: "iqRuleChecked"; id: number; error?: string }
   /** Answers dataSummary: what the store keeps of each system it has (the config's, and those removed from it whose data stayed); `error`: it couldn't say. */
   | { type: "dataSummary"; id: number; systems: DataSystem[]; error?: string }
   /** Answers deleteData: how much went; `error`: not all of it did. */
@@ -2136,6 +2176,8 @@ export type ToRecorder =
   | { type: "iqCaptures"; id: number }
   /** Record every radio for `seconds` (5 to 300) of a recording that's working well, to files; nothing is sent anywhere (answered with iqCaptures). */
   | { type: "iqCaptureStart"; id: number; seconds: number; note?: string }
+  /** Whether capture rule `rule` could run (answered with iqRuleChecked). */
+  | { type: "iqRuleCheck"; id: number; rule: CaptureRule }
   /** Delete capture `name` (answered with iqCaptures). */
   | { type: "iqCaptureDelete"; id: number; name: string }
   /** What the store keeps of each system (answered with dataSummary). A table's CSV is `GET /api/v1/export/{table}` (`?system=<id>`: one system's). */

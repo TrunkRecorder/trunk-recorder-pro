@@ -7,8 +7,8 @@ import { IqCaptureCard, iqCaptureText } from "./dash/IqCapture.tsx";
 import type { IqCapture } from "./protocol.ts";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
-const capture: IqCapture = { name: "20261108-140311", path: "/calls/iq-captures/20261108-140311", seconds: 60, radios: 2, bytes: 576_000_000, note: "Clear day", lostSamples: 0, messagesGood: 990, messagesBad: 10, calls: 1 };
-const answer = { type: "iqCaptures" as const, id: 1, captures: [capture], root: "/calls/iq-captures", recording: true };
+const capture: IqCapture = { name: "20261108-140311", path: "/calls/iq-captures/20261108-140311", tier: "wideband", purpose: "healthy", seconds: 60, radios: 2, bytes: 576_000_000, note: "Clear day", lostSamples: 0, messagesGood: 990, messagesBad: 10, calls: 1 };
+const answer = { type: "iqCaptures" as const, id: 1, captures: [capture], root: "/calls/iq-captures", recording: true, presets: [{ id: "poor-voice", enabled: true, on: "call.end", capture: [{ tier: "voice" as const }] }] };
 
 test("While recording, the button is ready and says nothing is sent", () => {
   const html = renderToString(<IqCaptureCard initial={answer} />);
@@ -28,6 +28,14 @@ test("The button waits for the radios, and shows a capture's progress", () => {
 test("Why a capture failed is said, and so are lost samples", () => {
   assert.match(text(renderToString(<IqCaptureCard initial={{ ...answer, error: "Recording stopped during the capture." }} />)), /Recording stopped during the capture/);
   assert.match(text(renderToString(<IqCaptureCard initial={{ ...answer, captures: [{ ...capture, lostSamples: 4096 }] }} />)), /4,096 samples lost/);
+});
+
+test("Capture rules can be switched on, and a rule capture says which rule made it", () => {
+  const html = renderToString(<IqCaptureCard initial={{ ...answer, captures: [{ ...capture, tier: "voice", purpose: "rule", rule: "poor-voice" }] }} />);
+  assert.match(text(html), /Capture automatically/);
+  assert.match(text(html), /Calls keep coming through badly/);
+  assert.match(html, /type="checkbox"/);
+  assert.match(text(html), /voice rule poor-voice/);
 });
 
 test("A capture in words", () => {

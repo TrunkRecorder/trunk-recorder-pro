@@ -860,6 +860,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             tokio::task::spawn_blocking(move || runtime::calls_query(&ctx2, id, &query)).await.ok()
         }
         Command::SetConfig { config, version } => match Config::from_value(config) {
+            Ok(c) if crate::iq_rules::check_all(&c.diagnostics).is_err() => {
+                let error = crate::iq_rules::check_all(&c.diagnostics).err();
+                Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error })
+            }
             Ok(mut c) => {
                 // While linked, a conventional system's channels are its file's
                 // (re-read: a spreadsheet may have changed it). Files are linked
@@ -941,6 +945,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             .await
             .ok()
         }
+        Command::IqRuleCheck { id, rule } => Some(ToClient::IqRuleChecked {
+            id,
+            error: serde_json::from_value::<trunk_app::config::CaptureRule>(rule).map_err(|e| e.to_string()).and_then(|r| crate::iq_rules::check(&r)).err(),
+        }),
         Command::IqCaptureDelete { id, name } => {
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || {

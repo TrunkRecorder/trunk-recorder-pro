@@ -163,6 +163,14 @@ pub enum ToClient {
         captures: Vec<IqCapture>,
         root: String,
         recording: bool,
+        /// The rules shipped, each off until the config has it.
+        presets: Vec<crate::config::CaptureRule>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Answers `iqRuleCheck`: why the rule can't run, if so.
+    IqRuleChecked {
+        id: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -247,6 +255,13 @@ pub struct IqCapture {
     /// Its folder's name.
     pub name: String,
     pub path: String,
+    /// `wideband`, `control` or `voice`.
+    pub tier: String,
+    /// `healthy` (made by hand) or `rule`.
+    pub purpose: String,
+    /// The rule that made it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub rule: String,
     pub seconds: u32,
     pub radios: u32,
     pub bytes: u64,
@@ -487,6 +502,8 @@ pub enum Command {
     /// Record every radio for `seconds` of a recording that's working
     /// well, to files (nothing is sent anywhere): answered with `iqCaptures` `id`.
     IqCaptureStart { id: u64, seconds: u32, #[serde(default)] note: String },
+    /// Whether capture rule `rule` could run: answered with `iqRuleChecked` `id`.
+    IqRuleCheck { id: u64, rule: Value },
     /// Delete capture `name`: answered with `iqCaptures` `id`.
     IqCaptureDelete { id: u64, name: String },
     /// What the store keeps of each system: answered with `dataSummary` `id`.

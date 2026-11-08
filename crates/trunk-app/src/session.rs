@@ -48,6 +48,8 @@ pub enum Output {
     Topic { topic: String, msg: ToClient },
     /// A minute of the dashboard's series, for the history (and its files).
     Rollup(Rollup),
+    /// Something capture rules can be on (`on`), and what's known of it.
+    Fact { on: &'static str, facts: Value },
     /// A frequency of system `short_name` is identified by this FCC call
     /// sign (Motorola's base station ID, on its control channel or the
     /// voice channel itself): once a run for each frequency and call sign.
@@ -339,6 +341,8 @@ pub struct Session {
     last_spec_ms: f64,
     /// Build audio frames (skip when nobody is listening).
     pub want_audio: bool,
+    /// Capture rules are on: tell them what happens ([`Output::Fact`]).
+    pub want_facts: bool,
     /// Each site, as calls number them: its system's number and its name.
     sites: Vec<(u16, String)>,
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
@@ -417,6 +421,7 @@ impl Session {
             last_status_ms: 0.0,
             last_spec_ms: 0.0,
             want_audio: true,
+            want_facts: false,
             sites,
             recordings,
             plugin_topics: PluginTopics::default(),
@@ -784,6 +789,16 @@ impl Session {
     /// The file name (beside the config) the codes are kept in.
     pub const HEARD_FILE: &'static str = "conventional.heard.json";
 
+    /// The voice channels' tapes finished since last asked.
+    pub fn take_voice_tapes(&self) -> Vec<trunk_core::trunk::tape::VoiceTape> {
+        self.engine.take_voice_tapes()
+    }
+
+    /// What the control channels have received lately.
+    pub fn control_tapes(&self) -> Vec<trunk_core::trunk::tape::ControlTape> {
+        self.engine.control_tapes()
+    }
+
     /// How each source has done this run.
     pub fn source_counts(&self) -> Vec<SourceCounts> {
         self.stats
@@ -1116,6 +1131,9 @@ impl Session {
             }
             Event::Note { system, site, level, text } => {
                 let name = self.system_name(system).to_string();
+                if self.want_facts && matches!(level, NoteLevel::Warning) {
+                    out.push(Output::Fact { on: "note.warning", facts: json!({ "note": { "system": name, "site": self.site_name(site), "text": text } }) });
+                }
                 let (level, kind) = match level {
                     NoteLevel::Info => (Level::Info, "note"),
                     NoteLevel::Warning => (Level::Warning, "error"),
@@ -1247,6 +1265,13 @@ impl Session {
                 }
             }
             Event::NotSaved(c) => {
+                if self.want_facts {
+                    out.push(Output::Fact { on: "call.not_saved", facts: json!({ "call": {
+                        "system": self.system_name(c.system), "site": self.site_name(c.site), "talkgroup": c.talkgroup, "freq": c.freq_hz,
+                        "call_length": (c.last_update_s - c.start_s).max(0.0), "clean_voice_pct": 0.0, "snr": 0.0, "signal": 0.0, "noise": 0.0, "freq_error": 0,
+                        "encrypted": c.encrypted, "decrypted": c.decrypted, "emergency": false, "analog": c.voice.analog(), "tdma_slot": 0, "units": 0,
+                    } }) });
+                }
                 let r = self.call_record(Level::Info, &c, Body::Dropped);
                 self.records.push(r);
             }
