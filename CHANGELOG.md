@@ -5,15 +5,21 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **HydraSDR RFOne sources.** A new source type, `hydrasdr` (**HydraSDR** in Setup), drives an RFOne through
-  libhydrasdr 1.1 or newer, loaded at run time like libairspy (`TRUNK_PRO_HYDRASDR` names the file). It takes
-  an Airspy's gain settings (linearity or sensitivity step, or each stage with AGC), runs at 10, 5 or 2.5 MSPS
-  or a lower rate the library decimates to, and picks its input (`rfPort`: ANT, CABLE1 or CABLE2). The bias-T
-  is on ANT only, and a source asking for it on another input won't start. `trunk-pro devices` and Setup list
-  RFOnes with their rates, and a Trunk Recorder config with a `hydrasdr` device imports as one. The udev rule
-  covers the RFOne's own USB ID (`38af:0001`, with updated firmware, v1.0.2) as well as the Airspy's, which it has
-  with the v1.0.0-rc2 it shipped with; both firmwares are tested. An RFOne that libairspy opens as an Airspy source's "first" is
-  now called a HydraSDR RFOne, not an Airspy R2.
+## [0.3.2] — 2026-11-07
+
+- **HydraSDR RFOne sources** (#116, #127, thanks @auggiesoft). A new source type, `hydrasdr`
+  (**HydraSDR** in Setup), drives an RFOne through libhydrasdr 1.1 or newer, installed from the
+  [hydrasdr-host release](https://github.com/hydrasdr/hydrasdr-host) (see Other radios).
+  - Its gain is set as an Airspy's: a linearity or sensitivity step, or each stage by hand with AGC on
+    the LNA and mixer. Gain changes apply while recording.
+  - It runs at 10, 5 or 2.5 MSPS, or a lower rate the library decimates to.
+  - **Input** picks ANT, CABLE1 or CABLE2 (`rfPort`). The bias-T is on ANT only: Setup and Start say so
+    before the radio opens, and a source on a cable input puts the radio back on ANT as it closes.
+  - `trunk-pro devices` and Setup list RFOnes with their rates, and a Trunk Recorder config with a
+    `hydrasdr` device imports as one. The udev rule covers the RFOne's own USB ID (`38af:0001`, firmware
+    v1.0.2) as well as the Airspy's, which it has with the v1.0.0-rc2 it shipped with.
+  - An RFOne that libairspy opens as an Airspy source's "first" is now called a HydraSDR RFOne, not an
+    Airspy R2.
 - **Talkgroups' encrypted share is right again after upgrading.** v0.3.1 counts a talkgroup's
   encrypted calls by the hour, but the hours kept by v0.3.0 were read as all clear: a fully
   encrypted talkgroup showed a few percent on the Radio system page (and no ENC badge) until a
