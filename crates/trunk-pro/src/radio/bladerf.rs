@@ -65,8 +65,34 @@ const RX0: c_int = 0;
 const RX_X1: c_int = 0;
 /// BLADERF_FORMAT_SC16_Q11_META.
 const FORMAT_SC16_Q11_META: c_int = 1;
-/// BLADERF_FORMAT_PACKET_META, in libbladeRF 2.5's numbering (later versions insert PACKED before it).
-const FORMAT_PACKET_META: c_int = 2;
+/// libbladeRF versions the filter bank has run against. Others get a warning.
+const TESTED_VERSIONS: &[(u16, u16, u16)] = &[(2, 5, 0)];
+
+/// BLADERF_FORMAT_PACKET_META in libbladeRF `major.minor`: 2 through 2.5, and 3
+/// from 2.6, which inserts BLADERF_FORMAT_SC16_Q11_PACKED before it. (Where a
+/// 2.6 build numbers them as 2.5 did, [`is_wideband_header`] catches it.)
+fn packet_format(major: u16, minor: u16) -> c_int {
+    if (major, minor) >= (2, 6) { 3 } else { 2 }
+}
+
+/// What a libbladeRF `major.minor.patch` should be warned about, if anything.
+fn version_warning(major: u16, minor: u16, patch: u16) -> Option<String> {
+    let mut w = None;
+    if !TESTED_VERSIONS.contains(&(major, minor, patch)) {
+        w = Some(format!("libbladeRF {major}.{minor}.{patch} hasn't been tested with the FPGA filter bank; its sample format numbers are assumed from the version"));
+    }
+    if packet_format(major, minor) != 2 {
+        let packed = format!("libbladeRF {major}.{minor}.{patch} numbers its sample formats differently: the wideband stream gets packed samples without metadata, so overruns aren't detected");
+        w = Some(w.map_or(packed.clone(), |t| format!("{t}. {packed}")));
+    }
+    w
+}
+
+/// Whether a stream's bytes start with the header of wideband samples with
+/// metadata (fifo_writer's marker), not a packet's.
+fn is_wideband_header(b: &[u8]) -> bool {
+    b.len() >= 4 && u32::from_le_bytes([b[0], b[1], b[2], b[3]]) == 0x1234_4321
+}
 /// BLADERF_GAIN_DEFAULT (the board's AGC) and BLADERF_GAIN_MGC (manual).
 const GAIN_DEFAULT: c_int = 0;
 const GAIN_MGC: c_int = 1;
@@ -105,6 +131,9 @@ struct Api {
     init_stream: Option<unsafe extern "C" fn(*mut *mut c_void, Dev, StreamCb, *mut *mut *mut c_void, usize, c_int, usize, usize, *mut c_void) -> c_int>,
     stream: Option<unsafe extern "C" fn(*mut c_void, c_int) -> c_int>,
     deinit_stream: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// BLADERF_FORMAT_PACKET_META in this libbladeRF, and its version to name in errors.
+    packet_format: c_int,
+    version_text: String,
 }
 
 /// bladerf_stream_cb.
@@ -130,8 +159,18 @@ fn api() -> Result<&'static Api, String> {
                     *lib.get(concat!($n, "\0").as_bytes()).map_err(|e| format!("{path}: {} missing (libbladeRF 2.x is needed): {e}", $n))?
                 };
             }
+            let version: unsafe extern "C" fn(*mut Version) = f!("bladerf_version");
+            let mut v = Version { major: 0, minor: 0, patch: 0, describe: std::ptr::null() };
+            version(&mut v);
+            let version_text = format!("{}.{}.{} ({})", v.major, v.minor, v.patch, cstr(v.describe));
+            log::info!("libbladeRF {version_text}, {path}");
+            if let Some(w) = version_warning(v.major, v.minor, v.patch) {
+                log::warn!("{w}");
+            }
             Ok(Api {
-                version: f!("bladerf_version"),
+                packet_format: packet_format(v.major, v.minor),
+                version_text,
+                version,
                 strerror: f!("bladerf_strerror"),
                 get_device_list: f!("bladerf_get_device_list"),
                 free_device_list: f!("bladerf_free_device_list"),
@@ -369,14 +408,17 @@ struct BankRx {
     seconds: f64,
     stop: AtomicBool,
     handler: Box<dyn FnMut(&[u8])>,
-    bad_parse: u64,
+    bad_parse: std::sync::atomic::AtomicU64,
+    /// USB transfers seen, and the first one's length and first bytes, for a stream that delivers nothing.
+    transfers: std::sync::atomic::AtomicU64,
+    first: std::sync::Mutex<Option<(usize, Vec<u8>)>>,
     /// Bytes of a packet still arriving.
     partial: Vec<u8>,
 }
 
 impl BankRx {
     fn new(seconds: f64, handler: Box<dyn FnMut(&[u8])>) -> Self {
-        BankRx { start: std::time::Instant::now(), seconds, stop: AtomicBool::new(false), handler, bad_parse: 0, partial: Vec::new() }
+        BankRx { start: std::time::Instant::now(), seconds, stop: AtomicBool::new(false), handler, bad_parse: Default::default(), transfers: Default::default(), first: Default::default(), partial: Vec::new() }
     }
 
     /// One USB transfer. A packet arrives in pieces of 512 DWORDs (2048 bytes,
@@ -384,10 +426,13 @@ impl BankRx {
     /// 16-byte header gives the payload's length.
     fn on_buffer(&mut self, bytes: &[u8]) {
         use trunk_core::dsp::bank_wire::{CORE_ID, HEADER_BYTES};
+        if self.transfers.fetch_add(1, Ordering::Relaxed) == 0 {
+            *self.first.lock().unwrap() = Some((bytes.len(), bytes[..bytes.len().min(16)].to_vec()));
+        }
         self.partial.extend_from_slice(bytes);
         while self.partial.len() >= HEADER_BYTES {
             if self.partial[3] != CORE_ID {
-                self.bad_parse += 1;
+                self.bad_parse.fetch_add(1, Ordering::Relaxed);
                 self.partial.clear();
                 return;
             }
@@ -533,7 +578,7 @@ impl BankCalls {
     /// `dev` stays open and `st` alive until the handle is joined.
     unsafe fn start(&self, a: &Api, dev: Dev, st: *mut BankRx) -> Result<(*mut c_void, std::thread::JoinHandle<c_int>), String> {
         let (mut stream, mut buffers): (*mut c_void, *mut *mut c_void) = (std::ptr::null_mut(), std::ptr::null_mut());
-        check(a, "stream setup", unsafe { (self.init)(&mut stream, dev, bank_rx_cb, &mut buffers, 32, FORMAT_PACKET_META, 2048, 16, st as *mut c_void) })?;
+        check(a, "stream setup", unsafe { (self.init)(&mut stream, dev, bank_rx_cb, &mut buffers, 32, a.packet_format, 2048, 16, st as *mut c_void) })?;
         let (run, addr) = (self.run, stream as usize);
         Ok((stream, std::thread::spawn(move || unsafe { run(addr as *mut c_void, RX_X1) })))
     }
@@ -620,7 +665,7 @@ pub fn bank_capture(c: &BankCapture) -> Result<serde_json::Value, String> {
         let dropped_before = setup?;
         check(a, "stream", r)?;
         let (saturated, dropped, rx_rate) = (calls.read(a, d.dev, REG_SATURATED)?, calls.read(a, d.dev, REG_DROPPED)?, calls.read(a, d.dev, REG_RX_RATE)?);
-        let bad_transfers = st.bad_parse;
+        let bad_transfers = st.bad_parse.load(Ordering::Relaxed);
         drop(st);
         let mut g = out.lock().unwrap();
         g.0.flush().map_err(|e| format!("{}: {e}", c.out))?;
@@ -711,16 +756,25 @@ fn stream_bank(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
                 check(a, "bias-T", r)?;
             }
         }
+        let unparsed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let unparsed2 = Arc::clone(&unparsed);
         // On the callback's thread: parsed and queued; if the queue is full it's a lost block.
         let mut st = Box::new(BankRx::new(
             f64::INFINITY,
             Box::new(move |bytes| {
-                if let Ok((packet, _)) = parse(bytes) {
-                    let _ = tx.try_send(BankPacket { packet, at: Instant::now() });
+                match parse(bytes) {
+                    Ok((packet, _)) => {
+                        let _ = tx.try_send(BankPacket { packet, at: Instant::now() });
+                    }
+                    Err(_) => {
+                        unparsed2.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }),
         ));
         let (stream, streamer) = calls.start(a, d.dev, &mut *st)?;
+        // (Only its atomics and mutex, while the stream's thread has the rest.)
+        let st_ref: &BankRx = &*(&*st as *const BankRx);
         std::thread::sleep(BANK_STARTUP);
         let mut tables = BankTables::new();
         let result = (|| -> Result<(), String> {
@@ -755,7 +809,24 @@ fn stream_bank(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
                             return Ok(());
                         }
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) if silent_since.elapsed() > Duration::from_secs(10) => return Err("bladeRF: no packets for 10 s (unplugged?)".into()),
+                    Err(mpsc::RecvTimeoutError::Timeout) if st_ref.first.lock().unwrap().as_ref().is_some_and(|(_, b)| is_wideband_header(b)) => {
+                        return Err(format!(
+                            "bladeRF: the radio is sending wideband samples, not packets: libbladeRF {} doesn't number its sample formats as expected (packet format {} tried)",
+                            a.version_text, a.packet_format
+                        ));
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) if silent_since.elapsed() > Duration::from_secs(10) => {
+                        return Err(format!(
+                            "bladeRF: no packets for 10 s (unplugged?): {} USB transfers, {} with a wrong header, {} unparseable, first {:02x?}; core generation {}, {} blocks dropped, RX clock {} Hz",
+                            st_ref.transfers.load(Ordering::Relaxed),
+                            st_ref.bad_parse.load(Ordering::Relaxed),
+                            unparsed.load(Ordering::Relaxed),
+                            st_ref.first.lock().unwrap(),
+                            calls.read(a, d.dev, REG_COMMIT)?,
+                            calls.read(a, d.dev, REG_DROPPED)?,
+                            calls.read(a, d.dev, REG_RX_RATE)? as u64 * 256,
+                        ));
+                    }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => return Err("bladeRF: the stream stopped".into()),
                 }
@@ -956,9 +1027,27 @@ mod tests {
         assert_eq!((first.block, parse(more).unwrap().0.block), (1, 2));
         // A piece that isn't a packet's start is dropped, and the next packet still reads.
         rx.on_buffer(&[0xee; 2048]);
-        assert_eq!(rx.bad_parse, 1);
+        assert_eq!(rx.bad_parse.load(Ordering::Relaxed), 1);
         rx.on_buffer(&packet(3, 1));
         assert_eq!((count(&|n| n.packets), count(&|n| n.lost)), (3, 0));
+    }
+
+    #[test]
+    fn the_packet_format_follows_the_library_version() {
+        assert_eq!((packet_format(2, 5), packet_format(2, 6), packet_format(2, 7), packet_format(3, 0)), (2, 3, 3, 3));
+        assert_eq!(version_warning(2, 5, 0), None);
+        let unknown = version_warning(2, 5, 3).unwrap();
+        assert!(unknown.contains("2.5.3") && !unknown.contains("overruns"), "{unknown}");
+        let newer = version_warning(2, 6, 1).unwrap();
+        assert!(newer.contains("overruns"), "{newer}");
+    }
+
+    #[test]
+    fn a_wideband_stream_is_told_from_packets() {
+        assert!(is_wideband_header(&[0x21, 0x43, 0x34, 0x12, 9, 0, 0, 0]));
+        // A packet's header starts with its length.
+        assert!(!is_wideband_header(&[0xe2, 0x07, 0, 0x25, 0, 0, 0, 0]));
+        assert!(!is_wideband_header(&[0x21]));
     }
 
     #[test]
