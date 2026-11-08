@@ -34,6 +34,7 @@ use crate::sdr::Block;
 /// Captures' folder, in the capture directory.
 const FOLDER: &str = "iq-captures";
 const COLLECTION: &str = "capture.sigmf-collection";
+pub(crate) const DIAGNOSTICS: &str = "diagnostics.json";
 const MIN_S: u32 = 5;
 const MAX_S: u32 = 300;
 /// Blocks queued for a writer: seconds of samples, however a radio cuts them.
@@ -201,6 +202,7 @@ pub struct Live {
     pub status: Status,
     /// Each site's band plan, in site order.
     pub bandplans: Vec<String>,
+    pub sources: Vec<trunk_app::session::SourceCounts>,
 }
 
 fn live(ctx: &Ctx) -> Option<Live> {
@@ -361,16 +363,16 @@ fn iso(ms: f64) -> String {
 }
 
 /// Only `keys` of an object.
-fn keep(v: &Value, keys: &[&str]) -> Value {
+pub(crate) fn keep(v: &Value, keys: &[&str]) -> Value {
     Value::Object(keys.iter().filter_map(|k| v.get(*k).map(|x| (k.to_string(), x.clone()))).collect::<Map<_, _>>())
 }
 
-const RECORDING_KEYS: &[&str] = &["callTimeoutS", "conversationMode", "recordUnknown", "recordEncrypted", "recordUnitToUnit", "keepSilentCalls", "minCallS", "maxCallS", "minTransmissionS", "prerollS", "maxRecorders", "vocoder", "normalizeAudio", "digitalLevelDb", "analogLevelDb", "dropDuplicateCalls"];
+pub(crate) const RECORDING_KEYS: &[&str] = &["callTimeoutS", "conversationMode", "recordUnknown", "recordEncrypted", "recordUnitToUnit", "keepSilentCalls", "minCallS", "maxCallS", "minTransmissionS", "prerollS", "maxRecorders", "vocoder", "normalizeAudio", "digitalLevelDb", "analogLevelDb", "dropDuplicateCalls"];
 const SYSTEM_KEYS: &[&str] = &["shortName", "type", "enabled", "defaultMode", "nxdnType", "preferredSite", "receiveOn", "sites", "recording"];
 const SITE_KEYS: &[&str] = &["name", "enabled", "controlChannelsHz", "modulation", "expect", "voiceChannelsHz", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz", "lcnTableHz", "dmrChannelsHz", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran", "esk"];
 const CONVENTIONAL_KEYS: &[&str] = &["shortName", "enabled", "squelchDb", "demod", "channels", "recording"];
 const CHANNEL_KEYS: &[&str] = &["freqHz", "mode", "talkgroup", "code", "slot", "matchTalkgroup", "squelchDb", "bandwidthKhz", "enabled", "receiveOn", "autoTune"];
-const RADIO_KEYS: &[&str] = &["type", "rateHz", "ppm", "autoTune", "guardHz", "gainDb", "agc", "antenna", "wireFormat", "gainMode", "gainStep", "lnaStep", "mixerStep", "vgaStep", "lnaDb", "vgaDb", "amp", "biasTee", "gains", "bufLen", "buffers", "packing"];
+pub(crate) const RADIO_KEYS: &[&str] = &["type", "rateHz", "ppm", "autoTune", "guardHz", "gainDb", "agc", "antenna", "wireFormat", "gainMode", "gainStep", "lnaStep", "mixerStep", "vgaStep", "lnaDb", "vgaDb", "amp", "biasTee", "gains", "bufLen", "buffers", "packing"];
 
 /// A list of source labels, as this capture calls them.
 fn relabel(v: &mut Value, labels: &BTreeMap<String, String>) {
@@ -495,7 +497,10 @@ fn save(ctx: &Ctx, cfg: &Config, dir: &Path, seconds: u32, note: &str, before: &
     let collection = json!({ "collection": { "core:version": "1.2.0", "core:streams": streams } });
     let text = serde_json::to_string_pretty(&collection).map_err(|e| e.to_string())?;
     let path = dir.join(COLLECTION);
-    fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+    fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let diagnostics = crate::diagnostics::build(cfg, &names, &after, &ctx.shared.recent_events());
+    let path = dir.join(DIAGNOSTICS);
+    fs::write(&path, serde_json::to_string_pretty(&diagnostics).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn recording_meta(w: &Written, center_hz: f64, rate_hz: f64, source: Value, note: &str, context: &Value) -> Value {

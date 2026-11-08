@@ -126,7 +126,7 @@ fn add(manifest: &Path, cache: &Path, folder: &Path, id: &str, tier: &str, proto
     let opened = iq_capture::open(name)?;
     let first = opened.recordings.first().ok_or("It has no recordings")?;
     let seconds = (fs::metadata(&first.data).map_err(|e| format!("{}: {e}", first.data.display()))?.len() / first.format.bytes_per_sample() as u64) as f64 / first.rate_hz;
-    let mut names: Vec<String> = fs::read_dir(folder).map_err(|e| format!("{name}: {e}"))?.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| [".sigmf-meta", ".sigmf-data", ".sigmf-collection"].iter().any(|x| n.ends_with(x))).collect();
+    let mut names: Vec<String> = fs::read_dir(folder).map_err(|e| format!("{name}: {e}"))?.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| n == iq_capture::DIAGNOSTICS || [".sigmf-meta", ".sigmf-data", ".sigmf-collection"].iter().any(|x| n.ends_with(x))).collect();
     names.sort();
     fs::create_dir_all(cache.join("blobs")).map_err(|e| format!("{}: {e}", cache.display()))?;
     let mut files = Vec::new();

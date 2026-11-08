@@ -100,6 +100,7 @@ mod api_v1;
 mod clock;
 mod corpus;
 mod data;
+mod diagnostics;
 mod iq_capture;
 mod directory;
 mod dmrtool;

@@ -1110,7 +1110,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 }
                 EngineCmd::IqLive { done } => {
                     let (status, bandplans) = session.status_and_bandplans();
-                    let _ = done.send(crate::iq_capture::Live { status, bandplans });
+                    let _ = done.send(crate::iq_capture::Live { status, bandplans, sources: session.source_counts() });
                 }
             }
             next = rx.try_recv().ok();

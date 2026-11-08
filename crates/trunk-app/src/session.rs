@@ -96,6 +96,15 @@ pub struct PluginTopics {
 /// Recorder's folders are in local time, which only the platform knows.
 pub type LocalOffset = fn(i64) -> i32;
 
+/// A source's counts this run ([`Session::source_counts`]).
+#[derive(Clone, Debug, Default)]
+pub struct SourceCounts {
+    pub samples: u64,
+    pub dropped: u64,
+    pub errors: u64,
+    pub rate_measured: f64,
+}
+
 #[derive(Default, Clone)]
 struct SourceStats {
     samples: u64,
@@ -774,6 +783,17 @@ impl Session {
 
     /// The file name (beside the config) the codes are kept in.
     pub const HEARD_FILE: &'static str = "conventional.heard.json";
+
+    /// How each source has done this run.
+    pub fn source_counts(&self) -> Vec<SourceCounts> {
+        self.stats
+            .iter()
+            .map(|s| {
+                let s = s.lock().unwrap();
+                SourceCounts { samples: s.samples, dropped: s.dropped, errors: s.errors, rate_measured: s.rate_measured }
+            })
+            .collect()
+    }
 
     /// The engine's status, and each site's band plan in site order.
     pub fn status_and_bandplans(&self) -> (trunk_core::trunk::Status, Vec<String>) {

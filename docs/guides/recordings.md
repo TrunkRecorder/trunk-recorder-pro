@@ -379,6 +379,10 @@ how the radios were set ([the fields](../sigmf/trp.sigmf-ext.md)). It leaves out
 encryption keys, plugin settings, serial numbers and paths. Radio traffic in the samples themselves
 can still be decoded by anyone who has the files.
 
+Beside the recordings, `diagnostics.json` describes the computer and how the radios were doing: operating
+system, CPU, memory, each radio's settings and dropped samples, the shape of the config (how many systems and
+channels), and recent drops, clipping and clock problems. It has no names, frequencies, paths or addresses.
+
 To play one back, with the systems it was made with:
 
 ```bash

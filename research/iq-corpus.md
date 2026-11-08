@@ -11,7 +11,9 @@ Status (2026-11-08): being built on branch `iq-corpus`. The Cloudflare repo does
   regression scenarios as metadata-only captures (phase 1, done).
 - Expected output by TRP version: comparison, the results, `bless` and `release` (phase 2, done).
 
-Not yet: `diagnostics.json`, and everything after phase 3.
+- `diagnostics.json` with each capture, built from allow-lists with its leak test (phase 3).
+
+Tested on a real RTL-SDR pair; no Airspy is available here yet.
 
 Recordings are public. Anyone can download them to test their own build or help debug someone else's
 report. The only gate is on what counts as a regression test: promoting a recording needs GitHub write
@@ -562,13 +564,15 @@ back on, against those results, `improved`.
 
 - The wideband tap, writer thread and budgets, for all radio types and multi-radio collections. **Built**;
   tested on file sources, not yet on real radios.
-- `sigmf-meta` writer with its leak test. **Built.** The `diagnostics.json` allow-list is not.
+- `sigmf-meta` writer with its leak test. **Built.** `diagnostics.json` with its leak test. **Built.**
 - The capture button, list and delete, on the RF page, with a web render test. **Built.** Local
   review before sending comes with phase 4.
 - Docs in `docs/guides/`.
 
 *Done when:* a capture made in the app replays to the same calls TRP recorded live, on an RTL pair and
 on an Airspy, and the leak test passes.
+**RTL pair met 2026-11-08:** 60 s of DCFD, no samples lost, the same 8 calls live and replayed, 2406 and 2394
+control messages. Airspy still to do.
 
 ### Phase 4: Corpus service and upload
 
