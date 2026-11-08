@@ -1,11 +1,11 @@
 // A recording of what the radios receive, made while everything is working:
 // the button that makes one and the list of those on disk.
 
-import { useEffect, useState } from "react";
-import { iqCaptureDelete, iqCaptures, iqCaptureStart, iqRuleCheck, updateConfig, useApp, type IqCaptures } from "../controller.ts";
+import { useEffect, useRef, useState } from "react";
+import { iqCaptureDelete, iqCaptureReview, iqCaptures, iqCaptureSend, iqCaptureStart, iqCaptureWithdraw, iqRuleCheck, updateConfig, useApp, type IqCaptureReview, type IqCaptures } from "../controller.ts";
 import { Card, Choice, Hint } from "../charts.tsx";
 import { bytes } from "../fmt.ts";
-import type { CaptureRule, IqCapture } from "../protocol.ts";
+import type { CaptureRule, IqCapture, IqWaterfall } from "../protocol.ts";
 
 const LENGTHS = ["30", "60", "120"] as const;
 type Length = (typeof LENGTHS)[number];
@@ -35,11 +35,13 @@ export function IqCaptureCard({ initial }: { initial?: IqCaptures }) {
   useEffect(() => void iqCaptures().then(shown), []);
   // (The recorder says how it's going: asked each second while it's going.)
   const active = list?.active;
+  const sending = list?.captures.some((c) => c.send?.state === "sending") ?? false;
   useEffect(() => {
-    if (!active) return;
+    if (!active && !sending) return;
     const t = setInterval(() => void iqCaptures().then(shown), 1000);
     return () => clearInterval(t);
-  }, [active?.name]);
+  }, [active?.name, sending]);
+  const [reviewing, setReviewing] = useState<string | null>(null);
   const start = () => {
     setBusy(true);
     void iqCaptureStart(Number(length), note.trim()).then((m) => {
@@ -74,15 +76,96 @@ export function IqCaptureCard({ initial }: { initial?: IqCaptures }) {
               {c.lostSamples > 0 && <span className="warn"> · {c.lostSamples.toLocaleString("en-US")} samples lost</span>}
               {c.note && <div className="hint">{c.note}</div>}
               <div className="hint">{c.path}</div>
-              <button className="btn ghost small" onClick={() => remove(c)}>
-                Delete…
-              </button>
+              <div className="row">
+                {sendText(c) && <span className={c.send?.state === "failed" ? "warn" : "hint"}>{sendText(c)}</span>}
+                {list.canSend && (!c.send || c.send.state === "failed") && (
+                  <button className="btn ghost small" onClick={() => setReviewing(reviewing === c.name ? null : c.name)}>
+                    Review and send…
+                  </button>
+                )}
+                {c.send?.state === "sent" && (
+                  <button className="btn ghost small" onClick={() => confirm("Withdraw this capture from the public corpus? Copies others made can't be recalled.") && void iqCaptureWithdraw(c.name).then(shown)}>
+                    Withdraw…
+                  </button>
+                )}
+                <button className="btn ghost small" onClick={() => remove(c)}>
+                  Delete…
+                </button>
+              </div>
+              {reviewing === c.name && <IqCaptureReviewPanel name={c.name} bytes={c.bytes} onClose={() => setReviewing(null)} onSend={() => void iqCaptureSend(c.name).then((m) => { setReviewing(null); shown(m); })} />}
             </li>
           ))}
         </ul>
       )}
       {list && <IqCaptureRules presets={list.presets} />}
     </Card>
+  );
+}
+
+/** How sending a capture stands, in words. */
+export function sendText(c: IqCapture): string {
+  const s = c.send;
+  if (!s) return "";
+  if (s.state === "sending") return `Sending… ${bytes(s.doneBytes)} of ${bytes(s.totalBytes)}`;
+  if (s.state === "sent") return `Sent. Receipt ${s.receipt}`;
+  return `Not sent: ${s.error ?? "it failed"}`;
+}
+
+/** A waterfall's levels drawn on a canvas. */
+function WaterfallImage({ w }: { w: IqWaterfall }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const ctx = ref.current?.getContext("2d");
+    if (!ctx) return;
+    const image = ctx.createImageData(w.width, w.height);
+    for (let i = 0; i < w.width * w.height; i++) {
+      const v = parseInt(w.levels.slice(i * 2, i * 2 + 2), 16);
+      image.data.set([v * 0.3, v * 0.7, v, 255], i * 4);
+    }
+    ctx.putImageData(image, 0, 0);
+  }, [w]);
+  return <canvas ref={ref} width={w.width} height={w.height} className="iq-waterfall" />;
+}
+
+/** What a capture would publish, and the owner's yes. */
+export function IqCaptureReviewPanel({ name, bytes: size, initial, onSend, onClose }: { name: string; bytes: number; initial?: IqCaptureReview; onSend: () => void; onClose: () => void }) {
+  const [review, setReview] = useState<IqCaptureReview | null>(initial ?? null);
+  const [problem, setProblem] = useState<string | null>(initial?.error ?? null);
+  const [agreed, setAgreed] = useState(false);
+  useEffect(() => {
+    if (initial) return;
+    void iqCaptureReview(name).then((m) => (m.type === "iqCaptureReview" ? (setReview(m), setProblem(m.error ?? null)) : setProblem(m.message)));
+  }, [name]);
+  if (problem) return <p className="warn">{problem}</p>;
+  if (!review) return <p className="hint">Preparing a preview…</p>;
+  return (
+    <div className="iq-review">
+      {review.waterfalls.map((w, i) => (
+        <WaterfallImage key={i} w={w} />
+      ))}
+      <details>
+        <summary>Its metadata</summary>
+        <pre>{JSON.stringify(review.metadata, null, 2)}</pre>
+      </details>
+      <details>
+        <summary>Its diagnostics</summary>
+        <pre>{JSON.stringify(review.diagnostics, null, 2)}</pre>
+      </details>
+      <label className="row">
+        <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+        <span>
+          I understand this recording ({bytes(size)}) and its diagnostics become public for anyone to download and decode, including all the radio traffic it holds. It also shows roughly where I am. A withdrawn recording may already have been copied.
+        </span>
+      </label>
+      <div className="row">
+        <button className="btn primary" disabled={!agreed} onClick={onSend}>
+          Send to the public corpus
+        </button>
+        <button className="btn ghost" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

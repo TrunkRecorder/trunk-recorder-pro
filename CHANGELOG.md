@@ -14,6 +14,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   failing, poor calls, a granted call with no audio, clipping, or one healthy sample a day, within a daily limit.
   Rules are JSON with a condition in [CEL](https://github.com/google/cel-spec), and can look back at what was
   received just before. See [Recordings](docs/guides/recordings.md#capture-rules).
+- **`trunk-pro tool channel`** runs one channel tape (`replay --tapes`) through its decoder alone, and **`tool submission`**
+  checks a contributed capture.
 - **`trunk-pro tool corpus`** adds, downloads and replays the recordings regression tests run on, listed by
   hash in `corpus/corpus.json`.
 

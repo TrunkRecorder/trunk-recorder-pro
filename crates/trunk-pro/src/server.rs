@@ -945,6 +945,28 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             .await
             .ok()
         }
+        Command::IqCaptureReview { id, name } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::iq_capture::review(&ctx2, id, &name)).await.ok()
+        }
+        Command::IqCaptureSend { id, name } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                let error = crate::iq_capture::send(&ctx2, &name).err();
+                crate::iq_capture::listing(&ctx2, id, error)
+            })
+            .await
+            .ok()
+        }
+        Command::IqCaptureWithdraw { id, name } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                let error = crate::iq_capture::withdraw(&ctx2, &name).err();
+                crate::iq_capture::listing(&ctx2, id, error)
+            })
+            .await
+            .ok()
+        }
         Command::IqRuleCheck { id, rule } => Some(ToClient::IqRuleChecked {
             id,
             error: serde_json::from_value::<trunk_app::config::CaptureRule>(rule).map_err(|e| e.to_string()).and_then(|r| crate::iq_rules::check(&r)).err(),

@@ -25,7 +25,7 @@ use num_complex::Complex32;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha512};
 use trunk_app::config::{Config, NameLists, SampleFormat, SourceKind, SystemNames};
-use trunk_app::protocol::{IqCapture, IqCaptureActive, ToClient};
+use trunk_app::protocol::{IqCapture, IqCaptureActive, IqWaterfall, ToClient};
 use trunk_core::trunk::tape::{ControlTape, VoiceTape};
 use trunk_core::trunk::{IdField, Status};
 
@@ -256,6 +256,8 @@ pub struct Captures {
     active: Mutex<Option<Active>>,
     last_error: Mutex<Option<String>>,
     rules: Mutex<Option<SyncSender<crate::iq_rules::Fact>>>,
+    /// A capture is being sent ([`crate::iq_send`]).
+    pub sending: Mutex<bool>,
 }
 
 impl Captures {
@@ -670,7 +672,7 @@ fn recording_meta(w: &Written, center_hz: f64, rate_hz: f64, source: Value, note
     json!({ "global": global, "captures": captures, "annotations": [] })
 }
 
-fn root(cfg: &Config) -> PathBuf {
+pub fn root(cfg: &Config) -> PathBuf {
     PathBuf::from(&cfg.recording.capture_dir).join(FOLDER)
 }
 
@@ -712,7 +714,47 @@ fn describe(dir: &Path) -> Option<IqCapture> {
         messages_good: sum("messages_good"),
         messages_bad: sum("messages_bad"),
         calls: g["trp:live"]["calls"].as_u64().unwrap_or(0),
+        send: crate::iq_send::status(dir),
     })
+}
+
+/// A capture's folder, by the name the list gave it.
+fn capture_dir(ctx: &Ctx, name: &str) -> Result<PathBuf, String> {
+    let mut parts = Path::new(name).components();
+    if !matches!((parts.next(), parts.next()), (Some(std::path::Component::Normal(_)), None)) {
+        return Err("No such capture.".into());
+    }
+    let dir = root(&ctx.config.lock().unwrap()).join(name);
+    if !dir.join(COLLECTION).is_file() {
+        return Err("No such capture.".into());
+    }
+    Ok(dir)
+}
+
+/// What a capture would publish, for its owner to look over.
+pub fn review(ctx: &Ctx, id: u64, name: &str) -> ToClient {
+    let reviewed = (|| -> Result<ToClient, String> {
+        let dir = capture_dir(ctx, name)?;
+        let opened = open(dir.to_str().ok_or("Its path isn't text")?)?;
+        let images = opened.recordings.iter().map(crate::waterfall::of_recording).collect::<Result<Vec<_>, _>>()?;
+        let read = |f: &str| fs::read_to_string(dir.join(f)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        let waterfalls = images.into_iter().map(|i| IqWaterfall { width: i.width, height: i.height, levels: crate::toolkit::hex(&i.pixels) }).collect();
+        Ok(ToClient::IqCaptureReview { id, name: name.to_string(), metadata: read("source-0.sigmf-meta").map_or(Value::Null, |m| m["global"].clone()), diagnostics: read(DIAGNOSTICS).unwrap_or(Value::Null), waterfalls, error: None })
+    })();
+    reviewed.unwrap_or_else(|error| ToClient::IqCaptureReview { id, name: name.to_string(), metadata: Value::Null, diagnostics: Value::Null, waterfalls: vec![], error: Some(error) })
+}
+
+/// Send a capture its owner has reviewed.
+pub fn send(ctx: &Arc<Ctx>, name: &str) -> Result<(), String> {
+    if ctx.iq.active.lock().unwrap().as_ref().is_some_and(|a| a.name == name) {
+        return Err("That capture is still being made.".into());
+    }
+    crate::iq_send::start(ctx, capture_dir(ctx, name)?)
+}
+
+/// Withdraw a capture that was sent.
+pub fn withdraw(ctx: &Ctx, name: &str) -> Result<(), String> {
+    crate::iq_send::withdraw(&capture_dir(ctx, name)?)
 }
 
 /// The captures on disk and the one being made: the answer to every capture command.
@@ -722,7 +764,7 @@ pub fn listing(ctx: &Ctx, id: u64, error: Option<String>) -> ToClient {
     captures.sort_by(|a, b| b.name.cmp(&a.name));
     let active = ctx.iq.active.lock().unwrap().as_ref().map(|a| IqCaptureActive { name: a.name.clone(), seconds: a.seconds, elapsed_s: a.started.elapsed().as_secs_f64() });
     let error = error.or_else(|| ctx.iq.last_error.lock().unwrap().clone());
-    ToClient::IqCaptures { id, active, captures, root: root(&cfg).display().to_string(), recording: !ctx.iq.taps.lock().unwrap().is_empty(), presets: crate::iq_rules::presets(), error }
+    ToClient::IqCaptures { id, active, captures, root: root(&cfg).display().to_string(), recording: !ctx.iq.taps.lock().unwrap().is_empty(), presets: crate::iq_rules::presets(), can_send: crate::iq_send::available(), error }
 }
 
 /// A folder for a channel tape a rule keeps: the capture directory's, named for what it is.

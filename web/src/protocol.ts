@@ -1955,6 +1955,25 @@ export interface IqCapture {
   messagesBad: number;
   /** Calls that ended while it was made. */
   calls: number;
+  /** How sending it to the corpus stands, if it has been. */
+  send?: IqCaptureSend;
+}
+
+/** How the sending of a capture to the corpus stands. */
+export interface IqCaptureSend {
+  state: "sending" | "sent" | "failed";
+  receipt: string;
+  id: string;
+  doneBytes: number;
+  totalBytes: number;
+  error?: string;
+}
+
+/** A radio's power by frequency over time, as levels 0–255, in hex. */
+export interface IqWaterfall {
+  width: number;
+  height: number;
+  levels: string;
 }
 
 /** What to keep when a capture rule fires. */
@@ -2091,8 +2110,10 @@ export type FromRecorder =
   | ({ type: "radioResult" } & RadioResultBody)
   /** Answers callsQuery: newest first (by start, then path); `next`: more remain, ask again with it as the `cursor`; `error`: only the recent calls (the call store is off). */
   | { type: "callsResult"; id: number; entries: CallEntry[]; next?: string; error?: string }
-  /** Answers iqCaptures, iqCaptureStart and iqCaptureDelete: the captures on disk in `root`, newest first; `active`: the one being made; `recording`: the radios are running; `presets`: the capture rules shipped; `error`: why the last request or capture failed. */
-  | { type: "iqCaptures"; id: number; active?: IqCaptureActive; captures: IqCapture[]; root: string; recording: boolean; presets: CaptureRule[]; error?: string }
+  /** Answers iqCaptures, iqCaptureStart and iqCaptureDelete: the captures on disk in `root`, newest first; `active`: the one being made; `recording`: the radios are running; `presets`: the capture rules shipped; `canSend`: there's a corpus service to send captures to; `error`: why the last request or capture failed. */
+  | { type: "iqCaptures"; id: number; active?: IqCaptureActive; captures: IqCapture[]; root: string; recording: boolean; presets: CaptureRule[]; canSend: boolean; error?: string }
+  /** Answers iqCaptureReview: what capture `name` would publish. */
+  | { type: "iqCaptureReview"; id: number; name: string; metadata: unknown; diagnostics: unknown; waterfalls: IqWaterfall[]; error?: string }
   /** Answers iqRuleCheck: why the rule can't run, if so. */
   | { type: "iqRuleChecked"; id: number; error?: string }
   /** Answers dataSummary: what the store keeps of each system it has (the config's, and those removed from it whose data stayed); `error`: it couldn't say. */
@@ -2176,6 +2197,12 @@ export type ToRecorder =
   | { type: "iqCaptures"; id: number }
   /** Record every radio for `seconds` (5 to 300) of a recording that's working well, to files; nothing is sent anywhere (answered with iqCaptures). */
   | { type: "iqCaptureStart"; id: number; seconds: number; note?: string }
+  /** What capture `name` would publish (answered with iqCaptureReview). */
+  | { type: "iqCaptureReview"; id: number; name: string }
+  /** Send capture `name`, reviewed, to the public corpus (answered with iqCaptures). */
+  | { type: "iqCaptureSend"; id: number; name: string }
+  /** Withdraw capture `name` from the corpus (answered with iqCaptures). */
+  | { type: "iqCaptureWithdraw"; id: number; name: string }
   /** Whether capture rule `rule` could run (answered with iqRuleChecked). */
   | { type: "iqRuleCheck"; id: number; rule: CaptureRule }
   /** Delete capture `name` (answered with iqCaptures). */

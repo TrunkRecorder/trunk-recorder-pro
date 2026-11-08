@@ -4074,6 +4074,9 @@
                 "$ref": "#/definitions/CaptureRule"
               }
             },
+            "canSend": {
+              "type": "boolean"
+            },
             "error": {
               "type": "string"
             }
@@ -4084,7 +4087,43 @@
             "captures",
             "root",
             "recording",
-            "presets"
+            "presets",
+            "canSend"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureReview"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            },
+            "metadata": {},
+            "diagnostics": {},
+            "waterfalls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/IqWaterfall"
+              }
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "metadata",
+            "diagnostics",
+            "waterfalls"
           ],
           "additionalProperties": false
         },
@@ -4557,6 +4596,10 @@
         "calls": {
           "type": "number",
           "description": "Calls that ended while it was made."
+        },
+        "send": {
+          "$ref": "#/definitions/IqCaptureSend",
+          "description": "How sending it to the corpus stands, if it has been."
         }
       },
       "required": [
@@ -4596,6 +4639,64 @@
       ],
       "additionalProperties": false,
       "description": "A capture being made."
+    },
+    "IqCaptureSend": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "sending",
+            "sent",
+            "failed"
+          ]
+        },
+        "receipt": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "doneBytes": {
+          "type": "number"
+        },
+        "totalBytes": {
+          "type": "number"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "receipt",
+        "id",
+        "doneBytes",
+        "totalBytes"
+      ],
+      "additionalProperties": false,
+      "description": "How the sending of a capture to the corpus stands."
+    },
+    "IqWaterfall": {
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "levels": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "levels"
+      ],
+      "additionalProperties": false,
+      "description": "A radio's power by frequency over time, as levels 0–255, in hex."
     },
     "KeySource": {
       "type": "object",
@@ -9948,6 +10049,69 @@
             "type",
             "id",
             "seconds"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureReview"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureSend"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureWithdraw"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
           ],
           "additionalProperties": false
         },

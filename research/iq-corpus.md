@@ -19,6 +19,11 @@ Status (2026-11-08): being built on branch `iq-corpus`. The Cloudflare repo does
 - Capture rules: CEL conditions, `repeat`, `tick`, schedules, budgets, wideband lookback, presets and their
   controls on the RF page (phase 7).
 
+- The send path: local review with consent, resumable upload, receipts and withdrawal; `tool submission`, `tool
+  corpus promote`, and the promote, remove and corpus workflows (phases 4 and 5, this repo's side).
+- The service, in the local repo `../trunk-recorder-corpus`: tested end to end against a local Worker. **Not deployed**, so
+  the Send button stays hidden (`SERVICE_LIVE` in `iq_send.rs`) and `corpus.yml` waits for `CORPUS_READY`.
+
 Tested on a real RTL-SDR pair; no Airspy is available here yet.
 
 Recordings are public. Anyone can download them to test their own build or help debug someone else's
@@ -79,7 +84,7 @@ gets us a recording of the problem when a user reports one.
  TRP (this repo)                              trunk-recorder-corpus (new repo)
  ─────────────────                            ────────────────────────────────
  rules / manual button                        Worker: trunkrecorder.pro/corpus*
-   │                                            ├─ upload API (presigned R2 URLs)
+   │                                            ├─ upload API (parts into R2)
    ▼                                            └─ public pages: list, waterfall, decode
  taps ──► RAM rings ──► local capture folder    │
                             │                   ▼
@@ -426,8 +431,7 @@ The files are public, so fork PRs run this the same as anyone.
 ## The corpus service (new repo)
 
 **`TrunkRecorder/trunk-recorder-corpus`**: TypeScript, one Worker on `trunkrecorder.pro/corpus*`, set up
-like `trunk-recorder-directory` (React and Vite site, D1 migrations, staging and production deploys gated
-on tests). The repo name is available as of this writing. TRP talks to it only over its API.
+like `trunk-recorder-directory`, with a single plain page rather than a site. The repo name is available as of this writing. TRP talks to it only over its API.
 
 ### Storage
 
@@ -460,15 +464,15 @@ with free egress: 1 TB is about $15 a month.
 ```
 POST   /corpus/api/v1/installs                      a token for this install
 POST   /corpus/api/v1/submissions                   declare files (hashes, sizes); get id and receipt
-POST   /corpus/api/v1/submissions/:id/parts         presigned URLs for parts
+PUT    /corpus/api/v1/submissions/:id/files/:name/parts/:n
 POST   /corpus/api/v1/submissions/:id/complete
 GET    /corpus/api/v1/submissions                   the public list
 GET    /corpus/api/v1/submissions/:id               a submission, public
 DELETE /corpus/api/v1/submissions/:id               withdraw, by receipt
 ```
 
-Bytes go straight to R2, since Worker request bodies are size-limited. Contributors don't need a GitHub
-account.
+Parts of 32 MiB go through the Worker, under its request size limit, straight into an R2 multipart upload, so no S3
+credentials or presigned URLs are needed. Contributors don't need a GitHub account.
 
 **Abuse.** A public bucket that accepts uploads can be misused as free file hosting. So: quotas per token and
 per IP; at most 5 GB a submission; nothing listed until the decode job has validated it; anything that
@@ -582,24 +586,30 @@ control messages. Airspy still to do.
 
 *New repo, plus the send path in this repo.*
 
-- Create the repo, Worker, D1, the public R2 bucket and its domain, staging and production.
-- The upload API, quotas, and scheduled retention that reads the manifest.
-- TRP: local review with the consent text, resumable send, receipts, withdrawal.
+- The Worker, D1 and bucket, with the upload API, quotas, and retention that reads the manifest. **Built**, in the local repo
+  `../trunk-recorder-corpus`. **Not created on GitHub or deployed.**
+- TRP: local review with the consent text, resumable send, receipts, withdrawal. **Built.** The Send button stays hidden until
+  `SERVICE_LIVE` in `iq_send.rs` is set.
 
 *Done when:* a 2 GB submission survives an interrupted upload and can be downloaded with `curl`.
+**Met locally 2026-11-08**, with a 96 MB capture sent through a real trunk-pro to a local Worker, the app restarted partway
+through a file. It hasn't run against production.
 
 ### Phase 5: Decode, public page and promotion
 
 *New repo, plus workflows in this repo.*
 
-- The decode job and checks. Unvalidated uploads are deleted. Only IQ, diagnostics, a waterfall and counts are published.
-- The public list and submission pages.
-- `corpus-promote` and `corpus-remove`.
-- The CI jobs in this repo, for PRs and nightly.
-- Publish today's eight captures as the first entries.
+- The decode job and checks (`tool submission`). Unvalidated uploads are deleted. Only IQ, diagnostics, a waterfall and counts are
+  published. **Built.**
+- The public list page, with waterfalls. **Built.**
+- `corpus-promote` and `corpus-remove`, using `tool corpus promote`. **Built.**
+- The CI jobs in this repo, for PRs and nightly. **Built**, waiting on the repository variable `CORPUS_READY`.
+- Publish today's eight captures as the first entries. **Not done:** it needs the bucket.
 
-*Done when:* a contributed capture goes from upload to a merged manifest entry to a nightly `match`, without
-anyone touching the files by hand, and a GitHub account without write access can't run the promote workflow.
+*Done when:* a contributed capture goes from upload to a merged manifest entry to a nightly `match`, without anyone touching the
+files by hand, and a GitHub account without write access can't run the promote workflow.
+**Partly met 2026-11-08:** locally, a capture went from upload through the checks and promotion to a `match`. The workflows themselves
+can't run until the service exists and a release includes these tools.
 
 ### Phase 6: Channel tiers
 

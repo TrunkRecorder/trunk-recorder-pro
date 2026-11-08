@@ -127,6 +127,9 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .warn { color: var(--warn); margin: 0; }
 .iq-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
 .iq-rules { margin-top: 16px; }
+.iq-review { margin-top: 8px; display: grid; gap: 8px; }
+.iq-review pre { max-height: 16em; overflow: auto; font: 12px var(--mono); }
+.iq-waterfall { width: 100%; height: 160px; image-rendering: pixelated; border-radius: 6px; }
 .iq-rules h4 { margin: 0 0 4px; }
 .iq-rule { width: 100%; font: 13px var(--mono); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; margin: 8px 0; color: var(--text); }
 .help { color: var(--muted); font-size: 13px; }

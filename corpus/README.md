@@ -29,6 +29,13 @@ target/release/trunk-pro tool corpus run --out /tmp/after --bless next
 The diff shows how much moved, and a release makes it that version's with
 `trunk-pro tool corpus release <version>`.
 
+## Promoting a contributed recording
+
+Anyone can browse what's been contributed at `trunkrecorder.pro/corpus`. To make one a test, someone with write access
+to this repo runs the **corpus-promote** workflow with its ID. It decodes the capture with the latest release and opens
+a pull request adding it and its first expected output; merging that makes it a test. **corpus-remove** takes a recording
+down.
+
 ## Seeding
 
 `seed.py` writes the scenarios of `captures/regress.sh` as SigMF capture folders, with their decoding

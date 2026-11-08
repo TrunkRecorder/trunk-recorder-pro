@@ -2518,6 +2518,7 @@ dependencies = [
  "rtlsdr-nusb",
  "rusqlite",
  "rust-embed",
+ "rustfft",
  "sdr-core",
  "sdr-hackrf",
  "serde",

@@ -165,6 +165,18 @@ pub enum ToClient {
         recording: bool,
         /// The rules shipped, each off until the config has it.
         presets: Vec<crate::config::CaptureRule>,
+        /// There's a corpus service to send captures to.
+        can_send: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Answers `iqCaptureReview`: what capture `name` would publish.
+    IqCaptureReview {
+        id: u64,
+        name: String,
+        metadata: Value,
+        diagnostics: Value,
+        waterfalls: Vec<IqWaterfall>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -272,6 +284,32 @@ pub struct IqCapture {
     pub messages_good: u64,
     pub messages_bad: u64,
     pub calls: u64,
+    /// How sending it to the corpus stands, if it has been.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send: Option<IqCaptureSend>,
+}
+
+/// How the sending of a capture to the corpus stands (`iqCaptures`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCaptureSend {
+    /// `sending`, `sent` or `failed`.
+    pub state: String,
+    pub receipt: String,
+    pub id: String,
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A radio's power by frequency over time, as levels 0–255, in hex (`iqCaptureReview`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqWaterfall {
+    pub width: u32,
+    pub height: u32,
+    pub levels: String,
 }
 
 /// A capture being made (`iqCaptures`).
@@ -502,6 +540,12 @@ pub enum Command {
     /// Record every radio for `seconds` of a recording that's working
     /// well, to files (nothing is sent anywhere): answered with `iqCaptures` `id`.
     IqCaptureStart { id: u64, seconds: u32, #[serde(default)] note: String },
+    /// What capture `name` would publish: answered with `iqCaptureReview` `id`.
+    IqCaptureReview { id: u64, name: String },
+    /// Send capture `name`, reviewed, to the public corpus: answered with `iqCaptures` `id`.
+    IqCaptureSend { id: u64, name: String },
+    /// Withdraw capture `name` from the corpus: answered with `iqCaptures` `id`.
+    IqCaptureWithdraw { id: u64, name: String },
     /// Whether capture rule `rule` could run: answered with `iqRuleChecked` `id`.
     IqRuleCheck { id: u64, rule: Value },
     /// Delete capture `name`: answered with `iqCaptures` `id`.

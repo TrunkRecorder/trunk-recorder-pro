@@ -41,6 +41,7 @@ log = { version = "0.4", features = ["std"] }
 ureq = "3"
 sha2 = "0.11"
 cel = "0.15"
+rustfft.workspace = true
 # The install's anonymous directory recorder ID (directory.rs).
 getrandom = "0.3"
 flate2 = "1"

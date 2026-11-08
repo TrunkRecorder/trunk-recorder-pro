@@ -37,6 +37,7 @@ use crate::{die, Args};
 const MANIFEST: &str = "corpus/corpus.json";
 const CACHE: &str = "captures/.corpus";
 const BASE: &str = "https://iq.trunkrecorder.pro/blobs/";
+const API: &str = "https://trunkrecorder.pro/corpus/api/v1";
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Manifest {
@@ -319,7 +320,7 @@ fn call_files(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-fn summarize(out: &Path, id: &str) -> Result<Results, String> {
+pub(crate) fn summarize(out: &Path, id: &str) -> Result<Results, String> {
     let stdout_path = out.join(format!("{id}.stdout"));
     let stdout = fs::read_to_string(&stdout_path).map_err(|e| format!("{}: {e}", stdout_path.display()))?;
     let mut files = Vec::new();
@@ -509,6 +510,48 @@ fn release(expected_root: &Path, version: &str) -> Result<usize, String> {
     Ok(done)
 }
 
+/// Add submission `id` to the manifest, and what this version decodes from it as its expected output.
+fn promote(api: &str, manifest: &Path, cache: &Path, o: &RunOptions, id: &str, state: &str, issue: Option<u64>) -> Result<(), String> {
+    if !safe_name(id) {
+        return Err(format!("{id:?} isn't a submission id"));
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).user_agent(concat!("trunk-pro/", env!("CARGO_PKG_VERSION"))).build().into();
+    let url = format!("{api}/submissions/{id}");
+    let mut r = agent.get(&url).call().map_err(|e| format!("{url}: {e}"))?;
+    let code = r.status();
+    let text = r.body_mut().read_to_string().map_err(|e| format!("{url}: {e}"))?;
+    if !code.is_success() {
+        return Err(format!("{url}: {code}"));
+    }
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{url}: {e}"))?;
+    if v["state"] != "ready" {
+        return Err(format!("Submission {id} is {}: only one that passed its checks can be promoted", v["state"]));
+    }
+    let files: Vec<FileRef> = serde_json::from_value(v["files"].clone()).map_err(|e| format!("{url}: {e}"))?;
+    if let Some(f) = files.iter().find(|f| !safe_name(&f.name) || !safe_hash(&f.sha256)) {
+        return Err(format!("{url}: a bad file entry: {:?}", f.name));
+    }
+    let entry_id = format!("s-{id}");
+    let staged = Entry { id: entry_id.clone(), files, ..Default::default() };
+    let folder = lay_out(o.base, cache, &staged)?;
+    add(manifest, cache, &folder, &entry_id, v["tier"].as_str().unwrap_or("wideband"), v["protocol"].as_str().unwrap_or("unknown"))?;
+    let mut m = read_manifest(manifest)?;
+    let e = m.captures.iter_mut().find(|e| e.id == entry_id).ok_or("It isn't in the manifest")?;
+    e.state = state.to_string();
+    e.issue = issue;
+    let entry = e.clone();
+    fs::write(manifest, serde_json::to_string_pretty(&m).map_err(|e| e.to_string())? + "\n").map_err(|e| format!("{}: {e}", manifest.display()))?;
+    let out = std::env::temp_dir().join(format!("trp-promote-{}", std::process::id()));
+    fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let failed = run_all(o, cache, &[&entry], &out)?;
+    let _ = fs::remove_dir_all(&out);
+    if failed > 0 {
+        return Err(format!("Submission {id} couldn't be replayed"));
+    }
+    println!("{entry_id}: promoted, {state}");
+    Ok(())
+}
+
 struct RunOptions<'a> {
     base: &'a str,
     expected: PathBuf,
@@ -598,7 +641,7 @@ fn run_all(o: &RunOptions, cache: &Path, entries: &[&Entry], out: &Path) -> Resu
 }
 
 pub fn run(a: &Args) {
-    let what = a.positional.get(1).map(String::as_str).unwrap_or_else(|| die("tool corpus add|fetch|run|release … (trunk-pro --help)"));
+    let what = a.positional.get(1).map(String::as_str).unwrap_or_else(|| die("tool corpus add|fetch|run|promote|release … (trunk-pro --help)"));
     let manifest = PathBuf::from(a.get("manifest").unwrap_or(MANIFEST));
     let cache = PathBuf::from(a.get("cache").map(str::to_string).or_else(|| std::env::var("TRP_CORPUS_CACHE").ok()).unwrap_or_else(|| CACHE.into()));
     let base = a.get("base").unwrap_or(BASE);
@@ -627,6 +670,17 @@ pub fn run(a: &Args) {
             if failed > 0 {
                 die(&format!("{failed} of {} captures failed or regressed", entries.len()));
             }
+        }
+        "promote" => {
+            let id = a.positional.get(2).unwrap_or_else(|| die("tool corpus promote <submission> [--state active|known-failing] [--issue N]"));
+            let state = a.get("state").unwrap_or("active");
+            if !matches!(state, "active" | "known-failing") {
+                die("--state is active or known-failing");
+            }
+            let api = a.get("api").map(str::to_string).or_else(|| std::env::var("TRP_CORPUS_API").ok()).unwrap_or_else(|| API.into());
+            let o = RunOptions { base, expected, against: None, bless: Some(env!("CARGO_PKG_VERSION")) };
+            let issue = a.get("issue").and_then(|i| i.parse().ok());
+            ok(promote(&api, &manifest, &cache, &o, id, state, issue));
         }
         "release" => {
             let version = a.positional.get(2).unwrap_or_else(|| die("tool corpus release <version>"));

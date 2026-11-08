@@ -506,6 +506,7 @@ function take(m: FromRecorder): void {
     case "callsResult":
     case "iqCaptures":
     case "iqRuleChecked":
+    case "iqCaptureReview":
     case "dataSummary":
     case "dataDeleted":
     case "dataCompacted":
@@ -644,6 +645,23 @@ export function iqCaptures(): Promise<IqAnswer> {
 /** Record every radio for `seconds`, while the recording is working well. */
 export function iqCaptureStart(seconds: number, note: string): Promise<IqAnswer> {
   return ask<IqCaptures>({ type: "iqCaptureStart", id: nextId++, seconds, note });
+}
+
+export type IqCaptureReview = Extract<FromRecorder, { type: "iqCaptureReview" }>;
+
+/** What a capture would publish. */
+export function iqCaptureReview(name: string): Promise<IqCaptureReview | { type: "error"; message: string }> {
+  return ask<IqCaptureReview>({ type: "iqCaptureReview", id: nextId++, name }, 60_000);
+}
+
+/** Send a capture its owner has reviewed to the public corpus. */
+export function iqCaptureSend(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureSend", id: nextId++, name });
+}
+
+/** Take a sent capture back from the corpus. */
+export function iqCaptureWithdraw(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureWithdraw", id: nextId++, name });
 }
 
 /** Why a capture rule can't run, if so. */

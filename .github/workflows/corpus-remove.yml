@@ -1,0 +1,25 @@
+# Take a contributed recording down from the public corpus. GitHub only lets people with
+# write access to this repo run a workflow_dispatch.
+name: corpus-remove
+
+on:
+  workflow_dispatch:
+    inputs:
+      submission:
+        description: The submission's ID
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  remove:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete it
+        env:
+          SUBMISSION: ${{ inputs.submission }}
+          TOKEN: ${{ secrets.CORPUS_ADMIN_TOKEN }}
+        run: |
+          case "$SUBMISSION" in *[!0-9a-f]*|"") echo "Not a submission ID"; exit 1;; esac
+          curl --fail-with-body -X DELETE -H "Authorization: Bearer $TOKEN" "https://trunkrecorder.pro/corpus/api/v1/submissions/$SUBMISSION"

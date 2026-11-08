@@ -482,6 +482,7 @@ process's instructions gives that path's cost; `--passes N` goes over the captur
 trunk-pro tool corpus add <capture folder> --id ID --protocol P [--tier wideband]
 trunk-pro tool corpus fetch [--only a,b] [--tier t]
 trunk-pro tool corpus run --out dir [--only a,b] [--tier t] [--against next|version] [--bless next|version]
+trunk-pro tool corpus promote <submission> [--state active|known-failing] [--issue N]
 trunk-pro tool corpus release <version>
 ```
 
@@ -500,6 +501,16 @@ output of the next release or of a version. `release` makes the unreleased expec
 | `--only a,b` | all | Just these capture ids |
 | `--tier t` | all | Just this tier (`wideband`, `control`, `voice`) |
 | `--against v` | `next`, else the newest at or below this build | The expected output to compare with |
+
+### tool submission
+
+```
+trunk-pro tool submission <folder> --out dir
+```
+
+Checks that a capture is what it says it is: its hash, size, clipping and lost samples, and whether anything decodes. It
+writes `checks.json` and a `waterfall-N.bin` for each radio to `dir`, as counts and levels, and fails if the capture
+doesn't check out.
 
 ### tool channel
 

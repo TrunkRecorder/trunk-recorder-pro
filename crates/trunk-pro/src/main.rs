@@ -103,6 +103,7 @@ mod data;
 mod diagnostics;
 mod iq_capture;
 mod iq_rules;
+mod iq_send;
 mod directory;
 mod dmrtool;
 mod interfaces;
@@ -127,7 +128,9 @@ mod spotlight;
 mod db;
 mod statstore;
 mod store;
+mod submission;
 mod tape_file;
+mod waterfall;
 mod toolkit;
 #[cfg(test)]
 mod protocol_tests;
@@ -1025,6 +1028,7 @@ fn serve(a: &Args) {
         iq: Default::default(),
     });
     monitor::start(ctx.clone());
+    iq_send::resume(&ctx, &iq_capture::root(&ctx.config.lock().unwrap()));
     // What each call kept once its plugins are done, for the history list.
     let weak = Arc::downgrade(&ctx);
     ctx.plugins.archive.on_settle(Box::new(move |rel, audio, json| {

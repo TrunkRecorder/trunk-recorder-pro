@@ -1,0 +1,37 @@
+# Replays the corpus (corpus/README.md) against what's expected of this version. The
+# recordings are public, so pull requests from forks run this like anyone. It stays
+# off until the recordings are published: set the repository variable CORPUS_READY.
+name: corpus
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  pull_request:
+    paths: ["crates/trunk-core/**", "crates/trunk-app/**", "corpus/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    if: vars.CORPUS_READY == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { key: corpus }
+      # (Replay doesn't serve the interface, but the binary embeds its folder.)
+      - run: mkdir -p web/dist && touch web/dist/index.html
+      - run: cargo build --release --locked -p trunk-pro
+      - uses: actions/cache@v4
+        with:
+          path: captures/.corpus/blobs
+          key: corpus-${{ hashFiles('corpus/corpus.json') }}
+          restore-keys: corpus-
+      # (Pull requests run the small captures; every night, all of them.)
+      - if: github.event_name == 'pull_request'
+        run: target/release/trunk-pro tool corpus run --out /tmp/corpus --tier voice && target/release/trunk-pro tool corpus run --out /tmp/corpus-control --tier control
+      - if: github.event_name != 'pull_request'
+        run: target/release/trunk-pro tool corpus run --out /tmp/corpus
