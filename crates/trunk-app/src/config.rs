@@ -119,7 +119,9 @@ pub enum SourceKind {
     /// libbladeRF 2.x (installed separately; loaded at run time). `serial`
     /// "" = the first. `bandwidth_hz`: the analog filter, 0 = the sample
     /// rate. `agc`: the board's AGC instead of `gain_db`. `bias_tee`: power
-    /// an LNA over the RX coax (bladeRF 2.0 only).
+    /// an LNA over the RX coax (bladeRF 2.0 only). `fpga_channelizer`: the
+    /// path of a filter bank image to load into the FPGA's RAM (needs 8 MS/s;
+    /// "" = none: the wideband stream, as ever).
     #[serde(rename_all = "camelCase")]
     Bladerf {
         #[serde(default)]
@@ -132,6 +134,8 @@ pub enum SourceKind {
         agc: bool,
         #[serde(default)]
         bias_tee: bool,
+        #[serde(default)]
+        fpga_channelizer: String,
     },
     /// A HackRF One, natively (nothing to install). `serial` "" = the first.
     /// Gain by stage: the IF LNA 0–40 dB (8 dB steps), the baseband VGA 0–62
@@ -389,6 +393,16 @@ impl Source {
     }
 
     /// For the interface: "RTL-SDR SN 200", "USRP serial=…", "file x.cu8".
+    /// Whether it sends filter bank channels, not wideband samples: a bladeRF with its FPGA
+    /// channelizer image, or a packet file (`tool bank-pack`, `tool bank-capture`) replayed.
+    pub fn filter_bank(&self) -> bool {
+        match &self.kind {
+            SourceKind::Bladerf { fpga_channelizer, .. } => !fpga_channelizer.trim().is_empty(),
+            SourceKind::File { path, .. } => path.ends_with(".pkt"),
+            _ => false,
+        }
+    }
+
     pub fn label(&self) -> String {
         match &self.kind {
             SourceKind::Rtlsdr { serial, .. } => format!("RTL-SDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
@@ -3274,7 +3288,7 @@ impl Config {
         }
         EngineConfig {
             systems,
-            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz, auto_tune: s.auto_tune, guard_hz: s.guard_hz }).collect(),
+            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz, auto_tune: s.auto_tune, guard_hz: s.guard_hz, filter_bank: s.filter_bank() }).collect(),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
             epoch_ms_at_zero: epoch_ms,
@@ -4181,6 +4195,18 @@ mod tests {
         assert_eq!(back["multisite"]["window"], 3);
         assert_eq!(serde_json::from_value::<Config>(back.clone()).unwrap(), c);
         assert!(back["conventional"][0].get("channelFileStatus").is_none(), "an empty status isn't written");
+    }
+
+    /// Only a bladeRF given an image runs from its FPGA filter bank.
+    #[test]
+    fn a_bladerf_image_selects_the_filter_bank() {
+        let bank = |extra: &str| {
+            let c = Config::from_json(&format!(r#"{{ "sources": [{{ "type": "bladerf", "centerHz": 772131250, "rateHz": 8000000{extra} }}] }}"#)).unwrap();
+            c.engine_config(0.0, &NameLists::default()).sources[0].filter_bank
+        };
+        assert!(bank(r#", "fpgaChannelizer": "/x/p25chan.rbf""#));
+        assert!(!bank(""));
+        assert!(!bank(r#", "fpgaChannelizer": " ""#));
     }
 
     /// A source is stored flat — its kind's keys beside the ones every

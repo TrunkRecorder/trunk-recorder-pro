@@ -606,7 +606,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
         queues.push(rx);
         let (stop, center) = (stop.clone(), *center);
-        let spawned = spawn_source(&src, i, center, tx, stop, Some(controls[i].clone()), &format!("source-{i}"));
+        let spawned = spawn_source(&src, i, center, tx, stop, Some(controls[i].clone()), &format!("source-{i}"), true);
         match spawned {
             Ok(t) => threads.push(t),
             Err(e) => return Err(undo(threads, e)),
@@ -616,7 +616,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     // The engine's commands: open before its thread is, so none sent meanwhile is lost.
     let ctl = mpsc::channel::<EngineCmd>();
     *ctx.engine.lock().unwrap() = Some(ctl.0.clone());
-    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, stop2, (epoch_ms, epoch_at), ctl));
+    let radio_controls = controls.clone();
+    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, radio_controls, stop2, (epoch_ms, epoch_at), ctl));
     match spawned {
         Ok(t) => threads.push(t),
         Err(e) => {
@@ -823,7 +824,7 @@ pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, names: &NameL
 /// `center` until `stop`; `ctl`: retune and gain requests (the survey). A
 /// capture file plays at its own centre. Recording and the survey both
 /// start their sources this way.
-pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<sdr::Control>>, name: &str) -> std::io::Result<JoinHandle<()>> {
+pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<sdr::Control>>, name: &str, filter_bank: bool) -> std::io::Result<JoinHandle<()>> {
     let src = src.clone();
     std::thread::Builder::new().name(name.to_string()).spawn(move || {
         let Source { kind, rate_hz, ppm, .. } = src;
@@ -843,8 +844,10 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
             SourceKind::Hydrasdr { serial, gains, bias_tee, packing, rf_port } => {
                 sdr::run_with(i, airspy::AirspyConfig { lib: airspy::Lib::Hydrasdr, serial, center_hz: center, rate_hz, gain: airspy_gain(gains), bias_tee, packing, rf_port, ppm }, tx, stop, ctl)
             }
-            SourceKind::Bladerf { serial, bandwidth_hz, gain_db, agc, bias_tee } => {
-                sdr::run_with(i, bladerf::BladerfConfig { serial, center_hz: center, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm }, tx, stop, ctl)
+            SourceKind::Bladerf { serial, bandwidth_hz, gain_db, agc, bias_tee, fpga_channelizer } => {
+                // (A survey or profile asks for the wideband stream, which the image still has.)
+                let fpga_image = (filter_bank && !fpga_channelizer.trim().is_empty()).then_some(fpga_channelizer);
+                sdr::run_with(i, bladerf::BladerfConfig { serial, center_hz: center, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm, fpga_image }, tx, stop, ctl)
             }
             SourceKind::Soapy { args, agc, gain_db, gains, antenna, settings } => {
                 let gains = gains.into_iter().collect();
@@ -962,13 +965,27 @@ fn iq_live(session: &Session) -> crate::iq_capture::Live {
     crate::iq_capture::Live { status, bandplans, sources: session.source_counts() }
 }
 
-fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<EngineCmd>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air, tap: Arc<crate::iq_capture::Tap>) {
+fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<EngineCmd>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air, tap: Arc<crate::iq_capture::Tap>, radio: Option<Arc<Control>>) {
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     // An instant on the same clock (when a driver handed samples over).
     let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
+    // A filter bank's bins: told to its driver when the engine wants different ones.
+    let mut sent_bins: Vec<u16> = Vec::new();
+    let mut update_bins = |feeder: &Feeder| {
+        let (want, evicted) = feeder.bank_bins();
+        if !evicted.is_empty() {
+            log::warn!("source {}: the filter bank is full (at most {} bins): dropped bins {evicted:?}", feeder.source(), trunk_core::dsp::bank_wire::MAX_BINS);
+        }
+        if want != sent_bins {
+            if let Some(c) = &radio {
+                *c.bins.lock().unwrap() = Some(want.clone());
+            }
+            sent_bins = want;
+        }
+    };
     // (An Airspy's real samples become IQ here, on this thread.)
     let mut rx = Inbox::new(rx);
-    let take = |m: SourceMsg| match m {
+    let mut take = |m: SourceMsg| match m {
         SourceMsg::Samples { source, block, dropped, at } => {
             debug_assert_eq!(source, feeder.source());
             air.keep_up(&stop);
@@ -977,6 +994,10 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
                 Block::U8(b) => feeder.push(b, dropped, at_ms(at)),
                 Block::Iq(b) => feeder.push_iq(b, dropped, at_ms(at)),
                 Block::Real16(_) => unreachable!("the inbox makes them I/Q"),
+                Block::Bank { bins, iq } => {
+                    feeder.push_bank(bins, iq, dropped, at_ms(at));
+                    update_bins(&feeder);
+                }
             }
             air.fed(block.len() as u64 + dropped);
         }
@@ -1058,7 +1079,7 @@ fn wall_less(recording_ms: f64) -> f64 {
 /// instant, for the session's clock. `ctl`: everything for this thread — the
 /// sources' errors and ends (by way of their decoding threads), and the
 /// browsers' and the server's changes ([`Ctx::engine`] holds its sender).
-fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
+fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, radio_controls: Vec<Arc<Control>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
     ctx.set_phase(Phase::Running, None, false);
     // Calls are stamped by this clock: the clock's health watches it against the wall clock.
     ctx.clock.recording(Some(epoch));
@@ -1074,6 +1095,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         .enumerate()
         .map(|(i, q)| {
             let (f, ctl, stop) = (session.feeder(i), ctl_tx.clone(), stop.clone());
+            let radio = radio_controls.get(i).cloned();
             let src = &cfg.sources[i];
             let paced = !matches!(src.kind, SourceKind::File { realtime: false, .. });
             if paced {
@@ -1081,7 +1103,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
             }
             let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz, samples: Default::default(), paced };
             let tap = taps[i].clone();
-            std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air, tap)).expect("thread")
+            std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air, tap, radio)).expect("thread")
         })
         .collect();
     drop(ctl_tx);

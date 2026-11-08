@@ -1,0 +1,172 @@
+--- a/bladerf-p25chan.vhd
++++ b/bladerf-p25chan.vhd
+@@ -181,20 +181,83 @@
+     signal wbm_wb_stb_o           : std_logic;
+     signal wbm_wb_ack_i           : std_logic;
+     signal wbm_wb_cyc_o           : std_logic;
++
++    signal fb_enable              : std_logic;
++    signal fb_tbl_count           : unsigned(6 downto 0);
++    signal fb_commit_gen          : unsigned(7 downto 0);
++    signal fb_active_gen          : unsigned(7 downto 0);
++    signal fb_dropped             : unsigned(31 downto 0);
++    signal fb_gain_shift          : unsigned(2 downto 0);
++    signal fb_tbl_we              : std_logic;
++    signal fb_tbl_addr            : unsigned(5 downto 0);
++    signal fb_tbl_bin             : unsigned(9 downto 0);
++    signal fb_saturated           : unsigned(31 downto 0);
++    signal fb_rx_div              : unsigned(7 downto 0) := (others => '0');
+ begin
+ 
+-    U_rx_pkt_gen : entity work.rx_packet_generator
+-        port map(
+-            rx_clock               => rx_clock,
+-            rx_reset               => rx_reset,
++    -- The filter bank's registers, on the Nios clock.
++    wbm_wb_clk_i <= sys_clock;
++    wbm_wb_rst_i <= sys_reset;
+ 
+-            rx_packet_ready        => rx_packet_ready,
++    U_fb_regs : entity work.fb_regs
++        port map (
++            clk        => sys_clock,
++            rst        => sys_reset,
++            wb_cyc     => wbm_wb_cyc_o,
++            wb_we      => wbm_wb_we_o,
++            wb_adr     => wbm_wb_adr_o,
++            wb_wdata   => wbm_wb_dat_o,
++            wb_rdata   => wbm_wb_dat_i,
++            wb_ack     => wbm_wb_ack_i,
++            enable     => fb_enable,
++            gain_shift => fb_gain_shift,
++            tbl_we     => fb_tbl_we,
++            tbl_addr   => fb_tbl_addr,
++            tbl_bin    => fb_tbl_bin,
++            tbl_count  => fb_tbl_count,
++            commit_gen => fb_commit_gen,
++            active_gen => fb_active_gen,
++            saturated  => fb_saturated,
++            dropped    => fb_dropped,
++            rx_tick    => fb_rx_div(7)
++        );
+ 
+-            rx_enable              => rx_enable,
+-            rx_packet_enable       => packet_en_rx,
++    -- The filter bank.
++    U_fb_radio : entity work.fb_radio
++        port map (
++            clk          => sys_clock,
++            rst          => sys_reset,
++            enable       => fb_enable,
++            gain_shift   => fb_gain_shift,
++            tbl_we       => fb_tbl_we,
++            tbl_addr     => fb_tbl_addr,
++            tbl_bin      => fb_tbl_bin,
++            tbl_count    => fb_tbl_count,
++            commit_gen   => fb_commit_gen,
++            active_gen   => fb_active_gen,
++            saturated    => fb_saturated,
++            dropped      => fb_dropped,
++            rx_clk       => rx_clock,
++            run          => rx_enable and packet_en_rx,
++            sample_valid => adc_streams(0).data_v,
++            sample_i     => adc_streams(0).data_i(11 downto 0),
++            sample_q     => adc_streams(0).data_q(11 downto 0),
++            pkt_ready    => rx_packet_ready,
++            out_valid    => rx_packet_control.data_valid,
++            out_sop      => rx_packet_control.pkt_sop,
++            out_eop      => rx_packet_control.pkt_eop,
++            out_data     => rx_packet_control.data
++        );
+ 
+-            rx_packet_control      => rx_packet_control
+-        ) ;
++    -- rx_clock / 256, for the clock measurement register.
++    process (rx_clock)
++    begin
++        if rising_edge(rx_clock) then
++            fb_rx_div <= fb_rx_div + 1;
++        end if;
++    end process;
++    rx_packet_control.pkt_core_id <= x"25";
++    rx_packet_control.pkt_flags   <= x"00";
+ 
+ 
+     -- ========================================================================
+@@ -545,66 +608,16 @@
+ 
+     tx_packet_ready <= '1';
+ 
+-    -- TX Submodule
+-    U_tx : entity work.tx
+-        generic map (
+-            NUM_STREAMS          => dac_controls'length
+-        )
+-        port map (
+-            tx_reset             => tx_reset,
+-            tx_clock             => tx_clock,
+-            tx_enable            => tx_enable,
+-
+-            meta_en              => meta_en_tx,
+-            timestamp_reset      => tx_ts_reset,
+-            usb_speed            => usb_speed_tx,
+-            tx_underflow_led     => tx_underflow_led,
+-            tx_timestamp         => tx_timestamp,
+-
+-            -- Triggering
+-            trigger_arm          => tx_trigger_ctl.arm,
+-            trigger_fire         => tx_trigger_ctl.fire,
+-            trigger_master       => tx_trigger_ctl.master,
+-            trigger_line         => tx_trigger_line,
+-
+-            -- Eightbit mode
+-            eight_bit_mode_en    => eightbit_en_tx,
+-            highly_packed_mode_en => highly_packed_en_txrx,
+-
+-            -- Packet FIFO
+-            packet_en            => packet_en_tx,
+-            packet_empty         => tx_packet_empty,
+-            packet_control       => tx_packet_control,
+-            packet_ready         => tx_packet_ready,
+-
+-            -- Samples from host via FX3
+-            sample_fifo_wclock   => fx3_pclk_pll,
+-            sample_fifo_wreq     => tx_sample_fifo.wreq,
+-            sample_fifo_wdata    => tx_sample_fifo.wdata,
+-            sample_fifo_wempty   => tx_sample_fifo.wempty,
+-            sample_fifo_wfull    => tx_sample_fifo.wfull,
+-            sample_fifo_wused    => tx_sample_fifo.wused,
+-
+-            -- Metadata from host via FX3
+-            meta_fifo_wclock     => fx3_pclk_pll,
+-            meta_fifo_wreq       => tx_meta_fifo.wreq,
+-            meta_fifo_wdata      => tx_meta_fifo.wdata,
+-            meta_fifo_wempty     => tx_meta_fifo.wempty,
+-            meta_fifo_wfull      => tx_meta_fifo.wfull,
+-            meta_fifo_wused      => tx_meta_fifo.wused,
+-
+-            -- Digital Loopback Interface
+-            loopback_enabled     => tx_loopback_enabled,
+-            loopback_fifo_wclock => tx_loopback_fifo.wclock,
+-            loopback_fifo_wdata  => tx_loopback_fifo.wdata,
+-            loopback_fifo_wreq   => tx_loopback_fifo.wreq,
+-            loopback_fifo_wfull  => tx_loopback_fifo.wfull,
+-            loopback_fifo_wused  => tx_loopback_fifo.wused,
+-
+-            -- RFFE Interface
+-            dac_controls         => dac_controls,
+-            dac_streams          => dac_streams
+-        );
++    -- No TX in this image: its FIFOs are RAM the filter bank needs on the xA4.
++    -- To the FX3, the TX FIFOs are always full.
++    tx_sample_fifo.wfull  <= '1';
++    tx_sample_fifo.wempty <= '0';
++    tx_sample_fifo.wused  <= (others => '1');
++    tx_meta_fifo.wfull    <= '1';
++    tx_meta_fifo.wempty   <= '0';
++    tx_meta_fifo.wused    <= (others => '1');
++    tx_ts_reset           <= '1';
++    tx_trigger_line       <= 'Z';
+ 
+     dac_assignment_proc : process( all )
+     begin

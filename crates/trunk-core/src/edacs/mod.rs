@@ -249,7 +249,7 @@ pub(crate) mod tests {
         noise(&mut iq, 0.02, seed);
         let ecfg = EngineConfig {
             systems: vec![SystemConfig::trunked("nycomco", vec![SiteConfig { control_channels: vec![cc_hz], protocol: crate::trunk::Protocol::Edacs(cfg), ..Default::default() }])],
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }],
             ..Default::default()
         };
         let e = Engine::new(ecfg).unwrap();
