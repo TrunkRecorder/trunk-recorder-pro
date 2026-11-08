@@ -65,6 +65,8 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
         match o {
             // (No plugins in the browser; none are asked for.)
             Output::Plugin(_) | Output::Log(_) => continue,
+            // (Capture rules are the desktop app's.)
+            Output::Fact { .. } => {}
             Output::Rollup(r) => {
                 history.insert(&r);
                 continue;

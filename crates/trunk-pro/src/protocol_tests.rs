@@ -459,6 +459,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         spool: Mutex::new(None),
         clock: Default::default(),
         unlocked: Default::default(),
+        iq: Default::default(),
     });
     // The stats thread makes its folder as it starts: wait for that, so a
     // test that removes `dir` when done does not see it made again after.

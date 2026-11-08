@@ -362,6 +362,86 @@ encrypted audio is still removed.
 
 A call that isn't kept logs `Call not saved - no audio, or shorter than the minimum`.
 
+## Capture a known-good sample
+
+When everything is decoding well, the card at the bottom of the **RF** page records what every
+radio is receiving. Replayed later, it shows whether a change to the decoders still works on your
+system. Choose a length (30, 60 or 120 seconds), add a note if you like, and press **Capture
+known-good sample**. Recording carries on as usual. Nothing is sent anywhere.
+
+Each capture is a folder in `iq-captures/` under the capture directory, with one recording per radio
+in [SigMF](https://sigmf.org/). It takes as much disk as the radios' samples: 288 MB a minute for an
+RTL-SDR at 2.4 MS/s, and 2.4 GB a minute for a radio at 10 MS/s. A capture won't start unless it would
+leave 1 GB free.
+
+The capture's metadata has what it takes to decode it: the systems' frequencies and band plans, and
+how the radios were set ([the fields](../sigmf/trp.sigmf-ext.md)). It leaves out names, unit IDs,
+encryption keys, plugin settings, serial numbers and paths. Radio traffic in the samples themselves
+can still be decoded by anyone who has the files.
+
+Beside the recordings, `diagnostics.json` describes the computer and how the radios were doing: operating
+system, CPU, memory, each radio's settings and dropped samples, the shape of the config (how many systems and
+channels), and recent drops, clipping and clock problems. It has no names, frequencies, paths or addresses.
+
+To play one back, with the systems it was made with:
+
+```bash
+trunk-pro replay ~/TrunkRecorderPro/iq-captures/20261108-140311 --out replayed
+```
+
+A capture ends early, and isn't kept, if recording stops, the radio is retuned, or the disk can't keep
+up. The card says which. Samples the radio lost are kept as gaps and shown in the list, and a capture
+with any isn't a good reference.
+
+## Sending a capture to the public corpus
+
+**Review and send…** on a capture shows what would be published: its waterfall,
+metadata and diagnostics. Nothing leaves your computer until you agree. The recording and its diagnostics then become
+public for anyone to download and decode, including all the radio traffic it holds. **Withdraw…** removes it, but
+copies others made can't be recalled. A send picks up where it stopped if the app restarts.
+
+## Capture rules
+
+**Capture automatically**, on the same card, keeps a recording when something goes wrong, within a daily limit:
+20 captures and 5 GB by default. Changes apply the next time recording starts, and nothing is sent anywhere.
+
+The presets cover the common problems. You can add your own as JSON, under `diagnostics.rules` in the config:
+
+```json
+{
+  "id": "weak-calls",
+  "enabled": true,
+  "on": "call.end",
+  "systems": ["county"],
+  "if": "call.call_length > 3.0 && !call.encrypted && call.clean_voice_pct < 70.0",
+  "repeat": { "count": 3, "within": "5m", "by": "call.freq" },
+  "capture": [{ "tier": "voice" }, { "tier": "control" }],
+  "limit": { "cooldown": "30m" }
+}
+```
+
+| Field | What it does |
+|---|---|
+| `on` | The event it's checked on (below) |
+| `systems` | Only these systems (left out: any) |
+| `if` | A condition in [CEL](https://github.com/google/cel-spec) on what's known of the event (left out: always) |
+| `repeat` | Only after `count` matches `within` a window, counted apart for each value of `by` |
+| `every` | A `schedule` rule: how often (`24h`) |
+| `capture` | What to keep: `tier` is `wideband` (every radio), `control` (the last minute of a control channel) or `voice` (the call's channel). A wideband capture can have `before` and `after` (`5s`); `before` needs memory while recording runs |
+| `limit` | `cooldown`: how long before it can fire again |
+
+| `on` | What a condition can name |
+|---|---|
+| `call.end`, `call.not_saved` | `call.system`, `site`, `talkgroup`, `freq`, `call_length`, `clean_voice_pct`, `snr`, `signal`, `noise`, `freq_error`, `encrypted`, `decrypted`, `emergency`, `analog`, `tdma_slot`, `units` |
+| `control.lost`, `control.regained` | `control.system`, `site`, `freq_hz` |
+| `source.clipping`, `source.drops` | `source.index`, `pct`, `per_s` |
+| `note.warning` | `note.system`, `site`, `text` |
+| `tick` (every 10 s, each site) | `site.system`, `name`, `good`, `bad`, `failed_pct`, `messages` |
+| `schedule` | nothing |
+
+A rule that can't run is refused when it's saved. `budget` beside `rules` sets `capturesPerDay`, `mbPerDay` and
+`ramMb`, the memory held for looking back.
+
 ## Vocoder and frame capture
 
 - **P25 voice decoder** (`vocoder`): which IMBE vocoder turns P25 Phase 1 voice into audio.

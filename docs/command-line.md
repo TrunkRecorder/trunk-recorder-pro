@@ -178,7 +178,7 @@ trunk-pro replay --source cap1.cu8,center,rate[,format] [--source …] --cc Hz[,
 
 | Option | Default | What it does |
 |---|---|---|
-| `<capture>` | | One capture file (the first argument that isn't an option) |
+| `<capture>` | | One capture file (the first argument that isn't an option), or a SigMF capture: its folder, `.sigmf-collection` or `.sigmf-meta`. A SigMF capture says its centre, rate and format; [one made by the recorder](guides/recordings.md#capture-a-known-good-sample) also says its systems, so it needs no other options. |
 | `--center Hz` | | Its centre frequency |
 | `--rate Hz` | 2400000 | Its sample rate |
 | `--source file,center,rate[,format]` | | A capture with its own centre and rate; repeat for several radios. They're fed in step, as they would be live. |
@@ -259,6 +259,7 @@ called `conv`.
 | `--max-call s` | 0 (no limit) | Split calls longer than this |
 | `--transmissions` | off | Conversation mode off: each transmission is a call of its own (`conversationMode`) |
 | `--min-transmission s` | 0 | Leave out transmissions shorter than this |
+| `--tapes dir` | | Also write each channel as a SigMF tape in `dir`: its IQ and what its decoder needs, for [`tool channel`](#tool-channel) |
 | `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
 | `--messages` | off | Print every control channel message |
 | `--quiet` | off | Don't print control channels, calls and files as they happen |
@@ -348,6 +349,8 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool nxdnsynth` | Make a synthetic NXDN capture |
 | `tool p25synth` | Make a synthetic P25 Phase 1 capture, encrypted with a key of yours or clear |
 | `tool perf` | One radio's read path over a capture, for counting its CPU cost |
+| `tool corpus` | The recordings regression tests run on: add, download and replay them |
+| `tool channel` | Run one channel tape through its decoder alone |
 | `tool snr` | Weak-signal curves: decode a strong channel again with noise added |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
 | `tool sdr` | A saved `.sdr` call's metadata, or its frames |
@@ -472,6 +475,51 @@ driver hands over, through the driver's own per-block code (for an RTL-SDR or Ha
 a stuck stream) and out of the queue its decoding thread reads. Nothing else runs, so counting the
 process's instructions gives that path's cost; `--passes N` goes over the capture N times. It's what
 `perf/gate.py` measures; see [Development](development.md#cpu-cost).
+
+### tool corpus
+
+```
+trunk-pro tool corpus add <capture folder> --id ID --protocol P [--tier wideband]
+trunk-pro tool corpus fetch [--only a,b] [--tier t]
+trunk-pro tool corpus run --out dir [--only a,b] [--tier t] [--against next|version] [--bless next|version]
+trunk-pro tool corpus promote <submission> [--state active|known-failing] [--issue N]
+trunk-pro tool corpus release <version>
+```
+
+The recordings regression tests run on, listed in `corpus/corpus.json` by SHA-256. `add` lists a SigMF
+capture and puts its files in the cache. `fetch` downloads what the cache lacks, resuming an interrupted
+download and keeping a file only if it matches its hash. `run` replays each capture into `<out>/<id>`, with
+what it printed in `<out>/<id>.stdout` and `.stderr`, compares each with its expected output, writes
+`<out>.report.json`, and fails if any replay failed or regressed. `--bless` keeps what it got as the expected
+output of the next release or of a version. `release` makes the unreleased expected output that version's.
+
+| Option | Default | What it does |
+|---|---|---|
+| `--manifest file` | `corpus/corpus.json` | The list of captures |
+| `--cache dir` | `TRP_CORPUS_CACHE`, or `captures/.corpus` | Where the files are kept |
+| `--base url` | `https://iq.trunkrecorder.pro/blobs/` | Where files are downloaded from, by hash |
+| `--only a,b` | all | Just these capture ids |
+| `--tier t` | all | Just this tier (`wideband`, `control`, `voice`) |
+| `--against v` | `next`, else the newest at or below this build | The expected output to compare with |
+
+### tool submission
+
+```
+trunk-pro tool submission <folder> --out dir
+```
+
+Checks that a capture is what it says it is: its hash, size, clipping and lost samples, and whether anything decodes. It
+writes `checks.json` and a `waterfall-N.bin` for each radio to `dir`, as counts and levels, and fails if the capture
+doesn't check out.
+
+### tool channel
+
+```
+trunk-pro tool channel <tape folder> [--against <other tape folder>]
+```
+
+Runs a channel tape (`replay --tapes`) through its decoder alone and prints counts and hashes of what it heard.
+`--against` says how close two tapes of the channel are, in dB: what a channelizer change did to it.
 
 ### tool snr
 

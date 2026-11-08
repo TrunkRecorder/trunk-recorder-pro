@@ -153,6 +153,39 @@ pub enum ToClient {
     /// Answers `dataSummary`: what the store keeps of each system it has,
     /// the config's and those gone from it (or why it can't say).
     DataSummary { id: u64, systems: Vec<DataSystem>, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
+    /// Answers `iqCaptures`, `iqCaptureStart` and `iqCaptureDelete`: the
+    /// captures on disk, newest first, in `root`; the one being made;
+    /// whether the radios are running; why the last request or capture failed.
+    IqCaptures {
+        id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active: Option<IqCaptureActive>,
+        captures: Vec<IqCapture>,
+        root: String,
+        recording: bool,
+        /// The rules shipped, each off until the config has it.
+        presets: Vec<crate::config::CaptureRule>,
+        /// There's a corpus service to send captures to.
+        can_send: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Answers `iqCaptureReview`: what capture `name` would publish.
+    IqCaptureReview {
+        id: u64,
+        name: String,
+        metadata: Value,
+        diagnostics: Value,
+        waterfalls: Vec<IqWaterfall>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Answers `iqRuleCheck`: why the rule can't run, if so.
+    IqRuleChecked {
+        id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Answers `deleteData`: how much went (or why not all of it did).
     DataDeleted { id: u64, deleted: DataCounts, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
     /// Answers `compactData`: the store's size, bytes, before and after (or why it couldn't).
@@ -225,6 +258,67 @@ pub struct DataCounts {
     pub heard_talkgroups: i64,
     /// The dashboard's series.
     pub history_series: i64,
+}
+
+/// A recording of what the radios received (`iqCaptures`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCapture {
+    /// Its folder's name.
+    pub name: String,
+    pub path: String,
+    /// `wideband`, `control` or `voice`.
+    pub tier: String,
+    /// `healthy` (made by hand) or `rule`.
+    pub purpose: String,
+    /// The rule that made it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub rule: String,
+    pub seconds: u32,
+    pub radios: u32,
+    pub bytes: u64,
+    pub note: String,
+    /// Samples the radios lost during it.
+    pub lost_samples: u64,
+    /// Control channel messages decoded and failed, and calls ended, while it was made.
+    pub messages_good: u64,
+    pub messages_bad: u64,
+    pub calls: u64,
+    /// How sending it to the corpus stands, if it has been.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send: Option<IqCaptureSend>,
+}
+
+/// How the sending of a capture to the corpus stands (`iqCaptures`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCaptureSend {
+    /// `sending`, `sent` or `failed`.
+    pub state: String,
+    pub receipt: String,
+    pub id: String,
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A radio's power by frequency over time, as levels 0–255, in hex (`iqCaptureReview`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqWaterfall {
+    pub width: u32,
+    pub height: u32,
+    pub levels: String,
+}
+
+/// A capture being made (`iqCaptures`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCaptureActive {
+    pub name: String,
+    pub seconds: u32,
+    pub elapsed_s: f64,
 }
 
 /// A system the store keeps data of (`dataSummary`).
@@ -441,6 +535,21 @@ pub enum Command {
     /// object it's on, as edited): answered with `pluginActionResult` `id`
     /// once the plugin says how it went.
     PluginAction { id: u64, plugin: String, action: String, #[serde(default)] value: Value },
+    /// The radios' captures on disk: answered with `iqCaptures` `id`.
+    IqCaptures { id: u64 },
+    /// Record every radio for `seconds` of a recording that's working
+    /// well, to files (nothing is sent anywhere): answered with `iqCaptures` `id`.
+    IqCaptureStart { id: u64, seconds: u32, #[serde(default)] note: String },
+    /// What capture `name` would publish: answered with `iqCaptureReview` `id`.
+    IqCaptureReview { id: u64, name: String },
+    /// Send capture `name`, reviewed, to the public corpus: answered with `iqCaptures` `id`.
+    IqCaptureSend { id: u64, name: String },
+    /// Withdraw capture `name` from the corpus: answered with `iqCaptures` `id`.
+    IqCaptureWithdraw { id: u64, name: String },
+    /// Whether capture rule `rule` could run: answered with `iqRuleChecked` `id`.
+    IqRuleCheck { id: u64, rule: Value },
+    /// Delete capture `name`: answered with `iqCaptures` `id`.
+    IqCaptureDelete { id: u64, name: String },
     /// What the store keeps of each system: answered with `dataSummary` `id`.
     DataSummary { id: u64 },
     /// Delete `kinds` of system `system`'s data (its id; none: every

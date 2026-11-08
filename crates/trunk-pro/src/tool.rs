@@ -45,9 +45,12 @@ use crate::toolkit::{hex, AudioOut, Capture};
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
-    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|dmrsynth|nxdn|nxdnscan|nxdnsynth|p25synth|perf|snr|revoice|sdr|tones … (trunk-pro --help)"));
+    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|corpus|voice|frames|p2|smartnet|dmr|dmrscan|dmrsynth|nxdn|nxdnscan|nxdnsynth|p25synth|perf|snr|revoice|sdr|tones … (trunk-pro --help)"));
     match mode {
         "cc" | "voice" | "frames" => run_p25(a, mode),
+        "corpus" => crate::corpus::run(a),
+        "channel" => crate::tape_file::cli(a),
+        "submission" => crate::submission::run(a),
         "p2" => run_p2(a),
         "smartnet" => run_smartnet(a),
         "dmr" => crate::dmrtool::run(a),

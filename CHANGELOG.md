@@ -5,6 +5,20 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Capture a known-good sample.** While recording, a button on the RF page records what every
+  radio receives for 30 to 120 seconds, to SigMF files in `iq-captures/` under the capture directory,
+  with what's needed to decode them again and nothing private. Nothing is sent anywhere.
+  `trunk-pro replay <folder>` plays one back with the systems it was made with. See
+  [Recordings](docs/guides/recordings.md#capture-a-known-good-sample).
+- **Capture rules.** The RF page can record automatically when something goes wrong: a control channel lost or
+  failing, poor calls, a granted call with no audio, clipping, or one healthy sample a day, within a daily limit.
+  Rules are JSON with a condition in [CEL](https://github.com/google/cel-spec), and can look back at what was
+  received just before. See [Recordings](docs/guides/recordings.md#capture-rules).
+- **`trunk-pro tool channel`** runs one channel tape (`replay --tapes`) through its decoder alone, and **`tool submission`**
+  checks a contributed capture.
+- **`trunk-pro tool corpus`** adds, downloads and replays the recordings regression tests run on, listed by
+  hash in `corpus/corpus.json`.
+
 ## [0.3.2] — 2026-11-07
 
 - **HydraSDR RFOne sources** (#116, #127, thanks @auggiesoft). A new source type, `hydrasdr`

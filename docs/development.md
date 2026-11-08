@@ -35,7 +35,8 @@ Release packages: `packaging/package.sh <macos|linux-x86_64|linux-aarch64|window
 A release is a commit that bumps the version, and a tag on it. With
 everything for the release already pushed to `main`:
 
-1. **`Cargo.toml`**: `[workspace.package] version` (`0.2.0` → `0.2.1`).
+1. **`Cargo.toml`**: `[workspace.package] version` (`0.2.0` → `0.2.1`). If any corpus capture has a
+   `next.jsonl`, also run `trunk-pro tool corpus release <version>` ([corpus/README.md](../corpus/README.md)).
    `trunk-core`, `trunk-app`, `trunk-pro` and `trunk-web` take it from
    there; the plugin SDK (`trunk-recorder-plugin`) has its own version
    (below).

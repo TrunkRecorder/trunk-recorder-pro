@@ -6,7 +6,7 @@
 
 import { useState } from "react";
 import { autoTuneOn, configIndex, formatGain, formatMhz, sourceTitle, systemColor, usableHalfWidth } from "../config.ts";
-import { setView, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
+import { setView, useApp, useTopic, web, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
@@ -16,6 +16,7 @@ import { K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE, useHi
 import { adjacentCcMarks, ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
+import { IqCaptureCard } from "./IqCapture.tsx";
 
 /** A source's gain setting, as configured. */
 function gainText(c: Source | undefined): string {
@@ -467,6 +468,7 @@ export function RfPage() {
           <SourceWaterfall s={s} i={k} />
         </div>
       ))}
+      {!web && <IqCaptureCard />}
     </div>
   );
 }

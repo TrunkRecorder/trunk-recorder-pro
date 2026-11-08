@@ -17,6 +17,7 @@ import type {
   AudioChunk,
   CallEntry,
   CallView,
+  CaptureRule,
   Config,
   Conventional,
   Device,
@@ -503,6 +504,9 @@ function take(m: FromRecorder): void {
     case "statsResult":
     case "radioResult":
     case "callsResult":
+    case "iqCaptures":
+    case "iqRuleChecked":
+    case "iqCaptureReview":
     case "dataSummary":
     case "dataDeleted":
     case "dataCompacted":
@@ -628,6 +632,45 @@ export type CallsResult = Extract<FromRecorder, { type: "callsResult" }>;
 /** Recorded calls by system, talkgroup, radio and time, newest first: a page, and `before` for the next. */
 export function callsQuery(q: Omit<Extract<ToRecorder, { type: "callsQuery" }>, "type" | "id">): Promise<CallsResult> {
   return ask<CallsResult>({ type: "callsQuery", id: nextId++, ...q });
+}
+
+export type IqCaptures = Extract<FromRecorder, { type: "iqCaptures" }>;
+type IqAnswer = IqCaptures | { type: "error"; message: string };
+
+/** The radios' captures on disk, and the one being made. */
+export function iqCaptures(): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptures", id: nextId++ });
+}
+
+/** Record every radio for `seconds`, while the recording is working well. */
+export function iqCaptureStart(seconds: number, note: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureStart", id: nextId++, seconds, note });
+}
+
+export type IqCaptureReview = Extract<FromRecorder, { type: "iqCaptureReview" }>;
+
+/** What a capture would publish. */
+export function iqCaptureReview(name: string): Promise<IqCaptureReview | { type: "error"; message: string }> {
+  return ask<IqCaptureReview>({ type: "iqCaptureReview", id: nextId++, name }, 60_000);
+}
+
+/** Send a capture its owner has reviewed to the public corpus. */
+export function iqCaptureSend(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureSend", id: nextId++, name });
+}
+
+/** Take a sent capture back from the corpus. */
+export function iqCaptureWithdraw(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureWithdraw", id: nextId++, name });
+}
+
+/** Why a capture rule can't run, if so. */
+export function iqRuleCheck(rule: CaptureRule): Promise<Extract<FromRecorder, { type: "iqRuleChecked" }> | { type: "error"; message: string }> {
+  return ask({ type: "iqRuleCheck", id: nextId++, rule });
+}
+
+export function iqCaptureDelete(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureDelete", id: nextId++, name });
 }
 
 export type DataSummary = Extract<FromRecorder, { type: "dataSummary" }>;

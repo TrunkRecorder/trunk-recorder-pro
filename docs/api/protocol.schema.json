@@ -787,6 +787,106 @@
       ],
       "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open"
     },
+    "CaptureRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "on": {
+          "type": "string"
+        },
+        "systems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Only these systems (none: any)."
+        },
+        "if": {
+          "type": "string"
+        },
+        "repeat": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "number"
+            },
+            "within": {
+              "type": "string"
+            },
+            "by": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "count",
+            "within",
+            "by"
+          ],
+          "additionalProperties": false,
+          "description": "Fire only after this many matches in a window, counted apart for each value of `by`."
+        },
+        "every": {
+          "type": "string",
+          "description": "A `schedule` rule: how often."
+        },
+        "capture": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CaptureTarget"
+          }
+        },
+        "limit": {
+          "type": "object",
+          "properties": {
+            "cooldown": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cooldown"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "enabled",
+        "on",
+        "capture"
+      ],
+      "additionalProperties": false,
+      "description": "When to record what the radios receive: an event, a condition on it in CEL, and what to keep."
+    },
+    "CaptureTarget": {
+      "type": "object",
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": [
+            "wideband",
+            "control",
+            "voice"
+          ]
+        },
+        "before": {
+          "type": "string",
+          "description": "How long before, and after, it fired (\"30s\", \"5m\")."
+        },
+        "after": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tier"
+      ],
+      "additionalProperties": false,
+      "description": "What to keep when a capture rule fires."
+    },
     "Channel": {
       "type": "object",
       "properties": {
@@ -1311,6 +1411,10 @@
           "$ref": "#/definitions/StorageSettings",
           "description": "What's kept on disk beside the config (desktop app): the call store."
         },
+        "diagnostics": {
+          "$ref": "#/definitions/Diagnostics",
+          "description": "Rules that record what the radios receive when something happens."
+        },
         "monitor": {
           "$ref": "#/definitions/MonitorSettings",
           "description": "What the dashboard watches on the computer (desktop app)."
@@ -1611,6 +1715,39 @@
         "product"
       ],
       "additionalProperties": false
+    },
+    "Diagnostics": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CaptureRule"
+          }
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "capturesPerDay": {
+              "type": "number"
+            },
+            "mbPerDay": {
+              "type": "number"
+            },
+            "ramMb": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "capturesPerDay",
+            "mbPerDay",
+            "ramMb"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "description": "Capture rules and what they may use."
     },
     "DirectoryLink": {
       "type": "object",
@@ -3911,6 +4048,110 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "iqCaptures"
+            },
+            "id": {
+              "type": "number"
+            },
+            "active": {
+              "$ref": "#/definitions/IqCaptureActive"
+            },
+            "captures": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/IqCapture"
+              }
+            },
+            "root": {
+              "type": "string"
+            },
+            "recording": {
+              "type": "boolean"
+            },
+            "presets": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CaptureRule"
+              }
+            },
+            "canSend": {
+              "type": "boolean"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "captures",
+            "root",
+            "recording",
+            "presets",
+            "canSend"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureReview"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            },
+            "metadata": {},
+            "diagnostics": {},
+            "waterfalls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/IqWaterfall"
+              }
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "metadata",
+            "diagnostics",
+            "waterfalls"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqRuleChecked"
+            },
+            "id": {
+              "type": "number"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "dataSummary"
             },
             "id": {
@@ -4301,6 +4542,161 @@
       ],
       "additionalProperties": false,
       "description": "An interface besides the built-in one: static web files, served with the API beside them on a port of its own."
+    },
+    "IqCapture": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Its folder's name."
+        },
+        "path": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "wideband",
+            "control",
+            "voice"
+          ],
+          "description": "What it's of."
+        },
+        "purpose": {
+          "type": "string",
+          "description": "`healthy` (made by hand) or `rule`."
+        },
+        "rule": {
+          "type": "string",
+          "description": "The rule that made it."
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "radios": {
+          "type": "number"
+        },
+        "bytes": {
+          "type": "number"
+        },
+        "note": {
+          "type": "string"
+        },
+        "lostSamples": {
+          "type": "number",
+          "description": "Samples the radios lost during it."
+        },
+        "messagesGood": {
+          "type": "number",
+          "description": "Control channel messages decoded and failed while it was made."
+        },
+        "messagesBad": {
+          "type": "number"
+        },
+        "calls": {
+          "type": "number",
+          "description": "Calls that ended while it was made."
+        },
+        "send": {
+          "$ref": "#/definitions/IqCaptureSend",
+          "description": "How sending it to the corpus stands, if it has been."
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "tier",
+        "purpose",
+        "seconds",
+        "radios",
+        "bytes",
+        "note",
+        "lostSamples",
+        "messagesGood",
+        "messagesBad",
+        "calls"
+      ],
+      "additionalProperties": false,
+      "description": "A recording of what the radios received."
+    },
+    "IqCaptureActive": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "elapsedS": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "seconds",
+        "elapsedS"
+      ],
+      "additionalProperties": false,
+      "description": "A capture being made."
+    },
+    "IqCaptureSend": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "sending",
+            "sent",
+            "failed"
+          ]
+        },
+        "receipt": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "doneBytes": {
+          "type": "number"
+        },
+        "totalBytes": {
+          "type": "number"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "receipt",
+        "id",
+        "doneBytes",
+        "totalBytes"
+      ],
+      "additionalProperties": false,
+      "description": "How the sending of a capture to the corpus stands."
+    },
+    "IqWaterfall": {
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "levels": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "levels"
+      ],
+      "additionalProperties": false,
+      "description": "A radio's power by frequency over time, as levels 0–255, in hex."
     },
     "KeySource": {
       "type": "object",
@@ -9612,6 +10008,152 @@
             "type",
             "id",
             "what"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptures"
+            },
+            "id": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureStart"
+            },
+            "id": {
+              "type": "number"
+            },
+            "seconds": {
+              "type": "number"
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "seconds"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureReview"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureSend"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureWithdraw"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqRuleCheck"
+            },
+            "id": {
+              "type": "number"
+            },
+            "rule": {
+              "$ref": "#/definitions/CaptureRule"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "rule"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureDelete"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
           ],
           "additionalProperties": false
         },
