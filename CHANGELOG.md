@@ -5,19 +5,23 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **Capture a known-good sample.** While recording, a button on the RF page records what every
-  radio receives for 30 to 120 seconds, to SigMF files in `iq-captures/` under the capture directory,
-  with what's needed to decode them again and nothing private. Nothing is sent anywhere.
-  `trunk-pro replay <folder>` plays one back with the systems it was made with. See
+## [0.3.3] — 2026-11-08
+
+- **Capture a known-good sample.** While recording, a card on the RF page records what every radio receives for 30 to
+  120 seconds, as SigMF files in `iq-captures/` under the capture directory, with what's needed to decode them again.
+  `trunk-pro replay <folder>` plays one back with no other options. See
   [Recordings](docs/guides/recordings.md#capture-a-known-good-sample).
-- **Capture rules.** The RF page can record automatically when something goes wrong: a control channel lost or
-  failing, poor calls, a granted call with no audio, clipping, or one healthy sample a day, within a daily limit.
-  Rules are JSON with a condition in [CEL](https://github.com/google/cel-spec), and can look back at what was
-  received just before. See [Recordings](docs/guides/recordings.md#capture-rules).
-- **`trunk-pro tool channel`** runs one channel tape (`replay --tapes`) through its decoder alone, and **`tool submission`**
-  checks a contributed capture.
-- **`trunk-pro tool corpus`** adds, downloads and replays the recordings regression tests run on, listed by
-  hash in `corpus/corpus.json`.
+- **A public corpus of recordings.** **Review and send…** on a capture shows what would be published, and sends it only if
+  you agree, to [trunkrecorder.pro/corpus](https://trunkrecorder.pro/corpus). The recording and a sanitized description of
+  your computer become public for anyone to download and decode. Names, keys, plugin settings, serial numbers and paths are
+  left out. See [Recordings](docs/guides/recordings.md#sending-a-capture-to-the-public-corpus).
+- **Capture rules.** The RF page can record automatically when something goes wrong: a control channel lost or failing,
+  poor calls, a granted call with no audio, clipping, or one healthy sample a day, within a daily limit. They only save
+  files on your computer. Rules are JSON with a condition in [CEL](https://github.com/google/cel-spec), and can look back at
+  what was received just before. See [Recordings](docs/guides/recordings.md#capture-rules).
+- **Regression tools for developers.** `trunk-pro tool corpus` downloads and replays the corpus and compares it with the
+  output expected of each version. `replay --tapes` cuts a capture into channel tapes, `tool channel` runs one through its
+  decoder alone, and `tool submission` checks a contributed capture.
 
 ## [0.3.2] — 2026-11-07
 
