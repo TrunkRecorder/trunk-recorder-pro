@@ -395,7 +395,7 @@ with any isn't a good reference.
 
 ## Sending a capture to the public corpus
 
-Once the corpus service is running, **Review and send…** on a capture shows what would be published: its waterfall,
+**Review and send…** on a capture shows what would be published: its waterfall,
 metadata and diagnostics. Nothing leaves your computer until you agree. The recording and its diagnostics then become
 public for anyone to download and decode, including all the radio traffic it holds. **Withdraw…** removes it, but
 copies others made can't be recalled. A send picks up where it stopped if the app restarts.

@@ -17,8 +17,8 @@ use crate::runtime::Ctx;
 use crate::toolkit::hex;
 
 const API: &str = "https://trunkrecorder.pro/corpus/api/v1";
-/// The service is up. Until then only a test's `TRP_CORPUS_API` makes the Send button appear.
-const SERVICE_LIVE: bool = false;
+/// The service is up. Off, only a test's `TRP_CORPUS_API` makes the Send button appear.
+const SERVICE_LIVE: bool = true;
 const PART_BYTES: u64 = 32 << 20;
 const STATE: &str = ".send.json";
 /// The most sent per second, so a send doesn't take over a home connection.

@@ -9,8 +9,7 @@ target/release/trunk-pro tool corpus run --out /tmp/after
 ```
 
 The recordings aren't in git. `tool corpus` keeps them in `captures/.corpus`, and downloads any it
-doesn't have from `iq.trunkrecorder.pro`. That site isn't up yet, so for now only a machine with the
-reference recordings in `captures/` can run this, after `corpus/seed.py` puts them in the cache.
+doesn't have from `iq.trunkrecorder.pro`.
 
 `run` compares each capture with its expected output and fails on a regression. The results are `match`,
 `improved`, `changed` (as much decoded, other bits), `regressed`, `known-failing`, `fixed` and `no-baseline`.

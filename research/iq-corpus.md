@@ -1,6 +1,6 @@
 # Plan: a corpus of contributed IQ recordings
 
-Status (2026-11-08): being built on branch `iq-corpus`. The Cloudflare repo does not exist yet.
+Status (2026-11-08): being built on branch `iq-corpus`. The service is deployed.
 
 **Built so far**, ahead of the phase order because a simple way to record a known-good state came first:
 
@@ -21,8 +21,8 @@ Status (2026-11-08): being built on branch `iq-corpus`. The Cloudflare repo does
 
 - The send path: local review with consent, resumable upload, receipts and withdrawal; `tool submission`, `tool
   corpus promote`, and the promote, remove and corpus workflows (phases 4 and 5, this repo's side).
-- The service, in the local repo `../trunk-recorder-corpus`: tested end to end against a local Worker. **Not deployed**, so
-  the Send button stays hidden (`SERVICE_LIVE` in `iq_send.rs`) and `corpus.yml` waits for `CORPUS_READY`.
+- The service, [TrunkRecorder/trunk-recorder-corpus](https://github.com/TrunkRecorder/trunk-recorder-corpus), live at
+  `trunkrecorder.pro/corpus` since 2026-11-08 with the 13 reference captures published.
 
 Tested on a real RTL-SDR pair; no Airspy is available here yet.
 
@@ -586,10 +586,8 @@ control messages. Airspy still to do.
 
 *New repo, plus the send path in this repo.*
 
-- The Worker, D1 and bucket, with the upload API, quotas, and retention that reads the manifest. **Built**, in the local repo
-  `../trunk-recorder-corpus`. **Not created on GitHub or deployed.**
-- TRP: local review with the consent text, resumable send, receipts, withdrawal. **Built.** The Send button stays hidden until
-  `SERVICE_LIVE` in `iq_send.rs` is set.
+- The Worker, D1 and bucket, with the upload API, quotas, and retention that reads the manifest. **Built and deployed.**
+- TRP: local review with the consent text, resumable send, receipts, withdrawal. **Built.**
 
 *Done when:* a 2 GB submission survives an interrupted upload and can be downloaded with `curl`.
 **Met locally 2026-11-08**, with a 96 MB capture sent through a real trunk-pro to a local Worker, the app restarted partway
@@ -603,8 +601,8 @@ through a file. It hasn't run against production.
   published. **Built.**
 - The public list page, with waterfalls. **Built.**
 - `corpus-promote` and `corpus-remove`, using `tool corpus promote`. **Built.**
-- The CI jobs in this repo, for PRs and nightly. **Built**, waiting on the repository variable `CORPUS_READY`.
-- Publish today's eight captures as the first entries. **Not done:** it needs the bucket.
+- The CI jobs in this repo, for PRs and nightly. **Built.**
+- Publish today's eight captures as the first entries. **Done:** 13 entries, as the seven scenarios and six channel tapes.
 
 *Done when:* a contributed capture goes from upload to a merged manifest entry to a nightly `match`, without anyone touching the
 files by hand, and a GitHub account without write access can't run the promote workflow.
