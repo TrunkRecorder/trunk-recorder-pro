@@ -9,8 +9,9 @@ Status (2026-11-08): being built on branch `iq-corpus`. The Cloudflare repo does
 - The `sigmf-meta` writer with its allow-lists and leak test, and `docs/sigmf/trp.sigmf-ext.md`.
 - `replay` of SigMF captures, including collections and gaps, the manifest, `tool corpus`, and the
   regression scenarios as metadata-only captures (phase 1, done).
+- Expected output by TRP version: comparison, the results, `bless` and `release` (phase 2, done).
 
-Not yet: `diagnostics.json`, expected outcomes, and everything after phase 3.
+Not yet: `diagnostics.json`, and everything after phase 3.
 
 Recordings are public. Anyone can download them to test their own build or help debug someone else's
 report. The only gate is on what counts as a regression test: promoting a recording needs GitHub write
@@ -545,13 +546,15 @@ with capture off.**
 
 *This repo. No engine change.*
 
-- The per-version expected files, generation, comparison and the six results.
-- `tool corpus bless`, `tool corpus release`, and that step in the release process.
-- Generate the first files for today's captures.
+- The per-version expected files, generation, comparison and the results. **Built.**
+- `tool corpus run --bless`, `tool corpus release`, and that step in the release process. **Built.**
+- Generate the first files for today's captures. **Built:** 29 KB for all seven.
 
 *Done when:* a deliberate decoder change on a branch reports `regressed` or `improved` correctly, `bless` puts
 the change in `next.jsonl`, a release turns that into a version, and an unchanged build reports `match` on
 every capture.
+**Met 2026-11-08:** switching soft decoding off reported `regressed` on P25, conventional P25 and Phase 2, and
+back on, against those results, `improved`.
 
 ### Phase 3: Manual capture and diagnostics
 

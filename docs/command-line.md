@@ -479,13 +479,16 @@ process's instructions gives that path's cost; `--passes N` goes over the captur
 ```
 trunk-pro tool corpus add <capture folder> --id ID --protocol P [--tier wideband]
 trunk-pro tool corpus fetch [--only a,b] [--tier t]
-trunk-pro tool corpus run --out dir [--only a,b] [--tier t]
+trunk-pro tool corpus run --out dir [--only a,b] [--tier t] [--against next|version] [--bless next|version]
+trunk-pro tool corpus release <version>
 ```
 
 The recordings regression tests run on, listed in `corpus/corpus.json` by SHA-256. `add` lists a SigMF
 capture and puts its files in the cache. `fetch` downloads what the cache lacks, resuming an interrupted
 download and keeping a file only if it matches its hash. `run` replays each capture into `<out>/<id>`, with
-what it printed in `<out>/<id>.stdout` and `.stderr`, and fails if any replay did.
+what it printed in `<out>/<id>.stdout` and `.stderr`, compares each with its expected output, writes
+`<out>.report.json`, and fails if any replay failed or regressed. `--bless` keeps what it got as the expected
+output of the next release or of a version. `release` makes the unreleased expected output that version's.
 
 | Option | Default | What it does |
 |---|---|---|
@@ -494,6 +497,7 @@ what it printed in `<out>/<id>.stdout` and `.stderr`, and fails if any replay di
 | `--base url` | `https://iq.trunkrecorder.pro/blobs/` | Where files are downloaded from, by hash |
 | `--only a,b` | all | Just these capture ids |
 | `--tier t` | all | Just this tier (`wideband`, `control`, `voice`) |
+| `--against v` | `next`, else the newest at or below this build | The expected output to compare with |
 
 ### tool snr
 

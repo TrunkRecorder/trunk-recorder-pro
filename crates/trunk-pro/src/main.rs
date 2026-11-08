@@ -275,8 +275,9 @@ usage:
       A synthetic P25 Phase 1 transmission, encrypted with the first key of
       --keys (or clear), for checking decryption (replay --p25 Hz --keys).
   trunk-pro tool corpus add <capture folder> --id ID --protocol P [--tier wideband]
-  trunk-pro tool corpus fetch|run [--only a,b] [--tier t] [--out dir]
-      The recordings regression tests run on (corpus/corpus.json): `run` replays them into --out.
+  trunk-pro tool corpus fetch|run [--only a,b] [--tier t] [--out dir] [--against next|V] [--bless next|V]
+  trunk-pro tool corpus release <version>
+      The recordings regression tests run on (corpus/corpus.json): `run` replays them into --out and compares each with its expected output.
   trunk-pro tool snr <capture.cu8> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet|p2 [--snr 40,20,…]
       Weak-signal curves: one channel decoded again with noise added.
   trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
