@@ -43,7 +43,7 @@ pub enum Block {
     Real16(Pooled<i16>),
     /// One block of channels from a bladeRF's FPGA filter bank: `bins`, the
     /// table it was made with, × 48 hops, hop by hop, Q15 (`dsp::bank_wire`).
-    Bank { bins: Arc<[u16]>, iq: Pooled<[i16; 2]> },
+    Bank { bins: Arc<[u16]>, iq: Pooled<[i16; 2]>, power_start: u16, power: Vec<u32> },
 }
 
 impl Block {

@@ -39,6 +39,9 @@ const OUTPUT_BITS: i32 = 16;
 /// Butterfly stages: two per radix-2² stage.
 const FFT_BITS: usize = 10;
 
+/// The output gain shift the radios run with (issue 06's status).
+pub const RADIO_GAIN_SHIFT: u32 = 2;
+
 /// What the hardware's word widths and filter are.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Design {

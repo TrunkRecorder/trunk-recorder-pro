@@ -86,7 +86,7 @@ fn run_bank_pack(a: &Args) {
     let drop_every = a.num("drop-every", 0.0) as u64;
     let mut file = std::fs::File::open(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
     let mut w = BufWriter::new(std::fs::File::create(&out).unwrap_or_else(|e| die(&format!("{out}: {e}"))));
-    let mut bank = filter_bank::FixedBank::new(&filter_bank::Design::default());
+    let mut bank = filter_bank::FixedBank::new(&filter_bank::Design { gain_shift: filter_bank::RADIO_GAIN_SHIFT, ..Default::default() });
     let mut packer = bank_wire::Packer::new(bins.clone(), 1);
     let (mut buf, mut written, mut dropped) = (vec![0u8; 4 << 20], 0u64, 0u64);
     loop {
@@ -129,7 +129,7 @@ fn run_bank_capture(a: &Args) {
     if bins.is_empty() || bins.len() > bank_wire::MAX_BINS {
         die(&format!("tool bank-capture: --freqs wants 1 to {} bins", bank_wire::MAX_BINS));
     }
-    let c = crate::radio::bladerf::BankCapture { serial, image, center_hz: center, bins: &bins, gain_db: a.num("gain", 30.0) as i32, gain_shift: a.num("gain-shift", 2.0) as u32, seconds: a.num("seconds", 10.0), out };
+    let c = crate::radio::bladerf::BankCapture { serial, image, center_hz: center, bins: &bins, gain_db: a.num("gain", 30.0) as i32, gain_shift: a.num("gain-shift", trunk_core::dsp::filter_bank::RADIO_GAIN_SHIFT as f64) as u32, seconds: a.num("seconds", 10.0), out };
     match crate::radio::bladerf::bank_capture(&c) {
         Ok(v) => println!("{v}"),
         Err(e) => die(&format!("tool bank-capture: {e}")),

@@ -74,6 +74,12 @@ pub const MAX_BANK_BINS: usize = super::bank_wire::MAX_BINS;
 /// output matches the model sample for sample. (On the radio, block 0 starts 51 µs
 /// into the stream, while the core clears its ring: small enough to ignore.)
 const BANK_EXTRA_DELAY: u64 = 2048;
+/// A filter bank's bin power (mean I² + Q² of its Q15 output, at
+/// [`filter_bank::RADIO_GAIN_SHIFT`]) in a wideband FFT bin's |X|². Measured
+/// by `the_banks_readings_match_the_wideband_path`.
+const BIN_POWER_SCALE: f64 = 2.607e-4;
+/// A filter bank head's samples, to read as the wideband path's do: the gain shift undone (same test).
+const HEAD_SCALE: f32 = 1.0 / (1u32 << filter_bank::RADIO_GAIN_SHIFT) as f32;
 
 /// The external backend: per bin, its recent air for pre-roll; per head, the
 /// host's end of the channel (residual NCO and filter).
@@ -89,10 +95,35 @@ struct External {
     /// Bins evicted since the caller last asked ([`Channelizer::take_evicted`]).
     evicted: Vec<u16>,
     noise: u64,
+    /// Each bin's latest power, as mean |X|² per wideband FFT bin (so it's in
+    /// the same units as the spectra of a [`Channelizer`] at this rate).
+    power: Vec<f32>,
 }
 
 impl External {
     /// Faint noise (about −80 dBFS) where a bin sent nothing, as the engine's gaps.
+    /// A packet's power slice into `power`. A value is a sum over the frames since the scan last
+    /// passed that bin; with `count` bins a block, that's a block's frames × M / `count`.
+    fn take_power(&mut self, start: u16, values: &[u32]) {
+        if values.is_empty() {
+            return;
+        }
+        let frames = (BLOCK_HOPS * filter_bank::M / values.len()) as f64;
+        for (k, v) in values.iter().enumerate() {
+            let bin = (start as usize + k) % filter_bank::M;
+            self.power[bin] = (*v as f64 * (1u64 << super::bank_wire::POWER_SHIFT) as f64 / frames * BIN_POWER_SCALE) as f32;
+        }
+    }
+
+    /// The band in `n` equal cells, each its mean power, first cell at −fs/2.
+    fn cells(&self, n: usize, mut each: impl FnMut(usize, &mut dyn Iterator<Item = f32>)) {
+        let m = filter_bank::M;
+        let per = m / n;
+        for c in 0..n {
+            each(c, &mut (0..per).map(|k| self.power[(c * per + k + m / 2) % m]));
+        }
+    }
+
     fn quiet(&mut self) -> Complex32 {
         let mut r = || {
             self.noise ^= self.noise << 13;
@@ -183,7 +214,8 @@ impl Channelizer {
 
     /// Fed by an FPGA filter bank ([`Channelizer::feed_bank`]) at 8 MS/s, with
     /// the same rates, block and clock as [`Channelizer::new`] there. No
-    /// spectrum: the power and noise readings stay empty (issue 08).
+    /// spectrum: the power and noise readings come from the bank's own power
+    /// slices ([`Channelizer::feed_bank`]), in the same units.
     pub fn external(min_output_rate: f64, history_s: f64) -> Self {
         let mut c = Self::new(filter_bank::FS, min_output_rate, 0.0);
         assert_eq!(c.output_rate, filter_bank::OUTPUT_RATE, "external channelizer: the bank's rate is fixed");
@@ -196,6 +228,7 @@ impl Channelizer {
             pinned: Vec::new(),
             used: BTreeMap::new(),
             evicted: Vec::new(),
+            power: vec![0.0; filter_bank::M],
             noise: 0x9e37_79b9_7f4a_7c15,
         }));
         c
@@ -272,8 +305,9 @@ impl Channelizer {
 
     /// External: one block from the bank, `bins` (the table it was made with)
     /// × [`BLOCK_HOPS`] hops, hop by hop, Q15. Always a whole block: runs it.
-    pub fn feed_bank(&mut self, bins: &[u16], iq: &[[i16; 2]]) {
+    pub fn feed_bank(&mut self, bins: &[u16], iq: &[[i16; 2]], power_start: u16, power: &[u32]) {
         assert_eq!(iq.len(), bins.len() * BLOCK_HOPS, "feed_bank: a block is {BLOCK_HOPS} hops of every bin");
+        self.ext.as_mut().expect("feed_bank: not an external channelizer").take_power(power_start, power);
         self.run_bank(Some((bins, iq)));
     }
 
@@ -291,7 +325,7 @@ impl Channelizer {
         let column = |e: &mut External, i: Option<usize>, col: &mut Vec<Complex32>| {
             for (h, c) in col.iter_mut().enumerate() {
                 *c = match (i, data) {
-                    (Some(i), Some((bins, iq))) => filter_bank::q15(iq[h * bins.len() + i]),
+                    (Some(i), Some((bins, iq))) => filter_bank::q15(iq[h * bins.len() + i]) * HEAD_SCALE,
                     _ => e.quiet(),
                 };
             }
@@ -440,6 +474,21 @@ impl Channelizer {
     /// averaged down to `bins`, in dBFS — free for a waterfall.
     pub fn power_spectrum(&self, bins: usize) -> Vec<f32> {
         let mut out = vec![-120.0f32; bins];
+        if let Some(e) = &self.ext {
+            if bins == 0 || bins > filter_bank::M {
+                return out;
+            }
+            let norm = 1.0 / (self.n as f64 * self.n as f64);
+            e.cells(bins, |c, p| {
+                let (mut acc, mut n) = (0.0f64, 0usize);
+                p.for_each(|v| {
+                    acc += v as f64;
+                    n += 1;
+                });
+                out[c] = (10.0 * ((acc / n as f64) * norm + 1e-14).log10()) as f32;
+            });
+            return out;
+        }
         // (No more cells than bins.)
         if self.history_count == 0 || bins == 0 || bins > self.n {
             return out;
@@ -484,6 +533,12 @@ impl Channelizer {
     /// [`Channelizer::noise_profile`]: the energy detector for a channel,
     /// with no head running.
     pub fn band_power(&self, offset_hz: f64, half_width_hz: f64) -> f64 {
+        if let Some(e) = &self.ext {
+            let c = (offset_hz / BIN_HZ).round() as i64;
+            let hw = ((half_width_hz / BIN_HZ).round() as i64).max(0);
+            let acc: f64 = (c - hw..=c + hw).map(|k| e.power[k.rem_euclid(filter_bank::M as i64) as usize] as f64).sum();
+            return acc / (2 * hw + 1) as f64;
+        }
         if self.history_count == 0 {
             return 0.0;
         }
@@ -504,6 +559,12 @@ impl Channelizer {
     /// `offset_hz`, Hz. Empty before the first block.
     pub fn band_bins(&self, offset_hz: f64, half_width_hz: f64, out: &mut Vec<f64>) -> f64 {
         out.clear();
+        if let Some(e) = &self.ext {
+            let c = (offset_hz / BIN_HZ).round() as i64;
+            let hw = ((half_width_hz / BIN_HZ).round() as i64).max(1);
+            out.extend((c - hw..=c + hw).map(|k| e.power[k.rem_euclid(filter_bank::M as i64) as usize] as f64));
+            return (c - hw) as f64 * BIN_HZ - offset_hz;
+        }
         if self.history_count == 0 {
             return 0.0;
         }
@@ -517,6 +578,9 @@ impl Channelizer {
 
     /// The width of a bin, Hz.
     pub fn bin_hz(&self) -> f64 {
+        if self.ext.is_some() {
+            return BIN_HZ;
+        }
         self.fs / self.n as f64
     }
 
@@ -526,6 +590,24 @@ impl Channelizer {
     /// ln 2 × the mean — so signals filling under half a slice don't lift it,
     /// and the profile follows the SDR's passband shape.
     pub fn noise_profile(&self, out: &mut [f64]) {
+        if let Some(e) = &self.ext {
+            if out.is_empty() || out.len() > filter_bank::M {
+                out.fill(0.0);
+                return;
+            }
+            let mut seg = Vec::new();
+            e.cells(out.len(), |c, p| {
+                seg.clear();
+                seg.extend(p);
+                // A quarter of the way up: a 7.8 kHz bin is about as wide as a channel, so
+                // busy slices have few bins of plain noise. No ln 2 here: a sum over
+                // hundreds of frames is close to its mean, not exponential.
+                let at = seg.len() / 4;
+                let (_, m, _) = seg.select_nth_unstable_by(at, |a, b| a.total_cmp(b));
+                out[c] = *m as f64;
+            });
+            return;
+        }
         if self.history_count == 0 || out.is_empty() || out.len() > self.n {
             out.fill(0.0);
             return;
@@ -748,7 +830,7 @@ mod tests {
         use super::super::filter_bank::{BIN_HZ, BLOCK_HOPS};
         let mut c = Channelizer::external(24_000.0, 0.1);
         c.pin_bins(&[10.0 * BIN_HZ]);
-        let block = |c: &mut Channelizer, bins: &[u16], v: i16| c.feed_bank(bins, &vec![[v, 0]; bins.len() * BLOCK_HOPS]);
+        let block = |c: &mut Channelizer, bins: &[u16], v: i16| c.feed_bank(bins, &vec![[v, 0]; bins.len() * BLOCK_HOPS], 0, &[]);
         // Two channels in one bin: wanted once, two heads.
         let (a, _, _) = c.add_head(20.0 * BIN_HZ + 1000.0, 7000.0, 0.0);
         let (b, _, _) = c.add_head(20.0 * BIN_HZ - 1000.0, 7000.0, 0.0);
@@ -763,7 +845,8 @@ mod tests {
             block(&mut c, &[10, 20], 16384);
         }
         for h in [a, b] {
-            assert!((c.output(h).unwrap()[BLOCK_HOPS - 1].norm() - 0.5).abs() < 0.05);
+            // (A quarter of the Q15 level: the radio's gain shift undone, by HEAD_SCALE.)
+            assert!((c.output(h).unwrap()[BLOCK_HOPS - 1].norm() - 0.125).abs() < 0.0125);
         }
         // Pre-roll replays the bin's stored blocks.
         let (_, pre, start) = c.add_head(20.0 * BIN_HZ, 7000.0, 1.0);
@@ -787,5 +870,69 @@ mod tests {
         let w = c.wanted_bins();
         assert_eq!(w.len(), MAX_BANK_BINS);
         assert!(w.contains(&10) && w.contains(&20) && w.contains(&400) && !w.contains(&30));
+    }
+
+    /// The same white noise through the wideband path and through the bank
+    /// (the fixed-point model, at the radio's gain, as packets): the floor and
+    /// a channel's power must read alike, which is what the two scales are for.
+    #[test]
+    fn the_banks_readings_match_the_wideband_path() {
+        use super::super::bank_wire::{parse, Body, Packer};
+        use super::super::filter_bank::{Design, FixedBank, FS, OUTPUT_RATE, RADIO_GAIN_SHIFT};
+        let mut x = 0x2545_f491_u64;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut gauss = || (-2.0 * (rnd() + 1e-12).ln()).sqrt() * (2.0 * std::f64::consts::PI * rnd()).cos();
+        let block = 12288;
+        let noise: Vec<Complex32> = (0..block * 40).map(|_| Complex32::new(0.08 * gauss() as f32, 0.08 * gauss() as f32)).collect();
+        let offset = 100_000.0;
+
+        let mut wide = Channelizer::new(FS, OUTPUT_RATE, 1.0);
+        let (head, _, _) = wide.add_head(offset, 7000.0, 0.0);
+        let mut wide_power = (0.0f64, 0usize);
+        for b in noise.chunks(block).skip(10) {
+            wide.feed(b);
+            for v in wide.output(head).unwrap() {
+                wide_power.0 += v.norm_sqr() as f64;
+                wide_power.1 += 1;
+            }
+        }
+
+        let mut ext = Channelizer::external(OUTPUT_RATE, 1.0);
+        let (bank_head, _, _) = ext.add_head(offset, 7000.0, 0.0);
+        let table = ext.wanted_bins();
+        let mut bank = FixedBank::new(&Design { gain_shift: RADIO_GAIN_SHIFT, ..Default::default() });
+        let mut packer = Packer::new(table.clone(), 1);
+        let input: Vec<[i16; 2]> = noise.iter().map(|v| [(v.re * 2048.0).round() as i16, (v.im * 2048.0).round() as i16]).collect();
+        let mut packets = Vec::new();
+        bank.push(&input, |f| packets.extend(packer.push(f)));
+        let mut bank_power = (0.0f64, 0usize);
+        for (n, p) in packets.iter().enumerate() {
+            let (got, _) = parse(&p.encode()).unwrap();
+            let Body::Channels { iq, power_start, power, .. } = &got.body;
+            ext.feed_bank(&table, iq, *power_start, power);
+            if n >= 20 {
+                for v in ext.output(bank_head).unwrap() {
+                    bank_power.0 += v.norm_sqr() as f64;
+                    bank_power.1 += 1;
+                }
+            }
+        }
+
+        let floor = |c: &Channelizer| {
+            let mut p = vec![0.0; 16];
+            c.noise_profile(&mut p);
+            p.iter().sum::<f64>() / p.len() as f64
+        };
+        let floor_ratio = floor(&wide) / floor(&ext);
+        let head_ratio = (wide_power.0 / wide_power.1 as f64) / (bank_power.0 / bank_power.1 as f64);
+        let db = |r: f64| 10.0 * r.log10();
+        eprintln!("floor ratio {floor_ratio} ({:.2} dB), head power ratio {head_ratio} ({:.2} dB, amplitude {})", db(floor_ratio), db(head_ratio), head_ratio.sqrt());
+        assert!(db(floor_ratio).abs() < 0.5, "floor reads {:.2} dB off", db(floor_ratio));
+        assert!(db(head_ratio).abs() < 0.5, "channel power reads {:.2} dB off", db(head_ratio));
     }
 }

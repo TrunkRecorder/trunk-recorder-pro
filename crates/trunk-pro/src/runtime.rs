@@ -834,8 +834,8 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
                 Block::U8(b) => feeder.push(b, dropped, at_ms(at)),
                 Block::Iq(b) => feeder.push_iq(b, dropped, at_ms(at)),
                 Block::Real16(_) => unreachable!("the inbox makes them I/Q"),
-                Block::Bank { bins, iq } => {
-                    feeder.push_bank(bins, iq, dropped, at_ms(at));
+                Block::Bank { bins, iq, power_start, power } => {
+                    feeder.push_bank(bins, iq, *power_start, power, dropped, at_ms(at));
                     update_bins(&feeder);
                 }
             }

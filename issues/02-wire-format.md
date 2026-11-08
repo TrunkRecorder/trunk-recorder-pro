@@ -2,7 +2,7 @@
 
 **Size:** S. **Needs:** 01.
 
-**Status (2026-11-08):** done. The bin limit is 42, not 64: a packet must fit one USB 3 DMA transaction (2048
+**Status (2026-11-08):** done, and since revised: version 2 replaces kind 1 power packets with a power slice in each channel packet (issue 08). The bin limit is 42, not 64: a packet must fit one USB 3 DMA transaction (2048
 DWORDs, 4 of them bladeRF's header), and 2 + 48 × 42 = 2018. Found reading `fx3_gpif.vhd` after the stock builds. The format lives in `crates/trunk-core/src/dsp/bank_wire.rs`, and vectors are in
 `fpga/sim/vectors/`. The header's length counts payload DWORDs only, and the host reads packets through libbladeRF's async interface (issue 04's status says why). Power packets are
 encoded and parsed, but the model doesn't make them until issue 08.

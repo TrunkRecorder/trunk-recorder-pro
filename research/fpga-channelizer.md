@@ -263,3 +263,8 @@ over 23.9 hours. The filter bank is one 30-second sample 12 minutes after a star
 The wideband figure is at a lower xA5 rate, so the saving at equal rates is larger. Calls vary, and most of what's left
 is voice decoding, so a short sample can be a few points off. Kernel USB work outside these threads isn't counted.
 
+## Power slices (issue 08)
+
+Wire format 2 adds a slice of the band's power to the end of every channel packet. The xA4 image is 265 of 308 RAM
+blocks and 24 of 66 DSP blocks, and meets timing. A slice is at most 65 DWORDs a block, about 170 KB/s.
+

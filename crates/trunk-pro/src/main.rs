@@ -530,13 +530,13 @@ fn replay(a: &Args) {
         while !rest.is_empty() {
             let (p, more) = trunk_core::dsp::bank_wire::parse(rest).unwrap_or_else(|e| die(&format!("{}: {e:?}", files[0])));
             rest = more;
-            let trunk_core::dsp::bank_wire::Body::Channels { iq, .. } = &p.body else { continue };
+            let trunk_core::dsp::bank_wire::Body::Channels { iq, power_start, power, .. } = &p.body;
             let missed = p.block.wrapping_sub(next) as u64;
             if missed > 0 {
                 engine.push_bank_gap(0, missed);
                 lost += missed;
             }
-            engine.push_bank(0, &bins, iq);
+            engine.push_bank(0, &bins, iq, *power_start, power);
             next = p.block.wrapping_add(1);
             if next % 64 == 0 {
                 written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));

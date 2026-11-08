@@ -227,10 +227,10 @@ impl Feeder {
 
     /// One block of channels from the FPGA filter bank (`bins`, the table it
     /// was made with); `dropped`: input samples of the blocks lost before it.
-    pub fn push_bank(&self, bins: &[u16], iq: &[[i16; 2]], dropped: u64, at_ms: f64) {
+    pub fn push_bank(&self, bins: &[u16], iq: &[[i16; 2]], power_start: u16, power: &[u32], dropped: u64, at_ms: f64) {
         let t = Instant::now();
         self.gap(dropped);
-        self.engine.push_bank(self.source, bins, iq);
+        self.engine.push_bank(self.source, bins, iq, power_start, power);
         self.fed(BANK_BLOCK, at_ms);
         self.busy_us.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
     }
@@ -516,8 +516,8 @@ impl Session {
     }
 
     /// A block of channels from `source`'s FPGA filter bank; as [`Feeder::push_bank`].
-    pub fn push_bank(&mut self, source: usize, bins: &[u16], iq: &[[i16; 2]], dropped: u64, at_ms: f64) {
-        self.feed_of(source).push_bank(bins, iq, dropped, at_ms);
+    pub fn push_bank(&mut self, source: usize, bins: &[u16], iq: &[[i16; 2]], power_start: u16, power: &[u32], dropped: u64, at_ms: f64) {
+        self.feed_of(source).push_bank(bins, iq, power_start, power, dropped, at_ms);
     }
 
     fn feed_of(&self, source: usize) -> Feeder {

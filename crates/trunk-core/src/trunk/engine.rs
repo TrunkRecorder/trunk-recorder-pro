@@ -2672,10 +2672,10 @@ impl Engine {
 impl Engine {
     /// Feed a filter bank source one block of channels: `bins`, the table the
     /// FPGA made it with, × 48 hops, hop by hop (`dsp::bank_wire`).
-    pub fn push_bank(&self, source: usize, bins: &[u16], iq: &[[i16; 2]]) {
+    pub fn push_bank(&self, source: usize, bins: &[u16], iq: &[[i16; 2]], power_start: u16, power: &[u32]) {
         let block = {
             let mut r = self.shared.rx[source].lock().unwrap();
-            r.src.chz.feed_bank(bins, iq);
+            r.src.chz.feed_bank(bins, iq, power_start, power);
             r.decode_block()
         };
         self.follow_block(source, block);

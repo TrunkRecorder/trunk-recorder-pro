@@ -523,7 +523,7 @@ const REG_DROPPED: u32 = 0x14;
 const REG_RX_RATE: u32 = 0x18;
 const REG_TABLE: u32 = 0x400;
 /// The output gain shift the radios run with (issue 06's status).
-const GAIN_SHIFT: u32 = 2;
+const GAIN_SHIFT: u32 = trunk_core::dsp::filter_bank::RADIO_GAIN_SHIFT;
 /// After the stream starts, before RX is enabled: the stream sets the format as it starts.
 const BANK_STARTUP: Duration = Duration::from_millis(300);
 /// Samples in a filter bank block.
@@ -567,7 +567,11 @@ impl BankCalls {
         check(a, "reopen", unsafe { (a.open)(&mut dev, id_ptr) })?;
         let d = Device { a, dev, enabled: false, ppm: 0.0 };
         let version = unsafe { self.read(a, d.dev, REG_ID) }?;
-        if version >> 24 != trunk_core::dsp::bank_wire::CORE_ID as u32 {
+        let (core, wire) = (version >> 24, version >> 16 & 0xff);
+        if core == trunk_core::dsp::bank_wire::CORE_ID as u32 && wire != trunk_core::dsp::bank_wire::VERSION as u32 {
+            return Err(format!("{image} is filter bank image version {wire}, and this build needs {}: build it from this version of fpga/", trunk_core::dsp::bank_wire::VERSION));
+        }
+        if core != trunk_core::dsp::bank_wire::CORE_ID as u32 {
             return Err(format!("{image} isn't a filter bank image: its core id register reads {version:#x}"));
         }
         Ok(d)
@@ -800,12 +804,12 @@ fn stream_bank(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
                         silent_since = at;
                         let lost = last_block.map_or(0, |b: u32| p.block.wrapping_sub(b).wrapping_sub(1) as u64);
                         last_block = Some(p.block);
-                        let (Some(bins), Body::Channels { bins: n, iq }) = (tables.bins(p.generation), p.body) else { continue };
+                        let (Some(bins), Body::Channels { bins: n, iq, power_start, power }) = (tables.bins(p.generation), p.body) else { continue };
                         if n != bins.len() {
                             continue;
                         }
                         let iq = sink.bank_buffer(&iq);
-                        if !sink.send(Block::Bank { bins, iq }, lost * SAMPLES_PER_BLOCK, at) {
+                        if !sink.send(Block::Bank { bins, iq, power_start, power }, lost * SAMPLES_PER_BLOCK, at) {
                             return Ok(());
                         }
                     }
@@ -1010,7 +1014,7 @@ mod tests {
         }));
         let packet = |block: u32, generation| {
             let iq: Vec<[i16; 2]> = (0..48 * 42).map(|k| [k as u16 as i16, block as i16]).collect();
-            let mut bytes = Packet { timestamp: 12288 * block as u64, generation, block, body: Body::Channels { bins: 42, iq } }.encode();
+            let mut bytes = Packet { timestamp: 12288 * block as u64, generation, block, body: Body::Channels { bins: 42, iq, power_start: 0, power: Vec::new() } }.encode();
             // Padded to whole pieces, as a transfer is.
             bytes.resize(bytes.len().next_multiple_of(2048), 0);
             bytes
