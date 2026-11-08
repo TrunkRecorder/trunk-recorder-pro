@@ -14,6 +14,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   covers the RFOne's own USB ID (`38af:0001`, with updated firmware, v1.0.2) as well as the Airspy's, which it has
   with the v1.0.0-rc2 it shipped with; both firmwares are tested. An RFOne that libairspy opens as an Airspy source's "first" is
   now called a HydraSDR RFOne, not an Airspy R2.
+- **Talkgroups' encrypted share is right again after upgrading.** v0.3.1 counts a talkgroup's
+  encrypted calls by the hour, but the hours kept by v0.3.0 were read as all clear: a fully
+  encrypted talkgroup showed a few percent on the Radio system page (and no ENC badge) until a
+  week had passed. The hours kept before now get their share of its encrypted calls, once.
+- **RadioReference's partial encryption is read as partial.** Its page marks encryption with a
+  word after the mode, `Enc` for full and `enc` for partial (some clear traffic). A paste took
+  both as full, so a mostly-clear talkgroup marked `enc` became `TE`/`DE` and its clear calls
+  weren't recorded; it is `Te`/`De` now, and recorded. A badge copied glued on (`TEnc`) no longer
+  becomes the alpha tag, and a number with `Online` glued on (`8009Online`) is no longer dropped.
+  **A table pasted before needs pasting again** (or the talkgroup's Mode changed to `Te`/`De`) for
+  its partly encrypted talkgroups to be recorded.
 
 ## [0.3.1] — 2026-11-07
 

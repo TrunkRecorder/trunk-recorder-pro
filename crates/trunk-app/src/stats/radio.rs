@@ -89,6 +89,10 @@ pub struct Tg {
     /// (hour = Unix s / 3600, its activity), oldest first, last week only:
     /// what a query of some hours counts (`calls`, `encPct`, `ciphers`).
     pub hours: VecDeque<(i64, TgHour)>,
+    /// Its hours hold their own encryption ([`Tg::enc_by_hour`]): false
+    /// only for one kept before they did (v0.3.0), until it's loaded.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enc_hourly: bool,
 }
 
 /// A talkgroup's hour: the calls that ended in it, its seconds of air, and
@@ -131,6 +135,23 @@ impl From<TgHour> for HourRow {
 }
 
 impl Tg {
+    /// One kept before its hours held their encryption (v0.3.0): each hour
+    /// gets its share of the encrypted calls, as its calls overall were, and
+    /// each cipher its calls in the hour it was last heard; once (it's
+    /// marked after). Without it, a talkgroup's ENC% read as clear for the
+    /// week its older hours were in the window. Temporary, as migrate.rs:
+    /// to drop it, delete this, `enc_hourly`, its use in `Registry::put` and its test.
+    fn enc_by_hour(&mut self) {
+        if std::mem::replace(&mut self.enc_hourly, true) || self.enc == 0 {
+            return;
+        }
+        let share = self.enc.min(self.calls) as f64 / self.calls.max(1) as f64;
+        for (h, v) in self.hours.iter_mut() {
+            v.enc = (v.calls as f64 * share).round() as u32;
+            v.ciphers.extend(self.ciphers.iter().filter(|c| c.3.div_euclid(3600) == *h).map(|&(a, k, n, _)| (a, k, n)));
+        }
+    }
+
     /// A call of it began or ended: keep the name it carried, if any.
     fn note_name(&mut self, c: &Call) {
         if let Some(t) = c.talkgroup_info.as_ref().filter(|t| !t.alpha_tag.is_empty()) {
@@ -530,6 +551,8 @@ impl Registry {
     /// Put system `name` as a store gave it.
     pub fn put(&mut self, name: &str, mut s: SystemRadio) {
         s.caps = self.caps;
+        // (Kept by an older version: its talkgroups' hours given their encryption.)
+        s.tgs.values_mut().for_each(Tg::enc_by_hour);
         self.systems.insert(name.to_string(), s);
     }
 
@@ -563,7 +586,7 @@ impl Registry {
         if !c.unit_to_unit {
             s.changed.tg(c.talkgroup);
             let new = !s.tgs.contains_key(&c.talkgroup);
-            let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: t, ..Default::default() });
+            let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: t, enc_hourly: true, ..Default::default() });
             g.last = t;
             g.note_name(c);
             firsts.tg = new && base;
@@ -594,7 +617,7 @@ impl Registry {
         let h = t.div_euclid(3600);
         if !c.unit_to_unit {
             s.changed.tg(c.talkgroup);
-            let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: start, ..Default::default() });
+            let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: start, enc_hourly: true, ..Default::default() });
             g.last = t;
             g.note_name(c);
             g.calls += 1;
@@ -1501,9 +1524,37 @@ mod tests {
         let (h0, h1) = (t0.div_euclid(3600), now.div_euclid(3600));
         assert_eq!(kept, json!([[h0, [4, 20.0, 4, [[0xAA, 0x1B50, 4]]]], [h1, [4, 20.0, 1, []]]]));
         assert_eq!(serde_json::to_value(TgHour { calls: 2, secs: 9.5, ..Default::default() }).unwrap(), json!([2, 9.5]));
-        // A registry kept before: it reads, its hours' calls and air as they were (its encryption only from now on).
+        // A registry kept before: it reads, its hours' calls and air as they were.
         let old: Tg = serde_json::from_value(json!({ "calls": 3, "enc": 3, "hours": [[h1, [3, 15.0]]] })).unwrap();
         assert_eq!(old.hours[0].1, TgHour { calls: 3, secs: 15.0, ..Default::default() });
+    }
+
+    /// A registry kept by v0.3.0 (its hours `[calls, seconds]` alone): once
+    /// loaded, an encrypted talkgroup's ENC% is what it was, not 0 for the
+    /// week its older hours are in the window, and its ciphers are listed;
+    /// a clear one's stays 0. Done once: saved again, it isn't redone.
+    #[test]
+    fn a_registry_kept_before_hours_held_encryption_keeps_its_enc_pct() {
+        let now: i64 = 1_700_000_000;
+        let (h0, h1) = ((now - 7200).div_euclid(3600), (now - 3600).div_euclid(3600));
+        let kept = json!({ "tgs": [
+            [100, { "first": now - 9000, "last": now - 3600, "calls": 10, "enc": 10, "ciphers": [[0xAA, 0x1B50, 10, now - 3600]], "hours": [[h0, [6, 30.0]], [h1, [4, 20.0]]] }],
+            [200, { "first": now - 9000, "last": now - 3600, "calls": 4, "enc": 0, "hours": [[h1, [4, 20.0]]] }]
+        ] });
+        let mut r = Registry::default();
+        r.load("dcfd", &kept.to_string());
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let row = |r: &Registry, k: u32| r.query(&json!({ "what": "tg", "system": "dcfd", "key": k, "hours": 24 }), now, &n)["row"].clone();
+        assert_eq!(row(&r, 100)["encPct"].as_f64(), Some(100.0), "as before the upgrade");
+        assert_eq!(row(&r, 100)["ciphers"][0]["calls"], 10);
+        assert_eq!(row(&r, 200)["encPct"].as_f64(), Some(0.0));
+        // Saved again (marked) and loaded: not redone over hours since.
+        let again = serde_json::to_string(&r.systems["dcfd"].whole()).unwrap();
+        let mut r2 = Registry::default();
+        r2.load("dcfd", &again);
+        assert_eq!(r2.systems["dcfd"].tgs[&100].hours, r.systems["dcfd"].tgs[&100].hours);
+        assert!(r2.systems["dcfd"].tgs[&100].enc_hourly);
     }
 
     /// How big a system's registry file gets, and how long turning it into

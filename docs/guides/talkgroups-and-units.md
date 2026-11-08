@@ -169,8 +169,10 @@ What it reads from the paste:
   there.
 - A line on its own above a run of rows (the table's heading, such as "County Fire") becomes those
   talkgroups' `Category`.
-- RadioReference's badges: `ENC` after a mode marks the talkgroup encrypted (`D` becomes `DE`,
-  `T` becomes `TE`, anything else `E`); `ONLINE` after a number is skipped.
+- RadioReference's badges, as its page's key says: `Enc` after a mode is full encryption (`D` becomes
+  `DE`, `T` becomes `TE`: not recorded); `enc`, lower case, is partial encryption with some clear
+  traffic (`D` becomes `De`, `T` becomes `Te`: recorded, its encrypted parts left out). Copied
+  glued on (`TEnc`) they read the same. `Online` after a number is skipped.
 - A row without a mode gets `D`.
 
 The result is saved as a normal talkgroup file, so **Download** gives you a CSV you can edit and

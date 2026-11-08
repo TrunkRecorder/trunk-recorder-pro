@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { talkgroupsReplace } from "./rules.ts";
-import { ignoreEdit, mergeTalkgroups, sameEdit, readTalkgroupFile, talkgroup, talkgroupFileText, withEdit } from "./talkgroups.ts";
+import { ignoreEdit, isEncryptedMode, mergeTalkgroups, parseRadioReferencePaste, sameEdit, readTalkgroupFile, talkgroup, talkgroupFileText, withEdit } from "./talkgroups.ts";
 
 const names = (rows: { number: number; alphaTag: string }[]) => rows.map((t) => [t.number, t.alphaTag]);
 
@@ -83,4 +83,31 @@ test("merge: the talkgroups it lacks, after its own; its own as they are", () =>
   assert.deepEqual(m.talkgroups, [...mine, theirs[1]]);
   assert.deepEqual(mergeTalkgroups([], theirs), { talkgroups: theirs, added: 2 });
   assert.equal(mergeTalkgroups(m.talkgroups, theirs).added, 0);
+});
+
+// A table copied from RadioReference's page (rows from a Berks County, PA listing, 2026-11): its
+// key says "Enc" full encryption, "enc" partial (some clear traffic, recorded).
+test("RadioReference paste: Enc is always encrypted, enc only sometimes; badges glued on read too", () => {
+  const paste = [
+    "County Law Enforcement",
+    "DEC\tHEX\tMode\tAlpha Tag\tDescription\tTag",
+    "1001\t3e9\tT Enc\tPD Disp A\tPolice Dispatch Zone A\tLaw Dispatch",
+    "1010\t3f2\tT\tPD SCOPE2\tPolice SCOPE Interactions\tLaw Talk",
+    "4004\tfa4\tDEnc\tBrksJail ERT\tCo Jail Emergency Response Team\tCorrections",
+    "Emergency Management",
+    "8001\t1f41\tT enc\tBerks DES\tDES Primary\tEmergency Ops",
+    "8009Online\t1f49\tT\tFire/EMSDisp\tFire/EMS Dispatch - Patched to 151.220\tFire Dispatch",
+    "8010\t1f4a\tTenc\tDES Tac\tDES Tactical\tEmergency Ops",
+  ].join("\n");
+  const rows = parseRadioReferencePaste(paste);
+  assert.deepEqual(rows.map((t) => [t.number, t.mode, t.alphaTag, t.category]), [
+    [1001, "TE", "PD Disp A", "County Law Enforcement"],
+    [1010, "T", "PD SCOPE2", "County Law Enforcement"],
+    [4004, "DE", "BrksJail ERT", "County Law Enforcement"],
+    [8001, "Te", "Berks DES", "Emergency Management"],
+    [8009, "T", "Fire/EMSDisp", "Emergency Management"],
+    [8010, "Te", "DES Tac", "Emergency Management"],
+  ]);
+  assert.deepEqual(rows.map((t) => isEncryptedMode(t.mode)), [true, false, true, false, false, false], "only the fully encrypted ones aren't recorded");
+  assert.deepEqual(parseRadioReferencePaste("101\tD ENC\tA\n102\tDE\tB\n103\tDe\tC\n104\td\tD").map((t) => t.mode), ["DE", "DE", "De", "D"], "the older ENC, and the letters as RadioReference wrote them before");
 });
