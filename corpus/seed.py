@@ -104,6 +104,43 @@ def write_scenario(scenario, description, sources, settings):
     return folder
 
 
+# Channel tapes, cut from the scenarios: (id, scenario, tier, protocol, what to look for).
+TAPES = [
+    ("voice-p25", "p25", "voice", "p25", "p25"),
+    ("voice-p25-phase2", "phase2", "voice", "p25", "p25_phase2"),
+    ("voice-dmr", "conv-dmr", "voice", "dmr", "dmr"),
+    ("voice-analog", "smartnet", "voice", "smartnet", "fm"),
+    ("control-p25", "p25", "control", "p25", None),
+    ("control-smartnet", "smartnet", "control", "smartnet", None),
+]
+
+
+def tapes_of(scenario, bin_path):
+    """The scenario's channel tapes, cut by replaying it."""
+    out = CAPTURES / "scenarios" / f".tapes-{scenario}"
+    shutil.rmtree(out, ignore_errors=True)
+    subprocess.run([bin_path, "replay", str(CAPTURES / "scenarios" / scenario), "--out", str(out / "calls"), "--capture-frames", "--tapes", str(out / "tapes"), "--quiet"], cwd=ROOT, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return out / "tapes"
+
+
+def heard(folder, bin_path):
+    """How much its decoder makes of a tape: frames, a loudness envelope's length, or messages."""
+    lines = subprocess.run([bin_path, "tool", "channel", str(folder)], cwd=ROOT, check=True, capture_output=True, text=True).stdout.splitlines()
+    calls = [json.loads(l) for l in lines[1:]]
+    return int(lines[0].split()[0]) + sum(c.get("frames", 0) + len(c.get("env", "")) for c in calls)
+
+
+def pick(tapes, tier, kind, bin_path):
+    """The tape of a tier and voice kind its decoder makes the most of."""
+    found = []
+    for folder in tapes.iterdir():
+        meta = json.loads((folder / "source-0.sigmf-meta").read_text())["global"]
+        if meta["trp:tier"] != tier or (kind and meta["trp:channel"]["spec"]["kind"] != kind):
+            continue
+        found.append((heard(folder, bin_path), folder))
+    return max(found)[1]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bin", default=str(ROOT / "target/release/trunk-pro"))
@@ -112,6 +149,17 @@ def main():
         folder = write_scenario(scenario, description, sources, settings)
         subprocess.run([args.bin, "tool", "corpus", "add", str(folder), "--id", scenario, "--protocol", protocol], cwd=ROOT, check=True)
         print(f"{scenario}: {folder}")
+    cut = {}
+    for tape, scenario, tier, protocol, kind in TAPES:
+        if scenario not in cut:
+            cut[scenario] = tapes_of(scenario, args.bin)
+        folder = CAPTURES / "scenarios" / tape
+        shutil.rmtree(folder, ignore_errors=True)
+        shutil.copytree(pick(cut[scenario], tier, kind, args.bin), folder)
+        subprocess.run([args.bin, "tool", "corpus", "add", str(folder), "--id", tape, "--tier", tier, "--protocol", protocol], cwd=ROOT, check=True)
+        print(f"{tape}: {folder}")
+    for scenario in cut:
+        shutil.rmtree(CAPTURES / "scenarios" / f".tapes-{scenario}", ignore_errors=True)
 
 
 if __name__ == "__main__":

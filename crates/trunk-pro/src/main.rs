@@ -126,6 +126,7 @@ mod spotlight;
 mod db;
 mod statstore;
 mod store;
+mod tape_file;
 mod toolkit;
 #[cfg(test)]
 mod protocol_tests;
@@ -237,6 +238,7 @@ usage:
   trunk-pro replay <capture> --center Hz --rate Hz --cc Hz,… --nxdn-trunk typeC|typeD [--nxdn-rate 48|96] [--nxdn-channels Hz,…] [--lcn n=Hz,…] [--ran N]
   trunk-pro replay <capture> --center Hz --rate Hz --cc Hz --smartnet 800_standard|800_reband|800_splinter|900|400_custom
   trunk-pro replay <capture> --center Hz --rate Hz --channels channels.csv
+  trunk-pro replay <capture folder> --tapes dir
       Record calls from captures instead of dongles (a trunked system from
       --cc, more from --system, conventional analog FM / AM / P25 / DMR / NXDN
       channels, or both). --format cu8|cs16|cf32 (else from the extension),
@@ -522,12 +524,13 @@ fn replay(a: &Args) {
         conventional,
         conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
         capture_frames: a.flag("capture-frames"),
+        tapes: a.get("tapes").is_some(),
         ..Default::default()
     };
     // One of our captures: decoded as the systems it was made with.
     let made_with = capture.as_ref().and_then(|c| c.config.as_ref().map(|k| k.engine_config(cfg.epoch_ms_at_zero, &c.names)));
     let cfg = match made_with {
-        Some(m) => EngineConfig { sources: cfg.sources, capture_frames: cfg.capture_frames, ..m },
+        Some(m) => EngineConfig { sources: cfg.sources, capture_frames: cfg.capture_frames, tapes: cfg.tapes, ..m },
         None => cfg,
     };
     let multi = if capture.as_ref().is_some_and(|c| c.config.is_some()) { cfg.systems.iter().filter(|s| !s.is_conventional()).count() > 1 } else { multi };
@@ -657,6 +660,9 @@ fn replay(a: &Args) {
     }
     engine.finish();
     written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+    if let Some(dir) = a.get("tapes") {
+        write_tapes(&engine, std::path::Path::new(dir), capture.as_ref()).unwrap_or_else(|e| die(&e));
+    }
     let cpu = t0.elapsed().as_secs_f64();
     for (i, p) in bandplans.iter().enumerate() {
         let _ = fs::write(p, engine.bandplan(i));
@@ -739,6 +745,24 @@ fn site_tag(engine: &Engine, site: u16) -> String {
 
 /// "[name] " for a line about system `system` when there are several trunked
 /// ones (a conventional one: any); else "".
+/// `replay --tapes`: each channel's tape, a folder of its own.
+fn write_tapes(engine: &Engine, dir: &std::path::Path, capture: Option<&iq_capture::Opened>) -> Result<(), String> {
+    let voice = engine.take_voice_tapes();
+    for (i, t) in voice.iter().enumerate() {
+        tape_file::write_voice(&dir.join(format!("voice-{i:03}-{}", t.freq_hz as u64)), t)?;
+    }
+    // (A control tape's decoder is built from its capture's systems.)
+    let config = capture.and_then(|c| c.config_json.as_ref());
+    let control = if config.is_some() { engine.control_tapes() } else { Vec::new() };
+    let status = engine.status();
+    for (i, t) in control.iter().enumerate() {
+        let freq = status.sites.get(t.site as usize).and_then(|s| s.control_channel_hz).unwrap_or(0) as f64;
+        tape_file::write_control(&dir.join(format!("control-{i:02}-{}", freq as u64)), t, freq, config.unwrap(), &engine.bandplan(t.site as usize))?;
+    }
+    println!("{} voice and {} control channel tapes in {}", voice.len(), control.len(), dir.display());
+    Ok(())
+}
+
 fn system_tag(engine: &Engine, system: u16) -> String {
     let systems = engine.systems();
     let trunked = systems.iter().filter(|s| !s.is_conventional()).count();

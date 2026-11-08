@@ -13,6 +13,9 @@ Status (2026-11-08): being built on branch `iq-corpus`. The Cloudflare repo does
 
 - `diagnostics.json` with each capture, built from allow-lists with its leak test (phase 3).
 
+- Channel tapes: voice and control channels' IQ with what their decoders need, `replay --tapes`, `tool channel`
+  (phase 6).
+
 Tested on a real RTL-SDR pair; no Airspy is available here yet.
 
 Recordings are public. Anyone can download them to test their own build or help debug someone else's
@@ -514,8 +517,8 @@ with a repo secret.
 | Waterfall, check results, decode counts | No decoded traffic | Everyone | Same |
 | `corpus/` in this repo | Manifest, and expected output as hashes and counts | Everyone | In git history |
 
-We publish IQ, not decoded radio traffic: no audio, message text, talkgroups or unit IDs are published by the
-service or in this repo. Anyone can run `trunk-pro replay` on a recording themselves.
+We publish IQ, not decoded radio traffic: no audio, message text or who-talked-when is published by the service
+or in this repo. A capture's metadata holds what decoding it takes, such as a system's frequencies. Anyone can run `trunk-pro replay` on a recording themselves.
 
 The metadata and diagnostics allow-lists still apply: keys, plugin settings, paths and serial numbers never leave
 the machine.
@@ -601,14 +604,18 @@ anyone touching the files by hand, and a GitHub account without write access can
 
 *This repo. The only phase with engine changes: small and optional.*
 
-- `Option<Tape>` on channels, the control and voice taps, and pre-roll capture.
-- `VoiceSpec`, `VoiceParams` and grants written to `sigmf-meta`.
-- The channel harness and `tool slice`.
-- Channelizer metrics in the wideband comparison: a head's output against the stored channel tier.
+- `Option<VoiceTape>` on channels, the control and voice taps, and pre-roll capture. **Built.**
+- `VoiceSpec`, `VoiceParams` and which slots were listened to, in `sigmf-meta`. **Built.** No talkgroups.
+- The channel harness (`tool channel`, and `tool corpus` for the channel tiers) and `replay --tapes` for cutting
+  tapes from a wideband capture. **Built.**
+- `tool channel --against`: how far a channel's samples moved, in dB, between two tapes. **Built.**
 - Channel tiers in the decode job and review page.
 
 *Done when:* a voice file on P25 Phase 1, Phase 2, DMR and analog decodes through the harness to the
 same frames or audio as the live call, and a tape-enabled run costs under an agreed CPU budget.
+**Met 2026-11-08** on the reference captures: of 39 tapes, 33 matched their call's frames exactly; the 4 analog
+ones matched at r 0.955 to 1.0; 2 held two consecutive calls, and matched their frame counts added; 1 was a 2-frame
+slot that was never saved. Keeping tapes added no measurable time on the Phase 2 capture.
 
 ### Phase 7: Rules
 

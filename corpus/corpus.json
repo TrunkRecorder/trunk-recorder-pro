@@ -212,6 +212,162 @@
       ],
       "state": "active",
       "issue": null
+    },
+    {
+      "id": "voice-p25",
+      "tier": "voice",
+      "protocol": "p25",
+      "seconds": 29.15328,
+      "bytes": 8748305,
+      "files": [
+        {
+          "name": "capture.sigmf-collection",
+          "sha256": "c04c976c0c2edc9b6f38041c8a176b09c4a21ed4854c9c72a9b24755fb1338ab",
+          "bytes": 273
+        },
+        {
+          "name": "source-0.sigmf-data",
+          "sha256": "563babe45445f873a0f8a89fff8b317b7485753e3c155cafdbc33fee8d1a2222",
+          "bytes": 8745984
+        },
+        {
+          "name": "source-0.sigmf-meta",
+          "sha256": "e77eedecde7cf5861b3e8078efd0734d0462dda1d7a50b189920292a328d59b6",
+          "bytes": 2048
+        }
+      ],
+      "state": "active",
+      "issue": null
+    },
+    {
+      "id": "voice-p25-phase2",
+      "tier": "voice",
+      "protocol": "p25",
+      "seconds": 17.21344,
+      "bytes": 5166944,
+      "files": [
+        {
+          "name": "capture.sigmf-collection",
+          "sha256": "1345c593a50fcf2ad328ca7dea668f1a5606d162fd8c0ba85205baec20ecb397",
+          "bytes": 273
+        },
+        {
+          "name": "source-0.sigmf-data",
+          "sha256": "f5ff4c24433936bf08645a27a0ef7b10327b2391a1ead25e80552dbd6e6a56c2",
+          "bytes": 5164032
+        },
+        {
+          "name": "source-0.sigmf-meta",
+          "sha256": "f904cab1ad0970a0624b7d1c2976dc3c97aa801659cb4ad0d74ce6625c535aef",
+          "bytes": 2639
+        }
+      ],
+      "state": "active",
+      "issue": null
+    },
+    {
+      "id": "voice-dmr",
+      "tier": "voice",
+      "protocol": "dmr",
+      "seconds": 9.45152,
+      "bytes": 2861299,
+      "files": [
+        {
+          "name": "capture.sigmf-collection",
+          "sha256": "94dcce59032b10cddb45efd26e8b1045541bc81ec50d2e3dd899288fc0b8d132",
+          "bytes": 273
+        },
+        {
+          "name": "source-0.sigmf-data",
+          "sha256": "c030eddcc5a0d694c59146ff135b3bc0f9c115371c33d417657fe5655e222083",
+          "bytes": 2835456
+        },
+        {
+          "name": "source-0.sigmf-meta",
+          "sha256": "acc575157f42cf5a3a86fe65d989d6e43e97a4cc4b2b1446fa529c73b29aa817",
+          "bytes": 25570
+        }
+      ],
+      "state": "active",
+      "issue": null
+    },
+    {
+      "id": "voice-analog",
+      "tier": "voice",
+      "protocol": "smartnet",
+      "seconds": 38.1184,
+      "bytes": 11437776,
+      "files": [
+        {
+          "name": "capture.sigmf-collection",
+          "sha256": "9019b961532f1fb6019f05ef00dde6b721c92a11996d2233402951c66863c8f6",
+          "bytes": 273
+        },
+        {
+          "name": "source-0.sigmf-data",
+          "sha256": "64dee93091ebe24ec43c9f40d38dbd17072eb8aeaa1f99744a7dce03172dda3f",
+          "bytes": 11435520
+        },
+        {
+          "name": "source-0.sigmf-meta",
+          "sha256": "df3e4e9ac9ec3dc8c60a48d476befeaca922f5982efd3f9477b24d5c5c40588a",
+          "bytes": 1983
+        }
+      ],
+      "state": "active",
+      "issue": null
+    },
+    {
+      "id": "control-p25",
+      "tier": "control",
+      "protocol": "p25",
+      "seconds": 59.99616,
+      "bytes": 18000845,
+      "files": [
+        {
+          "name": "capture.sigmf-collection",
+          "sha256": "b5983dc9c2619c7614605152d40c6c87b00ec7b63b5817e4df3651f2af228fed",
+          "bytes": 273
+        },
+        {
+          "name": "source-0.sigmf-data",
+          "sha256": "e67b5d317e2c38efec65c7e2aab37d9cfbc54e4c7526356bd006b86ccf4907f1",
+          "bytes": 17998848
+        },
+        {
+          "name": "source-0.sigmf-meta",
+          "sha256": "5babe03feb05502628d956168770b41f66683937979ee845f3bc24bfca33cd93",
+          "bytes": 1724
+        }
+      ],
+      "state": "active",
+      "issue": null
+    },
+    {
+      "id": "control-smartnet",
+      "tier": "control",
+      "protocol": "smartnet",
+      "seconds": 59.99616,
+      "bytes": 18000933,
+      "files": [
+        {
+          "name": "capture.sigmf-collection",
+          "sha256": "0597532989305fc78c1e1f79df44cf41b1321aab7031c919de66720f0a6bb5e0",
+          "bytes": 273
+        },
+        {
+          "name": "source-0.sigmf-data",
+          "sha256": "2b148f52b1039e5edf0379c7dd128ba2ab43d18aa8a104d2da466e6aea1f95c3",
+          "bytes": 17998848
+        },
+        {
+          "name": "source-0.sigmf-meta",
+          "sha256": "d37e199236d9b0c3f2e7d2bc13baa91f26645815b053be883aa3c706a09f699c",
+          "bytes": 1812
+        }
+      ],
+      "state": "active",
+      "issue": null
     }
   ]
 }

@@ -18,6 +18,7 @@ pub mod record;
 pub mod recorded;
 pub mod sdr;
 pub mod talkgroups;
+pub mod tape;
 pub mod tdma;
 pub mod tracker;
 pub mod units;

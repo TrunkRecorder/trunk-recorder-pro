@@ -259,6 +259,7 @@ called `conv`.
 | `--max-call s` | 0 (no limit) | Split calls longer than this |
 | `--transmissions` | off | Conversation mode off: each transmission is a call of its own (`conversationMode`) |
 | `--min-transmission s` | 0 | Leave out transmissions shorter than this |
+| `--tapes dir` | | Also write each channel as a SigMF tape in `dir`: its IQ and what its decoder needs, for [`tool channel`](#tool-channel) |
 | `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
 | `--messages` | off | Print every control channel message |
 | `--quiet` | off | Don't print control channels, calls and files as they happen |
@@ -349,6 +350,7 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool p25synth` | Make a synthetic P25 Phase 1 capture, encrypted with a key of yours or clear |
 | `tool perf` | One radio's read path over a capture, for counting its CPU cost |
 | `tool corpus` | The recordings regression tests run on: add, download and replay them |
+| `tool channel` | Run one channel tape through its decoder alone |
 | `tool snr` | Weak-signal curves: decode a strong channel again with noise added |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
 | `tool sdr` | A saved `.sdr` call's metadata, or its frames |
@@ -498,6 +500,15 @@ output of the next release or of a version. `release` makes the unreleased expec
 | `--only a,b` | all | Just these capture ids |
 | `--tier t` | all | Just this tier (`wideband`, `control`, `voice`) |
 | `--against v` | `next`, else the newest at or below this build | The expected output to compare with |
+
+### tool channel
+
+```
+trunk-pro tool channel <tape folder> [--against <other tape folder>]
+```
+
+Runs a channel tape (`replay --tapes`) through its decoder alone and prints counts and hashes of what it heard.
+`--against` says how close two tapes of the channel are, in dB: what a channelizer change did to it.
 
 ### tool snr
 

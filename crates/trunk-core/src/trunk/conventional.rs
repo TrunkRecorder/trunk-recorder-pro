@@ -59,10 +59,11 @@ use super::engine::{Event, Pins, SystemConfig, Tuning};
 use super::inband::InBandSpec;
 use super::record::RecordedOn;
 use super::recorded::Recorded;
+use super::tape::{TapeSink, VoiceTape};
 use super::voice::CipherId;
 use super::talkgroups::{Talkgroup, Talkgroups};
 use super::voice::TrackerOut;
-use super::voice::{self, VoiceDecoder, VoiceKind, VoiceOut, VoiceSpec};
+use super::voice::{self, VoiceDecoder, VoiceKind, VoiceOut, VoiceParams, VoiceSpec};
 use super::frames::VoiceFrame;
 use crate::dsp::am;
 use crate::dsp::fm::{self, ChannelFilter};
@@ -525,6 +526,8 @@ struct Live {
 }
 
 struct Open {
+    /// What it received ([`super::engine::EngineConfig::tapes`]).
+    tape: Option<VoiceTape>,
     head: HeadId,
     /// Its decoder ([`super::voice`]: the same as trunked calls').
     voice: Box<dyn VoiceDecoder>,
@@ -539,6 +542,13 @@ struct Open {
     /// Per slot: a cipher heard ahead of any voice (a P25 HDU in a run of
     /// its own), for the voice that follows it.
     cipher_ahead: [Option<CipherId>; 2],
+}
+
+/// A channel that closed: its tape to the host.
+fn keep_tape(sink: &TapeSink, o: &mut Open) {
+    if let (Some(sink), Some(t)) = (sink, o.tape.take()) {
+        sink.lock().unwrap().push(t);
+    }
 }
 
 /// A conventional frequency as the dashboard shows it ([`Conventional::channels`]).
@@ -614,6 +624,8 @@ struct Floor {
 }
 
 pub struct Conventional {
+    /// Where closed channels' tapes go ([`super::engine::EngineConfig::tapes`]).
+    pub(super) tape_sink: TapeSink,
     cfg: ConvConfig,
     bank_cfg: BankConfig,
     /// Keep each call's vocoder frames (see [`super::frames`]).
@@ -716,7 +728,7 @@ impl Conventional {
                 Floor { slices: vec![0.0; n], scratch: vec![0.0; n], next_s: 0.0, primed: false }
             })
             .collect();
-        Ok(Conventional { cfg, bank_cfg, capture_frames, chans, floors })
+        Ok(Conventional { cfg, bank_cfg, capture_frames, chans, floors, tape_sink: None })
     }
 
     /// Whether `channels` can run together: rows on one frequency have one
@@ -879,7 +891,7 @@ impl Conventional {
                     ch.bar_db = base;
                 }
                 if snr_db >= ch.bar_db {
-                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, ids, rules, out);
+                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.tape_sink.is_some(), self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, ids, rules, out);
                 }
                 continue;
             }
@@ -920,21 +932,22 @@ impl Conventional {
                     ch.bar_db = snr_db + FALSE_OPEN_RAISE_DB;
                     ch.raised = true;
                 }
-                let o = ch.open.take().unwrap();
+                let mut o = ch.open.take().unwrap();
                 chz.remove_head(o.head);
+                keep_tape(&self.tape_sink, &mut o);
             }
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
+    fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, tapes: bool, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
         if let Some(w) = &ch.watch {
             ch.ignored = w.ignored();
         }
         let (head, pre, start_sample) = chz.add_head(ch.offset_hz, ch.shape.head_cutoff_hz, preroll_s);
         let rate = chz.output_rate();
         let kind = ch.mode.kind();
-        let voice = voice::build(&VoiceSpec {
+        let spec = VoiceSpec {
             kind,
             rate,
             // (On the engine's clock: `now_s` is this source's, offset included.)
@@ -949,9 +962,11 @@ impl Conventional {
             analog: ch.analog,
             ignore_hz: ch.ignored.clone(),
             keys: rules.keys.cloned(),
-        });
+        };
+        let voice = voice::build(&spec);
+        let tape = tapes.then(|| VoiceTape::new(spec, ch.freq_hz));
         let meter = (!ch.mode.analog()).then(|| ChannelFilter::new(rate));
-        ch.open = Some(Open { head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None, cipher_ahead: [None; 2] });
+        ch.open = Some(Open { tape, head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None, cipher_ahead: [None; 2] });
         Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, out);
     }
 
@@ -961,6 +976,10 @@ impl Conventional {
         let o = ch.open.as_mut().unwrap();
         // Digital: the carrier by the meter; analog: by the decoder's squelch, at the same threshold.
         let metered = o.meter.as_mut().map(|m| m.meter(iq) > meter_thr);
+        let slots = o.live.each_ref().map(|l| l.is_some());
+        if let Some(t) = &mut o.tape {
+            t.run(iq, VoiceParams::default(), slots, meter_thr);
+        }
         o.voice.set_squelch(meter_thr);
         let mut vout = Vec::new();
         o.voice.push(iq, &mut vout);
@@ -1328,7 +1347,8 @@ impl Conventional {
             for (slot, h) in heard.into_iter().enumerate() {
                 Self::slot_call(ch, slot, h, now_s, idx as u32, ids, rules, out);
             }
-            let o = ch.open.take().unwrap();
+            let mut o = ch.open.take().unwrap();
+            keep_tape(&self.tape_sink, &mut o);
             for l in o.live.into_iter().flatten() {
                 Self::end(l, ch.on(idx), ch.tune_ref, out);
             }

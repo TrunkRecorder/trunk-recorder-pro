@@ -42,6 +42,7 @@ use super::record::{Concluded, SaveRules};
 use super::talkgroups::Talkgroups;
 
 use super::wall::WallEpoch;
+use super::tape::{ControlTape, TapeSink, VoiceTape};
 use super::voice::TrackerOut;
 use super::units::{UnitAlias, UnitAliases, UnitNameRow, UnitTags};
 use super::identity::{IdField, Identity};
@@ -283,6 +284,8 @@ pub struct EngineConfig {
     pub conv: ConvConfig,
     /// Keep each call's vocoder frames ([`Concluded::frames`]).
     pub capture_frames: bool,
+    /// Keep what each channel receives ([`super::tape`]): off, it costs nothing.
+    pub tapes: bool,
     /// Save a call heard on several sites of one system once ([`super::multisite`]).
     pub drop_duplicates: bool,
     /// The IMBE vocoder for P25 Phase 1 voice, trunked and conventional.
@@ -301,6 +304,7 @@ impl Default for EngineConfig {
             conventional: vec![],
             conv: ConvConfig::default(),
             capture_frames: false,
+            tapes: false,
             drop_duplicates: true,
             vocoder: mbe::Profile::Enhanced,
         }
@@ -652,6 +656,8 @@ struct Channel {
     /// Its power, and the noise floor under it when it opened ([`Reception`]).
     meter: ChannelFilter,
     noise: f64,
+    /// What it received ([`EngineConfig::tapes`]).
+    tape: Option<VoiceTape>,
 }
 
 /// A call on a voice channel's slot, and the talkgroup it was granted for.
@@ -684,6 +690,8 @@ type Cc = Arc<Mutex<Box<dyn ControlChannel>>>;
 /// A control channel carrier on a source: each block its head's output is
 /// decoded ([`ControlChannel::push`]) before the system follows the steps.
 struct Tap {
+    /// Kept when [`EngineConfig::tapes`] (set by [`SourceRx::set_tap`]).
+    tape: Option<ControlTape>,
     site: u16,
     /// Its number among the system's carriers (0 for a hunted control channel).
     carrier: usize,
@@ -706,6 +714,8 @@ enum TapTime {
 /// lock of its own, so each source can decode on a thread of its own while
 /// the calls are followed in one place ([`Core`]).
 struct SourceRx {
+    /// Keep tapes of its control channels ([`EngineConfig::tapes`]).
+    keep_tapes: bool,
     src: Source,
     /// Keyed by (site, frequency): sites never share a voice channel.
     /// (A `BTreeMap`: channels run in one order, run after run.)
@@ -797,20 +807,26 @@ impl SourceRx {
         let (rate, fs, offset) = (self.src.chz.output_rate(), self.src.cfg().rate_hz, self.src.clock_offset_s);
         let taps = self
             .taps
-            .iter()
+            .iter_mut()
             .map(|t| {
                 let iq = self.src.chz.output(t.head).map(|v| v.to_vec()).unwrap_or_default();
                 let t0 = match t.at {
                     TapTime::Hunt { start_s, offset_s } => start_s + (offset - offset_s),
                     TapTime::Watch { start } => start as f64 / fs + offset,
                 };
+                if let Some(tape) = &mut t.tape {
+                    tape.push(&iq, t0);
+                }
                 (t.site, t.carrier, t.head, t.cc.clone(), iq, t0)
             })
             .collect();
         BlockDsp { voice, taps, rate, time: self.src.time(), in_gap: self.src.in_gap }
     }
 
-    fn set_tap(&mut self, tap: Tap) {
+    fn set_tap(&mut self, mut tap: Tap) {
+        if self.keep_tapes {
+            tap.tape = Some(ControlTape::new(tap.site, tap.carrier, self.src.chz.output_rate()));
+        }
         self.taps.retain(|t| (t.site, t.carrier) != (tap.site, tap.carrier));
         let at = self.taps.partition_point(|t| (t.site, t.carrier) < (tap.site, tap.carrier));
         self.taps.insert(at, tap);
@@ -863,6 +879,8 @@ struct Radio {
     preroll_s: f64,
     capture_frames: bool,
     vocoder: mbe::Profile,
+    /// Where closed channels' tapes go ([`EngineConfig::tapes`]).
+    tape_sink: TapeSink,
     /// Audio / info produced by the voice channels, as (site, call, output), applied after.
     pending: Vec<(u16, CallId, TrackerOut)>,
     /// Calls followed without a recorder now ([`Call::followed`]): a
@@ -915,6 +933,11 @@ impl Radio {
     /// Run a channel's decoder over `iq` (then flush it, at the end of
     /// input), collecting what it produced as (slot, output).
     fn run_channel(ch: &mut Channel, iq: &[Complex32], params: &VoiceParams, tout: &mut Vec<(usize, TrackerOut)>, flush: bool) {
+        let slots = ch.calls.map(|c| c.is_some());
+        if let Some(t) = &mut ch.tape {
+            let squelch = t.spec.squelch;
+            t.run(iq, *params, slots, squelch);
+        }
         ch.voice.set_params(params);
         // Vocode only the slots somebody is recording.
         ch.voice.listen(ch.calls.map(|c| c.map(|c| c.talkgroup)));
@@ -965,8 +988,9 @@ impl SysHost<'_> {
             // Dual Mode: Phase 1 then Phase 2; SmartNet: analog then
             // digital): a channel of that kind instead. The calls on the old
             // one are over; they end when their timeout comes.
-            let old = rx.channels.remove(&key).unwrap();
+            let mut old = rx.channels.remove(&key).unwrap();
             rx.src.chz.remove_head(old.head);
+            keep_tape(&r.tape_sink, &mut old);
         }
         let s = &mut rx.src;
         s.voice_channels += 1;
@@ -980,7 +1004,7 @@ impl SysHost<'_> {
         s.chz.noise_profile(&mut prof);
         let slice = floor_slice(n, s.cfg().rate_hz, call.freq_hz as f64 - s.cfg().center_hz);
         let noise = s.chz.noise_in_band(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth());
-        let voice = voice::build(&VoiceSpec {
+        let spec = VoiceSpec {
             kind,
             rate,
             t0: start_sample as f64 / s.cfg().rate_hz + s.clock_offset_s,
@@ -993,10 +1017,12 @@ impl SysHost<'_> {
             analog: self.analog,
             ignore_hz: Vec::new(),
             keys: self.keys.clone(),
-        });
+        };
+        let voice = voice::build(&spec);
+        let tape = r.tape_sink.is_some().then(|| VoiceTape::new(spec, call.freq_hz as f64));
         let mut calls = [None, None];
         calls[slot] = Some(OnSlot::of(call));
-        let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tuning, meter: ChannelFilter::new(rate), noise };
+        let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tuning, meter: ChannelFilter::new(rate), noise, tape };
         // Pre-roll: decode the replayed air now.
         let params = rx.voice_params.get(self.site as usize).copied().unwrap_or_default();
         rx.tout.clear();
@@ -1066,6 +1092,7 @@ impl RecorderHost for SysHost<'_> {
         }
         let key = (self.site, call.freq_hz);
         let Some(src) = self.radio.source_for(call.system as usize, call.freq_hz as f64) else { return };
+        let sink = self.radio.tape_sink.clone();
         let mut rx = self.radio.rx(src);
         let Some(ch) = rx.channels.get_mut(&key) else { return };
         for c in ch.calls.iter_mut() {
@@ -1074,9 +1101,17 @@ impl RecorderHost for SysHost<'_> {
             }
         }
         if ch.calls.iter().all(Option::is_none) {
-            let ch = rx.channels.remove(&key).unwrap();
+            let mut ch = rx.channels.remove(&key).unwrap();
             rx.src.chz.remove_head(ch.head);
+            keep_tape(&sink, &mut ch);
         }
+    }
+}
+
+/// A channel that closed: its tape to the host.
+fn keep_tape(sink: &TapeSink, ch: &mut Channel) {
+    if let (Some(sink), Some(t)) = (sink, ch.tape.take()) {
+        sink.lock().unwrap().push(t);
     }
 }
 
@@ -1269,7 +1304,7 @@ impl Trunk {
 
     /// Hunting: its control channel's tap.
     fn hunt_tap(site: u16, cc: &Cc, h: &Hunt) -> Tap {
-        Tap { site, carrier: 0, head: h.head, cc: cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s } }
+        Tap { tape: None, site, carrier: 0, head: h.head, cc: cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s } }
     }
 
     /// Watching: heads on the sources that cover each carrier.
@@ -1291,7 +1326,7 @@ impl Trunk {
             return Err(format!("{}: {} frequencies outside every source's bandwidth: {} MHz — move a center frequency.", sys.short_name, name, outside.join(", ")));
         }
         for (i, c) in heads.iter().enumerate() {
-            radio.rx(c.source).set_tap(Tap { site: self.site, carrier: i, head: c.head, cc: self.cc.clone(), at: TapTime::Watch { start: c.start } });
+            radio.rx(c.source).set_tap(Tap { tape: None, site: self.site, carrier: i, head: c.head, cc: self.cc.clone(), at: TapTime::Watch { start: c.start } });
         }
         self.listening = Listening::Watching(heads);
         self.measured_s = self.now_s;
@@ -1565,7 +1600,9 @@ impl Core {
         }
         let history = cfg.preroll_s.max(cfg.conv.preroll_s).max(0.1);
         let spans: Vec<(f64, f64, f64)> = cfg.sources.iter().map(|s| (s.center_hz, s.rate_hz, s.usable_half_width())).collect();
-        let conv = Conventional::new(&cfg.conventional, &spans, ConvConfig { vocoder: cfg.vocoder, ..cfg.conv }, cfg.bank, cfg.capture_frames)?;
+        let tape_sink: TapeSink = cfg.tapes.then(Default::default);
+        let mut conv = Conventional::new(&cfg.conventional, &spans, ConvConfig { vocoder: cfg.vocoder, ..cfg.conv }, cfg.bank, cfg.capture_frames)?;
+        conv.tape_sink = tape_sink.clone();
         // (The engine's one copy of the sources' settings, shared.)
         let cfgs: Arc<[SourceConfig]> = std::mem::take(&mut cfg.sources).into();
         let sources: Vec<Source> = (0..cfgs.len()).map(|i| Source::new(&cfgs, i, history)).collect();
@@ -1574,7 +1611,7 @@ impl Core {
         let n_sites = sites(&cfg.systems).count();
         let rx = sources
             .into_iter()
-            .map(|src| Mutex::new(SourceRx { src, channels: BTreeMap::new(), taps: Vec::new(), voice_params: vec![VoiceParams::default(); n_sites], tout: Vec::new() }))
+            .map(|src| Mutex::new(SourceRx { keep_tapes: cfg.tapes, src, channels: BTreeMap::new(), taps: Vec::new(), voice_params: vec![VoiceParams::default(); n_sites], tout: Vec::new() }))
             .collect();
         let mut radio = Radio {
             rx: Arc::new(rx),
@@ -1587,6 +1624,7 @@ impl Core {
             preroll_s: cfg.preroll_s,
             capture_frames: cfg.capture_frames,
             vocoder: cfg.vocoder,
+            tape_sink,
             pending: Vec::new(),
             followed: 0,
         };
@@ -1922,6 +1960,9 @@ impl Core {
             }
         }
         self.apply_pending();
+        for r in self.radio.rx.iter() {
+            r.lock().unwrap().channels.values_mut().for_each(|ch| keep_tape(&self.radio.tape_sink, ch));
+        }
         for t in self.trunks.iter_mut() {
             let mut host = t.host(&mut self.radio, &self.systems[t.system as usize].cfg);
             t.calls.end_all(&mut host, &mut self.call_events);
@@ -2535,6 +2576,17 @@ impl Engine {
     /// End of input: release what the receivers still hold and end every call.
     pub fn finish(&self) {
         self.core().finish()
+    }
+
+    /// The voice channels' tapes finished since last asked ([`EngineConfig::tapes`]).
+    pub fn take_voice_tapes(&self) -> Vec<VoiceTape> {
+        let sink = self.core().radio.tape_sink.clone();
+        sink.map_or_else(Vec::new, |s| std::mem::take(&mut *s.lock().unwrap()))
+    }
+
+    /// What the control channels have received lately ([`EngineConfig::tapes`]).
+    pub fn control_tapes(&self) -> Vec<ControlTape> {
+        self.shared.rx.iter().flat_map(|r| r.lock().unwrap().taps.iter().filter_map(|t| t.tape.clone()).collect::<Vec<_>>()).collect()
     }
 
     /// Source `source`'s sample clock is this far behind the engine's

@@ -209,25 +209,25 @@ fn chosen<'a>(m: &'a Manifest, only: Option<&str>, tier: Option<&str>) -> Result
 
 /// A call as expected output keeps it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct CallSummary {
+pub(crate) struct CallSummary {
     /// A hash of its talkgroup, slot and encryption.
-    c: String,
-    f: u64,
+    pub c: String,
+    pub f: u64,
     /// When it started, and for how long, ms.
-    t: i64,
-    l: i64,
+    pub t: i64,
+    pub l: i64,
     #[serde(default)]
-    frames: u64,
+    pub frames: u64,
     #[serde(default)]
-    bad: u64,
+    pub bad: u64,
     #[serde(default)]
-    errs: u64,
+    pub errs: u64,
     /// Digital: a hash of each [`FRAMES_PER_HASH`] frames' bits.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    h: String,
+    pub h: String,
     /// Analog: its loudness each [`ENVELOPE_MS`] ms, 0–255 of its peak, in hex.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    env: String,
+    pub env: String,
 }
 
 impl CallSummary {
@@ -238,10 +238,10 @@ impl CallSummary {
 
 /// What a replay decoded, as expected output keeps it.
 #[derive(Clone, Debug, Default, PartialEq)]
-struct Results {
+pub(crate) struct Results {
     /// How many of each control message, by a hash of it.
-    messages: BTreeMap<String, u64>,
-    calls: Vec<CallSummary>,
+    pub messages: BTreeMap<String, u64>,
+    pub calls: Vec<CallSummary>,
 }
 
 const FRAMES_PER_HASH: usize = 20;
@@ -250,7 +250,7 @@ const ENVELOPE_MS: usize = 100;
 const MIN_ENVELOPE_R: f64 = 0.9;
 const SAME_ENVELOPE_R: f64 = 0.999;
 
-fn short_hash(bytes: &[u8], hex_chars: usize) -> String {
+pub(crate) fn short_hash(bytes: &[u8], hex_chars: usize) -> String {
     hex(&Sha256::digest(bytes))[..hex_chars].to_string()
 }
 
@@ -275,9 +275,19 @@ fn envelope(wav: &[u8]) -> String {
     }
     let rate = u32::from_le_bytes([wav[fmt + 12], wav[fmt + 13], wav[fmt + 14], wav[fmt + 15]]) as usize;
     let samples: Vec<f64> = wav[data + 8..].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f64).collect();
+    envelope_of(&samples, rate)
+}
+
+/// Audio's loudness every [`ENVELOPE_MS`], 0–255 of its peak, in hex.
+pub(crate) fn envelope_of(samples: &[f64], rate: usize) -> String {
     let rms: Vec<f64> = samples.chunks((rate * ENVELOPE_MS / 1000).max(1)).map(|w| (w.iter().map(|v| v * v).sum::<f64>() / w.len() as f64).sqrt()).collect();
     let peak = rms.iter().copied().fold(1e-9, f64::max);
     hex(&rms.iter().map(|v| (v / peak * 255.0).round() as u8).collect::<Vec<u8>>())
+}
+
+/// A hash of each [`FRAMES_PER_HASH`] frames' bits, joined.
+pub(crate) fn frame_hashes(frames: &[trunk_core::trunk::frames::VoiceFrame]) -> String {
+    frames.chunks(FRAMES_PER_HASH).map(|w| short_hash(&w.iter().flat_map(|f| f.bits.iter().copied()).collect::<Vec<u8>>(), 4)).collect()
 }
 
 fn summarize_call(json_path: &Path) -> Result<CallSummary, String> {
@@ -290,7 +300,7 @@ fn summarize_call(json_path: &Path) -> Result<CallSummary, String> {
         c.frames = frames.len() as u64;
         c.bad = frames.iter().filter(|f| f.bad()).count() as u64;
         c.errs = frames.iter().map(|f| f.errs as u64).sum();
-        c.h = frames.chunks(FRAMES_PER_HASH).map(|w| short_hash(&w.iter().flat_map(|f| f.bits.iter().copied()).collect::<Vec<u8>>(), 4)).collect();
+        c.h = frame_hashes(&frames);
     } else if v["audio_type"] == "analog" {
         c.env = envelope(&fs::read(json_path.with_extension("wav")).unwrap_or_default());
     }
@@ -521,6 +531,31 @@ fn describe(c: &Comparison) -> String {
     parts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}")).collect::<Vec<_>>().join(", ")
 }
 
+/// `got` against capture `e`'s expected output, said on the log: its result, what it was compared with, and how.
+fn judge(o: &RunOptions, e: &Entry, expected_dir: &Path, version: &str, got: &Results) -> Result<(&'static str, String, Option<Comparison>), String> {
+    let baseline = expected_file(expected_dir, version, o.against);
+    let (result, comparison) = match &baseline {
+        Some(path) => {
+            let text = fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
+            let c = compare(&parse_results(&text).map_err(|err| format!("{}: {err}", path.display()))?, got);
+            (verdict(&c, &e.state, e.tolerance), Some(c))
+        }
+        None => ("no-baseline", None),
+    };
+    let against = baseline.as_ref().and_then(|p| p.file_stem()).map_or_else(String::new, |s| s.to_string_lossy().to_string());
+    let detail = comparison.as_ref().map_or_else(String::new, describe);
+    println!("{}: {result}{}{}", e.id, if against.is_empty() { String::new() } else { format!(" (against {against})") }, if detail.is_empty() { String::new() } else { format!(": {detail}") });
+    Ok((result, against, comparison))
+}
+
+fn bless_if(o: &RunOptions, e: &Entry, expected_dir: &Path, result: &str, got: &Results) -> Result<(), String> {
+    if let Some(name) = o.bless.filter(|_| result != "match") {
+        bless(expected_dir, &e.id, name, got)?;
+        println!("{}: expected output for {name} written", e.id);
+    }
+    Ok(())
+}
+
 /// Replay each capture, its calls in `out/<id>` and what it printed beside
 /// that, and compare it with what's expected: how many failed or regressed.
 fn run_all(o: &RunOptions, cache: &Path, entries: &[&Entry], out: &Path) -> Result<usize, String> {
@@ -530,6 +565,16 @@ fn run_all(o: &RunOptions, cache: &Path, entries: &[&Entry], out: &Path) -> Resu
     let mut report = Vec::new();
     for e in entries {
         let folder = lay_out(o.base, cache, e)?;
+        // (A channel tape goes through its decoder alone.)
+        if e.tier != "wideband" {
+            let got = crate::tape_file::run(&folder)?;
+            let expected_dir = o.expected.join(&e.id);
+            let (result, against, comparison) = judge(o, e, &expected_dir, version, &got)?;
+            report.push(json!({ "id": e.id, "result": result, "against": against, "comparison": comparison, "messages": got.messages.values().sum::<u64>(), "calls": got.calls.len() }));
+            failed += (result == "regressed") as usize;
+            bless_if(o, e, &expected_dir, result, &got)?;
+            continue;
+        }
         let dir = out.join(&e.id);
         fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
         let log = |ext: &str| File::create(out.join(format!("{}.{ext}", e.id))).map(Stdio::from).map_err(|err| format!("{}: {err}", out.display()));
@@ -542,24 +587,10 @@ fn run_all(o: &RunOptions, cache: &Path, entries: &[&Entry], out: &Path) -> Resu
         }
         let got = summarize(out, &e.id)?;
         let expected_dir = o.expected.join(&e.id);
-        let baseline = expected_file(&expected_dir, version, o.against);
-        let (result, comparison) = match &baseline {
-            Some(path) => {
-                let text = fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
-                let c = compare(&parse_results(&text).map_err(|err| format!("{}: {err}", path.display()))?, &got);
-                (verdict(&c, &e.state, e.tolerance), Some(c))
-            }
-            None => ("no-baseline", None),
-        };
-        let against = baseline.as_ref().and_then(|p| p.file_stem()).map_or_else(String::new, |s| s.to_string_lossy().to_string());
-        let detail = comparison.as_ref().map_or_else(String::new, describe);
-        println!("{}: {result}{}{}", e.id, if against.is_empty() { String::new() } else { format!(" (against {against})") }, if detail.is_empty() { String::new() } else { format!(": {detail}") });
+        let (result, against, comparison) = judge(o, e, &expected_dir, version, &got)?;
         report.push(json!({ "id": e.id, "result": result, "against": against, "comparison": comparison, "messages": got.messages.values().sum::<u64>(), "calls": got.calls.len() }));
         failed += (result == "regressed") as usize;
-        if let Some(name) = o.bless.filter(|_| result != "match") {
-            bless(&expected_dir, &e.id, name, &got)?;
-            println!("{}: expected output for {name} written", e.id);
-        }
+        bless_if(o, e, &expected_dir, result, &got)?;
     }
     let path = PathBuf::from(format!("{}.report.json", out.display()));
     fs::write(&path, serde_json::to_string_pretty(&report).map_err(|e| e.to_string())? + "\n").map_err(|e| format!("{}: {e}", path.display()))?;

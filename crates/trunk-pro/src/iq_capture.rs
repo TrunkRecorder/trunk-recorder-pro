@@ -616,6 +616,8 @@ pub struct Opened {
     pub recordings: Vec<Recording>,
     /// The systems it was made with, if the file says.
     pub config: Option<Config>,
+    /// The same, as written.
+    pub config_json: Option<Value>,
     pub names: NameLists,
     pub bandplans: Vec<String>,
 }
@@ -729,7 +731,7 @@ pub fn open(path: &str) -> Result<Opened, String> {
         names.insert(system.clone(), SystemNames { talkgroups, ..Default::default() });
     }
     let bandplans = g["trp:bandplans"].as_array().into_iter().flatten().map(|b| b.as_str().unwrap_or("").to_string()).collect();
-    Ok(Opened { recordings, config, names, bandplans })
+    Ok(Opened { recordings, config, config_json: g.get("trp:config").cloned(), names, bandplans })
 }
 
 #[cfg(test)]

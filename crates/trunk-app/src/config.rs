@@ -2903,6 +2903,7 @@ impl Config {
             conventional: self.engine_channels(),
             conv: ConvConfig::default(),
             capture_frames: self.recording.capture_frames,
+            tapes: false,
             drop_duplicates: self.recording.drop_duplicate_calls,
             vocoder: self.recording.vocoder.engine(),
         }
