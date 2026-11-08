@@ -503,6 +503,7 @@ function take(m: FromRecorder): void {
     case "statsResult":
     case "radioResult":
     case "callsResult":
+    case "iqCaptures":
     case "dataSummary":
     case "dataDeleted":
     case "dataCompacted":
@@ -628,6 +629,23 @@ export type CallsResult = Extract<FromRecorder, { type: "callsResult" }>;
 /** Recorded calls by system, talkgroup, radio and time, newest first: a page, and `before` for the next. */
 export function callsQuery(q: Omit<Extract<ToRecorder, { type: "callsQuery" }>, "type" | "id">): Promise<CallsResult> {
   return ask<CallsResult>({ type: "callsQuery", id: nextId++, ...q });
+}
+
+export type IqCaptures = Extract<FromRecorder, { type: "iqCaptures" }>;
+type IqAnswer = IqCaptures | { type: "error"; message: string };
+
+/** The radios' captures on disk, and the one being made. */
+export function iqCaptures(): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptures", id: nextId++ });
+}
+
+/** Record every radio for `seconds`, while the recording is working well. */
+export function iqCaptureStart(seconds: number, note: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureStart", id: nextId++, seconds, note });
+}
+
+export function iqCaptureDelete(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureDelete", id: nextId++, name });
 }
 
 export type DataSummary = Extract<FromRecorder, { type: "dataSummary" }>;

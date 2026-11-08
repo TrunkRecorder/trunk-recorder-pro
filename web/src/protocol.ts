@@ -1931,6 +1931,31 @@ export interface DataCounts {
   historySeries: number;
 }
 
+/** A recording of what the radios received. */
+export interface IqCapture {
+  /** Its folder's name. */
+  name: string;
+  path: string;
+  seconds: number;
+  radios: number;
+  bytes: number;
+  note: string;
+  /** Samples the radios lost during it. */
+  lostSamples: number;
+  /** Control channel messages decoded and failed while it was made. */
+  messagesGood: number;
+  messagesBad: number;
+  /** Calls that ended while it was made. */
+  calls: number;
+}
+
+/** A capture being made. */
+export interface IqCaptureActive {
+  name: string;
+  seconds: number;
+  elapsedS: number;
+}
+
 /** A system the store keeps data of: one of the config's (`inConfig`), or one removed whose data stayed. */
 export interface DataSystem extends DataCounts {
   id: number;
@@ -2028,6 +2053,8 @@ export type FromRecorder =
   | ({ type: "radioResult" } & RadioResultBody)
   /** Answers callsQuery: newest first (by start, then path); `next`: more remain, ask again with it as the `cursor`; `error`: only the recent calls (the call store is off). */
   | { type: "callsResult"; id: number; entries: CallEntry[]; next?: string; error?: string }
+  /** Answers iqCaptures, iqCaptureStart and iqCaptureDelete: the captures on disk in `root`, newest first; `active`: the one being made; `recording`: the radios are running; `error`: why the last request or capture failed. */
+  | { type: "iqCaptures"; id: number; active?: IqCaptureActive; captures: IqCapture[]; root: string; recording: boolean; error?: string }
   /** Answers dataSummary: what the store keeps of each system it has (the config's, and those removed from it whose data stayed); `error`: it couldn't say. */
   | { type: "dataSummary"; id: number; systems: DataSystem[]; error?: string }
   /** Answers deleteData: how much went; `error`: not all of it did. */
@@ -2105,6 +2132,12 @@ export type ToRecorder =
   | { type: "pluginAction"; id: number; plugin: string; action: string; value: unknown }
   /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit"; `limit`: rows at most (default 500, up to the registry's cap: the summary's `caps`). */
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths" | "tones"; system?: string; key?: number; hours?: number; limit?: number }
+  /** The radios' captures on disk (answered with iqCaptures). */
+  | { type: "iqCaptures"; id: number }
+  /** Record every radio for `seconds` (5 to 300) of a recording that's working well, to files; nothing is sent anywhere (answered with iqCaptures). */
+  | { type: "iqCaptureStart"; id: number; seconds: number; note?: string }
+  /** Delete capture `name` (answered with iqCaptures). */
+  | { type: "iqCaptureDelete"; id: number; name: string }
   /** What the store keeps of each system (answered with dataSummary). A table's CSV is `GET /api/v1/export/{table}` (`?system=<id>`: one system's). */
   | { type: "dataSummary"; id: number }
   /** Delete these kinds of system `system`'s data (its id; none: every system's) from the store and from what the recorder holds; recordings stay on disk. Answered with dataDeleted. */

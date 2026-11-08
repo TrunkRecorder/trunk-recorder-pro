@@ -178,7 +178,7 @@ trunk-pro replay --source cap1.cu8,center,rate[,format] [--source …] --cc Hz[,
 
 | Option | Default | What it does |
 |---|---|---|
-| `<capture>` | | One capture file (the first argument that isn't an option) |
+| `<capture>` | | One capture file (the first argument that isn't an option), or a SigMF capture: its folder, `.sigmf-collection` or `.sigmf-meta`. A SigMF capture says its centre, rate and format; [one made by the recorder](guides/recordings.md#capture-a-known-good-sample) also says its systems, so it needs no other options. |
 | `--center Hz` | | Its centre frequency |
 | `--rate Hz` | 2400000 | Its sample rate |
 | `--source file,center,rate[,format]` | | A capture with its own centre and rate; repeat for several radios. They're fed in step, as they would be live. |

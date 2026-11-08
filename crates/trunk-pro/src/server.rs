@@ -927,6 +927,29 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             failed(tokio::task::spawn_blocking(move || runtime::set_unit_name(&ctx2, &system, unit, name)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
+        // (Captures read and write the disk: off the async workers.)
+        Command::IqCaptures { id } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::iq_capture::listing(&ctx2, id, None)).await.ok()
+        }
+        Command::IqCaptureStart { id, seconds, note } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                let error = crate::iq_capture::start(&ctx2, seconds, &note).err();
+                crate::iq_capture::listing(&ctx2, id, error)
+            })
+            .await
+            .ok()
+        }
+        Command::IqCaptureDelete { id, name } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                let error = crate::iq_capture::delete(&ctx2, &name).err();
+                crate::iq_capture::listing(&ctx2, id, error)
+            })
+            .await
+            .ok()
+        }
         // (Counting and deleting read and write the store: off the async workers.)
         Command::DataSummary { id } => {
             let ctx2 = ctx.clone();

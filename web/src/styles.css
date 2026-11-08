@@ -125,6 +125,7 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .seg button { background: transparent; border: 0; padding: 7px 14px; cursor: pointer; color: var(--muted); }
 .seg button.on { background: var(--panel-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 .warn { color: var(--warn); margin: 0; }
+.iq-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
 .help { color: var(--muted); font-size: 13px; }
 .help summary { cursor: pointer; }
 .help ul { margin: 8px 0 0; padding-left: 18px; }

@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Capture a known-good sample.** While recording, a button on the RF page records what every
+  radio receives for 30 to 120 seconds, to SigMF files in `iq-captures/` under the capture directory,
+  with what's needed to decode them again and nothing private. Nothing is sent anywhere.
+  `trunk-pro replay <folder>` plays one back with the systems it was made with. See
+  [Recordings](docs/guides/recordings.md#capture-a-known-good-sample).
+
 ## [0.3.2] — 2026-11-07
 
 - **HydraSDR RFOne sources** (#116, #127, thanks @auggiesoft). A new source type, `hydrasdr`

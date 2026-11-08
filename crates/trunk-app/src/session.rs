@@ -775,6 +775,11 @@ impl Session {
     /// The file name (beside the config) the codes are kept in.
     pub const HEARD_FILE: &'static str = "conventional.heard.json";
 
+    /// The engine's status, and each site's band plan in site order.
+    pub fn status_and_bandplans(&self) -> (trunk_core::trunk::Status, Vec<String>) {
+        (self.engine.status(), self.bandplans().into_iter().map(|b| b.1).collect())
+    }
+
     /// Each site's (band plan key, band plan), to keep for the next run.
     fn bandplans(&self) -> Vec<(String, String)> {
         let systems = self.engine.systems();

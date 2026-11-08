@@ -3911,6 +3911,44 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "iqCaptures"
+            },
+            "id": {
+              "type": "number"
+            },
+            "active": {
+              "$ref": "#/definitions/IqCaptureActive"
+            },
+            "captures": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/IqCapture"
+              }
+            },
+            "root": {
+              "type": "string"
+            },
+            "recording": {
+              "type": "boolean"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "captures",
+            "root",
+            "recording"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "dataSummary"
             },
             "id": {
@@ -4301,6 +4339,80 @@
       ],
       "additionalProperties": false,
       "description": "An interface besides the built-in one: static web files, served with the API beside them on a port of its own."
+    },
+    "IqCapture": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Its folder's name."
+        },
+        "path": {
+          "type": "string"
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "radios": {
+          "type": "number"
+        },
+        "bytes": {
+          "type": "number"
+        },
+        "note": {
+          "type": "string"
+        },
+        "lostSamples": {
+          "type": "number",
+          "description": "Samples the radios lost during it."
+        },
+        "messagesGood": {
+          "type": "number",
+          "description": "Control channel messages decoded and failed while it was made."
+        },
+        "messagesBad": {
+          "type": "number"
+        },
+        "calls": {
+          "type": "number",
+          "description": "Calls that ended while it was made."
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "seconds",
+        "radios",
+        "bytes",
+        "note",
+        "lostSamples",
+        "messagesGood",
+        "messagesBad",
+        "calls"
+      ],
+      "additionalProperties": false,
+      "description": "A recording of what the radios received."
+    },
+    "IqCaptureActive": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "elapsedS": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "seconds",
+        "elapsedS"
+      ],
+      "additionalProperties": false,
+      "description": "A capture being made."
     },
     "KeySource": {
       "type": "object",
@@ -9612,6 +9724,68 @@
             "type",
             "id",
             "what"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptures"
+            },
+            "id": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureStart"
+            },
+            "id": {
+              "type": "number"
+            },
+            "seconds": {
+              "type": "number"
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "seconds"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureDelete"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
           ],
           "additionalProperties": false
         },

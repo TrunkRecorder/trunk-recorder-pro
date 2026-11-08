@@ -362,6 +362,33 @@ encrypted audio is still removed.
 
 A call that isn't kept logs `Call not saved - no audio, or shorter than the minimum`.
 
+## Capture a known-good sample
+
+When everything is decoding well, the card at the bottom of the **RF** page records what every
+radio is receiving. Replayed later, it shows whether a change to the decoders still works on your
+system. Choose a length (30, 60 or 120 seconds), add a note if you like, and press **Capture
+known-good sample**. Recording carries on as usual. Nothing is sent anywhere.
+
+Each capture is a folder in `iq-captures/` under the capture directory, with one recording per radio
+in [SigMF](https://sigmf.org/). It takes as much disk as the radios' samples: 288 MB a minute for an
+RTL-SDR at 2.4 MS/s, and 2.4 GB a minute for a radio at 10 MS/s. A capture won't start unless it would
+leave 1 GB free.
+
+The capture's metadata has what it takes to decode it: the systems' frequencies and band plans, and
+how the radios were set ([the fields](../sigmf/trp.sigmf-ext.md)). It leaves out names, unit IDs,
+encryption keys, plugin settings, serial numbers and paths. Radio traffic in the samples themselves
+can still be decoded by anyone who has the files.
+
+To play one back, with the systems it was made with:
+
+```bash
+trunk-pro replay ~/TrunkRecorderPro/iq-captures/20261108-140311 --out replayed
+```
+
+A capture ends early, and isn't kept, if recording stops, the radio is retuned, or the disk can't keep
+up. The card says which. Samples the radio lost are kept as gaps and shown in the list, and a capture
+with any isn't a good reference.
+
 ## Vocoder and frame capture
 
 - **P25 voice decoder** (`vocoder`): which IMBE vocoder turns P25 Phase 1 voice into audio.

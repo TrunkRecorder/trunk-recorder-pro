@@ -144,6 +144,8 @@ pub struct Ctx {
     pub clock: Arc<crate::clock::Clock>,
     /// Key containers unlocked from the interface ([`crate::unlock`]).
     pub unlocked: crate::unlock::Unlocked,
+    /// Recordings of what the radios receive ([`crate::iq_capture`]).
+    pub iq: crate::iq_capture::Captures,
 }
 
 /// Something for the running session to do: the one way into the engine
@@ -170,6 +172,8 @@ pub enum EngineCmd {
     /// Data): here, so nothing the session holds of them is saved after.
     /// Answered with the radios and talkgroups the registry forgot.
     Forget { system: Option<String>, units: bool, registry: bool, done: mpsc::Sender<(usize, usize)> },
+    /// What a capture of the radios keeps of the session.
+    IqLive { done: mpsc::Sender<crate::iq_capture::Live> },
 }
 
 impl Ctx {
@@ -893,7 +897,7 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
 /// On stop, what the source had already sent is decoded first (up to the
 /// queue's 256 blocks: about 2.5 s of 10 ms USRP / Soapy blocks, about 14 s
 /// of RTL-SDR's at 2.4 MSPS): calls in progress keep it.
-fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<EngineCmd>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air) {
+fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<EngineCmd>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air, tap: Arc<crate::iq_capture::Tap>) {
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     // An instant on the same clock (when a driver handed samples over).
     let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
@@ -903,6 +907,7 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
         SourceMsg::Samples { source, block, dropped, at } => {
             debug_assert_eq!(source, feeder.source());
             air.keep_up(&stop);
+            tap.samples(&block, dropped, at);
             match &block {
                 Block::U8(b) => feeder.push(b, dropped, at_ms(at)),
                 Block::Iq(b) => feeder.push_iq(b, dropped, at_ms(at)),
@@ -911,7 +916,10 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
             air.fed(block.len() as u64 + dropped);
         }
         // A change the radio halted for: quiet, not loss (recording ignores the retune itself).
-        SourceMsg::Tuned { gap, .. } => feeder.quiet(gap),
+        SourceMsg::Tuned { center_hz, gap } => {
+            tap.tuned(center_hz, gap);
+            feeder.quiet(gap);
+        }
         m => {
             let _ = ctl.send(EngineCmd::Source(m));
         }
@@ -993,6 +1001,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     let (ctl_tx, rx) = ctl;
     session.set_topics(ctx.topics());
     let at_ms: Arc<Vec<AtomicU64>> = Arc::new(cfg.sources.iter().map(|_| AtomicU64::new(0)).collect());
+    let taps = ctx.iq.session_began(cfg.sources.len());
     let feeders: Vec<JoinHandle<()>> = queues
         .into_iter()
         .enumerate()
@@ -1004,7 +1013,8 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 at_ms[i].store(u64::MAX, Ordering::Relaxed);
             }
             let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz, samples: Default::default(), paced };
-            std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air)).expect("thread")
+            let tap = taps[i].clone();
+            std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air, tap)).expect("thread")
         })
         .collect();
     drop(ctl_tx);
@@ -1098,6 +1108,10 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     let gone = if registry { ctx.shared.radio.lock().unwrap().forget(system.as_deref()) } else { (0, 0) };
                     let _ = done.send(gone);
                 }
+                EngineCmd::IqLive { done } => {
+                    let (status, bandplans) = session.status_and_bandplans();
+                    let _ = done.send(crate::iq_capture::Live { status, bandplans });
+                }
             }
             next = rx.try_recv().ok();
         }
@@ -1126,6 +1140,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     for f in feeders {
         let _ = f.join();
     }
+    ctx.iq.session_ended();
     session.correct_wall_clock(wall_less(now_ms()));
     session.poll(now_ms(), &mut out);
     session.finish(&mut out);

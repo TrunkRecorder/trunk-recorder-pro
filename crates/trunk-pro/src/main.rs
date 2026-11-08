@@ -99,6 +99,7 @@ mod access;
 mod api_v1;
 mod clock;
 mod data;
+mod iq_capture;
 mod directory;
 mod dmrtool;
 mod interfaces;
@@ -386,7 +387,15 @@ fn replay(a: &Args) {
         formats.push(format_of(f[0], f.get(3).copied()));
         sources.push(SourceConfig { center_hz: f[1].parse().unwrap_or(0.0), rate_hz: f[2].parse().unwrap_or(2_400_000.0), auto_tune: a.flag("auto-tune"), guard_hz: a.num("guard", DEFAULT_GUARD_HZ) });
     }
-    if let Some(p) = a.positional.first() {
+    // A SigMF capture says what it is (and one of ours, how to decode it).
+    let capture = a.positional.first().filter(|p| iq_capture::is_sigmf(p)).map(|p| iq_capture::open(p).unwrap_or_else(|e| die(&e)));
+    if let Some(c) = &capture {
+        for r in &c.recordings {
+            files.push(r.data.display().to_string());
+            formats.push(r.format);
+            sources.push(SourceConfig { center_hz: r.center_hz, rate_hz: r.rate_hz, auto_tune: r.auto_tune, guard_hz: r.guard_hz });
+        }
+    } else if let Some(p) = a.positional.first() {
         files.push(p.clone());
         formats.push(format_of(p, None));
         sources.push(SourceConfig { center_hz: a.num("center", 0.0), rate_hz: a.num("rate", 2_400_000.0), auto_tune: a.flag("auto-tune"), guard_hz: a.num("guard", DEFAULT_GUARD_HZ) });
@@ -509,7 +518,18 @@ fn replay(a: &Args) {
         capture_frames: a.flag("capture-frames"),
         ..Default::default()
     };
+    // One of our captures: decoded as the systems it was made with.
+    let made_with = capture.as_ref().and_then(|c| c.config.as_ref().map(|k| k.engine_config(cfg.epoch_ms_at_zero, &c.names)));
+    let cfg = match made_with {
+        Some(m) => EngineConfig { sources: cfg.sources, capture_frames: cfg.capture_frames, ..m },
+        None => cfg,
+    };
+    let multi = if capture.as_ref().is_some_and(|c| c.config.is_some()) { cfg.systems.iter().filter(|s| !s.is_conventional()).count() > 1 } else { multi };
+    let sites = sites || trunk_core::trunk::sites(&cfg.systems).count() > 1;
     let engine = Engine::new(cfg).unwrap_or_else(|e| die(&e));
+    if let Some(c) = &capture {
+        c.bandplans.iter().enumerate().filter(|(_, b)| !b.is_empty()).for_each(|(i, b)| engine.load_bandplan(i, b));
+    }
     // One band plan file per site (with several: <file>.<shortName>, <file>.<shortName>.<site>).
     let bandplans: Vec<String> = a.get("bandplan").map_or_else(Vec::new, |p| {
         let systems = engine.systems();
@@ -531,8 +551,18 @@ fn replay(a: &Args) {
             (h, len)
         })
         .collect();
+    // Where each file's replay starts, and its gaps, in bytes (a capture's: radios start together).
+    let recordings = capture.as_ref().map_or(&[][..], |c| &c.recordings[..]);
+    let starts: Vec<usize> = (0..data.len()).map(|i| recordings.get(i).map_or(0, |r| r.skip as usize * formats[i].bytes_per_sample())).collect();
+    let mut gaps: Vec<std::collections::VecDeque<(usize, u64)>> = (0..data.len()).map(|i| recordings.get(i).map_or_else(Default::default, |r| r.gaps.iter().map(|g| (g.0 as usize * formats[i].bytes_per_sample(), g.1)).collect())).collect();
+    if a.flag("threads") && gaps.iter().any(|g| !g.is_empty()) {
+        die("this capture lost samples, which replay --threads can't reproduce: leave --threads off");
+    }
+    for (i, (file, _)) in data.iter_mut().enumerate() {
+        std::io::Seek::seek(file, std::io::SeekFrom::Start(starts[i] as u64)).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
+    }
     let rate0 = engine.sources()[0].rate_hz;
-    let air_s = (data[0].1 / formats[0].bytes_per_sample()) as f64 / rate0;
+    let air_s = ((data[0].1 - starts[0]) / formats[0].bytes_per_sample()) as f64 / rate0;
     let mut buf = Vec::new();
     let t0 = Instant::now();
     // Interleave the sources in ~13.6 ms chunks (rtl_sdr's 32768-sample transfers
@@ -547,14 +577,14 @@ fn replay(a: &Args) {
         let running = std::sync::atomic::AtomicUsize::new(data.len());
         std::thread::scope(|sc| {
             for (i, (mut file, len)) in data.drain(..).enumerate() {
-                let (engine, done, running, files, formats) = (&engine, &done, &running, &files, &formats);
+                let (engine, done, running, files, formats, starts) = (&engine, &done, &running, &files, &formats, &starts);
                 std::thread::Builder::new()
                     .name(format!("dsp-{i}"))
                     .spawn_scoped(sc, move || {
                         use std::sync::atomic::Ordering::SeqCst;
                         let bps = formats[i].bytes_per_sample();
                         let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
-                        let (mut pos, mut k, mut buf) = (0usize, 0usize, Vec::new());
+                        let (mut pos, mut k, mut buf) = (starts[i], 0usize, Vec::new());
                         loop {
                             let end = (pos + n).min(len - len % bps);
                             if pos >= end {
@@ -585,13 +615,23 @@ fn replay(a: &Args) {
             }
         });
     } else {
-        let mut pos = vec![0usize; data.len()];
+        let mut pos = starts.clone();
         loop {
             let mut any = false;
             for (i, (file, len)) in data.iter_mut().enumerate() {
                 let bps = formats[i].bytes_per_sample();
                 let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
-                let end = (pos[i] + n).min(*len - *len % bps);
+                let mut end = (pos[i] + n).min(*len - *len % bps);
+                // (Samples lost when it was made: silence, as live.)
+                if let Some(&(at, lost)) = gaps[i].front() {
+                    if at <= pos[i] {
+                        engine.push_gap(i, lost);
+                        gaps[i].pop_front();
+                        any = true;
+                    } else {
+                        end = end.min(at);
+                    }
+                }
                 if pos[i] < end {
                     buf.resize(end - pos[i], 0);
                     file.read_exact(&mut buf).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
@@ -951,6 +991,7 @@ fn serve(a: &Args) {
         spool: Mutex::new(None),
         clock: Default::default(),
         unlocked: Default::default(),
+        iq: Default::default(),
     });
     monitor::start(ctx.clone());
     // What each call kept once its plugins are done, for the history list.
