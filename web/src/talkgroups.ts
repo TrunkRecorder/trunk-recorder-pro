@@ -50,16 +50,22 @@ const RR_MODE = /^(A|D|T|E|M|DE|TE|De|Te|DM|AE|Ae)$/;
 
 /**
  * A Mode cell: "D", or the letter with RadioReference's encryption badge
- * after it ("D ENC") — Trunk Recorder's encrypted modes (DE / TE / E), which
- * it doesn't record. Null when it isn't a mode.
+ * after it, as its page's key says: "Enc" full encryption ("T Enc": TE,
+ * which Trunk Recorder doesn't record), "enc" partial, some clear traffic
+ * ("T enc": Te, recorded). A copy may glue the badge on ("TEnc"). Null when
+ * it isn't a mode.
  */
 function rrMode(cell: string): string | null {
-  const [raw = "", ...badges] = cell.split(/\s+/);
+  const c = cell.trim();
+  const badge = /\s*(enc)\w*$/i.exec(c);
+  const raw = badge && badge.index > 0 ? c.slice(0, badge.index) : (c.split(/\s+/)[0] ?? "");
   // A lone lower-case letter ("d") is the upper-case one.
   const mode = raw.length === 1 ? raw.toUpperCase() : raw;
   if (!RR_MODE.test(mode)) return null;
-  if (!badges.some((b) => /^enc/i.test(b)) || mode.endsWith("E")) return mode;
-  return mode === "D" ? "DE" : mode === "T" ? "TE" : "E";
+  if (!badge || badge.index === 0 || /e$/i.test(mode)) return mode;
+  const full = badge[1][0] === "E";
+  const letter = mode === "D" || mode === "T" || mode === "A" ? mode : "";
+  return letter ? letter + (full ? "E" : "e") : full ? "E" : mode;
 }
 
 /**
@@ -69,8 +75,9 @@ function rrMode(cell: string): string | null {
  * no talkgroup number before a run of rows is the category heading they fall
  * under ("Metro County Fire"). The column header line is skipped.
  *
- * The page's badges come along: "ONLINE" after a number breaks the row in
- * two ("167" / "ONLINE<tab>0a7<tab>D…"), and "ENC" follows the mode ("D ENC").
+ * The page's badges come along: "Online" after a number ("8009 Online", or
+ * glued on, "8009Online") or breaking the row in two ("167" /
+ * "ONLINE<tab>0a7<tab>D…"), and "Enc" / "enc" after the mode ("T Enc").
  */
 export function parseRadioReferencePaste(text: string): Talkgroup[] {
   const out: Talkgroup[] = [];
@@ -90,7 +97,7 @@ export function parseRadioReferencePaste(text: string): Talkgroup[] {
     }
     if (/^dec\b/i.test(f[0] ?? "")) continue;
     // A badge in the number's cell ("167 ONLINE").
-    const num = /^(\d+)(\s+[A-Za-z].*)?$/.exec(f[0] ?? "");
+    const num = /^(\d+)(\s*[A-Za-z].*)?$/.exec(f[0] ?? "");
     if (!num) {
       // A heading: a category name, not a sentence of help text.
       if (f.length === 1 && line.length <= 60) category = line;
