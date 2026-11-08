@@ -227,3 +227,39 @@ wideband recording works, and the xA5's three control channels decode as they do
 The core's clock reaches 84 MHz against 80. New dual-clock FIFOs aren't covered by bladeRF's constraints:
 `fpga/bladerf/p25chan.sdc` declares the RX and Nios clocks asynchronous.
 
+## In production (2026-11-08)
+
+Both bladeRFs on the filter bank at 8 MS/s, with libbladeRF 2.6.0, against the 24-hour wideband baseline, when the xA5
+ran at 6 MS/s and the xA4 at 8.
+
+### USB traffic
+
+Calculated, not measured: the bladeRF host account can't read USB counters. A block is 24 + 192 N bytes and there are
+651.04 blocks a second, so each bin costs about 0.125 MB/s. Wideband is 3 bytes a sample, the packed format libbladeRF
+2.6.0 delivers for this driver's format number.
+
+| | Wideband | Filter bank |
+|---|---|---|
+| xA5 | 18 MB/s | about 2.4 MB/s (the 19 bins of its control channels) |
+| xA4 | 24 MB/s | about 1.0 MB/s (the 8 bins of its control channels) |
+| Total | about 42 MB/s | about 3.4 MB/s, about 92 % less |
+
+Each voice channel open beyond those adds 0.125 MB/s. 42 bins, the most a radio can send, is 5.3 MB/s.
+
+### CPU
+
+Per-thread CPU, % of one core, user and system time in the process's own threads. Wideband is the mean of 143 samples
+over 23.9 hours. The filter bank is one 30-second sample 12 minutes after a start; the process averaged 11.1 % over those
+12 minutes.
+
+| Thread | Wideband | Filter bank |
+|---|---|---|
+| `dsp-0` (xA5 decoding) | 5.0 | 4.2 |
+| `dsp-1` (xA4 decoding) | 3.2 | 0.5 |
+| `source-0` (xA5 USB) | 3.0 | 1.6 |
+| `source-1` (xA4 USB) | 3.9 | 1.5 |
+| Whole process | 17.0 | 11.6, about 32 % less |
+
+The wideband figure is at a lower xA5 rate, so the saving at equal rates is larger. Calls vary, and most of what's left
+is voice decoding, so a short sample can be a few points off. Kernel USB work outside these threads isn't counted.
+
