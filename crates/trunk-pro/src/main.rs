@@ -74,7 +74,7 @@
 //! trunk-pro tool cc|voice|frames <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) [options]
 //!     One P25 channel's decode, as JSON lines (the research/native-bench
 //!     format); `frames` only counts the frames of each type.
-//! trunk-pro tool p2 | smartnet | dmr | dmrscan | nxdn | nxdnscan | nxdnsynth | p25synth | snr …
+//! trunk-pro tool p2 | smartnet | dmr | dmrscan | dmrsynth | nxdn | nxdnscan | nxdnsynth | p25synth | perf | snr …
 //!     Phase 2 slots, a SmartNet control channel, one DMR / NXDN channel,
 //!     every DMR / NXDN carrier in a capture, a synthetic NXDN or P25 capture,
 //!     weak-signal curves (each tool's module documents its options).
@@ -98,6 +98,7 @@
 mod access;
 mod api_v1;
 mod clock;
+mod data;
 mod directory;
 mod dmrtool;
 mod interfaces;
@@ -108,6 +109,7 @@ mod monitor;
 mod nxdntool;
 mod p25synth;
 mod paths;
+mod perftool;
 mod platform;
 mod snrtool;
 mod plugins;
@@ -262,6 +264,11 @@ usage:
       One DMR / NXDN channel's messages.
   trunk-pro tool nxdnsynth <out.cu8> --center Hz [--kind conv|typeC|typeD] [--nxdn 48|96]
       A synthetic NXDN capture, for checking a setup.
+  trunk-pro tool dmrsynth <out.cu8> [--center Hz] [--freq Hz]
+      A synthetic DMR repeater with one call on slot 1 (replay --dmr Hz).
+  trunk-pro tool perf rtl|hackrf|airspy <capture.cu8> [--passes N]
+      One radio's read path over a capture, for counting its CPU cost
+      (perf/gate.py).
   trunk-pro tool p25synth <out.cu8> [--center Hz] [--freq Hz] [--keys keys.json] [--voice call.frames.jsonl] [--wav out.wav]
       A synthetic P25 Phase 1 transmission, encrypted with the first key of
       --keys (or clear), for checking decryption (replay --p25 Hz --keys).
@@ -427,7 +434,6 @@ fn replay(a: &Args) {
     };
     let save = SaveRules {
         keep_silent: a.flag("keep-silent"),
-        keep_encrypted: a.flag("record-encrypted"),
         min_call_s: a.num("min-call", 0.0),
         min_transmission_s: a.num("min-transmission", 0.0),
         ..Default::default()
@@ -902,28 +908,32 @@ fn serve(a: &Args) {
         let hub = hub.clone();
         db.on_failure(move |why| runtime::publish(&hub, trunk_app::protocol::ToClient::error(why)));
     }
-    // TEMPORARY (trunk_app::migrate::talkgroup_files_into_store): talkgroup
-    // files an older version kept beside the config, into the store. Delete
-    // this block with it.
+    // TEMPORARY (trunk_app::migrate::files_into_store): talkgroup files and
+    // unit names an older version kept beside or in the config, into the
+    // store. Delete this block with it.
     if !db.is_disabled() {
-        let stored = |name: &str| db.talkgroups(name).is_ok_and(|rows| !rows.is_empty());
-        let mut keep = |name: &str, rows: Vec<trunk_core::trunk::TalkgroupRow>| {
-            kept::write_talkgroups(&db, name, rows.clone());
-            db.flush()?;
-            // (Renamed only once it reads back as it went in.)
-            if db.talkgroups(name)? == rows { Ok(()) } else { Err("not read back as written".into()) }
-        };
-        for n in trunk_app::migrate::talkgroup_files_into_store(&config_path, &cfg, &stored, &mut keep) {
-            log::info!("{n}");
+        fn import<R: runtime::NameList + PartialEq>(db: &db::Db, path: &std::path::Path, cfg: &config::Config, files: &trunk_app::migrate::OldFiles<R>) {
+            let stored = |name: &str| R::stored(db, name).is_ok_and(|rows| !rows.is_empty());
+            let mut keep = |name: &str, rows: Vec<R>| {
+                R::keep(db, name, rows.clone());
+                db.flush()?;
+                // (Renamed only once it reads back as it went in.)
+                if R::stored(db, name)? == rows { Ok(()) } else { Err("not read back as written".into()) }
+            };
+            for n in trunk_app::migrate::files_into_store(path, cfg, files, &stored, &mut keep) {
+                log::info!("{n}");
+            }
         }
+        import(&db, &config_path, &cfg, &trunk_app::migrate::TALKGROUP_FILES);
+        import(&db, &config_path, &cfg, &trunk_app::migrate::UNIT_NAME_FILES);
     }
-    let talkgroups = kept::load_talkgroups(&db, &cfg);
-    runtime::load_names(&shared, &cfg, &talkgroups, &db);
+    let names = kept::load_names(&db, &cfg);
+    runtime::load_names(&shared, &cfg, &names, &db);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
         config_version: std::sync::atomic::AtomicU64::new(1),
-        talkgroups: Mutex::new(talkgroups),
+        names: Mutex::new(names),
         hub: hub.clone(),
         lifecycle: Mutex::new(runtime::Lifecycle::default()),
         phase: Mutex::new(runtime::PhaseInfo::default()),

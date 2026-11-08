@@ -340,7 +340,9 @@ pub fn observation(recorder: &str, app: &str, sys: &System, sites: &[&SiteStatus
                     "identity": id,
                     "controlChannelHz": st.control_channel_hz,
                     "voice": ev.voice.iter().filter(|((s, _), _)| *s == st.site).map(|((_, hz), v)| json!({ "freqHz": hz, "grants": v.grants, "outOfBand": v.out_of_band })).collect::<Vec<_>>(),
-                    "neighbours": st.adjacent.iter().filter(|a| a.freq_hz > 0).map(|a| json!({ "sysId": a.sys_id, "rfss": a.rfss, "site": a.site, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
+                    // Other systems' too, by their WACN and System ID: the
+                    // directory claims each under its own system.
+                    "neighbours": st.adjacent,
                     "callSigns": call_signs.iter().filter(|(hz, _)| **hz > 0).map(|(hz, c)| json!({ "freqHz": hz, "callSign": c })).collect::<Vec<_>>(),
                     "good": st.good,
                     "bad": st.bad,
@@ -549,7 +551,10 @@ mod tests {
         l.call("dcfd", &Call { reason: Some(Reason::NoSource), ..grant(Some(1), 202, 869_000_000, true, false) });
         let mut tgs = Talkgroups::default();
         tgs.insert(101, Talkgroup { number: 101, alpha_tag: "Dispatch".into(), description: "From a website".into(), ..Talkgroup::default() });
-        let (north, south, unheard) = (site(0, "north", 50), site(1, "south", 9), site(2, "east", 0));
+        let (north, mut south, unheard) = (site(0, "north", 50), site(1, "south", 9), site(2, "east", 0));
+        // Its neighbours: its own system's, and another WACN's.
+        let adj = |wacn, sys_id, site, freq_hz| trunk_core::trunk::AdjacentSite { wacn, sys_id, rfss: 1, site, freq_hz };
+        south.adjacent = vec![adj(0xbee00, 0x3a9, 7, 853_000_000), adj(0xabcde, 0x97, 1, 854_000_000)];
         let (o, names) = observation("r_0123456789abcdef", "trunk-pro/test", sys, &[&north, &south, &unheard], l.evidence("dcfd").unwrap(), Some(&tgs)).unwrap();
         assert_eq!(names, ["north", "south"]);
         assert_eq!(o["v"], 1);
@@ -561,6 +566,10 @@ mod tests {
         assert_eq!(s["sites"][1].get("directoryId"), None);
         assert_eq!(s["sites"][0]["heard"]["voice"], json!([{ "freqHz": 851_000_000u64, "grants": 2, "outOfBand": 0 }]));
         assert_eq!(s["sites"][1]["heard"]["voice"][1], json!({ "freqHz": 869_000_000u64, "grants": 1, "outOfBand": 1 }), "a voice channel no source here covered");
+        assert_eq!(s["sites"][1]["heard"]["neighbours"], json!([
+            { "wacn": 0xbee00, "sysId": 0x3a9, "rfss": 1, "site": 7, "freqHz": 853_000_000u64 },
+            { "wacn": 0xabcde, "sysId": 0x97, "rfss": 1, "site": 1, "freqHz": 854_000_000u64 },
+        ]), "as the directory reads them (its observation.ts), another WACN's too");
         assert_eq!(s["fcc"], json!({ "857987500": { "callSign": "WPXT459", "from": "air" } }), "call signs from the air only");
         assert_eq!(o["heardTalkgroups"], json!([
             { "number": 101, "grants": 1, "sites": [0, 1], "encrypted": false },

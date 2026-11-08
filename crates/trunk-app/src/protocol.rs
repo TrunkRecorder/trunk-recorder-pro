@@ -11,6 +11,7 @@
 //! What a connection may hear and send by its access (listen or control) is
 //! decided here too: [`ToClient::audience`], [`Command::listen_may_send`].
 
+use trunk_core::trunk::Origin;
 use serde::{Deserialize, Serialize};
 pub use crate::calls::{CallsPage, CallsQuery, StoredCall};
 use serde_json::{Map, Value};
@@ -91,8 +92,15 @@ pub enum ToClient {
     /// each on connecting, and again whenever a system's are set.
     Talkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
     /// One talkgroup of system `system` edited ([`Command::SetTalkgroup`]):
-    /// each interface makes the same edit to its copy (`talkgroupsEdit`).
-    TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit },
+    /// each interface makes the same edit to its copy (`talkgroupsEdit`),
+    /// with the origin it was given.
+    TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit, origin: Origin },
+    /// A system's own names for its radios, in their order (none: it has
+    /// none): one for each on connecting, and again whenever a system's are set.
+    UnitNames { system: String, unit_names: Vec<trunk_core::trunk::UnitNameRow> },
+    /// Radio `unit` of system `system` named `name` ([`Command::SetUnitName`]):
+    /// each interface makes the same edit to its copy (`unitNamesEdit`).
+    UnitNameEdited { system: String, unit: u32, name: String, origin: Origin },
     Status { status: Value, sources: Vec<Value>, load: f64, calls: Vec<Value> },
     Spectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
     Log { lines: Vec<Value> },
@@ -142,7 +150,94 @@ pub enum ToClient {
         #[serde(flatten)]
         page: CallsPage,
     },
+    /// Answers `dataSummary`: what the store keeps of each system it has,
+    /// the config's and those gone from it (or why it can't say).
+    DataSummary { id: u64, systems: Vec<DataSystem>, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
+    /// Answers `deleteData`: how much went (or why not all of it did).
+    DataDeleted { id: u64, deleted: DataCounts, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
+    /// Answers `compactData`: the store's size, bytes, before and after (or why it couldn't).
+    DataCompacted { id: u64, before_bytes: i64, after_bytes: i64, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
     Quit,
+}
+
+/// A table of the store's, as Setup → Data exports it (a CSV file each:
+/// `GET /api/v1/export/{table}`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum::VariantArray, strum::IntoStaticStr, strum::EnumString)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum DataTable {
+    /// The call index: a row a call.
+    Calls,
+    /// Each radio's transmissions in each call.
+    Transmissions,
+    /// The talkgroups each system was given (its talkgroup file).
+    Talkgroups,
+    /// The names each system was given for its radios (its unit names file).
+    UnitNames,
+    /// Talker aliases heard over the air.
+    TalkerAliases,
+    /// The radio registry's radios: every radio heard.
+    Radios,
+    /// The radio registry's talkgroups: every talkgroup heard.
+    HeardTalkgroups,
+    /// The dashboard's history, by the hour.
+    DashboardHistory,
+}
+
+impl DataTable {
+    pub const ALL: &'static [DataTable] = <Self as strum::VariantArray>::VARIANTS;
+
+    /// Its name, as the route and the file name have it.
+    pub fn name(self) -> &'static str {
+        self.into()
+    }
+}
+
+/// A kind of the store's data, as Setup → Data deletes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum::VariantArray)]
+#[serde(rename_all = "camelCase")]
+pub enum DataKind {
+    /// The call index and each call's transmissions (the recordings stay).
+    Calls,
+    Talkgroups,
+    /// Each system's own names for its radios.
+    UnitNames,
+    TalkerAliases,
+    /// The radio registry: the radios, talkgroups, pairs and frequencies heard.
+    Registry,
+    DashboardHistory,
+}
+
+impl DataKind {
+    pub const ALL: &'static [DataKind] = <Self as strum::VariantArray>::VARIANTS;
+}
+
+/// How many of each the store has (`dataSummary`) or deleted (`dataDeleted`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataCounts {
+    pub calls: i64,
+    pub talkgroups: i64,
+    pub unit_names: i64,
+    pub talker_aliases: i64,
+    /// The radio registry's radios and talkgroups.
+    pub radios: i64,
+    pub heard_talkgroups: i64,
+    /// The dashboard's series.
+    pub history_series: i64,
+}
+
+/// A system the store keeps data of (`dataSummary`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSystem {
+    /// Its id (the config's `id`).
+    pub id: u32,
+    pub short_name: String,
+    /// It's in the config (else it was removed and its data stayed).
+    pub in_config: bool,
+    #[serde(flatten)]
+    pub counts: DataCounts,
 }
 
 /// Something a recorder can do beyond recording (`hello.capabilities`). The
@@ -289,7 +384,14 @@ pub enum Command {
     /// System `system`'s talkgroups, in their order (none: it has none). A
     /// talkgroup file is read into them, and written from them, by the
     /// recorder's own code (the page's `talkgroupsFromCsv` / `talkgroupsToCsv`).
-    SetTalkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
+    /// `from`: where they came from, the origin of the rows that change
+    /// (`at` is the recorder's); none: the rows keep their own (moved).
+    SetTalkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow>, #[serde(default)] from: Option<Origin> },
+    /// System `system`'s own names for its radios, as [`Command::SetTalkgroups`].
+    SetUnitNames { system: String, unit_names: Vec<trunk_core::trunk::UnitNameRow>, #[serde(default)] from: Option<Origin> },
+    /// Radio `unit` of system `system` named `name` (blank: its own name
+    /// taken out). Answered to every interface with `unitNameEdited`.
+    SetUnitName { system: String, unit: u32, name: String },
     /// One talkgroup of system `system`: only the cells `edit` sets change
     /// (a row added when there's none). Answered to every interface with
     /// `talkgroupEdited`.
@@ -339,6 +441,15 @@ pub enum Command {
     /// object it's on, as edited): answered with `pluginActionResult` `id`
     /// once the plugin says how it went.
     PluginAction { id: u64, plugin: String, action: String, #[serde(default)] value: Value },
+    /// What the store keeps of each system: answered with `dataSummary` `id`.
+    DataSummary { id: u64 },
+    /// Delete `kinds` of system `system`'s data (its id; none: every
+    /// system's) from the store, and from what the recorder holds of it:
+    /// answered with `dataDeleted` `id`.
+    DeleteData { id: u64, kinds: Vec<DataKind>, #[serde(default)] system: Option<u32> },
+    /// Give the space deleted data left in the store back to the disk:
+    /// answered with `dataCompacted` `id`.
+    CompactData { id: u64 },
     Quit,
 }
 

@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -28,12 +28,27 @@ test("activeSites: the recorder's order; site names unique in a system; new site
   assert.match(nameProblem(c) ?? "", /Two sites of a are named "a"/);
 });
 
+test("a neighbouring site: by the fields its protocol states, and how a radio roams to it", () => {
+  const p25 = adjacentIdentity({ wacn: 0xbee00, sysId: 0x954, rfss: 1, site: 1, freqHz: 854_000_000 });
+  assert.equal(siteAddress(p25), "BEE00:954:1-1");
+  assert.equal(siteAddress(adjacentIdentity({ wacn: 1, sysId: 0x97, rfss: 1, site: 1, freqHz: 0 })), "00001:097:1-1");
+  const here = { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 2 };
+  assert.equal(roaming(here, p25), "inter-system");
+  assert.equal(roaming(here, { ...p25, wacn: 1 }), "inter-WACN");
+  assert.equal(roaming(here, { ...p25, sysId: 0x1a2 }), "intra-system");
+  assert.ok(sameSite(here, { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 2 }) && !sameSite(here, { wacn: 1, sysId: 0x1a2, rfss: 1, site: 2 }));
+  const nxdn = adjacentIdentity({ wacn: 0, sysId: 0x1a, rfss: 0, site: 5, freqHz: 0 }, "nxdn");
+  assert.deepEqual(nxdn, { sysId: 0x1a, site: 5 }, "no WACN or RFSS to lock on");
+  assert.equal(siteAddress(nxdn), "SysID 1A · site 5");
+  assert.equal(roaming({ sysId: 0x1a, site: 4 }, nxdn), "intra-system");
+});
+
 test("sameOnTheAir: systems set up apart whose sites announce one system", () => {
   const c: Config = defaultConfig();
   c.systems.push(newSystem(c, { shortName: "dcfd" }), newSystem(c, { shortName: "dcfd2" }), newSystem(c, { shortName: "other", expect: { wacn: 0xbee00, sysId: 0x9 } }), newSystem(c, { shortName: "cm", type: "dmr" }));
   const id = (x: Partial<SiteIdentity>): SiteIdentity => ({ nac: null, wacn: null, sysId: null, rfss: null, site: null, ...x });
   const site = (name: string, identity: Partial<SiteIdentity>): SiteStatus =>
-    ({ index: 0, name, nowS: 0, controlChannelHz: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null });
+    ({ index: 0, name, nowS: 0, controlChannelHz: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [] });
   const sys = (shortName: string, sites: SiteStatus[]): SystemStatus => ({ index: 0, shortName, activeCalls: 0, recording: 0, conventionalOpen: 0, callsConcluded: 0, sites });
   assert.deepEqual(sameOnTheAir(c, []), []);
   const live = [sys("dcfd", [site("dcfd", { wacn: 0xbee00, sysId: 0x1a2, site: 1 })]), sys("dcfd2", [site("dcfd2", { wacn: 0xbee00, sysId: 0x1a2, site: 2 })])];
@@ -170,4 +185,17 @@ test("foundRadio: what the picked radio runs at, once its driver has asked it; a
   assert.equal(sourceFor("airspy", mini.serial, mini).rateHz, 6_000_000);
   assert.equal(sourceFor("airspy", "C", busy).rateHz, 6_000_000, "not asked: the default");
   assert.equal(sourceFor("bladerf", blade.serial, blade).rateHz, 10_000_000, "in its range: the default");
+});
+
+test("advice for the sources (the recorder's Config::advice): a typed-in centre that misses the site's voice channels moves, and can go back to auto", () => {
+  const c = defaultConfig();
+  c.sources = [{ type: "rtlsdr", serial: "", centerHz: 849_500_000, rateHz: 2_400_000, gainDb: 25, agc: false, ppm: 0, bufLen: 0, buffers: 0 }];
+  c.systems.push(newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_012_500] }));
+  c.systems[0].sites[0].voiceChannelsHz = [851_512_500, 852_012_500];
+  const a = sourceAdvice(c, [undefined]);
+  assert.ok(a, "advice");
+  assert.ok(a.sources[0].changed && a.sources[0].auto && a.after.reached > a.before.reached, JSON.stringify(a));
+  c.sources[0].centerHz = a.sources[0].centerHz!;
+  c.sources[0].rateHz = a.sources[0].rateHz;
+  assert.equal(sourceAdvice(c, [undefined]), null, "taken: nothing more to say");
 });

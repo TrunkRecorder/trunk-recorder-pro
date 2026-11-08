@@ -7,7 +7,8 @@
 
 use trunk_app::saving::Kind;
 use trunk_app::stats::radio::RegistryChanges;
-use trunk_core::trunk::{TalkgroupRow, UnitAliases};
+use trunk_app::config::{NameLists, SystemNames};
+use trunk_core::trunk::{TalkgroupRow, UnitAliases, UnitNameRow};
 
 use crate::db::{Change, Db};
 
@@ -25,14 +26,18 @@ pub fn write(db: &Db, kind: Kind, key: &str, text: String) {
     db.send(Change::Kept { kind: kind.as_str().into(), key: key.into(), value: Some(text) });
 }
 
-/// The talkgroups of `cfg`'s systems (trunked and conventional), as kept.
-pub fn load_talkgroups(db: &Db, cfg: &trunk_app::Config) -> trunk_app::config::TalkgroupLists {
+/// The names of `cfg`'s systems (trunked and conventional), as kept: their
+/// talkgroups and their own names for their radios.
+pub fn load_names(db: &Db, cfg: &trunk_app::Config) -> NameLists {
     if db.is_disabled() {
         return Default::default();
     }
     let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
-    let read = |name: &String| db.talkgroups(name).inspect_err(|e| log::warn!("Store: talkgroups of {name} not read ({e})")).ok().filter(|rows| !rows.is_empty());
-    names.filter_map(|name| read(name).map(|rows| (name.clone(), rows))).collect()
+    let read = |name: &String| SystemNames {
+        talkgroups: db.talkgroups(name).inspect_err(|e| log::warn!("Store: talkgroups of {name} not read ({e})")).unwrap_or_default(),
+        unit_names: db.unit_names(name).inspect_err(|e| log::warn!("Store: radio names of {name} not read ({e})")).unwrap_or_default(),
+    };
+    names.map(|name| (name.clone(), read(name))).filter(|(_, n)| !n.is_empty()).collect()
 }
 
 /// Keep system `system`'s talkgroups (none: it has none now), in place of
@@ -47,6 +52,14 @@ pub fn write_talkgroups(db: &Db, system: &str, rows: Vec<TalkgroupRow>) {
 pub fn write_talkgroup(db: &Db, system: &str, row: TalkgroupRow, order: usize) {
     if let Some(system_id) = db.system_id(system) {
         db.send(Change::Talkgroup { system_id, row, order });
+    }
+}
+
+/// Keep system `system`'s own names for its radios (none: it has none now),
+/// in place of what's kept. Committed at once.
+pub fn write_unit_names(db: &Db, system: &str, rows: Vec<UnitNameRow>) {
+    if let Some(system_id) = db.system_id(system) {
+        db.send(Change::UnitNames { system_id, rows });
     }
 }
 
@@ -119,18 +132,22 @@ mod tests {
             let mut ems = trunk_core::trunk::parse_rows("Decimal,Alpha Tag,Ignore\n102,EMS,x\n").remove(0);
             ems.comment = String::new();
             write_talkgroup(&db, "a", ems, 1);
+            let named = trunk_core::trunk::replace_rows(&[], trunk_core::trunk::read_unit_names("1,Engine 1\n/^2\\d$/,Medic\n").unit_names, Some(&trunk_core::trunk::Origin { name: "units.csv".into(), at: 9, ..Default::default() }));
+            write_unit_names(&db, "a", named.clone());
             write_registry(&db, "x", Box::new(changes.clone()));
             db.flush().unwrap();
             assert_eq!(read(&db, Kind::Tune, "").as_deref(), Some("{}"));
             assert_eq!(read_units(&db, "a").map(|c| UnitAliases::parse_csv(&c).entries().len()), Some(1));
-            assert_eq!(load_talkgroups(&db, &cfg)["a"], trunk_core::trunk::parse_rows("Decimal,Alpha Tag,Ignore\n# the fire one\n101,Fire,\n102,EMS,x\n"), "{}", db.kind());
+            let kept = load_names(&db, &cfg);
+            assert_eq!(kept["a"].talkgroups, trunk_core::trunk::parse_rows("Decimal,Alpha Tag,Ignore\n# the fire one\n101,Fire,\n102,EMS,x\n"), "{}", db.kind());
+            assert_eq!(kept["a"].unit_names, named, "in their order, with their origins: {}", db.kind());
             let shared = trunk_app::stats::Shared::new();
             load_registry(&db, &shared);
             assert_eq!(serde_json::to_value(&shared.radio.lock().unwrap().systems["x"]).unwrap(), serde_json::to_value(&reg.systems["x"]).unwrap(), "{}", db.kind());
         }
         let off = Db::failed("refused");
         assert_eq!(read(&off, Kind::Tune, ""), None);
-        assert!(load_talkgroups(&off, &cfg).is_empty());
+        assert!(load_names(&off, &cfg).is_empty());
         assert_eq!(off.failure(), Some("refused"));
     }
 }

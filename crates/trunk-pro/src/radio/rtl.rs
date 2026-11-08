@@ -172,6 +172,14 @@ impl Drop for Using {
     }
 }
 
+/// A block from the dongle as it arrives: checked ([`StreamCheck`]), then
+/// sent on. Err once the stream is stuck; false once nobody takes them.
+/// (`tool perf rtl` runs this on a capture.)
+pub(crate) fn take(check: &mut StreamCheck, sink: &mut Sink, raw: &[u8], dropped: u64, at: Instant) -> Result<bool, String> {
+    check.block(raw, at)?;
+    Ok(sink.bytes(Wire::Offset, raw, dropped, at))
+}
+
 fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     let mut b = Device::builder().raw_iq().frequency_hz(cfg.center_hz).sample_rate_hz(cfg.rate_hz).correction_ppm(cfg.ppm.round() as i32);
     b = b.gain(cfg.gain_db.map_or(GainConfig::Auto, GainConfig::Manual));
@@ -211,15 +219,11 @@ fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<
             }
         }
         match rx.next_block(Some(Duration::from_secs(2))).wait() {
-            Ok(Some(block)) => {
-                let at = Instant::now();
-                if let Err(e) = check.block(block.raw_bytes(), at) {
-                    break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in"));
-                }
-                if !sink.bytes(Wire::Offset, block.raw_bytes(), block.dropped_samples(), at) {
-                    break Ok(());
-                }
-            }
+            Ok(Some(block)) => match take(&mut check, sink, block.raw_bytes(), block.dropped_samples(), Instant::now()) {
+                Err(e) => break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in")),
+                Ok(false) => break Ok(()),
+                Ok(true) => {}
+            },
             Ok(None) => break Err(format!("{name}: no samples for 2 s")),
             Err(e) => break Err(format!("{name} USB: {e}")),
         }

@@ -216,7 +216,9 @@ system shares (pre-roll, `maxRecorders`, the vocoder).
   - its `CallManager` (`calls.rs`: turns `Message`s into `Call`s, à la Trunk
     Recorder's `monitor_systems.cc`; standing patches in `patches.rs`); call
     ids come from one `CallIds` sequence shared by every system;
-  - the adjacent sites.
+  - the adjacent sites (`Neighbours` in `message.rs`, shared with the
+    survey: each once by its address, P25's WACN:System:RFSS-site, another
+    system's too when the site sends that system's band plan).
 - **`Conventional`** (`conventional.rs`) covers energy-detected channels,
   tone / NAC / colour-code / RAN matching, and their calls. A conventional
   call opens on energy and ends when its carrier drops, so it doesn't go
@@ -548,10 +550,16 @@ main ─► serve()
   - Everything else kept between runs is the store's (`storage.backend`
     `sqlite` or `postgres`; `trunk-pro/src/kept.rs`, `db/`), keyed by each
     system's id from `config.json`:
-    - talkgroups as rows in `talkgroups`: a file load (`setTalkgroups`)
-      replaces a system's rows, an edit (`setTalkgroup`) upserts one, both
-      committed at once; `parse_rows` / `rows_csv` in trunk-core are the
-      import and export;
+    - each system's names (`SystemNames`): talkgroups as rows in
+      `talkgroups` and its own radio names in `unit_names`. A file load
+      (`setTalkgroups`, `setUnitNames`) replaces a system's list
+      (`runtime::set_names`, one generic over both), an edit
+      (`setTalkgroup`, `setUnitName`) changes one row, all committed at
+      once. Each row carries its origin (`trunk-core/src/trunk/names.rs`:
+      where its names came from, the last change only), set by
+      `replace_rows` and the edits, the same code in the browser build
+      (through wasm); `read_rows` / `rows_csv` and `read_unit_names` /
+      `unit_names_csv` are the import and export;
     - talker aliases in `units` (only those that changed are written);
     - band plans, the Heard list, AutoTune's scores and sharing's state in
       `kept`, written within 10 s of a change (`Session::due`) and at stop;
@@ -642,8 +650,8 @@ schema, and every documented command against `Command::parse`.
     `interfaces`, `installProgress` (with `kind`), `keys`.
   - Only to clients subscribed to the topic: `spectrum` (`spectrum:<i>`),
     `log` (`log`), `rfDetail` (`rf:<i>`), `decodeDetail`
-    (`decode:<shortName>`: also each site's adjacent sites and DMR / NXDN
-    detail, and the patches).
+    (`decode:<shortName>`: also each site's DMR / NXDN detail, and the
+    patches).
   - Replies to the sender only: `configSaved` (to every `setConfig`: the
     version now, and `error` when the edit wasn't taken or saved), `devices`,
     `radios`, `dir`, `trConfig`, `sourceProfile`, `store` (with `kind`; its
@@ -810,7 +818,8 @@ Other conventions:
 | Call JSON (Trunk Recorder fields) | `trunk-core/src/trunk/record.rs` (`call_record`); the type, `CallRecord`: `crates/trunk-recorder-plugin/src/protocol.rs` |
 | File names and folders | `trunk-app/src/filename.rs` |
 | Talkgroup CSV / unit names, talker aliases (`UnitAliases`) | `trunk-core/src/trunk/talkgroups.rs`, `units.rs` |
-| Talkgroup files beside the config (`talkgroups_path`, `TalkgroupFiles`) | `trunk-app/src/config.rs`, `trunk-pro/src/runtime.rs` (`set_talkgroups`, `load_talkgroups`) |
+| Where a row's names came from (`Origin`, `replace_rows`) | `trunk-core/src/trunk/names.rs` |
+| Each system's names beside the config (`SystemNames`, `NameLists`) | `trunk-app/src/config.rs`, `trunk-pro/src/runtime.rs` (`set_names`, `set_talkgroup`, `set_unit_name`), `trunk-pro/src/kept.rs` (`load_names`); in the page, `web/src/controller.ts` (one list machinery for both) |
 | Conventional channel CSV | `trunk-app/src/channels.rs` |
 | Codes conventional frequencies carried | `trunk-app/src/heard.rs` |
 | Control channels, one per protocol | `trunk-core/src/trunk/control.rs` |

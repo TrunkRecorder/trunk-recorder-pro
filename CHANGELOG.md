@@ -14,6 +14,135 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   covers the RFOne's own USB ID (`38af:0001`, with updated firmware, v1.0.2) as well as the Airspy's, which it has
   with the v1.0.0-rc2 it shipped with; both firmwares are tested. An RFOne that libairspy opens as an Airspy source's "first" is
   now called a HydraSDR RFOne, not an Airspy R2.
+
+## [0.3.1] — 2026-11-07
+
+- **Edit a talkgroup's or a radio's names on its page** (#130, #135). On the **Radio system** page,
+  open a talkgroup and click **Edit names** (**Name it** when it has none): its alpha tag,
+  description, tag and category are saved as you leave each box. Tag and Category suggest the ones the
+  system uses already. Open a radio to give it a name of its own; it goes ahead of any patterns in
+  the unit names, so it wins. Both apply at once, even while recording, to the live display, the
+  calls and plugins. The lists stay read-only, so a stray click can't rename anything.
+- **Each talkgroup and unit name says where it came from**: loaded from a file (by name), copied
+  from RadioReference, the systems directory, a Trunk Recorder import, or edited by hand, and when.
+  Only the last change is kept. A talkgroup's or radio's page says it under its heading, and Setup
+  counts them ("212 RadioReference · 3 edited"). Loading a file again only changes the rows whose
+  names it changes; Ignore isn't a name. **If a file would replace names you edited by hand, Setup
+  asks first.** Setup → Data exports the origins with the talkgroups.
+- **Unit names are kept in the store, like talkgroups**, not in the config, so naming a radio no
+  longer needs a restart. Setup's **Unit names** field loads, downloads and clears them as before;
+  the menu of which names come first stays in the config (`unitNames.mode`). **An existing
+  `unitNames.csv` moves into the store by itself** at the first start (the file it's written to
+  beside the config is then kept as `<shortName>.unit-names.csv.imported`). Setup → Data counts,
+  exports and deletes them.
+- **The store upgrades in place**: talkgroups, talker aliases, the radio registry and the dashboard's
+  history are kept.
+- **A system can prefer one of its sites** (#128). A multi-site system's **Preferred site** (in its
+  Sites group) keeps that site's copy of a call heard on several, for every talkgroup that names no
+  site of its own, as a talkgroup file's Preferred Site does for one: while it has at least 90 % of
+  the best copy's clean audio. Off by default.
+- **For interfaces and other tools:** unit names come in `unitNames` messages (rows of `unit`,
+  `name`, `origin`) and are set with `setUnitNames` and `setUnitName`; `unitNames.csv` is no longer
+  in the config. Talkgroup rows carry `origin`, `setTalkgroups` takes an optional `from`, and
+  `talkgroupEdited` says the `origin`. `client.js` has `unitNameRows`, `setUnitNames` and
+  `setUnitName`. The plugin SDK is 0.10.0 on crates.io.
+
+- **Export and delete what the store keeps (#140).** Setup → Data has a new card, Export and
+  delete, for every system or one:
+  - Each table downloads as a CSV file: calls, transmissions, talkgroups, talker aliases, radios
+    heard (with their IDs, names, first and last heard), talkgroups heard and the dashboard's
+    history. The file is named for the system (or `all`), the table, and the date and time.
+  - Ticked kinds are deleted: calls, talkgroups, talker aliases, the radio registry, the dashboard's
+    history. They go from the store and from what the running recorder holds. Recordings stay on
+    disk, and deleted calls aren't indexed again from them at the next start.
+  - Systems removed from the config are listed while the store still keeps their data.
+  - Removing a system now asks whether to delete its data too. Yes is the default.
+  - **Compact DB** gives the space deleted data left inside the store back to the disk (SQLite
+    `VACUUM`, PostgreSQL `VACUUM FULL`), and says the store's size before and after.
+  - For other tools: `GET /api/v1/export/{table}` (`?system=<id>`), and the `dataSummary` and
+    `deleteData` commands.
+- **Setup suggests each source's center and sample rate** (issue #139). For centers typed in as well as
+  Auto ones, and for sample rates: whatever reaches every system's needs, then more channels (listed,
+  and what each system was heard granting this week, by its calls), then with fewer radios, then at a
+  lower total rate (less CPU and USB), without an RTL-SDR past 2.56 MSPS unless that reaches more. Each
+  source's card says what to set, and **Use** takes it (back to Auto when Auto would put it there).
+  **Apply all** takes them all; the RF page says when there are suggestions, and Start's message names
+  the settings that reach what's missed. See [Suggested settings](docs/configuration/sources.md#suggested-settings).
+- **Placement needs what Start needs.** A conventional system's channels, and a DMR, NXDN or EDACS site's
+  frequencies, are all needed: Auto places a radio over the ones still missing before busier channels
+  elsewhere (it took one channel as enough, while Start wanted every one).
+- **The radio registry's size and history are settings.** It used to keep 20,000 radios per
+  system on every machine, forgetting the least recently heard past that, and a statewide system
+  fills that in days. `radioQuery` also returned 5,000 rows at most.
+  - `storage.registryRadios` (default 20,000; `0` for no cap) is the radios kept per system.
+    Talkgroups and pairs follow it.
+  - `storage.registryDays` (default 365; `0` for never) forgets what hasn't been heard for that
+    long. That's saved to the store as anything else that goes.
+  - Both are in Setup → Data and apply at once, in both builds. Platform → Storage shows each
+    system's registry against them.
+  - A `radioQuery` `limit` goes up to the cap, and its `summary` gives the caps (`caps`).
+
+- **Plugins can follow a call as it runs.** The `call.update` topic (SDK 0.10.0: `Plugin::call_update`)
+  sends a call again whenever any of it changes before it ends: another radio talking (its `sources`
+  gain it), an emergency, encryption, a patch, whether it's recorded. TRP had these all along (its own pages use
+  them); only `call.start` and `call.end` reached plugins, so one showing who's talking learned of
+  the second talker only once the call was over.
+- **Plugin settings can be sliders.** A number marked `x-slider`, with a `minimum`, `maximum` and
+  `multipleOf`, is drawn as a slider in those steps with its value beside it (a volume in 0.5 dB steps),
+  saved once it's let go, as Setup's gain sliders are.
+- **Plugins can take TRP's log.** The `log` topic (SDK 0.10.0: `Plugin::log_line`) sends each line
+  TRP logs, at the log's level, as the console prints it, with its time, level and system: a
+  plugin can pass the log on, to MQTT or a chat channel. A plugin isn't sent its own lines.
+- **A plugin can save its own settings.** `settings.save` (SDK 0.10.0: `Host::save_settings`, answered to
+  `Plugin::settings_saved`) saves some of a plugin's settings as if they were typed in on its form: the
+  config is written, every browser's form shows them at once, and the plugin gets them back as
+  `settings`. A plugin that sets itself up from elsewhere (a chat bot's own setup commands) keeps the
+  form in step, and one can fill in names for the IDs a user gives. A save that would restart the
+  plugin is refused (it takes settings as it runs, runs as one copy, has no per-system settings, and
+  keeps what it needs set), the same rule that decides whether a user's edit restarts it. Fields marked `readOnly` are shown on the form, not edited; a read-only web address
+  has a button that opens it in a new tab (labelled by `x-open`) and one that copies it.
+- **Talkgroups and radios are named one way everywhere.** The Radio pages named a radio by the
+  aliases heard alone, ignoring a system's unit tags and their mode (user names first, aliases
+  first, user names only), so they could show an alias the calls didn't. Plugins' unit events and
+  the Decode page's patches and carriers named a talkgroup from the system's talkgroups alone,
+  missing what a conventional row names it. Both now go through the one name book the Radio pages
+  use.
+- **A tone names its talkgroup, as its call does.** Plugins' `tone_pattern` events took the
+  talkgroup's name from the system's talkgroup list, which a conventional system's channel names
+  aren't in, so a page there came with no name ("TG 1") while its recording had one. The tone now
+  takes the name its call has, and the log line and the dashboard's event feed name it too.
+- **A control channel is alive only when it says so, every protocol alike.** One rule for a good block
+  (something decoded cleanly, an idle one too, or a message): DMR's idle control blocks now count, so its
+  site stays locked between calls. A watched site of another system no longer counts as locked or feeds
+  AutoTune, and an EDACS site whose control channel goes quiet is lost after 1.5 s, as DMR's and NXDN's
+  are, where it stayed "locked" forever. An EDACS site is believed once its ID has been heard three
+  times in a row, not from the first (a misread one could say it was another system).
+- **On a P25 system, a Phase 1 voice channel naming another talkgroup ends the call there**, as Phase 2's does: the
+  site gave the channel away by a grant not heard, and the next talkgroup's talkers and cipher would
+  otherwise be taken for the call's.
+- **DMR and NXDN share their channel rules.** A frequency is one channel everywhere it's learned (a DMR
+  channel announcement could leave two channels on one frequency, and a kept table was read back without
+  the check); a voice carrier counts as the site's by the same rule (NXDN took any carrier before it knew
+  the site's RAN).
+- **Call times follow the computer's clock while recording: no more "Stop and Start again".** A
+  recording runs on its own clock, the clock at Start carried on by one that never jumps. On macOS
+  that clock runs at the crystal's rate rather than the corrected one, so on a busy, long-running Mac
+  call times crept seconds away from the right time (a red Platform light past 5 s) until the next
+  Start. Now the times given out (calls, their talkers, unit events, status, plugins) are corrected
+  to the clock as it is now, on every platform. A call keeps the correction it began with until it
+  ends, so its length, its talkers' times and its copies' shared name (multi-site) hold even when the
+  clock is stepped during it. The drift is still shown on the Platform page, but no longer warns.
+
+- **Conventional calls follow the system's recording rules, as trunked calls do.** A talkgroup the
+  talkgroup file marks Ignore isn't recorded (its call is still shown), nor an unlisted one with
+  `recordUnknown` off (a row's own name lists it); `conversationMode` off makes each transmission a
+  call; a call past `maxCallS` carries on in the next with its talker; a call ends `callTimeoutS` after
+  the recorder last heard it, not up to 0.4 s early by the air's clock; and a capture's last frames
+  bring their talkers, cipher and decryption with them, not only their audio.
+- **"Decrypted" and "encrypted" are one rule each.** Live audio, tone patterns and the saved call say
+  the same about a call's decryption (a call's last tone pattern could say otherwise); a grant or update
+  saying a call is encrypted leaves that transmission out of the audio, as the voice's own link control
+  does.
 - **"Change requires restart" is the recorder's call, and right.** The recorder holds each edit against
   the config the run started with and tells the page, so the banner no longer comes up when the recorder
   learns an FCC call sign mid-run, and is right in a page opened after the edit (the browser build's worker

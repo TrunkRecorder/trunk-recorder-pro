@@ -35,15 +35,39 @@ off it.
 ### Center frequency and Auto
 
 `centerHz` is the frequency in the middle of the block of spectrum the source receives, in Hz.
-**`0` means Auto**: when recording starts, the app centers the source over whatever the sources
-before it in the list don't cover yet. It tries, in order: every uncovered system's control channels
-and known voice channels plus the conventional channels; just the control channels (and DMR and NXDN
-watched frequencies) plus the conventional channels; the first uncovered system with its voice
-channels; that system's control channels alone. It also keeps the center off any channel (the DC
-spike at the center of an SDR's band). If none of those fit, recording won't start until you set a
-center by hand.
+**`0` means Auto**: when recording starts, each Auto source in turn is centered over what the
+sources before it don't reach yet. What a system needs comes first: one of a P25 or SmartNet site's
+control channels; every control and watched frequency of a DMR, NXDN or EDACS site; every channel of a
+conventional system. Then the most of the remaining listed channels, packed so what's left needs as
+few more radios as possible. With everything reached, a spare source goes beside the others. The
+center is kept off every channel (the DC spike at the center of an SDR's band). If a source can't be
+placed, recording won't start until you set its center by hand.
 
 Setup shows where an Auto source will be placed under **Center frequency, MHz**.
+
+### Suggested settings
+
+Setup's **Radios** tab suggests a better center and sample rate for each source when there is one,
+for centers typed in as well as Auto ones. It tries the sources on Auto, and each source at each rate
+it runs at (an Airspy's or bladeRF's as the radio said when it was opened), and compares the results
+in this order:
+
+1. every system's needs reached;
+2. more of the channels reached: the ones the config lists, and the frequencies each system was heard
+   granting in the last week, by their calls (also those no source covered);
+3. fewer radios needed;
+4. no RTL-SDR past 2.56 MSPS, where many machines drop samples, unless that reaches more;
+5. a lower total sample rate, which means less CPU and USB traffic;
+6. the fewest changes.
+
+Only a strict improvement is suggested. A capture file's center and rate are the recording's, so they're
+never suggested. Each source's card says what to set, and **Use** takes it. A source is set back to
+Auto when Auto would place it there; otherwise the center is written in. The banner above the sources
+says what the suggestions do together, and **Apply all** takes them all. A source the others then make
+unnecessary says it can be removed.
+
+While recording, the RF page says when Setup has suggestions. When a channel a system needs is out of
+reach, Start's message names the settings that would reach it.
 
 ### Guard band and usable bandwidth
 

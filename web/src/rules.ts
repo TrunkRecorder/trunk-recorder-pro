@@ -12,7 +12,7 @@
 // each time.
 
 import init, * as wasm from "./web/pkg/trunk_web.js";
-import type { Channel, Config, SignalDef, Site, Talkgroup, TonePatternKind } from "./protocol.ts";
+import type { Channel, Config, FoundRadio, Origin, SignalDef, Site, Talkgroup, TalkgroupEdit, TonePatternKind, UnitName } from "./protocol.ts";
 
 let ready = false;
 
@@ -42,6 +42,11 @@ export function configTalkgroups(json: string): string {
   return rules().configTalkgroups(json);
 }
 
+/** The unit names files an older config's JSON holds (`unitNames.csv`), as JSON by short name (migrate.ts). */
+export function configUnitNames(json: string): string {
+  return rules().configUnitNames(json);
+}
+
 /** A talkgroup file read ([`talkgroupsFromCsv`]): its rows, and what in it was passed over. */
 export interface TalkgroupFileReport {
   talkgroups: Talkgroup[];
@@ -65,9 +70,55 @@ export function talkgroupsToCsv(rows: Talkgroup[]): string {
   return rules().talkgroupsToCsv(JSON.stringify(rows));
 }
 
-/** `rows` with talkgroup `number`'s cells set ([column, value], Trunk Recorder's names): the recorder's own edit for setTalkgroup. */
-export function talkgroupsEdit(rows: Talkgroup[], number: number, cells: [string, string][]): Talkgroup[] {
-  return JSON.parse(rules().talkgroupsEdit(JSON.stringify(rows), number, JSON.stringify(cells))) as Talkgroup[];
+/** `rows` with talkgroup `number` edited as `edit` says, by `origin`: the recorder's own edit for setTalkgroup. */
+export function talkgroupsEdit(rows: Talkgroup[], number: number, edit: TalkgroupEdit, origin: Origin): Talkgroup[] {
+  return JSON.parse(rules().talkgroupsEdit(JSON.stringify(rows), number, JSON.stringify(edit), JSON.stringify(origin))) as Talkgroup[];
+}
+
+/** Talkgroups `next` in place of `rows`, as the recorder takes setTalkgroups (`from`: its `from`, with the time set): rows that change are `from`'s. */
+export function talkgroupsReplace(rows: Talkgroup[], next: Talkgroup[], from: Origin | undefined): Talkgroup[] {
+  return JSON.parse(rules().talkgroupsReplace(JSON.stringify(rows), JSON.stringify(next), from ? JSON.stringify(from) : "")) as Talkgroup[];
+}
+
+/** A unit names file read ([`unitNamesFromCsv`]): its rows, and the patterns that aren't regular expressions. */
+export interface UnitNamesFileReport {
+  unitNames: UnitName[];
+  bad: string[];
+}
+
+/** A unit names file (Trunk Recorder's unitTagsFile) read as the recorder reads one (trunk_core::trunk::read_unit_names). */
+export function unitNamesFromCsv(text: string): UnitNamesFileReport {
+  return JSON.parse(rules().unitNamesFromCsv(text)) as UnitNamesFileReport;
+}
+
+/** Radio names as a unit names file. */
+export function unitNamesToCsv(rows: UnitName[]): string {
+  return rules().unitNamesToCsv(JSON.stringify(rows));
+}
+
+/** `rows` with radio `unit` named `name` ("": its own name taken out), by `origin`: the recorder's own edit for setUnitName. */
+export function unitNamesEdit(rows: UnitName[], unit: number, name: string, origin: Origin): UnitName[] {
+  return JSON.parse(rules().unitNamesEdit(JSON.stringify(rows), unit, name, JSON.stringify(origin))) as UnitName[];
+}
+
+/** Radio names `next` in place of `rows`, as `talkgroupsReplace`. */
+export function unitNamesReplace(rows: UnitName[], next: UnitName[], from: Origin | undefined): UnitName[] {
+  return JSON.parse(rules().unitNamesReplace(JSON.stringify(rows), JSON.stringify(next), from ? JSON.stringify(from) : "")) as UnitName[];
+}
+
+/** Each system's names looked up, by its rows and mode: made once for each. */
+const namers = new WeakMap<UnitName[], Map<string, wasm.UnitNamer>>();
+
+/** Radio `unit`'s name by `rows` in `mode` (`heard`: the talker alias heard for it), as the recorder names its calls' talkers. */
+export function unitNameOf(rows: UnitName[], mode: string, unit: number, heard: string | undefined): string | undefined {
+  let byMode = namers.get(rows);
+  if (!byMode) namers.set(rows, (byMode = new Map()));
+  let namer = byMode.get(mode);
+  if (!namer) {
+    namer = new (rules().UnitNamer)(JSON.stringify(rows), mode);
+    byMode.set(mode, namer);
+  }
+  return namer.name(unit, heard);
 }
 
 /** The store's config now, and what has been worked out of it. */
@@ -127,12 +178,13 @@ export interface Placing {
 
 /**
  * What radios are placed to reach (place::Targets): groups of channels, each
- * with how much it counts (calls seen; 1 when unknown), what a radio reaches
- * one of before any channel counts (a site's control channels), and on any
+ * with how much it counts (calls seen; 1 when unknown), what it needs reached
+ * before any channel counts — one of `need` (a site's control channels), or
+ * with `all` every one (a conventional system's channels) — and on any
  * source (the guide's are).
  */
 export interface Targets {
-  groups: { channels: { hz: number; weight: number }[]; need?: number[] }[];
+  groups: { channels: { hz: number; weight: number }[]; need?: number[]; all?: boolean }[];
 }
 
 /**
@@ -143,6 +195,70 @@ export interface Targets {
  */
 export function placeSources(sources: Placing[], targets: Targets): (number | null)[] {
   return JSON.parse(rules().placeSources(JSON.stringify({ sources, targets })));
+}
+
+/** How good a way of tuning the sources is (place::Score), compared in this order. */
+export interface AdviceScore {
+  /** Systems (sites, conventional systems) whose control channel, or channels, no source reaches. */
+  unmet: number;
+  /** The weight of channels reached (one each; calls heard, when known). */
+  reached: number;
+  /** Sources something needs. */
+  needed: number;
+  /** Of those, the ones past their dependable top rate (an RTL-SDR past 2.56 MSPS). */
+  unsteady: number;
+  /** Their sample rates together, Hz. */
+  rateHz: number;
+  /** Sources whose centre or rate changes. */
+  changes: number;
+}
+
+/** Better centres and rates for the sources (place::Advice): how they do now and with it, and each source as advised. */
+export interface Advice {
+  before: AdviceScore;
+  after: AdviceScore;
+  sources: {
+    centerHz: number | null;
+    rateHz: number;
+    /** Its centre or rate is other than now. */
+    changed: boolean;
+    /** Taken alone, it can be on auto (it is, or goes back to it) rather than set to `centerHz`. */
+    auto: boolean;
+    /** On auto in the advice: taking all of it, it is set to auto. */
+    released: boolean;
+    /** Something needs it, with the advice; false: it can go. */
+    needed: boolean;
+  }[];
+}
+
+/** What each system was heard on, by short name: each frequency and its calls (out of band too), to weigh advice by. */
+export type Heard = Record<string, { hz: number; weight: number }[]>;
+
+/**
+ * Better centres and rates for `c`'s sources than they have, or null
+ * (Config::advice): `found` is each source's found radio, `heard` what each
+ * system was heard on.
+ */
+export function sourceAdvice(c: Config, found: (FoundRadio | undefined)[], heard: Heard = {}): Advice | null {
+  return JSON.parse(rules().configAdvice(JSON.stringify(c), JSON.stringify(found.map((f) => f ?? null)), JSON.stringify(heard)));
+}
+
+/** A found radio, by what it says it runs at (`rates` or `rateRange`), as the rules read it. */
+type Found = FoundRadio | undefined;
+
+/** The rates a source of kind `kind` may run at (rates::offered): its radio's (`found`), else its kind's, the usual first. */
+export function sourceRates(kind: string, found?: Found): number[] {
+  return Array.from(rules().sourceRates(kind, JSON.stringify(found ?? null)));
+}
+
+/** Whether the radio runs at `hz`, as it said when opened (true when it didn't say). */
+export function rateOk(hz: number, found: Found): boolean {
+  return rules().rateOk(hz, JSON.stringify(found ?? null));
+}
+
+/** `hz` if the radio runs at it (or didn't say), else the nearest it does: its first rate, or the end of its range. */
+export function rateFor(hz: number, found: Found): number {
+  return rules().rateFor(hz, JSON.stringify(found ?? null));
 }
 
 /** Why a SmartNet site's band plan can't be used, or null (smartnet::Bandplan::from_config). */

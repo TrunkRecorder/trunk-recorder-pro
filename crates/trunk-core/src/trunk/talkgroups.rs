@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 
+use super::names::{stamp, NameRow, Origin};
+
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Talkgroup {
@@ -98,59 +100,17 @@ pub(crate) fn split_csv_on(line: &str, delim: char) -> Vec<String> {
     out
 }
 
+/// A talkgroup file as the engine looks it up, by number: its rows as
+/// [`read_rows`] reads them (the one reader of the file).
 pub fn parse_csv(text: &str) -> Talkgroups {
-    let lines: Vec<&str> = csv_lines(text).collect();
-    let mut out = Talkgroups::new();
-    let Some(&head) = lines.first() else { return out };
-    let delim = csv_delimiter(head);
-    // Headers in any case, as spreadsheets save them, and RadioReference's DEC and Group.
-    let first: Vec<String> = split_csv_on(head, delim)
-        .iter()
-        .map(|c| match c.trim().to_ascii_lowercase().as_str() {
-            "dec" => "decimal".to_string(),
-            "group" => "category".to_string(),
-            "alphatag" => "alpha tag".to_string(),
-            h => h.to_string(),
-        })
-        .collect();
-    let headed = first.first().map(|s| s.as_str()) == Some("decimal");
-    let col = |name: &str| first.iter().position(|c| c.eq_ignore_ascii_case(name));
-    for line in if headed { &lines[1..] } else { &lines[..] } {
-        let f = split_csv_on(line, delim);
-        let get = |name: &str, legacy: usize| -> Option<&str> {
-            if headed {
-                col(name).and_then(|i| f.get(i)).map(|s| s.as_str())
-            } else {
-                f.get(legacy).map(|s| s.as_str())
-            }
-        };
-        let Some(number) = get("Decimal", 0).and_then(|s| s.parse::<u32>().ok()) else { continue };
-        let s = |name: &str, legacy: usize| get(name, legacy).unwrap_or("").to_string();
-        let priority = get("Priority", 7).and_then(|v| v.parse().ok()).unwrap_or(1);
-        let marked = get("Ignore", 99).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "y" | "1" | "x" | "ignore"));
-        out.insert(
-            number,
-            Talkgroup {
-                number,
-                mode: s("Mode", 2),
-                alpha_tag: s("Alpha Tag", 3),
-                description: s("Description", 4),
-                tag: s("Tag", 5),
-                group: s("Category", 6),
-                priority,
-                preferred_nac: get("Preferred NAC", 99).and_then(|v| v.parse().ok()).unwrap_or(0),
-                preferred_site: s("Preferred Site", 99),
-                ignore: marked || priority < 0,
-            },
-        );
-    }
-    out
+    read_rows(text).talkgroups.into_iter().map(|r| (r.tg.number, r.tg)).collect()
 }
 
 /// A system's talkgroup, as kept and as the interfaces have it: its
 /// [`Talkgroup`], the comment written directly above its row in the file it
-/// came from (`#` lines), and the columns this app doesn't know ([name,
-/// value]), kept for the file it's exported to.
+/// came from (`#` lines), the columns this app doesn't know ([name,
+/// value]), kept for the file it's exported to, and where its names came
+/// from (not written to the file).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct TalkgroupRow {
@@ -160,6 +120,26 @@ pub struct TalkgroupRow {
     pub comment: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra: Vec<(String, String)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+}
+
+impl NameRow for TalkgroupRow {
+    type Key = u32;
+    fn key(&self) -> u32 {
+        self.tg.number
+    }
+    fn origin(&self) -> &Option<Origin> {
+        &self.origin
+    }
+    fn origin_mut(&mut self) -> &mut Option<Origin> {
+        &mut self.origin
+    }
+    fn same_names(&self, other: &Self) -> bool {
+        // (Trunk Recorder's way of ignoring, a priority of −1, is Ignore too.)
+        let tg = |r: &Self| Talkgroup { ignore: false, priority: if r.tg.priority < 0 { 1 } else { r.tg.priority }, ..r.tg.clone() };
+        (tg(self), &self.comment, &self.extra) == (tg(other), &other.comment, &other.extra)
+    }
 }
 
 /// A talkgroup file read ([`read_rows`]): its rows, and what in it was
@@ -190,8 +170,8 @@ pub fn parse_rows(text: &str) -> Vec<TalkgroupRow> {
     read_rows(text).talkgroups
 }
 
-/// A talkgroup file's rows, in its order (the headed or the legacy format,
-/// read as [`parse_csv`] reads it), and what was passed over. A comment
+/// A talkgroup file's rows, in its order (the headed or the legacy format),
+/// and what was passed over. A comment
 /// line directly above a row is that row's; others (before the header,
 /// after a blank line) are dropped. A talkgroup in two rows: the later
 /// one, where the first was.
@@ -252,7 +232,7 @@ pub fn read_rows(text: &str) -> TalkgroupFile {
             ignore: get("Ignore").is_some_and(truthy) || priority < 0,
         };
         let extra = cols.iter().enumerate().filter(|(_, c)| !KNOWN.contains(&c.as_str()) && !c.is_empty()).filter_map(|(i, c)| Some((c.clone(), f.get(i)?.clone())).filter(|(_, v)| !v.is_empty())).collect();
-        let row = TalkgroupRow { tg, comment: comment.join("\n"), extra };
+        let row = TalkgroupRow { tg, comment: comment.join("\n"), extra, origin: None };
         comment.clear();
         match at.get(&number) {
             Some(&i) => rows[i] = row,
@@ -328,14 +308,15 @@ pub fn rows_csv(rows: &[TalkgroupRow]) -> String {
 /// value), the column named as Trunk Recorder names it ("Alpha Tag",
 /// "Ignore"…; one it doesn't know is kept as it's given). A talkgroup
 /// without a row gets one when a value is set. Clearing Ignore also undoes
-/// Trunk Recorder's way of ignoring, a priority of −1. The row as it is now
-/// (none: there's none).
-pub fn edit_rows(rows: &mut Vec<TalkgroupRow>, number: u32, cells: &[(&str, &str)]) -> Option<TalkgroupRow> {
-    let i = match rows.iter().position(|r| r.tg.number == number) {
-        Some(i) => i,
+/// Trunk Recorder's way of ignoring, a priority of −1. An edit that adds
+/// the row or changes its names (not Ignore) makes `by` its origin. The row
+/// as it is now (none: there's none).
+pub fn edit_rows(rows: &mut Vec<TalkgroupRow>, number: u32, cells: &[(&str, &str)], by: &Origin) -> Option<TalkgroupRow> {
+    let (i, before) = match rows.iter().position(|r| r.tg.number == number) {
+        Some(i) => (i, Some(rows[i].clone())),
         None if cells.iter().any(|(_, v)| !v.is_empty()) => {
             rows.push(TalkgroupRow { tg: Talkgroup { number, mode: "D".into(), priority: 1, ..Default::default() }, ..Default::default() });
-            rows.len() - 1
+            (rows.len() - 1, None)
         }
         None => return None,
     };
@@ -366,6 +347,7 @@ pub fn edit_rows(rows: &mut Vec<TalkgroupRow>, number: u32, cells: &[(&str, &str
             }
         }
     }
+    stamp(r, before.as_ref(), by);
     Some(r.clone())
 }
 
@@ -425,10 +407,13 @@ mod tests {
         assert_eq!(parse_rows(&csv), rows, "the export reads back the same");
         assert_eq!(parse_csv(&csv), parse_csv(file), "and the engine reads the same talkgroups");
         let mut rows = rows;
-        assert!(edit_rows(&mut rows, 102, &[("Ignore", "")]).is_some_and(|r| !r.tg.ignore && r.tg.priority == 1));
-        let added = edit_rows(&mut rows, 205, &[("Alpha Tag", "Data"), ("Ignore", "x")]).unwrap();
-        assert_eq!((added.tg.mode.as_str(), added.tg.ignore, rows.len()), ("D", true, 3));
-        assert_eq!(edit_rows(&mut rows, 999, &[("Ignore", "")]), None, "nothing to un-ignore");
+        let by = Origin::edited(1000);
+        assert!(edit_rows(&mut rows, 102, &[("Ignore", "")], &by).is_some_and(|r| !r.tg.ignore && r.tg.priority == 1 && r.origin.is_none()), "Ignore isn't a name: no origin");
+        let added = edit_rows(&mut rows, 205, &[("Alpha Tag", "Data"), ("Ignore", "x")], &by).unwrap();
+        assert_eq!((added.tg.mode.as_str(), added.tg.ignore, rows.len(), added.origin.as_ref()), ("D", true, 3, Some(&by)));
+        assert_eq!(edit_rows(&mut rows, 101, &[("Alpha Tag", "Fire; Disp")], &by).unwrap().origin, None, "the same name: unchanged");
+        assert_eq!(edit_rows(&mut rows, 101, &[("Tag", "Fire")], &by).unwrap().origin, Some(by.clone()));
+        assert_eq!(edit_rows(&mut rows, 999, &[("Ignore", "")], &by), None, "nothing to un-ignore");
         let legacy = parse_rows("202,ca,E,Police,Tac 2,Law,City\n");
         assert_eq!((legacy[0].tg.alpha_tag.as_str(), legacy[0].tg.group.as_str()), ("Police", "City"));
         assert_eq!(rows_csv(&[]), "");

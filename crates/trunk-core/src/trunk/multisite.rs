@@ -9,7 +9,7 @@
 //! copy is recorded and the best kept once the last one ends — so a site
 //! that fades mid-call, or whose voice channel falls outside every source,
 //! doesn't cost the call. Best: the most cleanly decoded audio; a site the
-//! talkgroup prefers (talkgroup file) wins while its copy holds
+//! talkgroup prefers (its row's, else its system's) wins while its copy holds
 //! [`PREFERRED_SHARE`] of that. Live audio comes from one copy at a time.
 //!
 //! A copy is dropped only when one saved holds all of it ([`Kept::holds`]);
@@ -23,7 +23,6 @@ use std::collections::HashMap;
 
 use super::calls::{Call, CallId};
 use super::recorded::Recorded;
-use super::talkgroups::Talkgroup;
 
 
 /// Grants for one call reach each site's control channel at nearly the same time.
@@ -103,11 +102,18 @@ impl Held {
     }
 }
 
+/// A copy of a conversation: its call, its site, and whether it's still going.
+#[derive(Clone, Copy, Debug)]
+struct Member {
+    call: CallId,
+    site: u16,
+    open: bool,
+}
+
 #[derive(Default)]
 struct Conversation {
-    /// Every copy: (call, its site); `open` those not ended yet.
-    members: Vec<(CallId, u16)>,
-    open: Vec<CallId>,
+    /// Every copy, ended ones too.
+    members: Vec<Member>,
     held: Vec<Held>,
     /// The copy live audio comes from, and when it last gave some.
     lead: Option<(CallId, f64)>,
@@ -145,7 +151,7 @@ impl MultiSite {
             if conv.is_some_and(|id| ids.contains(&id)) {
                 continue;
             }
-            let theirs: Vec<u16> = conv.map_or(vec![t.1], |id| self.convs[&id].members.iter().map(|m| m.1).collect());
+            let theirs: Vec<u16> = conv.map_or(vec![t.1], |id| self.convs[&id].members.iter().map(|m| m.site).collect());
             if theirs.iter().any(|s| sites.contains(s)) {
                 continue;
             }
@@ -171,18 +177,16 @@ impl MultiSite {
         for other in ids.iter().skip(1) {
             let c = self.convs.remove(other).unwrap_or_default();
             for m in &c.members {
-                self.of.insert(m.0, id);
+                self.of.insert(m.call, id);
             }
             let conv = self.convs.get_mut(&id).unwrap();
             conv.members.extend(c.members);
-            conv.open.extend(c.open);
             conv.held.extend(c.held);
         }
         let conv = self.convs.get_mut(&id).unwrap();
         for &(c, at) in alone.iter().chain([&(call, site)]) {
-            if !conv.members.iter().any(|m| m.0 == c) {
-                conv.members.push((c, at));
-                conv.open.push(c);
+            if !conv.members.iter().any(|m| m.call == c) {
+                conv.members.push(Member { call: c, site: at, open: true });
                 self.of.insert(c, id);
             }
         }
@@ -190,7 +194,7 @@ impl MultiSite {
 
     /// The other copies of `call` (ended ones too, while it's going): (call, site).
     pub fn twins(&self, call: CallId) -> Vec<(CallId, u16)> {
-        self.of.get(&call).and_then(|i| self.convs.get(i)).map_or_else(Vec::new, |c| c.members.iter().copied().filter(|m| m.0 != call).collect())
+        self.of.get(&call).and_then(|i| self.convs.get(i)).map_or_else(Vec::new, |c| c.members.iter().filter(|m| m.call != call).map(|m| (m.call, m.site)).collect())
     }
 
     /// Whether `call` is the copy live audio comes from now (or the only one).
@@ -203,7 +207,7 @@ impl MultiSite {
     pub fn audio_lead(&mut self, call: CallId, now_s: f64) -> bool {
         let Some(c) = self.of.get(&call).and_then(|i| self.convs.get_mut(i)) else { return true };
         let take = match c.lead {
-            Some((lead, last)) => lead == call || !c.open.contains(&lead) || now_s - last > LEAD_HOLD_S,
+            Some((lead, last)) => lead == call || !c.members.iter().any(|m| m.call == lead && m.open) || now_s - last > LEAD_HOLD_S,
             None => true,
         };
         if take {
@@ -216,14 +220,16 @@ impl MultiSite {
     pub fn end(&mut self, call: CallId, held: Option<Held>) -> Ended {
         let Some(&id) = self.of.get(&call) else { return Ended::Alone(held) };
         let conv = self.convs.get_mut(&id).unwrap();
-        conv.open.retain(|&c| c != call);
+        for m in conv.members.iter_mut().filter(|m| m.call == call) {
+            m.open = false;
+        }
         conv.held.extend(held);
-        if !conv.open.is_empty() {
+        if conv.members.iter().any(|m| m.open) {
             return Ended::Waiting;
         }
         let conv = self.convs.remove(&id).unwrap();
         for m in &conv.members {
-            self.of.remove(&m.0);
+            self.of.remove(&m.call);
         }
         Ended::Done(conv.held)
     }
@@ -249,17 +255,15 @@ impl MultiSite {
     /// recorded). When it was the last of its copies: all of them, the one
     /// to save first ([`pick`]), then the others, best first — the next to
     /// try when one isn't kept (too short for its site's rules).
-    /// `prefers(site, tg)`: whether `site` is the one the talkgroup file
-    /// wants `tg` from.
-    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(Option<u16>, &Talkgroup) -> bool) -> Option<Vec<Held>> {
+    /// `prefers(call)`: whether the copy's site is the one its talkgroup is
+    /// wanted from.
+    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(&Call) -> bool) -> Option<Vec<Held>> {
         let mut copies = match self.end(id, held) {
             Ended::Alone(None) | Ended::Waiting => return None,
             Ended::Alone(Some(h)) => vec![h],
             Ended::Done(v) => v,
         };
-        // The talkgroup's preferred site, by any site's talkgroup file.
-        let prefs: Vec<&Talkgroup> = copies.iter().filter_map(|h| h.call.talkgroup_info.as_ref()).collect();
-        let preferred: Vec<bool> = copies.iter().map(|h| prefs.iter().any(|tg| prefers(h.call.site, tg))).collect();
+        let preferred: Vec<bool> = copies.iter().map(|h| prefers(&h.call)).collect();
         let k = pick(&copies, &preferred)?;
         let first = copies.remove(k);
         copies.sort_by(|a, b| b.clean_s().total_cmp(&a.clean_s()));

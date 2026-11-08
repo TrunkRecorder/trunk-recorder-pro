@@ -412,6 +412,12 @@ impl Db {
         self.store()?.talkgroups(id)
     }
 
+    /// A system's stored names for its radios, in their order.
+    pub fn unit_names(&self, system: &str) -> Result<Vec<trunk_core::trunk::UnitNameRow>, String> {
+        let Some(id) = self.system_id(system) else { return Ok(Vec::new()) };
+        self.store()?.unit_names(id)
+    }
+
     /// A system's stored talker aliases.
     pub fn units(&self, system: &str) -> Result<Vec<(u32, trunk_core::trunk::UnitAlias)>, String> {
         let Some(id) = self.system_id(system) else { return Ok(Vec::new()) };
@@ -421,6 +427,40 @@ impl Db {
     /// Every system's stored radio registry.
     pub fn registry(&self) -> Result<Vec<(i64, Option<trunk_app::stats::radio::SystemRadio>)>, String> {
         self.store()?.registry()
+    }
+
+    /// System `system_id`'s stored radio registry (gone from the config: not in memory).
+    pub fn registry_of(&self, system_id: i64) -> Result<Option<trunk_app::stats::radio::SystemRadio>, String> {
+        self.store()?.registry_of(system_id)
+    }
+
+    /// Every system the store has (the config's and those gone from it), by id.
+    pub fn system_names(&self) -> Result<Vec<(i64, String)>, String> {
+        self.store()?.system_names()
+    }
+
+    /// Every system the store has, and how much of each it keeps ([`Store::data_systems`]).
+    pub fn data_systems(&self) -> Result<Vec<(i64, String, trunk_app::protocol::DataCounts)>, String> {
+        self.store()?.data_systems()
+    }
+
+    /// Delete `kinds` of a system's data (none: every system's), once
+    /// every write sent before has been committed ([`Store::delete`]).
+    pub fn delete(&self, kinds: &[trunk_app::protocol::DataKind], system_id: Option<i64>, forget: bool, now_ms: i64) -> Result<trunk_app::protocol::DataCounts, String> {
+        self.flush()?;
+        self.store()?.delete(kinds, system_id, forget, now_ms)
+    }
+
+    /// Give deleted rows' space back to the disk, once every write sent
+    /// before is committed: the store's size before and after ([`Store::compact`]).
+    pub fn compact(&self) -> Result<(i64, i64), String> {
+        self.flush()?;
+        self.store()?.compact()
+    }
+
+    /// A page of a table to export ([`Store::export`]).
+    pub fn export(&self, table: trunk_app::protocol::DataTable, system_id: Option<i64>, after: Option<&[sql::V]>, limit: usize) -> Result<store::ExportPage, String> {
+        self.store()?.export(table, system_id, after, limit)
     }
 
     /// The bytes the store has written to disk since it opened: SQLite's
@@ -636,22 +676,28 @@ mod tests {
 
     /// What's kept is kept by the config's system id: a renamed system
     /// keeps its talkgroups and calls, and a name not the config's has none.
+    /// A conventional system is numbered with the trunked ones and kept alike.
     #[test]
     fn a_renamed_system_keeps_what_is_kept_by_its_id() {
-        let cfg = |name: &str| trunk_app::Config::from_json(&format!(r#"{{"systems":[{{"shortName":"{name}","id":5}}]}}"#)).unwrap();
+        let cfg = |name: &str, conv: &str| trunk_app::Config::from_json(&format!(r#"{{"systems":[{{"shortName":"{name}","id":5}}],"conventional":[{{"shortName":"{conv}","id":6}}]}}"#)).unwrap();
         for db in Db::for_each_backend("rename", Duration::from_millis(10)) {
-            db.set_systems(&cfg("old"));
-            assert_eq!(db.system_id("old"), Some(5));
+            db.set_systems(&cfg("old", "fire"));
+            assert_eq!((db.system_id("old"), db.system_id("fire")), (Some(5), Some(6)), "the config's ids, not a test's stand-in");
             db.send(Change::Talkgroups { system_id: 5, rows: trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n1,A\n") });
-            let mut r = row::tests::record(1, 1000);
-            r.short_name = "old".into();
-            db.send(Change::Call { row: row::call_row("old/1", &r, true, true, None, 0), live: true });
+            for (system, path) in [("old", "old/1"), ("fire", "fire/1")] {
+                let mut r = row::tests::record(1, 1000);
+                r.short_name = system.into();
+                db.send(Change::Call { row: row::call_row(path, &r, true, true, None, 0), live: true });
+            }
             db.flush().unwrap();
-            db.set_systems(&cfg("new"));
+            db.set_systems(&cfg("new", "county-fire"));
             db.flush().unwrap();
             assert_eq!(db.talkgroups("new").unwrap().iter().map(|r| r.tg.alpha_tag.as_str()).collect::<Vec<_>>(), ["A"], "{}", db.kind());
-            assert_eq!(db.calls(&Default::default(), &[db.system_id("new").unwrap()]).unwrap().entries.len(), 1);
-            assert_eq!(db.count("select count(*) from systems where id = 5 and short_name = 'new'"), 1);
+            for system in ["new", "county-fire"] {
+                assert_eq!(db.calls(&Default::default(), &[db.system_id(system).unwrap()]).unwrap().entries.len(), 1, "{system} {}", db.kind());
+            }
+            assert_eq!(db.count("select count(*) from systems where id = 5 and short_name = 'new' and kind = 'p25'"), 1);
+            assert_eq!(db.count("select count(*) from systems where id = 6 and short_name = 'county-fire' and kind = 'conventional'"), 1);
         }
     }
 
@@ -667,7 +713,8 @@ mod tests {
             db.send(Change::Talkgroups { system_id: a, rows: rows.clone() });
             let t = std::time::Instant::now();
             db.send(Change::Talkgroups { system_id: b, rows: parse_rows("1,x\n") });
-            let edited = edit_rows(&mut rows, 102, &[("Ignore", "x")]).unwrap();
+            let edited = edit_rows(&mut rows, 102, &[("Alpha Tag", "Tac 2"), ("Ignore", "x")], &trunk_core::trunk::Origin::edited(1_762_500_000)).unwrap();
+            assert!(edited.origin.is_some());
             db.send(Change::Talkgroup { system_id: a, row: edited, order: 1 });
             // (People's edits commit at once, whatever the interval.)
             while db.talkgroups("a").unwrap() != rows {
@@ -785,6 +832,77 @@ mod tests {
         }
     }
 
+    /// Setup → Data: each table exports a page at a time, every system's or
+    /// one's; a system's data deletes alone (the other's stays), its calls
+    /// marked for the backfill, and a system gone from the config with all
+    /// of it deleted is forgotten.
+    #[test]
+    fn data_exports_and_deletes_by_system() {
+        use trunk_app::protocol::{DataKind, DataTable};
+        use trunk_app::stats::HourRow;
+        for db in Db::for_each_backend("data-tools", Duration::from_millis(10)) {
+            let (a, b) = (db.system_id("a").unwrap(), db.system_id("b").unwrap());
+            for (sys, name) in [(a, "a"), (b, "b")] {
+                db.send(Change::Talkgroups { system_id: sys, rows: trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n1,One\n2,\"Two, too\"\n") });
+                db.send(Change::Units { system_id: sys, aliases: vec![(7, trunk_core::trunk::UnitAlias { alias: "E7".into(), time: 1000, ..Default::default() })] });
+                for i in 0..5 {
+                    let mut r = row::tests::record(1, 1_000_000 + i * 1000);
+                    r.short_name = name.into();
+                    db.send(Change::Call { row: row::call_row(&format!("{name}/{i}"), &r, true, true, None, 0), live: true });
+                }
+                let hour = |series: String, t: i64| HourRow { series, t, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 };
+                db.send(Change::StatsHours(vec![hour(format!("sys/{name}/calls"), 0), hour(format!("sys/{name}/calls"), 3600), hour(format!("sys/{name}"), 0)]));
+                db.send(Change::StatsMinute { t: 60, json: format!(r#"{{"t":60,"s":{{"sys/{name}/calls":[1,1,1],"cpu":[5,5,5]}}}}"#) });
+            }
+            db.send(Change::StatsHours(vec![HourRow { series: "sys/ab/calls".into(), t: 0, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 }, HourRow { series: "cpu".into(), t: 0, avg: 1.0, lo: 0.0, hi: 2.0, n: 60 }]));
+            db.flush().unwrap();
+            let all = |table, system, limit| {
+                let (mut rows, mut after) = (Vec::new(), None);
+                loop {
+                    let p = db.export(table, system, after.as_deref(), limit).unwrap();
+                    rows.extend(p.rows);
+                    match p.next {
+                        Some(n) => after = Some(n),
+                        None => return rows,
+                    }
+                }
+            };
+            assert_eq!(all(DataTable::Calls, None, 3).len(), 10, "paged, every system's ({})", db.kind());
+            let mine = all(DataTable::Calls, Some(a), 2);
+            assert_eq!(mine.len(), 5);
+            assert!(mine.iter().all(|r| r[0] == sql::V::Text("a".into())), "{mine:?}");
+            assert_eq!(all(DataTable::Transmissions, Some(b), 1).len(), db.count(&format!("select count(*) from call_transmissions where system_id = {b}")) as usize);
+            let tgs = all(DataTable::Talkgroups, Some(a), 1);
+            assert_eq!(tgs.iter().map(|r| r[2].clone()).collect::<Vec<_>>(), [sql::V::Text("One".into()), sql::V::Text("Two, too".into())], "in their order, unpaged");
+            assert_eq!(all(DataTable::TalkerAliases, None, 1).len(), 2);
+            // (A system's series are its own and those under it, not "ab"'s.)
+            let hist = all(DataTable::DashboardHistory, Some(a), 1);
+            assert_eq!(hist.len(), 3, "{hist:?} ({})", db.kind());
+            assert_eq!(all(DataTable::DashboardHistory, None, 2).len(), 8);
+
+            let n = db.delete(DataKind::ALL, Some(a), false, 5_000_000).unwrap();
+            assert_eq!((n.calls, n.talkgroups, n.talker_aliases, n.history_series), (5, 2, 1, 2), "{}", db.kind());
+            assert_eq!(db.count(&format!("select count(*) from calls where system_id = {b}")), 5, "the other system's stay");
+            assert_eq!(db.count(&format!("select count(*) from call_transmissions where system_id = {a}")), 0, "with their calls");
+            assert_eq!(db.count("select count(*) from talkgroups"), 2);
+            assert_eq!(db.count("select count(*) from series"), 4, "b's, ab's and cpu");
+            assert_eq!(db.meta(&store::deleted_before_key(Some(a))).unwrap().as_deref(), Some("5000000"));
+            let minutes = db.stats_minutes(0).unwrap();
+            assert!(minutes.iter().all(|m| !m.contains("sys/a/")) && minutes.iter().filter(|m| m.contains("cpu")).count() == 2, "{minutes:?}");
+            assert_eq!(db.count(&format!("select count(*) from systems where id = {a}")), 1, "still the config's");
+
+            // Gone from the config, all of it deleted: forgotten too.
+            db.delete(DataKind::ALL, Some(b), true, 5_000_000).unwrap();
+            assert_eq!(db.count(&format!("select count(*) from systems where id = {b}")), 0, "{}", db.kind());
+            let n = db.delete(&[DataKind::DashboardHistory], None, false, 0).unwrap();
+            assert_eq!((n.history_series, db.count("select count(*) from stats_minutes")), (2, 0));
+            // Compacted, the space deleted rows left goes back (the tables stay).
+            let (before, after) = db.compact().unwrap();
+            assert!(after > 0 && after <= before, "{before} → {after} ({})", db.kind());
+            assert_eq!(db.count("select count(*) from calls"), 0);
+        }
+    }
+
     #[test]
     fn the_last_handle_removes_a_test_folder() {
         let (db, path) = Db::for_test("cleanup");
@@ -855,8 +973,9 @@ mod tests {
         db.flush().unwrap();
         db.checkpoint();
         db.flush().unwrap();
+        // (Linux counts what reached the disk: 0 on tmpfs, or until the kernel writes it back. That it's counted is the point.)
         if cfg!(target_os = "linux") {
-            assert!(db.written().is_some_and(|b| b > 0), "{:?}", db.written());
+            assert!(db.written().is_some(), "{:?}", db.written());
         } else {
             assert_eq!(db.written(), None);
         }
@@ -944,8 +1063,7 @@ mod tests {
     #[ignore]
     fn write_budget() {
         let written = || -> u64 {
-            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
-            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+            writer::io_written("/proc/self/io").unwrap_or(0)
         };
         let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         let mut seed = 0x2545_f491_4f6c_dd1du64;
@@ -999,8 +1117,7 @@ mod tests {
     fn stats_write_budget() {
         use trunk_app::stats::{HourRow, Rollup};
         let written = || -> u64 {
-            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
-            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+            writer::io_written("/proc/self/io").unwrap_or(0)
         };
         let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         let path = dir.join("trp-stats-budget.sqlite");
@@ -1053,8 +1170,7 @@ mod tests {
         use trunk_app::stats::{HourRow, Rollup};
         use trunk_core::trunk::{Call, CallSource, Message, MessageType};
         let written = || -> u64 {
-            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
-            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+            writer::io_written("/proc/self/io").unwrap_or(0)
         };
         let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         let cfg = trunk_app::Config::from_json(r#"{"systems":[{"shortName":"ohmarcs","id":1}]}"#).unwrap();
@@ -1131,8 +1247,7 @@ mod tests {
         use trunk_app::stats::radio::Registry;
         use trunk_core::trunk::{Call, CallSource, Message, MessageType};
         let written = || -> u64 {
-            let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
-            io.lines().find_map(|l| l.strip_prefix("write_bytes: ").and_then(|v| v.trim().parse().ok())).unwrap_or(0)
+            writer::io_written("/proc/self/io").unwrap_or(0)
         };
         let dir = std::env::var("TRP_BENCH_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         let mut seed = 0x2545_f491_4f6c_dd1du64;

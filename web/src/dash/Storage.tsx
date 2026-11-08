@@ -5,7 +5,7 @@
 // card or eMMC. Settings for it are in Setup → Data.
 
 import { Fragment, useState } from "react";
-import type { StoreSizes } from "../protocol.ts";
+import type { PlatformInfo, StoreSizes } from "../protocol.ts";
 import { setSetupTab, setView, type StatsRange } from "../controller.ts";
 import { Card, Choice, Stat, TimeSeries } from "../charts.tsx";
 import { bytes, num } from "../fmt.ts";
@@ -36,8 +36,10 @@ export function tablesOf(s: StoreSizes): TableRow[] {
   return [...t.values()].sort((a, b) => all(b) - all(a));
 }
 
-export function StorageView(props: { store: { backend: string; radioIndex: boolean; talkgroupIndex?: boolean; sizes: StoreSizes; written?: { bytes: number; of: "store" | "server" } | { why: string } } }) {
-  const { backend, radioIndex, talkgroupIndex = true, sizes, written } = props.store;
+type Registry = NonNullable<PlatformInfo["store"]>["registry"];
+
+export function StorageView(props: { store: { backend: string; radioIndex: boolean; talkgroupIndex?: boolean; registry?: Registry; sizes: StoreSizes; written?: { bytes: number; of: "store" | "server" } | { why: string } } }) {
+  const { backend, radioIndex, talkgroupIndex = true, registry, sizes, written } = props.store;
   const off = [!talkgroupIndex && "talkgroup", !radioIndex && "radio"].filter(Boolean) as string[];
   const [range, setRange] = useState<StatsRange>("7d");
   const ranges = useRanges();
@@ -107,6 +109,7 @@ export function StorageView(props: { store: { backend: string; radioIndex: boole
           <TimeSeries lines={[{ label: "Written", color: "var(--series-1)", data: hist?.["store/written"] ?? null, band: true }]} zero fmt={(x) => `${bytes(x * 86400)}/day`} empty="Its history starts as it writes." />
         </Card>
       )}
+      {registry && <RegistryCard registry={registry} toData={toData} />}
       <Card title="Tables and indexes">
         <table className="calls store-sizes">
           <thead>
@@ -158,5 +161,42 @@ export function StorageView(props: { store: { backend: string; radioIndex: boole
         </details>
       </Card>
     </>
+  );
+}
+
+/** How full the radio registry is: each system's rows against its caps (Setup → Data). */
+function RegistryCard(props: { registry: Registry; toData: () => void }) {
+  const { caps, systems } = props.registry;
+  const of = (n: number, cap: number | null) => (cap === null ? num(n, 0) : `${num(n, 0)} of ${num(cap, 0)}`);
+  const full = (n: number, cap: number | null) => cap !== null && n >= cap;
+  return (
+    <Card title="Radio registry">
+      <table className="calls store-sizes">
+        <thead>
+          <tr>
+            <th>System</th>
+            <th className="num">Talkgroups</th>
+            <th className="num">Radios</th>
+            <th className="num">Pairs</th>
+          </tr>
+        </thead>
+        <tbody>
+          {systems.map((x) => (
+            <tr key={x.system}>
+              <td className="mono">{x.system}</td>
+              <td className={`num${full(x.talkgroups, caps.talkgroups) ? " warn" : ""}`}>{of(x.talkgroups, caps.talkgroups)}</td>
+              <td className={`num${full(x.radios, caps.radios) ? " warn" : ""}`}>{of(x.radios, caps.radios)}</td>
+              <td className={`num${full(x.pairs, caps.pairs) ? " warn" : ""}`}>{of(x.pairs, caps.pairs)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted small">
+        {caps.days === null ? "Kept however long ago it was heard" : `Forgotten after ${num(caps.days, 0)} days unheard`}; at a limit, the least recently heard go.{" "}
+        <button className="btn ghost small" onClick={props.toData}>
+          Setup → Data
+        </button>
+      </p>
+    </Card>
   );
 }

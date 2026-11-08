@@ -1,18 +1,37 @@
-// A system's talkgroup names (Setup → Systems): a Trunk Recorder talkgroup
-// CSV loaded from a file, or the talkgroup table copied from RadioReference's
-// web page and pasted in. Each system keeps its own talkgroups, saved as soon
+// A system's names (Setup → Systems): its talkgroups — a Trunk Recorder
+// talkgroup CSV loaded from a file, or the talkgroup table copied from
+// RadioReference's web page and pasted in — and its own names for its radios
+// (Trunk Recorder's unitTagsFile). Each system keeps its own, saved as soon
 // as they change, in the recorder's store; a file is read and written by the
-// recorder's own code (talkgroups.ts).
+// recorder's own code (talkgroups.ts, units.ts). Each row says where its
+// names came from; loading over names edited by hand asks first.
 
 import { useMemo, useRef, useState } from "react";
-import { downloadText, setNotice, setTalkgroups, useApp } from "./controller.ts";
-import { FileInput } from "./inputs.tsx";
-import type { System } from "./protocol.ts";
-import type { TalkgroupFileReport } from "./rules.ts";
+import { downloadText, mayReplaceNames, setNotice, setTalkgroups, setUnitNames, useApp } from "./controller.ts";
+import { Field, FileInput } from "./inputs.tsx";
+import { ORIGIN_SHORT, originCounts } from "./origins.ts";
+import type { Origin, OriginFrom, System, UnitNames } from "./protocol.ts";
+import type { TalkgroupFileReport, UnitNamesFileReport } from "./rules.ts";
 import { isEncryptedMode, parseRadioReferencePaste, readTalkgroupFile, talkgroupFileText, type Talkgroup } from "./talkgroups.ts";
+import { isPattern, readUnitNamesFile, unitNamesFileText } from "./units.ts";
 
 /** A system with a talkgroup file: trunked (its first site's identity helps find it on RadioReference), or conventional. */
 type TalkgroupsOf = Pick<System, "shortName"> & Partial<Pick<System, "sites">>;
+
+/** Where a list's names came from, a chip each way ("212 RadioReference", "3 edited"): said only when they came more than one way, or were edited. */
+function OriginChips(props: { rows: { origin?: Origin }[] }) {
+  const counts = originCounts(props.rows);
+  if (counts.length < 2 && !counts.some(([k]) => k === "edited")) return null;
+  return (
+    <>
+      {counts.map(([k, n]) => (
+        <span key={k} className="chip" title="Where these names came from (each one's last change)">
+          {n} {ORIGIN_SHORT[k]}
+        </span>
+      ))}
+    </>
+  );
+}
 
 export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anchor?: string }) {
   const { sys } = props;
@@ -26,17 +45,20 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
   // Columns kept from the file that Trunk Recorder doesn't know.
   const unknownColumns = useMemo(() => [...new Set(tgs.flatMap((t) => (t.extra ?? []).map(([k]) => k)))], [tgs]);
   const report = loaded && tgs.length ? loaded : null;
-  const set = (next: Talkgroup[], from: TalkgroupFileReport | null = null) => {
-    setLoaded(from);
-    setTalkgroups(sys.shortName, next);
+  /** The talkgroups are `next`, from `from` (none: cleared), unless that loses edits and the user says no. */
+  const set = (next: Talkgroup[], from: OriginFrom | undefined, what: string, file: TalkgroupFileReport | null = null): boolean => {
+    if (next.length && !mayReplaceNames("talkgroups", sys.shortName, next, what)) return false;
+    setLoaded(file);
+    setTalkgroups(sys.shortName, next, from);
+    return true;
   };
 
   const onFile = async (f: File | undefined) => {
     if (!f) return;
     const r = readTalkgroupFile(await f.text());
     if (!r.talkgroups.length) return setNotice(`${f.name}: no talkgroups found.`);
-    set(r.talkgroups, r);
-    setNotice(`Loaded ${r.talkgroups.length} talkgroups from ${f.name} into ${sys.shortName}.${r.skipped.length ? ` ${r.skipped.length} row(s) without a number skipped.` : ""}`);
+    if (set(r.talkgroups, { kind: "file", name: f.name }, f.name, r))
+      setNotice(`Loaded ${r.talkgroups.length} talkgroups from ${f.name} into ${sys.shortName}.${r.skipped.length ? ` ${r.skipped.length} row(s) without a number skipped.` : ""}`);
   };
 
   return (
@@ -55,7 +77,7 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
             <button className="btn ghost" title="Trunk Recorder CSV, with a header row" onClick={() => downloadText(`${sys.shortName || "system"}.talkgroups.csv`, talkgroupFileText(tgs))}>
               Download
             </button>
-            <button className="btn ghost" onClick={() => set([])}>
+            <button className="btn ghost" onClick={() => set([], undefined, "")}>
               Clear
             </button>
           </>
@@ -64,6 +86,7 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
       <FileInput inputRef={fileRef} accept=".csv,.tsv,.txt,text/csv,text/plain" onFile={(f) => void onFile(f)} />
       {tgs.length > 0 && (
         <div className="row tg-facts">
+          <OriginChips rows={tgs} />
           {ignored > 0 && <span className="chip">{ignored} ignored</span>}
           {encrypted > 0 && <span className="chip" title="Not recorded">{encrypted} encrypted</span>}
           {report?.legacy && <span className="chip" title="Trunk Recorder's old fixed columns; Download adds a header row">no header row</span>}
@@ -90,7 +113,7 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
           sys={sys}
           replacing={tgs.length}
           onUse={(list) => {
-            set(list);
+            if (!set(list, { kind: "radioReference" }, "The pasted table")) return;
             setPasting(false);
             setNotice(`Loaded ${list.length} talkgroups from RadioReference into ${sys.shortName}.`);
           }}
@@ -98,6 +121,76 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
         />
       )}
     </div>
+  );
+}
+
+/**
+ * A system's own names for its radios (Trunk Recorder's unitTagsFile, kept
+ * as rows) and which names come first (its unitTagsMode, in the config:
+ * `value`). Radios are named one at a time on their Radio page.
+ */
+export function UnitNamesField(props: { system: string; value: UnitNames | undefined; onChange: (u: UnitNames | undefined) => void; anchor: string; needs?: string }) {
+  const rows = useApp().unitNames[props.system] ?? [];
+  const ref = useRef<HTMLInputElement>(null);
+  // The patterns the file loaded last held that aren't regular expressions (until the names are replaced).
+  const [loaded, setLoaded] = useState<UnitNamesFileReport | null>(null);
+  const patterns = rows.filter(isPattern).length;
+  const bad = loaded && rows.length ? loaded.bad : [];
+  const mode = props.value?.mode ?? "";
+  return (
+    <Field label="Unit names" needs={props.needs} anchor={props.anchor}>
+      <div className="row">
+        <button className="btn" onClick={() => ref.current?.click()}>
+          Load CSV…
+        </button>
+        <span className="mono">{rows.length ? `${rows.length - patterns} radio${rows.length - patterns === 1 ? "" : "s"}${patterns ? `, ${patterns} pattern${patterns === 1 ? "" : "s"}` : ""}` : "none"}</span>
+        {rows.length > 0 && (
+          <>
+            <button className="btn ghost" title="Trunk Recorder's unitTagsFile: unit,name lines" onClick={() => downloadText(`${props.system || "system"}.units.csv`, unitNamesFileText(rows))}>
+              Download
+            </button>
+            <button
+              className="btn ghost"
+              onClick={() => {
+                setLoaded(null);
+                setUnitNames(props.system, []);
+              }}
+            >
+              Clear
+            </button>
+          </>
+        )}
+        <select value={mode} aria-label="Which names come first" onChange={(e) => props.onChange(e.target.value ? { mode: e.target.value as UnitNames["mode"] } : undefined)}>
+          <option value="">These first, then aliases heard</option>
+          <option value="ota">Aliases heard first</option>
+          <option value="user_only">Only these</option>
+          <option value="none">No names</option>
+        </select>
+      </div>
+      {rows.length > 0 && (
+        <div className="row tg-facts">
+          <OriginChips rows={rows} />
+          {bad.length > 0 && (
+            <span className="chip warn" title={bad.slice(0, 5).join("\n")}>
+              {bad.length} pattern{bad.length === 1 ? "" : "s"} that name nothing (not a regular expression)
+            </span>
+          )}
+        </div>
+      )}
+      <FileInput
+        inputRef={ref}
+        accept=".csv,text/csv,text/plain"
+        onFile={async (f) => {
+          if (!f) return;
+          const r = readUnitNamesFile(await f.text());
+          if (!r.unitNames.length) return setNotice(`${f.name}: no unit names found.`);
+          if (!mayReplaceNames("unitNames", props.system, r.unitNames, f.name)) return;
+          setLoaded(r);
+          setUnitNames(props.system, r.unitNames, { kind: "file", name: f.name });
+          setNotice(`Loaded ${r.unitNames.length} unit names from ${f.name} into ${props.system}.`);
+        }}
+      />
+    </Field>
   );
 }
 

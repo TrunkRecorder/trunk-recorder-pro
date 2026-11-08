@@ -19,7 +19,7 @@ import { findOnAir, findPlaces, setTalkgroups, snapshot, updateConfig, useSelect
 import { bundleSiteName, lookForBundle } from "./lookFor.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { Modal } from "./Identify.tsx";
-import type { Config, Site, System, Talkgroup } from "./protocol.ts";
+import type { Config, OriginFrom, Site, System, Talkgroup } from "./protocol.ts";
 import { mergeTalkgroups, readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
 
 export interface Bundle {
@@ -143,6 +143,16 @@ export function freeShortName(c: Config, wanted: string): string {
 /** The bundle's talkgroups (its talkgroup file, read). */
 const bundleTalkgroups = (b: Bundle): Talkgroup[] => (b.talkgroupsCsv.trim() ? readTalkgroupFile(b.talkgroupsCsv).talkgroups : []);
 
+/** Where the bundle's talkgroups came from: its directory (by its host), else the file it was read from. */
+function bundleOrigin(b: Bundle): OriginFrom {
+  if (!b.source.directory) return { kind: "file", name: b.source.id };
+  try {
+    return { kind: "directory", name: new URL(b.source.directory).host };
+  } catch {
+    return { kind: "directory", name: b.source.directory };
+  }
+}
+
 /** Add the bundle's system (these sites of it) as `shortName`, with its talkgroups. */
 export function addSystem(b: Bundle, shortName: string, sites: number[], talkgroups: Record<string, Talkgroup[]>): void {
   updateConfig((x) => {
@@ -150,7 +160,7 @@ export function addSystem(b: Bundle, shortName: string, sites: number[], talkgro
     x.systems.push(sys);
   });
   const theirs = bundleTalkgroups(b);
-  if (theirs.length) setTalkgroups(shortName, mergeTalkgroups(talkgroups[shortName] ?? [], theirs).talkgroups);
+  if (theirs.length) setTalkgroups(shortName, mergeTalkgroups(talkgroups[shortName] ?? [], theirs).talkgroups, bundleOrigin(b));
 }
 
 /**
@@ -186,7 +196,7 @@ export function updateSystem(b: Bundle, i: number, sites: number[], talkgroups: 
     }
   });
   const m = mergeTalkgroups(talkgroups[shortName] ?? [], bundleTalkgroups(b));
-  if (m.added) setTalkgroups(shortName, m.talkgroups);
+  if (m.added) setTalkgroups(shortName, m.talkgroups, bundleOrigin(b));
   return m.added;
 }
 

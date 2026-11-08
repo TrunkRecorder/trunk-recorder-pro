@@ -41,8 +41,8 @@ with `--config` files in different folders never share band plans, talker aliase
 - **Frequencies are in Hz, everywhere.** 857.9875 MHz is `857987500`. Keys carry their unit in the
   name: `…Hz`, `…Db`, `…S` (seconds), `…Kbps`, `…Mb`, `…PerS`. The Airspy gains are the driver's
   steps (`…Step`), not dB.
-- **A key ending in `Csv` holds a file's contents, not a path** (`unitNames.csv`).
-  A key ending in `File` holds a path (`channelFile`).
+- **A key ending in `File` holds a path** (`channelFile`). Talkgroups and unit names aren't in the
+  config at all: they're kept in the recorder's store, loaded and edited in Setup.
 - **A missing key takes its default**, listed in each table. The few marked ✓ in the Required column
   have no default: a source without its `centerHz`, for example, makes the file unreadable.
 - **A missing `sources` key gives one RTL-SDR** with default settings (first free dongle, Auto
@@ -169,6 +169,20 @@ PostgreSQL, backups are the database's.
 thousand at a time, when the app starts and every hour after. `0` keeps them all. It never deletes
 the calls' audio and JSON files: they stay where they were recorded (deleting recordings is issue
 #25).
+
+**The radio registry** is every talkgroup, radio and pair of radios each system has heard: the
+Radio page, first-heard alerts and `radioQuery` answer from it. It's held in memory (about 2 kB a
+radio) and saved in the store as it changes. Two settings bound it, per system:
+
+| Setting | Default | |
+|---|---|---|
+| `registryRadios` | 20,000 | Radios kept. Past it, the least recently heard go. Talkgroups get a quarter as many (5,000 at least) and pairs two and a half times as many. `0`: no cap, so the days alone bound it. |
+| `registryDays` | 365 | Days a talkgroup, radio or pair not heard is kept. `0`: however old. |
+
+What's forgotten comes back as new if it's heard again. A statewide system can fill 20,000 radios
+in days, so raise it on a computer with the memory. Both apply at once (Setup → Data), and
+Platform → Storage shows how full each system's registry is. `radioQuery`'s `summary` gives the
+caps (`caps`), and a `limit` up to `caps.radios` returns every radio heard.
 
 `commitSeconds` (default 300, 10 to 3600) is how far apart the store's commits are when calls are
 coming in. Each commit writes whole pages, twice on SQLite (the log, then the database), so fewer

@@ -4,7 +4,9 @@
 //! publishes what happens to the browser interface through the [`Hub`].
 
 use crate::kept;
-use trunk_core::trunk::TalkgroupRow;
+use trunk_app::config::{edit_names, NameLists, SystemNames};
+use trunk_app::protocol::TalkgroupEdit;
+use trunk_core::trunk::{edit_rows, edit_unit_names, replace_rows, NameRow, Origin, TalkgroupRow, UnitNameRow};
 use trunk_app::saving::Kind;
 use std::collections::VecDeque;
 use std::fs;
@@ -93,8 +95,8 @@ pub struct Ctx {
     pub config: Mutex<Config>,
     /// The config's version: one more each time it changes ([`Ctx::config_changed`]).
     pub config_version: AtomicU64,
-    /// Each system's talkgroup file, as kept ([`kept::load_talkgroups`]).
-    pub talkgroups: Mutex<trunk_app::config::TalkgroupLists>,
+    /// Each system's talkgroups and radio names, as kept ([`kept::load_names`]).
+    pub names: Mutex<NameLists>,
     pub hub: Hub,
     /// What the radios are doing ([`Lifecycle`]): changed only through its
     /// methods on `Ctx`, each holding the lock throughout, so two never
@@ -155,12 +157,19 @@ pub enum EngineCmd {
     Talkgroups { short_name: String, rows: Vec<TalkgroupRow> },
     /// One talkgroup of a system's file changed (an Ignore flag set from the dashboard).
     Talkgroup { short_name: String, number: u32, row: Option<trunk_core::trunk::Talkgroup> },
+    /// A system's own names for its radios changed (loaded, or one named on its page).
+    UnitNames { short_name: String, rows: Vec<UnitNameRow> },
     /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
     Keys { short_name: String, ring: Option<Arc<trunk_core::p25::crypt::Keyring>> },
     /// A system's config changed: what sharing uses of it, its switch, directory link and licenses ([`trunk_app::share::sync`]).
     ShareSystem(trunk_app::config::System),
     /// How a system's share went.
     Shared { short_name: String, result: Result<Option<trunk_app::share::Linked>, String> },
+    /// Forget system `system`'s (none: every system's) talker aliases and
+    /// radio registry, as `units` and `registry` say (deleted in Setup →
+    /// Data): here, so nothing the session holds of them is saved after.
+    /// Answered with the radios and talkgroups the registry forgot.
+    Forget { system: Option<String>, units: bool, registry: bool, done: mpsc::Sender<(usize, usize)> },
 }
 
 impl Ctx {
@@ -209,8 +218,8 @@ impl Ctx {
     /// the changes in order): a new version, told to every browser. Returns it.
     pub fn config_changed(&self, c: &Config) -> u64 {
         self.db.set_systems(c);
-        let files = self.talkgroups.lock().unwrap().clone();
-        self.shared.names.lock().unwrap().set_config(c, &files);
+        let names = self.names.lock().unwrap().clone();
+        self.shared.set_config(c, &names);
         let version = self.config_version.fetch_add(1, Ordering::SeqCst) + 1;
         publish(&self.hub, ToClient::Config { config: Box::new(c.clone()), version });
         self.restart_check(c);
@@ -494,8 +503,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     // `now_ms` is the one plus the other (wall time that never jumps).
     let epoch_ms = crate::clock::unix_ms() as f64;
     let epoch_at = Instant::now();
-    let talkgroups = ctx.talkgroups.lock().unwrap().clone();
-    let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| kept::read(&ctx.db, Kind::Bandplan, name), local_offset)?;
+    let names = ctx.names.lock().unwrap().clone();
+    let mut session = Session::new(cfg.clone(), &names, epoch_ms, &|name| kept::read(&ctx.db, Kind::Bandplan, name), local_offset)?;
     session.attach(ctx.shared.clone());
     if cfg.systems.iter().any(|s| s.share) {
         session.set_recorder(&crate::directory::recorder_id());
@@ -525,7 +534,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_heard(&kept::read(&ctx.db, Kind::Heard, "").unwrap_or_default());
     session.load_sharing(&kept::read(&ctx.db, Kind::Sharing, "").unwrap_or_default());
     session.load_tune(&kept::read(&ctx.db, Kind::Tune, "").unwrap_or_default());
-    ctx.plugins.start(&cfg, plugin_calls(&ctx));
+    ctx.plugins.start(&cfg, plugin_calls(&ctx), plugin_saves(&ctx));
     let stop = Arc::new(AtomicBool::new(false));
     // Each source's samples queue for its own decoding thread ([`feed_source`]).
     let mut queues = Vec::new();
@@ -582,69 +591,152 @@ fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
     let _ = (ctx, cfg);
 }
 
-/// System `system`'s talkgroups are now `rows` (none: it has none): kept,
-/// told to every browser, and taken by the recording at once; written in
-/// the background ([`kept::write_talkgroups`]). A talkgroup in two rows:
-/// the later one, where the first was.
-pub fn set_talkgroups(ctx: &Ctx, system: &str, rows: Vec<TalkgroupRow>) -> Result<(), String> {
+/// A list of each system's names ([`SystemNames`]), as the recorder keeps
+/// it, tells the recording, and tells the interfaces.
+pub trait NameList: NameRow + Sized {
+    fn of(n: &mut SystemNames) -> &mut Vec<Self>;
+    /// Keep system `system`'s, in place of what's kept.
+    fn keep(db: &crate::db::Db, system: &str, rows: Vec<Self>);
+    /// System `system`'s as kept.
+    fn stored(db: &crate::db::Db, system: &str) -> Result<Vec<Self>, String>;
+    fn engine(short_name: String, rows: Vec<Self>) -> EngineCmd;
+    fn told(system: String, rows: Vec<Self>) -> ToClient;
+}
+
+impl NameList for TalkgroupRow {
+    fn of(n: &mut SystemNames) -> &mut Vec<Self> {
+        &mut n.talkgroups
+    }
+    fn keep(db: &crate::db::Db, system: &str, rows: Vec<Self>) {
+        kept::write_talkgroups(db, system, rows);
+    }
+    fn stored(db: &crate::db::Db, system: &str) -> Result<Vec<Self>, String> {
+        db.talkgroups(system)
+    }
+    fn engine(short_name: String, rows: Vec<Self>) -> EngineCmd {
+        EngineCmd::Talkgroups { short_name, rows }
+    }
+    fn told(system: String, talkgroups: Vec<Self>) -> ToClient {
+        ToClient::Talkgroups { system, talkgroups }
+    }
+}
+
+impl NameList for UnitNameRow {
+    fn of(n: &mut SystemNames) -> &mut Vec<Self> {
+        &mut n.unit_names
+    }
+    fn keep(db: &crate::db::Db, system: &str, rows: Vec<Self>) {
+        kept::write_unit_names(db, system, rows);
+    }
+    fn stored(db: &crate::db::Db, system: &str) -> Result<Vec<Self>, String> {
+        db.unit_names(system)
+    }
+    fn engine(short_name: String, rows: Vec<Self>) -> EngineCmd {
+        EngineCmd::UnitNames { short_name, rows }
+    }
+    fn told(system: String, unit_names: Vec<Self>) -> ToClient {
+        ToClient::UnitNames { system, unit_names }
+    }
+}
+
+/// Why `system` can't be a system's short name the names are kept by.
+fn names_of(system: &str) -> Result<(), String> {
     if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
         return Err(format!("bad short name {system:?}"));
     }
-    let mut at = std::collections::HashMap::new();
-    let mut once: Vec<TalkgroupRow> = Vec::with_capacity(rows.len());
-    for r in rows {
-        match at.get(&r.tg.number) {
-            Some(&i) => once[i] = r,
-            None => {
-                at.insert(r.tg.number, once.len());
-                once.push(r);
-            }
-        }
-    }
-    let rows = once;
-    // (Handed to the writer with the lock held: two browsers' edits are written in the order they're kept.)
-    {
-        let mut lists = ctx.talkgroups.lock().unwrap();
-        if rows.is_empty() {
-            lists.remove(system);
-        } else {
-            lists.insert(system.to_string(), rows.clone());
-        }
-        kept::write_talkgroups(&ctx.db, system, rows.clone());
-    }
-    ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), rows: rows.clone() });
-    // (The config first, then the names: as config_changed takes them.)
-    let (cfg, lists) = (ctx.config.lock().unwrap().clone(), ctx.talkgroups.lock().unwrap().clone());
-    ctx.shared.names.lock().unwrap().set_config(&cfg, &lists);
-    publish(&ctx.hub, ToClient::Talkgroups { system: system.to_string(), talkgroups: rows });
     Ok(())
 }
 
-/// One talkgroup of system `system`'s file edited: only the cells `edit`
+/// The names the dashboard answers with follow the names kept (the config
+/// first, then the names: as config_changed takes them).
+fn names_changed(ctx: &Ctx) {
+    let (cfg, names) = (ctx.config.lock().unwrap().clone(), ctx.names.lock().unwrap().clone());
+    ctx.shared.set_config(&cfg, &names);
+}
+
+/// The unix second now: an origin's time.
+fn origin_now() -> i64 {
+    crate::clock::unix_s() as i64
+}
+
+/// System `system`'s talkgroups or radio names are now `rows` (none: it
+/// has none): kept, told to every browser, and taken by the recording at
+/// once; written in the background. `from`: where they came from, the
+/// origin of the rows that change ([`replace_rows`]; none: as they come).
+pub fn set_names<R: NameList>(ctx: &Ctx, system: &str, rows: Vec<R>, from: Option<Origin>) -> Result<(), String> {
+    names_of(system)?;
+    let from = from.map(|f| f.at(origin_now()));
+    // (Handed to the writer with the lock held: two browsers' edits are written in the order they're kept.)
+    let rows = edit_names(&mut ctx.names.lock().unwrap(), system, |n| {
+        let list = R::of(n);
+        *list = replace_rows(list, rows, from.as_ref());
+        R::keep(&ctx.db, system, list.clone());
+        list.clone()
+    });
+    ctx.tell_engine(R::engine(system.to_string(), rows.clone()));
+    names_changed(ctx);
+    publish(&ctx.hub, R::told(system.to_string(), rows));
+    Ok(())
+}
+
+/// One talkgroup of system `system`'s edited by hand: only the cells `edit`
 /// sets change. Kept, taken by the recording and told to every browser at
-/// once (the row alone, not the file); written in the background.
-pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::protocol::TalkgroupEdit) -> Result<(), String> {
-    if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
-        return Err(format!("bad short name {system:?}"));
-    }
-    let row = {
-        // (Edited and handed to the writer with the lock held: edits are written in the order they're kept.)
-        let mut lists = ctx.talkgroups.lock().unwrap();
-        let rows = lists.entry(system.to_string()).or_default();
-        let edited = trunk_core::trunk::edit_rows(rows, number, &edit.cells());
+/// once (the row alone, not the list); written in the background.
+pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: TalkgroupEdit) -> Result<(), String> {
+    names_of(system)?;
+    let origin = Origin::edited(origin_now());
+    // (Edited and handed to the writer with the lock held: edits are written in the order they're kept.)
+    let row = edit_names(&mut ctx.names.lock().unwrap(), system, |n| {
+        let rows = &mut n.talkgroups;
+        let edited = edit_rows(rows, number, &edit.cells(), &origin);
         let order = rows.iter().position(|r| r.tg.number == number).unwrap_or(rows.len());
         if let Some(r) = &edited {
             kept::write_talkgroup(&ctx.db, system, r.clone(), order);
         }
-        if rows.is_empty() {
-            lists.remove(system);
-        }
         edited.map(|r| r.tg)
-    };
+    });
     ctx.shared.names.lock().unwrap().set_talkgroup(system, number, row.clone());
     ctx.tell_engine(EngineCmd::Talkgroup { short_name: system.to_string(), number, row });
-    publish(&ctx.hub, ToClient::TalkgroupEdited { system: system.to_string(), talkgroup: number, edit });
+    publish(&ctx.hub, ToClient::TalkgroupEdited { system: system.to_string(), talkgroup: number, edit, origin });
     Ok(())
+}
+
+/// Radio `unit` of system `system` named `name` by hand (blank: its own name
+/// taken out): kept, taken by the recording and told to every browser at
+/// once (the name alone); written in the background.
+pub fn set_unit_name(ctx: &Ctx, system: &str, unit: u32, name: String) -> Result<(), String> {
+    names_of(system)?;
+    let origin = Origin::edited(origin_now());
+    let rows = edit_names(&mut ctx.names.lock().unwrap(), system, |n| {
+        edit_unit_names(&mut n.unit_names, unit, &name, &origin);
+        kept::write_unit_names(&ctx.db, system, n.unit_names.clone());
+        n.unit_names.clone()
+    });
+    ctx.tell_engine(EngineCmd::UnitNames { short_name: system.to_string(), rows });
+    names_changed(ctx);
+    publish(&ctx.hub, ToClient::UnitNameEdited { system: system.to_string(), unit, name, origin });
+    Ok(())
+}
+
+/// Forget system `system`'s (none: every system's) talker aliases and radio
+/// registry, as `units` and `registry` say, from what the recorder holds:
+/// the recording's session first, if one is running, so it saves nothing of
+/// them after ([`EngineCmd::Forget`]). The radios and talkgroups the
+/// registry forgot.
+pub fn forget(ctx: &Ctx, system: Option<&str>, units: bool, registry: bool) -> (usize, usize) {
+    let (done, answer) = mpsc::channel();
+    let told = ctx.engine.lock().unwrap().as_ref().is_some_and(|tx| tx.send(EngineCmd::Forget { system: system.map(str::to_string), units, registry, done }).is_ok());
+    let by_session = if told { answer.recv_timeout(Duration::from_secs(10)).unwrap_or_default() } else { (0, 0) };
+    // (Between runs, or the run ended meanwhile: what outlives it.)
+    if units {
+        let cfg = ctx.config.lock().unwrap().clone();
+        let mut book = ctx.shared.names.lock().unwrap();
+        for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)).filter(|n| system.is_none_or(|s| s == n.as_str())) {
+            book.set_units(n, "");
+        }
+    }
+    let gone = if registry { ctx.shared.radio.lock().unwrap().forget(system) } else { (0, 0) };
+    (by_session.0 + gone.0, by_session.1 + gone.1)
 }
 
 /// Hand what's due to be kept between runs ([`Session::due`]: it says when
@@ -662,11 +754,11 @@ fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
 }
 
 /// The names the radio registry answers with, as saved: each system's
-/// talkgroups (`cfg` with its talkgroup files) and talker aliases. A
-/// recording keeps them current from then on.
-pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &trunk_app::config::TalkgroupLists, db: &crate::db::Db) {
+/// talkgroups (`cfg` with its talkgroup files) and talker aliases; and the
+/// registry's caps. A recording keeps them current from then on.
+pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, names: &NameLists, db: &crate::db::Db) {
+    shared.set_config(cfg, names);
     let mut book = shared.names.lock().unwrap();
-    book.set_config(cfg, talkgroups);
     for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
         if let Some(csv) = kept::read_units(db, n) {
             book.set_units(n, &csv);
@@ -892,6 +984,15 @@ impl Air {
     }
 }
 
+/// The wall clock now less `recording_ms`, the recording's clock now, ms:
+/// what the session corrects the times it gives out by
+/// ([`Session::correct_wall_clock`]). The recording's clock never jumps and,
+/// on macOS, runs at the crystal's rate; the wall clock is the one its time
+/// service keeps right.
+fn wall_less(recording_ms: f64) -> f64 {
+    crate::clock::unix_s() * 1000.0 - recording_ms
+}
+
 /// `queues`: each source's samples. `epoch`: the wall clock (Unix ms) at an
 /// instant, for the session's clock. `ctl`: everything for this thread — the
 /// sources' errors and ends (by way of their decoding threads), and the
@@ -987,6 +1088,11 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 EngineCmd::Talkgroup { short_name, number, row } => {
                     session.set_talkgroup(&short_name, number, row);
                 }
+                EngineCmd::UnitNames { short_name, rows } => {
+                    if session.set_unit_names(&short_name, &rows) {
+                        log::info!("[{short_name}] Radio names updated");
+                    }
+                }
                 EngineCmd::Keys { short_name, ring } => {
                     session.set_keys(&short_name, ring);
                 }
@@ -997,6 +1103,13 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     session.set_share(&sys);
                 }
                 EngineCmd::Shared { short_name, result } => session.share_done(&short_name, now_ms(), result),
+                EngineCmd::Forget { system, units, registry, done } => {
+                    if units {
+                        session.forget_units(system.as_deref());
+                    }
+                    let gone = if registry { ctx.shared.radio.lock().unwrap().forget(system.as_deref()) } else { (0, 0) };
+                    let _ = done.send(gone);
+                }
             }
             next = rx.try_recv().ok();
         }
@@ -1007,6 +1120,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         let plugins = ctx.plugins.host();
         session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
         session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
+        session.correct_wall_clock(wall_less(now_ms()));
         session.poll(now_ms(), &mut out);
         deliver(&ctx, &mut out, plugins.as_deref(), &rules, &fin);
         drop(plugins);
@@ -1024,6 +1138,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     for f in feeders {
         let _ = f.join();
     }
+    session.correct_wall_clock(wall_less(now_ms()));
     session.poll(now_ms(), &mut out);
     session.finish(&mut out);
     deliver(&ctx, &mut out, ctx.plugins.host().as_deref(), &rules, &fin);
@@ -1345,6 +1460,30 @@ fn plugin_calls(ctx: &Arc<Ctx>) -> crate::plugins::Calls {
     })
 }
 
+/// What saves a plugin's `settings.save`: into its settings in the config, as an edit of the
+/// application's own ([`crate::server::edit_config`]): saved, sent to every browser, and to the
+/// plugin as its new settings.
+fn plugin_saves(ctx: &Arc<Ctx>) -> crate::plugins::Saves {
+    let ctx = Arc::downgrade(ctx);
+    Arc::new(move |id, given| {
+        let ctx = ctx.upgrade().ok_or("TRP is stopping")?;
+        let mut keys: Vec<String> = Vec::new();
+        let mut there = false;
+        crate::server::edit_config(&ctx, |cfg| {
+            let Some(p) = cfg.plugins.get_mut(id) else { return };
+            there = true;
+            keys = crate::plugins::merge_settings(&mut p.settings, given);
+        })?;
+        if !there {
+            return Err(format!("the config has no plugin \"{id}\""));
+        }
+        if !keys.is_empty() {
+            crate::logging::plugin_note(id, trunk_app::log::Level::Info, &format!("saved its settings: {}", keys.join(", ")));
+        }
+        Ok(())
+    })
+}
+
 /// `callsQuery`: [`calls`].
 pub fn calls_query(ctx: &Ctx, id: Value, q: &CallsQuery) -> ToClient {
     ToClient::CallsResult { id, page: calls(ctx, q) }
@@ -1533,6 +1672,42 @@ mod finish_tests {
         let text = crate::server::text_for(&out, true).expect("text");
         let m: Value = serde_json::from_str(&text).unwrap();
         assert_eq!((m["type"].as_str(), m["path"].as_str(), m["audio"].as_bool()), (Some("callFiles"), Some(rel), Some(false)));
+    }
+}
+
+#[cfg(test)]
+mod names_tests {
+    use super::*;
+    use trunk_core::trunk::{read_unit_names, OriginKind};
+
+    /// A list loaded and a row edited: kept with where each row came from
+    /// (the recorder's time), in the store and in the names the dashboard
+    /// answers with; a radio named by hand names it at once, ahead of a pattern.
+    #[test]
+    fn names_are_kept_with_their_origins_and_name_at_once() {
+        let dir = crate::db::TestDir::new("names");
+        let ctx = test_ctx(&dir.join("capture"));
+        // (A system being recorded: the dashboard names its radios.)
+        ctx.config.lock().unwrap().systems[0].sites[0].control_channels_hz = vec![851_012_500.0];
+        let before = origin_now();
+        set_names(&ctx, "ohmarcs", trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n101,Fire\n102,EMS\n"), Some(Origin { kind: OriginKind::RadioReference, ..Default::default() })).unwrap();
+        let at = |n: usize| ctx.names.lock().unwrap()["ohmarcs"].talkgroups[n].origin.clone().unwrap();
+        assert!(at(0).kind == OriginKind::RadioReference && at(0).at >= before, "the recorder's time: {:?}", at(0));
+        set_talkgroup(&ctx, "ohmarcs", 102, TalkgroupEdit { alpha_tag: Some("EMS 2".into()), ..Default::default() }).unwrap();
+        assert_eq!((at(0).kind, at(1).kind), (OriginKind::RadioReference, OriginKind::Edited));
+        assert_eq!(ctx.shared.names.lock().unwrap().tg("ohmarcs", 102).map(|t| t.alpha_tag), Some("EMS 2".into()));
+        set_names(&ctx, "ohmarcs", read_unit_names("/^7(\\d{3})$/,Medic $1\n").unit_names, Some(Origin { name: "units.csv".into(), ..Default::default() })).unwrap();
+        assert_eq!(ctx.shared.names.lock().unwrap().unit("ohmarcs", 7042).as_deref(), Some("Medic 042"));
+        let mut told = ctx.hub.subscribe();
+        set_unit_name(&ctx, "ohmarcs", 7042, "Bus 14".into()).unwrap();
+        assert!(told.try_recv().is_ok(), "unitNameEdited, to every browser");
+        assert_eq!(ctx.shared.names.lock().unwrap().unit("ohmarcs", 7042).as_deref(), Some("Bus 14"), "named at once, ahead of the pattern");
+        ctx.db.flush().unwrap();
+        let cfg = ctx.config.lock().unwrap().clone();
+        assert_eq!(kept::load_names(&ctx.db, &cfg), *ctx.names.lock().unwrap(), "kept as held");
+        set_unit_name(&ctx, "ohmarcs", 7042, String::new()).unwrap();
+        assert_eq!(ctx.shared.names.lock().unwrap().unit("ohmarcs", 7042).as_deref(), Some("Medic 042"), "its own taken out: the pattern's again");
+        assert!(set_unit_name(&ctx, "../x", 1, "y".into()).is_err());
     }
 }
 

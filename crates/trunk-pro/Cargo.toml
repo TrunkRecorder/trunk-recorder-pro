@@ -29,6 +29,8 @@ num-complex.workspace = true
 serde.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "fs", "signal"] }
 axum = { version = "0.8", features = ["ws"] }
+# (Streams a CSV export as it's read: already axum's.)
+futures-util = { version = "0.3", default-features = false }
 rust-embed = "8"
 mime_guess = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -63,4 +65,3 @@ libc = "0.2.190"
 [dev-dependencies]
 jsonschema = { version = "0.58.4", default-features = false }
 tokio-tungstenite = "0.29"
-futures-util = { version = "0.3", default-features = false }

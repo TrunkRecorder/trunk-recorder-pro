@@ -342,10 +342,12 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool smartnet` | One SmartNet control channel's messages |
 | `tool dmrscan` | Every DMR carrier in a capture |
 | `tool dmr` | One DMR channel's link control, CSBKs and calls |
+| `tool dmrsynth` | Make a synthetic DMR capture |
 | `tool nxdnscan` | Every NXDN carrier in a capture |
 | `tool nxdn` | One NXDN channel's messages |
 | `tool nxdnsynth` | Make a synthetic NXDN capture |
 | `tool p25synth` | Make a synthetic P25 Phase 1 capture, encrypted with a key of yours or clear |
+| `tool perf` | One radio's read path over a capture, for counting its CPU cost |
 | `tool snr` | Weak-signal curves: decode a strong channel again with noise added |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
 | `tool sdr` | A saved `.sdr` call's metadata, or its frames |
@@ -403,6 +405,17 @@ trunk-pro tool dmr <capture.cu8> --center Hz --rate Hz --freq Hz [--bursts] [--a
 codes and what they carry. `dmr` prints one channel's messages; `--bursts` prints every burst, and
 `--audio` writes a slot's voice (8 kHz, 32-bit float).
 
+### tool dmrsynth
+
+```bash
+trunk-pro tool dmrsynth <out.cu8> [--center 464000000] [--freq centre+100000] [--rate 2400000]
+                        [--superframes 15] [--tg 101] [--source 1234] [--cc 1]
+```
+
+Writes a synthetic DMR repeater on `--freq`: idle bursts, a voice call on slot 1 (made-up voice
+frames), idle again. `replay <out.cu8> --center 464000000 --rate 2400000 --dmr 464100000` records
+the call.
+
 ### tool nxdnscan, nxdn and nxdnsynth
 
 ```bash
@@ -447,6 +460,18 @@ trunk-pro replay test.cu8 --center 851000000 --rate 2400000 --p25 851100000 --ke
 
 The call should be saved with `"decrypted": 1` and sound like the call `--voice` came from.
 Replay it with a different key and it's noise.
+
+### tool perf
+
+```bash
+trunk-pro tool perf rtl|hackrf|airspy <capture.cu8> [--rate 2400000] [--passes 1]
+```
+
+Runs one radio's read path over a capture, on one thread: the bytes in the blocks that radio's
+driver hands over, through the driver's own per-block code (for an RTL-SDR or HackRF, the check for
+a stuck stream) and out of the queue its decoding thread reads. Nothing else runs, so counting the
+process's instructions gives that path's cost; `--passes N` goes over the capture N times. It's what
+`perf/gate.py` measures; see [Development](development.md#cpu-cost).
 
 ### tool snr
 

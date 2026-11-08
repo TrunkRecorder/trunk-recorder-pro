@@ -47,9 +47,11 @@ import {
   radioName,
   rateFor,
   rateOk,
+  sourceRates,
   ratesText,
   SOURCE_KINDS,
   sourceTitle,
+  type Advice,
 } from "./config.ts";
 import {
   can,
@@ -58,8 +60,8 @@ import {
   dismissTodo,
   downloadText,
   findRadios,
-  forgetTalkgroups,
-  moveTalkgroups,
+  forgetNames,
+  moveNames,
   renameSystem,
   newSiteOf,
   openGuide,
@@ -80,7 +82,7 @@ import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { SystemSignals } from "./Signals.tsx";
 import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, StorageSettings, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, StorageSettings, System } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -89,10 +91,12 @@ import { ShareSystem } from "./ShareSystem.tsx";
 import { findOnAir, siteFrequencies, type FccTarget } from "./controller.ts";
 import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
-import { TalkgroupsField } from "./TalkgroupsField.tsx";
-import { BiasT, DraftInput, Field, FileInput, NumberInput, TextInput, Toggle } from "./inputs.tsx";
+import { TalkgroupsField, UnitNamesField } from "./TalkgroupsField.tsx";
+import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "./NameFields.tsx";
+import { ManageData, RemoveSystem } from "./DataTools.tsx";
+import { BiasT, DraftInput, Field, FileInput, NumberInput, ReleaseSlider, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
-import { unitNameCount } from "./units.ts";
+import { SourceSuggestion, SourcesAdvice, useSourceAdvice } from "./sourceAdvice.tsx";
 import { openTodos } from "./todo.ts";
 import { parseAccess, sameAccess, type AccessParts } from "./tones.ts";
 
@@ -417,21 +421,13 @@ function MatchLegend(props: { modes: Set<Channel["mode"]> }) {
 
 /** A row's names beside its alpha tag (the table's Name), as a talkgroup file has them. */
 type NameField = "description" | "tag" | "group";
-const NAME_FIELDS: [NameField, string, string][] = [
-  ["description", "Description", "Fire / EMS dispatch"],
-  ["tag", "Tag", "Fire Dispatch"],
-  ["group", "Category", "Fire"],
-];
+/** A row's names beside its name: a talkgroup's (its Category is the row's `group`). */
+const NAME_FIELDS: NameFieldDef<NameField>[] = TALKGROUP_NAME_FIELDS.filter((f) => f.key !== "alphaTag").map((f) => ({ ...f, key: f.key === "category" ? "group" : (f.key as NameField) }));
 
 /** The Tag and Category values a conventional system uses already (its rows', its talkgroups'), most used first: offered as each row's are typed. */
 function useNameSuggestions(conv: Conventional): { tag: string[]; group: string[] } {
   const file = useApp().talkgroups[conv.shortName];
   return useMemo(() => {
-    const ranked = (values: string[]) => {
-      const n = new Map<string, number>();
-      for (const v of values.map((v) => v.trim()).filter(Boolean)) n.set(v, (n.get(v) ?? 0) + 1);
-      return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([v]) => v);
-    };
     return {
       tag: ranked([...conv.channels.map((c) => c.tag ?? ""), ...(file ?? []).map((t) => t.tag)]),
       group: ranked([...conv.channels.map((c) => c.group ?? ""), ...(file ?? []).map((t) => t.category)]),
@@ -470,18 +466,7 @@ function RowEditor(props: {
           </fieldset>
           <fieldset>
             <legend>Names</legend>
-            {NAME_FIELDS.map(([field, label, placeholder]) => (
-              <label key={field} className="row-name">
-                <span className="small muted">{label}</span>
-                <TextInput
-                  value={ch[field] ?? ""}
-                  disabled={props.disabled}
-                  placeholder={placeholder}
-                  list={field === "description" ? undefined : props.lists[field]}
-                  onChange={(v) => props.onName(field, v)}
-                />
-              </label>
-            ))}
+            <NameFields fields={NAME_FIELDS} value={(f) => ch[f] ?? ""} lists={props.lists} disabled={props.disabled} onChange={props.onName} />
           </fieldset>
           {digital(ch.mode) && (
             <fieldset>
@@ -778,38 +763,6 @@ function AutoTune(props: { c: Config; src: Source; i: number; edit: EditSource }
 
 const signedPpm = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
 
-/**
- * A gain slider: moves as it's dragged, saved once it's let go (the pointer
- * up, a key up, or leaving it) — each save sets the radio's gain while
- * recording, so one per setting, not one per step dragged through.
- */
-function ReleaseSlider(props: { max: number; value: number; disabled: boolean; label: string; onChange: (v: number) => void }) {
-  const [draft, setDraft] = useState<number | null>(null);
-  const shown = draft ?? props.value;
-  const done = () => {
-    if (draft !== null && draft !== props.value) props.onChange(draft);
-    setDraft(null);
-  };
-  return (
-    <div className="row">
-      <input
-        type="range"
-        min={0}
-        max={props.max}
-        value={shown}
-        disabled={props.disabled}
-        aria-label={props.label}
-        aria-valuetext={String(shown)}
-        onChange={(e) => setDraft(Number(e.target.value))}
-        onPointerUp={done}
-        onKeyUp={done}
-        onBlur={done}
-      />
-      <span className="mono small">{props.disabled ? "auto" : shown}</span>
-    </div>
-  );
-}
-
 const AIRSPY_MODES: { mode: AirspyGainMode; label: string; hint: string }[] = [
   { mode: "linearity", label: "Linearity", hint: "Best near transmitters" },
   { mode: "sensitivity", label: "Sensitivity", hint: "Best for weak signals" },
@@ -822,7 +775,7 @@ function AirspyGainFields(props: { src: Extract<Source, { type: "airspy" | "hydr
   const set = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", v: number) => edit((x) => airspyGains(x) && void (x[k] = v));
   const slider = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", label: string, max: number, disabled = false) => (
     <Field label={label}>
-      <ReleaseSlider max={max} value={src[k]} disabled={disabled} label={label} onChange={(v) => set(k, v)} />
+      <ReleaseSlider max={max} value={src[k]} disabled={disabled} label={label} text={(v) => (disabled ? "auto" : String(v))} onChange={(v) => set(k, v)} />
     </Field>
   );
   return (
@@ -980,7 +933,7 @@ function ReceiveOnSelect(props: { c: Config; ch: Channel; disabled?: boolean; on
   );
 }
 
-export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
+export function SourceCard(props: { c: Config; i: number; advice?: Advice | null; fresh?: boolean; onFreshDone?: () => void }) {
   const s = useApp();
   const { c, i } = props;
   const src = c.sources[i];
@@ -1277,7 +1230,7 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
             key={src.type}
             hz={src.rateHz}
             free={!!SOURCE_KINDS[src.type].freeRate || (src.type === "file" && can("service"))}
-            options={found?.rates?.length ? found.rates : SOURCE_KINDS[src.type].rates.filter((r) => rateOk(r, found))}
+            options={sourceRates(src.type, found)}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>
@@ -1286,6 +1239,9 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
             <DraftInput className="mono" codec={mhz} value={src.bandwidthHz} placeholder={formatMhz(src.rateHz, 2)} aria-label="Filter bandwidth, MHz" onChange={(hz) => edit((x) => x.type === "bladerf" && void (x.bandwidthHz = hz))} />
           </Field>
         )}
+        <div className="wide">
+          <SourceSuggestion c={c} i={i} advice={props.advice ?? null} />
+        </div>
         <GuardBand c={c} i={i} fresh={props.fresh} onFreshDone={props.onFreshDone} />
         {center ? (
           <div className="wide">
@@ -1443,6 +1399,8 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
   const csvRef = useRef<HTMLInputElement>(null);
   const [bulk, setBulk] = useState("");
   const [pending, setPending] = useState<{ name: string; channels: Channel[]; notes: string[] } | null>(null);
+  // (Asked in a dialog: whether its data in the store goes too.)
+  const [removing, setRemoving] = useState(false);
   const [filePath, setFilePath] = useState(`${conv.shortName || "conv"}-channels.csv`);
   const linked = can("service") && !!conv.channelFile;
   const [bulkMode, setBulkMode] = useState<Channel["mode"]>("fm");
@@ -1531,19 +1489,23 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
         <>
           <Switch label="Record" checked={conv.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
           <IdentifyFcc target={{ kind: "conventional", index: k }} what={conv.name || conv.shortName} freqs={[...new Set(chans.map((ch) => ch.freqHz).filter((f) => f > 0))]} fcc={conv.fcc} />
-          <button
-            className="btn ghost small"
-            onClick={() => {
-              if (window.confirm(`Remove ${name || "this conventional system"} and its ${chans.length} channel${chans.length === 1 ? "" : "s"}? Its recordings stay on disk.`)) {
-                updateConfig((x) => {
-                  x.conventional.splice(k, 1);
-                  forgetTalkgroups(x, conv.shortName);
-                });
-              }
-            }}
-          >
+          <button className="btn ghost small" onClick={() => setRemoving(true)}>
             Remove
           </button>
+          {removing && (
+            <RemoveSystem
+              name={name || conv.shortName || "this conventional system"}
+              id={conv.id}
+              question={`Its ${chans.length} channel${chans.length === 1 ? " goes" : "s go"} with it; its recordings stay on disk.`}
+              onRemove={() =>
+                updateConfig((x) => {
+                  x.conventional.splice(k, 1);
+                  forgetNames(x, conv.shortName);
+                })
+              }
+              onClose={() => setRemoving(false)}
+            />
+          )}
           <FileInput inputRef={csvRef} accept=".csv,text/csv" onFile={(f) => void onCsv(f)} />
         </>
       }
@@ -1669,11 +1631,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
           <>
             <MatchLegend modes={new Set(chans.map((c) => c.mode))} />
             {(["tag", "group"] as const).map((f) => (
-              <datalist key={f} id={lists[f]}>
-                {suggest[f].map((v) => (
-                  <option key={v} value={v} />
-                ))}
-              </datalist>
+              <Suggestions key={f} id={lists[f]} values={suggest[f]} />
             ))}
             <div className="table-wrap channels-wrap">
               <table className="calls channels">
@@ -1963,6 +1921,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
       {chans.length > 0 && (
         <Group title="Units" hint="Names for the radios heard on these channels." cols={1}>
           <UnitNamesField
+            system={conv.shortName}
             value={conv.unitNames}
             anchor={`convunits-${name}`}
             needs={need(`convunits-${name}`)}
@@ -2309,6 +2268,25 @@ function SiteCoverage(props: { c: Config; sys: System; sites: Site[] }) {
 }
 
 /** One site of system `i`: folded, its name, Record switch, control channels and coverage; open, how it is followed. */
+/** A multi-site system's preferred site: the one whose copy of a call is kept for talkgroups whose row names none. */
+function PreferredSite(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
+  const { sys, edit } = props;
+  const names = sys.sites.map((x) => siteNameOf(sys, x));
+  const value = names.find((n) => n.toLowerCase() === sys.preferredSite?.toLowerCase()) ?? "";
+  return (
+    <Field label="Preferred site" hint="Its copy of a call is kept unless another site's is clearly cleaner. A talkgroup's Preferred Site comes first">
+      <select value={value} onChange={(e) => edit((x) => void (e.target.value ? (x.preferredSite = e.target.value) : delete x.preferredSite))}>
+        <option value="">None: the cleanest copy</option>
+        {names.map((n) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
 function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () => void }) {
   const { c, i, k } = props;
   const sys = c.systems[i];
@@ -2334,7 +2312,11 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
   const remove = () => {
     if (sys.sites.length === 1) return props.onRemoveSystem();
     if (!confirm(`Remove the site ${name} from ${sys.shortName}?`)) return;
-    updateConfig((x) => void x.systems[i].sites.splice(k, 1));
+    updateConfig((x) => {
+      const s = x.systems[i];
+      if (s.preferredSite?.toLowerCase() === name.toLowerCase()) delete s.preferredSite;
+      s.sites.splice(k, 1);
+    });
   };
   return (
     <Card
@@ -2372,9 +2354,14 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
             value={site.name ?? ""}
             placeholder={sys.shortName}
             onChange={(v) =>
-              edit((x) => {
+              updateConfig((c) => {
+                const s = c.systems[i];
+                const x = s.sites[k];
+                const was = siteNameOf(s, x);
                 if (v) x.name = v;
                 else delete x.name;
+                // The system's preferred site follows its name.
+                if (s.preferredSite?.toLowerCase() === was.toLowerCase()) s.preferredSite = siteNameOf(s, x);
               })
             }
           />
@@ -2484,13 +2471,14 @@ export function SystemCard(props: { c: Config; i: number }) {
   // Systems set up apart that announce this one on the air.
   const same = sameOnTheAir(c, app.status?.systems ?? []).flatMap(([a, b]) => (a === sys ? [b] : b === sys ? [a] : []));
 
-  const remove = (lastSite = false) => {
-    if (!confirm(`${lastSite ? `This is ${sys.shortName}'s only site. ` : ""}Remove ${sys.shortName}? Its recordings stay on disk.`)) return;
+  // (Asked in a dialog: whether its data in the store goes too. `true`: removing its only site.)
+  const [removing, setRemoving] = useState<boolean | null>(null);
+  const remove = (lastSite = false) => setRemoving(lastSite);
+  const removed = () =>
     updateConfig((x) => {
       x.systems.splice(i, 1);
-      forgetTalkgroups(x, sys.shortName);
+      forgetNames(x, sys.shortName);
     });
-  };
   const addSite = () => {
     edit((x) => {
       const n = newSiteOf(x, {});
@@ -2522,9 +2510,9 @@ export function SystemCard(props: { c: Config; i: number }) {
       if (from.enabled) to.enabled = true;
       // Plugin settings that named it name this one.
       renameSystemRefs(x, from.shortName, to.shortName, plugins);
-      if (!mine) moveTalkgroups(from.shortName, to.shortName);
+      if (!mine) moveNames(from.shortName, to.shortName);
       x.systems.splice(j, 1);
-      forgetTalkgroups(x, from.shortName);
+      forgetNames(x, from.shortName);
     });
     setNotice(`${other.shortName} is a part of ${sys.shortName} now.`);
   };
@@ -2565,6 +2553,9 @@ export function SystemCard(props: { c: Config; i: number }) {
           <button className="btn ghost small" onClick={() => remove()}>
             Remove
           </button>
+          {removing !== null && (
+            <RemoveSystem name={sys.shortName} id={sys.id} question={`${removing ? `This is ${sys.shortName}'s only site. ` : ""}Its recordings stay on disk.`} onRemove={removed} onClose={() => setRemoving(null)} />
+          )}
         </>
       }
       note={
@@ -2651,6 +2642,7 @@ export function SystemCard(props: { c: Config; i: number }) {
         }
         cols={1}
       >
+        {sys.sites.length > 1 && <PreferredSite sys={sys} edit={edit} />}
         <div className="sites-list">
           {sys.sites.map((x, k) => (
             <SiteCard key={siteKey(sys, x)} c={c} i={i} k={k} onRemoveSystem={() => remove(true)} />
@@ -2667,6 +2659,7 @@ export function SystemCard(props: { c: Config; i: number }) {
       <Group title="Talkgroups and units" hint="Names for what is heard, and which talkgroups are recorded.">
         <TalkgroupsField sys={sys} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
         <UnitNamesField
+          system={sys.shortName}
           value={sys.unitNames}
           anchor={`units-${sys.shortName}`}
           needs={need(`units-${sys.shortName}`)}
@@ -2705,48 +2698,6 @@ export function SystemCard(props: { c: Config; i: number }) {
  * Names for a system's radios: Trunk Recorder's unitTagsFile (loaded into the
  * config) and unitTagsMode — which comes first, these or the aliases radios send.
  */
-function UnitNamesField(props: { value: UnitNames | undefined; onChange: (u: UnitNames | undefined) => void; anchor: string; needs?: string }) {
-  const ref = useRef<HTMLInputElement>(null);
-  const u = props.value ?? {};
-  const set = (patch: Partial<UnitNames>) => {
-    const n: UnitNames = { ...u, ...patch };
-    for (const k of Object.keys(n) as (keyof UnitNames)[]) if (!n[k]) delete n[k];
-    props.onChange(Object.keys(n).length ? n : undefined);
-  };
-  const count = u.csv ? unitNameCount(u.csv) : 0;
-  return (
-    <Field label="Unit names" needs={props.needs} anchor={props.anchor}>
-      <div className="row">
-        <button className="btn" onClick={() => ref.current?.click()}>
-          Load CSV…
-        </button>
-        <span className="mono">{count ? `${count} from ${u.name ?? "file"}` : "none"}</span>
-        {count > 0 && (
-          <button className="btn ghost" onClick={() => set({ csv: undefined, name: undefined })}>
-            Clear
-          </button>
-        )}
-        <select value={u.mode ?? ""} aria-label="Which names come first" onChange={(e) => set({ mode: e.target.value as UnitNames["mode"] })}>
-          <option value="">These first, then aliases heard</option>
-          <option value="ota">Aliases heard first</option>
-          <option value="user_only">Only these</option>
-          <option value="none">No names</option>
-        </select>
-      </div>
-      <FileInput
-        inputRef={ref}
-        accept=".csv,text/csv,text/plain"
-        onFile={async (f) => {
-          if (!f) return;
-          const csv = await f.text();
-          set({ csv, name: f.name });
-          setNotice(`Loaded ${unitNameCount(csv)} unit names from ${f.name}.`);
-        }}
-      />
-    </Field>
-  );
-}
-
 /** The log (desktop app): Trunk Recorder's options, applied at once. */
 function LogPanel(props: { c: Config }) {
   const l: LogSettings = props.c.log ?? defaultLog();
@@ -3138,6 +3089,14 @@ function DataTab(props: { c: Config }) {
             <NumberInput label="Write every, s" value={st?.commitSeconds ?? 300} onChange={(v) => set({ commitSeconds: Math.max(10, Math.min(3600, Math.round(v ?? 300))) })} />
           </Field>
         </Group>
+        <Group title="Radio registry" hint="Every talkgroup, radio and pair of radios each system has heard (the Radio page, first-heard alerts). It's held in memory, about 2 kB a radio, and saved as it changes. Past either limit, what was heard least recently is forgotten, and comes back as new if heard again.">
+          <Field label="Radios kept, per system" hint="Talkgroups a quarter as many (5,000 at least). 0: no limit but the days">
+            <NumberInput label="Radios kept, per system" value={st?.registryRadios ?? 20000} onChange={(v) => set({ registryRadios: Math.max(0, Math.round(v ?? 20000)) })} />
+          </Field>
+          <Field label="Forget after, days unheard" hint="A talkgroup, radio or pair not heard for this long. 0: never">
+            <NumberInput label="Forget after, days unheard" value={st?.registryDays ?? 365} onChange={(v) => set({ registryDays: Math.max(0, Math.round(v ?? 365)) })} />
+          </Field>
+        </Group>
         <Group title="How long">
           <Field label="Call history, days" hint="How long calls stay findable by talkgroup and radio; 0 keeps them all. Their files aren't touched">
             <NumberInput label="Call history, days" value={st?.retentionDays ?? 120} onChange={(v) => set({ retentionDays: Math.max(0, Math.round(v ?? 120)) })} />
@@ -3147,6 +3106,7 @@ function DataTab(props: { c: Config }) {
           </Field>
         </Group>
       </section>
+      <ManageData />
     </Section>
   );
 }
@@ -3220,6 +3180,8 @@ export function Setup() {
   shownTab = tab;
   // A source just added on the Radios tab (measuring its roll-off is offered).
   const [freshSource, setFreshSource] = useState<number | null>(null);
+  // Better centres and rates for the sources, while they're shown.
+  const advice = useSourceAdvice(tab === "radios" ? c : null);
   if (!c) return <p className="muted">Connecting to the recorder…</p>;
 
   return (
@@ -3288,8 +3250,9 @@ export function Setup() {
             </>
           }
         >
+          <SourcesAdvice advice={advice} />
           {c.sources.map((x, i) => (
-            <SourceCard key={srcKey(x, i, c.sources)} c={c} i={i} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
+            <SourceCard key={srcKey(x, i, c.sources)} c={c} i={i} advice={advice} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
           ))}
           <details className="help">
             <summary>Dongle not showing up?</summary>

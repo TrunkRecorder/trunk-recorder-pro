@@ -225,6 +225,98 @@ fn a_busy_engine_does_not_make_the_radio_look_late() {
     assert!((start - 500.0).abs() < 100.0, "the call starts {start} ms in");
 }
 
+/// What one transmission (0.5–2.5 s in) came to, with the host's wall clock
+/// reading `correction(t)` ms more than the recording's clock at `t` s.
+struct WallRun {
+    record: trunk_recorder_plugin::CallRecord,
+    /// The live call's start, as plugins were told it (Unix s).
+    told_start: f64,
+    /// What the log said.
+    logs: Vec<String>,
+    /// What each `correct_wall_clock` answered.
+    moved: Vec<bool>,
+}
+
+fn wall_run(cfg: Config, correction: impl Fn(f64) -> f64) -> WallRun {
+    let epoch = 1.75e12;
+    let mut s = Session::new(cfg, &Default::default(), epoch, &|_| None, |_| 0).unwrap();
+    s.plugin_topics.calls = true;
+    let (mut out, mut files, mut told, mut logs, mut moved) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut take = |out: &mut Vec<Output>| {
+        for o in out.drain(..) {
+            match o {
+                Output::File { record, .. } => files.push(record),
+                Output::Plugin(trunk_recorder_plugin::HostMessage::CallStart(c)) => told.push(c.start_time),
+                Output::Log(trunk_app::log::Record { body: trunk_app::log::Body::Text(t), .. }) => logs.push(t),
+                _ => {}
+            }
+        }
+    };
+    s.poll(epoch, &mut out);
+    air(2_400_000.0, 4.5, |iq, t| {
+        s.push_iq(0, iq, 0, epoch + t * 1000.0);
+        moved.push(s.correct_wall_clock(correction(t)));
+        s.poll(epoch + t * 1000.0, &mut out);
+        take(&mut out);
+    });
+    s.finish(&mut out);
+    take(&mut out);
+    assert_eq!(files.len(), 1, "one call");
+    WallRun { record: files.remove(0), told_start: *told.first().expect("its start told"), logs, moved }
+}
+
+/// The recording's clock never jumps, and on macOS runs at the crystal's rate
+/// rather than the corrected one, so after a day it can be seconds off the
+/// wall clock. Call times follow the wall clock all the same — no Stop and
+/// Start — however it moves meanwhile: a call's length, and what plugins were
+/// told of it while it was up, are as they'd be had it not moved.
+#[test]
+fn call_times_follow_the_wall_clock_not_the_recordings() {
+    let plain = wall_run(conventional_config(), |_| 0.0);
+    let length = |r: &trunk_recorder_plugin::CallRecord| r.stop_time_ms - r.start_time_ms;
+    let told_less_record = |w: &WallRun| w.told_start * 1000.0 - w.record.start_time_ms as f64;
+    // A day of a crystal 50 ppm slow (4.3 s), still drifting — sped up, 20 ms a second, to move during the call.
+    let drift = wall_run(conventional_config(), |t| 4320.0 + 20.0 * t);
+    let shift = (drift.record.start_time_ms - plain.record.start_time_ms) as f64;
+    assert!((shift - (4320.0 + 20.0 * 0.5)).abs() < 25.0, "by the wall clock at the call's start: moved {shift} ms");
+    assert_eq!(length(&drift.record), length(&plain.record), "its length as on the air");
+    assert!((told_less_record(&drift) - told_less_record(&plain)).abs() < 1.0, "told as recorded");
+    assert!(drift.logs.iter().any(|l| l.contains("The wall clock moved +4.320 s")), "the first correction is a step: {:?}", drift.logs);
+    assert_eq!(drift.logs.iter().filter(|l| l.contains("The wall clock moved")).count(), 1, "drift isn't logged, ms by ms");
+    assert!(drift.moved.iter().filter(|m| **m).count() > 10, "followed while recording");
+    // Stepped 10 s ahead (or slept) mid-call, then 3 s back: that call is whole, by the clock it began under.
+    let step = wall_run(conventional_config(), |t| if t >= 2.0 { 7000.0 } else if t >= 1.5 { 10_000.0 } else { 0.0 });
+    assert_eq!((step.record.start_time_ms, step.record.stop_time_ms), (plain.record.start_time_ms, plain.record.stop_time_ms));
+    assert_eq!(step.record.src_list.iter().map(|x| x.time).collect::<Vec<_>>(), plain.record.src_list.iter().map(|x| x.time).collect::<Vec<_>>());
+    assert!((told_less_record(&step) - told_less_record(&plain)).abs() < 1.0);
+    assert!(step.logs.iter().any(|l| l.contains("+10.000 s")) && step.logs.iter().any(|l| l.contains("-3.000 s")), "{:?}", step.logs);
+}
+
+/// A capture played as fast as it can be has no wall clock to keep to: its
+/// calls keep the capture's own time, whatever the host's clock does.
+#[test]
+fn a_fast_replay_ignores_the_wall_clock() {
+    let mut replay = conventional_config();
+    replay.sources = vec![trunk_app::config::Source { kind: crate::config::SourceKind::File { path: "x.cu8".into(), realtime: false, format: None }, center_hz: 155_000_000.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: trunk_app::config::DEFAULT_GUARD_HZ, name: String::new() }];
+    let plain = wall_run(replay.clone(), |_| 0.0);
+    let moved = wall_run(replay, |_| 10_000.0);
+    assert_eq!(moved.record.start_time_ms, plain.record.start_time_ms);
+    assert!(moved.moved.iter().all(|m| !m));
+}
+
+#[test]
+fn a_wall_clock_correction_that_isnt_one_is_ignored() {
+    let mut s = Session::new(conventional_config(), &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+    for nonsense in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, 0.4, -0.4] {
+        assert!(!s.correct_wall_clock(nonsense), "{nonsense}");
+    }
+    assert!(s.correct_wall_clock(5.0));
+    assert!(!s.correct_wall_clock(5.5), "within a ms of the last");
+    let mut out = Vec::new();
+    s.poll(1.75e12, &mut out);
+    assert!(!out.iter().any(|o| matches!(o, Output::Log(trunk_app::log::Record { body: trunk_app::log::Body::Text(t), .. }) if t.contains("wall clock moved"))), "5 ms is drift, not a step");
+}
+
 /// AutoTune starts from the last run's score, moved by the ppm set since,
 /// and the file isn't rewritten until something is measured.
 #[test]
@@ -345,7 +437,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         config_path: dir.join("config.json"),
         config: Mutex::new(cfg),
         config_version: std::sync::atomic::AtomicU64::new(1),
-        talkgroups: Mutex::new(Default::default()),
+        names: Mutex::new(Default::default()),
         hub: hub.clone(),
         lifecycle: Mutex::new(crate::runtime::Lifecycle::default()),
         phase: Mutex::new(crate::runtime::PhaseInfo::default()),
@@ -470,7 +562,8 @@ fn the_servers_messages() {
     agg.begin(now as f64);
     let p = platform.sample(&mut agg, true);
     *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
-    ctx.talkgroups.lock().unwrap().insert("p25".into(), trunk_core::trunk::parse_rows("101,Fire Dispatch\n"));
+    let unit_names = trunk_core::trunk::read_unit_names("7,Engine 7\n").unit_names;
+    *ctx.names.lock().unwrap() = [("p25".to_string(), trunk_app::config::SystemNames { talkgroups: trunk_core::trunk::parse_rows("101,Fire Dispatch\n"), unit_names })].into();
     // The greeting: hello last, after how things are now; less of it for listen access.
     let heard = |control| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -523,7 +616,7 @@ fn the_servers_messages() {
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
     // Named from the name book the server keeps (talkgroup files and the config; aliases as saved).
-    let files: trunk_app::config::TalkgroupLists = [("p25".to_string(), trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))].into();
+    let files = trunk_app::config::talkgroup_lists([("p25", trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))]);
     ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
     ctx.shared.names.lock().unwrap().set_units("p25", "7,Engine 7\n");
     let named = |q: Value| crate::server::radio_query(&ctx, &body(q)).to_value().to_string();
@@ -552,7 +645,9 @@ fn the_servers_messages() {
         ToClient::CallSignResult { id: 3, results: vec![json!({ "callSign": "KNJA391", "licensee": "DISTRICT OF COLUMBIA", "serviceCode": "YE", "serviceDesc": null, "status": "A", "city": "WASHINGTON", "state": "DC" })], error: None },
         ToClient::LicenseResult { id: 2, results: vec![], error: Some("Couldn't reach https://trunkrecorder.pro".into()) },
         ToClient::Subscribed { topics: vec!["spectrum:0".into(), "log".into()] },
-        ToClient::TalkgroupEdited { system: "dcfd".into(), talkgroup: 101, edit: trunk_app::protocol::TalkgroupEdit { ignore: Some(true), alpha_tag: Some("FD Disp".into()), ..Default::default() } },
+        ToClient::TalkgroupEdited { system: "dcfd".into(), talkgroup: 101, edit: trunk_app::protocol::TalkgroupEdit { ignore: Some(true), alpha_tag: Some("FD Disp".into()), ..Default::default() }, origin: trunk_core::trunk::Origin::edited(1_762_500_000) },
+        ToClient::UnitNames { system: "dcfd".into(), unit_names: trunk_core::trunk::replace_rows(&[], trunk_core::trunk::read_unit_names("1234,Engine 12\n/^7(\\d{3})$/,Medic $1\n").unit_names, Some(&trunk_core::trunk::Origin { name: "units.csv".into(), at: 1_762_500_000, ..Default::default() })) },
+        ToClient::UnitNameEdited { system: "dcfd".into(), unit: 1234, name: "Bus 14".into(), origin: trunk_core::trunk::Origin::edited(1_762_500_000) },
         // What the recorder itself logs (logging::to_browsers).
         ToClient::Log { lines: vec![json!({ "timeS": 0, "time": 1_750_000_000.5, "level": "warning", "kind": "error", "text": "No RAM spool" })] },
     ];
@@ -605,7 +700,10 @@ fn messages_to_the_recorder() {
         json!({ "type": "licenseQuery", "id": 1, "lat": 38.9, "lon": -77.03, "radiusM": 50_000, "signals": [{ "freqHz": 857_987_500 }, { "freqHz": 489_087_500, "widthHz": 12_500 }] }),
         json!({ "type": "store", "kind": "interface" }),
         json!({ "type": "removeInterface", "id": "trunkamp" }),
-        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "comment": "# dispatch", "extra": [["Zone", "North"]] }] }),
+        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "comment": "# dispatch", "extra": [["Zone", "North"]] }], "from": { "kind": "radioReference" } }),
+        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "origin": { "kind": "file", "name": "dcfd.csv", "at": 1_762_500_000 } }] }),
+        json!({ "type": "setUnitNames", "system": "dcfd", "unitNames": [{ "unit": "1234", "name": "Engine 12" }, { "unit": "/^7(\\d{3})$/", "name": "Medic $1" }], "from": { "kind": "file", "name": "units.csv" } }),
+        json!({ "type": "setUnitName", "system": "dcfd", "unit": 1234, "name": "Bus 14" }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 101, "edit": { "ignore": true } }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 102, "edit": { "alphaTag": "FIRE4A", "description": "", "tag": "Fire Tac", "category": "Fire" } }),
     ];

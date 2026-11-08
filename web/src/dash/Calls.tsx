@@ -5,8 +5,8 @@
 import { useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
 import { setListen, setView, useTopic, type AppState } from "../controller.ts";
-import type { CallView, TalkgroupName } from "../protocol.ts";
-import { unitName } from "../units.ts";
+import type { CallView, TalkgroupName, UnitName } from "../protocol.ts";
+import { unitNameOf } from "../rules.ts";
 import { tgText } from "./Systems.tsx";
 
 /** An analog call on one of its conventional system's AM channels (calls say only analog). */
@@ -33,28 +33,19 @@ export function Unit({ id, alias }: { id: number; alias: string | undefined }) {
   );
 }
 
-/** A unit's alias on a system: as learned, else as the call record saved it. */
 /**
- * A unit's name, by its system's unit names mode: the unit names file's, the
+ * A unit's name, by its system's unit names mode: its own names', the
  * talker alias heard (live, or `saved` with the call), as the recorder picks
- * a call's `tag`.
+ * a call's `tag` (the recorder's own lookup: units.rs UnitTags).
  */
-export const aliasOf = (s: Pick<AppState, "config" | "units">, system: string, id: number, saved?: string) => {
+export const aliasOf = (s: Pick<AppState, "config" | "units" | "unitNames">, system: string, id: number, saved?: string) => {
   const c = s.config;
-  const names = c?.systems.find((x) => x.shortName === system)?.unitNames ?? c?.conventional.find((x) => x.shortName === system)?.unitNames;
-  const heard = () => s.units[system]?.[id] || saved || undefined;
-  const user = () => (names?.csv ? unitName(names.csv, id) : undefined);
-  switch (names?.mode || "user") {
-    case "ota":
-      return heard() ?? user();
-    case "user_only":
-      return user();
-    case "none":
-      return undefined;
-    default:
-      return user() ?? heard();
-  }
+  const mode = (c?.systems.find((x) => x.shortName === system)?.unitNames ?? c?.conventional.find((x) => x.shortName === system)?.unitNames)?.mode || "user";
+  return unitNameOf(s.unitNames[system] ?? NONE, mode, id, s.units[system]?.[id] || saved || undefined);
 };
+
+/** No names of its own. */
+const NONE: UnitName[] = [];
 
 /** Under a call's talkgroup: what's patched with it. */
 /** A conventional call whose row files the air's talkgroup under another number: the air's. */

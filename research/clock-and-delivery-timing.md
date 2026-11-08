@@ -266,6 +266,16 @@ would then be reported as a clock step.
       on the probe thread. Linux only. The timesyncd parser is tested on the
       Pi testbed's real output. Chrony's is written to its documented CSV, but
       no machine here runs chrony.
+- [x] **Call times corrected to the wall clock, no Stop and Start** (2026-11-05). The
+      recording clock assumed a monotonic clock only parts from the wall clock when the wall
+      clock is stepped. True on Linux (`CLOCK_MONOTONIC` is slewed with it); not on macOS, where
+      Rust's `Instant` is `CLOCK_UPTIME_RAW`, at the crystal's rate and paused in sleep, so drift
+      grew a few seconds a day and the verdict said to restart. Now the engine keeps the epoch as
+      a history (`trunk::wall::WallEpoch`), the engine thread hands the session the wall clock less
+      the recording's each poll (`Session::correct_wall_clock`), and every time given out is by
+      the epoch in effect at its call's start (a multi-site call's first copy's), so a call's
+      length, talkers and `transmission_id` hold across a step. The engine's own time and the
+      sources' `ClockFit` are untouched. `Cause::Recording` is gone; `driftMs` is shown, not judged.
 - [ ] TIME_DATE_ANN (0x35, to the second) is still only named: SYNC_BCST is
       what Phase 2 systems send, to 7.5 ms
 

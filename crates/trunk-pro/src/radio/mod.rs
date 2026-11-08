@@ -125,34 +125,8 @@ pub fn usb_memory_hint(e: &str) -> String {
     }
 }
 
-/// The sample rates a radio runs at, as it said when opened.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Rates {
-    /// Only these (an Airspy's), widest first.
-    List(Vec<u32>),
-    /// Any from `min` to `max` (a bladeRF's).
-    Range { min: f64, max: f64 },
-}
-
-impl Rates {
-    pub fn allows(&self, hz: f64) -> bool {
-        match self {
-            Rates::List(v) => v.iter().any(|&r| (r as f64 - hz).abs() < 1.0),
-            Rates::Range { min, max } => hz >= *min - 1.0 && hz <= *max + 1.0,
-        }
-    }
-}
-
-impl std::fmt::Display for Rates {
-    /// "10 / 2.5" or "0.52–61.44" (MSPS).
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let msps = |hz: f64| (hz / 1e4).round() / 100.0;
-        match self {
-            Rates::List(v) => write!(f, "{}", v.iter().map(|&r| format!("{}", msps(r as f64))).collect::<Vec<_>>().join(" / ")),
-            Rates::Range { min, max } => write!(f, "{}–{}", msps(*min), msps(*max)),
-        }
-    }
-}
+/// The sample rates a radio runs at, as it said when opened (trunk-app's: Setup and advice read it too).
+pub use trunk_app::rates::Rates;
 
 /// What a radio said it is when it was opened: its model ("R2", "bladeRF 2.0") and rates.
 #[derive(Clone, Debug, PartialEq)]
@@ -191,13 +165,7 @@ pub fn known(key: &str) -> Option<Caps> {
 
 /// " · 10 / 2.5 MSPS" for a found radio's JSON whose rates are known (`trunk-pro devices`), else "".
 pub fn rates_shown(found: &serde_json::Value) -> String {
-    let hz = |v: &serde_json::Value| v.as_array().map(|a| a.iter().filter_map(|r| r.as_f64()).collect::<Vec<f64>>()).unwrap_or_default();
-    let rates = match (hz(&found["rates"]), hz(&found["rateRange"])) {
-        (list, _) if !list.is_empty() => Rates::List(list.iter().map(|&r| r as u32).collect()),
-        (_, range) if range.len() == 2 => Rates::Range { min: range[0], max: range[1] },
-        _ => return String::new(),
-    };
-    format!(" · {rates} MSPS")
+    Rates::from_found(found).map_or(String::new(), |rates| format!(" · {rates} MSPS"))
 }
 
 /// A source's refusal of a rate its radio doesn't run at, the same for every kind:
