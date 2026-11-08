@@ -321,3 +321,21 @@ trunk-pro capture dcfd.cu8 --freq 858300000 --rate 2400000 --gain 28 --serial 20
 
 Captures can also be replayed straight from the command line with `trunk-pro replay`, without
 the interface. See [Command line](../command-line.md).
+
+## bladeRF: the FPGA filter bank
+
+A bladeRF 2.0 micro (xA4 or xA5) can channelize in its FPGA and send only the channels in use, instead of the whole
+band: set a source's `fpgaChannelizer` to the path of an image built from `fpga/` in this repository (see
+`fpga/bladerf/apply.sh`). The image is loaded into the FPGA's RAM each time the radio opens. The flash is never written.
+
+Limits:
+
+- The source's rate must be 8 MS/s, and it can't have conventional channels.
+- At most 42 channels at once. If more are needed, the least recently used is dropped, with a warning in the log.
+- A call's noise and SNR aren't available on this path, and its signal level reads about 12 dB higher than on the
+  wideband path.
+- The radio can't transmit on this image.
+
+To go back, remove `fpgaChannelizer` and restart. The image stays loaded until the radio is power-cycled, but it still
+streams wideband normally. Scanning a radio with a survey uses the wideband stream either way.
+

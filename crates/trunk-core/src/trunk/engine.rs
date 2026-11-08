@@ -980,7 +980,8 @@ impl SysHost<'_> {
         let mut prof = vec![0.0f64; n];
         s.chz.noise_profile(&mut prof);
         let slice = floor_slice(n, s.cfg().rate_hz, call.freq_hz as f64 - s.cfg().center_hz);
-        let noise = s.chz.noise_in_band(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth());
+        // (0 where the source has no spectrum, a filter bank's: no reading, not a tiny one.)
+        let noise = s.chz.noise_in_band(prof[slice], ChannelFilter::noise_bandwidth());
         let voice = voice::build(&VoiceSpec {
             kind,
             rate,
@@ -1320,11 +1321,13 @@ impl Trunk {
         };
         h.samples += cc.samples;
         let moved = offset - h.offset_s;
-        self.now_s = h.start_s + h.samples as f64 / rate + moved;
+        let heard_s = h.samples as f64 / rate;
+        self.now_s = h.start_s + heard_s + moved;
         let (index, cutoff_hz) = (h.index, h.cutoff_hz);
         self.cc_offset_hz = cc.offset_hz;
         self.follow(radio, sys, cc, events, call_events);
-        if self.now_s - self.last_good_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
+        // (The air it has heard, too: the clock jumps across a radio that was slow to start.)
+        if self.now_s - self.last_good_s > CC_HUNT_S && heard_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
             let _ = self.tune(radio, sys, cutoff_hz, index + 1, events);
         } else if self.now_s - self.measured_s >= TUNE_EVERY_S {
             self.measure(radio);

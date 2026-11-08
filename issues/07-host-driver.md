@@ -11,11 +11,16 @@ as warnings when they change, which is the saturation check issue 06 hands over.
 
 First live run, xA5, 3 minutes, a scratch config: all three control channels decoded, 30 calls recorded on 10 voice
 frequencies (15 NJICS, 15 MIDD), clean voice frames mean 98.3 %, lowest 85.3 %, and no saturation or dropped-block
-warnings at gain shift 2. To look at:
-- **Noise reads −371 dB** on every call, so the SNR in a call's JSON means nothing on this path.
-- **The two lowest calls (85 % and 88 %)** may be new frequencies opening late, losing the call's start. Not checked.
-- **Start-up:** loading the image takes about 5 s, long enough for a control channel timer to give up and try the
-  site's next channel. MIDD lost about 10 s to that.
+warnings at gain shift 2. Found and settled:
+- **Noise read −371 dB:** a missing floor was replaced by a tiny number. A call now has no noise reading on this path
+  until issue 08 supplies the floor.
+- **The two weakest calls (85 % and 88 %)** were about 1 s long, where a few frames move the figure. Calls first on
+  their frequency were the cleanest (99.1 % against 97.9 %), so frequencies don't open too late.
+- **Start-up:** a radio slow to open looked like 5 s without a control channel. The hunt now needs 5 s of air heard.
+  Fixed offline, not yet seen on a live start.
+- **Signal levels** read about 12 dB high at gain shift 2 (noted in the guide).
+
+Rollout onto the production service is the operator's. Not tested yet: recovery from unplugging the radio.
 
 ## Goal
 
@@ -58,4 +63,4 @@ the board.
 - [ ] Unplugging the radio and restarting the service both recover without manual steps.
 - [ ] Survey and capture work on a channelized radio.
 - [ ] With the option unset, behaviour is identical to today.
-- [ ] `docs/guides/radios.md` covers the option, its limits and rollback.
+- [x] `docs/guides/radios.md` covers the option, its limits and rollback.
