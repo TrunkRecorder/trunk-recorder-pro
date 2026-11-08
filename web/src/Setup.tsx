@@ -41,7 +41,9 @@ import {
   needsDriver,
   hasBiasT,
   airspyGains,
-  HYDRASDR_PORTS,
+  pickedBySerial,
+  type SerialKind,
+  sourceInputs,
   sourceKey,
   foundRadio,
   radioName,
@@ -598,7 +600,7 @@ function DriverMissing(props: { kind: Source["type"]; detail: string }) {
 }
 
 /** A radio picked by serial from those its driver found (Airspy, HydraSDR, bladeRF, HackRF). */
-function SerialPicker(props: { kind: "airspy" | "hydrasdr" | "bladerf" | "hackrf"; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
+function SerialPicker(props: { kind: SerialKind; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
   const s = useApp();
   const { kind, serial, used } = props;
   const k = SOURCE_KINDS[kind];
@@ -1083,14 +1085,14 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             </select>
           </Field>
         )}
-        {(src.type === "airspy" || src.type === "hydrasdr" || src.type === "bladerf" || src.type === "hackrf") && !missing && (
+        {pickedBySerial(src) && !missing && (
           <SerialPicker
             kind={src.type}
             serial={src.serial}
             used={used}
             onChange={(v) =>
               edit((x) => {
-                if (x.type !== "airspy" && x.type !== "hydrasdr" && x.type !== "bladerf" && x.type !== "hackrf") return;
+                if (!pickedBySerial(x)) return;
                 x.serial = v;
                 // Radios of one kind can run at different rates (an Airspy R2 and a Mini): start at one the picked radio does.
                 x.rateHz = rateFor(x.rateHz, foundRadio(s.radios, x));
@@ -1099,9 +1101,9 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           />
         )}
         {src.type === "hydrasdr" && (
-          <Field label="Input" hint={src.biasTee && src.rfPort !== 0 ? "The bias-T is on ANT only: turn it off, or use ANT (the source won't start like this)" : "The RFOne's antenna input: ANT (with the bias-T), or CABLE1 / CABLE2"}>
+          <Field label="Input" hint="Which antenna input it hears: the bias-T is on the first">
             <select value={src.rfPort} aria-label="Input" onChange={(e) => edit((x) => x.type === "hydrasdr" && void (x.rfPort = Number(e.target.value)))}>
-              {HYDRASDR_PORTS.map((p, n) => (
+              {sourceInputs(src.type).map((p, n) => (
                 <option key={p} value={n}>
                   {p}
                 </option>

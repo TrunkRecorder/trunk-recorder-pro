@@ -8,7 +8,6 @@
 pub mod airspy;
 pub mod bladerf;
 pub mod hackrf;
-pub mod hydrasdr;
 pub mod priority;
 pub mod rtl;
 mod sdrplay;
@@ -288,7 +287,7 @@ pub fn radios_json(search: bool) -> serde_json::Value {
         serde_json::Value::Null
     };
     let hackrf = serde_json::json!({ "available": true, "detail": "built in", "devices": hackrf::devices() });
-    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(), "hydrasdr": hydrasdr_json(), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
+    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(airspy::Lib::Airspy), "hydrasdr": airspy_json(airspy::Lib::Hydrasdr), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
 }
 
 fn bladerf_json() -> serde_json::Value {
@@ -298,17 +297,10 @@ fn bladerf_json() -> serde_json::Value {
     j
 }
 
-fn hydrasdr_json() -> serde_json::Value {
-    let h = hydrasdr::info();
-    let mut j = h.json();
-    j["devices"] = serde_json::Value::Array(if h.loaded { hydrasdr::devices() } else { vec![] });
-    j
-}
-
-fn airspy_json() -> serde_json::Value {
-    let a = airspy::info();
+fn airspy_json(lib: airspy::Lib) -> serde_json::Value {
+    let a = airspy::info(lib);
     let mut j = a.json();
-    j["devices"] = serde_json::Value::Array(if a.loaded { airspy::devices() } else { vec![] });
+    j["devices"] = serde_json::Value::Array(if a.loaded { airspy::devices(lib) } else { vec![] });
     j
 }
 

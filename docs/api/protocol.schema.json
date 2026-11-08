@@ -6979,13 +6979,6 @@
               "type": "string",
               "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
             },
-            "type": {
-              "type": "string",
-              "const": "airspy"
-            },
-            "serial": {
-              "type": "string"
-            },
             "gainMode": {
               "$ref": "#/definitions/AirspyGainMode"
             },
@@ -7003,6 +6996,13 @@
             },
             "agc": {
               "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "airspy"
+            },
+            "serial": {
+              "type": "string"
             },
             "biasTee": {
               "type": "boolean"
@@ -7053,13 +7053,6 @@
               "type": "string",
               "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
             },
-            "type": {
-              "type": "string",
-              "const": "hydrasdr"
-            },
-            "serial": {
-              "type": "string"
-            },
             "gainMode": {
               "$ref": "#/definitions/AirspyGainMode"
             },
@@ -7078,9 +7071,16 @@
             "agc": {
               "type": "boolean"
             },
+            "type": {
+              "type": "string",
+              "const": "hydrasdr"
+            },
+            "serial": {
+              "type": "string"
+            },
             "biasTee": {
               "type": "boolean",
-              "description": "On the ANT port only (the source won't start with it on another)."
+              "description": "On the ANT input only (the source won't start with it on another)."
             },
             "packing": {
               "type": "boolean",

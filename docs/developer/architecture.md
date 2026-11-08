@@ -100,9 +100,11 @@ Stages in order. Thread in brackets.
      USB link speed (`radio/usb_speed.rs`); doubles a B2xx's master clock when UHD would run it at the rate.
    - Airspy (`radio/airspy.rs`): whatever libairspy hands its callback; by default real samples
      (`Block::Real16`), turned into IQ by the `Inbox` on the thread that takes them.
-   - HydraSDR (`radio/hydrasdr.rs`): libhydrasdr 1.1's float IQ (`Block::Iq`), converted and
-     decimated on its own thread, apart from the one draining the USB. Its `dropped_samples` is a
-     running total; the driver passes on the difference per buffer.
+   - HydraSDR (`radio/airspy.rs` too, `Lib::Hydrasdr`; libhydrasdr is libairspy's fork, and what
+     only it has, its device-info block and one gain call, is in `radio/airspy/hydrasdr.rs`):
+     libhydrasdr 1.1's float IQ (`Block::Iq`), converted and decimated on its own thread, apart
+     from the one draining the USB. Its `dropped_samples` is a running total; the driver passes on
+     the difference per buffer.
 
    What every radio shares lives in `sdr.rs` and `radio/mod.rs`. A radio sends through a `Sink`,
    which never blocks a live radio: if the queue to the decoding thread is full, the block is

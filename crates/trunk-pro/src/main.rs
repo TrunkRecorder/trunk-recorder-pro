@@ -324,15 +324,11 @@ fn devices(a: &Args) {
     for d in radio::hackrf::devices() {
         println!("  {}", d["label"].as_str().unwrap_or(""));
     }
-    let ai = radio::airspy::info();
-    println!("Airspy: {}", ai.detail);
-    for d in radio::airspy::devices() {
-        println!("  {}{}", d["label"].as_str().unwrap_or(""), radio::rates_shown(&d));
-    }
-    let hi = radio::hydrasdr::info();
-    println!("HydraSDR: {}", hi.detail);
-    for d in radio::hydrasdr::devices() {
-        println!("  {}{}", d["label"].as_str().unwrap_or(""), radio::rates_shown(&d));
+    for lib in radio::airspy::Lib::ALL {
+        println!("{}: {}", lib.brand(), radio::airspy::info(lib).detail);
+        for d in radio::airspy::devices(lib) {
+            println!("  {}{}", d["label"].as_str().unwrap_or(""), radio::rates_shown(&d));
+        }
     }
     let bi = radio::bladerf::info();
     println!("bladeRF: {}", bi.detail);
