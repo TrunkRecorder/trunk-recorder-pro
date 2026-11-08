@@ -18,14 +18,14 @@ jobs:
     if: vars.CORPUS_READY == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { key: corpus }
       # (Replay doesn't serve the interface, but the binary embeds its folder.)
       - run: mkdir -p web/dist && touch web/dist/index.html
       - run: cargo build --release --locked -p trunk-pro
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: captures/.corpus/blobs
           key: corpus-${{ hashFiles('corpus/corpus.json') }}
