@@ -66,7 +66,7 @@ const RX_X1: c_int = 0;
 /// BLADERF_FORMAT_SC16_Q11_META.
 const FORMAT_SC16_Q11_META: c_int = 1;
 /// libbladeRF versions the filter bank has run against. Others get a warning.
-const TESTED_VERSIONS: &[(u16, u16, u16)] = &[(2, 5, 0)];
+const TESTED_VERSIONS: &[(u16, u16, u16)] = &[(2, 5, 0), (2, 6, 0)];
 
 /// BLADERF_FORMAT_PACKET_META in libbladeRF `major.minor`: 2 through 2.5, and 3
 /// from 2.6, which inserts BLADERF_FORMAT_SC16_Q11_PACKED before it. (Where a
@@ -1036,6 +1036,7 @@ mod tests {
     fn the_packet_format_follows_the_library_version() {
         assert_eq!((packet_format(2, 5), packet_format(2, 6), packet_format(2, 7), packet_format(3, 0)), (2, 3, 3, 3));
         assert_eq!(version_warning(2, 5, 0), None);
+        assert!(version_warning(2, 6, 0).is_some_and(|w| !w.contains("tested") && w.contains("overruns")));
         let unknown = version_warning(2, 5, 3).unwrap();
         assert!(unknown.contains("2.5.3") && !unknown.contains("overruns"), "{unknown}");
         let newer = version_warning(2, 6, 1).unwrap();
