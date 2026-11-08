@@ -3,8 +3,9 @@
 Move channel splitting off the host and onto the bladeRF FPGA. Everything after channel splitting
 (receivers, FEC, vocoders, trunking) stays in `trunk-core`, unchanged.
 
-Status: issues 01, 02 and 03 done, and 05 nearly (the core is bit-exact in simulation). 00 waits on the 24-hour
-baseline. FPGA sizes are measured now: see the research note. The `p25chan` test image for 04 passed a 10-minute counting test on both boards. 06's image with the real filter bank is built and simulated; it hasn't run on a radio yet.
+Status: 01 to 07 are done or in production use on both bladeRFs, with a few checks left in their files. 08 is built and
+simulated, and its waterfall and meters haven't run on a radio. 09 is next after that. 00's baseline has gaps from the
+outages.
 
 ## Why
 
