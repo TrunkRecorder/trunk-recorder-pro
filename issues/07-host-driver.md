@@ -20,6 +20,13 @@ warnings at gain shift 2. Found and settled:
   Fixed offline, not yet seen on a live start.
 - **Signal levels** read about 12 dB high at gain shift 2 (noted in the guide).
 
+- **libbladeRF's sample format numbers depend on its version.** The first production start failed with "no packets":
+  root loads a newer build from `/usr/local/lib`, where 2 means wideband with metadata and packet mode is 3. The
+  driver now picks the number from the library's version, logs the version, warns about untested ones, and names the
+  version in the error if the radio sends wideband data anyway.
+- **On those newer libraries the wideband path** asks for format 1, which there means packed samples without metadata,
+  so overruns aren't detected. Samples are correct. It logs a warning, and the wideband path is unchanged.
+
 Rollout onto the production service is the operator's. Not tested yet: recovery from unplugging the radio.
 
 ## Goal
