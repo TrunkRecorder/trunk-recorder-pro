@@ -2,6 +2,20 @@
 
 **Size:** M. **Needs:** 07.
 
+**Status (2026-11-08):** the power data path is built and simulated bit for bit, and hasn't run on a radio. The plan's
+separate power packet can't work: a channel packet streams across all 48 hops of its block, leaving no gap for another.
+Instead every packet ends with a slice of the band's power (`bank_wire.rs`), 64 bins a block, 24 at 42 bins, wire format
+version 2. An image and a host must be the same version, and a mismatch is refused with a clear error. The host's
+waterfall, noise profile and band power come from those slices, in wideband units (`BIN_POWER_SCALE`, `HEAD_SCALE`,
+checked by `the_banks_readings_match_the_wideband_path`).
+
+Against a wideband replay of the same capture (12 calls): signal within 0.1 dB on every call. Noise within 1 dB on 4
+of 12, typically 7 dB off, and as much as 17 dB lower on some, so SNR isn't yet comparable. Percentiles from 25 % to 56 %
+of a slice didn't help; 25 % was the best. A 7.8 kHz bin is about a channel wide, so a busy slice has few plain-noise
+bins.
+
+Not done: clip and peak meters, AutoTune's frequency error on 7.8 kHz bins, checking the waterfall on a live radio.
+
 ## Goal
 
 Replace the placeholder measurements from issue 03, so SNR figures and the dashboard are

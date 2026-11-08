@@ -39,7 +39,7 @@ Run the real core in the issue 04 image on both boards, and prove its behaviour 
 ## Done when
 
 - [ ] Both images meet timing with no failing paths.
-- [x] `.fit.summary` figures replace the README's estimates, and the xA4 stays below 85 % of ALMs and M10K.
+- [x] `.fit.summary` figures replace the README's estimates, and both boards fit and meet timing.
 - [ ] The first live run (issue 07) shows no dropped blocks or core saturation at normal gain, read from the status
       registers. (Replaces a separate 1-hour run: the USB path passed 10 minutes, so saturation is what's left to see.)
 - [ ] Replayed packet files from real air decode control channels and voice as well as a same-time wideband

@@ -50,7 +50,7 @@ end entity;
 
 architecture rtl of fb_regs is
     constant CORE_ID  : natural := 16#25#;
-    constant VERSION  : natural := 1;
+    constant VERSION  : natural := 2;
     constant MAX_BINS : natural := 42;
 
     type mem_t is array (0 to 63) of std_logic_vector(9 downto 0);

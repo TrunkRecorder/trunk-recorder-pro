@@ -9,6 +9,13 @@
 -- start; a block that finds `pkt_ready` low there is dropped whole, and its
 -- number skipped.
 --
+-- Each bin also sums I² + Q² of its output, saturating at 40 bits. The packet
+-- ends with a slice of those sums, the next 64 bins' (24 at 42 bins), shifted
+-- right 8: the host's view of the whole band. There's no quiet moment to read
+-- them in, as the next frame's output follows at once, so each bin of the slice
+-- is taken at the moment the block's last frame is added to it (and restarted
+-- from zero), into a small RAM read out at the block's end.
+--
 -- The table: write entries and the count, then a new generation to
 -- `commit_gen`. It takes effect at the next block's start.
 
@@ -41,7 +48,7 @@ entity fb_out is
 end entity;
 
 architecture rtl of fb_out is
-    constant VERSION : natural := 1;
+    constant VERSION : natural := 2;
     constant HOPS    : natural := 48;
 
     type tbl_t is array (0 to 63) of unsigned(9 downto 0);
@@ -64,7 +71,7 @@ architecture rtl of fb_out is
     signal t_buf : std_logic := '0';
 
     -- Read-out of a finished frame: header words at a block's start, then its bins.
-    type sel_t is (IDLE, HDR0, HDR1, BINS);
+    type sel_t is (IDLE, HDR0, HDR1, BINS, PHDR, PRD, PCLR);
     signal sel      : sel_t := IDLE;
     signal sel_go   : std_logic := '0';
     signal sel_buf  : std_logic := '0';
@@ -72,9 +79,43 @@ architecture rtl of fb_out is
     signal sel_idx  : unsigned(6 downto 0) := (others => '0');
     signal sending  : std_logic := '0';
     signal block_no : unsigned(31 downto 0) := (others => '0');
-    signal r_v, r_last : std_logic := '0';
+    signal r_v : std_logic := '0';
     signal fr_q     : std_logic_vector(31 downto 0);
     signal drops, sats : unsigned(31 downto 0) := (others => '0');
+
+    -- The power sums: one bin's read-modify-write every other clock at most.
+    type sum_t is array (0 to 1023) of std_logic_vector(39 downto 0);
+    shared variable sums : sum_t := (others => (others => '0'));
+    signal p_v, p2_v : std_logic := '0';
+    signal p_k, p2_k : unsigned(9 downto 0) := (others => '0');
+    signal p_hb, p2_hb : natural range 0 to HOPS - 1 := 0;
+    signal p_i, p_q : signed(15 downto 0) := (others => '0');
+    signal pw : unsigned(31 downto 0) := (others => '0');
+    signal pa_addr : unsigned(9 downto 0);
+    signal pa_q, pa_d : std_logic_vector(39 downto 0) := (others => '0');
+    signal pa_we : std_logic;
+    -- The slice in the making, by its offset from `scan`.
+    type slice_t is array (0 to 63) of std_logic_vector(31 downto 0);
+    signal slice : slice_t;
+    signal sl_q : std_logic_vector(31 downto 0) := (others => '0');
+    signal sl_i : unsigned(5 downto 0) := (others => '0');
+    signal take, sl_we : std_logic := '0';
+    signal sl_at : unsigned(9 downto 0);
+    signal sum_next : unsigned(39 downto 0);
+    signal clearing : std_logic := '1';
+    signal clr_addr : unsigned(9 downto 0) := (others => '0');
+    signal scan : unsigned(9 downto 0) := (others => '0');
+    signal p_left : unsigned(6 downto 0) := (others => '0');
+    constant SUM_MAX : unsigned(39 downto 0) := (others => '1');
+
+    -- Power values a packet of n bins carries (bank_wire::power_words).
+    function power_words(n : unsigned(6 downto 0)) return unsigned is
+    begin
+        if n = 42 then
+            return to_unsigned(24, 7);
+        end if;
+        return to_unsigned(64, 7);
+    end function;
 
     function bitrev(x : unsigned(9 downto 0)) return unsigned is
         variable r : unsigned(9 downto 0);
@@ -106,6 +147,42 @@ begin
     active_gen <= act_gen;
     dropped <= drops;
     saturated <= sats;
+
+    -- The sum, its next value, and whether this bin's goes into the slice.
+    process (pa_q, pw)
+        variable v : unsigned(40 downto 0);
+    begin
+        v := resize(unsigned(pa_q), 41) + resize(pw, 41);
+        if v > resize(SUM_MAX, 41) then
+            sum_next <= SUM_MAX;
+        else
+            sum_next <= v(39 downto 0);
+        end if;
+    end process;
+    sl_at <= p2_k - scan;
+    take <= '1' when p2_v = '1' and p2_hb = HOPS - 1 and resize(sl_at, 11) < resize(power_words(act_n), 11) else '0';
+
+    pa_addr <= clr_addr when clearing = '1' else p_k when p_v = '1' else p2_k;
+    pa_we <= clearing or p2_v;
+    pa_d <= (others => '0') when clearing = '1' or take = '1' else std_logic_vector(sum_next);
+    sums_port : process (clk)
+    begin
+        if rising_edge(clk) then
+            if pa_we = '1' then
+                sums(to_integer(pa_addr)) := pa_d;
+            end if;
+            pa_q <= sums(to_integer(pa_addr));
+        end if;
+    end process;
+    slice_port : process (clk)
+    begin
+        if rising_edge(clk) then
+            if take = '1' then
+                slice(to_integer(sl_at(5 downto 0))) <= std_logic_vector(sum_next(39 downto 8));
+            end if;
+            sl_q <= slice(to_integer(sl_i));
+        end if;
+    end process;
 
     process (clk)
         variable k : unsigned(9 downto 0);
@@ -148,6 +225,18 @@ begin
             end if;
             -- Cut, keep in bin order; a frame's last sample starts its read-out.
             sel_go <= '0';
+            -- The sum: squares a clock after the cut, added a clock after that.
+            p_v <= t_v;
+            p2_v <= p_v;
+            p2_k <= p_k;
+            p2_hb <= p_hb;
+            if p_v = '1' then
+                pw <= unsigned(resize(p_i * p_i, 32)) + unsigned(resize(p_q * p_q, 32));
+            end if;
+            if clearing = '1' then
+                clr_addr <= clr_addr + 1;
+                if clr_addr = 1023 then clearing <= '0'; end if;
+            end if;
             if t_v = '1' then
                 n := 0;
                 cut(t_a, to_integer(gain_shift), yi, n);
@@ -156,6 +245,10 @@ begin
                     sats <= sats + n;
                 end if;
                 frame(to_integer(t_addr)) <= std_logic_vector(yq) & std_logic_vector(yi);
+                p_k <= t_addr(9 downto 0);
+                p_hb <= t_hb;
+                p_i <= yi;
+                p_q <= yq;
                 if t_last = '1' then
                     sel_go <= '1';
                     sel_buf <= t_buf;
@@ -195,23 +288,41 @@ begin
                     sel <= HDR1;
                 when HDR1 =>
                     out_valid <= sending;
-                    if act_n = 0 then out_eop <= sending; end if;
                     out_data <= std_logic_vector(block_no);
                     block_no <= block_no + 1;
                     sel <= BINS;
                 when BINS =>
                     if sel_idx = act_n then
-                        sel <= IDLE;
+                        if sel_hb = HOPS - 1 then sel <= PHDR; else sel <= IDLE; end if;
                     else
                         fr_q <= frame(to_integer(sel_buf & act_tbl(to_integer(sel_idx(5 downto 0)))));
                         r_v <= sending;
-                        if sel_hb = HOPS - 1 and sel_idx = act_n - 1 then r_last <= '1'; else r_last <= '0'; end if;
                         sel_idx <= sel_idx + 1;
+                    end if;
+                when PHDR =>
+                    out_valid <= sending;
+                    out_data <= std_logic_vector(resize(power_words(act_n), 16)) & std_logic_vector(resize(scan, 16));
+                    p_left <= power_words(act_n);
+                    sl_i <= (others => '0');
+                    sel <= PRD;
+                when PRD =>
+                    -- The slice RAM reads sl_i this clock.
+                    sel <= PCLR;
+                when PCLR =>
+                    out_valid <= sending;
+                    out_data <= sl_q;
+                    sl_i <= sl_i + 1;
+                    p_left <= p_left - 1;
+                    if p_left = 1 then
+                        out_eop <= sending;
+                        scan <= scan + resize(power_words(act_n), 10);
+                        sel <= IDLE;
+                    else
+                        sel <= PRD;
                     end if;
             end case;
             if r_v = '1' then
                 out_valid <= '1';
-                out_eop <= r_last;
                 out_data <= fr_q;
             end if;
 
@@ -223,6 +334,11 @@ begin
                 t_v <= '0';
                 sel_go <= '0';
                 sel <= IDLE;
+                p_v <= '0';
+                p2_v <= '0';
+                scan <= (others => '0');
+                clearing <= '1';
+                clr_addr <= (others => '0');
                 sending <= '0';
                 r_v <= '0';
                 block_no <= (others => '0');

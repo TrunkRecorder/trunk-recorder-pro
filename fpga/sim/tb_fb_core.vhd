@@ -221,6 +221,10 @@ begin
                 checked <= 0;
                 next;
             end if;
+            -- (Words from blocks after the last expected are the extra zeros' doing.)
+            if checked >= want_packets then
+                next;
+            end if;
             if out_sop = '1' then
                 next_header;
                 word := 0;

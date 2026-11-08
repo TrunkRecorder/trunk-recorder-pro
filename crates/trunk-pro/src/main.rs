@@ -527,10 +527,10 @@ fn replay(a: &Args) {
         while !rest.is_empty() {
             let (p, more) = bank_wire::parse(rest).unwrap_or_else(|e| die(&format!("{}: {e:?}", files[0])));
             rest = more;
-            let bank_wire::Body::Channels { iq, .. } = &p.body else { continue };
+            let bank_wire::Body::Channels { iq, power_start, power, .. } = &p.body;
             let missed = p.block.wrapping_sub(next) as u64;
             lost += missed;
-            session.push_bank(0, &bins, iq, missed * block, at(p.block));
+            session.push_bank(0, &bins, iq, *power_start, power, missed * block, at(p.block));
             next = p.block.wrapping_add(1);
             if next % 64 == 0 {
                 session.poll(at(next), &mut out);
