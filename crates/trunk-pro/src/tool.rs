@@ -45,7 +45,7 @@ use crate::toolkit::{hex, AudioOut, Capture};
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
-    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr|tones … (trunk-pro --help)"));
+    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr|tones|bank-pack|bank-capture … (trunk-pro --help)"));
     match mode {
         "cc" | "voice" | "frames" => run_p25(a, mode),
         "p2" => run_p2(a),
@@ -60,7 +60,79 @@ pub fn run(a: &Args) {
         "revoice" => run_revoice(a),
         "sdr" => run_sdr(a),
         "tones" => run_tones(a),
-        _ => die(&format!("tool {mode}: no such tool (cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr|tones)")),
+        "bank-pack" => run_bank_pack(a),
+        "bank-capture" => run_bank_capture(a),
+        _ => die(&format!("tool {mode}: no such tool (cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr|tones|bank-pack)")),
+    }
+}
+
+/// `tool bank-pack <capture.cs16> --center Hz --freqs Hz,Hz,… [--out file.pkt] [--drop-every K]`:
+/// what the FPGA filter bank would send for an 8 MS/s bladeRF capture (SC16
+/// Q11), made by the model: one bin per frequency, at most 42 (`bank_wire::MAX_BINS`). Writes the
+/// packets and `<out>.bins`, the bin table, for `trunk-pro replay <out>`.
+/// `--drop-every K` leaves out every Kth block, as a lossy link would.
+fn run_bank_pack(a: &Args) {
+    use std::io::Read;
+    use trunk_core::dsp::{bank_wire, filter_bank};
+    let path = a.positional.get(1).unwrap_or_else(|| die("tool bank-pack: no capture given"));
+    let center = a.num("center", 0.0);
+    let mut bins: Vec<u16> = a.get("freqs").unwrap_or("").split(',').filter_map(|v| v.trim().parse::<f64>().ok()).map(|f| filter_bank::bin_for(f - center).0 as u16).collect();
+    bins.sort_unstable();
+    bins.dedup();
+    if bins.is_empty() || bins.len() > bank_wire::MAX_BINS {
+        die(&format!("tool bank-pack: --freqs wants 1 to {} frequencies", bank_wire::MAX_BINS));
+    }
+    let out = a.get("out").map_or_else(|| format!("{path}.pkt"), str::to_string);
+    let drop_every = a.num("drop-every", 0.0) as u64;
+    let mut file = std::fs::File::open(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+    let mut w = BufWriter::new(std::fs::File::create(&out).unwrap_or_else(|e| die(&format!("{out}: {e}"))));
+    let mut bank = filter_bank::FixedBank::new(&filter_bank::Design::default());
+    let mut packer = bank_wire::Packer::new(bins.clone(), 1);
+    let (mut buf, mut written, mut dropped) = (vec![0u8; 4 << 20], 0u64, 0u64);
+    loop {
+        let n = file.read(&mut buf).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+        if n == 0 {
+            break;
+        }
+        // (Whole samples: the buffer is a multiple of 4 and files end on one.)
+        let iq: Vec<[i16; 2]> = buf[..n - n % 4].chunks_exact(4).map(|b| [i16::from_le_bytes([b[0], b[1]]), i16::from_le_bytes([b[2], b[3]])]).collect();
+        bank.push(&iq, |frame| {
+            if let Some(p) = packer.push(frame) {
+                if drop_every > 0 && (p.block as u64 + 1) % drop_every == 0 {
+                    dropped += 1;
+                } else {
+                    w.write_all(&p.encode()).unwrap_or_else(|e| die(&format!("{out}: {e}")));
+                    written += 1;
+                }
+            }
+        });
+    }
+    w.flush().unwrap_or_else(|e| die(&format!("{out}: {e}")));
+    let list: Vec<String> = bins.iter().map(u16::to_string).collect();
+    std::fs::write(format!("{out}.bins"), list.join(",") + "\n").unwrap_or_else(|e| die(&format!("{out}.bins: {e}")));
+    let s = bank.saturated;
+    println!("{written} blocks written to {out} ({dropped} dropped), bins {}; saturated: fold {}, FFT {}, output {}", list.join(","), s.fold, s.fft, s.output);
+}
+
+/// `tool bank-capture <serial> --image p25chan.rbf --center Hz --freqs Hz,… --out file.pkt [--seconds N]
+/// [--gain dB] [--gain-shift S]`: what a bladeRF's FPGA filter bank sends for those frequencies, for
+/// `trunk-pro replay`. Holds the radio while it runs, and the image stays in RAM.
+fn run_bank_capture(a: &Args) {
+    use trunk_core::dsp::{bank_wire, filter_bank};
+    let serial = a.positional.get(1).unwrap_or_else(|| die("tool bank-capture: no serial given"));
+    let image = a.get("image").unwrap_or_else(|| die("tool bank-capture: --image <p25chan.rbf> is required"));
+    let out = a.get("out").unwrap_or_else(|| die("tool bank-capture: --out <file.pkt> is required"));
+    let center = a.num("center", 0.0);
+    let mut bins: Vec<u16> = a.get("freqs").unwrap_or("").split(',').filter_map(|v| v.trim().parse::<f64>().ok()).map(|f| filter_bank::bin_for(f - center).0 as u16).collect();
+    bins.sort_unstable();
+    bins.dedup();
+    if bins.is_empty() || bins.len() > bank_wire::MAX_BINS {
+        die(&format!("tool bank-capture: --freqs wants 1 to {} bins", bank_wire::MAX_BINS));
+    }
+    let c = crate::radio::bladerf::BankCapture { serial, image, center_hz: center, bins: &bins, gain_db: a.num("gain", 30.0) as i32, gain_shift: a.num("gain-shift", 2.0) as u32, seconds: a.num("seconds", 10.0), out };
+    match crate::radio::bladerf::bank_capture(&c) {
+        Ok(v) => println!("{v}"),
+        Err(e) => die(&format!("tool bank-capture: {e}")),
     }
 }
 

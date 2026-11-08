@@ -23,6 +23,7 @@ use std::sync::Arc;
 use num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 
+use super::filter_bank::{self, BankHead, BIN_HZ, BLOCK_HOPS};
 use super::filters::blackman_sinc;
 
 pub type HeadId = u32;
@@ -60,6 +61,47 @@ pub struct Channelizer {
     heads: BTreeMap<HeadId, Head>,
     filters: Vec<(i64, Vec<Complex32>)>,
     next_id: HeadId,
+    /// Fed channel blocks from an FPGA filter bank instead of wideband IQ ([`Channelizer::external`]).
+    ext: Option<Box<External>>,
+}
+
+/// Bins the FPGA sends at once (`bank_wire::MAX_BINS`).
+pub const MAX_BANK_BINS: usize = super::bank_wire::MAX_BINS;
+
+/// Input samples the bank and its host head lag the FFT path by: the
+/// prototype's and the head filter's group delays, less the FFT path's own.
+/// The RTL adds nothing to it: hosts time blocks by their number, and the bank's
+/// output matches the model sample for sample. (On the radio, block 0 starts 51 µs
+/// into the stream, while the core clears its ring: small enough to ignore.)
+const BANK_EXTRA_DELAY: u64 = 2048;
+
+/// The external backend: per bin, its recent air for pre-roll; per head, the
+/// host's end of the channel (residual NCO and filter).
+struct External {
+    /// Each bin sent lately: its last `ring_cap` samples, whole blocks, ending with the latest.
+    rings: BTreeMap<u16, std::collections::VecDeque<Complex32>>,
+    ring_cap: usize,
+    heads: BTreeMap<HeadId, (BankHead, Vec<Complex32>)>,
+    /// Bins always wanted (control channels).
+    pinned: Vec<u16>,
+    /// Bins wanted for heads, with the block each was last asked for.
+    used: BTreeMap<u16, u64>,
+    /// Bins evicted since the caller last asked ([`Channelizer::take_evicted`]).
+    evicted: Vec<u16>,
+    noise: u64,
+}
+
+impl External {
+    /// Faint noise (about −80 dBFS) where a bin sent nothing, as the engine's gaps.
+    fn quiet(&mut self) -> Complex32 {
+        let mut r = || {
+            self.noise ^= self.noise << 13;
+            self.noise ^= self.noise >> 7;
+            self.noise ^= self.noise << 17;
+            (self.noise >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+        };
+        Complex32::new(r(), r()) * 2e-4
+    }
 }
 
 /// Narrowest noise-floor slice ([`floor_slices`]), Hz: a 12.5 kHz channel
@@ -135,7 +177,158 @@ impl Channelizer {
             heads: BTreeMap::new(),
             filters: Vec::new(),
             next_id: 1,
+            ext: None,
         }
+    }
+
+    /// Fed by an FPGA filter bank ([`Channelizer::feed_bank`]) at 8 MS/s, with
+    /// the same rates, block and clock as [`Channelizer::new`] there. No
+    /// spectrum: the power and noise readings stay empty (issue 08).
+    pub fn external(min_output_rate: f64, history_s: f64) -> Self {
+        let mut c = Self::new(filter_bank::FS, min_output_rate, 0.0);
+        assert_eq!(c.output_rate, filter_bank::OUTPUT_RATE, "external channelizer: the bank's rate is fixed");
+        assert_eq!(c.l, BLOCK_HOPS * filter_bank::HOP);
+        c.spectra = Vec::new();
+        c.ext = Some(Box::new(External {
+            rings: BTreeMap::new(),
+            ring_cap: (history_s * c.output_rate).ceil() as usize,
+            heads: BTreeMap::new(),
+            pinned: Vec::new(),
+            used: BTreeMap::new(),
+            evicted: Vec::new(),
+            noise: 0x9e37_79b9_7f4a_7c15,
+        }));
+        c
+    }
+
+    pub fn is_external(&self) -> bool {
+        self.ext.is_some()
+    }
+
+    /// External: bins to keep on whatever heads come and go (control channels).
+    pub fn pin_bins(&mut self, offsets_hz: &[f64]) {
+        if let Some(e) = &mut self.ext {
+            e.pinned = offsets_hz.iter().map(|&f| filter_bank::bin_for(f).0 as u16).collect();
+            e.pinned.sort_unstable();
+            e.pinned.dedup();
+            e.pinned.truncate(MAX_BANK_BINS);
+        }
+    }
+
+    /// External: the bins the FPGA should send, at most [`MAX_BANK_BINS`]:
+    /// the pinned ones, then those heads used most recently.
+    pub fn wanted_bins(&self) -> Vec<u16> {
+        let Some(e) = &self.ext else { return Vec::new() };
+        let mut v = e.pinned.clone();
+        v.extend(e.used.keys().filter(|b| !e.pinned.contains(b)));
+        v
+    }
+
+    /// External: bins dropped to make room since the last call, to log.
+    pub fn take_evicted(&mut self) -> Vec<u16> {
+        self.ext.as_mut().map_or_else(Vec::new, |e| std::mem::take(&mut e.evicted))
+    }
+
+    fn add_bank_head(&mut self, offset_hz: f64, cutoff_hz: f64, preroll_s: f64) -> (HeadId, Vec<Complex32>, u64) {
+        let block = self.block;
+        let e = self.ext.as_mut().unwrap();
+        // The nearest bin, or a neighbour already sending that still covers the
+        // channel: a head AutoTune moves across a bin edge keeps its bin.
+        let (near, _) = filter_bank::bin_for(offset_hz);
+        let m = filter_bank::M;
+        let covers = |b: usize| {
+            let signed = if b >= m / 2 { b as f64 - m as f64 } else { b as f64 };
+            (offset_hz - signed * BIN_HZ).abs() <= BIN_HZ / 2.0 + 1000.0
+        };
+        let bin = [(near + m - 1) % m, (near + 1) % m]
+            .into_iter()
+            .find(|&b| covers(b) && !e.rings.contains_key(&(near as u16)) && e.rings.contains_key(&(b as u16)))
+            .unwrap_or(near) as u16;
+        let (first_block, pre_src): (u64, Vec<Complex32>) = match e.rings.get(&bin) {
+            Some(ring) => {
+                let want = ((preroll_s * self.output_rate).ceil() as usize).min(ring.len()) / BLOCK_HOPS * BLOCK_HOPS;
+                (block - (want / BLOCK_HOPS) as u64, ring.range(ring.len() - want..).copied().collect())
+            }
+            None => (block, Vec::new()),
+        };
+        let mut head = BankHead::on_bin(bin as usize, offset_hz, cutoff_hz, first_block * BLOCK_HOPS as u64);
+        let pre: Vec<Complex32> = pre_src.into_iter().map(|x| head.push(x)).collect();
+        // Make room: the least recently used bin that no head is on and isn't pinned.
+        if !e.pinned.contains(&bin) && !e.used.contains_key(&bin) && e.pinned.len() + e.used.len() >= MAX_BANK_BINS {
+            let busy: Vec<u16> = e.heads.values().map(|(h, _)| h.bin as u16).collect();
+            if let Some((&old, _)) = e.used.iter().filter(|(b, _)| !busy.contains(b)).min_by_key(|(_, t)| **t) {
+                e.used.remove(&old);
+                e.evicted.push(old);
+            }
+        }
+        if !e.pinned.contains(&bin) {
+            e.used.insert(bin, block);
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        e.heads.insert(id, (head, Vec::new()));
+        (id, pre, (first_block * self.l as u64).saturating_sub(BANK_EXTRA_DELAY))
+    }
+
+    /// External: one block from the bank, `bins` (the table it was made with)
+    /// × [`BLOCK_HOPS`] hops, hop by hop, Q15. Always a whole block: runs it.
+    pub fn feed_bank(&mut self, bins: &[u16], iq: &[[i16; 2]]) {
+        assert_eq!(iq.len(), bins.len() * BLOCK_HOPS, "feed_bank: a block is {BLOCK_HOPS} hops of every bin");
+        self.run_bank(Some((bins, iq)));
+    }
+
+    /// External: a block that never came; every head and ring gets quiet.
+    pub fn feed_bank_gap(&mut self) {
+        self.run_bank(None);
+    }
+
+    fn run_bank(&mut self, data: Option<(&[u16], &[[i16; 2]])>) {
+        let block = self.block;
+        let e = self.ext.as_mut().expect("feed_bank: not an external channelizer");
+        let sent: &[u16] = data.map_or(&[], |d| d.0);
+        e.rings.retain(|b, _| data.is_none() || sent.contains(b));
+        let mut col = vec![Complex32::default(); BLOCK_HOPS];
+        let column = |e: &mut External, i: Option<usize>, col: &mut Vec<Complex32>| {
+            for (h, c) in col.iter_mut().enumerate() {
+                *c = match (i, data) {
+                    (Some(i), Some((bins, iq))) => filter_bank::q15(iq[h * bins.len() + i]),
+                    _ => e.quiet(),
+                };
+            }
+        };
+        let cap = e.ring_cap;
+        for (i, &b) in sent.iter().enumerate() {
+            column(e, Some(i), &mut col);
+            let ring = e.rings.entry(b).or_default();
+            ring.extend(col.iter().copied());
+            while ring.len() > cap {
+                ring.drain(..BLOCK_HOPS);
+            }
+        }
+        if data.is_none() {
+            let bins: Vec<u16> = e.rings.keys().copied().collect();
+            for b in bins {
+                column(e, None, &mut col);
+                let ring = e.rings.get_mut(&b).unwrap();
+                ring.extend(col.iter().copied());
+                while ring.len() > cap {
+                    ring.drain(..BLOCK_HOPS);
+                }
+            }
+        }
+        let ids: Vec<HeadId> = e.heads.keys().copied().collect();
+        for id in ids {
+            let bin = e.heads[&id].0.bin as u16;
+            column(e, sent.iter().position(|&b| b == bin), &mut col);
+            let (head, out) = e.heads.get_mut(&id).unwrap();
+            out.clear();
+            out.extend(col.iter().map(|&x| head.push(x)));
+            if let Some(t) = e.used.get_mut(&bin) {
+                *t = block;
+            }
+        }
+        self.block += 1;
+        self.fill = 0;
     }
 
     /// Each head's sample rate.
@@ -162,6 +355,9 @@ impl Channelizer {
     }
     /// A head's output for the block that just ran (empty before the first).
     pub fn output(&self, id: HeadId) -> Option<&[Complex32]> {
+        if let Some(e) = &self.ext {
+            return e.heads.get(&id).map(|h| h.1.as_slice());
+        }
         self.heads.get(&id).map(|h| h.out.as_slice())
     }
 
@@ -170,6 +366,9 @@ impl Channelizer {
     /// before the head's live output. Also returns the absolute input sample
     /// the head's first output sample (replayed or live) corresponds to.
     pub fn add_head(&mut self, offset_hz: f64, cutoff_hz: f64, preroll_s: f64) -> (HeadId, Vec<Complex32>, u64) {
+        if self.ext.is_some() {
+            return self.add_bank_head(offset_hz, cutoff_hz, preroll_s);
+        }
         let n = self.n as i64;
         let bin = (offset_hz / self.fs * self.n as f64).round() as i64;
         let residual_hz = offset_hz - bin as f64 * self.fs / self.n as f64;
@@ -196,7 +395,11 @@ impl Channelizer {
         (id, pre, start_block * self.l as u64)
     }
 
+    /// Removes the head. External: its bin stays wanted until evicted.
     pub fn remove_head(&mut self, id: HeadId) {
+        if let Some(e) = &mut self.ext {
+            e.heads.remove(&id);
+        }
         self.heads.remove(&id);
     }
 
@@ -204,6 +407,7 @@ impl Channelizer {
     /// completes (and runs it) or the input runs out; returns (bytes consumed,
     /// whether a block ran).
     pub fn feed_u8(&mut self, u8: &[u8]) -> (usize, bool) {
+        assert!(self.ext.is_none(), "an external channelizer takes channel blocks");
         let total = u8.len() / 2;
         let take = (self.l - self.fill).min(total);
         let base = self.p - 1 + self.fill;
@@ -220,6 +424,7 @@ impl Channelizer {
 
     /// Float IQ; as [`Channelizer::feed_u8`] but counting complex samples.
     pub fn feed(&mut self, iq: &[Complex32]) -> (usize, bool) {
+        assert!(self.ext.is_none(), "an external channelizer takes channel blocks");
         let take = (self.l - self.fill).min(iq.len());
         let base = self.p - 1 + self.fill;
         self.x[base..base + take].copy_from_slice(&iq[..take]);
@@ -533,5 +738,54 @@ mod tests {
         // A 7 kHz-cutoff head passes about 14 kHz of noise.
         let expect = c.noise_in_band(floor, 14_000.0);
         assert!(db(head_p / expect).abs() < 0.7, "head noise vs expected: {:.2} dB", db(head_p / expect));
+    }
+
+    /// The external backend: bins shared, evicted, kept across an edge, and a
+    /// head on a bin not sent yet gets quiet, then the bin once it comes, with
+    /// pre-roll from a bin already sent.
+    #[test]
+    fn external_bins_are_shared_evicted_and_filled_in() {
+        use super::super::filter_bank::{BIN_HZ, BLOCK_HOPS};
+        let mut c = Channelizer::external(24_000.0, 0.1);
+        c.pin_bins(&[10.0 * BIN_HZ]);
+        let block = |c: &mut Channelizer, bins: &[u16], v: i16| c.feed_bank(bins, &vec![[v, 0]; bins.len() * BLOCK_HOPS]);
+        // Two channels in one bin: wanted once, two heads.
+        let (a, _, _) = c.add_head(20.0 * BIN_HZ + 1000.0, 7000.0, 0.0);
+        let (b, _, _) = c.add_head(20.0 * BIN_HZ - 1000.0, 7000.0, 0.0);
+        assert_eq!(c.wanted_bins(), vec![10, 20]);
+        // Not sent yet: quiet, still a whole block.
+        block(&mut c, &[10], 16384);
+        let quiet = c.output(a).unwrap();
+        assert_eq!(quiet.len(), BLOCK_HOPS);
+        assert!(quiet.iter().all(|v| v.norm() < 1e-3));
+        // Sent: the bin's level comes through, to both heads (after the head filter fills).
+        for _ in 0..3 {
+            block(&mut c, &[10, 20], 16384);
+        }
+        for h in [a, b] {
+            assert!((c.output(h).unwrap()[BLOCK_HOPS - 1].norm() - 0.5).abs() < 0.05);
+        }
+        // Pre-roll replays the bin's stored blocks.
+        let (_, pre, start) = c.add_head(20.0 * BIN_HZ, 7000.0, 1.0);
+        assert_eq!(pre.len(), 3 * BLOCK_HOPS);
+        assert_eq!(start, (12288 * 1u64).saturating_sub(BANK_EXTRA_DELAY));
+        // A channel nudged past the bin edge stays on the bin being sent.
+        let (edge, _, _) = c.add_head(20.5 * BIN_HZ + 200.0, 7000.0, 0.0);
+        assert_eq!(c.ext.as_ref().unwrap().heads[&edge].0.bin, 20);
+        // Fill the table: the oldest bin with no head goes; pinned and busy ones stay.
+        c.remove_head(edge);
+        let (old, _, _) = c.add_head(30.0 * BIN_HZ, 7000.0, 0.0);
+        c.remove_head(old);
+        block(&mut c, &[10, 20], 0);
+        for k in 0..MAX_BANK_BINS - 3 {
+            c.add_head((100 + k) as f64 * BIN_HZ, 7000.0, 0.0);
+        }
+        assert_eq!(c.wanted_bins().len(), MAX_BANK_BINS);
+        assert!(c.take_evicted().is_empty());
+        c.add_head(400.0 * BIN_HZ, 7000.0, 0.0);
+        assert_eq!(c.take_evicted(), vec![30]);
+        let w = c.wanted_bins();
+        assert_eq!(w.len(), MAX_BANK_BINS);
+        assert!(w.contains(&10) && w.contains(&20) && w.contains(&400) && !w.contains(&30));
     }
 }

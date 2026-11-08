@@ -193,6 +193,7 @@ libbladeRF and the board's FPGA image must be installed separately (Debian / Ubu
 | `gainDb` | | `30` | number | Overall RX gain, dB (bladeRF 2.0: about −15 to 60). Ignored with `agc` |
 | `agc` | | `false` | bool | The board's AGC instead of `gainDb` |
 | `biasTee` | | `false` | bool | Power an LNA through the antenna cable (bladeRF 2.0 only) |
+| `fpgaChannelizer` | | `""` | string | Path of a filter bank FPGA image (built from `fpga/`) to load into the board's RAM; the flash is never touched. Needs a `rateHz` of 8000000 and no conventional channels on the source. `""` = the usual wideband stream |
 | `ppm` | | `0` | number | Frequency correction, ppm |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |

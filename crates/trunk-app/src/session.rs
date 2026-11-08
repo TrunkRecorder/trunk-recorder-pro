@@ -196,6 +196,9 @@ pub struct Feeder {
     busy_us: Arc<AtomicU64>,
 }
 
+/// Input samples one filter bank block stands for: its rate reads as the radio's.
+const BANK_BLOCK: u64 = (trunk_core::dsp::filter_bank::BLOCK_HOPS * trunk_core::dsp::filter_bank::HOP) as u64;
+
 impl Feeder {
     /// The source it feeds.
     pub fn source(&self) -> usize {
@@ -220,6 +223,21 @@ impl Feeder {
         self.meter.lock().unwrap().iq(iq);
         self.fed(iq.len() as u64, at_ms);
         self.busy_us.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// One block of channels from the FPGA filter bank (`bins`, the table it
+    /// was made with); `dropped`: input samples of the blocks lost before it.
+    pub fn push_bank(&self, bins: &[u16], iq: &[[i16; 2]], dropped: u64, at_ms: f64) {
+        let t = Instant::now();
+        self.gap(dropped);
+        self.engine.push_bank(self.source, bins, iq);
+        self.fed(BANK_BLOCK, at_ms);
+        self.busy_us.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// What the FPGA filter bank should send for this source; as [`Engine::bank_bins`].
+    pub fn bank_bins(&self) -> (Vec<u16>, Vec<u16>) {
+        self.engine.bank_bins(self.source)
     }
 
     fn fed(&self, n: u64, at_ms: f64) {
@@ -495,6 +513,11 @@ impl Session {
         f.engine.push_iq(source, iq);
         f.meter.lock().unwrap().iq(iq);
         f.fed(iq.len() as u64, at_ms);
+    }
+
+    /// A block of channels from `source`'s FPGA filter bank; as [`Feeder::push_bank`].
+    pub fn push_bank(&mut self, source: usize, bins: &[u16], iq: &[[i16; 2]], dropped: u64, at_ms: f64) {
+        self.feed_of(source).push_bank(bins, iq, dropped, at_ms);
     }
 
     fn feed_of(&self, source: usize) -> Feeder {

@@ -1382,7 +1382,7 @@ mod tests {
     fn run_on(sources: usize, fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, systems: Vec<SystemConfig>, mut gap: Option<(f64, f64)>) -> Run {
         let center = 155_000_000.0;
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }; sources],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }; sources],
             conventional: channels,
             systems,
             ..Default::default()
@@ -1495,7 +1495,7 @@ mod tests {
         keys.add(ALGID_AES_256, Some(0x4319), key, vec![]).unwrap();
         let sys = SystemConfig { keys: Some(Arc::new(keys)), ..conv_system("conv") };
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }],
             conventional: vec![ConvChannel::new(freq, ConvMode::P25)],
             systems: vec![sys],
             ..Default::default()
@@ -1959,7 +1959,7 @@ mod tests {
             crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
             let row = ConvChannel { talkgroup: Some(1), tune_ref, ..ConvChannel::new(freq, ConvMode::P25) };
             let cfg = EngineConfig {
-                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: true, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: true, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }],
                 conventional: vec![row],
                 systems: vec![conv_system("conv")],
                 ..Default::default()
@@ -2008,7 +2008,7 @@ mod tests {
         }
         crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }],
             conventional: rows.into_iter().map(|r| ConvChannel { freq_hz: freq, ..r }).collect(),
             systems: vec![conv_system("conv")],
             ..Default::default()

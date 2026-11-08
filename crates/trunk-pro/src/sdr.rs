@@ -41,6 +41,9 @@ pub enum Block {
     /// INT16_REAL): turned into I/Q by the [`Inbox`], on the thread that takes
     /// them, not the driver's.
     Real16(Pooled<i16>),
+    /// One block of channels from a bladeRF's FPGA filter bank: `bins`, the
+    /// table it was made with, × 48 hops, hop by hop, Q15 (`dsp::bank_wire`).
+    Bank { bins: Arc<[u16]>, iq: Pooled<[i16; 2]> },
 }
 
 impl Block {
@@ -50,6 +53,8 @@ impl Block {
             Block::U8(b) => b.len() / 2,
             Block::Iq(b) => b.len(),
             Block::Real16(b) => b.len() / 2,
+            // The input samples it stands for, so the rate reads as the radio's.
+            Block::Bank { .. } => trunk_core::dsp::filter_bank::BLOCK_HOPS * trunk_core::dsp::filter_bank::HOP,
         }
     }
 }
@@ -139,6 +144,7 @@ pub struct Sink {
     bytes: Pool<u8>,
     iq: Pool<Complex32>,
     real: Pool<i16>,
+    bank: Pool<[i16; 2]>,
     /// Bytes per 8-bit message, and the one being gathered (its dropped, when the last part came).
     gather: usize,
     pending: Option<(Pooled<u8>, u64, Instant)>,
@@ -150,7 +156,12 @@ impl Sink {
     /// For source `source` at `rate_hz`; `live`: a radio (see [`Sink::live`]).
     pub fn new(source: usize, tx: SyncSender<SourceMsg>, rate_hz: f64, live: bool) -> Sink {
         let gather = ((rate_hz * 2.0 * GATHER.as_secs_f64()) as usize).clamp(16 << 10, 1 << 20);
-        Sink { source, tx, live, lost: 0, closed: false, bytes: Pool::default(), iq: Pool::default(), real: Pool::default(), gather, pending: None, raise: None }
+        Sink { source, tx, live, lost: 0, closed: false, bytes: Pool::default(), iq: Pool::default(), real: Pool::default(), bank: Pool::default(), gather, pending: None, raise: None }
+    }
+
+    /// A copy of a filter bank block's words, for [`Block::Bank`].
+    pub fn bank_buffer(&self, iq: &[[i16; 2]]) -> Pooled<[i16; 2]> {
+        self.bank.copy(iq)
     }
 
     /// An empty buffer for `n` I/Q samples, to fill and [`Sink::send`].
@@ -286,6 +297,10 @@ pub struct Control {
     /// The centre and gain last applied, so a reopened device comes back so.
     pub current_hz: Mutex<Option<f64>>,
     pub current_gain: Mutex<Option<Gain>>,
+    /// The bins an FPGA filter bank should send, when they change; and those
+    /// last sent to it, so a reopened device comes back with them.
+    pub bins: Mutex<Option<Vec<u16>>>,
+    pub current_bins: Mutex<Option<Vec<u16>>>,
 }
 
 pub use sdr_core::gain::Stage;

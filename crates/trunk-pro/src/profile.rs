@@ -33,7 +33,7 @@ fn measure(cfg: &Config, req: &Request) -> Result<Value, String> {
     };
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
-    let th = crate::runtime::spawn_source(src, req.source, center, tx, stop.clone(), Some(Arc::new(Control::default())), &format!("profile-source-{}", req.source)).map_err(|e| e.to_string())?;
+    let th = crate::runtime::spawn_source(src, req.source, center, tx, stop.clone(), Some(Arc::new(Control::default())), &format!("profile-source-{}", req.source), false).map_err(|e| e.to_string())?;
     let mut p = Profiler::new(src.rate_hz, profile::SECONDS);
     let mut last = Instant::now();
     let mut err = None;
@@ -44,7 +44,7 @@ fn measure(cfg: &Config, req: &Request) -> Result<Value, String> {
                 match &block {
                     crate::sdr::Block::U8(b) => p.push_u8(b),
                     crate::sdr::Block::Iq(b) => p.push_iq(b),
-                    crate::sdr::Block::Real16(_) => {}
+                    crate::sdr::Block::Real16(_) | crate::sdr::Block::Bank { .. } => {}
                 }
                 last = Instant::now();
             }

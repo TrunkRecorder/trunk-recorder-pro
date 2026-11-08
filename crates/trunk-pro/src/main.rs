@@ -256,6 +256,8 @@ usage:
       of each frame type; p2: a Phase 2 channel, --nac --sysid --wacn).
   trunk-pro tool smartnet <capture.cu8> --center Hz --rate Hz --cc Hz [--osw]
       A SmartNet control channel's messages.
+  trunk-pro tool bank-capture <bladeRF serial> --image p25chan.rbf --center Hz --freqs Hz,… --out f.pkt [--seconds 10] [--gain 30]
+      Load the FPGA filter bank into RAM and record what it sends, for replay.
   trunk-pro tool dmrscan|nxdnscan <capture.cu8> --center Hz
       Every DMR / NXDN carrier in a capture.
   trunk-pro tool dmr|nxdn <capture.cu8> --center Hz --freq Hz [--nxdn 48|96] [--audio out.f32]
@@ -376,12 +378,14 @@ fn replay(a: &Args) {
         }
         files.push(f[0].to_string());
         formats.push(format_of(f[0], f.get(3).copied()));
-        sources.push(SourceConfig { center_hz: f[1].parse().unwrap_or(0.0), rate_hz: f[2].parse().unwrap_or(2_400_000.0), auto_tune: a.flag("auto-tune"), guard_hz: a.num("guard", DEFAULT_GUARD_HZ) });
+        sources.push(SourceConfig { center_hz: f[1].parse().unwrap_or(0.0), rate_hz: f[2].parse().unwrap_or(2_400_000.0), auto_tune: a.flag("auto-tune"), guard_hz: a.num("guard", DEFAULT_GUARD_HZ), filter_bank: f[0].ends_with(".pkt") });
     }
     if let Some(p) = a.positional.first() {
         files.push(p.clone());
         formats.push(format_of(p, None));
-        sources.push(SourceConfig { center_hz: a.num("center", 0.0), rate_hz: a.num("rate", 2_400_000.0), auto_tune: a.flag("auto-tune"), guard_hz: a.num("guard", DEFAULT_GUARD_HZ) });
+        let bank = p.ends_with(".pkt");
+        let rate = a.num("rate", if bank { trunk_core::dsp::filter_bank::FS } else { 2_400_000.0 });
+        sources.push(SourceConfig { center_hz: a.num("center", 0.0), rate_hz: rate, auto_tune: a.flag("auto-tune"), guard_hz: a.num("guard", DEFAULT_GUARD_HZ), filter_bank: bank });
     }
     if files.is_empty() {
         die("replay: no capture given");
@@ -511,6 +515,38 @@ fn replay(a: &Args) {
         if let Ok(s) = fs::read_to_string(p) {
             engine.load_bandplan(i, &s);
         }
+    }
+
+    // A filter bank packet file (`tool bank-pack`): one source, fed block by block.
+    if engine.sources()[0].filter_bank {
+        if files.len() != 1 {
+            die("replay: a packet file (.pkt) replays on its own");
+        }
+        let t0 = Instant::now();
+        let bytes = fs::read(&files[0]).unwrap_or_else(|e| die(&format!("{}: {e}", files[0])));
+        let table = fs::read_to_string(format!("{}.bins", files[0])).unwrap_or_else(|e| die(&format!("{}.bins: {e}", files[0])));
+        let bins: Vec<u16> = table.trim().split(',').map(|v| v.trim().parse().unwrap_or_else(|_| die(&format!("{}.bins: bad bin \"{v}\"", files[0])))).collect();
+        let (mut rest, mut next, mut written, mut lost) = (&bytes[..], 0u32, 0, 0u64);
+        while !rest.is_empty() {
+            let (p, more) = trunk_core::dsp::bank_wire::parse(rest).unwrap_or_else(|e| die(&format!("{}: {e:?}", files[0])));
+            rest = more;
+            let trunk_core::dsp::bank_wire::Body::Channels { iq, .. } = &p.body else { continue };
+            let missed = p.block.wrapping_sub(next) as u64;
+            if missed > 0 {
+                engine.push_bank_gap(0, missed);
+                lost += missed;
+            }
+            engine.push_bank(0, &bins, iq);
+            next = p.block.wrapping_add(1);
+            if next % 64 == 0 {
+                written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+            }
+        }
+        engine.finish();
+        written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+        let air_s = next as f64 * 12288.0 / trunk_core::dsp::filter_bank::FS;
+        println!("\n{air_s:.1} s of air ({lost} blocks lost) in {:.2} s. {written} call(s) written to {out_dir}/", t0.elapsed().as_secs_f64());
+        return;
     }
 
     // Streamed from disk, not read whole: a long capture is gigabytes (a

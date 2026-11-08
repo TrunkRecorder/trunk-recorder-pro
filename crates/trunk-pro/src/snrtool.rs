@@ -24,6 +24,7 @@ use std::fmt::Write as _;
 use num_complex::Complex32;
 use trunk_core::dmr::{self, Framer, SlotEvent};
 use trunk_core::dsp::c4fm::{C4fm, C4fmOptions};
+use trunk_core::dsp::filter_bank;
 use trunk_core::dsp::{Channelizer, Receiver};
 use trunk_core::p25::diversity::{best_imbe, best_tsbks, Bank, BankConfig};
 use trunk_core::p25::frame::{HDU, LDU1, LDU2, TDULC, TSDU};
@@ -35,6 +36,9 @@ use crate::{die, Args};
 
 /// Channel IQ of `freq` from a capture, through a head of `cutoff` Hz.
 fn channel(a: &Args, cutoff: f64) -> (Vec<Complex32>, f64) {
+    if a.positional.get(1).is_some_and(|p| p.ends_with(".cs16") || p.ends_with(".sc16")) {
+        return channel_cs16(a, cutoff);
+    }
     let cap = Capture::from_args_seconds(a, "snr");
     let mut chz = Channelizer::new(cap.fs, 24_000.0, 0.1);
     let rate = chz.output_rate();
@@ -42,6 +46,58 @@ fn channel(a: &Args, cutoff: f64) -> (Vec<Complex32>, f64) {
     let mut iq = Vec::new();
     cap.channelize(&mut chz, |chz| iq.extend_from_slice(chz.output(head).unwrap()));
     (iq, rate)
+}
+
+/// The same from a bladeRF's 12-bit SC16 Q11 capture. `--bank <spec>` takes the
+/// channel through the FPGA filter bank's model instead of the channelizer
+/// (`--bank float`: the model without its fixed-point arithmetic; a spec is
+/// [`filter_bank::Design::parse`]'s, `--bank default` the design as it stands).
+fn channel_cs16(a: &Args, cutoff: f64) -> (Vec<Complex32>, f64) {
+    let path = &a.positional[1];
+    let bytes = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+    let fs = a.num("rate", 8_000_000.0);
+    let mut iq: Vec<[i16; 2]> = bytes.chunks_exact(4).map(|b| [i16::from_le_bytes([b[0], b[1]]), i16::from_le_bytes([b[2], b[3]])]).collect();
+    if let Some(s) = a.get("seconds").and_then(|v| v.parse::<f64>().ok()) {
+        iq.truncate((s * fs) as usize);
+    }
+    let offset = a.num("freq", 0.0) - a.num("center", 0.0);
+    let float = || iq.iter().map(|v| Complex32::new(v[0] as f32 / 2048.0, v[1] as f32 / 2048.0));
+    let mut out = Vec::new();
+    match a.get("bank") {
+        None => {
+            let mut chz = Channelizer::new(fs, 24_000.0, 0.1);
+            let rate = chz.output_rate();
+            let (head, _, _) = chz.add_head(offset, cutoff, 0.0);
+            let x: Vec<Complex32> = float().collect();
+            let mut at = 0;
+            while at < x.len() {
+                let (used, ran) = chz.feed(&x[at..]);
+                at += used;
+                if ran {
+                    out.extend_from_slice(chz.output(head).unwrap());
+                }
+            }
+            return (out, rate);
+        }
+        Some(_) if fs != filter_bank::FS => die("tool snr: the filter bank only runs at 8 MS/s"),
+        Some("float") => {
+            let mut bank = filter_bank::FloatBank::new(&filter_bank::Design::default());
+            let mut head = filter_bank::BankHead::new(offset, cutoff);
+            let x: Vec<Complex32> = float().collect();
+            bank.push(&x, |f| out.push(head.push(f[head.bin])));
+        }
+        Some(spec) => {
+            let d = filter_bank::Design::parse(spec).unwrap_or_else(|e| die(&e));
+            let mut bank = filter_bank::FixedBank::new(&d);
+            let mut head = filter_bank::BankHead::new(offset, cutoff);
+            bank.push(&iq, |f| out.push(head.push(filter_bank::q15(f[head.bin]))));
+            let s = bank.saturated;
+            if s != Default::default() {
+                eprintln!("filter bank saturated: {s:?}");
+            }
+        }
+    }
+    (out, filter_bank::OUTPUT_RATE)
 }
 
 /// Windowed-sinc low-pass taps (Blackman), cutoff `fc` at rate `fs`.

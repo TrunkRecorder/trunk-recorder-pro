@@ -5,6 +5,8 @@ pub mod am;
 pub mod c4fm;
 pub mod channelizer;
 pub mod cqpsk;
+pub mod bank_wire;
+pub mod filter_bank;
 pub mod filters;
 pub mod fm;
 pub mod inband;

@@ -92,6 +92,10 @@ pub struct SourceConfig {
     pub auto_tune: bool,
     /// Left unused at each edge, Hz (see [`DEFAULT_GUARD_HZ`]).
     pub guard_hz: f64,
+    /// Channels come split by the bladeRF's FPGA filter bank, as channel
+    /// blocks ([`Engine::push_bank`]), not wideband IQ. 8 MS/s only, and no
+    /// conventional channels (their detector needs the wideband spectrum).
+    pub filter_bank: bool,
 }
 
 impl SourceConfig {
@@ -592,7 +596,8 @@ struct Source {
 impl Source {
     fn new(cfgs: &Arc<[SourceConfig]>, index: usize, history_s: f64) -> Source {
         let rate = cfgs[index].rate_hz;
-        Source { cfgs: cfgs.clone(), index, chz: Channelizer::new(rate, MIN_CHANNEL_RATE, history_s), errors: VecDeque::new(), seed: None, tune_ppm: 0.0, voice_channels: 0, in_gap: false, half: None, clock_offset_s: 0.0 }
+        let chz = if cfgs[index].filter_bank { Channelizer::external(MIN_CHANNEL_RATE, history_s) } else { Channelizer::new(rate, MIN_CHANNEL_RATE, history_s) };
+        Source { cfgs: cfgs.clone(), index, chz, errors: VecDeque::new(), seed: None, tune_ppm: 0.0, voice_channels: 0, in_gap: false, half: None, clock_offset_s: 0.0 }
     }
     /// Its settings.
     fn cfg(&self) -> &SourceConfig {
@@ -1555,12 +1560,26 @@ impl Core {
                 }
             }
         }
+        for (i, s) in cfg.sources.iter().enumerate().filter(|(_, s)| s.filter_bank) {
+            if s.rate_hz != crate::dsp::filter_bank::FS {
+                return Err(format!("Source {i} uses the FPGA channelizer, which runs at 8 MS/s only, not {} MS/s.", s.rate_hz / 1e6));
+            }
+            if let Some(c) = cfg.conventional.iter().find(|c| (c.freq_hz - s.center_hz).abs() <= s.usable_half_width()) {
+                return Err(format!("Conventional channel {:.5} MHz falls on source {i}, which uses the FPGA channelizer: it can't open conventional channels.", c.freq_hz / 1e6));
+            }
+        }
         let history = cfg.preroll_s.max(cfg.conv.preroll_s).max(0.1);
         let spans: Vec<(f64, f64, f64)> = cfg.sources.iter().map(|s| (s.center_hz, s.rate_hz, s.usable_half_width())).collect();
         let conv = Conventional::new(&cfg.conventional, &spans, ConvConfig { vocoder: cfg.vocoder, ..cfg.conv }, cfg.bank, cfg.capture_frames)?;
         // (The engine's one copy of the sources' settings, shared.)
         let cfgs: Arc<[SourceConfig]> = std::mem::take(&mut cfg.sources).into();
-        let sources: Vec<Source> = (0..cfgs.len()).map(|i| Source::new(&cfgs, i, history)).collect();
+        let mut sources: Vec<Source> = (0..cfgs.len()).map(|i| Source::new(&cfgs, i, history)).collect();
+        // A filter bank source sends every control channel it reaches, whatever heads come and go.
+        for s in sources.iter_mut().filter(|s| s.cfg().filter_bank) {
+            let half = s.cfg().usable_half_width();
+            let ccs: Vec<f64> = cfg.systems.iter().flat_map(|y| y.sites.iter()).flat_map(|t| t.control_channels.iter().copied()).filter(|&f| (f - s.cfg().center_hz).abs() <= half).map(|f| s.offset(f)).collect();
+            s.chz.pin_bins(&ccs);
+        }
         let rate = sources[0].chz.output_rate();
         let ids = CallIds::default();
         let n_sites = sites(&cfg.systems).count();
@@ -2621,6 +2640,11 @@ impl Engine {
     /// their noise floor from the silence nor open on it.
     pub fn push_gap(&self, source: usize, n: u64) {
         const CHUNK: u64 = 32768;
+        if self.shared.sources[source].filter_bank {
+            // Whole blocks: a filter bank loses packets, not samples.
+            let block = (crate::dsp::filter_bank::BLOCK_HOPS * crate::dsp::filter_bank::HOP) as u64;
+            return self.push_bank_gap(source, n.div_ceil(block));
+        }
         // Faint noise (about −80 dBFS) rather than zeros: receivers' gain
         // control and equalisers see a signal of the kind they always idle on.
         let mut x = 0x9e37_79b9_7f4a_7c15u64 ^ n;
@@ -2639,6 +2663,40 @@ impl Engine {
             left -= k as u64;
         }
         self.shared.rx[source].lock().unwrap().src.in_gap = false;
+    }
+}
+
+impl Engine {
+    /// Feed a filter bank source one block of channels: `bins`, the table the
+    /// FPGA made it with, × 48 hops, hop by hop (`dsp::bank_wire`).
+    pub fn push_bank(&self, source: usize, bins: &[u16], iq: &[[i16; 2]]) {
+        let block = {
+            let mut r = self.shared.rx[source].lock().unwrap();
+            r.src.chz.feed_bank(bins, iq);
+            r.decode_block()
+        };
+        self.follow_block(source, block);
+    }
+
+    /// `blocks` of a filter bank source that never came, fed as quiet ([`Engine::push_gap`]).
+    pub fn push_bank_gap(&self, source: usize, blocks: u64) {
+        self.shared.rx[source].lock().unwrap().src.in_gap = true;
+        for _ in 0..blocks {
+            let block = {
+                let mut r = self.shared.rx[source].lock().unwrap();
+                r.src.chz.feed_bank_gap();
+                r.decode_block()
+            };
+            self.follow_block(source, block);
+        }
+        self.shared.rx[source].lock().unwrap().src.in_gap = false;
+    }
+
+    /// A filter bank source's bins to send (at most `bank_wire::MAX_BINS`: its control channels,
+    /// then those its channels used last), and those dropped for room since the last call.
+    pub fn bank_bins(&self, source: usize) -> (Vec<u16>, Vec<u16>) {
+        let mut r = self.shared.rx[source].lock().unwrap();
+        (r.src.chz.wanted_bins(), r.src.chz.take_evicted())
     }
 }
 
@@ -2661,7 +2719,7 @@ mod tests {
     }
 
     fn tuned_source(auto_tune: bool) -> Source {
-        let cfg = SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune, guard_hz: DEFAULT_GUARD_HZ };
+        let cfg = SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune, guard_hz: DEFAULT_GUARD_HZ, filter_bank: false };
         Source::new(&Arc::from(vec![cfg]), 0, 0.1)
     }
 
@@ -2690,7 +2748,7 @@ mod tests {
     #[test]
     fn autotune_starts_from_a_saved_score() {
         let sys = SystemConfig::trunked("s", vec![SiteConfig { control_channels: vec![770.5e6], ..Default::default() }]);
-        let e = Engine::new(EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune: true, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() }).unwrap();
+        let e = Engine::new(EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune: true, guard_hz: DEFAULT_GUARD_HZ, filter_bank: false }], ..Default::default() }).unwrap();
         e.seed_tune(0, 2.5);
         let t = e.status().sources[0];
         assert_eq!((t.applied_ppm, t.error_ppm, t.seeded), (2.5, None, true));
@@ -2710,7 +2768,7 @@ mod tests {
         let pw = ConvChannel { talkgroup: Some(4), info: named("Town PW"), ..ConvChannel::new(155.4e6, ConvMode::Fm) };
         let e = Engine::new(EngineConfig {
             systems: vec![SystemConfig::conventional("town")],
-            sources: vec![SourceConfig { center_hz: 155e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: 155e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, filter_bank: false }],
             conventional: vec![pd, pd2, pw],
             ..Default::default()
         })
@@ -2727,7 +2785,7 @@ mod tests {
     fn plain_engine() -> Engine {
         use super::super::conventional::{ConvChannel, ConvMode};
         let ch = ConvChannel { talkgroup: Some(1), ..ConvChannel::new(155.2e6, ConvMode::Fm) };
-        Engine::new(EngineConfig { sources: vec![SourceConfig { center_hz: 155e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], conventional: vec![ch], ..Default::default() }).unwrap()
+        Engine::new(EngineConfig { sources: vec![SourceConfig { center_hz: 155e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, filter_bank: false }], conventional: vec![ch], ..Default::default() }).unwrap()
     }
 
     /// u8 IQ in buffers of odd length: the same as in even ones (no I/Q swap).
@@ -2773,7 +2831,7 @@ mod tests {
     fn one_site(short_name: &str, f: impl FnOnce(&mut SystemConfig)) -> EngineConfig {
         let mut sys = SystemConfig::trunked(short_name, vec![SiteConfig { control_channels: vec![851.0125e6], ..Default::default() }]);
         f(&mut sys);
-        EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() }
+        EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, filter_bank: false }], ..Default::default() }
     }
 
     /// A control channel's messages come out after they were on the air (P25's diversity
@@ -2854,7 +2912,7 @@ mod tests {
 
     #[test]
     fn sites_need_their_own_names_and_share_call_ids() {
-        let src = vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }];
+        let src = vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, filter_bank: false }];
         let site = |s: &str| SiteConfig { name: s.into(), control_channels: vec![851.0125e6], ..Default::default() };
         let cfg = EngineConfig { systems: vec![SystemConfig::trunked("a", vec![site(""), site("a")])], sources: src.clone(), ..Default::default() };
         assert!(Engine::new(cfg).err().unwrap().contains("Two sites of a are named \"a\""));
@@ -2886,7 +2944,7 @@ mod tests {
         let sys = |name: &str, sites| SystemConfig { talkgroups: tgs.clone(), save, ..SystemConfig::trunked(name, sites) };
         let cfg = EngineConfig {
             systems: vec![sys("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6)]), sys("md", vec![site("far", 851.4125e6)])],
-            sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, filter_bank: false }],
             drop_duplicates: dedupe,
             ..Default::default()
         };
@@ -2978,7 +3036,7 @@ mod tests {
         let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], ..Default::default() };
         let mut sys = SystemConfig { save: SaveRules { normalize: false, ..Default::default() }, ..SystemConfig::trunked("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6)]) };
         sys.calls.conversation = false;
-        let cfg = EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() };
+        let cfg = EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, filter_bank: false }], ..Default::default() };
         let mut e = Core::new(cfg).unwrap();
         let grant = |e: &mut Core, i: usize, t: f64, f: u64, src: i64| handle(e, i, &[Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: f, source: src, ..Default::default() }]);
         // Voice on site `i`'s call on `f`, at `t`.
@@ -3096,7 +3154,7 @@ mod tests {
         let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], ..Default::default() };
         let mut sys = SystemConfig { save: SaveRules { normalize: false, ..Default::default() }, ..SystemConfig::trunked("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6)]) };
         sys.calls.conversation = false;
-        let cfg = EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() };
+        let cfg = EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, filter_bank: false }], ..Default::default() };
         let mut e = Core::new(cfg).unwrap();
         let grant = |e: &mut Core, i: usize, t: f64, f: u64, src: i64| handle(e, i, &[Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: f, source: src, ..Default::default() }]);
         let (east, west) = (851_500_000, 851_600_000);
@@ -3181,7 +3239,7 @@ mod threads {
     }
 
     fn engine() -> Engine {
-        let sources = [450e6, 460e6].map(|c| SourceConfig { center_hz: c, rate_hz: FS, auto_tune: false, guard_hz: 10_000.0 }).to_vec();
+        let sources = [450e6, 460e6].map(|c| SourceConfig { center_hz: c, rate_hz: FS, auto_tune: false, guard_hz: 10_000.0, filter_bank: false }).to_vec();
         let conventional = [450.05e6, 460.05e6].map(|f| ConvChannel::new(f, ConvMode::Nxdn(Rate::N48))).to_vec();
         Engine::new(EngineConfig { sources, conventional, ..Default::default() }).unwrap()
     }

@@ -72,6 +72,8 @@ fn feed(session: &mut SurveySession, msg: SourceMsg) -> bool {
         SourceMsg::Samples { block: Block::Iq(b), .. } => session.survey().push_iq(&b),
         // (The callers' inbox makes these I/Q.)
         SourceMsg::Samples { block: Block::Real16(_), .. } => {}
+        // (A survey opens its radio wideband: never channel blocks.)
+        SourceMsg::Samples { block: Block::Bank { .. }, .. } => {}
         SourceMsg::Tuned { center_hz, .. } => session.survey().tuned(center_hz),
         SourceMsg::Error { error, .. } => session.source_error(&error),
         SourceMsg::End { .. } => {
@@ -107,7 +109,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
     }
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
     let mut rx = Inbox::new(rx);
-    let mut threads = vec![runtime::spawn_source(&radio, req.source, first, tx, stop.clone(), Some(ctl.clone()), &format!("survey-source-{}", req.source)).map_err(|e| e.to_string())?];
+    let mut threads = vec![runtime::spawn_source(&radio, req.source, first, tx, stop.clone(), Some(ctl.clone()), &format!("survey-source-{}", req.source), false).map_err(|e| e.to_string())?];
     // The opening tune is confirmed by the first samples.
     let mut opened = fixed.is_some();
     let (cmd_tx, cmd_rx) = mpsc::channel::<UserCmd>();
@@ -197,7 +199,7 @@ pub fn cli(a: &crate::Args) {
     }
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
     let mut rx = Inbox::new(rx);
-    let th = runtime::spawn_source(&cfg.sources[0], 0, first, tx, stop.clone(), Some(ctl.clone()), "survey-source-0").unwrap_or_else(|e| crate::die(&e.to_string()));
+    let th = runtime::spawn_source(&cfg.sources[0], 0, first, tx, stop.clone(), Some(ctl.clone()), "survey-source-0", false).unwrap_or_else(|e| crate::die(&e.to_string()));
     let listen_s = a.num("seconds", 30.0);
     let t0 = Instant::now();
     let mut opened = fixed.is_some();

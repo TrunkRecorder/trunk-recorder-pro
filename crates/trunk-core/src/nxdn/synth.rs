@@ -351,7 +351,7 @@ mod tests {
         for rate in [Rate::N48, Rate::N96] {
             let iq = keyed(&conv_tx(rate), fs, freq - center);
             let cfg = EngineConfig {
-                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }],
                 conventional: vec![ConvChannel::new(freq, ConvMode::Nxdn(rate))],
                 ..Default::default()
             };
@@ -376,7 +376,7 @@ mod tests {
                 let mut tx = conv_tx(rate);
                 tx.alias = Some(alias.into());
                 let cfg = EngineConfig {
-                    sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                    sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }],
                     conventional: vec![ConvChannel::new(freq, ConvMode::Nxdn(rate))],
                     ..Default::default()
                 };
@@ -388,7 +388,7 @@ mod tests {
         }
         // No alias sent: none made up.
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }],
             conventional: vec![ConvChannel::new(freq, ConvMode::Nxdn(Rate::N48))],
             ..Default::default()
         };
@@ -408,7 +408,7 @@ mod tests {
             ..ConvChannel::new(freq, mode)
         };
         let calls = |rows: Vec<ConvChannel>| {
-            let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }], conventional: rows, ..Default::default() };
+            let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }], conventional: rows, ..Default::default() };
             let (done, skipped) = run_engine(cfg, &iq);
             (done.into_iter().map(|k| (k.call.talkgroup, k.call.talkgroup_info.map(|t| t.alpha_tag))).collect::<Vec<_>>(), skipped)
         };
@@ -486,7 +486,7 @@ mod tests {
         let mut nc = NxdnConfig::default();
         nc.channel_table.insert(7, vc as u64);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }],
             systems: vec![SystemConfig::trunked("nx", vec![SiteConfig { control_channels: vec![cc], protocol: Protocol::Nxdn(nc), ..Default::default() }])],
             ..Default::default()
         };
@@ -526,7 +526,7 @@ mod tests {
         }
         let iq = band(&[(r1 - center, r1_frames), (r2 - center, r2_frames)], Rate::N48, fs);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }],
             systems: vec![SystemConfig::trunked("idas", vec![SiteConfig {
                 control_channels: vec![r1, r2],
                 protocol: Protocol::Nxdn(NxdnConfig { kind: Kind::TypeD, ..Default::default() }),
