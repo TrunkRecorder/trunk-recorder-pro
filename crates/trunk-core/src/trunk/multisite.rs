@@ -554,7 +554,7 @@ mod tests {
             }
             rec.audio = vec![0.1; n * 800];
             let call = Call { start_s, last_audio_s: to, sources: vec![CallSource { src: talker, ..Default::default() }], ..call(id, site, start_s) };
-            Held { call, rec, recorder_num: 0 }
+            Held { call, rec, on: Default::default() }
         };
         let kept = Kept::of(&aired(1, 0, 0.0, 0.5, 6.5, 3817));
         assert!(kept.holds(&aired(2, 1, 2.4, 2.6, 6.6, 6292)), "granted 2.4 s later on its site, on the air with it");

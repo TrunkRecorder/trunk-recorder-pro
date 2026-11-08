@@ -5,6 +5,29 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Multi-site: copies on the air together are one transmission.** An EDACS network can grant a
+  talkgroup on a second site seconds after the first, and each site names the talker its own way
+  (TG 799's link: 3817 on two sites, 6292 on a third), so neither the talker nor the grant time
+  matched and both copies were saved. A talkgroup has one talker at a time: two sites' copies
+  whose audio was on the air together for most of the shorter one, or a late site's copy that
+  began while the other's speech went on and ended with it, are one transmission now. A reply on
+  another site starts after the last speech, and is still its own call. Trunked analog copies are
+  weighed without their silent tails. Being on the air together decides by itself (a site that
+  holds its channel longer no longer keeps its copy apart), and copies that weren't linked (a
+  site's copy begun while its last was still open) are compared with those saved in the last
+  30 s too. On one site, a second channel on the air with the first and carrying the same talker
+  (or none known) is a doubled grant's copy, and dropped the same way.
+
+- **A trunked analog call's silent tail is cut.** When the channel stays up after the talker
+  unkeys (EDACS's hang time), the recording ran on with nothing but hiss for a second or more. A
+  trunked FM call now ends 0.4 s after its last speech when more than half a second of nothing
+  follows it; a call where no speech stands out, or a weak talker last, is left whole. Its
+  `call_length` and `stop_time` follow. Conventional channels (their own squelch) are untouched.
+
+- **SoapySDR: AGC on or off and the gain stages apply while recording**, like the gain in dB. An
+  SDRplay's IFGR / RFGR, a HackRF's LNA / VGA through SoapySDR: Setup's changes are set at once,
+  and a reopened radio comes back with them.
+
 ## [0.5.0] — 2026-11-23
 
 **Before you update:** the recordings folder (`recording.captureDir`) must be a full path, such as `/data/recordings` or
