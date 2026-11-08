@@ -34,6 +34,8 @@ architecture sim of tb_fb_core is
     signal checked : natural := 0;
     signal want_packets : natural := 2;
     signal gain_shift : unsigned(2 downto 0);
+    signal adc_peak : unsigned(11 downto 0) := (others => '0');
+    signal adc_clips : unsigned(31 downto 0) := (others => '0');
 
     type char_file is file of character;
     type int_array is array (natural range <>) of natural;
@@ -66,7 +68,7 @@ begin
         dut : entity work.fb_radio
             port map (clk => clk, rst => rst, enable => '1', gain_shift => gain_shift, tbl_we => tbl_we, tbl_addr => tbl_addr,
                       tbl_bin => tbl_bin, tbl_count => tbl_count, commit_gen => commit_gen, active_gen => active_gen,
-                      saturated => fold_sat, dropped => dropped, rx_clk => rx, run => not rst, sample_valid => in_valid,
+                      saturated => fold_sat, dropped => dropped, adc_peak => adc_peak, adc_clips => adc_clips, peak_read => '0', rx_clk => rx, run => not rst, sample_valid => in_valid,
                       sample_i => in_i, sample_q => in_q, pkt_ready => pkt_ready, out_valid => out_valid,
                       out_sop => out_sop, out_eop => out_eop, out_data => out_data);
     end generate;
@@ -173,6 +175,11 @@ begin
         assert fold_sat = 2 report "fold saturations: " & integer'image(to_integer(fold_sat)) & ", want 2" severity failure;
         if MODE = "ready" then
             assert dropped = 1 report "dropped: " & integer'image(to_integer(dropped)) severity failure;
+        end if;
+        if BRIDGE then
+            -- Input sample 5000 holds the extreme codes, 2047 and -2048.
+            assert adc_peak = 2048 report "ADC peak: " & integer'image(to_integer(adc_peak)) severity failure;
+            assert adc_clips >= 1 report "ADC clips: " & integer'image(to_integer(adc_clips)) severity failure;
         end if;
         report MODE & ": " & integer'image(checked) & " packets match the model" severity note;
         finish;

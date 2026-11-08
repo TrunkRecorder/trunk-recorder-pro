@@ -530,7 +530,7 @@ fn replay(a: &Args) {
             let bank_wire::Body::Channels { iq, power_start, power, .. } = &p.body;
             let missed = p.block.wrapping_sub(next) as u64;
             lost += missed;
-            session.push_bank(0, &bins, iq, *power_start, power, missed * block, at(p.block));
+            session.push_bank(0, &bins, iq, *power_start, power, None, missed * block, at(p.block));
             next = p.block.wrapping_add(1);
             if next % 64 == 0 {
                 session.poll(at(next), &mut out);
@@ -541,6 +541,12 @@ fn replay(a: &Args) {
         written += write_calls(&mut out, &session, &out_dir, multi, quiet);
         let air_s = next as f64 * block as f64 / filter_bank::FS;
         println!("\n{air_s:.1} s of air ({lost} blocks lost) in {:.2} s. {written} call(s) written to {out_dir}/", t0.elapsed().as_secs_f64());
+        let st = session.status_and_bandplans().0;
+        for (i, t) in st.sources.iter().enumerate() {
+            if let Some(e) = t.error_ppm {
+                println!("  source {}: frequency error {e:+.2} ppm, corrected by {:+.2} ppm", i + 1, t.applied_ppm);
+            }
+        }
         return;
     }
 

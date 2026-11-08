@@ -12,6 +12,8 @@
 --   4 (0x10)  R   filter bank saturations
 --   5 (0x14)  R   blocks dropped because the USB side wasn't ready
 --   6 (0x18)  R   rx_clock / 256, counted over SYS_HZ clocks
+--   7 (0x1C)  R   largest |I| or |Q| from the ADC since this was last read (read clears it)
+--   8 (0x20)  R   samples at the ADC's rails (|I| or |Q| of 2028 or more)
 --   0x100..0x13F (0x400..0x4FC)  RW  pending table
 -- All on the Nios clock.
 
@@ -44,7 +46,10 @@ entity fb_regs is
         saturated  : in  unsigned(31 downto 0);
         dropped    : in  unsigned(31 downto 0);
         -- rx_clock / 256, from the other domain: every rising edge is counted.
-        rx_tick    : in  std_logic
+        rx_tick    : in  std_logic;
+        adc_peak   : in  unsigned(11 downto 0);
+        adc_clips  : in  unsigned(31 downto 0);
+        peak_read  : out std_logic
     );
 end entity;
 
@@ -78,6 +83,7 @@ begin
     tbl_count  <= count;
     commit_gen <= gen;
     wb_ack     <= ack;
+    peak_read  <= '1' when wb_cyc = '1' and wb_we = '0' and wb_adr(8) = '0' and wb_adr(3 downto 0) = "0111" else '0';
     wb_rdata   <= x"00000" & "00" & mem_q when is_tbl = '1' else rdata;
 
     table : process (clk)
@@ -104,7 +110,7 @@ begin
             if wb_cyc = '1' then
                 is_tbl <= wb_adr(8);
                 rdata <= (others => '0');
-                case to_integer(unsigned(wb_adr(2 downto 0))) is
+                case to_integer(unsigned(wb_adr(3 downto 0))) is
                     when 0 => rdata <= std_logic_vector(to_unsigned(CORE_ID, 8) & to_unsigned(VERSION, 8) & to_unsigned(BUILD, 16));
                     when 1 => rdata(0) <= ctl_en; rdata(6 downto 4) <= std_logic_vector(gain);
                     when 2 => rdata(6 downto 0) <= std_logic_vector(count);
@@ -112,11 +118,13 @@ begin
                     when 4 => rdata <= std_logic_vector(saturated);
                     when 5 => rdata <= std_logic_vector(dropped);
                     when 6 => rdata <= std_logic_vector(rate);
+                    when 7 => rdata(11 downto 0) <= std_logic_vector(adc_peak);
+                    when 8 => rdata <= std_logic_vector(adc_clips);
                     when others => null;
                 end case;
                 if wb_we = '1' and wb_adr(8) = '0' then
                     v := unsigned(wb_wdata);
-                    case to_integer(unsigned(wb_adr(2 downto 0))) is
+                    case to_integer(unsigned(wb_adr(3 downto 0))) is
                         when 1 => ctl_en <= v(0); gain <= v(6 downto 4);
                         when 2 =>
                             if v > MAX_BINS then count <= to_unsigned(MAX_BINS, 7); else count <= v(6 downto 0); end if;
