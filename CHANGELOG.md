@@ -9,6 +9,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   go on a faster disk than the recordings.
 - A capture's `diagnostics.json` now records, second by second, each radio's lost samples beside its write queue and slowest
   write and what the disk was doing, to help find the cause of drops during a capture.
+- `trunk-pro tool corpus run` now says which calls changed and how, and counts missing control messages by type, in its log and in a
+  `.report.md`. A call that gets over half a second shorter is a regression. A new call, or one that runs longer, is `changed` rather than
+  `improved`, since it may be a false one.
 
 ## [0.3.4] — 2026-11-08
 
