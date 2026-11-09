@@ -646,12 +646,6 @@ pub struct Site {
     /// Recorder's `channels`; Capacity Plus: every repeater of the site).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dmr_channels_hz: Vec<f64>,
-    /// DMR: frequency Hz → color code, for repeaters with differing codes.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub dmr_color_codes: BTreeMap<String, u8>,
-    /// XPT: home talkgroup → logical repeater, from site programming.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub xpt_home_groups: BTreeMap<String, u32>,
     /// DMR: only this colour code.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_code: Option<u8>,
@@ -947,7 +941,7 @@ impl Site {
     /// Frequencies a watching protocol (DMR, NXDN, EDACS) needs besides the control channels.
     pub fn watched_channels(&self, sys: &System) -> Vec<f64> {
         if sys.is_dmr() {
-            self.dmr_channels_hz.iter().copied().chain(self.lcn_table_hz.values().copied()).collect()
+            self.dmr().channels
         } else if sys.is_nxdn() {
             self.nxdn_channels_hz.clone()
         } else if sys.is_edacs() {
@@ -963,19 +957,7 @@ impl Site {
             lcn_table: self.lcn_table(),
             channels: self.dmr_channels_hz.clone(),
             color_code: self.color_code,
-            color_codes: self.dmr_color_codes.iter().filter_map(|(f, &cc)| Some((f.trim().parse().ok()?, cc))).collect(),
-            home_groups: self.xpt_home_groups.iter().filter_map(|(g, &r)| Some((g.trim().parse().ok()?, r))).collect(),
         }
-    }
-
-    fn dmr_problem(&self) -> Option<String> {
-        if self.color_code.is_some_and(|cc| cc > 15) || self.dmr_color_codes.iter().any(|(f, &cc)| cc > 15 || f.trim().parse::<u64>().ok().is_none_or(|hz| hz == 0)) {
-            return Some("DMR color codes must be 0–15; dmrColorCodes keys must be frequencies in integer Hz.".into());
-        }
-        if self.xpt_home_groups.iter().any(|(g, &r)| g.trim().parse::<u32>().ok().is_none_or(|g| g == 0 || g > 255) || !(1..=8).contains(&r)) {
-            return Some("XPT home groups must map group IDs 1–255 to repeaters 1–8.".into());
-        }
-        None
     }
 
     /// `lcnTableHz` with numbers for keys and frequencies in Hz (the keys that parse).
@@ -1061,8 +1043,6 @@ impl Default for Site {
             bandplan_high_hz: 0.0,
             lcn_table_hz: Default::default(),
             dmr_channels_hz: vec![],
-            dmr_color_codes: Default::default(),
-            xpt_home_groups: Default::default(),
             color_code: None,
             nxdn_rate: NxdnRate::default(),
             nxdn_channels_hz: vec![],
@@ -2797,9 +2777,6 @@ impl Config {
                     return Some(format!("{name}: {e}"));
                 }
             }
-            if sys.is_dmr() {
-                if let Some(error) = s.dmr_problem() { return Some(format!("{name}: {error}")); }
-            }
             if sys.is_dmr() || sys.is_nxdn() || sys.is_edacs() {
                 let out: Vec<String> = g.need_missed.iter().map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
@@ -3415,23 +3392,6 @@ mod tests {
         assert!(c.problem().unwrap().contains("Two systems are named \"police\""));
         c.systems[0].short_name = "county".into();
         assert_eq!(c.problem(), None);
-    }
-
-    #[test]
-    fn xpt_home_groups_and_per_repeater_codes_are_preserved_and_checked() {
-        let site: Site = serde_json::from_value(serde_json::json!({
-            "controlChannelsHz": [451000000], "lcnTableHz": {"1": 451000000, "2": 452000000},
-            "dmrColorCodes": {"451000000": 1, "452000000": 2}, "xptHomeGroups": {"25": 1}
-        })).unwrap();
-        let d = site.dmr();
-        assert_eq!(d.color_codes, BTreeMap::from([(451000000, 1), (452000000, 2)]));
-        assert_eq!(d.home_groups, BTreeMap::from([(25, 1)]));
-        assert!(site.dmr_problem().is_none());
-        let mut invalid = site.clone();
-        invalid.dmr_color_codes.insert("451000000".into(), 16);
-        assert!(invalid.dmr_problem().is_some());
-        let back: Site = serde_json::from_value(serde_json::to_value(site).unwrap()).unwrap();
-        assert_eq!(back.dmr().home_groups, d.home_groups);
     }
 
     #[test]

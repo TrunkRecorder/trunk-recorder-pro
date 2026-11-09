@@ -114,7 +114,6 @@ pub fn run(a: &Args) {
     let (mut vcw, mut vcw_errs, mut vcw_clean) = (0u64, 0u64, 0u64);
     // Per slot: the last LC printed (only changes are), voice frames since.
     let mut last_lc: [Option<dmr::Lc>; 2] = [None, None];
-    let mut encrypted = [false; 2];
     let t0 = Instant::now();
     cap.channelize(&mut chz, |chz| {
         syms.clear();
@@ -154,22 +153,13 @@ pub fn run(a: &Args) {
                 let _ = writeln!(out, "{line}");
             }
             for (s, e) in ev.drain(..) {
-                let control = match &e {
-                    SlotEvent::Csbk { csbk, mbc: false } => dmr::xpt::csbk(&csbk.0),
-                    SlotEvent::Lc { lc, .. } => dmr::xpt::flco(&lc.0),
-                    SlotEvent::Slco(raw) => dmr::xpt::slco(raw),
-                    _ => None,
-                };
-                if let Some(xpt) = control {
-                    let _ = writeln!(out, "{}", serde_json::json!({ "t": t, "slot": s, "xpt": xpt }));
-                }
                 match e {
                     SlotEvent::Voice { frame, .. } => {
                         vcw += 1;
                         vcw_errs += frame.errs as u64;
                         vcw_clean += (frame.errs <= 1) as u64;
                         *counts.entry(format!("voice_slot{s}")).or_default() += 1;
-                        if s == want_slot && !encrypted[s as usize] {
+                        if s == want_slot {
                             if let Some(w) = audio_out.as_mut() {
                                 let mut buf = [0f32; FRAME_SAMPLES];
                                 vocoders[s as usize].ambe(&frame.bits, frame.errs, &mut buf);
@@ -179,21 +169,16 @@ pub fn run(a: &Args) {
                         }
                     }
                     SlotEvent::Lc { lc, from } => {
-                        if lc.voice_user().is_some() {
-                            if from == LcFrom::Header { encrypted[s as usize] = lc.encrypted(); }
-                            else if from != LcFrom::Terminator { encrypted[s as usize] |= lc.encrypted(); }
-                        }
                         *counts.entry(format!("lc_{from:?}").to_lowercase()).or_default() += 1;
                         if from != LcFrom::Embedded || last_lc[s as usize] != Some(lc) {
-                            let decoded = dmr::xpt::voice_lc(lc, chan.xpt);
                             let _ = writeln!(
                                 out,
                                 "{{\"t\":{t:.4},\"slot\":{s},\"lc\":\"{from:?}\",\"flco\":{},\"fid\":{},\"group\":{},\"target\":{},\"source\":{},\"emergency\":{},\"encrypted\":{},\"hex\":\"{}\"}}",
                                 lc.flco(),
                                 lc.fid(),
-                                lc.voice_user().unwrap_or_else(|| matches!(dmr::xpt::flco(&lc.0), Some(dmr::xpt::Control::Setup { group: true, .. }))),
-                                decoded.target(),
-                                decoded.source(),
+                                lc.voice_user().unwrap_or(false),
+                                lc.target(),
+                                lc.source(),
                                 lc.emergency(),
                                 lc.encrypted(),
                                 hex(&lc.0)
@@ -208,12 +193,7 @@ pub fn run(a: &Args) {
                     SlotEvent::MbcContinuation(bytes) => {
                         let _ = writeln!(out, "{{\"t\":{t:.4},\"slot\":{s},\"mbc_continuation\":\"{}\"}}", hex(&bytes));
                     }
-                    SlotEvent::Slco(raw) => {
-                        *counts.entry("slco".into()).or_default() += 1;
-                        let _ = writeln!(out, "{}", serde_json::json!({ "t": t, "slot": s, "slco": raw[0] >> 4, "hex": hex(&raw) }));
-                    }
                     SlotEvent::Privacy { alg, key } => {
-                        encrypted[s as usize] = true;
                         *counts.entry("pi_header".into()).or_default() += 1;
                         let _ = writeln!(out, "{{\"t\":{t:.4},\"slot\":{s},\"privacy\":{{\"alg\":{alg},\"key\":{key}}}}}");
                     }

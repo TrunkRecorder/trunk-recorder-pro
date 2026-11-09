@@ -185,8 +185,6 @@ pub struct AirInfo {
 /// What a system's control channel tells its voice channels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VoiceParams {
-    /// DMR: site has positively identified Hytera XPT (16-bit voice IDs).
-    pub dmr_xpt: bool,
     /// P25 Phase 2 scrambling: (NAC, System ID, WACN).
     pub tdma_key: Option<(u32, u32, u32)>,
     /// P25: the site's NAC. Phase 1 frames with another are another site's
@@ -439,9 +437,6 @@ struct Dmr {
 }
 
 impl VoiceDecoder for Dmr {
-    fn set_params(&mut self, p: &VoiceParams) {
-        self.voice.chan.xpt |= p.dmr_xpt;
-    }
     fn kind(&self) -> VoiceKind {
         VoiceKind::Dmr
     }

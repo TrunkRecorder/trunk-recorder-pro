@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { watchedChannels, activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -198,15 +198,4 @@ test("advice for the sources (the recorder's Config::advice): a typed-in centre 
   c.sources[0].centerHz = a.sources[0].centerHz!;
   c.sources[0].rateHz = a.sources[0].rateHz;
   assert.equal(sourceAdvice(c, [undefined]), null, "taken: nothing more to say");
-});
-
-
-test("XPT settings survive normalization and mapped repeaters are watched", () => {
-  const sys = normalizeSystem({ shortName: "xpt", type: "dmr", sites: [{
-    controlChannelsHz: [451000000], lcnTableHz: { "1": 451000000, "2": 451012500 },
-    dmrColorCodes: { "451000000": 1, "451012500": 2 }, xptHomeGroups: { "25": 1 },
-  }] });
-  assert.deepEqual(sys.sites[0].xptHomeGroups, { "25": 1 });
-  assert.deepEqual(sys.sites[0].dmrColorCodes, { "451000000": 1, "451012500": 2 });
-  assert.deepEqual(watchedChannels(sys, sys.sites[0]), [451000000, 451012500]);
 });

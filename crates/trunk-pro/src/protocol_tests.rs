@@ -527,7 +527,7 @@ fn the_servers_messages() {
         ],
         "systems": [
             { "shortName": "p25", "recording": { "minCallS": 2 }, "sites": [{ "controlChannelsHz": [851012500] }, { "name": "p25-2", "controlChannelsHz": [851512500] }] },
-            { "shortName": "dmr", "type": "dmr", "sites": [{ "controlChannelsHz": [452175000], "lcnTableHz": { "101": 452275000 }, "colorCode": 1, "dmrColorCodes": { "452175000": 1 }, "xptHomeGroups": { "25": 1 } }] },
+            { "shortName": "dmr", "type": "dmr", "sites": [{ "controlChannelsHz": [452175000], "lcnTableHz": { "101": 452275000 }, "colorCode": 1 }] },
             { "shortName": "smartnet", "type": "smartnet", "sites": [{ "controlChannelsHz": [856112500], "bandplan": "800_standard" }] }
         ]
     }))
