@@ -34,7 +34,7 @@ use num_complex::Complex32;
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Policy, Reason, RecorderHost};
 use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
 use super::message::{AdjacentSite, Message, MessageType, Neighbours};
-use super::multisite::{Held, Kept, MultiSite};
+use super::multisite::{Held, Kept, LiveKey, MultiSite};
 use super::record::{save_call, RecordedOn, SaveContext};
 use super::recorded::Recorded;
 use super::inband::InBandSpec;
@@ -2057,6 +2057,7 @@ impl Core {
             }
             // The call it's for, found once (gone already: it expired in this same block).
             let call = t.calls.calls.iter_mut().find(|c| c.id == id);
+            let live = call.as_deref().map(LiveKey::of).filter(|_| self.drop_duplicates);
             let rec = self.radio.recordings.get_mut(&id);
             match o {
                 o @ (TrackerOut::Audio(..) | TrackerOut::AnalogAudio(_)) => {
@@ -2084,7 +2085,7 @@ impl Core {
                         }
                         None => (0, digital),
                     };
-                    if self.multisite.audio_lead(id, now) {
+                    if live.is_none_or(|key| self.multisite.audio_lead(key, site, now)) {
                         self.events.push(Event::Audio { call_id: id, system, talkgroup: tg, samples, decrypted });
                     }
                 }
@@ -2167,11 +2168,11 @@ impl Core {
     }
 
     /// Patterns a call's tones made, as news (each with who sent it, and
-    /// the system's signals it is): from the copy of a multi-site call its
+    /// the system's signals it is): from the site a multi-site talkgroup's
     /// live audio comes from. A lone beep is no news (speech taken for a
     /// tone, a tone in the background).
     fn tone_patterns(&mut self, call: &Call, heard: Vec<(Pattern, u32)>, decrypted: bool, now: f64) {
-        if !self.multisite.leads(call.id) {
+        if call.site.is_some_and(|site| !self.multisite.leads(LiveKey::of(call), site, now)) {
             return;
         }
         let signals: &[Signal] = self.systems.get(call.system as usize).map_or(&[], |s| &s.cfg.signals);
@@ -3209,6 +3210,42 @@ mod tests {
         assert!(!e.set_wall_epoch(1000.4), "less than a ms");
         assert!(e.set_wall_epoch(1500.0));
         assert_eq!((e.wall_epoch_at(-1.0), e.wall_epoch_at(0.0), e.wall_epoch_at(99.0)), (1000.0, 1500.0, 1500.0));
+    }
+
+    /// The copy on a second site carries on as a new call, with no copy going elsewhere by then: it's
+    /// a call of its own, so whoever was told it started is told it ended.
+    #[test]
+    fn a_call_carried_on_from_a_copy_is_told_as_it_ended_too() {
+        let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], ..Default::default() };
+        let calls = CallConfig { max_call_s: 5.0, ..Default::default() };
+        let cfg = EngineConfig {
+            systems: vec![SystemConfig { calls, ..SystemConfig::trunked("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6)]) }],
+            sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            ..Default::default()
+        };
+        let mut e = Core::new(cfg).unwrap();
+        let grant = |t: f64, f: u64| Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: f, ..Default::default() };
+        handle(&mut e, 0, &[grant(0.0, 851_500_000)]);
+        handle(&mut e, 1, &[grant(0.4, 851_600_000)]);
+        e.emit_call_events();
+        let first = e.trunks[1].calls.calls[0].id;
+        assert!(e.trunks[1].calls.calls[0].twin, "a copy of east's");
+        // East's copy ends; west's goes on until it's too long, and carries on as a new call.
+        handle(&mut e, 1, &[grant(2.5, 851_600_000)]);
+        tick(&mut e, 0, 3.5);
+        e.emit_call_events();
+        assert!(e.trunks[0].calls.calls.is_empty());
+        handle(&mut e, 1, &[grant(5.0, 851_600_000)]);
+        tick(&mut e, 1, 5.5);
+        e.emit_call_events();
+        let next = e.trunks[1].calls.calls[0].id;
+        assert_ne!(next, first);
+        let ev = e.drain_events();
+        assert!(ev.iter().any(|x| matches!(x, Event::CallStart(c) if c.id == next && !c.twin)), "told it started");
+        tick(&mut e, 1, 20.0);
+        e.emit_call_events();
+        let ev = e.drain_events();
+        assert!(ev.iter().any(|x| matches!(x, Event::CallEnd(c) if c.id == next && !c.twin)), "so told it ended");
     }
 
     #[test]

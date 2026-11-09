@@ -137,8 +137,8 @@ Recorder's **Preferred NAC** column also works: the site's NAC, or its RFSS and 
 least 90% of the best copy's clean audio; below that, the best copy wins anyway.
 
 **On the dashboard.** An active call heard on other sites shows **also on …** under its talkgroup
-on a system's page under **Radio system** (hover: "The same call on other sites of its system; the best copy is saved"). Live listening plays one copy
-at a time and stays with it until it goes quiet.
+on a system's page under **Radio system** (hover: "The same call on other sites of its system; the best copy is saved"). Live listening plays one site
+at a time for each talkgroup and stays with it until it goes quiet, however the sites divide the talkgroup into calls.
 
 **Turning it off.** **Save a call heard on several sites once** on the **Recording** tab
 (`recording.dropDuplicateCalls`, on by default). Off, every site's copy is saved in the system's

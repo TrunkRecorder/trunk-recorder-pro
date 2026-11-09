@@ -342,7 +342,7 @@ noise floor from the silence or open on it.
 |---|---|
 | `ControlChannel`, `Message`, `Note` | Control-channel activity (by site) and log-worthy notes (by system, and site) |
 | `CallStart`, `CallUpdate`, `CallEnd` | Call lifecycle (`Call`, `calls.rs`) |
-| `Audio` | Live audio for a call, 8 kHz f32 (one copy per multi-site conversation) |
+| `Audio` | Live audio for a call, 8 kHz f32 (one site at a time per multi-site talkgroup) |
 | `Concluded` | A saved call: `Call`, its record (`CallRecord`), short name, site, base name, 8 kHz audio, optional frame capture |
 | `NotSaved`, `Duplicate` | A call that wasn't saved, and why (too short / silent, or another site's copy kept) |
 | `UnitAlias`, `UnitPosition` | A talker alias learned over the air; a radio's GPS position |

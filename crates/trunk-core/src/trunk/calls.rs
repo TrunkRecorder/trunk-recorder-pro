@@ -287,6 +287,8 @@ impl Call {
     pub fn continued(&self, id: CallId, now_s: f64, sources: Vec<CallSource>) -> Call {
         Call {
             id,
+            // (Whether it's a copy of a call on another site is for when it starts to say.)
+            twin: false,
             recording: false,
             followed: false,
             reason: None,

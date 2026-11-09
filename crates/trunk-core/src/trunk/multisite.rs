@@ -10,7 +10,12 @@
 //! that fades mid-call, or whose voice channel falls outside every source,
 //! doesn't cost the call. Best: the most cleanly decoded audio; a site the
 //! talkgroup prefers (its row's, else its system's) wins while its copy holds
-//! [`PREFERRED_SHARE`] of that. Live audio comes from one copy at a time.
+//! [`PREFERRED_SHARE`] of that.
+//!
+//! Live audio comes from one site at a time, for each talkgroup of a system
+//! ([`MultiSite::audio_lead`]), however the sites happen to divide it into
+//! calls: one may keep a channel through a conversation while another gives
+//! each transmission its own.
 //!
 //! A copy is dropped only when one saved holds all of it ([`Kept::holds`]);
 //! anything else is saved too: better a duplicate than a transmission lost.
@@ -29,8 +34,36 @@ use super::recorded::Recorded;
 pub const TWIN_WINDOW_S: f64 = 3.0;
 /// A preferred site's copy is kept while it has this share of the best copy's clean audio.
 pub const PREFERRED_SHARE: f64 = 0.9;
-/// Live audio stays with one copy until it has been quiet this long.
+/// Live audio stays with one site until it has been quiet this long.
 const LEAD_HOLD_S: f64 = 0.5;
+
+/// What live audio is one site at a time for: a system's talkgroup, or the radio called.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LiveKey {
+    system: u16,
+    talkgroup: u32,
+    unit_to_unit: bool,
+}
+
+impl LiveKey {
+    pub fn of(c: &Call) -> LiveKey {
+        LiveKey { system: c.system, talkgroup: c.talkgroup, unit_to_unit: c.unit_to_unit }
+    }
+}
+
+/// The site a talkgroup's live audio comes from, and when it last gave some.
+#[derive(Clone, Copy, Debug)]
+struct Lead {
+    site: u16,
+    last_s: f64,
+}
+
+impl Lead {
+    /// Is it `site`'s to give at `now_s`: its own, or free, the lead having gone quiet?
+    fn lets(self, site: u16, now_s: f64) -> bool {
+        self.site == site || now_s - self.last_s > LEAD_HOLD_S
+    }
+}
 
 /// When a copy was heard: from its grant to its last audio or update.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,8 +148,6 @@ struct Conversation {
     /// Every copy, ended ones too.
     members: Vec<Member>,
     held: Vec<Held>,
-    /// The copy live audio comes from, and when it last gave some.
-    lead: Option<(CallId, f64)>,
 }
 
 /// What ending a copy left to do.
@@ -135,6 +166,7 @@ pub struct MultiSite {
     convs: HashMap<u32, Conversation>,
     of: HashMap<CallId, u32>,
     next: u32,
+    leads: HashMap<LiveKey, Lead>,
 }
 
 impl MultiSite {
@@ -197,21 +229,17 @@ impl MultiSite {
         self.of.get(&call).and_then(|i| self.convs.get(i)).map_or_else(Vec::new, |c| c.members.iter().filter(|m| m.call != call).map(|m| (m.call, m.site)).collect())
     }
 
-    /// Whether `call` is the copy live audio comes from now (or the only one).
-    pub fn leads(&self, call: CallId) -> bool {
-        self.of.get(&call).and_then(|i| self.convs.get(i)).is_none_or(|c| c.lead.is_none_or(|(lead, _)| lead == call))
+    /// Whether `site` is where `key`'s live audio comes from at `now_s` (or nowhere is).
+    pub fn leads(&self, key: LiveKey, site: u16, now_s: f64) -> bool {
+        self.leads.get(&key).is_none_or(|l| l.lets(site, now_s))
     }
 
-    /// Should `call`'s live audio at `now_s` be passed on? One copy at a
-    /// time: the one already playing, until it has been quiet a moment.
-    pub fn audio_lead(&mut self, call: CallId, now_s: f64) -> bool {
-        let Some(c) = self.of.get(&call).and_then(|i| self.convs.get_mut(i)) else { return true };
-        let take = match c.lead {
-            Some((lead, last)) => lead == call || !c.members.iter().any(|m| m.call == lead && m.open) || now_s - last > LEAD_HOLD_S,
-            None => true,
-        };
+    /// Should `site`'s live audio for `key` at `now_s` be passed on? One
+    /// site at a time: the one already playing, until it has been quiet a moment.
+    pub fn audio_lead(&mut self, key: LiveKey, site: u16, now_s: f64) -> bool {
+        let take = self.leads(key, site, now_s);
         if take {
-            c.lead = Some((call, now_s));
+            self.leads.insert(key, Lead { site, last_s: now_s });
         }
         take
     }
@@ -393,16 +421,36 @@ mod tests {
         assert!(matches!(m.end(5, None), Ended::Done(v) if v.is_empty()));
     }
 
+    fn key(system: u16, talkgroup: u32) -> LiveKey {
+        LiveKey { system, talkgroup, unit_to_unit: false }
+    }
+
     #[test]
-    fn live_audio_stays_with_one_copy_until_it_goes_quiet() {
+    fn live_audio_stays_with_one_site_until_it_goes_quiet() {
         let mut m = MultiSite::default();
-        m.link(2, 1, &[(1, 0)]);
-        assert!(m.audio_lead(1, 0.0));
-        assert!(!m.audio_lead(2, 0.1));
-        assert!(m.audio_lead(1, 0.3));
-        assert!(m.audio_lead(2, 0.9), "1 went quiet");
-        assert!(!m.audio_lead(1, 1.0));
-        assert!(m.audio_lead(7, 0.0), "not a copy");
+        let tg = key(0, 101);
+        assert!(m.audio_lead(tg, 0, 0.0));
+        assert!(!m.audio_lead(tg, 1, 0.1));
+        assert!(m.audio_lead(tg, 0, 0.3));
+        assert!(m.audio_lead(tg, 1, 0.9), "site 0 went quiet");
+        assert!(!m.audio_lead(tg, 0, 1.0));
+        assert!(m.audio_lead(key(0, 102), 0, 1.0), "another talkgroup");
+        assert!(m.audio_lead(key(1, 101), 0, 1.0), "another system");
+        assert!(m.audio_lead(LiveKey { unit_to_unit: true, ..tg }, 0, 1.0), "a call to a radio of that number");
+    }
+
+    /// Issue 151: one site keeps one long call while another ends its call and starts a new one.
+    /// Nothing links the second site's new call to the long one, and only one site is still heard.
+    #[test]
+    fn live_audio_is_one_site_however_the_sites_divide_it_into_calls() {
+        let mut m = MultiSite::default();
+        let tg = key(0, 101);
+        m.link_new(&Call { talkgroup: 101, ..call(2, 1, 20.0) }, 1, [&[Call { talkgroup: 101, ..call(1, 0, 0.0) }][..]]);
+        assert!(m.twins(2).is_empty(), "begun too far apart to be copies");
+        assert!(m.audio_lead(tg, 0, 20.0));
+        assert!(!m.audio_lead(tg, 1, 20.1), "the same air, from another site");
+        assert!(m.leads(tg, 0, 20.2) && !m.leads(tg, 1, 20.2));
+        assert!(m.leads(tg, 1, 21.0), "free once it's quiet");
     }
 
     #[test]
