@@ -96,6 +96,7 @@ impl DmrVoice {
         let mut push = |o: TrackerOut| out.push(Out { slot, t, out: o });
         match e {
             SlotEvent::Lc { lc, from } => {
+                let lc = super::xpt::voice_lc(lc, self.chan.xpt);
                 let Some(group) = lc.voice_user() else { return };
                 if from == LcFrom::Terminator {
                     // End of the transmission (repeated through the hang time): not a call of its own.
@@ -176,4 +177,21 @@ mod tests {
         v.event(0, SlotEvent::Lc { lc: lc(true), from: LcFrom::Embedded }, 1.2, &mut out);
         assert!(v.slots[0].encrypted);
     }
+    #[test]
+    fn xpt_voice_ids_and_privacy_do_not_depend_on_a_new_receiver_hearing_setup() {
+        let mut v = DmrVoice::new(1);
+        v.chan.xpt = true; // supplied through the control channel's VoiceParams
+        let lc = Lc([3, 0x68, 0x40, 0xab, 0, 25, 0xcd, 0x12, 0x34]);
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc, from: LcFrom::Embedded }, 0.0, &mut out);
+        assert_eq!(v.talkgroup(0), Some(25));
+        assert_eq!(v.slots[0].source, Some(0x1234));
+        assert!(v.private(0) && v.slots[0].encrypted);
+        v.event(0, SlotEvent::Voice { frame: crate::ambe::AmbeFrame { bits: [0; 49], errs: 0 }, pos: Some(0) }, 0.1, &mut out);
+        assert!(out.iter().all(|v| !matches!(v.out, TrackerOut::Audio(..))), "encrypted frames are never vocoded");
+        let mut ordinary = DmrVoice::new(1);
+        ordinary.event(0, SlotEvent::Lc { lc, from: LcFrom::Header }, 0.0, &mut out);
+        assert_eq!(ordinary.talkgroup(0), Some(0xab0019), "non-XPT Hytera keeps standard 24-bit IDs");
+    }
+
 }

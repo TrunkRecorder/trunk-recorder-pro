@@ -72,11 +72,11 @@ impl Lc {
         self.0[2]
     }
     pub fn emergency(&self) -> bool {
-        self.0[2] & 0x80 != 0
+        !(self.fid() == FID_HYTERA && self.flco() == 9) && self.0[2] & 0x80 != 0
     }
     /// The privacy (encryption) service option — or Motorola's encrypted voice LC.
     pub fn encrypted(&self) -> bool {
-        self.0[2] & 0x40 != 0 || (self.fid() == FID_MOTOROLA && self.flco() == 32)
+        (!(self.fid() == FID_HYTERA && self.flco() == 9) && self.0[2] & 0x40 != 0) || (self.fid() == FID_MOTOROLA && self.flco() == 32)
     }
     /// The talkgroup (or radio) called. Capacity Plus's own LCs are narrower:
     /// wide-area (linked) groups are 8 bits, encrypted voice's 16.
@@ -84,7 +84,7 @@ impl Lc {
         let b = &self.0;
         match (self.fid(), self.flco()) {
             (FID_MOTOROLA, 4) => b[5] as u32,
-            (FID_MOTOROLA, 32) => u32::from_be_bytes([0, 0, b[4], b[5]]),
+            (FID_MOTOROLA, 32) | (FID_HYTERA, 9) => u32::from_be_bytes([0, 0, b[4], b[5]]),
             _ => u32::from_be_bytes([0, b[3], b[4], b[5]]),
         }
     }
@@ -92,7 +92,7 @@ impl Lc {
     pub fn source(&self) -> u32 {
         let b = &self.0;
         match (self.fid(), self.flco()) {
-            (FID_MOTOROLA, 4) | (FID_MOTOROLA, 32) => u32::from_be_bytes([0, 0, b[7], b[8]]),
+            (FID_MOTOROLA, 4) | (FID_MOTOROLA, 32) | (FID_HYTERA, 9) => u32::from_be_bytes([0, 0, b[7], b[8]]),
             _ => u32::from_be_bytes([0, b[6], b[7], b[8]]),
         }
     }
@@ -138,6 +138,8 @@ pub enum SlotEvent {
     Csbk { csbk: Csbk, mbc: bool },
     /// An MBC continuation block's 12 bytes (no CRC of its own).
     MbcContinuation([u8; 12]),
+    /// BPTC- and CRC8-checked carrier-wide short link control (36 packed bits).
+    Slco([u8; 5]),
     /// Privacy indicator header: encrypted, with this algorithm and key.
     Privacy { alg: u8, key: u8 },
     /// A data burst of another type (idle, data blocks, a bad CRC …).
@@ -405,6 +407,9 @@ impl SlotDecoder {
 #[derive(Default)]
 pub struct Channel {
     pub slots: [SlotDecoder; 2],
+    /// Positive XPT signaling observed on this receiver. FID alone is insufficient.
+    pub xpt: bool,
+    short_lc: super::short_lc::Assembler,
     last_slot: u8,
     /// Bursts whose CACH didn't decode (the slot was inferred).
     pub tact_errors: u64,
@@ -457,11 +462,21 @@ impl Channel {
         if b.rel.iter().all(|&r| r == 0.0) {
             // Nothing on the air (a mobile's other slot): nothing to decode.
             self.quiet_bursts += 1;
+            self.short_lc.push(None, [0; 17]);
             return;
         }
         if b.sync.is_some_and(|k| k.is_bs()) {
             // A repeater after all: its CACH names the slots.
             self.anchor = None;
+        }
+        let (tact, fragment) = cach(&b.cach);
+        if self.anchor.is_none() {
+            if let Some(raw) = self.short_lc.push(tact.map(|t| t.lcss), fragment) {
+                self.xpt |= super::xpt::slco(&raw).is_some();
+                out.push((slot, SlotEvent::Slco(raw)));
+            }
+        } else {
+            self.short_lc.push(None, [0; 17]);
         }
         self.ev.clear();
         self.slots[slot as usize].burst(b, &mut self.ev);
@@ -469,6 +484,13 @@ impl Channel {
         let k = &mut self.slots;
         if k[slot as usize].keyed != k[1 - slot as usize].keyed && k[slot as usize].keyed {
             k[1 - slot as usize].keyed = true;
+        }
+        for e in &self.ev {
+            self.xpt |= match e {
+                SlotEvent::Csbk { csbk, mbc: false } => super::xpt::csbk(&csbk.0).is_some(),
+                SlotEvent::Lc { lc, .. } => super::xpt::flco(&lc.0).is_some(),
+                _ => false,
+            };
         }
         out.extend(self.ev.drain(..).map(|e| (slot, e)));
     }

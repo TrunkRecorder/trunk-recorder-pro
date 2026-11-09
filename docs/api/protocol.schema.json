@@ -1769,12 +1769,37 @@
     "DmrSiteStatus": {
       "type": "object",
       "properties": {
+        "xpt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/XptStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "XPT signaling and confirmed voice calls; null until identified."
+        },
+        "availableRepeaters": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Repeaters with at least one fresh explicitly idle slot."
+        },
         "variant": {
           "type": [
             "string",
             "null"
           ],
-          "description": "\"DMR Capacity Plus\" | \"DMR Capacity Max\" | \"DMR Connect Plus\" | \"DMR Tier III\" | null (not known yet)."
+          "description": "\"DMR Capacity Plus\" | \"DMR Capacity Max\" | \"DMR Connect Plus\" | \"DMR Tier III\" | \"Hytera XPT\" | null (not known yet)."
         },
         "colorCode": {
           "type": [
@@ -6842,6 +6867,20 @@
           },
           "description": "DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels)."
         },
+        "dmrColorCodes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "DMR per-frequency color code filters (integer Hz keys, codes 0–15)."
+        },
+        "xptHomeGroups": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "XPT programmed home talkgroup → repeater (1–8)."
+        },
         "colorCode": {
           "type": "number",
           "description": "DMR: only this colour code."
@@ -10365,6 +10404,379 @@
       ],
       "additionalProperties": false,
       "description": "A radio as heard (radioQuery units / unit)."
+    },
+    "XptControl": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "Status": {
+              "type": "object",
+              "properties": {
+                "sequence": {
+                  "type": "number"
+                },
+                "free": {
+                  "type": "number"
+                },
+                "slots": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/XptOccupancy"
+                  }
+                }
+              },
+              "required": [
+                "sequence",
+                "free",
+                "slots"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "Status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Adjacent": {
+              "type": "object",
+              "properties": {
+                "sequence": {
+                  "type": "number"
+                },
+                "sites": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/XptNeighbor"
+                  }
+                }
+              },
+              "required": [
+                "sequence",
+                "sites"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "Adjacent"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Short": {
+              "type": "object",
+              "properties": {
+                "free": {
+                  "type": "number"
+                },
+                "priority": {
+                  "type": "number"
+                },
+                "target_hash": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "free",
+                "priority",
+                "target_hash"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "Short"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Setup": {
+              "type": "object",
+              "properties": {
+                "repeater": {
+                  "type": "number"
+                },
+                "slot": {
+                  "type": "number"
+                },
+                "group": {
+                  "type": "boolean"
+                },
+                "target": {
+                  "type": "number"
+                },
+                "source": {
+                  "type": "number"
+                },
+                "free": {
+                  "type": "number"
+                },
+                "handshake": {
+                  "type": "number"
+                },
+                "reserved": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "repeater",
+                "slot",
+                "group",
+                "target",
+                "source",
+                "free",
+                "handshake",
+                "reserved"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "Setup"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "XPT observations are site-local; target hints/hashes are not full radio IDs."
+    },
+    "XptNeighbor": {
+      "type": "object",
+      "properties": {
+        "site": {
+          "type": "number"
+        },
+        "free": {
+          "type": "number"
+        },
+        "reserved": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "site",
+        "free",
+        "reserved"
+      ],
+      "additionalProperties": false
+    },
+    "XptOccupancy": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "number"
+        },
+        "target_hint": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "status",
+        "target_hint"
+      ],
+      "additionalProperties": false
+    },
+    "XptStatus": {
+      "type": "object",
+      "properties": {
+        "home_groups": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "free": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/XptTimed%3Cnumber%3E"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/XptTimed%3C%5Bnumber%2Cnumber%5D%3E"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "occupancy": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/XptTimed%3CXptOccupancy%3E"
+          }
+        },
+        "neighbors": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/XptTimed%3CXptNeighbor%3E"
+          }
+        },
+        "setups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/XptTimed%3CXptControl%3E"
+          }
+        },
+        "calls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "freq_hz": {
+                "type": "number"
+              },
+              "repeater": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "slot": {
+                "type": "number"
+              },
+              "target": {
+                "type": "number"
+              },
+              "source": {
+                "type": "number"
+              },
+              "group": {
+                "type": "boolean"
+              },
+              "encrypted": {
+                "type": "boolean"
+              },
+              "late_entry": {
+                "type": "boolean"
+              },
+              "heard_s": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "freq_hz",
+              "repeater",
+              "slot",
+              "target",
+              "source",
+              "group",
+              "encrypted",
+              "late_entry",
+              "heard_s"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "home_groups",
+        "free",
+        "priority",
+        "occupancy",
+        "neighbors",
+        "setups",
+        "calls"
+      ],
+      "additionalProperties": false
+    },
+    "XptTimed<[number,number]>": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "heard_s": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "heard_s"
+      ],
+      "additionalProperties": false
+    },
+    "XptTimed<number>": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "number"
+        },
+        "heard_s": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "heard_s"
+      ],
+      "additionalProperties": false
+    },
+    "XptTimed<XptControl>": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "$ref": "#/definitions/XptControl"
+        },
+        "heard_s": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "heard_s"
+      ],
+      "additionalProperties": false
+    },
+    "XptTimed<XptNeighbor>": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "$ref": "#/definitions/XptNeighbor"
+        },
+        "heard_s": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "heard_s"
+      ],
+      "additionalProperties": false
+    },
+    "XptTimed<XptOccupancy>": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "$ref": "#/definitions/XptOccupancy"
+        },
+        "heard_s": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "heard_s"
+      ],
+      "additionalProperties": false
     }
   }
 }

@@ -574,7 +574,7 @@ pub(crate) fn keep(v: &Value, keys: &[&str]) -> Value {
 
 pub(crate) const RECORDING_KEYS: &[&str] = &["callTimeoutS", "conversationMode", "recordUnknown", "recordEncrypted", "recordUnitToUnit", "keepSilentCalls", "minCallS", "maxCallS", "minTransmissionS", "prerollS", "maxRecorders", "vocoder", "normalizeAudio", "digitalLevelDb", "analogLevelDb", "dropDuplicateCalls"];
 const SYSTEM_KEYS: &[&str] = &["shortName", "type", "enabled", "defaultMode", "nxdnType", "preferredSite", "receiveOn", "sites", "recording"];
-const SITE_KEYS: &[&str] = &["name", "enabled", "controlChannelsHz", "modulation", "expect", "voiceChannelsHz", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz", "lcnTableHz", "dmrChannelsHz", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran", "esk"];
+const SITE_KEYS: &[&str] = &["name", "enabled", "controlChannelsHz", "modulation", "expect", "voiceChannelsHz", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz", "lcnTableHz", "dmrChannelsHz", "dmrColorCodes", "xptHomeGroups", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran", "esk"];
 const CONVENTIONAL_KEYS: &[&str] = &["shortName", "enabled", "squelchDb", "demod", "channels", "recording"];
 const CHANNEL_KEYS: &[&str] = &["freqHz", "mode", "talkgroup", "code", "slot", "matchTalkgroup", "squelchDb", "bandwidthKhz", "enabled", "receiveOn", "autoTune"];
 pub(crate) const RADIO_KEYS: &[&str] = &["type", "rateHz", "ppm", "autoTune", "guardHz", "gainDb", "agc", "antenna", "wireFormat", "gainMode", "gainStep", "lnaStep", "mixerStep", "vgaStep", "lnaDb", "vgaDb", "amp", "biasTee", "gains", "bufLen", "buffers", "packing"];

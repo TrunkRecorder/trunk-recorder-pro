@@ -1,7 +1,7 @@
 # Trunked DMR
 
 This page explains how Trunk Recorder Pro records trunked DMR sites: Motorola Capacity Plus,
-Capacity Max and Connect Plus, and ETSI Tier III. It covers what to list, colour codes, slots,
+Capacity Max and Connect Plus, ETSI Tier III, and [Hytera XPT](xpt.md). It covers what to list, colour codes, slots,
 how channel numbers are learned, and restricted-access systems. Every key is listed in the
 [trunked systems reference](../configuration/systems.md#dmr). Conventional DMR channels are
 covered in [Conventional channels](conventional.md).
@@ -17,6 +17,8 @@ The trunked flavours differ in how a call gets its channel:
 - **Capacity Plus** (and Linked Capacity Plus) has no control channel and no grants. Idle radios
   sit on a *rest channel*, which moves from repeater to repeater. A call starts on the rest
   channel and the rest channel moves on.
+- **Hytera XPT** shares home/free repeaters without a dedicated control channel.
+  See [XPT configuration and validation status](xpt.md).
 - **Capacity Max, Connect Plus and Tier III** have a control channel that grants calls to a
   *logical channel number* (LCN), as P25 does.
 
@@ -36,7 +38,7 @@ In **Setup** → **Systems**, **Add a system** and set **Type** to **DMR (trunke
   site's voice frequencies. This is Trunk Recorder's `channels`.
 - **Colour code** (`colorCode`): leave empty ("auto") to take the control channel's.
 - **Channel table (optional)** (`lcnTableHz`): channel numbers you already know, as
-  `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Leave it empty to learn them.
+  `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Mapped frequencies are also watched. Leave it empty to learn them (XPT requires explicit repeater mappings).
 
 In the config file (frequencies in Hz):
 
