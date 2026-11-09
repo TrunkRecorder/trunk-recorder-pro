@@ -34,7 +34,7 @@ use num_complex::Complex32;
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Policy, Reason, RecorderHost};
 use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
 use super::message::{AdjacentSite, Message, MessageType, Neighbours};
-use super::multisite::{Held, Kept, MultiSite};
+use super::multisite::{Held, Kept, LiveKey, MultiSite};
 use super::record::{save_call, RecordedOn, SaveContext};
 use super::recorded::Recorded;
 use super::inband::InBandSpec;
@@ -2057,6 +2057,7 @@ impl Core {
             }
             // The call it's for, found once (gone already: it expired in this same block).
             let call = t.calls.calls.iter_mut().find(|c| c.id == id);
+            let live = call.as_deref().map(LiveKey::of).filter(|_| self.drop_duplicates);
             let rec = self.radio.recordings.get_mut(&id);
             match o {
                 o @ (TrackerOut::Audio(..) | TrackerOut::AnalogAudio(_)) => {
@@ -2084,7 +2085,7 @@ impl Core {
                         }
                         None => (0, digital),
                     };
-                    if self.multisite.audio_lead(id, now) {
+                    if live.is_none_or(|key| self.multisite.audio_lead(key, site, now)) {
                         self.events.push(Event::Audio { call_id: id, system, talkgroup: tg, samples, decrypted });
                     }
                 }
@@ -2167,11 +2168,11 @@ impl Core {
     }
 
     /// Patterns a call's tones made, as news (each with who sent it, and
-    /// the system's signals it is): from the copy of a multi-site call its
+    /// the system's signals it is): from the site a multi-site talkgroup's
     /// live audio comes from. A lone beep is no news (speech taken for a
     /// tone, a tone in the background).
     fn tone_patterns(&mut self, call: &Call, heard: Vec<(Pattern, u32)>, decrypted: bool, now: f64) {
-        if !self.multisite.leads(call.id) {
+        if call.site.is_some_and(|site| !self.multisite.leads(LiveKey::of(call), site, now)) {
             return;
         }
         let signals: &[Signal] = self.systems.get(call.system as usize).map_or(&[], |s| &s.cfg.signals);
