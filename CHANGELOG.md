@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-11-08
+
 - **Clearer waterfalls** when reviewing a capture: a stronger colour scale, and channel recordings are scaled to what's inside the
   channel's filter.
 - `trunk-pro tool corpus` now reads its list of captures from [trunkrecorder.pro/corpus](https://trunkrecorder.pro/corpus), where
