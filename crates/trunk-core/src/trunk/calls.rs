@@ -222,7 +222,17 @@ impl From<crate::p25::osp::ServiceOptions> for Flags {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+/// Why a call goes on as a new one ([`Call::continued`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CarriesOn {
+    /// It ran as long as a call may: the same conversation, as the air had it.
+    TooLong,
+    /// Conversation mode off: the next transmission, and what the air said
+    /// of the last one isn't said of it.
+    NewTransmission,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Call {
     pub id: CallId,
     /// The site that made it (its number among the engine's sites,
@@ -230,9 +240,6 @@ pub struct Call {
     pub site: Option<u16>,
     /// Its system's number (its place in the engine's systems).
     pub system: u16,
-    /// Multi-site: a copy of a call another site of its system had first —
-    /// one call, which plugins and stats count by its first copy.
-    pub twin: bool,
     pub talkgroup: u32,
     /// Conventional digital: the talkgroup the air named, which its row may
     /// file under another `talkgroup` (None: analog, nothing named yet, or
@@ -282,23 +289,83 @@ pub struct Call {
 
 impl Call {
     /// The call that carries on from this one on its channel at `now_s`
-    /// (it ran too long, or a new transmission began), `sources` talking: a
-    /// new id, not recorded until it's taken, timed from `now_s`.
-    pub fn continued(&self, id: CallId, now_s: f64, sources: Vec<CallSource>) -> Call {
-        Call {
+    /// (`how`), `sources` talking: a new id, not recorded until it's taken,
+    /// timed from `now_s`. Every field is named: a new one has to say whether it carries on.
+    pub fn continued(&self, id: CallId, now_s: f64, sources: Vec<CallSource>, how: CarriesOn) -> Call {
+        let Call {
+            id: _,
+            site,
+            system,
+            talkgroup,
+            talkgroup_ota,
+            freq_hz,
+            voice,
+            unit_to_unit,
+            recording: _,
+            followed: _,
+            reason: _,
+            encrypted,
+            cipher,
+            decrypted,
+            emergency,
+            priority,
+            duplex,
+            mode,
+            start_s: _,
+            last_update_s,
+            heard_s: _,
+            last_audio_s: _,
+            sources: _,
+            talkgroup_info,
+            patched_talkgroups,
+            ran,
+            nac,
+            tone,
+            tone_set,
+        } = self.clone();
+        let mut next = Call {
             id,
-            // (Whether it's a copy of a call on another site is for when it starts to say.)
-            twin: false,
+            site,
+            system,
+            talkgroup,
+            talkgroup_ota,
+            freq_hz,
+            voice,
+            unit_to_unit,
             recording: false,
             followed: false,
             reason: None,
+            encrypted,
+            cipher,
+            decrypted,
+            emergency,
+            priority,
+            duplex,
+            mode,
             start_s: now_s,
-            last_update_s: self.last_update_s.max(now_s),
+            last_update_s: last_update_s.max(now_s),
             heard_s: now_s,
             last_audio_s: now_s,
             sources,
-            ..self.clone()
+            talkgroup_info,
+            patched_talkgroups,
+            ran,
+            nac,
+            tone,
+            tone_set,
+        };
+        // (Its talkers unknown yet, encryption stays as it was: not known to be clear isn't clear.)
+        if how == CarriesOn::NewTransmission && !next.sources.is_empty() {
+            next.encrypted = next.talkgroup_info.as_ref().is_some_and(|t| t.encrypted_mode());
+            next.cipher = None;
+            next.decrypted = false;
+            next.emergency = false;
+            next.tone = None;
+            for f in next.sources.iter().map(|s| s.flags).collect::<Vec<_>>() {
+                next.latch(f);
+            }
         }
+        next
     }
 
     /// What the air said of the whole call (a grant or update, link
@@ -599,7 +666,7 @@ impl CallManager {
             } else if self.cfg.too_long(c, now_s) {
                 // The one talking now carries on.
                 let talking = c.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect();
-                self.split(i, now_s, talking, host, ev);
+                self.split(i, now_s, talking, CarriesOn::TooLong, host, ev);
             }
         }
         self.patches.expire(now_s);
@@ -617,16 +684,16 @@ impl CallManager {
         let i = self.calls.iter().position(|c| c.id == id)?;
         let next = self.cfg.new_transmission(&self.calls[i], now_s)?;
         let talking = self.calls[i].sources.split_off(next);
-        Some(self.split(i, now_s, talking, host, ev))
+        Some(self.split(i, now_s, talking, CarriesOn::NewTransmission, host, ev))
     }
 
     /// End call `i` and carry on in a new one on the same channel, with
     /// `sources`: the new call takes the voice channel over first, so it
     /// stays open and nothing is lost or replayed between the two. The new
     /// call's id.
-    fn split(&mut self, i: usize, now_s: f64, sources: Vec<CallSource>, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) -> CallId {
+    fn split(&mut self, i: usize, now_s: f64, sources: Vec<CallSource>, how: CarriesOn, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) -> CallId {
         let old = &self.calls[i];
-        let mut c = old.continued(self.ids.next(), now_s, sources);
+        let mut c = old.continued(self.ids.next(), now_s, sources, how);
         // (Only a recorded call is split: it carries on recorded.)
         match host.record_continued(old, &c) {
             Ok(()) => c.recording = true,
@@ -713,7 +780,6 @@ impl CallManager {
             id: self.ids.next(),
             site: Some(self.site),
             system: self.system,
-            twin: false,
             talkgroup: m.talkgroup,
             talkgroup_ota: None,
             freq_hz: m.freq_hz,
@@ -1058,8 +1124,24 @@ mod tests {
         assert!(c.decrypted_voice(false));
         assert!(!Call { voice: Voice::Fm, ..c.clone() }.decrypted_voice(true), "analog voice isn't decrypted");
         let id = CallIds::default().next();
-        let next = c.continued(id, 12.0, vec![]);
+        let next = c.continued(id, 12.0, vec![], CarriesOn::TooLong);
         assert_eq!((next.id, next.start_s, next.recording, next.talkgroup), (id, 12.0, false, 101));
+        assert!(next.encrypted, "the same conversation");
+    }
+
+    /// What one talker's transmission said isn't said of the next one's;
+    /// but with no talker named yet, it isn't known to be clear.
+    #[test]
+    fn a_new_transmission_says_only_what_its_talkers_said() {
+        let c = Call { id: 1, encrypted: true, decrypted: true, emergency: true, cipher: Some(CipherId { algid: 0x84, keyid: 1 }), ..Default::default() };
+        let talker = |flags| vec![CallSource { src: 9, flags, ..Default::default() }];
+        let clear = c.continued(2, 5.0, talker(Flags::default()), CarriesOn::NewTransmission);
+        assert!(!clear.encrypted && !clear.decrypted && !clear.emergency && clear.cipher.is_none());
+        let again = c.continued(3, 5.0, talker(Flags { encrypted: true, emergency: true, ..Default::default() }), CarriesOn::NewTransmission);
+        assert!(again.encrypted && again.emergency, "its own");
+        assert!(c.continued(4, 5.0, vec![], CarriesOn::NewTransmission).encrypted, "no talker named");
+        let long = c.continued(5, 5.0, talker(Flags::default()), CarriesOn::TooLong);
+        assert!(long.encrypted && long.decrypted && long.emergency, "the same conversation");
     }
 
     /// P25 Dynamic Dual Mode moves a frequency between Phase 1 and Phase 2:

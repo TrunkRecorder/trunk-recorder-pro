@@ -784,7 +784,7 @@ fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messa
             Event::ControlChannel { site, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", site_tag(engine, site), freq_hz as f64 / 1e6),
             Event::Note { system, site, text, .. } => eprintln!("{}{text}", sys_tag(engine, system, site)),
             Event::Message { site, msg } if messages => println!("{:7.2}s  {}{} {}", msg.time_s, site_tag(engine, site), msg.kind.as_str(), msg.meta),
-            Event::CallStart(c) if !quiet => println!(
+            Event::CopyStart(c) if !quiet => println!(
                 "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{}{}{} → {}",
                 c.start_s,
                 sys_tag(engine, c.system, c.site),
@@ -811,7 +811,7 @@ fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messa
                     system_tag(engine, system)
                 )
             }
-            Event::CallEnd(c) if !quiet => {
+            Event::CopyEnd(c) if !quiet => {
                 let srcs: Vec<String> = c.sources.iter().map(|s| s.src.to_string()).collect();
                 println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system, c.site), c.id, c.talkgroup, srcs.join(","), if c.decrypted { " ENC DEC" } else if c.encrypted { " ENC" } else { "" });
             }

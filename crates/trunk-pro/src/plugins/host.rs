@@ -9,7 +9,7 @@
 //! late (its delays) goes to the [`Hold`] instead, which gives it to the
 //! plugin when it's due.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -65,6 +65,32 @@ pub type Saves = Arc<dyn Fn(&str, serde_json::Map<String, Value>) -> Result<(), 
 /// Messages waiting for a plugin; beyond this it's behind, and loses them.
 const QUEUE: usize = 1024;
 
+/// A call's start or end, by its id. A plugin keeps track of what's going by
+/// these, so one isn't lost as other events are when the plugin falls behind.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Life {
+    Start(u32),
+    End(u32),
+}
+
+/// Starts and ends a plugin's queue had no room for, in order.
+#[derive(Default)]
+struct Owed(VecDeque<(Life, Arc<str>)>);
+
+impl Owed {
+    /// Owe it `l`. A call that begins and ends before the plugin has heard
+    /// of it needn't be told at all, so what's owed is at most the calls going.
+    fn add(&mut self, life: Life, l: &Arc<str>) {
+        if let Life::End(id) = life {
+            if let Some(i) = self.0.iter().position(|(o, _)| *o == Life::Start(id)) {
+                self.0.remove(i);
+                return;
+            }
+        }
+        self.0.push_back((life, l.clone()));
+    }
+}
+
 struct Plugin {
     id: String,
     manifest: Manifest,
@@ -74,6 +100,8 @@ struct Plugin {
     hello: Mutex<Hello>,
     tx: Mutex<Option<SyncSender<Arc<str>>>>,
     child: Mutex<Option<Child>>,
+    /// Given to it once its queue has emptied.
+    owed: Arc<Mutex<Owed>>,
     dropped: AtomicU64,
     last_drop_note: Mutex<Option<Instant>>,
     restarts: AtomicU64,
@@ -301,6 +329,7 @@ impl PluginHost {
                 hello: Mutex::new(hello),
                 tx: Mutex::new(Some(tx)),
                 child: Mutex::new(None),
+                owed: Default::default(),
                 dropped: AtomicU64::new(0),
                 last_drop_note: Mutex::new(None),
                 restarts: AtomicU64::new(0),
@@ -378,8 +407,13 @@ impl PluginHost {
             // `concluded`, which know.)
             _ => return,
         };
+        let life = match m {
+            HostMessage::CallStart(c) => Some(Life::Start(c.id)),
+            HostMessage::CallEnd(c) => Some(Life::End(c.id)),
+            _ => None,
+        };
         if self.shared.plugins.iter().any(|p| p.manifest.subscribes(t)) {
-            self.shared.dispatch(t, &line(m), &about, None);
+            self.shared.dispatch(t, &line(m), &about, None, life);
         }
     }
 
@@ -429,7 +463,7 @@ impl PluginHost {
         let short_name = self.names.get(&system).cloned().unwrap_or_default();
         let about = About { system: short_name.clone(), talkgroup: Some(talkgroup), decrypted };
         let chunk = AudioChunk { call_id, system, short_name, talkgroup, sample_rate: 8000, pcm };
-        self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)), &about, None);
+        self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)), &about, None, None);
     }
 
     /// The plugins that take concluded calls (each reports on every one);
@@ -467,7 +501,7 @@ impl PluginHost {
         let short_name = self.names.get(&system).cloned().unwrap_or_else(|| record.short_name.clone());
         let about = About { system: short_name, talkgroup: Some(record.talkgroup), decrypted };
         let call = ConcludedCall { path: rel.to_string(), system, call: record, files };
-        self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)), &about, Some(rel));
+        self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)), &about, Some(rel), None);
     }
 
     /// Tell every plugin to stop, and give each `grace` to
@@ -620,8 +654,9 @@ impl Shared {
     /// Send `l` (of topic `t`) to each plugin that subscribed to it, now or,
     /// when its delays say so, later (by the hold). `about`: what it's about —
     /// a call decrypted with our keys (or its audio) goes only to plugins with
-    /// `shareDecrypted`; `call`: it's that finished call.
-    fn dispatch(&self, t: &str, l: &Arc<str>, about: &About, call: Option<&str>) {
+    /// `shareDecrypted`; `call`: it's that finished call; `life`: it's a
+    /// call's start or end, which a plugin is never left without.
+    fn dispatch(&self, t: &str, l: &Arc<str>, about: &About, call: Option<&str>, life: Option<Life>) {
         for p in self.plugins.iter().filter(|p| p.manifest.subscribes(t)) {
             if about.decrypted && !p.share_decrypted {
                 self.say_withheld(p);
@@ -633,13 +668,34 @@ impl Shared {
                     if !p.audio_held_said.swap(true, Ordering::Relaxed) {
                         self.note_log(&p.id, Level::Info, "isn't given the live audio of calls it's delayed for");
                     }
+                } else if life.is_some() {
+                    h.keep(&p.id, about, l, call);
                 } else if !h.push(&p.id, about, l, call) {
                     self.dropped(p);
                 }
                 continue;
             }
-            if self.give(p, l) == Offer::Full {
+            self.send(p, t, l, life);
+        }
+    }
+
+    /// Give `l` to `p` now. What's owed comes after what's queued, so a
+    /// call's end never passes its start; until it's caught up, it's spared
+    /// the live audio, the bulk of what fills its queue.
+    fn send(&self, p: &Plugin, t: &str, l: &Arc<str>, life: Option<Life>) {
+        let mut owed = p.owed.lock().unwrap();
+        match life {
+            Some(life) if !owed.0.is_empty() || self.give(p, l) == Offer::Full => owed.add(life, l),
+            Some(_) => {}
+            None if t == topic::AUDIO && !owed.0.is_empty() => {
+                drop(owed);
                 self.dropped(p);
+            }
+            None => {
+                drop(owed);
+                if self.give(p, l) == Offer::Full {
+                    self.dropped(p);
+                }
             }
         }
     }
@@ -814,13 +870,21 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
     let hello = line(&HostMessage::Hello(p.hello.lock().unwrap().clone()));
     let dead2 = dead.clone();
     let drained_at = p.drained_at.clone();
+    let owed = p.owed.clone();
     let writer = std::thread::spawn(move || {
         let mut ok = stdin.write_all(hello.as_bytes()).and_then(|_| stdin.flush()).is_ok();
         let mut drained = false;
         while ok && !dead2.load(Ordering::Relaxed) {
-            match rx.recv_timeout(Duration::from_millis(100)) {
+            let wait = if owed.lock().unwrap().0.is_empty() { Duration::from_millis(100) } else { Duration::ZERO };
+            match rx.recv_timeout(wait) {
                 Ok(l) => ok = stdin.write_all(l.as_bytes()).and_then(|_| stdin.flush()).is_ok(),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                // (Its queue is empty: what it's owed comes after all of that.)
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    while ok {
+                        let Some((_, l)) = owed.lock().unwrap().0.pop_front() else { break };
+                        ok = stdin.write_all(l.as_bytes()).and_then(|_| stdin.flush()).is_ok();
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     *drained_at.lock().unwrap() = Some(Instant::now());
                     drained = true;
@@ -945,6 +1009,7 @@ mod tests {
             hello: Mutex::new(Hello::default()),
             tx: Mutex::new(Some(tx)),
             child: Mutex::new(None),
+            owed: Default::default(),
             dropped: AtomicU64::new(0),
             last_drop_note: Mutex::new(None),
             restarts: AtomicU64::new(0),
@@ -955,6 +1020,18 @@ mod tests {
             audio_held_said: AtomicBool::new(false),
         };
         (p, rx)
+    }
+
+    /// A plugin too far behind loses events, but not a call's start or end.
+    #[test]
+    fn a_full_queue_owes_a_plugin_its_calls_starts_and_ends() {
+        let mut o = Owed::default();
+        let l: Arc<str> = "x\n".into();
+        o.add(Life::Start(1), &l);
+        o.add(Life::End(2), &l);
+        o.add(Life::Start(3), &l);
+        o.add(Life::End(1), &l);
+        assert_eq!(o.0.iter().map(|x| x.0).collect::<Vec<_>>(), [Life::End(2), Life::Start(3)], "begun and ended unheard: nothing to tell");
     }
 
     /// A decrypted call (or its live audio) reaches only the plugins allowed it; a clear one reaches all.
@@ -981,10 +1058,10 @@ mod tests {
         };
         let msg: Arc<str> = "x\n".into();
         let (clear, decrypted) = (About { system: "dcfd".into(), ..Default::default() }, About { system: "dcfd".into(), decrypted: true, ..Default::default() });
-        sh.dispatch(topic::CALL_CONCLUDED, &msg, &clear, None);
+        sh.dispatch(topic::CALL_CONCLUDED, &msg, &clear, None, None);
         assert!(local_rx.try_recv().is_ok() && public_rx.try_recv().is_ok(), "a clear call goes to both");
-        sh.dispatch(topic::CALL_CONCLUDED, &msg, &decrypted, None);
-        sh.dispatch(topic::AUDIO, &msg, &decrypted, None);
+        sh.dispatch(topic::CALL_CONCLUDED, &msg, &decrypted, None, None);
+        sh.dispatch(topic::AUDIO, &msg, &decrypted, None, None);
         sh.say_all_withheld(topic::CALL_CONCLUDED);
         assert!(local_rx.try_recv().is_ok() && local_rx.try_recv().is_ok(), "the plugin that was allowed gets the call and its audio");
         assert!(public_rx.try_recv().is_err(), "the public one gets neither");

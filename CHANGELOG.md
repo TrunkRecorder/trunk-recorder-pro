@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A call heard on several sites is now one call to plugins and stats, from its first copy's start to its last copy's end.** Before, it was
+  reported as ending when the first copy did, could be reported as not recorded while another site recorded it (MQTT published `call_ignored` for
+  it), and grants reaching two sites in the same block could hide the call altogether.
+- **Conversations off: what one transmission said no longer carries to the next.** An emergency or encryption flag stayed on every later
+  transmission of the channel. A talker the air hasn't named yet still counts as encrypted if the last one was.
+- **A plugin that falls behind no longer loses a call's start or end,** which could leave a call listed as active.
+
 - **Plugins were never told some multi-site calls ended.** With Conversations off, or when a call reached its maximum length, a call carried on from another site's copy kept that copy's mark. Plugins saw it start but not end, so MQTT's `calls_active` grew until a restart. Recordings weren't affected.
 - **Live audio could echo on multi-site systems** (#151). When one site kept a long call while another split the same talkgroup into new calls, plugins got both copies at once. Live audio now comes from one site at a time for each talkgroup, however the sites divide it into calls.
 - **Choose where captures go** with **Save captures in** on the RF page's capture card (`diagnostics.captureDir`), so a capture can
