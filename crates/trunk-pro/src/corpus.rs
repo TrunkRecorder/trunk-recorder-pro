@@ -268,7 +268,18 @@ impl CallSummary {
 pub(crate) struct Results {
     /// How many of each control message, by a hash of it.
     pub messages: BTreeMap<String, u64>,
+    /// What type of message each hash is ("grant", "update"), so a report can say.
+    pub kinds: BTreeMap<String, String>,
     pub calls: Vec<CallSummary>,
+}
+
+impl Results {
+    /// One more control message: its text (hashed, and not kept) and its type.
+    pub fn add_message(&mut self, text: &str, kind: &str) {
+        let hash = short_hash(text.as_bytes(), 8);
+        *self.messages.entry(hash.clone()).or_insert(0) += 1;
+        self.kinds.insert(hash, kind.to_string());
+    }
 }
 
 const FRAMES_PER_HASH: usize = 20;
@@ -276,22 +287,25 @@ const ENVELOPE_MS: usize = 100;
 /// Analog calls whose loudness over time matches worse than this have changed for the worse.
 const MIN_ENVELOPE_R: f64 = 0.9;
 const SAME_ENVELOPE_R: f64 = 0.999;
+/// A call whose length moved by more than this has changed length, ms.
+const SAME_LENGTH_MS: i64 = 500;
+/// How many of a capture's differences the log shows (the report files have them all).
+const LOG_DIFFERENCES: usize = 15;
 
 pub(crate) fn short_hash(bytes: &[u8], hex_chars: usize) -> String {
     hex(&Sha256::digest(bytes))[..hex_chars].to_string()
 }
 
-/// The messages among a replay's `--messages` lines: `  12.34s  kind text`, by what they say, not when.
-fn message_counts(stdout: &str) -> BTreeMap<String, u64> {
-    let mut counts = BTreeMap::new();
+/// The messages among a replay's `--messages` lines: `  12.34s  [site] kind text`, by what they say, not when.
+fn add_messages(stdout: &str, r: &mut Results) {
     for line in stdout.lines() {
         let Some((at, rest)) = line.trim_start().split_once("s  ") else { continue };
         if at.parse::<f64>().is_err() || rest.contains("CALL ") {
             continue;
         }
-        *counts.entry(short_hash(rest.as_bytes(), 8)).or_insert(0) += 1;
+        let kind = rest.split_whitespace().find(|w| !w.starts_with('[')).unwrap_or("unknown");
+        r.add_message(rest, kind);
     }
-    counts
 }
 
 /// A WAV's loudness every [`ENVELOPE_MS`], in hex (none: it isn't 16-bit audio).
@@ -353,14 +367,20 @@ pub(crate) fn summarize(out: &Path, id: &str) -> Result<Results, String> {
     call_files(&out.join(id), &mut files);
     let mut calls = files.iter().map(|p| summarize_call(p)).collect::<Result<Vec<_>, _>>()?;
     calls.sort_by(|a, b| (a.t, &a.c, a.f).cmp(&(b.t, &b.c, b.f)));
-    Ok(Results { messages: message_counts(&stdout), calls })
+    let mut r = Results { calls, ..Default::default() };
+    add_messages(&stdout, &mut r);
+    Ok(r)
 }
 
 /// The lines of an expected-output file after its header, as text.
 fn results_text(r: &Results) -> String {
     let mut out = String::new();
     for (m, n) in &r.messages {
-        out += &json!({ "m": m, "n": n }).to_string();
+        out += &match r.kinds.get(m) {
+            Some(k) => json!({ "m": m, "n": n, "k": k }),
+            None => json!({ "m": m, "n": n }),
+        }
+        .to_string();
         out.push('\n');
     }
     for c in &r.calls {
@@ -380,6 +400,9 @@ fn parse_results(text: &str) -> Result<Results, String> {
         match v["m"].as_str() {
             Some(m) => {
                 r.messages.insert(m.to_string(), v["n"].as_u64().unwrap_or(0));
+                if let Some(k) = v["k"].as_str() {
+                    r.kinds.insert(m.to_string(), k.to_string());
+                }
             }
             None => r.calls.push(serde_json::from_value(v).map_err(|e| e.to_string())?),
         }
@@ -406,13 +429,35 @@ fn expected_file(dir: &Path, version: &str, against: Option<&str>) -> Option<Pat
     versions.pop().map(|(_, p)| p)
 }
 
-/// How a run compares with what was expected.
+/// What's different about one call.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+struct CallDifference {
+    /// `missing`, `worse`, `shorter`, `audio`, `new`, `longer`, `better` or `bits`.
+    change: &'static str,
+    /// The hash of its talkgroup, slot and encryption.
+    call: String,
+    freq_hz: u64,
+    start_s: f64,
+    detail: String,
+}
+
+/// How a run compares with what was expected: counts and hashes, as the log is public.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 struct Comparison {
+    expected_messages: u64,
+    decoded_messages: u64,
     missing_messages: u64,
     extra_messages: u64,
+    /// How many of each type of message are missing, and new.
+    missing_by_type: BTreeMap<String, u64>,
+    extra_by_type: BTreeMap<String, u64>,
+    expected_calls: u64,
+    decoded_calls: u64,
     missing_calls: u64,
     extra_calls: u64,
+    /// Calls that got shorter, or longer, by more than [`SAME_LENGTH_MS`].
+    shorter_calls: u64,
+    longer_calls: u64,
     /// Good frames gained on the calls that fell short of none, and lost on those that did.
     good_frames_gained: u64,
     good_frames_lost: u64,
@@ -420,6 +465,8 @@ struct Comparison {
     changed_calls: u64,
     /// Analog calls whose loudness over time no longer matches.
     bad_envelopes: u64,
+    /// Every call that differs, the worst first.
+    calls: Vec<CallDifference>,
 }
 
 fn envelope_r(a: &str, b: &str) -> Option<f64> {
@@ -445,46 +492,101 @@ fn envelope_r(a: &str, b: &str) -> Option<f64> {
 /// A call's match among those not yet taken: same call and frequency, starting within half a second.
 const SAME_CALL_MS: i64 = 500;
 
+fn seconds(ms: i64) -> f64 {
+    ms as f64 / 1000.0
+}
+
+fn length_and_frames(c: &CallSummary) -> String {
+    if c.frames > 0 {
+        format!("{:.1} s long, {} of {} frames good", seconds(c.l), c.good(), c.frames)
+    } else {
+        format!("{:.1} s long", seconds(c.l))
+    }
+}
+
 fn compare(expected: &Results, got: &Results) -> Comparison {
-    let mut c = Comparison::default();
+    let kind = |r: &Results, m: &str| r.kinds.get(m).cloned().unwrap_or_else(|| "other".to_string());
+    let mut c = Comparison { expected_messages: expected.messages.values().sum(), decoded_messages: got.messages.values().sum(), expected_calls: expected.calls.len() as u64, decoded_calls: got.calls.len() as u64, ..Default::default() };
     for (m, n) in &expected.messages {
-        c.missing_messages += n.saturating_sub(got.messages.get(m).copied().unwrap_or(0));
+        let short = n.saturating_sub(got.messages.get(m).copied().unwrap_or(0));
+        c.missing_messages += short;
+        if short > 0 {
+            *c.missing_by_type.entry(kind(expected, m)).or_insert(0) += short;
+        }
     }
     for (m, n) in &got.messages {
-        c.extra_messages += n.saturating_sub(expected.messages.get(m).copied().unwrap_or(0));
+        let more = n.saturating_sub(expected.messages.get(m).copied().unwrap_or(0));
+        c.extra_messages += more;
+        if more > 0 {
+            *c.extra_by_type.entry(kind(got, m)).or_insert(0) += more;
+        }
     }
+    let difference = |change, call: &CallSummary, detail: String| CallDifference { change, call: call.c.clone(), freq_hz: call.f, start_s: seconds(call.t), detail };
     let mut taken = vec![false; got.calls.len()];
     for e in &expected.calls {
         let found = got.calls.iter().enumerate().filter(|(i, g)| !taken[*i] && g.c == e.c && g.f == e.f && (g.t - e.t).abs() <= SAME_CALL_MS).min_by_key(|(_, g)| (g.t - e.t).abs());
         let Some((i, g)) = found else {
             c.missing_calls += 1;
+            c.calls.push(difference("missing", e, length_and_frames(e)));
             continue;
         };
         taken[i] = true;
-        c.good_frames_gained += g.good().saturating_sub(e.good());
-        c.good_frames_lost += e.good().saturating_sub(g.good());
+        let (gained, lost) = (g.good().saturating_sub(e.good()), e.good().saturating_sub(g.good()));
+        c.good_frames_gained += gained;
+        c.good_frames_lost += lost;
+        // What's different about it, the worst first: the first names the change.
+        let mut found: Vec<(&'static str, String)> = Vec::new();
+        if lost > 0 {
+            found.push(("worse", format!("good frames {} → {} (-{lost})", e.good(), g.good())));
+        }
+        let moved = g.l - e.l;
+        if moved < -SAME_LENGTH_MS {
+            c.shorter_calls += 1;
+            found.push(("shorter", format!("length {:.1} s → {:.1} s", seconds(e.l), seconds(g.l))));
+        }
+        let r = (!e.env.is_empty()).then(|| envelope_r(&e.env, &g.env).unwrap_or(0.0));
+        if let Some(r) = r.filter(|r| *r < MIN_ENVELOPE_R) {
+            c.bad_envelopes += 1;
+            found.push(("audio", format!("loudness over time matches at r = {r:.3}, under {MIN_ENVELOPE_R}")));
+        }
+        if moved > SAME_LENGTH_MS {
+            c.longer_calls += 1;
+            found.push(("longer", format!("length {:.1} s → {:.1} s", seconds(e.l), seconds(g.l))));
+        }
+        if gained > 0 {
+            found.push(("better", format!("good frames {} → {} (+{gained})", e.good(), g.good())));
+        }
         if g.good() == e.good() && (g.h != e.h || g.errs != e.errs) {
             c.changed_calls += 1;
+            found.push(("bits", format!("same good frames, other bits (bit errors {} → {})", e.errs, g.errs)));
         }
-        if let Some(r) = (!e.env.is_empty()).then(|| envelope_r(&e.env, &g.env).unwrap_or(0.0)) {
-            if r < MIN_ENVELOPE_R {
-                c.bad_envelopes += 1;
-            } else if r < SAME_ENVELOPE_R {
-                c.changed_calls += 1;
-            }
+        if let Some(r) = r.filter(|r| (MIN_ENVELOPE_R..SAME_ENVELOPE_R).contains(r)) {
+            c.changed_calls += 1;
+            found.push(("bits", format!("loudness over time matches at r = {r:.3}")));
+        }
+        if let Some((change, _)) = found.first().cloned() {
+            c.calls.push(difference(change, e, found.into_iter().map(|f| f.1).collect::<Vec<_>>().join("; ")));
         }
     }
-    c.extra_calls = taken.iter().filter(|t| !**t).count() as u64;
+    for (_, g) in got.calls.iter().enumerate().filter(|(i, _)| !taken[*i]) {
+        c.extra_calls += 1;
+        c.calls.push(difference("new", g, length_and_frames(g)));
+    }
+    let rank = |d: &CallDifference| ["missing", "worse", "shorter", "audio", "new", "longer", "better", "bits"].iter().position(|x| *x == d.change);
+    c.calls.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.start_s.total_cmp(&b.start_s)));
     c
 }
 
-/// The result of a comparison, given the capture's state and tolerance.
+/// The result of a comparison, given the capture's state and tolerance. A
+/// call nobody expected, or one that runs on, may be a false one: never called better.
 fn verdict(c: &Comparison, state: &str, tolerance: u64) -> &'static str {
-    let worse = c.missing_messages > tolerance || c.good_frames_lost > tolerance || c.missing_calls > 0 || c.bad_envelopes > 0;
-    let better = c.extra_messages > 0 || c.extra_calls > 0 || c.good_frames_gained > 0;
-    let plain = match (worse, better) {
-        (true, _) => "regressed",
-        (false, true) => "improved",
+    let worse = c.missing_messages > tolerance || c.good_frames_lost > tolerance || c.missing_calls > 0 || c.shorter_calls > 0 || c.bad_envelopes > 0;
+    let unsure = c.extra_calls > 0 || c.longer_calls > 0;
+    let better = c.extra_messages > 0 || c.good_frames_gained > 0;
+    let plain = match (worse, unsure, better) {
+        (true, _, _) => "regressed",
+        (false, true, _) => "changed",
+        (false, false, true) => "improved",
         _ if c.changed_calls > 0 || c.missing_messages > 0 || c.good_frames_lost > 0 => "changed",
         _ => "match",
     };
@@ -549,19 +651,103 @@ struct RunOptions<'a> {
     bless: Option<&'a str>,
 }
 
-/// Counts for the log, which is public: nothing decoded.
+/// One line of what differs: for the summary table.
 fn describe(c: &Comparison) -> String {
     let parts = [
         (c.missing_messages, "messages missing"),
-        (c.extra_messages, "more messages"),
         (c.missing_calls, "calls missing"),
-        (c.extra_calls, "more calls"),
         (c.good_frames_lost, "good frames lost"),
-        (c.good_frames_gained, "good frames gained"),
-        (c.changed_calls, "calls changed"),
+        (c.shorter_calls, "calls shorter"),
         (c.bad_envelopes, "analog calls unlike before"),
+        (c.extra_calls, "new calls"),
+        (c.longer_calls, "calls longer"),
+        (c.extra_messages, "more messages"),
+        (c.good_frames_gained, "good frames gained"),
+        (c.changed_calls, "calls with other bits"),
     ];
     parts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}")).collect::<Vec<_>>().join(", ")
+}
+
+fn by_type(counts: &BTreeMap<String, u64>) -> String {
+    let mut v: Vec<_> = counts.iter().collect();
+    v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    v.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ")
+}
+
+/// What differs, line by line: at most `max` calls. Hashes, counts and times, nothing decoded: this goes in a public log.
+fn details(c: &Comparison, max: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    if c.expected_messages + c.decoded_messages > 0 && (c.missing_messages + c.extra_messages > 0) {
+        out.push(format!("Control messages: {} expected, {} decoded ({} missing, {} new)", c.expected_messages, c.decoded_messages, c.missing_messages, c.extra_messages));
+        if !c.missing_by_type.is_empty() {
+            out.push(format!("  missing by type: {}", by_type(&c.missing_by_type)));
+        }
+        if !c.extra_by_type.is_empty() {
+            out.push(format!("  new by type: {}", by_type(&c.extra_by_type)));
+        }
+    }
+    if !c.calls.is_empty() {
+        out.push(format!("Calls: {} expected, {} decoded", c.expected_calls, c.decoded_calls));
+        for d in c.calls.iter().take(max) {
+            out.push(format!("  {:<8}{:.5} MHz at {:.1} s: {} (call {})", d.change, d.freq_hz as f64 / 1e6, d.start_s, d.detail, d.call));
+        }
+        if c.calls.len() > max {
+            out.push(format!("  … and {} more in the report", c.calls.len() - max));
+        }
+    }
+    out
+}
+
+/// A capture's place in the report.
+#[derive(Clone, Debug, Default)]
+struct Row {
+    id: String,
+    tier: String,
+    result: &'static str,
+    against: String,
+    comparison: Option<Comparison>,
+}
+
+/// What each result means, for whoever reads the report.
+fn result_meaning(result: &str) -> &'static str {
+    match result {
+        "match" => "decoded the same as expected",
+        "improved" => "everything expected, and more",
+        "changed" => "not clearly better or worse: look at it, and bless it if it's right",
+        "regressed" => "something expected is missing or worse",
+        "known-failing" => "a known bug, still failing as expected",
+        "fixed" => "was known to fail, and now does better",
+        "no-baseline" => "nothing to compare with yet",
+        _ => "the replay itself failed",
+    }
+}
+
+fn result_counts(rows: &[Row]) -> String {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for r in rows {
+        *counts.entry(r.result).or_insert(0) += 1;
+    }
+    let order = ["failed", "regressed", "changed", "no-baseline", "known-failing", "fixed", "improved", "match"];
+    order.iter().filter_map(|k| counts.get(k).map(|n| format!("{n} {k}"))).collect::<Vec<_>>().join(", ")
+}
+
+/// The report, for people: a table of every capture, then all that differs in each that did.
+fn markdown(rows: &[Row], version: &str, out: &Path) -> String {
+    let rank = |r: &Row| ["failed", "regressed", "changed", "no-baseline", "known-failing", "fixed", "improved", "match"].iter().position(|x| *x == r.result);
+    let mut sorted: Vec<&Row> = rows.iter().collect();
+    sorted.sort_by_key(|r| rank(r));
+    let mut md = format!("# Corpus report\n\nTrunk Recorder Pro {version}: {} captures: {}.\n\n| Capture | Tier | Result | Compared with | What differs |\n|---|---|---|---|---|\n", rows.len(), result_counts(rows));
+    for r in &sorted {
+        md += &format!("| {} | {} | **{}** | {} | {} |\n", r.id, r.tier, r.result, r.against, r.comparison.as_ref().map_or_else(String::new, describe));
+    }
+    let different: Vec<&&Row> = sorted.iter().filter(|r| r.comparison.as_ref().is_some_and(|c| !details(c, usize::MAX).is_empty())).collect();
+    for r in &different {
+        md += &format!("\n## {}: {}\n\n{}.\n\n```\n{}\n```\n", r.id, r.result, result_meaning(r.result), details(r.comparison.as_ref().unwrap(), usize::MAX).join("\n"));
+    }
+    if !different.is_empty() {
+        md += &format!("\n## Looking closer\n\nExpected output holds hashes, not what was said, so to see a message or a call, replay the capture on both builds and compare. On this machine the replay's calls are in `{0}/<capture>`, and its messages in `{0}/<capture>.stdout`.\n\nIf a change is right, record it in the same pull request: `trunk-pro tool corpus run --out dir --only <capture> --bless next`.\n", out.display());
+    }
+    md
 }
 
 /// What the service holds as capture `e`'s expected output, from when it was checked, if this
@@ -596,8 +782,10 @@ fn judge(o: &RunOptions, e: &Entry, expected_dir: &Path, version: &str, got: &Re
         None => ("no-baseline", None),
     };
     let against = baseline.map_or_else(String::new, |b| b.0);
-    let detail = comparison.as_ref().map_or_else(String::new, describe);
-    println!("{}: {result}{}{}", e.id, if against.is_empty() { String::new() } else { format!(" (against {against})") }, if detail.is_empty() { String::new() } else { format!(": {detail}") });
+    println!("{}: {result}{}", e.id, if against.is_empty() { String::new() } else { format!(" (against {against})") });
+    for line in comparison.as_ref().map_or_else(Vec::new, |c| details(c, LOG_DIFFERENCES)) {
+        println!("    {line}");
+    }
     Ok((result, against, comparison))
 }
 
@@ -615,38 +803,47 @@ fn run_all(o: &RunOptions, cache: &Path, entries: &[&Entry], out: &Path) -> Resu
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let version = env!("CARGO_PKG_VERSION");
     let mut failed = 0;
-    let mut report = Vec::new();
+    let mut rows = Vec::new();
     for e in entries {
         let folder = lay_out(o.base, cache, e)?;
-        // (A channel tape goes through its decoder alone.)
-        if e.tier != "wideband" {
-            let got = crate::tape_file::run(&folder)?;
-            let expected_dir = o.expected.join(&e.id);
-            let (result, against, comparison) = judge(o, e, &expected_dir, version, &got)?;
-            report.push(json!({ "id": e.id, "result": result, "against": against, "comparison": comparison, "messages": got.messages.values().sum::<u64>(), "calls": got.calls.len() }));
-            failed += (result == "regressed") as usize;
-            bless_if(o, e, &expected_dir, result, &got)?;
-            continue;
-        }
-        let dir = out.join(&e.id);
-        fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-        let log = |ext: &str| File::create(out.join(format!("{}.{ext}", e.id))).map(Stdio::from).map_err(|err| format!("{}: {err}", out.display()));
-        let status = Command::new(&exe).arg("replay").arg(&folder).arg("--out").arg(&dir).args(["--capture-frames", "--messages"]).stdout(log("stdout")?).stderr(log("stderr")?).status().map_err(|err| err.to_string())?;
-        if !status.success() {
-            println!("{}: failed, exit {}", e.id, status.code().unwrap_or(-1));
-            report.push(json!({ "id": e.id, "result": "failed" }));
-            failed += 1;
-            continue;
-        }
-        let got = summarize(out, &e.id)?;
         let expected_dir = o.expected.join(&e.id);
+        // (A channel tape goes through its decoder alone.)
+        let got = if e.tier != "wideband" {
+            crate::tape_file::run(&folder)?
+        } else {
+            let dir = out.join(&e.id);
+            fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+            let log = |ext: &str| File::create(out.join(format!("{}.{ext}", e.id))).map(Stdio::from).map_err(|err| format!("{}: {err}", out.display()));
+            let status = Command::new(&exe).arg("replay").arg(&folder).arg("--out").arg(&dir).args(["--capture-frames", "--messages"]).stdout(log("stdout")?).stderr(log("stderr")?).status().map_err(|err| err.to_string())?;
+            if !status.success() {
+                println!("{}: failed, exit {}", e.id, status.code().unwrap_or(-1));
+                rows.push(Row { id: e.id.clone(), tier: e.tier.clone(), result: "failed", ..Default::default() });
+                failed += 1;
+                continue;
+            }
+            summarize(out, &e.id)?
+        };
         let (result, against, comparison) = judge(o, e, &expected_dir, version, &got)?;
-        report.push(json!({ "id": e.id, "result": result, "against": against, "comparison": comparison, "messages": got.messages.values().sum::<u64>(), "calls": got.calls.len() }));
+        rows.push(Row { id: e.id.clone(), tier: e.tier.clone(), result, against, comparison });
         failed += (result == "regressed") as usize;
         bless_if(o, e, &expected_dir, result, &got)?;
     }
-    let path = PathBuf::from(format!("{}.report.json", out.display()));
-    fs::write(&path, serde_json::to_string_pretty(&report).map_err(|e| e.to_string())? + "\n").map_err(|e| format!("{}: {e}", path.display()))?;
+    let write = |ext: &str, text: String| -> Result<PathBuf, String> {
+        let path = PathBuf::from(format!("{}.report.{ext}", out.display()));
+        fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(path)
+    };
+    let json = rows.iter().map(|r| json!({ "id": r.id, "tier": r.tier, "result": r.result, "against": r.against, "comparison": r.comparison })).collect::<Vec<_>>();
+    write("json", serde_json::to_string_pretty(&json).map_err(|e| e.to_string())? + "\n")?;
+    let md = markdown(&rows, version, out);
+    let path = write("md", md.clone())?;
+    // (GitHub shows this on the run's page.)
+    if let Ok(summary) = std::env::var("GITHUB_STEP_SUMMARY") {
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(summary) {
+            let _ = f.write_all(md.as_bytes());
+        }
+    }
+    println!("\n{} captures: {}. Report: {}", rows.len(), result_counts(&rows), path.display());
     Ok(failed)
 }
 
@@ -806,16 +1003,20 @@ mod tests {
 
     #[test]
     fn message_lines_count_by_what_they_say_and_not_when() {
-        let out = "control channel 1 MHz\n   0.26s  grant tg 1\n   0.31s  grant tg 1\n   0.38s  update tg 2\n   0.52s  CALL 2 start TG 3\n         wrote x.wav\n   1.00s  [a] CALL 3 end\n";
-        let m = message_counts(out);
-        assert_eq!(m.len(), 2);
-        assert_eq!(m.values().sum::<u64>(), 3);
-        assert_eq!(m[&short_hash(b"grant tg 1", 8)], 2);
-        assert!(!format!("{m:?}").contains("grant"), "hashes, not decoded messages");
+        let out = "control channel 1 MHz\n   0.26s  grant tg 1\n   0.31s  grant tg 1\n   0.38s  [a] update tg 2\n   0.52s  CALL 2 start TG 3\n         wrote x.wav\n   1.00s  [a] CALL 3 end\n";
+        let mut r = Results::default();
+        add_messages(out, &mut r);
+        assert_eq!(r.messages.len(), 2);
+        assert_eq!(r.messages.values().sum::<u64>(), 3);
+        let hash = short_hash(b"grant tg 1", 8);
+        assert_eq!(r.messages[&hash], 2);
+        assert_eq!(r.kinds[&hash], "grant");
+        assert_eq!(r.kinds[&short_hash(b"[a] update tg 2", 8)], "update", "after a site's tag");
+        assert!(!format!("{:?}", r.messages).contains("grant"), "hashes, not decoded messages");
     }
 
     fn results(messages: &[(&str, u64)], calls: Vec<CallSummary>) -> Results {
-        Results { messages: messages.iter().map(|(m, n)| (m.to_string(), *n)).collect(), calls }
+        Results { messages: messages.iter().map(|(m, n)| (m.to_string(), *n)).collect(), calls, ..Default::default() }
     }
 
     fn call(c: &str, t: i64, frames: u64, bad: u64) -> CallSummary {
@@ -838,7 +1039,36 @@ mod tests {
         let lost_one = compare(&e, &results(&[("a", 1), ("b", 1)], e.calls.clone()));
         assert_eq!(verdict(&lost_one, "active", 1), "changed", "within its tolerance");
         assert_eq!(verdict(&lost_one, "known-failing", 0), "known-failing");
+        let same = |c: CallSummary| results(&[("a", 2), ("b", 1)], vec![c]);
+        assert_eq!(check(&same(CallSummary { l: 1400, ..call("x", 1000, 50, 2) })), "match", "under half a second's difference");
+        assert_eq!(check(&same(CallSummary { l: 400, ..call("x", 1000, 50, 2) })), "regressed", "cut short");
+        assert_eq!(check(&same(CallSummary { l: 1600, ..call("x", 1000, 50, 2) })), "changed", "runs on: maybe more, maybe a stuck call");
+        let extra = results(&[("a", 2), ("b", 1)], vec![call("x", 1000, 50, 2), call("y", 5000, 50, 2)]);
+        assert_eq!(check(&extra), "changed", "a call nobody expected may be a false one");
+        let extra_and_better = results(&[("a", 3), ("b", 1)], extra.calls.clone());
+        assert_eq!(check(&extra_and_better), "changed", "more messages don't make up for it");
         assert_eq!(verdict(&compare(&e, &results(&[("a", 3), ("b", 1)], e.calls.clone())), "known-failing", 0), "fixed");
+    }
+
+    #[test]
+    fn a_report_says_which_call_changed_and_how() {
+        let mut e = results(&[("a", 5), ("b", 1)], vec![call("gone", 1000, 50, 2), call("w", 9000, 50, 2), call("cut", 20000, 50, 2)]);
+        e.kinds.insert("a".into(), "grant".into());
+        let g = results(&[("a", 2), ("b", 1)], vec![call("w", 9000, 50, 10), CallSummary { l: 300, ..call("cut", 20000, 50, 2) }, call("odd", 30000, 20, 0)]);
+        let c = compare(&e, &g);
+        assert_eq!(verdict(&c, "active", 0), "regressed");
+        assert_eq!(c.calls.iter().map(|d| d.change).collect::<Vec<_>>(), ["missing", "worse", "shorter", "new"], "the worst first");
+        let text = details(&c, 10).join("\n");
+        assert!(text.contains("Control messages: 6 expected, 3 decoded (3 missing, 0 new)"), "{text}");
+        assert!(text.contains("missing by type: grant 3"), "{text}");
+        assert!(text.contains("0.00010 MHz at 9.0 s: good frames 48 → 40 (-8)"), "{text}");
+        assert!(text.contains("length 1.0 s → 0.3 s"), "{text}");
+        assert_eq!(details(&c, 1).last().unwrap(), "  … and 3 more in the report");
+        let row = |id: &str, result, comparison| Row { id: id.into(), tier: "wideband".into(), result, against: "0.3.2".into(), comparison };
+        let md = markdown(&[row("fine", "match", Some(Comparison::default())), row("bad", "regressed", Some(c))], "1.0.0", Path::new("/tmp/o"));
+        assert!(md.contains("2 captures: 1 regressed, 1 match"), "{md}");
+        assert!(md.find("| bad |").unwrap() < md.find("| fine |").unwrap(), "what needs looking at comes first");
+        assert!(md.contains("## bad: regressed") && !md.contains("## fine") && md.contains("--bless next"), "{md}");
     }
 
     #[test]

@@ -251,7 +251,7 @@ fn run_voice(meta: &Value, iq: &[Complex32], freq_hz: u64) -> Result<Results, St
     for (slot, a) in audio {
         calls.push(CallSummary { c: slot_hash(slot), f: freq_hz, env: envelope_of(&a, 8000), ..Default::default() });
     }
-    Ok(Results { messages: Default::default(), calls })
+    Ok(Results { calls, ..Default::default() })
 }
 
 /// A control tape through its protocol's decoder.
@@ -274,11 +274,11 @@ fn run_control(meta: &Value, iq: &[Complex32]) -> Result<Results, String> {
         d.push(carrier, chunk, t0 + (i * block) as f64 / rate, rate, &mut steps);
     }
     d.flush(&mut steps);
-    let mut messages = BTreeMap::new();
+    let mut r = Results::default();
     for m in steps.iter().flat_map(|s| s.msgs.iter()) {
-        *messages.entry(short_hash(format!("{} {}", m.kind.as_str(), m.meta).as_bytes(), 8)).or_insert(0) += 1;
+        r.add_message(&format!("{} {}", m.kind.as_str(), m.meta), m.kind.as_str());
     }
-    Ok(Results { messages, calls: vec![] })
+    Ok(r)
 }
 
 /// What a channel tape's decoder makes of it.

@@ -11,8 +11,22 @@ target/release/trunk-pro tool corpus run --out /tmp/after
 The recordings aren't in git. `tool corpus` keeps them in `captures/.corpus`, and downloads any it
 doesn't have from `iq.trunkrecorder.pro`.
 
-`run` compares each capture with its expected output and fails on a regression. The results are `match`,
-`improved`, `changed` (as much decoded, other bits), `regressed`, `known-failing`, `fixed` and `no-baseline`.
+`run` compares each capture with its expected output, prints what differs, and fails on a regression. It also writes
+`<out>.report.md`, which GitHub shows on the run's page, and `<out>.report.json`.
+
+| Result | Meaning | Fails CI |
+|---|---|---|
+| `match` | Decoded the same as expected | |
+| `improved` | Everything expected, and more messages or good frames | |
+| `changed` | Not clearly better or worse: a new call nobody expected, a call that runs longer, or other bits for as many good frames | |
+| `regressed` | A message or call is missing, a call lost good frames or got over half a second shorter, or an analog call's loudness no longer matches | Yes |
+| `known-failing` | A known bug, still failing | |
+| `fixed` | Was known to fail, and now does better | |
+| `no-baseline` | Nothing to compare with yet | |
+
+For each capture that differs, the report gives control messages by type, then each call with its frequency, start and what
+changed, the worst first. Expected output holds hashes, not what was said, so to see a message's text, replay the capture on
+both builds and compare.
 
 ## Expected output
 

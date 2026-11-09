@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- `trunk-pro tool corpus run` now says which calls changed and how, and counts missing control messages by type, in its log and in a
+  `.report.md`. A call that gets over half a second shorter is a regression. A new call, or one that runs longer, is `changed` rather than
+  `improved`, since it may be a false one.
+
 ## [0.3.4] — 2026-11-08
 
 - **Clearer waterfalls** when reviewing a capture: a stronger colour scale, and channel recordings are scaled to what's inside the
