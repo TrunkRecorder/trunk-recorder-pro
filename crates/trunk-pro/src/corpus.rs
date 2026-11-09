@@ -1,10 +1,10 @@
 //! `trunk-pro tool corpus`: the recordings regression tests run on
-//! (research/iq-corpus.md). A manifest, in the repo, lists each capture's
+//! (research/iq-corpus.md). A manifest lists each capture's
 //! files by SHA-256; they're fetched by that hash into a local cache, and a
 //! capture is its files under their own names again, for `replay`.
 //!
-//! `tool corpus add <capture folder> --id ID --protocol P [--tier wideband]`
-//! puts a capture in the manifest, and its files in the cache.
+//! `tool corpus add <capture folder> --manifest FILE --id ID --protocol P [--tier wideband]`
+//! puts a capture in a local manifest, and its files in the cache.
 //! `tool corpus fetch [--only a,b] [--tier t]` downloads what the cache lacks.
 //! `tool corpus run --out DIR [--only a,b] [--tier t] [--against V] [--bless next|V]`
 //! replays each capture into `DIR/<id>`, as `captures/regress.sh` lays its runs
@@ -16,7 +16,9 @@
 //! manifest, one for each version whose output changed, and `next.jsonl` for
 //! what's unreleased. Hashes and counts: no decoded traffic.
 //!
-//! All take `--manifest` (corpus/corpus.json), `--cache` (`TRP_CORPUS_CACHE`,
+//! The list of captures lives on the service, where maintainers edit it.
+//! All take `--manifest` (a URL or a file: the service's list), `--expected`
+//! (corpus/expected), `--cache` (`TRP_CORPUS_CACHE`,
 //! or captures/.corpus) and `--base`, the URL files are under.
 
 use std::fs::{self, File, OpenOptions};
@@ -34,7 +36,7 @@ use crate::iq_capture;
 use crate::toolkit::hex;
 use crate::{die, Args};
 
-const MANIFEST: &str = "corpus/corpus.json";
+const EXPECTED: &str = "corpus/expected";
 const CACHE: &str = "captures/.corpus";
 const BASE: &str = "https://iq.trunkrecorder.pro/blobs/";
 const API: &str = "https://trunkrecorder.pro/corpus/api/v1";
@@ -81,18 +83,42 @@ fn safe_hash(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
 }
 
-fn read_manifest(path: &Path) -> Result<Manifest, String> {
-    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let m: Manifest = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+fn parse_manifest(text: &str, from: &str) -> Result<Manifest, String> {
+    let m: Manifest = serde_json::from_str(text).map_err(|e| format!("{from}: {e}"))?;
     for e in &m.captures {
         if !safe_name(&e.id) {
-            return Err(format!("{}: {:?} isn't a usable capture id", path.display(), e.id));
+            return Err(format!("{from}: {:?} isn't a usable capture id", e.id));
         }
         if let Some(f) = e.files.iter().find(|f| !safe_name(&f.name) || !safe_hash(&f.sha256)) {
-            return Err(format!("{}: capture {} has a bad file entry: {:?}", path.display(), e.id, f.name));
+            return Err(format!("{from}: capture {} has a bad file entry: {:?}", e.id, f.name));
         }
     }
     Ok(m)
+}
+
+fn read_manifest(path: &Path) -> Result<Manifest, String> {
+    parse_manifest(&fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?, &path.display().to_string())
+}
+
+/// `url`'s text; None if it isn't there.
+fn get_text(url: &str) -> Result<Option<String>, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).user_agent(concat!("trunk-pro/", env!("CARGO_PKG_VERSION"))).build().into();
+    let mut r = agent.get(url).call().map_err(|e| format!("{url}: {e}"))?;
+    if r.status().as_u16() == 404 {
+        return Ok(None);
+    }
+    if !r.status().is_success() {
+        return Err(format!("{url}: {}", r.status()));
+    }
+    r.body_mut().read_to_string().map(Some).map_err(|e| format!("{url}: {e}"))
+}
+
+/// The list of captures, from the service or a file.
+fn load_manifest(from: &str) -> Result<Manifest, String> {
+    if from.starts_with("http://") || from.starts_with("https://") {
+        return parse_manifest(&get_text(from)?.ok_or_else(|| format!("{from}: not found"))?, from);
+    }
+    read_manifest(Path::new(from))
 }
 
 fn sha256_of(path: &Path) -> Result<String, String> {
@@ -481,7 +507,12 @@ fn bless(dir: &Path, id: &str, name: &str, got: &Results) -> Result<(), String> 
     }
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(format!("{name}.jsonl"));
-    fs::write(&path, header(id, name) + &results_text(got)).map_err(|e| format!("{}: {e}", path.display()))
+    fs::write(&path, expected_text(id, name, got)).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// An expected-output file's contents.
+pub(crate) fn expected_text(id: &str, version: &str, got: &Results) -> String {
+    header(id, version) + &results_text(got)
 }
 
 /// Make each capture's unreleased expected output `version`'s: how many there were.
@@ -510,50 +541,9 @@ fn release(expected_root: &Path, version: &str) -> Result<usize, String> {
     Ok(done)
 }
 
-/// Add submission `id` to the manifest, and what this version decodes from it as its expected output.
-fn promote(api: &str, manifest: &Path, cache: &Path, o: &RunOptions, id: &str, state: &str, issue: Option<u64>) -> Result<(), String> {
-    if !safe_name(id) {
-        return Err(format!("{id:?} isn't a submission id"));
-    }
-    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).user_agent(concat!("trunk-pro/", env!("CARGO_PKG_VERSION"))).build().into();
-    let url = format!("{api}/submissions/{id}");
-    let mut r = agent.get(&url).call().map_err(|e| format!("{url}: {e}"))?;
-    let code = r.status();
-    let text = r.body_mut().read_to_string().map_err(|e| format!("{url}: {e}"))?;
-    if !code.is_success() {
-        return Err(format!("{url}: {code}"));
-    }
-    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{url}: {e}"))?;
-    if v["state"] != "ready" {
-        return Err(format!("Submission {id} is {}: only one that passed its checks can be promoted", v["state"]));
-    }
-    let files: Vec<FileRef> = serde_json::from_value(v["files"].clone()).map_err(|e| format!("{url}: {e}"))?;
-    if let Some(f) = files.iter().find(|f| !safe_name(&f.name) || !safe_hash(&f.sha256)) {
-        return Err(format!("{url}: a bad file entry: {:?}", f.name));
-    }
-    let entry_id = format!("s-{id}");
-    let staged = Entry { id: entry_id.clone(), files, ..Default::default() };
-    let folder = lay_out(o.base, cache, &staged)?;
-    add(manifest, cache, &folder, &entry_id, v["tier"].as_str().unwrap_or("wideband"), v["protocol"].as_str().unwrap_or("unknown"))?;
-    let mut m = read_manifest(manifest)?;
-    let e = m.captures.iter_mut().find(|e| e.id == entry_id).ok_or("It isn't in the manifest")?;
-    e.state = state.to_string();
-    e.issue = issue;
-    let entry = e.clone();
-    fs::write(manifest, serde_json::to_string_pretty(&m).map_err(|e| e.to_string())? + "\n").map_err(|e| format!("{}: {e}", manifest.display()))?;
-    let out = std::env::temp_dir().join(format!("trp-promote-{}", std::process::id()));
-    fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let failed = run_all(o, cache, &[&entry], &out)?;
-    let _ = fs::remove_dir_all(&out);
-    if failed > 0 {
-        return Err(format!("Submission {id} couldn't be replayed"));
-    }
-    println!("{entry_id}: promoted, {state}");
-    Ok(())
-}
-
 struct RunOptions<'a> {
     base: &'a str,
+    api: &'a str,
     expected: PathBuf,
     against: Option<&'a str>,
     bless: Option<&'a str>,
@@ -574,18 +564,38 @@ fn describe(c: &Comparison) -> String {
     parts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}")).collect::<Vec<_>>().join(", ")
 }
 
+/// What the service holds as capture `e`'s expected output, from when it was checked, if this
+/// version is at least that one: a capture that's new to the tests has none in the repo.
+fn service_expected(o: &RunOptions, e: &Entry, version: &str) -> Result<Option<(String, String)>, String> {
+    if o.against.is_some() {
+        return Ok(None);
+    }
+    let Some(text) = get_text(&format!("{}/regression/{}/expected", o.api, e.id))? else { return Ok(None) };
+    let head: serde_json::Value = serde_json::from_str(text.lines().next().unwrap_or("")).map_err(|err| format!("{}: {err}", e.id))?;
+    let made = head["trp"].as_str().unwrap_or("").to_string();
+    Ok(match (parse_version(&made), parse_version(version)) {
+        (Some(a), Some(b)) if a <= b => Some((format!("service {made}"), text)),
+        _ => None,
+    })
+}
+
 /// `got` against capture `e`'s expected output, said on the log: its result, what it was compared with, and how.
 fn judge(o: &RunOptions, e: &Entry, expected_dir: &Path, version: &str, got: &Results) -> Result<(&'static str, String, Option<Comparison>), String> {
-    let baseline = expected_file(expected_dir, version, o.against);
-    let (result, comparison) = match &baseline {
+    let baseline = match expected_file(expected_dir, version, o.against) {
         Some(path) => {
-            let text = fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
-            let c = compare(&parse_results(&text).map_err(|err| format!("{}: {err}", path.display()))?, got);
+            let text = fs::read_to_string(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+            Some((path.file_stem().unwrap_or_default().to_string_lossy().to_string(), text))
+        }
+        None => service_expected(o, e, version)?,
+    };
+    let (result, comparison) = match &baseline {
+        Some((name, text)) => {
+            let c = compare(&parse_results(text).map_err(|err| format!("{name}: {err}"))?, got);
             (verdict(&c, &e.state, e.tolerance), Some(c))
         }
         None => ("no-baseline", None),
     };
-    let against = baseline.as_ref().and_then(|p| p.file_stem()).map_or_else(String::new, |s| s.to_string_lossy().to_string());
+    let against = baseline.map_or_else(String::new, |b| b.0);
     let detail = comparison.as_ref().map_or_else(String::new, describe);
     println!("{}: {result}{}{}", e.id, if against.is_empty() { String::new() } else { format!(" (against {against})") }, if detail.is_empty() { String::new() } else { format!(": {detail}") });
     Ok((result, against, comparison))
@@ -641,20 +651,21 @@ fn run_all(o: &RunOptions, cache: &Path, entries: &[&Entry], out: &Path) -> Resu
 }
 
 pub fn run(a: &Args) {
-    let what = a.positional.get(1).map(String::as_str).unwrap_or_else(|| die("tool corpus add|fetch|run|promote|release … (trunk-pro --help)"));
-    let manifest = PathBuf::from(a.get("manifest").unwrap_or(MANIFEST));
+    let what = a.positional.get(1).map(String::as_str).unwrap_or_else(|| die("tool corpus add|fetch|run|release … (trunk-pro --help)"));
+    let list = format!("{}/regression", a.get("api").unwrap_or(API));
+    let manifest = a.get("manifest").unwrap_or(&list);
     let cache = PathBuf::from(a.get("cache").map(str::to_string).or_else(|| std::env::var("TRP_CORPUS_CACHE").ok()).unwrap_or_else(|| CACHE.into()));
     let base = a.get("base").unwrap_or(BASE);
     let ok = |r: Result<(), String>| r.unwrap_or_else(|e| die(&e));
-    let expected = manifest.parent().unwrap_or(Path::new("")).join("expected");
+    let expected = PathBuf::from(a.get("expected").unwrap_or(EXPECTED));
     match what {
         "add" => {
             let folder = a.positional.get(2).unwrap_or_else(|| die("tool corpus add <capture folder> --id ID --protocol P"));
             let need = |k: &str| a.get(k).unwrap_or_else(|| die(&format!("tool corpus add: --{k} is needed")));
-            ok(add(&manifest, &cache, Path::new(folder), need("id"), a.get("tier").unwrap_or("wideband"), need("protocol")));
+            ok(add(Path::new(need("manifest")), &cache, Path::new(folder), need("id"), a.get("tier").unwrap_or("wideband"), need("protocol")));
         }
         "fetch" | "run" => {
-            let m = read_manifest(&manifest).unwrap_or_else(|e| die(&e));
+            let m = load_manifest(manifest).unwrap_or_else(|e| die(&e));
             let entries = chosen(&m, a.get("only"), a.get("tier")).unwrap_or_else(|e| die(&e));
             if what == "fetch" {
                 for e in &entries {
@@ -665,22 +676,11 @@ pub fn run(a: &Args) {
             }
             let out = PathBuf::from(a.get("out").unwrap_or_else(|| die("tool corpus run: --out is needed")));
             fs::create_dir_all(&out).unwrap_or_else(|e| die(&format!("{}: {e}", out.display())));
-            let o = RunOptions { base, expected, against: a.get("against"), bless: a.get("bless") };
+            let o = RunOptions { base, api: a.get("api").unwrap_or(API), expected, against: a.get("against"), bless: a.get("bless") };
             let failed = run_all(&o, &cache, &entries, &out).unwrap_or_else(|e| die(&e));
             if failed > 0 {
                 die(&format!("{failed} of {} captures failed or regressed", entries.len()));
             }
-        }
-        "promote" => {
-            let id = a.positional.get(2).unwrap_or_else(|| die("tool corpus promote <submission> [--state active|known-failing] [--issue N]"));
-            let state = a.get("state").unwrap_or("active");
-            if !matches!(state, "active" | "known-failing") {
-                die("--state is active or known-failing");
-            }
-            let api = a.get("api").map(str::to_string).or_else(|| std::env::var("TRP_CORPUS_API").ok()).unwrap_or_else(|| API.into());
-            let o = RunOptions { base, expected, against: None, bless: Some(env!("CARGO_PKG_VERSION")) };
-            let issue = a.get("issue").and_then(|i| i.parse().ok());
-            ok(promote(&api, &manifest, &cache, &o, id, state, issue));
         }
         "release" => {
             let version = a.positional.get(2).unwrap_or_else(|| die("tool corpus release <version>"));

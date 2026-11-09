@@ -33,8 +33,8 @@ fn hash_ok(meta_path: &Path, data: &Path) -> Result<bool, String> {
     Ok(want.eq_ignore_ascii_case(&hex(&Sha512::digest(&bytes))))
 }
 
-/// Decode counts of a wideband capture.
-fn decode_wideband(folder: &Path, out: &Path) -> Result<(u64, u64), String> {
+/// What a wideband capture decodes to.
+fn decode_wideband(folder: &Path, out: &Path) -> Result<corpus::Results, String> {
     let id = "submission";
     let calls = out.join(id);
     fs::create_dir_all(&calls).map_err(|e| format!("{}: {e}", calls.display()))?;
@@ -47,7 +47,7 @@ fn decode_wideband(folder: &Path, out: &Path) -> Result<(u64, u64), String> {
     let r = corpus::summarize(out, id)?;
     let _ = fs::remove_dir_all(&calls);
     let _ = fs::remove_file(out.join(format!("{id}.stdout")));
-    Ok((r.messages.values().sum(), r.calls.len() as u64))
+    Ok(r)
 }
 
 /// Check the capture in `folder`, leaving the results in `out`. `Err`: why it isn't one.
@@ -71,15 +71,17 @@ fn check(folder: &Path, out: &Path) -> Result<Value, String> {
     }
     let meta: Value = serde_json::from_str(&fs::read_to_string(opened.recordings[0].data.with_extension("sigmf-meta")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let tier = meta["global"]["trp:tier"].as_str().unwrap_or("wideband").to_string();
-    let (messages, calls) = if tier == "wideband" {
+    let decoded = if tier == "wideband" {
         if opened.config.is_none() {
             return Err("It doesn't say what systems it's of.".into());
         }
         decode_wideband(folder, out)?
     } else {
-        let r = tape_file::run(folder)?;
-        (r.messages.values().sum(), r.calls.len() as u64)
+        tape_file::run(folder)?
     };
+    let (messages, calls): (u64, u64) = (decoded.messages.values().sum(), decoded.calls.len() as u64);
+    // (In case it becomes a test: hashes and counts, nothing decoded.)
+    fs::write(out.join("expected.jsonl"), corpus::expected_text("submission", env!("CARGO_PKG_VERSION"), &decoded)).map_err(|e| e.to_string())?;
     if messages == 0 && calls == 0 {
         return Err("Nothing could be decoded from it.".into());
     }

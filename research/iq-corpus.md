@@ -97,7 +97,7 @@ gets us a recording of the problem when a user reports one.
    │          ▼
    │        trunk-pro tool corpus ◄── anyone, CI, forks (plain HTTPS)
    │
- corpus-promote workflow (write access only) ──► PR adding manifest + expected
+ the page, signed in with write access ──► the regression list, in the service
 ```
 
 ## The three kinds of capture
@@ -361,7 +361,6 @@ and counts, not decoded traffic, which also keeps them small enough for git.
 
 ```
 corpus/
-  corpus.json                     the manifest
   expected/<capture-id>/
     0.4.0.jsonl                   as of the release that promoted it
     0.6.2.jsonl                   a later release decoded it differently
@@ -392,7 +391,7 @@ output at capture time is wrong by definition.
 
 ### The manifest
 
-`corpus/corpus.json`:
+`/corpus/api/v1/regression`, edited on the page:
 
 ```json
 {
@@ -414,7 +413,7 @@ output at capture time is wrong by definition.
 
 Each file is at `https://iq.trunkrecorder.pro/blobs/<sha256>`, so anyone can fetch it with `curl`.
 
-`trunk-pro tool corpus corpus/corpus.json [--tier …] [--only …] [--against …]` downloads what it
+`trunk-pro tool corpus run --out dir [--tier …] [--only …] [--against …]` downloads what it
 doesn't have (resuming with range requests, into a local cache), verifies hashes, runs, and writes a report.
 Corpus files, like today's captures, stay out of git.
 
@@ -455,8 +454,7 @@ small one holds install tokens and their quotas.
 | `ready` | | Yes | 90 days, or as long as the manifest lists it |
 | `failed` | | No | Deleted |
 
-"Promoted" isn't a state here. A scheduled Worker reads `corpus/corpus.json` from this repo's `main`
-and keeps every blob it lists, so the service needs no sync with GitHub. Costs, at about $0.015 per GB-month
+A scheduled Worker keeps every blob a regression test uses. Costs, at about $0.015 per GB-month
 with free egress: 1 TB is about $15 a month.
 
 ### Upload API
@@ -476,7 +474,7 @@ credentials or presigned URLs are needed. Contributors don't need a GitHub accou
 
 **Abuse.** A public bucket that accepts uploads can be misused as free file hosting. So: quotas per token and
 per IP; at most 5 GB a submission; nothing listed until the decode job has validated it; anything that
-fails validation deleted automatically; and a maintainer-only `corpus-remove` workflow for takedowns.
+fails validation deleted automatically; and maintainers can delete from the page.
 
 ### The decode job
 
@@ -504,13 +502,13 @@ anyone who wants to decode it themselves, and for a promoted capture its score b
 
 ### Promoting, with GitHub permission
 
-**`.github/workflows/corpus-promote.yml`** in this repo, run by `workflow_dispatch`, with inputs for the
-submission ID, `active` or `known-failing`, and any issue. GitHub only lets users with write access to the repo
-run it, so there is no sign-in or permission code of ours. The public page links to it.
+The regression list lives in the service (D1), where it can be edited from the page. `trunk-pro tool corpus` reads it from
+`/corpus/api/v1/regression`. Signing in is optional and only adds the maintainers' buttons: **Add to regression testing**, **Reviewed,
+not a test**, and removal. The page asks GitHub on every change whether the signed-in user has write access to this repo, so access
+taken away is gone at once. The OAuth app asks for no scopes.
 
-It downloads the capture, decodes it with the latest release, adds the manifest entry and first expected file,
-and opens a PR. Merging makes it a test. **`corpus-remove.yml`** is the same for takedowns, calling the Worker
-with a repo secret.
+Expected output stays in this repo, so a decoder change and its new results are reviewed together. A newly added test has none
+here yet: it compares against what the release that checked it decoded, kept by the service, until a PR records it with `--bless`.
 
 ## Data handling
 
@@ -546,7 +544,7 @@ with capture off.**
 - Write `docs/sigmf/trp.sigmf-ext.md`. **Built.**
 - Today's eight recordings as the seven regress scenarios, each a capture folder with its settings in
   its metadata ([corpus/seed.py](../corpus/seed.py)). **Built.**
-- Add [corpus/corpus.json](../corpus/corpus.json) and `tool corpus`. **Built.** It lives in `corpus/` because
+- Add a manifest and `tool corpus`. **Built.** It lives in `corpus/` because
   `captures/` is gitignored. Each scenario is a manifest entry, and shared recordings are stored once by hash.
 
 *Done when:* the seven regress scenarios run from metadata alone with output identical to the flag form.
@@ -600,7 +598,7 @@ through a file. It hasn't run against production.
 - The decode job and checks (`tool submission`). Unvalidated uploads are deleted. Only IQ, diagnostics, a waterfall and counts are
   published. **Built.**
 - The public list page, with waterfalls. **Built.**
-- `corpus-promote` and `corpus-remove`, using `tool corpus promote`. **Built.**
+- Promotion and removal on the page, with optional GitHub sign-in. **Built.**
 - The CI jobs in this repo, for PRs and nightly. **Built.**
 - Publish today's eight captures as the first entries. **Done:** 13 entries, as the seven scenarios and six channel tapes.
 

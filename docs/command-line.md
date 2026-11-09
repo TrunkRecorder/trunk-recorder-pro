@@ -479,15 +479,14 @@ process's instructions gives that path's cost; `--passes N` goes over the captur
 ### tool corpus
 
 ```
-trunk-pro tool corpus add <capture folder> --id ID --protocol P [--tier wideband]
+trunk-pro tool corpus add <capture folder> --manifest file --id ID --protocol P [--tier wideband]
 trunk-pro tool corpus fetch [--only a,b] [--tier t]
 trunk-pro tool corpus run --out dir [--only a,b] [--tier t] [--against next|version] [--bless next|version]
-trunk-pro tool corpus promote <submission> [--state active|known-failing] [--issue N]
 trunk-pro tool corpus release <version>
 ```
 
-The recordings regression tests run on, listed in `corpus/corpus.json` by SHA-256. `add` lists a SigMF
-capture and puts its files in the cache. `fetch` downloads what the cache lacks, resuming an interrupted
+The recordings regression tests run on, listed at [trunkrecorder.pro/corpus](https://trunkrecorder.pro/corpus) by SHA-256. `add` lists a SigMF
+capture in a local manifest and puts its files in the cache. `fetch` downloads what the cache lacks, resuming an interrupted
 download and keeping a file only if it matches its hash. `run` replays each capture into `<out>/<id>`, with
 what it printed in `<out>/<id>.stdout` and `.stderr`, compares each with its expected output, writes
 `<out>.report.json`, and fails if any replay failed or regressed. `--bless` keeps what it got as the expected
@@ -495,7 +494,8 @@ output of the next release or of a version. `release` makes the unreleased expec
 
 | Option | Default | What it does |
 |---|---|---|
-| `--manifest file` | `corpus/corpus.json` | The list of captures |
+| `--manifest url-or-file` | `trunkrecorder.pro`'s list | The list of captures |
+| `--expected dir` | `corpus/expected` | Where expected output is kept |
 | `--cache dir` | `TRP_CORPUS_CACHE`, or `captures/.corpus` | Where the files are kept |
 | `--base url` | `https://iq.trunkrecorder.pro/blobs/` | Where files are downloaded from, by hash |
 | `--only a,b` | all | Just these capture ids |

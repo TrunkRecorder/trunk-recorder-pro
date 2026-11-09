@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Clearer waterfalls** when reviewing a capture: a stronger colour scale, and channel recordings are scaled to what's inside the
+  channel's filter.
+- `trunk-pro tool corpus` now reads its list of captures from [trunkrecorder.pro/corpus](https://trunkrecorder.pro/corpus), where
+  maintainers manage it. `tool corpus promote` and its workflows are gone.
+
 ## [0.3.3] — 2026-11-08
 
 - **Capture a known-good sample.** While recording, a card on the RF page records what every radio receives for 30 to

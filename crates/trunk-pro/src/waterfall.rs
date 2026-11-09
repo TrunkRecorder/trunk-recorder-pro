@@ -32,19 +32,36 @@ impl Image {
     }
 }
 
-/// Rows of powers in dB, as levels: the floor at the bottom of the range and the strongest signals at the top.
-fn levels(rows: &[Vec<f32>]) -> Vec<u8> {
-    let mut sorted: Vec<f32> = rows.iter().flatten().copied().filter(|v| v.is_finite()).collect();
+/// Below this rate a recording is one channel, shaped by its channel filter.
+const CHANNEL_MAX_HZ: f64 = 200_000.0;
+/// A channel's picture counts the frequencies within this much of its strongest, dB: inside its filter.
+const IN_FILTER_DB: f32 = 25.0;
+
+/// Rows of powers in dB, as levels. The range is what's worth seeing: from about
+/// the noise floor to the strongest signals. For a channel, that's only inside
+/// its filter: the filter's skirts would otherwise take up most of the range.
+fn levels(rows: &[Vec<f32>], channel: bool) -> Vec<u8> {
+    let width = rows.first().map_or(0, Vec::len);
+    let mut mean = vec![0f32; width];
+    for row in rows {
+        for (m, v) in mean.iter_mut().zip(row) {
+            *m += v.max(-200.0) / rows.len() as f32;
+        }
+    }
+    let top = mean.iter().copied().fold(f32::MIN, f32::max);
+    let counted = |bin: usize| !channel || mean[bin] >= top - IN_FILTER_DB;
+    let mut sorted: Vec<f32> = rows.iter().flat_map(|r| r.iter().enumerate().filter(|(b, _)| counted(*b)).map(|(_, v)| *v)).filter(|v| v.is_finite()).collect();
     if sorted.is_empty() {
         return vec![0; rows.iter().map(Vec::len).sum()];
     }
     sorted.sort_by(f32::total_cmp);
     let at = |p: f64| sorted[((sorted.len() - 1) as f64 * p) as usize];
-    let (low, high) = (at(0.05), at(0.999).max(at(0.05) + 1.0));
+    let floor = at(if channel { 0.2 } else { 0.5 });
+    let (low, high) = (floor, at(0.999).max(floor + 1.0));
     rows.iter().flatten().map(|v| (((v - low) / (high - low)).clamp(0.0, 1.0) * 255.0) as u8).collect()
 }
 
-fn image_of(iq_at: &mut dyn FnMut(u64, usize) -> Result<Vec<Complex32>, String>, samples: u64) -> Result<Image, String> {
+fn image_of(iq_at: &mut dyn FnMut(u64, usize) -> Result<Vec<Complex32>, String>, samples: u64, channel: bool) -> Result<Image, String> {
     let fft = FftPlanner::<f32>::new().plan_fft_forward(WIDTH);
     let window: Vec<f32> = (0..WIDTH).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (WIDTH - 1) as f32).cos()).collect();
     let height = ROWS.min((samples as usize / (WIDTH * AVERAGE)).max(1));
@@ -64,7 +81,7 @@ fn image_of(iq_at: &mut dyn FnMut(u64, usize) -> Result<Vec<Complex32>, String>,
         power.rotate_left(WIDTH / 2);
         rows.push(power.iter().map(|p| 10.0 * p.max(1e-20).log10()).collect::<Vec<f32>>());
     }
-    Ok(Image { width: WIDTH as u32, height: height as u32, pixels: levels(&rows) })
+    Ok(Image { width: WIDTH as u32, height: height as u32, pixels: levels(&rows, channel) })
 }
 
 /// The waterfall of one radio's recording.
@@ -79,7 +96,7 @@ pub fn of_recording(r: &Recording) -> Result<Image, String> {
         file.by_ref().take(n as u64 * bps).read_to_end(&mut buf).map_err(fail)?;
         Ok(to_iq(r.format, &buf))
     };
-    image_of(&mut read, len / bps)
+    image_of(&mut read, len / bps, r.rate_hz < CHANNEL_MAX_HZ)
 }
 
 #[cfg(test)]
@@ -93,7 +110,7 @@ mod tests {
         let mut read = |start: u64, count: usize| -> Result<Vec<Complex32>, String> {
             Ok((start..start + count as u64).map(|i| Complex32::from_polar(1.0, 2.0 * std::f32::consts::PI * (i % WIDTH as u64) as f32 * bin as f32 / WIDTH as f32)).collect())
         };
-        let im = image_of(&mut read, n).unwrap();
+        let im = image_of(&mut read, n, false).unwrap();
         assert_eq!((im.width, im.height), (WIDTH as u32, 4));
         let first: &[u8] = &im.pixels[..WIDTH];
         assert_eq!(first[WIDTH / 2 + bin], 255);
@@ -108,7 +125,19 @@ mod tests {
 
     #[test]
     fn silence_doesnt_divide_by_zero() {
-        assert_eq!(levels(&[vec![f32::NEG_INFINITY; 3]]), [0, 0, 0]);
-        assert_eq!(levels(&[vec![-5.0; 3]]), [0, 0, 0]);
+        assert_eq!(levels(&[vec![f32::NEG_INFINITY; 3]], false), [0, 0, 0]);
+        assert_eq!(levels(&[vec![-5.0; 3]], false), [0, 0, 0]);
+    }
+
+    #[test]
+    fn a_channels_filter_skirts_dont_use_up_the_range() {
+        // Outside the filter, far below; inside it, noise at -60 with a signal at -50.
+        let row = |signal: f32| vec![-140.0, -130.0, -60.0, -60.0, signal, -60.0, -60.0, -130.0, -140.0];
+        let rows = vec![row(-50.0), row(-60.0), row(-50.0), row(-60.0)];
+        let px = levels(&rows, true);
+        assert_eq!(px[2], 0, "noise is at the bottom");
+        assert_eq!(px[4], 255, "the signal is at the top");
+        let unfiltered = levels(&rows, false);
+        assert!(unfiltered[4] > unfiltered[0], "still drawn without the filter's rule");
     }
 }

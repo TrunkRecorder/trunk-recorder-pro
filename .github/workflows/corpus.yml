@@ -28,7 +28,7 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: captures/.corpus/blobs
-          key: corpus-${{ hashFiles('corpus/corpus.json') }}
+          key: corpus-${{ github.run_id }}
           restore-keys: corpus-
       # (Pull requests run the small captures; every night, all of them.)
       - if: github.event_name == 'pull_request'
