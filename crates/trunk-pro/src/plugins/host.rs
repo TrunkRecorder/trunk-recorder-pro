@@ -295,6 +295,7 @@ impl PluginHost {
             topics.units |= m.subscribes(topic::UNIT);
             topics.status |= m.subscribes(topic::STATUS);
             topics.tone_patterns |= m.subscribes(topic::TONE_PATTERN);
+            topics.voice |= m.subscribes(topic::VOICE);
             live_audio |= m.subscribes(topic::AUDIO);
             let data_dir = s.data_dir.clone().unwrap_or_else(|| super::data_dir(&s.id));
             let _ = std::fs::create_dir_all(&data_dir);
@@ -401,6 +402,8 @@ impl PluginHost {
             HostMessage::Unit(u) => (topic::UNIT, on(&u.short_name, u.talkgroup)),
             // (Its tones may have been heard in decrypted voice: only plugins allowed that get it.)
             HostMessage::TonePattern(t) => (topic::TONE_PATTERN, About { decrypted: t.decrypted, ..on(&t.short_name, Some(t.talkgroup)) }),
+            // (Decrypted voice only to plugins allowed it.)
+            HostMessage::Voice(v) => (topic::VOICE, About { decrypted: v.decrypted, ..on(&v.short_name, Some(v.talkgroup)) }),
             // (No one system's: never delayed.)
             HostMessage::Status(_) => (topic::STATUS, About::default()),
             // (Audio and concluded calls may be decrypted ones: they go only by `audio_frame` and

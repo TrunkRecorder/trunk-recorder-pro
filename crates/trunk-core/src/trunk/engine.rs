@@ -341,7 +341,8 @@ pub enum Event {
     CopyEnd(Call),
     /// Live audio for a recording call.
     /// `decrypted`: the call is encrypted on the air, so this audio is of a cipher we hold the key for.
-    Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32>, decrypted: bool },
+    /// `frames`: the vocoder frames it was made from (none: analog); `unit`: who is talking (0: not known).
+    Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32>, decrypted: bool, unit: u32, frames: Vec<super::frames::VoiceFrame> },
     /// System `system` (any of its sites) heard a radio's talker alias it didn't know (or knew by another name).
     UnitAlias { system: u16, unit: u32, alias: String, talkgroup: u32 },
     /// A frequency of system `system` is identified by this FCC call sign
@@ -2082,9 +2083,11 @@ impl Core {
                         _ => unreachable!(),
                     };
                     let digital = frame.is_some();
+                    let frames: Vec<_> = frame.iter().cloned().collect();
                     let news = rec.rec.push(&samples, frame, now);
                     // Fail closed: a digital call that is gone already is not known to be clear, and
                     // its voice is not given to a plugin as if it were.
+                    let unit = call.as_ref().and_then(|c| c.sources.last()).map_or(0, |s| s.src);
                     let (tg, decrypted) = match call {
                         Some(c) => {
                             c.note_audio(now);
@@ -2100,7 +2103,7 @@ impl Core {
                         None => (0, digital),
                     };
                     if live.is_none_or(|key| self.multisite.audio_lead(key, site, now)) {
-                        self.events.push(Event::Audio { call_id: id, system, talkgroup: tg, samples, decrypted });
+                        self.events.push(Event::Audio { call_id: id, system, talkgroup: tg, samples, decrypted, unit, frames });
                     }
                 }
                 TrackerOut::Info { source, flags } => match call {

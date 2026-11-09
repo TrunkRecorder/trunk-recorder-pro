@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Plugins can take a call's voice as vocoder frames.** The `voice` topic (SDK 0.11.0: `Plugin::voice`)
+  sends the frames live audio is made from, FEC-corrected and in order: IMBE (P25 Phase 1, ProVoice) or
+  AMBE+2 (P25 Phase 2, DMR, NXDN), with the call, talkgroup and who is talking. A plugin can relay them to
+  a digital voice network, such as MMDVM hotspots for DMR, P25 or NXDN radios, without decoding to audio
+  and encoding again. Frames come a few at a time (at most 180 ms of voice, sooner when the talker changes
+  or the call ends); a call's frames go where its live audio goes, and decrypted ones only to plugins with
+  `shareDecrypted`.
+
 ## [0.3.5] — 2026-11-09
 
 - **A call heard on several sites is now one call to plugins and stats, from its first copy's start to its last copy's end.** Before, it was

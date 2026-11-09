@@ -39,6 +39,10 @@ pub mod topic {
     pub const UNIT: &str = "unit";
     /// Live audio of recording calls ([`super::AudioChunk`]).
     pub const AUDIO: &str = "audio";
+    /// Live voice of recording digital calls as the vocoder frames it was
+    /// made from ([`super::VoiceChunk`]): the same frames, at the same
+    /// moments, as the `audio` topic's PCM.
+    pub const VOICE: &str = "voice";
     /// Every system's state, every few seconds ([`super::Status`]).
     pub const STATUS: &str = "status";
     /// A call's tones made a pattern ([`super::TonePatternEvent`]): every page,
@@ -49,7 +53,7 @@ pub mod topic {
     /// elsewhere. A plugin isn't sent its own lines.
     pub const LOG: &str = "log";
 
-    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE_PATTERN, LOG];
+    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, VOICE, STATUS, TONE_PATTERN, LOG];
 }
 
 /// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
@@ -175,6 +179,8 @@ pub enum HostMessage {
     Unit(UnitEvent),
     #[serde(rename = "audio")]
     Audio(AudioChunk),
+    #[serde(rename = "voice")]
+    Voice(VoiceChunk),
     #[serde(rename = "status")]
     Status(Status),
     #[serde(rename = "tone_pattern")]
@@ -904,6 +910,89 @@ impl AudioChunk {
     }
 }
 
+/// A slice of a recording digital call's voice ([`topic::VOICE`]): the
+/// vocoder frames (20 ms each), FEC-corrected, in order, that the `audio`
+/// topic's PCM was made from. A call's frames come a few at a time: at most
+/// [`VoiceChunk::MAX_FRAMES`] (180 ms), sooner when the talker changes, the
+/// call ends or 200 ms go by.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct VoiceChunk {
+    pub call_id: u32,
+    /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
+    pub system: u16,
+    pub short_name: String,
+    pub talkgroup: u32,
+    /// Who is talking (0: not known yet), and their name, as a call's `sources` give it.
+    pub unit: u32,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub unit_name: String,
+    /// Of a call decrypted with our keys (only plugins with `shareDecrypted` are given it).
+    pub decrypted: bool,
+    /// `imbe` (P25 Phase 1, ProVoice: 88 information bits a frame) or `ambe`
+    /// (AMBE+2 half rate: P25 Phase 2, DMR, NXDN: 49 bits).
+    pub codec: String,
+    /// The frames' information bits as one hex string: each frame MSB first in
+    /// octets of its own (IMBE 11, AMBE 7; the last padded with zeros).
+    pub frames: String,
+    /// Frames (their places in `frames`) not played as sent: repeated or
+    /// muted by the vocoder, or lost.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bad: Vec<u16>,
+}
+
+impl VoiceChunk {
+    pub const MAX_FRAMES: usize = 9;
+
+    /// Information bits a frame of its codec has.
+    pub fn frame_bits(&self) -> usize {
+        if self.codec == "imbe" {
+            88
+        } else {
+            49
+        }
+    }
+
+    fn frame_hex(&self) -> usize {
+        self.frame_bits().div_ceil(8) * 2
+    }
+
+    /// How many frames it holds.
+    pub fn len(&self) -> usize {
+        self.frames.len() / self.frame_hex()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    /// Frame `i`'s information bits (0 / 1).
+    pub fn frame(&self, i: usize) -> Vec<u8> {
+        let w = self.frame_hex();
+        let hex = self.frames.get(i * w..(i + 1) * w).unwrap_or("");
+        let mut out: Vec<u8> = (0..hex.len() / 2).filter_map(|k| u8::from_str_radix(&hex[k * 2..k * 2 + 2], 16).ok()).flat_map(|b| (0..8).rev().map(move |k| b >> k & 1)).collect();
+        out.resize(self.frame_bits(), 0);
+        out
+    }
+
+    pub fn is_bad(&self, i: usize) -> bool {
+        self.bad.contains(&(i as u16))
+    }
+
+    /// Add a frame (its information bits, 0 / 1).
+    pub fn push(&mut self, bits: &[u8], bad: bool) {
+        use std::fmt::Write;
+        if bad {
+            self.bad.push(self.len() as u16);
+        }
+        let mut b = bits.to_vec();
+        b.resize(self.frame_bits().div_ceil(8) * 8, 0);
+        for c in b.chunks(8) {
+            let _ = write!(self.frames, "{:02x}", c.iter().fold(0u8, |v, &x| v << 1 | (x & 1)));
+        }
+    }
+}
+
 /// A line TRP logged ([`topic::LOG`]), at the level its log is set to.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -1309,6 +1398,24 @@ mod tests {
         assert_eq!(v["patched_talkgroups"], serde_json::json!([101, 65001]));
         let unpatched = serde_json::to_value(CallRecord::default()).unwrap();
         assert!(unpatched.get("patched_talkgroups").is_none());
+    }
+
+    #[test]
+    fn voice_chunks_pack_their_frames() {
+        let mut c = VoiceChunk { codec: "ambe".into(), ..Default::default() };
+        let f: Vec<Vec<u8>> = (0..3).map(|k| (0..49).map(|i| ((i + k) % 3 == 0) as u8).collect()).collect();
+        for (k, bits) in f.iter().enumerate() {
+            c.push(bits, k == 1);
+        }
+        assert_eq!((c.len(), c.frames.len(), c.bad.clone()), (3, 42, vec![1]));
+        assert!((0..3).all(|k| c.frame(k) == f[k]));
+        assert!(c.is_bad(1) && !c.is_bad(0));
+        let mut i = VoiceChunk { codec: "imbe".into(), ..Default::default() };
+        let imbe: Vec<u8> = (0..88).map(|x| (x % 5 == 1) as u8).collect();
+        i.push(&imbe, false);
+        assert_eq!((i.len(), i.frame(0)), (1, imbe));
+        let line = serde_json::to_string(&HostMessage::Voice(i)).unwrap();
+        assert!(line.contains("\"voice\"") && !line.contains("\"bad\""), "{line}");
     }
 
     #[test]

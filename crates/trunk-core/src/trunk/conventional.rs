@@ -1294,7 +1294,7 @@ impl Conventional {
         // (none taken in for a call not recorded).
         let mut patterns = Vec::new();
         if !h.audio.is_empty() && l.call.recording {
-            let news = l.rec.push(&h.audio, h.frames, now_s);
+            let news = l.rec.push(&h.audio, h.frames.iter().cloned(), now_s);
             changed |= CallManager::note_units(&mut l.call, &mut l.rec.tx, &news.units, now_s);
             // A new tone or code is news; a firmer reading of the same one isn't.
             changed |= l.rec.subaudible(&h.low).code.is_some();
@@ -1308,7 +1308,8 @@ impl Conventional {
         // (An encrypted transmission's audio, unless decrypted, is left out
         // when the call is saved, as a trunked call's is; it isn't played live.)
         if !h.audio.is_empty() && l.call.recording && !l.rec.tx.current_dropped() {
-            out.push(ConvOut::Event(Event::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio, decrypted: l.call.decrypted_voice(false) }));
+            let unit = l.call.sources.last().map_or(0, |s| s.src);
+            out.push(ConvOut::Event(Event::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio, decrypted: l.call.decrypted_voice(false), unit, frames: h.frames }));
         }
     }
 
