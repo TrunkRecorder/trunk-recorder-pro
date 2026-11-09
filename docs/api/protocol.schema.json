@@ -1719,6 +1719,10 @@
     "Diagnostics": {
       "type": "object",
       "properties": {
+        "captureDir": {
+          "type": "string",
+          "description": "Where captures of the radios go (none: `iq-captures` in the recordings folder)."
+        },
         "rules": {
           "type": "array",
           "items": {

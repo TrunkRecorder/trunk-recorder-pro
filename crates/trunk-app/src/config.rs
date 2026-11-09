@@ -2986,6 +2986,9 @@ impl Default for CaptureBudget {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Diagnostics {
+    /// Where captures of the radios go ("": `iq-captures` in the recordings folder).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub capture_dir: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<CaptureRule>,
     pub budget: CaptureBudget,

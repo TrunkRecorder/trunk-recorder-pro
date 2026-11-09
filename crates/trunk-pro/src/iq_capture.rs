@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -39,7 +39,7 @@ pub(crate) const DIAGNOSTICS: &str = "diagnostics.json";
 const MIN_S: u32 = 5;
 const MAX_S: u32 = 300;
 /// Blocks queued for a writer: seconds of samples, however a radio cuts them.
-const QUEUE: usize = 512;
+pub(crate) const QUEUE: usize = 512;
 /// Every radio starts with its first block after this, so they start together.
 const START_DELAY: Duration = Duration::from_millis(300);
 /// A radio that sends nothing for this long has stopped.
@@ -70,6 +70,48 @@ struct Job {
     clock: (Instant, f64),
     /// Why the capture was given up.
     failed: Arc<Mutex<Option<String>>>,
+    activity: Arc<Activity>,
+}
+
+impl Job {
+    /// To the writer, without waiting: a source's thread never does.
+    fn send(&self, c: Chunk) -> Result<(), TrySendError<Chunk>> {
+        self.tx.try_send(c)?;
+        self.activity.queued();
+        Ok(())
+    }
+}
+
+/// How one source's capture is going, for `diagnostics.json`: lost samples beside what the disk was doing.
+#[derive(Default)]
+pub(crate) struct Activity {
+    in_queue: AtomicUsize,
+    queue_peak: AtomicUsize,
+    lost: AtomicU64,
+    slowest_write_us: AtomicU64,
+    written: AtomicU64,
+}
+
+impl Activity {
+    fn queued(&self) {
+        let n = self.in_queue.fetch_add(1, Ordering::Relaxed) + 1;
+        self.queue_peak.fetch_max(n, Ordering::Relaxed);
+    }
+
+    fn taken(&self) {
+        self.in_queue.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn wrote(&self, bytes: usize, took: Duration) {
+        self.written.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.slowest_write_us.fetch_max(took.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// What's happened since last asked: samples lost, the fullest the queue got, the slowest write (ms), bytes written.
+    pub(crate) fn take(&self) -> (u64, usize, f64, u64) {
+        let peak = self.queue_peak.swap(self.in_queue.load(Ordering::Relaxed), Ordering::Relaxed);
+        (self.lost.swap(0, Ordering::Relaxed), peak, self.slowest_write_us.swap(0, Ordering::Relaxed) as f64 / 1000.0, self.written.swap(0, Ordering::Relaxed))
+    }
 }
 
 /// A source's latest blocks, for a capture that looks back.
@@ -146,16 +188,17 @@ impl Tap {
         if !j.started {
             j.started = true;
             let ms = j.clock.1 + at.saturating_duration_since(j.clock.0).as_secs_f64() * 1000.0 - n as f64 / j.rate_hz * 1000.0;
-            sent = j.tx.try_send(Chunk::Begin(ms));
+            sent = j.send(Chunk::Begin(ms));
         } else if dropped > 0 {
             let lost = dropped.min(j.left);
             j.left -= lost;
-            sent = j.tx.try_send(Chunk::Gap(lost));
+            j.activity.lost.fetch_add(lost, Ordering::Relaxed);
+            sent = j.send(Chunk::Gap(lost));
         }
         let keep = n.min(j.left) as usize;
         if sent.is_ok() && keep > 0 {
             j.left -= keep as u64;
-            sent = j.tx.try_send(Chunk::of(block, keep));
+            sent = j.send(Chunk::of(block, keep));
         }
         if let Err(e) = sent {
             if matches!(e, TrySendError::Full(_)) {
@@ -180,7 +223,7 @@ impl Tap {
         } else if j.started && gap > 0 {
             let lost = gap.min(j.left);
             j.left -= lost;
-            let _ = j.tx.try_send(Chunk::Gap(lost));
+            let _ = j.send(Chunk::Gap(lost));
             if job_done(&state.job) {
                 self.end(&mut state);
             }
@@ -202,10 +245,14 @@ impl Tap {
                 if !job.started {
                     job.started = true;
                     let ms = job.clock.1 - job.clock.0.saturating_duration_since(at).as_secs_f64() * 1000.0 - chunk.samples() as f64 / job.rate_hz * 1000.0;
+                    job.activity.queued();
                     let _ = job.tx.send(Chunk::Begin(ms));
                 } else if dropped > 0 {
+                    job.activity.lost.fetch_add(dropped, Ordering::Relaxed);
+                    job.activity.queued();
                     let _ = job.tx.send(Chunk::Gap(dropped));
                 }
+                job.activity.queued();
                 let _ = job.tx.send(chunk);
             }
             if few {
@@ -380,7 +427,8 @@ pub fn begin_capture(ctx: &Arc<Ctx>, req: &Request) -> Result<(), String> {
 
 fn begin(ctx: &Arc<Ctx>, cfg: &Config, taps: Vec<Arc<Tap>>, name: &str, req: &Request) -> Result<(), String> {
     let seconds = req.after_s + req.before_s;
-    let root = root(cfg);
+    // (Where captures go can change while recording: it's not one of the run's settings.)
+    let root = root(&ctx.config.lock().unwrap());
     fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     let need = estimate(cfg, seconds);
     if let Some((_, free)) = crate::spool::statvfs(&root).filter(|d| d.1 < need + DISK_MARGIN) {
@@ -394,22 +442,31 @@ fn begin(ctx: &Arc<Ctx>, cfg: &Config, taps: Vec<Arc<Tap>>, name: &str, req: &Re
     let not_before = Instant::now() + START_DELAY;
     let clock = (Instant::now(), crate::clock::unix_ms() as f64);
     let mut writers = Vec::new();
+    let activity: Vec<Arc<Activity>> = taps.iter().map(|_| Arc::default()).collect();
     for (i, tap) in taps.iter().enumerate() {
         let (tx, rx) = mpsc::sync_channel(QUEUE);
         let path = dir.join(format!("source-{i}.sigmf-data"));
-        writers.push(std::thread::Builder::new().name(format!("iq-{i}")).spawn(move || write_samples(rx, &path)).map_err(|e| e.to_string())?);
+        let doing = activity[i].clone();
+        writers.push(std::thread::Builder::new().name(format!("iq-{i}")).spawn(move || write_samples(rx, &path, &doing)).map_err(|e| e.to_string())?);
         let rate_hz = cfg.sources[i].rate_hz;
-        let job = Job { tx, left: (rate_hz * req.after_s) as u64, not_before, started: false, rate_hz, center_hz: centers[i], clock, failed: failed.clone() };
+        let job = Job { tx, left: (rate_hz * req.after_s) as u64, not_before, started: false, rate_hz, center_hz: centers[i], clock, failed: failed.clone(), activity: activity[i].clone() };
         if req.before_s > 0.0 {
             tap.arm_after_lookback(Job { not_before: Instant::now(), ..job });
         } else {
             tap.arm(job);
         }
     }
+    let stop_watching = Arc::new(AtomicBool::new(false));
+    let watching = {
+        let (stop, dir, recordings) = (stop_watching.clone(), dir.clone(), PathBuf::from(&cfg.recording.capture_dir));
+        std::thread::Builder::new().name("iq-watch".into()).spawn(move || crate::diagnostics::watch(&activity, &dir, &recordings, &stop)).map_err(|e| e.to_string())?
+    };
     let (ctx, cfg, dir, name, what) = (ctx.clone(), cfg.clone(), dir, name.to_string(), (req.note.clone(), req.purpose, req.rule.clone()));
     let finished = move || {
         let results: Vec<_> = writers.into_iter().map(|w| w.join().unwrap_or_else(|_| Err("A capture writer failed.".into()))).collect();
-        let saved = failed.lock().unwrap().take().map_or_else(|| save(&ctx, &cfg, &dir, &what, &before, results), Err);
+        stop_watching.store(true, Ordering::Relaxed);
+        let watched = watching.join().unwrap_or(Value::Null);
+        let saved = failed.lock().unwrap().take().map_or_else(|| save(&ctx, &cfg, &dir, &what, &before, results, &watched), Err);
         match &saved {
             Ok(()) => log::info!("IQ capture saved: {}", dir.display()),
             Err(e) => {
@@ -443,14 +500,18 @@ impl Written {
     }
 }
 
-fn write_samples(rx: mpsc::Receiver<Chunk>, path: &Path) -> Result<Written, String> {
+fn write_samples(rx: mpsc::Receiver<Chunk>, path: &Path, activity: &Activity) -> Result<Written, String> {
     let fail = |e: std::io::Error| format!("{}: {e}", path.display());
     let mut file = BufWriter::with_capacity(1 << 20, File::create(path).map_err(fail)?);
     let mut hash = Sha512::new();
     let mut w = Written::default();
     let mut out = Vec::new();
     loop {
-        let bytes: &[u8] = match rx.recv_timeout(STALL) {
+        let next = rx.recv_timeout(STALL);
+        if next.is_ok() {
+            activity.taken();
+        }
+        let bytes: &[u8] = match next {
             Ok(Chunk::Begin(ms)) => {
                 w.start_ms = ms;
                 continue;
@@ -480,7 +541,9 @@ fn write_samples(rx: mpsc::Receiver<Chunk>, path: &Path) -> Result<Written, Stri
             Err(RecvTimeoutError::Timeout) => return Err("The radio stopped sending samples during the capture.".into()),
         };
         hash.update(bytes);
+        let started = Instant::now();
         file.write_all(bytes).map_err(fail)?;
+        activity.wrote(bytes.len(), started.elapsed());
     }
     file.flush().map_err(fail)?;
     w.sha512 = crate::toolkit::hex(&hash.finalize());
@@ -610,7 +673,7 @@ fn live_summary(before: &Status, after: &Status) -> Value {
     json!({ "sites": sites, "calls": after.calls_concluded - before.calls_concluded })
 }
 
-fn save(ctx: &Ctx, cfg: &Config, dir: &Path, what: &(String, &'static str, Option<Value>), before: &Live, results: Vec<Result<Written, String>>) -> Result<(), String> {
+fn save(ctx: &Ctx, cfg: &Config, dir: &Path, what: &(String, &'static str, Option<Value>), before: &Live, results: Vec<Result<Written, String>>, watched: &Value) -> Result<(), String> {
     let written = results.into_iter().collect::<Result<Vec<_>, _>>()?;
     let (note, purpose, rule) = what;
     let after = live(ctx).ok_or("The recording ended during the capture.")?;
@@ -638,7 +701,8 @@ fn save(ctx: &Ctx, cfg: &Config, dir: &Path, what: &(String, &'static str, Optio
     let text = serde_json::to_string_pretty(&collection).map_err(|e| e.to_string())?;
     let path = dir.join(COLLECTION);
     fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
-    let diagnostics = crate::diagnostics::build(cfg, &names, &after, &ctx.shared.recent_events());
+    let mut diagnostics = crate::diagnostics::build(cfg, &names, &after, &ctx.shared.recent_events());
+    diagnostics["capture"] = watched.clone();
     let path = dir.join(DIAGNOSTICS);
     fs::write(&path, serde_json::to_string_pretty(&diagnostics).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -673,7 +737,10 @@ fn recording_meta(w: &Written, center_hz: f64, rate_hz: f64, source: Value, note
 }
 
 pub fn root(cfg: &Config) -> PathBuf {
-    PathBuf::from(&cfg.recording.capture_dir).join(FOLDER)
+    match cfg.diagnostics.capture_dir.trim() {
+        "" => PathBuf::from(&cfg.recording.capture_dir).join(FOLDER),
+        own => PathBuf::from(own),
+    }
 }
 
 /// What's in a capture's folder, for the list.
@@ -1039,7 +1106,7 @@ mod tests {
         let path = dir.join("x");
         let at = Instant::now();
         let failed = Arc::new(Mutex::new(None));
-        tap.arm(Job { tx, left: 10, not_before: at, started: false, rate_hz: 1000.0, center_hz: 1e6, clock: (at, 5000.0), failed: failed.clone() });
+        tap.arm(Job { tx, left: 10, not_before: at, started: false, rate_hz: 1000.0, center_hz: 1e6, clock: (at, 5000.0), failed: failed.clone(), activity: Arc::default() });
         let block = |n: usize| Block::U8(pool.copy(&vec![7u8; n * 2]));
         tap.samples(&block(4), 0, at);
         tap.samples(&block(2), 3, at);
@@ -1047,7 +1114,7 @@ mod tests {
         tap.samples(&block(4), 0, at);
         assert!(!tap.armed.load(Ordering::Relaxed), "ten samples' worth: done");
         tap.samples(&block(4), 0, at);
-        let w = write_samples(rx, &path).unwrap();
+        let w = write_samples(rx, &path, &Activity::default()).unwrap();
         assert_eq!((w.samples, w.lost(), w.gaps.clone()), (7, 3, vec![(4, 3)]));
         assert_eq!(w.start_ms, 5000.0 - 4.0, "its first block began before it arrived");
         assert_eq!(fs::metadata(&path).unwrap().len(), 14);
@@ -1056,12 +1123,34 @@ mod tests {
     }
 
     #[test]
+    fn captures_go_where_the_config_says() {
+        let mut cfg = Config::default();
+        cfg.recording.capture_dir = "/recordings".into();
+        assert_eq!(root(&cfg), Path::new("/recordings/iq-captures"));
+        cfg.diagnostics.capture_dir = "  /fast/iq ".into();
+        assert_eq!(root(&cfg), Path::new("/fast/iq"));
+    }
+
+    #[test]
+    fn activity_says_what_happened_since_last_asked() {
+        let a = Activity::default();
+        a.queued();
+        a.queued();
+        a.taken();
+        a.lost.fetch_add(7, Ordering::Relaxed);
+        a.wrote(100, Duration::from_millis(5));
+        a.wrote(50, Duration::from_millis(2));
+        assert_eq!(a.take(), (7, 2, 5.0, 150));
+        assert_eq!(a.take(), (0, 1, 0.0, 0), "still one in the queue");
+    }
+
+    #[test]
     fn a_full_queue_gives_up_without_waiting() {
         let (pool, tap) = (crate::sdr::Pool::<u8>::default(), Tap::default());
         let (tx, _rx) = mpsc::sync_channel(1);
         let at = Instant::now();
         let failed = Arc::new(Mutex::new(None));
-        tap.arm(Job { tx, left: 100, not_before: at, started: false, rate_hz: 1000.0, center_hz: 1e6, clock: (at, 0.0), failed: failed.clone() });
+        tap.arm(Job { tx, left: 100, not_before: at, started: false, rate_hz: 1000.0, center_hz: 1e6, clock: (at, 0.0), failed: failed.clone(), activity: Arc::default() });
         tap.samples(&Block::U8(pool.copy(&[1, 2])), 0, at);
         assert!(!tap.armed.load(Ordering::Relaxed));
         assert!(failed.lock().unwrap().as_ref().unwrap().contains("keep up"));
@@ -1072,14 +1161,14 @@ mod tests {
         let (tx, rx) = mpsc::sync_channel(4);
         let (pool, tap, at) = (crate::sdr::Pool::<u8>::default(), Tap::default(), Instant::now());
         let failed = Arc::new(Mutex::new(None));
-        tap.arm(Job { tx, left: 100, not_before: at, started: false, rate_hz: 1000.0, center_hz: 1e6, clock: (at, 0.0), failed: failed.clone() });
+        tap.arm(Job { tx, left: 100, not_before: at, started: false, rate_hz: 1000.0, center_hz: 1e6, clock: (at, 0.0), failed: failed.clone(), activity: Arc::default() });
         tap.samples(&Block::U8(pool.copy(&[1, 2])), 0, at);
         tap.tuned(1e6, 5);
         assert!(failed.lock().unwrap().is_none());
         tap.tuned(2e6, 0);
         assert!(failed.lock().unwrap().as_ref().unwrap().contains("retuned"));
         assert!(!tap.armed.load(Ordering::Relaxed));
-        let w = write_samples(rx, &temp("retune").join("x")).unwrap();
+        let w = write_samples(rx, &temp("retune").join("x"), &Activity::default()).unwrap();
         assert_eq!(w.lost(), 5);
     }
 

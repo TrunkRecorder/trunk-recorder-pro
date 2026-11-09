@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Choose where captures go** with **Save captures in** on the RF page's capture card (`diagnostics.captureDir`), so a capture can
+  go on a faster disk than the recordings.
+- A capture's `diagnostics.json` now records, second by second, each radio's lost samples beside its write queue and slowest
+  write and what the disk was doing, to help find the cause of drops during a capture.
+
 ## [0.3.4] — 2026-11-08
 
 - **Clearer waterfalls** when reviewing a capture: a stronger colour scale, and channel recordings are scaled to what's inside the
