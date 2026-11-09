@@ -3,7 +3,7 @@ import "./testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToString } from "react-dom/server";
-import { IqCaptureCard, IqCaptureReviewPanel, iqCaptureText, sendText } from "./dash/IqCapture.tsx";
+import { IqCaptureCard, IqCaptureReviewPanel, iqCaptureText, sendText, waterfallColor } from "./dash/IqCapture.tsx";
 import type { IqCapture } from "./protocol.ts";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
@@ -53,6 +53,13 @@ test("A capture says how its sending went", () => {
   assert.equal(sendText({ ...capture, send: { ...send, state: "failed", error: "no answer" } }), "Not sent: no answer");
   assert.match(renderToString(<IqCaptureCard initial={answer} />), /Review and send…/);
   assert.doesNotMatch(renderToString(<IqCaptureCard initial={{ ...answer, canSend: false }} />), /Review and send/, "no service to send to yet");
+});
+
+test("A waterfall runs from black to bright, and a signal is brighter than the noise", () => {
+  assert.deepEqual(waterfallColor(0), [0, 0, 4]);
+  assert.deepEqual(waterfallColor(1), [252, 255, 164]);
+  const sum = (c: number[]) => c.reduce((a, b) => a + b);
+  for (const t of [0.1, 0.3, 0.5, 0.7, 0.9]) assert.ok(sum(waterfallColor(t + 0.05)) > sum(waterfallColor(t)));
 });
 
 test("A capture in words", () => {

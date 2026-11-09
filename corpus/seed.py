@@ -3,7 +3,7 @@
 
 captures/regress.sh gives each scenario on the command line. This writes the same
 scenarios as capture folders in captures/scenarios/<id>/, with the decoding settings
-in their metadata, then adds them to corpus/corpus.json:
+in their metadata, then adds them to a local manifest, captures/corpus.json:
 
     corpus/seed.py [--bin target/release/trunk-pro]
 
@@ -147,7 +147,7 @@ def main():
     args = parser.parse_args()
     for scenario, (protocol, description, sources, settings) in SCENARIOS.items():
         folder = write_scenario(scenario, description, sources, settings)
-        subprocess.run([args.bin, "tool", "corpus", "add", str(folder), "--id", scenario, "--protocol", protocol], cwd=ROOT, check=True)
+        subprocess.run([args.bin, "tool", "corpus", "add", str(folder), "--manifest", str(CAPTURES / "corpus.json"), "--id", scenario, "--protocol", protocol], cwd=ROOT, check=True)
         print(f"{scenario}: {folder}")
     cut = {}
     for tape, scenario, tier, protocol, kind in TAPES:
@@ -156,7 +156,7 @@ def main():
         folder = CAPTURES / "scenarios" / tape
         shutil.rmtree(folder, ignore_errors=True)
         shutil.copytree(pick(cut[scenario], tier, kind, args.bin), folder)
-        subprocess.run([args.bin, "tool", "corpus", "add", str(folder), "--id", tape, "--tier", tier, "--protocol", protocol], cwd=ROOT, check=True)
+        subprocess.run([args.bin, "tool", "corpus", "add", str(folder), "--manifest", str(CAPTURES / "corpus.json"), "--id", tape, "--tier", tier, "--protocol", protocol], cwd=ROOT, check=True)
         print(f"{tape}: {folder}")
     for scenario in cut:
         shutil.rmtree(CAPTURES / "scenarios" / f".tapes-{scenario}", ignore_errors=True)

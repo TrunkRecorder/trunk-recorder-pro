@@ -1,7 +1,7 @@
 # The regression corpus
 
-`corpus.json` lists the recordings regression tests run on, each file by its SHA-256.
-See [the plan](../research/iq-corpus.md).
+The recordings regression tests run on are listed at [trunkrecorder.pro/corpus](https://trunkrecorder.pro/corpus), each file by
+its SHA-256. See [the plan](../research/iq-corpus.md).
 
 ```bash
 cargo build --release -p trunk-pro
@@ -28,15 +28,14 @@ target/release/trunk-pro tool corpus run --out /tmp/after --bless next
 The diff shows how much moved, and a release makes it that version's with
 `trunk-pro tool corpus release <version>`.
 
-## Promoting a contributed recording
+## Adding a recording to the tests
 
-Anyone can browse what's been contributed at `trunkrecorder.pro/corpus`. To make one a test, someone with write access
-to this repo runs the **corpus-promote** workflow with its ID. It decodes the capture with the latest release and opens
-a pull request adding it and its first expected output; merging that makes it a test. **corpus-remove** takes a recording
-down.
+Anyone can browse what's been contributed at [trunkrecorder.pro/corpus](https://trunkrecorder.pro/corpus). To add one, or take one
+off, sign in there with GitHub: you need write access to this repo. A new test compares against what the release that checked it
+decoded, until a pull request records its expected output here with `--bless`.
 
 ## Seeding
 
 `seed.py` writes the scenarios of `captures/regress.sh` as SigMF capture folders, with their decoding
-settings in the metadata, and adds them to the manifest. `tool corpus run` lays its output out as
+settings in the metadata, and adds them to a local manifest. `tool corpus run` lays its output out as
 `regress.sh` does, so `captures/compare.sh` compares the two.

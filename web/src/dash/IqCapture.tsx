@@ -111,6 +111,23 @@ export function sendText(c: IqCapture): string {
   return `Not sent: ${s.error ?? "it failed"}`;
 }
 
+// Black through purple and orange to white, so a signal stands out from the noise around it.
+const STOPS = [
+  [0, 0, 0, 4],
+  [0.25, 87, 16, 110],
+  [0.5, 188, 55, 84],
+  [0.75, 249, 142, 9],
+  [1, 252, 255, 164],
+];
+
+/** The colour of level `t`, 0 to 1. */
+export function waterfallColor(t: number): number[] {
+  let i = 0;
+  while (i < STOPS.length - 2 && t > STOPS[i + 1][0]) i++;
+  const [a, b] = [STOPS[i], STOPS[i + 1]];
+  return [1, 2, 3].map((k) => a[k] + ((b[k] - a[k]) * (t - a[0])) / (b[0] - a[0]));
+}
+
 /** A waterfall's levels drawn on a canvas. */
 function WaterfallImage({ w }: { w: IqWaterfall }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -119,8 +136,8 @@ function WaterfallImage({ w }: { w: IqWaterfall }) {
     if (!ctx) return;
     const image = ctx.createImageData(w.width, w.height);
     for (let i = 0; i < w.width * w.height; i++) {
-      const v = parseInt(w.levels.slice(i * 2, i * 2 + 2), 16);
-      image.data.set([v * 0.3, v * 0.7, v, 255], i * 4);
+      const [r, g, b] = waterfallColor(parseInt(w.levels.slice(i * 2, i * 2 + 2), 16) / 255);
+      image.data.set([r, g, b, 255], i * 4);
     }
     ctx.putImageData(image, 0, 0);
   }, [w]);
