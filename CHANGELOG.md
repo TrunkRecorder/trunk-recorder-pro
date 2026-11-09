@@ -5,6 +5,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Plugins were never told some multi-site calls ended.** With Conversations off, or when a call reached its maximum length, a call carried on from another site's copy kept that copy's mark. Plugins saw it start but not end, so MQTT's `calls_active` grew until a restart. Recordings weren't affected.
 - **Choose where captures go** with **Save captures in** on the RF page's capture card (`diagnostics.captureDir`), so a capture can
   go on a faster disk than the recordings.
 - A capture's `diagnostics.json` now records, second by second, each radio's lost samples beside its write queue and slowest

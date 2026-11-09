@@ -3211,6 +3211,42 @@ mod tests {
         assert_eq!((e.wall_epoch_at(-1.0), e.wall_epoch_at(0.0), e.wall_epoch_at(99.0)), (1000.0, 1500.0, 1500.0));
     }
 
+    /// The copy on a second site carries on as a new call, with no copy going elsewhere by then: it's
+    /// a call of its own, so whoever was told it started is told it ended.
+    #[test]
+    fn a_call_carried_on_from_a_copy_is_told_as_it_ended_too() {
+        let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], ..Default::default() };
+        let calls = CallConfig { max_call_s: 5.0, ..Default::default() };
+        let cfg = EngineConfig {
+            systems: vec![SystemConfig { calls, ..SystemConfig::trunked("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6)]) }],
+            sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            ..Default::default()
+        };
+        let mut e = Core::new(cfg).unwrap();
+        let grant = |t: f64, f: u64| Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: f, ..Default::default() };
+        handle(&mut e, 0, &[grant(0.0, 851_500_000)]);
+        handle(&mut e, 1, &[grant(0.4, 851_600_000)]);
+        e.emit_call_events();
+        let first = e.trunks[1].calls.calls[0].id;
+        assert!(e.trunks[1].calls.calls[0].twin, "a copy of east's");
+        // East's copy ends; west's goes on until it's too long, and carries on as a new call.
+        handle(&mut e, 1, &[grant(2.5, 851_600_000)]);
+        tick(&mut e, 0, 3.5);
+        e.emit_call_events();
+        assert!(e.trunks[0].calls.calls.is_empty());
+        handle(&mut e, 1, &[grant(5.0, 851_600_000)]);
+        tick(&mut e, 1, 5.5);
+        e.emit_call_events();
+        let next = e.trunks[1].calls.calls[0].id;
+        assert_ne!(next, first);
+        let ev = e.drain_events();
+        assert!(ev.iter().any(|x| matches!(x, Event::CallStart(c) if c.id == next && !c.twin)), "told it started");
+        tick(&mut e, 1, 20.0);
+        e.emit_call_events();
+        let ev = e.drain_events();
+        assert!(ev.iter().any(|x| matches!(x, Event::CallEnd(c) if c.id == next && !c.twin)), "so told it ended");
+    }
+
     #[test]
     fn a_call_heard_on_two_sites_is_saved_once() {
         let (ev, [east, west, far]) = two_sites(80, "", true);
