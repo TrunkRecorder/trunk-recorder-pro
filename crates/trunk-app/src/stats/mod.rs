@@ -460,8 +460,8 @@ impl Stats {
 
     /// The air time of the calls in progress since the last tick.
     fn count_air(&mut self, engine: &Engine, site_names: &dyn Fn(u16, Option<u16>) -> (String, String)) {
-        let calls = engine.active_calls().into_iter().filter(|c| !c.twin);
-        let on = calls.map(|c| (c.id, system_key(&site_names(c.system, c.site).0), ((c.last_update_s - c.start_s).max(0.0) * 1000.0) as u64));
+        let calls = engine.calls_in_progress();
+        let on = calls.into_iter().map(|c| (c.id, system_key(&site_names(c.system, c.site).0), ((c.last_update_s - c.start_s).max(0.0) * 1000.0) as u64));
         for (sys, ms) in air_since(&mut self.air, on) {
             self.add_air(&sys, ms);
         }

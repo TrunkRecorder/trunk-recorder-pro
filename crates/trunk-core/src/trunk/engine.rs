@@ -330,9 +330,15 @@ pub enum Event {
     /// for what a control channel did): news (a colour code, a channel
     /// learned) or, as a warning, something wrong.
     Note { system: u16, site: Option<u16>, level: NoteLevel, text: String },
+    /// A call began, changed or ended: once, however many sites it's heard
+    /// on ([`MultiSite`]): from its first copy's start to its last one's end,
+    /// under the first's id.
     CallStart(Call),
     CallUpdate(Call),
     CallEnd(Call),
+    /// One site's copy of a call began or ended (for the log, a voice channel's use).
+    CopyStart(Call),
+    CopyEnd(Call),
     /// Live audio for a recording call.
     /// `decrypted`: the call is encrypted on the air, so this audio is of a cipher we hold the key for.
     Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32>, decrypted: bool },
@@ -1757,9 +1763,14 @@ impl Core {
         }
     }
 
-    /// Calls in progress (recording or monitoring), trunked then conventional.
+    /// Calls in progress (recording or monitoring), each site's copy, trunked then conventional.
     pub fn active_calls(&self) -> Vec<Call> {
         self.trunks.iter().flat_map(|t| t.calls.calls.iter()).chain(self.conv.calls()).cloned().collect()
+    }
+
+    /// Calls in progress, one each however many sites they're heard on, as told.
+    pub fn calls_in_progress(&self) -> Vec<Call> {
+        self.multisite.calls(&self.active_calls())
     }
 
     /// Everything that happened since the last call.
@@ -1977,6 +1988,7 @@ impl Core {
     fn emit_conv(&mut self, mut out: Vec<ConvOut>) {
         for o in out.drain(..) {
             match o {
+                ConvOut::Call(e) => self.call_event(e),
                 ConvOut::Event(e) => self.events.push(e),
                 ConvOut::End { call, rec, on, tune_ref } => {
                     // (A call not recorded — an ignored talkgroup, say — took in no audio: nothing to save, nothing to score.)
@@ -1986,7 +1998,9 @@ impl Core {
                         }
                         self.write_call(Held { call: call.clone(), rec, on }, None);
                     }
-                    self.events.push(Event::CallEnd(call));
+                    let (_, told) = self.multisite.conclude(&call, None, |_| false);
+                    self.events.push(Event::CopyEnd(call));
+                    self.events.extend(told);
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
                 ConvOut::Patterns { call, heard, decrypted, now_s } => self.tone_patterns(&call, heard, decrypted, now_s),
@@ -2195,38 +2209,31 @@ impl Core {
 
     fn emit_call_events(&mut self) {
         for ev in std::mem::take(&mut self.call_events) {
-            match ev {
-                CallEvent::Start(mut c) => {
-                    c.twin = self.link_twins(&c);
-                    self.events.push(Event::CallStart(c));
-                }
-                CallEvent::Update(c) => {
-                    // The control channel said it's encrypted: its transmission then is, as its voice's link control would say.
-                    if let Some(r) = self.radio.recordings.get_mut(&c.id).filter(|_| c.encrypted) {
-                        r.rec.tx.mark_encrypted(c.heard_s);
-                    }
-                    self.events.push(Event::CallUpdate(c));
-                }
-                CallEvent::End(c) => {
-                    self.conclude(&c);
-                    self.events.push(Event::CallEnd(c));
-                }
-            }
+            self.call_event(ev);
         }
     }
 
-    /// Multi-site: link a call just granted with its copies on the other
-    /// sites of its system. True: it is a copy of one already going (marked
-    /// [`Call::twin`]).
-    fn link_twins(&mut self, c: &Call) -> bool {
-        let Some(site) = c.site.filter(|_| self.drop_duplicates) else { return false };
-        let others = self.trunks.iter().filter(|t| t.system == c.system && t.site != site).map(|t| t.calls.calls.as_slice());
-        self.multisite.link_new(c, site, others);
-        let twin = !self.multisite.twins(c.id).is_empty();
-        if let Some(own) = self.trunks.get_mut(site as usize).and_then(|t| t.calls.call_mut(c.id)).filter(|_| twin) {
-            own.twin = true;
+    /// What a copy did, and what that tells of its call.
+    fn call_event(&mut self, ev: CallEvent) {
+        match ev {
+            CallEvent::Start(c) => {
+                let told = self.multisite.start(&c, self.drop_duplicates && c.site.is_some());
+                self.events.push(Event::CopyStart(c));
+                self.events.extend(told);
+            }
+            CallEvent::Update(c) => {
+                // The control channel said it's encrypted: its transmission then is, as its voice's link control would say.
+                if let Some(r) = self.radio.recordings.get_mut(&c.id).filter(|_| c.encrypted) {
+                    r.rec.tx.mark_encrypted(c.heard_s);
+                }
+                self.events.extend(self.multisite.update(&c));
+            }
+            CallEvent::End(c) => {
+                let told = self.conclude(&c);
+                self.events.push(Event::CopyEnd(c));
+                self.events.extend(told);
+            }
         }
-        twin
     }
 
     /// The other sites' copies of call `id` still going or held, as (call, site).
@@ -2246,8 +2253,8 @@ impl Core {
         }
     }
 
-    /// A call ended: save it, or (multi-site) the best of its copies once the last one ends.
-    fn conclude(&mut self, call: &Call) {
+    /// A call ended: save it, or (multi-site) the best of its copies once the last one ends. What that tells.
+    fn conclude(&mut self, call: &Call) -> Option<Event> {
         let mut rest = Vec::new();
         let held = self.radio.recordings.remove(&call.id).map(|mut r| {
             // What it ended on: news now, before the call is trimmed.
@@ -2276,7 +2283,7 @@ impl Core {
             let system_site = systems.get(c.system as usize).map_or("", |s| s.cfg.preferred_site.as_str());
             c.site.and_then(|s| trunks.get(s as usize)).is_some_and(|t| t.preferred_for(c.talkgroup_info.as_ref(), system_site))
         };
-        let Some(copies) = self.multisite.conclude(call.id, held, prefers) else { return };
+        let (copies, told) = self.multisite.conclude(call, held, prefers);
         // Best first, each saved unless one saved holds it (Kept::holds); those are its duplicates.
         // (None kept: each was reported not saved.) The copies share the first's start, in their transmission_id.
         let first_s = copies.iter().map(|h| h.call.start_s).fold(f64::INFINITY, f64::min);
@@ -2292,6 +2299,7 @@ impl Core {
                 }
             }
         }
+        told
     }
 
     /// A finished call's record and audio, as [`Event::Concluded`]; false
@@ -2418,6 +2426,11 @@ impl Engine {
     /// Calls in progress (recording or monitoring), trunked then conventional.
     pub fn active_calls(&self) -> Vec<Call> {
         self.core().active_calls()
+    }
+
+    /// Calls in progress, one each however many sites they're heard on, as told.
+    pub fn calls_in_progress(&self) -> Vec<Call> {
+        self.core().calls_in_progress()
     }
     /// Everything that happened since the last call.
     pub fn drain_events(&self) -> Vec<Event> {
@@ -3104,6 +3117,123 @@ mod tests {
         }
     }
 
+    fn three_sites(conversation: bool) -> Core {
+        let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], ..Default::default() };
+        let mut sys = SystemConfig { save: SaveRules { normalize: false, ..Default::default() }, ..SystemConfig::trunked("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6), site("south", 851.4125e6)]) };
+        sys.calls.conversation = conversation;
+        let cfg = EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() };
+        Core::new(cfg).unwrap()
+    }
+
+    fn granted(t: f64, f: u64) -> Message {
+        Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: f, ..Default::default() }
+    }
+
+    #[test]
+    fn grants_reaching_two_sites_in_one_block_are_one_call() {
+        let mut e = three_sites(true);
+        handle(&mut e, 0, &[granted(0.0, 851_500_000)]);
+        handle(&mut e, 1, &[granted(0.0, 851_600_000)]);
+        e.emit_call_events();
+        let ev = e.drain_events();
+        assert_eq!(ev.iter().filter(|x| matches!(x, Event::CallStart(_))).count(), 1);
+        assert_eq!(ev.iter().filter(|x| matches!(x, Event::CopyStart(_))).count(), 2);
+    }
+
+    #[test]
+    fn a_call_ends_when_its_last_copy_does() {
+        let mut e = three_sites(true);
+        handle(&mut e, 0, &[granted(0.0, 851_500_000)]);
+        handle(&mut e, 1, &[granted(0.4, 851_600_000)]);
+        e.emit_call_events();
+        e.drain_events();
+        handle(&mut e, 1, &[granted(2.5, 851_600_000)]);
+        tick(&mut e, 0, 3.5);
+        e.emit_call_events();
+        assert_eq!(e.calls_in_progress().len(), 1, "west's copy goes on");
+        assert!(!e.drain_events().iter().any(|x| matches!(x, Event::CallEnd(_))));
+        tick(&mut e, 1, 20.0);
+        e.emit_call_events();
+        assert!(e.drain_events().iter().any(|x| matches!(x, Event::CallEnd(_))));
+        assert!(e.calls_in_progress().is_empty());
+    }
+
+    #[test]
+    fn a_call_is_told_as_recorded_when_only_a_later_copy_is() {
+        let mut e = three_sites(true);
+        handle(&mut e, 0, &[granted(0.0, 870_000_000)]);
+        e.emit_call_events();
+        let ev = e.drain_events();
+        assert!(ev.iter().any(|x| matches!(x, Event::CallStart(c) if !c.recording)), "no radio reaches east's channel");
+        handle(&mut e, 1, &[granted(0.4, 851_600_000)]);
+        e.emit_call_events();
+        let ev = e.drain_events();
+        assert!(ev.iter().any(|x| matches!(x, Event::CallUpdate(c) if c.recording && c.reason.is_none())), "west records it");
+    }
+
+    /// Whatever order copies fall out in: every call told begins once and
+    /// ends once, nothing is told of a call outside that, and nothing's left.
+    #[test]
+    fn every_call_told_begins_and_ends_once_however_its_copies_fall_out() {
+        use super::super::frames::{Codec, VoiceFrame};
+        use std::collections::HashMap;
+        for seed in 1..=300u64 {
+            let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let mut rnd = move |n: u64| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x % n
+            };
+            let mut e = three_sites(seed % 2 == 0);
+            let (mut told, mut copies): (HashMap<CallId, u8>, HashMap<CallId, u8>) = Default::default();
+            let mut check = |ev: Vec<Event>| {
+                for x in ev {
+                    match x {
+                        Event::CallStart(c) => assert!(told.insert(c.id, 1).is_none(), "seed {seed}: begun twice"),
+                        Event::CallUpdate(c) => assert_eq!(told.get(&c.id), Some(&1), "seed {seed}: news of a call not going"),
+                        Event::CallEnd(c) => assert_eq!(told.insert(c.id, 2), Some(1), "seed {seed}: ended, not going"),
+                        Event::CopyStart(c) => assert!(copies.insert(c.id, 1).is_none(), "seed {seed}"),
+                        Event::CopyEnd(c) => assert_eq!(copies.insert(c.id, 2), Some(1), "seed {seed}"),
+                        _ => {}
+                    }
+                }
+            };
+            let mut t = 0.0;
+            for _ in 0..250 {
+                t += rnd(50) as f64 / 100.0;
+                let i = rnd(3) as usize;
+                match rnd(10) {
+                    0..=3 => {
+                        let f = 851_500_000 + rnd(4) * 100_000 * (i as u64 + 1);
+                        let m = Message { talkgroup: 101 + rnd(2) as u32, source: 1 + rnd(3) as i64, emergency: rnd(5) == 0, ..granted(t, f) };
+                        handle(&mut e, i, &[m]);
+                    }
+                    4..=5 => tick(&mut e, i, t),
+                    6..=7 => {
+                        if let Some(id) = e.trunks[i].calls.calls.first().map(|c| c.id) {
+                            let frame = VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: mbe::Kind::Voice, tone: None };
+                            e.trunks[i].now_s = t;
+                            e.radio.pending.push((i as u16, id, TrackerOut::Audio(vec![0.1; mbe::FRAME_SAMPLES], frame)));
+                            e.apply_pending();
+                        }
+                    }
+                    _ => {
+                        e.emit_call_events();
+                        check(e.drain_events());
+                    }
+                }
+            }
+            for i in 0..3 {
+                tick(&mut e, i, t + 100.0);
+            }
+            e.emit_call_events();
+            check(e.drain_events());
+            assert!(e.multisite.is_empty(), "seed {seed}: left behind");
+            assert!(told.values().all(|&s| s == 2) && copies.values().all(|&s| s == 2), "seed {seed}: never ended");
+        }
+    }
+
     /// Voice on site `i`'s call on `f`, at `t`, and the call events it makes.
     fn voice_at(e: &mut Core, i: usize, f: u64, t: f64) {
         use super::super::frames::{Codec, VoiceFrame};
@@ -3229,7 +3359,7 @@ mod tests {
         handle(&mut e, 1, &[grant(0.4, 851_600_000)]);
         e.emit_call_events();
         let first = e.trunks[1].calls.calls[0].id;
-        assert!(e.trunks[1].calls.calls[0].twin, "a copy of east's");
+        assert_eq!(e.twins(first).len(), 1, "a copy of east's");
         // East's copy ends; west's goes on until it's too long, and carries on as a new call.
         handle(&mut e, 1, &[grant(2.5, 851_600_000)]);
         tick(&mut e, 0, 3.5);
@@ -3241,11 +3371,11 @@ mod tests {
         let next = e.trunks[1].calls.calls[0].id;
         assert_ne!(next, first);
         let ev = e.drain_events();
-        assert!(ev.iter().any(|x| matches!(x, Event::CallStart(c) if c.id == next && !c.twin)), "told it started");
+        assert!(ev.iter().any(|x| matches!(x, Event::CallStart(c) if c.id == next)), "told it started");
         tick(&mut e, 1, 20.0);
         e.emit_call_events();
         let ev = e.drain_events();
-        assert!(ev.iter().any(|x| matches!(x, Event::CallEnd(c) if c.id == next && !c.twin)), "so told it ended");
+        assert!(ev.iter().any(|x| matches!(x, Event::CallEnd(c) if c.id == next)), "so told it ended");
     }
 
     #[test]

@@ -54,7 +54,7 @@ use std::sync::Arc;
 
 use num_complex::Complex32;
 
-use super::calls::{Call, CallConfig, CallIds, CallManager, CallSource, Flags, Policy, Voice};
+use super::calls::{Call, CallConfig, CallEvent, CallIds, CallManager, CallSource, CarriesOn, Flags, Policy, Voice};
 use super::engine::{Event, Pins, SystemConfig, Tuning};
 use super::inband::InBandSpec;
 use super::record::RecordedOn;
@@ -428,8 +428,9 @@ impl Default for ConvConfig {
 /// What the conventional channels did: the engine's events as they are,
 /// and what the engine itself acts on.
 pub enum ConvOut {
-    /// A call started or changed, its audio, a radio's position, a
-    /// transmission no row took ([`Event::ConvSkipped`]).
+    /// A call started or changed.
+    Call(CallEvent),
+    /// Its audio, a radio's position, a transmission no row took ([`Event::ConvSkipped`]).
     Event(Event),
     /// A call is over: the engine saves it. `recorder_num`: the index of the
     /// channel (frequency) it came on.
@@ -1187,21 +1188,21 @@ impl Conventional {
             let ota = l.call.talkgroup_ota;
             let new_tg = ota.is_some() && air_tg.is_some_and(|t| Some(t) != ota);
             let new_row = l.row != r && (ch.mode.analog() || air_tg.is_some());
-            let carry_on = if rules.calls.too_long(&l.call, now_s) {
+            let carry_on: Option<(Vec<CallSource>, CarriesOn)> = if rules.calls.too_long(&l.call, now_s) {
                 let talking = l.call.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() });
-                Some(talking.into_iter().collect())
+                Some((talking.into_iter().collect(), CarriesOn::TooLong))
             } else {
-                rules.calls.new_transmission(&l.call, from_s).map(|i| l.call.sources.split_off(i))
+                rules.calls.new_transmission(&l.call, from_s).map(|i| (l.call.sources.split_off(i), CarriesOn::NewTransmission))
             };
             if new_tg || new_row || carry_on.is_some() {
                 let l = o.live[slot].take().unwrap();
-                let next = carry_on.filter(|_| !(new_tg || new_row)).map(|talking| {
-                    let call = Call { recording: l.call.recording, reason: l.call.reason, ..l.call.continued(ids.next(), from_s, talking) };
+                let next = carry_on.filter(|_| !(new_tg || new_row)).map(|(talking, how)| {
+                    let call = Call { recording: l.call.recording, reason: l.call.reason, ..l.call.continued(ids.next(), from_s, talking, how) };
                     Live { rec: Recorded::new(rules.capture_frames, spec), call, row: l.row }
                 });
                 Self::end(l, on, tune, out);
                 if let Some(n) = next {
-                    out.push(ConvOut::Event(Event::CallStart(n.call.clone())));
+                    out.push(ConvOut::Call(CallEvent::Start(n.call.clone())));
                     o.live[slot] = Some(n);
                 }
             } else if air_tg.is_some() && ota.is_none() {
@@ -1211,7 +1212,7 @@ impl Conventional {
                     l.call.talkgroup = tg;
                     l.call.talkgroup_info = info;
                 }
-                out.push(ConvOut::Event(Event::CallUpdate(l.call.clone())));
+                out.push(ConvOut::Call(CallEvent::Update(l.call.clone())));
             }
         }
         if o.live[slot].is_none() {
@@ -1219,7 +1220,6 @@ impl Conventional {
             let mut call = Call {
                 site: None,
                 system: ch.system as u16,
-                twin: false,
                 id: ids.next(),
                 talkgroup: tg,
                 talkgroup_ota: air_tg,
@@ -1255,7 +1255,7 @@ impl Conventional {
             // Recorded as a trunked call is: not an ignored talkgroup, nor (asked so) an unknown or encrypted one.
             call.reason = rules.calls.gate(&call, rules.policy());
             call.recording = call.reason.is_none();
-            out.push(ConvOut::Event(Event::CallStart(call.clone())));
+            out.push(ConvOut::Call(CallEvent::Start(call.clone())));
             o.live[slot] = Some(Live { call, rec: Recorded::new(rules.capture_frames, spec), row: r });
         }
         let l = o.live[slot].as_mut().unwrap();
@@ -1302,7 +1302,7 @@ impl Conventional {
             patterns = news.patterns;
         }
         if changed {
-            out.push(ConvOut::Event(Event::CallUpdate(l.call.clone())));
+            out.push(ConvOut::Call(CallEvent::Update(l.call.clone())));
         }
         Self::patterns_out(l, patterns, now_s, out);
         // (An encrypted transmission's audio, unless decrypted, is left out

@@ -1230,9 +1230,9 @@ impl Session {
                 self.records.push(Record::text(Level::Info, Some(&self.site_label(call.system, call.site)), text.clone()));
                 self.log.push(json!({ "timeS": call.start_s, "kind": "duplicate", "text": text, "system": self.system_name(call.system), "site": also_at }));
             }
-            Event::CallStart(c) => {
+            Event::CopyStart(c) => {
                 let short = self.system_name(c.system).to_string();
-                self.share.call(&short, &c);
+                self.share.copy(&short, &c);
                 let r = match c.reason {
                     _ if c.recording => {
                         use trunk_core::trunk::Voice;
@@ -1259,8 +1259,12 @@ impl Session {
                     None => self.call_record(Level::Debug, &c, Body::Text("Following (not recorded)".into())),
                 };
                 self.records.push(r);
-                // (A call heard on several sites is one call: told by its first copy.)
-                if self.plugin_topics.calls && !c.twin {
+            }
+            Event::CopyEnd(_) => {}
+            Event::CallStart(c) => {
+                let short = self.system_name(c.system).to_string();
+                self.share.call(&short, c.talkgroup);
+                if self.plugin_topics.calls {
                     out.push(Output::Plugin(HostMessage::CallStart(self.call_info(&c))));
                 }
             }
@@ -1276,25 +1280,22 @@ impl Session {
                 self.records.push(r);
             }
             Event::CallEnd(c) => {
-                if self.plugin_topics.calls && !c.twin {
+                if self.plugin_topics.calls {
                     out.push(Output::Plugin(HostMessage::CallEnd(self.call_info(&c))));
                 }
             }
-            // (A call heard on several sites: told of by its first copy, as its start and end are.)
             Event::CallUpdate(c) => {
-                if self.plugin_topics.call_updates && !c.twin {
+                if self.plugin_topics.call_updates {
                     out.push(Output::Plugin(HostMessage::CallUpdate(self.call_info(&c))));
                 }
             }
         }
     }
 
-    /// The system an event is counted for in the stats (a call heard on
-    /// several sites: by its first copy).
+    /// The system an event is counted for in the stats.
     fn event_system(&self, ev: &Event) -> Option<u16> {
         match ev {
             Event::Message { site, .. } => Some(self.system_of(*site)),
-            Event::CallStart(c) | Event::CallEnd(c) if c.twin => None,
             Event::CallStart(c) | Event::CallEnd(c) | Event::NotSaved(c) => Some(c.system),
             Event::Concluded(k) => Some(k.call.system),
             Event::Duplicate { call, .. } => Some(call.system),
@@ -1706,6 +1707,5 @@ mod plugin_tests {
         let got = updates(&mut s, &call);
         assert_eq!(got.len(), 1);
         assert_eq!((got[0].talkgroup, got[0].sources.iter().map(|x| x.unit).collect::<Vec<_>>()), (1001, vec![1234567]));
-        assert!(updates(&mut s, &trunk_core::trunk::Call { twin: true, ..call }).is_empty(), "a second site's copy");
     }
 }

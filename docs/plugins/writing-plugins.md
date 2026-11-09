@@ -106,7 +106,10 @@ being recorded first, then the conventional ones (there is no `CONVENTIONAL` ind
 system's `kind` in `hello` (`p25`, `smartnet`, `dmr`, `nxdn`, `edacs` or `conventional`) says which it is. Calls and unit events also carry `site`,
 the name of the site they were heard on (a system of one site: its short name), and `status` has an
 entry per site, with its `site_name`. A call heard on several sites of a system is one call: one
-`call.start` and one `call.end` (from its first copy), and one `call.concluded`, for the copy kept.
+`call.start` when its first copy begins and one `call.end` when its last copy ends, under the first copy's `id`. Its `site` and
+`freq_hz` are those of the copy speaking for it (one being recorded, if any is), and a `call.update` says when that changes.
+`call.concluded` is for the copy kept, and it and live audio carry that site's own call id. A plugin too far behind can lose
+other events, but not a call's start or end.
 
 ### What a plugin sends back
 

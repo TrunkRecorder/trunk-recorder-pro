@@ -341,7 +341,8 @@ noise floor from the silence or open on it.
 | Event | Meaning |
 |---|---|
 | `ControlChannel`, `Message`, `Note` | Control-channel activity (by site) and log-worthy notes (by system, and site) |
-| `CallStart`, `CallUpdate`, `CallEnd` | Call lifecycle (`Call`, `calls.rs`) |
+| `CallStart`, `CallUpdate`, `CallEnd` | A call's lifecycle, once however many sites heard it (`MultiSite`) |
+| `CopyStart`, `CopyEnd` | One site's copy of a call beginning or ending |
 | `Audio` | Live audio for a call, 8 kHz f32 (one site at a time per multi-site talkgroup) |
 | `Concluded` | A saved call: `Call`, its record (`CallRecord`), short name, site, base name, 8 kHz audio, optional frame capture |
 | `NotSaved`, `Duplicate` | A call that wasn't saved, and why (too short / silent, or another site's copy kept) |

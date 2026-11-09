@@ -729,9 +729,12 @@ removed and its number returned to `free_nums`.
 `trunk/multisite.rs`. Sites are twins when they are sites of one system (one `SystemConfig`'s
 `sites`); nothing is grouped from what the control channels announce. A call that starts on a twin
 site with the same talkgroup (or, unit to unit, the same radio called) within 3 s
-(`Span::starts_with`) is linked into one conversation, from the first grant (`Call::twin` marks
-the later copies). A conversation has one copy from each site (`MultiSite::link`), so copies never
-chain one into the next. **Every copy is recorded.** Live audio comes from one site per talkgroup until it has
+(`Span::starts_with`) is linked into one conversation, from the first grant, against the copies
+`MultiSite` already has. A conversation has one copy from each site (`Conversation::takes`), so copies never
+chain one into the next. Every call goes through `MultiSite`, which alone tells it to the world:
+`CallStart` when the first copy begins, `CallEnd` when the last ends, `CallUpdate` when what's told changes, all
+under the first copy's id and as one view of its copies (`Conversation::view`). `CopyStart` / `CopyEnd`
+are each site's own, for the log and voice channel counts. **Every copy is recorded.** Live audio comes from one site per talkgroup until it has
 been quiet 0.5 s, whether or not the sites' calls are linked. When the last copy ends, they're tried best first: the talkgroup's preferred site
 if its clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC
 errors, then earliest start. Each is saved unless one saved holds it (`Kept::holds`: another site,
@@ -1035,7 +1038,6 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 | `id` | `CallId` (u32) | one sequence for all systems |
 | `site` | `Option<u16>` | engine site index; none for a conventional call |
 | `system` | u16 | engine system index (trunked, then conventional) |
-| `twin` | bool | multi-site: a copy of a call another site of its system had first |
 | `talkgroup` | u32 | |
 | `freq_hz` | u64 | |
 | `voice` | `Voice` | what its voice is on |
@@ -1180,7 +1182,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78.
 | `type` | Payload fields |
 |---|---|
 | `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, name, fcc (by frequency), fcc_call_sign / fcc_name (the one that names it), sites: [SiteInfo { name }], config, settings }]` (name, FCC fields and sites left out when empty), `capture_dir`, `data_dir`, `store?` (the call store's absolute path, left out when the store didn't open; open it read-only, WAL, read `schema_version` first, never write; remote plugins use the HTTP API), `audio_formats` |
-| `call.start`, `call.end` | once per call, from its first copy: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_ota, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
+| `call.start`, `call.end` | once per call, from its first copy's start to its last copy's end; never dropped for a plugin behind: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_ota, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
 | `unit` | `system`, `short_name`, `site`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |
 | `audio` | `call_id`, `system`, `short_name`, `talkgroup`, `sample_rate`, `pcm` (base64 i16 LE) |
