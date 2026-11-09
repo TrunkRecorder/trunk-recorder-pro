@@ -665,7 +665,8 @@ fn describe(c: &Comparison) -> String {
         (c.good_frames_gained, "good frames gained"),
         (c.changed_calls, "calls with other bits"),
     ];
-    parts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}")).collect::<Vec<_>>().join(", ")
+    let singular = |what: &str| what.replacen("messages", "message", 1).replacen("calls", "call", 1).replacen("frames", "frame", 1);
+    parts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| if *n == 1 { format!("1 {}", singular(what)) } else { format!("{n} {what}") }).collect::<Vec<_>>().join(", ")
 }
 
 fn by_type(counts: &BTreeMap<String, u64>) -> String {
@@ -1067,6 +1068,7 @@ mod tests {
         let row = |id: &str, result, comparison| Row { id: id.into(), tier: "wideband".into(), result, against: "0.3.2".into(), comparison };
         let md = markdown(&[row("fine", "match", Some(Comparison::default())), row("bad", "regressed", Some(c))], "1.0.0", Path::new("/tmp/o"));
         assert!(md.contains("2 captures: 1 regressed, 1 match"), "{md}");
+        assert!(md.contains("1 call missing") && !md.contains("1 calls"), "{md}");
         assert!(md.find("| bad |").unwrap() < md.find("| fine |").unwrap(), "what needs looking at comes first");
         assert!(md.contains("## bad: regressed") && !md.contains("## fine") && md.contains("--bless next"), "{md}");
     }
