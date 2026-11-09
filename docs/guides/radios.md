@@ -325,8 +325,8 @@ the interface. See [Command line](../command-line.md).
 ## bladeRF: the FPGA filter bank
 
 A bladeRF 2.0 micro (xA4 or xA5) can channelize in its FPGA and send only the channels in use, instead of the whole
-band: set a source's `fpgaChannelizer` to the path of an image built from `fpga/` in this repository (see
-`fpga/bladerf/apply.sh`). The image is loaded into the FPGA's RAM each time the radio opens. The flash is never written.
+band: set **FPGA channelizer image** on the source in Setup (`fpgaChannelizer` in the config) to the path of an image
+built from `fpga/` in this repository (see `fpga/bladerf/apply.sh`). The image is loaded into the FPGA's RAM each time the radio opens. The flash is never written.
 
 Limits:
 

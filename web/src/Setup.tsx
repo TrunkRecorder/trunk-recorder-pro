@@ -1240,6 +1240,16 @@ export function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFre
             <DraftInput className="mono" codec={mhz} value={src.bandwidthHz} placeholder={formatMhz(src.rateHz, 2)} aria-label="Filter bandwidth, MHz" onChange={(hz) => edit((x) => x.type === "bladerf" && void (x.bandwidthHz = hz))} />
           </Field>
         )}
+        {src.type === "bladerf" && (
+          <Field
+            label="FPGA channelizer image"
+            hint="Path on this computer to a filter bank .rbf for this board, loaded into the FPGA's RAM (never flash). Not for sources with conventional channels. Blank = the normal wideband stream."
+            needs={src.fpgaChannelizer && src.rateHz !== 8_000_000 ? "Needs a sample rate of 8 MSPS" : undefined}
+            wide
+          >
+            <TextInput className="mono" value={src.fpgaChannelizer ?? ""} placeholder="None" aria-label="FPGA channelizer image" onChange={(v) => edit((x) => x.type === "bladerf" && void (x.fpgaChannelizer = v.trim()))} />
+          </Field>
+        )}
         <GuardBand c={c} i={i} fresh={props.fresh} onFreshDone={props.onFreshDone} />
         {center ? (
           <div className="wide">

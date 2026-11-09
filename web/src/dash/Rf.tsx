@@ -27,7 +27,7 @@ function gainText(c: Source | undefined): string {
     case "airspy":
       return c.gainMode === "manual" ? (c.agc ? `AGC (VGA ${c.vgaStep})` : `LNA ${c.lnaStep} · mixer ${c.mixerStep} · VGA ${c.vgaStep}`) : `${c.gainMode} ${c.gainStep}`;
     case "bladerf":
-      return c.agc ? "AGC" : `${c.gainDb} dB${c.biasTee ? " · bias-T" : ""}`;
+      return `${c.agc ? "AGC" : `${c.gainDb} dB`}${c.biasTee ? " · bias-T" : ""}${c.fpgaChannelizer ? " · FPGA channelizer" : ""}`;
     case "hackrf":
       return `LNA ${c.lnaDb} · VGA ${c.vgaDb}${c.amp ? " · amp" : ""}${c.biasTee ? " · bias-T" : ""}`;
     case "soapy":

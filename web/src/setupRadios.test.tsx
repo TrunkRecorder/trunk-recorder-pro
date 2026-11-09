@@ -21,6 +21,17 @@ function setup(c: Config): void {
   for (const m of greeting) transport.onMessage(m);
 }
 
+test("Setup: a bladeRF's filter bank image, and the rate it needs", () => {
+  const c = defaultConfig();
+  c.sources = [{ ...SOURCE_KINDS.bladerf.fresh(), fpgaChannelizer: "/x/p25chanxA5.rbf", rateHz: 10_000_000 } as Config["sources"][number]];
+  setup(c);
+  const html = renderToString(<SourceCard c={c} i={0} />);
+  assert.match(html, /value="\/x\/p25chanxA5\.rbf"/);
+  assert.match(text(html), /Needs a sample rate of 8 MSPS/);
+  c.sources[0].rateHz = 8_000_000;
+  assert.doesNotMatch(text(renderToString(<SourceCard c={c} i={0} />)), /Needs a sample rate/);
+});
+
 test("Setup: a HackRF's editor has its stages and bias-T, and needs no driver", () => {
   const c = defaultConfig();
   c.sources = [SOURCE_KINDS.hackrf.fresh()];
