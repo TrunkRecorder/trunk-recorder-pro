@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.3.5] — 2026-11-09
+
 - **A call heard on several sites is now one call to plugins and stats, from its first copy's start to its last copy's end.** Before, it was
   reported as ending when the first copy did, could be reported as not recorded while another site recorded it (MQTT published `call_ignored` for
   it), and grants reaching two sites in the same block could hide the call altogether.
