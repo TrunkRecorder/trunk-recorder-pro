@@ -2002,6 +2002,8 @@ export interface CaptureRule {
 
 /** Capture rules and what they may use. */
 export interface Diagnostics {
+  /** Where captures of the radios go (none: `iq-captures` in the recordings folder). */
+  captureDir?: string;
   rules?: CaptureRule[];
   budget?: { capturesPerDay: number; mbPerDay: number; ramMb: number };
 }

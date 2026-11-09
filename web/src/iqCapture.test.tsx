@@ -62,6 +62,11 @@ test("A waterfall runs from black to bright, and a signal is brighter than the n
   for (const t of [0.1, 0.3, 0.5, 0.7, 0.9]) assert.ok(sum(waterfallColor(t + 0.05)) > sum(waterfallColor(t)));
 });
 
+test("Where captures go can be chosen", () => {
+  assert.match(text(renderToString(<IqCaptureCard initial={answer} />)), /Save captures in/);
+  assert.match(renderToString(<IqCaptureCard initial={answer} />), /aria-label="Capture folder"/);
+});
+
 test("A capture in words", () => {
   assert.equal(iqCaptureText(capture), "60 s · 2 radios · 576 MB · 99% of 1,000 control messages decoded · 1 call");
   assert.match(iqCaptureText({ ...capture, messagesGood: 0, messagesBad: 0, radios: 1 }), /1 radio · .* no control messages/);

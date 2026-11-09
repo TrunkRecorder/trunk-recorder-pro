@@ -97,6 +97,7 @@ export function IqCaptureCard({ initial }: { initial?: IqCaptures }) {
           ))}
         </ul>
       )}
+      {list && <CaptureFolder onSaved={() => setTimeout(() => void iqCaptures().then(shown), 700)} />}
       {list && <IqCaptureRules presets={list.presets} />}
     </Card>
   );
@@ -182,6 +183,28 @@ export function IqCaptureReviewPanel({ name, bytes: size, initial, onSend, onClo
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Where captures go. A capture of several radios can write tens of MB a second, so a fast disk helps. */
+export function CaptureFolder({ onSaved }: { onSaved: () => void }) {
+  const s = useApp();
+  const saved = s.config?.diagnostics?.captureDir ?? "";
+  const [text, setText] = useState(saved);
+  useEffect(() => setText(saved), [saved]);
+  const commit = () => {
+    if (text.trim() === saved) return;
+    updateConfig((c) => void (c.diagnostics = { ...c.diagnostics, captureDir: text.trim() || undefined }));
+    onSaved();
+  };
+  return (
+    <div className="iq-rules">
+      <h4>Save captures in</h4>
+      <div className="row">
+        <input className="search grow" aria-label="Capture folder" placeholder="iq-captures in the recordings folder" value={text} onChange={(e) => setText(e.target.value)} onBlur={commit} />
+      </div>
+      <Hint>Use a fast disk: a capture of several radios can write tens of MB per second, and a busy disk can slow your recordings too. Captures already made stay where they are.</Hint>
     </div>
   );
 }

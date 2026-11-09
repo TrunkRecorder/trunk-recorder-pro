@@ -369,8 +369,9 @@ radio is receiving. Replayed later, it shows whether a change to the decoders st
 system. Choose a length (30, 60 or 120 seconds), add a note if you like, and press **Capture
 known-good sample**. Recording carries on as usual. Nothing is sent anywhere.
 
-Each capture is a folder in `iq-captures/` under the capture directory, with one recording per radio
-in [SigMF](https://sigmf.org/). It takes as much disk as the radios' samples: 288 MB a minute for an
+Each capture is a folder in `iq-captures/` under the capture directory, or in the folder you choose under **Save captures
+in** (`diagnostics.captureDir` in the config), with one recording per radio in [SigMF](https://sigmf.org/). Use a fast disk:
+several radios can write tens of MB per second, and a busy disk can slow your recordings too. It takes as much disk as the radios' samples: 288 MB a minute for an
 RTL-SDR at 2.4 MS/s, and 2.4 GB a minute for a radio at 10 MS/s. A capture won't start unless it would
 leave 1 GB free.
 
@@ -381,7 +382,9 @@ can still be decoded by anyone who has the files.
 
 Beside the recordings, `diagnostics.json` describes the computer and how the radios were doing: operating
 system, CPU, memory, each radio's settings and dropped samples, the shape of the config (how many systems and
-channels), and recent drops, clipping and clock problems. It has no names, frequencies, paths or addresses.
+channels), and recent drops, clipping and clock problems. For each second of the capture it also gives each radio's lost
+samples, how full its write queue got and its slowest write, with what the disk was doing and whether it's an HDD or SSD. It
+has no names, frequencies, paths or addresses.
 
 To play one back, with the systems it was made with:
 
