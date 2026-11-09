@@ -693,7 +693,7 @@ queued in `radio.pending`, then applied after the block (`apply_pending`), at th
 control channel clock, so a voice channel never borrows a `Trunk` mutably. Each output finds its
 site, recording and call once, then:
 - `Audio` / `AnalogAudio` → appended to the `Recording`, `last_audio_s` moved, live
-  `Event::Audio` if this copy leads its multi-site conversation;
+  `Event::Audio` if this site leads the talkgroup's live audio (`MultiSite::audio_lead`);
 - `Info` → the source unit and its flags (merged into the source talking when it names none), the
   call's encrypted / emergency latches → `CallUpdate`;
 - `WrongKey` → a warning note, once a key;
@@ -731,8 +731,8 @@ removed and its number returned to `free_nums`.
 site with the same talkgroup (or, unit to unit, the same radio called) within 3 s
 (`Span::starts_with`) is linked into one conversation, from the first grant (`Call::twin` marks
 the later copies). A conversation has one copy from each site (`MultiSite::link`), so copies never
-chain one into the next. **Every copy is recorded.** Live audio comes from one copy until it has
-been quiet 0.5 s. When the last copy ends, they're tried best first: the talkgroup's preferred site
+chain one into the next. **Every copy is recorded.** Live audio comes from one site per talkgroup until it has
+been quiet 0.5 s, whether or not the sites' calls are linked. When the last copy ends, they're tried best first: the talkgroup's preferred site
 if its clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC
 errors, then earliest start. Each is saved unless one saved holds it (`Kept::holds`: another site,
 its whole `Span`, the same talkers where known, at least as much clean voice give or take 90 %);
