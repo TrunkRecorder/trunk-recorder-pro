@@ -129,8 +129,9 @@ mod tests {
         Recording { data, format, center_hz: 1e6, rate_hz: 1000.0, auto_tune: false, guard_hz: 0.0, skip: 0, gaps: vec![] }
     }
 
-    fn temp() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("trp-submission-{}", std::process::id()));
+    /// A folder of the test's own: tests run at the same time.
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("trp-submission-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
@@ -138,7 +139,7 @@ mod tests {
 
     #[test]
     fn clipping_counts_samples_at_the_rails() {
-        let dir = temp();
+        let dir = temp("clipping");
         assert_eq!(clipping_pct(&recording(&dir, "a", SampleFormat::Cu8, &[0, 255, 127, 128])).unwrap(), 50.0);
         let mut s16 = Vec::new();
         for v in [i16::MAX, 0, i16::MIN, 5] {
@@ -150,7 +151,7 @@ mod tests {
 
     #[test]
     fn something_that_isnt_a_capture_is_refused() {
-        let dir = temp();
+        let dir = temp("refused");
         assert!(check(&dir.join("nothing.sigmf-meta"), &dir.join("out")).is_err());
         let meta = dir.join("x.sigmf-meta");
         fs::write(&meta, json!({ "global": { "core:datatype": "cu8", "core:sample_rate": 1000.0, "core:sha512": "00" }, "captures": [{ "core:sample_start": 0, "core:frequency": 1e6 }] }).to_string()).unwrap();
