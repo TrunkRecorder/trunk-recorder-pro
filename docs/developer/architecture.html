@@ -309,7 +309,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
       <tr><td><code>finish-N</code></td><td>1–3</td><td>The finish pool: writes every file of a call's plan (.json, .wav, .m4a, frames), sends <code>concluded</code> to browsers, hands calls to the plugins and the Archive.</td></tr>
       <tr><td><code>plugin-&lt;id&gt;</code> + writer + stderr reader</td><td>per plugin process</td><td>Supervises one plugin process: feeds its stdin, reads stdout and stderr, restarts it. <code>plugin-hold</code> keeps what plugin delays hold back.</td></tr>
       <tr><td>tokio runtime</td><td>pool</td><td>The axum web server: one task per WebSocket client, one listener per interface.</td></tr>
-      <tr><td><code>monitor</code>, <code>net-probe</code>, <code>spotlight</code></td><td>one each</td><td>Samples the computer and plugins every 2 s; internet checks every 15 s; the Spotlight check of the recordings folder.</td></tr>
+      <tr><td><code>monitor</code>, <code>net-probe</code>, <code>spotlight</code></td><td>one each</td><td>Samples the computer and plugins every 2 s; the hosts in <code>monitor.checkHosts</code> (none by default) every <code>checkEveryS</code>; the Spotlight check of the recordings folder.</td></tr>
       <tr><td><code>stats-load</code>, <code>stats-store</code>, <code>history</code></td><td>one each</td><td>Load and append dashboard rollups; fill the call list from disk.</td></tr>
       <tr><td><code>survey</code>, <code>survey-source-N</code></td><td>while surveying</td><td>The first-run survey and its radio (never with recording).</td></tr>
     </tbody>
@@ -625,7 +625,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
       <tr><td><code>Registry</code></td><td>Per system, bounded maps of talkgroups (5,000), units (20,000), unit pairs, frequencies and affiliations, with hourly activity for a week. Answers <code>radioQuery</code>; saved as <code>radio/&lt;short&gt;.json</code> every 15 min and at stop.</td></tr>
       <tr><td><code>NameBook</code></td><td>Each system's talkgroups (as <code>engine_config</code> makes them) and talker aliases, by short name: the names <code>radioQuery</code> answers with. The session keeps it current; the desktop app fills it at start, on config changes and talkgroup edits.</td></tr>
       <tr><td><code>Monitor</code></td><td>Notable events: talkgroup or unit first seen, talkgroup active, call volume, control channel lost / regained (<code>MonitorEvent::ControlLost { system, site, … }</code>: the system's short name and the site's own name), source drops, clipping, disk and spool space. Each goes to the registered watchers (the hook for alert rules; none yet) and, if it is one for the feed, to browsers as <code>monitorEvent</code>. The last 200 are sent when a connection is greeted.</td></tr>
-      <tr><td>monitor thread (desktop)</td><td>Every 2 s the computer (CPU, memory, disks, cgroup limits, container detection; internet checks every 15 s) and the plugins (queued, retries, latency, drops) report into their own aggregator: a <code>host</code> message to browsers, and rollups into the same history.</td></tr>
+      <tr><td>monitor thread (desktop)</td><td>Every 2 s the computer (CPU, memory, disks, cgroup limits, container detection; the hosts checked, if any) and the plugins (queued, retries, latency, drops) report into their own aggregator: a <code>host</code> message to browsers, and rollups into the same history.</td></tr>
       <tr><td>Per-channel detail</td><td><code>VoiceDecoder::quality()</code> and <code>ControlChannel::quality()</code> (<code>ChannelQuality</code>) reach <code>Engine::channels()</code>, sent only to clients subscribed to <code>rf:&lt;source&gt;</code> (<code>rfDetail</code>) or <code>decode:&lt;shortName&gt;</code> (<code>decodeDetail</code>).</td></tr>
     </tbody>
   </table></div>
@@ -1847,7 +1847,7 @@ const CFG = {
   "log.level": ["trace · debug · info · warning · error · fatal", "info", "--log-level overrides."], "log.console": ["bool", "true", ""], "log.file": ["bool", "false", "Daily files, rotated at 100 MB."],
   "log.dir": ["path", "logs beside the config", ""], "log.syslogFriendly": ["bool", "false", ""], "log.syslog": ["bool", "false", ""], "log.color": ["\"\" · console · logfile · all · none", "\"\"", "\"\": the console's when it is a terminal."],
   "log.frequencyFormat": ["exp · mhz · hz", "mhz", ""], "log.talkgroupDisplayFormat": ["id · id_tag · tag_id", "id", ""], "log.statusAsString": ["bool", "true", ""], "log.controlWarnRatePerS": ["number", "10", "Warn below this decode rate; −1 always logs it."],
-  "monitor": ["{ probeHosts, timeServer }", "", "Internet checks and the clock's check for the dashboard."], "monitor.probeHosts": ["array of host:port", "[\"1.1.1.1:443\", \"dns.google:443\"]", "[] turns them off."], "monitor.networkChecks": ["boolean", "true", "false pauses the internet checks and the time server, at once."], "monitor.timeServer": ["string", "\"pool.ntp.org\"", "Asked how far off the clock is (SNTP, every 15 min). \"\" turns it off."], "monitor.clockWarnMs": ["number", "250", "The clock off by this much (ms): a warning, and calls marked clock_off."]
+  "monitor": ["{ checkHosts, checkEveryS, networkChecks, timeServer, clockWarnMs }", "", "What the dashboard checks: hosts, the time server, the clock. Applies at once."], "monitor.checkHosts": ["array of host:port", "[]", "TCP connects for the network's history. None: the plugins' services are the connections."], "monitor.checkEveryS": ["number", "15", "How often each host is tried (5 at least)."], "monitor.networkChecks": ["boolean", "true", "false pauses the hosts checked and the time server, at once."], "monitor.timeServer": ["string", "\"pool.ntp.org\"", "Asked how far off the clock is (SNTP, every 15 min). \"\" turns it off."], "monitor.clockWarnMs": ["number", "250", "The clock off by this much (ms): a warning, and calls marked clock_off."]
 };
 const CFG_EXAMPLE = {
   sources: [{ type: "rtlsdr", serial: "00000101", centerHz: 0, rateHz: 2400000, gainDb: 25.4, agc: false, ppm: 1, autoTune: true, guardHz: 75000 }],
@@ -1867,7 +1867,7 @@ const CFG_EXAMPLE = {
   server: { bind: "127.0.0.1", port: 8080, autoStart: true },
   plugins: { openmhz: { enabled: true } },
   log: { level: "info", file: true },
-  monitor: { probeHosts: ["1.1.1.1:443", "dns.google:443"] }
+  monitor: { checkHosts: ["192.168.1.1:443"] }
 };
 (function () {
   const tree = $("cfg-tree"), doc = $("cfg-doc");
@@ -2042,7 +2042,7 @@ diagram($("dia-meas"), {
     { id: "tally", x: 20, y: 245, label: "Tally", sub: "calls · airtime · reasons", text: "Counted from engine events: calls started and saved, airtime, why calls weren't recorded, voice errors." },
     { id: "vd", x: 20, y: 440, label: "quality() · ChannelQuality", sub: "eye opening · phase error", text: "<code>VoiceDecoder::quality()</code> and <code>ControlChannel::quality()</code> give a <code>ChannelQuality { sep, phase_err_deg }</code> per channel; only for the RF and decode detail views." },
     { id: "ev", x: 20, y: 330, label: "Session events", sub: "Stats::observe", text: "Every engine event passes <code>Stats::observe</code>, which feeds the tally, the registry and the monitor." },
-    { id: "hm", x: 290, y: 20, label: "monitor thread", sub: "computer · plugins, every 2 s", text: "Desktop only. The computer (CPU, memory, disks, cgroup limits, internet checks) and each plugin's metrics go into the host's own aggregator." },
+    { id: "hm", x: 290, y: 20, label: "monitor thread", sub: "computer · plugins, every 2 s", text: "Desktop only. The computer (CPU, memory, disks, cgroup limits, the hosts checked) and each plugin's metrics go into the host's own aggregator." },
     { id: "agg", x: 290, y: 150, label: "Aggregator", sub: "rates · avg / min / max", text: "Turns counters into rates and keeps each series' value now and its minute's average, lowest and highest." },
     { id: "reg", x: 290, y: 300, label: "Registry", sub: "talkgroups · units · pairs · freqs", text: "Bounded per-system maps with a week of hourly activity." },
     { id: "mon", x: 290, y: 375, label: "Monitor", sub: "notable events", text: "First-seen talkgroups and units, call volume, control channel lost and regained, drops, clipping, disk and spool space." },

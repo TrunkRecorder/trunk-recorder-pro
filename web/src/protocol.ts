@@ -589,11 +589,13 @@ export interface StorageSettings {
 }
 
 export interface MonitorSettings {
-  /** Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks. */
-  probeHosts: string[];
-  /** Off: neither the internet checks nor the time server are asked, whatever's set. Applies at once. */
+  /** Hosts to check the network reaches (host:port, a TCP connect every checkEveryS). Empty (the default): none; the dashboard goes by the services the plugins report. Applies at once. */
+  checkHosts: string[];
+  /** How often each of checkHosts is tried, s (5 at least). */
+  checkEveryS: number;
+  /** Off: neither checkHosts nor the time server are asked, whatever's set. Applies at once. */
   networkChecks: boolean;
-  /** The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked. */
+  /** The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked. Applies at once. */
   timeServer: string;
   /** The clock off by this much or more, ms: a warning, and calls marked clock_off (a problem at 5 s, or 4 times this). */
   clockWarnMs: number;
@@ -1487,7 +1489,7 @@ export interface DirListing {
 //   sys/<shortName>/voice/{frames,errors,bad}
 //   all/{calls,airMs,audioBytes}  day/{calls,airS,audioBytes}  eng/{load,recording,channels,recorders}
 //   plat/{cpu,proCpu,proCores,proMem,mem,memAvail,swap,memPsi,memLevel,load1,temp,throttledUs,piThrottled}
-//   plat/disk/<recordings|data>/{free,freePct}  net/{rx,tx,errors,up,rtt,dns}  net/probe/<target>/{up,rtt}
+//   plat/disk/<recordings|data>/{free,freePct}  net/{rx,tx,errors,up,rtt,dns}
 //   plg/<id>/{state,ok,skipped,failed,dropped,restarts,held,queued,latency,bytes}
 // Running totals arrive as rates per second; everything else as it is.
 

@@ -4903,20 +4903,24 @@
     "MonitorSettings": {
       "type": "object",
       "properties": {
-        "probeHosts": {
+        "checkHosts": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks."
+          "description": "Hosts to check the network reaches (host:port, a TCP connect every checkEveryS). Empty (the default): none; the dashboard goes by the services the plugins report. Applies at once."
+        },
+        "checkEveryS": {
+          "type": "number",
+          "description": "How often each of checkHosts is tried, s (5 at least)."
         },
         "networkChecks": {
           "type": "boolean",
-          "description": "Off: neither the internet checks nor the time server are asked, whatever's set. Applies at once."
+          "description": "Off: neither checkHosts nor the time server are asked, whatever's set. Applies at once."
         },
         "timeServer": {
           "type": "string",
-          "description": "The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked."
+          "description": "The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked. Applies at once."
         },
         "clockWarnMs": {
           "type": "number",
@@ -4924,7 +4928,8 @@
         }
       },
       "required": [
-        "probeHosts",
+        "checkHosts",
+        "checkEveryS",
         "networkChecks",
         "timeServer",
         "clockWarnMs"

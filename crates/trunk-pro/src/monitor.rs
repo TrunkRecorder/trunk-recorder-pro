@@ -48,17 +48,12 @@ pub fn start(ctx: Arc<Ctx>) {
 }
 
 fn run(ctx: Arc<Ctx>) {
-    let (targets, time_server, capture) = {
-        let c = ctx.config.lock().unwrap();
-        (c.monitor.probe_hosts.clone(), Some(c.monitor.time_server.trim().to_string()).filter(|s| !s.is_empty()), c.recording.capture_dir.clone())
-    };
-    let checks = |c: &Arc<Ctx>| {
-        let c = c.clone();
-        move || c.config.lock().unwrap().monitor.network_checks
-    };
-    ctx.clock.start(time_server, checks(&ctx));
-    let c2 = ctx.clone();
-    let probes = Probes::start(targets, checks(&ctx), move |(target, up, down_s)| {
+    let capture = ctx.config.lock().unwrap().recording.capture_dir.clone();
+    // Both read the settings as they are now: an edit applies at once.
+    let c = ctx.clone();
+    ctx.clock.start(move || c.config.lock().unwrap().monitor.time_server());
+    let (c, c2) = (ctx.clone(), ctx.clone());
+    let probes = Probes::start(move || c.config.lock().unwrap().monitor.checks(), move |(target, up, down_s)| {
         c2.event(if up { MonitorEvent::LinkUp { target, down_s: down_s.round() } } else { MonitorEvent::LinkDown { target } });
     });
     let watched = vec![Watched { name: "recordings", path: capture.into() }, Watched { name: "data", path: crate::paths::data_dir() }];

@@ -8,9 +8,7 @@ import { pluginOn, setView, useApp, type AppState } from "../controller.ts";
 import { Card, Choice, Hint, LiveSpark, Light, Stat, StackedBars, TimeSeries } from "../charts.tsx";
 import { ago, bytes, compact, dur, ms, num, pct } from "../fmt.ts";
 import type { PluginInfo, SeriesData } from "../protocol.ts";
-import { K, perIn, perLive, pluginHealth, recentAvg, total, useHistory } from "./data.ts";
-
-const ENDPOINT_LEVEL = { up: "ok", degraded: "warn", down: "bad", unknown: "idle" } as const;
+import { ENDPOINT_LEVEL, K, perIn, perLive, pluginHealth, recentAvg, total, useHistory } from "./data.ts";
 
 /** "packetsSent" → "Packets sent", "bytes_out" → "Bytes out". */
 function humanize(key: string): string {
