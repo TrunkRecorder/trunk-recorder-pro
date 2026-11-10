@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-11-10
+
 - **DMR calls on Motorola systems with restricted access (RAS) are no longer all marked encrypted.** RAS sets a bit in a call's
   link control that was read as encryption, so their audio was dropped or never recorded. A call is now encrypted only when its
   link control's privacy option says so, and RAS private calls are recorded.
