@@ -7,7 +7,7 @@ import { can, pluginOn, radioQuery, statsSince, setView, start, usePolled, useAp
 import { Card, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
-import { change, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
+import { change, connections, connectionsSummary, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
 import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
@@ -335,6 +335,7 @@ function PlatformLine({ s }: { s: AppState }) {
   const v = s.host?.values ?? {};
   const disk = s.host?.platform.disks.find((d) => d.name === "recordings") ?? s.host?.platform.disks[0];
   const spool = s.host?.platform.disks.find((d) => d.name === "spool");
+  const net = connectionsSummary(connections(s));
   return (
     <Card title="Computer" level={s.host ? h.level : undefined} why={h.why} onTitle={() => setView("platform")}>
       <div className="meters">
@@ -362,11 +363,11 @@ function PlatformLine({ s }: { s: AppState }) {
             <b>{spool.missing ? "gone" : `${bytes(spool.freeBytes)} free`}</b>
           </label>
         )}
-        {v["net/up"] !== undefined && (
-          <label>
-            <span>Internet</span>
-            <Light level={v["net/up"] >= 1 ? "ok" : v["net/up"] > 0 ? "warn" : "bad"} />
-            <b>{v["net/rtt"] !== undefined ? `${num(v["net/rtt"], 0)} ms` : v["net/up"] >= 1 ? "up" : "down"}</b>
+        {net && (
+          <label title={net.why}>
+            <span>Connections</span>
+            <Light level={net.level} />
+            <b>{net.value === "Up" && v["net/rtt"] !== undefined ? `${num(v["net/rtt"], 0)} ms` : net.value.toLowerCase()}</b>
           </label>
         )}
       </div>

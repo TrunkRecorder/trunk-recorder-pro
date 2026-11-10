@@ -160,6 +160,8 @@ pub enum ToClient {
         id: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         active: Option<IqCaptureActive>,
+        /// Captures asked for that wait on the air.
+        waiting: Vec<IqCaptureWaiting>,
         captures: Vec<IqCapture>,
         root: String,
         recording: bool,
@@ -269,7 +271,7 @@ pub struct IqCapture {
     pub path: String,
     /// `wideband`, `control` or `voice`.
     pub tier: String,
-    /// `healthy` (made by hand) or `rule`.
+    /// `bug` (made by hand, showing a problem), `healthy` (made by hand, working well) or `rule`.
     pub purpose: String,
     /// The rule that made it.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -310,6 +312,32 @@ pub struct IqWaterfall {
     pub width: u32,
     pub height: u32,
     pub levels: String,
+}
+
+/// What a capture asked for by hand records (`iqCaptureStart`).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum CaptureWhat {
+    /// Everything every radio receives.
+    #[default]
+    Radios,
+    /// One site's control channel (its `index` in the status), from now on.
+    Control { site: u16 },
+    /// The voice channel of the next call on system `system` (a short name), or on its talkgroup `talkgroup`.
+    Call { system: String, #[serde(default)] talkgroup: Option<u32> },
+}
+
+/// A capture asked for by hand that's waiting on the air (`iqCaptures`): a
+/// control channel recording for `seconds`, or the next call.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCaptureWaiting {
+    pub key: u64,
+    /// What it's of, in words.
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
+    pub elapsed_s: f64,
 }
 
 /// A capture being made (`iqCaptures`).
@@ -537,9 +565,12 @@ pub enum Command {
     PluginAction { id: u64, plugin: String, action: String, #[serde(default)] value: Value },
     /// The radios' captures on disk: answered with `iqCaptures` `id`.
     IqCaptures { id: u64 },
-    /// Record every radio for `seconds` of a recording that's working
-    /// well, to files (nothing is sent anywhere): answered with `iqCaptures` `id`.
-    IqCaptureStart { id: u64, seconds: u32, #[serde(default)] note: String },
+    /// Record `what` (every radio, by default) to files, nothing sent
+    /// anywhere: for `seconds` (the next call: as long as it is), showing a
+    /// problem (`problem`) or a recording working well. Answered with `iqCaptures` `id`.
+    IqCaptureStart { id: u64, seconds: u32, #[serde(default)] note: String, #[serde(default)] what: CaptureWhat, #[serde(default)] problem: bool },
+    /// Give up a capture asked for that's still waiting or running (`key`, as `iqCaptures` lists it): answered with `iqCaptures` `id`.
+    IqCaptureCancel { id: u64, key: u64 },
     /// What capture `name` would publish: answered with `iqCaptureReview` `id`.
     IqCaptureReview { id: u64, name: String },
     /// Send capture `name`, reviewed, to the public corpus: answered with `iqCaptures` `id`.
@@ -665,5 +696,17 @@ mod tests {
             _ => panic!(),
         };
         assert_eq!(q.span(1000), (400, 1000));
+    }
+
+    #[test]
+    fn a_capture_says_what_it_is_of() {
+        let what = |j: &str| match Command::parse(j).unwrap() {
+            Command::IqCaptureStart { what, problem, .. } => (what, problem),
+            _ => panic!(),
+        };
+        assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":60}"#), (CaptureWhat::Radios, false), "every radio, as it always was");
+        assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":30,"problem":true,"what":{"kind":"control","site":2}}"#), (CaptureWhat::Control { site: 2 }, true));
+        assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":0,"what":{"kind":"call","system":"dcfd","talkgroup":101}}"#).0, CaptureWhat::Call { system: "dcfd".into(), talkgroup: Some(101) });
+        assert!(!Command::parse(r#"{"type":"iqCaptureCancel","id":1,"key":3}"#).unwrap().listen_may_send());
     }
 }

@@ -238,14 +238,16 @@ The computer the recorder runs on, recording or not:
 | **CPU** | All cores together (of the container's limit, in a container). Amber over 90%. |
 | **Trunk Recorder Pro** | The app's own CPU use, in cores, and its memory |
 | **Memory** | Memory in use, and how much of the time programs stall waiting for memory (Linux) or the system's memory pressure (macOS) |
-| **Internet** | Whether the internet checks answer, and how long a connection takes |
+| **Connections** | Whether what the recorder reaches answers: the hosts it checks and the services the plugins send to, and how long a connection to a checked host takes |
 | **Temperature** | The hottest sensor, and whether a Raspberry Pi is throttling (under-voltage or heat) |
 
 **Over time** has CPU (with each core) and memory. **Disks** shows the **Recordings** disk, the
 **App data** disk and the **RAM spool** if it's on, with free space, calls that overflowed from
-the spool, and **About … of recordings left** at last week's daily average. **Network** shows each
-internet check (`monitor.probeHosts`, by default `1.1.1.1:443` and `dns.google:443`), and **This
-computer** the system, cores, uptime and anything the platform can't measure.
+the spool, and **About … of recordings left** at last week's daily average. **Network** lists each
+connection: the hosts checked (`monitor.checkHosts`, none by default), with their history minute by
+minute, and each service a plugin reports, with how it answers. Its settings (hosts to check, how
+often, the time server) are under the list. **This computer** shows the system, cores, uptime and
+anything the platform can't measure.
 
 ### Clock
 
@@ -285,7 +287,7 @@ isn't synchronized; red at 5 s. What's judged is the clock calls are stamped by:
 
 A measurement over an hour old isn't counted. A jump of the clock (its time service setting it, or
 the computer sleeping) is an event of its own. Some networks block NTP (UDP port 123): then nothing
-is measured, the card says the queries go unanswered, and the internet checks don't count it.
+is measured, the card says the queries go unanswered, and the hosts checked don't count it.
 Pointing `monitor.timeServer` at a server inside your network (often your router) can help.
 
 The offset is local: nothing Broadcastify or another service reports. Broadcastify Calls doesn't

@@ -17,7 +17,7 @@ use trunk_app::config::{CaptureBudget, CaptureRule, CaptureTarget, Config, Diagn
 use trunk_core::trunk::tape::VoiceTape;
 use trunk_recorder_plugin::CallRecord;
 
-use crate::iq_capture::{self, Request};
+use crate::iq_capture::{self, Asked, Request, Waiting};
 use crate::runtime::{Ctx, EngineCmd};
 
 /// A tape kept this long, waiting for a rule that asks for it (its call's end and its channel's closing race).
@@ -36,7 +36,7 @@ pub struct Fact {
 /// The events rules can be on, and an example of each one's facts: what a
 /// condition may name is checked against it when a rule is saved.
 fn sample(on: &str) -> Option<Value> {
-    let call = json!({ "system": "x", "site": "x", "talkgroup": 1, "freq": 1, "call_length": 1.0, "clean_voice_pct": 1.0, "snr": 1.0, "signal": 1.0, "noise": 1.0, "freq_error": 1, "encrypted": false, "decrypted": false, "emergency": false, "analog": false, "tdma_slot": 0, "units": 1 });
+    let call = json!({ "system": "x", "site": "x", "talkgroup": 1, "freq": 1, "start_time": 1.0, "call_length": 1.0, "clean_voice_pct": 1.0, "snr": 1.0, "signal": 1.0, "noise": 1.0, "freq_error": 1, "encrypted": false, "decrypted": false, "emergency": false, "analog": false, "tdma_slot": 0, "units": 1 });
     let control = json!({ "system": "x", "site": "x", "freq_hz": 1 });
     let source = json!({ "index": 0, "pct": 1.0, "per_s": 1.0 });
     Some(match on {
@@ -261,7 +261,7 @@ impl RuleSet {
 /// A call's facts, as conditions see them: nothing from it is stored unless a rule keeps a capture.
 pub fn call_facts(r: &CallRecord) -> Value {
     json!({ "call": {
-        "system": r.short_name, "site": r.site, "talkgroup": r.talkgroup, "freq": r.freq, "call_length": r.call_length,
+        "system": r.short_name, "site": r.site, "talkgroup": r.talkgroup, "freq": r.freq, "start_time": r.start_time, "call_length": r.call_length,
         // (An analog call has no vocoder frames to be clean or not.)
         "clean_voice_pct": r.clean_voice_pct.unwrap_or(100.0),
         "snr": r.snr.unwrap_or(0.0), "signal": r.signal.unwrap_or(0.0), "noise": r.noise.unwrap_or(0.0), "freq_error": r.freq_error,
@@ -282,9 +282,16 @@ fn monitor_fact(e: &Value, labels: &[String]) -> Option<Fact> {
     })
 }
 
+/// What a voice channel's tape is wanted for.
+enum For {
+    Rule(CaptureRule),
+    /// A capture asked for by hand ([`Waiting`], by its key).
+    Asked(u64),
+}
+
 struct Wanted {
     freq: u64,
-    rule: CaptureRule,
+    of: For,
     until: Instant,
 }
 
@@ -301,6 +308,9 @@ struct Worker {
     last_tick: Instant,
     /// Each site's message counts at the last tick.
     counts: BTreeMap<u16, (u64, u64)>,
+    /// The engine is taping channels (for a rule, or a capture asked for), since when.
+    taping: bool,
+    taping_since: Instant,
 }
 
 fn ask<T>(ctx: &Ctx, cmd: impl FnOnce(Sender<T>) -> EngineCmd) -> Option<T> {
@@ -321,6 +331,23 @@ impl Worker {
             log::info!("Capture rule {} fired on {}", rule.id, f.on);
             self.act(&rule, &f.facts);
         }
+        if matches!(f.on, "call.end" | "call.not_saved") {
+            self.next_call(&f.facts["call"]);
+        }
+    }
+
+    /// A call ended: the voice channel of the next call is wanted by those asked
+    /// for, on its system (and talkgroup), that began once they were asked.
+    fn next_call(&mut self, call: &Value) {
+        let Some(freq) = call["freq"].as_u64() else { return };
+        let started = call["start_time"].as_f64().unwrap_or(0.0);
+        let waiting = self.ctx.iq.waiting.lock().unwrap().clone();
+        for w in waiting {
+            let Asked::Call { system, talkgroup } = &w.asked else { continue };
+            if call["system"].as_str() == Some(system) && talkgroup.is_none_or(|t| call["talkgroup"].as_u64() == Some(t as u64)) && started >= w.since.floor() {
+                self.wanted.push(Wanted { freq, of: For::Asked(w.key), until: Instant::now() + WANTED_HOLD });
+            }
+        }
     }
 
     fn act(&mut self, rule: &CaptureRule, facts: &Value) {
@@ -334,7 +361,7 @@ impl Worker {
                 }
                 "voice" => {
                     if let Some(freq) = facts["call"]["freq"].as_u64() {
-                        self.wanted.push(Wanted { freq, rule: rule.clone(), until: Instant::now() + WANTED_HOLD });
+                        self.wanted.push(Wanted { freq, of: For::Rule(rule.clone()), until: Instant::now() + WANTED_HOLD });
                     }
                 }
                 _ => {}
@@ -363,15 +390,44 @@ impl Worker {
             return;
         }
         for t in tapes.iter().filter(|t| system.is_none_or(|s| live.status.sites.get(t.site as usize).is_some_and(|y| y.short_name == s))) {
-            if let Err(e) = iq_capture::save_control(&self.ctx, &self.cfg, t, &live, rule_json(rule)) {
+            if let Err(e) = iq_capture::save_control(&self.ctx, &self.cfg, t, &live, iq_capture::for_rule(rule_json(rule))) {
                 log::warn!("Capture rule {}: {e}", rule.id);
             }
         }
     }
 
+    /// A control channel capture asked for, its time up: what its site's control channel had since.
+    fn control_asked(&mut self, w: &Waiting, site: u16, seconds: u32) {
+        let Some((tapes, live)) = ask(&self.ctx, |done| EngineCmd::IqControl { done }) else { return self.ctx.iq.failed(format!("{}: the recording didn't answer.", w.text)) };
+        let mine: Vec<_> = tapes.into_iter().filter(|t| t.site == site && !t.iq.is_empty()).collect();
+        if mine.is_empty() {
+            return self.ctx.iq.failed(format!("{}: nothing to record. Is its control channel inside a radio's range?", w.text));
+        }
+        // (A DMR site's carriers are each a capture.)
+        for mut t in mine {
+            t.keep_last(seconds as f64);
+            if let Err(e) = iq_capture::save_control(&self.ctx, &self.cfg, &t, &live, w.why()) {
+                self.ctx.iq.failed(format!("{}: {e}", w.text));
+            }
+        }
+    }
+
+    /// Channel tapes are needed: for a rule, or a capture asked for.
+    fn wants_tapes(&self) -> bool {
+        self.cfg.diagnostics.needs_tapes() || !self.ctx.iq.waiting.lock().unwrap().is_empty()
+    }
+
     /// Tapes that have come in, and those a rule has been waiting for.
     fn housekeep(&mut self) {
-        if self.cfg.diagnostics.needs_tapes() {
+        let taping = self.wants_tapes();
+        if taping != self.taping {
+            self.ctx.tell_engine(EngineCmd::IqKeepTapes { on: taping });
+            (self.taping, self.taping_since) = (taping, Instant::now());
+            if !taping {
+                self.tapes.clear();
+            }
+        }
+        if self.taping {
             if let Some(new) = ask(&self.ctx, |done| EngineCmd::IqTapes { done }) {
                 let at = Instant::now();
                 self.tapes.extend(new.into_iter().map(|t| (at, t)));
@@ -385,15 +441,40 @@ impl Worker {
         }
         let wanted = std::mem::take(&mut self.wanted);
         for w in wanted {
-            if let Some(i) = self.tapes.iter().rposition(|(_, t)| t.freq_hz as u64 == w.freq) {
-                let (_, t) = self.tapes.remove(i).unwrap();
-                if self.rules.afford(t.iq.len() as u64 * 8, Self::now()) {
-                    if let Err(e) = iq_capture::save_voice(&self.ctx, &t, rule_json(&w.rule)) {
-                        log::warn!("Capture rule {}: {e}", w.rule.id);
+            // (Another call made it already, or it was given up.)
+            if matches!(w.of, For::Asked(k) if !self.ctx.iq.is_waiting(k)) {
+                continue;
+            }
+            let Some(i) = self.tapes.iter().rposition(|(_, t)| t.freq_hz as u64 == w.freq) else {
+                // (Its call began before its channel was taped: the next one, then.)
+                if w.until > Instant::now() {
+                    self.wanted.push(w);
+                }
+                continue;
+            };
+            let (_, t) = self.tapes.remove(i).unwrap();
+            match w.of {
+                For::Rule(rule) => {
+                    if self.rules.afford(t.iq.len() as u64 * 8, Self::now()) {
+                        if let Err(e) = iq_capture::save_voice(&self.ctx, &t, iq_capture::for_rule(rule_json(&rule))) {
+                            log::warn!("Capture rule {}: {e}", rule.id);
+                        }
                     }
                 }
-            } else if w.until > Instant::now() {
-                self.wanted.push(w);
+                For::Asked(key) => {
+                    let Some(asked) = self.ctx.iq.take_waiting(key) else { continue };
+                    if let Err(e) = iq_capture::save_voice(&self.ctx, &t, asked.why()) {
+                        self.ctx.iq.failed(format!("{}: {e}", asked.text));
+                    }
+                }
+            }
+        }
+        // Control channel captures asked for whose time is up: from when they were asked, or when taping began after.
+        let since = |w: &Waiting| w.started.max(self.taping_since).elapsed().as_secs_f64();
+        let due: Vec<Waiting> = self.ctx.iq.waiting.lock().unwrap().iter().filter(|w| matches!(w.asked, Asked::Control { seconds, .. } if since(w) >= seconds as f64)).cloned().collect();
+        for w in due {
+            if let (Some(w), Asked::Control { site, seconds }) = (self.ctx.iq.take_waiting(w.key), w.asked.clone()) {
+                self.control_asked(&w, site, seconds);
             }
         }
         let later = std::mem::take(&mut self.later);
@@ -440,15 +521,12 @@ fn rule_json(rule: &CaptureRule) -> Value {
     json!({ "id": rule.id, "on": rule.on, "if": rule.condition })
 }
 
-/// Start the session's rules, if any are on: where to send it facts.
+/// Start the session's rules, and what makes the captures asked for by hand that wait on the air: where to send it facts.
 pub fn spawn(ctx: Arc<Ctx>, cfg: &Config) -> Option<SyncSender<Fact>> {
     let rules = RuleSet::new(&cfg.diagnostics);
-    if rules.rules.is_empty() {
-        return None;
-    }
     let (tx, rx) = mpsc::sync_channel::<Fact>(256);
     let labels = cfg.sources.iter().map(|s| s.label()).collect();
-    let mut w = Worker { ctx, cfg: cfg.clone(), rules, labels, seen_t: crate::clock::unix_s(), tapes: VecDeque::new(), wanted: Vec::new(), later: Vec::new(), last_tick: Instant::now(), counts: BTreeMap::new() };
+    let mut w = Worker { ctx, cfg: cfg.clone(), rules, labels, seen_t: crate::clock::unix_s(), tapes: VecDeque::new(), wanted: Vec::new(), later: Vec::new(), last_tick: Instant::now(), counts: BTreeMap::new(), taping: cfg.diagnostics.needs_tapes(), taping_since: Instant::now() };
     let spawned = std::thread::Builder::new().name("iq-rules".into()).spawn(move || loop {
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(f) => w.fact(&f),

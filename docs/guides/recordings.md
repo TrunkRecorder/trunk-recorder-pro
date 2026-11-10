@@ -362,15 +362,23 @@ encrypted audio is still removed.
 
 A call that isn't kept logs `Call not saved - no audio, or shorter than the minimum`.
 
-## Capture a known-good sample
+## Capture what TRP receives
 
-When everything is decoding well, the card at the bottom of the **RF** page records what every
-radio is receiving. Replayed later, it shows whether a change to the decoders still works on your
-system. Choose a length (30, 60 or 120 seconds), add a note if you like, and press **Capture
-known-good sample**. Recording carries on as usual. Nothing is sent anywhere.
+The **Capture what TRP receives** card at the bottom of the **RF** page records what TRP is receiving, to replay
+later or to send in when something isn't working. Pick what to capture, say whether it shows **A problem** or
+**Everything working**, add a note if you like, and press the button. Recording carries on as usual. Nothing is sent anywhere.
+
+| Capture | What it records | Use it for |
+|---|---|---|
+| **A control channel** | One site's control channel, for 30 or 60 seconds from when you press it (a DMR site: each of its frequencies) | Calls that aren't granted or followed, a control channel that decodes badly. A few MB. |
+| **The next call** | The voice channel of the next call to begin on a system, or on one talkgroup, from start to end | Calls that sound bad, are silent or go missing |
+| **Everything the radios receive** | Every radio, for 30, 60 or 120 seconds | A problem that isn't one channel's, or a known-good sample of your system to test new versions against |
+
+A capture that waits on the air (a control channel's time, or the next call) is listed under the button with how it's
+going, and **Cancel** gives it up. A channel capture is replayed with `trunk-pro tool channel <folder>`.
 
 Each capture is a folder in `iq-captures/` under the capture directory, or in the folder you choose under **Save captures
-in** (`diagnostics.captureDir` in the config), with one recording per radio in [SigMF](https://sigmf.org/). Use a fast disk:
+in** (`diagnostics.captureDir` in the config), in [SigMF](https://sigmf.org/): one recording per radio, or the channel's. Use a fast disk:
 several radios can write tens of MB per second, and a busy disk can slow your recordings too. It takes as much disk as the radios' samples: 288 MB a minute for an
 RTL-SDR at 2.4 MS/s, and 2.4 GB a minute for a radio at 10 MS/s. A capture won't start unless it would
 leave 1 GB free.
@@ -405,7 +413,7 @@ copies others made can't be recalled. A send picks up where it stopped if the ap
 
 ## Capture rules
 
-**Capture automatically**, on the same card, keeps a recording when something goes wrong, within a daily limit:
+For a problem that comes and goes, **Capture automatically when something goes wrong**, on the same card, keeps a recording when it happens, within a daily limit:
 20 captures and 5 GB by default. Changes apply the next time recording starts, and nothing is sent anywhere.
 
 The presets cover the common problems. You can add your own as JSON, under `diagnostics.rules` in the config:
@@ -435,7 +443,7 @@ The presets cover the common problems. You can add your own as JSON, under `diag
 
 | `on` | What a condition can name |
 |---|---|
-| `call.end`, `call.not_saved` | `call.system`, `site`, `talkgroup`, `freq`, `call_length`, `clean_voice_pct`, `snr`, `signal`, `noise`, `freq_error`, `encrypted`, `decrypted`, `emergency`, `analog`, `tdma_slot`, `units` |
+| `call.end`, `call.not_saved` | `call.system`, `site`, `talkgroup`, `freq`, `start_time` (Unix s), `call_length`, `clean_voice_pct`, `snr`, `signal`, `noise`, `freq_error`, `encrypted`, `decrypted`, `emergency`, `analog`, `tdma_slot`, `units` |
 | `control.lost`, `control.regained` | `control.system`, `site`, `freq_hz` |
 | `source.clipping`, `source.drops` | `source.index`, `pct`, `per_s` |
 | `note.warning` | `note.system`, `site`, `text` |

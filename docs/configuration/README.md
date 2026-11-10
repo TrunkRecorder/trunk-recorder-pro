@@ -85,7 +85,7 @@ with `--config` files in different folders never share band plans, talker aliase
 | `recording` | | see page | object | Where calls go and which are kept. [recording.md](recording.md) |
 | `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
-| `monitor` | | see page | object | The dashboard's internet checks. [server-and-log.md](server-and-log.md#monitor) |
+| `monitor` | | see page | object | What the dashboard checks: hosts, the time server, the clock. [server-and-log.md](server-and-log.md#monitor) |
 | `storage` | | `{ "backend": "sqlite", "retentionDays": 120, "commitSeconds": 300, "statsDays": 365 }` | object | The call store: where it's kept, how long calls stay in it, and how far apart it commits. [See below](#the-store-storage) |
 | `plugins` | | `{}` | object | Which plugins run and their recorder-wide settings, by plugin id. [plugins.md](plugins.md) |
 | `keys` | | `{}` | object | P25 encryption key sources, by name: where each set of keys is read from. [Encryption keys](systems.md#encryption-keys-keys) |
@@ -379,8 +379,8 @@ then Start). A few apply at once:
 | Applies at once | Applies at the next Start | Applies when the app restarts |
 |---|---|---|
 | A trunked system's talkgroup file: an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
-| Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them | Recording rules, `filenameFormat`, `captureDir` | `monitor.probeHosts` |
-| `log` settings, `monitor.networkChecks` | `recording.ramSpool` (the interface says "from the next start") | |
+| Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them | Recording rules, `filenameFormat`, `captureDir` | |
+| `log` settings, `monitor` (the hosts checked, the time server, the Checks switch) | `recording.ramSpool` (the interface says "from the next start") | |
 | `server.allowedOrigins`, `server.interfaces` (an interface moves to its new port at once) | A linked `channelFile` is re-read at every Start | |
 
 ## Files kept beside the config

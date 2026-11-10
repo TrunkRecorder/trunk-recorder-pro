@@ -18,6 +18,7 @@ import type {
   CallEntry,
   CallView,
   CaptureRule,
+  CaptureWhat,
   Config,
   Conventional,
   Device,
@@ -642,9 +643,14 @@ export function iqCaptures(): Promise<IqAnswer> {
   return ask<IqCaptures>({ type: "iqCaptures", id: nextId++ });
 }
 
-/** Record every radio for `seconds`, while the recording is working well. */
-export function iqCaptureStart(seconds: number, note: string): Promise<IqAnswer> {
-  return ask<IqCaptures>({ type: "iqCaptureStart", id: nextId++, seconds, note });
+/** Record `what` for `seconds` (the next call: as long as it is), showing a problem or everything working. */
+export function iqCaptureStart(what: CaptureWhat, seconds: number, note: string, problem: boolean): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureStart", id: nextId++, seconds, note, what, problem });
+}
+
+/** Give up capture `key`, asked for and still waiting. */
+export function iqCaptureCancel(key: number): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureCancel", id: nextId++, key });
 }
 
 export type IqCaptureReview = Extract<FromRecorder, { type: "iqCaptureReview" }>;

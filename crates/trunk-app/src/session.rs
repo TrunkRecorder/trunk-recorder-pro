@@ -799,6 +799,11 @@ impl Session {
         self.engine.control_tapes()
     }
 
+    /// Tape channels from now on, or stop.
+    pub fn keep_tapes(&self, on: bool) {
+        self.engine.keep_tapes(on);
+    }
+
     /// How each source has done this run.
     pub fn source_counts(&self) -> Vec<SourceCounts> {
         self.stats
@@ -1271,7 +1276,7 @@ impl Session {
             Event::NotSaved(c) => {
                 if self.want_facts {
                     out.push(Output::Fact { on: "call.not_saved", facts: json!({ "call": {
-                        "system": self.system_name(c.system), "site": self.site_name(c.site), "talkgroup": c.talkgroup, "freq": c.freq_hz,
+                        "system": self.system_name(c.system), "site": self.site_name(c.site), "talkgroup": c.talkgroup, "freq": c.freq_hz, "start_time": self.wall(c.start_s),
                         "call_length": (c.last_update_s - c.start_s).max(0.0), "clean_voice_pct": 0.0, "snr": 0.0, "signal": 0.0, "noise": 0.0, "freq_error": 0,
                         "encrypted": c.encrypted, "decrypted": c.decrypted, "emergency": false, "analog": c.voice.analog(), "tdma_slot": 0, "units": 0,
                     } }) });

@@ -1,7 +1,7 @@
 # The `trp` SigMF extension
 
 Version 0.1.0. Used by the wideband captures Trunk Recorder Pro makes
-([Capture a known-good sample](../guides/recordings.md#capture-a-known-good-sample)). It's declared
+([Capture what TRP receives](../guides/recordings.md#capture-what-trp-receives)). It's declared
 in `core:extensions` as `{ "name": "trp", "version": "0.1.0", "optional": true }`, so any SigMF tool
 can open the recording and ignore these fields.
 
@@ -10,7 +10,7 @@ can open the recording and ignore these fields.
 | Name | Type | What it says |
 |---|---|---|
 | `trp:tier` | string | What the file holds: `wideband`, `control` or `voice` |
-| `trp:purpose` | string | Why it was made: `healthy`, a recording of a system that was working well, or `rule` |
+| `trp:purpose` | string | Why it was made: by hand, `bug` (showing a problem) or `healthy` (a system working well); or `rule` |
 | `trp:rule` | object | The rule that made it: `id`, `on`, `if` |
 | `trp:channel` | object | A channel tape's: for `voice`, how its decoder is built (`spec`), `first` and `block` (its push sizes); for `control`, `site`, `carrier`, `block`, `t0_s`, `bandplan`  |
 | `trp:app` | object | The recorder that made it: `version` |
