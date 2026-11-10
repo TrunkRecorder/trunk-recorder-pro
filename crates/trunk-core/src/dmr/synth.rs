@@ -278,6 +278,23 @@ mod tests {
     }
 
     #[test]
+    fn an_auto_channel_settles_on_dmr() {
+        let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
+        let cfg = EngineConfig {
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            conventional: vec![ConvChannel::new(freq, ConvMode::Auto)],
+            ..Default::default()
+        };
+        let done = run(cfg, &wideband(fs, freq - center));
+        assert_eq!(done.len(), 1, "{:?}", done.iter().map(|k| &k.call).collect::<Vec<_>>());
+        let c = &done[0].call;
+        assert_eq!((c.talkgroup, c.voice.slot(), c.voice.color_code()), (4321, Some(1), Some(5)));
+        assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [98765]);
+        let secs = done[0].audio.len() as f64 / 8000.0;
+        assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");
+    }
+
+    #[test]
     fn engine_records_a_conventional_dmr_call_on_its_slot() {
         // The squelch's noise floor is per 1/64 of the band: wide enough here that the carrier isn't it.
         let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);

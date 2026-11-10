@@ -1311,6 +1311,8 @@ choice! {
         Nxdn48 = "nxdn48",
         /// NXDN at 9600 bps (12.5 kHz).
         Nxdn96 = "nxdn96",
+        /// Whatever is on it: analog FM, P25, DMR or NXDN, as it turns out.
+        Auto = "auto",
     }
 }
 
@@ -1323,6 +1325,7 @@ impl ChannelMode {
             ChannelMode::Dmr => ConvMode::Dmr,
             ChannelMode::Nxdn48 => ConvMode::Nxdn(trunk_core::nxdn::Rate::N48),
             ChannelMode::Nxdn96 => ConvMode::Nxdn(trunk_core::nxdn::Rate::N96),
+            ChannelMode::Auto => ConvMode::Auto,
         }
     }
 }
@@ -1457,7 +1460,12 @@ impl Channel {
             default_talkgroup,
             info: named.then(|| Talkgroup {
                 number: tg,
-                mode: if self.analog() { "A".into() } else { "D".into() },
+                mode: match self.mode {
+                    ChannelMode::Fm | ChannelMode::Am => "A",
+                    ChannelMode::Auto => "M",
+                    _ => "D",
+                }
+                .into(),
                 alpha_tag: self.name.clone(),
                 description: self.description.clone(),
                 tag: self.tag.clone(),
@@ -3879,6 +3887,34 @@ mod tests {
         let mut c = Config::default();
         c.sources = vec![Source { name: "Whip".into(), kind: SourceKind::Hackrf { serial: String::new(), lna_db: 4, vga_db: 20, amp: false, bias_tee: false }, ..plain }];
         assert!(c.problem().unwrap().starts_with("Source 1 (Whip): "), "{:?}", c.problem());
+    }
+
+    #[test]
+    fn a_channel_can_be_auto() {
+        let c: Config = serde_json::from_str(
+            r#"{
+                "conventional": [{ "shortName": "frs", "channels": [
+                    { "freqHz": 462562500, "mode": "auto", "name": "FRS 1" },
+                    { "freqHz": 462587500, "mode": "auto", "name": "FRS 2", "bandwidthKhz": 16 }] }],
+                "sources": [{ "type": "file", "path": "a.cu8", "centerHz": 462500000, "rateHz": 2400000, "realtime": false }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(c.problem(), None);
+        let e = c.engine_config(0.0, &Default::default());
+        assert!(e.conventional.iter().all(|x| x.mode == trunk_core::trunk::ConvMode::Auto));
+        assert_eq!(e.conventional[1].analog.half_bw_hz, 8000.0, "the analog receiver's width");
+        // Written back as it was read.
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""mode":"auto""#));
+        // It has no code to hold: a tone on it stops Start, naming the frequency.
+        let mut bad = c.clone();
+        bad.conventional[0].channels[0].code = "100.0".into();
+        assert!(bad.problem().unwrap().contains("auto channels carry no tone or code"), "{:?}", bad.problem());
+        // Nor can a frequency be listed twice.
+        let mut twice = c.clone();
+        let first = twice.conventional[0].channels[0].clone();
+        twice.conventional[0].channels.push(first);
+        assert!(twice.problem().unwrap().contains("is auto"), "{:?}", twice.problem());
     }
 
     #[test]

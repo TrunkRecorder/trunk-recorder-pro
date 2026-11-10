@@ -92,20 +92,20 @@ export interface AccessParts {
  * A row's Code column (or the old Tone) for its mode, split into the
  * recorder's code, slot and talkgroup (crates/trunk-core
  * src/trunk/conventional.rs: Access::parse and Access::parts — keep them
- * together): FM as parseTone; AM none; P25's NAC (`293`, `293 NAC`, `$293`,
+ * together): FM as parseTone; AM and auto none; P25's NAC (`293`, `293 NAC`, `$293`,
  * `0x293` → `293`; `F7E` / `F7F` = any) and talkgroup (`NAC 293 TG 1`,
  * `TG 1`); DMR's colour code, slot and talkgroup (`CC1`, `1`,
  * `CC1 TS2 TG201`, `CC 1 TG 201 SL 2`); NXDN's RAN and group (`RAN 5`, `5`,
  * `ran5 tg 201`; RAN 0 = any).
  */
-export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96", text: string): AccessParts | { error: string } {
+export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96" | "auto", text: string): AccessParts | { error: string } {
   if (mode === "fm") {
     const t = parseTone(text);
     return "tone" in t ? { code: t.tone } : t;
   }
   const up = text.trim().toUpperCase();
   if (["", "0", "S", "ANY", "NONE", "SEARCH"].includes(up)) return { code: "" };
-  if (mode === "am") return { error: `"${text.trim()}": AM channels carry no tone or code — leave it empty` };
+  if (mode === "am" || mode === "auto") return { error: `"${text.trim()}": ${mode === "am" ? "AM" : "auto"} channels carry no tone or code — leave it empty` };
   if (mode === "p25") {
     const bad = { error: `"${text.trim()}" isn't a NAC (up to 3 hex digits, like 293) or talkgroup (TG 1)` };
     const spaced = up.replace(/[,:=]/g, " ");

@@ -255,6 +255,11 @@ pub trait VoiceDecoder: Send {
     }
     /// How well its receiver hears the channel (the dashboard's).
     fn quality(&self) -> ChannelQuality;
+    /// The kind of voice it is decoding: its own, except for [`build_auto`]'s, which is None
+    /// until it has settled on one.
+    fn resolved(&self) -> Option<VoiceKind> {
+        Some(self.kind())
+    }
 }
 
 /// How well a receiver hears its channel, as the dashboard shows it.
@@ -297,6 +302,115 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
         }),
         VoiceKind::ProVoice => Box::new(ProVoice { pv: crate::edacs::ProVoice::new(spec.rate, spec.seed, spec.vocoder), t0: spec.t0, air: None }),
         VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, carrier: false }),
+    }
+}
+
+/// A channel that may carry any of the conventional protocols: every receiver listens to it
+/// until one of them hears something only its protocol sends (see [`Auto`]).
+pub fn build_auto(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
+    let candidates: Vec<Box<dyn VoiceDecoder>> = Auto::KINDS.iter().map(|&kind| build(&VoiceSpec { kind, subaudible: spec.subaudible && kind == VoiceKind::Analog, ..spec.clone() })).collect();
+    Box::new(Auto { held: candidates.iter().map(|_| Vec::new()).collect(), candidates, locked: None, heard_s: 0.0, rate: spec.rate })
+}
+
+/// Analog FM and each digital receiver, all fed the same channel. What each puts out is held
+/// back until one is settled on, then that one's goes on and the others are dropped:
+///
+/// - a digital receiver is settled on when it has put out [`Auto::LOCK_FRAMES`] frames of voice,
+///   or anything else it sends only after the frame's own check (a talker, a cipher, a position),
+///   which noise or speech doesn't pass;
+/// - else analog is, [`Auto::DECIDE_S`] after the channel opened. The wait is the price of telling
+///   speech from a digital signal, which sounds like noise in FM; it is the recording that waits
+///   (a call keeps the audio from its start), not the radio's carrier.
+///
+/// Where the channel closes first, whatever is held is settled the same way ([`VoiceDecoder::flush`]),
+/// with [`Auto::END_FRAMES`] enough for a digital receiver then: a short call has few frames.
+struct Auto {
+    candidates: Vec<Box<dyn VoiceDecoder>>,
+    /// What each has put out while none is settled on.
+    held: Vec<Vec<VoiceOut>>,
+    locked: Option<usize>,
+    /// Channel time heard since it opened, s.
+    heard_s: f64,
+    rate: f64,
+}
+
+impl Auto {
+    /// Analog first, which is what a channel with nothing digital on it settles on.
+    const KINDS: [VoiceKind; 5] = [VoiceKind::Analog, VoiceKind::Fdma, VoiceKind::Dmr, VoiceKind::Nxdn(Rate::N48), VoiceKind::Nxdn(Rate::N96)];
+    /// Frames of voice a digital receiver puts out before analog is ruled out: two P25 LDUs (9 each),
+    /// six DMR bursts (3), a few NXDN frames.
+    const LOCK_FRAMES: usize = 18;
+    /// As few as one P25 LDU, or three DMR bursts, when the channel closes without more.
+    const END_FRAMES: usize = 9;
+    /// How long analog waits for a digital receiver, s: a DMR or P25 call's first voice comes up to
+    /// a second after the carrier does.
+    const DECIDE_S: f64 = 2.0;
+
+    /// How far a receiver's held output goes toward being the protocol: its frames of voice, or
+    /// enough at once for anything only a checked frame carries.
+    fn evidence(held: &[VoiceOut]) -> usize {
+        held.iter()
+            .map(|v| match v.out {
+                TrackerOut::Audio(..) => 1,
+                TrackerOut::AnalogAudio(_) | TrackerOut::Subaudible(_) => 0,
+                _ => Self::LOCK_FRAMES,
+            })
+            .sum()
+    }
+
+    /// Settle on a receiver if the evidence says (`end`: nothing more is coming).
+    fn settle(&mut self, end: bool, out: &mut Vec<VoiceOut>) {
+        let need = if end { Self::END_FRAMES } else { Self::LOCK_FRAMES };
+        let best = (1..self.candidates.len()).map(|i| (i, Self::evidence(&self.held[i]))).filter(|&(_, e)| e >= need).max_by_key(|&(_, e)| e).map(|(i, _)| i);
+        let Some(i) = best.or_else(|| (end || self.heard_s >= Self::DECIDE_S).then_some(0)) else { return };
+        self.locked = Some(i);
+        out.append(&mut self.held[i]);
+        self.held.iter_mut().for_each(Vec::clear);
+    }
+}
+
+impl VoiceDecoder for Auto {
+    fn kind(&self) -> VoiceKind {
+        self.candidates[self.locked.unwrap_or(0)].kind()
+    }
+    fn resolved(&self) -> Option<VoiceKind> {
+        self.locked.map(|i| self.candidates[i].kind())
+    }
+    fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
+        if let Some(i) = self.locked {
+            return self.candidates[i].push(iq, out);
+        }
+        self.heard_s += iq.len() as f64 / self.rate;
+        for (c, held) in self.candidates.iter_mut().zip(&mut self.held) {
+            c.push(iq, held);
+        }
+        self.settle(false, out);
+    }
+    fn flush(&mut self, out: &mut Vec<VoiceOut>) {
+        if let Some(i) = self.locked {
+            return self.candidates[i].flush(out);
+        }
+        for (c, held) in self.candidates.iter_mut().zip(&mut self.held) {
+            c.flush(held);
+        }
+        self.settle(true, out);
+    }
+    fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
+        for c in &mut self.candidates {
+            c.set_keys(keys.clone());
+        }
+    }
+    fn set_squelch(&mut self, open_power: f32) {
+        self.candidates[0].set_squelch(open_power);
+    }
+    fn air(&self, slot: u8) -> AirInfo {
+        self.locked.map(|i| self.candidates[i].air(slot)).unwrap_or_default()
+    }
+    fn offset_hz(&self) -> Option<f32> {
+        self.locked.and_then(|i| self.candidates[i].offset_hz())
+    }
+    fn quality(&self) -> ChannelQuality {
+        self.locked.map(|i| self.candidates[i].quality()).unwrap_or_default()
     }
 }
 

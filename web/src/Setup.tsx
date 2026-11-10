@@ -232,6 +232,7 @@ const MODE_OPTIONS: { mode: Channel["mode"]; label: string }[] = [
   { mode: "dmr", label: "DMR" },
   { mode: "nxdn48", label: "NXDN48 (6.25 kHz)" },
   { mode: "nxdn96", label: "NXDN96 (12.5 kHz)" },
+  { mode: "auto", label: "Auto (any of these but AM)" },
 ];
 
 const modeOptions = MODE_OPTIONS.map((o) => (
@@ -247,10 +248,14 @@ const CODE_HINT = {
   dmr: { placeholder: "any CC", title: "Colour code (1). Empty: any. RadioReference's CC1 TS2 TG201 fills Slot and Match TG too." },
   nxdn48: { placeholder: "any RAN", title: "RAN (5). Empty or 0: any. RAN 5 TG 201 fills Match TG too." },
   nxdn96: { placeholder: "any RAN", title: "RAN (5). Empty or 0: any. RAN 5 TG 201 fills Match TG too." },
+  auto: { placeholder: "—", title: "Auto has no tone or code: one row records everything on the frequency." },
 };
 
-/** Digital modes: those whose transmissions name their talkgroup. */
-const digital = (mode: Channel["mode"]) => mode !== "fm" && mode !== "am";
+/** Digital modes: those whose transmissions name their talkgroup (auto may be one, or analog: it has none to match). */
+const digital = (mode: Channel["mode"]) => mode !== "fm" && mode !== "am" && mode !== "auto";
+
+/** Modes with no tone or code to split a frequency by. */
+const noCodes = (mode: Channel["mode"]) => mode === "am" || mode === "auto";
 
 /** A row's access fields set to `p` (absent when empty). */
 function setAccess(x: Channel, p: AccessParts) {
@@ -286,7 +291,7 @@ function AccessInput(props: { ch: Channel; disabled?: boolean; onChange: (p: Acc
         value={code}
         codec={asTyped}
         placeholder={CODE_HINT[ch.mode].placeholder}
-        readOnly={ch.mode === "am" && !code}
+        readOnly={noCodes(ch.mode) && !code}
         aria-label="Code"
         aria-invalid={!!error}
         title={error ?? CODE_HINT[ch.mode].title}
@@ -363,7 +368,7 @@ function matchChips(ch: Channel, shared: boolean): { kind: MatchKind; text: stri
   const bad = "error" in parsed ? parsed.error : undefined;
   const out: { kind: MatchKind; text: string; bad?: string }[] = [];
   if (code) {
-    const named = { fm: /^\d/.test(code) ? `${code} Hz` : code, am: code, p25: `NAC ${code}`, dmr: `CC ${code}`, nxdn48: `RAN ${code}`, nxdn96: `RAN ${code}` }[ch.mode];
+    const named = { fm: /^\d/.test(code) ? `${code} Hz` : code, am: code, p25: `NAC ${code}`, dmr: `CC ${code}`, nxdn48: `RAN ${code}`, nxdn96: `RAN ${code}`, auto: code }[ch.mode];
     // (What doesn't read is shown as typed.)
     out.push({ kind: ch.mode === "fm" ? "tone" : "code", text: bad ? code : named, bad });
   }
@@ -382,7 +387,7 @@ function MatchLine(props: { ch: Channel; shared: boolean; open: boolean; onToggl
       type="button"
       className={`match-line${props.open ? " open" : ""}`}
       aria-expanded={props.open}
-      title={ch.mode === "am" ? "AM has no codes: every transmission. Click to edit the row" : "What this row records — click to edit the row"}
+      title={noCodes(ch.mode) ? `${ch.mode === "am" ? "AM" : "Auto"} has no codes: every transmission. Click to edit the row` : "What this row records — click to edit the row"}
       onClick={props.onToggle}
     >
       {chips.map((c, k) => (
@@ -465,15 +470,16 @@ function RowEditor(props: {
           <fieldset>
             <legend>
               Records
-              {ch.mode !== "am" && (
+              {!noCodes(ch.mode) && (
                 <Info>
                   {CODE_HINT[ch.mode].title}
+                  {ch.mode === "auto" && " Every receiver listens until one hears its own protocol (digital); analog is settled on after about two seconds. The call is the one it settled on. FM on a channel known to be analog doesn't wait."}
                   {ch.mode === "dmr" && " Slot: either, or one."}
                   {digital(ch.mode) && " Match TG: only transmissions naming this talkgroup (empty: any). Give the row a TG Number to file them under another; the air's stays in the call's JSON as talkgroup_ota."}
                 </Info>
               )}
             </legend>
-            {ch.mode === "am" ? <span className="muted small">Everything (AM has no codes)</span> : <AccessInput ch={ch} disabled={props.disabled} onChange={props.onAccess} />}
+            {noCodes(ch.mode) ? <span className="muted small">Everything ({ch.mode === "am" ? "AM" : "auto"} has no codes)</span> : <AccessInput ch={ch} disabled={props.disabled} onChange={props.onAccess} />}
           </fieldset>
           <fieldset>
             <legend>
@@ -506,7 +512,7 @@ function RowEditor(props: {
   );
 }
 
-const NONE_LABEL = { fm: "no tone", am: "no code", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code" };
+const NONE_LABEL = { fm: "no tone", am: "no code", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code", auto: "no code" };
 const SHOWN_CODES = 8;
 
 /**
@@ -1709,7 +1715,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                               // A bandwidth is the mode's (AM's and FM's mean different channels); AM has no codes.
                               delete x.bandwidthKhz;
                               // The code is the mode's; Match TG only digital modes', Slot only DMR's.
-                              if (x.mode === "am") delete x.code;
+                              if (noCodes(x.mode)) delete x.code;
                               if (!digital(x.mode)) delete x.matchTalkgroup;
                               if (x.mode !== "dmr") delete x.slot;
                             })
@@ -1763,7 +1769,9 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           label={
                             digital(ch.mode)
                               ? `TG Number: calls are filed under it; empty: the talkgroup the air names (${ch.freqHz ? talkgroups[i] : "the frequency in kHz"} when it names none)`
-                              : "TG Number: calls are filed under it"
+                              : ch.mode === "auto"
+                                ? `TG Number: calls are filed under it; empty: the talkgroup a digital call names, else ${ch.freqHz ? talkgroups[i] : "the frequency in kHz"}`
+                                : "TG Number: calls are filed under it"
                           }
                           onChange={(v) =>
                             editRow(i, (x) => {
@@ -1817,10 +1825,10 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           </button>
                         {!linked && (
                           <>
-                            {ch.freqHz > 0 && ch.mode !== "am" && (
+                            {ch.freqHz > 0 && !noCodes(ch.mode) && (
                               <button
                                 className="btn ghost small"
-                                title={`Another ${{ fm: "tone", p25: "NAC or talkgroup", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode]} on this frequency`}
+                                title={`Another ${{ fm: "tone", p25: "NAC or talkgroup", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode as Exclude<Channel["mode"], "am" | "auto">]} on this frequency`}
                                 aria-label="Add a row on this frequency"
                                 onClick={() => addRule(i)}
                               >
@@ -1945,7 +1953,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
           </ul>
         </details>
       </Group>
-      {chans.some((ch) => ch.mode === "fm" || ch.mode === "am") && (
+      {chans.some((ch) => ch.mode === "fm" || ch.mode === "am" || ch.mode === "auto") && (
         <DemodGroup
           conv={conv}
           edit={(fn) =>
@@ -2002,8 +2010,9 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
 /** An analog channel's filter width: the mode's default, or a preset (or what a file set). */
 function BandwidthSelect(props: { ch: Channel; disabled: boolean; onChange: (khz: number | undefined) => void }) {
   const { ch } = props;
-  if (ch.mode !== "fm" && ch.mode !== "am") return <span className="muted">—</span>;
-  const presets = BANDWIDTH_PRESETS[ch.mode];
+  if (ch.mode !== "fm" && ch.mode !== "am" && ch.mode !== "auto") return <span className="muted">—</span>;
+  // (An auto channel's is its analog receiver's.)
+  const presets = BANDWIDTH_PRESETS[ch.mode === "am" ? "am" : "fm"];
   const value = ch.bandwidthKhz === undefined ? "" : String(ch.bandwidthKhz);
   const custom = ch.bandwidthKhz !== undefined && !presets.some((p) => p.khz === ch.bandwidthKhz);
   return (
@@ -2012,7 +2021,7 @@ function BandwidthSelect(props: { ch: Channel; disabled: boolean; onChange: (khz
       disabled={props.disabled}
       aria-label="Bandwidth"
       title={
-        ch.mode === "fm"
+        ch.mode !== "am"
           ? "The channel filter: narrow for 12.5 kHz channels, wide FM for 25 kHz ones (±5 kHz deviation)."
           : "The channel filter: 8.33 kHz or 25 kHz airband channels, or wide for UHF military air and a transmitter that is off frequency."
       }
@@ -2032,7 +2041,7 @@ function BandwidthSelect(props: { ch: Channel; disabled: boolean; onChange: (khz
 /** A conventional system's demodulation settings, for the analog modes it has; each left at Default is left out. */
 function DemodGroup(props: { conv: Conventional; edit: (fn: (d: Demod) => void) => void }) {
   const d = props.conv.demod ?? {};
-  const fm = props.conv.channels.some((ch) => ch.mode === "fm");
+  const fm = props.conv.channels.some((ch) => ch.mode === "fm" || ch.mode === "auto");
   const am = props.conv.channels.some((ch) => ch.mode === "am");
   const set = <K extends keyof Demod>(k: K, v: Demod[K] | undefined) =>
     props.edit((x) => {

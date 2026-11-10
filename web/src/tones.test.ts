@@ -17,6 +17,11 @@ test("parseAccess: code, slot and talkgroup, as the recorder reads them", () => 
   assert.deepEqual(parseAccess("dmr", "CC1 TS2 TG201"), { code: "1", slot: 2, matchTalkgroup: 201 });
   assert.deepEqual(parseAccess("nxdn48", "RAN 5 TG 201"), { code: "5", matchTalkgroup: 201 });
   assert.deepEqual(parseAccess("nxdn48", "RAN 0"), { code: "" });
+  // AM and auto have no code to split a frequency by.
+  assert.deepEqual(parseAccess("auto", "any"), { code: "" });
+  assert.deepEqual(parseAccess("auto", ""), { code: "" });
+  const auto = parseAccess("auto", "100.0");
+  assert.ok("error" in auto && auto.error.includes("auto channels carry no tone or code"), JSON.stringify(auto));
   assert.ok(sameAccess({ code: "D023N" }, { code: "D047I" }), "a DCS code and its alias");
   assert.ok(!sameAccess({ code: "293", matchTalkgroup: 1 }, { code: "293" }));
 });
