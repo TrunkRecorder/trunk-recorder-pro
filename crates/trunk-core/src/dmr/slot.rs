@@ -51,9 +51,15 @@ pub const FID_HYTERA: u8 = 0x68;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Lc(pub [u8; 9]);
 
+/// Motorola restricted access (RAS) sets this FLCO bit in a voice call's
+/// embedded LC (group 0x20, private 0x23); the LC is otherwise the usual one.
+const FLCO_RAS: u8 = 0x20;
+
 impl Lc {
+    /// The opcode, without Motorola's restricted-access bit.
     pub fn flco(&self) -> u8 {
-        self.0[0] & 0x3f
+        let flco = self.0[0] & 0x3f;
+        if self.fid() == FID_MOTOROLA { flco & !FLCO_RAS } else { flco }
     }
     pub fn fid(&self) -> u8 {
         self.0[1]
@@ -63,8 +69,8 @@ impl Lc {
         match (self.fid(), self.flco()) {
             (_, 0) => Some(true),
             (_, 3) => Some(false),
-            // Motorola Capacity Plus wide-area / encrypted group voice.
-            (FID_MOTOROLA, 4) | (FID_MOTOROLA, 32) => Some(true),
+            // Motorola Capacity Plus wide-area group voice.
+            (FID_MOTOROLA, 4) => Some(true),
             _ => None,
         }
     }
@@ -74,25 +80,24 @@ impl Lc {
     pub fn emergency(&self) -> bool {
         self.0[2] & 0x80 != 0
     }
-    /// The privacy (encryption) service option — or Motorola's encrypted voice LC.
+    /// The privacy (encryption) service option.
     pub fn encrypted(&self) -> bool {
-        self.0[2] & 0x40 != 0 || (self.fid() == FID_MOTOROLA && self.flco() == 32)
+        self.0[2] & 0x40 != 0
     }
-    /// The talkgroup (or radio) called. Capacity Plus's own LCs are narrower:
-    /// wide-area (linked) groups are 8 bits, encrypted voice's 16.
+    /// The talkgroup (or radio) called. Capacity Plus wide-area (linked)
+    /// groups are 8 bits.
     pub fn target(&self) -> u32 {
         let b = &self.0;
         match (self.fid(), self.flco()) {
             (FID_MOTOROLA, 4) => b[5] as u32,
-            (FID_MOTOROLA, 32) => u32::from_be_bytes([0, 0, b[4], b[5]]),
             _ => u32::from_be_bytes([0, b[3], b[4], b[5]]),
         }
     }
-    /// The radio talking (Capacity Plus's LCs: 16 bits, 0 in a wide-area header).
+    /// The radio talking (Capacity Plus wide-area: 16 bits, 0 in a header).
     pub fn source(&self) -> u32 {
         let b = &self.0;
         match (self.fid(), self.flco()) {
-            (FID_MOTOROLA, 4) | (FID_MOTOROLA, 32) => u32::from_be_bytes([0, 0, b[7], b[8]]),
+            (FID_MOTOROLA, 4) => u32::from_be_bytes([0, 0, b[7], b[8]]),
             _ => u32::from_be_bytes([0, b[6], b[7], b[8]]),
         }
     }

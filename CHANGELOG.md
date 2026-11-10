@@ -5,6 +5,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **DMR calls on Motorola systems with restricted access (RAS) are no longer all marked encrypted.** RAS sets a bit in a call's
+  link control that was read as encryption, so their audio was dropped or never recorded. A call is now encrypted only when its
+  link control's privacy option says so, and RAS private calls are recorded.
 - **Capturing a control channel or a call for a bug report is one click.** The RF page's capture card (now **Capture what TRP
   receives**) records one site's control channel for 30 or 60 seconds, the next call on a system or talkgroup, or every radio, and
   says whether it shows a problem. Before, a control channel or call could only be caught by a capture rule set up ahead of time.
