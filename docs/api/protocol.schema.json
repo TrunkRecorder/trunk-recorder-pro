@@ -887,6 +887,61 @@
       "additionalProperties": false,
       "description": "What to keep when a capture rule fires."
     },
+    "CaptureWhat": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "radios"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "control"
+            },
+            "site": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "site"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "call"
+            },
+            "system": {
+              "type": "string"
+            },
+            "talkgroup": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "system"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "What a capture asked for by hand records: every radio, one site's control channel (its `index`), or the next call on a system (on one of its talkgroups)."
+    },
     "Channel": {
       "type": "object",
       "properties": {
@@ -4060,6 +4115,12 @@
             "active": {
               "$ref": "#/definitions/IqCaptureActive"
             },
+            "waiting": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/IqCaptureWaiting"
+              }
+            },
             "captures": {
               "type": "array",
               "items": {
@@ -4088,6 +4149,7 @@
           "required": [
             "type",
             "id",
+            "waiting",
             "captures",
             "root",
             "recording",
@@ -4680,6 +4742,31 @@
       ],
       "additionalProperties": false,
       "description": "How the sending of a capture to the corpus stands."
+    },
+    "IqCaptureWaiting": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "number"
+        },
+        "text": {
+          "type": "string",
+          "description": "What it's of, in words."
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "elapsedS": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "key",
+        "text",
+        "elapsedS"
+      ],
+      "additionalProperties": false,
+      "description": "A capture asked for by hand that waits on the air: a control channel recording for `seconds`, or the next call."
     },
     "IqWaterfall": {
       "type": "object",
@@ -10047,12 +10134,39 @@
             },
             "note": {
               "type": "string"
+            },
+            "what": {
+              "$ref": "#/definitions/CaptureWhat"
+            },
+            "problem": {
+              "type": "boolean"
             }
           },
           "required": [
             "type",
             "id",
             "seconds"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureCancel"
+            },
+            "id": {
+              "type": "number"
+            },
+            "key": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "key"
           ],
           "additionalProperties": false
         },

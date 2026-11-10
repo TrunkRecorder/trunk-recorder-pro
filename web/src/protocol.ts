@@ -2008,6 +2008,18 @@ export interface Diagnostics {
   budget?: { capturesPerDay: number; mbPerDay: number; ramMb: number };
 }
 
+/** What a capture asked for by hand records: every radio, one site's control channel (its `index`), or the next call on a system (on one of its talkgroups). */
+export type CaptureWhat = { kind: "radios" } | { kind: "control"; site: number } | { kind: "call"; system: string; talkgroup?: number };
+
+/** A capture asked for by hand that waits on the air: a control channel recording for `seconds`, or the next call. */
+export interface IqCaptureWaiting {
+  key: number;
+  /** What it's of, in words. */
+  text: string;
+  seconds?: number;
+  elapsedS: number;
+}
+
 /** A capture being made. */
 export interface IqCaptureActive {
   name: string;
@@ -2112,8 +2124,8 @@ export type FromRecorder =
   | ({ type: "radioResult" } & RadioResultBody)
   /** Answers callsQuery: newest first (by start, then path); `next`: more remain, ask again with it as the `cursor`; `error`: only the recent calls (the call store is off). */
   | { type: "callsResult"; id: number; entries: CallEntry[]; next?: string; error?: string }
-  /** Answers iqCaptures, iqCaptureStart and iqCaptureDelete: the captures on disk in `root`, newest first; `active`: the one being made; `recording`: the radios are running; `presets`: the capture rules shipped; `canSend`: there's a corpus service to send captures to; `error`: why the last request or capture failed. */
-  | { type: "iqCaptures"; id: number; active?: IqCaptureActive; captures: IqCapture[]; root: string; recording: boolean; presets: CaptureRule[]; canSend: boolean; error?: string }
+  /** Answers iqCaptures, iqCaptureStart and iqCaptureDelete: the captures on disk in `root`, newest first; `active`: the capture of every radio being made; `waiting`: those asked for that wait on the air; `recording`: the radios are running; `presets`: the capture rules shipped; `canSend`: there's a corpus service to send captures to; `error`: why the last request or capture failed. */
+  | { type: "iqCaptures"; id: number; active?: IqCaptureActive; waiting: IqCaptureWaiting[]; captures: IqCapture[]; root: string; recording: boolean; presets: CaptureRule[]; canSend: boolean; error?: string }
   /** Answers iqCaptureReview: what capture `name` would publish. */
   | { type: "iqCaptureReview"; id: number; name: string; metadata: unknown; diagnostics: unknown; waterfalls: IqWaterfall[]; error?: string }
   /** Answers iqRuleCheck: why the rule can't run, if so. */
@@ -2197,8 +2209,10 @@ export type ToRecorder =
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths" | "tones"; system?: string; key?: number; hours?: number; limit?: number }
   /** The radios' captures on disk (answered with iqCaptures). */
   | { type: "iqCaptures"; id: number }
-  /** Record every radio for `seconds` (5 to 300) of a recording that's working well, to files; nothing is sent anywhere (answered with iqCaptures). */
-  | { type: "iqCaptureStart"; id: number; seconds: number; note?: string }
+  /** Record `what` (every radio, by default) to files, nothing sent anywhere: for `seconds` (every radio: 5 to 300; a control channel: 5 to 60; the next call: as long as it is), showing a problem (`problem`) or everything working (answered with iqCaptures). */
+  | { type: "iqCaptureStart"; id: number; seconds: number; note?: string; what?: CaptureWhat; problem?: boolean }
+  /** Give up capture `key`, asked for and still waiting or running (answered with iqCaptures). */
+  | { type: "iqCaptureCancel"; id: number; key: number }
   /** What capture `name` would publish (answered with iqCaptureReview). */
   | { type: "iqCaptureReview"; id: number; name: string }
   /** Send capture `name`, reviewed, to the public corpus (answered with iqCaptures). */

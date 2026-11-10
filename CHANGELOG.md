@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Capturing a control channel or a call for a bug report is one click.** The RF page's capture card (now **Capture what TRP
+  receives**) records one site's control channel for 30 or 60 seconds, the next call on a system or talkgroup, or every radio, and
+  says whether it shows a problem. Before, a control channel or call could only be caught by a capture rule set up ahead of time.
+  Rules are still there, under **Capture automatically when something goes wrong**.
+- A DMR site's control channel captures are each named for their own frequency, not all for one.
+
 ## [0.3.5] — 2026-11-09
 
 - **A call heard on several sites is now one call to plugins and stats, from its first copy's start to its last copy's end.** Before, it was

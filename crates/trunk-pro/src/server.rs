@@ -936,10 +936,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || crate::iq_capture::listing(&ctx2, id, None)).await.ok()
         }
-        Command::IqCaptureStart { id, seconds, note } => {
+        Command::IqCaptureStart { id, seconds, note, what, problem } => {
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || {
-                let error = crate::iq_capture::start(&ctx2, seconds, &note).err();
+                let error = crate::iq_capture::start(&ctx2, what, seconds, &note, problem).err();
                 crate::iq_capture::listing(&ctx2, id, error)
             })
             .await
@@ -971,6 +971,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             id,
             error: serde_json::from_value::<trunk_app::config::CaptureRule>(rule).map_err(|e| e.to_string()).and_then(|r| crate::iq_rules::check(&r)).err(),
         }),
+        Command::IqCaptureCancel { id, key } => {
+            crate::iq_capture::cancel(&ctx, key);
+            Some(crate::iq_capture::listing(&ctx, id, None))
+        }
         Command::IqCaptureDelete { id, name } => {
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || {

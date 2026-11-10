@@ -25,7 +25,7 @@ use num_complex::Complex32;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha512};
 use trunk_app::config::{Config, NameLists, SampleFormat, SourceKind, SystemNames};
-use trunk_app::protocol::{IqCapture, IqCaptureActive, IqWaterfall, ToClient};
+use trunk_app::protocol::{CaptureWhat, IqCapture, IqCaptureActive, IqCaptureWaiting, IqWaterfall, ToClient};
 use trunk_core::trunk::tape::{ControlTape, VoiceTape};
 use trunk_core::trunk::{IdField, Status};
 
@@ -303,6 +303,9 @@ pub struct Captures {
     active: Mutex<Option<Active>>,
     last_error: Mutex<Option<String>>,
     rules: Mutex<Option<SyncSender<crate::iq_rules::Fact>>>,
+    /// Captures asked for by hand that wait on the air: the capture rules make them.
+    pub waiting: Mutex<Vec<Waiting>>,
+    next_key: AtomicU64,
     /// A capture is being sent ([`crate::iq_send`]).
     pub sending: Mutex<bool>,
 }
@@ -343,9 +346,27 @@ impl Captures {
         }
     }
 
+    /// Waiting capture `key`, taken off the list: it's being made.
+    pub fn take_waiting(&self, key: u64) -> Option<Waiting> {
+        let mut w = self.waiting.lock().unwrap();
+        let i = w.iter().position(|a| a.key == key)?;
+        Some(w.remove(i))
+    }
+
+    pub fn is_waiting(&self, key: u64) -> bool {
+        self.waiting.lock().unwrap().iter().any(|a| a.key == key)
+    }
+
+    /// Something went wrong with a capture: the list says so.
+    pub fn failed(&self, why: String) {
+        log::warn!("{why}");
+        *self.last_error.lock().unwrap() = Some(why);
+    }
+
     /// The session ended: a capture still running is given up.
     pub fn session_ended(&self) {
         *self.rules.lock().unwrap() = None;
+        self.waiting.lock().unwrap().clear();
         for t in self.taps.lock().unwrap().drain(..) {
             t.cancel("Recording stopped during the capture.");
         }
@@ -391,17 +412,94 @@ pub struct Request {
     pub after_s: f64,
     pub before_s: f64,
     pub note: String,
-    /// `healthy` or `rule`.
+    /// `bug`, `healthy` or `rule`.
     pub purpose: &'static str,
     pub rule: Option<Value>,
 }
 
-/// Capture every radio of the running session for `seconds`, in the background: the capture button.
-pub fn start(ctx: &Arc<Ctx>, seconds: u32, note: &str) -> Result<(), String> {
-    if !(MIN_S..=MAX_S).contains(&seconds) {
-        return Err(format!("A capture is {MIN_S} to {MAX_S} seconds long."));
+/// A capture asked for by hand that waits on the air: the capture rules' thread makes it.
+#[derive(Clone, Debug)]
+pub enum Asked {
+    /// Site `site`'s control channel, for `seconds` from when it was asked.
+    Control { site: u16, seconds: u32 },
+    /// The voice channel of the next call on `system` (on its `talkgroup`).
+    Call { system: String, talkgroup: Option<u32> },
+}
+
+#[derive(Clone, Debug)]
+pub struct Waiting {
+    pub key: u64,
+    pub asked: Asked,
+    /// What it's of, in words.
+    pub text: String,
+    pub note: String,
+    pub purpose: &'static str,
+    /// When it was asked for, Unix s.
+    pub since: f64,
+    pub started: Instant,
+}
+
+impl Waiting {
+    /// What its capture's metadata says of why it was made.
+    pub fn why(&self) -> Value {
+        json!({ "trp:purpose": self.purpose, "core:description": self.note })
     }
-    begin_capture(ctx, &Request { after_s: seconds as f64, before_s: 0.0, note: note.to_string(), purpose: "healthy", rule: None })
+}
+
+/// The longest a control channel capture is: what its tape keeps.
+const CONTROL_MAX_S: u32 = 60;
+
+/// Capture `what` of the running session, in the background: the capture card's button.
+pub fn start(ctx: &Arc<Ctx>, what: CaptureWhat, seconds: u32, note: &str, problem: bool) -> Result<(), String> {
+    let purpose = if problem { "bug" } else { "healthy" };
+    let note = note.trim().to_string();
+    let asked = match what {
+        CaptureWhat::Radios => {
+            if !(MIN_S..=MAX_S).contains(&seconds) {
+                return Err(format!("A capture is {MIN_S} to {MAX_S} seconds long."));
+            }
+            return begin_capture(ctx, &Request { after_s: seconds as f64, before_s: 0.0, note, purpose, rule: None });
+        }
+        CaptureWhat::Control { site } => {
+            if !(MIN_S..=CONTROL_MAX_S).contains(&seconds) {
+                return Err(format!("A control channel capture is {MIN_S} to {CONTROL_MAX_S} seconds long."));
+            }
+            Asked::Control { site, seconds }
+        }
+        CaptureWhat::Call { system, talkgroup } => Asked::Call { system, talkgroup },
+    };
+    if ctx.iq.taps.lock().unwrap().is_empty() {
+        return Err("Start recording first: a capture is of what the radios are receiving now.".into());
+    }
+    let live = live(ctx).ok_or("The recording isn't answering.")?;
+    let cfg = ctx.run.lock().unwrap().clone().ok_or("Start recording first.")?;
+    let text = match &asked {
+        Asked::Control { site, seconds } => {
+            let s = live.status.sites.iter().find(|y| y.site == *site).ok_or("That site isn't running.")?;
+            format!("{seconds} s of {}'s control channel", site_label(&s.short_name, &s.site_name))
+        }
+        Asked::Call { system, talkgroup } => {
+            let known = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|s| &s.short_name)).any(|s| s == system);
+            if !known {
+                return Err(format!("There's no system {system:?} recording."));
+            }
+            format!("The next call on {system}{}", talkgroup.map_or(String::new(), |t| format!(", talkgroup {t}")))
+        }
+    };
+    let key = ctx.iq.next_key.fetch_add(1, Ordering::Relaxed) + 1;
+    *ctx.iq.last_error.lock().unwrap() = None;
+    ctx.iq.waiting.lock().unwrap().push(Waiting { key, asked, text, note, purpose, since: crate::clock::unix_s(), started: Instant::now() });
+    Ok(())
+}
+
+/// A site by its system and own name ("DCFD · North"; a system of one site: its short name).
+fn site_label(system: &str, site: &str) -> String {
+    if site.is_empty() || site == system { system.to_string() } else { format!("{system} · {site}") }
+}
+
+/// Give up capture `key`, asked for and still waiting.
+pub fn cancel(ctx: &Ctx, key: u64) {
+    ctx.iq.take_waiting(key);
 }
 
 /// Capture every radio of the running session, in the background.
@@ -831,7 +929,8 @@ pub fn listing(ctx: &Ctx, id: u64, error: Option<String>) -> ToClient {
     captures.sort_by(|a, b| b.name.cmp(&a.name));
     let active = ctx.iq.active.lock().unwrap().as_ref().map(|a| IqCaptureActive { name: a.name.clone(), seconds: a.seconds, elapsed_s: a.started.elapsed().as_secs_f64() });
     let error = error.or_else(|| ctx.iq.last_error.lock().unwrap().clone());
-    ToClient::IqCaptures { id, active, captures, root: root(&cfg).display().to_string(), recording: !ctx.iq.taps.lock().unwrap().is_empty(), presets: crate::iq_rules::presets(), can_send: crate::iq_send::available(), error }
+    let waiting = ctx.iq.waiting.lock().unwrap().iter().map(|w| IqCaptureWaiting { key: w.key, text: w.text.clone(), seconds: match w.asked { Asked::Control { seconds, .. } => Some(seconds), Asked::Call { .. } => None }, elapsed_s: w.started.elapsed().as_secs_f64() }).collect();
+    ToClient::IqCaptures { id, active, waiting, captures, root: root(&cfg).display().to_string(), recording: !ctx.iq.taps.lock().unwrap().is_empty(), presets: crate::iq_rules::presets(), can_send: crate::iq_send::available(), error }
 }
 
 /// A folder for a channel tape a rule keeps: the capture directory's, named for what it is.
@@ -848,23 +947,29 @@ fn add_diagnostics(ctx: &Ctx, dir: &Path, live: &Live) -> Result<(), String> {
     fs::write(&path, serde_json::to_string_pretty(&d).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Save a voice channel's tape, for rule `rule`.
-pub fn save_voice(ctx: &Ctx, t: &VoiceTape, rule: Value) -> Result<(), String> {
+/// What a rule's capture says of why it was made.
+pub fn for_rule(rule: Value) -> Value {
+    json!({ "trp:purpose": "rule", "trp:rule": rule })
+}
+
+/// Save a voice channel's tape; `why`: its metadata's reason ([`for_rule`], [`Waiting::why`]).
+pub fn save_voice(ctx: &Ctx, t: &VoiceTape, why: Value) -> Result<(), String> {
     let dir = tape_dir(ctx, "voice", t.freq_hz as u64);
-    crate::tape_file::write_voice(&dir, t, json!({ "trp:purpose": "rule", "trp:rule": rule }))?;
+    crate::tape_file::write_voice(&dir, t, why)?;
     let live = live(ctx).ok_or("The recording ended")?;
     add_diagnostics(ctx, &dir, &live)?;
     log::info!("Voice channel capture saved: {}", dir.display());
     Ok(())
 }
 
-/// Save a control channel's tape, for rule `rule`.
-pub fn save_control(ctx: &Ctx, cfg: &Config, t: &ControlTape, live: &Live, rule: Value) -> Result<(), String> {
-    let freq = live.status.sites.get(t.site as usize).and_then(|s| s.control_channel_hz).unwrap_or(0);
+/// Save a control channel's tape; `why`: as [`save_voice`]'s.
+pub fn save_control(ctx: &Ctx, cfg: &Config, t: &ControlTape, live: &Live, why: Value) -> Result<(), String> {
+    // (Its own carrier's: a DMR site's are several.)
+    let freq = if t.freq_hz > 0.0 { t.freq_hz as u64 } else { live.status.sites.get(t.site as usize).and_then(|s| s.control_channel_hz).unwrap_or(0) };
     let dir = tape_dir(ctx, "control", freq);
     let config = decode_config(cfg, &vec_of_written(cfg.sources.len()));
     let bandplan = live.bandplans.get(t.site as usize).map_or("", String::as_str);
-    crate::tape_file::write_control(&dir, t, freq as f64, &config, bandplan, json!({ "trp:purpose": "rule", "trp:rule": rule }))?;
+    crate::tape_file::write_control(&dir, t, freq as f64, &config, bandplan, why)?;
     add_diagnostics(ctx, &dir, live)?;
     log::info!("Control channel capture saved: {}", dir.display());
     Ok(())
