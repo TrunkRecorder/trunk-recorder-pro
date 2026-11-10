@@ -1242,7 +1242,7 @@ unlike the other messages).
 | `pluginDelays` | array of `{plugins, talkgroups, delayS}` | `[]` | how long plugins wait for calls, every system (a system's own come first) |
 | `keys` | map name → `{file, passwordFile}` | `{}` | encryption key sources; a system names one in its `keys` |
 | `log` | object | see 10.9 | log options |
-| `monitor` | `{probeHosts, networkChecks, timeServer, clockWarnMs}` | `["1.1.1.1:443","dns.google:443"]`, `true`, `"pool.ntp.org"`, `250` | internet checks; `networkChecks: false` pauses them and the SNTP check; the clock's SNTP check and its warning threshold |
+| `monitor` | `{checkHosts, checkEveryS, networkChecks, timeServer, clockWarnMs}` | `[]`, `15`, `true`, `"pool.ntp.org"`, `250` | hosts checked (TCP, none by default: the plugins' services are the connections); `networkChecks: false` pauses them and the SNTP check; all apply at once; the clock's SNTP check and its warning threshold |
 
 ### 10.3 `sources[]`
 

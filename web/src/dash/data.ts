@@ -5,7 +5,7 @@
 
 import { activeSystems, autoTuneOn, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
 import { isRecording, can, setView, snapshot, statsQuery, useApp, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
-import { keyPart, num, pct } from "../fmt.ts";
+import { dur, keyPart, num, pct } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
 import type { Level } from "../charts.tsx";
 import type { PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, StorageSettings, SystemStatus } from "../protocol.ts";
@@ -337,7 +337,7 @@ export function platformHealth(s: AppState): Health {
   else if ((v["plat/memLevel"] ?? 0) >= 1 || (v["plat/memPsi"] ?? 0) > 10 || (v["plat/mem"] ?? 0) > 90) hs.push({ level: "warn", why: "Memory is under pressure" });
   if ((v["plat/cpu"] ?? 0) > 90) hs.push({ level: "warn", why: `CPU at ${pct(v["plat/cpu"])}: decoding may fall behind` });
   if ((v["plat/piThrottled"] ?? 0) > 0) hs.push({ level: "warn", why: "The Pi is throttled (under-voltage or heat)" });
-  if (v["net/up"] !== undefined && v["net/up"] < 1) hs.push({ level: v["net/up"] === 0 ? "bad" : "warn", why: v["net/up"] === 0 ? "The internet isn't answering" : "Some connectivity checks fail" });
+  if (v["net/up"] !== undefined && v["net/up"] < 1) hs.push({ level: v["net/up"] === 0 ? "bad" : "warn", why: v["net/up"] === 0 ? "No host checked answers (monitor.checkHosts)" : "Some hosts checked don't answer (monitor.checkHosts)" });
   if ((v["plat/temp"] ?? 0) > 80) hs.push({ level: "warn", why: `Running hot: ${num(v["plat/temp"], 0)} °C` });
   // (The recorder decides what's wrong with the clock: the events go by the same.)
   const clock = h.platform.clock?.problem;
@@ -360,6 +360,61 @@ export function pluginsHealth(s: AppState): Health {
   const on = (id: string) => !!s.config?.plugins?.[id]?.enabled;
   const ons = ps.filter((p) => on(p.id));
   return ons.length ? worstOf(ons, (p) => p.manifest?.name ?? p.id, (p) => pluginHealth(p, true)) : { level: "idle", why: "No plugins on" };
+}
+
+/** A plugin's endpoint state, as a light. */
+export const ENDPOINT_LEVEL = { up: "ok", degraded: "warn", down: "bad", unknown: "idle" } as const;
+
+/** Something the recorder reaches: a host it checks (monitor.checkHosts), or a service a plugin that's on talks to. */
+export interface Connection {
+  name: string;
+  /** The plugin that says how it answers; none: a host checked. */
+  plugin?: string;
+  level: Level;
+  /** How it answers now, in words. */
+  state: string;
+  /** A check's connect time, or how long a plugin's send takes, ms. */
+  ms: number | null;
+  lastOk: number | null;
+  /** A check's tries that failed, "2 of 40". */
+  failed?: string;
+}
+
+/**
+ * What the recorder reaches, as one list: the hosts it checks, then the
+ * services the plugins report. The plugins' are what's really used, and cost
+ * no traffic of their own; their warnings are the plugins' (Plugins), so they
+ * don't turn the computer's light.
+ */
+export function connections(s: AppState): Connection[] {
+  const now = Date.now() / 1000;
+  const rows: Connection[] = (s.host?.platform.probes ?? []).map((x) => ({
+    name: x.target,
+    level: x.ok === null ? "idle" : x.ok ? "ok" : "bad",
+    state: x.ok === null ? "not tried yet" : x.ok ? "answers" : `down${x.downSince ? ` for ${dur(now - x.downSince)}` : ""}`,
+    ms: x.rttMs,
+    lastOk: x.lastOk,
+    failed: `${x.fails} of ${x.tries}`,
+  }));
+  for (const p of s.plugins?.plugins ?? []) {
+    if (!s.config?.plugins?.[p.id]?.enabled || p.runtime.state === "off") continue;
+    for (const e of p.runtime.metrics?.endpoints ?? []) {
+      const state = e.state === "unknown" ? "nothing sent yet" : e.state === "up" ? "answers" : `${e.state}${e.lastError ? `: ${e.lastError}` : ""}`;
+      rows.push({ name: e.name, plugin: p.manifest?.name ?? p.id, level: ENDPOINT_LEVEL[e.state], state, ms: e.latencyMs ?? null, lastOk: e.lastOk ?? null });
+    }
+  }
+  return rows;
+}
+
+/** The connections together: all answer, some, none; null while none has been tried. */
+export function connectionsSummary(rows: Connection[]): { value: "Up" | "Partly" | "Down"; level: Level; why: string } | null {
+  const known = rows.filter((r) => r.level !== "idle");
+  if (!known.length) return null;
+  const trouble = known.filter((r) => r.level !== "ok");
+  const failing = (r: Connection) => `${r.name} ${r.level === "bad" ? "isn't answering" : "is having trouble"}`;
+  if (known.every((r) => r.level === "bad")) return { value: "Down", level: "bad", why: known.length === 1 ? failing(known[0]) : "Nothing answers" };
+  if (trouble.length) return { value: "Partly", level: "warn", why: `${failing(trouble[0])}${trouble.length > 1 ? `, and ${trouble.length - 1} more` : ""}` };
+  return { value: "Up", level: "ok", why: known.length === 1 ? `${known[0].name} answers` : `all ${known.length} answer` };
 }
 
 /** A system's Radio system page, at its frequencies out of band: `radio/<system>/outOfBand`. */

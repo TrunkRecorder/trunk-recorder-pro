@@ -137,7 +137,7 @@ coloured light. Click one to go to the page about it. These are the events you c
 | `<source>: clipping (…% of samples at full scale)` | amber | More than 0.5% of samples are at full scale: the gain is too high, or a strong signal is nearby. Lower the gain a few dB. |
 | `<source>: clean again` | green | No more drops or clipping. |
 | `<plugin>: error — …` / `warning — …` / `ok — …` | red / amber / green | A plugin's own status changed. See the Plugins page. |
-| `<target> stopped answering` | red | One of the internet checks (`monitor.probeHosts`) failed. Your uploads probably aren't getting through either. |
+| `<target> stopped answering` | red | One of the hosts checked (`monitor.checkHosts`) stopped answering. |
 | `<target> answers again (down … s)` | green | It's back. |
 | `The <name> disk has only …% free` | red | The recordings or app data disk is under 5% free. Free some space, or turn on M4A and the clean-up options in [Recordings](recordings.md). |
 | `The RAM spool has only …% free: uploads aren't keeping up` | amber | The RAM spool is under 25% free. Check the plugins. |
