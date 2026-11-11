@@ -386,6 +386,11 @@ impl Call {
         !self.voice.analog() && (self.encrypted || self.decrypted || recorded_decrypted)
     }
 
+    /// Who is talking now: the last source named.
+    pub fn talker(&self) -> Option<&CallSource> {
+        self.sources.last()
+    }
+
     /// Audio of it was heard at `time_s`.
     pub fn note_audio(&mut self, time_s: f64) {
         self.last_audio_s = self.last_audio_s.max(time_s);
@@ -665,7 +670,7 @@ impl CallManager {
                 Self::close(self.calls.remove(i), host, ev);
             } else if self.cfg.too_long(c, now_s) {
                 // The one talking now carries on.
-                let talking = c.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect();
+                let talking = c.talker().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect();
                 self.split(i, now_s, talking, CarriesOn::TooLong, host, ev);
             }
         }

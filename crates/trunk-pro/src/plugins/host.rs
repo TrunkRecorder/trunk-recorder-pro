@@ -23,8 +23,9 @@ use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
     format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, LogLine, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
-    SystemInfo, API_VERSION, EXIT_CONFIG,
+    SystemInfo, VoiceChunk, API_VERSION, EXIT_CONFIG,
 };
+use trunk_core::trunk::LiveAudio;
 
 use super::delay::About;
 use super::hold::{Hold, Offer, Outlet};
@@ -111,7 +112,7 @@ struct Plugin {
     /// It may be given calls decrypted with our keys (`shareDecrypted`); whether it was said when one was withheld.
     share_decrypted: bool,
     withheld_said: AtomicBool,
-    /// Whether it was said that it isn't streamed the live audio of calls it's delayed for.
+    /// Whether it was said that it isn't streamed the live media of calls it's delayed for.
     audio_held_said: AtomicBool,
 }
 
@@ -144,9 +145,9 @@ pub struct PluginHost {
     supervisors: Vec<JoinHandle<()>>,
     /// What the session should build for plugins.
     pub topics: PluginTopics,
-    /// Some plugin wants live audio.
-    pub audio: bool,
-    /// Each system's short name, by its number (for audio chunks).
+    /// Some plugin wants calls' live media ([`topic::is_live`]: audio, voice).
+    pub live: bool,
+    /// Each system's short name, by its number (for concluded calls).
     names: BTreeMap<u16, String>,
     /// The log's tap that hands its lines to the plugins taking `log` ([`crate::logging::tap`]).
     log_tap: Option<u64>,
@@ -286,7 +287,7 @@ impl PluginHost {
             notes(Note::Log { plugin: String::new(), level: Level::Warn, text });
         }
         let mut topics = PluginTopics::default();
-        let mut live_audio = false;
+        let mut live = false;
         let mut plugins = Vec::new();
         let mut queues = Vec::new();
         for (s, m, settings) in ready {
@@ -295,8 +296,7 @@ impl PluginHost {
             topics.units |= m.subscribes(topic::UNIT);
             topics.status |= m.subscribes(topic::STATUS);
             topics.tone_patterns |= m.subscribes(topic::TONE_PATTERN);
-            topics.voice |= m.subscribes(topic::VOICE);
-            live_audio |= m.subscribes(topic::AUDIO);
+            live |= topic::ALL.iter().any(|&t| topic::is_live(t) && m.subscribes(t));
             let data_dir = s.data_dir.clone().unwrap_or_else(|| super::data_dir(&s.id));
             let _ = std::fs::create_dir_all(&data_dir);
             let mut formats = vec!["wav".to_string()];
@@ -361,7 +361,7 @@ impl PluginHost {
                 }
             }))
         });
-        PluginHost { shared, encoder, supervisors, topics, audio: live_audio, names, log_tap, done: false }
+        PluginHost { shared, encoder, supervisors, topics, live, names, log_tap, done: false }
     }
 
     /// Each plugin's process: drops, restarts, uptime.
@@ -402,11 +402,9 @@ impl PluginHost {
             HostMessage::Unit(u) => (topic::UNIT, on(&u.short_name, u.talkgroup)),
             // (Its tones may have been heard in decrypted voice: only plugins allowed that get it.)
             HostMessage::TonePattern(t) => (topic::TONE_PATTERN, About { decrypted: t.decrypted, ..on(&t.short_name, Some(t.talkgroup)) }),
-            // (Decrypted voice only to plugins allowed it.)
-            HostMessage::Voice(v) => (topic::VOICE, About { decrypted: v.decrypted, ..on(&v.short_name, Some(v.talkgroup)) }),
             // (No one system's: never delayed.)
             HostMessage::Status(_) => (topic::STATUS, About::default()),
-            // (Audio and concluded calls may be decrypted ones: they go only by `audio_frame` and
+            // (Live media and concluded calls may be decrypted ones: they go only by `live` and
             // `concluded`, which know.)
             _ => return,
         };
@@ -415,7 +413,7 @@ impl PluginHost {
             HostMessage::CallEnd(c) => Some(Life::End(c.id)),
             _ => None,
         };
-        if self.shared.plugins.iter().any(|p| p.manifest.subscribes(t)) {
+        if self.shared.wants(t) {
             self.shared.dispatch(t, &line(m), &about, None, life);
         }
     }
@@ -453,20 +451,23 @@ impl PluginHost {
         answer
     }
 
-    /// A live audio frame (the session's `[2][u16 system][u32 call][u32 tg][i16…]`).
-    /// `decrypted`: of a call decrypted with our keys (only plugins with `shareDecrypted` are given it).
-    pub fn audio_frame(&self, frame: &[u8], decrypted: bool) {
-        if !self.audio || frame.len() < 11 {
+    /// A call's live audio, to the plugins that take it: its PCM as an `audio` chunk, its vocoder frames
+    /// as a `voice` one (`unit_name`: the talker's, "": none). One decrypted with our keys goes only to
+    /// plugins with `shareDecrypted`.
+    pub fn live(&self, short_name: &str, unit_name: &str, a: &LiveAudio) {
+        if !self.live {
             return;
         }
-        let system = u16::from_le_bytes([frame[1], frame[2]]);
-        let call_id = u32::from_le_bytes([frame[3], frame[4], frame[5], frame[6]]);
-        let talkgroup = u32::from_le_bytes([frame[7], frame[8], frame[9], frame[10]]);
-        let pcm = trunk_recorder_plugin::base64::encode(&frame[11..]);
-        let short_name = self.names.get(&system).cloned().unwrap_or_default();
-        let about = About { system: short_name.clone(), talkgroup: Some(talkgroup), decrypted };
-        let chunk = AudioChunk { call_id, system, short_name, talkgroup, sample_rate: 8000, pcm };
-        self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)), &about, None, None);
+        let about = About { system: short_name.to_string(), talkgroup: Some(a.talkgroup), decrypted: a.decrypted };
+        if self.shared.wants(topic::AUDIO) {
+            let pcm = trunk_recorder_plugin::base64::encode(&trunk_core::wav::pcm16(&a.samples));
+            let chunk = AudioChunk { call_id: a.call_id, system: a.system, short_name: short_name.to_string(), talkgroup: a.talkgroup, sample_rate: 8000, pcm };
+            self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)), &about, None, None);
+        }
+        if !a.frames.is_empty() && self.shared.wants(topic::VOICE) {
+            let chunk = VoiceChunk { call_id: a.call_id, system: a.system, short_name: short_name.to_string(), talkgroup: a.talkgroup, unit: a.unit, unit_name: unit_name.to_string(), decrypted: a.decrypted, frames: a.frames.clone() };
+            self.shared.dispatch(topic::VOICE, &line(&HostMessage::Voice(chunk)), &about, None, None);
+        }
     }
 
     /// The plugins that take concluded calls (each reports on every one);
@@ -654,9 +655,14 @@ impl Shared {
         }
     }
 
+    /// Some plugin subscribes to topic `t`.
+    fn wants(&self, t: &str) -> bool {
+        self.plugins.iter().any(|p| p.manifest.subscribes(t))
+    }
+
     /// Send `l` (of topic `t`) to each plugin that subscribed to it, now or,
     /// when its delays say so, later (by the hold). `about`: what it's about —
-    /// a call decrypted with our keys (or its audio) goes only to plugins with
+    /// a call decrypted with our keys (or its live media) goes only to plugins with
     /// `shareDecrypted`; `call`: it's that finished call; `life`: it's a
     /// call's start or end, which a plugin is never left without.
     fn dispatch(&self, t: &str, l: &Arc<str>, about: &About, call: Option<&str>, life: Option<Life>) {
@@ -666,10 +672,10 @@ impl Shared {
                 continue;
             }
             if let Some(h) = self.hold.as_ref().filter(|h| !h.delay(&p.id, about).is_zero()) {
-                // Live audio late isn't live: a delayed call's isn't streamed at all.
-                if t == topic::AUDIO {
+                // Live media late isn't live: a delayed call's isn't streamed at all.
+                if topic::is_live(t) {
                     if !p.audio_held_said.swap(true, Ordering::Relaxed) {
-                        self.note_log(&p.id, Level::Info, "isn't given the live audio of calls it's delayed for");
+                        self.note_log(&p.id, Level::Info, "isn't given the live audio or voice of calls it's delayed for");
                     }
                 } else if life.is_some() {
                     h.keep(&p.id, about, l, call);
@@ -690,7 +696,7 @@ impl Shared {
         match life {
             Some(life) if !owed.0.is_empty() || self.give(p, l) == Offer::Full => owed.add(life, l),
             Some(_) => {}
-            None if t == topic::AUDIO && !owed.0.is_empty() => {
+            None if topic::is_live(t) && !owed.0.is_empty() => {
                 drop(owed);
                 self.dropped(p);
             }
@@ -1157,10 +1163,8 @@ mod tests {
         };
         call("dcfd/held", 5);
         call("dcfd/now", 6);
-        let mut frame = vec![2u8, 0, 0, 1, 0, 0, 0];
-        frame.extend(5u32.to_le_bytes());
-        frame.extend([0u8; 320]);
-        host.audio_frame(&frame, false);
+        let frame = trunk_core::trunk::frames::VoiceFrame { codec: trunk_recorder_plugin::Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: trunk_recorder_plugin::FrameKind::Voice, tone: None };
+        host.live("dcfd", "", &LiveAudio { call_id: 1, system: 0, talkgroup: 5, unit: 0, samples: vec![0.0; 160], frames: vec![frame], decrypted: false });
         let got = dir.join("data/got.jsonl");
         let lines = || std::fs::read_to_string(&got).unwrap_or_default();
         let t0 = Instant::now();

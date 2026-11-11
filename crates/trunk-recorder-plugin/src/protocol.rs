@@ -54,6 +54,12 @@ pub mod topic {
     pub const LOG: &str = "log";
 
     pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, VOICE, STATUS, TONE_PATTERN, LOG];
+
+    /// A call's live media ([`AUDIO`], [`VOICE`]): late isn't live, so a plugin
+    /// delayed for the call, or catching up, isn't given it.
+    pub fn is_live(topic: &str) -> bool {
+        topic == AUDIO || topic == VOICE
+    }
 }
 
 /// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
@@ -910,11 +916,9 @@ impl AudioChunk {
     }
 }
 
-/// A slice of a recording digital call's voice ([`topic::VOICE`]): the
-/// vocoder frames (20 ms each), FEC-corrected, in order, that the `audio`
-/// topic's PCM was made from. A call's frames come a few at a time: at most
-/// [`VoiceChunk::MAX_FRAMES`] (180 ms), sooner when the talker changes, the
-/// call ends or 200 ms go by.
+/// A recording digital call's live voice ([`topic::VOICE`]): the vocoder
+/// frames one `audio` chunk's PCM was made from, FEC-corrected, in order,
+/// with who was talking.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct VoiceChunk {
@@ -929,68 +933,134 @@ pub struct VoiceChunk {
     pub unit_name: String,
     /// Of a call decrypted with our keys (only plugins with `shareDecrypted` are given it).
     pub decrypted: bool,
-    /// `imbe` (P25 Phase 1, ProVoice: 88 information bits a frame) or `ambe`
-    /// (AMBE+2 half rate: P25 Phase 2, DMR, NXDN: 49 bits).
-    pub codec: String,
-    /// The frames' information bits as one hex string: each frame MSB first in
-    /// octets of its own (IMBE 11, AMBE 7; the last padded with zeros).
-    pub frames: String,
-    /// Frames (their places in `frames`) not played as sent: repeated or
-    /// muted by the vocoder, or lost.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub bad: Vec<u16>,
+    pub frames: Vec<VoiceFrame>,
 }
 
-impl VoiceChunk {
-    pub const MAX_FRAMES: usize = 9;
+/// A vocoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Codec {
+    /// IMBE full rate (P25 Phase 1, EDACS ProVoice).
+    Imbe,
+    /// AMBE+2 half rate (P25 Phase 2, DMR, NXDN).
+    Ambe,
+}
 
-    /// Information bits a frame of its codec has.
-    pub fn frame_bits(&self) -> usize {
-        if self.codec == "imbe" {
-            88
-        } else {
-            49
+impl Codec {
+    /// Information bits in one of its frames.
+    pub fn bits(self) -> usize {
+        match self {
+            Codec::Imbe => 88,
+            Codec::Ambe => 49,
         }
     }
+}
 
-    fn frame_hex(&self) -> usize {
-        self.frame_bits().div_ceil(8) * 2
+/// What the vocoder made of a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FrameKind {
+    Voice,
+    Repeat,
+    Muted,
+    /// An AMBE erasure frame, a reserved tone ID, or a tone frame on the
+    /// `mbelib` profile: silence.
+    Erasure,
+    /// An AMBE+2 tone frame, played as its tone (ID 255: silence).
+    Tone,
+}
+
+/// One vocoder frame (20 ms) as the recorder decoded it: the `voice` topic's,
+/// and a line of a call's `.frames.jsonl`. In JSON its `bits` are hex, MSB
+/// first, the last byte zero-padded ([`bits_hex`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "FrameJson")]
+pub struct VoiceFrame {
+    pub codec: Codec,
+    /// Information bits (0 / 1), after FEC: [`Codec::bits`] of them.
+    #[serde(serialize_with = "serialize_bits")]
+    pub bits: Vec<u8>,
+    /// IMBE: bit errors corrected in u0 (the Golay word carrying pitch). AMBE: 0.
+    pub e0: u32,
+    /// Bit errors the FEC corrected in the whole frame.
+    pub errs: u32,
+    /// Known lost (a cut LDU); `errs` is then meaningless.
+    pub erased: bool,
+    pub kind: FrameKind,
+    /// AMBE+2: the tone the vocoder played for it, (ID, level): a tone
+    /// frame's, or the one a damaged frame repeated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tone: Option<(u8, u8)>,
+}
+
+impl VoiceFrame {
+    /// Repeated, muted or otherwise not synthesized as sent (a tone frame,
+    /// played as its tone, is as sent).
+    pub fn bad(&self) -> bool {
+        self.erased || !matches!(self.kind, FrameKind::Voice | FrameKind::Tone)
     }
 
-    /// How many frames it holds.
-    pub fn len(&self) -> usize {
-        self.frames.len() / self.frame_hex()
+    /// A call's frames as `.frames.jsonl`: one a line, in order (frame k
+    /// covers the call's audio from k × 20 ms).
+    pub fn to_jsonl(frames: &[VoiceFrame]) -> String {
+        frames.iter().map(|f| serde_json::to_string(f).unwrap_or_default() + "\n").collect()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.frames.is_empty()
+    /// [`Self::to_jsonl`] back; Err names the line (from 1) that isn't a frame.
+    pub fn from_jsonl(text: &str) -> Result<Vec<VoiceFrame>, String> {
+        text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()).map(|(n, l)| serde_json::from_str(l).map_err(|e| format!("line {}: not a frame ({e})", n + 1))).collect()
     }
+}
 
-    /// Frame `i`'s information bits (0 / 1).
-    pub fn frame(&self, i: usize) -> Vec<u8> {
-        let w = self.frame_hex();
-        let hex = self.frames.get(i * w..(i + 1) * w).unwrap_or("");
-        let mut out: Vec<u8> = (0..hex.len() / 2).filter_map(|k| u8::from_str_radix(&hex[k * 2..k * 2 + 2], 16).ok()).flat_map(|b| (0..8).rev().map(move |k| b >> k & 1)).collect();
-        out.resize(self.frame_bits(), 0);
-        out
-    }
+fn serialize_bits<S: serde::Serializer>(bits: &[u8], s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&bits_hex(bits))
+}
 
-    pub fn is_bad(&self, i: usize) -> bool {
-        self.bad.contains(&(i as u16))
-    }
+/// A [`VoiceFrame`] as JSON has it: its bits as hex, which its codec says how many of to keep.
+#[derive(Deserialize)]
+struct FrameJson {
+    codec: Codec,
+    bits: String,
+    #[serde(default)]
+    e0: u32,
+    #[serde(default)]
+    errs: u32,
+    #[serde(default)]
+    erased: bool,
+    kind: FrameKind,
+    #[serde(default)]
+    tone: Option<(u8, u8)>,
+}
 
-    /// Add a frame (its information bits, 0 / 1).
-    pub fn push(&mut self, bits: &[u8], bad: bool) {
-        use std::fmt::Write;
-        if bad {
-            self.bad.push(self.len() as u16);
-        }
-        let mut b = bits.to_vec();
-        b.resize(self.frame_bits().div_ceil(8) * 8, 0);
-        for c in b.chunks(8) {
-            let _ = write!(self.frames, "{:02x}", c.iter().fold(0u8, |v, &x| v << 1 | (x & 1)));
-        }
+impl TryFrom<FrameJson> for VoiceFrame {
+    type Error = String;
+    fn try_from(f: FrameJson) -> Result<Self, String> {
+        let bits = hex_bits(&f.bits, f.codec.bits()).ok_or_else(|| format!("bits {:?} aren't {} bits of hex", f.bits, f.codec.bits()))?;
+        Ok(VoiceFrame { codec: f.codec, bits, e0: f.e0, errs: f.errs, erased: f.erased, kind: f.kind, tone: f.tone })
     }
+}
+
+/// Bits (0 / 1), MSB first, as hex (the last byte zero-padded).
+pub fn bits_hex(bits: &[u8]) -> String {
+    use std::fmt::Write;
+    bits.chunks(8).fold(String::with_capacity(bits.len().div_ceil(4)), |mut s, c| {
+        let _ = write!(s, "{:02x}", c.iter().enumerate().fold(0u8, |a, (i, &v)| a | ((v & 1) << (7 - i))));
+        s
+    })
+}
+
+/// [`bits_hex`] back to `n` bits; None when it isn't that many bits of hex.
+pub fn hex_bits(hex: &str, n: usize) -> Option<Vec<u8>> {
+    if hex.len() != n.div_ceil(8) * 2 {
+        return None;
+    }
+    let mut bits = Vec::with_capacity(n);
+    for k in 0..hex.len() / 2 {
+        let b = u8::from_str_radix(hex.get(2 * k..2 * k + 2)?, 16).ok()?;
+        bits.extend((0..8).map(|i| (b >> (7 - i)) & 1));
+    }
+    bits.truncate(n);
+    Some(bits)
 }
 
 /// A line TRP logged ([`topic::LOG`]), at the level its log is set to.
@@ -1401,21 +1471,21 @@ mod tests {
     }
 
     #[test]
-    fn voice_chunks_pack_their_frames() {
-        let mut c = VoiceChunk { codec: "ambe".into(), ..Default::default() };
-        let f: Vec<Vec<u8>> = (0..3).map(|k| (0..49).map(|i| ((i + k) % 3 == 0) as u8).collect()).collect();
-        for (k, bits) in f.iter().enumerate() {
-            c.push(bits, k == 1);
-        }
-        assert_eq!((c.len(), c.frames.len(), c.bad.clone()), (3, 42, vec![1]));
-        assert!((0..3).all(|k| c.frame(k) == f[k]));
-        assert!(c.is_bad(1) && !c.is_bad(0));
-        let mut i = VoiceChunk { codec: "imbe".into(), ..Default::default() };
-        let imbe: Vec<u8> = (0..88).map(|x| (x % 5 == 1) as u8).collect();
-        i.push(&imbe, false);
-        assert_eq!((i.len(), i.frame(0)), (1, imbe));
-        let line = serde_json::to_string(&HostMessage::Voice(i)).unwrap();
-        assert!(line.contains("\"voice\"") && !line.contains("\"bad\""), "{line}");
+    fn voice_frames_go_as_json_and_come_back() {
+        let ambe = VoiceFrame { codec: Codec::Ambe, bits: (0..49).map(|i| (i % 3 == 0) as u8).collect(), e0: 0, errs: 2, erased: false, kind: FrameKind::Repeat, tone: None };
+        let imbe = VoiceFrame { codec: Codec::Imbe, bits: (0..88).map(|i| (i % 5 == 1) as u8).collect(), e0: 1, errs: 3, erased: false, kind: FrameKind::Voice, tone: None };
+        let chunk = VoiceChunk { call_id: 7, talkgroup: 101, unit: 1234, frames: vec![ambe.clone(), imbe.clone()], ..Default::default() };
+        let line = serde_json::to_string(&HostMessage::Voice(chunk.clone())).unwrap();
+        assert!(line.contains(r#""type":"voice""#) && line.contains(r#""codec":"ambe","bits":"#) && line.contains(r#""kind":"repeat""#) && !line.contains("tone"), "{line}");
+        let HostMessage::Voice(back) = serde_json::from_str(&line).unwrap() else { panic!("{line}") };
+        assert_eq!(back, chunk);
+        assert!(back.frames[0].bad() && !back.frames[1].bad());
+        // Bits as hex are their codec's count: too few or too many isn't a frame.
+        assert!(serde_json::from_str::<VoiceFrame>(r#"{"codec":"ambe","bits":"00","kind":"voice"}"#).is_err());
+        assert_eq!(hex_bits(&bits_hex(&imbe.bits), 88), Some(imbe.bits.clone()));
+        // A call's frame capture, a line each.
+        assert_eq!(VoiceFrame::from_jsonl(&VoiceFrame::to_jsonl(&[ambe.clone(), imbe.clone()])), Ok(vec![ambe, imbe]));
+        assert!(VoiceFrame::from_jsonl("{}\n").unwrap_err().starts_with("line 1"));
     }
 
     #[test]

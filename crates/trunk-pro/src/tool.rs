@@ -283,37 +283,12 @@ fn num_any(a: &Args, key: &str) -> u32 {
 
 /// A frame capture: an `.sdr` file, or `.frames.jsonl`.
 pub(crate) fn load_frames(path: &str) -> Vec<VoiceFrame> {
-    use trunk_core::mbe::Kind;
-    use trunk_core::trunk::frames::{hex_bits, Codec};
     let bytes = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
     if trunk_core::trunk::sdr::is_sdr(&bytes) {
         return trunk_core::trunk::sdr::sdr_frames(&bytes);
     }
     let text = String::from_utf8(bytes).unwrap_or_else(|_| die(&format!("{path}: not an .sdr file or frame JSON lines")));
-    fn not_frame<T>(path: &str, n: usize) -> T {
-        die(&format!("{path}:{}: not a frame record", n + 1))
-    }
-    let mut frames = Vec::new();
-    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
-        let f: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|_| not_frame(path, n));
-        let int = |k: &str| f[k].as_u64().unwrap_or_else(|| not_frame(path, n)) as u32;
-        let (codec, nbits) = match f["codec"].as_str() {
-            Some("imbe") => (Codec::Imbe, 88),
-            Some("ambe") => (Codec::Ambe, 49),
-            _ => not_frame(path, n),
-        };
-        let bits = f["bits"].as_str().and_then(|h| hex_bits(h, nbits)).unwrap_or_else(|| not_frame(path, n));
-        let kind = match f["out"].as_str() {
-            Some("repeat") => Kind::Repeat,
-            Some("muted") => Kind::Muted,
-            Some("erasure") => Kind::Erasure,
-            Some("tone") => Kind::Tone,
-            _ => Kind::Voice,
-        };
-        let e0 = if codec == Codec::Imbe { int("e0") } else { 0 };
-        frames.push(VoiceFrame { codec, bits, e0, errs: int("errs"), erased: f["erased"].as_bool().unwrap_or(false), kind, tone: None });
-    }
-    frames
+    VoiceFrame::from_jsonl(&text).unwrap_or_else(|e| die(&format!("{path}: {e}")))
 }
 
 /// `tool sdr`: an `.sdr` file's call as MimoSDR sees it (its sidecar JSON),
@@ -321,7 +296,7 @@ pub(crate) fn load_frames(path: &str) -> Vec<VoiceFrame> {
 fn run_sdr(a: &Args) {
     let path = a.positional.get(1).unwrap_or_else(|| die("tool sdr <call.sdr> [--frames]"));
     if a.flag("frames") {
-        print!("{}", trunk_core::trunk::frames::frames_jsonl(&load_frames(path)));
+        print!("{}", VoiceFrame::to_jsonl(&load_frames(path)));
         return;
     }
     let bytes = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
@@ -362,7 +337,7 @@ fn run_tones(a: &Args) {
             if rate != mbe::SAMPLE_RATE {
                 die(&format!("{path}: {rate} Hz; 8000 Hz audio only"));
             }
-            rec.push(&audio, [], 0.0);
+            rec.push(&audio, &[], 0.0);
         } else {
             let mut dec = mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced);
             for (k, f) in load_frames(path).iter().enumerate() {
@@ -371,7 +346,7 @@ fn run_tones(a: &Args) {
                 frames += 1;
                 tone_frames += (f.kind == mbe::Kind::Tone) as usize;
                 mbe::to_limited(&mut buf);
-                rec.push(&buf, [f], k as f64 * 0.02);
+                rec.push(&buf, std::slice::from_ref(&f), k as f64 * 0.02);
             }
         }
         rec.finish();

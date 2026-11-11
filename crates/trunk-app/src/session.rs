@@ -4,7 +4,7 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, MessageType, NoteLevel, ProtocolStatus};
+use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus};
 
 use crate::filename;
 use sdr_core::clock::{ClockEvent, SampleClock};
@@ -19,20 +19,19 @@ use crate::stats::{NameBook, Rollup, SampleMeter, Shared, Stats, Topics};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, UnitEvent, VoiceChunk};
+use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, UnitEvent};
 
 use crate::protocol::ToClient;
 
 pub enum Output {
     /// A message for the interface.
     Message(ToClient),
-    /// Live audio frame `[2][u16 system][u32 call id][u32 talkgroup][i16…]`
-    /// for talkgroup `tg` of `system` — that system's number for this run
-    /// (from 0, trunked then conventional: `status.systemNames`) — whose
-    /// short name, its identity, is `short_name`.
-    /// `decrypted`: of a call decrypted with our keys. (A call heard on
-    /// several sites of a system plays from one of them at a time.)
-    Audio { system: u16, short_name: String, tg: u32, frame: Vec<u8>, decrypted: bool },
+    /// Live audio of a call of `audio.system` — that system's number for this
+    /// run (from 0, trunked then conventional: `status.systemNames`) — whose
+    /// short name, its identity, is `short_name`; `unit_name`: the talker's
+    /// ("": none). (A call heard on several sites of a system plays from one
+    /// of them at a time.)
+    Audio { short_name: String, unit_name: String, audio: LiveAudio },
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
     /// the recordings folder); `record` is its call JSON, and [`call_entry`]
     /// its history entry, which the platform sends as a `concluded` message
@@ -81,8 +80,6 @@ const ERROR_SHOWN_S: f64 = 300.0;
 /// A move of the wall clock this big or more is logged, ms
 /// ([`Session::correct_wall_clock`]): a step, not drift.
 const STEP_TOLD_MS: f64 = 500.0;
-/// A call's voice frames are held for plugins at most this long, ms.
-const VOICE_HOLD_MS: f64 = 200.0;
 /// The most silence fed for one gap, s: a driver's count of samples lost.
 const MAX_GAP_S: f64 = 10.0;
 
@@ -94,8 +91,17 @@ pub struct PluginTopics {
     pub units: bool,
     pub status: bool,
     pub tone_patterns: bool,
-    /// Live voice as vocoder frames.
-    pub voice: bool,
+}
+
+/// Live audio as the browsers take it, a binary frame: `[2][u16 system][u32 call][u32 tg][i16…]`.
+pub fn audio_frame(a: &LiveAudio) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(11 + a.samples.len() * 2);
+    frame.push(2u8);
+    frame.extend_from_slice(&a.system.to_le_bytes());
+    frame.extend_from_slice(&a.call_id.to_le_bytes());
+    frame.extend_from_slice(&a.talkgroup.to_le_bytes());
+    frame.extend(trunk_core::wav::pcm16(&a.samples));
+    frame
 }
 
 /// Local time's offset from UTC at a Unix time, s (east positive) — Trunk
@@ -352,9 +358,6 @@ pub struct Session {
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
     recordings: Vec<crate::config::Recording>,
     pub plugin_topics: PluginTopics,
-    /// Each call's voice frames not yet sent to plugins, and when the first came (ms).
-    voice_held: std::collections::BTreeMap<u32, (VoiceChunk, f64)>,
-    voice_now_ms: f64,
     /// Wall clock (Unix ms) at the engine's time 0, as at Start: the clock
     /// sources are measured against. What times are given out by is the
     /// engine's ([`Session::correct_wall_clock`]).
@@ -432,8 +435,6 @@ impl Session {
             sites,
             recordings,
             plugin_topics: PluginTopics::default(),
-            voice_held: Default::default(),
-            voice_now_ms: 0.0,
             epoch_ms,
             wall_correction_ms: 0.0,
             last_plugin_status_ms: 0.0,
@@ -622,11 +623,9 @@ impl Session {
         self.steer_clocks();
         self.meas.set_now(now_ms / 1000.0);
         self.fill_quiet(now_ms);
-        self.voice_now_ms = now_ms;
         for ev in self.engine.drain_events() {
             self.handle(ev, out);
         }
-        self.flush_voice(Some(now_ms - VOICE_HOLD_MS), out);
         self.log_rates_and_status(out);
         out.extend(self.records.drain(..).map(Output::Log));
         if now_ms - self.last_spec_ms >= 150.0 {
@@ -684,7 +683,6 @@ impl Session {
         for ev in self.engine.drain_events() {
             self.handle(ev, out);
         }
-        self.flush_voice(None, out);
         out.extend(self.records.drain(..).map(Output::Log));
         self.flush_log(out);
     }
@@ -929,41 +927,6 @@ impl Session {
     /// Radio `unit`'s name ("": none), as a call's JSON gives it (`tag`): by
     /// the rule [`NameBook::unit`] names it by, on the engine's aliases (an
     /// alias heard is the engine's at once, the book's when next saved).
-    /// A call's voice frames for plugins: sent a few at a time
-    /// ([`VoiceChunk::MAX_FRAMES`]), and each run of one talker's alone.
-    #[allow(clippy::too_many_arguments)]
-    fn hold_voice(&mut self, call_id: u32, system: u16, talkgroup: u32, unit: u32, decrypted: bool, frames: &[trunk_core::trunk::frames::VoiceFrame], out: &mut Vec<Output>) {
-        for f in frames {
-            let codec = if f.codec == trunk_core::trunk::frames::Codec::Imbe { "imbe" } else { "ambe" };
-            let other = self.voice_held.get(&call_id).is_some_and(|(v, _)| v.unit != unit || v.codec != codec || v.decrypted != decrypted);
-            if other {
-                let (v, _) = self.voice_held.remove(&call_id).unwrap();
-                out.push(Output::Plugin(HostMessage::Voice(v)));
-            }
-            if !self.voice_held.contains_key(&call_id) {
-                let short_name = self.system_name(system).to_string();
-                let unit_name = if unit != 0 { self.unit_tag(system, unit) } else { String::new() };
-                let v = VoiceChunk { call_id, system, short_name, talkgroup, unit, unit_name, decrypted, codec: codec.into(), ..Default::default() };
-                self.voice_held.insert(call_id, (v, self.voice_now_ms));
-            }
-            let (v, _) = self.voice_held.get_mut(&call_id).unwrap();
-            v.push(&f.bits, f.bad());
-            if v.len() >= VoiceChunk::MAX_FRAMES {
-                let (v, _) = self.voice_held.remove(&call_id).unwrap();
-                out.push(Output::Plugin(HostMessage::Voice(v)));
-            }
-        }
-    }
-
-    /// Send the voice held since before `before` ms (None: all of it).
-    fn flush_voice(&mut self, before: Option<f64>, out: &mut Vec<Output>) {
-        let due: Vec<u32> = self.voice_held.iter().filter(|(_, (_, t))| before.is_none_or(|b| *t <= b)).map(|(k, _)| *k).collect();
-        for k in due {
-            let (v, _) = self.voice_held.remove(&k).unwrap();
-            out.push(Output::Plugin(HostMessage::Voice(v)));
-        }
-    }
-
     fn unit_tag(&self, system: u16, unit: u32) -> String {
         self.engine.unit_name(system, unit).unwrap_or_default()
     }
@@ -1193,22 +1156,12 @@ impl Session {
                 self.records.push(Record::text(level, Some(&self.site_label(system, site)), text.clone()));
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": kind, "text": text, "system": name, "site": self.site_name(site) }))
             }
-            Event::Audio { call_id, system, talkgroup, samples, decrypted, unit, frames } => {
-                if self.plugin_topics.voice && !frames.is_empty() {
-                    self.hold_voice(call_id, system, talkgroup, unit, decrypted, &frames, out);
-                }
+            Event::Audio(audio) => {
                 if !self.want_audio {
                     return;
                 }
-                let mut frame = Vec::with_capacity(11 + samples.len() * 2);
-                frame.push(2u8);
-                frame.extend_from_slice(&system.to_le_bytes());
-                frame.extend_from_slice(&call_id.to_le_bytes());
-                frame.extend_from_slice(&talkgroup.to_le_bytes());
-                for s in samples {
-                    frame.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
-                }
-                out.push(Output::Audio { system, short_name: self.system_name(system).to_string(), tg: talkgroup, frame, decrypted });
+                let unit_name = if audio.unit != 0 { self.unit_tag(audio.system, audio.unit) } else { String::new() };
+                out.push(Output::Audio { short_name: self.system_name(audio.system).to_string(), unit_name, audio });
             }
             Event::ConvSkipped { freq_hz, code } => {
                 let ms = self.wall(self.engine.status().now_s) * 1000.0;
@@ -1335,10 +1288,6 @@ impl Session {
                 self.records.push(r);
             }
             Event::CallEnd(c) => {
-                // Its last frames go before word that it ended.
-                if let Some(v) = self.voice_held.remove(&c.id) {
-                    out.push(Output::Plugin(HostMessage::Voice(v.0)));
-                }
                 if self.plugin_topics.calls {
                     out.push(Output::Plugin(HostMessage::CallEnd(self.call_info(&c))));
                 }

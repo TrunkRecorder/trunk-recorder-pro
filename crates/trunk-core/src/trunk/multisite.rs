@@ -363,7 +363,7 @@ mod tests {
         let mut rec = Recorded::new(false, InBandSpec::default());
         for k in 0..good + bad {
             let kind = if k < good { Kind::Voice } else { Kind::Repeat };
-            rec.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind, tone: None });
+            rec.frames.push(&VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind, tone: None });
         }
         rec.audio = vec![0.1; (good + bad) * FRAME_SAMPLES];
         Held { call: call(id, site, id as f64 * 0.1), rec, on: Default::default() }
@@ -522,7 +522,7 @@ mod tests {
         let mut h = held(1, 0, 0, 0, 0);
         for k in 0..100 {
             let kind = if k < 50 { Kind::Repeat } else { Kind::Voice };
-            h.rec.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind, tone: None });
+            h.rec.frames.push(&VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind, tone: None });
         }
         h.rec.audio = vec![0.1; 100 * FRAME_SAMPLES];
         h.rec.tx.note(0, 0.0);

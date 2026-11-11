@@ -90,12 +90,12 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 set(&obj, "t", "text");
                 set(&obj, "json", m.to_json());
             }
-            Output::Audio { system, short_name, tg, frame, .. } => {
+            Output::Audio { short_name, audio, .. } => {
                 set(&obj, "t", "audio");
-                set(&obj, "system", system);
+                set(&obj, "system", audio.system);
                 set(&obj, "shortName", short_name);
-                set(&obj, "tg", tg);
-                set(&obj, "frame", Uint8Array::from(frame.as_slice()));
+                set(&obj, "tg", audio.talkgroup);
+                set(&obj, "frame", Uint8Array::from(trunk_app::session::audio_frame(&audio).as_slice()));
             }
             // (No frame capture in the browser: the setting is desktop-only.)
             Output::File { rel, wav, record, .. } => {

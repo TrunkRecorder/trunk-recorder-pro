@@ -1140,7 +1140,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         // (The plugins can be swapped meanwhile: their settings changed. This iteration's, held by no lock.)
         let plugins = ctx.plugins.host();
         session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
-        session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
+        session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.live);
         session.correct_wall_clock(wall_less(now_ms()));
         session.poll(now_ms(), &mut out);
         deliver(&ctx, &mut out, plugins.as_deref(), &rules, &fin);
@@ -1305,11 +1305,11 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
                 }
                 publish(&ctx.hub, m)
             }
-            Output::Audio { short_name, tg, frame, decrypted, .. } => {
+            Output::Audio { short_name, unit_name, audio } => {
                 if let Some(p) = plugins {
-                    p.audio_frame(&frame, decrypted);
+                    p.live(&short_name, &unit_name, &audio);
                 }
-                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg, frame }));
+                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg: audio.talkgroup, frame: trunk_app::session::audio_frame(&audio) }));
             }
             Output::Plugin(m) => {
                 if let Some(p) = plugins {

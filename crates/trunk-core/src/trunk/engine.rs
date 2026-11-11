@@ -320,6 +320,23 @@ pub enum NoteLevel {
     Warning,
 }
 
+/// A recording call's live audio, as heard: its PCM, the vocoder frames that
+/// was made from, and who was talking.
+#[derive(Clone, Debug)]
+pub struct LiveAudio {
+    pub call_id: CallId,
+    pub system: u16,
+    pub talkgroup: u32,
+    /// Who is talking (0: not known).
+    pub unit: u32,
+    /// 8 kHz.
+    pub samples: Vec<f32>,
+    /// The vocoder frames it was made from (none: analog).
+    pub frames: Vec<super::frames::VoiceFrame>,
+    /// The call is encrypted on the air, so this is of a cipher we hold the key for.
+    pub decrypted: bool,
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     /// Site `site` tuned a control channel.
@@ -339,10 +356,7 @@ pub enum Event {
     /// One site's copy of a call began or ended (for the log, a voice channel's use).
     CopyStart(Call),
     CopyEnd(Call),
-    /// Live audio for a recording call.
-    /// `decrypted`: the call is encrypted on the air, so this audio is of a cipher we hold the key for.
-    /// `frames`: the vocoder frames it was made from (none: analog); `unit`: who is talking (0: not known).
-    Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32>, decrypted: bool, unit: u32, frames: Vec<super::frames::VoiceFrame> },
+    Audio(LiveAudio),
     /// System `system` (any of its sites) heard a radio's talker alias it didn't know (or knew by another name).
     UnitAlias { system: u16, unit: u32, alias: String, talkgroup: u32 },
     /// A frequency of system `system` is identified by this FCC call sign
@@ -2083,12 +2097,11 @@ impl Core {
                         TrackerOut::AnalogAudio(samples) => (samples, None),
                         _ => unreachable!(),
                     };
-                    let digital = frame.is_some();
-                    let frames: Vec<_> = frame.iter().cloned().collect();
-                    let news = rec.rec.push(&samples, frame, now);
+                    let frames: Vec<_> = frame.into_iter().collect();
+                    let news = rec.rec.push(&samples, &frames, now);
+                    let unit = call.as_ref().and_then(|c| c.talker()).map_or(0, |s| s.src);
                     // Fail closed: a digital call that is gone already is not known to be clear, and
                     // its voice is not given to a plugin as if it were.
-                    let unit = call.as_ref().and_then(|c| c.sources.last()).map_or(0, |s| s.src);
                     let (tg, decrypted) = match call {
                         Some(c) => {
                             c.note_audio(now);
@@ -2101,10 +2114,10 @@ impl Core {
                             }
                             (c.talkgroup, decrypted)
                         }
-                        None => (0, digital),
+                        None => (0, !frames.is_empty()),
                     };
                     if live.is_none_or(|key| self.multisite.audio_lead(key, site, now)) {
-                        self.events.push(Event::Audio { call_id: id, system, talkgroup: tg, samples, decrypted, unit, frames });
+                        self.events.push(Event::Audio(LiveAudio { call_id: id, system, talkgroup: tg, unit, samples, frames, decrypted }));
                     }
                 }
                 TrackerOut::Info { source, flags } => match call {
@@ -3015,7 +3028,7 @@ mod tests {
             let rec = e.radio.recordings.get_mut(&ids[i]).unwrap();
             for k in 0..100 {
                 let kind = if k < good { mbe::Kind::Voice } else { mbe::Kind::Repeat };
-                rec.rec.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind, tone: None });
+                rec.rec.frames.push(&VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind, tone: None });
                 if k < audio {
                     rec.rec.audio.extend_from_slice(&[0.1; mbe::FRAME_SAMPLES]);
                 }
@@ -3070,7 +3083,7 @@ mod tests {
         e.radio.pending.push((0, id, TrackerOut::Decrypted));
         e.radio.pending.push((0, id, TrackerOut::Audio(vec![0.0; 160], frame())));
         e.apply_pending();
-        let audio: Vec<bool> = e.drain_events().iter().filter_map(|x| if let Event::Audio { decrypted, .. } = x { Some(*decrypted) } else { None }).collect();
+        let audio: Vec<bool> = e.drain_events().iter().filter_map(|x| if let Event::Audio(a) = x { Some(a.decrypted) } else { None }).collect();
         assert_eq!(audio, [true], "its audio is not passed on as clear");
         // And the call, concluded from the snapshot taken before the news, is saved as decrypted.
         e.conclude(&call);
