@@ -23,6 +23,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   trunked FM call now ends 0.4 s after its last speech when more than half a second of nothing
   follows it; a call where no speech stands out, or a weak talker last, is left whole. Its
   `call_length` and `stop_time` follow. Conventional channels (their own squelch) are untouched.
+  A call with one talker also needs its speech within 20 dB of its loud speech: a tail's hiss can
+  rise several dB before the carrier goes (a bladeRF on EDACS), and passed for speech.
 
 - **SoapySDR: AGC on or off and the gain stages apply while recording**, like the gain in dB. An
   SDRplay's IFGR / RFGR, a HackRF's LNA / VGA through SoapySDR: Setup's changes are set at once,

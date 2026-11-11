@@ -532,14 +532,14 @@ mod tests {
         // EDACS: 2 s of speech, then 3 s of the channel held with nothing on it.
         let mut a = talk(-15.0, -50.0, 2.0, &mut seed);
         a.extend(hiss(-50.0, 3.0, &mut seed));
-        let cut = trim_tail(&mut a, 8000);
+        let cut = trim_tail(&mut a, 8000, true);
         assert!((2.4..=2.7).contains(&cut), "cut {cut} s");
         assert!((2.3..=2.6).contains(&(a.len() as f64 / 8000.0)), "left {} s", a.len() as f64 / 8000.0);
         assert_eq!(*a.last().unwrap(), 0.0, "faded out");
         // A weak site: loud hiss, speech a little over it.
         let mut w = talk(-22.0, -33.0, 1.5, &mut seed);
         w.extend(hiss(-33.0, 3.0, &mut seed));
-        let cut = trim_tail(&mut w, 8000);
+        let cut = trim_tail(&mut w, 8000, true);
         assert!(cut > 2.0, "weak: cut {cut} s");
     }
 
@@ -547,18 +547,34 @@ mod tests {
     fn speech_to_the_end_and_calls_of_hiss_are_left_whole() {
         let mut seed = 7;
         let mut a = talk(-15.0, -50.0, 4.0, &mut seed);
-        assert_eq!(trim_tail(&mut a, 8000), 0.0);
+        assert_eq!(trim_tail(&mut a, 8000, true), 0.0);
         assert_eq!(a.len(), 32000);
         let mut h = hiss(-35.0, 4.0, &mut seed);
-        assert_eq!(trim_tail(&mut h, 8000), 0.0, "nothing stands out: nothing cut");
+        assert_eq!(trim_tail(&mut h, 8000, true), 0.0, "nothing stands out: nothing cut");
         // A short tail stays.
         let mut s = talk(-15.0, -50.0, 2.0, &mut seed);
         s.extend(hiss(-50.0, 0.7, &mut seed));
-        assert_eq!(trim_tail(&mut s, 8000), 0.0);
+        assert_eq!(trim_tail(&mut s, 8000, true), 0.0);
         // Weak speech last, after loud: kept (6 dB over the floor counts).
         let mut c = talk(-15.0, -45.0, 1.5, &mut seed);
         c.extend(talk(-36.0, -45.0, 1.5, &mut seed));
-        assert_eq!(trim_tail(&mut c, 8000), 0.0, "the weak talker isn't cut");
+        assert_eq!(trim_tail(&mut c, 8000, false), 0.0, "the weak talker isn't cut");
+    }
+
+    /// A bladeRF's tail on EDACS: the hiss rises several dB before the carrier
+    /// goes, enough over its quietest part to pass for speech. With one talker,
+    /// speech is also near the call's loud speech, and the tail goes.
+    #[test]
+    fn a_tail_whose_hiss_rises_is_cut_too() {
+        let mut seed = 3;
+        // (hiss() at -46 measures about -52 dBFS, at -38 about -44.)
+        let mut a = talk(-17.0, -46.0, 1.5, &mut seed);
+        a.extend(hiss(-46.0, 1.0, &mut seed));
+        a.extend(hiss(-38.0, 1.0, &mut seed));
+        let mut b = a.clone();
+        assert_eq!(trim_tail(&mut b, 8000, false), 0.0, "by the floor alone the rising hiss is speech");
+        let cut = trim_tail(&mut a, 8000, true);
+        assert!((1.5..=1.9).contains(&cut), "one talker: cut {cut} s");
     }
 }
 
@@ -713,6 +729,9 @@ pub struct Unsaved {
 const TAIL_OVER_FLOOR_DB: f32 = 6.0;
 const TAIL_SPEECH_DBFS: f32 = -50.0;
 const TAIL_SPEECH_FRAMES: usize = 5;
+/// With one talker, speech is also within this of the call's loud speech
+/// (its loudest twentieth of frames).
+const TAIL_BELOW_PEAK_DB: f32 = 20.0;
 /// Kept after the last speech, and the least tail worth cutting, s.
 pub const TAIL_KEEP_S: f64 = 0.4;
 const TAIL_MIN_S: f64 = 0.5;
@@ -722,7 +741,13 @@ const TAIL_MIN_S: f64 = 0.5;
 /// carrier left on), keeping [`TAIL_KEEP_S`] after the speech and fading out.
 /// Nothing is cut when no speech stands out (a call all hiss or all weak), or
 /// the tail is short. Seconds cut.
-pub fn trim_tail(audio: &mut Vec<f32>, rate: usize) -> f64 {
+///
+/// `one_talker`: the call had one talker (or none known). Then speech must
+/// also be within [`TAIL_BELOW_PEAK_DB`] of the call's loud speech: a tail's
+/// hiss isn't steady (it can rise several dB as the carrier goes), and a floor
+/// taken from its quietest part let the louder end pass for speech. With
+/// several talkers that isn't asked, so a weak one after a loud one stays.
+pub fn trim_tail(audio: &mut Vec<f32>, rate: usize, one_talker: bool) -> f64 {
     let f = rate / 50;
     let n = audio.len() / f.max(1);
     if f == 0 || n < 50 {
@@ -736,10 +761,14 @@ pub fn trim_tail(audio: &mut Vec<f32>, rate: usize) -> f64 {
     }
     live.sort_by(|a, b| a.total_cmp(b));
     let floor = live[live.len() / 10];
+    let mut over = floor + TAIL_OVER_FLOOR_DB;
+    if one_talker {
+        over = over.max(live[live.len() * 19 / 20] - TAIL_BELOW_PEAK_DB);
+    }
     let mut run = 0;
     let mut last = None;
     for (i, v) in lv.iter().enumerate() {
-        run = if *v > floor + TAIL_OVER_FLOOR_DB && *v > TAIL_SPEECH_DBFS { run + 1 } else { 0 };
+        run = if *v > over && *v > TAIL_SPEECH_DBFS { run + 1 } else { 0 };
         if run >= TAIL_SPEECH_FRAMES {
             last = Some(i + 1);
         }
@@ -756,6 +785,14 @@ pub fn trim_tail(audio: &mut Vec<f32>, rate: usize) -> f64 {
         *x *= 1.0 - (k + 1) as f32 / fade as f32;
     }
     cut as f64 / rate as f64
+}
+
+/// One talker on the call, or none known.
+pub fn one_talker(call: &Call) -> bool {
+    let mut t: Vec<u32> = call.sources.iter().map(|s| s.src).filter(|&s| s != 0).collect();
+    t.sort_unstable();
+    t.dedup();
+    t.len() <= 1
 }
 
 /// A finished call made ready to save: transmissions shorter than its
@@ -782,7 +819,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Unsaved> {
         loudness::gain(&mut audio, mbe::SAMPLE_RATE, gain_db);
     }
     // A trunked analog call's silent tail (a repeater's hang time): cut.
-    let trimmed_s = if call.voice.analog() && call.site.is_some() { trim_tail(&mut audio, mbe::SAMPLE_RATE as usize) } else { 0.0 };
+    let trimmed_s = if call.voice.analog() && call.site.is_some() { trim_tail(&mut audio, mbe::SAMPLE_RATE as usize, one_talker(&call)) } else { 0.0 };
     let (record, base_name) = call_record(
         &call,
         &ConcludeInfo {

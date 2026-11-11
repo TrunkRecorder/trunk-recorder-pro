@@ -234,7 +234,7 @@ impl Held {
     /// copies are weighed by the audio they'd be saved with ([`super::record::trim_tail`]).
     pub fn trim_tail(&mut self) {
         if self.call.voice.analog() && self.call.site.is_some() {
-            let cut = super::record::trim_tail(&mut self.rec.audio, crate::mbe::SAMPLE_RATE as usize);
+            let cut = super::record::trim_tail(&mut self.rec.audio, crate::mbe::SAMPLE_RATE as usize, super::record::one_talker(&self.call));
             self.call.last_audio_s -= cut;
         }
     }
