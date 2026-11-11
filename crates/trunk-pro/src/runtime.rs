@@ -176,6 +176,8 @@ pub enum EngineCmd {
     IqLive { done: mpsc::Sender<crate::iq_capture::Live> },
     /// The voice channels' tapes that have finished.
     IqTapes { done: mpsc::Sender<Vec<trunk_core::trunk::tape::VoiceTape>> },
+    /// Tape channels from now on, or stop.
+    IqKeepTapes { on: bool },
     /// The control channels' latest tapes, and what a capture keeps of the session.
     IqControl { done: mpsc::Sender<(Vec<trunk_core::trunk::tape::ControlTape>, crate::iq_capture::Live)> },
 }
@@ -1128,6 +1130,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 EngineCmd::IqControl { done } => {
                     let _ = done.send((session.control_tapes(), iq_live(&session)));
                 }
+                EngineCmd::IqKeepTapes { on } => session.keep_tapes(on),
             }
             next = rx.try_recv().ok();
         }

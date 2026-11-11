@@ -42,7 +42,7 @@ use super::record::{Concluded, SaveRules};
 use super::talkgroups::Talkgroups;
 
 use super::wall::WallEpoch;
-use super::tape::{ControlTape, TapeSink, VoiceTape};
+use super::tape::{ControlTape, Tapes, VoiceTape};
 use super::voice::TrackerOut;
 use super::units::{UnitAlias, UnitAliases, UnitNameRow, UnitTags};
 use super::identity::{IdField, Identity};
@@ -702,6 +702,8 @@ struct Tap {
     site: u16,
     /// Its number among the system's carriers (0 for a hunted control channel).
     carrier: usize,
+    /// Its frequency.
+    freq_hz: f64,
     head: HeadId,
     cc: Cc,
     at: TapTime,
@@ -722,7 +724,7 @@ enum TapTime {
 /// the calls are followed in one place ([`Core`]).
 struct SourceRx {
     /// Keep tapes of its control channels ([`EngineConfig::tapes`]).
-    keep_tapes: bool,
+    keep_tapes: Tapes,
     src: Source,
     /// Keyed by (site, frequency): sites never share a voice channel.
     /// (A `BTreeMap`: channels run in one order, run after run.)
@@ -831,8 +833,8 @@ impl SourceRx {
     }
 
     fn set_tap(&mut self, mut tap: Tap) {
-        if self.keep_tapes {
-            tap.tape = Some(ControlTape::new(tap.site, tap.carrier, self.src.chz.output_rate()));
+        if self.keep_tapes.on() {
+            tap.tape = Some(ControlTape::new(tap.site, tap.carrier, tap.freq_hz, self.src.chz.output_rate()));
         }
         self.taps.retain(|t| (t.site, t.carrier) != (tap.site, tap.carrier));
         let at = self.taps.partition_point(|t| (t.site, t.carrier) < (tap.site, tap.carrier));
@@ -887,7 +889,7 @@ struct Radio {
     capture_frames: bool,
     vocoder: mbe::Profile,
     /// Where closed channels' tapes go ([`EngineConfig::tapes`]).
-    tape_sink: TapeSink,
+    tape_sink: Tapes,
     /// Audio / info produced by the voice channels, as (site, call, output), applied after.
     pending: Vec<(u16, CallId, TrackerOut)>,
     /// Calls followed without a recorder now ([`Call::followed`]): a
@@ -1026,7 +1028,7 @@ impl SysHost<'_> {
             keys: self.keys.clone(),
         };
         let voice = voice::build(&spec);
-        let tape = r.tape_sink.is_some().then(|| VoiceTape::new(spec, call.freq_hz as f64));
+        let tape = r.tape_sink.on().then(|| VoiceTape::new(spec, call.freq_hz as f64));
         let mut calls = [None, None];
         calls[slot] = Some(OnSlot::of(call));
         let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tuning, meter: ChannelFilter::new(rate), noise, tape };
@@ -1116,10 +1118,8 @@ impl RecorderHost for SysHost<'_> {
 }
 
 /// A channel that closed: its tape to the host.
-fn keep_tape(sink: &TapeSink, ch: &mut Channel) {
-    if let (Some(sink), Some(t)) = (sink, ch.tape.take()) {
-        sink.lock().unwrap().push(t);
-    }
+fn keep_tape(sink: &Tapes, ch: &mut Channel) {
+    sink.keep(ch.tape.take());
 }
 
 /// How a site listens, decided once when it starts from its protocol's
@@ -1288,7 +1288,7 @@ impl Trunk {
             let (head, _, _) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
             let hunt = Hunt { cutoff_hz, index, source: src, head, start_s: self.now_s, samples: 0, offset_s: s.clock_offset_s, tuning: s.tuning(), retuned_s };
             let rate = s.chz.output_rate();
-            rx.set_tap(Self::hunt_tap(self.site, &self.cc, &hunt));
+            rx.set_tap(Self::hunt_tap(self.site, &self.cc, &hunt, hz));
             (hunt, rate)
         };
         self.listening = Listening::Hunting(hunt);
@@ -1310,8 +1310,8 @@ impl Trunk {
     }
 
     /// Hunting: its control channel's tap.
-    fn hunt_tap(site: u16, cc: &Cc, h: &Hunt) -> Tap {
-        Tap { tape: None, site, carrier: 0, head: h.head, cc: cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s } }
+    fn hunt_tap(site: u16, cc: &Cc, h: &Hunt, freq_hz: f64) -> Tap {
+        Tap { tape: None, site, carrier: 0, freq_hz, head: h.head, cc: cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s } }
     }
 
     /// Watching: heads on the sources that cover each carrier.
@@ -1333,7 +1333,7 @@ impl Trunk {
             return Err(format!("{}: {} frequencies outside every source's bandwidth: {} MHz — move a center frequency.", sys.short_name, name, outside.join(", ")));
         }
         for (i, c) in heads.iter().enumerate() {
-            radio.rx(c.source).set_tap(Tap { tape: None, site: self.site, carrier: i, head: c.head, cc: self.cc.clone(), at: TapTime::Watch { start: c.start } });
+            radio.rx(c.source).set_tap(Tap { tape: None, site: self.site, carrier: i, freq_hz: c.hz, head: c.head, cc: self.cc.clone(), at: TapTime::Watch { start: c.start } });
         }
         self.listening = Listening::Watching(heads);
         self.measured_s = self.now_s;
@@ -1500,7 +1500,7 @@ impl Trunk {
             h.samples = 0;
             h.offset_s = s.clock_offset_s;
             let rate = s.chz.output_rate();
-            let tap = Self::hunt_tap(self.site, &self.cc, h);
+            let tap = Self::hunt_tap(self.site, &self.cc, h, hz);
             rx.set_tap(tap);
             drop(rx);
             self.cc().restart(rate);
@@ -1607,7 +1607,8 @@ impl Core {
         }
         let history = cfg.preroll_s.max(cfg.conv.preroll_s).max(0.1);
         let spans: Vec<(f64, f64, f64)> = cfg.sources.iter().map(|s| (s.center_hz, s.rate_hz, s.usable_half_width())).collect();
-        let tape_sink: TapeSink = cfg.tapes.then(Default::default);
+        let tape_sink = Tapes::default();
+        tape_sink.set(cfg.tapes);
         let mut conv = Conventional::new(&cfg.conventional, &spans, ConvConfig { vocoder: cfg.vocoder, ..cfg.conv }, cfg.bank, cfg.capture_frames)?;
         conv.tape_sink = tape_sink.clone();
         // (The engine's one copy of the sources' settings, shared.)
@@ -1618,7 +1619,7 @@ impl Core {
         let n_sites = sites(&cfg.systems).count();
         let rx = sources
             .into_iter()
-            .map(|src| Mutex::new(SourceRx { keep_tapes: cfg.tapes, src, channels: BTreeMap::new(), taps: Vec::new(), voice_params: vec![VoiceParams::default(); n_sites], tout: Vec::new() }))
+            .map(|src| Mutex::new(SourceRx { keep_tapes: tape_sink.clone(), src, channels: BTreeMap::new(), taps: Vec::new(), voice_params: vec![VoiceParams::default(); n_sites], tout: Vec::new() }))
             .collect();
         let mut radio = Radio {
             rx: Arc::new(rx),
@@ -2597,8 +2598,25 @@ impl Engine {
 
     /// The voice channels' tapes finished since last asked ([`EngineConfig::tapes`]).
     pub fn take_voice_tapes(&self) -> Vec<VoiceTape> {
-        let sink = self.core().radio.tape_sink.clone();
-        sink.map_or_else(Vec::new, |s| std::mem::take(&mut *s.lock().unwrap()))
+        let tapes = self.core().radio.tape_sink.clone();
+        tapes.take()
+    }
+
+    /// Tape channels from now on, or stop ([`EngineConfig::tapes`], as it runs):
+    /// a control channel's tape starts now, a voice channel's with its next call.
+    pub fn keep_tapes(&self, on: bool) {
+        let tapes = self.core().radio.tape_sink.clone();
+        tapes.set(on);
+        for r in self.shared.rx.iter() {
+            let mut r = r.lock().unwrap();
+            let rate = r.src.chz.output_rate();
+            for t in r.taps.iter_mut() {
+                t.tape = if on { t.tape.take().or_else(|| Some(ControlTape::new(t.site, t.carrier, t.freq_hz, rate))) } else { None };
+            }
+            if !on {
+                r.channels.values_mut().for_each(|ch| ch.tape = None);
+            }
+        }
     }
 
     /// What the control channels have received lately ([`EngineConfig::tapes`]).

@@ -59,7 +59,7 @@ use super::engine::{Event, Pins, SystemConfig, Tuning};
 use super::inband::InBandSpec;
 use super::record::RecordedOn;
 use super::recorded::Recorded;
-use super::tape::{TapeSink, VoiceTape};
+use super::tape::{Tapes, VoiceTape};
 use super::voice::CipherId;
 use super::talkgroups::{Talkgroup, Talkgroups};
 use super::voice::TrackerOut;
@@ -546,10 +546,8 @@ struct Open {
 }
 
 /// A channel that closed: its tape to the host.
-fn keep_tape(sink: &TapeSink, o: &mut Open) {
-    if let (Some(sink), Some(t)) = (sink, o.tape.take()) {
-        sink.lock().unwrap().push(t);
-    }
+fn keep_tape(sink: &Tapes, o: &mut Open) {
+    sink.keep(o.tape.take());
 }
 
 /// A conventional frequency as the dashboard shows it ([`Conventional::channels`]).
@@ -626,7 +624,7 @@ struct Floor {
 
 pub struct Conventional {
     /// Where closed channels' tapes go ([`super::engine::EngineConfig::tapes`]).
-    pub(super) tape_sink: TapeSink,
+    pub(super) tape_sink: Tapes,
     cfg: ConvConfig,
     bank_cfg: BankConfig,
     /// Keep each call's vocoder frames (see [`super::frames`]).
@@ -729,7 +727,7 @@ impl Conventional {
                 Floor { slices: vec![0.0; n], scratch: vec![0.0; n], next_s: 0.0, primed: false }
             })
             .collect();
-        Ok(Conventional { cfg, bank_cfg, capture_frames, chans, floors, tape_sink: None })
+        Ok(Conventional { cfg, bank_cfg, capture_frames, chans, floors, tape_sink: Tapes::default() })
     }
 
     /// Whether `channels` can run together: rows on one frequency have one
@@ -892,7 +890,7 @@ impl Conventional {
                     ch.bar_db = base;
                 }
                 if snr_db >= ch.bar_db {
-                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.tape_sink.is_some(), self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, ids, rules, out);
+                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.tape_sink.on(), self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, ids, rules, out);
                 }
                 continue;
             }

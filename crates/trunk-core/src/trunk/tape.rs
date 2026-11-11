@@ -3,6 +3,7 @@
 //! channel's last minute. Off unless [`super::engine::EngineConfig::tapes`].
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use num_complex::Complex32;
@@ -14,8 +15,44 @@ const VOICE_MAX_S: f64 = 120.0;
 /// How much of a control channel is kept, s.
 const CONTROL_S: f64 = 60.0;
 
-/// Tapes of the voice channels that have closed, for the host to take.
-pub type TapeSink = Option<Arc<Mutex<Vec<VoiceTape>>>>;
+/// Whether channels are taped, and the voice channels' tapes that have
+/// closed, for the host to take. Shared by the engine's parts, and switched
+/// on and off as it runs ([`Tapes::set`]): a capture asked for by hand needs
+/// them only until it's made.
+#[derive(Clone, Default)]
+pub struct Tapes(Arc<TapesShared>);
+
+#[derive(Default)]
+struct TapesShared {
+    on: AtomicBool,
+    done: Mutex<Vec<VoiceTape>>,
+}
+
+impl Tapes {
+    pub fn on(&self) -> bool {
+        self.0.on.load(Ordering::Relaxed)
+    }
+
+    /// Tape from now on, or stop (what's waiting goes).
+    pub fn set(&self, on: bool) {
+        self.0.on.store(on, Ordering::Relaxed);
+        if !on {
+            self.0.done.lock().unwrap().clear();
+        }
+    }
+
+    /// A channel closed with tape `t`.
+    pub fn keep(&self, t: Option<VoiceTape>) {
+        if let Some(t) = t.filter(|_| self.on()) {
+            self.0.done.lock().unwrap().push(t);
+        }
+    }
+
+    /// The tapes of the channels closed since last asked.
+    pub fn take(&self) -> Vec<VoiceTape> {
+        std::mem::take(&mut *self.0.done.lock().unwrap())
+    }
+}
 
 /// What a voice channel's decoder was told, from sample `sample` on.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,6 +112,8 @@ impl VoiceTape {
 pub struct ControlTape {
     pub site: u16,
     pub carrier: usize,
+    /// The carrier's frequency.
+    pub freq_hz: f64,
     pub rate: f64,
     /// Samples in each push.
     pub block: usize,
@@ -84,8 +123,8 @@ pub struct ControlTape {
 }
 
 impl ControlTape {
-    pub fn new(site: u16, carrier: usize, rate: f64) -> ControlTape {
-        ControlTape { site, carrier, rate, block: 0, t0: 0.0, iq: VecDeque::new() }
+    pub fn new(site: u16, carrier: usize, freq_hz: f64, rate: f64) -> ControlTape {
+        ControlTape { site, carrier, freq_hz, rate, block: 0, t0: 0.0, iq: VecDeque::new() }
     }
 
     /// Samples whose first was at `t0`.
@@ -104,6 +143,16 @@ impl ControlTape {
             // Whole blocks, so a replay pushes what the decoder was pushed.
             let drop = over.div_ceil(self.block) * self.block;
             self.iq.drain(..drop.min(self.iq.len()));
+            self.t0 += drop as f64 / self.rate;
+        }
+    }
+
+    /// Only (about) its last `seconds`: whole blocks, at least that much.
+    pub fn keep_last(&mut self, seconds: f64) {
+        let room = (seconds * self.rate) as usize;
+        if self.block > 0 && self.iq.len() > room {
+            let drop = (self.iq.len() - room) / self.block * self.block;
+            self.iq.drain(..drop);
             self.t0 += drop as f64 / self.rate;
         }
     }
@@ -148,11 +197,24 @@ mod tests {
 
     #[test]
     fn a_control_tape_keeps_the_latest_whole_blocks() {
-        let mut t = ControlTape::new(0, 0, 10.0);
+        let mut t = ControlTape::new(0, 0, 851e6, 10.0);
         let block = vec![Complex32::default(); 100];
         for b in 0..8 {
             t.push(&block, b as f64 * 10.0);
         }
         assert_eq!((t.iq.len(), t.t0), (600, 20.0));
+        t.keep_last(25.0);
+        assert_eq!((t.iq.len(), t.t0), (300, 50.0), "whole blocks, at least that much");
+    }
+
+    #[test]
+    fn tapes_are_kept_only_while_on() {
+        let tapes = Tapes::default();
+        tapes.keep(Some(VoiceTape::new(spec(10.0), 851e6)));
+        assert!(tapes.take().is_empty());
+        tapes.set(true);
+        tapes.keep(Some(VoiceTape::new(spec(10.0), 851e6)));
+        tapes.set(false);
+        assert!(tapes.take().is_empty(), "switched off: what was waiting goes");
     }
 }

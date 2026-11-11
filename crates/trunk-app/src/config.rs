@@ -2114,15 +2114,19 @@ pub enum StorageBackend {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MonitorSettings {
-    /// Where to check the internet answers (`host:port`, a TCP connect every
-    /// 15 s): the uplink's history. Empty: no checks.
-    pub probe_hosts: Vec<String>,
-    /// Off: neither the internet checks nor the time server are asked,
-    /// whatever's set (the dashboard's Network switch). Applies at once.
+    /// Hosts to check the network reaches (`host:port`, a TCP connect every
+    /// `check_every_s`): the connection's history. Empty (the default): none,
+    /// and the dashboard goes by the services the plugins report. Applies at once.
+    pub check_hosts: Vec<String>,
+    /// How often each of `check_hosts` is tried, s (5 at least).
+    pub check_every_s: u64,
+    /// Off: neither `check_hosts` nor the time server are asked, whatever's
+    /// set (the dashboard's Network switch). Applies at once.
     pub network_checks: bool,
     /// The time server asked how far off the clock is (SNTP, every 15
     /// minutes; a name or address, port 123 unless given). It only measures:
     /// the operating system's time service keeps the clock. Empty: not asked.
+    /// Applies at once.
     pub time_server: String,
     /// The clock off by this much or more, ms: a warning, and calls marked
     /// `clock_off` (a problem at 5 s, or 4 times this). Applies at once.
@@ -2131,7 +2135,20 @@ pub struct MonitorSettings {
 
 impl Default for MonitorSettings {
     fn default() -> Self {
-        MonitorSettings { probe_hosts: vec!["1.1.1.1:443".into(), "dns.google:443".into()], network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0 }
+        MonitorSettings { check_hosts: Vec::new(), check_every_s: 15, network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0 }
+    }
+}
+
+impl MonitorSettings {
+    /// The hosts to check now and how often: none while the checks are off.
+    pub fn checks(&self) -> (Vec<String>, std::time::Duration) {
+        let hosts = if self.network_checks { self.check_hosts.iter().map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect() } else { Vec::new() };
+        (hosts, std::time::Duration::from_secs(self.check_every_s.max(5)))
+    }
+
+    /// The time server to ask now: none while the checks are off.
+    pub fn time_server(&self) -> Option<String> {
+        Some(self.time_server.trim().to_string()).filter(|s| self.network_checks && !s.is_empty())
     }
 }
 

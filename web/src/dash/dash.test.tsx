@@ -357,7 +357,7 @@ test("Platform: the span chooser offers what the store keeps", () => {
   assert.match(page, /7 days\s*30 days\s*90 days\s*1 year/, "a year, by default with the store on");
 });
 
-test("Platform: the Network card's Checks switch turns the internet checks and the time server off (#37)", () => {
+test("Platform: the Network card's Checks switch turns the hosts checked and the time server off (#37)", () => {
   twoSites();
   setView("platform");
   host({ os: synced, server: "pool.ntp.org", measured: null, error: null, problem: null, check: null });
@@ -368,8 +368,38 @@ test("Platform: the Network card's Checks switch turns the internet checks and t
   transport.onMessage({ type: "config", config: c, version: 2 });
   host({ os: synced, server: null, measured: null, error: null, problem: null, check: null });
   const page = text(renderToString(<PlatformPage />));
-  assert.match(page, /Checks off: the internet and the time server aren(?:'|&#x27;)t asked/);
+  assert.match(page, /Checks off: no host is checked and the time server isn(?:'|&#x27;)t asked/);
   assert.match(page, /Offset, measured — not asked: network checks are off/);
+});
+
+test("Platform: the connections are the hosts checked and the plugins' services; none checked by default (#148)", () => {
+  uploader("broadcastify");
+  setView("platform");
+  host({ os: synced });
+  assert.deepEqual(snapshot().config!.monitor!.checkHosts, [], "no traffic of the recorder's own by default");
+  let page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Connections\s*—\s*nothing checked, no plugin sending/);
+  assert.match(page, /No hosts checked, so no history kept/);
+  assert.match(page, /Hosts to check/);
+  // What the plugin reports is the connection: no host need be checked.
+  const p = snapshot().plugins!.plugins[0];
+  const reports = (state: "up" | "down", lastError?: string) =>
+    transport.onMessage({ type: "plugins", encoderFound: null, plugins: [{ ...p, runtime: { ...p.runtime, metrics: { endpoints: [{ name: "Broadcastify Calls", state, latencyMs: 400, lastError }] } } }] });
+  reports("up");
+  page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Connections\s*Up\s*Broadcastify Calls answers/);
+  assert.match(page, /Broadcastify Calls · Broadcastify Calls\s*answers\s*400 ms/);
+  assert.match(text(renderToString(<Overview />)), /Connections\s*up/);
+  reports("down", "HTTP 503");
+  page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Connections\s*Down\s*Broadcastify Calls isn(?:'|&#x27;)t answering/);
+  assert.match(page, /down: HTTP 503/);
+  assert.equal(pageHealth(snapshot()).platform.level, "ok", "a plugin's service down is the plugins' warning, not the computer's");
+  // A host that isn't host:port is said so.
+  const c = snapshot().config!;
+  c.monitor!.checkHosts = ["https://example.internal/health", "10.0.0.1:443", "[fe80::1]:443", "router.lan:80"];
+  transport.onMessage({ type: "config", config: c, version: 2 });
+  assert.match(text(renderToString(<PlatformPage />)), /Not host:port: https:\/\/example\.internal\/health(?!,)/);
 });
 
 test("Platform: the time service, the recording's clock and the radio systems' clocks", () => {

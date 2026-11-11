@@ -13,6 +13,26 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   or the call ends); a call's frames go where its live audio goes, and decrypted ones only to plugins with
   `shareDecrypted`.
 
+## [0.3.6] — 2026-11-10
+
+- **DMR calls on Motorola systems with restricted access (RAS) are no longer all marked encrypted.** RAS sets a bit in a call's
+  link control that was read as encryption, so their audio was dropped or never recorded. A call is now encrypted only when its
+  link control's privacy option says so, and RAS private calls are recorded.
+- **Capturing a control channel or a call for a bug report is one click.** The RF page's capture card (now **Capture what TRP
+  receives**) records one site's control channel for 30 or 60 seconds, the next call on a system or talkgroup, or every radio, and
+  says whether it shows a problem. Before, a control channel or call could only be caught by a capture rule set up ahead of time.
+  Rules are still there, under **Capture automatically when something goes wrong**.
+- A DMR site's control channel captures are each named for their own frequency, not all for one.
+- **The recorder no longer checks public DNS servers to see if the internet is up** (#148). It used to connect to
+  `1.1.1.1:443` and `dns.google:443` every 15 s, and networks that watch for DNS over HTTPS flagged that as DoH. Now it
+  checks nothing by default. The Platform page's **Connections** go by what the plugins already report about the
+  services they send to (Broadcastify Calls, OpenMHz, an MQTT broker…), which costs no extra traffic.
+- **Choose what to check, and how often,** on the Platform page's Network card: **Hosts to check** (`monitor.checkHosts`,
+  such as your router) and how often (`monitor.checkEveryS`, 15 s by default), and the **Time server**. All of them now
+  apply at once instead of at the next restart. `monitor.probeHosts` is gone: a list set there is ignored, so set it again
+  as `checkHosts`. [What the recorder connects to](docs/configuration/server-and-log.md#what-the-recorder-connects-to)
+  lists everything the recorder contacts, and when.
+
 ## [0.3.5] — 2026-11-09
 
 - **A call heard on several sites is now one call to plugins and stats, from its first copy's start to its last copy's end.** Before, it was

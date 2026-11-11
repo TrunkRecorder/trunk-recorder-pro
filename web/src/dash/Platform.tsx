@@ -1,15 +1,17 @@
 // The computer the recorder runs on: CPU (all of it, and ours), memory and
 // its pressure, the disks the calls go to (and how long they'll last at
-// today's rate), the network (whether the internet answers, minute by
-// minute), and the machine itself — container limits included. What this
-// platform can't tell is listed, greyed, with why.
+// today's rate), the network (what the recorder reaches: the hosts it
+// checks, minute by minute, and the services the plugins use), and the
+// machine itself — container limits included. What this platform can't
+// tell is listed, greyed, with why.
 
 import { useState } from "react";
-import type { ClockInfo, PlatformInfo, SeriesData } from "../protocol.ts";
+import type { ClockInfo, MonitorSettings, PlatformInfo, SeriesData } from "../protocol.ts";
 import { updateConfig, useApp, useTopic, type StatsRange } from "../controller.ts";
 import { Card, Choice, HeatStrip, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
 import { ago, bytes, clockAt, dur, ms, num, pct } from "../fmt.ts";
-import { platformHealth, total, useHistory, useRanges } from "./data.ts";
+import { connections, connectionsSummary, platformHealth, total, useHistory, useRanges } from "./data.ts";
+import { Field, NumberInput, TextArea, TextInput } from "../inputs.tsx";
 import { Switch } from "../SetupLayout.tsx";
 import { StorageView } from "./Storage.tsx";
 
@@ -29,6 +31,8 @@ export function PlatformPage() {
   const p = h.platform;
   const health = platformHealth(s);
   const checks = s.config?.monitor?.networkChecks ?? true;
+  const links = connections(s);
+  const net = connectionsSummary(links);
   const missing = (field: string) => p.unavailable.find((u) => u.field === field)?.why;
   const audioPerDay = (() => {
     const t = total(week?.["all/audioBytes"]);
@@ -91,10 +95,10 @@ export function PlatformPage() {
           hint="Stalled: time spent waiting for memory."
         />
         <Stat
-          label="Internet"
-          value={v["net/up"] === undefined ? "—" : v["net/up"] >= 1 ? "Up" : v["net/up"] > 0 ? "Partly" : "Down"}
-          level={v["net/up"] === undefined ? undefined : v["net/up"] >= 1 ? undefined : v["net/up"] > 0 ? "warn" : "bad"}
-          sub={v["net/rtt"] !== undefined ? `${num(v["net/rtt"], 0)} ms to connect` : "no checks set up"}
+          label="Connections"
+          value={net?.value ?? "—"}
+          level={net && net.level !== "ok" ? net.level : undefined}
+          sub={!net ? (links.length ? "not tried yet" : "nothing checked, no plugin sending") : net.value === "Up" && v["net/rtt"] !== undefined ? `${num(v["net/rtt"], 0)} ms to connect` : net.why}
           spark={<LiveSpark k="net/rtt" color="var(--series-3)" lo={0} />}
         />
         {v["plat/temp"] !== undefined ? (
@@ -194,7 +198,7 @@ export function PlatformPage() {
           s.config && (
             <Switch
               label="Checks"
-              title="The internet checks (monitor.probeHosts) and the clock's time server (monitor.timeServer). Off: neither is asked."
+              title="The hosts checked (monitor.checkHosts) and the clock's time server (monitor.timeServer). Off: neither is asked."
               checked={checks}
               onChange={(on) => updateConfig((x) => void (x.monitor && (x.monitor.networkChecks = on)))}
             />
@@ -202,16 +206,16 @@ export function PlatformPage() {
         }
       >
         {!checks ? (
-          <p className="empty">Checks off: the internet and the time server aren't asked (monitor.networkChecks).</p>
+          <p className="empty">Checks off: no host is checked and the time server isn't asked (monitor.networkChecks).</p>
         ) : upCells.length > 0 ? (
           <>
-            <Ribbon cells={upCells} titles={(up?.v ?? []).map((x, i) => `${clockAt(up!.t0 + i * up!.stepS)}: ${x === null ? "no data" : x >= 1 ? "up" : `${Math.round((x ?? 0) * 100)}% of checks answered`}`)} h={18} label="internet reachability" />
+            <Ribbon cells={upCells} titles={(up?.v ?? []).map((x, i) => `${clockAt(up!.t0 + i * up!.stepS)}: ${x === null ? "no data" : x >= 1 ? "up" : `${Math.round((x ?? 0) * 100)}% of checks answered`}`)} h={18} label="the hosts checked, answering" />
             <p className="muted small">
               {downSteps ? `${downSteps} stretch${downSteps > 1 ? "es" : ""} with failed checks` : "Every check answered"}
             </p>
           </>
         ) : (
-          <p className="empty">No checks set up (monitor.probeHosts).</p>
+          <p className="empty">No hosts checked, so no history kept. The services the plugins use are listed as they answer.</p>
         )}
         <div className="columns">
           <TimeSeries lines={[{ label: "Connect time, ms", color: "var(--series-3)", data: hist?.["net/rtt"] ?? null, band: true }]} zero height={120} fmt={(x) => x.toFixed(0)} />
@@ -225,28 +229,28 @@ export function PlatformPage() {
             fmt={(x) => `${bytes(x)}/s`}
           />
         </div>
-        {p.probes.length > 0 && (
+        {links.length > 0 && (
           <div className="table-wrap">
             <table className="calls">
               <thead>
                 <tr>
-                  <th>Check</th>
+                  <th>Connection</th>
                   <th>Now</th>
-                  <th>Connect</th>
+                  <th title="A host checked: how long it takes to connect. A plugin's service: how long a send takes.">Time</th>
                   <th>Last answered</th>
                   <th>Failed</th>
                 </tr>
               </thead>
               <tbody>
-                {p.probes.map((x) => (
-                  <tr key={x.target}>
-                    <td className="mono">{x.target}</td>
-                    <td>{x.ok === null ? "—" : x.ok ? "answers" : `down ${x.downSince ? `for ${dur(Date.now() / 1000 - x.downSince)}` : ""}`}</td>
-                    <td className="mono">{x.rttMs !== null ? `${num(x.rttMs, 0)} ms` : "—"}</td>
-                    <td className="small">{ago(x.lastOk)}</td>
-                    <td className="mono">
-                      {x.fails} of {x.tries}
+                {links.map((x) => (
+                  <tr key={`${x.plugin ?? ""}/${x.name}`}>
+                    <td>
+                      <span className={x.plugin ? "" : "mono"}>{x.name}</span> <span className="muted small">{x.plugin ? `· ${x.plugin}` : "· checked"}</span>
                     </td>
+                    <td className={x.level === "bad" ? "bad" : x.level === "warn" ? "warn" : ""}>{x.state}</td>
+                    <td className="mono">{x.ms !== null ? (x.ms >= 1000 ? `${num(x.ms / 1000, 1)} s` : `${num(x.ms, 0)} ms`) : "—"}</td>
+                    <td className="small">{ago(x.lastOk)}</td>
+                    <td className="mono">{x.failed ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -254,6 +258,7 @@ export function PlatformPage() {
           </div>
         )}
         {v["net/dns"] !== undefined && <p className="muted small">Name lookups take {num(v["net/dns"], 0)} ms.</p>}
+        {s.config?.monitor && <NetworkSettings m={s.config.monitor} />}
       </Card>
       <ClockCard c={p.clock} offsets={hist?.["clock/offsetMs"] ?? null} osMissing={missing("clockSynced")} checksOff={!checks} />
       <Card title="This computer">
@@ -281,6 +286,38 @@ export function PlatformPage() {
           </ul>
         )}
       </Card>
+    </div>
+  );
+}
+
+/** A host the checks can connect to: `name:port`, `1.2.3.4:port` or `[v6]:port`. */
+const HOST_PORT = /^(\[[0-9a-fA-F:.]+\]|[^\s:/[\]]+):\d{1,5}$/;
+
+/** What the recorder itself sends to see the network answers: hosts to check, how often, and the time server. Each applies at once. */
+function NetworkSettings({ m }: { m: MonitorSettings }) {
+  const bad = m.checkHosts.filter((h) => !HOST_PORT.test(h));
+  const set = (f: (x: MonitorSettings) => void) => updateConfig((c) => void (c.monitor && f(c.monitor)));
+  return (
+    <div className="grid2">
+      <Field
+        label="Hosts to check"
+        wide
+        hint={
+          bad.length ? (
+            <span className="bad-text">Not host:port: {bad.join(", ")}</span>
+          ) : (
+            "One host:port per line, connected to (TCP) to keep the network's history: your router, or a server on your network. None: no traffic of the recorder's own."
+          )
+        }
+      >
+        <TextArea className="mono" rows={2} value={m.checkHosts.join("\n")} placeholder={"192.168.1.1:443"} onChange={(t) => set((x) => void (x.checkHosts = t.split(/[\s,]+/).filter(Boolean)))} />
+      </Field>
+      <Field label="Check every, s" hint="5 at least">
+        <NumberInput label="Check every, s" narrow value={m.checkEveryS} onChange={(n) => set((x) => void (x.checkEveryS = Math.max(5, Math.round(n ?? 15))))} />
+      </Field>
+      <Field label="Time server" hint="Asked every 15 minutes how far off the clock is (SNTP, UDP 123). Empty: not asked.">
+        <TextInput className="mono" value={m.timeServer} placeholder="pool.ntp.org" onChange={(t) => set((x) => void (x.timeServer = t))} />
+      </Field>
     </div>
   );
 }
@@ -404,7 +441,7 @@ function ClockCard({ c, offsets, osMissing, checksOff }: { c: ClockInfo; offsets
       <TimeSeries lines={[{ label: `This computer's clock against ${c.server ?? "the time server"}, ms (+: behind)`, color: "var(--series-1)", data: offsets }]} height={110} fmt={(x) => x.toFixed(0)} />
       {c.check && c.check.fails > 0 && (
         <p className="muted small">
-          {c.check.fails} of {c.check.tries} queries unanswered{c.error ? ` (last: ${c.error})` : ""}. Some networks block NTP (UDP port 123); the internet checks don't count it.
+          {c.check.fails} of {c.check.tries} queries unanswered{c.error ? ` (last: ${c.error})` : ""}. Some networks block NTP (UDP port 123); the hosts checked don't count it.
         </p>
       )}
       <p className="muted small">
