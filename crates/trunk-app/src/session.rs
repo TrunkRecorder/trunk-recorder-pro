@@ -4,7 +4,7 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, MessageType, NoteLevel, ProtocolStatus};
+use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus};
 
 use crate::filename;
 use sdr_core::clock::{ClockEvent, SampleClock};
@@ -26,13 +26,12 @@ use crate::protocol::ToClient;
 pub enum Output {
     /// A message for the interface.
     Message(ToClient),
-    /// Live audio frame `[2][u16 system][u32 call id][u32 talkgroup][i16…]`
-    /// for talkgroup `tg` of `system` — that system's number for this run
-    /// (from 0, trunked then conventional: `status.systemNames`) — whose
-    /// short name, its identity, is `short_name`.
-    /// `decrypted`: of a call decrypted with our keys. (A call heard on
-    /// several sites of a system plays from one of them at a time.)
-    Audio { system: u16, short_name: String, tg: u32, frame: Vec<u8>, decrypted: bool },
+    /// Live audio of a call of `audio.system` — that system's number for this
+    /// run (from 0, trunked then conventional: `status.systemNames`) — whose
+    /// short name, its identity, is `short_name`; `unit_name`: the talker's
+    /// ("": none). (A call heard on several sites of a system plays from one
+    /// of them at a time.)
+    Audio { short_name: String, unit_name: String, audio: LiveAudio },
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
     /// the recordings folder); `record` is its call JSON, and [`call_entry`]
     /// its history entry, which the platform sends as a `concluded` message
@@ -92,6 +91,17 @@ pub struct PluginTopics {
     pub units: bool,
     pub status: bool,
     pub tone_patterns: bool,
+}
+
+/// Live audio as the browsers take it, a binary frame: `[2][u16 system][u32 call][u32 tg][i16…]`.
+pub fn audio_frame(a: &LiveAudio) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(11 + a.samples.len() * 2);
+    frame.push(2u8);
+    frame.extend_from_slice(&a.system.to_le_bytes());
+    frame.extend_from_slice(&a.call_id.to_le_bytes());
+    frame.extend_from_slice(&a.talkgroup.to_le_bytes());
+    frame.extend(trunk_core::wav::pcm16(&a.samples));
+    frame
 }
 
 /// Local time's offset from UTC at a Unix time, s (east positive) — Trunk
@@ -1146,19 +1156,12 @@ impl Session {
                 self.records.push(Record::text(level, Some(&self.site_label(system, site)), text.clone()));
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": kind, "text": text, "system": name, "site": self.site_name(site) }))
             }
-            Event::Audio { call_id, system, talkgroup, samples, decrypted } => {
+            Event::Audio(audio) => {
                 if !self.want_audio {
                     return;
                 }
-                let mut frame = Vec::with_capacity(11 + samples.len() * 2);
-                frame.push(2u8);
-                frame.extend_from_slice(&system.to_le_bytes());
-                frame.extend_from_slice(&call_id.to_le_bytes());
-                frame.extend_from_slice(&talkgroup.to_le_bytes());
-                for s in samples {
-                    frame.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
-                }
-                out.push(Output::Audio { system, short_name: self.system_name(system).to_string(), tg: talkgroup, frame, decrypted });
+                let unit_name = if audio.unit != 0 { self.unit_tag(audio.system, audio.unit) } else { String::new() };
+                out.push(Output::Audio { short_name: self.system_name(audio.system).to_string(), unit_name, audio });
             }
             Event::ConvSkipped { freq_hz, code } => {
                 let ms = self.wall(self.engine.status().now_s) * 1000.0;

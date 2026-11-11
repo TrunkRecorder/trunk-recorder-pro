@@ -5,6 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Plugins can take a call's voice as vocoder frames.** The `voice` topic (SDK 0.11.0: `Plugin::voice`)
+  sends, beside each live `audio` chunk, the frames it was made from, FEC-corrected and in order: IMBE (P25
+  Phase 1, ProVoice) or AMBE+2 (P25 Phase 2, DMR, NXDN), each with its bit errors and what the vocoder made
+  of it, and the call, talkgroup and who is talking. A plugin can relay them to a digital voice network,
+  such as MMDVM hotspots for DMR, P25 or NXDN radios, without decoding to audio and encoding again. Voice
+  goes where live audio goes: not to a plugin delayed for the call, and decrypted voice only to plugins
+  with `shareDecrypted`.
+- A call's `.frames.jsonl` (NXDN's frame capture, and `tool sdr --frames`) names each frame's vocoder
+  output `kind` (it was `out`) and no longer has `pos`: frame k starts k × 20 ms into the call.
+
 ## [0.3.6] — 2026-11-10
 
 - **DMR calls on Motorola systems with restricted access (RAS) are no longer all marked encrypted.** RAS sets a bit in a call's

@@ -30,7 +30,7 @@ pub use control::{Protocol, ProtocolStatus};
 pub use conventional::{check_channels, heard_code, Access, ConvChannel, ConvConfig, ConvMode};
 pub use identity::{IdField, Identity};
 pub use record::{Capture, Concluded, SaveRules};
-pub use engine::{sites, usable_half_width, ChannelKind, ChannelSnapshot, Engine, EngineConfig, Event, Pins, NoteLevel, SmartnetConfig, SourceConfig, SourceReport, Status, SiteConfig, SiteKey, SiteStatus, SystemConfig, SystemStatus, PatternHeard, DEFAULT_GUARD_HZ};
+pub use engine::{sites, usable_half_width, ChannelKind, ChannelSnapshot, Engine, EngineConfig, Event, LiveAudio, Pins, NoteLevel, SmartnetConfig, SourceConfig, SourceReport, Status, SiteConfig, SiteKey, SiteStatus, SystemConfig, SystemStatus, PatternHeard, DEFAULT_GUARD_HZ};
 pub use message::{AdjacentSite, Message, MessageType, Neighbours, P25Parser, Patch};
 pub use names::{replace_rows, NameRow, Origin, OriginKind};
 pub use patches::Patches;

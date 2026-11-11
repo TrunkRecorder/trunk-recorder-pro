@@ -9,7 +9,7 @@ use crate::dsp::inband::signal::{matching, Signal};
 use crate::dsp::inband::{self, ToneSeg};
 use crate::dsp::inband::subaudible::Tone;
 use super::frames::FrameErrors;
-use super::frames::{frames_jsonl, VoiceFrame};
+use super::frames::VoiceFrame;
 use super::multisite::Held;
 use super::recorded::Recorded;
 use super::sdr::{call_sdr, SdrInfo, SdrMode};
@@ -513,7 +513,7 @@ pub struct Concluded {
 }
 
 /// A call's frame capture: an `.sdr` file ([`super::sdr`]), or JSON lines
-/// ([`super::frames::frames_jsonl`]) for NXDN, which `.sdr` has no layout for.
+/// ([`VoiceFrame::to_jsonl`]) for NXDN, which `.sdr` has no layout for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Capture {
     /// The file's extension: `sdr` or `frames.jsonl`.
@@ -555,7 +555,7 @@ fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: 
         Voice::P25Tdma { .. } => Some(SdrMode::P25Tdma),
         Voice::P25 | Voice::Fm | Voice::Am => Some(SdrMode::P25Fdma),
     };
-    let (first, last) = (call.sources.first().map_or(0, |s| s.src), call.sources.last().map_or(0, |s| s.src));
+    let (first, last) = (call.sources.first().map_or(0, |s| s.src), call.talker().map_or(0, |s| s.src));
     let info = SdrInfo {
         start_us: ((cx.epoch_ms_at_zero + call.start_s * 1000.0) * 1000.0).round().max(0.0) as u64,
         duration_ms: (audio_len as f64 * 1000.0 / mbe::SAMPLE_RATE as f64).round() as u32,
@@ -582,7 +582,7 @@ fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: 
     };
     match mode.and_then(|m| call_sdr(m, frames, &info)) {
         Some(bytes) => Capture { ext: "sdr", bytes },
-        None => Capture { ext: "frames.jsonl", bytes: frames_jsonl(frames).into_bytes() },
+        None => Capture { ext: "frames.jsonl", bytes: VoiceFrame::to_jsonl(frames).into_bytes() },
     }
 }
 

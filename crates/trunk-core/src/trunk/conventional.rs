@@ -55,7 +55,7 @@ use std::sync::Arc;
 use num_complex::Complex32;
 
 use super::calls::{Call, CallConfig, CallEvent, CallIds, CallManager, CallSource, CarriesOn, Flags, Policy, Voice};
-use super::engine::{Event, Pins, SystemConfig, Tuning};
+use super::engine::{Event, LiveAudio, Pins, SystemConfig, Tuning};
 use super::inband::InBandSpec;
 use super::record::RecordedOn;
 use super::recorded::Recorded;
@@ -1187,7 +1187,7 @@ impl Conventional {
             let new_tg = ota.is_some() && air_tg.is_some_and(|t| Some(t) != ota);
             let new_row = l.row != r && (ch.mode.analog() || air_tg.is_some());
             let carry_on: Option<(Vec<CallSource>, CarriesOn)> = if rules.calls.too_long(&l.call, now_s) {
-                let talking = l.call.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() });
+                let talking = l.call.talker().map(|s| CallSource { time_s: now_s, ..s.clone() });
                 Some((talking.into_iter().collect(), CarriesOn::TooLong))
             } else {
                 rules.calls.new_transmission(&l.call, from_s).map(|i| (l.call.sources.split_off(i), CarriesOn::NewTransmission))
@@ -1292,7 +1292,7 @@ impl Conventional {
         // (none taken in for a call not recorded).
         let mut patterns = Vec::new();
         if !h.audio.is_empty() && l.call.recording {
-            let news = l.rec.push(&h.audio, h.frames, now_s);
+            let news = l.rec.push(&h.audio, &h.frames, now_s);
             changed |= CallManager::note_units(&mut l.call, &mut l.rec.tx, &news.units, now_s);
             // A new tone or code is news; a firmer reading of the same one isn't.
             changed |= l.rec.subaudible(&h.low).code.is_some();
@@ -1306,7 +1306,8 @@ impl Conventional {
         // (An encrypted transmission's audio, unless decrypted, is left out
         // when the call is saved, as a trunked call's is; it isn't played live.)
         if !h.audio.is_empty() && l.call.recording && !l.rec.tx.current_dropped() {
-            out.push(ConvOut::Event(Event::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio, decrypted: l.call.decrypted_voice(false) }));
+            let c = &l.call;
+            out.push(ConvOut::Event(Event::Audio(LiveAudio { call_id: c.id, system: c.system, talkgroup: c.talkgroup, unit: c.talker().map_or(0, |s| s.src), samples: h.audio, frames: h.frames, decrypted: c.decrypted_voice(false) })));
         }
     }
 
