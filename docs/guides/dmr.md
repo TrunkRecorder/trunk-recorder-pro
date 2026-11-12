@@ -37,7 +37,7 @@ In **Setup** → **Systems**, **Add a system** and set **Type** to **DMR (trunke
 - **Voice frequencies, MHz** (`dmrChannelsHz`): for Tier III, Capacity Max and Connect Plus, the
   site's voice frequencies. This is Trunk Recorder's `channels`.
 - **Colour code** (`colorCode`): leave empty ("auto") to take the control channel's.
-- **Channel table (optional)** (`lcnTableHz`): channel numbers you already know, as
+- **Channel table** (`lcnTableHz`): channel numbers you already know, as
   `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Mapped frequencies are also watched. Leave it empty to learn them (XPT requires explicit repeater mappings).
 
 In the config file (frequencies in Hz):

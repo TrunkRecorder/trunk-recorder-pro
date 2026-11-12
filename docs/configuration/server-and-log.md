@@ -14,7 +14,7 @@ for one run, see [command-line.md](../command-line.md).
 ## Server
 
 The built-in interface's address and port, and the other interfaces, each on a port of its own. In
-the app: **Start recording when the app starts** on Setup's **Recording** tab; the rest on the
+the app: **Record when the app starts** on Setup's **Recording** tab; the rest on the
 **Interfaces** page.
 
 | Key | Required | Default | Type | Description |

@@ -42,7 +42,7 @@ import { showTodo } from "./Setup.tsx";
 import { CopyButton, DraftInput, NumberInput, ReleaseSlider, TextArea, TextInput, Toggle } from "./inputs.tsx";
 import { numberList, talkgroupList, talkgroupProblem, textList } from "./fieldText.ts";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
-import { Card } from "./charts.tsx";
+import { Card, Fig } from "./charts.tsx";
 import { ToneList } from "./ToneList.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
@@ -323,7 +323,7 @@ const choosesFrom = (f: PluginSchema) => !!(f.items?.enum || f["x-systems"] || f
  */
 function choicesOf(f: PluginSchema, c: Config | null, root: PluginValues): { options: { value: string; label: string }[]; none: string } {
   if (f.items?.enum) return { options: f.items.enum.map((x, i) => ({ value: String(x), label: f.items?.["x-enum-labels"]?.[i] ?? String(x) })), none: "" };
-  if (f["x-signals"]) return { options: c ? signalChoices(c) : [], none: "No signals yet: name them in Setup (each system's Signals), or Add one from its Tones card" };
+  if (f["x-signals"]) return { options: c ? signalChoices(c) : [], none: "No signals yet: add them on a system's Signals or Tones card" };
   if (f["x-ref"]) return { options: refOptions(root, f["x-ref"]), none: `None yet: add them under ${spell(f["x-ref"])}` };
   return { options: (c ? systemsOf(c) : []).map((x) => ({ value: x.name, label: x.name })), none: "No systems yet" };
 }
@@ -593,7 +593,7 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
               </legend>
               {copies.length > 1 && (
                 <div className="plugin-copy-head">
-                  <span className="field-hint muted">{i === 0 ? `The first ${m.name} for ${sys.shortName}.` : `${m.name} again, with these settings, for ${sys.shortName} alone.`}</span>
+                  <span className="field-hint muted">{i === 0 ? "The first" : `Another, for ${sys.shortName} alone`}</span>
                   <button type="button" className="btn ghost small danger" onClick={() => removeSystemPluginCopy(props.system, p.id, i)} aria-label={`Remove ${m.name} copy ${i + 1}`}>
                     Remove
                   </button>
@@ -651,17 +651,17 @@ function PluginOverride(props: { m: PluginManifest; over: PluginValues; every: P
   return (
     <details className="plugin-override" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
       <summary>
-        {m.name} settings for {props.system}
+        {m.name} shared settings
         <span className="muted">
           {" "}
-          · {changed.length === 0 ? "as for every system" : `${changed.map(([k]) => labelOf(m.config, k)).join(", ")} changed`}
+          · {changed.length === 0 ? "default" : `${changed.map(([k]) => labelOf(m.config, k)).join(", ")} changed for ${props.system}`}
         </span>
       </summary>
-      <p className="field-hint">Change any of {m.name}'s settings for {props.system} alone. Empty ones are as for every system.</p>
+      <p className="field-hint">Empty: default</p>
       <SchemaFields schema={m.config} values={over} inherited={every} onChange={props.onChange} id={props.id} />
       {changed.length > 0 && (
         <button type="button" className="btn ghost small" onClick={() => props.onChange({})}>
-          As for every system
+          Reset to default
         </button>
       )}
     </details>
@@ -679,7 +679,7 @@ export function PluginSetupPanel() {
     <Section
       id="need-plugins"
       title="Plugins"
-      hint="They upload or stream each call. Settings for one system alone are on that system's card."
+      hint="Per-system settings: on each system's card"
       actions={
         <button className="btn" onClick={() => setView("plugins")}>
           Find and install plugins…
@@ -728,7 +728,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
           <button className="btn" onClick={() => setView("plugin", p.id)}>
             Open {m.page.title || m.name}
           </button>
-          <span className="muted small">Its settings have a page of their own.</span>
+          <span className="muted small">Settings on its own page</span>
         </div>
       ) : (
         m && hasFields(m.config) && (
@@ -764,7 +764,8 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
       {on && hasKeys(c) && (m?.subscribe.includes("audio") || m?.subscribe.includes("call.concluded")) && (
         <Toggle
           label="Share decrypted calls"
-          hint="Calls decrypted with your keys go to it too. Once sent they can't be taken back, and may become public."
+          hint="Once sent, they can't be taken back"
+          info="Calls decrypted with your keys go to it too. Once sent they can't be taken back, and may become public."
           checked={!!c.plugins?.[p.id]?.shareDecrypted}
           onChange={(v) => setPluginShareDecrypted(p.id, v)}
         />
@@ -862,7 +863,7 @@ function Held(props: { id: string; name: string; saved: PluginValues; save: (v: 
       {props.children(draft ?? props.saved, change)}
       {draft !== undefined && (
         <div className="held-bar" role="status">
-          <span className="small">Not applied yet: applying restarts {props.name}{recording ? "" : " when recording starts"}.</span>
+          <span className="small">Not applied · Apply restarts {props.name}{recording ? "" : " when recording starts"}</span>
           <button type="button" className="btn primary small" onClick={() => done(true)}>
             Apply
           </button>
@@ -900,7 +901,7 @@ function usePluginStatus(p: PluginInfo, c: Config) {
 
 /** What changing its settings does while it runs. */
 function ChangesNote(props: { m: PluginManifest | null | undefined }) {
-  return <p className="small muted">{props.m?.live_settings ? "It takes changes as they're made." : "While recording, changes wait for Apply: applying restarts it (delays don't)."}</p>;
+  return <p className="small muted">{props.m?.live_settings ? "Changes apply live" : <span title="Delays apply live">Changes wait for Apply, which restarts it</span>}</p>;
 }
 
 /** A plugin's log, newest last (`newestFirst`: first). */
@@ -1000,7 +1001,7 @@ export function M4aSettings() {
       <header className="set-card-head">
         <div className="set-card-title">
           <h3 id="m4a-title">M4A audio</h3>
-          <span className="set-card-sub">About a tenth the size of WAV</span>
+          <span className="set-card-sub">⅒ the size of WAV</span>
         </div>
         <span className="spacer" />
         {found ? <span className="chip ok">{found}</span> : <span className={`chip ${wanted.length ? "bad" : ""}`}>{a.encoder === "none" ? "off" : "no encoder found"}</span>}
@@ -1009,7 +1010,7 @@ export function M4aSettings() {
         title="Encoding"
         hint={
           <>
-            Used by the plugins that upload M4A, and by <b>Keep .m4a</b>.{" "}
+            For M4A uploads and <b>Keep .m4a</b>{" "}
             {wanted.length > 0 && !found && (
               <span className="bad-text">
                 {wanted.map((p) => p.manifest!.name).join(", ")} {wanted.length > 1 ? "need" : "needs"} it: install ffmpeg.
@@ -1048,7 +1049,7 @@ export function M4aSettings() {
               else setKbps(String(a.bitrateKbps));
             }}
           />
-          <span className="field-hint">Trunk Recorder uses 32.</span>
+          <span className="field-hint">Trunk Recorder: 32</span>
         </div>
       </Group>
     </section>
@@ -1125,16 +1126,17 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
       {m?.description && <p className="plugin-desc">{m.description}</p>}
       {message && <p className={`small ${st.tone === "bad" ? "bad-text" : st.tone === "warn" ? "warn-text" : "muted"}`}>{message}</p>}
       {counted && (
-        <p className="small muted" title={r.lastFailure || undefined}>
-          {recording ? "This recording" : "Last recording"}: {r.ok} done
-          {r.skipped > 0 && ` · ${r.skipped} skipped`}
-          {r.failed > 0 && <span className="bad-text"> · {r.failed} failed</span>}
-          {r.failed > 0 && r.lastFailure && <span className="plugin-last-failure"> — last: {r.lastFailure}</span>}
+        <p className="small muted plugin-counts" title={r.lastFailure || undefined}>
+          <span>{recording ? "This recording" : "Last recording"}</span>
+          <Fig v={r.ok.toLocaleString()} u="done" />
+          {r.skipped > 0 && <Fig v={r.skipped} u="skipped" />}
+          {r.failed > 0 && <Fig v={r.failed} u="failed" level="bad" />}
+          {r.failed > 0 && r.lastFailure && <span className="plugin-last-failure bad-text">{r.lastFailure}</span>}
         </p>
       )}
       {(r.held ?? 0) > 0 && (
         <p className="small muted" title="Its delays hold these back; they go when their time is up, after a restart too">
-          {r.held} call{r.held === 1 ? "" : "s"} waiting out a delay
+          <Fig v={r.held} u={r.held === 1 ? "call" : "calls"} /> held by a delay
         </p>
       )}
       {m && (

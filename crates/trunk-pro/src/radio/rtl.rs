@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use rtlsdr_nusb::{Device, GainConfig, MaybeFuture, RawIq, RxBuffers, RxStream};
 
 use super::Deadline;
-use crate::sdr::{Applied, Control, Gain, Radio, Retuned, Sink, StreamCheck, Tunable, Wire};
+use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, StreamCheck, Tunable, Wire};
 
 #[derive(Clone, Debug)]
 pub struct RtlConfig {
@@ -117,6 +117,9 @@ impl Radio for RtlConfig {
             Gain::Stages(_) | Gain::Preset(..) => {}
         }
     }
+    fn gain(&self) -> Option<Gain> {
+        Some(self.gain_db.map_or(Gain::Agc, Gain::Db))
+    }
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
         stream_once(self, sink, stop, ctl)
     }
@@ -151,14 +154,21 @@ impl Tunable for Rtl<'_> {
         let gap = self.halted(|dev| dev.set_frequency_hz(hz.round() as u64).wait().map_err(|e| format!("tune {:.4} MHz: {e}", hz / 1e6)))?;
         Ok(Retuned { hz: self.dev.actual_frequency_hz() as f64, gap })
     }
-    fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
+    fn set_gain(&mut self, g: Gain) -> Result<Regained, String> {
         let gain = match g {
             Gain::Agc => GainConfig::Auto,
             Gain::Db(db) => GainConfig::Manual(db),
-            Gain::Stages(_) | Gain::Preset(..) => return Ok(0),
+            Gain::Stages(_) | Gain::Preset(..) => return Ok(Regained::LEFT_ALONE),
         };
-        self.halted(|dev| dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}")))
+        let gap = self.halted(|dev| dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}")))?;
+        Ok(Regained { gap, gain: Some(gain_set(self.dev)) })
     }
+}
+
+/// What the dongle's tuner is set to: its AGC, or a manual gain's nearest step
+/// (the tuner has steps: an R820T's 0, 0.9, 1.4 … 49.6 dB).
+fn gain_set(dev: &Device<RawIq>) -> Gain {
+    dev.gain_db().map_or(Gain::Agc, Gain::Db)
 }
 
 /// Keeps a dongle in [`OPEN`] while it streams.
@@ -204,6 +214,7 @@ fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<
         OPEN.lock().unwrap().insert(s.clone());
     }
     let _using = Using(serial);
+    sink.gained(cfg.gain(), Some(gain_set(&dev)));
     let mut rx = dev.rx_stream_with(cfg.rx_buffers()).map_err(|e| format!("{name} USB transfers: {e}"))?;
     rx.start().wait().map_err(|e| format!("{name}: {e}"))?;
     let mut check = StreamCheck::new(cfg.rate_hz as f64);

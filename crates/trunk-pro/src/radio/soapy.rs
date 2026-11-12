@@ -16,7 +16,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{cstr, ppm_corrected, Caps, Deadline, DriverInfo, Handed, Rates};
-use crate::sdr::{Applied, Block, Control, Gain, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
 
 type Dev = *mut c_void;
 type Stream = *mut c_void;
@@ -77,6 +77,8 @@ struct Api {
     set_gain_mode: unsafe extern "C" fn(Dev, c_int, usize, bool) -> c_int,
     set_gain: unsafe extern "C" fn(Dev, c_int, usize, f64) -> c_int,
     set_gain_element: unsafe extern "C" fn(Dev, c_int, usize, *const c_char, f64) -> c_int,
+    /// The overall gain it's set to (its stages together).
+    get_gain: Option<unsafe extern "C" fn(Dev, c_int, usize) -> f64>,
     set_antenna: unsafe extern "C" fn(Dev, c_int, usize, *const c_char) -> c_int,
     write_setting: unsafe extern "C" fn(Dev, *const c_char, *const c_char) -> c_int,
 }
@@ -167,6 +169,7 @@ fn api() -> Result<&'static Api, String> {
                 set_gain_mode: f!("SoapySDRDevice_setGainMode"),
                 set_gain: f!("SoapySDRDevice_setGain"),
                 set_gain_element: f!("SoapySDRDevice_setGainElement"),
+                get_gain: opt!("SoapySDRDevice_getGain"),
                 set_antenna: f!("SoapySDRDevice_setAntenna"),
                 write_setting: f!("SoapySDRDevice_writeSetting"),
                 _lib: lib,
@@ -418,6 +421,9 @@ impl crate::sdr::Radio for SoapyConfig {
             self.gain_db = Some(db as f64);
         }
     }
+    fn gain(&self) -> Option<Gain> {
+        if self.agc { Some(Gain::Agc) } else { self.gain_db.map(|g| Gain::Db(g as f32)) }
+    }
     fn rate_hz(&self) -> f64 {
         self.rate_hz
     }
@@ -442,6 +448,8 @@ struct Device {
     stream: Stream,
     active: bool,
     ppm: f64,
+    /// Its stages' gains ([`SoapyConfig::gains`]), set after the overall one each time it's set.
+    stages: Vec<(String, f64)>,
 }
 
 impl Drop for Device {
@@ -468,21 +476,36 @@ impl Tunable for Device {
         Ok(Retuned { hz, gap: 0 })
     }
     /// A manual gain (AGC on or off waits for the next start).
-    fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
-        let Gain::Db(db) = g else { return Ok(0) };
+    fn set_gain(&mut self, g: Gain) -> Result<Regained, String> {
+        let Gain::Db(db) = g else { return Ok(Regained::LEFT_ALONE) };
         // SAFETY: an open device.
-        unsafe { self.gain(db as f64) }.map(|()| 0)
+        unsafe { self.gain(Some(db as f64)) }?;
+        Ok(Regained { gap: 0, gain: self.gain_set() })
     }
 }
 
 impl Device {
-    unsafe fn gain(&self, db: f64) -> Result<(), String> {
+    /// A manual gain: the AGC off, `db` overall (None: as the device has it),
+    /// then each of its stages' — which an overall gain set alone would undo.
+    unsafe fn gain(&self, db: Option<f64>) -> Result<(), String> {
         unsafe {
             if (self.a.has_gain_mode)(self.dev, RX, 0) {
                 check(self.a, "AGC off", (self.a.set_gain_mode)(self.dev, RX, 0, false))?;
             }
-            check(self.a, "gain", (self.a.set_gain)(self.dev, RX, 0, db))
+            if let Some(db) = db {
+                check(self.a, "gain", (self.a.set_gain)(self.dev, RX, 0, db))?;
+            }
+            for (k, db) in &self.stages {
+                let ck = CString::new(k.as_str()).map_err(|e| e.to_string())?;
+                check(self.a, &format!("gain {k}"), (self.a.set_gain_element)(self.dev, RX, 0, ck.as_ptr(), *db))?;
+            }
+            Ok(())
         }
+    }
+    /// The overall gain it's set to, when its SoapySDR can say.
+    fn gain_set(&self) -> Option<Gain> {
+        // SAFETY: an open device.
+        self.a.get_gain.map(|get| Gain::Db(unsafe { get(self.dev, RX, 0) } as f32))
     }
     /// The rates its module says it runs at: a span (min to max of its ranges) when one is a
     /// span, else the rates themselves.
@@ -534,7 +557,7 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
             let why = a.last_error.map(|f| unsafe { cstr(f()) }).filter(|s| !s.is_empty()).unwrap_or_else(|| "no matching device".into());
             return Err(format!("{what} open: {why}"));
         }
-        Ok((Handed(Device { a, dev, stream: std::ptr::null_mut(), active: false, ppm: 0.0 }), sdrplay))
+        Ok((Handed(Device { a, dev, stream: std::ptr::null_mut(), active: false, ppm: 0.0, stages: Vec::new() }), sdrplay))
     })?;
     let mut d = d.0;
     d.ppm = cfg.ppm;
@@ -569,18 +592,13 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
             }
             check(a, "AGC", (a.set_gain_mode)(d.dev, RX, 0, true))?;
         } else {
-            if has_agc {
-                check(a, "AGC off", (a.set_gain_mode)(d.dev, RX, 0, false))?;
-            }
-            if let Some(g) = cfg.gain_db {
-                d.gain(g)?;
-            }
-            for (k, db) in &cfg.gains {
-                let ck = CString::new(k.as_str()).map_err(|e| e.to_string())?;
-                check(a, &format!("gain {k}"), (a.set_gain_element)(d.dev, RX, 0, ck.as_ptr(), *db))?;
-            }
+            d.stages = cfg.gains.clone();
+            d.gain(cfg.gain_db)?;
         }
         d.tune(cfg.center_hz)?;
+        if !cfg.agc {
+            sink.gained(cfg.gain(), d.gain_set());
+        }
 
         let chan = [0usize];
         d.stream = match a.setup_stream {

@@ -113,8 +113,7 @@ at boot, restart if it stops, and resume recording by itself. The tarball includ
 the same settings and recordings folder as when you run `trunk-pro` yourself.
 
 1. Set it up once. Either run `trunk-pro` on the machine and configure it in the browser, or do
-   step 4 first and configure it through the tunnel. Turn on **Start recording when the app
-   starts** in **Setup → Recording**, so that recording resumes after every restart.
+   step 4 first and configure it through the tunnel. Turn on **Record when the app starts** in **Setup → Recording**, so that recording resumes after every restart.
 
 2. Install and start the service. From the folder you unpacked:
 

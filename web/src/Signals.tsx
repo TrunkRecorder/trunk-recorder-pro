@@ -6,6 +6,7 @@
 // are the recorder's (rules.ts): Start refuses a config with one it can't use.
 
 import { useState } from "react";
+import { Fig, Info } from "./charts.tsx";
 import { editList, systemAt, useApp, type SystemRef } from "./controller.ts";
 import { numberList, talkgroupList, type TextCodec } from "./fieldText.ts";
 import { DraftInput, Field, NumberInput, TalkgroupHint, TextInput } from "./inputs.tsx";
@@ -108,7 +109,7 @@ export function SignalFields(props: { d: SignalDef; taken: (id: string) => boole
     <>
       <div className="row-editor">
         {!props.bare && (
-        <Field label="Id" hint="What the call JSON and plugins name it by">
+        <Field label="Id" hint="Its name in calls and plugins">
           <DraftInput
             className="mono"
             aria-label="Id"
@@ -166,7 +167,7 @@ export function SignalFields(props: { d: SignalDef; taken: (id: string) => boole
           </>
         )}
         {k === "sequence" && (
-          <Field label="Tones, Hz, in order" hint="As the list gives them (1124, 1197, 1275)">
+          <Field label="Tones, Hz, in order" hint="e.g. 1124, 1197, 1275">
             <DraftInput className="mono" aria-label="Tones" codec={hzList} value={d.tonesHz ?? []} onChange={(v) => set((x) => void (x.tonesHz = v))} />
           </Field>
         )}
@@ -181,12 +182,12 @@ export function SignalFields(props: { d: SignalDef; taken: (id: string) => boole
           </Field>
         )}
         {d.pattern !== "digits" && d.pattern !== "morse" && (
-          <Field label="Extra tolerance, %" hint="Added to the usual (below); empty: none">
+          <Field label="Extra tolerance, %" hint="On top of the usual (below)">
             <NumberInput label="Extra tolerance, %" narrow value={d.extraTolerancePct} onChange={(v) => set((x) => void (x.extraTolerancePct = v))} />
           </Field>
         )}
         {!props.bare && (
-          <Field label="Talkgroups" hint={<TalkgroupHint list={d.talkgroups} text="Numbers, ranges (1000-1099), patterns (507*); empty: any" />}>
+          <Field label="Talkgroups" hint={<TalkgroupHint list={d.talkgroups} text="e.g. 1000-1099, 507* · empty: any" />}>
             <DraftInput className="mono" aria-label="Talkgroups" placeholder="any" codec={talkgroupList} value={d.talkgroups ?? []} onChange={(v) => set((x) => void (x.talkgroups = v))} />
           </Field>
         )}
@@ -224,10 +225,11 @@ export function SystemSignals(props: { system: SystemRef }) {
   return (
     <details className="help override" id={`need-${anchor}`}>
       <summary>
-        Signals
-        <span className="muted">{defs.length ? ` — ${defs.length}` : " — none"}</span>
+        Signals {defs.length ? <Fig v={defs.length} /> : <span className="muted">none</span>}
       </summary>
-      <p className="field-hint">{WHAT}</p>
+      <p className="field-hint">
+        Tones its calls and plugins name <Info>{WHAT}</Info>
+      </p>
       {(defs.length > 0 || draft) && (
         <div className="table-wrap channels-wrap">
           <table className="calls channels">

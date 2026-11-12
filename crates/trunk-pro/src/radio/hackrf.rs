@@ -87,6 +87,9 @@ impl Radio for HackrfConfig {
             self.gain = s;
         }
     }
+    fn gain(&self) -> Option<Gain> {
+        Some(Gain::Stages(self.gain))
+    }
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
         stream_once(self, sink, stop, ctl)
     }
@@ -121,7 +124,13 @@ mod native {
 
     use super::{release, HackrfConfig, FIRMWARE_MIN};
     use crate::radio::Deadline;
-    use crate::sdr::{Applied, Control, Gain, Retuned, Sink, StreamCheck, Tunable};
+    use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, Stages, StreamCheck, Tunable};
+
+    /// What a HackRF is set to, each stage's dB on its steps, by its driver's account
+    /// (the radio can't be asked).
+    fn gain_set<S: Into<sdr_core::gain::Stage>>(readings: Vec<sdr_core::gain::StageReading<S>>) -> Gain {
+        Gain::Stages(readings.into_iter().map(|r| r.common()).fold(Stages::default(), |s, r| s.with(r.stage, r.db as f32)))
+    }
 
     /// A HackRF streaming, as [`Control`]'s requests change it. It keeps
     /// sampling through a change (placed by the firmware's own byte count): no gap.
@@ -135,7 +144,7 @@ mod native {
             self.stream.retune(&self.cfg.tune_request(hz)).map_err(|e| format!("tune {:.4} MHz: {e}", hz / 1e6))?;
             Ok(Retuned { hz, gap: 0 })
         }
-        fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
+        fn set_gain(&mut self, g: Gain) -> Result<Regained, String> {
             let r = match g {
                 Gain::Stages(s) => {
                     let (lna, vga, amp) = super::levels(&s);
@@ -147,9 +156,10 @@ mod native {
                 }
                 // (The survey's one number, split across the stages by the driver.)
                 Gain::Db(db) => self.stream.set_gain(db as f64).map(|b| ((), b)),
-                Gain::Agc | Gain::Preset(..) => return Ok(0),
+                Gain::Agc | Gain::Preset(..) => return Ok(Regained::LEFT_ALONE),
             };
-            r.map(|_| 0).map_err(|e| format!("gain {g}: {e}"))
+            r.map_err(|e| format!("gain {g}: {e}"))?;
+            Ok(Regained { gap: 0, gain: Some(gain_set(self.stream.stage_readings())) })
         }
     }
 
@@ -174,6 +184,7 @@ mod native {
         };
         h.set_rate(cfg.rate_hz).and_then(|()| h.set_freq(&cfg.tune_request(cfg.center_hz)).map(drop)).and_then(|()| gain(&mut h)).map_err(|e| format!("{name}: {e}"))?;
         log::info!("{name} ({}, firmware {version}): {:.4} MHz, {:.3} MSPS, {}", h.label(), cfg.center_hz / 1e6, cfg.rate_hz / 1e6, cfg.gain);
+        sink.gained(cfg.gain(), Some(gain_set(h.stage_readings())));
         // (The driver's default transfers: 32 × 64 KiB in flight.)
         let mut stream = h.into_stream(0, 0).map_err(|e| format!("{name}: {}", e.error))?;
         stream.start().map_err(|e| format!("{name}: {e}"))?;

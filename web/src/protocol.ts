@@ -863,6 +863,8 @@ export interface SourceStatus {
   centerHz: number;
   rateHz: number;
   rateMeasured: number;
+  /** The gain its radio is set to, when that isn't the gain asked for (the radio's nearest step, or within its range here). */
+  gainSet?: string | null;
   dropped: number;
   errors: number;
   /** The last error, for 5 minutes after it. */

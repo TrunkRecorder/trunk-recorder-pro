@@ -7888,6 +7888,13 @@
         "rateMeasured": {
           "type": "number"
         },
+        "gainSet": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The gain its radio is set to, when that isn't the gain asked for (the radio's nearest step, or within its range here)."
+        },
         "dropped": {
           "type": "number"
         },

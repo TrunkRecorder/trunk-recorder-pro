@@ -4,18 +4,23 @@
 
 import { useEffect, useRef, useState } from "react";
 import { iqCaptureCancel, iqCaptureDelete, iqCaptureReview, iqCaptures, iqCaptureSend, iqCaptureStart, iqCaptureWithdraw, iqRuleCheck, updateConfig, useApp, type IqCaptureReview, type IqCaptures } from "../controller.ts";
-import { Card, Choice, Hint } from "../charts.tsx";
+import { Card, Choice, Figs, Hint, Info } from "../charts.tsx";
 import { bytes } from "../fmt.ts";
 import type { CaptureRule, CaptureWhat, IqCapture, IqWaterfall, SystemStatus } from "../protocol.ts";
 
 type What = CaptureWhat["kind"];
 const WHATS: { v: What; label: string }[] = [
-  { v: "control", label: "A control channel" },
-  { v: "call", label: "The next call" },
-  { v: "radios", label: "Everything the radios receive" },
+  { v: "control", label: "Control channel" },
+  { v: "call", label: "Next call" },
+  { v: "radios", label: "Every radio" },
 ];
-/** What each is for, in words. */
-const WHAT_TEXT: Record<What, string> = {
+/** What each is for, in a few words; and at length (WHAT_WHY, behind an ⓘ). */
+const WHAT_SHORT: Record<What, string> = {
+  control: "Small · for grants or control decoding",
+  call: "One voice channel · for bad or missing calls",
+  radios: "Large · for wider problems, or a good sample",
+};
+const WHAT_WHY: Record<What, string> = {
   control: "Records one site's control channel from now on. Small, and the best start when calls aren't granted or followed, or the control channel decodes badly.",
   call: "Waits for the next call on a system (or one talkgroup) and records its voice channel from start to end. For calls that sound bad, are silent or go missing.",
   radios: "Records everything every radio receives. Large, so use it when the problem isn't one channel's, or for a known-good sample of your system.",
@@ -24,6 +29,20 @@ const LENGTHS: Record<What, string[]> = { control: ["30", "60"], call: [], radio
 
 /** What a capture shows. */
 type Shows = "problem" | "good";
+
+/** What decoding did while a capture was made, as figures (the list shows these; `iqCaptureText` says them in a line). */
+function iqCaptureFigs(c: IqCapture) {
+  const total = c.messagesGood + c.messagesBad;
+  const wide = c.tier === "wideband";
+  return [
+    { k: "Length", v: c.seconds, u: "s" },
+    wide && { k: "Radios", v: c.radios },
+    { k: "Size", v: bytes(c.bytes) },
+    wide && { k: "Decoded", v: total ? `${Math.round((c.messagesGood / total) * 100)}%` : "—", u: total ? `of ${total.toLocaleString("en-US")}` : "no control messages", title: "Control messages decoded" },
+    wide && { k: "Calls", v: c.calls.toLocaleString("en-US") },
+    c.lostSamples > 0 && { k: "Lost", v: c.lostSamples.toLocaleString("en-US"), u: "samples", level: "warn" as const },
+  ];
+}
 
 /** What decoding did while a capture was made, in words. */
 export function iqCaptureText(c: IqCapture): string {
@@ -97,10 +116,20 @@ export function IqCaptureCard({ initial, systems: given }: { initial?: IqCapture
   const recording = list?.recording ?? false;
   const label = what === "control" ? "Record the control channel" : what === "call" ? "Record the next call" : "Record every radio";
   return (
-    <Card title="Capture what TRP receives" id="iq-capture">
-      <Hint>Record a control channel, a call or every radio, to replay later or to send in when something isn't working. It stays on this computer unless you send it.</Hint>
+    <Card
+      title={
+        <>
+          IQ capture
+          <Info>Record a control channel, a call or every radio, to replay later or to send in when something isn't working. It stays on this computer unless you send it.</Info>
+        </>
+      }
+      id="iq-capture"
+    >
       <Choice label="What to capture" value={what} options={WHATS} onChange={pickWhat} />
-      <Hint>{WHAT_TEXT[what]}</Hint>
+      <Hint>
+        {WHAT_SHORT[what]}
+        <Info>{WHAT_WHY[what]}</Info>
+      </Hint>
       <div className="row">
         {what === "control" &&
           (sites.length ? (
@@ -112,7 +141,7 @@ export function IqCaptureCard({ initial, systems: given }: { initial?: IqCapture
               ))}
             </select>
           ) : (
-            <span className="hint">No control channel is running.</span>
+            <span className="hint">No control channel running</span>
           ))}
         {what === "call" && (
           <>
@@ -135,7 +164,7 @@ export function IqCaptureCard({ initial, systems: given }: { initial?: IqCapture
           {what === "radios" && active ? `Capturing… ${Math.min(Math.floor(active.elapsedS), active.seconds)} of ${active.seconds} s` : label}
         </button>
       </div>
-      {!recording && list && <p className="hint">Start recording first: a capture is of what the radios are receiving now.</p>}
+      {!recording && list && <p className="hint" title="A capture is of what the radios are receiving now">Start recording first</p>}
       {error && <p className="warn">{error}</p>}
       {(waiting.length > 0 || active) && (
         <ul className="iq-list">
@@ -160,8 +189,12 @@ export function IqCaptureCard({ initial, systems: given }: { initial?: IqCapture
         <ul className="iq-list">
           {list.captures.map((c) => (
             <li key={c.name}>
-              <strong>{c.name}</strong> {c.tier !== "wideband" && <span className="badge-kind">{c.tier}</span>} {c.purpose === "bug" && <span className="badge-kind">problem</span>} {c.rule && <span className="badge-kind">rule {c.rule}</span>} {iqCaptureText(c)}
-              {c.lostSamples > 0 && <span className="warn"> · {c.lostSamples.toLocaleString("en-US")} samples lost</span>}
+              <div className="row">
+                <strong>{c.name}</strong> {c.tier !== "wideband" && <span className="badge-kind">{c.tier}</span>} {c.purpose === "bug" && <span className="badge-kind">problem</span>} {c.rule && <span className="badge-kind">rule {c.rule}</span>}
+              </div>
+              <div title={iqCaptureText(c)}>
+                <Figs items={iqCaptureFigs(c)} />
+              </div>
               {c.note && <div className="hint">{c.note}</div>}
               <div className="hint">{c.path}</div>
               <div className="row">
@@ -301,7 +334,9 @@ export function CaptureFolder({ onSaved }: { onSaved: () => void }) {
       <div className="row">
         <input className="search grow" aria-label="Capture folder" placeholder="iq-captures in the recordings folder" value={text} onChange={(e) => setText(e.target.value)} onBlur={commit} />
       </div>
-      <Hint>Use a fast disk: a capture of several radios can write tens of MB per second, and a busy disk can slow your recordings too. Captures already made stay where they are.</Hint>
+      <Hint>
+        A fast disk helps<Info>A capture of several radios can write tens of MB per second, and a busy disk can slow your recordings too. Captures already made stay where they are.</Info>
+      </Hint>
     </div>
   );
 }
@@ -345,7 +380,9 @@ export function IqCaptureRules({ presets }: { presets: CaptureRule[] }) {
   };
   return (
     <div>
-      <Hint>For a problem that comes and goes: a rule keeps a recording here when it happens, within a daily limit. Nothing is sent anywhere. Changes apply the next time recording starts.</Hint>
+      <Hint>
+        Kept here, never sent · applies on next Start<Info>For a problem that comes and goes: a rule keeps a recording here when it happens, within a daily limit. Nothing is sent anywhere. Changes apply the next time recording starts.</Info>
+      </Hint>
       {presets.map((p) => (
         <label key={p.id} className="row">
           <input type="checkbox" checked={on(p.id)} onChange={() => toggle(p)} />

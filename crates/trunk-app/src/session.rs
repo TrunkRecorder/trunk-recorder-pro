@@ -115,6 +115,8 @@ pub struct SourceCounts {
     pub dropped: u64,
     pub errors: u64,
     pub rate_measured: f64,
+    /// The gain its radio is set to, when that isn't the gain asked for ([`Session::source_gain`]).
+    pub gain_set: Option<String>,
 }
 
 #[derive(Default, Clone)]
@@ -126,6 +128,7 @@ struct SourceStats {
     /// When it came, Unix s (the error is shown for [`ERROR_SHOWN_S`]).
     last_error_s: f64,
     rate_measured: f64,
+    gain_set: Option<String>,
     /// The newest buffer's arrival (ms) and the samples to its end; and the
     /// same where the rate's window began ([`RATE_WINDOW_MS`]).
     arrived: Option<(f64, u64)>,
@@ -607,6 +610,19 @@ impl Session {
         self.records.push(Record::text(Level::Error, None, text));
     }
 
+    /// The gain source `source`'s radio is set to, as it opened or changed:
+    /// `set` when that isn't the gain `asked` for (the radio's nearest step, or
+    /// within its range here), which the log says and the status shows.
+    pub fn source_gain(&mut self, source: usize, asked: &str, set: Option<String>) {
+        if let Some(set) = &set {
+            let text = format!("{}: gain {asked} is set as {set} (the radio's nearest)", self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source)));
+            self.records.push(Record::text(Level::Info, None, text));
+        }
+        if let Some(s) = self.stats.get(source) {
+            s.lock().unwrap().gain_set = set;
+        }
+    }
+
     /// A finite source ran out; true when all have.
     pub fn source_ended(&mut self, source: usize) -> bool {
         self.stats[source].lock().unwrap().ended = true;
@@ -820,7 +836,7 @@ impl Session {
             .iter()
             .map(|s| {
                 let s = s.lock().unwrap();
-                SourceCounts { samples: s.samples, dropped: s.dropped, errors: s.errors, rate_measured: s.rate_measured }
+                SourceCounts { samples: s.samples, dropped: s.dropped, errors: s.errors, rate_measured: s.rate_measured, gain_set: s.gain_set.clone() }
             })
             .collect()
     }
@@ -1327,7 +1343,7 @@ impl Session {
                 let tune = st.sources.get(i).copied().unwrap_or_default();
                 // An error long past isn't news (its count stays).
                 let recent = ss.last_error.as_ref().filter(|_| ss.last_error_s == 0.0 || self.meas.now() - ss.last_error_s < ERROR_SHOWN_S);
-                json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured,
+                json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured, "gainSet": ss.gain_set,
                         "dropped": ss.dropped, "errors": ss.errors, "lastError": recent, "lastErrorS": recent.filter(|_| ss.last_error_s > 0.0).map(|_| ss.last_error_s.round()), "ended": ss.ended,
                         "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm, "tuneSeeded": tune.seeded,
                         // The ppm that removes the error: it was measured against the ppm this run opened the radio with.

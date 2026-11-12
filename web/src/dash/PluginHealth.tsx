@@ -5,7 +5,7 @@
 
 import { useState, type ReactNode } from "react";
 import { pluginOn, setView, useApp, type AppState } from "../controller.ts";
-import { Card, Choice, Hint, LiveSpark, Light, Stat, StackedBars, TimeSeries } from "../charts.tsx";
+import { Card, Choice, Fig, Figs, LiveSpark, Light, Stat, StackedBars, TimeSeries } from "../charts.tsx";
 import { ago, bytes, compact, dur, ms, num, pct } from "../fmt.ts";
 import type { PluginInfo, SeriesData } from "../protocol.ts";
 import { ENDPOINT_LEVEL, K, perIn, perLive, pluginHealth, recentAvg, total, useHistory } from "./data.ts";
@@ -69,7 +69,6 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
   const [open, setOpen] = useState(false);
   const hist = useHistory([K.plg(p.id, "ok"), K.plg(p.id, "failed"), K.plg(p.id, "queued"), K.plg(p.id, "age")], "24h", 96);
   const d = useDelivery(p.id);
-  const parts = [d.held ? `held ${ms(d.held)}` : "", d.wait !== null ? `waiting ${ms(d.wait)}` : "", d.upload !== null ? `upload ${ms(d.upload)}` : ""].filter(Boolean).join(" · ");
   // The last hour, a column a minute: [ok, skipped, failed].
   const nowM = Math.floor(Date.now() / 60_000) * 60;
   const minutes = Array.from({ length: 60 }, (_, i) => {
@@ -97,28 +96,40 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
       ) : (
         <>
           <div className="src-grid">
-            <Stat label="Sent" value={compact(r.ok)} sub={`${r.skipped} skipped this run`} />
+            <Stat label="Sent" value={compact(r.ok)} sub={<Figs inline items={[{ k: "Skipped", v: compact(r.skipped) }, !!m?.bytesSent && { k: "Data", v: bytes(m.bytesSent) }]} />} hint="This run" />
             <Stat
               label="Failed"
               value={compact(r.failed)}
               level={r.failed > 0 ? "warn" : undefined}
-              sub={tries ? `${pct((100 * r.failed) / tries, 1)} of tries` : "nothing tried yet"}
+              sub={tries ? <Figs inline items={[{ k: "Of tries", v: pct((100 * r.failed) / tries, 1), level: r.failed > 0 ? "warn" : undefined }]} /> : "none tried yet"}
               hint={r.lastFailure || undefined}
             />
             <Stat
               label="Waiting"
               value={m?.queued ?? "—"}
               level={(m?.queued ?? 0) > 20 ? "warn" : undefined}
-              sub={m?.retrying ? `${m.retrying} to retry` : m ? "queue clear" : "not reported"}
+              sub={m?.retrying ? <Figs inline items={[{ k: "To retry", v: m.retrying, level: "warn" }]} /> : m ? "queue clear" : "not reported"}
               spark={m?.queued !== undefined ? <LiveSpark k={K.plg(p.id, "queued")} color="var(--series-4)" lo={0} sinceS={600} /> : undefined}
             />
             <Stat
               label="Age at delivery"
               value={d.age !== null ? ms(d.age) : "—"}
               sub={
-                d.age === null
-                  ? "no calls delivered in the last hour"
-                  : `${d.span === "5 min" ? "last 5 min" : "last hour"}${parts ? `: ${parts}` : ""}${d.longest !== null ? ` · longest ${ms(d.longest)}` : ""}`
+                d.age === null ? (
+                  "none in the last hour"
+                ) : (
+                  <>
+                    <span className="muted">{d.span === "5 min" ? "last 5 min" : "last hour"}</span>
+                    <Figs
+                      items={[
+                        !!d.held && { k: "Held", v: ms(d.held) },
+                        d.wait !== null && { k: "Waiting", v: ms(d.wait) },
+                        d.upload !== null && { k: "Upload", v: ms(d.upload) },
+                        d.longest !== null && { k: "Longest", v: ms(d.longest), title: "The hour's longest" },
+                      ]}
+                    />
+                  </>
+                )
               }
               spark={<LiveSpark k={K.plg(p.id, "age")} color="var(--series-1)" lo={0} sinceS={3600} />}
               hint={`From a call's end to ${p.manifest?.name ?? p.id}'s success, by this computer's clock: held by delay rules, waiting (files, its queue, failed tries) and its upload.${d.age !== null && d.upload === null ? " It doesn't say its own upload time (a plugin built on SDK 0.6 or later does), so only the age is known." : ""} Measured here; no service reports it.`}
@@ -128,19 +139,16 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
             <StackedBars parts={minutes} colors={["var(--good)", "var(--muted-mark)", "var(--critical)"]} labels={["sent", "skipped", "failed"]} h={44} titles={minutes.map((c, i) => `${60 - i} min ago: ${c[0]} sent, ${c[1]} skipped, ${c[2]} failed`)} />
             <span className="muted small">last hour, per minute</span>
           </div>
-          {m?.bytesSent ? <p className="muted small">{bytes(m.bytesSent)} sent this run.</p> : null}
           {m?.endpoints && m.endpoints.length > 0 && (
             <ul className="line-list">
               {m.endpoints.map((e) => (
                 <li key={e.name}>
-                  <Light level={ENDPOINT_LEVEL[e.state]} title={e.state} />
+                  <Light level={ENDPOINT_LEVEL[e.state]} title={`${e.state}: down after 3 failures in a row, or 5 min without success`} />
                   <b>{e.name}</b>
-                  <span className="muted small">
-                    {e.state}
-                    {e.latencyMs !== undefined ? ` · ${num(e.latencyMs / 1000, 1)} s` : ""}
-                    {e.lastOk ? ` · last success ${ago(e.lastOk)}` : ""}
-                    {e.lastError ? ` · ${e.lastError}` : ""}
-                  </span>
+                  <Fig v={e.state} level={ENDPOINT_LEVEL[e.state]} title="Down after 3 failures in a row, or 5 min without success" />
+                  {e.latencyMs !== undefined && <Fig v={num(e.latencyMs / 1000, 1)} u="s" title="Latency" />}
+                  {e.state !== "up" && e.lastOk ? <span className="muted small">last success {ago(e.lastOk)}</span> : null}
+                  {e.lastError ? <span className="warn small">{e.lastError}</span> : null}
                 </li>
               ))}
             </ul>
@@ -154,32 +162,16 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
               ))}
             </div>
           )}
-          <div className="kv small">
-            <span>
-              Last result <b>{ago(r.lastResult ?? null)}</b>
-            </span>
-            <span>
-              Last success <b>{ago(r.lastOk ?? null)}</b>
-            </span>
-            {r.lastFail ? (
-              <span>
-                Last failure <b>{ago(r.lastFail)}</b>
-              </span>
-            ) : null}
-            <span>
-              Up <b>{r.uptimeS ? dur(r.uptimeS) : "—"}</b>
-            </span>
-            {r.restarts ? (
-              <span className="warn">
-                Restarted <b>{r.restarts}×</b>
-              </span>
-            ) : null}
-            {r.dropped ? (
-              <span className="warn" title="Events it was too slow to take">
-                Fell behind <b>{compact(r.dropped)}</b> events
-              </span>
-            ) : null}
-          </div>
+          <Figs
+            items={[
+              { k: "Last result", v: ago(r.lastResult ?? null) },
+              { k: "Last success", v: ago(r.lastOk ?? null) },
+              !!r.lastFail && { k: "Last failure", v: ago(r.lastFail), level: "warn" },
+              { k: "Up", v: r.uptimeS ? dur(r.uptimeS) : "—" },
+              !!r.restarts && { k: "Restarts", v: r.restarts, level: "warn" },
+              !!r.dropped && { k: "Fell behind", v: compact(r.dropped), u: "events", level: "warn", title: "Events it was too slow to take" },
+            ]}
+          />
           {r.lastFailure && <p className="why why-warn small">Last failure: {r.lastFailure}</p>}
           <button className="card-more" onClick={() => setOpen(!open)} aria-expanded={open}>
             {open ? "Less ▴" : "Last 24 h and log ▾"}
@@ -242,7 +234,6 @@ export function PluginHealthPage({ manage }: { manage: ReactNode }) {
             ))}
           </div>
           {off.length > 0 && <p className="muted small">Off: {off.map((p) => p.manifest?.name ?? p.id).join(", ")}</p>}
-          <Hint>A service is down after 3 failures in a row, or 5 min without success.</Hint>
         </>
       )}
     </div>

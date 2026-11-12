@@ -62,7 +62,7 @@ test("a sites file: its sites, control channels, site lock and places; not one: 
 test("its import asks the kind of system, and offers to check the sites on the air first", () => {
   connected(defaultConfig());
   const html = text(renderToString(<ImportDialog bundle={sitesFileBundle(CSV, "trs_sites_7363.csv")!} onClose={() => {}} />));
-  assert.ok(html.includes("Import trs_sites_7363.csv") && html.includes("Kind of system") && html.includes("RadioReference sites · 3 sites"), html);
+  assert.ok(html.includes("Import trs_sites_7363.csv") && html.includes("Kind of system") && html.includes("<b>RadioReference sites</b>") && html.includes("<dt>Sites</dt><dd><span class=\"fig\"><b>3</b>"), html);
   assert.ok(html.includes("Check which I can hear") && html.includes("Near: a city or ZIP code"), html);
   // Only the ticked ones are looked for; what the recorder is sent leaves out where each came from.
   const l = lookForBundle(asType(sitesFileBundle(CSV, "trs_sites_7363.csv")!, "p25"), "rr-7363", [0, 2]);
@@ -112,11 +112,11 @@ test("each site's verdict; a system's sites not heard can be turned off, a bundl
   connected(c, "running", [], survey);
   lookFor(lookForSystem(c.systems[0]));
   const html = text(renderToString(<SurveyPanel c={snapshot().config!} />));
-  assert.ok(html.includes("Checking which of <b>onevoice</b>&#x27;s 3 sites can be heard here"), html);
-  assert.ok(html.includes("On RTL-SDR SN 2, a spare radio, beside the recording"), html);
+  assert.ok(html.includes("Checking <b>onevoice</b>: which of its <span class=\"fig\"><b>3</b><small>sites</small></span> are heard here"), html);
+  assert.ok(html.includes("Spare radio <b>RTL-SDR SN 2</b> · beside the recording"), html);
   assert.ok(html.includes("Heard") && html.includes("Unconfirmed") && html.includes("Not heard") && html.includes("but this system is DMR Connect Plus"));
   assert.match(html, /<tr class="q-good"><td>a<\/td>/);
-  assert.ok(html.includes("2 sites of 3 heard here, 1 not") && html.includes("Turn off the 1 site not heard"), html);
+  assert.ok(html.includes("<dt>Heard here</dt><dd><span class=\"fig\"><b>2/3</b><small>sites</small>") && html.includes("<dt>Not heard</dt><dd><span class=\"fig fig-warn\"><b>1</b>") && html.includes("Turn off the 1 site not heard"), html);
   // From a bundle instead: its heard sites to import.
   lookFor(lookForBundle(asType(sitesFileBundle(CSV, "trs_sites_7363.csv")!, "dmr"), "rr-7363"));
   const b = text(renderToString(<SurveyPanel c={snapshot().config!} />));

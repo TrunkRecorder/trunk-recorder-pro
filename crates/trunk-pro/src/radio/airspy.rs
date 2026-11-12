@@ -24,7 +24,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{ppm_corrected, Caps, Deadline, DriverInfo, Rates};
-use crate::sdr::{Applied, Control, Gain, Preset, Retuned, Sink, Stage, Stages, Tunable};
+use crate::sdr::{Applied, Control, Gain, Preset, Regained, Retuned, Sink, Stage, Stages, Tunable};
 
 /// The library a source's radio is driven through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -409,6 +409,9 @@ impl crate::sdr::Radio for AirspyConfig {
             self.gain = g;
         }
     }
+    fn gain(&self) -> Option<Gain> {
+        Some(self.gain)
+    }
     fn rate_hz(&self) -> f64 {
         self.rate_hz
     }
@@ -494,9 +497,10 @@ impl Tunable for Device {
     }
     /// Its own settings, which the library takes while streaming (a survey's
     /// dB is left alone: the gain stays as set).
-    fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
+    fn set_gain(&mut self, g: Gain) -> Result<Regained, String> {
         // SAFETY: an open device.
-        unsafe { set_gain(self.a, self.dev, g) }.map(|()| 0)
+        unsafe { set_gain(self.a, self.dev, g) }?;
+        Ok(Regained { gap: 0, gain: within(g) })
     }
 }
 
@@ -545,22 +549,34 @@ impl Setting {
     }
 }
 
-/// What `g` sets, in order: a table's step (which turns the AGCs off), or the stages
-/// (a survey's dB is left alone: the gain stays as set).
+/// `g` as the radio takes it: a table's step, or the stages, each a whole
+/// step within its range (LNA 0–14, mixer and VGA 0–15, a table 0–21). None:
+/// a kind it doesn't take (a survey's dB), so the gain stays as set.
+fn within(g: Gain) -> Option<Gain> {
+    let step = |s: &Stages, stage: Stage, most: u8| s.get(stage).unwrap_or(0.0).clamp(0.0, most as f32).trunc();
+    Some(match g {
+        Gain::Preset(p, n) => Gain::Preset(p, n.min(21)),
+        Gain::Stages(s) if s.agc => Gain::Stages(Stages::default().agc().with(Stage::Vga, step(&s, Stage::Vga, 15))),
+        Gain::Stages(s) => Gain::Stages(Stages::default().with(Stage::Lna, step(&s, Stage::Lna, 14)).with(Stage::Mixer, step(&s, Stage::Mixer, 15)).with(Stage::Vga, step(&s, Stage::Vga, 15))),
+        Gain::Agc | Gain::Db(_) => return None,
+    })
+}
+
+/// What `g` sets ([`within`]), in order: a table's step (which turns the AGCs off), or the stages.
 fn settings(g: Gain) -> Vec<(Setting, u8)> {
-    let step = |s: &Stages, stage: Stage, most: u8| s.get(stage).unwrap_or(0.0).clamp(0.0, most as f32) as u8;
-    match g {
-        Gain::Preset(Preset::Linearity, g) => vec![(Setting::Linearity, g.min(21))],
-        Gain::Preset(Preset::Sensitivity, g) => vec![(Setting::Sensitivity, g.min(21))],
-        Gain::Stages(s) if s.agc => vec![(Setting::LnaAgc, 1), (Setting::MixerAgc, 1), (Setting::Vga, step(&s, Stage::Vga, 15))],
-        Gain::Stages(s) => vec![
+    let level = |s: &Stages, stage: Stage| s.get(stage).unwrap_or(0.0) as u8;
+    match within(g) {
+        Some(Gain::Preset(Preset::Linearity, n)) => vec![(Setting::Linearity, n)],
+        Some(Gain::Preset(Preset::Sensitivity, n)) => vec![(Setting::Sensitivity, n)],
+        Some(Gain::Stages(s)) if s.agc => vec![(Setting::LnaAgc, 1), (Setting::MixerAgc, 1), (Setting::Vga, level(&s, Stage::Vga))],
+        Some(Gain::Stages(s)) => vec![
             (Setting::LnaAgc, 0),
             (Setting::MixerAgc, 0),
-            (Setting::Lna, step(&s, Stage::Lna, 14)),
-            (Setting::Mixer, step(&s, Stage::Mixer, 15)),
-            (Setting::Vga, step(&s, Stage::Vga, 15)),
+            (Setting::Lna, level(&s, Stage::Lna)),
+            (Setting::Mixer, level(&s, Stage::Mixer)),
+            (Setting::Vga, level(&s, Stage::Vga)),
         ],
-        Gain::Agc | Gain::Db(_) => vec![],
+        _ => vec![],
     }
 }
 
@@ -645,7 +661,8 @@ fn stream_once(cfg: &AirspyConfig, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl:
             }
         }
         // (As a gain set while running is: a reopened radio comes back the same.)
-        d.set_gain(cfg.gain)?;
+        let r = d.set_gain(cfg.gain)?;
+        sink.gained(Some(cfg.gain), r.gain);
         if let (true, Own::Hydrasdr { set_rf_port, .. }) = (id.can.input, &a.own) {
             d.off_ant = cfg.rf_port != 0;
             check(a, "input", set_rf_port(d.dev, cfg.rf_port as c_int))?;
@@ -735,6 +752,10 @@ mod tests {
         assert_eq!(settings(Gain::Stages(stages)), [(LnaAgc, 0), (MixerAgc, 0), (Lna, 14), (Mixer, 8), (Vga, 7)]);
         assert_eq!(settings(Gain::Stages(Stages::default().agc().with(Stage::Vga, 7.0))), [(LnaAgc, 1), (MixerAgc, 1), (Vga, 7)]);
         assert_eq!(settings(Gain::Db(30.0)), []);
+        // What it says it set: the steps it took, so a step out of range is told as the one set.
+        assert_eq!(within(Gain::Stages(stages)), Some(Gain::Stages(Stages::default().with(Stage::Lna, 14.0).with(Stage::Mixer, 8.0).with(Stage::Vga, 7.0))));
+        assert_eq!(within(Gain::Preset(Preset::Linearity, 30)), Some(Gain::Preset(Preset::Linearity, 21)));
+        assert_eq!(within(Gain::Db(30.0)), None, "a survey's dB isn't one it takes");
         assert_eq!((LnaAgc.what(0), LnaAgc.what(1), Vga.what(7)), ("LNA AGC off", "LNA AGC", "VGA gain"));
         // libhydrasdr's types for them (hydrasdr_gain_type_t).
         assert_eq!([Lna, Mixer, Vga, Linearity, Sensitivity, LnaAgc, MixerAgc].map(hydrasdr::gain_type), [0, 2, 4, 5, 6, 7, 9]);

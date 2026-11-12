@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { activeSites, DEFAULT_GUARD_HZ, enabledChannels, formatMhz, resolvedCenters, siteNameOf, watchedChannels } from "./config.ts";
 import { isRecording, profileSource, updateConfig, useApp } from "./controller.ts";
 import { decimal, type TextCodec } from "./fieldText.ts";
+import { Figs, Info } from "./charts.tsx";
 import { DraftInput } from "./inputs.tsx";
 import type { Config, Source, SourceProfile } from "./protocol.ts";
 import { color as heat } from "./Waterfall.tsx";
@@ -57,7 +58,10 @@ export function GuardBand(props: { c: Config; i: number; fresh?: boolean; onFres
 
   return (
     <div className="field wide">
-      <span className="field-label">Guard band</span>
+      <span className="field-label">
+        Guard band
+        <Info>Unused at each edge, where the radio&apos;s filter rolls off. Default {khz(DEFAULT_GUARD_HZ)}.</Info>
+      </span>
       <div className="row">
         <DraftInput
           type="number"
@@ -76,12 +80,9 @@ export function GuardBand(props: { c: Config; i: number; fresh?: boolean; onFres
           {open ? "Close" : "Profile roll-off…"}
         </button>
       </div>
-      <span className="field-hint">
-        Unused at each edge, where the filter rolls off. Default {khz(DEFAULT_GUARD_HZ)}.
-      </span>
       {props.fresh && !open && (
         <div className="banner small">
-          <span>New radio — measure its edge roll-off?</span>
+          <span>New radio: measure its roll-off?</span>
           <span className="row">
             <button className="btn small" onClick={start}>
               Profile roll-off
@@ -127,11 +128,11 @@ function Profiler(props: { c: Config; i: number; src: Source; guard: number; onA
           {result ? "Measure again" : "Measure"}
         </button>
         <span className="muted small">
-          {recording ? "Stop recording first." : busy ? "Listening…" : null}
+          {recording ? "Stop recording first" : busy ? "Listening…" : null}
         </span>
       </div>
       {!result && !busy && !profile && (
-        <p className="muted small">Best on a quiet frequency, antenna connected, gain as you'll record.</p>
+        <p className="muted small">Best: a quiet frequency, antenna on, recording gain</p>
       )}
       {profile && "error" in profile && <p className="bad small">{profile.error}</p>}
       {result && <Measurement c={c} i={i} r={result} draft={draft} setDraft={setDraft} guard={guard} onApply={props.onApply} />}
@@ -237,15 +238,18 @@ function Measurement(props: { c: Config; i: number; r: Measured; draft: number; 
           {draft === guard ? "In use" : `Use ${khz(draft)}`}
         </button>
       </div>
-      <p className="muted small">
-        Noise floor (blue) is 3 dB down <b>{khz(r.lowHz)}</b> / <b>{khz(r.highHz)}</b> from the low / high edge, {r.lowDropDb.toFixed(1)} /{" "}
-        {r.highDropDb.toFixed(1)} dB at the edges. Suggested: the larger plus half a channel.
-      </p>
-      {out.length > 0 && (
-        <p className="warn small">
-          {out.length === 1 ? "A channel" : `${out.length} channels`} in the guard band: {out.map((w) => `${w.label} ${formatMhz(w.hz)}`).join(", ")} MHz.
-        </p>
-      )}
+      <div className="row rolloff-figs">
+        <Figs
+          items={[
+            { k: "−3 dB, low edge", v: Math.round(r.lowHz / 1000), u: "kHz", title: "How far in from the low edge the noise floor (blue) is 3 dB down" },
+            { k: "−3 dB, high edge", v: Math.round(r.highHz / 1000), u: "kHz", title: "How far in from the high edge the noise floor (blue) is 3 dB down" },
+            { k: "Drop at edges", v: `${r.lowDropDb.toFixed(1)} / ${r.highDropDb.toFixed(1)}`, u: "dB" },
+            out.length > 0 && { k: "In the guard band", v: out.length, u: out.length === 1 ? "channel" : "channels", level: "warn", title: `${out.map((w) => `${w.label} ${formatMhz(w.hz)}`).join(", ")} MHz` },
+          ]}
+        />
+        <Info>Noise floor in blue. Suggested: the larger −3 dB distance plus half a channel.</Info>
+      </div>
+      {out.length > 0 && <p className="warn small mono">{out.map((w) => `${w.label} ${formatMhz(w.hz)}`).join(", ")} MHz</p>}
     </>
   );
 }

@@ -7,7 +7,7 @@
 import { Fragment, useState } from "react";
 import type { PlatformInfo, StoreSizes } from "../protocol.ts";
 import { setSetupTab, setView, type StatsRange } from "../controller.ts";
-import { Card, Choice, Stat, TimeSeries } from "../charts.tsx";
+import { Card, Choice, Fig, Figs, Info, Stat, TimeSeries } from "../charts.tsx";
 import { bytes, num } from "../fmt.ts";
 import { total, useHistory, useRanges } from "./data.ts";
 import { INDEX_USES } from "../storeIndexes.ts";
@@ -65,27 +65,28 @@ export function StorageView(props: { store: { backend: string; radioIndex: boole
   return (
     <>
       <div className="kpis">
-        <Stat size="hero" label="Store" value={bytes(sizes.fileBytes + sizes.walBytes)} sub={backend === "postgres" ? "PostgreSQL: its tables and indexes" : "SQLite, with its write-ahead log"} />
-        <Stat label="Tables" value={bytes(tableBytes)} sub={`${tables.length} tables`} />
-        <Stat label="Indexes" value={bytes(indexBytes)} sub={tableBytes ? `${num((100 * indexBytes) / tableBytes, 0)}% of the tables` : undefined} />
-        {backend === "sqlite" && <Stat label="Write-ahead log" value={bytes(sizes.walBytes)} sub={`${bytes(sizes.freeBytes)} free inside the file`} />}
+        <Stat size="hero" label="Store" value={bytes(sizes.fileBytes + sizes.walBytes)} sub={backend === "postgres" ? "PostgreSQL" : "SQLite + write-ahead log"} />
+        <Stat label="Tables" value={bytes(tableBytes)} sub={<Fig v={tables.length} u="tables" />} />
+        <Stat label="Indexes" value={bytes(indexBytes)} sub={tableBytes ? <><Fig v={num((100 * indexBytes) / tableBytes, 0)} u="%" /> of tables</> : undefined} />
+        {backend === "sqlite" && <Stat label="Write-ahead log" value={bytes(sizes.walBytes)} sub={<Figs inline items={[{ k: "Free inside", v: bytes(sizes.freeBytes) }]} />} />}
         <Stat
           label="Written"
           value={measured ? (perDay === null ? "—" : `${bytes(perDay)}`) : "—"}
-          unit={measured && perDay !== null ? "a day" : undefined}
+          unit={measured && perDay !== null ? "/ day" : undefined}
           sub={
             !written ? undefined
-            : !measured ? `not measured: ${"why" in written ? written.why : ""}`
-            : measured.of === "server" ? `the PostgreSQL server's log (all its databases) · ${bytes(measured.bytes)} so far`
-            : perDay === null ? `${bytes(measured.bytes)} since it started; a day's rate after an hour`
-            : `to disk, the last 24 h · ${bytes(measured.bytes)} since it started`
+            : !measured ? <>not measured<Info>{"why" in written ? written.why : ""}</Info></>
+            : measured.of === "server" ? <><Figs inline items={[{ k: "So far", v: bytes(measured.bytes) }]} /><Info>The PostgreSQL server's log, all its databases.</Info></>
+            : perDay === null ? <><Figs inline items={[{ k: "Since start", v: bytes(measured.bytes) }]} /><Info>A day's rate after an hour.</Info></>
+            : <Figs inline items={[{ k: "Since start", v: bytes(measured.bytes) }]} />
           }
           hint="What the store writes to disk: commits, checkpoints and its daily backup. It's what wears an SD card or eMMC; Setup → Data has what lowers it."
         />
       </div>
       {off.length > 0 && (
-        <p className="muted small">
-          Calls aren't indexed by {off.join(" or ")}: a {off.join(" or ")}'s list shows only its recent calls.{" "}
+        <p className="row">
+          <b>Not indexed</b> <Fig v={off.join(" · ")} level="warn" />
+          <Info>A {off.join(" or ")}'s list of calls shows only its recent calls.</Info>{" "}
           <button className="btn ghost small" onClick={toData}>
             Setup → Data
           </button>
@@ -148,7 +149,7 @@ export function StorageView(props: { store: { backend: string; radioIndex: boole
             ))}
           </tbody>
         </table>
-        <p className="muted small">Measured every 15 minutes{backend === "postgres" ? "; rows are PostgreSQL's estimate" : ""}. Settings: Setup → Data.</p>
+        <p className="muted small">Measured every 15 min{backend === "postgres" ? " · rows estimated by PostgreSQL" : ""}</p>
         <details className="muted small">
           <summary>What the call indexes are for</summary>
           <ul>
@@ -191,8 +192,9 @@ function RegistryCard(props: { registry: Registry; toData: () => void }) {
           ))}
         </tbody>
       </table>
-      <p className="muted small">
-        {caps.days === null ? "Kept however long ago it was heard" : `Forgotten after ${num(caps.days, 0)} days unheard`}; at a limit, the least recently heard go.{" "}
+      <p className="row">
+        <Figs inline items={[caps.days === null ? { k: "Kept", v: "forever" } : { k: "Forgotten after", v: num(caps.days, 0), u: "days unheard" }]} />
+        <Info>At a limit, the least recently heard go.</Info>{" "}
         <button className="btn ghost small" onClick={props.toData}>
           Setup → Data
         </button>

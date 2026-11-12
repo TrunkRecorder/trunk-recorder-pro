@@ -8,6 +8,7 @@ import { useMemo } from "react";
 import { activeSystems, foundRadio, formatMhz, sourceAdvice, type Advice, type Heard } from "./config.ts";
 import { radioQuery, setSetupTab, setView, updateConfig, usePolled, useApp } from "./controller.ts";
 import { msps as rate } from "./fieldText.ts";
+import { Fig, Figs, Info } from "./charts.tsx";
 import type { Config, RadioResult } from "./protocol.ts";
 
 /** How far back what's heard is counted, hours. */
@@ -34,22 +35,17 @@ export function useSourceAdvice(c: Config | null): Advice | null {
   return useMemo(() => (c ? sourceAdvice(c, c.sources.map((x) => foundRadio(s.radios, x)), heardOf(answers ?? [])) : null), [c, s.radios, answers]);
 }
 
-const msps = (hz: number) => `${rate.format(hz)} MSPS`;
-
-/** What taking the advice does, a phrase each ("the sources would …"): needs met, more reached, radios freed, sample rate saved. */
-export function adviceReasons(a: Advice): string[] {
+/** What taking the advice does, a figure each with a short label: needs met, more reached, radios freed, sample rate saved. */
+export function adviceFigs(a: Advice): { k: string; v: string; u?: string; title?: string }[] {
   const { before: b, after: x } = a;
-  const out: string[] = [];
-  if (x.unmet < b.unmet) out.push(`reach what ${b.unmet - x.unmet === 1 ? "a system needs" : `${b.unmet - x.unmet} systems need`} that no source reaches now`);
-  if (x.reached > b.reached + 1e-9) out.push("reach more of the channels the systems use");
-  if (x.needed < b.needed) out.push(`need ${b.needed - x.needed === 1 ? "one radio" : `${b.needed - x.needed} radios`} fewer`);
-  if (x.unsteady < b.unsteady) out.push("run no RTL-SDR past its dependable 2.56 MSPS");
-  if (x.rateHz < b.rateHz - 1) out.push(`sample ${msps(b.rateHz - x.rateHz)} less in all (less CPU and USB)`);
+  const out: { k: string; v: string; u?: string; title?: string }[] = [];
+  if (x.unmet < b.unmet) out.push({ k: "Systems missed", v: `${b.unmet} → ${x.unmet}`, title: "Systems or sites whose channels no source reaches" });
+  if (x.reached > b.reached + 1e-9) out.push({ k: "Channels reached", v: b.reached > 0 ? `+${Math.max(1, Math.round((x.reached / b.reached - 1) * 100))}` : "more", u: b.reached > 0 ? "%" : undefined, title: "The channels the systems use, weighed by calls heard" });
+  if (x.needed < b.needed) out.push({ k: "Radios needed", v: `${b.needed} → ${x.needed}` });
+  if (x.unsteady < b.unsteady) out.push({ k: "RTL-SDRs over 2.56 MSPS", v: `${b.unsteady} → ${x.unsteady}`, title: "Past an RTL-SDR's dependable rate" });
+  if (x.rateHz < b.rateHz - 1) out.push({ k: "Sample rate", v: `−${rate.format(b.rateHz - x.rateHz)}`, u: "MSPS", title: "Less CPU and USB" });
   return out;
 }
-
-/** "a", "a and b", "a, b and c". */
-const listed = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : (xs[0] ?? ""));
 
 /** Take the advice for source `i` alone (back to auto when auto puts it there, else its centre written in), or (undefined) all of it. */
 export function takeAdvice(a: Advice, i?: number): void {
@@ -73,18 +69,28 @@ export function SourceSuggestion(props: { c: Config; i: number; advice: Advice |
   const src = props.c.sources[props.i];
   if (!s || !props.advice) return null;
   if (!s.needed && props.advice.before.needed > props.advice.after.needed) {
-    return <span className="field-hint">With the suggested settings, the other sources reach everything this one does: it can be removed.</span>;
+    return (
+      <span className="field-hint advice-line">
+        Suggested <Fig v="Remove" level="warn" />
+        <Info>With the suggested settings, the other sources reach everything this one does.</Info>
+      </span>
+    );
   }
   if (!s.changed) return null;
-  const parts: string[] = [];
   const moves = src.centerHz ? s.centerHz !== null && Math.abs(s.centerHz - src.centerHz) >= 1000 : false;
-  if (moves) parts.push(s.auto ? `auto (${formatMhz(s.centerHz!, 4)} MHz)` : `${formatMhz(s.centerHz!, 4)} MHz`);
-  if (Math.abs(s.rateHz - src.rateHz) >= 1) parts.push(msps(s.rateHz));
-  if (!parts.length) return null;
+  const rateMoves = Math.abs(s.rateHz - src.rateHz) >= 1;
+  if (!moves && !rateMoves) return null;
+  const others = props.advice.sources.filter((x) => x.changed).length > 1;
   return (
-    <span className="field-hint">
-      Suggested: <span className="mono">{parts.join(" at ")}</span>
-      {props.advice.sources.filter((x) => x.changed).length > 1 && " (with the other suggestions)"} ·{" "}
+    <span className="field-hint advice-line" title={others ? "Together with the other sources' suggestions" : undefined}>
+      Suggested
+      {moves && (
+        <>
+          {s.auto && <span className="chip">auto</span>}
+          <Fig v={formatMhz(s.centerHz!, 4)} u="MHz" />
+        </>
+      )}
+      {rateMoves && <Fig v={rate.format(s.rateHz)} u="MSPS" />}
       <button className="btn ghost small" onClick={() => takeAdvice(props.advice!, props.i)}>
         Use
       </button>
@@ -94,15 +100,16 @@ export function SourceSuggestion(props: { c: Config; i: number; advice: Advice |
 
 /** On the RF page: that Setup has suggested settings for the sources, what they'd do, and the way there. */
 export function AdviceNote(props: { advice: Advice | null }) {
-  const reasons = props.advice ? adviceReasons(props.advice) : [];
-  if (!reasons.length) return null;
+  const figs = props.advice ? adviceFigs(props.advice) : [];
+  if (!figs.length) return null;
   const open = () => {
     setView("setup");
     setSetupTab("radios");
   };
   return (
-    <div className="banner">
-      <span>With the settings Setup suggests, the sources would {listed(reasons)}.</span>
+    <div className="banner advice-banner">
+      <b>Suggested settings</b>
+      <Figs items={figs} />
       <button className="btn small" onClick={open}>
         Review in Setup
       </button>
@@ -110,17 +117,16 @@ export function AdviceNote(props: { advice: Advice | null }) {
   );
 }
 
-/** Above the sources: what the suggested settings do, and Apply all. */
+/** Above the sources: what the suggested settings do, and Apply all (each source's card shows its own change). */
 export function SourcesAdvice(props: { advice: Advice | null }) {
   const a = props.advice;
-  const reasons = a ? adviceReasons(a) : [];
-  if (!a || !reasons.length) return null;
+  const figs = a ? adviceFigs(a) : [];
+  if (!a || !figs.length) return null;
   return (
-    <div className="banner">
-      <span>
-        With the suggested settings, the sources would {listed(reasons)}. Each source's card says what changes.
-      </span>
-      <button className="btn small" onClick={() => takeAdvice(a)}>
+    <div className="banner advice-banner">
+      <b>Suggested settings</b>
+      <Figs items={figs} />
+      <button className="btn small" onClick={() => takeAdvice(a)} title="Each source's card shows its change">
         Apply all
       </button>
     </div>
