@@ -23,7 +23,7 @@ use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
     format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, LogLine, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
-    SystemInfo, VoiceChunk, API_VERSION, EXIT_CONFIG,
+    SystemInfo, API_VERSION, EXIT_CONFIG,
 };
 use trunk_core::trunk::LiveAudio;
 
@@ -464,8 +464,9 @@ impl PluginHost {
             let chunk = AudioChunk { call_id: a.call_id, system: a.system, short_name: short_name.to_string(), talkgroup: a.talkgroup, sample_rate: 8000, pcm };
             self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)), &about, None, None);
         }
-        if !a.frames.is_empty() && self.shared.wants(topic::VOICE) {
-            let chunk = VoiceChunk { call_id: a.call_id, system: a.system, short_name: short_name.to_string(), talkgroup: a.talkgroup, unit: a.unit, unit_name: unit_name.to_string(), decrypted: a.decrypted, frames: a.frames.clone() };
+        if self.shared.wants(topic::VOICE)
+            && let Some(chunk) = trunk_app::session::voice_chunk(short_name, unit_name, a)
+        {
             self.shared.dispatch(topic::VOICE, &line(&HostMessage::Voice(chunk)), &about, None, None);
         }
     }

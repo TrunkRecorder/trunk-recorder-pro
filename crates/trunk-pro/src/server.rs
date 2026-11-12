@@ -608,7 +608,7 @@ pub(crate) fn text_for(out: &Out, control: bool) -> Option<String> {
         Out::Text(s) => Some(s.clone()),
         Out::Control(s) => control.then(|| s.clone()),
         Out::Config { full, listen } => Some(if control { full } else { listen }.clone()),
-        Out::Topic { .. } | Out::Audio { .. } | Out::Quit => None,
+        Out::Topic { .. } | Out::Audio { .. } | Out::Voice { .. } | Out::Quit => None,
     }
 }
 
@@ -728,7 +728,11 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                         Out::Topic { topic, text } if subs.topics.contains(topic) => Message::Text(text.clone().into()),
                         Out::Topic { .. } => continue,
                         Out::Audio { short_name, tg, frame } => match &listen {
-                            Some(l) if l.wants(short_name, *tg) => Message::Binary(frame.clone().into()),
+                            Some(l) if l.audio && l.wants(short_name, *tg) => Message::Binary(frame.clone().into()),
+                            _ => continue,
+                        },
+                        Out::Voice { short_name, tg, text } => match &listen {
+                            Some(l) if l.voice.is_some() && l.wants(short_name, *tg) => Message::Text(text.clone().into()),
                             _ => continue,
                         },
                         Out::Quit => Message::Text(ToClient::Quit.to_json().into()),
@@ -816,6 +820,26 @@ async fn plugins_list(ctx: &Arc<Ctx>) -> ToClient {
 struct Listen {
     system: Option<String>,
     talkgroup: Option<u32>,
+    /// The PCM (type 2).
+    audio: bool,
+    /// The vocoder frames (`voice` messages): counted while it lasts.
+    voice: Option<VoiceListener>,
+}
+
+/// One connection listening with `voice` ([`Ctx::voice_listeners`]).
+struct VoiceListener(Arc<Ctx>);
+
+impl VoiceListener {
+    fn new(ctx: &Arc<Ctx>) -> Self {
+        ctx.voice_listeners.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        VoiceListener(ctx.clone())
+    }
+}
+
+impl Drop for VoiceListener {
+    fn drop(&mut self) {
+        self.0.voice_listeners.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl Listen {
@@ -1222,8 +1246,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             crate::interfaces::serve::reconcile(ctx.clone()).await;
             failed(r)
         }
-        Command::Listen { on, system, talkgroup } => {
-            *listen = on.then_some(Listen { system, talkgroup });
+        Command::Listen { on, system, talkgroup, voice, audio } => {
+            *listen = on.then(|| Listen { system, talkgroup, audio, voice: voice.then(|| VoiceListener::new(ctx)) });
             None
         }
     }
@@ -1452,10 +1476,10 @@ mod tests {
     /// Live audio is asked for by a system's short name.
     #[test]
     fn listening_by_short_name() {
-        let l = Listen { system: Some("dcfd".into()), talkgroup: None };
+        let l = Listen { system: Some("dcfd".into()), talkgroup: None, audio: true, voice: None };
         assert!(l.wants("dcfd", 101) && !l.wants("wmata", 101));
-        let l = Listen { system: Some("wmata".into()), talkgroup: Some(101) };
+        let l = Listen { system: Some("wmata".into()), talkgroup: Some(101), audio: true, voice: None };
         assert!(l.wants("wmata", 101) && !l.wants("wmata", 102) && !l.wants("dcfd", 101));
-        assert!(Listen { system: None, talkgroup: None }.wants("conv", 7));
+        assert!(Listen { system: None, talkgroup: None, audio: true, voice: None }.wants("conv", 7));
     }
 }

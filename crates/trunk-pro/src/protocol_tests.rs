@@ -460,6 +460,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         clock: Default::default(),
         unlocked: Default::default(),
         iq: Default::default(),
+        voice_listeners: Default::default(),
     });
     // The stats thread makes its folder as it starts: wait for that, so a
     // test that removes `dir` when done does not see it made again after.
@@ -750,4 +751,23 @@ fn a_key_container_is_unlocked_and_locked_from_the_interface() {
     moved.keys.get_mut("county").unwrap().file = "elsewhere.ekc".into();
     crate::unlock::config_changed(&c, &moved);
     assert!(c.unlocked.lock().unwrap().is_empty());
+}
+
+/// An interface listening with `voice` is sent the `voice` plugin topic's
+/// chunk as it is, in a message protocol.ts declares.
+#[test]
+fn live_voice_is_the_plugin_topics_chunk() {
+    use trunk_recorder_plugin::{Codec, FrameKind, HostMessage, VoiceFrame};
+    let frame = |codec: Codec, kind| VoiceFrame { codec, bits: (0..codec.bits()).map(|i| (i % 3 == 0) as u8).collect(), e0: 1, errs: 2, erased: false, kind, tone: None };
+    let audio = trunk_core::trunk::LiveAudio { call_id: 7, system: 0, talkgroup: 101, unit: 1234, samples: vec![0.0; 160], frames: vec![frame(Codec::Imbe, FrameKind::Voice), frame(Codec::Imbe, FrameKind::Repeat)], decrypted: false };
+    let chunk = trunk_app::session::voice_chunk("dcfd", "E1", &audio).unwrap();
+    let msg = ToClient::Voice { chunk: chunk.clone() }.to_value();
+    check("FromRecorder", &msg).unwrap();
+    let mut plugin = serde_json::to_value(HostMessage::Voice(chunk)).unwrap();
+    plugin.as_object_mut().unwrap().remove("type");
+    assert_eq!(msg["chunk"], plugin);
+    assert_eq!(msg["chunk"]["frames"][1]["kind"], "repeat");
+    let tone = trunk_core::trunk::LiveAudio { frames: vec![VoiceFrame { tone: Some((5, 20)), ..frame(Codec::Ambe, FrameKind::Tone) }], ..audio.clone() };
+    check("FromRecorder", &ToClient::Voice { chunk: trunk_app::session::voice_chunk("dcfd", "", &tone).unwrap() }.to_value()).unwrap();
+    assert!(trunk_app::session::voice_chunk("dcfd", "", &trunk_core::trunk::LiveAudio { frames: vec![], ..audio }).is_none(), "analog: none");
 }

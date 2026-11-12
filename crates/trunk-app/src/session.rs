@@ -104,6 +104,22 @@ pub fn audio_frame(a: &LiveAudio) -> Vec<u8> {
     frame
 }
 
+/// Live voice as the vocoder frames its audio was made from (`unit_name`: the
+/// talker's, "": none): what the `voice` plugin topic and interfaces listening
+/// with `voice` are sent. None: analog, no frames.
+pub fn voice_chunk(short_name: &str, unit_name: &str, a: &LiveAudio) -> Option<trunk_recorder_plugin::VoiceChunk> {
+    (!a.frames.is_empty()).then(|| trunk_recorder_plugin::VoiceChunk {
+        call_id: a.call_id,
+        system: a.system,
+        short_name: short_name.to_string(),
+        talkgroup: a.talkgroup,
+        unit: a.unit,
+        unit_name: unit_name.to_string(),
+        decrypted: a.decrypted,
+        frames: a.frames.clone(),
+    })
+}
+
 /// Local time's offset from UTC at a Unix time, s (east positive) — Trunk
 /// Recorder's folders are in local time, which only the platform knows.
 pub type LocalOffset = fn(i64) -> i32;
