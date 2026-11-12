@@ -115,9 +115,10 @@ export class TrunkClient {
    * talkgroup, unit (a radio), from / to (start time, Unix ms), cursor (the
    * previous page's `next`) and limit (1 to 500, 100). Answers
    * `{ entries, next?, error? }`; page on with `cursor` while `next` is there. Needs the
-   * `calls` capability; the desktop app answers from its call store.
+   * `calls` capability; the desktop app answers from its call store. (Not `calls`: that's
+   * the calls on the air now.)
    */
-  calls(query = {}) {
+  queryCalls(query = {}) {
     const id = this._nextId++;
     return new Promise((resolve) => {
       this._asked.set(id, resolve);

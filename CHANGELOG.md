@@ -5,6 +5,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **`client.js`: `rec.queryCalls(query)` searches the recorded calls.** The method was called
+  `calls`, the name of the array of calls on the air, which replaced it on every `TrunkClient`:
+  `rec.calls({ … })` threw `rec.calls is not a function`. `rec.calls` is still the calls on the air.
 - **Plugins can follow a call as it runs.** The `call.update` topic (SDK 0.10.0: `Plugin::call_update`)
   sends a call again whenever any of it changes before it ends: another radio talking (its `sources`
   gain it), an emergency, encryption, a patch, whether it's recorded. TRP had these all along (its own pages use
