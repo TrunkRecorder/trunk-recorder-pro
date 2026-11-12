@@ -7,16 +7,18 @@ import { compactData, DATA_KINDS, dataSummary, deleteData, exportUrl, setNotice,
 import { bytes } from "./fmt.ts";
 import { Modal } from "./Identify.tsx";
 import { Group } from "./SetupLayout.tsx";
+import { Fig, Info } from "./charts.tsx";
 import { Field, Toggle } from "./inputs.tsx";
 import type { DataCounts, DataKind, DataSystem, DataTable } from "./protocol.ts";
 
-/** Each kind of data, as the Data tab lists it: what it's called, what it is, how many there are, and its tables. */
-const KINDS: { kind: DataKind; label: string; hint: string; count: (c: DataCounts) => string; tables: { table: DataTable; label: string }[] }[] = [
+/** Each kind of data, as the Data tab lists it: what it's called, what it is (a few words, and the why), how many there are, and its tables. */
+const KINDS: { kind: DataKind; label: string; hint: string; info?: string; count: (c: DataCounts) => { v: number; u: string }[]; tables: { table: DataTable; label: string }[] }[] = [
   {
     kind: "calls",
     label: "Calls",
-    hint: "The call index: each call, and each radio's transmissions in it. Deleting it leaves the recordings on disk, and they aren't indexed again.",
-    count: (c) => `${c.calls.toLocaleString()} calls`,
+    hint: "The call index, with transmissions",
+    info: "Each call, and each radio's transmissions in it. Deleting it leaves the recordings on disk, and they aren't indexed again.",
+    count: (c) => [{ v: c.calls, u: "calls" }],
     tables: [
       { table: "calls", label: "Calls" },
       { table: "transmissions", label: "Transmissions" },
@@ -25,29 +27,35 @@ const KINDS: { kind: DataKind; label: string; hint: string; count: (c: DataCount
   {
     kind: "talkgroups",
     label: "Talkgroups",
-    hint: "The talkgroups each system was given (loaded from a file or edited), each with where its names came from.",
-    count: (c) => `${c.talkgroups.toLocaleString()} talkgroups`,
+    hint: "Loaded from a file or edited",
+    info: "The talkgroups each system was given, each with where its names came from.",
+    count: (c) => [{ v: c.talkgroups, u: "talkgroups" }],
     tables: [{ table: "talkgroups", label: "Talkgroups" }],
   },
   {
     kind: "unitNames",
     label: "Unit names",
-    hint: "The names each system was given for its radios (loaded from a file or edited), each with where it came from.",
-    count: (c) => `${c.unitNames.toLocaleString()} names`,
+    hint: "Radio names, loaded or edited",
+    info: "The names each system was given for its radios, each with where it came from.",
+    count: (c) => [{ v: c.unitNames, u: "names" }],
     tables: [{ table: "unit-names", label: "Unit names" }],
   },
   {
     kind: "talkerAliases",
     label: "Talker aliases",
-    hint: "Radios' names, as heard over the air.",
-    count: (c) => `${c.talkerAliases.toLocaleString()} aliases`,
+    hint: "Radio names heard over the air",
+    count: (c) => [{ v: c.talkerAliases, u: "aliases" }],
     tables: [{ table: "talker-aliases", label: "Talker aliases" }],
   },
   {
     kind: "registry",
     label: "Radio registry",
-    hint: "Every radio and talkgroup heard: when first and last, how often, and the pairs and frequencies (the Radio page, first-heard alerts).",
-    count: (c) => `${c.radios.toLocaleString()} radios, ${c.heardTalkgroups.toLocaleString()} talkgroups`,
+    hint: "Every radio and talkgroup heard",
+    info: "When first and last, how often, and the pairs and frequencies (the Radio page, first-heard alerts).",
+    count: (c) => [
+      { v: c.radios, u: "radios" },
+      { v: c.heardTalkgroups, u: "talkgroups" },
+    ],
     tables: [
       { table: "radios", label: "Radios" },
       { table: "heard-talkgroups", label: "Talkgroups heard" },
@@ -56,8 +64,9 @@ const KINDS: { kind: DataKind; label: string; hint: string; count: (c: DataCount
   {
     kind: "dashboardHistory",
     label: "Dashboard history",
-    hint: "The dashboard's charts, by the hour. All systems: the computer's and the radios' too.",
-    count: (c) => `${c.historySeries.toLocaleString()} series`,
+    hint: "The charts, by the hour",
+    info: "All systems: the computer's and the radios' too.",
+    count: (c) => [{ v: c.historySeries, u: "series" }],
     tables: [{ table: "dashboard-history", label: "Dashboard history" }],
   },
 ];
@@ -135,7 +144,16 @@ export function ManageData() {
   };
   return (
     <section className="set-card">
-      <Group title="Export and delete" hint="What the store keeps, a CSV file a table (named for the system, the table and the time), or deleted. Every system's, or one's: a system removed from the config is listed while its data is kept." full>
+      <Group
+        title="Export and delete"
+        hint={
+          <>
+            A CSV file per table
+            <Info>Named for the system, the table and the time. A system removed from the config is listed while its data is kept.</Info>
+          </>
+        }
+        full
+      >
         <Field label="Systems" hint={error ?? undefined}>
           <select value={scope} onChange={(e) => setScope(e.target.value === "all" ? "all" : Number(e.target.value))} disabled={!systems}>
             <option value="all">All systems</option>
@@ -152,15 +170,15 @@ export function ManageData() {
             <div className="data-kind" key={k.kind}>
               <Toggle
                 label={k.label}
-                hint={
-                  <>
-                    {k.hint} <span className="mono">{systems ? k.count(counts) : "…"}</span>
-                  </>
-                }
+                hint={k.hint}
+                info={k.info}
                 checked={marked.includes(k.kind)}
                 disabled={busy}
                 onChange={(v) => setMarked((m) => (v ? [...m, k.kind] : m.filter((x) => x !== k.kind)))}
               />
+              <span className="data-count">
+                {systems ? k.count(counts).map((n) => <Fig key={n.u} v={n.v.toLocaleString()} u={n.u} />) : <Fig v="…" />}
+              </span>
               <div className="row data-exports">
                 {k.tables.map((t) => (
                   <a key={t.table} className="btn ghost small" href={exportUrl(t.table, one?.id)} download title={`${t.label} of ${what}, as a CSV file`}>
@@ -178,7 +196,12 @@ export function ManageData() {
             {busy ? "Deleting…" : `Delete what's ticked${one ? ` of ${one.shortName}` : ""}…`}
           </button>
         </div>
-        <Field label="Compact the store" hint="Deleting data (or calls aging out) leaves free space inside the store that it reuses but doesn't give back to the disk. Compacting rewrites the store without it. Every system's: the whole store." wide>
+        <Field
+          label="Compact the store"
+          hint="Gives deleted space back to the disk"
+          info="Deleting data (or calls aging out) leaves free space inside the store that it reuses but doesn't give back to the disk. Compacting rewrites the store without it: the whole store, every system's."
+          wide
+        >
           <div className="row">
             <button className="btn ghost" disabled={compacting || busy} onClick={compact}>
               {compacting ? "Compacting…" : "Compact DB…"}
@@ -214,7 +237,8 @@ export function RemoveSystem(props: { name: string; question: string; id: number
       {stored && (
         <Toggle
           label="Also delete its data"
-          hint="Its calls in the call index, talkgroups, talker aliases, radio registry and dashboard history. Recordings stay on disk. Unticked, they stay in the store: Setup → Data exports or deletes them later."
+          hint="Recordings stay on disk"
+          info="Its calls in the call index, talkgroups, talker aliases, radio registry and dashboard history. Unticked, they stay in the store: Setup → Data exports or deletes them later."
           checked={withData}
           onChange={setWithData}
         />

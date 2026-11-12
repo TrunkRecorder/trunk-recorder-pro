@@ -53,7 +53,7 @@ test("the setup guide's radio cards offer bias-T on an Airspy, not on a dongle",
 test("Find my system offers bias-T when the scan's radio is a spare Airspy", () => {
   connected("running", RADIOS);
   const html = renderToString(<SurveyPanel c={snapshot().config!} />);
-  assert.ok(html.includes("No source uses it"), "the spare is the radio while recording");
+  assert.ok(html.includes("Spare: scans while the others record"), "the spare is the radio while recording");
   assert.ok(html.includes("Bias-T"), html);
   connected("idle", RADIOS);
   const idle = renderToString(<SurveyPanel c={snapshot().config!} />);

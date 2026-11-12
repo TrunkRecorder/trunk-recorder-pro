@@ -29,7 +29,7 @@ never throttled.)
 
 Trunk Recorder Pro watches for both: when the Pi's firmware reports under-voltage or heat
 throttling, the dashboard warns "The Pi is throttled (under-voltage or heat)", and the
-**Platform** page shows the temperature with "throttled now" under it.
+**Platform** page shows the temperature with "throttled" under it.
 
 ## Install the OS
 
@@ -115,8 +115,7 @@ trunk-pro --no-open
 ```
 
 Open `http://localhost:8080` in your computer's browser and follow
-[Getting started](../getting-started.md). Before you leave it, turn on **Start recording when the
-app starts** in **Setup → Recording**. Press Ctrl-C on the Pi when you're done; the settings are
+[Getting started](../getting-started.md). Before you leave it, turn on **Record when the app starts** in **Setup → Recording**. Press Ctrl-C on the Pi when you're done; the settings are
 saved.
 
 ## Run it as a service
@@ -147,8 +146,7 @@ card last:
 
 - Keep recordings on a USB SSD or a network share instead: set **Setup → Recording → Recordings
   folder** to a folder on it.
-- If calls are only uploaded (by a plugin) and not kept, turn on **Keep calls waiting to upload in
-  memory** in **Setup → Recording**: calls wait for their upload on a RAM disk instead of the card.
+- If calls are only uploaded (by a plugin) and not kept, turn on **RAM spool** in **Setup → Recording**: calls wait for their upload on a RAM disk instead of the card.
   See [Recordings](../guides/recordings.md).
 - Boot from an SSD (a Pi 5 can boot from NVMe or USB).
 

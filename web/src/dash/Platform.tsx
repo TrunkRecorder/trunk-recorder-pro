@@ -8,7 +8,7 @@
 import { useState } from "react";
 import type { ClockInfo, MonitorSettings, PlatformInfo, SeriesData } from "../protocol.ts";
 import { updateConfig, useApp, useTopic, type StatsRange } from "../controller.ts";
-import { Card, Choice, HeatStrip, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
+import { Card, Choice, Fig, Figs, HeatStrip, Info, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
 import { ago, bytes, clockAt, dur, ms, num, pct } from "../fmt.ts";
 import { connections, connectionsSummary, platformHealth, total, useHistory, useRanges } from "./data.ts";
 import { Field, NumberInput, TextArea, TextInput } from "../inputs.tsx";
@@ -71,38 +71,41 @@ export function PlatformPage() {
           size="hero"
           label="CPU"
           value={pct(v["plat/cpu"])}
-          sub={p.cpuLimitCores ? `of the container's ${num(p.cpuLimitCores, 1)} cores` : `of ${p.cores} cores`}
+          sub={p.cpuLimitCores ? <><Fig v={num(p.cpuLimitCores, 1)} u="cores" /> container limit</> : <Fig v={p.cores} u="cores" />}
           spark={<LiveSpark k="plat/cpu" lo={0} hi={100} />}
           level={(v["plat/cpu"] ?? 0) > 90 ? "warn" : undefined}
         />
         <Stat
           label="Trunk Recorder Pro"
           value={pct(v["plat/proCpu"])}
-          sub={`${num(v["plat/proCores"], 2)} cores · ${bytes(v["plat/proMem"])} memory`}
+          sub={<Figs inline items={[{ k: "Cores", v: num(v["plat/proCores"], 2) }, { k: "Memory", v: bytes(v["plat/proMem"]) }]} />}
           spark={<LiveSpark k="plat/proCpu" color="var(--series-2)" lo={0} />}
         />
         <Stat
           label="Memory"
           value={pct(v["plat/mem"])}
           sub={
-            v["plat/memPsi"] !== undefined
-              ? `stalled ${num(v["plat/memPsi"], 1)}% of the time`
-              : v["plat/memLevel"] !== undefined
-                ? `pressure ${PRESSURE[v["plat/memLevel"]] ?? "?"}`
-                : `${bytes(v["plat/memAvail"])} available`
+            v["plat/memPsi"] !== undefined ? (
+              <Figs inline items={[{ k: "Stalled", v: num(v["plat/memPsi"], 1), u: "%", level: v["plat/memPsi"] >= 10 ? "warn" : undefined }]} />
+            ) : v["plat/memLevel"] !== undefined ? (
+              <Figs inline items={[{ k: "Pressure", v: PRESSURE[v["plat/memLevel"]] ?? "?", level: v["plat/memLevel"] >= 2 ? "bad" : v["plat/memLevel"] >= 1 ? "warn" : undefined }]} />
+            ) : (
+              <Figs inline items={[{ k: "Free", v: bytes(v["plat/memAvail"]) }]} />
+            )
           }
           spark={<Meter value={v["plat/mem"] ?? null} max={100} zones={[85, 95]} label="memory used" />}
-          hint="Stalled: time spent waiting for memory."
+          hint="Stalled: share of time spent waiting for memory."
         />
         <Stat
           label="Connections"
           value={net?.value ?? "—"}
           level={net && net.level !== "ok" ? net.level : undefined}
-          sub={!net ? (links.length ? "not tried yet" : "nothing checked, no plugin sending") : net.value === "Up" && v["net/rtt"] !== undefined ? `${num(v["net/rtt"], 0)} ms to connect` : net.why}
+          sub={!net ? (links.length ? "not tried yet" : "nothing to check") : net.value === "Up" && v["net/rtt"] !== undefined ? <Figs inline items={[{ k: "Connect", v: num(v["net/rtt"], 0), u: "ms" }]} /> : net.why}
+          hint={!net && !links.length ? "No host checked and no plugin sending" : undefined}
           spark={<LiveSpark k="net/rtt" color="var(--series-3)" lo={0} />}
         />
         {v["plat/temp"] !== undefined ? (
-          <Stat label="Temperature" value={num(v["plat/temp"], 0)} unit="°C" level={v["plat/temp"] > 80 ? "warn" : undefined} sub={v["plat/piThrottled"] ? "throttled now" : "hottest sensor"} />
+          <Stat label="Temperature" value={num(v["plat/temp"], 0)} unit="°C" level={v["plat/temp"] > 80 ? "warn" : undefined} sub={v["plat/piThrottled"] ? <Fig v="throttled" level="warn" /> : "hottest sensor"} />
         ) : (
           <Stat label="Temperature" value="—" sub={missing("temp") ?? "not reported"} />
         )}
@@ -160,32 +163,26 @@ export function PlatformPage() {
                 <div key={d.name} className="disk">
                   <div className="row">
                     <b>{spool ? "RAM spool" : d.name === "recordings" ? "Recordings" : "App data"}</b>
+                    {spool && <Info>Calls waiting for plugins to upload, held in memory; overflows to disk.</Info>}
                     <span className="muted small mono">{d.path}</span>
                   </div>
                   <Meter value={d.missing ? null : used} max={100} zones={spool ? [75, 90] : [90, 95]} label={`${d.name} disk used`} />
-                  <div className="kv small">
-                    {d.missing ? (
-                      <span className="bad">Gone: calls go to the recordings folder</span>
-                    ) : (
-                      <span>
-                        <b>{bytes(d.freeBytes)}</b> free of {bytes(d.totalBytes)}
-                      </span>
-                    )}
-                    {spool ? (
-                      <span title="Held in memory until plugins upload; overflows to disk.">
-                        {d.kind === "RAM disk" ? "a RAM disk" : d.kind === "tmpfs" ? "in /dev/shm" : d.kind === "service" ? "in the service's runtime folder" : "a folder of yours"} · calls waiting for upload
-                      </span>
-                    ) : (
-                      <span>on {d.mount}</span>
-                    )}
-                    {spool && !!d.overflowed && <span className="warn">{d.overflowed} call{d.overflowed === 1 ? "" : "s"} overflowed to disk</span>}
-                    {spool && !!d.removed && <span className="warn">deleted {d.removed === 1 ? "once" : `${d.removed} times`} while running</span>}
-                    {days !== null && (
-                      <span className={days < 7 ? "warn" : ""} title="At last week's average, before M4A or clean-up">
-                        About <b>{days > 365 ? "a year or more" : dur(days * 86400)}</b> of recordings left at {bytes(audioPerDay)} a day
-                      </span>
-                    )}
-                  </div>
+                  {d.missing ? (
+                    <p className="bad small">Gone: calls go to the recordings folder</p>
+                  ) : (
+                    <Figs
+                      items={[
+                        { k: "Free", v: bytes(d.freeBytes), level: used >= (spool ? 90 : 95) ? "bad" : used >= (spool ? 75 : 90) ? "warn" : undefined },
+                        { k: "Size", v: bytes(d.totalBytes) },
+                        !spool && { k: "Mount", v: d.mount },
+                        spool && { k: "Kind", v: d.kind === "RAM disk" ? "RAM disk" : d.kind === "tmpfs" ? "/dev/shm" : d.kind === "service" ? "service folder" : "your folder" },
+                        days !== null && { k: "Room for", v: days > 365 ? "1 y+" : dur(days * 86400), level: days < 7 ? "warn" : undefined, title: "At last week's average, before M4A or clean-up" },
+                        days !== null && { k: "Per day", v: bytes(audioPerDay) },
+                        spool && !!d.overflowed && { k: "Overflowed", v: num(d.overflowed, 0), u: d.overflowed === 1 ? "call" : "calls", level: "warn", title: "Calls that didn't fit and went to disk" },
+                        spool && !!d.removed && { k: "Deleted", v: num(d.removed, 0), u: d.removed === 1 ? "time" : "times", level: "warn", title: "Deleted while running" },
+                      ]}
+                    />
+                  )}
                 </div>
               );
             })}
@@ -206,16 +203,16 @@ export function PlatformPage() {
         }
       >
         {!checks ? (
-          <p className="empty">Checks off: no host is checked and the time server isn't asked (monitor.networkChecks).</p>
+          <p className="empty" title="monitor.networkChecks">Checks off: no hosts, no time server</p>
         ) : upCells.length > 0 ? (
           <>
             <Ribbon cells={upCells} titles={(up?.v ?? []).map((x, i) => `${clockAt(up!.t0 + i * up!.stepS)}: ${x === null ? "no data" : x >= 1 ? "up" : `${Math.round((x ?? 0) * 100)}% of checks answered`}`)} h={18} label="the hosts checked, answering" />
-            <p className="muted small">
-              {downSteps ? `${downSteps} stretch${downSteps > 1 ? "es" : ""} with failed checks` : "Every check answered"}
-            </p>
+            <Figs inline items={[{ k: "Stretches with failures", v: downSteps, level: downSteps ? "warn" : undefined }]} />
           </>
         ) : (
-          <p className="empty">No hosts checked, so no history kept. The services the plugins use are listed as they answer.</p>
+          <p className="empty">
+            No hosts to check<Info>No history kept. The plugins' services are listed as they answer.</Info>
+          </p>
         )}
         <div className="columns">
           <TimeSeries lines={[{ label: "Connect time, ms", color: "var(--series-3)", data: hist?.["net/rtt"] ?? null, band: true }]} zero height={120} fmt={(x) => x.toFixed(0)} />
@@ -257,7 +254,7 @@ export function PlatformPage() {
             </table>
           </div>
         )}
-        {v["net/dns"] !== undefined && <p className="muted small">Name lookups take {num(v["net/dns"], 0)} ms.</p>}
+        {v["net/dns"] !== undefined && <Figs inline items={[{ k: "Name lookup", v: num(v["net/dns"], 0), u: "ms" }]} />}
         {s.config?.monitor && <NetworkSettings m={s.config.monitor} />}
       </Card>
       <ClockCard c={p.clock} offsets={hist?.["clock/offsetMs"] ?? null} osMissing={missing("clockSynced")} checksOff={!checks} />
@@ -306,16 +303,26 @@ function NetworkSettings({ m }: { m: MonitorSettings }) {
           bad.length ? (
             <span className="bad-text">Not host:port: {bad.join(", ")}</span>
           ) : (
-            "One host:port per line, connected to (TCP) to keep the network's history: your router, or a server on your network. None: no traffic of the recorder's own."
+            <>
+              host:port per line, e.g. your router
+              <Info>Connected to (TCP) to keep the network's history. None: no traffic of the recorder's own.</Info>
+            </>
           )
         }
       >
         <TextArea className="mono" rows={2} value={m.checkHosts.join("\n")} placeholder={"192.168.1.1:443"} onChange={(t) => set((x) => void (x.checkHosts = t.split(/[\s,]+/).filter(Boolean)))} />
       </Field>
-      <Field label="Check every, s" hint="5 at least">
+      <Field label="Check every" hint="seconds, 5 at least">
         <NumberInput label="Check every, s" narrow value={m.checkEveryS} onChange={(n) => set((x) => void (x.checkEveryS = Math.max(5, Math.round(n ?? 15))))} />
       </Field>
-      <Field label="Time server" hint="Asked every 15 minutes how far off the clock is (SNTP, UDP 123). Empty: not asked.">
+      <Field
+        label="Time server"
+        hint={
+          <>
+            Empty: clock not measured<Info>Asked every 15 minutes how far off the clock is (SNTP, UDP 123).</Info>
+          </>
+        }
+      >
         <TextInput className="mono" value={m.timeServer} placeholder="pool.ntp.org" onChange={(t) => set((x) => void (x.timeServer = t))} />
       </Field>
     </div>
@@ -346,22 +353,27 @@ function SpotlightNote({ spot }: { spot: PlatformInfo["spotlight"] }) {
     }
     setNoted(true);
   };
+  const files = /(\d+)/.exec(spot.why)?.[1];
   return (
     <div className="banner spotlight-note" role="note">
       <div>
-        <b>{spot.state === "indexed" ? "Spotlight indexes the recordings folder" : "Spotlight may be indexing the recordings folder"}</b>
-        <p className="small">
-          Extra disk writes for files nobody searches. <span className="muted">({spot.why}.)</span>
-        </p>
-        <ol className="small">
+        <div className="row">
+          <b>{spot.state === "indexed" ? "Spotlight indexes recordings" : "Spotlight may index recordings"}</b>
+          <Info>Extra disk writes for files nobody searches ({spot.why}). Apps can't change Spotlight's list; rechecked daily.</Info>
+          {files && <Figs inline items={[{ k: "Files", v: Number(files).toLocaleString("en-US"), level: "warn" }]} />}
+        </div>
+        <ol className="steps" aria-label="To exclude it">
           <li>
-            Open <b>System Settings → Spotlight</b> and click <b>Search Privacy</b>.
+            <b>System Settings → Spotlight</b>
           </li>
           <li>
-            Click <b>+</b> and choose <span className="mono">{spot.path}</span> (in the dialog, ⇧⌘G takes a path).
+            <b>Search Privacy</b>
+          </li>
+          <li>
+            <b>+</b> <span className="mono">{spot.path}</span>
+            <Info>In the folder dialog, ⇧⌘G takes a path.</Info>
           </li>
         </ol>
-        <p className="muted small">Apps can't change that list; rechecked daily.</p>
       </div>
       {spot.state === "unknown" && <button onClick={note}>I've done it</button>}
     </div>
@@ -388,13 +400,18 @@ function ClockCard({ c, offsets, osMissing, checksOff }: { c: ClockInfo; offsets
           label="Offset, measured"
           value={off ? off.by : "—"}
           sub={
-            m
-              ? `${off!.way} ${c.server}, ${ago(m.at)}${m.current ? "" : " (too long ago to go by)"}`
-              : c.server
-                ? c.error ?? `asking ${c.server}…`
-                : checksOff
-                  ? "not asked: network checks are off"
-                  : "no time server set (monitor.timeServer)"
+            m ? (
+              <>
+                {off!.way === "behind" ? "behind" : "ahead of"} {c.server} · {ago(m.at)}
+                {m.current ? null : <> · <Fig v="stale" level="warn" title="Too long ago to go by" /></>}
+              </>
+            ) : c.server ? (
+              c.error ?? `asking ${c.server}…`
+            ) : checksOff ? (
+              "not asked: checks off"
+            ) : (
+              <span title="monitor.timeServer">no time server set</span>
+            )
           }
           hint="This computer's clock less the time server's, from one SNTP query every 15 minutes. Measured here: no service reports it."
         />
@@ -402,51 +419,78 @@ function ClockCard({ c, offsets, osMissing, checksOff }: { c: ClockInfo; offsets
           label="Operating system"
           value={c.os ? (c.os.synced ? "synchronized" : "not synchronized") : "—"}
           level={c.os && !c.os.synced ? "warn" : undefined}
-          sub={c.os ? `within ${c.os.maxErrorMs >= 1000 ? `${num(c.os.maxErrorMs / 1000, 1)} s` : `${num(c.os.maxErrorMs, 0)} ms`} by its own account` : osMissing ?? "not read yet"}
+          sub={c.os ? <Figs inline items={[{ k: "Error bound", v: ms(c.os.maxErrorMs), title: "By its own account" }]} /> : osMissing ?? "not read yet"}
           hint="What the time service keeping the clock (chrony, systemd-timesyncd, ntpd, macOS) tells the kernel. Its error bound is loose."
         />
-        <Stat label="Round trip" value={m ? num(m.delayMs, 0) : "—"} unit={m ? "ms" : undefined} sub={m ? `stratum ${m.stratum}` : undefined} hint="The query's round trip, less the server's own time: the offset is good to about half of it." />
+        <Stat label="Round trip" value={m ? num(m.delayMs, 0) : "—"} unit={m ? "ms" : undefined} sub={m ? <Figs inline items={[{ k: "Stratum", v: m.stratum }]} /> : undefined} hint="The query's round trip, less the server's own time: the offset is good to about half of it." />
       </div>
       {c.service && (
-        <p className="small">
-          Kept by <b>{c.service.name}</b>
-          {c.service.server ? <> from {c.service.server}</> : null}
-          {c.service.stratum ? `, stratum ${c.service.stratum}` : ""}
-          {c.service.lastSync ? `, last synchronized ${ago(c.service.lastSync)}` : ""}.
-        </p>
+        <Figs
+          items={[
+            { k: "Kept by", v: c.service.name },
+            !!c.service.server && { k: "From", v: c.service.server },
+            !!c.service.stratum && { k: "Stratum", v: c.service.stratum },
+            !!c.service.lastSync && { k: "Last synced", v: ago(c.service.lastSync) },
+          ]}
+        />
       )}
       {c.driftMs !== null && (
-        <p className="small" title="The recording runs on its own clock, which never jumps: the clock at Start, carried on by a monotonic clock (on macOS, one that runs at the crystal's rate, uncorrected). Call times are corrected to the clock as it is now all the same; this is only how far the two have parted.">
-          The recording's own clock:{" "}
-          {Math.abs(c.driftMs) < 1 ? "the same as the clock now" : `${offsetText(c.driftMs).by} ${offsetText(c.driftMs).way} the clock now — call times are corrected for it`}.
-        </p>
+        <Figs
+          items={[
+            {
+              k: "Recording's own clock",
+              v: Math.abs(c.driftMs) < 1 ? "in step" : `${offsetText(c.driftMs).by} ${offsetText(c.driftMs).way === "behind" ? "behind" : "ahead"}`,
+              title: "The recording runs on its own clock, which never jumps: the clock at Start, carried on by a monotonic clock (on macOS, one that runs at the crystal's rate, uncorrected). Call times are corrected to the clock as it is now all the same; this is only how far the two have parted.",
+            },
+          ]}
+        />
       )}
       {c.radio.length > 0 && (
         <>
-          <p className="small">The radio systems' own clocks, against the calls' time:</p>
-          <ul className="line-list small" aria-label="Radio systems' clocks">
+          <div className="row">
+            <b>Radio systems' clocks</b>
+            <Info>Each system's broadcast time against the calls' time.</Info>
+          </div>
+          <ul className="line-list" aria-label="Radio systems' clocks">
             {c.radio.map((r) => (
               <li key={r.site}>
-                <b>{r.site}</b>
-                <span className="muted">
-                  {/* (offsetMs: the system's time less the calls': positive, the system's is ahead.) */}
-                  {r.sane ? ` ${ms(r.offsetMs)} ${r.offsetMs > 0 ? "ahead of" : "behind"} them` : " set to another time (its local time?): not compared"}
-                  {r.sane && !r.valid ? " (the system marks its time not valid: shown, not gone by)" : ""}, {ago(r.at)}
-                </span>
+                <b>{r.site}</b>{" "}
+                {/* (offsetMs: the system's time less the calls': positive, the system's is ahead.) */}
+                {r.sane ? (
+                  <>
+                    <Fig v={ms(r.offsetMs)} /> <span className="muted">{r.offsetMs > 0 ? "ahead" : "behind"}</span>
+                  </>
+                ) : (
+                  <span className="muted" title="Set to another time (its local time?)">not compared</span>
+                )}
+                {r.sane && !r.valid ? (
+                  <>
+                    {" "}
+                    <Fig v="marked not valid" level="warn" title="The system marks its time not valid: shown, not gone by" />
+                  </>
+                ) : null}
+                <span className="muted small"> · {ago(r.at)}</span>
               </li>
             ))}
           </ul>
         </>
       )}
-      <TimeSeries lines={[{ label: `This computer's clock against ${c.server ?? "the time server"}, ms (+: behind)`, color: "var(--series-1)", data: offsets }]} height={110} fmt={(x) => x.toFixed(0)} />
-      {c.check && c.check.fails > 0 && (
-        <p className="muted small">
-          {c.check.fails} of {c.check.tries} queries unanswered{c.error ? ` (last: ${c.error})` : ""}. Some networks block NTP (UDP port 123); the hosts checked don't count it.
-        </p>
-      )}
-      <p className="muted small">
-        The recorder only watches the clock: the operating system's time service keeps it. A warning at {ms(c.warnMs)} off (monitor.clockWarnMs).
-      </p>
+      <TimeSeries lines={[{ label: `Offset from ${c.server ?? "the time server"}, ms (+ behind)`, color: "var(--series-1)", data: offsets }]} height={110} fmt={(x) => x.toFixed(0)} />
+      <div className="row">
+        {c.check && c.check.fails > 0 && (
+          <span className="fig-info">
+            <Figs inline items={[{ k: "Unanswered", v: `${c.check.fails} of ${c.check.tries}`, level: "warn" }]} />
+            <Info>
+              {c.error ? `Last: ${c.error}. ` : ""}Some networks block NTP (UDP port 123); the hosts checked don't count it.
+            </Info>
+          </span>
+        )}
+        <span className="spacer" />
+        <span className="fig-info">
+          <Figs inline items={[{ k: "Warns at", v: ms(c.warnMs), title: "monitor.clockWarnMs" }]} />
+          <Info>The recorder only watches the clock: the operating system's time service keeps it.</Info>
+        </span>
+      </div>
     </Card>
   );
 }

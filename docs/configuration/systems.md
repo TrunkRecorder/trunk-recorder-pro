@@ -110,7 +110,7 @@ one on the most of its frequencies.
 
 ## Sharing with the directory
 
-With `share` on (**Share channel and talkgroup config with the community** in the system's Basics), the
+With `share` on (**Share with the directory** in the system's Basics), the
 recorder shares the system with the community directory at
 [trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/) while it records. Only P25, SmartNet,
 DMR and NXDN systems can be shared for now, and only once the system has an FCC call sign in its

@@ -43,7 +43,7 @@ system's **NXDN type** (`nxdnType`): **Type-C (control channel)** (the default) 
 - **Voice frequencies, MHz** (Type-C) or **More repeaters, MHz** (Type-D) (`nxdnChannelsHz`):
   for Type-C, the site's voice frequencies, which are watched so channel numbers can be learned.
   For Type-D, optional: the repeaters may all go in the first field.
-- **Channel table (optional)** (`lcnTableHz`): channel numbers you know, as `20=451.0125, 21=…`
+- **Channel table** (`lcnTableHz`): channel numbers you know, as `20=451.0125, 21=…`
   (Type-D: repeater numbers).
 
 In the config file (frequencies in Hz):

@@ -136,7 +136,7 @@ test("the dialog: what comes, its sites; and, when the config has it, updating i
   connected(c);
   const text = (h: string) => h.replace(/<!-- -->/g, "");
   let html = text(renderToString(<ImportDialog bundle={bundle()} onClose={() => {}} />));
-  assert.ok(html.includes("2 named talkgroups") && html.includes("1 FCC license") && html.includes("857.9875"), html);
+  assert.ok(html.includes("<dt>Talkgroups</dt><dd><span class=\"fig\"><b>2</b>") && html.includes("<dt>FCC licenses</dt><dd><span class=\"fig\"><b>1</b>") && html.includes("857.9875"), html);
   assert.ok(html.includes("Short name") && html.includes("Add it"));
   c.systems = [normalizeSystem({ shortName: "dcfd", type: "p25", controlChannelsHz: [857_987_500] })];
   connected(c);

@@ -30,7 +30,7 @@ test("Setup: a HackRF's editor has its stages and bias-T, and needs no driver", 
   const page = text(html);
   assert.match(page, /LNA \(IF\) gain/);
   assert.match(page, /VGA \(baseband\) gain/);
-  assert.match(page, /Amp .*\+14 dB — leave off near strong signals: it overloads easily/);
+  assert.match(page, /Amp .*\+14 dB; overloads near strong signals/);
   assert.match(page, /Bias-T/);
   assert.match(page, /HackRF One · SN 0000a1/, "the radio its driver found");
   assert.doesNotMatch(page, /brew install|apt install/, "nothing to install");
@@ -67,15 +67,15 @@ test("Setup's AutoTune: the ppm to set is measured against the radio's as runnin
     });
   transport.onMessage({ type: "state", phase: "running", error: null, ended: false, restartNeeded: false });
   status(c.sources);
-  assert.match(text(renderToString(<SourceCard c={c} i={0} />)), /Measured error: \+3\.60 ppm · corrected by \+3\.60 ppm · Set correction to -2 ppm/);
+  assert.match(text(renderToString(<SourceCard c={c} i={0} />)), /Measured \+3\.60 ppm Corrected \+3\.60 ppm Set correction to -2 ppm/);
   // Set: the radio still runs at 2 and measures the same, and nothing more is offered — it applies at the next Start.
   const set = { ...c, sources: [rtl("200", -2), rtl("91", 0)] };
   let page = text(renderToString(<SourceCard c={set} i={0} />));
-  assert.match(page, /correction set to -2 ppm, from the next Start/);
+  assert.match(page, /Correction -2 ppm from next Start/);
   assert.doesNotMatch(page, /Set correction to/);
   // Sources moved in Setup since Start: each card shows its own radio's measurement, not the one at its place.
   const moved = { ...c, sources: [rtl("91", 0), rtl("200", 2)] };
-  assert.doesNotMatch(text(renderToString(<SourceCard c={moved} i={0} />)), /Measured error/);
+  assert.doesNotMatch(text(renderToString(<SourceCard c={moved} i={0} />)), /Measured \+/);
   page = text(renderToString(<SourceCard c={moved} i={1} />));
   assert.match(page, /Set correction to -2 ppm/);
 });

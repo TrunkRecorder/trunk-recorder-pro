@@ -45,8 +45,8 @@ Across the top are:
   says why (for example "Add a source: a dongle or a capture file.").
 - **Quit** (see [Quitting](#quitting)).
 
-Banners under the top bar tell you about problems: `Not connected to trunk-pro. Retrying…` when
-the app isn't answering, errors (with **Dismiss**), `Replay finished.` when a replay has run
+Banners under the top bar tell you about problems: `Not connected to trunk-pro — retrying…` when
+the app isn't answering, errors (with **Dismiss**), `Replay finished` when a replay has run
 through its captures, and, while stopped, what's missing from the setup with an **Open setup**
 button.
 
@@ -129,26 +129,26 @@ coloured light. Click one to go to the page about it. These are the events you c
 
 | Event | Colour | What it means, and what to do |
 |---|---|---|
-| `<system>: talkgroup … heard for the first time` | info | A talkgroup you hadn't heard before. Worth a look on the Radio system page; add it to your talkgroup file if you want a name for it. |
-| `<system>: radio … heard for the first time` | info | A new radio ID. Only reported once the app has a baseline for the system. |
-| `<system>: lost its control channel (… MHz)` | red | The control channel stopped decoding and the recorder is hunting for another. Check the antenna, gain and frequency; see [Troubleshooting](../troubleshooting.md#the-control-channel-isnt-decoding). |
-| `<system>: decoding its control channel again` | green | Back to normal. |
+| `<system>: new talkgroup …` | info | A talkgroup you hadn't heard before. Worth a look on the Radio system page; add it to your talkgroup file if you want a name for it. |
+| `<system>: new radio …` | info | A new radio ID. Only reported once the app has a baseline for the system. |
+| `<system>: control channel lost · … MHz` | red | The control channel stopped decoding and the recorder is hunting for another. Check the antenna, gain and frequency; see [Troubleshooting](../troubleshooting.md#the-control-channel-isnt-decoding). |
+| `<system>: control channel back` | green | Back to normal. |
 | `<source>: dropping samples` | amber | The computer or USB bus isn't keeping up; calls on that source lose audio. See [Troubleshooting](../troubleshooting.md#dropped-samples). |
-| `<source>: clipping (…% of samples at full scale)` | amber | More than 0.5% of samples are at full scale: the gain is too high, or a strong signal is nearby. Lower the gain a few dB. |
+| `<source>: clipping …%` | amber | More than 0.5% of samples are at full scale: the gain is too high, or a strong signal is nearby. Lower the gain a few dB. |
 | `<source>: clean again` | green | No more drops or clipping. |
 | `<plugin>: error — …` / `warning — …` / `ok — …` | red / amber / green | A plugin's own status changed. See the Plugins page. |
-| `<target> stopped answering` | red | One of the hosts checked (`monitor.checkHosts`) stopped answering. |
-| `<target> answers again (down … s)` | green | It's back. |
-| `The <name> disk has only …% free` | red | The recordings or app data disk is under 5% free. Free some space, or turn on M4A and the clean-up options in [Recordings](recordings.md). |
-| `The RAM spool has only …% free: uploads aren't keeping up` | amber | The RAM spool is under 25% free. Check the plugins. |
-| `The RAM spool has only …% free: calls will soon go to the disk` | red | Under 10% free. |
-| `The RAM spool was full: … calls written to the recordings folder instead` | red | Nothing was lost; those calls went to disk. Make the spool bigger, or find out why uploads are slow. |
-| `The RAM spool has room again (…% free)` | green | Back to normal. |
+| `<target>: not answering` | red | One of the hosts checked (`monitor.checkHosts`) stopped answering. |
+| `<target>: back · down … s` | green | It's back. |
+| `Disk <name>: …% free` | red | The recordings or app data disk is under 5% free. Free some space, or turn on M4A and the clean-up options in [Recordings](recordings.md). |
+| `RAM spool …% free — uploads behind` | amber | The RAM spool is under 25% free. Check the plugins. |
+| `RAM spool …% free — calls soon go to disk` | red | Under 10% free. |
+| `RAM spool full: … calls to the recordings folder` | red | Nothing was lost; those calls went to disk. Make the spool bigger, or find out why uploads are slow. |
+| `RAM spool OK · …% free` | green | Back to normal. |
 | `The clock is … behind/ahead of <server>: call times are off by as much` | amber / red | The measured offset is 250 ms or more (red at 5 s). Check the operating system's time service. See [Clock](dashboard.md#clock). |
 | `The operating system says its clock isn't synchronized: …` | amber | The time service (chrony, systemd-timesyncd, ntpd) isn't running or can't reach its servers. |
 | `Calls are being stamped … behind/ahead of <site>'s radio system clock…` | amber / red | No time server answers, and a radio system that vouches for its time says this computer's clock is off. |
-| `The clock jumped … forward (its time service set it, or the computer slept)` / `The clock was set back …` | amber | The wall clock jumped by half a second or more. Calls begun from then on are by the new time; a call being recorded keeps the time it began with until it ends. |
-| `The clock is right again` | green | Back to normal. |
+| `Clock jumped … forward` (hover: its time service set it, or the computer slept) / `Clock set back …` | amber | The wall clock jumped by half a second or more. Calls begun from then on are by the new time; a call being recorded keeps the time it began with until it ends. |
+| `Clock right again` | green | Back to normal. |
 
 The app keeps the last 200 events in memory, so a browser that opens later still sees them; they
 are not kept when the app quits. There are no alerts (email, push) yet: events only show in the
@@ -161,8 +161,7 @@ interface.
 `SIGTERM` (`systemctl --user stop trunk-pro`) do the same. On macOS the app has no Dock icon, so
 **Quit** is how you stop it; on Windows, closing the console window does the same.
 
-To start recording again after a restart without touching anything, turn on **Start recording
-when the app starts** in Setup → Recording (or start with `--start`).
+To start recording again after a restart without touching anything, turn on **Record when the app starts** in Setup → Recording (or start with `--start`).
 
 ## Where the history is kept
 

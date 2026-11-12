@@ -41,7 +41,7 @@ test("Captures waiting on the air say how they're going, and can be given up", (
 
 test("Why a capture failed is said, and so are lost samples", () => {
   assert.match(text(renderToString(<IqCaptureCard initial={{ ...answer, error: "Recording stopped during the capture." }} />)), /Recording stopped during the capture/);
-  assert.match(text(renderToString(<IqCaptureCard initial={{ ...answer, captures: [{ ...capture, lostSamples: 4096 }] }} />)), /4,096 samples lost/);
+  assert.match(text(renderToString(<IqCaptureCard initial={{ ...answer, captures: [{ ...capture, lostSamples: 4096 }] }} />)), /Lost\s*4,096\s*samples/);
 });
 
 test("Capture rules can be switched on, and a rule capture says which rule made it", () => {

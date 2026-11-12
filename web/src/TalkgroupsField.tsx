@@ -7,6 +7,7 @@
 // names came from; loading over names edited by hand asks first.
 
 import { useMemo, useRef, useState } from "react";
+import { Fig, Figs } from "./charts.tsx";
 import { downloadText, mayReplaceNames, setNotice, setTalkgroups, setUnitNames, useApp } from "./controller.ts";
 import { Field, FileInput } from "./inputs.tsx";
 import { ORIGIN_SHORT, originCounts } from "./origins.ts";
@@ -65,13 +66,13 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
     <div className={`field wide tg-field${props.needs ? " needs" : ""}`} id={props.anchor && `need-${props.anchor}`}>
       <span className="field-label">Talkgroups</span>
       <div className="row">
+        {tgs.length ? <Fig v={tgs.length} u={tgs.length === 1 ? "talkgroup" : "talkgroups"} /> : <span className="muted">none</span>}
         <button className="btn" onClick={() => fileRef.current?.click()}>
           Load CSV…
         </button>
         <button className="btn" aria-expanded={pasting} onClick={() => setPasting(!pasting)}>
           Paste from RadioReference…
         </button>
-        <span className="mono">{tgs.length ? `${tgs.length}` : "none"}</span>
         {tgs.length > 0 && (
           <>
             <button className="btn ghost" title="Trunk Recorder CSV, with a header row" onClick={() => downloadText(`${sys.shortName || "system"}.talkgroups.csv`, talkgroupFileText(tgs))}>
@@ -101,8 +102,8 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
             </span>
           )}
           {report && report.skipped.length > 0 && (
-            <span className="chip warn" title={`Rows with no talkgroup number:\n${report.skipped.slice(0, 5).join("\n")}`}>
-              {report.skipped.length} row{report.skipped.length === 1 ? "" : "s"} without a number
+            <span className="chip warn" title={`Rows with no talkgroup number, skipped:\n${report.skipped.slice(0, 5).join("\n")}`}>
+              {report.skipped.length} no number
             </span>
           )}
         </div>
@@ -140,10 +141,17 @@ export function UnitNamesField(props: { system: string; value: UnitNames | undef
   return (
     <Field label="Unit names" needs={props.needs} anchor={props.anchor}>
       <div className="row">
+        {rows.length ? (
+          <>
+            <Fig v={rows.length - patterns} u={rows.length - patterns === 1 ? "radio" : "radios"} />
+            {patterns > 0 && <Fig v={patterns} u={patterns === 1 ? "pattern" : "patterns"} />}
+          </>
+        ) : (
+          <span className="muted">none</span>
+        )}
         <button className="btn" onClick={() => ref.current?.click()}>
           Load CSV…
         </button>
-        <span className="mono">{rows.length ? `${rows.length - patterns} radio${rows.length - patterns === 1 ? "" : "s"}${patterns ? `, ${patterns} pattern${patterns === 1 ? "" : "s"}` : ""}` : "none"}</span>
         {rows.length > 0 && (
           <>
             <button className="btn ghost" title="Trunk Recorder's unitTagsFile: unit,name lines" onClick={() => downloadText(`${props.system || "system"}.units.csv`, unitNamesFileText(rows))}>
@@ -161,8 +169,8 @@ export function UnitNamesField(props: { system: string; value: UnitNames | undef
           </>
         )}
         <select value={mode} aria-label="Which names come first" onChange={(e) => props.onChange(e.target.value ? { mode: e.target.value as UnitNames["mode"] } : undefined)}>
-          <option value="">These first, then aliases heard</option>
-          <option value="ota">Aliases heard first</option>
+          <option value="">These first, then on-air aliases</option>
+          <option value="ota">On-air aliases first</option>
           <option value="user_only">Only these</option>
           <option value="none">No names</option>
         </select>
@@ -171,8 +179,8 @@ export function UnitNamesField(props: { system: string; value: UnitNames | undef
         <div className="row tg-facts">
           <OriginChips rows={rows} />
           {bad.length > 0 && (
-            <span className="chip warn" title={bad.slice(0, 5).join("\n")}>
-              {bad.length} pattern{bad.length === 1 ? "" : "s"} that name nothing (not a regular expression)
+            <span className="chip warn" title={`Not regular expressions; they name nothing:\n${bad.slice(0, 5).join("\n")}`}>
+              {bad.length} bad pattern{bad.length === 1 ? "" : "s"}
             </span>
           )}
         </div>
@@ -203,20 +211,15 @@ function RadioReferencePaste(props: { sys: TalkgroupsOf; replacing: number; onUs
   const shown = 8;
   return (
     <div className="tg-paste">
-      <p className="small">
-        Copy the talkgroup tables from{" "}
-        <a href="https://www.radioreference.com/db/browse/" target="_blank" rel="noreferrer">
-          RadioReference
-        </a>{" "}
-        and paste them here.
-        {sysId != null && (
-          <span className="muted">
-            {" "}
-            This system: <span className="mono">System ID {hex(sysId)}</span>
-            {wacn != null && <span className="mono">, WACN {hex(wacn)}</span>}.
-          </span>
-        )}
-      </p>
+      <div className="row">
+        <span className="small">
+          Paste the talkgroup tables from{" "}
+          <a href="https://www.radioreference.com/db/browse/" target="_blank" rel="noreferrer">
+            RadioReference
+          </a>
+        </span>
+        {sysId != null && <Figs inline items={[{ k: "System ID", v: hex(sysId) }, wacn != null && { k: "WACN", v: hex(wacn) }]} />}
+      </div>
       <textarea
         className="mono tg-paste-box"
         value={text}
@@ -255,10 +258,7 @@ function RadioReferencePaste(props: { sys: TalkgroupsOf; replacing: number; onUs
               </tbody>
             </table>
           </div>
-          <span className="muted small">
-            {parsed.length > shown ? `…and ${parsed.length - shown} more. ` : ""}
-            {summary(parsed)}
-          </span>
+          <Figs inline items={summary(parsed, shown)} />
         </>
       )}
       <div className="row">
@@ -274,8 +274,14 @@ function RadioReferencePaste(props: { sys: TalkgroupsOf; replacing: number; onUs
   );
 }
 
-function summary(list: Talkgroup[]): string {
+/** What a paste read, as figures: talkgroups (beyond the `shown` rows), categories, encrypted. */
+function summary(list: Talkgroup[], shown: number) {
   const cats = new Set(list.map((t) => t.category).filter(Boolean)).size;
   const enc = list.filter((t) => isEncryptedMode(t.mode)).length;
-  return [`${list.length} talkgroup${list.length === 1 ? "" : "s"}`, cats ? `in ${cats} categor${cats === 1 ? "y" : "ies"}` : "", enc ? `${enc} encrypted (not recorded)` : ""].filter(Boolean).join(", ") + ".";
+  return [
+    { k: "Talkgroups", v: list.length },
+    list.length > shown && { k: "Not shown", v: list.length - shown },
+    cats > 0 && { k: "Categories", v: cats },
+    enc > 0 && { k: "Encrypted", v: enc, title: "Not recorded" },
+  ];
 }

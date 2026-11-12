@@ -76,14 +76,13 @@ narrow it further. Leave them blank to record everything on the frequency. Split
 frequency is covered in [Tones and access codes](tones.md). A config with an older `tone` key is
 upgraded when it loads.
 
-**Import CSV…** reads a channel file and asks whether to **Replace the list** or **Add to the
-list**. **Export CSV** writes the whole list, codes and names included, as a CSV you can edit and
+**Import CSV…** reads a channel file and asks whether to **Replace N** (the channels there now) or **Add to them**. **Export CSV** writes the whole list, codes and names included, as a CSV you can edit and
 import again (or link as a [channel file](#in-a-spreadsheet-desktop-app)).
 
 ### In a spreadsheet (desktop app)
 
 If you'd rather keep the list in Excel, Numbers or LibreOffice, link the system to a CSV file.
-Under **Channel file (optional)**, type a path such as `fire-channels.csv` and click **Use this
+Under **Channel file**, type a path such as `fire-channels.csv` and click **Use this
 file**. If the file doesn't exist yet, it is created from the current list. From then on the
 channels come from the file: the table becomes read-only, and you edit the file instead.
 

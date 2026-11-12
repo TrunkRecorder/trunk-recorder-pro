@@ -4,6 +4,7 @@
 
 import { useMemo, useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
+import { Info } from "../charts.tsx";
 import { downloadCall, useSelect, web, type AppState } from "../controller.ts";
 import {
   avoid,
@@ -118,8 +119,8 @@ function Display({ s }: { s: ListenState }) {
     return (
       <div className="scan-display idle">
         <div className="scan-label">{!s.connected ? "No link" : l.feed ? (l.paused ? "Paused" : "Scanning…") : "Feed off"}</div>
-        <div className="muted small">
-          {!s.connected ? "Not connected to the recorder." : l.feed ? "New calls play here as they're recorded." : "Press Live feed to hear calls as they're recorded, or pick one from the list."}
+        <div className="muted">
+          {!s.connected ? "Recorder not connected" : l.feed ? "New calls play here" : "Turn on Live feed, or pick a call"}
         </div>
       </div>
     );
@@ -256,8 +257,8 @@ function Scanner({ s }: { s: ListenState }) {
         )}
         <span className="spacer" />
         {l.missed > 0 && <span className="small warn-text">{l.missed} missed</span>}
-        <span className="mono small" title="Calls waiting to play">
-          Q {l.queue}
+        <span className="small muted" title="Calls waiting to play">
+          Queued <b className="mono">{l.queue}</b>
         </span>
       </header>
       <Display s={s} />
@@ -275,10 +276,12 @@ function NoAudio({ config }: { config: Config | null }) {
   if (!systems.length) return null;
   const one = systems.length === 1;
   return (
-    <div className="banner subtle small">
+    <div className="banner subtle">
       <span>
-        <b>{systems.join(", ")}</b> {one ? "isn't" : "aren't"} here: {one ? "its" : "their"} calls' audio is deleted once the plugins are done with it (Keep .wav and Keep .m4a are off), so there's nothing to play. To hear{" "}
-        {one ? "it" : "them"}, turn on Keep .wav or Keep .m4a in Setup, under Archive on {one ? "the system's" : "each system's"} card or on the Recording tab.
+        <b>{systems.join(", ")}</b> · no audio kept
+        <Info>
+          {one ? "Its" : "Their"} calls' audio is deleted once the plugins are done with it (Keep .wav and Keep .m4a are off), so there's nothing to play. To hear {one ? "it" : "them"}, turn on Keep .wav or Keep .m4a in Setup, under Archive on {one ? "the system's" : "each system's"} card or on the Recording tab.
+        </Info>
       </span>
     </div>
   );
@@ -337,15 +340,15 @@ function CallList({ s }: { s: ListenState }) {
         </ul>
       )}
       <footer className="listen-more">
-        {rows.length > 500 && <span className="muted small">Showing the newest 500. </span>}
+        {rows.length > 500 && <span className="muted small">Newest 500 </span>}
         {l.moreOlder === false ? (
-          <span className="muted small">That's every call from the last 24 hours.</span>
+          <span className="muted small">All calls from the last 24 h</span>
         ) : (
           <button className="btn ghost" onClick={loadOlder} disabled={l.loadingOlder || !s.connected}>
             {l.loadingOlder ? "Loading…" : "Load older"}
           </button>
         )}
-        {oldest !== undefined && <span className="muted small">Back to {new Date(oldest).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}</span>}
+        {oldest !== undefined && <span className="muted small">Back to <b>{new Date(oldest).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}</b></span>}
       </footer>
     </>
   );
@@ -415,9 +418,9 @@ export function Talkgroups({ s }: { s: ListenState }) {
       </div>
       {sel.hold && (
         <div className="banner subtle">
-          <span>
-            Holding on {sel.hold.system}
-            {sel.hold.talkgroup !== null ? `, talkgroup ${sel.hold.talkgroup}` : ""}: only it plays.
+          <span title="Only it plays">
+            Holding <b>{sel.hold.system}</b>
+            {sel.hold.talkgroup !== null ? <> · TG <b>{sel.hold.talkgroup}</b></> : null}
           </span>
           <button className="btn ghost small" onClick={sel.hold.talkgroup === null ? holdSystem : holdTalkgroup}>
             Release
@@ -452,7 +455,7 @@ export function Talkgroups({ s }: { s: ListenState }) {
               <b>{system}</b>
               {sites > 1 && <span className="chip small" title="A call plays whichever site it was kept from">{sites} sites</span>}
               <span className="muted small">
-                {sysOn ? tgs.filter((t) => !sel.offTalkgroups.includes(t.key)).length : 0} of {tgs.length} talkgroups
+                <b>{sysOn ? tgs.filter((t) => !sel.offTalkgroups.includes(t.key)).length : 0}</b> of {tgs.length} talkgroups
               </span>
             </label>
             <div className="tg-grid">
