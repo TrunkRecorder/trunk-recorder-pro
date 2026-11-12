@@ -2,7 +2,7 @@
 
 This page explains how Trunk Recorder Pro records Motorola SmartNet and SmartZone (Type II)
 systems: band plans, including the custom VHF/UHF ones, analog and digital voice, and the
-**Voice of unknown talkgroups** setting. Every key is listed in the
+**Default voice** setting. Every key is listed in the
 [trunked systems reference](../configuration/systems.md#smartnet).
 
 ## What it handles
@@ -25,7 +25,7 @@ the easiest way to set up a VHF or UHF system.
 To add one by hand, click **Add a system** on **Setup** → **Systems**, set **Type** to
 **SmartNet / SmartZone**, and fill in:
 
-- **Voice of unknown talkgroups**: see [Analog and digital voice](#analog-and-digital-voice).
+- **Default voice**: see [Analog and digital voice](#analog-and-digital-voice).
 - **Talkgroups**: see [Talkgroups and units](talkgroups-and-units.md).
 - On its site, under **Sites** (open it):
   - **Control channels, MHz**: the control channel, then the alternates ("Later ones are
@@ -110,7 +110,7 @@ FM receiver or a P25 receiver to match, and remembers each talkgroup's mode.
 
 Some messages don't say: the short "update" messages repeated while a call goes on. If the
 recorder starts while a call is already up, it only ever hears updates for it, and has to guess.
-For a talkgroup it hasn't yet seen granted, it uses **Voice of unknown talkgroups**
+For a talkgroup it hasn't yet seen granted, it uses **Default voice**
 (`defaultMode`):
 
 - **P25** (the default; `defaultMode` left out or `"digital"`)
@@ -134,7 +134,7 @@ noise.
 - **Patches.** When dispatch patches talkgroups together, the control channel announces it, and
   the call goes out on the patch's *supergroup*, which usually isn't in your talkgroup file. A
   supergroup call is recorded while it's patched with a talkgroup you do have (even with
-  **Talkgroups not in the talkgroup file** off), and the call JSON lists the patched talkgroups.
+  **Unlisted talkgroups** off), and the call JSON lists the patched talkgroups.
   The **Decode** page shows the patches standing now.
 - **Site lock.** A SmartNet control channel announces a **System ID** (and on some VHF/UHF
   systems a **Site**). The **Site lock** fields on each site's card take the System ID in hex. See
@@ -178,8 +178,7 @@ with `tool smartnet --osw`, or let Find my system work it out.
 **Setup won't start: "unknown SmartNet band plan".** The `bandplan` value isn't one of
 `800_standard`, `800_reband`, `800_splinter`, `900` or `400_custom`.
 
-**Analog talkgroups come out as noise (or P25 ones as hiss).** Set **Voice of unknown
-talkgroups** to match the system, or mark the analog talkgroups `A` in the talkgroup file.
+**Analog talkgroups come out as noise (or P25 ones as hiss).** Set **Default voice** to match the system, or mark the analog talkgroups `A` in the talkgroup file.
 
 **Low deviation, many lost OSWs.** The signal is weak or off frequency: check the antenna, gain and
 ppm correction (see [Radios](radios.md)).

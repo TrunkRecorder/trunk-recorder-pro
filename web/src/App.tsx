@@ -200,7 +200,7 @@ export function App() {
           </div>
         </header>
         <div className="banners">
-          {!s.connected && <div className="banner bad">Not connected to trunk-pro. Retrying…</div>}
+          {!s.connected && <div className="banner bad">Not connected to trunk-pro — retrying…</div>}
           {(s.error ?? s.runError) && (
             <div className="banner bad" role="alert">
               <span>{s.error ?? s.runError}</span>
@@ -219,10 +219,12 @@ export function App() {
           )}
           {running && s.restartNeeded && (
             <div className="banner" role="status">
-              Change requires restart — some settings you changed only apply when recording starts again.
+              <span>
+                <b>Restart to apply</b> <span className="muted">— some changes take effect on the next Start</span>
+              </span>
             </div>
           )}
-          {s.ended && s.phase === "idle" && <div className="banner">Replay finished.</div>}
+          {s.ended && s.phase === "idle" && <div className="banner">Replay finished</div>}
           {!running && problem && s.connected && !s.error && !s.runError && s.view !== "setup" && (
             <div className="banner subtle">
               <span>{problem}</span>

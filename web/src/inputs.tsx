@@ -9,19 +9,32 @@
 // The rules for using them: docs/developer/ui-style.md.
 
 import { useEffect, useRef, useState, type InputHTMLAttributes, type KeyboardEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
+import { Info } from "./charts.tsx";
 import { hasBiasT, SOURCE_KINDS } from "./config.ts";
 import { asTyped, decimal, finishDraft, gain, hex, talkgroupProblem, type TextCodec } from "./fieldText.ts";
 import type { Source } from "./protocol.ts";
 
-/** A labelled setting. `needs`: what an import left to fill in here (highlighted); `anchor`: its place, for the to-do list's Show. */
-export function Field(props: { label: string; hint?: ReactNode; children: ReactNode; wide?: boolean; needs?: string; anchor?: string; className?: string }) {
+/** A labelled setting. `needs`: what an import left to fill in here (highlighted); `anchor`: its place, for the to-do list's Show; `info`: the longer why, as an ⓘ beside the label. */
+export function Field(props: { label: string; hint?: ReactNode; info?: ReactNode; children: ReactNode; wide?: boolean; needs?: string; anchor?: string; className?: string }) {
   return (
     <label className={`field${props.wide ? " wide" : ""}${props.needs ? " needs" : ""}${props.className ? ` ${props.className}` : ""}`} id={props.anchor && `need-${props.anchor}`}>
-      <span className="field-label">{props.label}</span>
+      <span className="field-label">
+        {props.label}
+        {props.info && <LabelInfo label={props.label}>{props.info}</LabelInfo>}
+      </span>
       {props.children}
       {props.needs && <span className="field-needs">{props.needs}</span>}
       {props.hint && <span className="field-hint">{props.hint}</span>}
     </label>
+  );
+}
+
+/** An ⓘ inside a label: a click on it opens nothing else (not the label's input). */
+function LabelInfo(props: { label: string; children: ReactNode }) {
+  return (
+    <span onClick={(e) => e.preventDefault()}>
+      <Info label={props.label}>{props.children}</Info>
+    </span>
   );
 }
 
@@ -31,13 +44,16 @@ export function TalkgroupHint(props: { list: readonly unknown[] | undefined; tex
   return problem ? <span className="bad-text">{problem}</span> : <>{props.text}</>;
 }
 
-/** A checkbox with its label and hint. */
-export function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: ReactNode; disabled?: boolean; id?: string }) {
+/** A checkbox with its label and hint; `info`: the longer why, as an ⓘ beside the label. */
+export function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: ReactNode; info?: ReactNode; disabled?: boolean; id?: string }) {
   return (
     <label className={`toggle${props.disabled ? " disabled" : ""}`}>
       <input id={props.id} type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} />
       <span className="toggle-text">
-        <span>{props.label}</span>
+        <span>
+          {props.label}
+          {props.info && <LabelInfo label={props.label}>{props.info}</LabelInfo>}
+        </span>
         {props.hint && <span className="field-hint">{props.hint}</span>}
       </span>
     </label>

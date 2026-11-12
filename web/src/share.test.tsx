@@ -27,16 +27,16 @@ const p25 = (more: Partial<System> = {}) => normalizeSystem({ shortName: "dcfd",
 test("Share: the switch is there without an FCC call sign (switching it on asks Identify); on in the file, it says it waits for one", () => {
   const c = connected([p25({ fcc: {} })]);
   const html = renderToString(<ShareSystem c={c} i={0} />);
-  assert.ok(html.includes("Share channel and talkgroup config with the community"), html);
+  assert.ok(html.includes("Share with the directory"), html);
   assert.ok(!html.includes("checked"));
   const d = connected([p25({ fcc: {}, share: true })]);
-  assert.ok(renderToString(<ShareSystem c={d} i={0} />).includes("Not shared until it has an FCC call sign"));
+  assert.ok(renderToString(<ShareSystem c={d} i={0} />).includes("Needs a call sign"));
 });
 
 test("Share: the switch says what goes to the directory, and not names or a location", () => {
   const c = connected([p25()]);
   const html = renderToString(<ShareSystem c={c} i={0} />);
-  assert.ok(html.includes("Share channel and talkgroup config with the community"), html);
+  assert.ok(html.includes("Share with the directory"), html);
   assert.ok(html.includes("Not talkgroup names, and not where you are"));
   assert.ok(!html.includes("checked"), "off until switched on");
 });
@@ -45,17 +45,18 @@ test("Share: shared, with when and a link to its page in the directory", () => {
   const sys = p25({ share: true, directory: { id: "sys_abc" } });
   const c = connected([sys], { state: "shared", lastShared: Date.now() - 3600_000, error: null });
   const html = renderToString(<ShareSystem c={c} i={0} />);
-  assert.ok(html.includes("Shared 1 h ago") || html.includes("Shared 60 m ago"), html);
+  assert.ok(html.includes("Shared <span class=\"fig\"><b>1 h ago</b>") || html.includes("Shared <span class=\"fig\"><b>60 m ago</b>"), html);
   assert.ok(html.includes("https://trunkrecorder.pro/directory/systems/sys_abc"));
   assert.equal(directoryUrl({ ...c, server: { ...c.server, trpApi: "http://localhost:8790/" } }, "sys_abc"), "http://localhost:8790/directory/systems/sys_abc");
 });
 
 test("Share: its error, and conventional-only protocols can't be shared", () => {
   let c = connected([p25({ share: true })], { state: "error", lastShared: null, error: "Too many shares" });
-  assert.ok(renderToString(<ShareSystem c={c} i={0} />).includes("Not shared: Too many shares"));
+  const failed = renderToString(<ShareSystem c={c} i={0} />);
+  assert.ok(failed.includes("Not shared</span>") && failed.includes("Too many shares"), failed);
   c = connected([normalizeSystem({ shortName: "ed", type: "edacs", fcc: { "851012500": { callSign: "WQAA123" } } })]);
   const html = renderToString(<ShareSystem c={c} i={0} />);
-  assert.ok(html.includes("can&#x27;t be shared yet") || html.includes("can't be shared yet"), html);
+  assert.ok(html.includes("Not for EDACS yet"), html);
 });
 
 test("Share: the config keeps the switch and the directory's link", () => {

@@ -71,7 +71,7 @@ SmartScreen may warn the first time: click **More info → Run anyway**.
 ## Start is greyed out (or "Not started")
 
 When the settings can't record, **Start** is greyed out and hovering over it says why. The same
-check runs when recording starts from `--start` or **Start recording when the app starts**, and
+check runs when recording starts from `--start` or **Record when the app starts**, and
 the log says `Not started: <why>`. The reasons:
 
 | Message | What to do |
@@ -175,7 +175,7 @@ A HackRF with firmware older than 2021.03 is refused when opened: update it with
 A trunked system lives on its control channel: if that isn't decoding, nothing gets recorded.
 Signs:
 
-- The system's light is red and says `Not decoding its control channel — hunting for another.`
+- The system's light is red and says `Control channel lost, hunting — check antenna, gain, frequency`
 - The Overview's system card says `hunting` instead of a frequency.
 - The log has errors like this every 10 seconds:
 
@@ -220,7 +220,7 @@ or the expected identity is wrong (fix or clear it). See [Multiple sites](guides
 
 ## Calls are empty, or missing
 
-- **Encrypted calls.** They show as `encrypted — not recorded`. Encrypted audio can't be decoded,
+- **Encrypted calls.** They show as `encrypted`. Encrypted audio can't be decoded,
   so by default they aren't recorded. `recordEncrypted` in the config records them anyway (there's
   no switch for it in the interface); they'll have no usable audio.
 - **"Call not saved - no audio, or shorter than the minimum".** Calls with no decoded audio are
@@ -229,9 +229,9 @@ or the expected identity is wrong (fix or clear it). See [Multiple sites](guides
 - **Garbled or broken-up audio.** Look at **Voice lost** on the Decode page. Over 8% is bad. The
   frequency table there shows whether it's one frequency (interference), the frequencies near a
   band edge (move the centre), or all of them (gain, antenna, ppm).
-- **Calls you know happened aren't there.** The Radio system page's **What happened to calls**
+- **Calls you know happened aren't there.** The Radio system page's **Call outcomes**
   shows where they went: **No recorder** (raise **Recorders**), **Out of band** (a voice channel no
-  source covers: click it for which frequencies, and how far each is past the nearest source's edge), **Not in the file** (unknown talkgroups are off), **Ignored**.
+  source covers: click it for which frequencies, and how far each is past the nearest source's edge), **Not in file** (unknown talkgroups are off), **Ignored**.
 
 ## Nothing is recorded on a conventional channel
 
@@ -286,7 +286,7 @@ the recorder with `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` to have libairspy convert as b
 themselves. Other USRP messages: `USRP can't run at … MSPS (it offers …); set that sample rate`
 (pick a rate the device supports) and `USRP: no samples for 3 s`.
 
-## Clipping or "Peaks reach full scale"
+## Clipping or "Peaks at full scale"
 
 The gain is too high, or there's a strong transmitter nearby. Lower the gain a few dB. On the RF
 page, **Headroom** should stay a few dB above zero. More gain isn't better: past a point it
@@ -308,12 +308,12 @@ WAV only` means the encoder is set to `none`. See [Recordings](guides/recordings
 The Plugins page's **Health** tab shows each plugin's state and last failure.
 
 - `[<id>] exited (1); restarting in 4 s`: the plugin crashed. It's restarted automatically, waiting
-  a little longer each time (up to a minute). **Restarted N×** counts these. Open **Last 24 h and
+  a little longer each time (up to a minute). **Restarts** counts these. Open **Last 24 h and
   log ▾** for what it said before it died.
 - A plugin that stops because of its settings says why in its status and isn't restarted until
   the next Start. Fix its settings in Setup → Plugins.
 - `[<id>] is falling behind: N event(s) dropped so far`: the plugin is too slow to keep up, and
-  events it couldn't take were dropped. **Fell behind N events** shows it on its card.
+  events it couldn't take were dropped. **Fell behind** (N events) shows it on its card.
 - A service shown as down: the plugin failed 3 times in a row, or hasn't succeeded in 5 minutes.
   Check your internet (Platform page) and the plugin's key or URL.
 
@@ -332,7 +332,7 @@ carries on, writing to disk. Spool warnings in the event feed (filling, full) me
 aren't uploading as fast as calls arrive. Nothing is lost when it's full: calls go to the
 recordings folder instead. See [Recordings](guides/recordings.md).
 
-**The RAM spool was deleted while running** (Linux): systemd deletes a user's files in /dev/shm
+**RAM spool deleted** (Linux): systemd deletes a user's files in /dev/shm
 when their last login session ends (`RemoveIPC`, on by default), as when the SSH session that
 started `trunk-pro` closes, or someone logs in and out as the account a system service runs as.
 The app makes the spool again, but calls waiting in it for their uploads are lost, and each

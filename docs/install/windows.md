@@ -60,7 +60,7 @@ trunk-pro.exe --no-open --start
 
 ### Recording unattended
 
-Turn on **Start recording when the app starts** in **Setup → Recording**, so that recording resumes
+Turn on **Record when the app starts** in **Setup → Recording**, so that recording resumes
 whenever `trunk-pro.exe` is started. Trunk Recorder Pro doesn't install a Windows service or a
 startup entry; to start it at logon, put a shortcut to `trunk-pro.exe` in your Startup folder
 (press Win+R and type `shell:startup`). Set Windows not to sleep while it records.

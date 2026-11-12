@@ -7,11 +7,11 @@ work differently here.
 ## Running the import
 
 1. Open the import, either way:
-   - On first run, the setup guide's welcome screen has **I have a Trunk Recorder config**.
+   - On first run, the setup guide's welcome screen has **Import a Trunk Recorder config**.
    - Any time later: **Setup** → **Systems** → **Import Trunk Recorder config…**.
 2. **Choose config.** In the desktop app you browse the recorder's computer: open the folder
    Trunk Recorder runs from, and when it holds a `config.json`, press **Use it** (or click any
-   `.json` file). **Or upload a config.json** picks one from the computer your browser is on
+   `.json` file). **Or upload a file…** picks one from the computer your browser is on
    instead. In the browser version, press **Choose config.json…**.
 3. **Review.** "Here's what comes over" lists the radios, systems, conventional channels, the
    recordings folder and any uploaders, with anything that needs attention marked:
@@ -177,7 +177,7 @@ not always Trunk Recorder's:
 |---|---|---|
 | `compressWav` | on | off (`archiveM4a: false`): turn on **Keep .m4a** if you want `.m4a` files kept |
 | `archiveFilesOnFailure` | off | on |
-| `multiSite` / duplicate calls | off: every copy saved | on (`dropDuplicateCalls: true`): a call heard on several sites is saved once. The import notes this; turn off **Save a call heard on several sites once** to keep every copy |
+| `multiSite` / duplicate calls | off: every copy saved | on (`dropDuplicateCalls: true`): a call heard on several sites is saved once. The import notes this; turn off **One copy per multi-site call** to keep every copy |
 | `modulation` | `qpsk` | `auto` (both receivers) |
 | `captureDir` | the folder it was started from | `~/TrunkRecorderPro` |
 | `frequencyFormat` | `exp` | `mhz` |

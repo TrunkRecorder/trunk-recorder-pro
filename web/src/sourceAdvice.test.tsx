@@ -47,10 +47,10 @@ test("Setup: a source's card says the suggested centre and rate, and the sources
   const a = sourceAdvice(c, [undefined]);
   assert.ok(a);
   const card = text(renderToString(<SourceCard c={c} i={0} advice={a} />));
-  assert.match(card, /Suggested: auto \(85\d\.\d{4} MHz\)( at [\d.]+ MSPS)? · Use/, card);
+  assert.match(card, /Suggested auto 85\d\.\d{4} MHz( [\d.]+ MSPS)? Use/, card);
   const banner = text(renderToString(<SourcesAdvice advice={a} />));
-  assert.match(banner, /With the suggested settings, the sources would reach what a system needs that no source reaches now and reach more of the channels the systems use\. .* Apply all/, banner);
-  assert.doesNotMatch(text(renderToString(<SourceCard c={c} i={0} advice={null} />)), /Suggested:/, "no advice: no line");
+  assert.match(banner, /Suggested settings Systems missed 1 → 0 Channels reached .* Apply all/, banner);
+  assert.doesNotMatch(text(renderToString(<SourceCard c={c} i={0} advice={null} />)), /Suggested/, "no advice: no line");
 });
 
 test("Use: back on auto when auto places it where the advice says; the rate written in", async () => {
@@ -71,6 +71,6 @@ test("what's heard: each frequency by its calls, decoded and out of band", () =>
 
 test("RF page: the note that Setup has suggested settings, what they'd do, and the way there", () => {
   const a = sourceAdvice(tooLow(), [undefined]);
-  assert.match(text(renderToString(<AdviceNote advice={a} />)), /With the settings Setup suggests, the sources would reach what a system needs .* Review in Setup/);
+  assert.match(text(renderToString(<AdviceNote advice={a} />)), /Suggested settings Systems missed 1 → 0 .* Review in Setup/);
   assert.equal(renderToString(<AdviceNote advice={null} />), "");
 });

@@ -33,7 +33,7 @@ Now go to [Getting started](../getting-started.md) to set up your system.
 
 To have a Mac record by itself after a restart:
 
-1. Turn on **Start recording when the app starts** in **Setup → Recording**. Without it the app
+1. Turn on **Record when the app starts** in **Setup → Recording**. Without it the app
    starts but waits for you to press **Start**.
 2. Add **Trunk Recorder Pro** to **System Settings → General → Login Items** so it starts when you
    log in.

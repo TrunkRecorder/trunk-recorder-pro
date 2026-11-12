@@ -2,7 +2,7 @@
 // their decoding, neighbours not recorded yet, patches, DMR and NXDN carriers.
 
 import { adjacentIdentity, formatMhz, reaches, roaming, sameSite, siteAddress, systemColor, systemWithChannel } from "../config.ts";
-import { Light } from "../charts.tsx";
+import { Fig, Figs, Info, Light } from "../charts.tsx";
 import { addSite, setNotice, type AppState } from "../controller.ts";
 import { num } from "../fmt.ts";
 import type { AdjacentSite, Config, DmrSiteStatus, NxdnSiteStatus, Patch, SiteIdentity, TalkgroupName } from "../protocol.ts";
@@ -73,13 +73,15 @@ export function SiteRows(props: { s: AppState; x: DashSystem }) {
         const good = recentAvg(K.cc(site, "good"), 60) ?? 0;
         const bad = recentAvg(K.cc(site, "bad"), 60) ?? 0;
         const hz = site.status?.controlChannelHz;
+        const decoded = good + bad > 0 ? (100 * good) / (good + bad) : null;
         return (
           <div key={site.name} className="site-row small" title={h.why}>
             <Light level={h.level} title={h.why} />
             <b>{site.name}</b>
             <span className="mono">{hz ? formatMhz(hz) : "hunting"}</span>
-            <span className="mono muted">
-              {num(val(s, K.cc(site, "good")))} msg/s{good + bad > 0 ? ` · ${num((100 * good) / (good + bad), 0)}%` : ""}
+            <span className="site-figs">
+              <Fig v={num(val(s, K.cc(site, "good")))} u="msg/s" />
+              {decoded !== null && <Fig v={num(decoded, 0)} u="%" level={decoded < 70 ? "bad" : decoded < 90 ? "warn" : undefined} title="Decoded" />}
             </span>
           </div>
         );
@@ -102,16 +104,14 @@ export function Neighbours(props: { s: AppState; sites: RunningSite[] }) {
   if (!rows.length) return null;
   const add = ({ a, id }: Neighbour) => {
     const name = addSite([a.freqHz], id);
-    setNotice(`Added ${name} (site ${siteAddress(id)}, ${formatMhz(a.freqHz)} MHz). It records from the next Start, if a source covers it.`);
+    setNotice(`Added ${name} · site ${siteAddress(id)} · ${formatMhz(a.freqHz)} MHz — records from the next Start, if a source reaches it`);
   };
   const others = rows.filter((n) => kind(n) !== "intra-system").length;
   return (
     <details className="panel log">
       <summary className="panel-head">
         <h2>Neighbouring sites</h2>
-        <span className="muted small">
-          {rows.length} announced, not recorded{others ? ` · ${others} of other systems (inter-system or inter-WACN)` : ""}
-        </span>
+        <Figs inline items={[{ k: "Not recorded", v: rows.length, title: "Announced by the control channel, not set up here" }, others > 0 && { k: "Other systems", v: others, title: "Inter-system or inter-WACN: their radios roam here" }]} />
       </summary>
       <div className="row">
         {rows.map((n) => (
@@ -141,7 +141,7 @@ export function Patches(props: { patches: Patch[] }) {
     <section className="panel">
       <header className="panel-head">
         <h2>Patches</h2>
-        <span className="muted small">{all.length} active</span>
+        <Figs inline items={[{ k: "Active", v: all.length }]} />
       </header>
       <div className="row">
         {all.map((p) => (
@@ -316,9 +316,13 @@ export function NxdnSites(props: { sites: DetailedSite[] }) {
             )}
             {d.unknownChannels.length > 0 && (
               <p className="why why-warn small">
-                {d.unknownChannels.length === 1
-                  ? `Channel ${d.unknownChannels[0]} was granted but isn't in the channel table — it is learned when its call shows up on a listed voice frequency; or add it to the channel table in Setup.`
-                  : `Channels ${d.unknownChannels.join(", ")} were granted but aren't in the channel table — each is learned when its call shows up on a listed voice frequency; or add them to the channel table in Setup.`}
+                Not in the channel table:{" "}
+                {d.unknownChannels.map((c) => (
+                  <b key={c} className="mono">
+                    {c}{" "}
+                  </b>
+                ))}
+                <Info label="Unknown channels">Granted, but not in the channel table. Each is learned when its call shows up on a listed voice frequency; or add it to the channel table in Setup.</Info>
               </p>
             )}
           </div>
