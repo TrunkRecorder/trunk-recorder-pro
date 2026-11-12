@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from "react";
 import { addInterface, installFromStore, removeInterface, setInterface, updateConfig, useApp } from "./controller.ts";
+import { Info } from "./charts.tsx";
 import { Switch } from "./SetupLayout.tsx";
 import { Author, InstallStage, newer, Screenshots, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
 import type { ApiAccess, Config, InstallProgress, InterfaceInfo, InterfaceListing } from "./protocol.ts";
@@ -122,7 +123,7 @@ function InterfaceCard(props: { i: InterfaceInfo; listing?: InterfaceListing; in
       <Screenshots name={name} shots={(m?.screenshots ?? []).map((sh, k) => ({ src: `/interfaces/${encodeURIComponent(i.id)}/screenshots/${k}`, caption: sh.caption }))} />
       {on && i.problem && <p className="small bad-text">{i.problem}</p>}
       <p className="small muted plugin-meta">
-        {i.access === "control" ? <span className="warn-text">Control: it can change anything</span> : "Listen: it sees and plays, and changes nothing"}
+        {i.access === "control" ? <span className="warn-text">Control: can change anything</span> : <span title="It sees and plays, and changes nothing">Listen only</span>}
         {m?.access === "control" && i.access === "listen" && " (it asks for control)"}
         {" · "}
         {i.installed ? (
@@ -200,12 +201,10 @@ function AddFolder() {
     >
       <div className="field wide">
         <label className="field-label" htmlFor="add-iface-path">
-          A folder on the recorder's computer with an index.html
+          Folder with an index.html
+          <Info>On the recorder&apos;s computer. Its interface.json, if it has one, names it and says what access it needs. Edits show when its page is reloaded.</Info>
         </label>
         <input id="add-iface-path" className="mono" autoFocus value={path} placeholder="~/scanner-page" onChange={(e) => setPath(e.target.value)} />
-        <span className="field-hint">
-          Its <code>interface.json</code>, if it has one, names it and says what access it needs. Edits show when its page is reloaded.
-        </span>
       </div>
       <div className="row">
         <button className="btn primary" type="submit" disabled={!path.trim()}>
@@ -229,7 +228,8 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
         <h2 id="ports-title">Ports</h2>
       </header>
       <p className="muted small plugins-intro">
-        Each interface is its own site, at this computer's address and its port. A change moves it at once; open pages reconnect at the new port.
+        One site per port; changes move it at once
+        <Info>Each interface is its own site, at this computer&apos;s address and its port. Open pages reconnect at the new port.</Info>
       </p>
       <div className="iface-ports" role="table">
         <div className="iface-ports-row" role="row">
@@ -240,7 +240,7 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
             <PortInput id="" value={c.server.port} c={c} list={list} label="This interface's port" onSave={(p) => updateConfig((x) => void (x.server.port = p))} />
           </span>
           <span role="cell" className="small muted">
-            {c.server.port !== here && location.port ? `Takes effect when the recorder restarts (now ${here})` : "Changes take effect when the recorder restarts"}
+            {c.server.port !== here && location.port ? `From next restart (now ${here})` : "From next restart"}
           </span>
         </div>
         {list
@@ -272,8 +272,10 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
           })}
       </div>
       <p className="muted small">
-        Other computers reach them only when the recorder listens on every address (<code>server.bind</code> <code>0.0.0.0</code>, now{" "}
-        <code>{c.server.bind}</code>), and their ports are open in the firewall.
+        Listening on <code>{c.server.bind}</code>
+        <Info>
+          Other computers reach them only when the recorder listens on every address (<code>server.bind</code> <code>0.0.0.0</code>), and their ports are open in the firewall.
+        </Info>
       </p>
     </section>
   );
@@ -333,7 +335,11 @@ function OriginsPanel(props: { c: Config }) {
       </header>
       <div className="field">
         <label className="field-label" htmlFor="ui-origins">
-          Pages allowed to use this interface's API, with control
+          Allowed origins (with control)
+          <Info>
+            For a page served by something else, such as a dev server. One origin per line (scheme://host:port). <code>null</code>: a page opened from a file; <code>*</code>: any
+            page — private networks only. An interface the recorder serves needs none of this.
+          </Info>
         </label>
         <textarea
           id="ui-origins"
@@ -352,10 +358,7 @@ function OriginsPanel(props: { c: Config }) {
             )
           }
         />
-        <span className="field-hint">
-          One origin per line (scheme://host:port), for a page served by something else, such as a dev server. <code>null</code>: a page opened from a
-          file; <code>*</code>: any page — private networks only. An interface the recorder serves needs none of this.
-        </span>
+        <span className="field-hint">One per line, scheme://host:port</span>
       </div>
     </section>
   );
@@ -376,7 +379,7 @@ export function InterfacesPage() {
           <AddFolder />
         </header>
         <p className="muted small plugins-intro">
-          Pages for people who listen, apart from this one: a player, a scanner wall. Each runs in the browser and is served on a port of its own.{" "}
+          Pages for listeners: a player, a scanner wall{" "}
           <a href="/api/docs" target="_blank" rel="noreferrer">
             Build your own
           </a>

@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use trunk_core::metrics::{key_part, Scoped, Sink};
+use trunk_core::metrics::{key_part, system_key, Scoped, Sink};
 use trunk_core::dsp::inband::signal::{Heard, Signal};
 use trunk_core::trunk::{CallId, Engine, Event, MessageType};
 
@@ -56,6 +56,14 @@ pub struct Shared {
 impl Shared {
     pub fn new() -> Arc<Shared> {
         Arc::new(Shared::default())
+    }
+
+    /// The config is now `cfg`, each system's talkgroups `talkgroups`: the
+    /// names the registry and calls answer with, and how much of what it
+    /// heard the registry keeps ([`radio::Caps::of`] `cfg.storage`).
+    pub fn set_config(&self, cfg: &crate::Config, names: &crate::config::NameLists) {
+        self.names.lock().unwrap().set_config(cfg, names);
+        self.radio.lock().unwrap().set_caps(radio::Caps::of(&cfg.storage));
     }
 
     /// Hand an event to the watchers; its `monitorEvent` message when it's one for the feed.
@@ -94,15 +102,15 @@ pub struct NameBook {
     /// Conventional rows' names for the numbers they file under ([`Config::row_talkgroups`]).
     rows: HashMap<String, trunk_core::trunk::Talkgroups>,
     units: HashMap<String, trunk_core::trunk::UnitAliases>,
-    /// The config's unit tags (names by pattern, and whose name comes first).
+    /// Each system's unit tags (its own names for its radios, and whose name comes first).
     unit_tags: HashMap<String, trunk_core::trunk::UnitTags>,
     signals: HashMap<String, Vec<Signal>>,
 }
 
 impl NameBook {
-    /// Each system's talkgroups, as an engine built from `cfg` and these talkgroup files has them.
-    pub fn set_config(&mut self, cfg: &Config, files: &crate::config::TalkgroupLists) {
-        self.set_systems(&cfg.engine_config(0.0, files).systems);
+    /// Each system's talkgroups and radio names, as an engine built from `cfg` and these names has them.
+    pub fn set_config(&mut self, cfg: &Config, names: &crate::config::NameLists) {
+        self.set_systems(&cfg.engine_config(0.0, names).systems);
         self.set_rows(cfg);
     }
 
@@ -323,7 +331,7 @@ impl Stats {
     /// One of the session's events. `name`: the short name of the event's system.
     pub fn observe(&mut self, ev: &Event, name: &str, engine: &Engine, out: &mut Vec<Output>) {
         let t = self.now as i64;
-        let sys = format!("sys/{}", key_part(name));
+        let sys = system_key(name);
         match ev {
             Event::CallStart(c) => {
                 let why = if c.recording { "recorded" } else { c.reason.map_or("monitored", |r| r.as_str()) };
@@ -452,8 +460,8 @@ impl Stats {
 
     /// The air time of the calls in progress since the last tick.
     fn count_air(&mut self, engine: &Engine, site_names: &dyn Fn(u16, Option<u16>) -> (String, String)) {
-        let calls = engine.active_calls().into_iter().filter(|c| !c.twin);
-        let on = calls.map(|c| (c.id, format!("sys/{}", key_part(&site_names(c.system, c.site).0)), ((c.last_update_s - c.start_s).max(0.0) * 1000.0) as u64));
+        let calls = engine.calls_in_progress();
+        let on = calls.into_iter().map(|c| (c.id, system_key(&site_names(c.system, c.site).0), ((c.last_update_s - c.start_s).max(0.0) * 1000.0) as u64));
         for (sys, ms) in air_since(&mut self.air, on) {
             self.add_air(&sys, ms);
         }
@@ -550,7 +558,7 @@ mod tests {
     fn the_book_names_a_radio_as_its_calls_do() {
         use trunk_core::trunk::{SystemConfig, UnitTags, UnitTagsMode};
         let mut book = NameBook::default();
-        let tags = |mode| UnitTags::parse_csv("1234,Engine 12\n", mode).0;
+        let tags = |mode| UnitTags::new(&trunk_core::trunk::read_unit_names("1234,Engine 12\n").unit_names, mode);
         book.set_units("x", "1234,Heard 1234\n5678,Heard 5678\n");
         assert_eq!((book.unit("x", 1234), book.unit("x", 5678)), (Some("Heard 1234".into()), Some("Heard 5678".into())), "no tags: the aliases");
         book.set_systems(&[SystemConfig { unit_tags: tags(UnitTagsMode::UserFirst), ..SystemConfig::conventional("x") }]);

@@ -1,5 +1,6 @@
 //! The call store over HTTP: `GET /api/v1/calls`, `/api/v1/calls/{path}` and
-//! `/api/v1/storage`, for interfaces and tools on other machines. They answer
+//! `/api/v1/storage`, for interfaces and tools on other machines (and
+//! `/api/v1/export/{table}`, Setup → Data's CSV files: `crate::data`). They answer
 //! as `callsQuery` does ([`runtime::calls`]: the store, the latest calls
 //! included). Every door that serves the API serves these, with the access
 //! the WebSocket there has.
@@ -25,7 +26,8 @@ pub fn router() -> Router<Arc<Ctx>> {
         Router::new()
             .route("/calls", get(calls))
             .route("/calls/{*path}", get(call))
-            .route("/storage", get(storage)),
+            .route("/storage", get(storage))
+            .route("/export/{table}", get(crate::data::export)),
     )
 }
 

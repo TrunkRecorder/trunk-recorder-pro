@@ -63,7 +63,7 @@ recorder-wide when every system that uses the plugin overrides it.
                                 "override": { "server": "https://rdio.example.org" } } } }
 ```
 
-In Setup, each plugin on a system's card has a *settings for this system* section for this. Keys
+In Setup, each plugin on a system's card has a *shared settings* section for this. Keys
 the plugin has no setting for are ignored, with a warning in its log. An uploader keeps a separate
 queue for each server it sends to, so a server that's down doesn't hold up uploads to the others.
 

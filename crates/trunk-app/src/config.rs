@@ -14,7 +14,7 @@ use trunk_core::trunk::{
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
-use crate::place::{listed_reached, place_sources, receiver, Group, Placing, Targets, Weighted};
+use crate::place::{advise, coverage, place_sources, receiver, Advice, Choices, Coverage, Group, Placing, Targets, Weighted};
 use trunk_core::trunk::Pins;
 
 /// A source: the radio or capture it reads ([`SourceKind`]), where and how fast.
@@ -82,32 +82,38 @@ pub enum SourceKind {
         wire_format: String,
     },
     /// An Airspy R2 / Mini through libairspy (installed separately; loaded
-    /// at run time). `serial` hex, "" = the first. Gain: a 0..21 step of
-    /// libairspy's linearity or sensitivity tables, or (`gain_mode` "manual")
-    /// its three stages; `agc` hands the LNA and mixer stages to the Airspy's AGC.
+    /// at run time). `serial` hex, "" = the first.
     #[serde(rename_all = "camelCase")]
     Airspy {
         #[serde(default)]
         serial: String,
-        #[serde(default)]
-        gain_mode: AirspyGain,
-        #[serde(default = "airspy_gain")]
-        gain_step: u8,
-        /// Manual: LNA 0..14, mixer 0..15, VGA (IF) 0..15.
-        #[serde(default = "airspy_stage")]
-        lna_step: u8,
-        #[serde(default = "airspy_stage")]
-        mixer_step: u8,
-        #[serde(default = "airspy_stage")]
-        vga_step: u8,
-        #[serde(default)]
-        agc: bool,
+        #[serde(flatten)]
+        gains: AirspyGains,
         #[serde(default)]
         bias_tee: bool,
         /// 12-bit samples packed on the USB (a quarter less of the bus: an
         /// Airspy at 10 MS/s nearly fills a USB 2.0 bus by itself).
         #[serde(default = "yes")]
         packing: bool,
+    },
+    /// A HydraSDR RFOne through libhydrasdr (installed separately; loaded at
+    /// run time). Its tuner and gain stages are an Airspy R2's, so its gain is
+    /// an Airspy's. `rf_port`: which input, 0 ANT (the one with the bias-T),
+    /// 1 CABLE1, 2 CABLE2.
+    #[serde(rename_all = "camelCase")]
+    Hydrasdr {
+        #[serde(default)]
+        serial: String,
+        #[serde(flatten)]
+        gains: AirspyGains,
+        /// On the ANT input only.
+        #[serde(default)]
+        bias_tee: bool,
+        /// 12-bit samples packed on the USB.
+        #[serde(default = "yes")]
+        packing: bool,
+        #[serde(default)]
+        rf_port: u8,
     },
     /// A bladeRF (2.0 micro xA4 / xA9, or the original x40 / x115) through
     /// libbladeRF 2.x (installed separately; loaded at run time). `serial`
@@ -188,6 +194,36 @@ choice! {
     }
 }
 
+/// An Airspy's gain (a HydraSDR's too: the same tuner and tables): a 0..21
+/// step of libairspy's linearity or sensitivity table, or (`gain_mode`
+/// "manual") its three stages; `agc` hands the LNA and mixer stages to its AGC.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AirspyGains {
+    #[serde(default)]
+    pub gain_mode: AirspyGain,
+    #[serde(default = "airspy_gain")]
+    pub gain_step: u8,
+    /// Manual: LNA 0..14, mixer 0..15, VGA (IF) 0..15.
+    #[serde(default = "airspy_stage")]
+    pub lna_step: u8,
+    #[serde(default = "airspy_stage")]
+    pub mixer_step: u8,
+    #[serde(default = "airspy_stage")]
+    pub vga_step: u8,
+    #[serde(default)]
+    pub agc: bool,
+}
+
+impl Default for AirspyGains {
+    fn default() -> Self {
+        AirspyGains { gain_mode: AirspyGain::default(), gain_step: airspy_gain(), lna_step: airspy_stage(), mixer_step: airspy_stage(), vga_step: airspy_stage(), agc: false }
+    }
+}
+
+/// A HydraSDR RFOne's inputs, by `rf_port`: the bias-T is on the first, ANT.
+pub const HYDRASDR_INPUTS: [&str; 3] = ["ANT", "CABLE1", "CABLE2"];
+
 fn guard_default() -> f64 {
     DEFAULT_GUARD_HZ
 }
@@ -257,6 +293,11 @@ pub struct Receiving {
     pub source: Option<usize>,
 }
 
+/// What each system was heard on, by short name: each frequency and how many
+/// calls it carried (out of band too), as the radio registry counts them
+/// ([`Config::targets_with`]).
+pub type Heard = BTreeMap<String, Vec<Weighted>>;
+
 /// Where a source goes ([`Config::placement`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placed {
@@ -302,6 +343,29 @@ impl Source {
     pub fn placing(&self) -> Placing {
         Placing { rate_hz: self.rate_hz, guard_hz: self.guard_hz, fixed_hz: (self.center_hz > 0.0).then_some(self.center_hz) }
     }
+    /// Its `type` ("rtlsdr", "airspy", …), as the config names it.
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            SourceKind::Rtlsdr { .. } => "rtlsdr",
+            SourceKind::Usrp { .. } => "usrp",
+            SourceKind::Airspy { .. } => "airspy",
+            SourceKind::Hydrasdr { .. } => "hydrasdr",
+            SourceKind::Bladerf { .. } => "bladerf",
+            SourceKind::Hackrf { .. } => "hackrf",
+            SourceKind::Soapy { .. } => "soapy",
+            SourceKind::File { .. } => "file",
+        }
+    }
+    /// What advice may change about it ([`place::advise`]): a centre typed
+    /// in, and the rates it may run at (`found`: what its radio said). A
+    /// capture file's are the recording's: neither.
+    pub fn choices(&self, found: Option<&crate::rates::Rates>) -> Choices {
+        if matches!(self.kind, SourceKind::File { .. }) {
+            return Choices::default();
+        }
+        let kind = self.kind_name();
+        Choices { movable: true, rates: crate::rates::offered(kind, found), steady_max: crate::rates::steady_max(kind) }
+    }
     /// Whether the two may open the same radio (one program at a time can):
     /// of a kind and naming one device, or either "the first found". (A
     /// bladeRF may be named by the start of its serial.)
@@ -310,7 +374,8 @@ impl Source {
             match &s.kind {
                 SourceKind::Rtlsdr { serial, .. } => Some((0, serial.trim().to_string())),
                 SourceKind::Usrp { args, .. } => Some((1, args.trim().to_string())),
-                SourceKind::Airspy { serial, .. } => Some((2, serial.trim().to_lowercase())),
+                // (libairspy opens an RFOne as "the first" when it comes first.)
+                SourceKind::Airspy { serial, .. } | SourceKind::Hydrasdr { serial, .. } => Some((2, serial.trim().to_lowercase())),
                 SourceKind::Bladerf { serial, .. } => Some((3, serial.trim().to_lowercase())),
                 SourceKind::Soapy { args, .. } => Some((4, args.trim().to_string())),
                 SourceKind::Hackrf { serial, .. } => Some((5, serial.trim().to_lowercase())),
@@ -334,6 +399,7 @@ impl Source {
                 format!("USRP {}", if which.is_empty() { "(first)".to_string() } else { which.join(",") })
             }
             SourceKind::Airspy { serial, .. } => format!("Airspy {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            SourceKind::Hydrasdr { serial, .. } => format!("HydraSDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Bladerf { serial, .. } => format!("bladeRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Hackrf { serial, .. } => format!("HackRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
@@ -385,7 +451,7 @@ pub struct System {
     #[serde(rename = "type")]
     pub kind: SystemKind,
     pub enabled: bool,
-    /// Its own names for its radios (Trunk Recorder's unitTagsFile, kept here as text): see [`UnitNames`].
+    /// Which names its radios go by ([`UnitNames`]; the names are kept beside the config: [`SystemNames`]).
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
     /// Its own recording rules; what's left out is as in [`Config::recording`].
@@ -413,6 +479,10 @@ pub struct System {
     /// The tone signals it sends (pages, alerts, digit strings, Morse IDs): see [`SignalDef`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<SignalDef>,
+    /// Multi-site: the site (by its name) whose copy of a call is kept for
+    /// the talkgroups whose file row names none (Preferred Site, Preferred NAC).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub preferred_site: String,
     /// Where it is recorded from: one site, or several of one system.
     pub sites: Vec<Site>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
@@ -950,6 +1020,7 @@ impl Default for System {
             plugins: BTreeMap::new(),
             plugin_delays: vec![],
             signals: vec![],
+            preferred_site: String::new(),
             sites: vec![],
         }
     }
@@ -1083,7 +1154,7 @@ pub struct Conventional {
     /// Their own recording rules; what's left out is as in [`Config::recording`].
     #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
     pub recording: RecordingOverride,
-    /// Names for the radios heard on them.
+    /// Which names the radios heard on them go by (as [`System::unit_names`]).
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
     /// The encryption keys its P25 channels decrypt with (as [`System::keys`]).
@@ -1095,18 +1166,13 @@ pub struct Conventional {
     pub other: BTreeMap<String, serde_json::Value>,
 }
 
-/// Names for a system's radios: Trunk Recorder's unitTagsFile (headerless
-/// `unit,name` lines; a unit between slashes is a regular expression) and
-/// unitTagsMode: "user" (these first, then the talker aliases heard),
-/// "ota" (the aliases first), "user_only" or "none".
+/// Which names a system's radios go by — Trunk Recorder's unitTagsMode:
+/// "user" (its own names first, then the talker aliases heard), "ota" (the
+/// aliases first), "user_only" or "none". Its own names (Trunk Recorder's
+/// unitTagsFile) are kept beside the config ([`SystemNames::unit_names`]).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct UnitNames {
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub csv: String,
-    /// The file it came from.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub name: String,
     #[serde(skip_serializing_if = "is_default")]
     pub mode: UnitNamesMode,
 }
@@ -1114,9 +1180,6 @@ pub struct UnitNames {
 impl UnitNames {
     pub fn is_empty(&self) -> bool {
         *self == UnitNames::default()
-    }
-    fn engine(&self) -> UnitTags {
-        UnitTags::parse_csv(&self.csv, self.mode.engine()).0
     }
 }
 
@@ -1881,6 +1944,9 @@ pub struct Config {
     pub storage: StorageSettings,
     /// The dashboard's watch on the computer (desktop app).
     pub monitor: MonitorSettings,
+    /// Rules that record what the radios receive when something happens (desktop app).
+    #[serde(skip_serializing_if = "Diagnostics::is_empty")]
+    pub diagnostics: Diagnostics,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1967,6 +2033,7 @@ impl Default for Config {
             keys: BTreeMap::new(),
             log: LogSettings::default(),
             storage: StorageSettings::default(),
+            diagnostics: Diagnostics::default(),
             monitor: MonitorSettings::default(),
             notes: vec![],
             numbered: false,
@@ -2009,6 +2076,14 @@ pub struct StorageSettings {
     /// system (on the Pi's eMMC, a call a second: 1.6 GB a day with it, 0.8
     /// without; `db::tests::day_write_budget`).
     pub radio_index: bool,
+    /// Radios the radio registry keeps a system: past it, the least
+    /// recently heard go (talkgroups a quarter as many, 5,000 at least).
+    /// It's held in memory: about 2 kB a radio. 0: no cap (`registry_days`
+    /// alone bounds it).
+    pub registry_radios: u32,
+    /// Days a talkgroup, radio or pair the registry hasn't heard is kept;
+    /// 0 keeps it however old.
+    pub registry_days: u32,
     /// Index each call by its talkgroup, for a talkgroup's call list (the
     /// same, asking by `talkgroup`); off, a talkgroup's list is its recent
     /// calls. About a third as costly as the radio index.
@@ -2022,7 +2097,7 @@ impl StorageSettings {
 
 impl Default for StorageSettings {
     fn default() -> Self {
-        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true, talkgroup_index: true }
+        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true, talkgroup_index: true, registry_radios: 20_000, registry_days: 365 }
     }
 }
 
@@ -2039,15 +2114,19 @@ pub enum StorageBackend {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MonitorSettings {
-    /// Where to check the internet answers (`host:port`, a TCP connect every
-    /// 15 s): the uplink's history. Empty: no checks.
-    pub probe_hosts: Vec<String>,
-    /// Off: neither the internet checks nor the time server are asked,
-    /// whatever's set (the dashboard's Network switch). Applies at once.
+    /// Hosts to check the network reaches (`host:port`, a TCP connect every
+    /// `check_every_s`): the connection's history. Empty (the default): none,
+    /// and the dashboard goes by the services the plugins report. Applies at once.
+    pub check_hosts: Vec<String>,
+    /// How often each of `check_hosts` is tried, s (5 at least).
+    pub check_every_s: u64,
+    /// Off: neither `check_hosts` nor the time server are asked, whatever's
+    /// set (the dashboard's Network switch). Applies at once.
     pub network_checks: bool,
     /// The time server asked how far off the clock is (SNTP, every 15
     /// minutes; a name or address, port 123 unless given). It only measures:
     /// the operating system's time service keeps the clock. Empty: not asked.
+    /// Applies at once.
     pub time_server: String,
     /// The clock off by this much or more, ms: a warning, and calls marked
     /// `clock_off` (a problem at 5 s, or 4 times this). Applies at once.
@@ -2056,7 +2135,20 @@ pub struct MonitorSettings {
 
 impl Default for MonitorSettings {
     fn default() -> Self {
-        MonitorSettings { probe_hosts: vec!["1.1.1.1:443".into(), "dns.google:443".into()], network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0 }
+        MonitorSettings { check_hosts: Vec::new(), check_every_s: 15, network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0 }
+    }
+}
+
+impl MonitorSettings {
+    /// The hosts to check now and how often: none while the checks are off.
+    pub fn checks(&self) -> (Vec<String>, std::time::Duration) {
+        let hosts = if self.network_checks { self.check_hosts.iter().map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect() } else { Vec::new() };
+        (hosts, std::time::Duration::from_secs(self.check_every_s.max(5)))
+    }
+
+    /// The time server to ask now: none while the checks are off.
+    pub fn time_server(&self) -> Option<String> {
+        Some(self.time_server.trim().to_string()).filter(|s| self.network_checks && !s.is_empty())
     }
 }
 
@@ -2103,7 +2195,7 @@ pub fn default_capture_dir() -> PathBuf {
 
 /// A source's `type` names its kind (the tag of [`Source`]), read in any case
 /// as the other closed choices are (`"RTLSDR"` is `"rtlsdr"`).
-const SOURCE_TYPES: [&str; 7] = ["rtlsdr", "usrp", "airspy", "bladerf", "hackrf", "soapy", "file"];
+const SOURCE_TYPES: [&str; 8] = ["rtlsdr", "usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "soapy", "file"];
 
 fn source_types(v: &mut serde_json::Value) {
     for s in v.get_mut("sources").and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
@@ -2164,9 +2256,9 @@ impl Config {
     /// defaults when there's no file yet. A file that isn't a config is an
     /// error, not the defaults (which would be saved over it).
     pub fn load(path: &Path) -> Result<Config, String> {
-        // An older config's talkgroup files are written beside it first: whoever
-        // reads it (the desktop app, its command lines) then saves it without them.
-        crate::migrate::move_talkgroups(path).map_err(|e| format!("{}: couldn't move its talkgroup files out of it ({e})", path.display()))?;
+        // An older config's talkgroup files and unit names are written beside it first:
+        // whoever reads it (the desktop app, its command lines) then saves it without them.
+        crate::migrate::move_files_out(path).map_err(|e| format!("{}: couldn't move its talkgroup files or unit names out of it ({e})", path.display()))?;
         let mut c: Config = match std::fs::read_to_string(path) {
             Ok(s) => Config::from_json(&s).map_err(|e| format!("{}: not a config this version reads ({e})", path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
@@ -2438,31 +2530,99 @@ impl Config {
     /// the frequencies the config lists it is the first to reach (where the
     /// engine opens them): 0 for one nothing listed needs.
     pub fn placement(&self) -> Vec<Placed> {
+        let (centers, cov) = self.placed();
+        centers.iter().zip(cov.listed).map(|(c, listed)| Placed { center_hz: c.unwrap_or(0.0), listed }).collect()
+    }
+
+    /// Each source's centre as Start places it ([`place_sources`]; None:
+    /// nothing to place it by), and what they receive of [`Config::targets`]
+    /// ([`coverage`]).
+    pub fn placed(&self) -> (Vec<Option<f64>>, Coverage) {
         let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
         let t = self.targets();
         let centers = place_sources(&sources, &t);
-        let listed = listed_reached(&sources, &centers, &t);
-        centers.iter().zip(listed).map(|(c, listed)| Placed { center_hz: c.unwrap_or(0.0), listed }).collect()
+        let cov = coverage(&sources, &centers, &t);
+        (centers, cov)
     }
 
-    /// What the radios are placed to reach: each active site's control (and
-    /// watched) channels, one of which it needs, and its voice channels; each
-    /// conventional system's channels, one of which it needs (a group for each
-    /// set of sources its rows may be received on). Each on its sources.
+    /// Better centres and rates for the sources than they have, if there are
+    /// ([`place::advise`], for [`Config::targets_with`] what's `heard`):
+    /// `found` is what each source's radio said it runs at (None, or
+    /// missing: not known).
+    pub fn advice(&self, found: &[Option<crate::rates::Rates>], heard: &Heard) -> Option<Advice> {
+        let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
+        let choices: Vec<Choices> = self.sources.iter().enumerate().map(|(k, s)| s.choices(found.get(k).and_then(Option::as_ref))).collect();
+        advise(&sources, &choices, &self.targets_with(heard))
+    }
+
+    /// What the sources' advice ([`Config::advice`], by the config alone)
+    /// sets to reach what Start found missed, to follow its message: "" when
+    /// the advice doesn't reach more of what's needed. As Apply all takes it:
+    /// a source on auto in the advice is set to auto.
+    fn advice_fix(&self) -> String {
+        let Some(a) = self.advice(&[], &Heard::new()).filter(|a| a.after.unmet < a.before.unmet) else { return String::new() };
+        let what: Vec<String> = a
+            .sources
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.changed)
+            .map(|(k, x)| {
+                let src = &self.sources[k];
+                let mut set = Vec::new();
+                if x.released && src.center_hz > 0.0 {
+                    set.push("on auto".to_string());
+                } else if let Some(c) = x.center_hz.filter(|c| src.center_hz > 0.0 && (c - src.center_hz).abs() >= 1000.0) {
+                    set.push(format!("{:.4} MHz", c / 1e6));
+                }
+                if (x.rate_hz - src.rate_hz).abs() >= 1.0 {
+                    set.push(format!("{} MSPS", x.rate_hz / 1e6));
+                }
+                format!("{} {}", src.title(k), set.join(" at "))
+            })
+            .collect();
+        format!(" Suggested settings reach it: {} (Setup → Radios).", what.join("; "))
+    }
+
+    /// [`Config::targets`], and what each trunked system was heard on: a
+    /// group of its own (needing nothing, on the system's sources), each
+    /// frequency weighed by its calls — those no source covered too — so a
+    /// voice channel granted on the air counts though the config doesn't
+    /// list it, and a busy one more than a quiet one.
+    pub fn targets_with(&self, heard: &Heard) -> Targets {
+        let mut t = self.targets();
+        for sys in self.active_systems() {
+            if let Some(chans) = heard.get(&sys.short_name).filter(|c| !c.is_empty()) {
+                t.groups.push(Group { channels: chans.clone(), pins: self.pins(&sys.receive_on), ..Default::default() });
+            }
+        }
+        t
+    }
+
+    /// What the radios are placed to reach, and what Start needs reached:
+    /// each active site's control (and watched) channels and its voice
+    /// channels — one control channel needed (a DMR, NXDN or EDACS site:
+    /// every frequency it watches) — then each conventional system's
+    /// channels, every one needed (a group for each set of sources its rows
+    /// may be received on). Each on its sources. The sites' groups come
+    /// first, in [`Config::active_sites`]' order.
     pub fn targets(&self) -> Targets {
-        let group = |need: Vec<f64>, more: &[f64], receive_on: &[String]| Group {
+        let group = |need: Vec<f64>, all: bool, more: &[f64], receive_on: &[String]| Group {
             channels: need.iter().chain(more).map(|&hz| Weighted { hz, weight: 1.0 }).collect(),
             need,
+            all,
             pins: self.pins(receive_on),
         };
-        let mut groups: Vec<Group> = self.active_sites().map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), &s.voice_channels_hz, &sys.receive_on)).collect();
+        let mut groups: Vec<Group> = self
+            .active_sites()
+            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.is_dmr() || sys.is_nxdn() || sys.is_edacs(), &s.voice_channels_hz, &sys.receive_on))
+            .collect();
         for v in self.conventional.iter().filter(|v| v.enabled) {
             let rows: Vec<&Channel> = v.channels.iter().filter(|c| c.enabled && c.freq_hz > 0.0).collect();
             let mut ons: Vec<&Vec<String>> = rows.iter().map(|c| &c.receive_on).collect();
             ons.sort();
             ons.dedup();
             for on in ons {
-                groups.push(group(rows.iter().filter(|c| &c.receive_on == on).map(|c| c.freq_hz).collect(), &[], on));
+                groups.push(group(rows.iter().filter(|c| &c.receive_on == on).map(|c| c.freq_hz).collect(), true, &[], on));
             }
         }
         Targets { groups }
@@ -2591,6 +2751,14 @@ impl Config {
                         return Some(format!("{}: a HackRF's LNA gain is 0–40 dB in 8 dB steps, its VGA gain 0–62 dB in 2 dB steps.", s.title(i)));
                     }
                 }
+                SourceKind::Hydrasdr { rf_port, bias_tee, .. } => {
+                    let Some(input) = HYDRASDR_INPUTS.get(*rf_port as usize) else {
+                        return Some(format!("{}: a HydraSDR's input is {}.", s.title(i), HYDRASDR_INPUTS.join(", ")));
+                    };
+                    if *bias_tee && *rf_port != 0 {
+                        return Some(format!("{}: the HydraSDR's bias-T is on {} only, not {input}: turn the bias-T off, or use {0}.", s.title(i), HYDRASDR_INPUTS[0]));
+                    }
+                }
                 SourceKind::Usrp { wire_format, .. } if !["", "sc16", "sc12", "sc8"].contains(&wire_format.trim()) => {
                     return Some(format!("{}: the USRP's wire format is sc16, sc12 or sc8 (or empty, to choose).", s.title(i)));
                 }
@@ -2608,16 +2776,15 @@ impl Config {
         if let Some(p) = signals.filter_map(|(n, d)| signals_problem(n, d)).next() {
             return Some(p);
         }
-        let centers = self.resolved_centers();
-        if let Some(i) = centers.iter().position(|&c| c <= 0.0) {
+        let (centers, cov) = self.placed();
+        if let Some(i) = centers.iter().position(|c| c.is_none()) {
             return Some(format!(
                 "Set a center frequency for source {} — it couldn't be placed automatically (nothing left for it to cover, or the channels don't fit one source).",
                 i + 1
             ));
         }
-        let rx = self.receiving(&centers);
-        for (sys, s) in self.active_sites() {
-            let inside = |f: f64| rx(&sys.receive_on, f).is_some();
+        // (What's missed is the coverage's: the sites' groups first, in order.)
+        for ((sys, s), g) in self.active_sites().zip(&cov.groups) {
             let sources = if sys.receive_on.is_empty() { "every source's bandwidth" } else { "the bandwidth of the sources it receives on" };
             // "dcfd", or "dcfd (site south)" for a site with its own name.
             let key = trunk_core::trunk::SiteKey { system: &sys.short_name, site: sys.site_name(s) };
@@ -2628,14 +2795,14 @@ impl Config {
                 }
             }
             if sys.is_dmr() || sys.is_nxdn() || sys.is_edacs() {
-                let out: Vec<String> = s.control_channels_hz.iter().chain(&s.watched_channels(sys)).filter(|&&f| !inside(f)).map(|f| format!("{:.5}", f / 1e6)).collect();
+                let out: Vec<String> = g.need_missed.iter().map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
                     let what = if sys.is_dmr() { "DMR" } else if sys.is_nxdn() { "NXDN" } else { "EDACS" };
-                    return Some(format!("{name}: {what} frequencies outside {sources}: {} MHz — move a center frequency or add a source.", out.join(", ")));
+                    return Some(format!("{name}: {what} frequencies outside {sources}: {} MHz — move a center frequency or add a source.{}", out.join(", "), self.advice_fix()));
                 }
             }
-            if !s.control_channels_hz.iter().any(|&f| inside(f)) {
-                return Some(format!("No control channel of {name} falls inside {} — move a center frequency or add a source.", if sys.receive_on.is_empty() { "any source's bandwidth" } else { sources }));
+            if !s.control_channels_hz.iter().any(|f| !g.need_missed.contains(f)) {
+                return Some(format!("No control channel of {name} falls inside {} — move a center frequency or add a source.{}", if sys.receive_on.is_empty() { "any source's bandwidth" } else { sources }, self.advice_fix()));
             }
             if sys.is_edacs() && s.edacs().lcns.is_empty() {
                 return Some(format!("{name}: an EDACS site needs its channel list — each LCN (1–25) and its frequency."));
@@ -2654,9 +2821,10 @@ impl Config {
         if self.enabled_channels().any(|c| c.freq_hz <= 0.0) {
             return Some("A conventional channel has no frequency yet.".into());
         }
-        let outside: Vec<String> = self.enabled_channels().filter(|c| rx(&c.receive_on, c.freq_hz).is_none()).map(|c| format!("{:.5}", c.freq_hz / 1e6)).collect();
+        let missed: Vec<f64> = cov.groups.iter().skip(self.active_sites().count()).flat_map(|g| g.need_missed.iter().copied()).collect();
+        let outside: Vec<String> = self.enabled_channels().filter(|c| missed.contains(&c.freq_hz)).map(|c| format!("{:.5}", c.freq_hz / 1e6)).collect();
         if !outside.is_empty() {
-            return Some(format!("Conventional channel(s) outside the bandwidth of every source they may be received on: {} MHz — move a center frequency or disable them.", outside.join(", ")));
+            return Some(format!("Conventional channel(s) outside the bandwidth of every source they may be received on: {} MHz — move a center frequency or disable them.{}", outside.join(", "), self.advice_fix()));
         }
         if let Some((c, e)) = self.enabled_channels().find_map(|c| c.parsed_access().err().map(|e| (c, e))) {
             return Some(format!("Conventional channel {:.5} MHz: {e}.", c.freq_hz / 1e6));
@@ -2707,8 +2875,9 @@ impl Config {
     }
 
     /// The engine's config, with each system's talkgroups (kept apart from the config).
-    pub fn engine_config(&self, epoch_ms: f64, talkgroups: &TalkgroupLists) -> EngineConfig {
-        let tg = |short: &str| talkgroups.get(short).map_or_else(Default::default, |rows| talkgroups_of(rows));
+    pub fn engine_config(&self, epoch_ms: f64, names: &NameLists) -> EngineConfig {
+        let tg = |short: &str| names.get(short).map_or_else(Default::default, |n| talkgroups_of(&n.talkgroups));
+        let units = |short: &str, u: &UnitNames| UnitTags::new(names.get(short).map_or(&[][..], |n| &n.unit_names), u.mode.engine());
         let centers = self.resolved_centers();
         // (Keys are read by the app: [`Config::load_keys`].)
         let mut systems: Vec<SystemConfig> = self
@@ -2723,9 +2892,10 @@ impl Config {
                     calls: rules.call_config(),
                     save: rules.save_rules(),
                     talkgroups: tg(&sys.short_name),
-                    unit_tags: sys.unit_names.engine(),
+                    unit_tags: units(&sys.short_name, &sys.unit_names),
                     signals: engine_signals(&sys.signals),
                     pins: self.pins(&sys.receive_on),
+                    preferred_site: sys.preferred_site.clone(),
                     ..SystemConfig::trunked(&sys.short_name, sites)
                 }
             })
@@ -2739,7 +2909,7 @@ impl Config {
                 calls: r.call_config(),
                 save: r.save_rules(),
                 talkgroups: tg(&v.short_name),
-                unit_tags: v.unit_names.engine(),
+                unit_tags: units(&v.short_name, &v.unit_names),
                 signals: engine_signals(&v.signals),
                 ..SystemConfig::conventional(&v.short_name)
             });
@@ -2754,6 +2924,7 @@ impl Config {
             conventional: self.engine_channels(),
             conv: ConvConfig::default(),
             capture_frames: self.recording.capture_frames,
+            tapes: self.diagnostics.needs_tapes(),
             drop_duplicates: self.recording.drop_duplicate_calls,
             vocoder: self.recording.vocoder.engine(),
         }
@@ -2761,12 +2932,139 @@ impl Config {
 }
 
 
-/// Each system's talkgroups, by its short name, in their order. Kept apart
-/// from the config: the desktop app's store, the browser's storage; the
-/// interface sets a system's with `setTalkgroups` and edits one with
-/// `setTalkgroup`. A talkgroup file (Trunk Recorder's CSV) is how they come
-/// in and go out (trunk_core::trunk::read_rows / rows_csv).
-pub type TalkgroupLists = BTreeMap<String, Vec<trunk_core::trunk::TalkgroupRow>>;
+/// What to keep when a capture rule fires.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureTarget {
+    /// `wideband`, `control` or `voice`.
+    pub tier: String,
+    /// How long before, and after, it fired (`30s`, `5m`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
+/// A rule fires only after this many matches in a window, counted apart for each value of `by`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureRepeat {
+    pub count: u32,
+    pub within: String,
+    pub by: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureLimit {
+    pub cooldown: String,
+}
+
+/// When to record what the radios receive: an event, a condition on it in
+/// CEL, and what to keep (trunk-pro's `iq_rules`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureRule {
+    pub id: String,
+    pub enabled: bool,
+    pub on: String,
+    /// Only these systems ([]: any).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub systems: Vec<String>,
+    #[serde(rename = "if", skip_serializing_if = "String::is_empty")]
+    pub condition: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<CaptureRepeat>,
+    /// A `schedule` rule: how often.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub every: Option<String>,
+    pub capture: Vec<CaptureTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<CaptureLimit>,
+}
+
+/// What capture rules may use.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureBudget {
+    pub captures_per_day: u32,
+    pub mb_per_day: u32,
+    /// Memory for samples held in case a rule wants them.
+    pub ram_mb: u32,
+}
+
+impl Default for CaptureBudget {
+    fn default() -> Self {
+        CaptureBudget { captures_per_day: 20, mb_per_day: 5000, ram_mb: 256 }
+    }
+}
+
+/// Capture rules (research/iq-corpus.md).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Diagnostics {
+    /// Where captures of the radios go ("": `iq-captures` in the recordings folder).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub capture_dir: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<CaptureRule>,
+    pub budget: CaptureBudget,
+}
+
+impl Diagnostics {
+    pub fn is_empty(&self) -> bool {
+        *self == Diagnostics::default()
+    }
+
+    /// A rule on keeps a channel's samples: the engine must hold them.
+    pub fn needs_tapes(&self) -> bool {
+        self.rules.iter().filter(|r| r.enabled).flat_map(|r| &r.capture).any(|c| c.tier != "wideband")
+    }
+
+    /// The most a rule on looks back at the radios' full samples, in seconds.
+    pub fn wideband_lookback(&self, seconds: impl Fn(&str) -> f64) -> f64 {
+        self.rules.iter().filter(|r| r.enabled).flat_map(|r| &r.capture).filter(|c| c.tier == "wideband").filter_map(|c| c.before.as_deref()).map(seconds).fold(0.0, f64::max)
+    }
+}
+
+/// A system's names, kept apart from the config (the desktop app's store,
+/// the browser's storage), each list in its order: its talkgroups (set with
+/// `setTalkgroups`, one edited with `setTalkgroup`) and its own names for
+/// its radios (`setUnitNames`, `setUnitName`). Files (Trunk Recorder's
+/// talkgroup CSV and unitTagsFile) are how they come in and go out
+/// (trunk_core::trunk::read_rows / rows_csv, read_unit_names / unit_names_csv).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SystemNames {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub talkgroups: Vec<trunk_core::trunk::TalkgroupRow>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unit_names: Vec<trunk_core::trunk::UnitNameRow>,
+}
+
+impl SystemNames {
+    pub fn is_empty(&self) -> bool {
+        self.talkgroups.is_empty() && self.unit_names.is_empty()
+    }
+}
+
+/// Each system's names ([`SystemNames`]), by its short name.
+pub type NameLists = BTreeMap<String, SystemNames>;
+
+/// `lists` with system `system`'s names, as `edit` leaves them: a system with none left has no entry.
+pub fn edit_names<T>(lists: &mut NameLists, system: &str, edit: impl FnOnce(&mut SystemNames) -> T) -> T {
+    let names = lists.entry(system.to_string()).or_default();
+    let out = edit(names);
+    if names.is_empty() {
+        lists.remove(system);
+    }
+    out
+}
+
+/// Talkgroups only, as [`NameLists`] (tests and examples).
+pub fn talkgroup_lists<'a>(lists: impl IntoIterator<Item = (&'a str, Vec<trunk_core::trunk::TalkgroupRow>)>) -> NameLists {
+    lists.into_iter().map(|(n, talkgroups)| (n.to_string(), SystemNames { talkgroups, ..Default::default() })).collect()
+}
 
 /// A system's talkgroups as the engine looks them up, by number.
 pub fn talkgroups_of(rows: &[trunk_core::trunk::TalkgroupRow]) -> trunk_core::trunk::Talkgroups {
@@ -2803,7 +3101,7 @@ mod tests {
     #[test]
     fn storage_defaults_to_300_second_commits_and_120_days() {
         let c = Config::from_value(serde_json::json!({})).unwrap();
-        assert_eq!((c.storage.commit_seconds, c.storage.retention_days), (300, 120));
+        assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.registry_radios, c.storage.registry_days), (300, 120, 20_000, 365));
         let c = Config::from_value(serde_json::json!({ "storage": { "commitSeconds": 60, "retentionDays": 0 } })).unwrap();
         assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.backend), (60, 0, StorageBackend::Sqlite));
         let c = Config::from_value(serde_json::json!({ "storage": { "backend": "postgres", "url": "postgres://trp@db/trunk" } })).unwrap();
@@ -3031,7 +3329,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let files: TalkgroupLists = [("county".to_string(), trunk_core::trunk::parse_rows("1,County TG\n")), ("fire".to_string(), trunk_core::trunk::parse_rows("7,Fire Ops\n"))].into();
+        let files = talkgroup_lists([("county", trunk_core::trunk::parse_rows("1,County TG\n")), ("fire", trunk_core::trunk::parse_rows("7,Fire Ops\n"))]);
         let e = c.engine_config(0.0, &files);
         let fire = e.systems.iter().find(|s| s.short_name == "fire").unwrap();
         assert!(fire.talkgroups.contains_key(&7) && !fire.talkgroups.contains_key(&1), "its own, not county's");
@@ -3062,7 +3360,7 @@ mod tests {
         assert_eq!(town[&46012].tag, "Law Dispatch");
         // Ahead of the talkgroup file, whose Ignore flag stays.
         let mut book = crate::stats::NameBook::default();
-        let files: TalkgroupLists = [("town".to_string(), trunk_core::trunk::parse_rows("46012,File name\n9,Nine,,,,,,,true\n"))].into();
+        let files = talkgroup_lists([("town", trunk_core::trunk::parse_rows("46012,File name\n9,Nine,,,,,,,true\n"))]);
         book.set_config(&c, &files);
         assert_eq!(book.tg("town", 46012).map(|t| t.alpha_tag), Some("Townville PD".into()));
         assert_eq!(book.tg("town", 154430).map(|t| t.alpha_tag), Some("Fire Dispatch".into()));
@@ -3152,11 +3450,87 @@ mod tests {
         assert!(c.problem().unwrap().contains("channel list"), "{:?}", c.problem());
     }
 
+    /// Advice for a config: a centre typed in that misses the site's voice
+    /// channels moves (and can go back to auto); a capture file never does;
+    /// an Airspy is advised only rates it runs at.
+    #[test]
+    fn advice_for_the_sources_a_config_has() {
+        let mut c: Config = serde_json::from_value(serde_json::json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 849500000, "rateHz": 2400000, "ppm": 0 }],
+            "systems": [{ "shortName": "dcfd", "sites": [{ "controlChannelsHz": [851012500], "voiceChannelsHz": [851512500, 852012500] }] }]
+        }))
+        .unwrap();
+        let a = c.advice(&[], &Heard::new()).expect("advice");
+        let s = &a.sources[0];
+        assert!(s.changed && s.auto && a.after.reached > a.before.reached, "{a:?}");
+        // As a capture file: nothing.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "file", "path": "x.cu8", "realtime": true, "centerHz": 849500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        assert_eq!(c.advice(&[], &Heard::new()), None);
+        // An Airspy that said it runs at 10 / 2.5 MSPS: 2.5 covers it all.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "ppm": 0 })).unwrap();
+        let a = c.advice(&[Some(crate::rates::Rates::List(vec![10_000_000, 2_500_000]))], &Heard::new()).expect("advice");
+        assert_eq!(a.sources[0].rate_hz, 2_500_000.0, "{a:?}");
+        // Heard granting a busy voice channel the config doesn't list, 3 MHz up: 10 MSPS reaches it, 2.5 doesn't.
+        let heard: Heard = [("dcfd".to_string(), vec![Weighted { hz: 855_012_500.0, weight: 300.0 }])].into();
+        let a = c.advice(&[Some(crate::rates::Rates::List(vec![10_000_000, 2_500_000]))], &heard);
+        assert_eq!(a, None, "10 MSPS already reaches it, and 2.5 wouldn't: {a:?}");
+        // Start says what the advice would set, after what it found missed.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 849500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        let p = c.problem().expect("the control channel isn't reached");
+        assert!(p.starts_with("No control channel of dcfd falls inside any source's bandwidth") && p.contains("Suggested settings reach it: Source 1 on auto") && p.ends_with("(Setup → Radios)."), "{p}");
+        // An RTL-SDR set over the listed channels; a busy one heard just past its band: moved over it too.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 851500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        let a = c.advice(&[], &Heard::new()).expect("advice");
+        assert_eq!((a.sources[0].rate_hz, a.sources[0].center_hz), (1_920_000.0, Some(851_500_000.0)), "it reaches what the config lists, and at 1.92 MSPS still would: {a:?}");
+        let heard: Heard = [("dcfd".to_string(), vec![Weighted { hz: 852_900_000.0, weight: 300.0 }])].into();
+        let a = c.advice(&[], &heard).expect("advice");
+        let s = &a.sources[0];
+        assert!(a.after.reached >= a.before.reached + 300.0 && c.sources[0].reaches(s.center_hz.unwrap(), 852_900_000.0), "{a:?}");
+        assert!([851_012_500.0, 851_512_500.0, 852_012_500.0].iter().all(|&f| c.sources[0].reaches(s.center_hz.unwrap(), f)), "and still the listed ones: {a:?}");
+    }
+
     #[test]
     fn ppm_is_set_as_the_radio_takes_it() {
         let rtl: Source = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "ppm": 0 })).unwrap();
         let airspy: Source = serde_json::from_value(serde_json::json!({ "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "ppm": 0 })).unwrap();
         assert_eq!((rtl.settable_ppm(2.0 - 3.6), airspy.settable_ppm(2.0 - 3.614)), (-2.0, -1.61));
+    }
+
+    /// A HydraSDR source reads with an Airspy's gain defaults and the ANT input; it may be the
+    /// radio an Airspy source opens as "the first" (libairspy opens an RFOne), not one by another serial.
+    #[test]
+    fn a_hydrasdr_source() {
+        let src = |v: serde_json::Value| -> Source { serde_json::from_value(v).unwrap() };
+        let h = src(serde_json::json!({ "type": "hydrasdr", "serial": "1A2B3C4D5E6F7081", "centerHz": 0, "rateHz": 5000000 }));
+        assert_eq!(
+            h.kind,
+            SourceKind::Hydrasdr {
+                serial: "1A2B3C4D5E6F7081".into(),
+                gains: AirspyGains::default(),
+                bias_tee: false,
+                packing: true,
+                rf_port: 0,
+            }
+        );
+        assert_eq!(h.label(), "HydraSDR SN 1A2B3C4D5E6F7081");
+        // Its gain is an Airspy's, kept flat beside its other keys.
+        let manual = src(serde_json::json!({ "type": "hydrasdr", "gainMode": "manual", "lnaStep": 3, "agc": true, "rfPort": 2, "centerHz": 0, "rateHz": 5000000 }));
+        let SourceKind::Hydrasdr { gains, rf_port: 2, .. } = manual.kind else { panic!("{:?}", manual.kind) };
+        assert_eq!((gains.gain_mode, gains.lna_step, gains.mixer_step, gains.agc), (AirspyGain::Manual, 3, 10, true));
+        let j = serde_json::to_value(&manual).unwrap();
+        assert_eq!((&j["lnaStep"], &j["gainMode"], j.get("gains")), (&serde_json::json!(3), &serde_json::json!("manual"), None));
+        // The bias-T is on ANT alone: Start (and Setup) say so before the radio opens.
+        let problem = |rf_port: u8, bias_tee: bool| {
+            let mut c: Config = serde_json::from_str(r#"{ "sources": [], "conventional": [{ "channels": [{ "freqHz": 154430000, "mode": "fm" }] }] }"#).unwrap();
+            c.sources.push(src(serde_json::json!({ "type": "hydrasdr", "rfPort": rf_port, "biasTee": bias_tee, "centerHz": 154e6, "rateHz": 5000000 })));
+            c.problem()
+        };
+        assert_eq!((problem(0, true), problem(2, false)), (None, None));
+        assert!(problem(1, true).unwrap().contains("bias-T is on ANT only, not CABLE1"), "{:?}", problem(1, true));
+        assert!(problem(3, false).unwrap().contains("input is ANT, CABLE1, CABLE2"), "{:?}", problem(3, false));
+        let airspy = |serial: &str| src(serde_json::json!({ "type": "airspy", "serial": serial, "centerHz": 0, "rateHz": 10000000 }));
+        assert!(h.may_be(&airspy("")) && h.may_be(&airspy("1a2b3c4d5e6f7081")));
+        assert!(!h.may_be(&airspy("735863DC2F650AE3")));
     }
 
     /// What a run reads only when it starts needs a restart; what applies

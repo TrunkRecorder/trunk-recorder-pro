@@ -29,6 +29,8 @@ num-complex.workspace = true
 serde.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "fs", "signal"] }
 axum = { version = "0.8", features = ["ws"] }
+# (Streams a CSV export as it's read: already axum's.)
+futures-util = { version = "0.3", default-features = false }
 rust-embed = "8"
 mime_guess = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -38,6 +40,8 @@ log = { version = "0.4", features = ["std"] }
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
 ureq = "3"
 sha2 = "0.11"
+cel = "0.15"
+rustfft.workspace = true
 # The install's anonymous directory recorder ID (directory.rs).
 getrandom = "0.3"
 flate2 = "1"
@@ -63,4 +67,3 @@ libc = "0.2.190"
 [dev-dependencies]
 jsonschema = { version = "0.58.4", default-features = false }
 tokio-tungstenite = "0.29"
-futures-util = { version = "0.3", default-features = false }

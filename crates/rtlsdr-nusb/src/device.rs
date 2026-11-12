@@ -68,6 +68,13 @@ impl<M: SampleMode> Device<M> {
     pub fn link_stats(&self) -> crate::LinkStats {
         self.session.link_stats()
     }
+    /// The tuner gain set, dB: a manual gain's nearest step (None: automatic).
+    pub fn gain_db(&self) -> Option<f32> {
+        match self.config.settings.gain {
+            GainConfig::Manual(db) => Some(self.info().tuner.gain_db(db)),
+            GainConfig::Auto => None,
+        }
+    }
     /// Last successfully programmed center frequency after divider quantization.
     pub fn actual_frequency_hz(&self) -> u64 {
         self.applied.frequency_hz

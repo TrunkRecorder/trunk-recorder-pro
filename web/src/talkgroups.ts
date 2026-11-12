@@ -2,7 +2,7 @@
 // (protocol.ts Talkgroup), as the recorder keeps them. A file is read and
 // written by the recorder's own code (rules.ts, through wasm): CSV only at
 // Load CSV and Download.
-import type { Talkgroup, TalkgroupEdit } from "./protocol.ts";
+import type { Origin, Talkgroup, TalkgroupEdit } from "./protocol.ts";
 import { talkgroupsEdit, talkgroupsFromCsv, talkgroupsToCsv, type TalkgroupFileReport } from "./rules.ts";
 
 export type { Talkgroup };
@@ -50,16 +50,22 @@ const RR_MODE = /^(A|D|T|E|M|DE|TE|De|Te|DM|AE|Ae)$/;
 
 /**
  * A Mode cell: "D", or the letter with RadioReference's encryption badge
- * after it ("D ENC") — Trunk Recorder's encrypted modes (DE / TE / E), which
- * it doesn't record. Null when it isn't a mode.
+ * after it, as its page's key says: "Enc" full encryption ("T Enc": TE,
+ * which Trunk Recorder doesn't record), "enc" partial, some clear traffic
+ * ("T enc": Te, recorded). A copy may glue the badge on ("TEnc"). Null when
+ * it isn't a mode.
  */
 function rrMode(cell: string): string | null {
-  const [raw = "", ...badges] = cell.split(/\s+/);
+  const c = cell.trim();
+  const badge = /\s*(enc)\w*$/i.exec(c);
+  const raw = badge && badge.index > 0 ? c.slice(0, badge.index) : (c.split(/\s+/)[0] ?? "");
   // A lone lower-case letter ("d") is the upper-case one.
   const mode = raw.length === 1 ? raw.toUpperCase() : raw;
   if (!RR_MODE.test(mode)) return null;
-  if (!badges.some((b) => /^enc/i.test(b)) || mode.endsWith("E")) return mode;
-  return mode === "D" ? "DE" : mode === "T" ? "TE" : "E";
+  if (!badge || badge.index === 0 || /e$/i.test(mode)) return mode;
+  const full = badge[1][0] === "E";
+  const letter = mode === "D" || mode === "T" || mode === "A" ? mode : "";
+  return letter ? letter + (full ? "E" : "e") : full ? "E" : mode;
 }
 
 /**
@@ -69,8 +75,9 @@ function rrMode(cell: string): string | null {
  * no talkgroup number before a run of rows is the category heading they fall
  * under ("Metro County Fire"). The column header line is skipped.
  *
- * The page's badges come along: "ONLINE" after a number breaks the row in
- * two ("167" / "ONLINE<tab>0a7<tab>D…"), and "ENC" follows the mode ("D ENC").
+ * The page's badges come along: "Online" after a number ("8009 Online", or
+ * glued on, "8009Online") or breaking the row in two ("167" /
+ * "ONLINE<tab>0a7<tab>D…"), and "Enc" / "enc" after the mode ("T Enc").
  */
 export function parseRadioReferencePaste(text: string): Talkgroup[] {
   const out: Talkgroup[] = [];
@@ -90,7 +97,7 @@ export function parseRadioReferencePaste(text: string): Talkgroup[] {
     }
     if (/^dec\b/i.test(f[0] ?? "")) continue;
     // A badge in the number's cell ("167 ONLINE").
-    const num = /^(\d+)(\s+[A-Za-z].*)?$/.exec(f[0] ?? "");
+    const num = /^(\d+)(\s*[A-Za-z].*)?$/.exec(f[0] ?? "");
     if (!num) {
       // A heading: a category name, not a sentence of help text.
       if (f.length === 1 && line.length <= 60) category = line;
@@ -126,28 +133,22 @@ export function talkgroupFileText(rows: Talkgroup[]): string {
   return talkgroupsToCsv(rows);
 }
 
-/** The cells an edit of one talkgroup sets, by the file's column names (trunk-app's `TalkgroupEdit::cells`). */
-export function editCells(e: TalkgroupEdit): [string, string][] {
-  const text: [string, string | undefined][] = [
-    ["Alpha Tag", e.alphaTag],
-    ["Description", e.description],
-    ["Tag", e.tag],
-    ["Category", e.category],
-  ];
-  const cells = text.filter((c): c is [string, string] => c[1] !== undefined).map(([c, v]): [string, string] => [c, v.trim()]);
-  if (e.ignore !== undefined) cells.push(["Ignore", e.ignore ? "x" : ""]);
-  return cells;
+/**
+ * `rows` with talkgroup `tg`'s row edited by `origin`: only the cells `edit`
+ * sets change; a talkgroup without a row gets one when a value is set.
+ * Clearing Ignore also undoes Trunk Recorder's way of ignoring, a priority
+ * of −1; a change to its names makes `origin` its origin. The recorder's own
+ * edit (trunk-core's `edit_rows`), so this copy holds what the recorder holds.
+ */
+export function withEdit(rows: Talkgroup[], tg: number, edit: TalkgroupEdit, origin: Origin): Talkgroup[] {
+  return talkgroupsEdit(rows, tg, edit, origin);
 }
 
-/**
- * `rows` with talkgroup `tg`'s row edited: only the cells `edit` sets
- * change; a talkgroup without a row gets one when a value is set. Clearing
- * Ignore also undoes Trunk Recorder's way of ignoring, a priority of −1. The
- * recorder's own edit (trunk-core's `edit_rows`), so this copy holds what
- * the recorder holds.
- */
-export function withEdit(rows: Talkgroup[], tg: number, edit: TalkgroupEdit): Talkgroup[] {
-  return talkgroupsEdit(rows, tg, editCells(edit));
+/** Whether two edits of a talkgroup set the same cells to the same values (as sent, and as the recorder answers). */
+export function sameEdit(a: TalkgroupEdit, b: TalkgroupEdit): boolean {
+  const keys: (keyof TalkgroupEdit)[] = ["alphaTag", "description", "tag", "category", "ignore"];
+  const v = (e: TalkgroupEdit, k: keyof TalkgroupEdit) => (typeof e[k] === "string" ? (e[k] as string).trim() : e[k]);
+  return keys.every((k) => v(a, k) === v(b, k));
 }
 
 /** The edit that marks talkgroup `tg` ignored or not: named `alphaTag` too when `rows` lack it. */

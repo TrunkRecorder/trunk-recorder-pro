@@ -227,18 +227,22 @@ impl Default for Clock {
 }
 
 impl Clock {
-    /// Ask `server` (SNTP, when there's one) and the OS's time service, each
-    /// as often as it should be, on a thread of their own; the server only
-    /// while `on()` (turned off, its answers are forgotten).
-    pub fn start(self: &Arc<Self>, server: Option<String>, on: impl Fn() -> bool + Send + 'static) {
+    /// Ask the time server `server()` names now (SNTP, when there's one) and
+    /// the OS's time service, each as often as it should be, on a thread of
+    /// their own. The server changed or gone, its answers are forgotten.
+    pub fn start(self: &Arc<Self>, server: impl Fn() -> Option<String> + Send + 'static) {
         let me = self.clone();
         let _ = std::thread::Builder::new().name("clock".into()).spawn(move || {
             let (mut next_time, mut next_service) = (Instant::now(), Instant::now());
+            let mut asked: Option<String> = None;
             loop {
-                if server.is_some() && !on() {
+                let server = server();
+                if server != asked {
                     me.forget_server();
                     next_time = Instant::now();
-                } else if let Some(s) = server.as_deref().filter(|_| Instant::now() >= next_time) {
+                    asked = server.clone();
+                }
+                if let Some(s) = server.as_deref().filter(|_| Instant::now() >= next_time) {
                     let ok = me.measure(s);
                     next_time = Instant::now() + if ok { TIME_EVERY } else { TIME_RETRY };
                 }

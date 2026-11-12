@@ -23,10 +23,11 @@ Each system has its own, shared by all its sites. It's the **Talkgroups** field 
 The talkgroup file isn't part of the config, and isn't kept as a path: Setup keeps a copy in the
 recorder's store, and it stays with the system when you rename it. (A config
 from before 0.2.0 had them inside it; they're moved out into these files the first time it's read.) To change it later, edit your copy and load it
-again, or **Download**, edit, and load. Changes made while recording take effect at once (the log
-says "Talkgroups updated").
+again, or **Download**, edit, and load, or edit one talkgroup on its page (below). Changes made while
+recording take effect at once (the log says "Talkgroups updated").
 
-When a file is loaded, chips under the field sum it up: how many talkgroups are **ignored** and
+When a file is loaded, chips under the field sum it up: where the names came from (when they came
+more than one way, or some were edited by hand: "212 RadioReference", "3 edited"), how many talkgroups are **ignored** and
 **encrypted**, and warnings for **no header row**, a missing **Mode** or **Description** column
 (Trunk Recorder needs those, Trunk Recorder Pro doesn't), **unknown columns**, and **rows without
 a number**.
@@ -103,21 +104,48 @@ A conventional system has a talkgroup file of its own too, shown in Setup → **
 talkgroups they hear by it; it isn't shared with a trunked system. See
 [Conventional channels](conventional.md#talkgroup-names-on-digital-channels).
 
+### Editing a talkgroup
+
+On the **Radio system** page, open a talkgroup and click **Edit names** (**Name it** when it has none).
+Its **Alpha tag**, **Description**, **Tag** and **Category** can be changed there, each saved as you
+leave its box; **Tag** and **Category** offer the ones the system's talkgroups already use. A
+talkgroup that isn't in the file gets a row. The lists stay read-only, so a stray click can't rename
+anything. Calls from then on carry the new names, and so do plugins (MQTT, OpenMHz, transcription).
+
+### Where names came from
+
+Each talkgroup remembers where its names came from: the last change only, not a history. The
+talkgroup's page says it under its heading ("Copied from RadioReference, 3 d ago", "Loaded from
+dc.csv", "Edited by hand, 2 min ago"). It is one of:
+
+| Origin | When |
+|---|---|
+| Loaded from *file* | **Load CSV…** (or a talkgroup file picked in the first-run guide) |
+| Copied from RadioReference | **Paste from RadioReference…** |
+| From the directory | a system imported from the systems directory |
+| From Trunk Recorder's *file* | a Trunk Recorder config imported |
+| Edited by hand | changed on the talkgroup's page |
+
+Loading a file again only changes the origin of the talkgroups whose names it changes; the rest keep
+theirs. Clicking **Ignore** doesn't change it: it isn't a name. If a file would replace names you
+edited by hand, Setup asks first. The origin isn't written to a downloaded CSV (Trunk Recorder
+would refuse the extra columns); **Setup** → **Data** exports it with the talkgroups.
+
 ## Choosing what to record
 
 - **Ignore a talkgroup.** Put `x` in its `Ignore` column. Or, on the **Radio system** page, click
   **Ignore** next to the talkgroup; it becomes **Ignored ✕**, click again to record it again. That
   button edits the system's talkgroup file for you: it adds an `Ignore` column if there isn't one
   (and a header row to a file without one), and adds a row for a talkgroup that isn't in the file.
-- **Only the talkgroups in the file.** Turn off **Talkgroups not in the talkgroup file** under
+- **Only the talkgroups in the file.** Turn off **Unlisted talkgroups** under
   **Call rules** on the **Recording** tab (`recordUnknown`, on by default), or for one system under
   **Recording** on its card. This only has an effect once the system has a talkgroup file; with none,
   everything is recorded. A talkgroup that isn't in the file is still recorded while it's patched
   with one that is (a patch's supergroup usually isn't in anyone's file).
 - **Encrypted talkgroups** aren't recorded; see the protocol pages ([P25](p25.md#encrypted-calls)).
 
-The **Radio system** page's **What happened to calls** shows how each call went: **Recorded**,
-**Followed only**, **Ignored**, **Encrypted**, **Not in the file**, **No recorder** or **Out of
+The **Radio system** page's **Call outcomes** shows how each call went: **Recorded**,
+**Followed only**, **Ignored**, **Encrypted**, **Not in file**, **No recorder** or **Out of
 band**.
 
 ## Pasting from RadioReference
@@ -141,8 +169,10 @@ What it reads from the paste:
   there.
 - A line on its own above a run of rows (the table's heading, such as "County Fire") becomes those
   talkgroups' `Category`.
-- RadioReference's badges: `ENC` after a mode marks the talkgroup encrypted (`D` becomes `DE`,
-  `T` becomes `TE`, anything else `E`); `ONLINE` after a number is skipped.
+- RadioReference's badges, as its page's key says: `Enc` after a mode is full encryption (`D` becomes
+  `DE`, `T` becomes `TE`: not recorded); `enc`, lower case, is partial encryption with some clear
+  traffic (`D` becomes `De`, `T` becomes `Te`: recorded, its encrypted parts left out). Copied
+  glued on (`TEnc`) they read the same. `Online` after a number is skipped.
 - A row without a mode gets `D`.
 
 The result is saved as a normal talkgroup file, so **Download** gives you a CSV you can edit and
@@ -151,8 +181,13 @@ load again.
 ## Unit names
 
 A system can have its own names for radio IDs ("Engine 12" for 1234). This is Trunk Recorder's
-`unitTagsFile`. On the system card, **Unit names** → **Load CSV…** loads one; **Clear** removes it.
-Unlike the talkgroup file, it's kept inside the config, under the system's `unitNames`.
+`unitTagsFile`. On the system card, **Unit names** → **Load CSV…** loads one; **Download** saves it;
+**Clear** removes it. Like the talkgroup file, it's kept in the recorder's store, not the config, and
+each name remembers where it came from.
+
+To name one radio, open it on the **Radio system** page and click **Name it** (or **Edit names**).
+The name is its own line, put ahead of any patterns so it wins; clearing it takes the line out, so a
+pattern may name the radio again. It applies at once, even while recording.
 
 The file has no header. Each line is a unit ID and its name:
 
@@ -175,15 +210,15 @@ aliases radios send (below). It is Trunk Recorder's `unitTagsMode`:
 
 | Menu | `mode` | A radio is named by |
 |---|---|---|
-| **These first, then aliases heard** | `user` (default) | this file; failing that, its talker alias |
-| **Aliases heard first** | `ota` | its talker alias; failing that, this file |
+| **These first, then on-air aliases** | `user` (default) | this file; failing that, its talker alias |
+| **On-air aliases first** | `ota` | its talker alias; failing that, this file |
 | **Only these** | `user_only` | this file only |
 | **No names** | `none` | nothing |
 
 With no unit names file, a radio is named by its talker alias.
 
 ```json
-"unitNames": { "csv": "1234,Engine 12\n/^7(\\d{3})$/,Medic $1\n", "name": "units.csv", "mode": "ota" }
+"unitNames": { "mode": "ota" }
 ```
 
 The name chosen goes into each source's `tag` in the call JSON's `srcList`; the talker alias heard,
@@ -221,8 +256,8 @@ does ignoring a talkgroup from the **Radio system** page.
 **"unknown column" chip.** A header isn't one of the names above (check the spelling). The column
 is kept but not used.
 
-**Talkgroups recorded that you didn't want.** Turn off **Talkgroups not in the talkgroup file**, or
+**Talkgroups recorded that you didn't want.** Turn off **Unlisted talkgroups**, or
 mark them ignored.
 
-**A unit name doesn't apply.** Check that the unit names menu isn't on **Aliases heard first** (an
+**A unit name doesn't apply.** Check that the unit names menu isn't on **On-air aliases first** (an
 alias wins there) or **No names**, and that no earlier line in the file matches the same ID.

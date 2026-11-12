@@ -55,7 +55,7 @@ test("known only by its licenses: a bundle with no site and licensed frequencies
 test("the dialog says what's known, and starting the survey scans its bands from Setup's systems", () => {
   const sent = connected();
   const html = text(renderToString(<ImportDialog bundle={bundle()} onClose={() => {}} />));
-  assert.ok(html.includes("Find District of Columbia") && html.includes("WPXT459") && html.includes("4 licensed frequencies"), html);
+  assert.ok(html.includes("Find District of Columbia") && html.includes("WPXT459") && html.includes("<b>4</b><small>frequencies</small>"), html);
   assert.ok(html.includes("Start the survey") && !html.includes("Short name"));
   // Its button: the survey, looking for it, on the 800 MHz band only.
   assert.equal(findOnAir(looking()), null);
@@ -77,7 +77,7 @@ test("you have it already: by its call sign, updated with the licenses it lacks"
   connected(c);
   assert.equal(findExisting(c, bundle()), 0);
   const html = text(renderToString(<ImportDialog bundle={bundle()} onClose={() => {}} />));
-  assert.ok(html.includes("You have it already: dcfd") && html.includes("Update dcfd") && html.includes("add what it lacks (licenses)"), html);
+  assert.ok(html.includes("You have it already: dcfd") && html.includes("Update dcfd") && html.includes("adds missing licenses"), html);
 });
 
 test("the survey marks its signals, first; a system added from one of its control channels gets its licenses and name", () => {
@@ -90,7 +90,7 @@ test("the survey marks its signals, first; a system added from one of its contro
   });
   lookFor(looking());
   const html = text(renderToString(<SurveyPanel c={snapshot().config!} />));
-  assert.ok(html.includes("Looking for") && html.includes("4 licensed frequencies"), html);
+  assert.ok(html.includes("Looking for") && html.includes("<b>4</b><small>licensed frequencies</small>"), html);
   assert.match(html, /<tr class="[^"]*\bsought\b/);
   assert.ok(html.includes("Licensed to") && html.includes("District of Columbia · "));
   assert.ok(html.indexOf("857.9875") < html.indexOf("851.0125"), "its signal first");

@@ -60,6 +60,12 @@ pub fn key_part(s: &str) -> String {
     s.trim().replace('/', "_")
 }
 
+/// Where system `short_name`'s series go: `sys/<short name>`, and its
+/// series under it (`sys/<short name>/calls`…).
+pub fn system_key(short_name: &str) -> String {
+    format!("sys/{}", key_part(short_name))
+}
+
 /// |X|² per FFT bin (the channelizer's units) as dBFS, for an `n`-point FFT.
 pub fn bin_dbfs(power: f64, n: usize) -> f64 {
     10.0 * (power / (n as f64 * n as f64) + 1e-14).log10()

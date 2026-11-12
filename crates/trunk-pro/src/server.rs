@@ -580,7 +580,10 @@ fn kept_now(ctx: &Ctx) -> Vec<ToClient> {
 pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, history: ToClient, kept: Vec<ToClient>) -> Vec<ToClient> {
     let config = ctx.config.lock().unwrap().clone();
     let mut m = vec![ctx.phase.lock().unwrap().message(), ToClient::Config { config: Box::new(config.clone()), version: ctx.config_version.load(Ordering::SeqCst) }];
-    m.extend(ctx.talkgroups.lock().unwrap().iter().map(|(system, rows)| ToClient::Talkgroups { system: system.clone(), talkgroups: rows.clone() }));
+    for (system, n) in ctx.names.lock().unwrap().iter() {
+        m.push(ToClient::Talkgroups { system: system.clone(), talkgroups: n.talkgroups.clone() });
+        m.push(ToClient::UnitNames { system: system.clone(), unit_names: n.unit_names.clone() });
+    }
     // Each system's talker aliases; the codes conventional frequencies carried: as last told, else as saved.
     let (heard, units): (Vec<ToClient>, Vec<ToClient>) = kept.into_iter().partition(|k| matches!(k, ToClient::Heard { .. }));
     m.extend(units);
@@ -857,6 +860,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             tokio::task::spawn_blocking(move || runtime::calls_query(&ctx2, id, &query)).await.ok()
         }
         Command::SetConfig { config, version } => match Config::from_value(config) {
+            Ok(c) if crate::iq_rules::check_all(&c.diagnostics).is_err() => {
+                let error = crate::iq_rules::check_all(&c.diagnostics).err();
+                Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error })
+            }
             Ok(mut c) => {
                 // While linked, a conventional system's channels are its file's
                 // (re-read: a spreadsheet may have changed it). Files are linked
@@ -912,9 +919,83 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         },
         // (Written beside the config; a recording takes it at once.)
         // (Off the async workers: the store's queue can be full, and the edit holds the talkgroups' lock while it hands over.)
-        Command::SetTalkgroups { system, talkgroups } => {
+        Command::SetTalkgroups { system, talkgroups, from } => {
             let ctx2 = ctx.clone();
-            failed(tokio::task::spawn_blocking(move || runtime::set_talkgroups(&ctx2, &system, talkgroups)).await.unwrap_or_else(|e| Err(e.to_string())))
+            failed(tokio::task::spawn_blocking(move || runtime::set_names(&ctx2, &system, talkgroups, from)).await.unwrap_or_else(|e| Err(e.to_string())))
+        }
+        Command::SetUnitNames { system, unit_names, from } => {
+            let ctx2 = ctx.clone();
+            failed(tokio::task::spawn_blocking(move || runtime::set_names(&ctx2, &system, unit_names, from)).await.unwrap_or_else(|e| Err(e.to_string())))
+        }
+        Command::SetUnitName { system, unit, name } => {
+            let ctx2 = ctx.clone();
+            failed(tokio::task::spawn_blocking(move || runtime::set_unit_name(&ctx2, &system, unit, name)).await.unwrap_or_else(|e| Err(e.to_string())))
+        }
+        // (Captures read and write the disk: off the async workers.)
+        Command::IqCaptures { id } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::iq_capture::listing(&ctx2, id, None)).await.ok()
+        }
+        Command::IqCaptureStart { id, seconds, note, what, problem } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                let error = crate::iq_capture::start(&ctx2, what, seconds, &note, problem).err();
+                crate::iq_capture::listing(&ctx2, id, error)
+            })
+            .await
+            .ok()
+        }
+        Command::IqCaptureReview { id, name } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::iq_capture::review(&ctx2, id, &name)).await.ok()
+        }
+        Command::IqCaptureSend { id, name } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                let error = crate::iq_capture::send(&ctx2, &name).err();
+                crate::iq_capture::listing(&ctx2, id, error)
+            })
+            .await
+            .ok()
+        }
+        Command::IqCaptureWithdraw { id, name } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                let error = crate::iq_capture::withdraw(&ctx2, &name).err();
+                crate::iq_capture::listing(&ctx2, id, error)
+            })
+            .await
+            .ok()
+        }
+        Command::IqRuleCheck { id, rule } => Some(ToClient::IqRuleChecked {
+            id,
+            error: serde_json::from_value::<trunk_app::config::CaptureRule>(rule).map_err(|e| e.to_string()).and_then(|r| crate::iq_rules::check(&r)).err(),
+        }),
+        Command::IqCaptureCancel { id, key } => {
+            crate::iq_capture::cancel(&ctx, key);
+            Some(crate::iq_capture::listing(&ctx, id, None))
+        }
+        Command::IqCaptureDelete { id, name } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                let error = crate::iq_capture::delete(&ctx2, &name).err();
+                crate::iq_capture::listing(&ctx2, id, error)
+            })
+            .await
+            .ok()
+        }
+        // (Counting and deleting read and write the store: off the async workers.)
+        Command::DataSummary { id } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::data::summary(&ctx2, id)).await.ok()
+        }
+        Command::DeleteData { id, kinds, system } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::data::delete(&ctx2, id, &kinds, system)).await.ok()
+        }
+        Command::CompactData { id } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::data::compact(&ctx2, id)).await.ok()
         }
         Command::SetTalkgroup { system, talkgroup, edit } => {
             let ctx2 = ctx.clone();

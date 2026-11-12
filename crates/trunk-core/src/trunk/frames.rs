@@ -3,44 +3,9 @@
 //! each frame's information bits and error counts as JSON lines, which
 //! `trunk-pro tool revoice` decodes again offline.
 
-use std::fmt::Write;
-
-use crate::mbe::{Kind, FRAME_SAMPLES, SAMPLE_RATE};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Codec {
-    /// Phase 1 full rate: 88 information bits.
-    Imbe,
-    /// Phase 2 half rate: 49 information bits.
-    Ambe,
-}
-
-/// One vocoder frame as the tracker decoded it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct VoiceFrame {
-    pub codec: Codec,
-    /// Information bits (0 / 1), after FEC.
-    pub bits: Vec<u8>,
-    /// IMBE: bit errors corrected in u0 (the Golay word carrying pitch). AMBE: 0.
-    pub e0: u32,
-    /// Bit errors the FEC corrected in the whole frame.
-    pub errs: u32,
-    /// Known lost (a cut LDU); `errs` is then meaningless.
-    pub erased: bool,
-    /// What the vocoder made of it.
-    pub kind: Kind,
-    /// AMBE+2: the tone the vocoder played for it, (ID, level): a tone
-    /// frame's, or the one a damaged frame repeated ([`crate::mbe::Decoder::tone_played`]).
-    pub tone: Option<(u8, u8)>,
-}
-
-impl VoiceFrame {
-    /// Repeated, muted or otherwise not synthesized as sent (a tone frame,
-    /// played as its tone, is as sent).
-    pub fn bad(&self) -> bool {
-        self.erased || !matches!(self.kind, Kind::Voice | Kind::Tone)
-    }
-}
+use crate::mbe::{FRAME_SAMPLES, SAMPLE_RATE};
+// (The plugin SDK's, which plugins get on the `voice` topic.)
+pub use trunk_recorder_plugin::{Codec, VoiceFrame};
 
 /// Seconds of audio per [`ErrorInterval`].
 pub const ERROR_INTERVAL_S: f64 = 10.0;
@@ -110,60 +75,6 @@ impl FrameErrors {
     }
 }
 
-fn kind_name(k: Kind) -> &'static str {
-    match k {
-        Kind::Voice => "voice",
-        Kind::Repeat => "repeat",
-        Kind::Muted => "muted",
-        Kind::Erasure => "erasure",
-        Kind::Tone => "tone",
-    }
-}
-
-/// Information bits, MSB first, as hex (the last byte zero-padded).
-pub fn bits_hex(bits: &[u8]) -> String {
-    bits.chunks(8)
-        .map(|c| {
-            let b = c.iter().enumerate().fold(0u8, |a, (i, &v)| a | ((v & 1) << (7 - i)));
-            format!("{b:02x}")
-        })
-        .collect()
-}
-
-/// [`bits_hex`] back to `n` bits.
-pub fn hex_bits(hex: &str, n: usize) -> Option<Vec<u8>> {
-    if hex.len() != n.div_ceil(8) * 2 {
-        return None;
-    }
-    let mut bits = Vec::with_capacity(n);
-    for k in 0..hex.len() / 2 {
-        let b = u8::from_str_radix(hex.get(2 * k..2 * k + 2)?, 16).ok()?;
-        bits.extend((0..8).map(|i| (b >> (7 - i)) & 1));
-    }
-    bits.truncate(n);
-    Some(bits)
-}
-
-/// The frame capture: one JSON object per line, `pos` in seconds of the
-/// call's audio (frame k covers [pos, pos + 0.02)).
-pub fn frames_jsonl(frames: &[VoiceFrame]) -> String {
-    let mut s = String::with_capacity(frames.len() * 110);
-    for (k, f) in frames.iter().enumerate() {
-        let _ = writeln!(
-            s,
-            "{{\"pos\":{:.2},\"codec\":\"{}\",\"bits\":\"{}\",\"e0\":{},\"errs\":{},\"erased\":{},\"out\":\"{}\"}}",
-            k as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64,
-            if f.codec == Codec::Imbe { "imbe" } else { "ambe" },
-            bits_hex(&f.bits),
-            f.e0,
-            f.errs,
-            f.erased,
-            kind_name(f.kind)
-        );
-    }
-    s
-}
-
 /// A call's frame bookkeeping: always the error summary, the frames
 /// themselves only when captured.
 #[derive(Clone, Debug, Default)]
@@ -194,12 +105,12 @@ impl CallFrames {
         CallFrames { errors: FrameErrors::default(), captured: capture.then(Vec::new), stats: Vec::new() }
     }
 
-    pub fn push(&mut self, f: VoiceFrame) {
-        let st = FrameStat::of(&f);
+    pub fn push(&mut self, f: &VoiceFrame) {
+        let st = FrameStat::of(f);
         self.stats.push(st);
         self.errors.add_stat(st);
         if let Some(c) = self.captured.as_mut() {
-            c.push(f);
+            c.push(f.clone());
         }
     }
 
@@ -233,6 +144,7 @@ impl CallFrames {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mbe::Kind;
 
     fn frame(errs: u32, kind: Kind) -> VoiceFrame {
         VoiceFrame { codec: Codec::Imbe, bits: vec![1; 88], e0: 0, errs, erased: false, kind, tone: None }
@@ -252,14 +164,5 @@ mod tests {
         let list = e.intervals();
         assert_eq!((list[0].pos, list[0].len, list[0].frames), (0.0, 10.0, 500));
         assert_eq!((list[2].pos, list[2].len, list[2].frames, list[2].error_count, list[2].bad_frames, list[2].max_frame_errors), (20.0, 4.0, 200, 200, 1, 1));
-    }
-
-    #[test]
-    fn bits_round_trip_through_hex() {
-        let bits: Vec<u8> = (0..49).map(|i| ((i * 7 + 3) % 5 == 0) as u8).collect();
-        let h = bits_hex(&bits);
-        assert_eq!(h.len(), 14);
-        assert_eq!(hex_bits(&h, 49), Some(bits));
-        assert_eq!(hex_bits("zz", 8), None);
     }
 }

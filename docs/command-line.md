@@ -120,9 +120,9 @@ trunk-pro devices [--usrp [args]]
 ```
 
 Lists the RTL-SDRs it can see (model and serial number; one the app is recording from is shown as `recording`, not opened) and the HackRFs, then whether the optional Airspy
-(libairspy), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy and
-bladeRF it lists the devices: Airspys with their model (R2 or Mini) and the sample rates they run
-at, bladeRFs with their full serials; for
+(libairspy), HydraSDR (libhydrasdr), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy,
+HydraSDR and bladeRF it lists the devices: Airspys with their model (R2 or Mini) and the sample rates they run
+at, HydraSDRs with theirs, bladeRFs with their full serials; for
 SoapySDR it lists the installed modules (and any that failed to load, with why) and the devices
 found. USRPs are only searched for with `--usrp`, optionally with UHD device arguments
 (`--usrp type=b200`), because a search can be slow.
@@ -178,7 +178,7 @@ trunk-pro replay --source cap1.cu8,center,rate[,format] [--source …] --cc Hz[,
 
 | Option | Default | What it does |
 |---|---|---|
-| `<capture>` | | One capture file (the first argument that isn't an option) |
+| `<capture>` | | One capture file (the first argument that isn't an option), or a SigMF capture: its folder, `.sigmf-collection` or `.sigmf-meta`. A SigMF capture says its centre, rate and format; [one made by the recorder](guides/recordings.md#capture-a-known-good-sample) also says its systems, so it needs no other options. |
 | `--center Hz` | | Its centre frequency |
 | `--rate Hz` | 2400000 | Its sample rate |
 | `--source file,center,rate[,format]` | | A capture with its own centre and rate; repeat for several radios. They're fed in step, as they would be live. |
@@ -259,6 +259,7 @@ called `conv`.
 | `--max-call s` | 0 (no limit) | Split calls longer than this |
 | `--transmissions` | off | Conversation mode off: each transmission is a call of its own (`conversationMode`) |
 | `--min-transmission s` | 0 | Leave out transmissions shorter than this |
+| `--tapes dir` | | Also write each channel as a SigMF tape in `dir`: its IQ and what its decoder needs, for [`tool channel`](#tool-channel) |
 | `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
 | `--messages` | off | Print every control channel message |
 | `--quiet` | off | Don't print control channels, calls and files as they happen |
@@ -342,10 +343,14 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool smartnet` | One SmartNet control channel's messages |
 | `tool dmrscan` | Every DMR carrier in a capture |
 | `tool dmr` | One DMR channel's link control, CSBKs and calls |
+| `tool dmrsynth` | Make a synthetic DMR capture |
 | `tool nxdnscan` | Every NXDN carrier in a capture |
 | `tool nxdn` | One NXDN channel's messages |
 | `tool nxdnsynth` | Make a synthetic NXDN capture |
 | `tool p25synth` | Make a synthetic P25 Phase 1 capture, encrypted with a key of yours or clear |
+| `tool perf` | One radio's read path over a capture, for counting its CPU cost |
+| `tool corpus` | The recordings regression tests run on: add, download and replay them |
+| `tool channel` | Run one channel tape through its decoder alone |
 | `tool snr` | Weak-signal curves: decode a strong channel again with noise added |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
 | `tool sdr` | A saved `.sdr` call's metadata, or its frames |
@@ -403,6 +408,17 @@ trunk-pro tool dmr <capture.cu8> --center Hz --rate Hz --freq Hz [--bursts] [--a
 codes and what they carry. `dmr` prints one channel's messages; `--bursts` prints every burst, and
 `--audio` writes a slot's voice (8 kHz, 32-bit float).
 
+### tool dmrsynth
+
+```bash
+trunk-pro tool dmrsynth <out.cu8> [--center 464000000] [--freq centre+100000] [--rate 2400000]
+                        [--superframes 15] [--tg 101] [--source 1234] [--cc 1]
+```
+
+Writes a synthetic DMR repeater on `--freq`: idle bursts, a voice call on slot 1 (made-up voice
+frames), idle again. `replay <out.cu8> --center 464000000 --rate 2400000 --dmr 464100000` records
+the call.
+
 ### tool nxdnscan, nxdn and nxdnsynth
 
 ```bash
@@ -447,6 +463,63 @@ trunk-pro replay test.cu8 --center 851000000 --rate 2400000 --p25 851100000 --ke
 
 The call should be saved with `"decrypted": 1` and sound like the call `--voice` came from.
 Replay it with a different key and it's noise.
+
+### tool perf
+
+```bash
+trunk-pro tool perf rtl|hackrf|airspy <capture.cu8> [--rate 2400000] [--passes 1]
+```
+
+Runs one radio's read path over a capture, on one thread: the bytes in the blocks that radio's
+driver hands over, through the driver's own per-block code (for an RTL-SDR or HackRF, the check for
+a stuck stream) and out of the queue its decoding thread reads. Nothing else runs, so counting the
+process's instructions gives that path's cost; `--passes N` goes over the capture N times. It's what
+`perf/gate.py` measures; see [Development](development.md#cpu-cost).
+
+### tool corpus
+
+```
+trunk-pro tool corpus add <capture folder> --manifest file --id ID --protocol P [--tier wideband]
+trunk-pro tool corpus fetch [--only a,b] [--tier t]
+trunk-pro tool corpus run --out dir [--only a,b] [--tier t] [--against next|version] [--bless next|version]
+trunk-pro tool corpus release <version>
+```
+
+The recordings regression tests run on, listed at [trunkrecorder.pro/corpus](https://trunkrecorder.pro/corpus) by SHA-256. `add` lists a SigMF
+capture in a local manifest and puts its files in the cache. `fetch` downloads what the cache lacks, resuming an interrupted
+download and keeping a file only if it matches its hash. `run` replays each capture into `<out>/<id>`, with
+what it printed in `<out>/<id>.stdout` and `.stderr`, compares each with its expected output, writes
+`<out>.report.json`, and fails if any replay failed or regressed. `--bless` keeps what it got as the expected
+output of the next release or of a version. `release` makes the unreleased expected output that version's.
+
+| Option | Default | What it does |
+|---|---|---|
+| `--manifest url-or-file` | `trunkrecorder.pro`'s list | The list of captures |
+| `--expected dir` | `corpus/expected` | Where expected output is kept |
+| `--cache dir` | `TRP_CORPUS_CACHE`, or `captures/.corpus` | Where the files are kept |
+| `--base url` | `https://iq.trunkrecorder.pro/blobs/` | Where files are downloaded from, by hash |
+| `--only a,b` | all | Just these capture ids |
+| `--tier t` | all | Just this tier (`wideband`, `control`, `voice`) |
+| `--against v` | `next`, else the newest at or below this build | The expected output to compare with |
+
+### tool submission
+
+```
+trunk-pro tool submission <folder> --out dir
+```
+
+Checks that a capture is what it says it is: its hash, size, clipping and lost samples, and whether anything decodes. It
+writes `checks.json` and a `waterfall-N.bin` for each radio to `dir`, as counts and levels, and fails if the capture
+doesn't check out.
+
+### tool channel
+
+```
+trunk-pro tool channel <tape folder> [--against <other tape folder>]
+```
+
+Runs a channel tape (`replay --tapes`) through its decoder alone and prints counts and hashes of what it heard.
+`--against` says how close two tapes of the channel are, in dB: what a channelizer change did to it.
 
 ### tool snr
 
@@ -571,6 +644,7 @@ trunk-pro interface add ~/wall-display --port 8090
 |---|---|
 | `TRUNK_PRO_UHD` | The UHD library file to load for USRPs, instead of searching for it |
 | `TRUNK_PRO_AIRSPY` | The libairspy library file to load, instead of searching |
+| `TRUNK_PRO_HYDRASDR` | The libhydrasdr library file to load, instead of searching |
 | `TRUNK_PRO_BLADERF` | The libbladeRF library file to load, instead of searching |
 | `TRUNK_PRO_SOAPY` | The SoapySDR library file to load, instead of searching |
 | `NO_COLOR` | When set (and `log.color` is empty), the log isn't coloured |

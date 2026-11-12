@@ -71,7 +71,7 @@ adds gives the `plugdev` group, and whoever is logged in at the machine's screen
 
 - RTL-SDRs (USB IDs `0bda:2832` and `0bda:2838`);
 - HackRF One (`1d50:6089` and `604b`);
-- Airspy R2 / Mini (`1d50:60a1`);
+- Airspy R2 / Mini (`1d50:60a1`), and the HydraSDR RFOne (`38af:0001` with updated firmware, v1.0.2; the Airspy's ID with the v1.0.0-rc2 it shipped with);
 - USRP B200 / B210 / B200mini / B206mini (Ettus `2500:0020`–`0023`, NI `3923:7813` and `7814`).
 
 For a service or an SSH session (nobody "at the screen"), your user must be in `plugdev`.
@@ -113,8 +113,7 @@ at boot, restart if it stops, and resume recording by itself. The tarball includ
 the same settings and recordings folder as when you run `trunk-pro` yourself.
 
 1. Set it up once. Either run `trunk-pro` on the machine and configure it in the browser, or do
-   step 4 first and configure it through the tunnel. Turn on **Start recording when the app
-   starts** in **Setup → Recording**, so that recording resumes after every restart.
+   step 4 first and configure it through the tunnel. Turn on **Record when the app starts** in **Setup → Recording**, so that recording resumes after every restart.
 
 2. Install and start the service. From the folder you unpacked:
 

@@ -80,7 +80,7 @@ export function LocationMap(props: { base: string; at: [number, number] | null; 
     if (Math.abs(c.lat - props.at[0]) > 1e-3 || Math.abs(c.lng - props.at[1]) > 1e-3) m.easeTo({ center: [props.at[1], props.at[0]], zoom: Math.max(m.getZoom(), 9) });
   }, [props.at?.[0], props.at?.[1]]);
 
-  if (failed) return <p className="muted small">The map isn't available right now: use your location, or type a place or coordinates.</p>;
+  if (failed) return <p className="muted small">Map unavailable: use your location or find a place</p>;
   return (
     <div className="location-map" role="region" aria-label="Map: move it so the circle is around where you are">
       <div ref={el} className="location-map-canvas" />

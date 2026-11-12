@@ -14,12 +14,13 @@
 // its kind of system chosen here, the sites far away left out.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { Fig, Figs, Info } from "./charts.tsx";
 import { fccPrimary, newSiteName, normalizeSite, normalizeSystem, sameSystem, trpBase, type SystemInput } from "./config.ts";
 import { findOnAir, findPlaces, setTalkgroups, snapshot, updateConfig, useSelect } from "./controller.ts";
 import { bundleSiteName, lookForBundle } from "./lookFor.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { Modal } from "./Identify.tsx";
-import type { Config, Site, System, Talkgroup } from "./protocol.ts";
+import type { Config, OriginFrom, Site, System, Talkgroup } from "./protocol.ts";
 import { mergeTalkgroups, readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
 
 export interface Bundle {
@@ -143,6 +144,16 @@ export function freeShortName(c: Config, wanted: string): string {
 /** The bundle's talkgroups (its talkgroup file, read). */
 const bundleTalkgroups = (b: Bundle): Talkgroup[] => (b.talkgroupsCsv.trim() ? readTalkgroupFile(b.talkgroupsCsv).talkgroups : []);
 
+/** Where the bundle's talkgroups came from: its directory (by its host), else the file it was read from. */
+function bundleOrigin(b: Bundle): OriginFrom {
+  if (!b.source.directory) return { kind: "file", name: b.source.id };
+  try {
+    return { kind: "directory", name: new URL(b.source.directory).host };
+  } catch {
+    return { kind: "directory", name: b.source.directory };
+  }
+}
+
 /** Add the bundle's system (these sites of it) as `shortName`, with its talkgroups. */
 export function addSystem(b: Bundle, shortName: string, sites: number[], talkgroups: Record<string, Talkgroup[]>): void {
   updateConfig((x) => {
@@ -150,7 +161,7 @@ export function addSystem(b: Bundle, shortName: string, sites: number[], talkgro
     x.systems.push(sys);
   });
   const theirs = bundleTalkgroups(b);
-  if (theirs.length) setTalkgroups(shortName, mergeTalkgroups(talkgroups[shortName] ?? [], theirs).talkgroups);
+  if (theirs.length) setTalkgroups(shortName, mergeTalkgroups(talkgroups[shortName] ?? [], theirs).talkgroups, bundleOrigin(b));
 }
 
 /**
@@ -186,7 +197,7 @@ export function updateSystem(b: Bundle, i: number, sites: number[], talkgroups: 
     }
   });
   const m = mergeTalkgroups(talkgroups[shortName] ?? [], bundleTalkgroups(b));
-  if (m.added) setTalkgroups(shortName, m.talkgroups);
+  if (m.added) setTalkgroups(shortName, m.talkgroups, bundleOrigin(b));
   return m.added;
 }
 
@@ -316,21 +327,34 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
         <>
           {find ? (
             <>
-              <p className="small muted">
-                {`${fccPrimary(b.system.fcc, [])?.callSign ?? ""} · ${licenses} licensed frequenc${licenses === 1 ? "y" : "ies"} · from `}
-                {source}
-              </p>
+              <div className="row">
+                <Figs inline items={[{ k: "Call sign", v: fccPrimary(b.system.fcc, [])?.callSign || "—" }, { k: "Licensed", v: licenses, u: licenses === 1 ? "frequency" : "frequencies" }]} />
+                <span className="small muted">from {source}</span>
+              </div>
               <p>
-                No one has shared it yet, so all that's known is its licenses. They don't say which frequency is its control channel, so the survey looks for it: it listens to these frequencies, the signals on them are marked as its own, and the
-                control channel it listens to sets it up.
+                Not shared yet: the survey finds its control channel{" "}
+                <Info>
+                  All that's known is its licenses, and they don't say which frequency is its control channel. The survey listens to these frequencies, the signals on
+                  them are marked as its own, and the control channel it hears sets it up.
+                </Info>
               </p>
             </>
           ) : (
-          <p className="small muted">
-            {`${fromFile ? "RadioReference sites" : (TYPES[b.system.type ?? ""] ?? b.system.type)} · ${b.system.sites.length} site${b.system.sites.length === 1 ? "" : "s"}${fromFile ? "" : ` · ${tgCount} named talkgroup${tgCount === 1 ? "" : "s"}`}${licenses ? ` · ${licenses} FCC license${licenses === 1 ? "" : "s"}` : ""} · from `}
-            {source}
-            {!fromFile && ` (version ${b.source.rev})`}
-          </p>
+          <div className="row">
+            <Figs
+              inline
+              items={[
+                { k: "Type", v: fromFile ? "RadioReference sites" : (TYPES[b.system.type ?? ""] ?? b.system.type ?? "—") },
+                { k: "Sites", v: b.system.sites.length },
+                !fromFile && { k: "Talkgroups", v: tgCount, title: "Named talkgroups" },
+                licenses > 0 && { k: "FCC licenses", v: licenses },
+              ]}
+            />
+            <span className="small muted">
+              from {source}
+              {!fromFile && ` (version ${b.source.rev})`}
+            </span>
+          </div>
           )}
           {!props.bundle.system.type && (
             <label className="field">
@@ -342,7 +366,7 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
                   </option>
                 ))}
               </select>
-              <span className="field-hint">A sites file doesn't say: as RadioReference lists the system.</span>
+              <span className="field-hint">As RadioReference lists it</span>
             </label>
           )}
           {!find && b.locations?.some(Boolean) && <Near b={b} onPick={setSites} />}
@@ -364,7 +388,8 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
               <legend className="small">You have it already: {existing.shortName}</legend>
               <label className="toggle small">
                 <input type="radio" name="import-mode" checked={mode === "update"} onChange={() => setMode("update")} />
-                Update {existing.shortName}: add what it lacks ({find ? "licenses" : "sites, licenses, talkgroups"}). Nothing of yours is replaced.
+                Update {existing.shortName}{" "}
+                <span className="muted">· adds missing {find ? "licenses" : "sites, licenses, talkgroups"}; replaces nothing</span>
               </label>
               <label className="toggle small">
                 <input type="radio" name="import-mode" checked={mode === "add"} onChange={() => setMode("add")} />
@@ -376,11 +401,8 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
             <label className="field">
               <span className="field-label">Short name</span>
               <input className="search" value={name} onChange={(e) => setName(cleanShortName(e.target.value))} />
-              <span className="field-hint">{taken ? "Already used: each needs its own." : "Its folder for calls, and how plugins know it."}</span>
+              <span className="field-hint">{taken ? "Already used: each needs its own" : "Its calls' folder; plugins know it by it"}</span>
             </label>
-          )}
-          {!find && (
-            <p className="small muted">Not sure which sites reach you? Check them on the air first: the survey listens to each one's control channels and keeps the ones it hears ticked.</p>
           )}
           <div className="row">
             <span className="spacer" />
@@ -388,7 +410,7 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
               Cancel
             </button>
             {!find && (
-              <button className="btn" disabled={!sites.length} onClick={() => look(sites)} title="Listen to each ticked site's control channels">
+              <button className="btn" disabled={!sites.length} onClick={() => look(sites)} title="Not sure which sites reach you? The survey listens to each ticked site's control channels and keeps the ones it hears ticked">
                 Check which I can hear
               </button>
             )}
@@ -406,14 +428,18 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
 function Near(props: { b: Bundle; onPick: (sites: number[]) => void }) {
   const [q, setQ] = useState("");
   const [within, setWithin] = useState(40);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<React.ReactNode>(null);
   const pick = async () => {
     const at = (await findPlaces(q.trim()))[0];
-    if (!at) return setNote("No such place found (or the directory couldn't be reached).");
+    if (!at) return setNote("No such place (or the directory couldn't be reached)");
     const locs = props.b.locations ?? [];
     const near = props.b.system.sites.map((_, k) => k).filter((k) => locs[k] && miles([at.lat, at.lon], locs[k]!) <= within);
     props.onPick(near);
-    setNote(`${near.length} of ${props.b.system.sites.length} sites within ${within} miles of ${at.name}, ${at.state}.`);
+    setNote(
+      <>
+        <Fig v={`${near.length}/${props.b.system.sites.length}`} u="sites" /> within {within} mi of {at.name}, {at.state}
+      </>,
+    );
   };
   return (
     <div className="stack">

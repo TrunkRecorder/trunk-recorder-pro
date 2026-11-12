@@ -33,12 +33,12 @@ impl Recorded {
 
     /// Voice heard by air time `now_s`: `samples`, and (digital) the frames
     /// they were vocoded from. What it carried besides speech, newly found.
-    pub fn push(&mut self, samples: &[f32], frames: impl IntoIterator<Item = VoiceFrame>, now_s: f64) -> News {
+    pub fn push(&mut self, samples: &[f32], frames: &[VoiceFrame], now_s: f64) -> News {
         let at = self.audio.len();
         self.tx.note(at, now_s);
         self.audio.extend_from_slice(samples);
         for f in frames {
-            self.inband.frame(&f, self.frames.count());
+            self.inband.frame(f, self.frames.count());
             self.frames.push(f);
         }
         self.inband.audio(samples, at)

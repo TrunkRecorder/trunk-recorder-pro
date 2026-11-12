@@ -53,7 +53,7 @@ fn measure(cfg: &Config, req: &Request) -> Result<Value, String> {
                 break;
             }
             Ok(SourceMsg::End { .. }) | Err(RecvTimeoutError::Disconnected) => break,
-            Ok(SourceMsg::Tuned { .. }) => {}
+            Ok(SourceMsg::Tuned { .. } | SourceMsg::Gain { .. }) => {}
             Err(RecvTimeoutError::Timeout) if last.elapsed() > TIMEOUT => {
                 err = Some("the source sent nothing".into());
                 break;

@@ -7,11 +7,11 @@ work differently here.
 ## Running the import
 
 1. Open the import, either way:
-   - On first run, the setup guide's welcome screen has **I have a Trunk Recorder config**.
+   - On first run, the setup guide's welcome screen has **Import a Trunk Recorder config**.
    - Any time later: **Setup** → **Systems** → **Import Trunk Recorder config…**.
 2. **Choose config.** In the desktop app you browse the recorder's computer: open the folder
    Trunk Recorder runs from, and when it holds a `config.json`, press **Use it** (or click any
-   `.json` file). **Or upload a config.json** picks one from the computer your browser is on
+   `.json` file). **Or upload a file…** picks one from the computer your browser is on
    instead. In the browser version, press **Choose config.json…**.
 3. **Review.** "Here's what comes over" lists the radios, systems, conventional channels, the
    recordings folder and any uploaders, with anything that needs attention marked:
@@ -70,7 +70,7 @@ USRP, Airspy, bladeRF and SoapySDR sources need their driver installed on this c
 | `control_channels` | its site's `controlChannelsHz` |
 | `modulation: "qpsk"` / `"fsk4"` | its site's `modulation` the same; anything else, or no `modulation`, becomes `"auto"` |
 | `talkgroupsFile` | The system's talkgroup file, `<shortName>.talkgroups.csv` beside the config (not a config key). Semicolon, tab or bar delimiters become commas, header names are tidied |
-| `unitTagsFile`, `unitTagsMode` | `unitNames.csv` (contents), `unitNames.name`, `unitNames.mode` |
+| `unitTagsFile`, `unitTagsMode` | The system's unit names, kept in the recorder's store (not a config key), each named as from that file; `unitNames.mode` |
 | `bandplan` | its site's `bandplan` (default `800_standard`), and the keys below |
 | `bandplanBase`, `bandplanSpacing`, `bandplanHigh` (MHz) | `bandplanBaseHz`, `bandplanSpacingHz`, `bandplanHighHz` (Hz) |
 | `bandplanOffset` | `bandplanOffset` |
@@ -177,7 +177,7 @@ not always Trunk Recorder's:
 |---|---|---|
 | `compressWav` | on | off (`archiveM4a: false`): turn on **Keep .m4a** if you want `.m4a` files kept |
 | `archiveFilesOnFailure` | off | on |
-| `multiSite` / duplicate calls | off: every copy saved | on (`dropDuplicateCalls: true`): a call heard on several sites is saved once. The import notes this; turn off **Save a call heard on several sites once** to keep every copy |
+| `multiSite` / duplicate calls | off: every copy saved | on (`dropDuplicateCalls: true`): a call heard on several sites is saved once. The import notes this; turn off **One copy per multi-site call** to keep every copy |
 | `modulation` | `qpsk` | `auto` (both receivers) |
 | `captureDir` | the folder it was started from | `~/TrunkRecorderPro` |
 | `frequencyFormat` | `exp` | `mhz` |
@@ -225,8 +225,9 @@ plugins are published. A Trunk Recorder MQTT status plugin entry isn't imported 
 
 The config is in the app's config folder ([where](configuration/README.md#where-the-file-is)), not
 the folder you run it from, and keys are camelCase with frequencies in Hz. Talkgroup files are copied into the
-recorder (its call store, or `<shortName>.talkgroups.csv` beside the config) and unit files stored **inside** it (`unitNames.csv`), so editing
-the original CSV afterwards changes nothing: load it again in Setup. A conventional system can stay linked to a
+recorder's store, and so are unit files, so editing the original CSV afterwards changes nothing: load it again in Setup,
+or edit one talkgroup or radio on its page. Each talkgroup and unit name remembers where it came from (the file it was
+imported from, until it's changed). A conventional system can stay linked to a
 channel CSV, though (`channelFile`), re-read at every Start.
 
 ### What stays compatible

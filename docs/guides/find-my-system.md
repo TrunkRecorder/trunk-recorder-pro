@@ -267,7 +267,7 @@ your location:
 - Or find a place: a city ("Arlington, VA"), a ZIP code, or a latitude and longitude.
 - Or move the map so its circle is roughly where you are. The circle is 5 km across: only your
   general area is needed. The map comes from trunkrecorder.pro, the systems directory's.
-- **Look for licenses within** sets how far: 10 to 150 km (50 by default). Wide-area systems can
+- **Search radius** sets how far: 10 to 150 km (50 by default). Wide-area systems can
   have towers 50 km or more away.
 
 The frequencies and the location go to trunkrecorder.pro, which answers from the FCC's license
@@ -277,8 +277,7 @@ location and distance for next time.
 
 There are three places to ask:
 
-- **The setup guide**: when choosing bands, turn on **Look up who holds the FCC license for each
-  system found** and give the location. When the scan finds a system, the guide shows who it is
+- **The setup guide**: when choosing bands, turn on **Look up FCC license holders** and give the location. When the scan finds a system, the guide shows who it is
   *Licensed to*.
 - **The survey** (Systems tab): **Identify surveyed sites**, under the signals found. The
   **Licensed to** column then shows each signal's nearest licensee, its call sign, radio service and

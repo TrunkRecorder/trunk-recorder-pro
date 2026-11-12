@@ -46,7 +46,7 @@ mod tests {
         let c: crate::Config = serde_json::from_str(r#"{"sources":[{"type":"file","path":"a.cf32","centerHz":1,"rateHz":2400000,"realtime":true}]}"#).unwrap();
         assert!(matches!(&c.sources[0].kind, crate::config::SourceKind::File { format: None, path, .. } if SampleFormat::of(None, path) == SampleFormat::Cf32));
         let c: crate::Config = serde_json::from_str(r#"{"sources":[{"type":"airspy","centerHz":1,"rateHz":6000000}]}"#).unwrap();
-        assert!(matches!(c.sources[0].kind, crate::config::SourceKind::Airspy { gain_step: 14, .. }));
+        assert!(matches!(c.sources[0].kind, crate::config::SourceKind::Airspy { gains: crate::config::AirspyGains { gain_step: 14, .. }, .. }));
         let c: crate::Config = serde_json::from_str(r#"{"sources":[{"type":"soapy","centerHz":1,"rateHz":8000000}]}"#).unwrap();
         assert!(matches!(&c.sources[0].kind, crate::config::SourceKind::Soapy { args, gain_db: None, .. } if args.is_empty()));
         let c: crate::Config = serde_json::from_str(r#"{"sources":[{"type":"bladerf","centerHz":1,"rateHz":10000000}]}"#).unwrap();

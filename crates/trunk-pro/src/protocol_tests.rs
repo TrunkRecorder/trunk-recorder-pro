@@ -437,7 +437,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         config_path: dir.join("config.json"),
         config: Mutex::new(cfg),
         config_version: std::sync::atomic::AtomicU64::new(1),
-        talkgroups: Mutex::new(Default::default()),
+        names: Mutex::new(Default::default()),
         hub: hub.clone(),
         lifecycle: Mutex::new(crate::runtime::Lifecycle::default()),
         phase: Mutex::new(crate::runtime::PhaseInfo::default()),
@@ -459,6 +459,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         spool: Mutex::new(None),
         clock: Default::default(),
         unlocked: Default::default(),
+        iq: Default::default(),
     });
     // The stats thread makes its folder as it starts: wait for that, so a
     // test that removes `dir` when done does not see it made again after.
@@ -562,7 +563,8 @@ fn the_servers_messages() {
     agg.begin(now as f64);
     let p = platform.sample(&mut agg, true);
     *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
-    ctx.talkgroups.lock().unwrap().insert("p25".into(), trunk_core::trunk::parse_rows("101,Fire Dispatch\n"));
+    let unit_names = trunk_core::trunk::read_unit_names("7,Engine 7\n").unit_names;
+    *ctx.names.lock().unwrap() = [("p25".to_string(), trunk_app::config::SystemNames { talkgroups: trunk_core::trunk::parse_rows("101,Fire Dispatch\n"), unit_names })].into();
     // The greeting: hello last, after how things are now; less of it for listen access.
     let heard = |control| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -615,7 +617,7 @@ fn the_servers_messages() {
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
     // Named from the name book the server keeps (talkgroup files and the config; aliases as saved).
-    let files: trunk_app::config::TalkgroupLists = [("p25".to_string(), trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))].into();
+    let files = trunk_app::config::talkgroup_lists([("p25", trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))]);
     ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
     ctx.shared.names.lock().unwrap().set_units("p25", "7,Engine 7\n");
     let named = |q: Value| crate::server::radio_query(&ctx, &body(q)).to_value().to_string();
@@ -644,7 +646,9 @@ fn the_servers_messages() {
         ToClient::CallSignResult { id: 3, results: vec![json!({ "callSign": "KNJA391", "licensee": "DISTRICT OF COLUMBIA", "serviceCode": "YE", "serviceDesc": null, "status": "A", "city": "WASHINGTON", "state": "DC" })], error: None },
         ToClient::LicenseResult { id: 2, results: vec![], error: Some("Couldn't reach https://trunkrecorder.pro".into()) },
         ToClient::Subscribed { topics: vec!["spectrum:0".into(), "log".into()] },
-        ToClient::TalkgroupEdited { system: "dcfd".into(), talkgroup: 101, edit: trunk_app::protocol::TalkgroupEdit { ignore: Some(true), alpha_tag: Some("FD Disp".into()), ..Default::default() } },
+        ToClient::TalkgroupEdited { system: "dcfd".into(), talkgroup: 101, edit: trunk_app::protocol::TalkgroupEdit { ignore: Some(true), alpha_tag: Some("FD Disp".into()), ..Default::default() }, origin: trunk_core::trunk::Origin::edited(1_762_500_000) },
+        ToClient::UnitNames { system: "dcfd".into(), unit_names: trunk_core::trunk::replace_rows(&[], trunk_core::trunk::read_unit_names("1234,Engine 12\n/^7(\\d{3})$/,Medic $1\n").unit_names, Some(&trunk_core::trunk::Origin { name: "units.csv".into(), at: 1_762_500_000, ..Default::default() })) },
+        ToClient::UnitNameEdited { system: "dcfd".into(), unit: 1234, name: "Bus 14".into(), origin: trunk_core::trunk::Origin::edited(1_762_500_000) },
         // What the recorder itself logs (logging::to_browsers).
         ToClient::Log { lines: vec![json!({ "timeS": 0, "time": 1_750_000_000.5, "level": "warning", "kind": "error", "text": "No RAM spool" })] },
     ];
@@ -697,7 +701,10 @@ fn messages_to_the_recorder() {
         json!({ "type": "licenseQuery", "id": 1, "lat": 38.9, "lon": -77.03, "radiusM": 50_000, "signals": [{ "freqHz": 857_987_500 }, { "freqHz": 489_087_500, "widthHz": 12_500 }] }),
         json!({ "type": "store", "kind": "interface" }),
         json!({ "type": "removeInterface", "id": "trunkamp" }),
-        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "comment": "# dispatch", "extra": [["Zone", "North"]] }] }),
+        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "comment": "# dispatch", "extra": [["Zone", "North"]] }], "from": { "kind": "radioReference" } }),
+        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "origin": { "kind": "file", "name": "dcfd.csv", "at": 1_762_500_000 } }] }),
+        json!({ "type": "setUnitNames", "system": "dcfd", "unitNames": [{ "unit": "1234", "name": "Engine 12" }, { "unit": "/^7(\\d{3})$/", "name": "Medic $1" }], "from": { "kind": "file", "name": "units.csv" } }),
+        json!({ "type": "setUnitName", "system": "dcfd", "unit": 1234, "name": "Bus 14" }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 101, "edit": { "ignore": true } }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 102, "edit": { "alphaTag": "FIRE4A", "description": "", "tag": "Fire Tac", "category": "Fire" } }),
     ];

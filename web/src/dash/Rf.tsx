@@ -6,15 +6,22 @@
 
 import { useState } from "react";
 import { autoTuneOn, configIndex, formatGain, formatMhz, sourceTitle, systemColor, usableHalfWidth } from "../config.ts";
-import { setView, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
-import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
+import { setView, useApp, useTopic, web, type AppState, type StatsRange } from "../controller.ts";
+import { BackBar, Card, Choice, Fig, Figs, Hint, Info, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall, type CcMark } from "../Waterfall.tsx";
-import { K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE, useHistory, useRanges, val } from "./data.ts";
+import { AdviceNote, useSourceAdvice } from "../sourceAdvice.tsx";
+import { K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE_WHY, useHistory, useRanges, val } from "./data.ts";
 import { adjacentCcMarks, ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
+import { IqCaptureCard } from "./IqCapture.tsx";
+
+/** A radio's gain as Setup has it, and what the radio is set to when that differs (`set`). */
+export function gainLine(c: Source | undefined, set?: string | null): string {
+  return set ? `${gainText(c)} · set to ${set}` : gainText(c);
+}
 
 /** A source's gain setting, as configured. */
 function gainText(c: Source | undefined): string {
@@ -25,6 +32,7 @@ function gainText(c: Source | undefined): string {
     case "usrp":
       return c.agc ? "AGC" : `${formatGain(c.gainDb)} dB${c.antenna ? ` · ${c.antenna}` : ""}`;
     case "airspy":
+    case "hydrasdr":
       return c.gainMode === "manual" ? (c.agc ? `AGC (VGA ${c.vgaStep})` : `LNA ${c.lnaStep} · mixer ${c.mixerStep} · VGA ${c.vgaStep}`) : `${c.gainMode} ${c.gainStep}`;
     case "bladerf":
       return c.agc ? "AGC" : `${c.gainDb} dB${c.biasTee ? " · bias-T" : ""}`;
@@ -63,46 +71,55 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
             <span className="stat-unit">dB</span>
           </div>
           <Meter value={peak === null ? null : peak + 60} max={60} zones={[54, 59]} title={`Peaks at ${num(peak)} dBFS`} label="peak level" />
-          <div className="stat-sub">{clip ? `${num(clip, 2)}% clipping` : "no clipping"}</div>
+          <div className="stat-sub">{clip ? <Figs inline items={[{ k: "Clipping", v: num(clip, 2), u: "%", level: clip > 0.5 ? "warn" : undefined }]} /> : "No clipping"}</div>
         </div>
         <Stat
           label="Frequency error"
           value={src.errorPpm == null ? "—" : signed(src.errorPpm, 2)}
           unit="ppm"
           sub={
-            <>
-              {autoTuneOn(src.settings) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}${src.tuneSeeded ? " (last run's)" : ""}` : src.errorPpm == null ? "needs a digital call or control channel" : "not corrected (AutoTune off)"}
-              {src.clockPpm != null && <div>Sample clock {signed(src.clockPpm, 2)} ppm against this computer</div>}
-            </>
+            <Figs
+              items={[
+                autoTuneOn(src.settings)
+                  ? { k: src.tuneSeeded ? "AutoTune (last run)" : "AutoTune", v: signed(src.tunePpm ?? 0, 2), u: "ppm", title: "The correction AutoTune applies" }
+                  : src.errorPpm == null
+                    ? { k: "Needs", v: "digital signal", title: "Measured on a digital call or control channel (P25, NXDN)" }
+                    : { k: "AutoTune", v: "off", title: "Not corrected" },
+                src.clockPpm != null && { k: "Clock vs PC", v: signed(src.clockPpm, 2), u: "ppm", title: "The radio's sample clock against this computer's" },
+              ]}
+            />
           }
           spark={small ? undefined : <LiveSpark k={K.src(src.label, "ppm")} color="var(--series-2)" minSpan={1} title="Measured error, last 10 min" />}
-          hint="The median of the last 20 measurements, on control channels and digital calls (P25, NXDN). Steady: set ppm; drifting: temperature."
+          hint="Median of the last 20 measurements on control channels and digital calls. Steady: set ppm; drifting: temperature."
         />
         <Stat
           label="Dropped"
           value={compact(drops)}
           unit="samples/s"
           level={drops > 0 ? "bad" : undefined}
-          sub={`${compact(src.dropped)} this run`}
-          hint="Lost by the driver (USB or CPU); calls lose audio."
+          sub={<Figs inline items={[{ k: "Since start", v: compact(src.dropped), level: src.dropped > 0 ? "warn" : undefined }]} />}
+          hint="Lost by the driver (USB or CPU); calls lose audio"
         />
       </div>
-      {src.unused && <Hint>{UNUSED_SOURCE}</Hint>}
+      {src.unused && (
+        <div className="row src-unused">
+          <span className="chip warn">Unused</span>
+          <span className="muted">Probably removable</span>
+          <Info label="Why unused">{UNUSED_SOURCE_WHY}</Info>
+        </div>
+      )}
       {!small && (
-        <div className="kv small">
-          <span>
-            {/* (Setup's: the desktop recorder takes a new gain while recording.) */}
-            Gain <b>{gainText(k >= 0 ? s.config!.sources[k] : src.settings)}</b>
-          </span>
-          <span>
-            Rate <b>{num(src.rateMeasured / 1e6, 3)}</b> of {num(src.rateHz / 1e6, 3)} MS/s
-          </span>
-          {src.errors > 0 && (
-            <span>
-              Errors <b>{src.errors}</b>
-              {src.lastError ? ` — ${src.lastError}` : ""}
-            </span>
-          )}
+        <div className="row src-facts">
+          {/* (Gain: Setup's — the desktop recorder takes a new gain while recording.) */}
+          <Figs
+            inline
+            items={[
+              { k: "Gain", v: gainLine(k >= 0 ? s.config!.sources[k] : src.settings, src.gainSet) },
+              { k: "Rate", v: num(src.rateMeasured / 1e6, 3), u: `of ${num(src.rateHz / 1e6, 3)} MS/s`, level: src.rateMeasured > 0 && Math.abs(src.rateMeasured / src.rateHz - 1) > 0.05 ? "warn" : undefined },
+              src.errors > 0 && { k: "Errors", v: src.errors, level: "bad", title: src.lastError ?? undefined },
+            ]}
+          />
+          {src.errors > 0 && src.lastError && <span className="muted small">{src.lastError}</span>}
         </div>
       )}
     </Card>
@@ -227,30 +244,30 @@ function BandOverview({ s }: { s: AppState }) {
       <div className="legend small">
         <span>
           <i className="sw-src" />
-          source passband (darker: usable)
+          Source (darker: usable)
         </span>
         <span>
           <i className="sw-cc" />
-          control channel
+          Control channel
         </span>
         {adjacent.length > 0 && (
-          <span>
+          <span title="An adjacent site's control channel, labelled WACN:System:RFSS-site">
             <i className="sw-adj" />
-            adjacent site's control channel (WACN:System:RFSS-site)
+            Adjacent site
           </span>
         )}
         <span>
           <i className="sw-rec" />
-          call recording
+          Recording
         </span>
         <span>
           <i className="sw-mon" />
-          call followed, not recorded
+          Followed, not recorded
         </span>
         {conv.length > 0 && (
           <span>
             <i className="sw-conv" />
-            conventional channel
+            Conventional
           </span>
         )}
       </div>
@@ -365,7 +382,7 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
       <SourceWaterfall s={s} i={i} title="Waterfall" />
       <Card title="Across the band">
         {d ? <ChannelPlot profile={d.profile} channels={d.channels} src={src} color={color} /> : <div className="chart-empty">Measuring…</div>}
-        <Hint>Bars: noise floor. Stems: channels; 10 dB+ above the floor is clean.</Hint>
+        <Hint>Bars: noise floor · Stems: channels (10+ dB above: clean)</Hint>
       </Card>
       {d && d.channels.length > 0 && (
         <Card title="Channels on this source">
@@ -405,7 +422,9 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
             </table>
           </div>
           {meanOffset !== null && Math.abs(meanOffset * 1e6) > 1 && (
-            <Hint>Every carrier is about {signed(meanOffset * 1e6, 1)} ppm off: set the source's ppm or turn on AutoTune.</Hint>
+            <p className="why why-warn">
+              All carriers <Fig v={signed(meanOffset * 1e6, 1)} u="ppm" level="warn" /> off — set ppm or turn on AutoTune
+            </p>
           )}
         </Card>
       )}
@@ -436,17 +455,23 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
 export function RfPage() {
   const s = useApp();
   const i = s.path[0] !== undefined ? Number(s.path[0]) : null;
+  // (Suggested settings for the sources: said here, taken in Setup.)
+  const advice = useSourceAdvice(running(s) && i === null ? s.config : null);
   if (!running(s) || !s.sources.length) {
     return (
       <div className="page">
         <p className="empty">Start recording to see the sources.</p>
         {s.config?.sources.map((src, k) => (
           <Card key={k} title={sourceTitle(s.config!, k)}>
-            <div className="kv small">
-              <span>
-                {src.type} · {mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s · gain {gainText(src)}
-              </span>
-            </div>
+            <Figs
+              inline
+              items={[
+                { k: "Type", v: src.type },
+                { k: "Centre", v: src.centerHz ? mhz(src.centerHz, 3) : "auto", u: src.centerHz ? "MHz" : undefined },
+                { k: "Rate", v: num(src.rateHz / 1e6, 2), u: "MS/s" },
+                { k: "Gain", v: gainText(src) },
+              ]}
+            />
           </Card>
         ))}
       </div>
@@ -455,6 +480,7 @@ export function RfPage() {
   if (i !== null && s.sources[i]) return <SourceDetail s={s} i={i} />;
   return (
     <div className="page">
+      <AdviceNote advice={advice} />
       <BandOverview s={s} />
       {s.sources.map((src, k) => (
         <div key={k} className="src-row">
@@ -462,6 +488,7 @@ export function RfPage() {
           <SourceWaterfall s={s} i={k} />
         </div>
       ))}
+      {!web && <IqCaptureCard />}
     </div>
   );
 }

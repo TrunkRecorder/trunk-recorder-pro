@@ -41,8 +41,8 @@ with `--config` files in different folders never share band plans, talker aliase
 - **Frequencies are in Hz, everywhere.** 857.9875 MHz is `857987500`. Keys carry their unit in the
   name: `…Hz`, `…Db`, `…S` (seconds), `…Kbps`, `…Mb`, `…PerS`. The Airspy gains are the driver's
   steps (`…Step`), not dB.
-- **A key ending in `Csv` holds a file's contents, not a path** (`unitNames.csv`).
-  A key ending in `File` holds a path (`channelFile`).
+- **A key ending in `File` holds a path** (`channelFile`). Talkgroups and unit names aren't in the
+  config at all: they're kept in the recorder's store, loaded and edited in Setup.
 - **A missing key takes its default**, listed in each table. The few marked ✓ in the Required column
   have no default: a source without its `centerHz`, for example, makes the file unreadable.
 - **A missing `sources` key gives one RTL-SDR** with default settings (first free dongle, Auto
@@ -85,7 +85,7 @@ with `--config` files in different folders never share band plans, talker aliase
 | `recording` | | see page | object | Where calls go and which are kept. [recording.md](recording.md) |
 | `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
-| `monitor` | | see page | object | The dashboard's internet checks. [server-and-log.md](server-and-log.md#monitor) |
+| `monitor` | | see page | object | What the dashboard checks: hosts, the time server, the clock. [server-and-log.md](server-and-log.md#monitor) |
 | `storage` | | `{ "backend": "sqlite", "retentionDays": 120, "commitSeconds": 300, "statsDays": 365 }` | object | The call store: where it's kept, how long calls stay in it, and how far apart it commits. [See below](#the-store-storage) |
 | `plugins` | | `{}` | object | Which plugins run and their recorder-wide settings, by plugin id. [plugins.md](plugins.md) |
 | `keys` | | `{}` | object | P25 encryption key sources, by name: where each set of keys is read from. [Encryption keys](systems.md#encryption-keys-keys) |
@@ -169,6 +169,20 @@ PostgreSQL, backups are the database's.
 thousand at a time, when the app starts and every hour after. `0` keeps them all. It never deletes
 the calls' audio and JSON files: they stay where they were recorded (deleting recordings is issue
 #25).
+
+**The radio registry** is every talkgroup, radio and pair of radios each system has heard: the
+Radio page, first-heard alerts and `radioQuery` answer from it. It's held in memory (about 2 kB a
+radio) and saved in the store as it changes. Two settings bound it, per system:
+
+| Setting | Default | |
+|---|---|---|
+| `registryRadios` | 20,000 | Radios kept. Past it, the least recently heard go. Talkgroups get a quarter as many (5,000 at least) and pairs two and a half times as many. `0`: no cap, so the days alone bound it. |
+| `registryDays` | 365 | Days a talkgroup, radio or pair not heard is kept. `0`: however old. |
+
+What's forgotten comes back as new if it's heard again. A statewide system can fill 20,000 radios
+in days, so raise it on a computer with the memory. Both apply at once (Setup → Data), and
+Platform → Storage shows how full each system's registry is. `radioQuery`'s `summary` gives the
+caps (`caps`), and a `limit` up to `caps.radios` returns every radio heard.
 
 `commitSeconds` (default 300, 10 to 3600) is how far apart the store's commits are when calls are
 coming in. Each commit writes whole pages, twice on SQLite (the log, then the database), so fewer
@@ -365,8 +379,8 @@ then Start). A few apply at once:
 | Applies at once | Applies at the next Start | Applies when the app restarts |
 |---|---|---|
 | A trunked system's talkgroup file: an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
-| Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them | Recording rules, `filenameFormat`, `captureDir` | `monitor.probeHosts` |
-| `log` settings, `monitor.networkChecks` | `recording.ramSpool` (the interface says "from the next start") | |
+| Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them | Recording rules, `filenameFormat`, `captureDir` | |
+| `log` settings, `monitor` (the hosts checked, the time server, the Checks switch) | `recording.ramSpool` (the interface says "from the next start") | |
 | `server.allowedOrigins`, `server.interfaces` (an interface moves to its new port at once) | A linked `channelFile` is re-read at every Start | |
 
 ## Files kept beside the config

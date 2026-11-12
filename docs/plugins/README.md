@@ -263,8 +263,7 @@ A plugin's log lines (except debug ones) also go to the recorder's log, prefixed
   while calls are waiting
 - any figures of its own the plugin reports, such as simplestream's **Packets sent** and
   **Packets dropped**
-- when it last succeeded and failed, how long it has been up, how many times it was
-  **Restarted**, and how many events it **Fell behind** on
+- when it last succeeded and failed, how long it has been up, how many **Restarts** it had, and how many events it **Fell behind** on
 - **Last 24 h and log**: charts of sent, failed and waiting, and its log
 
 A change in a plugin's health (to a warning, to an error, or back to working) shows up as an

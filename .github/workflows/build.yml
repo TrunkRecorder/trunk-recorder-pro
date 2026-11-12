@@ -33,7 +33,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: v
         name: Version (the tag, or Cargo.toml's + -dev.<commit>)
         run: |
@@ -53,8 +53,8 @@ jobs:
     needs: meta
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
@@ -67,16 +67,16 @@ jobs:
       # (The tests and both interfaces use the WebAssembly the wasm step builds: src/rules.ts.)
       - run: npm ci && npm run schema -- --check && npm run wasm && npm test && npm run build && npm run build:web
         working-directory: web
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: web-dist, path: web/dist }
       - name: Third-party notices (every platform's crates + the bundled npm packages)
         run: |
           cargo fetch --locked
           mkdir -p pkg && python3 scripts/third_party_notices.py > pkg/THIRD-PARTY-NOTICES.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: notices, path: pkg/THIRD-PARTY-NOTICES.txt }
       - run: packaging/package.sh browser ${{ needs.meta.outputs.version }} web/dist-web pkg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: pkg-browser, path: pkg/trunk-pro-*.zip }
 
   test:
@@ -92,12 +92,31 @@ jobs:
     env:
       TRP_PG_URL: postgres://trp:trp-test@localhost:5432/trp
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --release --workspace --locked
       - run: cargo check --release -p trunk-web --target wasm32-unknown-unknown --locked
+
+  # CPU cost: the instructions each stage takes on synthetic IQ, against
+  # perf/baseline.json (perf/gate.py; fails when one rises more than 2%).
+  # Valgrind's count is exact, so the compiler is pinned: a new Rust moves
+  # every count, and its baseline comes with the upgrade (perf-counts.json).
+  perf:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.99.0" }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: perf }
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq valgrind
+      - run: cargo build --release --locked -p trunk-pro
+      - run: perf/gate.py --counter cachegrind --summary "$GITHUB_STEP_SUMMARY" --json perf-counts.json
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with: { name: perf-counts, path: perf-counts.json, if-no-files-found: ignore }
 
   build:
     needs: [meta, web, test]
@@ -113,10 +132,10 @@ jobs:
     env:
       VERSION: ${{ needs.meta.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with: { name: web-dist, path: web/dist }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: notices, path: pkg }
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -181,7 +200,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: packaging/package.sh ${{ matrix.kind }} "$VERSION" "$BIN" pkg
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pkg-${{ matrix.kind }}
           path: |
@@ -198,8 +217,8 @@ jobs:
     env:
       VERSION: ${{ needs.meta.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with: { pattern: pkg-*, path: dist, merge-multiple: true }
       - name: Checksums and release notes
         run: |
@@ -208,7 +227,7 @@ jobs:
           awk -v v="## [$VERSION]" 'index($0, v) == 1 {on = 1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
           [ -s notes.md ] || echo "Trunk Recorder Pro $VERSION" > notes.md
           cat notes.md
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           name: Trunk Recorder Pro ${{ env.VERSION }}
           body_path: notes.md

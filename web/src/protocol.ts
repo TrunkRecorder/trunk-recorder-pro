@@ -30,23 +30,24 @@ export type Source = (
    * `wireFormat`: samples on the wire, "sc16", "sc12" (B2xx), "sc8"; "" or absent = sc16, or sc12 for a B2xx on USB 2.0 above 8 MSPS.
    */
   | { type: "usrp"; args: string; gainDb: number; agc: boolean; antenna: string; wireFormat?: string }
-  /**
-   * Airspy R2 / Mini through libairspy (desktop app). `gainStep`: a 0–21 step of the linearity or sensitivity
-   * table (`gainMode`); "manual": each stage's step, LNA 0–14, mixer 0–15, VGA 0–15, with `agc` the Airspy's own on LNA and mixer.
-   */
-  | {
+  /** Airspy R2 / Mini through libairspy (desktop app). */
+  | ({
       type: "airspy";
       serial: string;
-      gainMode: AirspyGainMode;
-      gainStep: number;
-      lnaStep: number;
-      mixerStep: number;
-      vgaStep: number;
-      agc: boolean;
       biasTee: boolean;
       /** 12-bit samples packed on the USB: a quarter less of the bus (default true). */
       packing: boolean;
-    }
+    } & AirspyGains)
+  /** HydraSDR RFOne through libhydrasdr 1.1+ (desktop app). `rfPort`: the input, 0 ANT (the one with the bias-T), 1 CABLE1, 2 CABLE2. */
+  | ({
+      type: "hydrasdr";
+      serial: string;
+      /** On the ANT input only (the source won't start with it on another). */
+      biasTee: boolean;
+      /** 12-bit samples packed on the USB (default true). */
+      packing: boolean;
+      rfPort: number;
+    } & AirspyGains)
   /**
    * bladeRF 2.0 micro (xA4 / xA9) or original bladeRF through libbladeRF (desktop app). `serial` "" = the first;
    * `bandwidthHz` the analog filter, 0 = the sample rate; `agc` the board's AGC instead of `gainDb`; `biasTee` bladeRF 2.0 only.
@@ -78,6 +79,18 @@ export type Source = (
 
 export type AirspyGainMode = "linearity" | "sensitivity" | "manual";
 
+/**
+ * An Airspy's gain (a HydraSDR's too: the same tuner and tables). `gainStep`: a 0–21 step of the linearity or
+ * sensitivity table (`gainMode`); "manual": each stage's step, LNA 0–14, mixer 0–15, VGA 0–15, with `agc` its own on LNA and mixer.
+ */
+export interface AirspyGains {
+  gainMode: AirspyGainMode;
+  gainStep: number;
+  lnaStep: number;
+  mixerStep: number;
+  vgaStep: number;
+  agc: boolean;
+}
 /** An optional driver (desktop app) and what it found; `devices` null = not searched. */
 export interface DriverState {
   available: boolean;
@@ -86,8 +99,8 @@ export interface DriverState {
 }
 /**
  * A radio its driver found. Once it has been opened in this run (by a source, or to ask
- * it — an Airspy is), it also says its `model` ("R2", "Mini", "bladeRF 2.0") and the sample
- * rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`).
+ * it — an Airspy or a HydraSDR is), it also says its `model` ("R2", "Mini", "RFOne", "bladeRF 2.0")
+ * and the sample rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`).
  */
 export interface FoundRadio {
   args?: string;
@@ -116,6 +129,7 @@ export interface Radios {
   /** Built in: always available. */
   hackrf: DriverState;
   airspy: DriverState;
+  hydrasdr: DriverState;
   bladerf: DriverState;
   soapy?: SoapyState;
 }
@@ -253,6 +267,8 @@ export interface System {
   pluginDelays?: DelayRule[];
   /** The tone signals it sends (pages, alerts, digit strings, Morse IDs): see SignalDef. */
   signals?: SignalDef[];
+  /** Multi-site: the site (by name) whose copy of a call is kept for the talkgroups whose row names none. */
+  preferredSite?: string;
   /** Where it is recorded from: one site, or several of one system. */
   sites: Site[];
 }
@@ -389,16 +405,39 @@ export interface RecordingRules {
 export type RecordingOverride = Partial<RecordingRules>;
 
 /**
- * Names for a system's radios: Trunk Recorder's unitTagsFile, kept as text
- * (headerless `unit,name`; a unit between slashes is a regular expression,
- * `/^1(\d{3})$/,Engine $1`), and unitTagsMode: "user" (these first, then the
- * aliases heard; the default), "ota" (the aliases first), "user_only", "none".
+ * Which names a system's radios go by — Trunk Recorder's unitTagsMode:
+ * "user" (its own names first, then the aliases heard; the default), "ota"
+ * (the aliases first), "user_only", "none". Its own names are kept beside
+ * the config ({@link UnitName}).
  */
 export interface UnitNames {
-  csv?: string;
-  name?: string;
   mode?: "" | "user" | "ota" | "user_only" | "none";
 }
+
+/**
+ * One of a system's own names for its radios: a line of Trunk Recorder's
+ * unitTagsFile, as the recorder keeps it. `unit`: the radio's ID, or a
+ * regular expression between slashes naming many (`/^1(\d{3})$/`, named
+ * `Engine $1`); the first row that matches names a radio.
+ */
+export interface UnitName {
+  unit: string;
+  name: string;
+  origin?: Origin;
+}
+
+/** How a talkgroup's or radio's names came in (crates/trunk-core/src/trunk/names.rs). */
+export type OriginKind = "file" | "radioReference" | "directory" | "trunkRecorder" | "edited";
+
+/** Where a row's names came from: its last change, not its history. `name`: the file's or directory's; `at`: Unix s. */
+export interface Origin {
+  kind: OriginKind;
+  name?: string;
+  at: number;
+}
+
+/** Where a list sent came from (`setTalkgroups`, `setUnitNames`): the recorder gives it the time. */
+export type OriginFrom = Omit<Origin, "at">;
 
 /** The log (desktop app), with Trunk Recorder's options (crates/trunk-app/src/config.rs LogSettings). */
 export interface LogSettings {
@@ -520,6 +559,8 @@ export interface Config {
   log?: LogSettings;
   /** What's kept on disk beside the config (desktop app): the call store. */
   storage?: StorageSettings;
+  /** Rules that record what the radios receive when something happens. */
+  diagnostics?: Diagnostics;
   /** What the dashboard watches on the computer (desktop app). */
   monitor?: MonitorSettings;
 }
@@ -539,16 +580,22 @@ export interface StorageSettings {
   statsDays?: number;
   /** Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system. */
   radioIndex?: boolean;
+  /** Radios the radio registry keeps a system (default 20,000): past it, the least recently heard go (talkgroups a quarter as many, 5,000 at least). 0: no cap, `registryDays` alone bounding it. */
+  registryRadios?: number;
+  /** Days a talkgroup, radio or pair the registry hasn't heard is kept (default 365); 0 keeps it however old. */
+  registryDays?: number;
   /** Index calls by their talkgroups (default true), so a talkgroup's calls page back as far as the store keeps them; off, a talkgroup's list is its recent calls. */
   talkgroupIndex?: boolean;
 }
 
 export interface MonitorSettings {
-  /** Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks. */
-  probeHosts: string[];
-  /** Off: neither the internet checks nor the time server are asked, whatever's set. Applies at once. */
+  /** Hosts to check the network reaches (host:port, a TCP connect every checkEveryS). Empty (the default): none; the dashboard goes by the services the plugins report. Applies at once. */
+  checkHosts: string[];
+  /** How often each of checkHosts is tried, s (5 at least). */
+  checkEveryS: number;
+  /** Off: neither checkHosts nor the time server are asked, whatever's set. Applies at once. */
   networkChecks: boolean;
-  /** The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked. */
+  /** The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked. Applies at once. */
   timeServer: string;
   /** The clock off by this much or more, ms: a warning, and calls marked clock_off (a problem at 5 s, or 4 times this). */
   clockWarnMs: number;
@@ -788,6 +835,8 @@ export interface SourceStatus {
   centerHz: number;
   rateHz: number;
   rateMeasured: number;
+  /** The gain its radio is set to, when that isn't the gain asked for (the radio's nearest step, or within its range here). */
+  gainSet?: string | null;
   dropped: number;
   errors: number;
   /** The last error, for 5 minutes after it. */
@@ -1442,7 +1491,7 @@ export interface DirListing {
 //   sys/<shortName>/voice/{frames,errors,bad}
 //   all/{calls,airMs,audioBytes}  day/{calls,airS,audioBytes}  eng/{load,recording,channels,recorders}
 //   plat/{cpu,proCpu,proCores,proMem,mem,memAvail,swap,memPsi,memLevel,load1,temp,throttledUs,piThrottled}
-//   plat/disk/<recordings|data>/{free,freePct}  net/{rx,tx,errors,up,rtt,dns}  net/probe/<target>/{up,rtt}
+//   plat/disk/<recordings|data>/{free,freePct}  net/{rx,tx,errors,up,rtt,dns}
 //   plg/<id>/{state,ok,skipped,failed,dropped,restarts,held,queued,latency,bytes}
 // Running totals arrive as rates per second; everything else as it is.
 
@@ -1582,6 +1631,8 @@ export interface PlatformInfo {
     backend: "sqlite" | "postgres";
     radioIndex: boolean;
     talkgroupIndex: boolean;
+    /** How full the radio registry is: each system's rows against the caps (null: none). */
+    registry: { caps: { talkgroups: number | null; radios: number | null; pairs: number | null; days: number | null }; systems: { system: string; talkgroups: number; radios: number; pairs: number }[] };
     sizes: StoreSizes;
     /** What it has written to disk: `of` "store" (SQLite's writer, counted by the OS: Linux), or "server" (PostgreSQL's write-ahead log, the whole server's); else `why` not. Its rate is the `store/written` series. */
     written: { bytes: number; of: "store" | "server" } | { why: string };
@@ -1790,6 +1841,8 @@ export interface RadioResultBody {
   system?: string;
   /** summary */
   systems?: Record<string, RadioSummary>;
+  /** summary: the registry's caps a system (null: none; a `limit` of `radios` is every radio heard), and the days an unheard row is kept. */
+  caps?: { talkgroups: number | null; radios: number | null; days: number | null };
   /** talkgroups, units, freqs, tones */
   hours?: number;
   total?: number;
@@ -1851,6 +1904,8 @@ export interface Talkgroup {
   comment?: string;
   /** Columns this app doesn't know, [name, value]: kept for the file it's downloaded as. */
   extra?: [string, string][];
+  /** Where its names came from (not in the file). */
+  origin?: Origin;
 }
 
 /** What an edit of one talkgroup sets; what's left out stays as it is. */
@@ -1861,6 +1916,126 @@ export interface TalkgroupEdit {
   category?: string;
   /** Never record it. */
   ignore?: boolean;
+}
+
+/** A table of the store's, as Setup → Data exports it: `GET /api/v1/export/{table}` (`?system=<id>`), a CSV file. */
+export type DataTable = "calls" | "transmissions" | "talkgroups" | "unit-names" | "talker-aliases" | "radios" | "heard-talkgroups" | "dashboard-history";
+
+/** A kind of the store's data, as Setup → Data deletes it. `calls`: the call index and each call's transmissions (the recordings stay); `registry`: the radios, talkgroups, pairs and frequencies heard. */
+export type DataKind = "calls" | "talkgroups" | "unitNames" | "talkerAliases" | "registry" | "dashboardHistory";
+
+/** How many of each the store has (dataSummary) or deleted (dataDeleted). */
+export interface DataCounts {
+  calls: number;
+  talkgroups: number;
+  unitNames: number;
+  talkerAliases: number;
+  /** The radio registry's radios and talkgroups heard. */
+  radios: number;
+  heardTalkgroups: number;
+  /** The dashboard's series. */
+  historySeries: number;
+}
+
+/** A recording of what the radios received. */
+export interface IqCapture {
+  /** Its folder's name. */
+  name: string;
+  path: string;
+  /** What it's of. */
+  tier: "wideband" | "control" | "voice";
+  /** `healthy` (made by hand) or `rule`. */
+  purpose: string;
+  /** The rule that made it. */
+  rule?: string;
+  seconds: number;
+  radios: number;
+  bytes: number;
+  note: string;
+  /** Samples the radios lost during it. */
+  lostSamples: number;
+  /** Control channel messages decoded and failed while it was made. */
+  messagesGood: number;
+  messagesBad: number;
+  /** Calls that ended while it was made. */
+  calls: number;
+  /** How sending it to the corpus stands, if it has been. */
+  send?: IqCaptureSend;
+}
+
+/** How the sending of a capture to the corpus stands. */
+export interface IqCaptureSend {
+  state: "sending" | "sent" | "failed";
+  receipt: string;
+  id: string;
+  doneBytes: number;
+  totalBytes: number;
+  error?: string;
+}
+
+/** A radio's power by frequency over time, as levels 0–255, in hex. */
+export interface IqWaterfall {
+  width: number;
+  height: number;
+  levels: string;
+}
+
+/** What to keep when a capture rule fires. */
+export interface CaptureTarget {
+  tier: "wideband" | "control" | "voice";
+  /** How long before, and after, it fired ("30s", "5m"). */
+  before?: string;
+  after?: string;
+}
+
+/** When to record what the radios receive: an event, a condition on it in CEL, and what to keep. */
+export interface CaptureRule {
+  id: string;
+  enabled: boolean;
+  on: string;
+  /** Only these systems (none: any). */
+  systems?: string[];
+  if?: string;
+  /** Fire only after this many matches in a window, counted apart for each value of `by`. */
+  repeat?: { count: number; within: string; by: string };
+  /** A `schedule` rule: how often. */
+  every?: string;
+  capture: CaptureTarget[];
+  limit?: { cooldown: string };
+}
+
+/** Capture rules and what they may use. */
+export interface Diagnostics {
+  /** Where captures of the radios go (none: `iq-captures` in the recordings folder). */
+  captureDir?: string;
+  rules?: CaptureRule[];
+  budget?: { capturesPerDay: number; mbPerDay: number; ramMb: number };
+}
+
+/** What a capture asked for by hand records: every radio, one site's control channel (its `index`), or the next call on a system (on one of its talkgroups). */
+export type CaptureWhat = { kind: "radios" } | { kind: "control"; site: number } | { kind: "call"; system: string; talkgroup?: number };
+
+/** A capture asked for by hand that waits on the air: a control channel recording for `seconds`, or the next call. */
+export interface IqCaptureWaiting {
+  key: number;
+  /** What it's of, in words. */
+  text: string;
+  seconds?: number;
+  elapsedS: number;
+}
+
+/** A capture being made. */
+export interface IqCaptureActive {
+  name: string;
+  seconds: number;
+  elapsedS: number;
+}
+
+/** A system the store keeps data of: one of the config's (`inConfig`), or one removed whose data stayed. */
+export interface DataSystem extends DataCounts {
+  id: number;
+  shortName: string;
+  inConfig: boolean;
 }
 
 export type FromRecorder =
@@ -1898,8 +2073,12 @@ export type FromRecorder =
   | { type: "configSaved"; version: number; error?: string }
   /** A system's talkgroups: one message for each system with some on connecting, and again whenever they change (setTalkgroups). Kept beside the config, not in it. */
   | { type: "talkgroups"; system: string; talkgroups: Talkgroup[] }
-  /** One talkgroup of system `system`'s edited (setTalkgroup): make the same edit to the talkgroups kept (talkgroups.ts withEdit). */
-  | { type: "talkgroupEdited"; system: string; talkgroup: number; edit: TalkgroupEdit }
+  /** One talkgroup of system `system`'s edited (setTalkgroup): make the same edit to the talkgroups kept, by `origin` (talkgroups.ts withEdit). */
+  | { type: "talkgroupEdited"; system: string; talkgroup: number; edit: TalkgroupEdit; origin: Origin }
+  /** A system's own names for its radios, as `talkgroups` (setUnitNames). */
+  | { type: "unitNames"; system: string; unitNames: UnitName[] }
+  /** Radio `unit` of system `system` named `name` (setUnitName; "": its own name taken out): make the same edit, by `origin` (units.ts withUnitName). */
+  | { type: "unitNameEdited"; system: string; unit: number; name: string; origin: Origin }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
   | ({ type: "spectrum" } & Spectrum)
   | { type: "log"; lines: LogLine[] }
@@ -1949,13 +2128,32 @@ export type FromRecorder =
   | ({ type: "radioResult" } & RadioResultBody)
   /** Answers callsQuery: newest first (by start, then path); `next`: more remain, ask again with it as the `cursor`; `error`: only the recent calls (the call store is off). */
   | { type: "callsResult"; id: number; entries: CallEntry[]; next?: string; error?: string }
+  /** Answers iqCaptures, iqCaptureStart and iqCaptureDelete: the captures on disk in `root`, newest first; `active`: the capture of every radio being made; `waiting`: those asked for that wait on the air; `recording`: the radios are running; `presets`: the capture rules shipped; `canSend`: there's a corpus service to send captures to; `error`: why the last request or capture failed. */
+  | { type: "iqCaptures"; id: number; active?: IqCaptureActive; waiting: IqCaptureWaiting[]; captures: IqCapture[]; root: string; recording: boolean; presets: CaptureRule[]; canSend: boolean; error?: string }
+  /** Answers iqCaptureReview: what capture `name` would publish. */
+  | { type: "iqCaptureReview"; id: number; name: string; metadata: unknown; diagnostics: unknown; waterfalls: IqWaterfall[]; error?: string }
+  /** Answers iqRuleCheck: why the rule can't run, if so. */
+  | { type: "iqRuleChecked"; id: number; error?: string }
+  /** Answers dataSummary: what the store keeps of each system it has (the config's, and those removed from it whose data stayed); `error`: it couldn't say. */
+  | { type: "dataSummary"; id: number; systems: DataSystem[]; error?: string }
+  /** Answers deleteData: how much went; `error`: not all of it did. */
+  | { type: "dataDeleted"; id: number; deleted: DataCounts; error?: string }
+  /** Answers compactData: the store's size in bytes before and after (SQLite: its files; PostgreSQL: its tables and indexes); `error`: it couldn't. */
+  | { type: "dataCompacted"; id: number; beforeBytes: number; afterBytes: number; error?: string }
   | { type: "quit" };
 
 export type ToRecorder =
   /** The whole config, edited from `version` (the last `config` message's): refused when the config has changed since. */
   | { type: "setConfig"; config: Config; version: number }
-  /** System `system`'s talkgroups, all of them (`[]`: none; a number twice: the later row, in the first's place). Everyone gets them back as a `talkgroups` message. */
-  | { type: "setTalkgroups"; system: string; talkgroups: Talkgroup[] }
+  /**
+   * System `system`'s talkgroups, all of them (`[]`: none; a number twice: the later row, in the first's place). Everyone gets them back as a `talkgroups` message.
+   * `from`: where they came from, the origin of each row that changes; none: each keeps the origin it comes with (a system's moved to its new name).
+   */
+  | { type: "setTalkgroups"; system: string; talkgroups: Talkgroup[]; from?: OriginFrom }
+  /** System `system`'s own names for its radios, as `setTalkgroups` (a unit twice: the later row, in the first's place). Everyone gets them back as a `unitNames` message. */
+  | { type: "setUnitNames"; system: string; unitNames: UnitName[]; from?: OriginFrom }
+  /** Radio `unit` of system `system` named `name` ("": its own name taken out). Everyone gets it back as a `unitNameEdited` message. */
+  | { type: "setUnitName"; system: string; unit: number; name: string }
   /** One talkgroup of system `system`'s: only the cells `edit` sets change (a row added when it has none). Everyone gets it back as a `talkgroupEdited` message. */
   | { type: "setTalkgroup"; system: string; talkgroup: number; edit: TalkgroupEdit }
   | { type: "start" }
@@ -2011,8 +2209,30 @@ export type ToRecorder =
   | { type: "callsQuery"; id: number; system?: string; talkgroup?: number; unit?: number; from?: number; to?: number; cursor?: string; limit?: number }
   /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited). */
   | { type: "pluginAction"; id: number; plugin: string; action: string; value: unknown }
-  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
+  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit"; `limit`: rows at most (default 500, up to the registry's cap: the summary's `caps`). */
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths" | "tones"; system?: string; key?: number; hours?: number; limit?: number }
+  /** The radios' captures on disk (answered with iqCaptures). */
+  | { type: "iqCaptures"; id: number }
+  /** Record `what` (every radio, by default) to files, nothing sent anywhere: for `seconds` (every radio: 5 to 300; a control channel: 5 to 60; the next call: as long as it is), showing a problem (`problem`) or everything working (answered with iqCaptures). */
+  | { type: "iqCaptureStart"; id: number; seconds: number; note?: string; what?: CaptureWhat; problem?: boolean }
+  /** Give up capture `key`, asked for and still waiting or running (answered with iqCaptures). */
+  | { type: "iqCaptureCancel"; id: number; key: number }
+  /** What capture `name` would publish (answered with iqCaptureReview). */
+  | { type: "iqCaptureReview"; id: number; name: string }
+  /** Send capture `name`, reviewed, to the public corpus (answered with iqCaptures). */
+  | { type: "iqCaptureSend"; id: number; name: string }
+  /** Withdraw capture `name` from the corpus (answered with iqCaptures). */
+  | { type: "iqCaptureWithdraw"; id: number; name: string }
+  /** Whether capture rule `rule` could run (answered with iqRuleChecked). */
+  | { type: "iqRuleCheck"; id: number; rule: CaptureRule }
+  /** Delete capture `name` (answered with iqCaptures). */
+  | { type: "iqCaptureDelete"; id: number; name: string }
+  /** What the store keeps of each system (answered with dataSummary). A table's CSV is `GET /api/v1/export/{table}` (`?system=<id>`: one system's). */
+  | { type: "dataSummary"; id: number }
+  /** Delete these kinds of system `system`'s data (its id; none: every system's) from the store and from what the recorder holds; recordings stay on disk. Answered with dataDeleted. */
+  | { type: "deleteData"; id: number; kinds: DataKind[]; system?: number }
+  /** Give the space deleted data left in the store back to the disk (SQLite: VACUUM; PostgreSQL: VACUUM FULL); writes wait meanwhile. Answered with dataCompacted. */
+  | { type: "compactData"; id: number }
   | { type: "quit" };
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */

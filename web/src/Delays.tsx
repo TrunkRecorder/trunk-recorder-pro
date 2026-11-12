@@ -5,6 +5,7 @@
 // is decided by the recorder (crates/trunk-pro/src/plugins/delay.rs);
 // `inEffect` here follows the same rules, to show what they come to.
 
+import { Fig, Figs, Info } from "./charts.tsx";
 import { editList, systemAt, useApp, type SystemRef } from "./controller.ts";
 import { useState } from "react";
 import { minutes, talkgroupList } from "./fieldText.ts";
@@ -244,12 +245,8 @@ function InEffect(props: { c: Config; system: string; plugins: PluginInfo[] }) {
       <ul>
         {rows.map(({ p, rest, own }) => (
           <li key={p.id}>
-            <strong>{p.manifest!.name}</strong>: {own.length ? `${delayText(rest)} for other talkgroups` : delayText(rest)}
-            {own.map((x) => (
-              <span key={x.tgs.join(",")}>
-                ; <span className="mono">{x.tgs.join(", ")}</span>: {delayText(x.s)}
-              </span>
-            ))}
+            <strong>{p.manifest!.name}</strong>{" "}
+            <Figs inline items={[{ k: own.length ? "Other talkgroups" : "Every talkgroup", v: delayText(rest) }, ...own.map((x) => ({ k: x.tgs.join(", "), v: delayText(x.s) }))]} />
           </li>
         ))}
       </ul>
@@ -273,11 +270,13 @@ export function SystemDelays(props: { system: SystemRef }) {
   return (
     <details className="help override">
       <summary>
-        Plugin delays
-        <span className="muted">{rules.length ? ` — ${rules.length} here` : fromEvery ? " — from the Plugins tab" : " — none"}</span>
+        Plugin delays {rules.length ? <Fig v={rules.length} u="here" /> : <span className="muted">{fromEvery ? "from the Plugins tab" : "none"}</span>}
       </summary>
       <p className="field-hint">
-        {WHAT} {WINS} These come before the Plugins tab's.
+        Hold calls back from plugins · no live audio{" "}
+        <Info>
+          {WHAT} {WINS} These come before the Plugins tab's.
+        </Info>
       </p>
       <RuleTable at={props.system} rules={rules} plugins={plugins} />
       <InEffect c={c} system={sys.shortName} plugins={plugins} />
@@ -306,16 +305,16 @@ export function PluginDelay(props: { p: PluginInfo; c: Config }) {
   return (
     <details className="help override plugin-delay">
       <summary>
-        Delay
-        <span className="muted"> — {delayText(s)}</span>
+        Delay {s > 0 ? <Fig v={delayText(s)} /> : <span className="muted">none</span>}
       </summary>
-      <Field label="Delay on every system, min" hint="Calls reach it this long after they end. A system can change it, and delay talkgroups, on its card">
+      <Field label="Delay on every system, min" hint={<>After each call ends <Info>Calls reach it this long after they end. A system can change it, and delay talkgroups, on its card.</Info></>}>
         <DraftInput className="mono narrow" inputMode="decimal" aria-label="Delay, min" placeholder="none" codec={minutes} value={s} onChange={set} />
       </Field>
       {other.length > 0 && (
-        <p className="field-hint">
-          With systems' own delays: {other.map((x) => `${x.name} ${delayText(x.s)}`).join(", ")} (other talkgroups).
-        </p>
+        <div className="field-hint row">
+          <span title="Systems with their own delays (for other talkgroups)">Own delays:</span>
+          <Figs inline items={other.map((x) => ({ k: x.name, v: delayText(x.s) }))} />
+        </div>
       )}
     </details>
   );
@@ -331,11 +330,13 @@ export function EveryDelays() {
   return (
     <details className="help override">
       <summary>
-        Plugin delays on every system
-        <span className="muted">{rules.length ? ` — ${rules.length}` : " — none"}</span>
+        Plugin delays on every system {rules.length ? <Fig v={rules.length} /> : <span className="muted">none</span>}
       </summary>
       <p className="field-hint">
-        {WHAT} {WINS} A system's own, on its card, come first.
+        Hold calls back from plugins · no live audio{" "}
+        <Info>
+          {WHAT} {WINS} A system's own, on its card, come first.
+        </Info>
       </p>
       <RuleTable at="every" rules={rules} plugins={plugins} />
     </details>
