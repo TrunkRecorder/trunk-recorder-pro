@@ -5,6 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **An RTL-SDR's gain is set as librtlsdr (and Trunk Recorder) set it** (#163). TRP turned a gain into the R820T's LNA and mixer steps as if
+  each step were the same size, so some gains landed on another step than Trunk Recorder's: 34 dB was set as 36.4 dB, 28 as 29.7 and 36.4 as
+  37.2. It now uses librtlsdr's measured steps and the nearest of its gains (34 dB: 33.8). The survey's gain suggestions are now the gains
+  they name.
+- **Every radio says what gain it's set to.** As it opens and as a gain changes while recording, each radio reports the gain it actually runs
+  at: read back from a bladeRF, a USRP or a SoapySDR device, and from the steps RTL-SDR, HackRF, Airspy and HydraSDR drivers set. When that
+  isn't the gain Setup asks for (the radio's nearest step, or its range at that frequency), the log says so, the RF page shows "set to …" beside
+  the gain, and a capture's `diagnostics.json` has it.
+- A SoapySDR device's stage gains are no longer undone by a gain changed while recording.
+
 - **Plugins can take a call's voice as vocoder frames.** The `voice` topic (SDK 0.11.0: `Plugin::voice`)
   sends, beside each live `audio` chunk, the frames it was made from, FEC-corrected and in order: IMBE (P25
   Phase 1, ProVoice) or AMBE+2 (P25 Phase 2, DMR, NXDN), each with its bit errors and what the vocoder made

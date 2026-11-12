@@ -12,7 +12,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{cstr, ppm_corrected, Deadline, DriverInfo, Handed};
-use crate::sdr::{Applied, Block, Control, Gain, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
 
 type Handle = *mut c_void;
 type Err = c_int;
@@ -87,6 +87,8 @@ struct Api {
     get_rx_rate: unsafe extern "C" fn(Handle, usize, *mut f64) -> Err,
     set_rx_freq: unsafe extern "C" fn(Handle, *mut TuneRequest, usize, *mut TuneResult) -> Err,
     set_rx_gain: unsafe extern "C" fn(Handle, f64, usize, *const c_char) -> Err,
+    /// What it's set to: the gain asked for on the device's steps, within its range.
+    get_rx_gain: Option<unsafe extern "C" fn(Handle, usize, *const c_char, *mut f64) -> Err>,
     /// Not in every UHD (nor on every device).
     set_rx_agc: Option<unsafe extern "C" fn(Handle, bool, usize) -> Err>,
     set_rx_antenna: unsafe extern "C" fn(Handle, *const c_char, usize) -> Err,
@@ -140,6 +142,7 @@ fn api() -> Result<&'static Api, String> {
                 get_rx_rate: f!("uhd_usrp_get_rx_rate"),
                 set_rx_freq: f!("uhd_usrp_set_rx_freq"),
                 set_rx_gain: f!("uhd_usrp_set_rx_gain"),
+                get_rx_gain: lib.get(b"uhd_usrp_get_rx_gain\0").ok().map(|s| *s),
                 set_rx_agc: lib.get(b"uhd_usrp_set_rx_agc\0").ok().map(|s| *s),
                 set_rx_antenna: f!("uhd_usrp_set_rx_antenna"),
                 rx_streamer_make: f!("uhd_rx_streamer_make"),
@@ -246,6 +249,9 @@ impl crate::sdr::Radio for UsrpConfig {
             self.gain_db = db as f64;
         }
     }
+    fn gain(&self) -> Option<Gain> {
+        Some(if self.agc { Gain::Agc } else { Gain::Db(self.gain_db as f32) })
+    }
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
         stream_once(self, sink, stop, ctl)
     }
@@ -326,10 +332,21 @@ impl Tunable for Session {
         Ok(Retuned { hz, gap: 0 })
     }
     /// A manual gain (AGC on or off waits for the next start).
-    fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
-        let Gain::Db(db) = g else { return Ok(0) };
+    fn set_gain(&mut self, g: Gain) -> Result<Regained, String> {
+        let Gain::Db(db) = g else { return Ok(Regained::LEFT_ALONE) };
         // SAFETY: an open USRP.
-        check(self.a, "set gain", unsafe { (self.a.set_rx_gain)(self.usrp, db as f64, 0, c"".as_ptr()) }).map(|()| 0)
+        check(self.a, "set gain", unsafe { (self.a.set_rx_gain)(self.usrp, db as f64, 0, c"".as_ptr()) })?;
+        Ok(Regained { gap: 0, gain: self.gain_set() })
+    }
+}
+
+impl Session {
+    /// The manual gain it's set to, when this UHD can say.
+    fn gain_set(&self) -> Option<Gain> {
+        let get = self.a.get_rx_gain?;
+        let mut db = 0.0;
+        // SAFETY: an open USRP; the out-pointer is a live local.
+        (unsafe { get(self.usrp, 0, c"".as_ptr(), &mut db) } == 0).then_some(Gain::Db(db as f32))
     }
 }
 
@@ -407,6 +424,9 @@ fn stream_once(cfg: &UsrpConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option
             check(a, "set gain", (a.set_rx_gain)(s.usrp, cfg.gain_db, 0, c"".as_ptr()))?;
         }
         s.tune(cfg.center_hz)?;
+        if !cfg.agc {
+            sink.gained(cfg.gain(), s.gain_set());
+        }
 
         // A B2xx on USB 2.0 (a port, a hub, a cable) is the usual cause of overflows at high rates.
         let usb2 = b2xx && super::usb_speed::slowest(super::usb_speed::ETTUS_VID).is_some_and(super::usb_speed::is_usb2_class);

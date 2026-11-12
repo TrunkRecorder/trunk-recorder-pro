@@ -31,6 +31,15 @@ pub enum TunerKind {
 const PROBES: [(TunerKind, u8, u8, u8); 3] = [(TunerKind::R820T, 0x34, 0, 0x69), (TunerKind::R828D, 0x74, 0, 0x69), (TunerKind::E4000, 0xc8, 2, 0x40)];
 
 impl TunerKind {
+    /// The gain a manual `db` is set to: the tuner's nearest step, dB.
+    pub fn gain_db(self, db: f32) -> f32 {
+        let tenths = match self {
+            TunerKind::R820T | TunerKind::R828D => r82xx::nearest_gain(db),
+            TunerKind::E4000 => e4k::nearest_gain(db).0,
+        };
+        tenths as f32 / 10.0
+    }
+
     /// Its 8-bit I2C address.
     pub(crate) fn address(self) -> u8 {
         PROBES.iter().find(|p| p.0 == self).expect("every kind is probed").1

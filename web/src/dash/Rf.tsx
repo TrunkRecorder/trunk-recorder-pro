@@ -18,6 +18,11 @@ import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
 import { IqCaptureCard } from "./IqCapture.tsx";
 
+/** A radio's gain as Setup has it, and what the radio is set to when that differs (`set`). */
+export function gainLine(c: Source | undefined, set?: string | null): string {
+  return set ? `${gainText(c)} · set to ${set}` : gainText(c);
+}
+
 /** A source's gain setting, as configured. */
 function gainText(c: Source | undefined): string {
   if (!c) return "—";
@@ -95,7 +100,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
         <div className="kv small">
           <span>
             {/* (Setup's: the desktop recorder takes a new gain while recording.) */}
-            Gain <b>{gainText(k >= 0 ? s.config!.sources[k] : src.settings)}</b>
+            Gain <b>{gainLine(k >= 0 ? s.config!.sources[k] : src.settings, src.gainSet)}</b>
           </span>
           <span>
             Rate <b>{num(src.rateMeasured / 1e6, 3)}</b> of {num(src.rateHz / 1e6, 3)} MS/s

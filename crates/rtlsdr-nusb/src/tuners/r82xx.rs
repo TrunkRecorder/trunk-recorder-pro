@@ -148,10 +148,36 @@ pub(crate) fn v4_input(hz: u64) -> u8 {
         0
     }
 }
+/// librtlsdr's measured gain of each LNA and mixer step, tenths of a dB
+/// (`r82xx_lna_gain_steps`, `r82xx_mixer_gain_steps`): uneven, so a dB
+/// figure is a pair of steps only by this table.
+const LNA_STEPS: [i32; 16] = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13];
+const MIXER_STEPS: [i32; 16] = [0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8];
+/// The gains librtlsdr offers, tenths of a dB (`r82xx_gains`): what Trunk
+/// Recorder (through gr-osmosdr) takes the nearest of.
+const GAINS: [i32; 29] = [0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364, 372, 386, 402, 421, 434, 439, 445, 480, 496];
+
+/// The offered gain nearest `db` (first of equals), tenths of a dB.
+pub(super) fn nearest_gain(db: f32) -> i32 {
+    let tenths = (db * 10.0).round() as i32;
+    GAINS.into_iter().min_by_key(|&g| (g - tenths).abs()).expect("a gain at least")
+}
+
+/// The LNA and mixer steps for the gain nearest `db`, as librtlsdr sets
+/// them: raising the LNA and then the mixer a step in turn until there.
 fn gain_steps(db: f32) -> (u8, u8) {
-    let full = (db / 3.5).floor().clamp(0.0, 15.0) as u8;
-    let half = u8::from(full < 15 && db - 3.5 * f32::from(full) >= 2.3);
-    (full + half, full)
+    let want = nearest_gain(db);
+    let (mut lna, mut mixer, mut total) = (0, 0, 0);
+    while total < want && mixer < 15 {
+        lna += 1;
+        total += LNA_STEPS[lna];
+        if total >= want {
+            break;
+        }
+        mixer += 1;
+        total += MIXER_STEPS[mixer];
+    }
+    (lna as u8, mixer as u8)
 }
 #[derive(Debug)]
 struct Pll {
@@ -320,9 +346,17 @@ mod tests {
     #[test]
     fn gain_and_v4_band_edges() {
         assert_eq!(gain_steps(0.0), (0, 0));
-        assert_eq!(gain_steps(2.3), (1, 0));
-        assert_eq!(gain_steps(3.5), (1, 1));
-        assert_eq!(gain_steps(52.5), (15, 15));
+        // (The top, 49.6 dB, is the mixer's 14th step: its 15th takes 0.8 dB off.)
+        assert_eq!(gain_steps(52.5), (15, 14));
+        // Each gain offered is its own pair of steps, adding up to it as librtlsdr measured them.
+        let measured = |(lna, mixer): (u8, u8)| LNA_STEPS[..=lna as usize].iter().sum::<i32>() + MIXER_STEPS[..=mixer as usize].iter().sum::<i32>();
+        for g in GAINS {
+            assert_eq!(measured(gain_steps(g as f32 / 10.0)), g, "{g}");
+        }
+        // Issue 163: what isn't offered goes to the nearest that is.
+        assert_eq!((nearest_gain(34.0), gain_steps(34.0)), (338, gain_steps(33.8)));
+        assert_eq!(nearest_gain(35.2), 364);
+        assert_eq!(nearest_gain(-3.0), 0);
         assert_eq!(v4_input(28_799_999), 2);
         assert_eq!(v4_input(28_800_000), 1);
         assert_eq!(v4_input(249_999_999), 1);

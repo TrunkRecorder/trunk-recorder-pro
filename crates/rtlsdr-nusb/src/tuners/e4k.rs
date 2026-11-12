@@ -242,7 +242,7 @@ fn gain_steps() -> impl Iterator<Item = (i32, u8, u8)> {
 
 /// The step nearest `db` (above 42 dB: 42 dB; first of equals, as librtlsdr):
 /// (tenths of a dB, GAIN1 LNA code, GAIN2 mixer bit).
-fn nearest_gain(db: f32) -> (i32, u8, u8) {
+pub(super) fn nearest_gain(db: f32) -> (i32, u8, u8) {
     let tenths = (db * 10.0).round() as i32;
     gain_steps().min_by_key(|&(g, ..)| (g - tenths).abs()).expect("a step at least")
 }
