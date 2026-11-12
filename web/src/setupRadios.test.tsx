@@ -3,6 +3,7 @@
 import "./testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { gainLine } from "./dash/Rf.tsx";
 import { renderToString } from "react-dom/server";
 import { defaultConfig, SOURCE_KINDS } from "./config.ts";
 import { transport } from "./controller.ts";
@@ -77,4 +78,10 @@ test("Setup's AutoTune: the ppm to set is measured against the radio's as runnin
   assert.doesNotMatch(text(renderToString(<SourceCard c={moved} i={0} />)), /Measured error/);
   page = text(renderToString(<SourceCard c={moved} i={1} />));
   assert.match(page, /Set correction to -2 ppm/);
+});
+
+test("A radio's gain says what it's set to when that isn't what Setup asks", () => {
+  const rtl = { type: "rtlsdr" as const, serial: "", centerHz: 851_000_000, rateHz: 2_400_000, gainDb: 34, agc: false, ppm: 0, bufLen: 0, buffers: 0 };
+  assert.equal(gainLine(rtl, "33.8 dB"), "34 dB · set to 33.8 dB");
+  assert.equal(gainLine(rtl, null), "34 dB", "the same: said once");
 });
