@@ -1477,6 +1477,8 @@ fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>,
                     "colorCode": d.color_code,
                     "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
                     "keyed": d.keyed,
+                    "xpt": d.xpt,
+                    "availableRepeaters": d.xpt.as_ref().map(|x| x.available_repeaters()),
                     "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
                     "carriers": d.carriers.iter().map(|c| json!({
                         "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,

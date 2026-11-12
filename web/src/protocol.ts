@@ -326,6 +326,10 @@ export interface Site {
   lcnTableHz?: Record<string, number>;
   /** DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels). */
   dmrChannelsHz?: number[];
+  /** DMR per-frequency color code filters (integer Hz keys, codes 0–15). */
+  dmrColorCodes?: Record<string, number>;
+  /** XPT programmed home talkgroup → repeater (1–8). */
+  xptHomeGroups?: Record<string, number>;
   /** DMR: only this colour code. */
   colorCode?: number;
   /** NXDN: the control channel's (Type-D: the repeaters') rate; default "nxdn48". */
@@ -779,8 +783,32 @@ export interface SiteDetail {
   nxdn: NxdnSiteStatus | null;
 }
 
+/** XPT observations are site-local; target hints/hashes are not full radio IDs. */
+export type XptControl =
+  | { Status: { sequence: number; free: number; slots: XptOccupancy[] } }
+  | { Adjacent: { sequence: number; sites: XptNeighbor[] } }
+  | { Short: { free: number; priority: number; target_hash: number } }
+  | { Setup: { repeater: number; slot: number; group: boolean; target: number; source: number; free: number; handshake: number; reserved: number } }
+  | { Preamble: { data: boolean; group: boolean; blocks: number; free: number; priority: number; target: number; priority_hash: number; source: number; reserved: number } };
+export interface XptOccupancy { status: number; target_hint: number }
+export interface XptNeighbor { site: number; free: number; reserved: number }
+export interface XptTimed<T> { value: T; heard_s: number }
+export interface XptStatus {
+  home_groups: Record<string, number>;
+  free: XptTimed<number> | null;
+  priority: XptTimed<[number, number]> | null;
+  occupancy: Record<string, XptTimed<XptOccupancy>>;
+  neighbors: Record<string, XptTimed<XptNeighbor>>;
+  setups: XptTimed<XptControl>[];
+  calls: { freq_hz: number; repeater: number | null; slot: number; target: number; source: number; group: boolean; encrypted: boolean; late_entry: boolean; heard_s: number }[];
+}
+
 export interface DmrSiteStatus {
-  /** "DMR Capacity Plus" | "DMR Capacity Max" | "DMR Connect Plus" | "DMR Tier III" | null (not known yet). */
+  /** XPT signaling and confirmed voice calls; null until identified. */
+  xpt?: XptStatus | null;
+  /** Repeaters with at least one fresh explicitly idle slot. */
+  availableRepeaters?: number[] | null;
+  /** "DMR Capacity Plus" | "DMR Capacity Max" | "DMR Connect Plus" | "DMR Tier III" | "Hytera XPT" | null (not known yet). */
   variant: string | null;
   colorCode: number | null;
   /** Capacity Plus: the rest channel's logical slot number, and its frequency once known. */

@@ -1,7 +1,7 @@
 //! A talker alias, the name a radio is programmed with ("E12 CAPT"), as any
 //! protocol's decoder hands it to the engine ([`crate::trunk::voice::TrackerOut::Alias`]).
 //! The decoders: P25 (Motorola, Harris) in [`crate::p25::alias`], NXDN
-//! (Kenwood) in [`crate::nxdn::alias`].
+//! (Kenwood) in [`crate::nxdn::alias`], DMR in [`crate::dmr::alias`].
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Alias {

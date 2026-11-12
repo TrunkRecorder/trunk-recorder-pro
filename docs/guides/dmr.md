@@ -1,7 +1,7 @@
 # Trunked DMR
 
 This page explains how Trunk Recorder Pro records trunked DMR sites: Motorola Capacity Plus,
-Capacity Max and Connect Plus, and ETSI Tier III. It covers what to list, colour codes, slots,
+Capacity Max and Connect Plus, ETSI Tier III, and [Hytera XPT](xpt.md). It covers what to list, colour codes, slots,
 how channel numbers are learned, and restricted-access systems. Every key is listed in the
 [trunked systems reference](../configuration/systems.md#dmr). Conventional DMR channels are
 covered in [Conventional channels](conventional.md).
@@ -17,6 +17,8 @@ The trunked flavours differ in how a call gets its channel:
 - **Capacity Plus** (and Linked Capacity Plus) has no control channel and no grants. Idle radios
   sit on a *rest channel*, which moves from repeater to repeater. A call starts on the rest
   channel and the rest channel moves on.
+- **Hytera XPT** shares home/free repeaters without a dedicated control channel.
+  See [XPT configuration and validation status](xpt.md).
 - **Capacity Max, Connect Plus and Tier III** have a control channel that grants calls to a
   *logical channel number* (LCN), as P25 does.
 
@@ -36,7 +38,7 @@ In **Setup** → **Systems**, **Add a system** and set **Type** to **DMR (trunke
   site's voice frequencies. This is Trunk Recorder's `channels`.
 - **Colour code** (`colorCode`): leave empty ("auto") to take the control channel's.
 - **Channel table (optional)** (`lcnTableHz`): channel numbers you already know, as
-  `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Leave it empty to learn them.
+  `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Mapped frequencies are also watched. Leave it empty to learn them (XPT requires explicit repeater mappings).
 
 In the config file (frequencies in Hz):
 
@@ -119,6 +121,34 @@ Encrypted transmissions (the link control's privacy bit, or a privacy header) ar
 out of the audio. A call that was all encrypted is kept, without audio, only when
 `recordEncrypted` is `true` in the config file; there is no switch for it in Setup. The recorder
 can't decrypt anything.
+
+## Over-the-air radio names
+
+DMR talker aliases are decoded from embedded link control on trunked and
+conventional channels. Supported forms are standard FID `0x00` and Hytera FID
+`0x68` (FLCO `0x04`–`0x07`), and Motorola FID `0x10` (FLCO `0x14`–`0x17`).
+The four encodings are 7-bit ASCII, ISO-8859-1, UTF-8 and UTF-16BE. Lengths
+are code units, not displayed characters; multibyte characters and UTF-16
+surrogate pairs may cross fragments.
+
+Complete, valid aliases with fresh voice LC identifying the radio use the
+existing learned-radio-name store and name-priority settings. Assembly is
+independent for each carrier and slot. Missing/out-of-order/conflicting blocks,
+new headers, source/talkgroup changes, matching voice termination, protected LC
+and four-second timeouts discard incomplete state. An alias cannot establish
+a call's identity or change its encryption state.
+
+`tool dmr` emits `alias` JSON records with text, format, declared/received code
+units, `complete`, and the radio/talkgroup when known. Valid partial Unicode
+prefixes are shown without replacement characters; partial or unattributed
+results never overwrite saved radio names. For example, the supplied Hytera
+capture declares 13 UTF-16 units but only supplies six (`Hytera`) before its
+alias header repeats. This remains a partial diagnostic, not a learned name.
+
+No alias is invented when the feature is disabled or fragments are absent.
+Clear alias LC can be decoded even when audio is encrypted; protected/encrypted
+LC itself is not decrypted. Protocol layouts follow ETSI TS 102 361-2 V2.5.1
+§§7.1.1.4–5 and 7.2.18–19.
 
 ## Several sites
 

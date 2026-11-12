@@ -174,7 +174,7 @@ mod tests {
     fn a_voice_tape_notes_what_its_decoder_was_told_when_it_changes() {
         let mut t = VoiceTape::new(spec(1000.0), 851e6);
         let iq = [Complex32::new(1.0, 0.0); 10];
-        let key = VoiceParams { tdma_key: Some((1, 2, 3)), nac: Some(1) };
+        let key = VoiceParams { tdma_key: Some((1, 2, 3)), nac: Some(1), ..Default::default() };
         t.run(&iq, VoiceParams::default(), [true, false], 0.5);
         t.run(&iq[..4], VoiceParams::default(), [true, false], 0.5);
         t.run(&iq[..4], key, [true, false], 0.5);
