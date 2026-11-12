@@ -157,7 +157,21 @@ impl Tunable for Rtl<'_> {
             Gain::Db(db) => GainConfig::Manual(db),
             Gain::Stages(_) | Gain::Preset(..) => return Ok(0),
         };
-        self.halted(|dev| dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}")))
+        let gap = self.halted(|dev| dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}")))?;
+        if let Gain::Db(db) = g {
+            say_gain("RTL-SDR", self.dev, db);
+        }
+        Ok(gap)
+    }
+}
+
+/// The log says what a manual gain was set to, when it isn't what was asked:
+/// the tuner has steps (an R820T: 0, 0.9, 1.4 … 49.6 dB), and the nearest is used.
+fn say_gain(name: &str, dev: &Device<RawIq>, asked: f32) {
+    if let Some(set) = dev.gain_db() {
+        if (asked - set).abs() >= 0.05 {
+            log::info!("{name}: gain {asked} dB is set to {set} dB, the nearest step its {:?} tuner has", dev.info().tuner);
+        }
     }
 }
 
@@ -204,6 +218,9 @@ fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<
         OPEN.lock().unwrap().insert(s.clone());
     }
     let _using = Using(serial);
+    if let Some(db) = cfg.gain_db {
+        say_gain(&name, &dev, db);
+    }
     let mut rx = dev.rx_stream_with(cfg.rx_buffers()).map_err(|e| format!("{name} USB transfers: {e}"))?;
     rx.start().wait().map_err(|e| format!("{name}: {e}"))?;
     let mut check = StreamCheck::new(cfg.rate_hz as f64);

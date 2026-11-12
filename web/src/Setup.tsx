@@ -1259,7 +1259,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           }`}
         >
           {src.type === "rtlsdr" && (
-            <Field label="Gain, dB" hint={src.agc ? "A fixed gain usually works better" : "Most dongles: 0–49.6"}>
+            <Field label="Gain, dB" hint={src.agc ? "A fixed gain usually works better" : "Most dongles: 0–49.6, in steps (0.9, 1.4, 2.7 … 49.6): the nearest is used"}>
               <div className="row">
                 <NumberInput gain label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => v !== undefined && edit((x) => x.type === "rtlsdr" && void (x.gainDb = v))} />
                 <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "rtlsdr" && void (x.agc = v))} />
