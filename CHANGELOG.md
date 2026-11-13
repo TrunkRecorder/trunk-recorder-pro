@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-11-13
+
 - **NXDN Type-C: control loss is the control channel's** (#170). A site's decode rate counted every watched carrier's
   frames, so a voice channel's frames, and a few after each transmission, counted as control messages lost: the dashboard
   and replay showed about 15 % loss where the control channel lost 5.5 %. It now counts the control channel's CAC frames only.
@@ -16,6 +18,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **`client.js`: `rec.queryCalls(query)` searches the recorded calls.** The method was called
   `calls`, the name of the array of calls on the air, which replaced it on every `TrunkClient`:
   `rec.calls({ … })` threw `rec.calls is not a function`. `rec.calls` is still the calls on the air.
+- **RadioReference paste: rows with a live feed or an encryption badge are read** (#171). A feed's ONLINE badge stuck to the
+  number ("4407Online") and an ENC badge that broke a row in two after its mode lost those rows; the Category column is read
+  too. One statewide system's paste read 658 of its 922 talkgroups; it now reads all 922. A partly encrypted talkgroup
+  (`enc`) stays `Te`, recorded.
+- **The dashboard reads as figures, not sentences.** Numbers stand on their own with short labels coloured by status; the
+  Data tab's writing settings are a Normal / Low-write choice, the Radios suggestions are figures with Apply all, and the
+  rare explanation is behind an ⓘ.
 - **An RTL-SDR's gain is set as librtlsdr (and Trunk Recorder) set it** (#163). TRP turned a gain into the R820T's LNA and mixer steps as if
   each step were the same size, so some gains landed on another step than Trunk Recorder's: 34 dB was set as 36.4 dB, 28 as 29.7 and 36.4 as
   37.2. It now uses librtlsdr's measured steps and the nearest of its gains (34 dB: 33.8). The survey's gain suggestions are now the gains
