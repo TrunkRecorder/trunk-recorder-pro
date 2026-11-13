@@ -945,7 +945,7 @@ fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
             let why = match check {
                 Some(ck) if found.best != start => format!("{} came closest, {:+.1} ± {:.1}: not clearly better", knobs.describe(&found.best), ck.diff, ck.se),
                 None if found.best != start => format!("{} was refused (it hurt another system, lost a control channel, or clipped)", knobs.describe(&found.best)),
-                _ => format!("no setting tried was clearly better than {now}"),
+                _ => format!("No setting tried was clearly better than {now}"),
             };
             println!("  Gain: keep it. {why}.");
         }
