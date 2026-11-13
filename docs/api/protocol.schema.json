@@ -2567,6 +2567,23 @@
         },
         {
           "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "voice"
+            },
+            "chunk": {
+              "$ref": "#/definitions/VoiceChunk"
+            }
+          },
+          "required": [
+            "type",
+            "chunk"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
           "additionalProperties": false,
           "properties": {
             "source": {
@@ -9581,6 +9598,12 @@
                 "number",
                 "null"
               ]
+            },
+            "voice": {
+              "type": "boolean"
+            },
+            "audio": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -10530,6 +10553,111 @@
       ],
       "additionalProperties": false,
       "description": "A radio as heard (radioQuery units / unit)."
+    },
+    "VoiceChunk": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "number"
+        },
+        "system": {
+          "type": "number",
+          "description": "Its system's number this run; `short_name` is its identity."
+        },
+        "short_name": {
+          "type": "string"
+        },
+        "talkgroup": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "number",
+          "description": "Who is talking (0: not known yet), and their name."
+        },
+        "unit_name": {
+          "type": "string"
+        },
+        "decrypted": {
+          "type": "boolean",
+          "description": "Of a call decrypted with the recorder's keys."
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/VoiceFrame"
+          }
+        }
+      },
+      "required": [
+        "call_id",
+        "system",
+        "short_name",
+        "talkgroup",
+        "unit",
+        "decrypted",
+        "frames"
+      ],
+      "additionalProperties": false,
+      "description": "A digital call's live voice as vocoder frames: the `voice` plugin topic's chunk, as it is."
+    },
+    "VoiceFrame": {
+      "type": "object",
+      "properties": {
+        "codec": {
+          "type": "string",
+          "enum": [
+            "imbe",
+            "ambe"
+          ],
+          "description": "\"imbe\": P25 Phase 1, ProVoice (88 bits); \"ambe\": AMBE+2 half rate, P25 Phase 2, DMR, NXDN (49 bits)."
+        },
+        "bits": {
+          "type": "string",
+          "description": "Information bits after FEC, as hex: MSB first, the last byte zero-padded."
+        },
+        "e0": {
+          "type": "number",
+          "description": "IMBE: bit errors corrected in u0. AMBE: 0."
+        },
+        "errs": {
+          "type": "number",
+          "description": "Bit errors the FEC corrected in the whole frame."
+        },
+        "erased": {
+          "type": "boolean",
+          "description": "Known lost: `errs` is then meaningless."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "voice",
+            "repeat",
+            "muted",
+            "erasure",
+            "tone"
+          ],
+          "description": "What the vocoder made of it."
+        },
+        "tone": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "AMBE+2: the tone played for it, [ID, level]."
+        }
+      },
+      "required": [
+        "codec",
+        "bits",
+        "e0",
+        "errs",
+        "erased",
+        "kind"
+      ],
+      "additionalProperties": false,
+      "description": "One vocoder frame (20 ms) as the recorder decoded it: the `voice` plugin topic's, and a line of a call's `.frames.jsonl`."
     },
     "XptControl": {
       "anyOf": [

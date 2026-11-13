@@ -110,6 +110,25 @@ Findings along the way:
   The reference captures replay identically (every WAV, frame and message;
   the call JSON only gains `"ran"`).
 
+## On the air (#170, 2026-11)
+
+The first real Type-C report: two NEXEDGE 4800 systems in southwest
+Washington (FleetnetSilke SysID 50, Wiztronics SysID 7ed), received from 50+
+miles. Grants followed and channel numbers learned on three sites; Kenwood
+talker aliases decoded live; `tool nxdnscan` found every carrier's rate and
+RAN.
+
+- **RAN = site number** on every site seen, on both systems.
+- **Channel numbers are per site and not in frequency order** (Chehalis:
+  499 = 463.2375, 507 = 461.46875). Learning coped.
+- **Registrations** (0x20 REG and its family) are common: 13–15 per 120 s
+  on a site with buses moving between sites. Now decoded (SDRTrunk's
+  layouts; DSD-FME doesn't decode them), not yet checked on the air.
+- **Control loss** was over-counted: every carrier's frames counted, so
+  voice channels' looked like lost CAC (replay 614 good / 110 bad against
+  `tool nxdn`'s 613 / 36). Fixed: only the control channel's CAC frames.
+- Captures asked for, for the corpus and for `tool snr` on real NXDN.
+
 ## Not known, or not done
 
 - **Direct Frequency Assignment** is in TS 1-A v2.0, which isn't public;

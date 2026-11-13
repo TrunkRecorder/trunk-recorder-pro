@@ -44,8 +44,10 @@ pub enum Out {
     /// Only for browsers that subscribed to `topic` (see [`trunk_app::stats::Topics`]).
     Topic { topic: String, text: String },
     /// Live audio (binary frame) for talkgroup `tg` of the system with short
-    /// name `short_name` (the frame carries the system's number this run).
-    Audio { short_name: String, tg: u32, frame: Vec<u8> },
+    /// name `short_name` (the frame carries the system's number this run);
+    /// `voice`: its vocoder frames as a `voice` message, sent just before it
+    /// to connections listening with `voice` (none: no one is, or analog).
+    Audio { short_name: String, tg: u32, frame: Vec<u8>, voice: Option<String> },
     /// The recorder is quitting: every connection is told, then closed.
     Quit,
 }
@@ -1307,11 +1309,12 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
                 }
                 publish(&ctx.hub, m)
             }
-            Output::Audio { short_name, unit_name, audio } => {
+            Output::Audio { short_name, audio, voice, voice_listened } => {
                 if let Some(p) = plugins {
-                    p.live(&short_name, &unit_name, &audio);
+                    p.live(&short_name, &audio, voice.as_ref());
                 }
-                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg: audio.talkgroup, frame: trunk_app::session::audio_frame(&audio) }));
+                let voice = voice.filter(|_| voice_listened).map(|chunk| ToClient::Voice { chunk }.to_json());
+                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg: audio.talkgroup, frame: trunk_app::session::audio_frame(&audio), voice }));
             }
             Output::Plugin(m) => {
                 if let Some(p) = plugins {

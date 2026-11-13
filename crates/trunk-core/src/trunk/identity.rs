@@ -51,9 +51,10 @@ impl IdField {
         }
     }
 
-    /// Written in hex (as the air and RadioReference show it).
-    fn hex(self) -> bool {
-        matches!(self, IdField::Nac | IdField::Wacn | IdField::SysId)
+    /// A value of it as written: NAC, WACN and System ID in hex (as the air
+    /// and RadioReference show them), the others in decimal.
+    fn show(self, v: u32) -> String {
+        if matches!(self, IdField::Nac | IdField::Wacn | IdField::SysId) { format!("{v:X}") } else { v.to_string() }
     }
 }
 
@@ -115,11 +116,16 @@ impl Identity {
             .filter(|f| fields.contains(f))
             .filter_map(|f| {
                 let (g, w) = (self.get(f)?, expect.get(f)?);
-                let name = f.label();
-                (g != w).then(|| if f.hex() { format!("{name} {g:X} (expected {w:X})") } else { format!("{name} {g} (expected {w})") })
+                (g != w).then(|| format!("{} {} (expected {})", f.label(), f.show(g), f.show(w)))
             })
             .collect();
         (!d.is_empty()).then(|| d.join(", "))
+    }
+
+    /// Each of `fields` with its value, "?" when not heard: "SysID 50 site 14".
+    pub fn describe(&self, fields: &[IdField]) -> String {
+        let shown = |f: IdField| self.get(f).map_or("?".into(), |v| f.show(v));
+        IdField::ALL.into_iter().filter(|f| fields.contains(f)).map(|f| format!("{} {}", f.label(), shown(f))).collect::<Vec<_>>().join(" ")
     }
 
     /// Every one of `fields` that `expect` names is known here.

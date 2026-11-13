@@ -28,10 +28,11 @@ pub enum Output {
     Message(ToClient),
     /// Live audio of a call of `audio.system` — that system's number for this
     /// run (from 0, trunked then conventional: `status.systemNames`) — whose
-    /// short name, its identity, is `short_name`; `unit_name`: the talker's
-    /// ("": none). (A call heard on several sites of a system plays from one
-    /// of them at a time.)
-    Audio { short_name: String, unit_name: String, audio: LiveAudio },
+    /// short name, its identity, is `short_name`. (A call heard on several
+    /// sites of a system plays from one of them at a time.) `voice`: its
+    /// vocoder frames ([`voice_chunk`]) while plugins take topic `voice` or
+    /// interfaces listen with it (`voice_listened`); none for analog.
+    Audio { short_name: String, audio: LiveAudio, voice: Option<trunk_recorder_plugin::VoiceChunk>, voice_listened: bool },
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
     /// the recordings folder); `record` is its call JSON, and [`call_entry`]
     /// its history entry, which the platform sends as a `concluded` message
@@ -91,6 +92,7 @@ pub struct PluginTopics {
     pub units: bool,
     pub status: bool,
     pub tone_patterns: bool,
+    pub voice: bool,
 }
 
 /// Live audio as the browsers take it, a binary frame: `[2][u16 system][u32 call][u32 tg][i16…]`.
@@ -102,6 +104,22 @@ pub fn audio_frame(a: &LiveAudio) -> Vec<u8> {
     frame.extend_from_slice(&a.talkgroup.to_le_bytes());
     frame.extend(trunk_core::wav::pcm16(&a.samples));
     frame
+}
+
+/// Live voice as the vocoder frames its audio was made from (`unit_name`: the
+/// talker's, "": none): what the `voice` plugin topic and interfaces listening
+/// with `voice` are sent ([`Output::Audio`]). None: analog, no frames.
+pub fn voice_chunk(short_name: &str, unit_name: &str, a: &LiveAudio) -> Option<trunk_recorder_plugin::VoiceChunk> {
+    (!a.frames.is_empty()).then(|| trunk_recorder_plugin::VoiceChunk {
+        call_id: a.call_id,
+        system: a.system,
+        short_name: short_name.to_string(),
+        talkgroup: a.talkgroup,
+        unit: a.unit,
+        unit_name: unit_name.to_string(),
+        decrypted: a.decrypted,
+        frames: a.frames.clone(),
+    })
 }
 
 /// Local time's offset from UTC at a Unix time, s (east positive) — Trunk
@@ -1176,8 +1194,15 @@ impl Session {
                 if !self.want_audio {
                     return;
                 }
-                let unit_name = if audio.unit != 0 { self.unit_tag(audio.system, audio.unit) } else { String::new() };
-                out.push(Output::Audio { short_name: self.system_name(audio.system).to_string(), unit_name, audio });
+                let short_name = self.system_name(audio.system).to_string();
+                let voice_listened = self.meas.topics.has("voice");
+                let voice = (self.plugin_topics.voice || voice_listened)
+                    .then(|| {
+                        let unit_name = if audio.unit != 0 { self.unit_tag(audio.system, audio.unit) } else { String::new() };
+                        voice_chunk(&short_name, &unit_name, &audio)
+                    })
+                    .flatten();
+                out.push(Output::Audio { short_name, audio, voice, voice_listened });
             }
             Event::ConvSkipped { freq_hz, code } => {
                 let ms = self.wall(self.engine.status().now_s) * 1000.0;
@@ -1685,6 +1710,32 @@ mod tone_tests {
         assert_eq!(plugin.as_deref(), Some("Fire Dispatch"));
         let feed = out.iter().find_map(|o| match o { Output::Message(ToClient::MonitorEvent(b)) => b.get("alphaTag").cloned(), _ => None });
         assert_eq!(feed, Some(json!("Fire Dispatch")));
+    }
+
+    /// Live voice's frames are built only while plugins take topic `voice` or
+    /// interfaces listen with it, and go to interfaces only in the second case.
+    #[test]
+    fn live_voice_is_built_for_whoever_takes_it() {
+        use trunk_recorder_plugin::{Codec, FrameKind, VoiceFrame};
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "wood", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire Dispatch" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let frame = VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: FrameKind::Voice, tone: None };
+        let audio = LiveAudio { call_id: 7, system: 0, talkgroup: 1, unit: 0, samples: vec![0.0; 160], frames: vec![frame], decrypted: false };
+        let live = |s: &mut Session| {
+            let mut out = Vec::new();
+            s.handle(Event::Audio(audio.clone()), &mut out);
+            out.into_iter().find_map(|o| match o { Output::Audio { voice, voice_listened, .. } => Some((voice.is_some(), voice_listened)), _ => None }).unwrap()
+        };
+        assert_eq!(live(&mut s), (false, false), "nobody takes it");
+        s.plugin_topics.voice = true;
+        assert_eq!(live(&mut s), (true, false), "plugins only");
+        s.plugin_topics.voice = false;
+        s.set_topics(crate::stats::Topics::new(["voice".to_string()]));
+        assert_eq!(live(&mut s), (true, true), "an interface listens with voice");
     }
 }
 #[cfg(test)]

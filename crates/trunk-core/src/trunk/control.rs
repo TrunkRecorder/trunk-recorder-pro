@@ -134,6 +134,8 @@ pub trait ControlChannel: Send {
     fn flush(&mut self, _out: &mut Vec<Step>) {}
     /// Blocks decoded cleanly and lost, so far.
     fn counts(&self) -> (u64, u64);
+    /// What those blocks are called, plural ("TSBKs"), for summaries.
+    fn blocks(&self) -> &'static str;
     /// How far off the control channel comes in, Hz, when known (AutoTune,
     /// the dashboard). No default: each protocol says.
     fn offset_hz(&self) -> Option<f32>;
@@ -314,6 +316,9 @@ impl ControlChannel for P25 {
     fn counts(&self) -> (u64, u64) {
         (self.good, self.bad)
     }
+    fn blocks(&self) -> &'static str {
+        "TSBKs"
+    }
     fn offset_hz(&self) -> Option<f32> {
         self.bank.offset_hz()
     }
@@ -401,6 +406,9 @@ impl ControlChannel for Smartnet {
     fn counts(&self) -> (u64, u64) {
         (self.good, self.bad)
     }
+    fn blocks(&self) -> &'static str {
+        "OSWs"
+    }
     fn offset_hz(&self) -> Option<f32> {
         self.cc.as_ref().map(|c| c.offset_hz())
     }
@@ -453,6 +461,9 @@ impl ControlChannel for Edacs {
     }
     fn counts(&self) -> (u64, u64) {
         self.site.counts()
+    }
+    fn blocks(&self) -> &'static str {
+        "messages"
     }
     fn offset_hz(&self) -> Option<f32> {
         self.site.offset_hz()
@@ -520,6 +531,9 @@ impl ControlChannel for Dmr {
         let slots = || self.site.carriers.iter().flat_map(|c| c.chan.slots.iter());
         (slots().map(|s| s.good_blocks).sum(), slots().map(|s| s.bad_blocks).sum())
     }
+    fn blocks(&self) -> &'static str {
+        "blocks"
+    }
     fn modulation(&self) -> &'static str {
         self.site.variant.map_or("DMR", |v| v.name())
     }
@@ -573,6 +587,9 @@ impl ControlChannel for Nxdn {
     }
     fn counts(&self) -> (u64, u64) {
         self.site.counts()
+    }
+    fn blocks(&self) -> &'static str {
+        "CAC frames"
     }
     fn identity_fields(&self) -> &'static [IdField] {
         match self.site.kind() {

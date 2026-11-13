@@ -5,6 +5,26 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-11-13
+
+- **NXDN Type-C: control loss is the control channel's** (#170). A site's decode rate counted every watched carrier's
+  frames, so a voice channel's frames, and a few after each transmission, counted as control messages lost: the dashboard
+  and replay showed about 15 % loss where the control channel lost 5.5 %. It now counts the control channel's CAC frames only.
+- **NXDN Type-C registrations are decoded** (#170): REG, REG_C, REG_COMM and GRP_REG (message 0x20 and its family, laid out
+  as SDRTrunk reads them). Radios' registrations, groups and deregistrations count for units as P25's do: the unit pages,
+  plugins' `unit` topic.
+- `replay`'s summary names each protocol's own control blocks and site identity (NXDN: CAC frames, SysID and site; DMR:
+  blocks; EDACS: messages), not P25's TSBKs, NAC, WACN and RFSS for every protocol.
+- **`client.js`: `rec.queryCalls(query)` searches the recorded calls.** The method was called
+  `calls`, the name of the array of calls on the air, which replaced it on every `TrunkClient`:
+  `rec.calls({ … })` threw `rec.calls is not a function`. `rec.calls` is still the calls on the air.
+- **RadioReference paste: rows with a live feed or an encryption badge are read** (#171). A feed's ONLINE badge stuck to the
+  number ("4407Online") and an ENC badge that broke a row in two after its mode lost those rows; the Category column is read
+  too. One statewide system's paste read 658 of its 922 talkgroups; it now reads all 922. A partly encrypted talkgroup
+  (`enc`) stays `Te`, recorded.
+- **The dashboard reads as figures, not sentences.** Numbers stand on their own with short labels coloured by status; the
+  Data tab's writing settings are a Normal / Low-write choice, the Radios suggestions are figures with Apply all, and the
+  rare explanation is behind an ⓘ.
 - **An RTL-SDR's gain is set as librtlsdr (and Trunk Recorder) set it** (#163). TRP turned a gain into the R820T's LNA and mixer steps as if
   each step were the same size, so some gains landed on another step than Trunk Recorder's: 34 dB was set as 36.4 dB, 28 as 29.7 and 36.4 as
   37.2. It now uses librtlsdr's measured steps and the nearest of its gains (34 dB: 33.8). The survey's gain suggestions are now the gains
@@ -22,6 +42,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   such as MMDVM hotspots for DMR, P25 or NXDN radios, without decoding to audio and encoding again. Voice
   goes where live audio goes: not to a plugin delayed for the call, and decrypted voice only to plugins
   with `shareDecrypted`.
+- **Interfaces can take a call's voice as vocoder frames too.** `listen` takes `voice: true` (and
+  `audio: false` for the frames without the PCM): a `voice` message then comes just before each live audio
+  chunk, carrying the `voice` topic's chunk as plugins get it. client.js's `listen({ voice, audio })`.
 - A call's `.frames.jsonl` (NXDN's frame capture, and `tool sdr --frames`) names each frame's vocoder
   output `kind` (it was `out`) and no longer has `pos`: frame k starts k × 20 ms into the call.
 

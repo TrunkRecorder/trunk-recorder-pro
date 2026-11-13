@@ -674,22 +674,16 @@ fn replay(a: &Args) {
     }
     let st = engine.status();
     println!("\n{air_s:.1} s of air in {cpu:.2} s ({:.0}× real time). {written} call(s) written to {out_dir}/", air_s / cpu);
-    let hex = |v: Option<u32>| v.map_or("?".into(), |v| format!("{v:x}"));
-    let dec = |v: Option<u32>| v.map_or("?".into(), |v| v.to_string());
     for s in &st.sites {
-        let id = &s.identity;
+        let id = s.identity.describe(s.id_fields);
         println!(
-            "  {}: CC {} good / {} bad {}, {}, NAC {} WACN {} SysID {} RFSS {} site {}, {} call(s){}",
+            "  {}: CC {} good / {} bad {}, {}{}, {} call(s){}",
             if s.site_name == s.short_name { s.short_name.clone() } else { format!("{}/{}", s.short_name, s.site_name) },
             s.good,
             s.bad,
-            if s.modulation == "2FSK" { "OSWs" } else { "TSBKs" },
+            s.blocks,
             s.modulation,
-            hex(id.get(IdField::Nac)),
-            hex(id.wacn()),
-            hex(id.sys_id()),
-            dec(id.rfss()),
-            dec(id.site()),
+            if id.is_empty() { id } else { format!(", {id}") },
             s.calls_concluded,
             s.mismatch.as_ref().map_or(String::new(), |m| format!(" — NOT FOLLOWED: {m}")),
         );
