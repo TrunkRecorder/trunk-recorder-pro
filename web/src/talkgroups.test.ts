@@ -22,14 +22,14 @@ test("a live feed's ONLINE badge stuck to its number (4407Online)", () => {
   ]);
 });
 
-test("ENC breaking a row after its mode: the rest is on the next line, after the badge; the talkgroup is encrypted", () => {
+test("ENC breaking a row after its mode: the rest is on the next line, after the badge; Enc fully encrypted, enc partly", () => {
   const paste = [
     "1205\t4b5\tT",
     "Enc\tLkv PD Tac\tLkv PD Tac desc\tLaw Tac\tLakeview\t2020-01-01",
     "1207\t4b7\tT",
     "enc\tLkv PD Det\tLkv PD Det desc\tLaw Talk\tLakeview\t2020-01-01",
   ];
-  assert.deepEqual(parse(paste), [tg(1205, "TE", "Lkv PD Tac", "Law Tac", "Lakeview"), tg(1207, "TE", "Lkv PD Det", "Law Talk", "Lakeview")]);
+  assert.deepEqual(parse(paste), [tg(1205, "TE", "Lkv PD Tac", "Law Tac", "Lakeview"), tg(1207, "Te", "Lkv PD Det", "Law Talk", "Lakeview")]);
 });
 
 test("both badges: ONLINE stuck to the number, and ENC breaking the row", () => {
