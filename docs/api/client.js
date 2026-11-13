@@ -150,12 +150,13 @@ export class TrunkClient {
   /**
    * Live audio on this connection: listen() every call, listen({ talkgroup })
    * one talkgroup's, listen({ system, talkgroup }) one system's (`system`: its
-   * short name), listen(false) none.
+   * short name), listen(false) none. `voice: true` adds the vocoder frames
+   * (on("voice", (m) => m.chunk)); `audio: false` leaves out the PCM: listen({ voice: true, audio: false }).
    * Kept across reconnects. Chunks come to on("audio", …).
    */
   listen(filter = {}) {
-    this._listen = filter === false ? null : { system: filter.system ?? null, talkgroup: filter.talkgroup ?? null };
-    this.send({ type: "listen", on: !!this._listen, system: this._listen?.system ?? null, talkgroup: this._listen?.talkgroup ?? null });
+    this._listen = filter === false ? null : { system: filter.system ?? null, talkgroup: filter.talkgroup ?? null, voice: !!filter.voice, audio: filter.audio ?? true };
+    this.send(this._listen ? { type: "listen", on: true, ...this._listen } : { type: "listen", on: false, system: null, talkgroup: null });
   }
 
   /**

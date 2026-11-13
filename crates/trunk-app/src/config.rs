@@ -1386,7 +1386,8 @@ fn usrp_gain() -> f64 {
     40.0
 }
 
-fn yes() -> bool {
+/// `true`, as a serde default.
+pub(crate) fn yes() -> bool {
     true
 }
 

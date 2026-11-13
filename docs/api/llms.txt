@@ -132,6 +132,7 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.listen({ talkgroup })          one talkgroup's
   rec.listen({ system, talkgroup })  one system's (its short name) talkgroup's
   rec.listen(false)                  none
+  rec.listen({ voice: true, audio: false })  vocoder frames ("voice" messages) without the PCM; mixes with the above
                                      (kept across reconnects; one filter per connection)
   rec.subscribe(topics)              the costly messages to receive: ["log"] fills log,
                                      "spectrum:0" a waterfall's spectrum (kept across reconnects)
@@ -280,6 +281,10 @@ From the recorder:
   status       ~2/s while running: { status, sources, load, calls }
   spectrum     ~7/s per radio: { source, centerHz, rateHz, bins: 512 dBFS levels }
   concluded    { entry }: a call was recorded
+  voice        { chunk }: while listening with voice (rec.listen({ voice: true, audio: false })), a
+               digital call's vocoder frames just before each audio chunk: the voice plugin topic's
+               chunk { call_id, system, short_name, talkgroup, unit, unit_name?, decrypted,
+               frames: [{ codec "imbe"|"ambe", bits (hex), e0, errs, erased, kind, tone? }] }
   log          { lines }: topic log (warnings and errors always); { timeS, kind, text, time?, level?, system?, site? }
   callsResult  { id, entries, next?, error? }: answers callsQuery; next is there only when more remain: send it back as cursor
   monitorEvent { t, level ("info" | "ok" | "warn" | "bad"), kind, … }: something notable (a control
@@ -295,7 +300,8 @@ From the recorder:
   (more in protocol.ts; ignore types you don't use)
 To the recorder:
   { type: "start" }, { type: "stop" }
-  { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required)
+  { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required;
+                                                                 optional voice: true, audio: false)
   { type: "setConfig", config: <the whole config>, version: <the last config message's> }
   { type: "setTalkgroups", system: <short name>, talkgroups: <Talkgroup rows, [] for none> }   all of them
     (a number twice: the later row); CSV is only for files: read one yourself and send its rows

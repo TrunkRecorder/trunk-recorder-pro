@@ -909,6 +909,39 @@ export interface LogLine {
   site?: string;
 }
 
+/** One vocoder frame (20 ms) as the recorder decoded it: the `voice` plugin topic's, and a line of a call's `.frames.jsonl`. */
+export interface VoiceFrame {
+  /** "imbe": P25 Phase 1, ProVoice (88 bits); "ambe": AMBE+2 half rate, P25 Phase 2, DMR, NXDN (49 bits). */
+  codec: "imbe" | "ambe";
+  /** Information bits after FEC, as hex: MSB first, the last byte zero-padded. */
+  bits: string;
+  /** IMBE: bit errors corrected in u0. AMBE: 0. */
+  e0: number;
+  /** Bit errors the FEC corrected in the whole frame. */
+  errs: number;
+  /** Known lost: `errs` is then meaningless. */
+  erased: boolean;
+  /** What the vocoder made of it. */
+  kind: "voice" | "repeat" | "muted" | "erasure" | "tone";
+  /** AMBE+2: the tone played for it, [ID, level]. */
+  tone?: [number, number];
+}
+
+/** A digital call's live voice as vocoder frames: the `voice` plugin topic's chunk, as it is. */
+export interface VoiceChunk {
+  call_id: number;
+  /** Its system's number this run; `short_name` is its identity. */
+  system: number;
+  short_name: string;
+  talkgroup: number;
+  /** Who is talking (0: not known yet), and their name. */
+  unit: number;
+  unit_name?: string;
+  /** Of a call decrypted with the recorder's keys. */
+  decrypted: boolean;
+  frames: VoiceFrame[];
+}
+
 /** Trunk Recorder's call JSON: each call's .json file, and `record` in `concluded` and `hello.history`. */
 export interface CallRecord {
   /** The call's number since the recorder started. */
@@ -2080,6 +2113,8 @@ export type FromRecorder =
   /** Radio `unit` of system `system` named `name` (setUnitName; "": its own name taken out): make the same edit, by `origin` (units.ts withUnitName). */
   | { type: "unitNameEdited"; system: string; unit: number; name: string; origin: Origin }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
+  /** Live voice as vocoder frames, beside its live audio: only while listening with `voice`. */
+  | { type: "voice"; chunk: VoiceChunk }
   | ({ type: "spectrum" } & Spectrum)
   | { type: "log"; lines: LogLine[] }
   | { type: "concluded"; entry: CallEntry }
@@ -2164,8 +2199,9 @@ export type ToRecorder =
   | { type: "listDir"; path: string }
   /** A Trunk Recorder config.json (or a folder with one), with the files it names. */
   | { type: "readTrConfig"; path: string }
-  /** Live audio: on/off, optionally one system's (its short name) and/or one talkgroup's. */
-  | { type: "listen"; on: boolean; system: string | null; talkgroup: number | null }
+  /** Live audio: on/off, optionally one system's (its short name) and/or one talkgroup's.
+   * `voice`: also digital calls' vocoder frames (`voice` messages); `audio: false`: those alone, without the PCM (default true). */
+  | { type: "listen"; on: boolean; system: string | null; talkgroup: number | null; voice?: boolean; audio?: boolean }
   /** Open a key container (a key source with no password file) with its password; held in memory only. */
   | { type: "unlockKeys"; source: string; password: string }
   /** Forget a key container's keys: its systems stop decrypting at once. */
