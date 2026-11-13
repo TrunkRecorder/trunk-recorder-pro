@@ -30,6 +30,7 @@ tools. Most people only ever run `trunk-pro` with no arguments and do the rest i
 | [`replay`](#replay) | Record calls from capture files instead of radios |
 | [`survey`](#survey) | Find a system: scan the bands, then listen to the best control channel |
 | [`rolloff`](#rolloff) | Measure how a radio's band edges sag, and the guard band to use |
+| [`tune`](#tune) | Find a radio's best gain on a recorder that is recording |
 | [`tool …`](#tool) | Diagnostics: one channel's decode, scans, weak-signal curves, re-vocoding |
 | [`plugin …`](#plugin) | Find, install, update, remove and test plugins |
 | [`interface …`](#interface) | Find, install, update and remove interfaces, or add a folder of your own |
@@ -326,6 +327,68 @@ JSON. `--full` adds the spectrum, floor and waterfall rows. Without `--gain` it 
 
 ```bash
 trunk-pro rolloff --center 858500000
+```
+
+## tune
+
+```bash
+trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--dwell 45] [--settle 8]
+               [--max-steps 20] [--margin 1] [--mode manual|linearity|sensitivity] [--apply]
+```
+
+Finds the gain at which a radio decodes its systems best. It works on a recorder that is
+**recording**, the one at `--url` (it can be another computer's: it uses the
+[interface API](api/README.md), so the recorder must be reachable there, and it needs the built-in
+interface's port, which has control access). It sets each gain to try as Setup does, which the radio
+takes at once, holds it for `--settle` seconds and then measures for `--dwell` seconds what the
+radio's systems decode:
+
+- **The control channel first.** P25's coverage (the share of the control channel's air decoded),
+  else the share of messages decoded while it was locked. Without the control channel nothing is
+  recorded.
+- **Then voice frames lost**, when a system had at least 5 seconds of voice in the step. A system's
+  score is 70 % control channel and 30 % voice then, else its control channel alone.
+- **A gain that clips** (more than 0.5 % of samples at full scale) is refused, whatever it decoded.
+
+The setting's score (0 to 100) is the systems' average with the weakest counted twice, so a gain
+that helps the strong systems a little at a weak one's cost isn't chosen. The systems are those with
+a control channel in the radio's band, or `--systems`.
+
+The search starts where the radio is and moves one gain stage at a time, coarse steps first, keeping
+a move only when it scores more than `--margin` better. Then the best and the starting setting are
+measured once more each, since traffic changes from minute to minute, and the best is reported only
+if it is still ahead.
+
+| Radio | Stages tried |
+|---|---|
+| Airspy, HydraSDR | **Manual**: LNA (0–14), mixer and VGA (0–15), in steps of 3, then 1. **Linearity** or **sensitivity**: the step (0–21), by 4, then 1. The mode it is in, or `--mode` |
+| HackRF | LNA (0–40 dB, by 8), VGA (0–62 dB, by 6, then 2), the amp |
+| RTL-SDR | The tuner's gains (0–49.6 dB), four places along the table, then one |
+
+Other radios aren't supported yet.
+
+**Recording goes on while it runs**, so a poor setting costs the radio's systems while it is tried.
+A setting under which a control channel that was decoding stops for 10 seconds is given up at once,
+and one that clips heavily after 5. However it ends (done, an error, Ctrl-C), the radio is put back
+as it was, unless `--apply`, which keeps the best (and saves it in the config). It prints the
+radio's settings as they were first, to set by hand if it is killed. At the end it also says whether
+the frequency correction (ppm) should change, as Setup's **Set correction to** does.
+
+| Option | Default | What it does |
+|---|---|---|
+| `--url` | `http://127.0.0.1:8080` | The recorder's built-in interface |
+| `--source N` | the only one | The radio, by its place in Setup's list from 0. Needed when there are several: the error lists them |
+| `--systems a,b` | every system on the radio | Score only these (short names) |
+| `--dwell s` | 45 | How long each setting is measured. Busy systems need less; voice needs traffic |
+| `--settle s` | 8 | How long each setting runs before it is measured |
+| `--max-steps n` | 20 | At most this many settings measured. Each takes `--settle` + `--dwell` |
+| `--margin` | 1 | A move is kept only when it scores this much better (0–100 scale) |
+| `--mode` | the radio's | Airspy: search `manual`, `linearity` or `sensitivity` instead |
+| `--apply` | | Keep the best setting |
+
+```bash
+trunk-pro tune --url http://192.168.1.20:8080 --source 1
+trunk-pro tune --source 0 --systems county,city --mode sensitivity --apply
 ```
 
 ## tool

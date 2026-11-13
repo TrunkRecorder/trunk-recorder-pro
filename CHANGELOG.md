@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **`trunk-pro tune` finds a radio's best gain** from what its systems decode. On a recorder that is recording, it tries
+  the radio's gain stage by stage (Airspy and HydraSDR in manual, linearity or sensitivity mode, HackRF, RTL-SDR), holds
+  each setting for a while and scores it by the control channels of the systems on that radio first, then their voice frames
+  lost, the weakest system counted twice; a setting that clips is refused. A setting that loses a control channel is given
+  up at once, and the radio is put back at the end unless `--apply`. It also says whether the ppm should change. It uses
+  the interface API, so it can tune another computer's recorder.
+
 ## [0.3.7] — 2026-11-13
 
 - **NXDN Type-C: control loss is the control channel's** (#170). A site's decode rate counted every watched carrier's

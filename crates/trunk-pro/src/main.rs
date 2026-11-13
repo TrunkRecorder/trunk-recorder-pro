@@ -136,6 +136,7 @@ mod toolkit;
 mod protocol_tests;
 mod survey;
 mod tool;
+mod tune;
 mod unlock;
 
 pub use trunk_app::config;
@@ -262,6 +263,10 @@ usage:
   trunk-pro rolloff <capture> --center Hz --rate Hz [--format cu8|cs16|cf32] [--full]
       How far in from each edge of the band the noise floor sags, and the
       guard band to leave there (--full: with the spectra and waterfall).
+  trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--dwell 45] [--apply]
+      On a recorder that is recording: try a radio's gains one stage at a
+      time and keep the one its systems decode best at (control channel,
+      then voice). The radio is put back unless --apply. tune --help: more.
   trunk-pro tool cc|voice|frames|p2 <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) …
       One P25 channel's decode as JSON lines (diagnostics; frames: counts
       of each frame type; p2: a Phase 2 channel, --nac --sysid --wacn).
@@ -322,6 +327,7 @@ fn main() {
         Some("capture") => capture(&Args::parse(&argv[1..])),
         Some("survey") => survey::cli(&Args::parse(&argv[1..])),
         Some("rolloff") => profile::cli(&Args::parse(&argv[1..])),
+        Some("tune") => tune::cli(&Args::parse(&argv[1..])),
         Some("plugin") => plugins::cli::run(&Args::parse(&argv[1..])),
         Some("interface") => interfaces::cli::run(&Args::parse(&argv[1..])),
         _ => die(USAGE),
