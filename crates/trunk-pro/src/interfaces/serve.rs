@@ -57,7 +57,8 @@ pub async fn reconcile(ctx: Arc<Ctx>) {
         match bind(addr).await {
             Ok(listener) => {
                 let (stop, stopped) = watch::channel(false);
-                log::info!("Interface {id}: {}://{}:{port}/", ctx.scheme(), if ctx.bind.is_unspecified() { "localhost".to_string() } else { ctx.bind.to_string() });
+                let host = ctx.config.lock().unwrap().server.url_host(&ctx.bind.to_string());
+                log::info!("Interface {id}: {}://{host}:{port}/", ctx.scheme());
                 tokio::spawn(run(ctx.clone(), id.clone(), listener, stopped));
                 ctx.interfaces.serving.lock().unwrap().insert(id, Serving { port, stop });
             }

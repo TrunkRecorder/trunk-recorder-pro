@@ -65,7 +65,7 @@ fn list(a: &Args) {
     let (path, cfg) = load_config(a);
     println!("{}", path.display());
     println!("  built-in [control] port {}", cfg.server.port);
-    let host = if cfg.server.bind == "0.0.0.0" { "localhost" } else { &cfg.server.bind };
+    let host = cfg.server.url_host(&cfg.server.bind);
     for (id, i) in &cfg.server.interfaces {
         let dir = folder(&path, id, i);
         let what = match Manifest::read(&dir) {

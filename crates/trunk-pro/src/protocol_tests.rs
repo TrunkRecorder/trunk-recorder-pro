@@ -461,6 +461,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         unlocked: Default::default(),
         iq: Default::default(),
         sessions: crate::access::Sessions::fresh(),
+        passkeys: Default::default(),
         tls: Default::default(),
     });
     // The stats thread makes its folder as it starts: wait for that, so a

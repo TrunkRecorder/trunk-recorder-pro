@@ -1,12 +1,13 @@
 // Setup → Recording → Access (desktop app): signing in (server.auth). Off,
 // whoever reaches a port gets its access; on, a browser signs in as a user,
-// with their access token's secret, and gets what the user's role allows:
-// View (listen) or Admin (control). Turned on in an order that can't lock
-// this browser out: an Admin user, this browser signed in as them, and only
-// then on.
+// with their access token's secret or a passkey of theirs, and gets what the
+// user's role allows: View (listen) or Admin (control). Turned on in an order
+// that can't lock this browser out: an Admin user, this browser signed in as
+// them, and only then on. Each user adds their own passkeys, signed in
+// (where passkeys work: localhost, or server.hostname over HTTPS).
 
 import { useState } from "react";
-import { createToken, signIn, signOut, snapshot, subscribe, updateConfig, useSelect } from "./controller.ts";
+import { addPasskey, createToken, passkeyName, passkeySignIn, signIn, signOut, snapshot, subscribe, updateConfig, useSelect, type SignedIn } from "./controller.ts";
 import { Info } from "./charts.tsx";
 import { CopyButton, Field } from "./inputs.tsx";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
@@ -38,18 +39,20 @@ function untilConfig(ok: (c: Config) => boolean, ms = 5000): Promise<boolean> {
 const authOf = (x: Config): AuthSetup => (x.server.auth ??= { enabled: false });
 
 /**
- * Turn signing in on, an Admin user's access token `secret` in hand: this
- * browser signed in as them (the recorder says who and their role), the user
- * in this browser's config (an edit without them would take them out), and
- * only then on. Why it wasn't, or null.
+ * Turn signing in on, an Admin user's access token `secret` in hand (or, with
+ * `passkey`, one of their passkeys): this browser signed in as them (the
+ * recorder says who and their role), the user in this browser's config (an
+ * edit without them would take them out), and only then on. Why it wasn't, or null.
  */
-export async function enableWith(secret: string): Promise<string | null> {
-  const who = await signIn(secret);
-  if (!who) return "Not a token here";
+export async function enableWith(secret: string, passkey = false): Promise<string | null> {
+  const signed: SignedIn | string | null = passkey ? await passkeySignIn() : await signIn(secret);
+  if (!signed) return "Not a token here";
+  if (typeof signed === "string") return signed;
+  const who = signed;
   if (who.access !== "control") {
     // (Its cookie out again: once on, it could be the one this browser is taken for.)
     await signOut(false);
-    return "Not an Admin token";
+    return passkey ? "Not an Admin's passkey" : "Not an Admin token";
   }
   if (!(await untilConfig((x) => x.server.auth?.users?.[who.user]?.access === "control"))) return "Token not saved yet";
   updateConfig((x) => void (authOf(x).enabled = true));
@@ -59,12 +62,18 @@ export async function enableWith(secret: string): Promise<string | null> {
 /** A user just made: their token's secret, shown this once. */
 export type Made = { name: string; access: ApiAccess; secret: string };
 
+/** Whether they have something to sign in with: a token or a passkey. */
+const canSignIn = (u: AuthUser) => !!u.token || !!u.passkeys?.length;
 /** Who can turn signing in off again: an Admin with something to sign in with. */
-const admin = (u: AuthUser) => u.access === "control" && !!u.token;
+const admin = (u: AuthUser) => u.access === "control" && canSignIn(u);
+
+const day = (t?: number) => (t ? new Date(t * 1000).toLocaleDateString() : "—");
 
 /** `made`: a user just made (tests). */
 export function AccessSection(props: { c: Config; made?: Made }) {
   const saved = useSelect((x) => ({ status: x.saveStatus, error: x.saveError }));
+  // Who this browser is signed in as, and whether passkeys work where it is.
+  const me = useSelect((x) => ({ user: x.user, passkeys: x.passkeys }));
   const auth = props.c.server.auth;
   const users = auth?.users ?? {};
   const rows = Object.entries(users).sort(([, a], [, b]) => (a.token?.created ?? 0) - (b.token?.created ?? 0));
@@ -78,11 +87,14 @@ export function AccessSection(props: { c: Config; made?: Made }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [enabling, setEnabling] = useState(false);
+  // A passkey being added for this browser's user: its name.
+  const [naming, setNaming] = useState<string | null>(null);
+  const [addedKey, setAddedKey] = useState<string | null>(null);
 
-  const finish = async (secret: string) => {
+  const finish = async (secret: string, passkey = false) => {
     setBusy(true);
     setProblem(null);
-    const why = await enableWith(secret);
+    const why = await enableWith(secret, passkey);
     setBusy(false);
     if (why) return setProblem(why);
     setStep(null);
@@ -122,12 +134,33 @@ export function AccessSection(props: { c: Config; made?: Made }) {
     if (made?.name === name) setMade(null);
   };
   const setRole = (name: string, access: ApiAccess) => updateConfig((x) => void (authOf(x).users![name] = { ...authOf(x).users![name], access }));
-  // The last Admin who can sign in, signing in on: they stay, and stay Admin.
+  // The last Admin who can sign in, signing in on: they stay, and stay Admin, and keep a way in.
   const lastAdmin = (u: AuthUser) => on && admin(u) && admins <= 1;
+  const keepsWayIn = (u: AuthUser, after: AuthUser) => canSignIn(after) && !(lastAdmin(u) && !admin(after));
+  const removeToken = (name: string) => {
+    if (!confirm(`Remove ${name}'s token? Browsers signed in with it are signed out; their passkeys stay.`)) return;
+    updateConfig((x) => void delete authOf(x).users![name].token);
+  };
+  const removePasskey = (name: string, id: string, label: string) => {
+    if (!confirm(`Remove ${name}'s passkey ${label}? Browsers signed in with it are signed out.`)) return;
+    updateConfig((x) => void (authOf(x).users![name].passkeys = authOf(x).users![name].passkeys?.filter((p) => p.id !== id)));
+  };
+  const add = async () => {
+    if (!naming?.trim()) return;
+    setBusy(true);
+    setProblem(null);
+    const r = await addPasskey(naming.trim());
+    setBusy(false);
+    if (typeof r === "string") return setProblem(r);
+    setNaming(null);
+    setAddedKey(r.name);
+  };
   const anon = auth?.anonymous === "listen";
+  // Signing in with a passkey to turn it on: an Admin has one, and passkeys work here.
+  const adminKeys = me.passkeys && rows.some(([, u]) => u.access === "control" && u.passkeys?.length);
 
   return (
-    <Section title="Access" hint="Sign-in with tokens" actions={<Switch label="Sign-in" checked={on} disabled={busy} onChange={turn} />}>
+    <Section title="Access" hint="Tokens, passkeys" actions={<Switch label="Sign-in" checked={on} disabled={busy} onChange={turn} />}>
       <section className="set-card">
         {step === "paste" && (
           <Group title="Sign in first" hint="An Admin token's secret" cols={1}>
@@ -144,6 +177,11 @@ export function AccessSection(props: { c: Config; made?: Made }) {
               <button className="btn primary" type="submit" disabled={busy || !paste.trim()}>
                 Sign in and turn on
               </button>
+              {adminKeys && (
+                <button type="button" className="btn" disabled={busy} onClick={() => void finish("", true)}>
+                  Passkey
+                </button>
+              )}
               <button
                 type="button"
                 className="btn ghost"
@@ -180,7 +218,7 @@ export function AccessSection(props: { c: Config; made?: Made }) {
             ) : (
               <>
                 View or Admin
-                <Info>View: sees and plays, changes nothing. Admin: everything. Each signs in with a token; removing one signs their browsers out.</Info>
+                <Info>View: sees and plays, changes nothing. Admin: everything. Each signs in with a token or a passkey of theirs; removing either signs their browsers out. Passkeys: added by each user, signed in, here.</Info>
               </>
             )
           }
@@ -207,6 +245,35 @@ export function AccessSection(props: { c: Config; made?: Made }) {
                 Done
               </button>
             </div>
+          )}
+          {addedKey && (
+            <div className="banner" role="status" aria-label="Passkey added">
+              <span>
+                Passkey <b>{addedKey}</b> added
+              </span>
+              <button className="btn ghost small" onClick={() => setAddedKey(null)}>
+                Done
+              </button>
+            </div>
+          )}
+          {naming !== null && (
+            <form
+              className="row wide"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void add();
+              }}
+            >
+              <Field label="Passkey name">
+                <input autoComplete="off" maxLength={40} value={naming} aria-label="Passkey name" onChange={(e) => setNaming(e.target.value)} />
+              </Field>
+              <button className="btn primary" type="submit" disabled={busy || !naming.trim()}>
+                Add
+              </button>
+              <button type="button" className="btn ghost" onClick={() => setNaming(null)}>
+                Cancel
+              </button>
+            </form>
           )}
           {adding && (
             <form
@@ -247,7 +314,8 @@ export function AccessSection(props: { c: Config; made?: Made }) {
                   <tr>
                     <th>Name</th>
                     <th>Role</th>
-                    <th>Created</th>
+                    <th>Token</th>
+                    <th>Passkeys</th>
                     <th />
                   </tr>
                 </thead>
@@ -261,7 +329,34 @@ export function AccessSection(props: { c: Config; made?: Made }) {
                           <option value="control">Admin</option>
                         </select>
                       </td>
-                      <td className="small">{u.token?.created ? new Date(u.token.created * 1000).toLocaleDateString() : "—"}</td>
+                      <td className="small">
+                        {day(u.token?.created)}
+                        {u.token && keepsWayIn(u, { ...u, token: undefined }) && (
+                          <button type="button" className="btn ghost small danger" title="Remove" aria-label={`Remove ${name}'s token`} onClick={() => removeToken(name)}>
+                            ×
+                          </button>
+                        )}
+                      </td>
+                      <td>
+                        <div className="row wrap">
+                          {(u.passkeys ?? []).map((p) => (
+                            <span key={p.id} className="chip" title={`Added ${day(p.created)}`}>
+                              {p.name}
+                              {keepsWayIn(u, { ...u, passkeys: u.passkeys!.filter((q) => q.id !== p.id) }) && (
+                                <button type="button" className="btn ghost small danger" title="Remove" aria-label={`Remove ${name}'s passkey ${p.name}`} onClick={() => removePasskey(name, p.id, p.name)}>
+                                  ×
+                                </button>
+                              )}
+                            </span>
+                          ))}
+                          {!u.passkeys?.length && <span className="small">—</span>}
+                          {me.passkeys && me.user === name && naming === null && (
+                            <button type="button" className="btn small" disabled={busy} onClick={() => setNaming(passkeyName())}>
+                              Add passkey
+                            </button>
+                          )}
+                        </div>
+                      </td>
                       <td>
                         {!lastAdmin(u) && (
                           <button type="button" className="btn ghost small danger" aria-label={`Remove ${name}`} onClick={() => remove(name)}>

@@ -142,6 +142,8 @@ export interface AppState {
   user: string | null;
   /** Whether signing in is on (GET /api/session, asked after each hello: a listen-only connection's config doesn't say). */
   signingIn: boolean;
+  /** Whether passkeys work where this page is (GET /api/session: localhost, or server.hostname over HTTPS). */
+  passkeys: boolean;
   surveySpectrum: Spectrum | null;
   /** The licenses looked up for the survey's signals ("Identify surveyed sites"); null: none asked for since it started. */
   surveyLicenses: LicenseLookup | null;
@@ -243,6 +245,7 @@ let state: AppState = {
   access: null,
   user: null,
   signingIn: false,
+  passkeys: false,
   surveySpectrum: null,
   surveyLicenses: null,
   surveyFor: null,
@@ -390,7 +393,7 @@ function take(m: FromRecorder): void {
     // The greeting's end: everything before it said how things are now.
     case "hello":
       set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands, capabilities: m.capabilities, access: m.access, user: m.user ?? null });
-      void fetchSession().then((x) => x && set({ signingIn: x.auth }));
+      void fetchSession().then((x) => x && set({ signingIn: x.auth, passkeys: !!x.passkeys }));
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
       sendTopics(true);
@@ -754,7 +757,7 @@ export function createToken(name: string, access: ApiAccess): Promise<TokenCreat
 }
 
 /** How the recorder sees this browser (GET /api/session); null: it couldn't say (the browser build has no server). */
-export type Session = { auth: boolean; access: ApiAccess | null; user: string | null };
+export type Session = { auth: boolean; access: ApiAccess | null; user: string | null; passkeys?: boolean };
 export async function fetchSession(): Promise<Session | null> {
   if (transport.kind !== "desktop") return null;
   try {
@@ -777,6 +780,66 @@ export async function signIn(secret: string): Promise<SignedIn | null> {
   } catch {
     return null;
   }
+}
+
+// Passkeys: WebAuthn ceremonies with the recorder (POST /api/passkey/…), its binary values base64url.
+// (The sign-in page, signin.html, has its own copy: it's served alone, before signing in.)
+
+const bytes = (s: string) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+const b64url = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const post = (url: string, body?: unknown) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}), cache: "no-store" });
+
+/** Why a passkey ceremony didn't finish, in a word or three. */
+function passkeyFailed(x: unknown): string {
+  const name = (x as { name?: string } | null)?.name;
+  if (name === "NotAllowedError" || name === "AbortError") return "Cancelled";
+  if (name === "InvalidStateError") return "On this device already";
+  return String((x as { message?: string } | null)?.message ?? x).trim() || "Failed";
+}
+
+/** Sign this browser in with a passkey (the browser asks which): who it signed in as, or why not. */
+export async function passkeySignIn(): Promise<SignedIn | string> {
+  try {
+    const r = await post("/api/passkey/login/start");
+    if (!r.ok) return (await r.text()).trim();
+    const { id, options } = (await r.json()) as { id: string; options: { publicKey: Record<string, unknown> & { challenge: string } } };
+    const publicKey = { ...options.publicKey, challenge: bytes(options.publicKey.challenge) } as unknown as PublicKeyCredentialRequestOptions;
+    const cred = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null;
+    if (!cred) return "Cancelled";
+    const a = cred.response as AuthenticatorAssertionResponse;
+    const response = { authenticatorData: b64url(a.authenticatorData), clientDataJSON: b64url(a.clientDataJSON), signature: b64url(a.signature), userHandle: a.userHandle ? b64url(a.userHandle) : null };
+    const done = await post("/api/passkey/login/finish", { id, credential: { id: cred.id, rawId: b64url(cred.rawId), type: cred.type, extensions: {}, response } });
+    return done.ok ? ((await done.json()) as SignedIn) : done.status === 401 ? "Not a passkey here" : (await done.text()).trim();
+  } catch (x) {
+    return passkeyFailed(x);
+  }
+}
+
+/** Add a passkey called `name` for the user this browser signed in as (the browser makes it): its name as saved, or why not. */
+export async function addPasskey(name: string): Promise<{ name: string } | string> {
+  try {
+    const r = await post("/api/passkey/register/start", { name });
+    if (!r.ok) return (await r.text()).trim();
+    type Options = { publicKey: Record<string, unknown> & { challenge: string; user: { id: string }; excludeCredentials?: { id: string }[] } };
+    const { id, options } = (await r.json()) as { id: string; options: Options };
+    const o = options.publicKey;
+    const publicKey = { ...o, challenge: bytes(o.challenge), user: { ...o.user, id: bytes(o.user.id) }, excludeCredentials: (o.excludeCredentials ?? []).map((c) => ({ ...c, id: bytes(c.id) })) } as unknown as PublicKeyCredentialCreationOptions;
+    const cred = (await navigator.credentials.create({ publicKey })) as PublicKeyCredential | null;
+    if (!cred) return "Cancelled";
+    const a = cred.response as AuthenticatorAttestationResponse;
+    const response = { attestationObject: b64url(a.attestationObject), clientDataJSON: b64url(a.clientDataJSON) };
+    const done = await post("/api/passkey/register/finish", { id, credential: { id: cred.id, rawId: b64url(cred.rawId), type: cred.type, extensions: {}, response } });
+    return done.ok ? ((await done.json()) as { name: string }) : (await done.text()).trim();
+  } catch (x) {
+    return passkeyFailed(x);
+  }
+}
+
+/** A name for a passkey made in this browser: its system and browser ("Mac Safari"), 1–3 words. */
+export function passkeyName(ua: string = typeof navigator === "undefined" ? "" : navigator.userAgent): string {
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /CrOS/.test(ua) ? "Chromebook" : /Linux/.test(ua) ? "Linux" : "";
+  const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
+  return [os, browser].filter(Boolean).join(" ") || "Passkey";
 }
 
 /** Sign out (the cookie cleared), and the page again (`reload`): the server's sign-in page, or the app as anyone may see it. */

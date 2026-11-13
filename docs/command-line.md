@@ -655,9 +655,10 @@ Setup → **Recording** → **Access** does the same at once.
 
 | Subcommand | What it does |
 |---|---|
-| `access list` | Whether signing in is on, what `anonymous` allows, and each user: their name, role and the day their token was made. |
+| `access list` | Whether signing in is on, what `anonymous` allows, and each user: their name, role, the day their token was made, and their passkeys (name and day). |
 | `access add <name> [--access listen\|control]` | Add a user (control unless `--access listen`) with an access token. Its secret is printed once, on stdout (the rest on stderr), so `trunk-pro access add kiosk --access listen > kiosk.token` keeps it in a file. |
 | `access remove <name>` | Remove a user: whoever signed in as them is signed out. Refused if they're the last one with control access while signing in is on. |
+| `access passkey remove <name> <passkey>` | Remove one of a user's passkeys, by its name as `access list` shows it: whoever signed in with it is signed out. Refused if it's the last way in for the last control user while signing in is on. (Passkeys are added from a browser: Setup → Access.) |
 | `access on` | Turn signing in on. Refused until there's a user with control access. |
 | `access off` | Turn signing in off: the recovery when you're locked out. |
 

@@ -18,7 +18,8 @@
 //! gets no more than its user's role allows ([`Caller::access`]): a user
 //! signs in with their access token, whose secret comes as `Authorization:
 //! Bearer` or `?token=` (programs), or by way of the session cookie
-//! `/api/login` sets (browsers: [`Sessions`]), and without one it gets
+//! `/api/login` sets (browsers: [`Sessions`]), or one of their passkeys
+//! signing in sets ([`passkey`]); without one it gets
 //! `server.auth.anonymous` (none: it must sign in first). A secret is 32
 //! random bytes; the config keeps only its SHA-256.
 
@@ -36,6 +37,7 @@ use crate::runtime::Ctx;
 use crate::toolkit::{hex, percent_decode, percent_encode, sha256_hex, unhex};
 
 pub mod cli;
+pub mod passkey;
 
 /// Which port a request came in on.
 #[derive(Clone, Debug)]
@@ -51,10 +53,11 @@ pub enum Door {
 pub enum Who {
     /// Not signed in (or signing in is off).
     Anonymous,
-    /// Signed in as user `name`, with the access token whose secret's hash
-    /// is `hash` (as a secret sent, or a session names it; a token made
-    /// again is another sign-in).
-    User { name: String, hash: String },
+    /// Signed in as user `name` with `credential`: their access token's
+    /// secret's hash (as a secret sent, or a session names it; a token made
+    /// again is another sign-in), or `pk:` and the id of the passkey a
+    /// session was signed in with ([`passkey_credential`]).
+    User { name: String, credential: String },
 }
 
 /// A request (or a WebSocket, for as long as it lasts): its port and who it is.
@@ -70,7 +73,7 @@ impl Who {
     pub fn grants(&self, auth: &Auth) -> Option<ApiAccess> {
         match self {
             Who::Anonymous => auth.anonymous,
-            Who::User { name, hash } => auth.users.get(name).filter(|u| u.token.as_ref().is_some_and(|t| t.hash == *hash)).map(|u| u.access),
+            Who::User { name, credential } => auth.users.get(name).filter(|u| holds(u, credential)).map(|u| u.access),
         }
     }
 
@@ -89,14 +92,19 @@ impl Caller {
     /// more than its credential's.
     pub fn access(&self, ctx: &Ctx) -> Option<ApiAccess> {
         let cfg = ctx.config.lock().unwrap();
-        let door = match &self.door {
-            Door::Builtin => Some(ApiAccess::Control),
-            Door::Interface { id, .. } => ctx.interfaces.access(&cfg, id),
-        };
+        let door = self.port_access(ctx, &cfg);
         if !cfg.server.auth.enabled {
             return door;
         }
         Some(door?.min(self.who.grants(&cfg.server.auth)?))
+    }
+
+    /// Its port's access, by `cfg` (None once its interface is gone or off), whoever it is.
+    pub fn port_access(&self, ctx: &Ctx, cfg: &crate::config::Config) -> Option<ApiAccess> {
+        match &self.door {
+            Door::Builtin => Some(ApiAccess::Control),
+            Door::Interface { id, .. } => ctx.interfaces.access(cfg, id),
+        }
     }
 }
 
@@ -116,7 +124,20 @@ pub fn user_of<'a>(auth: &'a Auth, secret: &str) -> Option<(&'a String, &'a Auth
 /// Who signs in with `secret`: [`Who::User`], or None.
 pub fn signs_in(auth: &Auth, secret: &str) -> Option<Who> {
     let (name, u) = user_of(auth, secret)?;
-    Some(Who::User { name: name.clone(), hash: u.token.as_ref()?.hash.clone() })
+    Some(Who::User { name: name.clone(), credential: u.token.as_ref()?.hash.clone() })
+}
+
+/// A session's credential when signed in with the passkey whose id is `id`.
+pub fn passkey_credential(id: &str) -> String {
+    format!("pk:{id}")
+}
+
+/// Whether user `u` still has `credential`: their token's hash, or a passkey of theirs ([`passkey_credential`]).
+pub fn holds(u: &AuthUser, credential: &str) -> bool {
+    match credential.strip_prefix("pk:") {
+        Some(id) => u.passkeys.iter().any(|p| p.id == id),
+        None => u.token.as_ref().is_some_and(|t| t.hash == credential),
+    }
 }
 
 /// Who a request is: the first valid secret of its `Authorization: Bearer`
@@ -146,11 +167,11 @@ pub const SESSION_S: u64 = 30 * 24 * 3600;
 pub const SESSION_KEY_FILE: &str = "session-key";
 
 /// Browsers' sessions: a browser signed in keeps a cookie saying who, with
-/// what credential (an access token's hash) and until when, signed with
-/// this recorder's key, which nothing else knows (it's never in the config,
-/// which control pages are sent). Removing the user, or making their token
-/// again, ends the session (it no longer [`Who::grants`] anything); so does
-/// a new key.
+/// what credential (an access token's hash, or a passkey's id) and until
+/// when, signed with this recorder's key, which nothing else knows (it's
+/// never in the config, which control pages are sent). Removing the user,
+/// making their token again or removing the passkey ends the session (it no
+/// longer [`Who::grants`] anything); so does a new key.
 pub struct Sessions {
     key: [u8; 32],
     /// The cookie's name: this key's, so recorders on one host name (other
@@ -218,7 +239,7 @@ impl Sessions {
         let mut parts = body.split('.');
         let (user, credential, expires) = (parts.next()?, parts.next()?, parts.next()?.parse::<u64>().ok()?);
         (parts.next().is_none() && now < expires).then_some(())?;
-        Some(Who::User { name: percent_decode(user)?, hash: percent_decode(credential)? })
+        Some(Who::User { name: percent_decode(user)?, credential: percent_decode(credential)? })
     }
 
     fn mac(&self, body: &str) -> Hmac<Sha256> {
@@ -277,7 +298,7 @@ pub fn add_user(auth: &mut Auth, name: &str, access: ApiAccess) -> Result<Secret
     getrandom::fill(&mut b).map_err(|e| format!("No random numbers to make a secret with: {e}"))?;
     let secret = format!("trp_{}", hex(&b));
     let token = AuthToken { hash: sha256_hex(secret.as_bytes()), created: crate::clock::unix_s() as i64 };
-    auth.users.insert(name.into(), AuthUser { access, token: Some(token) });
+    auth.users.insert(name.into(), AuthUser { access, token: Some(token), passkeys: vec![] });
     Ok(Secret::new(secret))
 }
 
@@ -352,7 +373,7 @@ mod tests {
         let secret = add_user(&mut auth, " luke ", ApiAccess::Control).unwrap();
         let s = secret.expose();
         assert!(s.starts_with("trp_") && s.len() == 4 + 64, "{s}");
-        let luke = Who::User { name: "luke".into(), hash: sha256_hex(s.as_bytes()) };
+        let luke = Who::User { name: "luke".into(), credential: sha256_hex(s.as_bytes()) };
         let hash = auth.users["luke"].token.as_ref().unwrap().hash.clone();
         assert_eq!(hash, sha256_hex(s.as_bytes()), "the config keeps its hash, by its trimmed name");
         let with = |name: header::HeaderName, v: String| {
@@ -431,7 +452,7 @@ mod tests {
         let mut auth = Auth { enabled: true, ..Default::default() };
         add_user(&mut auth, "luke.b ÿ", ApiAccess::Control).unwrap();
         let hash = auth.users["luke.b ÿ"].token.as_ref().unwrap().hash.clone();
-        let luke = Who::User { name: "luke.b ÿ".into(), hash: hash.clone() };
+        let luke = Who::User { name: "luke.b ÿ".into(), credential: hash.clone() };
         let v = sessions.issue("luke.b ÿ", &hash);
         assert!(v.starts_with("luke%2Eb%20%C3%BF.") && v.split('.').count() == 4, "{v}");
         assert_eq!(sessions.verify(&v), Some(luke.clone()), "dots and more in a name");
@@ -455,7 +476,7 @@ mod tests {
         let (a, b, other) = (Sessions::load(&dir), Sessions::load(&dir), Sessions::load(&elsewhere));
         assert_eq!((a.key, &a.cookie), (b.key, &b.cookie));
         assert!(a.cookie != other.cookie && a.cookie.starts_with("trp_") && a.cookie.len() == 12, "{}", a.cookie);
-        assert_eq!(b.verify(&a.issue("luke", "h")), Some(Who::User { name: "luke".into(), hash: "h".into() }), "a restart keeps sessions");
+        assert_eq!(b.verify(&a.issue("luke", "h")), Some(Who::User { name: "luke".into(), credential: "h".into() }), "a restart keeps sessions");
         let kept = std::fs::read_to_string(dir.join(SESSION_KEY_FILE)).unwrap();
         assert_eq!(kept, hex(&a.key), "the key, in hex");
         #[cfg(unix)]

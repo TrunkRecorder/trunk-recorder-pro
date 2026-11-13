@@ -271,6 +271,7 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
             );
           })}
         <TlsRow c={c} />
+        <HostnameRow c={c} />
       </div>
       <p className="muted small">
         Listening on <code>{c.server.bind}</code>
@@ -321,6 +322,31 @@ function TlsRow(props: { c: Config }) {
       </span>
       <span role="cell" className="small muted">
         {half ? <span className="bad-text">Needs both</span> : !tls ? "Off" : location.protocol === "https:" ? "On" : "From next restart"}
+      </span>
+    </div>
+  );
+}
+
+/** The name the recorder is reached by over HTTPS (server.hostname): passkeys there, and the URLs it logs. */
+function HostnameRow(props: { c: Config }) {
+  const saved = props.c.server.hostname ?? "";
+  const [name, setName] = useState(saved);
+  useEffect(() => setName(saved), [saved]);
+  const save = () => {
+    const n = name.trim();
+    if (n !== saved) updateConfig((x) => void (x.server.hostname = n || undefined));
+  };
+  return (
+    <div className="iface-ports-row" role="row">
+      <span role="cell">
+        <strong>Host name</strong> <span className="muted small">passkeys</span>
+        <Info>The name the certificate is for (radio.tail1234.ts.net). Passkeys work there over HTTPS, and on localhost; never on an IP address.</Info>
+      </span>
+      <span role="cell" className="iface-tls">
+        <input className="mono" aria-label="Host name" value={name} placeholder="radio.tail1234.ts.net" onChange={(e) => setName(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
+      </span>
+      <span role="cell" className="small muted">
+        {!saved ? "None" : location.hostname === saved.toLowerCase() ? "This page" : "Set"}
       </span>
     </div>
   );

@@ -263,8 +263,9 @@ export class TrunkClient {
   }
 
   /**
-   * Whether signing in is on and what this page may do: { auth, access, user }
-   * (GET /api/session; `access` null: it must sign in). A WebSocket that may
+   * Whether signing in is on and what this page may do: { auth, access, user,
+   * passkeys } (GET /api/session; `access` null: it must sign in; `passkeys`:
+   * the sign-in page offers them on this host). A WebSocket that may
    * not connect just closes, so this is how a page tells that from a recorder
    * that's down (which rejects).
    */

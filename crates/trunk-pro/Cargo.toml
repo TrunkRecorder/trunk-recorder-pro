@@ -44,6 +44,12 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring
 sha2 = "0.11"
 # Signing browsers' sessions (access.rs): the version trunk-app has.
 hmac = "0.13"
+# Passkeys (access/passkey.rs): WebAuthn's checks, over RustCrypto (no OpenSSL, no C).
+# No attestation (any authenticator will do); conditional-ui: signing in with
+# no name typed (discoverable credentials).
+webauthn-rs = { version = "0.6.2", default-features = false, features = ["conditional-ui"] }
+# Passkeys' credential ids (base64url): the version trunk-app has.
+base64 = "0.23"
 cel = "0.15"
 rustfft.workspace = true
 # The install's anonymous directory recorder ID (directory.rs).
@@ -69,5 +75,8 @@ sdr-hackrf = "0.1"
 libc = "0.2.190"
 
 [dev-dependencies]
+# A software authenticator for the passkey tests (access/passkey.rs): what webauthn-rs has already.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
+serde_cbor_2 = "0.13"
 jsonschema = { version = "0.58.4", default-features = false }
 tokio-tungstenite = "0.29"

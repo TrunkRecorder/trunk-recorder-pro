@@ -26,8 +26,9 @@
 //! listed in `server.allowedOrigins`, and with signing in on (`server.auth`)
 //! a request without a user's access token that gives it access gets the
 //! sign-in page (or a 401). GET /signin is that page; POST /api/login and
-//! /api/logout set and clear the cookie a browser signs in with; GET
-//! /api/session says who this request is, and may do.
+//! /api/logout set and clear the cookie a browser signs in with, as do
+//! /api/passkey/login/… with a passkey (/api/passkey/register/… adds one,
+//! [`crate::access::passkey`]); GET /api/session says who this request is, and may do.
 
 use trunk_app::protocol::{body, Body, Command, StatsQuery, StoreKind, ToClient};
 use std::path::{Component, Path, PathBuf};
@@ -44,7 +45,7 @@ use axum::Router;
 use rust_embed::RustEmbed;
 use serde_json::{json, Value};
 
-use crate::access::{self, Caller, Door, Who};
+use crate::access::{self, passkey, Caller, Door, Who};
 use crate::config::{ApiAccess, Config};
 use crate::runtime::{self, publish, Ctx, Out};
 
@@ -66,7 +67,7 @@ const SIGN_IN: &str = include_str!("signin.html");
 
 /// What a request that must sign in may still ask for: who's running (a
 /// second launch asks), signing in, and (see [`open`]) the API's docs.
-const OPEN: &[&str] = &["/api/version", "/api/login", "/api/logout", "/api/session", "/signin"];
+const OPEN: &[&str] = &["/api/version", "/api/login", "/api/logout", "/api/session", "/api/passkey/login/start", "/api/passkey/login/finish", "/signin"];
 
 /// Whether a request for `path` needs no access: [`OPEN`], and the API's
 /// static files (the docs, schema, types, client.js, examples: nothing of
@@ -132,6 +133,10 @@ fn api(r: Router<Arc<Ctx>>) -> Router<Arc<Ctx>> {
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/session", get(signed_in))
+        .route("/api/passkey/register/start", post(passkey_add_start))
+        .route("/api/passkey/register/finish", post(passkey_add_finish))
+        .route("/api/passkey/login/start", post(passkey_sign_in_start))
+        .route("/api/passkey/login/finish", post(passkey_sign_in_finish))
         .route("/signin", get(|| async { sign_in_page(StatusCode::OK) }))
         .route("/api/docs", get(|| async { api_file("README.md") }))
         .route("/api/schema", get(|| async { api_file("protocol.schema.json") }))
@@ -229,11 +234,13 @@ async fn guard(State((ctx, loopback, door)): State<(Arc<Ctx>, bool, Door)>, mut 
         let header = |name| req.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
         (header(header::HOST), header(header::ORIGIN))
     };
-    let (allowed, auth) = {
+    let (allowed, auth, hostname) = {
         let cfg = ctx.config.lock().unwrap();
-        (cfg.server.allowed_origins.clone(), cfg.server.auth.clone())
+        (cfg.server.allowed_origins.clone(), cfg.server.auth.clone(), cfg.server.host())
     };
-    match admit(loopback, host.as_deref(), origin.as_deref(), &allowed) {
+    // (Bound to localhost, `server.hostname` is a name it answers to as well: a proxy in front, `tailscale serve`.)
+    let named = hostname.is_some_and(|n| host.as_deref().is_some_and(|h| host_name(h) == n));
+    match admit(loopback && !named, host.as_deref(), origin.as_deref(), &allowed) {
         Ok(cors) => {
             // Cookies don't keep to a port: without this, a listen interface's page on :8081 (or
             // any page `allowedOrigins: "*"` lets in) could use a signed-in browser's cookie on
@@ -305,14 +312,146 @@ async fn login(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: String) ->
     let secret = secret.trim();
     let found = access::user_of(&ctx.config.lock().unwrap().server.auth, secret).and_then(|(name, u)| Some((name.clone(), u.access, u.token.as_ref()?.hash.clone())));
     let Some((user, role, hash)) = found else { return (StatusCode::UNAUTHORIZED, "That isn't an access token of this recorder.\n").into_response() };
-    let h = |n: header::HeaderName| headers.get(n).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
-    // (Served over HTTPS here, or by a proxy in front that says so.)
-    let https = ctx.tls.get().is_some() || h(header::ORIGIN).starts_with("https://") || h(header::HeaderName::from_static("x-forwarded-proto")) == "https";
-    let cookie = ctx.sessions.set_cookie(&user, &hash, https);
+    signed_in_as(&ctx, &headers, &user, role, &hash)
+}
+
+/// A browser signed in as `user` (with `role`) with `credential`: its session's cookie, and `{access, user}`.
+fn signed_in_as(ctx: &Ctx, headers: &HeaderMap, user: &str, role: ApiAccess, credential: &str) -> Response {
+    let cookie = ctx.sessions.set_cookie(user, credential, https(ctx, headers));
     match HeaderValue::from_str(&cookie) {
         Ok(v) => ([(header::SET_COOKIE, v)], axum::Json(json!({ "access": role, "user": user }))).into_response(),
         Err(_) => StatusCode::BAD_REQUEST.into_response(),
     }
+}
+
+/// Whether a request came over HTTPS: served so here, or by a proxy in front that says so.
+fn https(ctx: &Ctx, headers: &HeaderMap) -> bool {
+    let h = |n: header::HeaderName| headers.get(n).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+    ctx.tls.get().is_some() || h(header::ORIGIN).starts_with("https://") || h(header::HeaderName::from_static("x-forwarded-proto")) == "https"
+}
+
+/// Where passkeys are for a request, if a browser allows them on the host it's for ([`passkey::Rp::of`]).
+fn passkey_rp(ctx: &Ctx, headers: &HeaderMap) -> Option<passkey::Rp> {
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    passkey::Rp::of(ctx.config.lock().unwrap().server.host().as_deref(), host, https(ctx, headers))
+}
+
+/// A passkey request's relying party: from a page of this origin's alone (or
+/// no page: none of another's, even one `allowedOrigins` lets in), on a host
+/// passkeys work on. Else the answer to it.
+fn passkey_request(ctx: &Ctx, headers: &HeaderMap) -> Result<passkey::Rp, Response> {
+    let h = |n| headers.get(n).and_then(|v| v.to_str().ok());
+    if admit(false, h(header::HOST), h(header::ORIGIN), &[]).is_err() {
+        return Err((StatusCode::FORBIDDEN, "Passkeys: from this recorder's own pages only.\n").into_response());
+    }
+    passkey_rp(ctx, headers).ok_or_else(|| (StatusCode::BAD_REQUEST, "Passkeys work on localhost, or over HTTPS on the host name in server.hostname.\n").into_response())
+}
+
+/// A passkey route's answer: its JSON, or why not (400).
+fn passkey_answer<T: serde::Serialize>(r: Result<T, String>) -> Response {
+    match r {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")).into_response(),
+    }
+}
+
+/// Who may add a passkey: a user signed in (they add one for themselves, on
+/// their device), on a port with control access — a listen interface's page
+/// could otherwise give its own key to whoever's signed in there. Their name, or the answer.
+fn passkey_adder(ctx: &Ctx, caller: &Caller) -> Result<String, Response> {
+    let Who::User { name, .. } = &caller.who else { return Err((StatusCode::UNAUTHORIZED, "Sign in first (signing in on), then add a passkey.\n").into_response()) };
+    let port = caller.port_access(ctx, &ctx.config.lock().unwrap());
+    if port != Some(ApiAccess::Control) || caller.access(ctx).is_none() {
+        return Err((StatusCode::FORBIDDEN, "Passkeys are added on the recorder's own page.\n").into_response());
+    }
+    Ok(name.clone())
+}
+
+/// `POST /api/passkey/register/start`: `{name}` (what to call it: "iPhone"),
+/// for the user signed in: `{id, options}` ([`passkey::add_start`]).
+async fn passkey_add_start(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap, body: String) -> Response {
+    let rp = match passkey_request(&ctx, &headers) {
+        Ok(rp) => rp,
+        Err(r) => return r,
+    };
+    let user = match passkey_adder(&ctx, &caller) {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+    let name = serde_json::from_str::<Value>(&body).ok().and_then(|v| v["name"].as_str().map(str::to_string)).unwrap_or_default();
+    let auth = ctx.config.lock().unwrap().server.auth.clone();
+    passkey_answer(passkey::add_start(&ctx.passkeys, &rp, &auth, &user, &name))
+}
+
+/// `POST /api/passkey/register/finish`: `{id, credential}` (what
+/// `navigator.credentials.create` made, as JSON, binary values base64url):
+/// added to the user's passkeys and saved; `{name, id}` (its name, made theirs alone; its id).
+async fn passkey_add_finish(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap, body: String) -> Response {
+    let rp = match passkey_request(&ctx, &headers) {
+        Ok(rp) => rp,
+        Err(r) => return r,
+    };
+    let user = match passkey_adder(&ctx, &caller) {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+    let v = serde_json::from_str::<Value>(&body).unwrap_or_default();
+    let p = match passkey::add_finish(&ctx.passkeys, &rp, &user, v["id"].as_str().unwrap_or(""), v["credential"].clone()) {
+        Ok(p) => p,
+        Err(e) => return passkey_answer::<()>(Err(e)),
+    };
+    let id = p.id.clone();
+    let ctx2 = ctx.clone();
+    let added = tokio::task::spawn_blocking(move || {
+        let mut added = Err(String::new());
+        edit_config(&ctx2, |c| added = passkey::add(&mut c.server.auth, &user, p))?;
+        added
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    passkey_answer(added.map(|name| json!({ "name": name, "id": id })))
+}
+
+/// `POST /api/passkey/login/start`: `{id, options}` ([`passkey::sign_in_start`]). Open: it signs in.
+async fn passkey_sign_in_start(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
+    match passkey_request(&ctx, &headers) {
+        Ok(rp) => passkey_answer(passkey::sign_in_start(&ctx.passkeys, &rp)),
+        Err(r) => r,
+    }
+}
+
+/// `POST /api/passkey/login/finish`: `{id, credential}` (what
+/// `navigator.credentials.get` answered): signed in as the passkey's user, as
+/// `/api/login` signs in — the cookie, and `{access, user}`.
+async fn passkey_sign_in_finish(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: String) -> Response {
+    let rp = match passkey_request(&ctx, &headers) {
+        Ok(rp) => rp,
+        Err(r) => return r,
+    };
+    let v = serde_json::from_str::<Value>(&body).unwrap_or_default();
+    let auth = ctx.config.lock().unwrap().server.auth.clone();
+    let signed = match passkey::sign_in_finish(&ctx.passkeys, &rp, &auth, v["id"].as_str().unwrap_or(""), v["credential"].clone()) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::UNAUTHORIZED, format!("{e}\n")).into_response(),
+    };
+    if let Some(key) = signed.updated.clone() {
+        // (Its count, kept: see passkey::sign_in_finish.)
+        let (ctx2, user, id) = (ctx.clone(), signed.user.clone(), signed.id.clone());
+        let kept = tokio::task::spawn_blocking(move || {
+            edit_config(&ctx2, |c| {
+                if let Some(p) = c.server.auth.users.get_mut(&user).and_then(|u| u.passkeys.iter_mut().find(|p| p.id == id)) {
+                    p.key = key;
+                }
+            })
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        if let Err(e) = kept {
+            log::warn!("Passkey {} of {}: its counter wasn't kept ({e})", signed.id, signed.user);
+        }
+    }
+    let role = auth.users[&signed.user].access;
+    signed_in_as(&ctx, &headers, &signed.user, role, &access::passkey_credential(&signed.id))
 }
 
 /// `POST /api/logout`: this recorder's cookie, expired (other recorders' on
@@ -324,12 +463,12 @@ async fn logout(State(ctx): State<Arc<Ctx>>) -> Response {
     }
 }
 
-/// `GET /api/session`: whether signing in is on, and what this request may
-/// do on this port as whom (a page's WebSocket can't see a 401: this is how
-/// it learns it must sign in).
-async fn signed_in(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>) -> Response {
+/// `GET /api/session`: whether signing in is on, what this request may do
+/// on this port as whom (a page's WebSocket can't see a 401: this is how it
+/// learns it must sign in), and whether passkeys work on the host it's for.
+async fn signed_in(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap) -> Response {
     let enabled = ctx.config.lock().unwrap().server.auth.enabled;
-    axum::Json(json!({ "auth": enabled, "access": caller.access(&ctx), "user": caller.who.user() })).into_response()
+    axum::Json(json!({ "auth": enabled, "access": caller.access(&ctx), "user": caller.who.user(), "passkeys": passkey_rp(&ctx, &headers).is_some() })).into_response()
 }
 
 /// [`guard`]'s verdict: Ok(whether the answer needs CORS headers) or Err(why not).
@@ -355,7 +494,7 @@ fn admit(loopback: bool, host: Option<&str>, origin: Option<&str>, allowed: &[St
 }
 
 /// "Localhost:8080" → "localhost", "[::1]:8080" → "::1".
-fn host_name(host: &str) -> String {
+pub(crate) fn host_name(host: &str) -> String {
     let h = host.trim().to_ascii_lowercase();
     let h = match h.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or("").to_string(),
@@ -1608,7 +1747,7 @@ mod tests {
         assert_eq!(get("/signin", bearer(&luke)).await.0, 200, "signed in too");
         assert_eq!(get("/api/version", vec![]).await.0, 200, "a second launch still finds it");
         let (code, _, who) = get("/api/session", vec![]).await;
-        assert_eq!((code, serde_json::from_str::<serde_json::Value>(&who).unwrap()), (200, serde_json::json!({ "auth": true, "access": null, "user": null })));
+        assert_eq!((code, serde_json::from_str::<serde_json::Value>(&who).unwrap()), (200, serde_json::json!({ "auth": true, "access": null, "user": null, "passkeys": false })));
         // A token: what its user's role allows.
         assert_eq!(get("/api/v1/calls", bearer(&luke)).await.0, 200);
         assert_eq!(get("/calls/x.wav", bearer(&luke)).await.0, 404, "no such file, but let in");
@@ -1627,7 +1766,7 @@ mod tests {
         assert_eq!((code, serde_json::from_str::<serde_json::Value>(&who).unwrap()), (200, serde_json::json!({ "access": "control", "user": "luke" })));
         assert!(name.starts_with("trp_") && value.starts_with("luke.") && !set.contains(&luke), "{set}");
         assert!(set.contains("; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax") && !set.contains("Secure"), "{set}");
-        assert_eq!(ctx.sessions.verify(&value), Some(super::Who::User { name: "luke".into(), hash: crate::toolkit::sha256_hex(luke.as_bytes()) }));
+        assert_eq!(ctx.sessions.verify(&value), Some(super::Who::User { name: "luke".into(), credential: crate::toolkit::sha256_hex(luke.as_bytes()) }));
         let (_, h, _) = http(addr, "POST", "/api/login", &[("x-forwarded-proto", "https")], Some(&luke)).await;
         assert!(h["set-cookie"].to_str().unwrap().ends_with("; Secure"), "behind https; and the secret alone is a body too");
         let (_, _, who) = http(addr, "POST", "/api/login", &[], Some(&kiosk)).await;
@@ -1639,7 +1778,7 @@ mod tests {
             h.extend(extra);
             async move { serde_json::from_str::<serde_json::Value>(&get("/api/session", h).await.2).unwrap() }
         };
-        assert_eq!(session(vec![]).await, serde_json::json!({ "auth": true, "access": "control", "user": "luke" }));
+        assert_eq!(session(vec![]).await, serde_json::json!({ "auth": true, "access": "control", "user": "luke", "passkeys": false }), "127.0.0.1: no passkeys");
         assert_eq!(session(vec![("sec-fetch-site", "same-origin".into())]).await["access"], "control");
         assert_eq!(session(vec![("sec-fetch-site", "same-site".into())]).await["access"], serde_json::Value::Null, "another port's page: its cookie doesn't count");
         let link = vec![("sec-fetch-site", "cross-site".into()), ("sec-fetch-mode", "navigate".into()), ("sec-fetch-dest", "document".into())];
@@ -1686,6 +1825,84 @@ mod tests {
         let (code, _, who) = http(addr, "POST", "/api/login", &[], Some(&kiosk)).await;
         assert_eq!((code, serde_json::from_str::<serde_json::Value>(&who).unwrap()), (200, serde_json::json!({ "access": "listen", "user": "kiosk" })));
         assert_eq!(get("/signin", vec![]).await.0, 200);
+    }
+
+    /// Passkeys: usable on localhost or the host name over HTTPS (the session
+    /// says); signing in with one is open, adding one is for a user signed in
+    /// on a control port; another origin's page may do neither; a bogus answer
+    /// signs nobody in. Then the whole of it over HTTP, with a software key:
+    /// added (saved), signed in with (the cookie), and signed out once removed.
+    #[tokio::test]
+    async fn passkeys_add_and_sign_in() {
+        let dir = crate::db::TestDir::new("passkey-http");
+        let (ctx, luke, kiosk) = signed_in_ctx(&dir, "passkey-http");
+        ctx.config.lock().unwrap().server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, ..Default::default() });
+        let (_tx, stop) = tokio::sync::watch::channel(false);
+        let addr = super::test_server(&ctx, super::Door::Builtin).await;
+        let wall = super::test_server(&ctx, super::Door::Interface { id: "wall".into(), stop }).await;
+        let (local, port) = (format!("localhost:{}", addr.port()), addr.port());
+        let json = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap_or_default();
+        let session = |headers: Vec<(&'static str, String)>| async move {
+            let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            serde_json::from_str::<serde_json::Value>(&http(addr, "GET", "/api/session", &h, None).await.2).unwrap()
+        };
+        assert_eq!(session(vec![]).await["passkeys"], false, "127.0.0.1");
+        assert_eq!(session(vec![("host", local.clone())]).await["passkeys"], true, "localhost");
+        let named = vec![("host", format!("radio.ts.net:{port}")), ("x-forwarded-proto", "https".to_string())];
+        assert_eq!(http(addr, "GET", "/api/session", &[("host", "radio.ts.net")], None).await.0, 403, "bound to localhost, another name is refused");
+        ctx.config.lock().unwrap().server.hostname = "radio.ts.net".into();
+        assert_eq!(session(named.clone()).await["passkeys"], true, "the host name, over HTTPS");
+        assert_eq!(session(vec![("host", format!("radio.ts.net:{port}"))]).await["passkeys"], false, "the host name over plain HTTP");
+        // Signing in starts for anyone, on a host passkeys work on.
+        let post = |path: &'static str, headers: Vec<(&'static str, String)>, body: Option<String>| async move {
+            let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            http(addr, "POST", path, &h, body.as_deref()).await
+        };
+        let host = vec![("host", local.clone())];
+        let (code, _, started) = post("/api/passkey/login/start", host.clone(), None).await;
+        let started = json(&started);
+        assert!(code == 200 && started["id"].is_string() && started["options"]["publicKey"]["challenge"].is_string(), "{code} {started}");
+        assert_eq!(post("/api/passkey/login/start", vec![], None).await.0, 400, "127.0.0.1: no passkeys");
+        let (code, _, why) = post("/api/passkey/login/finish", host.clone(), Some(format!(r#"{{"id":{},"credential":{{"id":"x"}}}}"#, started["id"]))).await;
+        assert!(code == 401 && why.contains("Not a passkey"), "{code} {why}");
+        // Adding: signed in, on a control port.
+        let name = Some(r#"{"name":"Test key"}"#.to_string());
+        assert_eq!(post("/api/passkey/register/start", host.clone(), name.clone()).await.0, 401, "nobody signed in");
+        let as_ = |secret: &str| vec![("host", local.clone()), ("authorization", format!("Bearer {secret}"))];
+        assert_eq!(post("/api/passkey/register/start", as_(&kiosk), name.clone()).await.0, 200, "a View user adds their own");
+        let on_wall = [("host", format!("localhost:{}", wall.port())), ("authorization", format!("Bearer {luke}"))];
+        let h: Vec<(&str, &str)> = on_wall.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        assert_eq!(http(wall, "POST", "/api/passkey/register/start", &h, name.as_deref()).await.0, 403, "not through a listen interface's port");
+        // Another origin's page: not even one allowedOrigins lets in.
+        ctx.config.lock().unwrap().server.allowed_origins = vec!["https://app.example".into()];
+        let mut from_app = as_(&luke);
+        from_app.push(("origin", "https://app.example".into()));
+        assert_eq!(post("/api/passkey/register/start", from_app, name.clone()).await.0, 403);
+        assert_eq!(post("/api/passkey/login/start", vec![("host", local.clone()), ("origin", "https://app.example".into())], None).await.0, 403);
+        let mut same = as_(&luke);
+        same.push(("origin", format!("http://{local}")));
+        // The whole of it, from this recorder's own page.
+        let key = crate::access::passkey::soft::Key::new();
+        let (code, _, started) = post("/api/passkey/register/start", same.clone(), name.clone()).await;
+        let started = json(&started);
+        assert_eq!(code, 200, "{started}");
+        let made = key.create(&started["options"]["publicKey"], &format!("http://{local}"), 0);
+        let (code, _, added) = post("/api/passkey/register/finish", same.clone(), Some(serde_json::json!({ "id": started["id"], "credential": made }).to_string())).await;
+        assert_eq!((code, json(&added)["name"].clone()), (200, "Test key".into()), "{added}");
+        let saved = ctx.config.lock().unwrap().server.auth.users["luke"].passkeys.clone();
+        assert!(saved.len() == 1 && std::fs::read_to_string(&ctx.config_path).unwrap().contains(&saved[0].id), "saved");
+        let (_, _, started) = post("/api/passkey/login/start", host.clone(), None).await;
+        let started = json(&started);
+        let answer = key.get(&started["options"]["publicKey"], &format!("http://{local}"), 0, "luke");
+        let (code, h, who) = post("/api/passkey/login/finish", host.clone(), Some(serde_json::json!({ "id": started["id"], "credential": answer }).to_string())).await;
+        assert_eq!((code, json(&who)), (200, serde_json::json!({ "access": "control", "user": "luke" })));
+        let cookie = h["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+        assert_eq!(ctx.sessions.verify(cookie.split_once('=').unwrap().1).unwrap().grants(&ctx.config.lock().unwrap().server.auth), Some(crate::config::ApiAccess::Control));
+        let signed = session(vec![("cookie", cookie.clone())]).await;
+        assert_eq!((&signed["user"], &signed["access"]), (&"luke".into(), &"control".into()));
+        // Removed (a config edit, as Setup makes it): signed out.
+        ctx.config.lock().unwrap().server.auth.users.get_mut("luke").unwrap().passkeys.clear();
+        assert_eq!(session(vec![("cookie", cookie)]).await["user"], serde_json::Value::Null);
     }
 
     /// A WebSocket is greeted with what it may do and as whom; a listen

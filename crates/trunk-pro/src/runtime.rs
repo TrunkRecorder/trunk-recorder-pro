@@ -150,6 +150,8 @@ pub struct Ctx {
     pub iq: crate::iq_capture::Captures,
     /// What browsers' sign-in cookies are signed with ([`crate::access::Sessions`]).
     pub sessions: crate::access::Sessions,
+    /// Passkey sign-ins and adds started and not yet finished ([`crate::access::passkey`]).
+    pub passkeys: crate::access::passkey::Ceremonies,
     /// HTTPS, when it's served (`server.tls` as the app started): every port's.
     pub tls: std::sync::OnceLock<crate::tls::Tls>,
 }

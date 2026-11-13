@@ -28,8 +28,9 @@ every other interface's ([Serving your interface](#serving-your-interface)):
 | `GET /api/protocol.ts` | Every message, as TypeScript types with comments: **the definition** |
 | `GET /api/schema` | The same as JSON Schema (draft-07): `definitions.FromRecorder` / `definitions.ToRecorder` |
 | `GET /api/version` | `{"app": "trunk-pro", "version": "…", "api": 1}` (`api`: the interface API version). Always open, signed in or not |
-| `GET /api/session` | `{ auth, access, user }`: whether signing in is on, and what this request may do ([Signing in](#signing-in)) |
+| `GET /api/session` | `{ auth, access, user, passkeys }`: whether signing in is on, what this request may do, and whether passkeys work here ([Signing in](#signing-in)) |
 | `POST /api/login`, `POST /api/logout` | Sign a browser in with an access token (a session cookie; answers `{ access, user }`), and out |
+| `POST /api/passkey/login/…`, `/api/passkey/register/…` | Sign a browser in with a passkey, and add one ([Passkeys](#passkeys)) |
 | `GET /signin` | The sign-in page, on every port, whether or not a page needs it |
 | `WS /api/ws` | The connection: JSON messages both ways, plus binary live audio |
 | `GET /calls/<path>.wav` / `.json` | A recorded call's audio and details |
@@ -396,9 +397,10 @@ Signing in is optional and off unless the recorder's owner turns it on
 [Access](../configuration/server-and-log.md#access)). With it off, nothing
 on this page changes and no token is needed.
 
-With it on, every request needs a user's **access token**, except
-`GET /api/version`, `/api/session`, `/api/login`, `/api/logout`, `/signin`
-and the API's static files (`/api/client.js`, `/api/docs`, `/api/schema`,
+With it on, every request needs a user's **access token** (or a browser's
+session, signed in with a token or a [passkey](#passkeys)), except
+`GET /api/version`, `/api/session`, `/api/login`, `/api/logout`,
+`/api/passkey/login/start` and `/finish`, `/signin` and the API's static files (`/api/client.js`, `/api/docs`, `/api/schema`,
 `/api/protocol.ts`, `/api/llms.txt`, `/api/examples/…`: nothing of the
 recorder's own). A user is a person or program the owner adds: a name and
 a role, `listen` or `control` (the same two as an interface's
@@ -433,8 +435,8 @@ other two. The cookie only counts for requests from the recorder's own pages
 (same origin), never from another site's.
 
 **What you get** is the lower of the port's access and the user's role.
-`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null }`
-for the request it's asked with, and `hello` carries `access` and `user`.
+`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null, "passkeys": true | false }`
+for the request it's asked with (`passkeys`: whether a browser may use them on the host it asked at), and `hello` carries `access` and `user`.
 `POST /api/login` answers `{ "access": "listen" | "control", "user": "kiosk" }`
 (the user's role and name, whatever the port; signing in on or off) with the
 cookie, or 401. When the owner changes access (a user removed, a role or an
@@ -453,6 +455,30 @@ Otherwise the owner can turn on HTTPS (`server.tls`, see
 that adds it in front; across the internet, use a VPN or tunnel rather than
 exposing the port. Over HTTPS, or behind a proxy that sets
 `X-Forwarded-Proto: https`, the cookie is marked `Secure`.
+
+### Passkeys
+
+Browsers sign in with a passkey too: the sign-in page and Setup do it, and
+another page on the recorder's own origin can (never another origin's: these
+routes have no CORS). Passkeys work where browsers allow them: on `localhost`,
+or over HTTPS on the recorder's `server.hostname` (see
+[Passkeys](../configuration/server-and-log.md#passkeys)), any port of it;
+elsewhere these routes answer 400 and `GET /api/session` says
+`"passkeys": false`. Each is a WebAuthn ceremony in two steps, all `POST`
+and JSON, its binary values base64url (no padding), as webauthn-rs reads them:
+
+| Route | Body | Answer |
+|---|---|---|
+| `/api/passkey/login/start` | none | `{ id, options }`: `options.publicKey` for `navigator.credentials.get` (no credentials listed: the passkey says whose it is), `options.mediation` `"conditional"` (for autofill; leave it out to ask at once) |
+| `/api/passkey/login/finish` | `{ id, credential }`: what `get` answered (`id`, `rawId`, `type`, `response`: `authenticatorData`, `clientDataJSON`, `signature`, `userHandle`) | As `/api/login`: the cookie and `{ access, user }`, or 401 |
+| `/api/passkey/register/start` | `{ name }`: what to call it (1–40 characters) | `{ id, options }`: `options.publicKey` for `navigator.credentials.create` |
+| `/api/passkey/register/finish` | `{ id, credential }`: what `create` made (`id`, `rawId`, `type`, `response`: `attestationObject`, `clientDataJSON`) | `{ name, id }`: its name (made the user's alone: "iPhone 2") and credential id, saved to the config |
+
+Registering is for a user signed in (a session or a token) on a port with
+control access (the built-in interface's), and adds the passkey to that
+user alone. Signing in needs nothing. A ceremony waits 5 minutes for its
+finish, and is finished once. A session signed in with a passkey ends when
+the passkey is removed from the config.
 
 ### curl
 

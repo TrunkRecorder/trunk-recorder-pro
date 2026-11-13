@@ -66,7 +66,10 @@ sign in (anonymous "listen" access lets visitors in without one), link to
 fetch() from an allowed origin), or as ?token=<secret> in the URL (a
 browser WebSocket or <audio> on another origin; client.js does this when
 given { token }). Never hard-code a secret in a page: ask the user for it.
-GET /api/session → { auth, access ("listen" | "control" | null), user }.
+GET /api/session → { auth, access ("listen" | "control" | null), user,
+passkeys (whether a browser may sign in with a passkey on this host: the
+recorder's sign-in page offers it; POST /api/passkey/login/… and
+/register/…, same origin only) }.
 Without access: 401 (a browser page: the sign-in page). Access is the lower
 of the port's and the user's; hello.access says which. When it changes the
 socket is closed; reconnect (client.js does).

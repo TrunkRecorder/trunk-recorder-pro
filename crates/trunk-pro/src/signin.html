@@ -19,28 +19,34 @@
   button { padding: 9px; font: inherit; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
   button:disabled { opacity: .6; cursor: default; }
   .error { margin: 0; min-height: 1.4em; color: var(--bad); font-size: 13px; }
+  .or { margin: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <form id="f">
   <h1>Trunk Recorder Pro</h1>
   <p class="sub">Sign in</p>
+  <button id="p" type="button" hidden>Passkey</button>
+  <p class="or" id="or" hidden>or</p>
   <label>Access token
-    <input id="t" type="password" name="token" autocomplete="current-password" autofocus required>
+    <input id="t" type="password" name="token" autocomplete="current-password webauthn" autofocus required>
   </label>
   <button id="b" type="submit">Sign in</button>
   <p class="error" id="e" role="alert"></p>
 </form>
 <script>
-  const f = document.getElementById("f"), t = document.getElementById("t"), b = document.getElementById("b"), e = document.getElementById("e");
+  const f = document.getElementById("f"), t = document.getElementById("t"), b = document.getElementById("b"), e = document.getElementById("e"), p = document.getElementById("p");
+  // Asked for at /signin: on to the start page; in place of another page: that page again.
+  const signedIn = () => (location.pathname === "/signin" ? location.replace("/") : location.reload());
   f.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     b.disabled = true;
     e.textContent = "";
     try {
       const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: t.value.trim() }) });
-      // Asked for at /signin: on to the start page; in place of another page: that page again.
-      if (r.ok) return location.pathname === "/signin" ? location.replace("/") : location.reload();
+      if (r.ok) return signedIn();
       e.textContent = r.status === 401 ? "Not a token here" : "Failed: " + r.status;
     } catch {
       e.textContent = "No answer";
@@ -48,6 +54,49 @@
     b.disabled = false;
     t.select();
   });
+
+  // Passkeys (where the recorder says browsers allow them): WebAuthn, its binary values base64url.
+  const bytes = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+  const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
+  let autofill = null;
+  // Signed in with a passkey: `conditional`, offered in the token field's autofill as well (until the button's pressed).
+  async function passkey(conditional) {
+    autofill?.abort();
+    const ac = new AbortController();
+    if (conditional) autofill = ac;
+    const r = await post("/api/passkey/login/start");
+    if (!r.ok) throw new Error(await r.text());
+    const { id, options } = await r.json();
+    const pk = options.publicKey;
+    pk.challenge = bytes(pk.challenge);
+    for (const c of pk.allowCredentials ?? []) c.id = bytes(c.id);
+    const cred = await navigator.credentials.get({ publicKey: pk, signal: ac.signal, ...(conditional ? { mediation: "conditional" } : {}) });
+    const a = cred.response;
+    const response = { authenticatorData: b64url(a.authenticatorData), clientDataJSON: b64url(a.clientDataJSON), signature: b64url(a.signature), userHandle: a.userHandle ? b64url(a.userHandle) : null };
+    const done = await post("/api/passkey/login/finish", { id, credential: { id: cred.id, rawId: b64url(cred.rawId), type: cred.type, extensions: {}, response } });
+    if (done.ok) return signedIn();
+    throw new Error(done.status === 401 ? "Not a passkey here" : "Failed: " + done.status);
+  }
+  const failed = (x) => {
+    // (Cancelled, or replaced by the button's: nothing to say.)
+    if (x?.name === "AbortError") return;
+    e.textContent = x?.name === "NotAllowedError" ? "No passkey used" : String(x?.message || x).trim() || "Failed";
+  };
+  p.addEventListener("click", async () => {
+    p.disabled = true;
+    e.textContent = "";
+    await passkey(false).catch(failed);
+    p.disabled = false;
+  });
+  fetch("/api/session", { cache: "no-store" })
+    .then((r) => r.json())
+    .then(async (s) => {
+      if (!s.passkeys || !window.PublicKeyCredential) return;
+      p.hidden = document.getElementById("or").hidden = false;
+      if (await PublicKeyCredential.isConditionalMediationAvailable?.()) passkey(true).catch(failed);
+    })
+    .catch(() => {});
 </script>
 </body>
 </html>

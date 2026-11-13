@@ -939,7 +939,8 @@ fn serve(a: &Args) {
     };
     let bind = a.get("bind").unwrap_or(&cfg.server.bind);
     let addr: std::net::SocketAddr = format!("{bind}:{port}").parse().unwrap_or_else(|e| fatal(&format!("bind address: {e}")));
-    let host = if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() };
+    // (localhost for the loopback address too: browsers allow passkeys there, on no IP address.)
+    let host = cfg.server.url_host(&addr.ip().to_string());
     let url = format!("{}://{host}:{}", cfg.server.scheme(), addr.port());
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
@@ -1036,6 +1037,7 @@ fn serve(a: &Args) {
         unlocked: Default::default(),
         iq: Default::default(),
         sessions: access::Sessions::load(&paths::data_dir()),
+        passkeys: Default::default(),
         tls: tls.map(std::sync::OnceLock::from).unwrap_or_default(),
     });
     monitor::start(ctx.clone());

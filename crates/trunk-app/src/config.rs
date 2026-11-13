@@ -1771,6 +1771,11 @@ pub struct Server {
     /// Read as the app starts; a renewed certificate is picked up without a restart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls: Option<Tls>,
+    /// The name this computer is reached by over HTTPS (`radio.tail1234.ts.net`, the one its
+    /// certificate is for): the URLs the recorder logs and opens, and where passkeys work
+    /// besides `localhost` (browsers allow them on no IP address). Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hostname: String,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1779,7 +1784,7 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), auth: Auth::default(), tls: None, other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), auth: Auth::default(), tls: None, hostname: String::new(), other: BTreeMap::new() }
     }
 }
 
@@ -1809,7 +1814,7 @@ impl Tls {
 }
 
 /// Signing in to the API: the people and programs who may, each with a role
-/// and what they sign in with (an access token, for now). Enabled, a request
+/// and what they sign in with (an access token, passkeys). Enabled, a request
 /// gets the lower of its port's access and its user's role (`anonymous`
 /// without one; none: it must sign in); off, its port's alone.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -1825,13 +1830,17 @@ pub struct Auth {
 }
 
 /// Someone (or a program) who may sign in: what they may do, and what they
-/// sign in with. Without a token they can't sign in (yet).
+/// sign in with. With neither a token nor a passkey they can't sign in (yet).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthUser {
     pub access: ApiAccess,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<AuthToken>,
+    /// Their passkeys, each a device (or password manager) of theirs: added
+    /// by them, signed in, from a browser.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passkeys: Vec<AuthPasskey>,
 }
 
 /// An access token: its secret's SHA-256 (hex), never the secret.
@@ -1844,10 +1853,25 @@ pub struct AuthToken {
     pub created: i64,
 }
 
+/// A passkey: what it's called, when it was added, its credential id
+/// (base64url) and `key`, WebAuthn's record of it (webauthn-rs's `Passkey`,
+/// as it serializes: its public key, counter and flags; nothing secret), which
+/// the recorder alone reads.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthPasskey {
+    pub name: String,
+    /// When it was added, Unix s.
+    #[serde(default)]
+    pub created: i64,
+    pub id: String,
+    pub key: serde_json::Value,
+}
+
 impl AuthUser {
-    /// Whether they have anything to sign in with.
+    /// Whether they have anything to sign in with: a token or a passkey.
     pub fn can_sign_in(&self) -> bool {
-        self.token.is_some()
+        self.token.is_some() || !self.passkeys.is_empty()
     }
 }
 
@@ -1863,7 +1887,7 @@ impl Auth {
             return Some("Anonymous control access is the same as signing in turned off: give anonymous listen access or none.".into());
         }
         if !self.users.values().any(|u| u.access == ApiAccess::Control && u.can_sign_in()) {
-            return Some("Signing in needs a user with control access and an access token first, or nobody could turn it off again.".into());
+            return Some("Signing in needs a user with control access and an access token (or a passkey) first, or nobody could turn it off again.".into());
         }
         None
     }
@@ -1873,6 +1897,24 @@ impl Server {
     /// "https" with `tls` set, else "http": its interfaces' URLs.
     pub fn scheme(&self) -> &'static str {
         if self.tls.is_some() { "https" } else { "http" }
+    }
+
+    /// `hostname` as a host name is compared (trimmed, lowercase, no final dot), if set.
+    pub fn host(&self) -> Option<String> {
+        let h = self.hostname.trim().trim_end_matches('.').to_ascii_lowercase();
+        (!h.is_empty()).then_some(h)
+    }
+
+    /// The host name of the URLs its ports are at, when it listens on `bind`:
+    /// `hostname`, else localhost for all addresses or the loopback one, else
+    /// the address.
+    pub fn url_host(&self, bind: &str) -> String {
+        match bind.trim().parse::<std::net::IpAddr>() {
+            _ if self.host().is_some() => self.host().unwrap_or_default(),
+            Ok(ip) if ip.is_unspecified() || ip.is_loopback() => "localhost".into(),
+            Ok(std::net::IpAddr::V6(ip)) => format!("[{ip}]"),
+            _ => bind.trim().to_string(),
+        }
     }
 
     /// The trunkrecorder.pro API's base URL (no trailing slash).
@@ -3960,13 +4002,16 @@ mod tests {
         let c = Config::default();
         assert!(!serde_json::to_string(&c).unwrap().contains("auth"), "off: no auth key");
         assert_eq!(c.server.auth.problem(), None);
-        let user = |access| AuthUser { access, token: Some(AuthToken { hash: "ab".repeat(32), created: 1_794_000_000 }) };
+        let user = |access| AuthUser { access, token: Some(AuthToken { hash: "ab".repeat(32), created: 1_794_000_000 }), passkeys: vec![] };
         let mut a = Auth { enabled: true, ..Default::default() };
         assert!(a.problem().unwrap().contains("control"), "nobody at all");
         a.users.insert("wall".into(), user(ApiAccess::Listen));
         assert!(a.problem().is_some(), "a listen user can't turn it off");
-        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None });
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
         assert!(a.problem().is_some(), "a control user with nothing to sign in with can't either");
+        let passkey = AuthPasskey { name: "iPhone".into(), created: 1_794_000_000, id: "AQID".into(), key: serde_json::json!({ "cred": {} }) };
+        a.users.get_mut("luke").unwrap().passkeys.push(passkey.clone());
+        assert!(a.users["luke"].can_sign_in() && a.problem().is_none(), "a passkey alone will do");
         a.users.insert("luke".into(), user(ApiAccess::Control));
         assert_eq!(a.problem(), None);
         a.anonymous = Some(ApiAccess::Listen);
@@ -3976,7 +4021,13 @@ mod tests {
         assert_eq!(Auth { enabled: false, ..a.clone() }.problem(), None, "off, anything goes");
         let c = Config::from_json(r#"{ "server": { "auth": { "enabled": true, "anonymous": "listen", "users": { "luke": { "access": "control", "token": { "hash": "00", "created": 1794000000 } }, "wall": { "access": "listen" } } } } }"#).unwrap();
         assert_eq!((c.server.auth.anonymous, c.server.auth.users["luke"].access, c.server.auth.users["wall"].token.is_none()), (Some(ApiAccess::Listen), ApiAccess::Control, true));
-        assert!(serde_json::to_string(&c).unwrap().contains(r#""auth":{"enabled":true,"anonymous":"listen","users":{"luke":{"access":"control","token":{"hash":"00","created":1794000000}},"wall":{"access":"listen"}}}"#));
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""auth":{"enabled":true,"anonymous":"listen","users":{"luke":{"access":"control","token":{"hash":"00","created":1794000000}},"wall":{"access":"listen"}}}"#), "no passkeys: no passkeys key");
+        // Passkeys, saved as they were read (the key as webauthn-rs wrote it).
+        let mut c = c;
+        c.server.auth.users.get_mut("wall").unwrap().passkeys.push(passkey);
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""wall":{"access":"listen","passkeys":[{"name":"iPhone","created":1794000000,"id":"AQID","key":{"cred":{}}}]}"#), "{saved}");
+        assert_eq!(Config::from_json(&saved).unwrap().server.auth, c.server.auth);
     }
 
     /// HTTPS off is saved as a config always was; on, its two paths, from
@@ -3994,6 +4045,12 @@ mod tests {
         let t = c.server.tls.unwrap();
         assert_eq!(t.paths(Path::new("/home/luke/trunk-pro/config.json")), (PathBuf::from("/home/luke/trunk-pro/certs/radiobox.crt"), PathBuf::from("/etc/ssl/radiobox.key")));
         assert_eq!(Tls { cert: "~/c.pem".into(), key: "k.pem".into() }.paths(Path::new("config.json")).0, home().join("c.pem"));
+        // The URLs' host: the host name when set, else localhost for any or the loopback address.
+        let mut s = Server::default();
+        assert_eq!((s.url_host("127.0.0.1"), s.url_host("0.0.0.0"), s.url_host("::1"), s.url_host("192.168.1.5"), s.url_host("fd00::5")), ("localhost".into(), "localhost".into(), "localhost".into(), "192.168.1.5".into(), "[fd00::5]".into()));
+        assert!(!serde_json::to_string(&s).unwrap().contains("hostname"), "none: no hostname key");
+        s.hostname = " Radio.tail1234.ts.net. ".into();
+        assert_eq!(s.url_host("0.0.0.0"), "radio.tail1234.ts.net");
     }
 
     #[test]

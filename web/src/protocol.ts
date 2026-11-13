@@ -552,6 +552,8 @@ export interface Config {
     auth?: AuthSetup;
     /** HTTPS on every interface's port (absent: plain HTTP). Read as the app starts; a renewed certificate is picked up without a restart. */
     tls?: TlsSetup;
+    /** The name this computer is reached by over HTTPS (its certificate's): the URLs the recorder logs and opens, and where passkeys work besides localhost (absent: none). */
+    hostname?: string;
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
@@ -614,9 +616,9 @@ export type ApiAccess = "listen" | "control";
 
 /**
  * Signing in. `enabled`: a request gets the lower of its port's access and its user's — signed in with their access
- * token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login sets — and without one, `anonymous`'s
- * (absent: it must sign in; GET /api/session says so). Enabled, it needs a user with control access and a token, and
- * `anonymous` can't be "control".
+ * token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login (or a passkey's sign-in) sets — and
+ * without one, `anonymous`'s (absent: it must sign in; GET /api/session says so). Enabled, it needs a user with control
+ * access and a token or a passkey, and `anonymous` can't be "control".
  */
 export interface AuthSetup {
   enabled: boolean;
@@ -625,10 +627,20 @@ export interface AuthSetup {
   users?: Record<string, AuthUser>;
 }
 
-/** Someone (or a program) who may sign in: what they may do, and what they sign in with (absent: nothing yet). */
+/** Someone (or a program) who may sign in: what they may do, and what they sign in with (neither: nothing yet). */
 export interface AuthUser {
   access: ApiAccess;
   token?: AuthToken;
+  /** Their passkeys: added by them, signed in, from a browser (POST /api/passkey/register/…); removed or renamed by editing this. */
+  passkeys?: AuthPasskey[];
+}
+
+/** A passkey: its name ("iPhone"), when it was added (Unix s), its credential id (base64url) and `key`, WebAuthn's record of it (its public key and counter; the recorder's to read). */
+export interface AuthPasskey {
+  name: string;
+  created: number;
+  id: string;
+  key: unknown;
 }
 
 /** An access token: its secret's SHA-256 (hex). The secret itself is never kept. */

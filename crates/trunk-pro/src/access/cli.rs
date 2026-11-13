@@ -13,6 +13,7 @@ pub fn run(a: &Args) {
         Some("list") => list(a),
         Some("add") => add(a),
         Some("remove") => remove(a),
+        Some("passkey") if a.positional.get(1).map(String::as_str) == Some("remove") => remove_passkey(a),
         Some("on") => on(a, true),
         Some("off") => on(a, false),
         _ => die(USAGE),
@@ -27,6 +28,9 @@ trunk-pro access add <name> [--access listen|control]
     printed this once.
 trunk-pro access remove <name>
     Remove a user: whoever signed in as them is signed out.
+trunk-pro access passkey remove <name> <passkey>
+    Remove one of a user's passkeys (by its name, as list shows it): whoever
+    signed in with it is signed out. (Passkeys are added from a browser.)
 trunk-pro access on | off
     Signing in on (it needs a control user first) or off.
 A running recorder takes the change when it's restarted.
@@ -48,9 +52,13 @@ fn list(a: &Args) {
     let auth = &cfg.server.auth;
     println!("{}", path.display());
     println!("  signing in {}, anonymous {}", if auth.enabled { "on" } else { "off" }, auth.anonymous.map_or("none", ApiAccess::name));
+    let day = |t: i64| chrono::DateTime::from_timestamp(t, 0).map_or(String::new(), |d| format!(" {}", d.format("%Y-%m-%d")));
     for (name, u) in &auth.users {
-        let token = u.token.as_ref().map_or("no token".to_string(), |t| chrono::DateTime::from_timestamp(t.created, 0).map_or("token".into(), |d| format!("token {}", d.format("%Y-%m-%d"))));
+        let token = u.token.as_ref().map_or("no token".to_string(), |t| format!("token{}", day(t.created)));
         println!("  {name} [{}] {token}", u.access.name());
+        for p in &u.passkeys {
+            println!("    passkey \"{}\"{}", p.name, day(p.created));
+        }
     }
 }
 
@@ -79,6 +87,23 @@ fn remove(a: &Args) {
     }
     save(&path, &cfg);
     println!("{} removed.", name.trim());
+}
+
+fn remove_passkey(a: &Args) {
+    let (Some(name), Some(label)) = (a.positional.get(2), a.positional.get(3)) else { die("trunk-pro access passkey remove <name> <passkey>") };
+    let (path, mut cfg) = load_config(a);
+    let Some(u) = cfg.server.auth.users.get_mut(name.trim()) else { die(&format!("There's no user named \"{}\".", name.trim())) };
+    let before = u.passkeys.len();
+    u.passkeys.retain(|p| p.name != label.trim());
+    if u.passkeys.len() == before {
+        let have: Vec<&str> = u.passkeys.iter().map(|p| p.name.as_str()).collect();
+        die(&format!("{} has no passkey named \"{}\" ({}).", name.trim(), label.trim(), if have.is_empty() { "none at all".into() } else { format!("theirs: {}", have.join(", ")) }));
+    }
+    if let Some(why) = cfg.server.auth.problem() {
+        die(&format!("{why} (Turn signing in off first: trunk-pro access off.)"));
+    }
+    save(&path, &cfg);
+    println!("{}'s passkey \"{}\" removed.", name.trim(), label.trim());
 }
 
 fn on(a: &Args, enabled: bool) {

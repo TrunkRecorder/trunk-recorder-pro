@@ -26,6 +26,7 @@ too) on the **Interfaces** page.
 | `interfaces` | | `{}` | object | The other interfaces, by id. See below |
 | `auth` | | off | object | Signing in: who may, with what role. See [Access](#access) |
 | `tls` | | off | object | HTTPS on every interface's port: `cert` and `key`, PEM files. See [HTTPS](#https) |
+| `hostname` | | `""` | string | The name this computer is reached by over HTTPS, the one its certificate is for (`"radiobox.tail1234.ts.net"`). The log and the browser the app opens use it; [passkeys](#passkeys) work on it (besides `localhost`); bound to `127.0.0.1`, the recorder answers to it too (a proxy in front, `tailscale serve`) |
 | `trpApi` | | `""` (https://trunkrecorder.pro) | string | Where the trunkrecorder.pro API is, for **Identify** and [sharing with the directory](systems.md#sharing-with-the-directory). Only for testing another copy of it (`"http://localhost:8788"`) |
 
 `bind`, `port` and `tls` are read when the app starts; the rest apply at once.
@@ -61,8 +62,8 @@ built-in interface).
 
 Signing in is off unless you turn it on. Off, whoever reaches a port gets what that port gives:
 control on the built-in interface's, each interface's own `access` on its. On, they also sign in as
-a **user**, with that user's **access token**, and get the lower of the port's access and the
-user's role.
+a **user**, with that user's **access token** or one of their [passkeys](#passkeys), and get the
+lower of the port's access and the user's role.
 
 **Turning it on.** In the app: Setup → **Recording** → **Access**. Turn the **Sign-in** switch on.
 With no Admin yet, it asks for one first: give it a name, **Create**, and copy the token's secret
@@ -71,10 +72,10 @@ so you can't lock yourself out. (With an Admin already there, it asks for their 
 instead, or offers **New Admin token**.) Other browsers get the sign-in page: paste the secret. One sign-in covers the
 dashboard and every interface's port on that host name, for 30 days or until **Sign out**.
 
-The browser keeps a session, not the token: who signed in, with which token, and until when,
+The browser keeps a session, not the token: who signed in, with which token (or passkey), and until when,
 signed with a key the recorder keeps in `session-key` beside the config (made the first time,
-readable by its owner alone, never in the config). Removing the user or making their token again
-ends their sessions; deleting `session-key` (then restarting the recorder) signs every browser
+readable by its owner alone, never in the config). Removing the user, making their token again
+or removing the passkey ends their sessions; deleting `session-key` (then restarting the recorder) signs every browser
 out. If the recorder can't keep the file it says so in the log, and browsers are signed out
 whenever it restarts.
 
@@ -86,6 +87,7 @@ trunk-pro access add kiosk --access listen
 trunk-pro access on
 trunk-pro access list                        # on or off, anonymous, and each user
 trunk-pro access remove kiosk                # signs out whoever signed in as kiosk
+trunk-pro access passkey remove luke iPhone  # one of luke's passkeys, by its name
 ```
 
 **Users.** Each has a name (who or what signs in) and a role. **New token** in Setup adds one, with
@@ -113,7 +115,8 @@ sign-in page (`/signin`).
     "enabled": true,
     "anonymous": "listen",
     "users": {
-      "luke": { "access": "control", "token": { "hash": "…", "created": 1763000000 } },
+      "luke": { "access": "control", "token": { "hash": "…", "created": 1763000000 },
+                "passkeys": [{ "name": "iPhone", "created": 1763100000, "id": "…", "key": { "cred": { … } } }] },
       "kiosk": { "access": "listen", "token": { "hash": "…", "created": 1763000000 } }
     }
   }
@@ -122,13 +125,40 @@ sign-in page (`/signin`).
 
 | Key | Default | Description |
 |---|---|---|
-| `enabled` | `false` | Signing in on. It needs a user with control access and a token, so someone can turn it off again |
+| `enabled` | `false` | Signing in on. It needs a user with control access and a token or a passkey, so someone can turn it off again |
 | `anonymous` | none | `"listen"`: what a request without a token may do. `"control"` is refused (it would be the same as off) |
-| `users` | `{}` | By name: `access` (`"listen"` or `"control"`) and `token`, what they sign in with: `hash` (the secret's SHA-256) and `created` (Unix s). Made in Setup or with `trunk-pro access add`, not by hand |
+| `users` | `{}` | By name: `access` (`"listen"` or `"control"`) and what they sign in with: `token`, `hash` (the secret's SHA-256) and `created` (Unix s); `passkeys`, each `name`, `created`, `id` (the credential's, base64url) and `key` (its public key and counter, as the recorder's WebAuthn library keeps it). Made in Setup or with `trunk-pro access add`, not by hand; a passkey can be renamed or removed by hand |
 
 Changes in Setup apply at once: connections whose access changed are closed and reconnect with
 what they have now. Changes made with `trunk-pro access` are written to the config file and take
 effect when the recorder restarts.
+
+### Passkeys
+
+A passkey signs a browser in with the device itself (Touch ID, Face ID, Windows Hello, a phone, a
+password manager, a security key): nothing to paste. It's optional; tokens keep working, for
+scripts and as the way back in.
+
+**Where they work.** Browsers allow passkeys only on `localhost`, or over [HTTPS](#https) on a
+host name, never an IP address. So on the recorder's own computer at `http://localhost:8080` they
+just work. From other devices, set `server.hostname` to the name the certificate is for
+(`tailscale cert`'s, say) and open `https://radiobox.tail1234.ts.net:8443`. Anywhere else (an IP
+address, plain HTTP on the name) the sign-in page and Setup don't offer them. A passkey belongs to
+the name it was made on: one made at `localhost` isn't offered at the host name, and the other way
+round; every port of that name shares it.
+
+**Adding one.** Signed in (with your token, the first time), open Setup → **Recording** →
+**Access**: your row has **Add passkey**, with a name for it (the browser and system, unless you
+change it). The browser asks to make it; it's saved at once. Each user adds their own, on their own
+device: an Admin can't add one for someone else, but can remove anyone's. With a passkey, you may
+remove your token (the **×** by its date), as long as you can still sign in.
+
+**Signing in.** The sign-in page has **Passkey** above the token field; browsers that fill in
+passkeys also offer them from the field itself. No name to type: the passkey says whose it is.
+
+The config keeps each passkey's public key, never anything secret. A passkey kept on one device
+(a security key) counts its uses, and the count is saved when it goes up, so a copy is refused;
+passkeys synced between devices don't count, so signing in with them writes nothing.
 
 **Locked out?** On the recorder's computer, `trunk-pro access off`, then restart the recorder.
 Open Setup, add a new Admin, and turn **Sign-in** back on. (`--config file.json` for a config
@@ -164,8 +194,9 @@ the certificate you give it. It works with [signing in](#access) on or off.
 - **Cookies** from [signing in](#access) are `Secure` over HTTPS. There's no HSTS, so you can
   turn HTTPS off again without browsers refusing the plain-HTTP port.
 - The certificate must name the address you open it at (a phone at `https://radiobox.tail1234.ts.net:8443`
-  needs a certificate for `radiobox.tail1234.ts.net`). The log and the browser the app opens use
-  `https://localhost:…` (or the `bind` address), which a certificate for another name won't match.
+  needs a certificate for `radiobox.tail1234.ts.net`). Set `server.hostname` to that name, and
+  the log and the browser the app opens use it; without it they use `https://localhost:…` (or the
+  `bind` address), which a certificate for another name won't match.
 
 **Getting a certificate.** The recorder doesn't make one; any of these do:
 
@@ -179,8 +210,8 @@ the certificate you give it. It works with [signing in](#access) on or off.
 - **mkcert**, on a home network: [mkcert](https://github.com/FiloSottile/mkcert) `radiobox.local 192.168.1.20 localhost`,
   and install its root (`mkcert -install`) on each device that opens the recorder.
 
-A self-signed certificate works too, but every browser warns about it, and passkeys (and other
-features browsers keep to secure pages) won't work with it.
+A self-signed certificate works too, but every browser warns about it, and [passkeys](#passkeys)
+(and other features browsers keep to secure pages) won't work with it.
 
 ## Log
 

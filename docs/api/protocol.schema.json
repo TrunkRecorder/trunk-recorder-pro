@@ -48,6 +48,29 @@
       ],
       "description": "What a page may do with the recorder's API. \"listen\": see what the recorder does and play its calls, change nothing (its config comes without plugin settings and key sources). \"control\": everything the built-in interface can."
     },
+    "AuthPasskey": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "created": {
+          "type": "number"
+        },
+        "id": {
+          "type": "string"
+        },
+        "key": {}
+      },
+      "required": [
+        "name",
+        "created",
+        "id",
+        "key"
+      ],
+      "additionalProperties": false,
+      "description": "A passkey: its name (\"iPhone\"), when it was added (Unix s), its credential id (base64url) and `key`, WebAuthn's record of it (its public key and counter; the recorder's to read)."
+    },
     "AuthSetup": {
       "type": "object",
       "properties": {
@@ -69,7 +92,7 @@
         "enabled"
       ],
       "additionalProperties": false,
-      "description": "Signing in. `enabled`: a request gets the lower of its port's access and its user's — signed in with their access token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login sets — and without one, `anonymous`'s (absent: it must sign in; GET /api/session says so). Enabled, it needs a user with control access and a token, and `anonymous` can't be \"control\"."
+      "description": "Signing in. `enabled`: a request gets the lower of its port's access and its user's — signed in with their access token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login (or a passkey's sign-in) sets — and without one, `anonymous`'s (absent: it must sign in; GET /api/session says so). Enabled, it needs a user with control access and a token or a passkey, and `anonymous` can't be \"control\"."
     },
     "AuthToken": {
       "type": "object",
@@ -97,13 +120,20 @@
         },
         "token": {
           "$ref": "#/definitions/AuthToken"
+        },
+        "passkeys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AuthPasskey"
+          },
+          "description": "Their passkeys: added by them, signed in, from a browser (POST /api/passkey/register/…); removed or renamed by editing this."
         }
       },
       "required": [
         "access"
       ],
       "additionalProperties": false,
-      "description": "Someone (or a program) who may sign in: what they may do, and what they sign in with (absent: nothing yet)."
+      "description": "Someone (or a program) who may sign in: what they may do, and what they sign in with (neither: nothing yet)."
     },
     "CallEntry": {
       "type": "object",
@@ -1493,6 +1523,10 @@
             "tls": {
               "$ref": "#/definitions/TlsSetup",
               "description": "HTTPS on every interface's port (absent: plain HTTP). Read as the app starts; a renewed certificate is picked up without a restart."
+            },
+            "hostname": {
+              "type": "string",
+              "description": "The name this computer is reached by over HTTPS (its certificate's): the URLs the recorder logs and opens, and where passkeys work besides localhost (absent: none)."
             }
           },
           "required": [

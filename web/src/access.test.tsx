@@ -11,7 +11,7 @@ import { renderToString } from "react-dom/server";
 import { App } from "./App.tsx";
 import { AccessSection, enableWith } from "./Access.tsx";
 import { defaultConfig, newSystem } from "./config.ts";
-import { mayEdit, setSetupTab, setView, snapshot, transport, type View } from "./controller.ts";
+import { mayEdit, passkeyName, setSetupTab, setView, snapshot, transport, type View } from "./controller.ts";
 import { IgnoreToggle, NameButton } from "./dash/Radio.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
 import type { ApiAccess, Config, EngineStatus, FromRecorder, Phase, TgRow, ToRecorder } from "./protocol.ts";
@@ -121,9 +121,9 @@ test("Access: the users, each's role and when their token was made; the last Adm
   setSetupTab("recording");
   setView("setup");
   const page = text(renderToString(<App />));
-  assert.match(page, /Access Sign-in with tokens/);
+  assert.match(page, /Access Tokens, passkeys/);
   const html = renderToString(<AccessSection c={full()} />);
-  assert.match(text(html), /Name Role Created luke .* kiosk/);
+  assert.match(text(html), /Name Role Token Passkeys luke .* kiosk/);
   assert.match(html, /aria-label="Role of luke" disabled=""/, "the only Admin stays Admin");
   assert.doesNotMatch(html, /aria-label="Remove luke"/);
   assert.match(html, /aria-label="Remove kiosk"/);
@@ -132,13 +132,57 @@ test("Access: the users, each's role and when their token was made; the last Adm
   off.server.auth!.enabled = false;
   assert.match(renderToString(<AccessSection c={off} />), /aria-label="Remove luke"/, "off: any can go");
   assert.match(text(renderToString(<AccessSection c={{ ...off, server: { ...off.server, auth: undefined } }} />)), /No users/);
-  // An Admin with no token (passkeys, later) can't turn it off again: the one who can stays.
+  // An Admin with nothing to sign in with can't turn it off again: the one who can stays.
   const both = full();
   both.server.auth!.users!.ann = { access: "control" };
   const two = renderToString(<AccessSection c={both} />);
   assert.match(two, /aria-label="Role of luke" disabled=""/);
   assert.match(two, /aria-label="Remove ann"/);
   assert.match(text(two), /ann .*—/, "no token: no date");
+});
+
+/** `hello` as `user`, the session saying whether passkeys work here. */
+async function helloWithPasskeys(c: Config, user: string, passkeys: boolean): Promise<void> {
+  const fetch0 = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ auth: true, access: "control", user, passkeys }), { status: 200 })) as typeof fetch;
+  try {
+    hello(c, "control", user);
+    await new Promise((r) => setTimeout(r, 20));
+  } finally {
+    globalThis.fetch = fetch0;
+  }
+}
+
+test("Access: each user's passkeys by name, to remove; Add passkey for this browser's user alone, where passkeys work", async () => {
+  const c = full();
+  c.server.auth!.users!.kiosk.passkeys = [{ name: "Wall tablet", created: 1_763_200_000, id: "AQID", key: {} }];
+  c.server.auth!.users!.luke.passkeys = [{ name: "Mac Safari", created: 1_763_200_000, id: "BAUG", key: {} }, { name: "iPhone", created: 1_763_300_000, id: "BwgJ", key: {} }];
+  await helloWithPasskeys(c, "luke", true);
+  assert.equal(snapshot().passkeys, true);
+  const html = renderToString(<AccessSection c={c} />);
+  assert.match(text(html), /luke .*Mac Safari .*iPhone .*Add passkey .*kiosk .*Wall tablet/);
+  assert.equal(html.match(/>Add passkey</g)?.length, 1, "only for luke, signed in here");
+  for (const l of ["Remove luke's passkey Mac Safari", "Remove luke's passkey iPhone", "Remove kiosk's passkey Wall tablet", "Remove luke's token", "Remove kiosk's token"]) assert.match(html, new RegExp(`aria-label="${l.replace("'", "&#x27;")}"`), l);
+  // Passkeys don't work where this page is (an IP address, plain HTTP on a name): no Add passkey.
+  await helloWithPasskeys(c, "luke", false);
+  assert.doesNotMatch(renderToString(<AccessSection c={c} />), />Add passkey</);
+  // The last Admin keeps a way in: with a passkey and no token, that passkey stays; with one of each, neither's last.
+  const one = full();
+  delete one.server.auth!.users!.luke.token;
+  one.server.auth!.users!.luke.passkeys = [{ name: "iPhone", created: 1, id: "AQID", key: {} }];
+  const last = renderToString(<AccessSection c={one} />);
+  assert.doesNotMatch(last, /aria-label="Remove luke&#x27;s passkey iPhone"/);
+  assert.match(last, /aria-label="Role of luke" disabled=""/, "a passkey alone makes them an Admin who can sign in");
+  assert.doesNotMatch(renderToString(<AccessSection c={full()} />), /aria-label="Remove luke&#x27;s token"/, "a token alone: it stays");
+});
+
+test("Access: a passkey's default name is the system and browser", () => {
+  assert.equal(passkeyName("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15"), "Mac Safari");
+  assert.equal(passkeyName("Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1"), "iPhone Safari");
+  assert.equal(passkeyName("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"), "Windows Edge");
+  assert.equal(passkeyName("Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"), "Android Chrome");
+  assert.equal(passkeyName("Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0"), "Linux Firefox");
+  assert.equal(passkeyName(""), "Passkey");
 });
 
 test("Access: a user just made shows their token's secret once, to copy", () => {
@@ -198,7 +242,7 @@ test("Interfaces: with signing in on, an allowed origin needs an Admin's token t
   assert.equal(snapshot().user, null);
 });
 
-test("Interfaces: HTTPS's certificate and key, beside the ports", () => {
+test("Interfaces: HTTPS's certificate and key, and the host name, beside the ports", () => {
   const c = full();
   hello(c, "control", "luke");
   transport.onMessage({ type: "interfaces", interfaces: [], api: 1 });
@@ -209,4 +253,8 @@ test("Interfaces: HTTPS's certificate and key, beside the ports", () => {
   assert.match(html, /aria-label="Certificate" [^>]*value="\/etc\/ssl\/radiobox.crt"/);
   assert.match(html, /aria-label="Key" [^>]*value="\/etc\/ssl\/radiobox.key"/);
   assert.match(text(html), /From next restart/, "served over plain HTTP until then");
+  assert.match(text(html), /Host name passkeys .* None/);
+  c.server.hostname = "radiobox.tail1234.ts.net";
+  hello(c, "control", "luke");
+  assert.match(renderToString(<InterfacesPage />), /aria-label="Host name" [^>]*value="radiobox.tail1234.ts.net"/);
 });
