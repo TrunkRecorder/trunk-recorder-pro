@@ -50,6 +50,17 @@ fn newer(latest: &str, current: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Asks the real GitHub API (needs the network): `cargo test -- --ignored live`.
+    #[test]
+    #[ignore]
+    fn live_github_check() {
+        let found = check("0.0.1").expect("0.0.1 is older than every real release");
+        println!("latest: {found}");
+        assert!(found["version"].as_str().is_some_and(|v| parse(v).is_some()));
+        assert!(found["url"].as_str().is_some_and(|u| u.starts_with("https://github.com/")));
+        assert!(check(found["version"].as_str().unwrap()).is_none(), "already on it: nothing newer");
+    }
+
     #[test]
     fn newer_releases_beat_the_version_running_now() {
         assert!(newer("0.4.0", "0.3.7"));
