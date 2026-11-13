@@ -237,9 +237,9 @@ FRS and GMRS channels, say, where almost everything is analog FM but a digital r
 When the channel opens, the analog FM receiver and each digital one (P25, DMR, NXDN48 and NXDN96) all
 listen to it, and what each one puts out is held back. The channel then settles on one of them:
 
-- A **digital** receiver is settled on once it has decoded about two P25 voice frames' worth (or six DMR
-  bursts) of voice, or anything else only a checked frame carries: a radio ID, a cipher, a position. Noise
-  and speech don't pass those checks.
+- A **digital** receiver is settled on once it has decoded about two P25 LDUs' worth of voice frames (or six
+  DMR bursts), or two of anything else only a checked frame carries (a radio ID, a cipher, a position), or
+  some of each. Noise and speech don't pass those checks, and one stray message isn't enough.
 - Otherwise **analog FM** is, two seconds after the channel opened. A digital signal sounds like noise
   in an FM receiver, so the wait is how analog is told from it.
 
@@ -259,9 +259,12 @@ What it can't do:
   transmission. Give a channel known to be analog the mode `fm`.
 - It settles once per transmission: a different protocol arriving on the same carrier within the receiver's
   half-second hang isn't noticed until the channel closes.
-- Its **Bandwidth** is the analog receiver's; the digital ones are opened 12.5 kHz wide (the narrowest of
-  P25's, DMR's and NXDN96's), which on a 6.25 kHz channel lets a neighbour's leakage in.
-- A channel's replay tape (the debugging feature) isn't kept.
+- It has no **Bandwidth** setting: every receiver is opened 12.5 kHz wide (the narrowest of P25's, DMR's and
+  NXDN96's), which on a 6.25 kHz channel lets a neighbour's leakage in, and the analog receiver is the narrowband
+  one. A wide-FM (25 kHz) channel takes the mode `fm`. The Demodulation settings (de-emphasis, squelch open
+  delay and hang) apply to its analog receiver, and the FM receiver's squelch decides the carrier, as for an
+  `fm` channel, once it has settled on analog.
+- Its tapes and **Record the next call** work as for any channel, and replay as auto.
 
 ## Airband (AM)
 

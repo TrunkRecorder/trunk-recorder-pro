@@ -37,6 +37,7 @@ fn kind_name(k: VoiceKind) -> &'static str {
         VoiceKind::Nxdn(Rate::N48) => "nxdn48",
         VoiceKind::Nxdn(Rate::N96) => "nxdn96",
         VoiceKind::ProVoice => "provoice",
+        VoiceKind::Auto => "auto",
     }
 }
 
@@ -50,6 +51,7 @@ fn kind_of(s: &str) -> Option<VoiceKind> {
         "nxdn48" => VoiceKind::Nxdn(Rate::N48),
         "nxdn96" => VoiceKind::Nxdn(Rate::N96),
         "provoice" => VoiceKind::ProVoice,
+        "auto" => VoiceKind::Auto,
         _ => return None,
     })
 }

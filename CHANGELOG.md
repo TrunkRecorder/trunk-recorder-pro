@@ -8,7 +8,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **A conventional channel can be `auto`: whatever is on it.** For a frequency that may carry analog or
   digital, FRS and GMRS's say, the mode `auto` (`any` in a channel file; **Auto** in Setup) runs analog FM
   and the P25, DMR and NXDN receivers on it together and settles on the one that hears its protocol: a
-  digital one once it has decoded a couple of frames of voice or anything else only a checked frame
+  digital one once it has decoded a couple of frames of voice or two of anything else only a checked frame
   carries, else analog FM two seconds after the channel opened. The call is recorded as what it settled
   on (`voice_mode`, talkgroup, NAC / colour code / RAN as for a channel of that mode), with its analog
   audio whole. It is one row to a frequency, without a code, and costs more CPU than a channel of one

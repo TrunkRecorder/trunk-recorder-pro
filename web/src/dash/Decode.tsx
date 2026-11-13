@@ -9,6 +9,7 @@ import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type S
 import { BackBar, Card, Choice, Fig, Figs, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, FreqRow, SeriesData } from "../protocol.ts";
+import { MODES } from "../modes.ts";
 import { change, coverage, dashSystems, K, KIND_LABEL, perLive, recentAvg, running, runningSites, siteHealth, systemHealth, useHistory, useRanges, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
 import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 
@@ -41,12 +42,10 @@ export const BAD_MAX = 20;
 const PHASE_WARN = 15;
 const PHASE_BAD = 20;
 
-const MODE_LABEL: Record<NonNullable<ChannelSnapshot["mode"]>, string> = { fm: "FM", am: "AM", p25: "P25", dmr: "DMR", nxdn48: "NXDN 4800", nxdn96: "NXDN 9600", auto: "Auto" };
-
 /** What a channel is: a trunked one's role, a conventional one's mode and names ("P25 · Fire Dispatch"). */
 export function channelWhat(c: ChannelSnapshot): string {
   if (!c.mode) return c.kind;
-  return c.names?.length ? `${MODE_LABEL[c.mode]} · ${c.names.join(", ")}` : MODE_LABEL[c.mode];
+  return c.names?.length ? `${MODES[c.mode].short} · ${c.names.join(", ")}` : MODES[c.mode].short;
 }
 
 /** A channel's demodulation quality: the eye opening, or CQPSK's phase error. */

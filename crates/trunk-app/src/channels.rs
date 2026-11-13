@@ -181,7 +181,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         let bandwidth_khz = match at(c_bw) {
             "" => None,
             s => match (if decimal_comma { s.replace(',', ".") } else { s.to_string() }).parse::<f64>() {
-                Ok(v) if (lo..=hi).contains(&v) && matches!(mode, ChannelMode::Fm | ChannelMode::Am | ChannelMode::Auto) => Some(v),
+                Ok(v) if (lo..=hi).contains(&v) && mode.conv().analog() => Some(v),
                 _ => {
                     bad_bw.push(row);
                     None
@@ -435,7 +435,9 @@ mod tests {
     fn auto_channels_read_and_write() {
         let p = parse("Frequency,Mode,Alpha Tag,Code,Bandwidth kHz\n462.5625,auto,FRS 1,,\n462.5875,ANY,FRS 2,,16\n462.6125,auto,FRS 3,100.0,\n").unwrap();
         assert!(p.channels.iter().all(|c| c.mode == ChannelMode::Auto), "{:?}", p.channels.iter().map(|c| c.mode).collect::<Vec<_>>());
-        assert_eq!(p.channels[1].bandwidth_khz, Some(16.0));
+        // A width is for FM and AM: an auto channel opens every receiver the same.
+        assert_eq!(p.channels[1].bandwidth_khz, None);
+        assert!(p.notes.iter().any(|n| n.contains("Row(s) 3: Bandwidth")), "{:?}", p.notes);
         // A tone it can't have is said so, and left out.
         assert_eq!(p.channels[2].code, "");
         assert!(p.notes.iter().any(|n| n.contains("row 4") && n.contains("auto channels carry no tone or code")), "{:?}", p.notes);

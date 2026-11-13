@@ -1274,7 +1274,8 @@ impl Demod {
     /// Channel `c`'s tuning: the mode's (and frequency's) defaults, with these and its bandwidth.
     fn tuning(&self, c: &Channel) -> AnalogTuning {
         let mut t = if c.mode == ChannelMode::Am { AnalogTuning::am(c.freq_hz) } else { AnalogTuning::default() };
-        if let Some(khz) = c.bandwidth_khz {
+        // (An auto channel has one width for every receiver: its analog one's, and the digital ones'.)
+        if let Some(khz) = c.bandwidth_khz.filter(|_| c.conv_mode().analog()) {
             t.half_bw_hz = khz * 500.0;
         }
         if self.fm_deemphasis == Some(false) {
@@ -3903,7 +3904,7 @@ mod tests {
         assert_eq!(c.problem(), None);
         let e = c.engine_config(0.0, &Default::default());
         assert!(e.conventional.iter().all(|x| x.mode == trunk_core::trunk::ConvMode::Auto));
-        assert_eq!(e.conventional[1].analog.half_bw_hz, 8000.0, "the analog receiver's width");
+        assert_eq!(e.conventional[1].analog.half_bw_hz, trunk_core::dsp::AnalogTuning::default().half_bw_hz, "no width of its own: every receiver has the same");
         // Written back as it was read.
         assert!(serde_json::to_string(&c).unwrap().contains(r#""mode":"auto""#));
         // It has no code to hold: a tone on it stops Start, naming the frequency.
