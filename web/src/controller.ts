@@ -9,6 +9,7 @@ import { copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
 import type {
+  ApiAccess,
   MonitorEvent,
   PlatformInfo,
   RadioResult,
@@ -135,6 +136,12 @@ export interface AppState {
   surveyBands: SurveyBand[];
   /** What the recorder can do beyond recording (hello): see [`can`]. */
   capabilities: Capability[];
+  /** What this connection may do (hello): see [`mayEdit`]; null before the first hello. */
+  access: ApiAccess | null;
+  /** The user this browser signed in as, by name (hello); null: none (signing in off, or not signed in). */
+  user: string | null;
+  /** Whether signing in is on (GET /api/session, asked after each hello: a listen-only connection's config doesn't say). */
+  signingIn: boolean;
   surveySpectrum: Spectrum | null;
   /** The licenses looked up for the survey's signals ("Identify surveyed sites"); null: none asked for since it started. */
   surveyLicenses: LicenseLookup | null;
@@ -233,6 +240,9 @@ let state: AppState = {
   survey: { stage: "idle" },
   surveyBands: [],
   capabilities: [],
+  access: null,
+  user: null,
+  signingIn: false,
   surveySpectrum: null,
   surveyLicenses: null,
   surveyFor: null,
@@ -334,6 +344,14 @@ export function can(c: Capability): boolean {
   return state.capabilities.includes(c);
 }
 
+/**
+ * Whether this connection may change the recorder (hello.access is control):
+ * what to show. A view-only one sees no setup, no Start and no editors.
+ */
+export function mayEdit(): boolean {
+  return state.access === "control";
+}
+
 export const web: WorkerTransport | null = import.meta.env.MODE === "web" ? new (await import("./web/workerTransport.ts")).WorkerTransport() : null;
 export const transport: Transport = web ?? new WsTransport();
 
@@ -353,7 +371,7 @@ export function onRecorderMessage(f: (m: FromRecorder) => void): void {
 
 transport.onConnection = (connected) => {
   set({ connected, ...(connected ? {} : { phase: "idle" as Phase }) });
-  if (!connected) return;
+  if (!connected) return void signedOut();
   // A new connection's greeting says how things are, from nothing: what
   // collects (events, files by system) starts over, an edit awaiting an
   // answer won't get one (a talkgroup edit's is sent again: "hello").
@@ -371,7 +389,8 @@ function take(m: FromRecorder): void {
   switch (m.type) {
     // The greeting's end: everything before it said how things are now.
     case "hello":
-      set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands, capabilities: m.capabilities });
+      set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands, capabilities: m.capabilities, access: m.access, user: m.user ?? null });
+      void fetchSession().then((x) => x && set({ signingIn: x.auth }));
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
       sendTopics(true);
@@ -511,6 +530,7 @@ function take(m: FromRecorder): void {
     case "dataSummary":
     case "dataDeleted":
     case "dataCompacted":
+    case "tokenCreated":
     case "pluginActionResult": {
       const r = pending.get(m.id);
       pending.delete(m.id);
@@ -718,6 +738,80 @@ export type PluginActionResult = Extract<FromRecorder, { type: "pluginActionResu
 /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited): how it went, as the plugin says. */
 export function pluginAction(plugin: string, action: string, value: unknown): Promise<PluginActionResult> {
   return ask<PluginActionResult>({ type: "pluginAction", id: nextId++, plugin, action, value });
+}
+
+// ── signing in ───────────────────────────────────────────────────────────────
+//
+// Optional (server.auth): a browser signs in as a user with their access
+// token's secret, and keeps a session cookie (POST /api/login). The desktop app's server alone: the
+// browser build is its own recorder, with nothing to sign in to.
+
+export type TokenCreated = Extract<FromRecorder, { type: "tokenCreated" }>;
+
+/** A new user `name` with `access` and an access token: its secret, in the answer alone (shown this once). */
+export function createToken(name: string, access: ApiAccess): Promise<TokenCreated> {
+  return ask<TokenCreated>({ type: "createToken", id: nextId++, name, access });
+}
+
+/** How the recorder sees this browser (GET /api/session); null: it couldn't say (the browser build has no server). */
+export type Session = { auth: boolean; access: ApiAccess | null; user: string | null };
+export async function fetchSession(): Promise<Session | null> {
+  if (transport.kind !== "desktop") return null;
+  try {
+    const r = await fetch("/api/session", { cache: "no-store" });
+    return r.ok ? ((await r.json()) as Session) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Who signed in (POST /api/login's answer): the user's role and name. */
+export type SignedIn = { access: ApiAccess; user: string };
+
+/** Sign this browser in with access token `secret` (its cookie set): who it signed in as; null: the recorder didn't take it. */
+export async function signIn(secret: string): Promise<SignedIn | null> {
+  if (transport.kind !== "desktop") return null;
+  try {
+    const r = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: secret.trim() }), cache: "no-store" });
+    return r.ok ? ((await r.json()) as SignedIn) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Sign out (the cookie cleared), and the page again (`reload`): the server's sign-in page, or the app as anyone may see it. */
+export async function signOut(reload = true): Promise<void> {
+  try {
+    await fetch("/api/logout", { method: "POST", cache: "no-store" });
+  } catch {
+    // Reloaded anyway.
+  }
+  if (reload) location.reload();
+}
+
+const RELOADED_KEY = "trp.signedOutAt";
+let askingSession = false;
+
+/**
+ * The connection dropped, or couldn't be made: a WebSocket refused for want
+ * of access (a user removed, signing in turned on) can't say so, the
+ * session does. Without access, the page again: the server's sign-in page in
+ * its place. Not when the session couldn't be asked (the recorder down), nor
+ * twice within a minute.
+ */
+async function signedOut(): Promise<void> {
+  if (askingSession || transport.kind !== "desktop") return;
+  askingSession = true;
+  const s = await fetchSession();
+  askingSession = false;
+  if (!s?.auth || s.access !== null) return;
+  try {
+    if (Date.now() - Number(sessionStorage.getItem(RELOADED_KEY) ?? 0) < 60_000) return;
+    sessionStorage.setItem(RELOADED_KEY, String(Date.now()));
+  } catch {
+    // Not remembered: reloaded all the same.
+  }
+  location.reload();
 }
 
 /**

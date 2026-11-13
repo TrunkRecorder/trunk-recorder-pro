@@ -74,7 +74,7 @@ LimeSDR...).
 
 ### Using it
 
-- [The interface](guides/interface.md): Setup, live listening, events, remote access
+- [The interface](guides/interface.md): Setup, live listening, events, remote access, signing in
 - [The dashboard](guides/dashboard.md): what each page and number means
 - [Recordings](guides/recordings.md): where calls go, file names, the call JSON, what is kept
 - [Signals](guides/signals.md): pages, alert tones, DTMF, KNOX and Morse IDs heard in calls, and naming them

@@ -13,7 +13,7 @@ test("a SmartNet system found by the survey: its site identity and band plan as 
   transport.onConnection(true);
   const greeting: FromRecorder[] = [
     { type: "config", config: c, version: 1 },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: [] },
+    { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: [] },
   ];
   for (const m of greeting) transport.onMessage(m);
   const sug: SurveySuggestion = {

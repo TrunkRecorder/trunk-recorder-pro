@@ -369,7 +369,7 @@ impl Interfaces {
         let mime = image_type(&shot.url).ok_or("not a picture")?;
         let cache = crate::paths::data_dir().join("interface-screenshots").join(&sha);
         if let Ok(data) = std::fs::read(&cache) {
-            if crate::store::sha256_hex(&data) == sha {
+            if crate::toolkit::sha256_hex(&data) == sha {
                 return Ok((data, mime));
             }
         }

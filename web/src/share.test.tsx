@@ -15,7 +15,7 @@ function connected(systems: System[], share: ShareStatus | null = null): Config 
   transport.onConnection(true);
   const config = { ...defaultConfig(), systems };
   transport.onMessage({ type: "config", config, version: 1 });
-  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: [] });
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: [] });
   const status = systems.map((s, index) => ({ index, shortName: s.shortName, activeCalls: 0, recording: 0, callsConcluded: 0, share, sites: [] }));
   transport.onMessage({ type: "status", status: { systems: status, recording: 0 } as unknown as EngineStatus, sources: [], load: 0, calls: [] });
   return snapshot().config!;

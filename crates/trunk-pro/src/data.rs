@@ -20,7 +20,7 @@ use trunk_app::protocol::{DataCounts, DataKind, DataSystem, DataTable, ToClient}
 use trunk_core::metrics::system_key;
 use trunk_core::trunk::{TalkgroupRow, UnitNameRow};
 
-use crate::access::Door;
+use crate::access::Caller;
 use crate::config::ApiAccess;
 use crate::db::sql::V;
 use crate::db::store::{Cell, ExportPage};
@@ -38,9 +38,9 @@ pub fn file_name(system: Option<&str>, table: DataTable, at: chrono::DateTime<Lo
 
 /// `GET /api/v1/export/{table}`: a table as a CSV file, every system's or
 /// (`?system=<id>`) one's. Control access only, as Setup is.
-pub async fn export(State(ctx): State<Arc<Ctx>>, Extension(door): Extension<Door>, Path(table): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
+pub async fn export(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, Path(table): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
     let fail = |code: StatusCode, msg: &str| (code, Json(json!({ "error": msg }))).into_response();
-    match crate::server::access_of(&ctx, &door) {
+    match caller.access(&ctx) {
         None => return StatusCode::NOT_FOUND.into_response(),
         Some(ApiAccess::Listen) => return fail(StatusCode::FORBIDDEN, "exporting needs control access"),
         Some(ApiAccess::Control) => {}
@@ -326,14 +326,12 @@ pub fn compact(ctx: &Ctx, id: u64) -> ToClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::access::Door;
     use crate::db::TestDir;
 
     /// `GET path` on a server of `ctx` as `door`: the status, the file it's saved as, and the body.
     async fn fetch(ctx: &Arc<Ctx>, door: Door, path: &str) -> (u16, String, String) {
-        let app = crate::server::api(axum::Router::new()).layer(Extension(door)).with_state(ctx.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}{path}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, app).await });
+        let url = format!("http://{}{path}", crate::server::test_server(ctx, door).await);
         tokio::task::spawn_blocking(move || {
             let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
             let mut r = agent.get(&url).call().unwrap();

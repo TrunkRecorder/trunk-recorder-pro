@@ -1,7 +1,7 @@
 # Server, Log and Monitor
 
-This page lists the keys for the web server (`server`), the log (`log`) and the dashboard's internet
-checks (`monitor`). For remote access, security and building your own interfaces, see the
+This page lists the keys for the web server (`server`, and [signing in](#access) with
+`server.auth`), the log (`log`) and the dashboard's internet checks (`monitor`). For remote access, security and building your own interfaces, see the
 [interface guide](../guides/interface.md); for the command-line flags that override some of these
 for one run, see [command-line.md](../command-line.md).
 
@@ -19,11 +19,12 @@ the app: **Record when the app starts** on Setup's **Recording** tab; the rest o
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `bind` | | `"127.0.0.1"` | string | The address every interface listens on. `"127.0.0.1"`: this computer only. `"0.0.0.0"`: reachable from other machines. **There's no login**: anyone who can reach the built-in interface's port can change settings and run plugins. `--bind` overrides it for one run. Config only |
+| `bind` | | `"127.0.0.1"` | string | The address every interface listens on. `"127.0.0.1"`: this computer only. `"0.0.0.0"`: reachable from other machines. With [signing in](#access) off (the default), anyone who can reach the built-in interface's port can change settings and run plugins. `--bind` overrides it for one run. Config only |
 | `port` | | `8080` | integer | The built-in interface's port. `--port` overrides it for one run |
 | `autoStart` | | `false` | bool | Start recording when the app starts, as `--start` does. For headless machines and after a reboot |
-| `allowedOrigins` | | `[]` | array of strings | Web pages on other origins allowed to use the built-in interface's API, with control (a page served by something else, such as a dev server): `"http://host:port"` as the browser sends it, `"null"` for a page opened from a file, or `"*"` for any. Each interface's own pages, and programs that aren't browsers, always may |
+| `allowedOrigins` | | `[]` | array of strings | Web pages on other origins allowed to use the built-in interface's API, with control (a page served by something else, such as a dev server): `"http://host:port"` as the browser sends it, `"null"` for a page opened from a file, or `"*"` for any. Each interface's own pages, and programs that aren't browsers, always may. With [signing in](#access) on, such a page must also send an access token |
 | `interfaces` | | `{}` | object | The other interfaces, by id. See below |
+| `auth` | | off | object | Signing in: who may, with what role. See [Access](#access) |
 | `trpApi` | | `""` (https://trunkrecorder.pro) | string | Where the trunkrecorder.pro API is, for **Identify** and [sharing with the directory](systems.md#sharing-with-the-directory). Only for testing another copy of it (`"http://localhost:8788"`) |
 
 `bind` and `port` are read when the app starts; the rest apply at once.
@@ -54,6 +55,88 @@ Changes take effect at once: an interface is started, stopped or moved to its ne
 restart. A config from 0.1.13 or earlier, with `interfaces` as a list of `{name, path}`, is read as this
 map, each given a port; its `home` is dropped (`/` on the built-in interface's port is always the
 built-in interface).
+
+## Access
+
+Signing in is off unless you turn it on. Off, whoever reaches a port gets what that port gives:
+control on the built-in interface's, each interface's own `access` on its. On, they also sign in as
+a **user**, with that user's **access token**, and get the lower of the port's access and the
+user's role.
+
+**Turning it on.** In the app: Setup → **Recording** → **Access**. Turn the **Sign-in** switch on.
+With no Admin yet, it asks for one first: give it a name, **Create**, and copy the token's secret
+while it's shown (once). The browser is signed in with it, and only then is signing in turned on,
+so you can't lock yourself out. (With an Admin already there, it asks for their token's secret
+instead, or offers **New Admin token**.) Other browsers get the sign-in page: paste the secret. One sign-in covers the
+dashboard and every interface's port on that host name, for 30 days or until **Sign out**.
+
+The browser keeps a session, not the token: who signed in, with which token, and until when,
+signed with a key the recorder keeps in `session-key` beside the config (made the first time,
+readable by its owner alone, never in the config). Removing the user or making their token again
+ends their sessions; deleting `session-key` (then restarting the recorder) signs every browser
+out. If the recorder can't keep the file it says so in the log, and browsers are signed out
+whenever it restarts.
+
+On a recorder with no browser nearby, use the command line, then restart the recorder:
+
+```sh
+trunk-pro access add luke                    # control by default; prints the token's secret once
+trunk-pro access add kiosk --access listen
+trunk-pro access on
+trunk-pro access list                        # on or off, anonymous, and each user
+trunk-pro access remove kiosk                # signs out whoever signed in as kiosk
+```
+
+**Users.** Each has a name (who or what signs in) and a role. **New token** in Setup adds one, with
+their token:
+
+| Role (in Setup) | In the config | May |
+|---|---|---|
+| View | `listen` | See and play everything (status, calls on the air, recorded calls, live audio, the dashboard), change nothing. The config it sees has no plugin settings, key sources or users |
+| Admin | `control` | Everything the built-in interface can, including adding and removing users |
+
+The token's secret (`trp_` and 64 hex digits) is shown once, when it's made. The config keeps only
+its SHA-256, so a lost secret can't be recovered: remove the user and add them again. Removing a
+user signs out everyone signed in as them (from Setup at once; with `trunk-pro access remove`, at
+the restart). Programs and scripts sign in with a token too; see
+[Signing in](../api/README.md#signing-in) in the API docs.
+
+**Without a token.** **None** (the default): everything but the sign-in page needs a token.
+**View** (`anonymous: "listen"`): anyone who reaches the port can look and listen, and needs a
+token only to change things; the dashboard's top bar then has **Sign in**, which goes to the
+sign-in page (`/signin`).
+
+```json
+"server": {
+  "auth": {
+    "enabled": true,
+    "anonymous": "listen",
+    "users": {
+      "luke": { "access": "control", "token": { "hash": "…", "created": 1763000000 } },
+      "kiosk": { "access": "listen", "token": { "hash": "…", "created": 1763000000 } }
+    }
+  }
+}
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Signing in on. It needs a user with control access and a token, so someone can turn it off again |
+| `anonymous` | none | `"listen"`: what a request without a token may do. `"control"` is refused (it would be the same as off) |
+| `users` | `{}` | By name: `access` (`"listen"` or `"control"`) and `token`, what they sign in with: `hash` (the secret's SHA-256) and `created` (Unix s). Made in Setup or with `trunk-pro access add`, not by hand |
+
+Changes in Setup apply at once: connections whose access changed are closed and reconnect with
+what they have now. Changes made with `trunk-pro access` are written to the config file and take
+effect when the recorder restarts.
+
+**Locked out?** On the recorder's computer, `trunk-pro access off`, then restart the recorder.
+Open Setup, add a new Admin, and turn **Sign-in** back on. (`--config file.json` for a config
+somewhere else.)
+
+**HTTPS.** The recorder doesn't serve HTTPS yet, so on plain HTTP the secret crosses the network
+in the clear, as everything else does. That's fine on your own network, over a VPN or an SSH
+tunnel. Across the internet, don't open the port: use a VPN or tunnel, or a reverse proxy that
+adds HTTPS (see [Remote access](../guides/interface.md#remote-access)).
 
 ## Log
 

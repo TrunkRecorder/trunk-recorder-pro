@@ -148,6 +148,8 @@ pub struct Ctx {
     pub unlocked: crate::unlock::Unlocked,
     /// Recordings of what the radios receive ([`crate::iq_capture`]).
     pub iq: crate::iq_capture::Captures,
+    /// What browsers' sign-in cookies are signed with ([`crate::access::Sessions`]).
+    pub sessions: crate::access::Sessions,
 }
 
 /// Something for the running session to do: the one way into the engine

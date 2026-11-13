@@ -665,8 +665,8 @@ schema, and every documented command against `Command::parse`.
     (plugin, interface, store and key management), and `runtime::publish` —
     the one way onto the hub — serializes a message once per audience: `config`
     whole and without plugin settings and key sources (`access.rs`). A
-    session passes on what its access may have. A command a listen-only
-    connection may not send (`Command::listen_may_send`), and one that
+    session passes on what its access may have. A command that needs more
+    access than the connection has (`Command::needs`), and one that
     doesn't parse, is answered with an `error`.
 - **Client → recorder.** `setConfig { config, version }` (the whole config,
   and the version it edits: an edit of an older one is refused),
@@ -675,18 +675,24 @@ schema, and every documented command against `Command::parse`.
   `readTrConfig`, `survey*`, `profileSource`, `plugins`, `addPlugin`,
   `removePlugin`, `interfaces`, `addInterface`, `removeInterface`, `store`
   and `install` (each with `kind`: `plugin` or `interface`), `subscribe`,
-  `statsQuery`, `callsQuery`, `radioQuery`, `quit`. A listen-only connection
-  may send only `subscribe`, `statsQuery`, `radioQuery`, `callsQuery` and
-  `listen`.
+  `statsQuery`, `callsQuery`, `radioQuery`, `createToken`, `quit`. A
+  listen-only connection may send only `subscribe`, `statsQuery`,
+  `radioQuery`, `callsQuery` and `listen`.
 - **HTTP routes**, on every interface's port (`server::api`):
   - `/api/ws`, `/api/version`, `/api/docs`, `/api/schema`, `/api/protocol.ts`,
-    `/api/*` (the docs/api folder).
+    `/api/*` (the docs/api folder); `/api/login`, `/api/logout`,
+    `/api/session`, `/signin` (signing in).
   - `/calls/<path>` (the recordings folder).
   - Everything else: the embedded interface on `server.port`; the
     interface's folder on its own port. A request's port is its `Door`, and
     a WebSocket's access follows from it (`access.rs`): control on the
     built-in port, the config's `server.interfaces.<id>.access` on an
-    interface's.
+    interface's. With signing in on (`server.auth`), `server::guard`
+    identifies who sent it (`access::identify`: a user's access token as a
+    Bearer header, `?token=`, or a same-origin session cookie) and it gets no more
+    than the user's role (`Caller::access`); without one, `anonymous`'s, or
+    the sign-in page / 401. `server::open` lists what needs nothing: the
+    version, signing in, and the API's static files.
 
 ### 10. Plugins (`trunk-pro/src/plugins/`, `trunk-recorder-plugin`)
 
@@ -837,7 +843,7 @@ Other conventions:
 | Data folder | `trunk-pro/src/paths.rs` |
 | Analysis tools (`trunk-pro tool` cc / voice / frames / p2 / snr / dmr / nxdn …) | `trunk-pro/src/tool.rs`, `toolkit.rs` (what they share), `snrtool.rs`, `dmrtool.rs`, `nxdntool.rs` |
 | Interface protocol | `web/src/protocol.ts` → `docs/api/protocol.schema.json`; in Rust `trunk-app/src/protocol.rs` (`ToClient`, `Command`), checked against it by `trunk-pro/src/protocol_tests.rs` |
-| Who may hear and send what (listen / control access) | `trunk-app/src/protocol.rs` (`audience`, `listen_may_send`), `trunk-pro/src/access.rs` |
+| Who may hear and send what (listen / control access, signing in) | `trunk-app/src/protocol.rs` (`audience`, `needs`), `trunk-pro/src/access.rs`, `access/cli.rs`, `server.rs` (`guard`) |
 | Radio drivers' run loop | `trunk-pro/src/sdr.rs` (`Radio`, `run_with`), `radio/` |
 | Plugin protocol | `crates/trunk-recorder-plugin/src/protocol.rs` |
 | Log format | `trunk-app/src/log.rs`, `trunk-pro/src/logging.rs` |

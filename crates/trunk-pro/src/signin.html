@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sign in</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --text: #1b1f24; --muted: #5d6670; --line: #d4d9df; --accent: #2563eb; --bad: #b42318; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1216; --card: #181c22; --text: #e6e9ed; --muted: #9aa4ae; --line: #2c333c; --accent: #6b9bff; --bad: #ff8a80; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  form { width: 100%; max-width: 340px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 24px; display: grid; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .sub { margin: 0; color: var(--muted); font-size: 13px; }
+  label { font-size: 13px; color: var(--muted); display: grid; gap: 4px; }
+  input { width: 100%; padding: 9px 10px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button { padding: 9px; font: inherit; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  .error { margin: 0; min-height: 1.4em; color: var(--bad); font-size: 13px; }
+</style>
+</head>
+<body>
+<form id="f">
+  <h1>Trunk Recorder Pro</h1>
+  <p class="sub">Sign in</p>
+  <label>Access token
+    <input id="t" type="password" name="token" autocomplete="current-password" autofocus required>
+  </label>
+  <button id="b" type="submit">Sign in</button>
+  <p class="error" id="e" role="alert"></p>
+</form>
+<script>
+  const f = document.getElementById("f"), t = document.getElementById("t"), b = document.getElementById("b"), e = document.getElementById("e");
+  f.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    b.disabled = true;
+    e.textContent = "";
+    try {
+      const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: t.value.trim() }) });
+      // Asked for at /signin: on to the start page; in place of another page: that page again.
+      if (r.ok) return location.pathname === "/signin" ? location.replace("/") : location.reload();
+      e.textContent = r.status === 401 ? "Not a token here" : "Failed: " + r.status;
+    } catch {
+      e.textContent = "No answer";
+    }
+    b.disabled = false;
+    t.select();
+  });
+</script>
+</body>
+</html>

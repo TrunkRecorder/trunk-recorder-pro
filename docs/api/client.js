@@ -29,13 +29,15 @@ export function decodeAudioFrame(buf) {
  *
  *   const rec = new TrunkClient();                       // the page's own recorder
  *   const rec = new TrunkClient({ server: "pi.local:8080" });
+ *   const rec = new TrunkClient({ server: "pi.local:8080", token: "trp_…" }); // signing in is on
  *   rec.on("change", () => draw(rec));                   // anything changed
  *   rec.on("concluded", (m) => console.log(m.entry));    // one message type
  *
  * State (read it, don't change it): connected, version, config, phase
  * ({ phase, error, ended }), status (EngineStatus), sources, calls (on the
  * air now), history (recorded calls, newest first), configVersion, talkgroupRows,
- * capabilities, log (after subscribe(["log"])), aliases, error (also why a
+ * capabilities, access ("listen" | "control") and user (the user it signed
+ * in as, or null), log (after subscribe(["log"])), aliases, error (also why a
  * setConfig was refused), exited (the recorder quit; it keeps trying to reconnect).
  * "change" fires once, at `hello`, while a connection is being greeted.
  */
@@ -45,19 +47,28 @@ export class TrunkClient {
    * @param {string} [opts.server] host:port; default the page's own host (Node: localhost:8080)
    * @param {boolean} [opts.secure] wss:// (default: when the page is https)
    * @param {number} [opts.historyLimit] recorded calls kept in `history` (default 500)
+   * @param {string} [opts.token] an access token's secret ("trp_…"), for a recorder with signing
+   *   in on: put on the WebSocket's and the call files' URLs as ?token=. Not needed by a page the
+   *   recorder serves once its browser has signed in (the cookie does), nor with signing in off.
    */
   constructor(opts = {}) {
     const page = typeof location !== "undefined" && location.protocol.startsWith("http") ? location : null;
     this.server = opts.server ?? (page ? page.host : "localhost:8080");
     const secure = opts.secure ?? page?.protocol === "https:";
     this.httpBase = `${secure ? "https" : "http"}://${this.server}`;
-    this.wsUrl = `${secure ? "wss" : "ws"}://${this.server}/api/ws`;
+    this.token = opts.token || null;
+    this._auth = this.token ? `token=${encodeURIComponent(this.token)}` : "";
+    this.wsUrl = `${secure ? "wss" : "ws"}://${this.server}/api/ws${this._auth ? `?${this._auth}` : ""}`;
     this.historyLimit = opts.historyLimit ?? 500;
 
     this.connected = false;
     this.version = null;
     /** What the recorder can do beyond recording (hello.capabilities: "service", "drivers", "plugins", "interfaces", "host", "keys"). */
     this.capabilities = [];
+    /** What this connection may do (hello.access): "listen" or "control"; null until greeted. */
+    this.access = null;
+    /** The user it signed in as, by name (hello.user); null when it didn't. */
+    this.user = null;
     this.config = null;
     /** The version of `config`: a `setConfig` names the one it edits. */
     this.configVersion = 0;
@@ -248,7 +259,18 @@ export class TrunkClient {
   /** A recorded call's file: entry (or its path), "wav" | "json" | "m4a". */
   callUrl(entry, ext = "wav") {
     const path = typeof entry === "string" ? entry : entry.path;
-    return `${this.httpBase}/calls/${path.split("/").map(encodeURIComponent).join("/")}.${ext}`;
+    return `${this.httpBase}/calls/${path.split("/").map(encodeURIComponent).join("/")}.${ext}${this._auth ? `?${this._auth}` : ""}`;
+  }
+
+  /**
+   * Whether signing in is on and what this page may do: { auth, access, user }
+   * (GET /api/session; `access` null: it must sign in). A WebSocket that may
+   * not connect just closes, so this is how a page tells that from a recorder
+   * that's down (which rejects).
+   */
+  async session() {
+    const r = await fetch(`${this.httpBase}/api/session${this._auth ? `?${this._auth}` : ""}`);
+    return r.json();
   }
 
   /** Stop for good. */
@@ -311,6 +333,8 @@ export class TrunkClient {
       case "hello":
         this.version = m.version;
         this.capabilities = m.capabilities ?? [];
+        this.access = m.access ?? null;
+        this.user = m.user ?? null;
         this._greeting = false;
         if (!this.connected) {
           this.connected = true;

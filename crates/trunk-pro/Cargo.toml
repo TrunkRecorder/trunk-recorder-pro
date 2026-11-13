@@ -40,6 +40,8 @@ log = { version = "0.4", features = ["std"] }
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
 ureq = "3"
 sha2 = "0.11"
+# Signing browsers' sessions (access.rs): the version trunk-app has.
+hmac = "0.13"
 cel = "0.15"
 rustfft.workspace = true
 # The install's anonymous directory recorder ID (directory.rs).

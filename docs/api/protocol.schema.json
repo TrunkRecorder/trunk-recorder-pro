@@ -48,6 +48,63 @@
       ],
       "description": "What a page may do with the recorder's API. \"listen\": see what the recorder does and play its calls, change nothing (its config comes without plugin settings and key sources). \"control\": everything the built-in interface can."
     },
+    "AuthSetup": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "anonymous": {
+          "$ref": "#/definitions/ApiAccess"
+        },
+        "users": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/AuthUser"
+          },
+          "description": "Who may sign in, by name. Made with createToken (the token's secret is shown once); removed by taking them out."
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false,
+      "description": "Signing in. `enabled`: a request gets the lower of its port's access and its user's — signed in with their access token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login sets — and without one, `anonymous`'s (absent: it must sign in; GET /api/session says so). Enabled, it needs a user with control access and a token, and `anonymous` can't be \"control\"."
+    },
+    "AuthToken": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "created": {
+          "type": "number",
+          "description": "When it was made, Unix s."
+        }
+      },
+      "required": [
+        "hash",
+        "created"
+      ],
+      "additionalProperties": false,
+      "description": "An access token: its secret's SHA-256 (hex). The secret itself is never kept."
+    },
+    "AuthUser": {
+      "type": "object",
+      "properties": {
+        "access": {
+          "$ref": "#/definitions/ApiAccess"
+        },
+        "token": {
+          "$ref": "#/definitions/AuthToken"
+        }
+      },
+      "required": [
+        "access"
+      ],
+      "additionalProperties": false,
+      "description": "Someone (or a program) who may sign in: what they may do, and what they sign in with (absent: nothing yet)."
+    },
     "CallEntry": {
       "type": "object",
       "properties": {
@@ -1428,6 +1485,10 @@
             "trpApi": {
               "type": "string",
               "description": "Where the trunkrecorder.pro API is, for the survey's license lookup (absent: https://trunkrecorder.pro)."
+            },
+            "auth": {
+              "$ref": "#/definitions/AuthSetup",
+              "description": "Signing in, on every interface's port (absent: off). Not in a listen-only connection's config."
             }
           },
           "required": [
@@ -2232,6 +2293,14 @@
                 "$ref": "#/definitions/Capability"
               },
               "description": "What this recorder can do beyond recording: show only what works. The desktop app can do all of them; the browser build, none."
+            },
+            "access": {
+              "$ref": "#/definitions/ApiAccess",
+              "description": "What this connection may do: its port's access, and no more than its user's with signing in on."
+            },
+            "user": {
+              "type": "string",
+              "description": "The user it signed in as, by name."
             }
           },
           "required": [
@@ -2240,7 +2309,8 @@
             "platform",
             "api",
             "surveyBands",
-            "capabilities"
+            "capabilities",
+            "access"
           ],
           "additionalProperties": false
         },
@@ -4306,6 +4376,33 @@
             "id",
             "beforeBytes",
             "afterBytes"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tokenCreated"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            },
+            "secret": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
           ],
           "additionalProperties": false
         },
@@ -10368,6 +10465,31 @@
           "required": [
             "type",
             "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "createToken"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            },
+            "access": {
+              "$ref": "#/definitions/ApiAccess"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "access"
           ],
           "additionalProperties": false
         },

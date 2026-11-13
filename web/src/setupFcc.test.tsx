@@ -11,7 +11,7 @@ import { ConventionalPanel, SystemCard } from "./Setup.tsx";
 import { setCardOpen } from "./SetupLayout.tsx";
 
 function connected(c: Config) {
-  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service"] }] as const) transport.onMessage(m as never);
+  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service"] }] as const) transport.onMessage(m as never);
 }
 
 test("a system's FCC licenses section: none until a frequency has a license", () => {

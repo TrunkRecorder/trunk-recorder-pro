@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
-import { callsQuery, editTalkgroup, nameUnit, radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
+import { callsQuery, editTalkgroup, mayEdit, nameUnit, radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
 import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "../NameFields.tsx";
 import { originText } from "../origins.ts";
 import { isPattern, ownUnitName } from "../units.ts";
@@ -49,8 +49,8 @@ function TgName({ r }: { r: { tg: number; alphaTag: string } }) {
   );
 }
 
-function IgnoreToggle({ sys, r }: { sys: DashSystem; r: TgRow }) {
-  if (sys.kind === "conventional") return null;
+export function IgnoreToggle({ sys, r }: { sys: DashSystem; r: TgRow }) {
+  if (sys.kind === "conventional" || !mayEdit()) return null;
   return (
     <button
       className={`btn ghost small${r.ignore ? " on" : ""}`}
@@ -73,7 +73,8 @@ export function OriginNote({ origin }: { origin: Origin | undefined }) {
 }
 
 /** A button that opens a row's names editor: "Name it" when it has none. */
-function NameButton(props: { named: boolean; open: boolean; onClick: () => void }) {
+export function NameButton(props: { named: boolean; open: boolean; onClick: () => void }) {
+  if (!mayEdit()) return null;
   return (
     <button className={`btn small${props.named ? " ghost" : ""}`} aria-expanded={props.open} onClick={props.onClick}>
       {props.open ? "Done" : props.named ? "Edit names" : "Name it"}
@@ -490,7 +491,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
           {sys.kind !== "conventional" && <NameButton named={!!(kept?.alphaTag || row.alphaTag)} open={naming} onClick={() => setNaming(!naming)} />}
           <IgnoreToggle sys={sys} r={row} />
         </div>
-        {naming && sys.kind !== "conventional" && <TalkgroupNamesEditor sys={sys} tg={tg} />}
+        {naming && mayEdit() && sys.kind !== "conventional" && <TalkgroupNamesEditor sys={sys} tg={tg} />}
       </section>
       <div className="kpis">
         <Stat label="Calls, 7 days" value={compact(row.calls)} sub={<Figs inline items={[{ k: "All time", v: compact(row.totalCalls) }]} />} />
@@ -673,7 +674,7 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
           {row.reg === false && <span className="badge ign">DEREGISTERED</span>}
           <NameButton named={!!own} open={naming} onClick={() => setNaming(!naming)} />
         </div>
-        {naming && (
+        {naming && mayEdit() && (
           <div className="row-editor names-editor">
             <fieldset>
               <legend>Name</legend>

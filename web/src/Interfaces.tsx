@@ -323,7 +323,7 @@ function StoreSection(props: { list: InterfaceInfo[] }) {
   return <StorePanel kind="interface" words={INTERFACE_STORE} card={(l) => <StoreListingCard key={l.id} l={l} installed={props.list.find((i) => i.id === l.id)} install={installs[l.id]} />} />;
 }
 
-/** Pages served elsewhere that may use this interface's API (with control). */
+/** Pages served elsewhere that may use this interface's API (with control; signing in on, an Admin token too). */
 function OriginsPanel(props: { c: Config }) {
   const saved = props.c.server.allowedOrigins ?? [];
   const [origins, setOrigins] = useState(saved.join("\n"));
@@ -335,7 +335,7 @@ function OriginsPanel(props: { c: Config }) {
       </header>
       <div className="field">
         <label className="field-label" htmlFor="ui-origins">
-          Allowed origins (with control)
+          Allowed origins ({props.c.server.auth?.enabled ? "control, with an Admin token" : "with control"})
           <Info>
             For a page served by something else, such as a dev server. One origin per line (scheme://host:port). <code>null</code>: a page opened from a file; <code>*</code>: any
             page — private networks only. An interface the recorder serves needs none of this.

@@ -22,7 +22,7 @@ function tooLow(): Config {
   c.systems[0].sites[0].voiceChannelsHz = [851_512_500, 852_012_500];
   const greeting: FromRecorder[] = [
     { type: "config", config: c, version: 1 },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: [] },
+    { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: [] },
   ];
   for (const m of greeting) transport.onMessage(m);
   return c;

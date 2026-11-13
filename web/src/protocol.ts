@@ -548,6 +548,8 @@ export interface Config {
     interfaces?: Record<string, InterfaceSetup>;
     /** Where the trunkrecorder.pro API is, for the survey's license lookup (absent: https://trunkrecorder.pro). */
     trpApi?: string;
+    /** Signing in, on every interface's port (absent: off). Not in a listen-only connection's config. */
+    auth?: AuthSetup;
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
@@ -607,6 +609,32 @@ export interface MonitorSettings {
  * everything the built-in interface can.
  */
 export type ApiAccess = "listen" | "control";
+
+/**
+ * Signing in. `enabled`: a request gets the lower of its port's access and its user's — signed in with their access
+ * token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login sets — and without one, `anonymous`'s
+ * (absent: it must sign in; GET /api/session says so). Enabled, it needs a user with control access and a token, and
+ * `anonymous` can't be "control".
+ */
+export interface AuthSetup {
+  enabled: boolean;
+  anonymous?: ApiAccess;
+  /** Who may sign in, by name. Made with createToken (the token's secret is shown once); removed by taking them out. */
+  users?: Record<string, AuthUser>;
+}
+
+/** Someone (or a program) who may sign in: what they may do, and what they sign in with (absent: nothing yet). */
+export interface AuthUser {
+  access: ApiAccess;
+  token?: AuthToken;
+}
+
+/** An access token: its secret's SHA-256 (hex). The secret itself is never kept. */
+export interface AuthToken {
+  hash: string;
+  /** When it was made, Unix s. */
+  created: number;
+}
 
 /** An interface besides the built-in one: static web files, served with the API beside them on a port of its own. */
 export interface InterfaceSetup {
@@ -2091,6 +2119,10 @@ export type FromRecorder =
       surveyBands: SurveyBand[];
       /** What this recorder can do beyond recording: show only what works. The desktop app can do all of them; the browser build, none. */
       capabilities: Capability[];
+      /** What this connection may do: its port's access, and no more than its user's with signing in on. */
+      access: ApiAccess;
+      /** The user it signed in as, by name. */
+      user?: string;
     }
   /** The latest calls, newest first: on connecting (then `concluded` for each new one). */
   | { type: "history"; entries: CallEntry[]; next?: string }
@@ -2175,6 +2207,8 @@ export type FromRecorder =
   | { type: "dataDeleted"; id: number; deleted: DataCounts; error?: string }
   /** Answers compactData: the store's size in bytes before and after (SQLite: its files; PostgreSQL: its tables and indexes); `error`: it couldn't. */
   | { type: "dataCompacted"; id: number; beforeBytes: number; afterBytes: number; error?: string }
+  /** Answers createToken, to that connection alone: the new user's access token's `secret`, shown this once (the config keeps its hash); `error`: it wasn't made. */
+  | { type: "tokenCreated"; id: number; name: string; secret?: string; error?: string }
   | { type: "quit" };
 
 export type ToRecorder =
@@ -2269,6 +2303,8 @@ export type ToRecorder =
   | { type: "deleteData"; id: number; kinds: DataKind[]; system?: number }
   /** Give the space deleted data left in the store back to the disk (SQLite: VACUUM; PostgreSQL: VACUUM FULL); writes wait meanwhile. Answered with dataCompacted. */
   | { type: "compactData"; id: number }
+  /** A new user `name` (1–64 characters, not taken) with `access` and an access token, put in the config's server.auth.users; works with signing in off too. Answered with tokenCreated. */
+  | { type: "createToken"; id: number; name: string; access: ApiAccess }
   | { type: "quit" };
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */

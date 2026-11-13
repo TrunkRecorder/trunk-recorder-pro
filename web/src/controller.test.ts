@@ -24,7 +24,7 @@ function connect(): void {
     { type: "talkgroups", system: "alpha", talkgroups: A },
     { type: "talkgroups", system: "beta", talkgroups: B },
     { type: "unitNames", system: "alpha", unitNames: U },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: [] },
+    { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: [] },
   ];
   for (const m of greeting) transport.onMessage(m);
 }

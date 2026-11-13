@@ -460,6 +460,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         clock: Default::default(),
         unlocked: Default::default(),
         iq: Default::default(),
+        sessions: crate::access::Sessions::fresh(),
     });
     // The stats thread makes its folder as it starts: wait for that, so a
     // test that removes `dir` when done does not see it made again after.
@@ -537,6 +538,8 @@ fn the_servers_messages() {
     cfg.server.allowed_origins = vec!["http://localhost:3000".into()];
     cfg.server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, path: "ui/wall".into(), ..Default::default() });
     cfg.server.interfaces.insert("trunkamp".into(), trunk_app::config::Interface { port: 8082, access: trunk_app::config::ApiAccess::Control, ..Default::default() });
+    let secret = crate::access::add_user(&mut cfg.server.auth, "luke", trunk_app::config::ApiAccess::Control).unwrap();
+    cfg.server.auth.anonymous = Some(trunk_app::config::ApiAccess::Listen);
 
     let ctx = ctx(cfg.clone(), &dir);
     // Something in the registry and the history to ask about.
@@ -568,7 +571,8 @@ fn the_servers_messages() {
     // The greeting: hello last, after how things are now; less of it for listen access.
     let heard = |control| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let msgs = rt.block_on(crate::server::greeting(&ctx, control));
+        let access = if control { trunk_app::config::ApiAccess::Control } else { trunk_app::config::ApiAccess::Listen };
+        let msgs = rt.block_on(crate::server::greeting(&ctx, access, control.then(|| "luke".to_string())));
         msgs.iter().filter_map(|m| crate::server::text_for(&crate::runtime::Out::of(m), control)).map(|t| serde_json::from_str::<Value>(&t).unwrap()).collect::<Vec<Value>>()
     };
     let (greeting, listening) = (heard(true), heard(false));
@@ -588,6 +592,8 @@ fn the_servers_messages() {
     assert!(matches!(crate::runtime::Out::of(&host), crate::runtime::Out::Text(_)), "host is sent to some connections only");
     assert!(listening.iter().find(|m| m["type"] == "host").unwrap()["t"].is_number());
     assert!(greeting.last().unwrap()["configPath"].is_string() && listening.last().unwrap().get("configPath").is_none());
+    assert_eq!((&greeting.last().unwrap()["access"], &greeting.last().unwrap()["user"], &listening.last().unwrap()["access"]), (&json!("control"), &json!("luke"), &json!("listen")));
+    assert!(listening.last().unwrap().get("user").is_none());
     let config = |g: &[Value]| g.iter().find(|m| m["type"] == "config").unwrap()["config"].clone();
     assert_eq!(config(&listening), crate::access::redact_config(config(&greeting)));
     let q = serde_json::from_value(json!({ "id": 1, "series": ["sys/p25/*"], "range": "1h" })).unwrap();
@@ -642,6 +648,8 @@ fn the_servers_messages() {
         crate::server::tr_config(&dir.display().to_string()),
         crate::server::tr_config(&dir.join("nothing.json").display().to_string()),
         ToClient::Quit,
+        ToClient::TokenCreated { id: 4, name: "luke".into(), secret: Some(secret), error: None },
+        ToClient::TokenCreated { id: 5, name: "luke".into(), secret: None, error: Some("There's a user named \"luke\" already.".into()) },
         ToClient::LicenseResult { id: 1, results: vec![json!({ "freqHz": 857_987_500, "historical": false, "licenses": [{ "callSign": "WPXT459", "licensee": "DISTRICT OF COLUMBIA", "serviceCode": "YE", "serviceDesc": null, "freqHz": 857_987_500, "emission": "8K10F1E", "distanceM": 1374, "bearingDeg": 115, "bearingCardinal": "ESE", "city": "WASHINGTON", "state": "DC", "status": "A", "locationKind": "fixed" }] })], error: None },
         ToClient::CallSignResult { id: 3, results: vec![json!({ "callSign": "KNJA391", "licensee": "DISTRICT OF COLUMBIA", "serviceCode": "YE", "serviceDesc": null, "status": "A", "city": "WASHINGTON", "state": "DC" })], error: None },
         ToClient::LicenseResult { id: 2, results: vec![], error: Some("Couldn't reach https://trunkrecorder.pro".into()) },
@@ -707,6 +715,7 @@ fn messages_to_the_recorder() {
         json!({ "type": "setUnitName", "system": "dcfd", "unit": 1234, "name": "Bus 14" }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 101, "edit": { "ignore": true } }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 102, "edit": { "alphaTag": "FIRE4A", "description": "", "tag": "Fire Tac", "category": "Fire" } }),
+        json!({ "type": "createToken", "id": 6, "name": "kiosk", "access": "listen" }),
     ];
     check_all("ToRecorder", &msgs);
     // And the recorder reads each as the docs give it.

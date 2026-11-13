@@ -102,8 +102,18 @@ Anything written elsewhere in the container is lost when the container is replac
 
 ## Security
 
-> **The interface has no login.** Anyone who can reach port 8080 can change the settings, install
-> plugins and stop the recorder. Only publish the port on a network you trust.
+> **Signing in is off until you turn it on.** Until then, anyone who can reach port 8080 can
+> change the settings, install plugins and stop the recorder. Turn it on in Setup → **Recording**
+> → **Access**, or from the host:
+>
+> ```bash
+> docker compose exec trunk-pro trunk-pro access add me   # an Admin user; prints their token's secret once
+> docker compose exec trunk-pro trunk-pro access on
+> docker compose restart
+> ```
+>
+> See [Access](../configuration/server-and-log.md#access). The recorder has no HTTPS yet, so a
+> token crosses the network in the clear: publish the port only on a network you trust.
 
 To keep the interface to the host itself, publish it on localhost only:
 

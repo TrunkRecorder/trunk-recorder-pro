@@ -1764,6 +1764,9 @@ pub struct Server {
     /// empty for https://trunkrecorder.pro; another for testing one.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub trp_api: String,
+    /// Who may use the API, on every interface's port: off unless enabled.
+    #[serde(skip_serializing_if = "is_default")]
+    pub auth: Auth,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1772,7 +1775,68 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), auth: Auth::default(), other: BTreeMap::new() }
+    }
+}
+
+/// Signing in to the API: the people and programs who may, each with a role
+/// and what they sign in with (an access token, for now). Enabled, a request
+/// gets the lower of its port's access and its user's role (`anonymous`
+/// without one; none: it must sign in); off, its port's alone.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Auth {
+    pub enabled: bool,
+    /// What a request without a user may do (control would be the same as off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anonymous: Option<ApiAccess>,
+    /// Who may sign in, by name.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub users: BTreeMap<String, AuthUser>,
+}
+
+/// Someone (or a program) who may sign in: what they may do, and what they
+/// sign in with. Without a token they can't sign in (yet).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthUser {
+    pub access: ApiAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<AuthToken>,
+}
+
+/// An access token: its secret's SHA-256 (hex), never the secret.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthToken {
+    pub hash: String,
+    /// When it was made, Unix s.
+    #[serde(default)]
+    pub created: i64,
+}
+
+impl AuthUser {
+    /// Whether they have anything to sign in with.
+    pub fn can_sign_in(&self) -> bool {
+        self.token.is_some()
+    }
+}
+
+impl Auth {
+    /// Why it can't be so, if it can't: enabled, someone must still be able
+    /// to turn it off again (a control user who can sign in), and anonymous
+    /// control is off.
+    pub fn problem(&self) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        if self.anonymous == Some(ApiAccess::Control) {
+            return Some("Anonymous control access is the same as signing in turned off: give anonymous listen access or none.".into());
+        }
+        if !self.users.values().any(|u| u.access == ApiAccess::Control && u.can_sign_in()) {
+            return Some("Signing in needs a user with control access and an access token first, or nobody could turn it off again.".into());
+        }
+        None
     }
 }
 
@@ -3852,6 +3916,33 @@ mod tests {
         assert_eq!(c.server.interfaces["city"].access, ApiAccess::Control);
         let saved = serde_json::to_string(&c).unwrap();
         assert!(saved.contains(r#""type":"rtlsdr""#) && saved.contains(r#""level":"warning""#) && saved.contains(r#""talkgroupDisplayFormat":"id_tag""#) && saved.contains(r#""access":"control""#), "{saved}");
+    }
+
+    /// Signing in off is saved as a config always was; on, it needs a control
+    /// user who can sign in (to turn it off again), and anonymous control is
+    /// no such thing.
+    #[test]
+    fn signing_in_needs_a_way_back_out() {
+        let c = Config::default();
+        assert!(!serde_json::to_string(&c).unwrap().contains("auth"), "off: no auth key");
+        assert_eq!(c.server.auth.problem(), None);
+        let user = |access| AuthUser { access, token: Some(AuthToken { hash: "ab".repeat(32), created: 1_794_000_000 }) };
+        let mut a = Auth { enabled: true, ..Default::default() };
+        assert!(a.problem().unwrap().contains("control"), "nobody at all");
+        a.users.insert("wall".into(), user(ApiAccess::Listen));
+        assert!(a.problem().is_some(), "a listen user can't turn it off");
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None });
+        assert!(a.problem().is_some(), "a control user with nothing to sign in with can't either");
+        a.users.insert("luke".into(), user(ApiAccess::Control));
+        assert_eq!(a.problem(), None);
+        a.anonymous = Some(ApiAccess::Listen);
+        assert_eq!(a.problem(), None);
+        a.anonymous = Some(ApiAccess::Control);
+        assert!(a.problem().unwrap().contains("nonymous"));
+        assert_eq!(Auth { enabled: false, ..a.clone() }.problem(), None, "off, anything goes");
+        let c = Config::from_json(r#"{ "server": { "auth": { "enabled": true, "anonymous": "listen", "users": { "luke": { "access": "control", "token": { "hash": "00", "created": 1794000000 } }, "wall": { "access": "listen" } } } } }"#).unwrap();
+        assert_eq!((c.server.auth.anonymous, c.server.auth.users["luke"].access, c.server.auth.users["wall"].token.is_none()), (Some(ApiAccess::Listen), ApiAccess::Control, true));
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""auth":{"enabled":true,"anonymous":"listen","users":{"luke":{"access":"control","token":{"hash":"00","created":1794000000}},"wall":{"access":"listen"}}}"#));
     }
 
     #[test]

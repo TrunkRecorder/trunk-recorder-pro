@@ -5,10 +5,12 @@
 //   node call-log.mjs                                  # localhost:8080 → calls.csv
 //   node call-log.mjs --server pi.local:8080 --csv /var/log/calls.csv
 //   node call-log.mjs --webhook https://example.com/hook --talkgroups 101,202
+//   TRP_TOKEN=trp_… node call-log.mjs --server pi.local:8080   # signing in is on
 //
 // Programs aren't browsers: no Origin, so the recorder lets them in without
 // server.allowedOrigins. (It still has to be reachable: --bind 0.0.0.0 for
-// another machine, on a network you trust.)
+// another machine, on a network you trust.) With signing in on, give it an
+// access token (listen is enough) in TRP_TOKEN, or with --token.
 
 import { appendFileSync, existsSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -20,6 +22,7 @@ const { values: opt } = parseArgs({
     csv: { type: "string", default: "calls.csv" },
     webhook: { type: "string" },
     talkgroups: { type: "string" },
+    token: { type: "string", default: process.env.TRP_TOKEN },
   },
 });
 const only = opt.talkgroups ? new Set(opt.talkgroups.split(",").map(Number)) : null;
@@ -28,7 +31,7 @@ const columns = ["start", "system", "talkgroup", "talkgroup_tag", "seconds", "fr
 const cell = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : String(v));
 if (!existsSync(opt.csv)) appendFileSync(opt.csv, columns.join(",") + "\n");
 
-const rec = new TrunkClient({ server: opt.server });
+const rec = new TrunkClient({ server: opt.server, token: opt.token });
 rec.on("connection", (up) => console.log(up ? `Connected to ${opt.server} (Trunk Recorder Pro ${rec.version}); recorder ${rec.phase.phase}` : "Disconnected; reconnecting…"));
 
 rec.on("concluded", async ({ entry }) => {
@@ -45,7 +48,8 @@ rec.on("concluded", async ({ entry }) => {
     encrypted: r.encrypted,
     units: r.srcList.map((s) => s.tag || s.src).join(" "),
     snr_db: r.snr ?? "",
-    audio_url: rec.callUrl(entry, "wav"),
+    // (Without the ?token= callUrl adds: the CSV and the webhook mustn't carry the secret.)
+    audio_url: rec.callUrl(entry, "wav").replace(/\?token=.*$/, ""),
   };
   appendFileSync(opt.csv, columns.map((c) => cell(row[c])).join(",") + "\n");
   console.log(`${row.start}  ${row.system}  ${row.talkgroup_tag || row.talkgroup}  ${row.seconds}s`);

@@ -9,13 +9,14 @@
 //! [`Body`] (an object, without its `type`).
 //!
 //! What a connection may hear and send by its access (listen or control) is
-//! decided here too: [`ToClient::audience`], [`Command::listen_may_send`].
+//! decided here too: [`ToClient::audience`], [`Command::needs`].
 
 use trunk_core::trunk::Origin;
 use serde::{Deserialize, Serialize};
 pub use crate::calls::{CallsPage, CallsQuery, StoredCall};
 use serde_json::{Map, Value};
 
+use crate::config::ApiAccess;
 use crate::Config;
 
 /// A message's body, put together as JSON: an object, without its `type`.
@@ -65,6 +66,11 @@ pub enum ToClient {
         survey_bands: Value,
         /// What this recorder can do beyond recording: an interface shows only what works.
         capabilities: Vec<Capability>,
+        /// What this connection may do (its port's access, and its user's when signing in is on).
+        access: ApiAccess,
+        /// The user it signed in as, by name.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
     },
     /// The latest calls, newest first: on connecting (then `concluded` for each new one).
     History {
@@ -196,7 +202,39 @@ pub enum ToClient {
     DataDeleted { id: u64, deleted: DataCounts, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
     /// Answers `compactData`: the store's size, bytes, before and after (or why it couldn't).
     DataCompacted { id: u64, before_bytes: i64, after_bytes: i64, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
+    /// Answers `createToken`, to that connection alone: the new user's access
+    /// token's secret, shown this once (the config keeps only its hash), or why not.
+    TokenCreated {
+        id: u64,
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        secret: Option<Secret>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     Quit,
+}
+
+/// An access token's secret, on its way to whoever made it: written out as
+/// it is, but never by `Debug` (so not in a log line or a panic).
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(s: String) -> Secret {
+        Secret(s)
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(…)")
+    }
 }
 
 /// A table of the store's, as Setup → Data exports it (a CSV file each:
@@ -607,6 +645,10 @@ pub enum Command {
     /// Give the space deleted data left in the store back to the disk:
     /// answered with `dataCompacted` `id`.
     CompactData { id: u64 },
+    /// A new user `name` with `access` and an access token, put in the
+    /// config (the token's secret's hash): answered with `tokenCreated` `id`,
+    /// the secret in it.
+    CreateToken { id: u64, name: String, access: ApiAccess },
     Quit,
 }
 
@@ -626,9 +668,15 @@ impl Command {
         serde_json::from_value(v).map_err(|e| format!("Bad \"{ty}\" command: {e}"))
     }
 
-    /// What a listen-only connection may send: looking, never changing.
-    pub fn listen_may_send(&self) -> bool {
-        matches!(self, Command::Subscribe { .. } | Command::StatsQuery(_) | Command::RadioQuery(_) | Command::CallsQuery { .. } | Command::Listen { .. })
+    /// The access it takes to send it (a connection may when its access is
+    /// at least this): listen for looking, control for everything else, so a
+    /// new command needs control until it's listed here. (A role per system
+    /// would widen this: `SetTalkgroup(s)` and `SetUnitName(s)` carry theirs.)
+    pub fn needs(&self) -> ApiAccess {
+        match self {
+            Command::Subscribe { .. } | Command::StatsQuery(_) | Command::RadioQuery(_) | Command::CallsQuery { .. } | Command::Listen { .. } => ApiAccess::Listen,
+            _ => ApiAccess::Control,
+        }
     }
 }
 
@@ -697,19 +745,29 @@ mod tests {
         assert_eq!(ToClient::Keys { sources: Value::Null }.audience(), Audience::Control);
     }
 
+    /// A new token's secret is in its answer, and nowhere `Debug` reaches.
+    #[test]
+    fn a_secret_is_sent_but_never_shown() {
+        let m = ToClient::TokenCreated { id: 1, name: "wall".into(), secret: Some(Secret::new("trp_0123abcd".into())), error: None };
+        assert_eq!(m.to_json(), r#"{"type":"tokenCreated","id":1,"name":"wall","secret":"trp_0123abcd"}"#);
+        assert!(!format!("{m:?}").contains("0123abcd"), "{m:?}");
+    }
+
     #[test]
     fn commands_are_read_strictly_and_listen_may_only_look() {
         let c = Command::parse(r#"{"type":"listen","on":true,"system":"dcfd"}"#).unwrap();
-        assert!(matches!(&c, Command::Listen { on: true, system: Some(s), talkgroup: None, voice: false, audio: true } if s == "dcfd") && c.listen_may_send());
+        assert!(matches!(&c, Command::Listen { on: true, system: Some(s), talkgroup: None, voice: false, audio: true } if s == "dcfd") && c.needs() == ApiAccess::Listen);
         let c = Command::parse(r#"{"type":"listen","on":true,"voice":true,"audio":false}"#).unwrap();
-        assert!(matches!(&c, Command::Listen { on: true, system: None, voice: true, audio: false, .. }) && c.listen_may_send());
+        assert!(matches!(&c, Command::Listen { on: true, system: None, voice: true, audio: false, .. }) && c.needs() == ApiAccess::Listen);
         assert!(matches!(Command::parse(r#"{"type":"install","kind":"plugin","repository":"a/b"}"#), Ok(Command::Install { kind: StoreKind::Plugin, what: Install::Release { tag: None, .. } })));
         assert!(matches!(Command::parse(r#"{"type":"install","kind":"interface","id":"trunkamp"}"#), Ok(Command::Install { kind: StoreKind::Interface, what: Install::Listed { .. } })));
         let e = Command::parse(r#"{"type":"channelFile","index":0}"#).err().unwrap();
         assert!(e.contains("channelFile") && e.contains("path"), "{e}");
         assert!(Command::parse(r#"{"type":"nope"}"#).is_err());
         let c = Command::parse(r#"{"type":"setConfig","config":{},"version":1}"#).unwrap();
-        assert!(!c.listen_may_send() && c.kind() == "setConfig");
+        assert!(c.needs() == ApiAccess::Control && c.kind() == "setConfig");
+        let c = Command::parse(r#"{"type":"createToken","id":1,"name":"wall","access":"listen"}"#).unwrap();
+        assert!(matches!(&c, Command::CreateToken { access: ApiAccess::Listen, .. }) && c.needs() == ApiAccess::Control, "making a listen user still takes control");
         let q = match Command::parse(r#"{"type":"statsQuery","id":3,"series":["a"],"range":"10m"}"#).unwrap() {
             Command::StatsQuery(q) => q,
             _ => panic!(),
@@ -726,6 +784,6 @@ mod tests {
         assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":60}"#), (CaptureWhat::Radios, false), "every radio, as it always was");
         assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":30,"problem":true,"what":{"kind":"control","site":2}}"#), (CaptureWhat::Control { site: 2 }, true));
         assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":0,"what":{"kind":"call","system":"dcfd","talkgroup":101}}"#).0, CaptureWhat::Call { system: "dcfd".into(), talkgroup: Some(101) });
-        assert!(!Command::parse(r#"{"type":"iqCaptureCancel","id":1,"key":3}"#).unwrap().listen_may_send());
+        assert_eq!(Command::parse(r#"{"type":"iqCaptureCancel","id":1,"key":3}"#).unwrap().needs(), ApiAccess::Control);
     }
 }
