@@ -150,6 +150,8 @@ pub struct Ctx {
     pub iq: crate::iq_capture::Captures,
     /// What browsers' sign-in cookies are signed with ([`crate::access::Sessions`]).
     pub sessions: crate::access::Sessions,
+    /// HTTPS, when it's served (`server.tls` as the app started): every port's.
+    pub tls: std::sync::OnceLock<crate::tls::Tls>,
 }
 
 /// Something for the running session to do: the one way into the engine
@@ -187,6 +189,11 @@ pub enum EngineCmd {
 }
 
 impl Ctx {
+    /// "https" while HTTPS is served, else "http": the URLs of its ports.
+    pub fn scheme(&self) -> &'static str {
+        if self.tls.get().is_some() { "https" } else { "http" }
+    }
+
     /// What the connected browsers watch.
     pub fn topics(&self) -> trunk_app::stats::Topics {
         trunk_app::stats::Topics::new(self.topics.lock().unwrap().keys().cloned())

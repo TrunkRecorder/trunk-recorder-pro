@@ -447,11 +447,12 @@ once, on the sign-in page, and the cookie covers the dashboard and every
 interface's port on that host name.
 
 **Over plain HTTP the token travels in the clear**, like everything else the
-recorder sends. That's fine on your own network, a VPN or an SSH tunnel. The
-recorder has no HTTPS of its own yet: across the internet, put it behind a
-reverse proxy that adds HTTPS (or use a VPN or tunnel) rather than exposing
-the port. Behind a proxy that sets `X-Forwarded-Proto: https`, the cookie is
-marked `Secure`.
+recorder sends. That's fine on your own network, a VPN or an SSH tunnel.
+Otherwise the owner can turn on HTTPS (`server.tls`, see
+[HTTPS](../configuration/server-and-log.md#https)), or put a reverse proxy
+that adds it in front; across the internet, use a VPN or tunnel rather than
+exposing the port. Over HTTPS, or behind a proxy that sets
+`X-Forwarded-Proto: https`, the cookie is marked `Secure`.
 
 ### curl
 
@@ -554,7 +555,9 @@ with signing in off too. Removing a user is a `setConfig` without them in
 
 ## How a connection goes
 
-1. **Connect** to `ws://<host>:<port>/api/ws`. Set `binaryType = "arraybuffer"`
+1. **Connect** to `ws://<host>:<port>/api/ws` (`wss://` when the recorder
+   serves HTTPS: a page served by it uses its own scheme, `wss:` from an
+   `https:` page; client.js does this). Set `binaryType = "arraybuffer"`
    if you'll want live audio. With signing in on, bring an access token
    ([Signing in](#signing-in)).
 2. **The greeting.** The recorder sends how things are now as ordinary

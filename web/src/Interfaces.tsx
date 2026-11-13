@@ -2,7 +2,7 @@
 // rather than run the recorder. Each is served on a port of its own, a site
 // of its own to the browser, with the recorder's API beside it and the
 // access the config gives it (docs/interfaces). This page lists them (open,
-// on or off, access, update, remove), sets their ports, installs them from
+// on or off, access, update, remove), sets their ports (and HTTPS's files), installs them from
 // the interface store, adds folders of one's own, and lists the pages
 // elsewhere allowed to use this interface's API. All of it is in the
 // config's `server`, saved as it's changed; the recorder serves the changes
@@ -270,6 +270,7 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
               </div>
             );
           })}
+        <TlsRow c={c} />
       </div>
       <p className="muted small">
         Listening on <code>{c.server.bind}</code>
@@ -278,6 +279,50 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
         </Info>
       </p>
     </section>
+  );
+}
+
+/** HTTPS on every port: the certificate's and key's files, saved once both are given (or both cleared). */
+function TlsRow(props: { c: Config }) {
+  const tls = props.c.server.tls;
+  const [cert, setCert] = useState(tls?.cert ?? "");
+  const [key, setKey] = useState(tls?.key ?? "");
+  useEffect(() => {
+    setCert(tls?.cert ?? "");
+    setKey(tls?.key ?? "");
+  }, [tls?.cert, tls?.key]);
+  const half = !cert.trim() !== !key.trim();
+  const save = () => {
+    const [c, k] = [cert.trim(), key.trim()];
+    if (half || (c === (tls?.cert ?? "") && k === (tls?.key ?? ""))) return;
+    updateConfig((x) => void (x.server.tls = c ? { cert: c, key: k } : undefined));
+  };
+  const input = (label: string, value: string, set: (v: string) => void, placeholder: string) => (
+    <input
+      className="mono"
+      aria-label={label}
+      aria-invalid={half && !value.trim()}
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => set(e.target.value)}
+      onBlur={save}
+      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+    />
+  );
+  return (
+    <div className="iface-ports-row" role="row">
+      <span role="cell">
+        <strong>HTTPS</strong> <span className="muted small">every port</span>
+        <Info>PEM files on the recorder&apos;s computer: tailscale cert, Let&apos;s Encrypt (fullchain.pem, privkey.pem) or mkcert. Renewals are picked up without a restart.</Info>
+      </span>
+      <span role="cell" className="iface-tls">
+        {input("Certificate", cert, setCert, "cert.pem")}
+        {input("Key", key, setKey, "key.pem")}
+      </span>
+      <span role="cell" className="small muted">
+        {half ? <span className="bad-text">Needs both</span> : !tls ? "Off" : location.protocol === "https:" ? "On" : "From next restart"}
+      </span>
+    </div>
   );
 }
 

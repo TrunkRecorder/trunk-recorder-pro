@@ -112,8 +112,8 @@ Anything written elsewhere in the container is lost when the container is replac
 > docker compose restart
 > ```
 >
-> See [Access](../configuration/server-and-log.md#access). The recorder has no HTTPS yet, so a
-> token crosses the network in the clear: publish the port only on a network you trust.
+> See [Access](../configuration/server-and-log.md#access). On plain HTTP a token crosses the
+> network in the clear: publish the port only on a network you trust, or turn on HTTPS (below).
 
 To keep the interface to the host itself, publish it on localhost only:
 
@@ -125,6 +125,26 @@ To keep the interface to the host itself, publish it on localhost only:
 and reach it from elsewhere through an SSH tunnel (`ssh -L 8080:localhost:8080 you@host`, then
 `http://localhost:8080`). To use another port on the host, change only the left-hand number:
 `"8081:8080"`.
+
+### HTTPS
+
+To serve HTTPS ([HTTPS](../configuration/server-and-log.md#https)), mount the certificate and
+key into the container read-only, and point `server.tls` in `config.json` at them as the container
+sees them:
+
+```yaml
+    volumes:
+      - ./data:/data
+      - /etc/letsencrypt:/etc/letsencrypt:ro    # or the folder tailscale cert or mkcert wrote to
+```
+
+```json
+"server": { "tls": { "cert": "/etc/letsencrypt/live/radio.example.com/fullchain.pem", "key": "/etc/letsencrypt/live/radio.example.com/privkey.pem" } }
+```
+
+Mount the folder, not the two files: Let's Encrypt's `live/` files are links into `archive/`, and
+a renewal replaces them; with the folder mounted, the recorder picks the new pair up within a minute
+without a restart. Then `docker compose restart` and open `https://<host>:8080`.
 
 ## Everyday commands
 

@@ -10,6 +10,8 @@
 //! tests in protocol_tests.rs check what is sent against it). GET
 //! /api/version identifies a running instance.
 //!
+//! With `server.tls` set, every port is served over HTTPS ([`crate::tls`]).
+//!
 //! The built-in interface is served on the recorder's port (`server.port`);
 //! every other interface on a port of its own ([`crate::interfaces`]), with
 //! the same API beside it ([`api`]) and what its access allows
@@ -85,6 +87,7 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
     let loopback = listener.local_addr()?.ip().is_loopback();
     let listener = tokio::net::TcpListener::from_std(listener)?;
     let app = builtin_app(ctx.clone(), loopback);
+    let tls = ctx.tls.get().cloned();
     tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));
     #[cfg(unix)]
     tokio::spawn(reopen_log_on_hangup());
@@ -102,7 +105,7 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         crate::interfaces::serve::stop_all(&ctx2);
     };
-    axum::serve(listener, app).with_graceful_shutdown(shutdown).await
+    crate::tls::serve(listener, tls.as_ref(), app, shutdown).await
 }
 
 /// The built-in interface's server: its pages, the API, and the Interfaces page's screenshots.
@@ -115,12 +118,17 @@ fn builtin_app(ctx: Arc<Ctx>, loopback: bool) -> Router {
         .with_state(ctx)
 }
 
+/// What `GET /api/version` answers (plain HTTP to an HTTPS port too, [`crate::tls`]).
+pub(crate) fn version() -> Value {
+    json!({ "app": APP_ID, "version": env!("CARGO_PKG_VERSION"), "api": crate::interfaces::API_VERSION })
+}
+
 /// The recorder's API, served on every interface's port: the WebSocket,
 /// signing in (its page at /signin too), the docs and client beside it,
 /// and the recorded calls.
 fn api(r: Router<Arc<Ctx>>) -> Router<Arc<Ctx>> {
     r.route("/api/ws", get(ws))
-        .route("/api/version", get(|| async { axum::Json(json!({ "app": APP_ID, "version": env!("CARGO_PKG_VERSION"), "api": crate::interfaces::API_VERSION })) }))
+        .route("/api/version", get(|| async { axum::Json(version()) }))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/session", get(signed_in))
@@ -146,7 +154,7 @@ pub(crate) fn interface_app(ctx: Arc<Ctx>, id: String, stop: tokio::sync::watch:
 }
 
 /// A server of `ctx` through `door`, as the recorder serves it (bound to
-/// localhost, through [`guard`]), for tests: its address.
+/// localhost, through [`guard`]; over HTTPS when `ctx.tls` is set), for tests: its address.
 #[cfg(test)]
 pub(crate) async fn test_server(ctx: &Arc<Ctx>, door: Door) -> std::net::SocketAddr {
     let app = match door {
@@ -155,7 +163,8 @@ pub(crate) async fn test_server(ctx: &Arc<Ctx>, door: Door) -> std::net::SocketA
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await });
+    let tls = ctx.tls.get().cloned();
+    tokio::spawn(async move { crate::tls::serve(listener, tls.as_ref(), app, std::future::pending()).await });
     addr
 }
 
@@ -297,7 +306,8 @@ async fn login(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: String) ->
     let found = access::user_of(&ctx.config.lock().unwrap().server.auth, secret).and_then(|(name, u)| Some((name.clone(), u.access, u.token.as_ref()?.hash.clone())));
     let Some((user, role, hash)) = found else { return (StatusCode::UNAUTHORIZED, "That isn't an access token of this recorder.\n").into_response() };
     let h = |n: header::HeaderName| headers.get(n).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
-    let https = h(header::ORIGIN).starts_with("https://") || h(header::HeaderName::from_static("x-forwarded-proto")) == "https";
+    // (Served over HTTPS here, or by a proxy in front that says so.)
+    let https = ctx.tls.get().is_some() || h(header::ORIGIN).starts_with("https://") || h(header::HeaderName::from_static("x-forwarded-proto")) == "https";
     let cookie = ctx.sessions.set_cookie(&user, &hash, https);
     match HeaderValue::from_str(&cookie) {
         Ok(v) => ([(header::SET_COOKIE, v)], axum::Json(json!({ "access": role, "user": user }))).into_response(),
@@ -1016,6 +1026,7 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error })
             }
             Ok(c) if c.server.auth.problem().is_some() => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: c.server.auth.problem() }),
+            Ok(c) if crate::tls::problem(&c, &ctx.config_path).is_some() => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: crate::tls::problem(&c, &ctx.config_path) }),
             Ok(mut c) => {
                 // While linked, a conventional system's channels are its file's
                 // (re-read: a spreadsheet may have changed it). Files are linked
@@ -1777,6 +1788,43 @@ mod tests {
         on["server"]["auth"]["users"]["wall"]["access"] = "control".into();
         assert!(matches!(command(&ctx, Command::SetConfig { config: on, version }, &mut listen, &mut subs).await, Some(ToClient::ConfigSaved { error: None, .. })));
         assert!(ctx.config.lock().unwrap().server.auth.enabled);
+    }
+
+    /// Served over HTTPS, every port is (the API, signing in with a `Secure`
+    /// cookie, an interface's); a config whose certificate won't do isn't saved.
+    #[tokio::test]
+    async fn over_https_signing_in_is_secure() {
+        use super::{command, Subs};
+        use crate::tls::tests::{config_of, fixture, http, https};
+        use std::sync::atomic::Ordering;
+        use trunk_app::protocol::{Command, ToClient};
+        let dir = crate::db::TestDir::new("signin-https");
+        let (ctx, luke, _) = signed_in_ctx(&dir, "signin-https");
+        let (cert, key) = fixture("a");
+        assert!(ctx.tls.set(crate::tls::Tls::new(&config_of(&cert, &key), &ctx.config_path).unwrap()).is_ok());
+        assert_eq!(ctx.scheme(), "https");
+        let addr = super::test_server(&ctx, super::Door::Builtin).await;
+        let (res, _) = https(addr, &format!("POST /api/login HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{luke}", luke.len())).await;
+        let set = res.lines().find_map(|l| l.strip_prefix("set-cookie: ")).unwrap_or_default();
+        assert!(res.starts_with("HTTP/1.1 200") && set.ends_with("; HttpOnly; SameSite=Lax; Secure"), "{res}");
+        let (res, _) = https(addr, "GET /api/v1/calls HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await;
+        assert!(res.starts_with("HTTP/1.1 401"), "guarded as ever: {res}");
+        let (res, _) = https(addr, &format!("GET /api/v1/calls HTTP/1.1\r\nHost: localhost:{0}\r\nAuthorization: Bearer {luke}\r\nOrigin: https://localhost:{0}\r\nConnection: close\r\n\r\n", addr.port())).await;
+        assert!(res.starts_with("HTTP/1.1 200"), "its own https:// page: {res}");
+        assert!(http(addr, "GET /api/version HTTP/1.0\r\nHost: localhost\r\n\r\n").await.contains("\"app\":\"trunk-pro\""), "a second launch still finds it");
+        let (_stop, stopped) = tokio::sync::watch::channel(false);
+        let iface = super::test_server(&ctx, super::Door::Interface { id: "wall".into(), stop: stopped }).await;
+        assert!(https(iface, "GET /api/version HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await.0.starts_with("HTTP/1.1 200"), "an interface's port too");
+        // A certificate that won't do: not saved.
+        let (mut listen, mut subs) = (None, Subs { ctx: ctx.clone(), topics: Default::default() });
+        let version = ctx.config_version.load(Ordering::SeqCst);
+        let mut c = serde_json::to_value(ctx.config.lock().unwrap().clone()).unwrap();
+        c["server"]["tls"] = serde_json::json!({ "cert": cert, "key": fixture("b").1 });
+        match command(&ctx, Command::SetConfig { config: c, version }, &mut listen, &mut subs).await {
+            Some(ToClient::ConfigSaved { error: Some(e), .. }) => assert!(e.starts_with("HTTPS: the key") && e.contains("isn't the certificate"), "{e}"),
+            r => panic!("not refused: {:?}", r.map(|m| m.to_value())),
+        }
+        assert!(ctx.config.lock().unwrap().server.tls.is_none());
     }
 
     #[tokio::test]

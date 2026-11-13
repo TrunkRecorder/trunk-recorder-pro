@@ -1,7 +1,7 @@
 # Server, Log and Monitor
 
-This page lists the keys for the web server (`server`, and [signing in](#access) with
-`server.auth`), the log (`log`) and the dashboard's internet checks (`monitor`). For remote access, security and building your own interfaces, see the
+This page lists the keys for the web server (`server`, [signing in](#access) with
+`server.auth` and [HTTPS](#https) with `server.tls`), the log (`log`) and the dashboard's internet checks (`monitor`). For remote access, security and building your own interfaces, see the
 [interface guide](../guides/interface.md); for the command-line flags that override some of these
 for one run, see [command-line.md](../command-line.md).
 
@@ -14,8 +14,8 @@ for one run, see [command-line.md](../command-line.md).
 ## Server
 
 The built-in interface's address and port, and the other interfaces, each on a port of its own. In
-the app: **Record when the app starts** on Setup's **Recording** tab; the rest on the
-**Interfaces** page.
+the app: **Record when the app starts** on Setup's **Recording** tab; the rest (HTTPS's files
+too) on the **Interfaces** page.
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
@@ -25,9 +25,10 @@ the app: **Record when the app starts** on Setup's **Recording** tab; the rest o
 | `allowedOrigins` | | `[]` | array of strings | Web pages on other origins allowed to use the built-in interface's API, with control (a page served by something else, such as a dev server): `"http://host:port"` as the browser sends it, `"null"` for a page opened from a file, or `"*"` for any. Each interface's own pages, and programs that aren't browsers, always may. With [signing in](#access) on, such a page must also send an access token |
 | `interfaces` | | `{}` | object | The other interfaces, by id. See below |
 | `auth` | | off | object | Signing in: who may, with what role. See [Access](#access) |
+| `tls` | | off | object | HTTPS on every interface's port: `cert` and `key`, PEM files. See [HTTPS](#https) |
 | `trpApi` | | `""` (https://trunkrecorder.pro) | string | Where the trunkrecorder.pro API is, for **Identify** and [sharing with the directory](systems.md#sharing-with-the-directory). Only for testing another copy of it (`"http://localhost:8788"`) |
 
-`bind` and `port` are read when the app starts; the rest apply at once.
+`bind`, `port` and `tls` are read when the app starts; the rest apply at once.
 
 ### `interfaces`
 
@@ -133,10 +134,53 @@ effect when the recorder restarts.
 Open Setup, add a new Admin, and turn **Sign-in** back on. (`--config file.json` for a config
 somewhere else.)
 
-**HTTPS.** The recorder doesn't serve HTTPS yet, so on plain HTTP the secret crosses the network
-in the clear, as everything else does. That's fine on your own network, over a VPN or an SSH
-tunnel. Across the internet, don't open the port: use a VPN or tunnel, or a reverse proxy that
-adds HTTPS (see [Remote access](../guides/interface.md#remote-access)).
+**HTTPS.** On plain HTTP the secret crosses the network in the clear, as everything else does.
+That's fine on your own network, over a VPN or an SSH tunnel. Otherwise turn on [HTTPS](#https),
+or put a reverse proxy that adds it in front. Across the internet, don't open the port: use a VPN
+or tunnel (see [Remote access](../guides/interface.md#remote-access)).
+
+## HTTPS
+
+Off by default: over a VPN (Tailscale, WireGuard) or on your own network, plain HTTP is fine. On,
+every port the recorder serves (the built-in interface's and each interface's) speaks HTTPS with
+the certificate you give it. It works with [signing in](#access) on or off.
+
+```json
+"server": { "bind": "0.0.0.0", "port": 8443, "tls": { "cert": "radiobox.crt", "key": "radiobox.key" } }
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `cert` | | The certificate, PEM, its chain after it (Let's Encrypt's `fullchain.pem`). Absolute, `~/…`, or relative to the config file's folder |
+| `key` | | Its private key, PEM (`privkey.pem`) |
+
+- **Read when the app starts.** Turning it on or off, or pointing at other files, takes a restart.
+  A pair that can't be read, isn't PEM, or whose key isn't the certificate's stops the app with
+  that message (and isn't saved from the interface); it doesn't fall back to plain HTTP.
+- **Renewals need no restart.** The files are looked at once a minute; a renewed pair is served
+  from then on. If the new pair doesn't load, the recorder warns once and keeps serving the old one.
+- **Plain HTTP to the port** is redirected to `https://` (308). `GET /api/version` still answers
+  over plain HTTP, so scripts and a second launch still find the recorder.
+- **Cookies** from [signing in](#access) are `Secure` over HTTPS. There's no HSTS, so you can
+  turn HTTPS off again without browsers refusing the plain-HTTP port.
+- The certificate must name the address you open it at (a phone at `https://radiobox.tail1234.ts.net:8443`
+  needs a certificate for `radiobox.tail1234.ts.net`). The log and the browser the app opens use
+  `https://localhost:…` (or the `bind` address), which a certificate for another name won't match.
+
+**Getting a certificate.** The recorder doesn't make one; any of these do:
+
+- **Tailscale**: `tailscale cert radiobox.tail1234.ts.net` writes `radiobox.tail1234.ts.net.crt`
+  and `.key` (HTTPS certificates turned on in the Tailscale admin console). Run it again before
+  it expires (90 days); the recorder picks up the new files.
+- **Let's Encrypt**, for a name in DNS you control: [certbot](https://certbot.eff.org/) or
+  [acme.sh](https://github.com/acmesh-official/acme.sh), with a DNS challenge if the recorder isn't
+  reachable from the internet. Point `cert` at `fullchain.pem` and `key` at `privkey.pem`, and
+  make sure the user the recorder runs as can read them.
+- **mkcert**, on a home network: [mkcert](https://github.com/FiloSottile/mkcert) `radiobox.local 192.168.1.20 localhost`,
+  and install its root (`mkcert -install`) on each device that opens the recorder.
+
+A self-signed certificate works too, but every browser warns about it, and passkeys (and other
+features browsers keep to secure pages) won't work with it.
 
 ## Log
 

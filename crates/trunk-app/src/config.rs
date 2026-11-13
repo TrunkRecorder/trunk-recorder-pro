@@ -1767,6 +1767,10 @@ pub struct Server {
     /// Who may use the API, on every interface's port: off unless enabled.
     #[serde(skip_serializing_if = "is_default")]
     pub auth: Auth,
+    /// Serve HTTPS, on every interface's port: off (plain HTTP) unless set.
+    /// Read as the app starts; a renewed certificate is picked up without a restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<Tls>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1775,7 +1779,32 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), auth: Auth::default(), other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), auth: Auth::default(), tls: None, other: BTreeMap::new() }
+    }
+}
+
+/// HTTPS: a certificate (its chain, leaf first) and its private key, PEM
+/// files, each absolute, `~/…` or relative to the config file's folder
+/// (`tailscale cert`'s, Let's Encrypt's `fullchain.pem` and `privkey.pem`, mkcert's).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Tls {
+    pub cert: String,
+    pub key: String,
+}
+
+impl Tls {
+    /// Where its certificate and key are, for the config at `config_path`.
+    pub fn paths(&self, config_path: &Path) -> (PathBuf, PathBuf) {
+        let at = |f: &str| {
+            let f = f.trim();
+            match f.strip_prefix("~/") {
+                Some(rest) => home().join(rest),
+                None if Path::new(f).is_absolute() => PathBuf::from(f),
+                None => config_path.parent().unwrap_or(Path::new(".")).join(f),
+            }
+        };
+        (at(&self.cert), at(&self.key))
     }
 }
 
@@ -1841,6 +1870,11 @@ impl Auth {
 }
 
 impl Server {
+    /// "https" with `tls` set, else "http": its interfaces' URLs.
+    pub fn scheme(&self) -> &'static str {
+        if self.tls.is_some() { "https" } else { "http" }
+    }
+
     /// The trunkrecorder.pro API's base URL (no trailing slash).
     pub fn trp_api_base(&self) -> &str {
         let t = self.trp_api.trim().trim_end_matches('/');
@@ -3943,6 +3977,23 @@ mod tests {
         let c = Config::from_json(r#"{ "server": { "auth": { "enabled": true, "anonymous": "listen", "users": { "luke": { "access": "control", "token": { "hash": "00", "created": 1794000000 } }, "wall": { "access": "listen" } } } } }"#).unwrap();
         assert_eq!((c.server.auth.anonymous, c.server.auth.users["luke"].access, c.server.auth.users["wall"].token.is_none()), (Some(ApiAccess::Listen), ApiAccess::Control, true));
         assert!(serde_json::to_string(&c).unwrap().contains(r#""auth":{"enabled":true,"anonymous":"listen","users":{"luke":{"access":"control","token":{"hash":"00","created":1794000000}},"wall":{"access":"listen"}}}"#));
+    }
+
+    /// HTTPS off is saved as a config always was; on, its two paths, from
+    /// the config's folder unless absolute or `~/…`.
+    #[test]
+    fn https_is_two_files_and_off_unless_set() {
+        let c = Config::from_json(r#"{ "server": { "bind": "0.0.0.0", "port": 8443 } }"#).unwrap();
+        assert_eq!((c.server.tls.as_ref(), c.server.scheme()), (None, "http"));
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(!saved.contains(r#""tls""#), "off: no tls key");
+        assert_eq!(serde_json::to_string(&Config::from_json(&saved).unwrap()).unwrap(), saved);
+        let c = Config::from_json(r#"{ "server": { "tls": { "cert": "certs/radiobox.crt", "key": "/etc/ssl/radiobox.key" } } }"#).unwrap();
+        assert_eq!(c.server.scheme(), "https");
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""tls":{"cert":"certs/radiobox.crt","key":"/etc/ssl/radiobox.key"}"#));
+        let t = c.server.tls.unwrap();
+        assert_eq!(t.paths(Path::new("/home/luke/trunk-pro/config.json")), (PathBuf::from("/home/luke/trunk-pro/certs/radiobox.crt"), PathBuf::from("/etc/ssl/radiobox.key")));
+        assert_eq!(Tls { cert: "~/c.pem".into(), key: "k.pem".into() }.paths(Path::new("config.json")).0, home().join("c.pem"));
     }
 
     #[test]

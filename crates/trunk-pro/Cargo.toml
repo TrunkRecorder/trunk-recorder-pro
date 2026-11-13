@@ -39,6 +39,8 @@ log = { version = "0.4", features = ["std"] }
 # The plugin store (plugins/store.rs): the registry and release downloads,
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
 ureq = "3"
+# HTTPS (tls.rs): over the rustls (and ring) ureq has, pure Rust, no OpenSSL.
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 sha2 = "0.11"
 # Signing browsers' sessions (access.rs): the version trunk-app has.
 hmac = "0.13"

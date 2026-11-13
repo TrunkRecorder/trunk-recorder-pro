@@ -197,3 +197,16 @@ test("Interfaces: with signing in on, an allowed origin needs an Admin's token t
   assert.match(text(renderToString(<InterfacesPage />)), /Allowed origins \(with control\)/);
   assert.equal(snapshot().user, null);
 });
+
+test("Interfaces: HTTPS's certificate and key, beside the ports", () => {
+  const c = full();
+  hello(c, "control", "luke");
+  transport.onMessage({ type: "interfaces", interfaces: [], api: 1 });
+  assert.match(text(renderToString(<InterfacesPage />)), /HTTPS every port .* Off/);
+  c.server.tls = { cert: "/etc/ssl/radiobox.crt", key: "/etc/ssl/radiobox.key" };
+  hello(c, "control", "luke");
+  const html = renderToString(<InterfacesPage />);
+  assert.match(html, /aria-label="Certificate" [^>]*value="\/etc\/ssl\/radiobox.crt"/);
+  assert.match(html, /aria-label="Key" [^>]*value="\/etc\/ssl\/radiobox.key"/);
+  assert.match(text(html), /From next restart/, "served over plain HTTP until then");
+});

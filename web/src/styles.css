@@ -1357,6 +1357,9 @@ table.calls tr.ignored td { opacity: 0.55; }
 .iface-port { display: inline-flex; align-items: center; gap: 8px; }
 .iface-port input { width: 7ch; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; font-family: var(--mono); color: inherit; }
 .iface-port input[aria-invalid="true"] { border-color: var(--bad); }
+.iface-tls { display: flex; flex-direction: column; gap: 6px; }
+.iface-tls input { width: 24ch; max-width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; font-family: var(--mono); color: inherit; }
+.iface-tls input[aria-invalid="true"] { border-color: var(--bad); }
 .iface-access { display: inline-flex; align-items: center; gap: 6px; }
 @media (max-width: 640px) { .iface-ports-row { grid-template-columns: 1fr auto; } .iface-ports-row > :last-child { grid-column: 1 / -1; } }
 

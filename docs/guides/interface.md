@@ -198,9 +198,10 @@ interface with listen access is safer to share either way: on its port, the reco
 listened to but not changed. That's what the other interfaces are for — give the people who listen
 a player's address, not the recorder's.
 
-Never open the port to the internet. The recorder has no HTTPS yet, so a token typed on another
-computer crosses the network in the clear. On your own network that's fine; from outside, use a
-VPN, the SSH tunnel below, or a reverse proxy that adds HTTPS, with signing in on.
+Never open the port to the internet. On plain HTTP a token typed on another computer crosses the
+network in the clear. On your own network or a VPN that's fine; otherwise turn on
+[HTTPS](../configuration/server-and-log.md#https), or put a reverse proxy that adds it in front.
+From outside, use a VPN or the SSH tunnel below, with signing in on.
 
 A safer way, from a machine that can SSH to the recorder, is an SSH tunnel. Leave the recorder
 bound to `127.0.0.1`, then on your machine:

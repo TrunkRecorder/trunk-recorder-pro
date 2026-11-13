@@ -220,9 +220,10 @@ For the service, edit `~/.config/systemd/user/trunk-pro.service` so the line rea
 > ```
 >
 > then paste the secret on the sign-in page. See [Access](../configuration/server-and-log.md#access).
-> The recorder has no HTTPS yet, so the secret crosses the network in the clear: fine on a
-> network you trust, but never forward the port from the internet. For access from outside, use
-> the SSH tunnel or a VPN.
+> On plain HTTP the secret crosses the network in the clear: fine on a network you trust, but
+> never forward the port from the internet. Turn on [HTTPS](../configuration/server-and-log.md#https)
+> (a certificate from `tailscale cert`, Let's Encrypt or mkcert) for other networks; for access
+> from outside, use the SSH tunnel or a VPN.
 
 While it listens only on `localhost`, Trunk Recorder Pro also refuses requests that arrive with
 any other host name (to block web pages that try to reach it through DNS tricks). A reverse proxy

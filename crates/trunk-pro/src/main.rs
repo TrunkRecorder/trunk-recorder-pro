@@ -133,6 +133,7 @@ mod statstore;
 mod store;
 mod submission;
 mod tape_file;
+mod tls;
 mod waterfall;
 mod toolkit;
 #[cfg(test)]
@@ -913,6 +914,8 @@ fn serve(a: &Args) {
     if let Some(why) = cfg.server.auth.problem() {
         log::warn!("{}: signing in: {why} (trunk-pro access)", config_path.display());
     }
+    // (Asked for and not possible: not served over plain HTTP instead.)
+    let tls = cfg.server.tls.as_ref().map(|t| tls::Tls::new(t, &config_path).unwrap_or_else(|e| fatal(&format!("{}: HTTPS (server.tls): {e}", config_path.display()))));
     // An older config, upgraded: saved so (the old one kept beside it), and told.
     if !cfg.notes.is_empty() {
         match trunk_app::migrate::save(&cfg, &config_path) {
@@ -937,7 +940,7 @@ fn serve(a: &Args) {
     let bind = a.get("bind").unwrap_or(&cfg.server.bind);
     let addr: std::net::SocketAddr = format!("{bind}:{port}").parse().unwrap_or_else(|e| fatal(&format!("bind address: {e}")));
     let host = if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() };
-    let url = format!("http://{host}:{}", addr.port());
+    let url = format!("{}://{host}:{}", cfg.server.scheme(), addr.port());
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -970,7 +973,7 @@ fn serve(a: &Args) {
         s.interfaces.remove(&id);
         interfaces::Dev { id, folder: d, port: s.free_port(&[]) }
     });
-    let ui_url = dev.as_ref().map(|d| format!("http://{host}:{}/", d.port));
+    let ui_url = dev.as_ref().map(|d| format!("{}://{host}:{}/", cfg.server.scheme(), d.port));
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
     let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
@@ -1033,6 +1036,7 @@ fn serve(a: &Args) {
         unlocked: Default::default(),
         iq: Default::default(),
         sessions: access::Sessions::load(&paths::data_dir()),
+        tls: tls.map(std::sync::OnceLock::from).unwrap_or_default(),
     });
     monitor::start(ctx.clone());
     iq_send::resume(&ctx, &iq_capture::root(&ctx.config.lock().unwrap()));

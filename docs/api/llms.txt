@@ -386,9 +386,11 @@ system is a system's short name; you get its audio from whichever of its sites c
    connection state (rec.connected, rec.exited); client.js reconnects by
    itself.
 10. Signing in is optional and off by default. Don't put the recorder on the
-    internet: it has no HTTPS of its own, so a token crosses plain HTTP in
-    the clear. If the user wants remote access, tell them to use a VPN or an
-    SSH tunnel, or a reverse proxy that adds HTTPS, with signing in on.
+    internet. On plain HTTP a token crosses the network in the clear; the
+    recorder can serve HTTPS (server.tls, off by default). If the user wants
+    remote access, tell them to use a VPN or an SSH tunnel, with signing in
+    on, and HTTPS (or a reverse proxy that adds it) off their own network.
+    Build URLs from the page's own location: wss:// on an https:// page.
     Don't build your own login: use the recorder's (above).
 
 

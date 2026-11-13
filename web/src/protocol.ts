@@ -550,6 +550,8 @@ export interface Config {
     trpApi?: string;
     /** Signing in, on every interface's port (absent: off). Not in a listen-only connection's config. */
     auth?: AuthSetup;
+    /** HTTPS on every interface's port (absent: plain HTTP). Read as the app starts; a renewed certificate is picked up without a restart. */
+    tls?: TlsSetup;
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
@@ -634,6 +636,16 @@ export interface AuthToken {
   hash: string;
   /** When it was made, Unix s. */
   created: number;
+}
+
+/**
+ * HTTPS: PEM files on the recorder's computer, each absolute, `~/…` or relative to the config file's folder. `cert`: the
+ * certificate, its chain after it (Let's Encrypt's fullchain.pem); `key`: its private key. A config whose pair can't be
+ * read, or whose key isn't the certificate's, isn't saved.
+ */
+export interface TlsSetup {
+  cert: string;
+  key: string;
 }
 
 /** An interface besides the built-in one: static web files, served with the API beside them on a port of its own. */

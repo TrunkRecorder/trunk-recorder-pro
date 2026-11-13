@@ -74,7 +74,7 @@ fn list(a: &Args) {
             Err(e) => e,
         };
         let access = if i.access == ApiAccess::Control { "control" } else { "listen" };
-        let state = cfg.server.interface_problem(id).unwrap_or_else(|| if i.enabled { format!("http://{host}:{}/", i.port) } else { "off".into() });
+        let state = cfg.server.interface_problem(id).unwrap_or_else(|| if i.enabled { format!("{}://{host}:{}/", cfg.server.scheme(), i.port) } else { "off".into() });
         println!("  {id} [{access}] port {} — {state}\n    {what} · {}", i.port, dir.display());
     }
 }
