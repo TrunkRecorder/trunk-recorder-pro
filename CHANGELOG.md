@@ -5,6 +5,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **`client.js`: `rec.queryCalls(query)` searches the recorded calls.** The method was called
+  `calls`, the name of the array of calls on the air, which replaced it on every `TrunkClient`:
+  `rec.calls({ … })` threw `rec.calls is not a function`. `rec.calls` is still the calls on the air.
 - **An RTL-SDR's gain is set as librtlsdr (and Trunk Recorder) set it** (#163). TRP turned a gain into the R820T's LNA and mixer steps as if
   each step were the same size, so some gains landed on another step than Trunk Recorder's: 34 dB was set as 36.4 dB, 28 as 29.7 and 36.4 as
   37.2. It now uses librtlsdr's measured steps and the nearest of its gains (34 dB: 33.8). The survey's gain suggestions are now the gains

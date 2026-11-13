@@ -144,7 +144,7 @@ new TrunkClient({ server?, secure?, historyLimit? })
                                      { alphaTag, description, tag, category, ignore }
   rec.setUnitNames(shortName, rows, from?)  replace a system's own radio names ({ unit, name } rows)
   rec.setUnitName(shortName, unit, name)    name one radio ("": its own name taken out)
-  await rec.calls(query)             recorded calls, newest first: query has any of system
+  await rec.queryCalls(query)        recorded calls, newest first: query has any of system
                                      (short name), talkgroup, unit, from / to (start time,
                                      Unix ms), cursor, limit (1–500, default 100). Answers
                                      { entries, next?, error? }: page on with cursor: next
@@ -344,7 +344,7 @@ system is a system's short name; you get its audio from whichever of its sites c
    callsQuery { id, cursor: <the last page's next>, … } and read callsResult
    (no next at the end). The desktop app answers from its call store
    (hello.capabilities has "calls" while it's open); the browser build from
-   its own list. client.js: rec.calls({ talkgroup, cursor }).
+   its own list. client.js: rec.queryCalls({ talkgroup, cursor }).
    The same query over HTTP (no WebSocket; any door with listen or control access; JSON):
      GET /api/v1/calls?talkgroup=<n>&limit=<n>                            → { entries, next?, error? }
        (all optional: system=<shortName>, talkgroup=<n>, unit=<n>, from=<ms>, to=<ms>, cursor=<next>, limit=<1..500>)
