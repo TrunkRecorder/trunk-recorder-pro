@@ -539,7 +539,7 @@ pub enum Command {
         talkgroup: Option<u32>,
         #[serde(default)]
         voice: bool,
-        #[serde(default = "yes")]
+        #[serde(default = "crate::config::yes")]
         audio: bool,
     },
     UnlockKeys { source: String, password: String },
@@ -608,10 +608,6 @@ pub enum Command {
     /// answered with `dataCompacted` `id`.
     CompactData { id: u64 },
     Quit,
-}
-
-fn yes() -> bool {
-    true
 }
 
 impl Command {

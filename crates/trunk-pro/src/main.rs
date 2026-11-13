@@ -1026,7 +1026,6 @@ fn serve(a: &Args) {
         clock: Default::default(),
         unlocked: Default::default(),
         iq: Default::default(),
-        voice_listeners: Default::default(),
     });
     monitor::start(ctx.clone());
     iq_send::resume(&ctx, &iq_capture::root(&ctx.config.lock().unwrap()));

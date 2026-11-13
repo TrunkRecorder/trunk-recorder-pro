@@ -608,7 +608,7 @@ pub(crate) fn text_for(out: &Out, control: bool) -> Option<String> {
         Out::Text(s) => Some(s.clone()),
         Out::Control(s) => control.then(|| s.clone()),
         Out::Config { full, listen } => Some(if control { full } else { listen }.clone()),
-        Out::Topic { .. } | Out::Audio { .. } | Out::Voice { .. } | Out::Quit => None,
+        Out::Topic { .. } | Out::Audio { .. } | Out::Quit => None,
     }
 }
 
@@ -620,6 +620,12 @@ struct Subs {
 }
 
 impl Subs {
+    fn new(ctx: &Arc<Ctx>, topics: std::collections::BTreeSet<String>) -> Subs {
+        let mut s = Subs { ctx: ctx.clone(), topics: Default::default() };
+        s.set(topics);
+        s
+    }
+
     fn set(&mut self, topics: std::collections::BTreeSet<String>) {
         let add: Vec<String> = topics.difference(&self.topics).cloned().collect();
         let remove: Vec<String> = self.topics.difference(&topics).cloned().collect();
@@ -707,7 +713,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
     };
     // Live audio: off until the browser asks; optionally one system and/or talkgroup only.
     let mut listen: Option<Listen> = None;
-    let mut subs = Subs { ctx: ctx.clone(), topics: Default::default() };
+    let mut subs = Subs::new(&ctx, Default::default());
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {
@@ -727,12 +733,19 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                         }
                         Out::Topic { topic, text } if subs.topics.contains(topic) => Message::Text(text.clone().into()),
                         Out::Topic { .. } => continue,
-                        Out::Audio { short_name, tg, frame } => match &listen {
-                            Some(l) if l.audio && l.wants(short_name, *tg) => Message::Binary(frame.clone().into()),
-                            _ => continue,
-                        },
-                        Out::Voice { short_name, tg, text } => match &listen {
-                            Some(l) if l.voice.is_some() && l.wants(short_name, *tg) => Message::Text(text.clone().into()),
+                        Out::Audio { short_name, tg, frame, voice } => match &listen {
+                            Some(l) if l.wants(short_name, *tg) => {
+                                if let (Some(_), Some(v)) = (&l.voice, voice)
+                                    && !send(&mut socket, Message::Text(v.clone().into())).await
+                                {
+                                    send(&mut socket, Message::Close(None)).await;
+                                    return;
+                                }
+                                if !l.audio {
+                                    continue;
+                                }
+                                Message::Binary(frame.clone().into())
+                            }
                             _ => continue,
                         },
                         Out::Quit => Message::Text(ToClient::Quit.to_json().into()),
@@ -822,24 +835,9 @@ struct Listen {
     talkgroup: Option<u32>,
     /// The PCM (type 2).
     audio: bool,
-    /// The vocoder frames (`voice` messages): counted while it lasts.
-    voice: Option<VoiceListener>,
-}
-
-/// One connection listening with `voice` ([`Ctx::voice_listeners`]).
-struct VoiceListener(Arc<Ctx>);
-
-impl VoiceListener {
-    fn new(ctx: &Arc<Ctx>) -> Self {
-        ctx.voice_listeners.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        VoiceListener(ctx.clone())
-    }
-}
-
-impl Drop for VoiceListener {
-    fn drop(&mut self) {
-        self.0.voice_listeners.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-    }
+    /// The vocoder frames (`voice` messages): watched as topic `voice`, so
+    /// they're built while it lasts.
+    voice: Option<Subs>,
 }
 
 impl Listen {
@@ -1247,7 +1245,7 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             failed(r)
         }
         Command::Listen { on, system, talkgroup, voice, audio } => {
-            *listen = on.then(|| Listen { system, talkgroup, audio, voice: voice.then(|| VoiceListener::new(ctx)) });
+            *listen = on.then(|| Listen { system, talkgroup, audio, voice: voice.then(|| Subs::new(ctx, ["voice".to_string()].into())) });
             None
         }
     }

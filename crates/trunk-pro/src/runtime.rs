@@ -44,11 +44,10 @@ pub enum Out {
     /// Only for browsers that subscribed to `topic` (see [`trunk_app::stats::Topics`]).
     Topic { topic: String, text: String },
     /// Live audio (binary frame) for talkgroup `tg` of the system with short
-    /// name `short_name` (the frame carries the system's number this run).
-    Audio { short_name: String, tg: u32, frame: Vec<u8> },
-    /// Live voice as vocoder frames (a `voice` message), likewise: only for
-    /// connections listening with `voice`.
-    Voice { short_name: String, tg: u32, text: String },
+    /// name `short_name` (the frame carries the system's number this run);
+    /// `voice`: its vocoder frames as a `voice` message, sent just before it
+    /// to connections listening with `voice` (none: no one is, or analog).
+    Audio { short_name: String, tg: u32, frame: Vec<u8>, voice: Option<String> },
     /// The recorder is quitting: every connection is told, then closed.
     Quit,
 }
@@ -149,8 +148,6 @@ pub struct Ctx {
     pub unlocked: crate::unlock::Unlocked,
     /// Recordings of what the radios receive ([`crate::iq_capture`]).
     pub iq: crate::iq_capture::Captures,
-    /// How many connections listen with `voice` (voice frames are built while any do).
-    pub voice_listeners: std::sync::atomic::AtomicUsize,
 }
 
 /// Something for the running session to do: the one way into the engine
@@ -1312,17 +1309,12 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
                 }
                 publish(&ctx.hub, m)
             }
-            Output::Audio { short_name, unit_name, audio } => {
+            Output::Audio { short_name, audio, voice, voice_listened } => {
                 if let Some(p) = plugins {
-                    p.live(&short_name, &unit_name, &audio);
+                    p.live(&short_name, &audio, voice.as_ref());
                 }
-                if ctx.voice_listeners.load(std::sync::atomic::Ordering::Relaxed) > 0
-                    && let Some(chunk) = trunk_app::session::voice_chunk(&short_name, &unit_name, &audio)
-                {
-                    let text = ToClient::Voice { chunk }.to_json();
-                    let _ = ctx.hub.send(Arc::new(Out::Voice { short_name: short_name.clone(), tg: audio.talkgroup, text }));
-                }
-                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg: audio.talkgroup, frame: trunk_app::session::audio_frame(&audio) }));
+                let voice = voice.filter(|_| voice_listened).map(|chunk| ToClient::Voice { chunk }.to_json());
+                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg: audio.talkgroup, frame: trunk_app::session::audio_frame(&audio), voice }));
             }
             Output::Plugin(m) => {
                 if let Some(p) = plugins {
