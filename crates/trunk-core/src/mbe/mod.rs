@@ -742,17 +742,8 @@ fn decode_ambe2450_parms(d: &[u8; 49], cur: &mut Parms, prev: &mut Parms) -> Amb
     Ambe::Voice
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Voice,
-    Repeat,
-    Muted,
-    /// An AMBE erasure frame, a reserved tone ID, or a tone frame on the
-    /// `mbelib` profile: silence.
-    Erasure,
-    /// An AMBE+2 tone frame, played as its tone (ID 255: silence).
-    Tone,
-}
+/// What the vocoder made of a frame (the plugin SDK's: a frame carries it).
+pub use trunk_recorder_plugin::FrameKind as Kind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Profile {

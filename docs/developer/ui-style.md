@@ -34,6 +34,25 @@ on one page.
    fix it.
 5. **Nothing moves under the pointer.** Folding, adding and removing keep
    the other cards as they were.
+6. **Infographic, not prose.** Someone should understand a screen by
+   looking, not reading:
+   - **Data is never inside a sentence.** A number, count, frequency or
+     state goes in its own element (`Stat`, `Fig`, `Figs`, a chip, a meter)
+     with a short label beside or above it: "Calls **326,944**", not "…the
+     call index. 326,944 calls". Make it stand out by size, weight or
+     status colour.
+   - **Labels are a few words.** A label or chip is 1–3 words; a hint is at
+     most one short line (≈8 words, no full stop needed); a group's or
+     section's line is one short phrase, or none when its name says it.
+     Drop what the control already shows (a unit in the label, "Optional",
+     "Default 75 kHz" next to a field showing 75).
+   - **If it takes a paragraph, change the control.** A setting that needs
+     explaining gets a clearer name, a picture (a band, a meter, a preview
+     of the result) or better choices (a segmented control naming the
+     outcomes) before it gets more words. What still needs a why goes in an
+     `<Info>` (shown on hover), never as always-visible text.
+   - **Repeat nothing.** A hint never restates its label; text shared by
+     several cards is said once, above them.
 
 ## Tokens
 
@@ -108,14 +127,14 @@ read once, slowly, by someone new.
 ```
 Section   "Trunked systems"   P25, SmartNet … control channels.   [Expand all] [Add a system]
 ┌ Card ─────────────────────────────────────────────────────────────────────────┐
-│ ›  ● wmata   SmartNet / SmartZone   [control channel on source 1, 2]   ◉ Record  Remove │
+│ ›  ● wmata   SmartNet / SmartZone   [CC → 1, 2]   ◉ Record  Remove │
 ├────────────────────────────────────────────────────────────────────────────────┤
 │ Basics                 │ Short name            Name                            │
-│ The short name is …    │ [wmata          ]     [                ]              │
+│                        │ [wmata          ]     [                ]              │
 │                        │ Type                  Modulation                      │
 ├────────────────────────┼───────────────────────────────────────────────────────┤
 │ On the air             │ Control channels, MHz                                 │
-│ Where the recorder …   │ [496.43750, 490.86250 …                             ] │
+│                        │ [496.43750, 490.86250 …                             ] │
 └────────────────────────┴───────────────────────────────────────────────────────┘
 ```
 
@@ -137,8 +156,7 @@ One thing: a system, a radio, the log. Its head has:
 - the name (`h3`) and, under it, a one-line summary in `.set-card-sub`
   (type, frequency, rate, "3 channels, 2 on"): enough to recognize it
   folded;
-- status chips: what's right or wrong with it now ("control channel on
-  source 1, 2", "voice 14/14 covered", "2 to finish");
+- status chips: what's right or wrong with it now ("CC → 1, 2", "Voice 14/14", "2 to finish");
 - on the right, its controls: the on/off `<Switch>` ("Record"), then
   `Remove` as a small ghost button. Remove always confirms when it loses
   data, and says what stays ("Its recordings stay on disk").
@@ -212,8 +230,7 @@ A label, the input, and an optional hint below.
 - **Label:** the thing, in sentence case, with its unit after a comma:
   "Gain, dB", "Center frequency, MHz", "Pre-roll, s". No colon.
 - **Hint:** short, no closing full stop, starts with a capital. Says the
-  range, the default, the consequence or an example ("Most dongles:
-  0–49.6", "Later ones are fallbacks", "e.g. RX2, TX/RX"). A hint that
+  range, the default, the consequence or an example ("0–49.6", "Later ones are fallbacks", "Top outbound channel"). A hint that
   isn't needed is left out. When a field is overridden, the hint says the
   default ("Default: 3").
 - **Placeholder:** what happens when empty ("any", "auto", "from the
@@ -291,7 +308,7 @@ changed".
 | Component | Class | Notes |
 | --- | --- | --- |
 | Button | `.btn` | `.primary` for the one main action on the screen (Start); `.ghost` for secondary; `.small` in rows and card heads; `.danger` text for destructive |
-| Chip | `.chip` | A short status or fact; `.ok` / `.warn` / `.bad` tint it. Lowercase text ("control channel on source 3") |
+| Chip | `.chip` | A short status or fact; `.ok` / `.warn` / `.bad` tint it. Two or three words ("CC → 3", "Voice 14/14") |
 | Pill | `.pill` | The recorder's state in the top bar |
 | Banner | `.banner` | A message across a page or card; `.bad` for errors; `.subtle` for a reminder. Has its action on the right ("Open setup", "Dismiss") |
 | Segmented choice | `.seg` | A choice among 2–5 that changes what else is shown (a radio's kind); the chosen one filled with `--accent` |
@@ -301,8 +318,7 @@ changed".
 ## Writing
 
 - Plain words, sentence case, short. Say what something does for the
-  person, not how it's implemented ("Keep calls waiting to upload in
-  memory", not "Enable tmpfs spool").
+  person, not how it's implemented ("RAM spool", not "Enable tmpfs spool").
 - Trunk Recorder's own names for settings are kept where people will look
   for them, or given in a hint, so a config can be brought over.
 - Name buttons with a verb and object: "Add a system", "Import CSV…",

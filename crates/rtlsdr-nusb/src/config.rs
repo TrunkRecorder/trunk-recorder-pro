@@ -41,9 +41,10 @@ impl SampleMode for F32Iq {
     const FORMAT: SampleFormat = SampleFormat::F32Iq;
 }
 
-/// Tuner gain policy. Manual gain is approximate, using the reference driver's
-/// measured 2.3 dB LNA and 1.2 dB mixer steps with a fixed VGA setting. On an
-/// E4000 it is librtlsdr's nearest LNA + mixer step (-1 to 42 dB; above 42: 42).
+/// Tuner gain policy. Manual gain is librtlsdr's nearest step, with a fixed
+/// VGA setting: on an R82xx its offered gains (0 to 49.6 dB) by its measured
+/// LNA and mixer steps, on an E4000 its LNA + mixer steps (-1 to 42 dB). What
+/// that is: [`crate::TunerKind::gain_db`], [`crate::Device::gain_db`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum GainConfig {
     /// Let the tuner control LNA and mixer gain automatically.

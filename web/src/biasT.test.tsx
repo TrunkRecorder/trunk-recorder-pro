@@ -14,8 +14,8 @@ import type { Radios, ToRecorder } from "./protocol.ts";
 import { SurveyPanel } from "./Survey.tsx";
 
 const none = { available: false, detail: "", devices: null };
-const RADIOS: Radios = { usrp: none, bladerf: none, hackrf: none, airspy: { available: true, detail: "", devices: [{ serial: "735863DC2F650AE3", label: "Airspy R2 735863DC2F650AE3" }] } };
-const NO_RADIOS: Radios = { usrp: none, bladerf: none, hackrf: none, airspy: { available: true, detail: "", devices: [] } };
+const RADIOS: Radios = { usrp: none, bladerf: none, hackrf: none, hydrasdr: none, airspy: { available: true, detail: "", devices: [{ serial: "735863DC2F650AE3", label: "Airspy R2 735863DC2F650AE3" }] } };
+const NO_RADIOS: Radios = { usrp: none, bladerf: none, hackrf: none, hydrasdr: none, airspy: { available: true, detail: "", devices: [] } };
 
 /** Connected as the desktop app, with the recorder in `phase`, `radios` found by their drivers and `serials` of dongles plugged in; what the page sends kept. */
 function connected(phase: "idle" | "running", radios: Radios | null, serials: string[] = []): ToRecorder[] {
@@ -31,12 +31,12 @@ function connected(phase: "idle" | "running", radios: Radios | null, serials: st
   return sent;
 }
 
-test("an Airspy, a bladeRF and a HackRF have a bias-T; the others don't", () => {
+test("an Airspy, a HydraSDR, a bladeRF and a HackRF have a bias-T; the others don't", () => {
   const airspy = detectRadios([], RADIOS)[0].source;
   assert.equal(airspy.type, "airspy");
   assert.ok(hasBiasT(airspy));
   const kinds = (Object.keys(SOURCE_KINDS) as (keyof typeof SOURCE_KINDS)[]).filter((k) => hasBiasT(SOURCE_KINDS[k].fresh()));
-  assert.deepEqual(kinds, ["airspy", "bladerf", "hackrf"]);
+  assert.deepEqual(kinds, ["airspy", "hydrasdr", "bladerf", "hackrf"]);
   assert.ok(!hasBiasT(defaultConfig().sources[0]), "the default source is an RTL-SDR");
 });
 
@@ -53,7 +53,7 @@ test("the setup guide's radio cards offer bias-T on an Airspy, not on a dongle",
 test("Find my system offers bias-T when the scan's radio is a spare Airspy", () => {
   connected("running", RADIOS);
   const html = renderToString(<SurveyPanel c={snapshot().config!} />);
-  assert.ok(html.includes("No source uses it"), "the spare is the radio while recording");
+  assert.ok(html.includes("Spare: scans while the others record"), "the spare is the radio while recording");
   assert.ok(html.includes("Bias-T"), html);
   connected("idle", RADIOS);
   const idle = renderToString(<SurveyPanel c={snapshot().config!} />);

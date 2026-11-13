@@ -100,6 +100,11 @@ Stages in order. Thread in brackets.
      USB link speed (`radio/usb_speed.rs`); doubles a B2xx's master clock when UHD would run it at the rate.
    - Airspy (`radio/airspy.rs`): whatever libairspy hands its callback; by default real samples
      (`Block::Real16`), turned into IQ by the `Inbox` on the thread that takes them.
+   - HydraSDR (`radio/airspy.rs` too, `Lib::Hydrasdr`; libhydrasdr is libairspy's fork, and what
+     only it has, its device-info block and one gain call, is in `radio/airspy/hydrasdr.rs`):
+     libhydrasdr 1.1's float IQ (`Block::Iq`), converted and decimated on its own thread, apart
+     from the one draining the USB. Its `dropped_samples` is a running total; the driver passes on
+     the difference per buffer.
 
    What every radio shares lives in `sdr.rs` and `radio/mod.rs`. A radio sends through a `Sink`,
    which never blocks a live radio: if the queue to the decoding thread is full, the block is
@@ -688,7 +693,7 @@ queued in `radio.pending`, then applied after the block (`apply_pending`), at th
 control channel clock, so a voice channel never borrows a `Trunk` mutably. Each output finds its
 site, recording and call once, then:
 - `Audio` / `AnalogAudio` → appended to the `Recording`, `last_audio_s` moved, live
-  `Event::Audio` if this copy leads its multi-site conversation;
+  `Event::Audio` if this site leads the talkgroup's live audio (`MultiSite::audio_lead`);
 - `Info` → the source unit and its flags (merged into the source talking when it names none), the
   call's encrypted / emergency latches → `CallUpdate`;
 - `WrongKey` → a warning note, once a key;
@@ -724,10 +729,13 @@ removed and its number returned to `free_nums`.
 `trunk/multisite.rs`. Sites are twins when they are sites of one system (one `SystemConfig`'s
 `sites`); nothing is grouped from what the control channels announce. A call that starts on a twin
 site with the same talkgroup (or, unit to unit, the same radio called) within 3 s
-(`Span::starts_with`) is linked into one conversation, from the first grant (`Call::twin` marks
-the later copies). A conversation has one copy from each site (`MultiSite::link`), so copies never
-chain one into the next. **Every copy is recorded.** Live audio comes from one copy until it has
-been quiet 0.5 s. When the last copy ends, they're tried best first: the talkgroup's preferred site
+(`Span::starts_with`) is linked into one conversation, from the first grant, against the copies
+`MultiSite` already has. A conversation has one copy from each site (`Conversation::takes`), so copies never
+chain one into the next. Every call goes through `MultiSite`, which alone tells it to the world:
+`CallStart` when the first copy begins, `CallEnd` when the last ends, `CallUpdate` when what's told changes, all
+under the first copy's id and as one view of its copies (`Conversation::view`). `CopyStart` / `CopyEnd`
+are each site's own, for the log and voice channel counts. **Every copy is recorded.** Live audio comes from one site per talkgroup until it has
+been quiet 0.5 s, whether or not the sites' calls are linked. When the last copy ends, they're tried best first: the talkgroup's preferred site
 if its clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC
 errors, then earliest start. Each is saved unless one saved holds it (`Kept::holds`: another site,
 its whole `Span`, the same talkers where known, at least as much clean voice give or take 90 %);
@@ -1030,7 +1038,6 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 | `id` | `CallId` (u32) | one sequence for all systems |
 | `site` | `Option<u16>` | engine site index; none for a conventional call |
 | `system` | u16 | engine system index (trunked, then conventional) |
-| `twin` | bool | multi-site: a copy of a call another site of its system had first |
 | `talkgroup` | u32 | |
 | `freq_hz` | u64 | |
 | `voice` | `Voice` | what its voice is on |
@@ -1175,7 +1182,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78.
 | `type` | Payload fields |
 |---|---|
 | `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, name, fcc (by frequency), fcc_call_sign / fcc_name (the one that names it), sites: [SiteInfo { name }], config, settings }]` (name, FCC fields and sites left out when empty), `capture_dir`, `data_dir`, `store?` (the call store's absolute path, left out when the store didn't open; open it read-only, WAL, read `schema_version` first, never write; remote plugins use the HTTP API), `audio_formats` |
-| `call.start`, `call.end` | once per call, from its first copy: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_ota, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
+| `call.start`, `call.end` | once per call, from its first copy's start to its last copy's end; never dropped for a plugin behind: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_ota, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
 | `unit` | `system`, `short_name`, `site`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |
 | `audio` | `call_id`, `system`, `short_name`, `talkgroup`, `sample_rate`, `pcm` (base64 i16 LE) |
@@ -1208,7 +1215,7 @@ unlike the other messages).
   beside it (`config::talkgroups_path`; `TalkgroupFiles` by short name), written by
   `setTalkgroups` and taken by a recording at once (`EngineCmd::Talkgroups`). An older config's
   `talkgroupsCsv` / `talkgroupsName` are moved out into those files before it is read, by every
-  reader (`Config::load` → `migrate::move_talkgroups`). The browser keeps them in
+  reader (`Config::load` → `migrate::move_files_out`, which writes an older config's `unitNames.csv` out beside it too; `migrate::files_into_store` then takes both into the store). The browser keeps them in
   `localStorage["trp.talkgroups"]`.
 - Every upgrade of an older config is in `migrate.rs` (`migrate::config`, run by
   `Config::from_value`: key files named by systems, interfaces as a list and `server.home`, each
@@ -1235,7 +1242,7 @@ unlike the other messages).
 | `pluginDelays` | array of `{plugins, talkgroups, delayS}` | `[]` | how long plugins wait for calls, every system (a system's own come first) |
 | `keys` | map name → `{file, passwordFile}` | `{}` | encryption key sources; a system names one in its `keys` |
 | `log` | object | see 10.9 | log options |
-| `monitor` | `{probeHosts, networkChecks, timeServer, clockWarnMs}` | `["1.1.1.1:443","dns.google:443"]`, `true`, `"pool.ntp.org"`, `250` | internet checks; `networkChecks: false` pauses them and the SNTP check; the clock's SNTP check and its warning threshold |
+| `monitor` | `{checkHosts, checkEveryS, networkChecks, timeServer, clockWarnMs}` | `[]`, `15`, `true`, `"pool.ntp.org"`, `250` | hosts checked (TCP, none by default: the plugins' services are the connections); `networkChecks: false` pauses them and the SNTP check; all apply at once; the clock's SNTP check and its warning threshold |
 
 ### 10.3 `sources[]`
 
@@ -1248,6 +1255,7 @@ unlike the other messages).
 | `hackrf` | `serial` "" = first, `centerHz`, `rateHz` (1–20 MSPS), `lnaDb` 16, `vgaDb` 20, `amp` false, `biasTee`, `ppm`, `autoTune`, `guardHz` |
 | `usrp` | `args` "", `gainDb` 40, `agc` false, `antenna` "", `ppm` 0 |
 | `airspy` | `serial` "", `gainMode` linearity / sensitivity / manual, `gainStep` 14, `lnaStep` / `mixerStep` / `vgaStep` 10, `agc`, `biasTee`, `packing` true, `ppm` |
+| `hydrasdr` | as `airspy`, and `rfPort` 0 (ANT; 1 CABLE1, 2 CABLE2) |
 | `soapy` | `args` "", `agc` true, `gainDb` null, `gains` {}, `antenna` "", `settings` "", `ppm` 0 |
 | `file` | `path` (required), `realtime` (required), `format` cu8 / cs16 / cf32 (else from the extension) |
 
@@ -1412,9 +1420,10 @@ The interface runs this same code (section 13.3), so Setup says what Start will 
 **Auto-centring** (`trunk-app/src/place.rs`): one placement for Start's auto centres
 (`resolved_centers`), the first-run guide and the survey's suggested centre. Sources with
 `centerHz` 0 are placed in order (`place_sources`), each over the window (`busiest_window`) that
-takes in the most of what the ones before it don't reach: a site's control channels (or a
-conventional system's channels) not reached yet outweigh everything, then each channel counts
-once (the guide: by the calls seen on it); of windows taking in as much, the one that leaves the
+takes in the most of what the ones before it don't reach: what a group needs and isn't reached yet
+outweighs everything — one of a P25 or SmartNet site's control channels, or (`Group::all`) every
+control and watched frequency of a DMR, NXDN or EDACS site and every channel of a conventional
+system — then each channel counts once (the guide: by the calls seen on it); of windows taking in as much, the one that leaves the
 rest the fewest windows. So a site wider than one radio gets every radio it needs. With
 everything reached, a spare radio goes alongside the others, on the side with more of the
 channels. Each centre is then centred on what it reaches and stepped to either side in widening
@@ -1428,10 +1437,22 @@ the frequency. The engine opens channels by it (`Radio::source_for`, `Convention
 the app asks the same of the centres Start places (`place::receiver`): placement's targets are
 groups (a site, a conventional system's channels on the same sources) carrying their pins, so a
 source is placed only for what it may receive; `Config::receivers` says the source of each
-listed frequency (Setup's coverage chips and to-dos, `configReceivers`); `problem` checks control
-and conventional channels by it; and `Config::placement` counts how many listed frequencies each
-source receives (`listed_reached`). A source at 0 that has opened no voice channel this run is
-`unused` in its status, and the dashboard says it can probably be removed.
+listed frequency (Setup's coverage chips and to-dos, `configReceivers`); and `place::coverage`
+is the one account of what's received: per group whether its need is met and what's missed, per
+source how many listed frequencies it's the first to reach. `problem` reports what it misses
+(`Config::placed`: the sites' groups come first, in `active_sites` order), and `Config::placement`
+reads its counts. A source at 0 that has opened no voice channel this run is `unused` in its status,
+and the dashboard says it can probably be removed.
+
+**Advice** (`place::advise`, `Config::advice`; research/source-advice.md): better centres and rates
+than the sources have, by re-running `place_sources`. A source's `Choices` say whether its set centre
+may move (not a capture file's) and its rates (`rates::offered`: its radio's, else its kind's from
+`rates::of_kind`, the one list the web's `SOURCE_KINDS` reads too). Sources are released to auto
+(none, each alone, all) and each one's rates tried in turn; ways are compared by `Score` (needs met,
+weight reached, radios needed, past the dependable rate, total rate, changes), and only a strict
+improvement is advice. `Config::targets_with` weighs it by what's heard (the registry's calls per
+frequency, out of band too). Setup's Radios tab and the RF page show it (`web/src/sourceAdvice.tsx`);
+`problem` appends the settings that reach what it found missed (`advice_fix`).
 
 ### 10.12 Companion files (in the config's folder)
 
@@ -1789,6 +1810,7 @@ hub skips the oldest without notice.
 | `/api/ws` | the WebSocket |
 | `/api/version`, `/api/schema`, `/api/protocol.ts`, `/api/docs`, `/api/*` | version (and interface API), schema, TypeScript types, API docs and examples |
 | `/api/v1/calls`, `/api/v1/calls/<path>`, `/api/v1/storage` | the call store as JSON (`docs/api/calls.openapi.yaml`), with listen or control access; 503 when the store is off |
+| `/api/v1/export/<table>` | a table of the store as a CSV file, streamed a page at a time (`data.rs`), control access only |
 | `/calls/<path>` | recordings (folder, then RAM spool), WAV ↔ M4A substitution, Range requests |
 | `/store/screenshots/<sha256>`, `/interfaces/<id>/screenshots/<n>` | store listings' screenshots (built-in port only) |
 | everything else | on `server.port` the embedded interface; on an interface's port, its folder (no hidden files) |

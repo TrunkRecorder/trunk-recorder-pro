@@ -9,8 +9,16 @@
 //! copy is recorded and the best kept once the last one ends — so a site
 //! that fades mid-call, or whose voice channel falls outside every source,
 //! doesn't cost the call. Best: the most cleanly decoded audio; a site the
-//! talkgroup prefers (talkgroup file) wins while its copy holds
-//! [`PREFERRED_SHARE`] of that. Live audio comes from one copy at a time.
+//! talkgroup prefers (its row's, else its system's) wins while its copy holds
+//! [`PREFERRED_SHARE`] of that.
+//!
+//! Live audio comes from one site at a time, for each talkgroup of a system
+//! ([`MultiSite::audio_lead`]), however the sites happen to divide it into
+//! calls: one may keep a channel through a conversation while another gives
+//! each transmission its own.
+//!
+//! However many copies there are, it's one call to the world: [`MultiSite`]
+//! tells its start, changes and end, and nothing else does.
 //!
 //! A copy is dropped only when one saved holds all of it ([`Kept::holds`]);
 //! anything else is saved too: better a duplicate than a transmission lost.
@@ -22,16 +30,44 @@
 use std::collections::HashMap;
 
 use super::calls::{Call, CallId};
+use super::engine::Event;
 use super::recorded::Recorded;
-use super::talkgroups::Talkgroup;
 
 
 /// Grants for one call reach each site's control channel at nearly the same time.
 pub const TWIN_WINDOW_S: f64 = 3.0;
 /// A preferred site's copy is kept while it has this share of the best copy's clean audio.
 pub const PREFERRED_SHARE: f64 = 0.9;
-/// Live audio stays with one copy until it has been quiet this long.
+/// Live audio stays with one site until it has been quiet this long.
 const LEAD_HOLD_S: f64 = 0.5;
+
+/// What live audio is one site at a time for: a system's talkgroup, or the radio called.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LiveKey {
+    system: u16,
+    talkgroup: u32,
+    unit_to_unit: bool,
+}
+
+impl LiveKey {
+    pub fn of(c: &Call) -> LiveKey {
+        LiveKey { system: c.system, talkgroup: c.talkgroup, unit_to_unit: c.unit_to_unit }
+    }
+}
+
+/// The site a talkgroup's live audio comes from, and when it last gave some.
+#[derive(Clone, Copy, Debug)]
+struct Lead {
+    site: u16,
+    last_s: f64,
+}
+
+impl Lead {
+    /// Is it `site`'s to give at `now_s`: its own, or free, the lead having gone quiet?
+    fn lets(self, site: u16, now_s: f64) -> bool {
+        self.site == site || now_s - self.last_s > LEAD_HOLD_S
+    }
+}
 
 /// When a copy was heard: from its grant to its last audio or update.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,175 +139,196 @@ impl Held {
     }
 }
 
-/// A copy of a conversation: its call, its site, and whether it's still going.
-#[derive(Clone, Copy, Debug)]
+/// A copy of a call: as last heard, and whether it's still going.
+#[derive(Clone, Debug)]
 struct Member {
-    call: CallId,
-    site: u16,
+    call: Call,
     open: bool,
 }
 
-#[derive(Default)]
+/// One call, however many sites it's heard on.
 struct Conversation {
-    /// Every copy, ended ones too.
+    /// What the world knows it by: its first copy's id.
+    id: CallId,
+    /// Every copy, ended ones too, the first first.
     members: Vec<Member>,
     held: Vec<Held>,
-    /// The copy live audio comes from, and when it last gave some.
-    lead: Option<(CallId, f64)>,
+    /// What's been told of it.
+    told: Call,
 }
 
-/// What ending a copy left to do.
-#[derive(Debug)]
-pub enum Ended {
-    /// Not a copy of anything: save it as usual.
-    Alone(Option<Held>),
-    /// Its twins are still going: held.
-    Waiting,
-    /// The last copy ended: every recording the conversation made.
-    Done(Vec<Held>),
+/// The same news, whenever it was heard.
+fn same_news(a: &Call, b: &Call) -> bool {
+    let bare = |c: &Call| Call { last_update_s: 0.0, heard_s: 0.0, last_audio_s: 0.0, ..c.clone() };
+    bare(a) == bare(b)
 }
 
+impl Conversation {
+    fn new(c: &Call) -> Conversation {
+        Conversation { id: c.id, members: vec![Member { call: c.clone(), open: true }], held: Vec::new(), told: c.clone() }
+    }
+
+    /// `c`, just begun, is a copy of this: another site's, of the same
+    /// talkgroup (or radio called), begun at nearly the same time as a copy
+    /// still going. One copy from each site, so that a talkgroup's copies
+    /// never chain one into the next.
+    fn takes(&self, c: &Call) -> bool {
+        self.members.iter().all(|m| m.call.site != c.site)
+            && self.members.iter().any(|m| m.open && m.call.system == c.system && m.call.talkgroup == c.talkgroup && m.call.unit_to_unit == c.unit_to_unit && Span::of(&m.call).starts_with(Span::of(c)))
+    }
+
+    /// The copy that speaks for the call: the first still going that's
+    /// recorded, else the first still going, else the first recorded.
+    fn teller(&self) -> &Call {
+        let recorded = |m: &&Member| m.call.recording;
+        let going = || self.members.iter().filter(|m| m.open);
+        let m = going().find(recorded).or_else(|| going().next()).or_else(|| self.members.iter().find(recorded)).unwrap_or(&self.members[0]);
+        &m.call
+    }
+
+    /// The call as the world is told of it: its teller's, from the first
+    /// copy's start to the last one's end, with what any copy heard.
+    fn view(&self) -> Call {
+        let mut v = self.teller().clone();
+        v.id = self.id;
+        for c in self.members.iter().map(|m| &m.call) {
+            v.start_s = v.start_s.min(c.start_s);
+            v.last_update_s = v.last_update_s.max(c.last_update_s);
+            v.heard_s = v.heard_s.max(c.heard_s);
+            v.last_audio_s = v.last_audio_s.max(c.last_audio_s);
+            v.recording |= c.recording;
+            v.encrypted |= c.encrypted;
+            v.decrypted |= c.decrypted;
+            v.emergency |= c.emergency;
+            for s in &c.sources {
+                if !v.sources.iter().any(|o| o.src == s.src) {
+                    v.sources.push(s.clone());
+                }
+            }
+        }
+        if v.recording {
+            v.reason = None;
+        }
+        v.sources.sort_by(|a, b| a.time_s.total_cmp(&b.time_s));
+        v
+    }
+
+    /// What the world hasn't been told yet, if anything.
+    fn news(&mut self) -> Option<Call> {
+        let v = self.view();
+        (!same_news(&v, &self.told)).then(|| {
+            self.told = v.clone();
+            v
+        })
+    }
+}
+
+/// Every call in progress and what's known of its copies. Each call goes
+/// through here, and only here is it told: [`Event::CallStart`] when its
+/// first copy begins, [`Event::CallEnd`] when its last one ends, under the
+/// first copy's id. A site's own copies are [`Event::CopyStart`] and
+/// [`Event::CopyEnd`].
 #[derive(Default)]
 pub struct MultiSite {
-    convs: HashMap<u32, Conversation>,
-    of: HashMap<CallId, u32>,
-    next: u32,
+    /// By the call's id.
+    convs: HashMap<CallId, Conversation>,
+    /// A copy's call.
+    of: HashMap<CallId, CallId>,
+    leads: HashMap<LiveKey, Lead>,
 }
 
 impl MultiSite {
-    /// `call` (on `site`) is a copy of `twins` (calls still going, with their
-    /// sites). A conversation has one copy from each site: a twin whose
-    /// conversation has one from a site already taken is another
-    /// transmission's (or conversation's), left out — so a talkgroup's
-    /// copies never chain one into the next.
-    pub fn link(&mut self, call: CallId, site: u16, twins: &[(CallId, u16)]) {
-        // The twins' conversations (or the twins themselves, in none yet) taken, each with sites not taken yet.
-        let (mut sites, mut ids, mut alone) = (vec![site], Vec::<u32>::new(), Vec::<(CallId, u16)>::new());
-        for &t in twins {
-            let conv = self.of.get(&t.0).copied();
-            if conv.is_some_and(|id| ids.contains(&id)) {
-                continue;
-            }
-            let theirs: Vec<u16> = conv.map_or(vec![t.1], |id| self.convs[&id].members.iter().map(|m| m.site).collect());
-            if theirs.iter().any(|s| sites.contains(s)) {
-                continue;
-            }
-            sites.extend(theirs);
-            match conv {
-                Some(id) => ids.push(id),
-                None => alone.push(t),
-            }
-        }
-        if ids.is_empty() && alone.is_empty() {
-            return;
-        }
-        // Join the twins' conversation(s) — merging, should they be in different ones.
-        ids.sort_unstable();
-        let id = match ids.first() {
-            Some(&id) => id,
-            None => {
-                self.next += 1;
-                self.convs.insert(self.next, Conversation::default());
-                self.next
-            }
+    /// Copy `c` began: a call of its own, or (`link`: a multi-site call may
+    /// be saved once) another site's copy of one begun with it. What that tells.
+    pub fn start(&mut self, c: &Call, link: bool) -> Option<Event> {
+        let of = self.convs.values().filter(|v| link && v.takes(c)).map(|v| v.id).min();
+        let Some(id) = of else {
+            self.of.insert(c.id, c.id);
+            let v = Conversation::new(c);
+            let told = v.told.clone();
+            self.convs.insert(c.id, v);
+            return Some(Event::CallStart(told));
         };
-        for other in ids.iter().skip(1) {
-            let c = self.convs.remove(other).unwrap_or_default();
-            for m in &c.members {
-                self.of.insert(m.call, id);
-            }
-            let conv = self.convs.get_mut(&id).unwrap();
-            conv.members.extend(c.members);
-            conv.held.extend(c.held);
-        }
-        let conv = self.convs.get_mut(&id).unwrap();
-        for &(c, at) in alone.iter().chain([&(call, site)]) {
-            if !conv.members.iter().any(|m| m.call == c) {
-                conv.members.push(Member { call: c, site: at, open: true });
-                self.of.insert(c, id);
-            }
-        }
+        self.of.insert(c.id, id);
+        let v = self.convs.get_mut(&id)?;
+        v.members.push(Member { call: c.clone(), open: true });
+        v.news().map(Event::CallUpdate)
+    }
+
+    /// Copy `c` changed. What that tells.
+    pub fn update(&mut self, c: &Call) -> Option<Event> {
+        let v = self.convs.get_mut(self.of.get(&c.id)?)?;
+        v.members.iter_mut().find(|m| m.call.id == c.id)?.call = c.clone();
+        v.news().map(Event::CallUpdate)
     }
 
     /// The other copies of `call` (ended ones too, while it's going): (call, site).
     pub fn twins(&self, call: CallId) -> Vec<(CallId, u16)> {
-        self.of.get(&call).and_then(|i| self.convs.get(i)).map_or_else(Vec::new, |c| c.members.iter().filter(|m| m.call != call).map(|m| (m.call, m.site)).collect())
+        self.of.get(&call).and_then(|i| self.convs.get(i)).map_or_else(Vec::new, |v| v.members.iter().filter(|m| m.call.id != call).filter_map(|m| Some((m.call.id, m.call.site?))).collect())
     }
 
-    /// Whether `call` is the copy live audio comes from now (or the only one).
-    pub fn leads(&self, call: CallId) -> bool {
-        self.of.get(&call).and_then(|i| self.convs.get(i)).is_none_or(|c| c.lead.is_none_or(|(lead, _)| lead == call))
+    /// The calls in progress, one each, as told. `live`: their copies as
+    /// they are now (a grant repeated is news to nobody, but it's still air time).
+    pub fn calls(&self, live: &[Call]) -> Vec<Call> {
+        let of = |v: &Conversation, c: &Call| self.of.get(&c.id) == Some(&v.id);
+        self.convs.values().map(|v| Call { last_update_s: live.iter().filter(|c| of(v, c)).fold(v.view().last_update_s, |t, c| t.max(c.last_update_s)), ..v.view() }).collect()
     }
 
-    /// Should `call`'s live audio at `now_s` be passed on? One copy at a
-    /// time: the one already playing, until it has been quiet a moment.
-    pub fn audio_lead(&mut self, call: CallId, now_s: f64) -> bool {
-        let Some(c) = self.of.get(&call).and_then(|i| self.convs.get_mut(i)) else { return true };
-        let take = match c.lead {
-            Some((lead, last)) => lead == call || !c.members.iter().any(|m| m.call == lead && m.open) || now_s - last > LEAD_HOLD_S,
-            None => true,
-        };
+    /// Whether `site` is where `key`'s live audio comes from at `now_s` (or nowhere is).
+    pub fn leads(&self, key: LiveKey, site: u16, now_s: f64) -> bool {
+        self.leads.get(&key).is_none_or(|l| l.lets(site, now_s))
+    }
+
+    /// Should `site`'s live audio for `key` at `now_s` be passed on? One
+    /// site at a time: the one already playing, until it has been quiet a moment.
+    pub fn audio_lead(&mut self, key: LiveKey, site: u16, now_s: f64) -> bool {
+        let take = self.leads(key, site, now_s);
         if take {
-            c.lead = Some((call, now_s));
+            self.leads.insert(key, Lead { site, last_s: now_s });
         }
         take
     }
 
-    /// A copy ended, with its recording (None: it wasn't recorded).
-    pub fn end(&mut self, call: CallId, held: Option<Held>) -> Ended {
-        let Some(&id) = self.of.get(&call) else { return Ended::Alone(held) };
-        let conv = self.convs.get_mut(&id).unwrap();
-        for m in conv.members.iter_mut().filter(|m| m.call == call) {
+    /// Copy `c` ended, with its recording (None: it wasn't recorded). The
+    /// recordings, once the last copy has, and what's told.
+    fn end(&mut self, c: &Call, held: Option<Held>) -> (Vec<Held>, Option<Event>) {
+        let Some(&id) = self.of.get(&c.id) else { return (held.into_iter().collect(), None) };
+        let Some(v) = self.convs.get_mut(&id) else { return (held.into_iter().collect(), None) };
+        if let Some(m) = v.members.iter_mut().find(|m| m.call.id == c.id) {
+            m.call = c.clone();
             m.open = false;
         }
-        conv.held.extend(held);
-        if conv.members.iter().any(|m| m.open) {
-            return Ended::Waiting;
+        v.held.extend(held);
+        if v.members.iter().any(|m| m.open) {
+            return (Vec::new(), v.news().map(Event::CallUpdate));
         }
-        let conv = self.convs.remove(&id).unwrap();
-        for m in &conv.members {
-            self.of.remove(&m.call);
+        let Some(v) = self.convs.remove(&id) else { return (Vec::new(), None) };
+        for m in &v.members {
+            self.of.remove(&m.call.id);
         }
-        Ended::Done(conv.held)
-    }
-}
-
-impl MultiSite {
-    /// Link call `c`, just begun on `site`, with the copies of it already
-    /// going on the other sites of its system (`others`: their calls) — the
-    /// same talkgroup, begun within [`TWIN_WINDOW_S`] ([`Span::starts_with`]).
-    /// (A unit-to-unit call's "talkgroup" is the radio called: never a copy
-    /// of a talkgroup's call.)
-    pub fn link_new<'a>(&mut self, c: &Call, site: u16, others: impl IntoIterator<Item = &'a [Call]>) {
-        let twins: Vec<(CallId, u16)> = others
-            .into_iter()
-            .flatten()
-            .filter(|o| o.talkgroup == c.talkgroup && o.unit_to_unit == c.unit_to_unit && Span::of(o).starts_with(Span::of(c)))
-            .filter_map(|o| Some((o.id, o.site?)))
-            .collect();
-        self.link(c.id, site, &twins);
+        let told = v.view();
+        (v.held, Some(Event::CallEnd(told)))
     }
 
-    /// Call `id` ended (`held`: its recording, None when it wasn't
-    /// recorded). When it was the last of its copies: all of them, the one
-    /// to save first ([`pick`]), then the others, best first — the next to
-    /// try when one isn't kept (too short for its site's rules).
-    /// `prefers(site, tg)`: whether `site` is the one the talkgroup file
-    /// wants `tg` from.
-    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(Option<u16>, &Talkgroup) -> bool) -> Option<Vec<Held>> {
-        let mut copies = match self.end(id, held) {
-            Ended::Alone(None) | Ended::Waiting => return None,
-            Ended::Alone(Some(h)) => vec![h],
-            Ended::Done(v) => v,
-        };
-        // The talkgroup's preferred site, by any site's talkgroup file.
-        let prefs: Vec<&Talkgroup> = copies.iter().filter_map(|h| h.call.talkgroup_info.as_ref()).collect();
-        let preferred: Vec<bool> = copies.iter().map(|h| prefs.iter().any(|tg| prefers(h.call.site, tg))).collect();
-        let k = pick(&copies, &preferred)?;
+    /// Copy `c` ended (`held`: its recording, None when it wasn't
+    /// recorded). When it was the last: all of them, the one to save first
+    /// ([`pick`]), then the others, best first — the next to try when one
+    /// isn't kept (too short for its site's rules) — and what's told.
+    /// `prefers(call)`: whether the copy's site is the one its talkgroup is
+    /// wanted from.
+    pub fn conclude(&mut self, c: &Call, held: Option<Held>, prefers: impl Fn(&Call) -> bool) -> (Vec<Held>, Option<Event>) {
+        let (mut copies, told) = self.end(c, held);
+        let preferred: Vec<bool> = copies.iter().map(|h| prefers(&h.call)).collect();
+        let Some(k) = pick(&copies, &preferred) else { return (copies, told) };
         let first = copies.remove(k);
         copies.sort_by(|a, b| b.clean_s().total_cmp(&a.clean_s()));
         copies.insert(0, first);
-        Some(copies)
+        (copies, told)
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.convs.is_empty() && self.of.is_empty()
     }
 }
 
@@ -306,23 +363,26 @@ mod tests {
         let mut rec = Recorded::new(false, InBandSpec::default());
         for k in 0..good + bad {
             let kind = if k < good { Kind::Voice } else { Kind::Repeat };
-            rec.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind, tone: None });
+            rec.frames.push(&VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind, tone: None });
         }
         rec.audio = vec![0.1; (good + bad) * FRAME_SAMPLES];
         Held { call: call(id, site, id as f64 * 0.1), rec, on: Default::default() }
     }
 
+    /// Copy `c` begins, linked.
+    fn begin(m: &mut MultiSite, c: Call) -> Option<Event> {
+        m.start(&c, true)
+    }
+
     #[test]
     fn copies_are_the_same_talkgroup_granted_close_together() {
-        let tg = |id, site, talkgroup, start_s, u2u| Call { talkgroup, unit_to_unit: u2u, ..call(id, site, start_s) };
+        let tg = |id, site, talkgroup, start_s| Call { talkgroup, ..call(id, site, start_s) };
         let mut m = MultiSite::default();
-        m.link_new(&tg(5, 1, 101, 10.0, false), 1, [&[tg(1, 0, 101, 8.0, false), tg(2, 0, 102, 10.0, false), tg(3, 0, 101, 5.0, false)][..]]);
+        for c in [tg(1, 0, 101, 8.0), tg(2, 0, 102, 10.0), tg(3, 0, 101, 5.0)] {
+            begin(&mut m, c);
+        }
+        begin(&mut m, tg(5, 1, 101, 10.0));
         assert_eq!(m.twins(5), [(1, 0)], "another talkgroup, or granted too long before, isn't a copy");
-        // A call to a radio is no copy of a talkgroup call of its number; the same radio called on two sites is.
-        m.link_new(&tg(7, 1, 1234, 0.0, true), 1, [&[tg(6, 0, 1234, 0.0, false)][..]]);
-        assert!(m.twins(7).is_empty());
-        m.link_new(&tg(9, 1, 1234, 0.0, true), 1, [&[tg(8, 0, 1234, 0.0, true)][..]]);
-        assert_eq!(m.twins(9), [(8, 0)]);
     }
 
     /// One copy from each site: a talkgroup's next transmission on a site
@@ -332,12 +392,13 @@ mod tests {
     fn a_conversation_has_one_copy_from_each_site() {
         let tg = |id, site, start_s| Call { talkgroup: 145, ..call(id, site, start_s) };
         let mut m = MultiSite::default();
-        m.link_new(&tg(2, 1, 0.2), 1, [&[tg(1, 0, 0.0)][..]]);
+        begin(&mut m, tg(1, 0, 0.0));
+        begin(&mut m, tg(2, 1, 0.2));
         // Site 1's next transmission, 1.5 s on: site 0's copy already has a site 1 copy.
-        m.link_new(&tg(3, 1, 1.5), 1, [&[tg(1, 0, 0.0)][..]]);
+        begin(&mut m, tg(3, 1, 1.5));
         assert!(m.twins(3).is_empty());
         // Site 0's next, 2.5 s on, goes with it, not with the first.
-        m.link_new(&tg(4, 0, 2.5), 0, [&[tg(2, 1, 0.2), tg(3, 1, 1.5)][..]]);
+        begin(&mut m, tg(4, 0, 2.5));
         assert_eq!((m.twins(4), m.twins(1)), (vec![(3, 1)], vec![(2, 1)]));
     }
 
@@ -363,49 +424,82 @@ mod tests {
     fn a_call_to_a_radio_is_no_copy_of_a_talkgroup_call_of_its_number() {
         let tg = |id, site, u2u| Call { talkgroup: 1234, unit_to_unit: u2u, ..call(id, site, 0.0) };
         let mut m = MultiSite::default();
-        m.link_new(&tg(2, 1, true), 1, [&[tg(1, 0, false)][..]]);
+        begin(&mut m, tg(1, 0, false));
+        begin(&mut m, tg(2, 1, true));
         assert!(m.twins(2).is_empty());
-        m.link_new(&tg(4, 1, true), 1, [&[tg(3, 0, true)][..]]);
-        assert_eq!(m.twins(4), [(3, 0)], "the same radio called on two sites is one call");
+        begin(&mut m, tg(3, 0, true));
+        assert_eq!(m.twins(3), [(2, 1)], "the same radio called on two sites is one call");
     }
 
     #[test]
-    fn the_last_copy_to_end_hands_over_every_recording() {
+    fn the_last_copy_to_end_hands_over_every_recording_and_ends_the_call() {
         let mut m = MultiSite::default();
-        m.link(2, 1, &[(1, 0)]);
-        m.link(3, 2, &[(2, 1)]);
+        let (c1, c2, c3) = (call(1, 0, 0.0), call(2, 1, 0.1), call(3, 2, 0.2));
+        assert!(matches!(begin(&mut m, c1.clone()), Some(Event::CallStart(c)) if c.id == 1));
+        assert!(begin(&mut m, c2.clone()).is_none(), "the same call");
+        begin(&mut m, c3.clone());
         assert_eq!(m.twins(1), vec![(2, 1), (3, 2)]);
-        assert!(matches!(m.end(1, Some(held(1, 0, 10, 0, 0))), Ended::Waiting));
-        assert!(matches!(m.end(3, None), Ended::Waiting));
-        let Ended::Done(v) = m.end(2, Some(held(2, 1, 12, 0, 0))) else { panic!() };
-        assert_eq!(v.iter().map(|h| h.call.id).collect::<Vec<_>>(), [1, 2]);
-        assert!(m.twins(2).is_empty());
-        assert!(matches!(m.end(9, None), Ended::Alone(None)));
+        let none = |_: &Call| false;
+        let (v, told) = m.conclude(&c1, Some(held(1, 0, 10, 0, 0)), none);
+        assert!(v.is_empty() && !matches!(told, Some(Event::CallEnd(_))), "two copies go on");
+        let (v, told) = m.conclude(&c3, None, none);
+        assert!(v.is_empty() && !matches!(told, Some(Event::CallEnd(_))), "one goes on");
+        let (v, told) = m.conclude(&c2, Some(held(2, 1, 12, 0, 0)), none);
+        assert_eq!(v.iter().map(|h| h.call.id).collect::<Vec<_>>(), [2, 1]);
+        assert!(matches!(told, Some(Event::CallEnd(c)) if c.id == 1), "by the id it was told by");
+        assert!(m.is_empty());
+    }
+
+    /// The call's told by a copy being recorded, wherever that is, from
+    /// the first copy's start to the last one's end, with what any copy heard.
+    #[test]
+    fn a_call_is_told_as_its_copies_together_have_it() {
+        let src = |src, time_s| CallSource { src, time_s, ..Default::default() };
+        let mut m = MultiSite::default();
+        let first = Call { reason: Some(crate::trunk::calls::Reason::NoSource), sources: vec![src(7, 0.0)], ..call(1, 0, 0.0) };
+        begin(&mut m, first.clone());
+        let second = Call { recording: true, freq_hz: 851_000_000, sources: vec![src(9, 0.5)], ..call(2, 1, 0.4) };
+        let Some(Event::CallUpdate(c)) = begin(&mut m, second.clone()) else { panic!("it's being recorded after all") };
+        assert_eq!((c.id, c.recording, c.reason, c.site, c.freq_hz, c.start_s), (1, true, None, Some(1), 851_000_000, 0.0));
+        assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [7, 9]);
+        assert!(m.update(&Call { last_update_s: 3.0, ..second.clone() }).is_none(), "time passing isn't news");
+        let none = |_: &Call| false;
+        m.conclude(&first, None, none);
+        let (_, told) = m.conclude(&Call { last_update_s: 9.0, ..second }, None, none);
+        assert!(matches!(told, Some(Event::CallEnd(c)) if c.id == 1 && c.recording && c.last_update_s == 9.0));
+    }
+
+    fn key(system: u16, talkgroup: u32) -> LiveKey {
+        LiveKey { system, talkgroup, unit_to_unit: false }
     }
 
     #[test]
-    fn conversations_merge_when_a_copy_links_two() {
+    fn live_audio_stays_with_one_site_until_it_goes_quiet() {
         let mut m = MultiSite::default();
-        m.link(2, 1, &[(1, 0)]);
-        m.link(4, 3, &[(3, 2)]);
-        m.link(5, 4, &[(1, 0), (3, 2)]);
-        assert_eq!(m.twins(5).len(), 4);
-        for c in [1, 2, 3, 4] {
-            assert!(matches!(m.end(c, None), Ended::Waiting));
-        }
-        assert!(matches!(m.end(5, None), Ended::Done(v) if v.is_empty()));
+        let tg = key(0, 101);
+        assert!(m.audio_lead(tg, 0, 0.0));
+        assert!(!m.audio_lead(tg, 1, 0.1));
+        assert!(m.audio_lead(tg, 0, 0.3));
+        assert!(m.audio_lead(tg, 1, 0.9), "site 0 went quiet");
+        assert!(!m.audio_lead(tg, 0, 1.0));
+        assert!(m.audio_lead(key(0, 102), 0, 1.0), "another talkgroup");
+        assert!(m.audio_lead(key(1, 101), 0, 1.0), "another system");
+        assert!(m.audio_lead(LiveKey { unit_to_unit: true, ..tg }, 0, 1.0), "a call to a radio of that number");
     }
 
+    /// Issue 151: one site keeps one long call while another ends its call and starts a new one.
+    /// Nothing links the second site's new call to the long one, and only one site is still heard.
     #[test]
-    fn live_audio_stays_with_one_copy_until_it_goes_quiet() {
+    fn live_audio_is_one_site_however_the_sites_divide_it_into_calls() {
         let mut m = MultiSite::default();
-        m.link(2, 1, &[(1, 0)]);
-        assert!(m.audio_lead(1, 0.0));
-        assert!(!m.audio_lead(2, 0.1));
-        assert!(m.audio_lead(1, 0.3));
-        assert!(m.audio_lead(2, 0.9), "1 went quiet");
-        assert!(!m.audio_lead(1, 1.0));
-        assert!(m.audio_lead(7, 0.0), "not a copy");
+        let tg = key(0, 101);
+        begin(&mut m, Call { talkgroup: 101, ..call(1, 0, 0.0) });
+        begin(&mut m, Call { talkgroup: 101, ..call(2, 1, 20.0) });
+        assert!(m.twins(2).is_empty(), "begun too far apart to be copies");
+        assert!(m.audio_lead(tg, 0, 20.0));
+        assert!(!m.audio_lead(tg, 1, 20.1), "the same air, from another site");
+        assert!(m.leads(tg, 0, 20.2) && !m.leads(tg, 1, 20.2));
+        assert!(m.leads(tg, 1, 21.0), "free once it's quiet");
     }
 
     #[test]
@@ -428,7 +522,7 @@ mod tests {
         let mut h = held(1, 0, 0, 0, 0);
         for k in 0..100 {
             let kind = if k < 50 { Kind::Repeat } else { Kind::Voice };
-            h.rec.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind, tone: None });
+            h.rec.frames.push(&VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind, tone: None });
         }
         h.rec.audio = vec![0.1; 100 * FRAME_SAMPLES];
         h.rec.tx.note(0, 0.0);

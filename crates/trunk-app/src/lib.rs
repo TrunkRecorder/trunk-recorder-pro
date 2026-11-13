@@ -18,6 +18,7 @@ pub mod migrate;
 pub mod place;
 pub mod profile;
 pub mod protocol;
+pub mod rates;
 pub mod samples;
 pub mod saving;
 pub mod session;

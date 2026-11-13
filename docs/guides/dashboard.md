@@ -38,7 +38,7 @@ Below that is a card for each system. Click its name to go to its Decode page.
   decoded over the last 10 minutes; under 2% is clean), and **new TGs** (first heard in the last
   24 hours).
 - Chips for the talkgroups on the air; click one for its page.
-- **voice quality by frequency, 24 h**: one cell per voice channel, darker where more voice was
+- **Voice lost per frequency · 24 h**: one cell per voice channel, darker where more voice was
   lost. A dark cell or two at one end often means a source's band edge.
 
 On the right are the **Sources** (as on the RF page, smaller), then **Status**: a **Computer**
@@ -60,7 +60,7 @@ Each source then has a card:
 |---|---|
 | **Noise floor**, dBFS | The median power across the band. It rises with gain, and with interference. A sudden rise with no gain change means something nearby started making noise. |
 | **Headroom**, dB | How far the strongest signals are below full scale (the point where the radio clips). Under the meter: the share of samples clipping, if any. |
-| **Frequency error**, ppm | How far off the radio's frequency is, measured against the control channels (the towers' frequencies are very accurate). With AutoTune on it's corrected as it's measured; otherwise it says `not corrected (AutoTune off)`. It needs a control channel to measure. Steady: set the source's ppm. Drifting: temperature. See [Radios](radios.md). |
+| **Frequency error**, ppm | How far off the radio's frequency is, measured against the control channels (the towers' frequencies are very accurate). With AutoTune on it's corrected as it's measured; otherwise it says **AutoTune** off. It needs a control channel to measure. Steady: set the source's ppm. Drifting: temperature. See [Radios](radios.md). |
 | **Dropped**, samples/s | Samples the driver lost because the computer or the USB bus didn't keep up. Anything but zero is red: calls on that source lose audio. |
 
 Under the card: the gain as set, the sample rate actually delivered against the one asked for,
@@ -95,10 +95,10 @@ How well signals turn into messages and voice. A card per system:
 | **Phase error**, ° rms | CQPSK (simulcast P25, and Phase 2): how far symbols land from where they should. Under 10° is clean, amber from 15°, red from 20°, about 25° is noise. |
 | **Deviation**, Hz | SmartNet: how far the signal swings. About ±2.4 kHz is normal; less means weak or filtered. |
 | **carrier** (under these) | The control channel's carrier offset in Hz. A steady offset is the radio's frequency error. |
-| **Framing**, % missed | P25: frames whose header (NID) failed or whose sync was missed, and how often the equaliser reset a minute |
+| **Frames missed**, % | P25: frames whose header (NID) failed or whose sync was missed, and how often the equaliser reset a minute |
 | **Voice lost**, % of frames | Voice frames too damaged to use, over 10 minutes. Under 2% is clean, amber from 2%, red from 8%. Under it: bit errors the error correction fixed per frame. |
 
-Each card also has a **voice lost by frequency, 24 h** strip.
+Each card also has a **Voice lost per frequency · 24 h** strip.
 
 Click a system's name for its own page, which adds:
 
@@ -128,17 +128,16 @@ clicking a system's card goes to it. The **Span** is 24 hours or 7 days.
 | **New talkgroups** | First heard in the last 24 hours (`learning (first hour)` while it builds a baseline) |
 | **Unknown** | Heard in 24 hours but not in the talkgroup file |
 
-**What happened to calls** splits the calls by what became of them: **Recorded**, **Followed
-only**, **Ignored**, **Encrypted**, **Not in the file**, **No recorder** and **Out of band**. The
+**Call outcomes** splits the calls by what became of them: **Recorded**, **Followed
+only**, **Ignored**, **Encrypted**, **Not in file**, **No recorder** and **Out of band**. The
 last two are calls you missed; see the reasons table under [Active calls](#active-calls).
 
 **Out of band** lists the frequencies those calls were granted on, in the span: how many calls,
 by hour, when the last was, and the nearest source with how far past the edge of its usable
 range each is (guard band left out). Move that source's centre toward them, widen its sample
-rate, or add a source. It shows when there are some; **Out of band** in **What happened to
-calls**, and a warning of calls out of band (on the Overview too), open it.
+rate, or add a source. It shows when there are some; **Out of band** in **Call outcomes**, and a warning of calls out of band (on the Overview too), open it.
 
-Below the numbers: **Active calls** (see below), **What happened to calls** and **Call lengths**,
+Below the numbers: **Active calls** (see below), **Call outcomes** and **Call lengths**,
 **Busiest … by hour**, **Who talks on what** (talkgroups and the busiest radios, linked by how
 often each radio talks on each), the **Talkgroups** table, the **Radios** table, and at the
 bottom the **Control channel log**.
@@ -163,18 +162,18 @@ the Radio system page).
 | **Freq, MHz** | The voice channel, with `s0`/`s1` for a TDMA slot, `FM` (and its tone) for analog, `NXDN48`/`NXDN96` and the RAN for NXDN |
 | **Source** | The radio talking now: its name or talker alias when known, else its unit ID. Click it for the radio's page. |
 | **Time** | How long the call has gone on |
-| **State** | `recording`, `recording (encrypted)`, or why it isn't being recorded |
+| **State** | `recording`, `recording · encrypted`, or why it isn't being recorded |
 | (button) | **Listen** plays just that talkgroup |
 
 The reasons a call isn't recorded:
 
 | State | Why | What to do |
 |---|---|---|
-| `encrypted — not recorded` | The call is encrypted and encrypted calls are off | Nothing: encrypted audio can't be decoded |
-| `outside tuned range` | No source covers its voice frequency | Move a source's centre, or add a source. See [Radios](radios.md). |
+| `encrypted` | The call is encrypted and encrypted calls are off | Nothing: encrypted audio can't be decoded |
+| `out of range` | No source covers its voice frequency | Move a source's centre, or add a source. See [Radios](radios.md). |
 | `no free recorder` | Every recorder is busy | Raise **Recorders** in Setup → Recording |
-| `not in talkgroup list` | It's not in the talkgroup file and **Talkgroups not in the talkgroup file** is off | Add it, or turn that on in Call rules |
-| `ignored (talkgroup list)` | It's set to Ignore in the talkgroup file | Un-ignore it on the Radio system page |
+| `not in file` | It's not in the talkgroup file and **Unlisted talkgroups** is off | Add it, or turn that on in Call rules |
+| `ignored` | It's set to Ignore in the talkgroup file | Un-ignore it on the Radio system page |
 | `monitoring` | Followed, not recorded, for another reason | |
 
 ### Listening live
@@ -183,7 +182,7 @@ Tick **Listen live** to hear that system's calls as they're decoded, like a scan
 one call until that call has been quiet for 2 seconds, then takes the next one. The line under the
 heading shows what's playing (`▶ TG 3747 · <radio>`).
 
-- Live audio is one system at a time: on another system's page it says "Listening to <system>".
+- Live audio is one system at a time: on another system's page it says "Listening: <system>".
 - Turning on Listen's **Live feed** turns **Listen live** off, and the other way round (one sound
   at a time).
 - The **Listen** button on a recording call plays only that talkgroup. A button then appears
@@ -200,7 +199,7 @@ At the bottom of a system's page, collapsed. Click **Control channel log** to op
 system's last 150 control channel messages as they arrive, newest first (a site's name in brackets
 for a system with several sites): grants, updates, patches, the system's identity, neighbouring
 sites, talker aliases, protocol notes (such as a DMR site's colour code and kind), plugin notes and
-errors. Tick **Show unit activity** to also see affiliations, registrations and the like.
+errors. Tick **Unit activity** to also see affiliations, registrations and the like.
 
 The log is only made while it's open, because turning every control message into a line costs
 the recorder some work. This is not the same as the app's log file: see
@@ -220,8 +219,8 @@ The **Health** tab has a card for each plugin that's on (**Install & settings** 
 
 Under them: how much it has sent this run, a bar per minute for the last hour (sent, skipped, failed), each service the plugin
 talks to with its state, any figures of its own the plugin reports (simplestream's packets sent and
-dropped, for example), and when it last succeeded and failed. **Restarted N×** means the plugin
-crashed and was restarted; **Fell behind N events** means it was too slow to take events and some
+dropped, for example), and when it last succeeded and failed. **Restarts** means the plugin
+crashed and was restarted; **Fell behind** (N events) means it was too slow to take events and some
 were dropped. **Last 24 h and log ▾** shows its history (the age at delivery among it) and recent log lines.
 
 The age at delivery is local, so it's only as right as this computer's clock: see [Clock](#clock).
@@ -238,14 +237,16 @@ The computer the recorder runs on, recording or not:
 | **CPU** | All cores together (of the container's limit, in a container). Amber over 90%. |
 | **Trunk Recorder Pro** | The app's own CPU use, in cores, and its memory |
 | **Memory** | Memory in use, and how much of the time programs stall waiting for memory (Linux) or the system's memory pressure (macOS) |
-| **Internet** | Whether the internet checks answer, and how long a connection takes |
+| **Connections** | Whether what the recorder reaches answers: the hosts it checks and the services the plugins send to, and how long a connection to a checked host takes |
 | **Temperature** | The hottest sensor, and whether a Raspberry Pi is throttling (under-voltage or heat) |
 
 **Over time** has CPU (with each core) and memory. **Disks** shows the **Recordings** disk, the
 **App data** disk and the **RAM spool** if it's on, with free space, calls that overflowed from
-the spool, and **About … of recordings left** at last week's daily average. **Network** shows each
-internet check (`monitor.probeHosts`, by default `1.1.1.1:443` and `dns.google:443`), and **This
-computer** the system, cores, uptime and anything the platform can't measure.
+the spool, and **Room for** at last week's daily average (and **Per day**). **Network** lists each
+connection: the hosts checked (`monitor.checkHosts`, none by default), with their history minute by
+minute, and each service a plugin reports, with how it answers. Its settings (hosts to check, how
+often, the time server) are under the list. **This computer** shows the system, cores, uptime and
+anything the platform can't measure.
 
 ### Clock
 
@@ -261,15 +262,15 @@ macOS) keeps it. Nothing extra needs installing, and nothing runs with privilege
 | **Round trip** | The query's round trip. The offset is good to about half of it. |
 
 Under them, when they're known:
-- **Kept by…**: the time service and the server it follows, its stratum and when it last
+- **Kept by**: the time service and the server it follows, its stratum and when it last
   synchronized (Linux: chrony or systemd-timesyncd).
-- **The recording's own clock**: while recording. The recording runs on the clock as it was at
+- **Recording's own clock**: while recording. The recording runs on the clock as it was at
   Start, carried on by a clock that never jumps (on macOS one that runs at the crystal's rate, so it
   parts from the corrected clock by up to a few seconds a day). Call times are corrected to the clock
   as it is now all the same, with no Stop and Start: this line only says how far apart the two are.
   A call keeps the correction it began with until it ends, so its length and its talkers' times
   are as on the air even when the clock is stepped during it.
-- **The radio systems' clocks**: P25 systems (Phase 2) broadcast their own time, to 7.5 ms,
+- **Radio systems' clocks**: P25 systems (Phase 2) broadcast their own time, to 7.5 ms,
   usually from GPS. Each site's line says how far its system's clock is ahead of or behind the
   calls' time ("3.0 s behind them": the system's clock is three seconds slow). Times are in ms under
   a second, then seconds. Some systems mark their time not valid, and those can be seconds off
@@ -285,7 +286,7 @@ isn't synchronized; red at 5 s. What's judged is the clock calls are stamped by:
 
 A measurement over an hour old isn't counted. A jump of the clock (its time service setting it, or
 the computer sleeping) is an event of its own. Some networks block NTP (UDP port 123): then nothing
-is measured, the card says the queries go unanswered, and the internet checks don't count it.
+is measured, the card says the queries go unanswered, and the hosts checked don't count it.
 Pointing `monitor.timeServer` at a server inside your network (often your router) can help.
 
 The offset is local: nothing Broadcastify or another service reports. Broadcastify Calls doesn't

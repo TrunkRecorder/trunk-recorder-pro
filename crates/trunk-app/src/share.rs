@@ -193,13 +193,16 @@ impl Ledger {
         self.systems.contains_key(short_name)
     }
 
-    /// A call was granted on the system (a twin, another site's copy of one, counts for its site's voice channel only).
-    pub fn call(&mut self, short_name: &str, c: &Call) {
+    /// A call of `talkgroup` was granted on the system, however many sites heard it.
+    pub fn call(&mut self, short_name: &str, talkgroup: u32) {
+        let Some(e) = self.systems.get_mut(short_name) else { return };
+        e.talkgroups.entry(talkgroup).or_default().grants += 1;
+    }
+
+    /// One site's copy of a call: its voice channel, and what it's on.
+    pub fn copy(&mut self, short_name: &str, c: &Call) {
         let Some(e) = self.systems.get_mut(short_name) else { return };
         let h = e.talkgroups.entry(c.talkgroup).or_default();
-        if !c.twin {
-            h.grants += 1;
-        }
         h.encrypted |= c.encrypted;
         if let Some(s) = c.site {
             h.sites.insert(s);
@@ -415,8 +418,14 @@ mod tests {
     }
 
     /// A grant on engine site `site`.
-    fn grant(site: Option<u16>, talkgroup: u32, freq_hz: u64, encrypted: bool, twin: bool) -> Call {
-        Call { site, talkgroup, freq_hz, encrypted, twin, ..Call::default() }
+    fn grant(site: Option<u16>, talkgroup: u32, freq_hz: u64, encrypted: bool) -> Call {
+        Call { site, talkgroup, freq_hz, encrypted, ..Call::default() }
+    }
+
+    /// A call heard first on this site.
+    fn granted(l: &mut Ledger, c: &Call) {
+        l.call("dcfd", c.talkgroup);
+        l.copy("dcfd", c);
     }
 
     fn site(n: u16, name: &str, good: u64) -> SiteStatus {
@@ -440,7 +449,7 @@ mod tests {
         let t0 = NOW;
         assert!(!l.due("dcfd", t0), "not decoded yet");
         l.decoding("dcfd", t0);
-        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
+        granted(&mut l, &grant(Some(0), 101, 851_000_000, false));
         assert!(!l.due("dcfd", t0 + 4.0 * MIN));
         assert!(l.due("dcfd", t0 + 5.0 * MIN));
         l.sent("dcfd");
@@ -449,10 +458,10 @@ mod tests {
         l.done("dcfd", t1, Ok(Some(Linked { id: "sys_1".into(), rev: 1 })));
         assert_eq!(l.status_json("dcfd")["state"], "shared");
         // The same talkgroup on the same channel again: nothing new.
-        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
+        granted(&mut l, &grant(Some(0), 101, 851_000_000, false));
         assert!(!l.due("dcfd", t1 + 2.0 * 60.0 * MIN));
         // A new one: but not within the hour.
-        l.call("dcfd", &grant(Some(0), 102, 851_000_000, true, false));
+        granted(&mut l, &grant(Some(0), 102, 851_000_000, true));
         assert!(!l.due("dcfd", t1 + 30.0 * MIN));
         assert!(l.due("dcfd", t1 + 60.0 * MIN));
         // Shared, then nothing new: daily.
@@ -468,7 +477,7 @@ mod tests {
         c.systems[0].fcc.clear();
         let mut l = Ledger::new(&c.systems);
         l.decoding("dcfd", NOW);
-        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
+        granted(&mut l, &grant(Some(0), 101, 851_000_000, false));
         assert!(!l.due("dcfd", NOW + 10.0 * MIN), "no call sign: not shared");
         assert_eq!(l.status_json("dcfd")["state"], "needsCallSign");
         // One heard on the air (a Motorola base station ID): shared.
@@ -477,7 +486,7 @@ mod tests {
         // Or one looked up (Identify), told while recording.
         let mut l = Ledger::new(&c.systems);
         l.decoding("dcfd", NOW);
-        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
+        granted(&mut l, &grant(Some(0), 101, 851_000_000, false));
         assert!(!l.due("dcfd", NOW + 10.0 * MIN));
         c.systems[0].fcc.insert("857987500".into(), crate::config::FccLicense { call_sign: "WPXT459".into(), name: "DISTRICT OF COLUMBIA".into(), from: FccFrom::Lookup });
         l.set(&c.systems[0]);
@@ -495,7 +504,7 @@ mod tests {
         let c = config(true);
         let mut l = Ledger::new(&c.systems);
         l.decoding("dcfd", NOW);
-        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
+        granted(&mut l, &grant(Some(0), 101, 851_000_000, false));
         let t = NOW + 10.0 * MIN;
         l.sent("dcfd");
         l.done("dcfd", t, Err("down".into()));
@@ -531,7 +540,7 @@ mod tests {
         let mut l = Ledger::new(&c.systems);
         l.load(&saved);
         l.decoding("dcfd", NOW);
-        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
+        granted(&mut l, &grant(Some(0), 101, 851_000_000, false));
         assert!(!l.due("dcfd", NOW + 30.0 * MIN), "shared half an hour ago, before the restart");
         assert!(l.due("dcfd", NOW + 60.0 * MIN));
         assert_eq!(l.evidence("dcfd").unwrap().link, Some(("sys_1".into(), 3)));
@@ -544,11 +553,11 @@ mod tests {
         let sys = &c.systems[0];
         let mut l = Ledger::new(&c.systems);
         l.load(r#"{ "sys_1": { "rev": 3, "sharedAt": 1 } }"#);
-        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, false));
-        l.call("dcfd", &grant(Some(0), 101, 851_000_000, false, true));
-        l.call("dcfd", &grant(Some(1), 101, 852_000_000, false, true));
-        l.call("dcfd", &grant(Some(1), 202, 852_000_000, true, false));
-        l.call("dcfd", &Call { reason: Some(Reason::NoSource), ..grant(Some(1), 202, 869_000_000, true, false) });
+        granted(&mut l, &grant(Some(0), 101, 851_000_000, false));
+        l.copy("dcfd", &grant(Some(0), 101, 851_000_000, false));
+        l.copy("dcfd", &grant(Some(1), 101, 852_000_000, false));
+        granted(&mut l, &grant(Some(1), 202, 852_000_000, true));
+        granted(&mut l, &Call { reason: Some(Reason::NoSource), ..grant(Some(1), 202, 869_000_000, true) });
         let mut tgs = Talkgroups::default();
         tgs.insert(101, Talkgroup { number: 101, alpha_tag: "Dispatch".into(), description: "From a website".into(), ..Talkgroup::default() });
         let (north, mut south, unheard) = (site(0, "north", 50), site(1, "south", 9), site(2, "east", 0));

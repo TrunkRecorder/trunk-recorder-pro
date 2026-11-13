@@ -98,6 +98,13 @@ impl Backend for SqliteBackend {
         out
     }
 
+    fn compact(&self) -> Result<(), String> {
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute_batch("vacuum").map_err(|e| format!("vacuum failed: {e}"))?;
+        // (Vacuumed, the whole store went through the WAL: let it go too.)
+        conn.query_row("pragma wal_checkpoint(truncate)", [], |_| Ok(())).map_err(|e| format!("checkpoint failed: {e}"))
+    }
+
     fn checkpoint(&self) {
         if let Err(e) = self.writer.lock().unwrap_or_else(|e| e.into_inner()).query_row("pragma wal_checkpoint(truncate)", [], |_| Ok(())) {
             log::warn!("Call store: checkpoint failed: {e}");
@@ -322,7 +329,7 @@ mod tests {
         assert_eq!(store.scalar("pragma user_version"), i64::from(schema::SCHEMA_VERSION));
         assert_eq!(store.texts("pragma journal_mode"), ["wal"]);
         let tables = store.texts("select name from sqlite_master where type='table' order by name");
-        assert_eq!(tables, ["call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "series", "stats_hours", "stats_minutes", "systems", "talkgroups", "units"]);
+        assert_eq!(tables, ["call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "series", "stats_hours", "stats_minutes", "systems", "talkgroups", "unit_names", "units"]);
     }
 
     /// A second opener of the same store (another recorder on the same data
@@ -338,6 +345,25 @@ mod tests {
         std::fs::copy(&path, &other).unwrap();
         drop(db);
         assert!(open(&other).is_ok());
+    }
+
+    /// A version 8 store (v0.3.0's) is upgraded in place: its talkgroups
+    /// kept, with no origin, and a table for unit names.
+    #[test]
+    fn a_version_8_store_is_upgraded_in_place() {
+        let dir = TestDir::new("db-v8");
+        let path = dir.join("trunk-pro.sqlite");
+        let store = open(&path).unwrap();
+        store.batch_for_test("insert into systems (id, short_name, kind) values (1, 'a', 'p25');
+            insert into talkgroups (system_id, number, alpha_tag, mode, description, tag, category, priority, preferred_nac, preferred_site, ignore, sort_order, comment, origin, origin_name, origin_at)
+              values (1, 101, 'Fire', 'D', '', '', '', 1, 0, '', 0, 0, '', 'file', 'x.csv', 5);
+            drop table unit_names; alter table talkgroups drop column origin; alter table talkgroups drop column origin_name; alter table talkgroups drop column origin_at;
+            pragma user_version = 8;");
+        drop(store);
+        let store = open(&path).unwrap();
+        assert_eq!((store.scalar("pragma user_version"), aside_count(&dir)), (i64::from(schema::SCHEMA_VERSION), 0), "not set aside");
+        assert_eq!(store.talkgroups(1).unwrap().iter().map(|r| (r.tg.alpha_tag.as_str(), r.origin.is_none())).collect::<Vec<_>>(), [("Fire", true)]);
+        assert!(store.unit_names(1).unwrap().is_empty());
     }
 
     #[test]

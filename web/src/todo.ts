@@ -29,8 +29,7 @@ export function openTodos(s: AppState): OpenTodo[] {
       case "units": {
         const sys = c.systems.find((x) => x.shortName === item.system);
         const conv = c.conventional.find((x) => x.shortName === item.system);
-        const names = sys?.unitNames ?? conv?.unitNames;
-        if (!names?.csv)
+        if ((sys || conv) && !s.unitNames[item.system])
           out.push({
             item,
             target: sys || !conv ? `units-${item.system}` : `convunits-${item.system}`,

@@ -1,46 +1,38 @@
-// Radios' talker aliases as the recorder saves them — Trunk Recorder's
-// unitTagsOTA CSV (crates/trunk-core/src/trunk/units.rs): headerless,
-// unitID,alias,source,timestamp,WACN,SYS,talkgroup; the newest line wins.
+// A system's radios' names: its own (Trunk Recorder's unitTagsFile, kept as
+// rows beside the config and read, written and edited by the recorder's own
+// code through rules.ts), and the talker aliases heard, as the recorder saves
+// them — Trunk Recorder's unitTagsOTA CSV (crates/trunk-core/src/trunk/units.rs):
+// headerless, unitID,alias,source,timestamp,WACN,SYS,talkgroup; the newest line wins.
 
+import type { Origin, UnitName } from "./protocol.ts";
+import { unitNamesEdit, unitNamesFromCsv, unitNamesToCsv, type UnitNamesFileReport } from "./rules.ts";
 import { splitCsvLine } from "./talkgroups.ts";
 
 /** Unit ID → alias. */
 export type UnitAliases = Record<number, string>;
 
-/** A unit names file's patterns (the recorder's UnitTags, crates/trunk-core/src/trunk/units.rs). */
-const namers = new Map<string, (id: number) => string | undefined>();
-
-/** The name a unit names file gives `id` (first match; `$1` / `\1` take a pattern's groups). */
-export function unitName(csv: string, id: number): string | undefined {
-  let f = namers.get(csv);
-  if (!f) {
-    const tags: [RegExp, string][] = [];
-    for (const line of csv.split(/\r?\n/)) {
-      const t = line.trim();
-      if (!t || t.startsWith("#")) continue;
-      const [pat = "", name = ""] = splitCsvLine(t).map((x) => x.trim());
-      if (!pat || !name) continue;
-      try {
-        const re = pat.length > 1 && pat.startsWith("/") && pat.endsWith("/") ? new RegExp(pat.slice(1, -1)) : new RegExp(`^${pat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
-        tags.push([re, name.replace(/\\(\d+)/g, "$$$1")]);
-      } catch {
-        // Not a regular expression: left out, as the recorder does.
-      }
-    }
-    f = (n: number) => {
-      const s = String(n);
-      const hit = tags.find(([re]) => re.test(s));
-      return hit ? s.replace(hit[0], hit[1]) : undefined;
-    };
-    namers.set(csv, f);
-  }
-  return f(id);
+/** A unit names file (Trunk Recorder's unitTagsFile) read as the recorder reads one. */
+export function readUnitNamesFile(text: string): UnitNamesFileReport {
+  return unitNamesFromCsv(text);
 }
 
-/** Lines in a unit names file. */
-export function unitNameCount(csv: string): number {
-  return csv.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#") && l.includes(",")).length;
+/** Radio names as a unit names file to download. */
+export function unitNamesFileText(rows: UnitName[]): string {
+  return unitNamesToCsv(rows);
 }
+
+/** `rows` with radio `unit` named `name` by `origin` ("": its own name taken out; its own row goes before the patterns): the recorder's own edit. */
+export function withUnitName(rows: UnitName[], unit: number, name: string, origin: Origin): UnitName[] {
+  return unitNamesEdit(rows, unit, name, origin);
+}
+
+/** Radio `unit`'s own row of `rows` (not a pattern's). */
+export function ownUnitName(rows: UnitName[] | undefined, unit: number): UnitName | undefined {
+  return rows?.find((r) => r.unit === String(unit));
+}
+
+/** Whether `rows` name radios by pattern too (the first match names a radio). */
+export const isPattern = (r: UnitName) => r.unit.startsWith("/");
 
 export function parseUnitsCsv(text: string): UnitAliases {
   const out: UnitAliases = {};

@@ -4,10 +4,10 @@
 
 import { formatMhz } from "../config.ts";
 import { can, pluginOn, radioQuery, statsSince, setView, start, usePolled, useApp, type AppState } from "../controller.ts";
-import { Card, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
+import { Card, Fig, Figs, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
-import { change, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
+import { change, connections, connectionsSummary, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
 import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
@@ -47,16 +47,16 @@ function Today({ s }: { s: AppState }) {
         label="Calls today"
         value={compact(Math.round(day("all/calls", "day/calls")))}
         trend={<Trend delta={change(callsPerH / 3600, usual["all/calls"])} title="Last hour vs usual" />}
-        sub={`${compact(callsPerH)} an hour now`}
+        sub={<Figs inline items={[{ k: "Now", v: compact(callsPerH), u: "/h" }]} />}
         spark={<Sparkline v={perHour("all/calls")} title="Calls an hour, last 24 h" />}
       />
       <Stat
         label="Airtime today"
         value={hmm(day("all/airMs", "day/airS", 0.001))}
-        sub={`${num(onAir, 1)} at once on average`}
+        sub={<Figs inline items={[{ k: "On air, avg", v: num(onAir, 1), title: "Calls on the air at once, average of the last hour" }]} />}
         spark={<Sparkline v={(h24?.["all/airMs"]?.v ?? []).map((v) => (v === null ? null : v / 1000))} color="var(--series-3)" title="Calls on the air at once, last 24 h" />}
       />
-      <Stat label="Audio today" value={bytes(day("all/audioBytes", "day/audioBytes"))} sub={`${bytes(audioPerH)} an hour now`} spark={<Sparkline v={perHour("all/audioBytes")} color="var(--series-6)" />} />
+      <Stat label="Audio today" value={bytes(day("all/audioBytes", "day/audioBytes"))} sub={<Figs inline items={[{ k: "Now", v: bytes(audioPerH), u: "/h" }]} />} spark={<Sparkline v={perHour("all/audioBytes")} color="var(--series-6)" />} />
       <Stat
         label="Recorders"
         value={
@@ -67,21 +67,21 @@ function Today({ s }: { s: AppState }) {
         }
         level={recMax && rec >= recMax ? "warn" : undefined}
         spark={<Meter value={rec} max={Math.max(1, recMax)} zones={[recMax * 0.75, recMax]} label="recorders in use" />}
-        sub={`${val(s, "eng/channels") ?? 0} channels open`}
+        sub={<Figs inline items={[{ k: "Channels open", v: val(s, "eng/channels") ?? 0 }]} />}
       />
       <Stat
         label="Missed, 24 h"
         value={compact(missed)}
         level={missed > 0 ? "warn" : undefined}
-        sub={missed === 0 ? "none" : systems.length > 1 ? missedBy.map((m) => `${m.name} ${compact(m.n)}`).join(", ") : "no free recorder, or out of band"}
+        sub={missed > 0 && systems.length > 1 ? <Figs inline items={missedBy.map((m) => ({ k: m.name, v: compact(m.n) }))} /> : undefined}
+        hint="No free recorder, or out of every source's band"
         onClick={() => (missedBy.length === 1 ? setView("radio", missedBy[0].name) : setView("radio"))}
       />
       <Stat
         label="Decoding load"
         value={pct(load === null ? null : load * 100)}
-        sub="of one CPU core"
         spark={<LiveSpark k="eng/load" mul={100} color="var(--series-2)" lo={0} />}
-        hint="Over 100% needs more than one core"
+        hint="Of one CPU core: over 100% needs more than one"
       />
     </div>
   );
@@ -105,6 +105,7 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
   const onAir = s.calls.filter((c) => c.systemName === x.name);
   const tgs = [...new Map(onAir.map((c) => [c.talkgroup, c])).values()].slice(0, 4);
   const lost = voiceBadPct(x.name);
+  const snr = val(s, cc("snr"));
   // Not recording: the last day from the history instead.
   const day = useHistory([cc("good"), K.sys(x.name, "calls")], "24h", 48);
   const live = running(s);
@@ -130,11 +131,11 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
           value={dayCalls === null ? "—" : compact(dayCalls)}
           unit="calls"
           spark={<Sparkline v={day?.[cc("good")]?.v ?? []} title="Control msg/s, last 24 h" />}
-          sub={dayRate ? `control avg ${num(dayRate.avg)} msg/s` : "no history yet"}
+          sub={dayRate ? <Figs inline items={[{ k: "Control avg", v: num(dayRate.avg), u: "msg/s" }]} /> : "No history yet"}
         />
       ) : x.kind !== "conventional" && several ? (
         <div className="sys-main">
-          <Stat label="Control channels" value={num(rate)} unit="msg/s" sub={`${x.sites.length} sites`} />
+          <Stat label="Control channels" value={num(rate)} unit="msg/s" sub={<Fig v={x.sites.length} u="sites" />} />
           <SiteRows s={s} x={x} />
         </div>
       ) : x.kind !== "conventional" ? (
@@ -146,21 +147,24 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
             trend={<Trend delta={change(recentAvg(cc("good"), 60), usual)} title="vs usual" />}
             spark={<LiveSpark k={cc("good")} band={usual ? [usual.lo, usual.hi] : null} lo={0} title="msg/s, 10 min; band is usual" />}
             sub={
-              <>
-                {decoded !== null ? `${num(decoded, 0)}% decoded` : "…"} · {st?.controlChannelHz ? `${formatMhz(st.controlChannelHz)} MHz` : "hunting"}
-                {val(s, cc("snr")) !== null && ` · SNR ${num(val(s, cc("snr")), 0)} dB`}
-              </>
+              <Figs
+                inline
+                items={[
+                  { k: "Decoded", v: decoded === null ? "…" : num(decoded, 0), u: decoded === null ? undefined : "%", level: decoded === null ? undefined : decoded < 70 ? "bad" : decoded < 90 ? "warn" : undefined },
+                  st?.controlChannelHz ? { k: "CC", v: formatMhz(st.controlChannelHz), u: "MHz", title: "Control channel" } : { k: "CC", v: "hunting", level: "warn" },
+                  snr !== null && { k: "SNR", v: num(snr, 0), u: "dB", level: snr < 8 ? "bad" : snr < 15 ? "warn" : undefined },
+                ]}
+              />
             }
           />
         </div>
       ) : (
         <div className="sys-main">
           <Stat
-            label="Calls"
+            label="Calls since start"
             value={x.status ? compact(x.status.callsConcluded) : "—"}
-            unit="this run"
             spark={<LiveSpark k={K.sys(x.name, "calls")} mul={60} lo={0} title="Calls a minute, 10 min" />}
-            sub={`${dayCalls === null ? "—" : compact(dayCalls)} in 24 h · ${channels} channel${channels === 1 ? "" : "s"}${x.status?.conventionalOpen ? ` · ${x.status.conventionalOpen} open now` : ""}`}
+            sub={<Figs inline items={[{ k: "24 h", v: dayCalls === null ? "—" : compact(dayCalls) }, { k: "Channels", v: channels }, !!x.status?.conventionalOpen && { k: "Open", v: x.status.conventionalOpen, title: "A signal on them now" }]} />}
           />
         </div>
       )}
@@ -198,11 +202,11 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
             v={freqs.map((f) => f.badPct)}
             ramp="hot"
             max={BAD_MAX}
-            titles={freqs.map((f) => `${mhz(f.freqHz)} MHz · ${f.calls} calls · ${f.badPct ?? "—"}% of voice frames lost${f.snr !== null ? ` · SNR ${num(f.snr)} dB` : ""}`)}
+            titles={freqs.map((f) => `${mhz(f.freqHz)} MHz · ${f.calls} calls · ${f.badPct ?? "—"}% voice lost${f.snr !== null ? ` · SNR ${num(f.snr)} dB` : ""}`)}
             onCell={() => setView("decode", x.name)}
-            label="decode quality by frequency"
+            label="voice lost per frequency"
           />
-          <span className="muted small">voice quality by frequency, 24 h</span>
+          <span className="muted small">Voice lost per frequency · 24 h</span>
         </div>
       )}
     </Card>
@@ -214,45 +218,59 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
 export function eventText(e: MonitorEvent): string {
   switch (e.kind) {
     case "tgFirstSeen":
-      return `${e.system}: talkgroup ${e.alphaTag || e.talkgroup} heard for the first time`;
+      return `${e.system}: new talkgroup ${e.alphaTag || e.talkgroup}`;
     case "unitFirstSeen":
-      return `${e.system}: radio ${e.alias || e.unit} heard for the first time`;
+      return `${e.system}: new radio ${e.alias || e.unit}`;
     case "tonePattern":
       return `${e.system}: ${e.signals?.length ? `${e.signals.join(", ")} (${e.text})` : e.text} on talkgroup ${e.alphaTag || e.talkgroup}`;
     case "controlLost":
-      return `${e.system}${e.site ? ` site ${e.site}` : ""}: lost its control channel${e.freqHz ? ` (${mhz(e.freqHz)} MHz)` : ""}`;
+      return `${e.system}${e.site ? ` site ${e.site}` : ""}: control channel lost${e.freqHz ? ` · ${mhz(e.freqHz)} MHz` : ""}`;
     case "controlRegained":
-      return `${e.system}${e.site ? ` site ${e.site}` : ""}: decoding its control channel again`;
+      return `${e.system}${e.site ? ` site ${e.site}` : ""}: control channel back`;
     case "sourceDrops":
       return `${e.source}: dropping samples`;
     case "sourceClipping":
-      return `${e.source}: clipping (${e.pct}% of samples at full scale)`;
+      return `${e.source}: clipping ${e.pct}%`;
     case "sourceRecovered":
       return `${e.source}: clean again`;
     case "pluginHealth":
       return `${e.plugin}: ${e.state}${e.message ? ` — ${e.message}` : ""}`;
     case "linkDown":
-      return `${e.target} stopped answering`;
+      return `${e.target}: not answering`;
     case "linkUp":
-      return `${e.target} answers again (down ${e.downS ? `${Math.round(e.downS)} s` : "briefly"})`;
+      return `${e.target}: back · down ${e.downS ? `${Math.round(e.downS)} s` : "briefly"}`;
     case "diskLow":
-      return `The ${e.path} disk has only ${e.freePct}% free`;
+      return `Disk ${e.path}: ${e.freePct}% free`;
     case "spoolLow":
-      return `The RAM spool has only ${e.freePct}% free: ${e.critical ? "calls will soon go to the disk" : "uploads aren't keeping up"}`;
+      return `RAM spool ${e.freePct}% free — ${e.critical ? "calls soon go to disk" : "uploads behind"}`;
     case "spoolFull":
-      return `The RAM spool was full: ${e.calls} call${e.calls === 1 ? "" : "s"} written to the recordings folder instead`;
+      return `RAM spool full: ${e.calls} call${e.calls === 1 ? "" : "s"} to the recordings folder`;
     case "spoolRecovered":
-      return `The RAM spool has room again (${e.freePct}% free)`;
+      return `RAM spool OK · ${e.freePct}% free`;
     case "spoolRemoved":
-      return `The RAM spool was deleted while running${e.remade ? " (made again)" : ": calls go to the recordings folder"}. ${spoolRemovedFix(e.spool)}`;
+      return `RAM spool deleted${e.remade ? " · made again" : " — calls go to the recordings folder"}`;
     case "clockOff":
       return e.why ?? "The clock is off";
     case "clockOk":
-      return "The clock is right again";
+      return "Clock right again";
     case "clockStep":
-      return (e.byMs ?? 0) > 0 ? `The clock jumped ${ms(e.byMs)} forward (its time service set it, or the computer slept)` : `The clock was set back ${ms(e.byMs)}`;
+      return (e.byMs ?? 0) > 0 ? `Clock jumped ${ms(e.byMs)} forward` : `Clock set back ${ms(e.byMs)}`;
     default:
       return `${e.kind}${e.system ? ` (${e.system})` : ""}`;
+  }
+}
+
+/** The longer why behind an event, if any: its row's tooltip. */
+function eventTip(e: MonitorEvent): string | undefined {
+  switch (e.kind) {
+    case "spoolRemoved":
+      return spoolRemovedFix(e.spool);
+    case "clockStep":
+      return (e.byMs ?? 0) > 0 ? "Its time service set it, or the computer slept" : undefined;
+    case "sourceClipping":
+      return "Samples at full scale";
+    default:
+      return undefined;
   }
 }
 
@@ -288,7 +306,7 @@ export function EventFeed({ events, limit = 12 }: { events: MonitorEvent[]; limi
         <ul className="feed">
           {shown.map((e, i) => (
             <li key={`${e.t}-${i}`}>
-              <button className="linkish feed-item" onClick={eventPlace(e)}>
+              <button className="linkish feed-item" onClick={eventPlace(e)} title={eventTip(e)}>
                 <Light level={e.level === "info" ? "idle" : e.level} />
                 <span className="feed-text">{eventText(e)}</span>
                 <span className="muted small">{ago(e.t)}</span>
@@ -318,9 +336,7 @@ function PluginsLine({ s }: { s: AppState }) {
               <li key={p.id}>
                 <Light level={h.level} title={h.why} />
                 <b>{p.manifest?.name ?? p.id}</b>
-                <span className="muted small">
-                  {p.runtime.ok} sent · {p.runtime.failed} failed{m?.queued ? ` · ${m.queued} queued` : ""}
-                </span>
+                <Figs inline items={[{ k: "Sent", v: compact(p.runtime.ok) }, { k: "Failed", v: compact(p.runtime.failed), level: p.runtime.failed ? "warn" : undefined }, !!m?.queued && { k: "Queued", v: compact(m.queued) }]} />
               </li>
             );
           })}
@@ -335,6 +351,7 @@ function PlatformLine({ s }: { s: AppState }) {
   const v = s.host?.values ?? {};
   const disk = s.host?.platform.disks.find((d) => d.name === "recordings") ?? s.host?.platform.disks[0];
   const spool = s.host?.platform.disks.find((d) => d.name === "spool");
+  const net = connectionsSummary(connections(s));
   return (
     <Card title="Computer" level={s.host ? h.level : undefined} why={h.why} onTitle={() => setView("platform")}>
       <div className="meters">
@@ -362,11 +379,11 @@ function PlatformLine({ s }: { s: AppState }) {
             <b>{spool.missing ? "gone" : `${bytes(spool.freeBytes)} free`}</b>
           </label>
         )}
-        {v["net/up"] !== undefined && (
-          <label>
-            <span>Internet</span>
-            <Light level={v["net/up"] >= 1 ? "ok" : v["net/up"] > 0 ? "warn" : "bad"} />
-            <b>{v["net/rtt"] !== undefined ? `${num(v["net/rtt"], 0)} ms` : v["net/up"] >= 1 ? "up" : "down"}</b>
+        {net && (
+          <label title={net.why}>
+            <span>Connections</span>
+            <Light level={net.level} />
+            <b>{net.value === "Up" && v["net/rtt"] !== undefined ? `${num(v["net/rtt"], 0)} ms` : net.value.toLowerCase()}</b>
           </label>
         )}
       </div>
@@ -394,7 +411,7 @@ export function Overview() {
           <div>
             <h2 className="big">Not recording</h2>
             <p className="muted">
-              {s.config && systems.length ? `${systems.length} system${systems.length > 1 ? "s" : ""} set up.` : "Set up a source and a system, then start."}
+              {s.config && systems.length ? `${systems.length} system${systems.length > 1 ? "s" : ""} set up` : "Set up a source and a system, then Start"}
             </p>
           </div>
           <div className="row">

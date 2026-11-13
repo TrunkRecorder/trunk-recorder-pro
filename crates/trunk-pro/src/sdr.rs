@@ -27,6 +27,10 @@ pub enum SourceMsg {
     /// for it (an RTL-SDR's halt), not lost.
     Tuned { center_hz: f64, gap: u64 },
     Error { source: usize, error: String },
+    /// The gain source `source`'s radio is set to (`set`: read back where it
+    /// can say, else as its driver set it), as it opened or as it changed,
+    /// and the gain it was asked for.
+    Gain { source: usize, asked: Gain, set: Gain },
     /// A finite source (a capture file) has no more data.
     End { source: usize },
 }
@@ -229,6 +233,14 @@ impl Sink {
         !self.closed
     }
 
+    /// The gain the radio is set to, and was asked for ([`SourceMsg::Gain`]),
+    /// when it can say. (Never waits for room: the next change says it again.)
+    pub fn gained(&mut self, asked: Option<Gain>, set: Option<Gain>) {
+        if let (Some(asked), Some(set)) = (asked, set) {
+            let _ = self.tx.try_send(SourceMsg::Gain { source: self.source, asked, set });
+        }
+    }
+
     /// A change the radio made ([`SourceMsg::Tuned`]): after the samples before it.
     pub fn tuned(&mut self, center_hz: f64, gap: u64) -> bool {
         self.flush();
@@ -356,10 +368,28 @@ impl std::fmt::Display for Gain {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Gain::Agc => write!(f, "AGC"),
-            Gain::Db(db) => write!(f, "{db} dB"),
+            Gain::Db(db) => write!(f, "{} dB", (db * 10.0).round() / 10.0),
             Gain::Stages(s) => write!(f, "{s}"),
             Gain::Preset(Preset::Linearity, step) => write!(f, "linearity {step}"),
             Gain::Preset(Preset::Sensitivity, step) => write!(f, "sensitivity {step}"),
+        }
+    }
+}
+
+impl Gain {
+    /// The same gain, but for float rounding (an RTL-SDR's step is an f32: 33.799999…).
+    pub fn same(&self, o: &Gain) -> bool {
+        let near = |a: f32, b: f32| (a - b).abs() < 0.05;
+        match (self, o) {
+            (Gain::Db(a), Gain::Db(b)) => near(*a, *b),
+            (Gain::Stages(a), Gain::Stages(b)) => {
+                a.agc == b.agc
+                    && Stage::ALL.iter().all(|&s| match (a.get(s), b.get(s)) {
+                        (Some(x), Some(y)) => near(x, y),
+                        (x, y) => x.is_none() && y.is_none(),
+                    })
+            }
+            _ => self == o,
         }
     }
 }
@@ -384,8 +414,10 @@ impl Control {
             gap += r.gap;
         }
         if let Some(g) = gain {
-            gap += radio.set_gain(g)?;
+            let r = radio.set_gain(g)?;
+            gap += r.gap;
             *self.current_gain.lock().unwrap() = Some(g);
+            sink.gained(Some(g), r.gain);
         }
         let hz = self.current_hz.lock().unwrap().unwrap_or(center_hz);
         Ok(if sink.tuned(hz, gap) { Applied::Tuned } else { Applied::Closed })
@@ -410,13 +442,28 @@ pub struct Retuned {
     pub gap: u64,
 }
 
+/// A gain set: the samples' worth of quiet made for it (as [`Retuned::gap`]),
+/// and what the radio is set to now — read back where it can say, else as its
+/// driver set it, on the radio's steps and within its range. None: a kind of
+/// gain it doesn't take, left alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Regained {
+    pub gap: u64,
+    pub gain: Option<Gain>,
+}
+
+impl Regained {
+    /// A kind of gain the radio doesn't take: nothing changed.
+    pub const LEFT_ALONE: Regained = Regained { gap: 0, gain: None };
+}
+
 /// An open radio, as [`Control`]'s requests change it ([`Control::apply`]).
 pub trait Tunable {
     /// Retune to `hz`.
     fn tune(&mut self, hz: f64) -> Result<Retuned, String>;
-    /// Set `g` (a kind of gain the radio doesn't take is left alone); the
-    /// quiet made for it, as [`Retuned::gap`].
-    fn set_gain(&mut self, g: Gain) -> Result<u64, String>;
+    /// Set `g` (a kind of gain the radio doesn't take is left alone), and say
+    /// what it's set to.
+    fn set_gain(&mut self, g: Gain) -> Result<Regained, String>;
 }
 
 /// A radio's driver: [`run_with`] keeps it streaming.
@@ -429,6 +476,9 @@ pub trait Radio: Send + 'static {
     fn retune_to(&mut self, hz: f64);
     /// It opens with `g` from now on (the gain last set while running).
     fn gain_to(&mut self, g: Gain);
+    /// The gain it opens with (None: none it sets, or none a [`Gain`] says).
+    /// Its driver says what that set it to ([`Sink::gained`]), as [`Tunable::set_gain`] does for a change.
+    fn gain(&self) -> Option<Gain>;
     /// Open it and stream into `sink` until `stop` or an error, retuning on
     /// `ctl`'s requests (each answered with [`SourceMsg::Tuned`]).
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String>;
@@ -466,12 +516,20 @@ pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>
 /// (whole USB packets; the RTL2832U's 3,760-byte FIFO replay, sdr-rtl
 /// findings 9) — is a radio replaying a buffer; and one that sends far
 /// faster than its rate is replaying its FIFO. Either for [`STUCK_FOR`]
-/// is an error (and so a reopen).
+/// is an error (and so a reopen). A stuck radio replays every block, so
+/// one block a second is looked at for replay, with the block after it to
+/// compare, not all of them: searching each for a period, and keeping each
+/// to compare with the next, cost most of a source thread.
 pub struct StreamCheck {
     /// Bytes per second as set.
     rate: f64,
-    last: Vec<u8>,
+    /// The block last looked at, kept for the one after it; whether it
+    /// repeated itself.
+    looked: Vec<u8>,
+    held: Option<bool>,
     replay_since: Option<Instant>,
+    /// When the next block is looked at for replay.
+    next_look: Option<Instant>,
     /// The rate window: when it began, the bytes since.
     window: Option<(Instant, u64)>,
     fast_windows: u32,
@@ -480,21 +538,29 @@ pub struct StreamCheck {
 /// How long a stream may replay itself before it counts as stuck.
 const STUCK_FOR: Duration = Duration::from_secs(2);
 
+/// How often a block is looked at for replay.
+const LOOK_EVERY: Duration = Duration::from_secs(1);
+
 impl StreamCheck {
     /// For a radio sending `rate_hz` I/Q samples a second, 2 bytes each.
     pub fn new(rate_hz: f64) -> StreamCheck {
-        StreamCheck { rate: rate_hz * 2.0, last: Vec::new(), replay_since: None, window: None, fast_windows: 0 }
+        StreamCheck { rate: rate_hz * 2.0, looked: Vec::new(), held: None, replay_since: None, next_look: None, window: None, fast_windows: 0 }
     }
 
     /// Each block as it comes: Err once the stream is stuck.
     pub fn block(&mut self, b: &[u8], at: Instant) -> Result<(), String> {
-        let again = b == self.last.as_slice() || periodic(b);
-        self.last.clear();
-        self.last.extend_from_slice(b);
-        if !again {
-            self.replay_since = None;
-        } else if self.replay_since.get_or_insert(at).elapsed() >= STUCK_FOR {
-            return Err("keeps sending the same samples over and over (its USB stream is stuck, so the waterfall stands still)".into());
+        if let Some(periodic) = self.held.take() {
+            // The block after a look: the looked-at one again, or that one a run of bytes over and over.
+            if !(periodic || b == self.looked.as_slice()) {
+                self.replay_since = None;
+            } else if at.saturating_duration_since(*self.replay_since.get_or_insert(at)) >= STUCK_FOR {
+                return Err("keeps sending the same samples over and over (its USB stream is stuck, so the waterfall stands still)".into());
+            }
+        } else if self.next_look.is_none_or(|t| at >= t) {
+            self.next_look = Some(at + LOOK_EVERY);
+            self.held = Some(periodic(b));
+            self.looked.clear();
+            self.looked.extend_from_slice(b);
         }
         // Seconds-long windows, two in a row past 1.5×: a backlog the
         // transfers held while this thread waited empties faster than that.
@@ -537,7 +603,8 @@ mod tests {
 
     /// Fresh samples never count; a block sent again, or a run of bytes
     /// repeated within one (the chip's 3,760-byte replay too), count once
-    /// they've gone on for STUCK_FOR; so does a stream at 10× its rate.
+    /// they've gone on for STUCK_FOR (found within a look of that); so does
+    /// a stream at 10× its rate.
     #[test]
     fn stuck_streams_are_found() {
         assert!(!periodic(&noise(1 << 18, 1)));
@@ -551,10 +618,14 @@ mod tests {
         for k in 0..2000 {
             assert!(c.block(&noise(16384, k + 1), at(k)).is_ok());
         }
-        let same = noise(16384, 99);
-        assert!(c.block(&same, t0).is_ok() && c.block(&same, t0).is_ok(), "not at once");
-        c.replay_since = Some(t0 - STUCK_FOR);
-        assert!(c.block(&same, t0).unwrap_err().contains("same samples"));
+        // Stuck: found at the first look STUCK_FOR after the first (each look a block and the one after it).
+        for (stuck, what) in [(noise(16384, 99), "the same block"), (noise(3760, 3).repeat(5)[..16384].to_vec(), "the FIFO replay")] {
+            let mut c = StreamCheck::new(2.4e6);
+            let (k, r) = (0..2000).map(|k| (k, c.block(&stuck, at(k)))).find(|(_, r)| r.is_err()).unwrap();
+            assert!(r.unwrap_err().contains("same samples"), "{what}");
+            let after = at(k) - t0;
+            assert!(after >= STUCK_FOR && after <= STUCK_FOR + LOOK_EVERY + Duration::from_millis(10), "{what}: {after:?}");
+        }
         let mut c = StreamCheck::new(2.4e6);
         let fast = |k: u32| t0 + Duration::from_micros(341) * k;
         let r = (0..20_000).map(|k| c.block(&noise(16384, k + 1), fast(k))).find(Result::is_err);
@@ -616,5 +687,43 @@ mod tests {
             Ok(SourceMsg::Samples { block: Block::Iq(iq), .. }) => assert!(!iq.is_empty()),
             _ => panic!("I/Q"),
         }
+    }
+
+    /// A radio's gain set is weighed against what was asked once, in one place: but for float rounding.
+    #[test]
+    fn a_gain_is_the_same_but_for_rounding() {
+        assert!(Gain::Db(33.8).same(&Gain::Db(33.799_999)) && !Gain::Db(34.0).same(&Gain::Db(33.8)));
+        assert_eq!(Gain::Db(33.799_999).to_string(), "33.8 dB");
+        let s = Stages::default().with(Stage::Lna, 24.0).with(Stage::Vga, 30.0);
+        assert!(Gain::Stages(s).same(&Gain::Stages(s)) && !Gain::Stages(s).same(&Gain::Stages(s.with(Stage::Vga, 28.0))));
+        assert!(!Gain::Stages(s).same(&Gain::Stages(s.with(Stage::Amp, 0.0))), "a stage one has, the other hasn't");
+        assert!(!Gain::Agc.same(&Gain::Db(30.0)));
+    }
+
+    /// A gain changed while running: the radio says what it set, and the sink tells it with what was asked.
+    #[test]
+    fn a_gain_change_says_what_the_radio_set() {
+        struct Stepped;
+        impl Tunable for Stepped {
+            fn tune(&mut self, hz: f64) -> Result<Retuned, String> {
+                Ok(Retuned { hz, gap: 0 })
+            }
+            fn set_gain(&mut self, g: Gain) -> Result<Regained, String> {
+                Ok(match g {
+                    Gain::Db(db) => Regained { gap: 5, gain: Some(Gain::Db((db * 10.0 / 13.0).round() * 1.3)) },
+                    _ => Regained::LEFT_ALONE,
+                })
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let mut sink = Sink::new(3, tx, 1e6, true);
+        let ctl = Control::default();
+        *ctl.gain.lock().unwrap() = Some(Gain::Db(34.0));
+        assert_eq!(ctl.apply(&mut Stepped, 851e6, &mut sink), Ok(Applied::Tuned));
+        assert!(matches!(rx.try_recv(), Ok(SourceMsg::Gain { source: 3, asked: Gain::Db(a), set: Gain::Db(s) }) if a == 34.0 && (s - 33.8).abs() < 1e-4));
+        assert!(matches!(rx.try_recv(), Ok(SourceMsg::Tuned { gap: 5, .. })));
+        *ctl.gain.lock().unwrap() = Some(Gain::Agc);
+        ctl.apply(&mut Stepped, 851e6, &mut sink).unwrap();
+        assert!(matches!(rx.try_recv(), Ok(SourceMsg::Tuned { .. })), "a gain it doesn't take: nothing said of it");
     }
 }

@@ -1,9 +1,9 @@
 //! Radios whose drivers are vendor C libraries — USRP (UHD), Airspy
-//! (libairspy), bladeRF (libbladeRF) and anything with a SoapySDR module. Nothing links against
-//! them: each library is looked for at run time, so the same binary records
+//! (libairspy), HydraSDR (libhydrasdr), bladeRF (libbladeRF) and anything with a SoapySDR module.
+//! Nothing links against them: each library is looked for at run time, so the same binary records
 //! from RTL-SDRs out of the box and from these once their driver is
-//! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_BLADERF` / `TRUNK_PRO_SOAPY` name a
-//! library file to use instead of searching.
+//! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_HYDRASDR` / `TRUNK_PRO_BLADERF` /
+//! `TRUNK_PRO_SOAPY` name a library file to use instead of searching.
 
 pub mod airspy;
 pub mod bladerf;
@@ -34,7 +34,7 @@ fn opening() -> MutexGuard<'static, ()> {
 /// How long an open (or a driver's search for radios) may take, by what it is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Deadline {
-    /// A radio that opens in well under a second (RTL-SDR, HackRF, Airspy) or a search: 5 s.
+    /// A radio that opens in well under a second (RTL-SDR, HackRF, Airspy, HydraSDR) or a search: 5 s.
     Quick,
     /// One that loads firmware or an FPGA image as it opens (bladeRF, a SoapySDR module): 15 s.
     Loads,
@@ -124,34 +124,8 @@ pub fn usb_memory_hint(e: &str) -> String {
     }
 }
 
-/// The sample rates a radio runs at, as it said when opened.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Rates {
-    /// Only these (an Airspy's), widest first.
-    List(Vec<u32>),
-    /// Any from `min` to `max` (a bladeRF's).
-    Range { min: f64, max: f64 },
-}
-
-impl Rates {
-    pub fn allows(&self, hz: f64) -> bool {
-        match self {
-            Rates::List(v) => v.iter().any(|&r| (r as f64 - hz).abs() < 1.0),
-            Rates::Range { min, max } => hz >= *min - 1.0 && hz <= *max + 1.0,
-        }
-    }
-}
-
-impl std::fmt::Display for Rates {
-    /// "10 / 2.5" or "0.52–61.44" (MSPS).
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let msps = |hz: f64| (hz / 1e4).round() / 100.0;
-        match self {
-            Rates::List(v) => write!(f, "{}", v.iter().map(|&r| format!("{}", msps(r as f64))).collect::<Vec<_>>().join(" / ")),
-            Rates::Range { min, max } => write!(f, "{}–{}", msps(*min), msps(*max)),
-        }
-    }
-}
+/// The sample rates a radio runs at, as it said when opened (trunk-app's: Setup and advice read it too).
+pub use trunk_app::rates::Rates;
 
 /// What a radio said it is when it was opened: its model ("R2", "bladeRF 2.0") and rates.
 #[derive(Clone, Debug, PartialEq)]
@@ -190,13 +164,7 @@ pub fn known(key: &str) -> Option<Caps> {
 
 /// " · 10 / 2.5 MSPS" for a found radio's JSON whose rates are known (`trunk-pro devices`), else "".
 pub fn rates_shown(found: &serde_json::Value) -> String {
-    let hz = |v: &serde_json::Value| v.as_array().map(|a| a.iter().filter_map(|r| r.as_f64()).collect::<Vec<f64>>()).unwrap_or_default();
-    let rates = match (hz(&found["rates"]), hz(&found["rateRange"])) {
-        (list, _) if !list.is_empty() => Rates::List(list.iter().map(|&r| r as u32).collect()),
-        (_, range) if range.len() == 2 => Rates::Range { min: range[0], max: range[1] },
-        _ => return String::new(),
-    };
-    format!(" · {rates} MSPS")
+    Rates::from_found(found).map_or(String::new(), |rates| format!(" · {rates} MSPS"))
 }
 
 /// A source's refusal of a rate its radio doesn't run at, the same for every kind:
@@ -301,7 +269,7 @@ pub fn candidates(unix_name: &str, mac_name: &str, win_names: &[&'static str]) -
 }
 
 /// Drivers and the devices found through them, for the interface:
-/// `{usrp: {available, detail, devices}, airspy: {…}, bladerf: {…}, soapy: {…, modules}}`.
+/// `{usrp: {available, detail, devices}, airspy: {…}, hydrasdr: {…}, bladerf: {…}, soapy: {…, modules}}`.
 /// USRPs and SoapySDR devices are searched only with `search` (a device
 /// search can take seconds).
 pub fn radios_json(search: bool) -> serde_json::Value {
@@ -319,7 +287,7 @@ pub fn radios_json(search: bool) -> serde_json::Value {
         serde_json::Value::Null
     };
     let hackrf = serde_json::json!({ "available": true, "detail": "built in", "devices": hackrf::devices() });
-    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
+    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(airspy::Lib::Airspy), "hydrasdr": airspy_json(airspy::Lib::Hydrasdr), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
 }
 
 fn bladerf_json() -> serde_json::Value {
@@ -329,10 +297,10 @@ fn bladerf_json() -> serde_json::Value {
     j
 }
 
-fn airspy_json() -> serde_json::Value {
-    let a = airspy::info();
+fn airspy_json(lib: airspy::Lib) -> serde_json::Value {
+    let a = airspy::info(lib);
     let mut j = a.json();
-    j["devices"] = serde_json::Value::Array(if a.loaded { airspy::devices() } else { vec![] });
+    j["devices"] = serde_json::Value::Array(if a.loaded { airspy::devices(lib) } else { vec![] });
     j
 }
 

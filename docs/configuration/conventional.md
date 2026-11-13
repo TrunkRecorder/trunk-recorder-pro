@@ -173,7 +173,7 @@ Recording won't start while any of these is broken; the message names the freque
 ## Channel file (`channelFile`)
 
 Instead of listing channels in the config, a conventional system can read them from a CSV file you
-edit in a spreadsheet. In Setup, type a name under **Channel file (optional)** and press
+edit in a spreadsheet. In Setup, type a name under **Channel file** and press
 **Use this file**: if the file doesn't exist, it's created from the current list. While a file is
 linked:
 

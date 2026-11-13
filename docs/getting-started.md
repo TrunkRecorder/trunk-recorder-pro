@@ -72,7 +72,7 @@ step edits the same settings as the Setup page, so leaving part way keeps what y
 The welcome screen offers three ways in:
 
 - **Get started** runs the guide.
-- **I have a Trunk Recorder config** imports an existing Trunk Recorder `config.json` instead.
+- **Import a Trunk Recorder config** imports an existing Trunk Recorder `config.json` instead.
   See [Migrating from Trunk Recorder](migrating-from-trunk-recorder.md).
 - **Skip to the app** goes straight to the interface, to set everything up by hand.
 
@@ -107,8 +107,7 @@ The guide has six steps:
    file** (a talkgroup CSV), or **Not now**. Calls are recorded either way. See
    [Talkgroups and units](guides/talkgroups-and-units.md).
 
-The last screen, *You're all set*, sums up what was set up. Press **Start recording**, or **Open
-the app without starting**.
+The last screen, *You're all set*, sums up what was set up. Press **Start recording**, or **Open without starting**.
 
 ## Setting it up without the guide
 
@@ -140,8 +139,8 @@ Then, on its site under **Sites** (open it):
 - For SmartNet, the **Band plan**: see [SmartNet](guides/smartnet.md). For DMR and NXDN, see
   [DMR](guides/dmr.md) and [NXDN](guides/nxdn.md).
 
-Each system card shows whether its control channel lands inside a source ("control channel on
-source 1") or not ("no control channel inside a source"). To record another site of the same
+Each system card shows whether its control channel lands inside a source ("CC → 1")
+or not ("CC → none"). To record another site of the same
 system, **Add site** under **Sites**: see [Multi-site](guides/multi-site.md). The other keys are described in the
 [configuration reference](configuration/systems.md).
 
@@ -193,8 +192,7 @@ Press **Start** at the top right. The status pill changes from *Stopped* to *Sta
 *Recording*. If something is missing (no source, no system, a radio that couldn't be placed),
 **Start** is greyed out and its tooltip says why.
 
-To have the recorder start by itself when the app starts, turn on **Start recording when the app
-starts** on the **Recording** tab, or run `trunk-pro --start`.
+To have the recorder start by itself when the app starts, turn on **Record when the app starts** on the **Recording** tab, or run `trunk-pro --start`.
 
 ## Check that it works
 
@@ -207,7 +205,7 @@ channel frequency (or *hunting* while it looks for one) and its signal-to-noise 
   is usual for your system and warns when the rate drops well under it.
 - A few percent of control messages lost is normal. Over 10 % the card warns (multipath or a
   marginal signal), over 30 % it turns red.
-- *Not decoding its control channel — hunting for another* means nothing is getting through.
+- *Control channel lost, hunting — check antenna, gain, frequency* means nothing is getting through.
   Check the antenna, the gain and the frequency, and that the control channel is inside a
   source's band.
 
@@ -217,7 +215,7 @@ keep up), if samples hit full scale (lower the gain), or if its frequency is off
 frequency error and waterfall.
 
 When calls start, they show on a system's page under **Radio system** (press one to listen live), and once recorded
-on **Listen**. A call that wasn't recorded says why, for example *outside tuned range* when no
+on **Listen**. A call that wasn't recorded says why, for example *out of range* when no
 radio covers its voice frequency. The **Radio system** page counts these reasons over time; lots
 of *Out of band* means you need another radio or a different center.
 

@@ -89,7 +89,7 @@ test("Listen: a system whose audio isn't kept has no talkgroups to pick, and say
   const list = tgList();
   assert.doesNotMatch(list, /Red Line/, "none of its talkgroups");
   assert.match(list, /dcfd 2 sites/, "the others still are");
-  assert.match(showing(), /wmata isn&#x27;t here: its calls&#x27; audio is deleted/);
+  assert.match(showing(), /wmata.*no audio kept.*Its calls&#x27; audio is deleted/);
   // Kept again, it's back and the card goes.
   wmata.recording = {};
   transport.onMessage({ type: "config", config: c, version: 3 });

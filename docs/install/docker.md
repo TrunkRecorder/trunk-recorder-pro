@@ -76,7 +76,7 @@ What each part does:
 ### Start recording on its own
 
 The container starts the recorder, but recording waits for **Start** until you either turn on
-**Start recording when the app starts** in **Setup → Recording** (recommended: set it once and
+**Record when the app starts** in **Setup → Recording** (recommended: set it once and
 every restart resumes recording), or uncomment the `command:` line in the compose file:
 
 ```yaml

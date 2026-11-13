@@ -42,6 +42,8 @@ pub trait Plugin: Sized {
     fn call_concluded(&mut self, _call: ConcludedCall) {}
     fn unit(&mut self, _event: UnitEvent) {}
     fn audio(&mut self, _chunk: AudioChunk) {}
+    /// Live voice as vocoder frames (subscribe to `voice`).
+    fn voice(&mut self, _chunk: VoiceChunk) {}
     fn status(&mut self, _status: Status) {}
     /// A call's tones made a pattern: every one heard (subscribe to `tone_pattern`).
     fn tone_pattern(&mut self, _t: TonePatternEvent) {}
@@ -338,6 +340,7 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
             HostMessage::CallConcluded(c) => p.call_concluded(c),
             HostMessage::Unit(u) => p.unit(u),
             HostMessage::Audio(a) => p.audio(a),
+            HostMessage::Voice(v) => p.voice(v),
             HostMessage::Status(s) => p.status(s),
             HostMessage::TonePattern(t) => p.tone_pattern(t),
             HostMessage::Log(l) => p.log_line(l),

@@ -11,6 +11,7 @@
 //! What a connection may hear and send by its access (listen or control) is
 //! decided here too: [`ToClient::audience`], [`Command::listen_may_send`].
 
+use trunk_core::trunk::Origin;
 use serde::{Deserialize, Serialize};
 pub use crate::calls::{CallsPage, CallsQuery, StoredCall};
 use serde_json::{Map, Value};
@@ -91,8 +92,15 @@ pub enum ToClient {
     /// each on connecting, and again whenever a system's are set.
     Talkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
     /// One talkgroup of system `system` edited ([`Command::SetTalkgroup`]):
-    /// each interface makes the same edit to its copy (`talkgroupsEdit`).
-    TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit },
+    /// each interface makes the same edit to its copy (`talkgroupsEdit`),
+    /// with the origin it was given.
+    TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit, origin: Origin },
+    /// A system's own names for its radios, in their order (none: it has
+    /// none): one for each on connecting, and again whenever a system's are set.
+    UnitNames { system: String, unit_names: Vec<trunk_core::trunk::UnitNameRow> },
+    /// Radio `unit` of system `system` named `name` ([`Command::SetUnitName`]):
+    /// each interface makes the same edit to its copy (`unitNamesEdit`).
+    UnitNameEdited { system: String, unit: u32, name: String, origin: Origin },
     Status { status: Value, sources: Vec<Value>, load: f64, calls: Vec<Value> },
     Spectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
     Log { lines: Vec<Value> },
@@ -142,7 +150,216 @@ pub enum ToClient {
         #[serde(flatten)]
         page: CallsPage,
     },
+    /// Answers `dataSummary`: what the store keeps of each system it has,
+    /// the config's and those gone from it (or why it can't say).
+    DataSummary { id: u64, systems: Vec<DataSystem>, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
+    /// Answers `iqCaptures`, `iqCaptureStart` and `iqCaptureDelete`: the
+    /// captures on disk, newest first, in `root`; the one being made;
+    /// whether the radios are running; why the last request or capture failed.
+    IqCaptures {
+        id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active: Option<IqCaptureActive>,
+        /// Captures asked for that wait on the air.
+        waiting: Vec<IqCaptureWaiting>,
+        captures: Vec<IqCapture>,
+        root: String,
+        recording: bool,
+        /// The rules shipped, each off until the config has it.
+        presets: Vec<crate::config::CaptureRule>,
+        /// There's a corpus service to send captures to.
+        can_send: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Answers `iqCaptureReview`: what capture `name` would publish.
+    IqCaptureReview {
+        id: u64,
+        name: String,
+        metadata: Value,
+        diagnostics: Value,
+        waterfalls: Vec<IqWaterfall>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Answers `iqRuleCheck`: why the rule can't run, if so.
+    IqRuleChecked {
+        id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Answers `deleteData`: how much went (or why not all of it did).
+    DataDeleted { id: u64, deleted: DataCounts, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
+    /// Answers `compactData`: the store's size, bytes, before and after (or why it couldn't).
+    DataCompacted { id: u64, before_bytes: i64, after_bytes: i64, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
     Quit,
+}
+
+/// A table of the store's, as Setup → Data exports it (a CSV file each:
+/// `GET /api/v1/export/{table}`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum::VariantArray, strum::IntoStaticStr, strum::EnumString)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum DataTable {
+    /// The call index: a row a call.
+    Calls,
+    /// Each radio's transmissions in each call.
+    Transmissions,
+    /// The talkgroups each system was given (its talkgroup file).
+    Talkgroups,
+    /// The names each system was given for its radios (its unit names file).
+    UnitNames,
+    /// Talker aliases heard over the air.
+    TalkerAliases,
+    /// The radio registry's radios: every radio heard.
+    Radios,
+    /// The radio registry's talkgroups: every talkgroup heard.
+    HeardTalkgroups,
+    /// The dashboard's history, by the hour.
+    DashboardHistory,
+}
+
+impl DataTable {
+    pub const ALL: &'static [DataTable] = <Self as strum::VariantArray>::VARIANTS;
+
+    /// Its name, as the route and the file name have it.
+    pub fn name(self) -> &'static str {
+        self.into()
+    }
+}
+
+/// A kind of the store's data, as Setup → Data deletes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum::VariantArray)]
+#[serde(rename_all = "camelCase")]
+pub enum DataKind {
+    /// The call index and each call's transmissions (the recordings stay).
+    Calls,
+    Talkgroups,
+    /// Each system's own names for its radios.
+    UnitNames,
+    TalkerAliases,
+    /// The radio registry: the radios, talkgroups, pairs and frequencies heard.
+    Registry,
+    DashboardHistory,
+}
+
+impl DataKind {
+    pub const ALL: &'static [DataKind] = <Self as strum::VariantArray>::VARIANTS;
+}
+
+/// How many of each the store has (`dataSummary`) or deleted (`dataDeleted`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataCounts {
+    pub calls: i64,
+    pub talkgroups: i64,
+    pub unit_names: i64,
+    pub talker_aliases: i64,
+    /// The radio registry's radios and talkgroups.
+    pub radios: i64,
+    pub heard_talkgroups: i64,
+    /// The dashboard's series.
+    pub history_series: i64,
+}
+
+/// A recording of what the radios received (`iqCaptures`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCapture {
+    /// Its folder's name.
+    pub name: String,
+    pub path: String,
+    /// `wideband`, `control` or `voice`.
+    pub tier: String,
+    /// `bug` (made by hand, showing a problem), `healthy` (made by hand, working well) or `rule`.
+    pub purpose: String,
+    /// The rule that made it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub rule: String,
+    pub seconds: u32,
+    pub radios: u32,
+    pub bytes: u64,
+    pub note: String,
+    /// Samples the radios lost during it.
+    pub lost_samples: u64,
+    /// Control channel messages decoded and failed, and calls ended, while it was made.
+    pub messages_good: u64,
+    pub messages_bad: u64,
+    pub calls: u64,
+    /// How sending it to the corpus stands, if it has been.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send: Option<IqCaptureSend>,
+}
+
+/// How the sending of a capture to the corpus stands (`iqCaptures`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCaptureSend {
+    /// `sending`, `sent` or `failed`.
+    pub state: String,
+    pub receipt: String,
+    pub id: String,
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A radio's power by frequency over time, as levels 0–255, in hex (`iqCaptureReview`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqWaterfall {
+    pub width: u32,
+    pub height: u32,
+    pub levels: String,
+}
+
+/// What a capture asked for by hand records (`iqCaptureStart`).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum CaptureWhat {
+    /// Everything every radio receives.
+    #[default]
+    Radios,
+    /// One site's control channel (its `index` in the status), from now on.
+    Control { site: u16 },
+    /// The voice channel of the next call on system `system` (a short name), or on its talkgroup `talkgroup`.
+    Call { system: String, #[serde(default)] talkgroup: Option<u32> },
+}
+
+/// A capture asked for by hand that's waiting on the air (`iqCaptures`): a
+/// control channel recording for `seconds`, or the next call.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCaptureWaiting {
+    pub key: u64,
+    /// What it's of, in words.
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
+    pub elapsed_s: f64,
+}
+
+/// A capture being made (`iqCaptures`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCaptureActive {
+    pub name: String,
+    pub seconds: u32,
+    pub elapsed_s: f64,
+}
+
+/// A system the store keeps data of (`dataSummary`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSystem {
+    /// Its id (the config's `id`).
+    pub id: u32,
+    pub short_name: String,
+    /// It's in the config (else it was removed and its data stayed).
+    pub in_config: bool,
+    #[serde(flatten)]
+    pub counts: DataCounts,
 }
 
 /// Something a recorder can do beyond recording (`hello.capabilities`). The
@@ -289,7 +506,14 @@ pub enum Command {
     /// System `system`'s talkgroups, in their order (none: it has none). A
     /// talkgroup file is read into them, and written from them, by the
     /// recorder's own code (the page's `talkgroupsFromCsv` / `talkgroupsToCsv`).
-    SetTalkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
+    /// `from`: where they came from, the origin of the rows that change
+    /// (`at` is the recorder's); none: the rows keep their own (moved).
+    SetTalkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow>, #[serde(default)] from: Option<Origin> },
+    /// System `system`'s own names for its radios, as [`Command::SetTalkgroups`].
+    SetUnitNames { system: String, unit_names: Vec<trunk_core::trunk::UnitNameRow>, #[serde(default)] from: Option<Origin> },
+    /// Radio `unit` of system `system` named `name` (blank: its own name
+    /// taken out). Answered to every interface with `unitNameEdited`.
+    SetUnitName { system: String, unit: u32, name: String },
     /// One talkgroup of system `system`: only the cells `edit` sets change
     /// (a row added when there's none). Answered to every interface with
     /// `talkgroupEdited`.
@@ -339,6 +563,33 @@ pub enum Command {
     /// object it's on, as edited): answered with `pluginActionResult` `id`
     /// once the plugin says how it went.
     PluginAction { id: u64, plugin: String, action: String, #[serde(default)] value: Value },
+    /// The radios' captures on disk: answered with `iqCaptures` `id`.
+    IqCaptures { id: u64 },
+    /// Record `what` (every radio, by default) to files, nothing sent
+    /// anywhere: for `seconds` (the next call: as long as it is), showing a
+    /// problem (`problem`) or a recording working well. Answered with `iqCaptures` `id`.
+    IqCaptureStart { id: u64, seconds: u32, #[serde(default)] note: String, #[serde(default)] what: CaptureWhat, #[serde(default)] problem: bool },
+    /// Give up a capture asked for that's still waiting or running (`key`, as `iqCaptures` lists it): answered with `iqCaptures` `id`.
+    IqCaptureCancel { id: u64, key: u64 },
+    /// What capture `name` would publish: answered with `iqCaptureReview` `id`.
+    IqCaptureReview { id: u64, name: String },
+    /// Send capture `name`, reviewed, to the public corpus: answered with `iqCaptures` `id`.
+    IqCaptureSend { id: u64, name: String },
+    /// Withdraw capture `name` from the corpus: answered with `iqCaptures` `id`.
+    IqCaptureWithdraw { id: u64, name: String },
+    /// Whether capture rule `rule` could run: answered with `iqRuleChecked` `id`.
+    IqRuleCheck { id: u64, rule: Value },
+    /// Delete capture `name`: answered with `iqCaptures` `id`.
+    IqCaptureDelete { id: u64, name: String },
+    /// What the store keeps of each system: answered with `dataSummary` `id`.
+    DataSummary { id: u64 },
+    /// Delete `kinds` of system `system`'s data (its id; none: every
+    /// system's) from the store, and from what the recorder holds of it:
+    /// answered with `dataDeleted` `id`.
+    DeleteData { id: u64, kinds: Vec<DataKind>, #[serde(default)] system: Option<u32> },
+    /// Give the space deleted data left in the store back to the disk:
+    /// answered with `dataCompacted` `id`.
+    CompactData { id: u64 },
     Quit,
 }
 
@@ -445,5 +696,17 @@ mod tests {
             _ => panic!(),
         };
         assert_eq!(q.span(1000), (400, 1000));
+    }
+
+    #[test]
+    fn a_capture_says_what_it_is_of() {
+        let what = |j: &str| match Command::parse(j).unwrap() {
+            Command::IqCaptureStart { what, problem, .. } => (what, problem),
+            _ => panic!(),
+        };
+        assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":60}"#), (CaptureWhat::Radios, false), "every radio, as it always was");
+        assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":30,"problem":true,"what":{"kind":"control","site":2}}"#), (CaptureWhat::Control { site: 2 }, true));
+        assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":0,"what":{"kind":"call","system":"dcfd","talkgroup":101}}"#).0, CaptureWhat::Call { system: "dcfd".into(), talkgroup: Some(101) });
+        assert!(!Command::parse(r#"{"type":"iqCaptureCancel","id":1,"key":3}"#).unwrap().listen_may_send());
     }
 }

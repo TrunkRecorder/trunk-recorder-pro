@@ -16,10 +16,8 @@ use trunk_core::dsp::inband::signal::Heard;
 use trunk_core::trunk::calls::Reason;
 use trunk_core::trunk::{Call, Message, MessageType};
 
-/// Caps per system.
+/// Caps per system: the least talkgroups kept ([`Caps`] sets the rest), and frequencies and logs.
 const MAX_TGS: usize = 5000;
-const MAX_UNITS: usize = 20_000;
-const MAX_PAIRS: usize = 50_000;
 const MAX_FREQS: usize = 512;
 pub const MAX_AFFILIATIONS: usize = 2000;
 pub const MAX_LENGTHS: usize = 5000;
@@ -28,6 +26,41 @@ const MAX_RECENT_TX: usize = 30;
 const TOP_TGS: usize = 8;
 /// Ciphers (ALGID, key ID) kept per talkgroup.
 const MAX_CIPHERS: usize = 16;
+
+/// How much of what a system's radio registry heard it keeps
+/// (`storage.registryRadios` and `storage.registryDays`: [`Caps::of`]):
+/// past a cap, the least recently heard talkgroups, radios and pairs go,
+/// and those not heard for `days` go too. Talkgroups are a quarter of the
+/// radios (5,000 at least) and pairs two and a half times them, as the
+/// defaults are. What goes is told to the store as it goes (gone rows in
+/// [`RegistryChanges`]), as anything else that changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caps {
+    pub tgs: usize,
+    pub units: usize,
+    pub pairs: usize,
+    /// Rows not heard for this long go (none: kept however old).
+    pub days: Option<u32>,
+}
+
+impl Default for Caps {
+    fn default() -> Self {
+        Caps::of(&crate::config::StorageSettings::default())
+    }
+}
+
+impl Caps {
+    /// The caps `storage` sets: `registryRadios` radios a system (0: no
+    /// cap, the days alone bounding it), `registryDays` (0: none).
+    pub fn of(storage: &crate::config::StorageSettings) -> Caps {
+        let days = (storage.registry_days > 0).then_some(storage.registry_days);
+        match storage.registry_radios as usize {
+            0 => Caps { tgs: usize::MAX, units: usize::MAX, pairs: usize::MAX, days },
+            units => Caps { tgs: (units / 4).max(MAX_TGS), units, pairs: units.saturating_mul(5) / 2, days },
+        }
+    }
+}
+
 /// Hours of per-hour activity kept (a week).
 const HOURS: i64 = 168;
 /// A registry this young has no baseline: everything in it is "new".
@@ -56,6 +89,10 @@ pub struct Tg {
     /// (hour = Unix s / 3600, its activity), oldest first, last week only:
     /// what a query of some hours counts (`calls`, `encPct`, `ciphers`).
     pub hours: VecDeque<(i64, TgHour)>,
+    /// Its hours hold their own encryption ([`Tg::enc_by_hour`]): false
+    /// only for one kept before they did (v0.3.0), until it's loaded.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enc_hourly: bool,
 }
 
 /// A talkgroup's hour: the calls that ended in it, its seconds of air, and
@@ -98,6 +135,23 @@ impl From<TgHour> for HourRow {
 }
 
 impl Tg {
+    /// One kept before its hours held their encryption (v0.3.0): each hour
+    /// gets its share of the encrypted calls, as its calls overall were, and
+    /// each cipher its calls in the hour it was last heard; once (it's
+    /// marked after). Without it, a talkgroup's ENC% read as clear for the
+    /// week its older hours were in the window. Temporary, as migrate.rs:
+    /// to drop it, delete this, `enc_hourly`, its use in `Registry::put` and its test.
+    fn enc_by_hour(&mut self) {
+        if std::mem::replace(&mut self.enc_hourly, true) || self.enc == 0 {
+            return;
+        }
+        let share = self.enc.min(self.calls) as f64 / self.calls.max(1) as f64;
+        for (h, v) in self.hours.iter_mut() {
+            v.enc = (v.calls as f64 * share).round() as u32;
+            v.ciphers.extend(self.ciphers.iter().filter(|c| c.3.div_euclid(3600) == *h).map(|&(a, k, n, _)| (a, k, n)));
+        }
+    }
+
     /// A call of it began or ended: keep the name it carried, if any.
     fn note_name(&mut self, c: &Call) {
         if let Some(t) = c.talkgroup_info.as_ref().filter(|t| !t.alpha_tag.is_empty()) {
@@ -192,6 +246,9 @@ pub struct SystemRadio {
     /// What changed since [`Registry::take_changes`] last took it (not saved).
     #[serde(skip)]
     changed: Changed,
+    /// The tables' caps (the registry's, [`Registry::set_caps`]; not saved).
+    #[serde(skip)]
+    pub caps: Caps,
 }
 
 /// What changed in a system's registry, by row: which talkgroups, radios,
@@ -295,6 +352,8 @@ pub struct Names<'a> {
 #[derive(Default)]
 pub struct Registry {
     pub systems: BTreeMap<String, SystemRadio>,
+    /// Every system's caps ([`Registry::set_caps`]).
+    caps: Caps,
 }
 
 fn pair_key(a: u32, b: u32) -> u64 {
@@ -321,7 +380,7 @@ fn bump_hour<T>(hours: &mut VecDeque<(i64, T)>, h: i64, f: impl FnOnce(&mut T), 
 
 /// Keep the `cap` most recently heard of `m` (when it's grown 10% past it); those that went.
 fn evict<K: Copy + Eq + std::hash::Hash, V>(m: &mut HashMap<K, V>, cap: usize, last: impl Fn(&V) -> i64) -> Vec<K> {
-    if m.len() <= cap + cap / 10 {
+    if m.len() <= cap.saturating_add(cap / 10) {
         return Vec::new();
     }
     let mut ts: Vec<i64> = m.values().map(&last).collect();
@@ -383,11 +442,28 @@ impl SystemRadio {
 
     fn evict(&mut self) {
         let c = &mut self.changed;
-        let (tgs, units, pairs, freqs) = (evict(&mut self.tgs, MAX_TGS, |v| v.last), evict(&mut self.units, MAX_UNITS, |v| v.last), evict(&mut self.pairs, MAX_PAIRS, |v| v.last), evict(&mut self.freqs, MAX_FREQS, Freq::heard));
+        let (tgs, units, pairs, freqs) = (evict(&mut self.tgs, self.caps.tgs, |v| v.last), evict(&mut self.units, self.caps.units, |v| v.last), evict(&mut self.pairs, self.caps.pairs, |v| v.last), evict(&mut self.freqs, MAX_FREQS, Freq::heard));
         went(tgs, &mut c.tgs, &mut c.gone.tgs);
         went(units, &mut c.units, &mut c.gone.units);
         went(pairs, &mut c.pairs, &mut c.gone.pairs);
         went(freqs, &mut c.freqs, &mut c.gone.freqs);
+    }
+
+    /// Let go of the rows not heard since `caps.days` before `now` (Unix
+    /// s), as gone: what a store is told, as when a cap evicts them.
+    fn expire(&mut self, now: i64) {
+        let Some(days) = self.caps.days else { return };
+        let before = now - i64::from(days) * 86_400;
+        fn old<K: Copy, V>(m: &mut HashMap<K, V>, before: i64, last: impl Fn(&V) -> i64) -> Vec<K> {
+            let gone: Vec<K> = m.iter().filter(|(_, v)| last(v) < before).map(|(k, _)| *k).collect();
+            m.retain(|_, v| last(v) >= before);
+            gone
+        }
+        let c = &mut self.changed;
+        went(old(&mut self.tgs, before, |v| v.last), &mut c.tgs, &mut c.gone.tgs);
+        went(old(&mut self.units, before, |v| v.last), &mut c.units, &mut c.gone.units);
+        went(old(&mut self.pairs, before, |v| v.last), &mut c.pairs, &mut c.gone.pairs);
+        went(old(&mut self.freqs, before, Freq::heard), &mut c.freqs, &mut c.gone.freqs);
     }
 
     /// Every row, as changes: the whole system, as it's stored (the one
@@ -468,12 +544,37 @@ pub struct Firsts {
 
 impl Registry {
     fn sys(&mut self, name: &str, t: i64) -> &mut SystemRadio {
-        self.systems.entry(name.to_string()).or_insert_with(|| SystemRadio::new(t))
+        let caps = self.caps;
+        self.systems.entry(name.to_string()).or_insert_with(|| SystemRadio { caps, ..SystemRadio::new(t) })
     }
 
     /// Put system `name` as a store gave it.
-    pub fn put(&mut self, name: &str, s: SystemRadio) {
+    pub fn put(&mut self, name: &str, mut s: SystemRadio) {
+        s.caps = self.caps;
+        // (Kept by an older version: its talkgroups' hours given their encryption.)
+        s.tgs.values_mut().for_each(Tg::enc_by_hour);
         self.systems.insert(name.to_string(), s);
+    }
+
+    /// Size every system's tables (now and as systems come); past a cap
+    /// the least recently heard go on the next change.
+    pub fn set_caps(&mut self, caps: Caps) {
+        self.caps = caps;
+        for s in self.systems.values_mut() {
+            s.caps = caps;
+        }
+    }
+
+    pub fn caps(&self) -> Caps {
+        self.caps
+    }
+
+    /// How full it is: each system's talkgroups, radios and pairs against
+    /// the caps (none: no cap), for the dashboard (Platform → Storage).
+    pub fn fill(&self) -> Value {
+        let cap = |n: usize| (n != usize::MAX).then_some(n);
+        let systems: Vec<Value> = self.systems.iter().map(|(n, s)| json!({ "system": n, "talkgroups": s.tgs.len(), "radios": s.units.len(), "pairs": s.pairs.len() })).collect();
+        json!({ "caps": { "talkgroups": cap(self.caps.tgs), "radios": cap(self.caps.units), "pairs": cap(self.caps.pairs), "days": self.caps.days }, "systems": systems })
     }
 
     /// A call began (`t`: Unix s). Returns what was heard for the first time
@@ -485,7 +586,7 @@ impl Registry {
         if !c.unit_to_unit {
             s.changed.tg(c.talkgroup);
             let new = !s.tgs.contains_key(&c.talkgroup);
-            let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: t, ..Default::default() });
+            let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: t, enc_hourly: true, ..Default::default() });
             g.last = t;
             g.note_name(c);
             firsts.tg = new && base;
@@ -516,7 +617,7 @@ impl Registry {
         let h = t.div_euclid(3600);
         if !c.unit_to_unit {
             s.changed.tg(c.talkgroup);
-            let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: start, ..Default::default() });
+            let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: start, enc_hourly: true, ..Default::default() });
             g.last = t;
             g.note_name(c);
             g.calls += 1;
@@ -674,11 +775,26 @@ impl Registry {
         s.changed.tones += 1;
     }
 
+    /// Let go of what each system hasn't heard for its caps' days (`now`:
+    /// Unix s): the next [`Registry::take_changes`] has them as gone.
+    pub fn expire(&mut self, now: i64) {
+        for s in self.systems.values_mut() {
+            s.expire(now);
+        }
+    }
+
     /// Each system's rows that changed since the last call ([`RegistryChanges`]):
     /// what's kept (a store appends them, and writes a system whole now and
     /// then; the browser writes the systems they name whole).
     pub fn take_changes(&mut self) -> Vec<(String, RegistryChanges)> {
         self.systems.iter_mut().filter_map(|(n, s)| s.take_changes().map(|c| (n.clone(), c))).collect()
+    }
+
+    /// Forget system `system` (none: every system), what it changed since
+    /// it was last taken too; the radios and talkgroups it had heard.
+    pub fn forget(&mut self, system: Option<&str>) -> (usize, usize) {
+        let gone: Vec<String> = self.systems.keys().filter(|n| system.is_none_or(|s| s == n.as_str())).cloned().collect();
+        gone.iter().filter_map(|n| self.systems.remove(n)).fold((0, 0), |(u, t), s| (u + s.units.len(), t + s.tgs.len()))
     }
 
     /// Load a system kept whole ([`SystemRadio::whole`], as JSON; a bad one is ignored).
@@ -694,12 +810,14 @@ impl Registry {
         let what = q["what"].as_str().unwrap_or("summary");
         if what == "summary" {
             let systems: serde_json::Map<String, Value> = self.systems.iter().map(|(n, s)| (n.clone(), summary(n, s, now, names))).collect();
-            return json!({ "what": what, "systems": systems });
+            let cap = |n: usize| (n != usize::MAX).then_some(n);
+            return json!({ "what": what, "systems": systems, "caps": { "talkgroups": cap(self.caps.tgs), "radios": cap(self.caps.units), "days": self.caps.days } });
         }
         let Some(name) = q["system"].as_str() else { return json!({ "what": what, "error": "which system?" }) };
         let Some(s) = self.systems.get(name) else { return json!({ "what": what, "system": name, "rows": [] }) };
         let hours = q["hours"].as_i64().unwrap_or(24).clamp(1, HOURS);
-        let limit = q["limit"].as_u64().unwrap_or(500).min(5000) as usize;
+        // Up to the registry's own cap: a client may ask for every radio heard.
+        let limit = q["limit"].as_u64().unwrap_or(500).min(self.caps.units as u64) as usize;
         let key = q["key"].as_u64().map(|k| k as u32);
         let mut out = match what {
             "talkgroups" => talkgroups(name, s, now, hours, limit, names),
@@ -1243,7 +1361,7 @@ mod tests {
         assert!(r.take_changes().is_empty(), "nothing since");
         let mut kept = r.systems["x"].clone();
         // Past the caps: radios and pairs go, the oldest first.
-        let n = (MAX_PAIRS / 5 + MAX_PAIRS / 40) as u32;
+        let n = (Caps::default().pairs / 5 + Caps::default().pairs / 40) as u32;
         for i in 0..n {
             let talkers: Vec<(u32, f64)> = (0..6).map(|k| (10_000 + 6 * i + k, k as f64)).collect();
             r.call_end("x", &call(200 + i % 50, &talkers, 0.0, 6.0), 10 + i as i64);
@@ -1266,6 +1384,92 @@ mod tests {
         // As a log's line, and back.
         let line = serde_json::to_string(c).unwrap();
         assert_eq!(serde_json::from_str::<RegistryChanges>(&line).unwrap().units.len(), c.units.len());
+    }
+
+    /// The caps the storage settings make: the defaults as ever, a number
+    /// of radios with the other tables in proportion, 0 for none.
+    #[test]
+    fn caps_follow_the_storage_settings() {
+        use crate::config::StorageSettings;
+        let of = |registry_radios, registry_days| Caps::of(&StorageSettings { registry_radios, registry_days, ..Default::default() });
+        assert_eq!(Caps::default(), Caps { tgs: 5000, units: 20_000, pairs: 50_000, days: Some(365) });
+        assert_eq!(of(100_000, 30), Caps { tgs: 25_000, units: 100_000, pairs: 250_000, days: Some(30) });
+        assert_eq!(of(1_000, 0), Caps { tgs: 5000, units: 1_000, pairs: 2_500, days: None }, "talkgroups 5,000 at least");
+        assert_eq!(of(0, 90).units, usize::MAX, "no cap: the days alone");
+    }
+
+    /// Rows not heard for the caps' days go, as gone: a store is told.
+    #[test]
+    fn what_isnt_heard_for_its_days_goes() {
+        let mut r = Registry::default();
+        r.set_caps(Caps::of(&crate::config::StorageSettings { registry_days: 30, ..Default::default() }));
+        let t0 = 1_700_000_000;
+        r.call_end("x", &call(100, &[(1, 0.0), (2, 1.0)], 0.0, 3.0), t0);
+        r.call_end("x", &call(200, &[(3, 0.0)], 0.0, 3.0), t0 + 29 * 86_400);
+        r.take_changes();
+        r.expire(t0 + 31 * 86_400);
+        let x = &r.systems["x"];
+        assert!(!x.units.contains_key(&1) && !x.units.contains_key(&2) && x.units.contains_key(&3));
+        assert!(!x.tgs.contains_key(&100) && x.tgs.contains_key(&200) && x.pairs.is_empty());
+        let (_, c) = r.take_changes().remove(0);
+        let mut gone = c.gone.units.clone();
+        gone.sort_unstable();
+        assert_eq!((gone, c.gone.tgs.clone(), c.gone.pairs.len()), (vec![1, 2], vec![100], 1), "the store is told");
+        r.set_caps(Caps::of(&crate::config::StorageSettings { registry_days: 0, ..Default::default() }));
+        r.expire(t0 + 10_000 * 86_400);
+        assert!(r.systems["x"].units.contains_key(&3), "0: kept however old");
+    }
+
+    /// A page is 500 rows by default, and a `limit` up to the cap is every
+    /// radio heard (from PR #112: an interface listing a system's radios).
+    #[test]
+    fn a_query_may_ask_for_every_radio_heard() {
+        let t = 1_790_000_000i64;
+        let mut s = SystemRadio::new(t);
+        for u in 0..6_000u32 {
+            s.units.insert(1_000_000 + u, Unit { first: t, last: t, last_tx: t, tx: 1, tx_secs: 1.0, aff: None, aff_t: 0, reg: None, tgs: Default::default(), recent: Default::default() });
+        }
+        let mut r = Registry::default();
+        r.put("x", s);
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let rows = |r: &Registry, limit: Option<u64>| {
+            let mut q = json!({ "what": "units", "system": "x", "hours": 24 });
+            if let Some(l) = limit {
+                q["limit"] = json!(l);
+            }
+            let a = r.query(&q, t + 60, &n);
+            assert_eq!(a["total"], 6_000);
+            a["rows"].as_array().unwrap().len()
+        };
+        assert_eq!(rows(&r, None), 500, "the default page");
+        assert_eq!(rows(&r, Some(Caps::default().units as u64)), 6_000, "every radio heard");
+        assert_eq!(rows(&r, Some(1_000_000)), 6_000, "more than were heard is all of them");
+        r.set_caps(Caps::of(&crate::config::StorageSettings { registry_radios: 0, ..Default::default() }));
+        assert_eq!(rows(&r, Some(1_000_000)), 6_000, "no cap: as many as asked for");
+    }
+
+    #[test]
+    fn caps_bound_the_tables_and_the_query() {
+        let mut r = Registry::default();
+        r.set_caps(Caps::of(&crate::config::StorageSettings { registry_radios: 1_000, ..Default::default() }));
+        let t0 = 1_700_000_000;
+        for u in 1..=1_200u32 {
+            r.call_end("x", &call(100, &[(u, 0.0)], 0.0, 1.0), t0 + u as i64);
+        }
+        let n = r.systems["x"].units.len();
+        assert!((1_000..=1_100).contains(&n), "past the cap by a tenth, the least recently heard go: {n}");
+        assert!(!r.systems["x"].units.contains_key(&1) && r.systems["x"].units.contains_key(&1_200));
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let q = r.query(&json!({ "what": "units", "system": "x", "limit": 50_000 }), t0 + 1_300, &n);
+        assert_eq!(q["rows"].as_array().unwrap().len(), 1_000, "a limit past the cap is the cap");
+        let q = r.query(&json!({ "what": "summary" }), t0 + 1_300, &n);
+        assert_eq!(q["caps"], json!({ "talkgroups": 5000, "radios": 1_000, "days": 365 }));
+        // A system put from the store, and one made later, get the caps too.
+        r.put("y", SystemRadio::new(t0));
+        r.call_end("z", &call(100, &[(1, 0.0)], 0.0, 1.0), t0);
+        assert_eq!((r.systems["y"].caps, r.systems["z"].caps), (r.caps(), r.caps()));
     }
 
     #[test]
@@ -1320,9 +1524,37 @@ mod tests {
         let (h0, h1) = (t0.div_euclid(3600), now.div_euclid(3600));
         assert_eq!(kept, json!([[h0, [4, 20.0, 4, [[0xAA, 0x1B50, 4]]]], [h1, [4, 20.0, 1, []]]]));
         assert_eq!(serde_json::to_value(TgHour { calls: 2, secs: 9.5, ..Default::default() }).unwrap(), json!([2, 9.5]));
-        // A registry kept before: it reads, its hours' calls and air as they were (its encryption only from now on).
+        // A registry kept before: it reads, its hours' calls and air as they were.
         let old: Tg = serde_json::from_value(json!({ "calls": 3, "enc": 3, "hours": [[h1, [3, 15.0]]] })).unwrap();
         assert_eq!(old.hours[0].1, TgHour { calls: 3, secs: 15.0, ..Default::default() });
+    }
+
+    /// A registry kept by v0.3.0 (its hours `[calls, seconds]` alone): once
+    /// loaded, an encrypted talkgroup's ENC% is what it was, not 0 for the
+    /// week its older hours are in the window, and its ciphers are listed;
+    /// a clear one's stays 0. Done once: saved again, it isn't redone.
+    #[test]
+    fn a_registry_kept_before_hours_held_encryption_keeps_its_enc_pct() {
+        let now: i64 = 1_700_000_000;
+        let (h0, h1) = ((now - 7200).div_euclid(3600), (now - 3600).div_euclid(3600));
+        let kept = json!({ "tgs": [
+            [100, { "first": now - 9000, "last": now - 3600, "calls": 10, "enc": 10, "ciphers": [[0xAA, 0x1B50, 10, now - 3600]], "hours": [[h0, [6, 30.0]], [h1, [4, 20.0]]] }],
+            [200, { "first": now - 9000, "last": now - 3600, "calls": 4, "enc": 0, "hours": [[h1, [4, 20.0]]] }]
+        ] });
+        let mut r = Registry::default();
+        r.load("dcfd", &kept.to_string());
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let row = |r: &Registry, k: u32| r.query(&json!({ "what": "tg", "system": "dcfd", "key": k, "hours": 24 }), now, &n)["row"].clone();
+        assert_eq!(row(&r, 100)["encPct"].as_f64(), Some(100.0), "as before the upgrade");
+        assert_eq!(row(&r, 100)["ciphers"][0]["calls"], 10);
+        assert_eq!(row(&r, 200)["encPct"].as_f64(), Some(0.0));
+        // Saved again (marked) and loaded: not redone over hours since.
+        let again = serde_json::to_string(&r.systems["dcfd"].whole()).unwrap();
+        let mut r2 = Registry::default();
+        r2.load("dcfd", &again);
+        assert_eq!(r2.systems["dcfd"].tgs[&100].hours, r.systems["dcfd"].tgs[&100].hours);
+        assert!(r2.systems["dcfd"].tgs[&100].enc_hourly);
     }
 
     /// How big a system's registry file gets, and how long turning it into
@@ -1332,7 +1564,7 @@ mod tests {
     #[test]
     #[ignore]
     fn registry_size() {
-        for (label, tgs, units, pairs) in [("at the caps", MAX_TGS, MAX_UNITS, MAX_PAIRS), ("about half", MAX_TGS / 2, MAX_UNITS / 2, MAX_PAIRS / 2)] {
+        for (label, tgs, units, pairs) in [("at the caps", Caps::default().tgs, Caps::default().units, Caps::default().pairs), ("about half", Caps::default().tgs / 2, Caps::default().units / 2, Caps::default().pairs / 2)] {
             let t = 1_790_000_000i64;
             let mut s = SystemRadio::new(t);
             let hours = |n: usize| (0..n as i64).map(|h| (t / 3600 - h, TgHour { calls: 12, secs: 95.5, ..Default::default() })).collect::<VecDeque<_>>();

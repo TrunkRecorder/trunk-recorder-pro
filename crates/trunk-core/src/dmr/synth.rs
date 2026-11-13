@@ -1,10 +1,10 @@
-//! A synthetic DMR repeater for tests: idle bursts on both slots, then a
+//! A synthetic DMR repeater, for tests and `tool dmrsynth`: idle bursts on both slots, then a
 //! voice transmission on one (LC headers, voice superframes with embedded
 //! LC, terminators), 4FSK-modulated.
 
 use num_complex::Complex32;
 
-use super::burst::tests::{cach_dibits, sync_dibits};
+use super::burst::{cach_dibits, sync_dibits};
 use super::burst::{SyncKind, BURST_DIBITS};
 use super::fec::{bptc196_encode, embedded_lc_encode, golay20_encode, qr16_encode, rs129_parity, unpack, MASK_CSBK, MASK_TERMINATOR_LC, MASK_VOICE_LC_HEADER};
 use super::slot::{DT_CSBK, DT_IDLE, DT_TERMINATOR_LC, DT_VOICE_LC_HEADER};

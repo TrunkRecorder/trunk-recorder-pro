@@ -18,10 +18,13 @@ pub fn encode(samples: &[f32], rate: u32) -> Vec<u8> {
     b.extend_from_slice(&16u16.to_le_bytes());
     b.extend_from_slice(b"data");
     b.extend_from_slice(&data.to_le_bytes());
-    for &s in samples {
-        b.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
-    }
+    b.extend(pcm16(samples));
     b
+}
+
+/// Samples (-1…1) as 16-bit PCM, little-endian: a WAV's data, and live audio's.
+pub fn pcm16(samples: &[f32]) -> Vec<u8> {
+    samples.iter().flat_map(|&s| ((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes()).collect()
 }
 
 /// A 16-bit PCM WAV's rate, and its samples in [−1, 1] (the first channel).

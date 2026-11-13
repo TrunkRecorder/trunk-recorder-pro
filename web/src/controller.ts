@@ -17,11 +17,15 @@ import type {
   AudioChunk,
   CallEntry,
   CallView,
+  CaptureRule,
+  CaptureWhat,
   Config,
   Conventional,
   Device,
   DirListing,
   EngineStatus,
+  DataKind,
+  DataTable,
   FromRecorder,
   LogLine,
   Phase,
@@ -31,8 +35,11 @@ import type {
   InterfacesList,
   Store,
   StoreKind,
+  Origin,
+  OriginFrom,
   Talkgroup,
   TalkgroupEdit,
+  UnitName,
   PluginValues,
   LockableKeys,
   Radios,
@@ -73,8 +80,10 @@ import {
   trpBase,
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
-import { parseUnitsCsv, type UnitAliases } from "./units.ts";
-import { editCells, ignoreEdit, withEdit } from "./talkgroups.ts";
+import { parseUnitsCsv, withUnitName, type UnitAliases } from "./units.ts";
+import { ignoreEdit, sameEdit, withEdit } from "./talkgroups.ts";
+import { editedNow, fromNow } from "./origins.ts";
+import { talkgroupsReplace, unitNamesReplace } from "./rules.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 import { lookedFreqs, lookForMessage, type LookingFor } from "./lookFor.ts";
 
@@ -94,6 +103,8 @@ export interface AppState {
   config: Config | null;
   /** Each system's talkgroups, by short name (none: absent): kept beside the config, not in it. */
   talkgroups: Record<string, Talkgroup[]>;
+  /** Each system's own names for its radios, by short name (none: absent), in their order: kept beside the config, as its talkgroups. */
+  unitNames: Record<string, UnitName[]>;
   devices: Device[];
   /** Optional drivers (desktop app); null in the web build. */
   radios: Radios | null;
@@ -201,6 +212,7 @@ let state: AppState = {
   ended: false,
   config: null,
   talkgroups: {},
+  unitNames: {},
   devices: [],
   radios: null,
   lockable: [],
@@ -347,7 +359,7 @@ transport.onConnection = (connected) => {
   // answer won't get one (a talkgroup edit's is sent again: "hello").
   saving = queued = false;
   wholeSent.clear();
-  set({ events: [], talkgroups: {}, units: {} });
+  set({ events: [], talkgroups: {}, unitNames: {}, units: {} });
 };
 transport.onAudio = onAudio;
 transport.onMessage = (m: FromRecorder) => {
@@ -363,8 +375,8 @@ function take(m: FromRecorder): void {
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
       sendTopics(true);
-      // Talkgroup edits not answered before the connection dropped: sent again (shown meanwhile).
-      for (const u of unanswered) transport.send({ type: "setTalkgroup", system: u.system, talkgroup: u.tg, edit: u.edit });
+      // Edits not answered before the connection dropped: sent again (shown meanwhile).
+      for (const u of unanswered) sendNameEdit(u);
       break;
     case "state":
       set({ phase: m.phase, runError: m.error, ended: m.ended, restartNeeded: m.restartNeeded, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
@@ -382,12 +394,16 @@ function take(m: FromRecorder): void {
       configSaved(m.version, m.error);
       break;
     case "talkgroups":
-      if (wholeSent.get(m.system)) wholeSent.set(m.system, wholeSent.get(m.system)! - 1);
-      set({ talkgroups: withList(state.talkgroups, m.system, withUnanswered(m.system, m.talkgroups)) });
-      saveSettled();
+      namesTold("talkgroups", m.system, m.talkgroups);
       break;
     case "talkgroupEdited":
-      talkgroupEdited(m.system, m.talkgroup, m.edit);
+      nameEdited({ list: "talkgroups", system: m.system, key: m.talkgroup, edit: m.edit }, m.origin);
+      break;
+    case "unitNames":
+      namesTold("unitNames", m.system, m.unitNames);
+      break;
+    case "unitNameEdited":
+      nameEdited({ list: "unitNames", system: m.system, key: m.unit, name: m.name }, m.origin);
       break;
     case "units":
       set({ units: { ...state.units, [m.system]: parseUnitsCsv(m.csv) } });
@@ -489,6 +505,12 @@ function take(m: FromRecorder): void {
     case "statsResult":
     case "radioResult":
     case "callsResult":
+    case "iqCaptures":
+    case "iqRuleChecked":
+    case "iqCaptureReview":
+    case "dataSummary":
+    case "dataDeleted":
+    case "dataCompacted":
     case "pluginActionResult": {
       const r = pending.get(m.id);
       pending.delete(m.id);
@@ -576,14 +598,14 @@ export function useTopic(topic: string | null): void {
 let nextId = 1;
 const pending = new Map<number, (m: FromRecorder) => void>();
 
-function ask<T extends FromRecorder>(msg: ToRecorder & { id: number }): Promise<T> {
+function ask<T extends FromRecorder>(msg: ToRecorder & { id: number }, waitMs = 20_000): Promise<T> {
   return new Promise((resolve) => {
     pending.set(msg.id, (m) => resolve(m as T));
     transport.send(msg);
     // Never answered (the connection dropped): let it go.
     setTimeout(() => {
       if (pending.delete(msg.id)) resolve({ type: "error", message: "no answer" } as unknown as T);
-    }, 20_000);
+    }, waitMs);
   });
 }
 
@@ -613,6 +635,84 @@ export function callsQuery(q: Omit<Extract<ToRecorder, { type: "callsQuery" }>, 
   return ask<CallsResult>({ type: "callsQuery", id: nextId++, ...q });
 }
 
+export type IqCaptures = Extract<FromRecorder, { type: "iqCaptures" }>;
+type IqAnswer = IqCaptures | { type: "error"; message: string };
+
+/** The radios' captures on disk, and the one being made. */
+export function iqCaptures(): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptures", id: nextId++ });
+}
+
+/** Record `what` for `seconds` (the next call: as long as it is), showing a problem or everything working. */
+export function iqCaptureStart(what: CaptureWhat, seconds: number, note: string, problem: boolean): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureStart", id: nextId++, seconds, note, what, problem });
+}
+
+/** Give up capture `key`, asked for and still waiting. */
+export function iqCaptureCancel(key: number): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureCancel", id: nextId++, key });
+}
+
+export type IqCaptureReview = Extract<FromRecorder, { type: "iqCaptureReview" }>;
+
+/** What a capture would publish. */
+export function iqCaptureReview(name: string): Promise<IqCaptureReview | { type: "error"; message: string }> {
+  return ask<IqCaptureReview>({ type: "iqCaptureReview", id: nextId++, name }, 60_000);
+}
+
+/** Send a capture its owner has reviewed to the public corpus. */
+export function iqCaptureSend(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureSend", id: nextId++, name });
+}
+
+/** Take a sent capture back from the corpus. */
+export function iqCaptureWithdraw(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureWithdraw", id: nextId++, name });
+}
+
+/** Why a capture rule can't run, if so. */
+export function iqRuleCheck(rule: CaptureRule): Promise<Extract<FromRecorder, { type: "iqRuleChecked" }> | { type: "error"; message: string }> {
+  return ask({ type: "iqRuleCheck", id: nextId++, rule });
+}
+
+export function iqCaptureDelete(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureDelete", id: nextId++, name });
+}
+
+export type DataSummary = Extract<FromRecorder, { type: "dataSummary" }>;
+export type DataDeleted = Extract<FromRecorder, { type: "dataDeleted" }>;
+
+/** What the store keeps of each system it has (the config's, and those removed whose data stayed). */
+export function dataSummary(): Promise<DataSummary | { type: "error"; message: string }> {
+  return ask<DataSummary>({ type: "dataSummary", id: nextId++ });
+}
+
+/** Every kind of data the store keeps, as deleteData takes them. */
+export const DATA_KINDS: DataKind[] = ["calls", "talkgroups", "unitNames", "talkerAliases", "registry", "dashboardHistory"];
+
+/**
+ * Delete `kinds` of system `system`'s data (its id; none: every system's)
+ * from the store, after any config edit waiting to be sent (a system just
+ * removed is gone from the config first, and the store forgets it too).
+ * A big store takes a while: waited for up to 10 minutes.
+ */
+export function deleteData(kinds: DataKind[], system?: number): Promise<DataDeleted | { type: "error"; message: string }> {
+  flushConfig();
+  return ask<DataDeleted>({ type: "deleteData", id: nextId++, kinds, ...(system === undefined ? {} : { system }) }, 600_000);
+}
+
+export type DataCompacted = Extract<FromRecorder, { type: "dataCompacted" }>;
+
+/** Give the space deleted data left in the store back to the disk: waited for up to 30 minutes (it rewrites the whole store). */
+export function compactData(): Promise<DataCompacted | { type: "error"; message: string }> {
+  return ask<DataCompacted>({ type: "compactData", id: nextId++ }, 1_800_000);
+}
+
+/** Where a table's CSV file is (every system's, or system `system`'s): the recorder names it by the system, the table and the time. */
+export function exportUrl(table: DataTable, system?: number): string {
+  return `/api/v1/export/${table}${system === undefined ? "" : `?system=${system}`}`;
+}
+
 export type PluginActionResult = Extract<FromRecorder, { type: "pluginActionResult" }>;
 
 /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited): how it went, as the plugin says. */
@@ -639,41 +739,133 @@ export function usePolled<T>(key: string, run: () => Promise<T>, everyMs: number
   return v && v.key === key ? v.v : null;
 }
 
+// ── names: talkgroups and radio names ───────────────────────────────────────
+
+// A system's names are kept beside the config, in lists by system: its
+// talkgroups and its own names for its radios. Each list is set whole (a
+// file loaded) or edited a row at a time, shown at once and sent to the
+// recorder, which answers every interface; each moves with its system.
+
+/** The lists of a system's names, by their AppState key. */
+export type NameList = "talkgroups" | "unitNames";
+const NAME_LISTS: NameList[] = ["talkgroups", "unitNames"];
+interface NameRows {
+  talkgroups: Talkgroup[];
+  unitNames: UnitName[];
+}
+
+/** An edit of one row: a talkgroup's cells, or a radio's name. */
+type NameEdit = { list: "talkgroups"; system: string; key: number; edit: TalkgroupEdit } | { list: "unitNames"; system: string; key: number; name: string };
+
+/** `rows` with `e` made, by `origin`: the recorder's own edit. */
+function withNameEdit<L extends NameList>(rows: NameRows[L], e: NameEdit, origin: Origin): NameRows[L] {
+  return (e.list === "talkgroups" ? withEdit(rows as Talkgroup[], e.key, e.edit, origin) : withUnitName(rows as UnitName[], e.key, e.name, origin)) as NameRows[L];
+}
+
+function sendNameEdit(e: NameEdit): void {
+  transport.send(e.list === "talkgroups" ? { type: "setTalkgroup", system: e.system, talkgroup: e.key, edit: e.edit } : { type: "setUnitName", system: e.system, unit: e.key, name: e.name });
+}
+
+function sameNameEdit(a: NameEdit, b: NameEdit): boolean {
+  if (a.list !== b.list || a.system !== b.system || a.key !== b.key) return false;
+  return a.list === "talkgroups" ? sameEdit(a.edit, (b as typeof a).edit) : a.name.trim() === (b as typeof a).name.trim();
+}
+
+/** `lists` (one of AppState's) with system `system`'s now `rows` (`[]`: none). */
+function withList<R>(lists: Record<string, R[]>, system: string, rows: R[]): Record<string, R[]> {
+  const next = { ...lists };
+  if (rows.length) next[system] = rows;
+  else delete next[system];
+  return next;
+}
+
+/** Edits this browser sent that the recorder hasn't answered yet, oldest first. */
+let unanswered: NameEdit[] = [];
+/** Whole lists this browser sent not answered yet, by list and system. */
+const wholeSent = new Map<string, number>();
+const sentKey = (list: NameList, system: string) => `${list}:${system}`;
+
+/** `rows` (system `system`'s list `list` as the recorder has it) with this browser's edits not answered yet. */
+function withUnanswered<L extends NameList>(list: L, system: string, rows: NameRows[L]): NameRows[L] {
+  return unanswered.filter((u) => u.list === list && u.system === system).reduce((f, u) => withNameEdit<L>(f, u, editedNow()), rows);
+}
+
+/** Make edit `e`: shown at once, sent as the row's edit alone, the recorder's copy edited the same way. */
+function editName(e: NameEdit): void {
+  unanswered.push(e);
+  const rows = withNameEdit(state[e.list][e.system] ?? [], e, editedNow());
+  set({ [e.list]: withList<unknown>(state[e.list], e.system, rows), saveStatus: "saving", saveError: null } as Partial<AppState>);
+  sendNameEdit(e);
+}
+
+/** An edit made (by this browser or another), by `origin`: this browser's answered, or another's made here too. */
+function nameEdited(e: NameEdit, origin: Origin): void {
+  if (unanswered.length && sameNameEdit(unanswered[0], e)) unanswered.shift();
+  else {
+    // Another's, made before this browser's not answered yet: those are made over it again.
+    const rows = withNameEdit(state[e.list][e.system] ?? [], e, origin);
+    set({ [e.list]: withList<unknown>(state[e.list], e.system, withUnanswered(e.list, e.system, rows)) } as Partial<AppState>);
+  }
+  saveSettled();
+}
+
+/** System `system`'s list `list`, as the recorder has it now. */
+function namesTold<L extends NameList>(list: L, system: string, rows: NameRows[L]): void {
+  const k = sentKey(list, system);
+  if (wholeSent.get(k)) wholeSent.set(k, wholeSent.get(k)! - 1);
+  set({ [list]: withList<unknown>(state[list], system, withUnanswered(list, system, rows)) } as Partial<AppState>);
+  saveSettled();
+}
+
+/** System `system`'s list `list` is now `rows` (`[]`: none), from `from` (none: the rows' own origins): saved on the recorder at once. */
+function setNames<L extends NameList>(list: L, system: string, rows: NameRows[L], from?: OriginFrom): void {
+  const k = sentKey(list, system);
+  wholeSent.set(k, (wholeSent.get(k) ?? 0) + 1);
+  const had = state[list][system] ?? [];
+  const shown = list === "talkgroups" ? talkgroupsReplace(had as Talkgroup[], rows as Talkgroup[], fromNow(from)) : unitNamesReplace(had as UnitName[], rows as UnitName[], fromNow(from));
+  set({ [list]: withList<unknown>(state[list], system, shown), saveStatus: "saving", saveError: null } as Partial<AppState>);
+  transport.send(list === "talkgroups" ? { type: "setTalkgroups", system, talkgroups: rows as Talkgroup[], from } : { type: "setUnitNames", system, unitNames: rows as UnitName[], from });
+}
+
+/**
+ * Whether system `system`'s list `list` may become `rows`: yes, unless that
+ * changes or drops names edited by hand and the user, asked (`what`: what's
+ * being loaded, "dc.csv"), says no.
+ */
+export function mayReplaceNames(list: NameList, system: string, rows: NameRows[NameList], what: string): boolean {
+  const had: { origin?: Origin }[] = state[list][system] ?? [];
+  if (!had.some((r) => r.origin?.kind === "edited")) return true;
+  const key = (r: Talkgroup | UnitName) => ("number" in r ? String(r.number) : r.unit);
+  const after = new Map<string, { origin?: Origin }>(
+    (list === "talkgroups" ? talkgroupsReplace(had as Talkgroup[], rows as Talkgroup[], fromNow({ kind: "file" })) : unitNamesReplace(had as UnitName[], rows as UnitName[], fromNow({ kind: "file" }))).map((r) => [key(r), r]),
+  );
+  const lost = (had as (Talkgroup | UnitName)[]).filter((r) => r.origin?.kind === "edited" && after.get(key(r))?.origin?.kind !== "edited").length;
+  return !lost || confirm(`${what} replaces ${lost} name${lost === 1 ? "" : "s"} edited by hand. Use it anyway?`);
+}
+
+/** System `system`'s talkgroups are now `rows` (`[]`: none), from `from`: saved on the recorder at once. */
+export function setTalkgroups(system: string, rows: Talkgroup[], from?: OriginFrom): void {
+  setNames("talkgroups", system, rows, from);
+}
+
+/** System `system`'s own names for its radios are now `rows` (`[]`: none), from `from`: saved on the recorder at once. */
+export function setUnitNames(system: string, rows: UnitName[], from?: OriginFrom): void {
+  setNames("unitNames", system, rows, from);
+}
+
 /** Mark talkgroup `tg` of system `system` ignored (or not). */
 export function setTalkgroupIgnore(system: string, tg: number, ignore: boolean, alphaTag = ""): void {
   editTalkgroup(system, tg, ignoreEdit(state.talkgroups[system] ?? [], tg, ignore, alphaTag));
 }
 
-/**
- * Edit one talkgroup of system `system`'s: shown at once, sent as the
- * row's edit alone (setTalkgroup), the recorder's copy edited the same way.
- */
+/** Edit one talkgroup of system `system`'s (setTalkgroup): only the cells `edit` sets change. */
 export function editTalkgroup(system: string, tg: number, edit: TalkgroupEdit): void {
-  unanswered.push({ system, tg, edit });
-  set({ talkgroups: withList(state.talkgroups, system, withEdit(state.talkgroups[system] ?? [], tg, edit)), saveStatus: "saving", saveError: null });
-  transport.send({ type: "setTalkgroup", system, talkgroup: tg, edit });
+  editName({ list: "talkgroups", system, key: tg, edit });
 }
 
-/** Talkgroup edits this browser sent that the recorder hasn't answered yet, oldest first. */
-let unanswered: { system: string; tg: number; edit: TalkgroupEdit }[] = [];
-/** Whole talkgroup lists this browser sent not answered yet, by system. */
-const wholeSent = new Map<string, number>();
-
-/** `rows` (system `system`'s talkgroups as the recorder has them) with this browser's edits not answered yet. */
-function withUnanswered(system: string, rows: Talkgroup[]): Talkgroup[] {
-  return unanswered.filter((u) => u.system === system).reduce((f, u) => withEdit(f, u.tg, u.edit), rows);
-}
-
-/** A talkgroup edited (by this browser or another): this browser's answered, or another's made here too. */
-function talkgroupEdited(system: string, tg: number, edit: TalkgroupEdit): void {
-  const same = (u: (typeof unanswered)[number]) => u.system === system && u.tg === tg && JSON.stringify(editCells(u.edit)) === JSON.stringify(editCells(edit));
-  if (unanswered.length && same(unanswered[0])) unanswered.shift();
-  else {
-    // Another's, made before this browser's not answered yet: those are made over it again.
-    const rows = withEdit(state.talkgroups[system] ?? [], tg, edit);
-    set({ talkgroups: withList(state.talkgroups, system, withUnanswered(system, rows)) });
-  }
-  saveSettled();
+/** Name radio `unit` of system `system` (setUnitName; "": its own name taken out). */
+export function nameUnit(system: string, unit: number, name: string): void {
+  editName({ list: "unitNames", system, key: unit, name });
 }
 
 /** Nothing of this browser's waiting to be saved any more: say it's saved (unless the last one failed). */
@@ -682,96 +874,97 @@ function saveSettled(): void {
   if (!waiting && state.saveStatus === "saving") set({ saveStatus: "saved" });
 }
 
-// ── talkgroups ───────────────────────────────────────────────────────────────
-
-/** `lists` with system `system`'s talkgroups now `rows` (`[]`: none). */
-function withList(lists: Record<string, Talkgroup[]>, system: string, rows: Talkgroup[]): Record<string, Talkgroup[]> {
-  const next = { ...lists };
-  if (rows.length) next[system] = rows;
-  else delete next[system];
-  return next;
-}
-
-/** System `system`'s talkgroups are now `rows` (`[]`: none): saved on the recorder at once. */
-export function setTalkgroups(system: string, rows: Talkgroup[]): void {
-  wholeSent.set(system, (wholeSent.get(system) ?? 0) + 1);
-  set({ talkgroups: withList(state.talkgroups, system, rows), saveStatus: "saving", saveError: null });
-  transport.send({ type: "setTalkgroups", system, talkgroups: rows });
-}
-
 /**
  * Rename `sys` (one of `x`'s systems, trunked or conventional) to `to`, in an
- * updateConfig: its talkgroups move with it, and plugin settings that
- * name it follow. Setup and the first-run guide both rename this way.
+ * updateConfig: its names move with it, and plugin settings that name it
+ * follow. Setup and the first-run guide both rename this way.
  */
-export function renameSystem(x: Config, sys: { shortName: string }, to: string): void {
+export function renameSystem(x: Config, sys: System | Conventional, to: string): void {
   if (sys.shortName === to) return;
-  moveTalkgroups(sys.shortName, to, [...x.systems, ...x.conventional].some((s) => s !== sys && s.shortName === to));
+  moveNames(sys.shortName, to, [...x.systems, ...x.conventional].some((s) => s !== sys && s.shortName === to));
   renameSystemRefs(x, sys.shortName, to, state.plugins?.plugins ?? []);
+  // A site without a name of its own goes by the system's: so does the system's preferred site.
+  if ("sites" in sys && sys.preferredSite === sys.shortName && sys.sites.some((s) => !s.name?.trim())) sys.preferredSite = to;
   sys.shortName = to;
 }
 
-/** System `name` is gone from `x` (removed, or made a site of another), in an updateConfig: its talkgroups go too (once the config is saved), unless a system still has the name. */
-export function forgetTalkgroups(x: Config, name: string): void {
-  if ([...x.systems, ...x.conventional].some((s) => s.shortName === name)) return;
-  const rows = state.talkgroups[name];
-  if (rows === undefined) return;
-  forgottenTalkgroups.set(name, rows);
-  set({ talkgroups: withList(state.talkgroups, name, []) });
+/** A system's lists, as AppState has them. */
+function namesOf(lists: Pick<AppState, NameList>, system: string): Partial<NameRows> {
+  return Object.fromEntries(NAME_LISTS.filter((l) => lists[l][system] !== undefined).map((l) => [l, lists[l][system]]));
 }
 
-// Talkgroups follow the config they are edited with: moved and dropped in
-// the store as the edit is made, on the recorder once the edit is saved (a
+/** `lists` with system `from`'s moved to `to` (`""`: dropped), and `put`'s put under `to`. */
+function withNamesAt(lists: Pick<AppState, NameList>, from: string, to: string, put: Partial<NameRows> = namesOf(lists, from)): Pick<AppState, NameList> {
+  const out = { ...lists };
+  for (const l of NAME_LISTS) {
+    out[l] = withList<unknown>(out[l], from, []) as never;
+    if (to && put[l]) out[l] = withList<unknown>(out[l], to, put[l]!) as never;
+  }
+  return out;
+}
+
+/** System `name` is gone from `x` (removed, or made a site of another), in an updateConfig: its names go too (once the config is saved), unless a system still has the name. */
+export function forgetNames(x: Config, name: string): void {
+  if ([...x.systems, ...x.conventional].some((s) => s.shortName === name)) return;
+  const had = namesOf(state, name);
+  if (!Object.keys(had).length) return;
+  forgottenNames.set(name, had);
+  set(withNamesAt(state, name, ""));
+}
+
+// Names follow the config they are edited with: moved and dropped in the
+// store as the edit is made, on the recorder once the edit is saved (a
 // refused edit puts them back).
 
-/** Talkgroups following a renamed system: its name when the renaming began → its name now, and the name they sit under in the store. */
-const movedTalkgroups = new Map<string, { now: string; at: string }>();
-/** Talkgroups of systems removed (by name), in case the edit is refused. */
-const forgottenTalkgroups = new Map<string, Talkgroup[]>();
+/** Names following a renamed system: its name when the renaming began → its name now, and the name they sit under in the store. */
+const movedNames = new Map<string, { now: string; at: string }>();
+/** Names of systems removed (by name), in case the edit is refused. */
+const forgottenNames = new Map<string, Partial<NameRows>>();
 
 /**
- * System `from` is renamed `to` (as its short name is typed): its
- * talkgroups follow. Not onto "" or a name another system has (`taken`):
- * they wait under its last name of its own until the new one is.
+ * System `from` is renamed `to` (as its short name is typed): its names
+ * follow. Not onto "" or a name another system has (`taken`): they wait
+ * under its last name of its own until the new one is.
  */
-export function moveTalkgroups(from: string, to: string, taken = false): void {
+export function moveNames(from: string, to: string, taken = false): void {
   if (from === to) return;
-  const began = [...movedTalkgroups].find(([, m]) => m.now === from)?.[0] ?? from;
-  const move = movedTalkgroups.get(began) ?? { now: from, at: from };
-  const rows = state.talkgroups[move.at];
-  if (rows === undefined) return;
+  const began = [...movedNames].find(([, m]) => m.now === from)?.[0] ?? from;
+  const move = movedNames.get(began) ?? { now: from, at: from };
+  if (!Object.keys(namesOf(state, move.at)).length) return;
   move.now = to;
-  if (to === began) movedTalkgroups.delete(began);
-  else movedTalkgroups.set(began, move);
+  if (to === began) movedNames.delete(began);
+  else movedNames.set(began, move);
   if (to === "" || taken) return;
-  if (move.at !== to) set({ talkgroups: withList(withList(state.talkgroups, move.at, []), to, rows) });
+  if (move.at !== to) set(withNamesAt(state, move.at, to));
   move.at = to;
 }
 
-/** The config was saved: the recorder's talkgroups follow it. */
-function sendTalkgroupMoves(): void {
-  for (const [began, m] of movedTalkgroups) {
+/** The config was saved: the recorder's names follow it (each row with its own origin). */
+function sendNameMoves(): void {
+  const send = (list: NameList, system: string, rows: NameRows[NameList]) =>
+    transport.send(list === "talkgroups" ? { type: "setTalkgroups", system, talkgroups: rows as Talkgroup[] } : { type: "setUnitNames", system, unitNames: rows as UnitName[] });
+  for (const [began, m] of movedNames) {
     // (Waiting for a name of its own: they stay where they were.)
     if (m.at !== m.now) continue;
-    transport.send({ type: "setTalkgroups", system: m.now, talkgroups: state.talkgroups[m.now] ?? [] });
-    transport.send({ type: "setTalkgroups", system: began, talkgroups: [] });
-    movedTalkgroups.delete(began);
+    for (const l of NAME_LISTS) {
+      if (!state[l][m.now]) continue;
+      send(l, m.now, state[l][m.now]);
+      send(l, began, []);
+    }
+    movedNames.delete(began);
   }
-  for (const name of forgottenTalkgroups.keys()) transport.send({ type: "setTalkgroups", system: name, talkgroups: [] });
-  forgottenTalkgroups.clear();
+  for (const [name, had] of forgottenNames) for (const l of NAME_LISTS) if (had[l]) send(l, name, []);
+  forgottenNames.clear();
 }
 
-/** The edit was refused: the talkgroups are where the recorder has them. */
-function undoTalkgroupMoves(): void {
-  let lists = state.talkgroups;
-  for (const [began, m] of movedTalkgroups) {
-    const rows = lists[m.at];
-    if (m.at !== began && rows !== undefined) lists = withList(withList(lists, m.at, []), began, rows);
-  }
-  for (const [name, rows] of forgottenTalkgroups) lists = withList(lists, name, rows);
-  movedTalkgroups.clear();
-  forgottenTalkgroups.clear();
-  set({ talkgroups: lists });
+/** The edit was refused: the names are where the recorder has them. */
+function undoNameMoves(): void {
+  let lists: Pick<AppState, NameList> = state;
+  for (const [began, m] of movedNames) if (m.at !== began) lists = withNamesAt(lists, m.at, began);
+  for (const [name, had] of forgottenNames) lists = withNamesAt(lists, name, name, had);
+  movedNames.clear();
+  forgottenNames.clear();
+  set(lists);
 }
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -805,14 +998,14 @@ function configSaved(version: number, error: string | undefined): void {
     queued = false;
     if (pendingConfig) clearTimeout(pendingConfig);
     pendingConfig = null;
-    undoTalkgroupMoves();
+    undoNameMoves();
     if (server.config) set({ config: keepCards(server.config, state.config) });
     basedOn = server.version;
     set({ error });
     return;
   }
   basedOn = version;
-  sendTalkgroupMoves();
+  sendNameMoves();
   if (queued) {
     queued = false;
     sendConfig();

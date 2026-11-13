@@ -125,6 +125,13 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .seg button { background: transparent; border: 0; padding: 7px 14px; cursor: pointer; color: var(--muted); }
 .seg button.on { background: var(--panel-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 .warn { color: var(--warn); margin: 0; }
+.iq-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.iq-rules { margin-top: 16px; }
+.iq-review { margin-top: 8px; display: grid; gap: 8px; }
+.iq-review pre { max-height: 16em; overflow: auto; font: 12px var(--mono); }
+.iq-waterfall { width: 100%; height: 160px; image-rendering: pixelated; border-radius: 6px; }
+.iq-rules h4 { margin: 0 0 4px; }
+.iq-rule { width: 100%; font: 13px var(--mono); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; margin: 8px 0; color: var(--text); }
 .help { color: var(--muted); font-size: 13px; }
 .help summary { cursor: pointer; }
 .help ul { margin: 8px 0 0; padding-left: 18px; }
@@ -645,15 +652,15 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
    groups of related settings named on the left. Then each field's label, and
    its hint. */
 .setup {
-  --fs-section: 22px; --fs-card: 17px; --fs-group: 14.5px; --fs-label: 13px; --fs-hint: 12.5px;
+  --fs-section: 24px; --fs-card: 18px; --fs-group: 16px; --fs-label: 14px; --fs-hint: 13.5px;
   --text-2: color-mix(in srgb, var(--text) 78%, var(--muted));
-  gap: 36px; font-size: 14px; line-height: 1.5; max-width: 1120px;
+  gap: 36px; font-size: 15px; line-height: 1.5; max-width: 1120px;
 }
 .setup .stack { gap: 14px; }
 .setup .muted.small, .setup .small, .setup .field-hint, .setup .help { font-size: var(--fs-hint); }
 .setup .field { gap: 6px; }
 .setup .field-label { font-size: var(--fs-label); font-weight: 550; color: var(--text-2); }
-.setup .field input, .setup .field select, .setup input.mono, .setup select, .setup textarea { font-size: 14px; padding: 8px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+.setup .field input, .setup .field select, .setup input.mono, .setup select, .setup textarea { font-size: 15px; padding: 8px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 .setup .field input:focus, .setup select:focus, .setup textarea:focus, .setup input.mono:focus { border-color: var(--accent); outline: none; }
 .setup .grid2, .setup .grid3 { gap: 18px 24px; }
 .setup .btn { border-radius: 8px; padding: 7px 14px; font-weight: 550; }
@@ -726,7 +733,7 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .set-group.full { grid-template-columns: minmax(0, 1fr); }
 .set-group-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; min-width: 0; }
 .set-group-head h4 { margin: 0; font-size: var(--fs-group); font-weight: 650; line-height: 1.35; color: var(--text); }
-.set-group-head p { margin: 4px 0 0; font-size: var(--fs-hint); line-height: 1.45; color: var(--muted); max-width: 60ch; }
+.set-group-head p { margin: 4px 0 0; font-size: var(--fs-hint); line-height: 1.4; color: var(--muted); max-width: 60ch; }
 .set-group-head p code { font-size: 0.95em; }
 .set-group-body { display: grid; gap: 18px 20px; align-content: start; min-width: 0; }
 .set-group-body.cols-1 { grid-template-columns: minmax(0, 1fr); }
@@ -961,7 +968,8 @@ h2.big { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: 
 .stat-value small { font-size: 0.55em; color: var(--muted); font-weight: 500; }
 .stat-unit { font-size: 0.5em; color: var(--muted); font-weight: 500; margin-left: 4px; letter-spacing: 0; }
 .stat-hero .stat-value { font-size: var(--fs-hero); }
-.stat-sub { font-size: 12px; color: var(--muted); }
+.stat-sub { font-size: 13px; color: var(--muted); }
+.stat-sub b, .stat-sub .fig b { color: var(--text); font-weight: 600; }
 .stat-spark { margin-top: 4px; }
 .stat-warn { box-shadow: inset 0 3px 0 var(--warn); }
 .stat-bad { box-shadow: inset 0 3px 0 var(--bad); }
@@ -1390,6 +1398,9 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .row-editor .row-name { display: flex; flex-direction: column; gap: 2px; }
 .row-editor .row-name input { width: 15ch; }
 .row-editor .row-name:first-child input { width: 22ch; }
+/* A talkgroup's or radio's names, edited on its page (under its heading). */
+.hero .names-editor { flex-basis: 100%; }
+.names-editor .field-hint { flex-basis: 100%; }
 /* Under a row's name: its tag and category, opening its editor. */
 .row-meta { display: block; max-width: 24ch; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .row-meta:hover { color: var(--text); text-decoration: underline; }
@@ -1455,3 +1466,82 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .plugin-slider { display: flex; align-items: center; gap: 10px; }
 .plugin-slider input[type="range"] { flex: 1 1 200px; min-width: 0; accent-color: var(--accent); }
 .plugin-slider > .mono { min-width: 4ch; text-align: right; }
+
+/* Setup → Data: each kind of data, its delete tick and its exports. */
+.data-kinds { display: flex; flex-direction: column; gap: 10px; }
+.data-kind { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: flex-start; justify-content: space-between; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.data-kind .toggle { flex: 1 1 280px; min-width: 0; }
+.data-exports { flex-wrap: wrap; gap: 6px; }
+
+/* Figures in a line (charts.tsx Fig, Figs): the number bold in text colour,
+   its unit small and muted; a row of short labels over their figures. */
+.fig { white-space: nowrap; }
+.fig b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.fig small { margin-left: 3px; font-size: 0.8em; color: var(--muted); font-weight: 500; }
+.fig-warn b { color: var(--warn); }
+.fig-bad b { color: var(--bad); }
+.figs { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 0; }
+.figs > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.figs dt { font-size: 12px; color: var(--muted); }
+.figs dd { margin: 0; font-size: 15px; }
+.figs.inline > div { flex-direction: row; align-items: baseline; gap: 6px; }
+.figs.inline dd { font-size: inherit; }
+.setup .figs dd { font-size: 16px; }
+
+/* Info: the longer why, on hover or focus (charts.tsx Info). */
+.info { position: relative; display: inline-flex; vertical-align: -2px; margin-left: 4px; color: var(--muted); cursor: help; outline: none; }
+.info svg { width: 15px; height: 15px; }
+.info:hover, .info:focus-visible { color: var(--accent); }
+.info-pop { display: none; position: absolute; z-index: 30; left: 50%; top: calc(100% + 6px); transform: translateX(-50%); width: max-content; max-width: 320px; padding: 9px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); box-shadow: 0 6px 24px rgb(0 0 0 / 0.35); color: var(--text); font-size: 13px; font-weight: 400; line-height: 1.45; text-transform: none; letter-spacing: 0; white-space: normal; text-align: left; }
+.info:hover .info-pop, .info:focus .info-pop, .info:focus-within .info-pop { display: block; }
+
+/* Sources' suggested settings (sourceAdvice.tsx): the banner's figures, a card's line. */
+.advice-banner { justify-content: flex-start; flex-wrap: wrap; gap: 10px 24px; }
+.advice-banner > b { font-size: 15px; }
+.advice-banner .figs { flex: 1 1 auto; }
+.advice-line { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.advice-line .fig { font-size: 15px; }
+
+/* Setup's radios and data (Setup.tsx, DataTools.tsx, Rolloff.tsx): figures beside their controls. */
+.driver-missing { flex-direction: column; align-items: flex-start; gap: 8px; }
+.driver-missing .figs code { font-weight: 500; }
+.autotune-figs { gap: 10px 20px; align-items: flex-end; }
+.rolloff-figs { gap: 6px 12px; align-items: flex-end; }
+.index-switch { gap: 4px; }
+.index-switch .figs { font-size: var(--fs-hint); color: var(--muted); padding-left: 46px; }
+.setup .index-switch .figs dd { font-size: 14px; }
+.field-hint .fig b { font-size: 1.05em; }
+.data-count { display: flex; gap: 14px; align-items: baseline; margin-left: auto; padding-top: 1px; }
+.data-count .fig b { font-size: 18px; }
+.plugin-counts { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
+
+/* Dashboard (dashB): numbered steps in a row (Platform's Spotlight card);
+   a disk's figures under its meter. */
+.steps { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 8px 0 0; padding: 0; list-style: none; counter-reset: step; font-size: 14px; }
+.steps li { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 4px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); counter-increment: step; }
+.steps li::before { content: counter(step); display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--bg); font-size: 12px; font-weight: 700; }
+.spotlight-note .row { gap: 6px 12px; flex-wrap: wrap; }
+.disk .figs { margin-top: 6px; }
+.fig-info { display: inline-flex; align-items: center; gap: 2px; }
+/* The guide's figures: large, centred under the step's title. */
+.ob .figs { gap: 10px 36px; }
+.ob .figs dt { font-size: 14px; }
+.ob .figs dd { font-size: 22px; }
+.ob .figs.inline dd { font-size: inherit; }
+.ob-figs, .ob-meter .figs { display: flex; justify-content: center; }
+.ob-checks .ob-check-sub > .fig { font-size: 22px; }
+.ob-checks .fig b { display: inline; }
+.ob-lead .fig b, .ob-lead b, .ob-summary .fig b { color: var(--text); }
+.ob-summary .fig { font-size: 19px; }
+.ob-howto .figs { margin-top: 8px; }
+/* Dashboard figures (Overview, RF, Decode): a stat's line under its value, the system card's mini stats, the source card's facts. */
+.stat-sub .figs.inline { gap: 4px 14px; }
+.stat-sub .figs:not(.inline) { gap: 4px 16px; margin-top: 2px; }
+.stat-sub .figs:not(.inline) dd { font-size: 14px; }
+.mini-stats span { font-size: 12.5px; }
+.band .legend { font-size: 13px; }
+.site-row .site-figs { justify-self: end; display: inline-flex; gap: 10px; }
+.src-unused { gap: 8px; margin-top: 10px; font-size: 13.5px; }
+.src-unused .chip { font-size: 12.5px; }
+.src-facts { gap: 6px 18px; margin-top: 10px; font-size: 14px; }
+.line-list li .figs.inline { gap: 4px 12px; font-size: 13.5px; }

@@ -47,7 +47,7 @@ channel announces its neighbouring sites, and the recorder offers them in two pl
 - in **Find my system**, under **Neighbouring sites** in its checklist, each with an **Add**
   button;
 - while recording, in the **Neighbouring sites** panel in a system's detail on the **Decode** page
-  ("announced, not recorded"), each with an **Add** button. The new site records from the next
+  (**Not recorded**), each with an **Add** button. The new site records from the next
   Start, if a source covers it.
 
 A site added this way becomes a site of its system (a new system, if it isn't set up), with its
@@ -137,10 +137,10 @@ Recorder's **Preferred NAC** column also works: the site's NAC, or its RFSS and 
 least 90% of the best copy's clean audio; below that, the best copy wins anyway.
 
 **On the dashboard.** An active call heard on other sites shows **also on …** under its talkgroup
-on a system's page under **Radio system** (hover: "The same call on other sites of its system; the best copy is saved"). Live listening plays one copy
-at a time and stays with it until it goes quiet.
+on a system's page under **Radio system** (hover: "The same call on other sites of its system; the best copy is saved"). Live listening plays one site
+at a time for each talkgroup and stays with it until it goes quiet, however the sites divide the talkgroup into calls.
 
-**Turning it off.** **Save a call heard on several sites once** on the **Recording** tab
+**Turning it off.** **One copy per multi-site call** on the **Recording** tab
 (`recording.dropDuplicateCalls`, on by default). Off, every site's copy is saved in the system's
 folder, each with its `site` in its call JSON.
 
@@ -173,11 +173,11 @@ system, become one system, each a site named as it was (the old file is kept as
 Check which field the message names; if you edited the config by hand, check decimal versus hex.
 
 **The same call is saved twice.** The two sites aren't sites of one system (set up apart: **Make
-them one system**, or move one under **Sites**), or **Save a call heard on several sites once** is
+them one system**, or move one under **Sites**), or **One copy per multi-site call** is
 off. Or the grants came more than 3 seconds apart.
 
 **Calls from one site never get kept.** Its copies decode less cleanly than another site's. Add a
 **Preferred Site** for the talkgroups you want from it, or improve its reception.
 
 **A neighbouring site was added but records nothing.** No source covers its control channel. Its
-site card shows **no control channel inside a source**.
+site card shows **CC → none**.

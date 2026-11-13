@@ -787,6 +787,161 @@
       ],
       "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open"
     },
+    "CaptureRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "on": {
+          "type": "string"
+        },
+        "systems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Only these systems (none: any)."
+        },
+        "if": {
+          "type": "string"
+        },
+        "repeat": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "number"
+            },
+            "within": {
+              "type": "string"
+            },
+            "by": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "count",
+            "within",
+            "by"
+          ],
+          "additionalProperties": false,
+          "description": "Fire only after this many matches in a window, counted apart for each value of `by`."
+        },
+        "every": {
+          "type": "string",
+          "description": "A `schedule` rule: how often."
+        },
+        "capture": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CaptureTarget"
+          }
+        },
+        "limit": {
+          "type": "object",
+          "properties": {
+            "cooldown": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cooldown"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "enabled",
+        "on",
+        "capture"
+      ],
+      "additionalProperties": false,
+      "description": "When to record what the radios receive: an event, a condition on it in CEL, and what to keep."
+    },
+    "CaptureTarget": {
+      "type": "object",
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": [
+            "wideband",
+            "control",
+            "voice"
+          ]
+        },
+        "before": {
+          "type": "string",
+          "description": "How long before, and after, it fired (\"30s\", \"5m\")."
+        },
+        "after": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tier"
+      ],
+      "additionalProperties": false,
+      "description": "What to keep when a capture rule fires."
+    },
+    "CaptureWhat": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "radios"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "control"
+            },
+            "site": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "site"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "call"
+            },
+            "system": {
+              "type": "string"
+            },
+            "talkgroup": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "system"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "What a capture asked for by hand records: every radio, one site's control channel (its `index`), or the next call on a system (on one of its talkgroups)."
+    },
     "Channel": {
       "type": "object",
       "properties": {
@@ -1311,6 +1466,10 @@
           "$ref": "#/definitions/StorageSettings",
           "description": "What's kept on disk beside the config (desktop app): the call store."
         },
+        "diagnostics": {
+          "$ref": "#/definitions/Diagnostics",
+          "description": "Rules that record what the radios receive when something happens."
+        },
         "monitor": {
           "$ref": "#/definitions/MonitorSettings",
           "description": "What the dashboard watches on the computer (desktop app)."
@@ -1409,6 +1568,108 @@
       ],
       "additionalProperties": false,
       "description": "A conventional system (Trunk Recorder's conventional / conventionalP25 / conventionalDMR): energy-detected channels with their own short name, squelch, channel file, recording rules, unit names and upload settings. A frequency belongs to one system."
+    },
+    "DataCounts": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "number"
+        },
+        "talkgroups": {
+          "type": "number"
+        },
+        "unitNames": {
+          "type": "number"
+        },
+        "talkerAliases": {
+          "type": "number"
+        },
+        "radios": {
+          "type": "number",
+          "description": "The radio registry's radios and talkgroups heard."
+        },
+        "heardTalkgroups": {
+          "type": "number"
+        },
+        "historySeries": {
+          "type": "number",
+          "description": "The dashboard's series."
+        }
+      },
+      "required": [
+        "calls",
+        "talkgroups",
+        "unitNames",
+        "talkerAliases",
+        "radios",
+        "heardTalkgroups",
+        "historySeries"
+      ],
+      "additionalProperties": false,
+      "description": "How many of each the store has (dataSummary) or deleted (dataDeleted)."
+    },
+    "DataKind": {
+      "type": "string",
+      "enum": [
+        "calls",
+        "talkgroups",
+        "unitNames",
+        "talkerAliases",
+        "registry",
+        "dashboardHistory"
+      ],
+      "description": "A kind of the store's data, as Setup → Data deletes it. `calls`: the call index and each call's transmissions (the recordings stay); `registry`: the radios, talkgroups, pairs and frequencies heard."
+    },
+    "DataSystem": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "number"
+        },
+        "talkgroups": {
+          "type": "number"
+        },
+        "unitNames": {
+          "type": "number"
+        },
+        "talkerAliases": {
+          "type": "number"
+        },
+        "radios": {
+          "type": "number",
+          "description": "The radio registry's radios and talkgroups heard."
+        },
+        "heardTalkgroups": {
+          "type": "number"
+        },
+        "historySeries": {
+          "type": "number",
+          "description": "The dashboard's series."
+        },
+        "id": {
+          "type": "number"
+        },
+        "shortName": {
+          "type": "string"
+        },
+        "inConfig": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "calls",
+        "heardTalkgroups",
+        "historySeries",
+        "id",
+        "inConfig",
+        "radios",
+        "shortName",
+        "talkerAliases",
+        "talkgroups",
+        "unitNames"
+      ],
+      "additionalProperties": false,
+      "description": "A system the store keeps data of: one of the config's (`inConfig`), or one removed whose data stayed."
     },
     "DelayRule": {
       "type": "object",
@@ -1509,6 +1770,43 @@
         "product"
       ],
       "additionalProperties": false
+    },
+    "Diagnostics": {
+      "type": "object",
+      "properties": {
+        "captureDir": {
+          "type": "string",
+          "description": "Where captures of the radios go (none: `iq-captures` in the recordings folder)."
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CaptureRule"
+          }
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "capturesPerDay": {
+              "type": "number"
+            },
+            "mbPerDay": {
+              "type": "number"
+            },
+            "ramMb": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "capturesPerDay",
+            "mbPerDay",
+            "ramMb"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "description": "Capture rules and what they may use."
     },
     "DirectoryLink": {
       "type": "object",
@@ -1803,7 +2101,7 @@
         "label"
       ],
       "additionalProperties": false,
-      "description": "A radio its driver found. Once it has been opened in this run (by a source, or to ask it — an Airspy is), it also says its `model` (\"R2\", \"Mini\", \"bladeRF 2.0\") and the sample rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`)."
+      "description": "A radio its driver found. Once it has been opened in this run (by a source, or to ask it — an Airspy or a HydraSDR is), it also says its `model` (\"R2\", \"Mini\", \"RFOne\", \"bladeRF 2.0\") and the sample rates it runs at, Hz: only those (`rates`, an Airspy's) or any in a span (`rateRange`)."
     },
     "FreqRow": {
       "type": "object",
@@ -2140,13 +2438,70 @@
             },
             "edit": {
               "$ref": "#/definitions/TalkgroupEdit"
+            },
+            "origin": {
+              "$ref": "#/definitions/Origin"
             }
           },
           "required": [
             "type",
             "system",
             "talkgroup",
-            "edit"
+            "edit",
+            "origin"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "unitNames"
+            },
+            "system": {
+              "type": "string"
+            },
+            "unitNames": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/UnitName"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "unitNames"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "unitNameEdited"
+            },
+            "system": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "#/definitions/Origin"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "unit",
+            "name",
+            "origin"
           ],
           "additionalProperties": false
         },
@@ -3466,6 +3821,36 @@
               },
               "description": "summary"
             },
+            "caps": {
+              "type": "object",
+              "properties": {
+                "talkgroups": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "radios": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "days": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "talkgroups",
+                "radios",
+                "days"
+              ],
+              "additionalProperties": false,
+              "description": "summary: the registry's caps a system (null: none; a `limit` of `radios` is every radio heard), and the days an unheard row is kept."
+            },
             "hours": {
               "type": "number",
               "description": "talkgroups, units, freqs, tones"
@@ -3714,6 +4099,196 @@
             "type",
             "id",
             "entries"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptures"
+            },
+            "id": {
+              "type": "number"
+            },
+            "active": {
+              "$ref": "#/definitions/IqCaptureActive"
+            },
+            "waiting": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/IqCaptureWaiting"
+              }
+            },
+            "captures": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/IqCapture"
+              }
+            },
+            "root": {
+              "type": "string"
+            },
+            "recording": {
+              "type": "boolean"
+            },
+            "presets": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CaptureRule"
+              }
+            },
+            "canSend": {
+              "type": "boolean"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "waiting",
+            "captures",
+            "root",
+            "recording",
+            "presets",
+            "canSend"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureReview"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            },
+            "metadata": {},
+            "diagnostics": {},
+            "waterfalls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/IqWaterfall"
+              }
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "metadata",
+            "diagnostics",
+            "waterfalls"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqRuleChecked"
+            },
+            "id": {
+              "type": "number"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dataSummary"
+            },
+            "id": {
+              "type": "number"
+            },
+            "systems": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/DataSystem"
+              }
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "systems"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dataDeleted"
+            },
+            "id": {
+              "type": "number"
+            },
+            "deleted": {
+              "$ref": "#/definitions/DataCounts"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "deleted"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dataCompacted"
+            },
+            "id": {
+              "type": "number"
+            },
+            "beforeBytes": {
+              "type": "number"
+            },
+            "afterBytes": {
+              "type": "number"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "beforeBytes",
+            "afterBytes"
           ],
           "additionalProperties": false
         },
@@ -4034,6 +4609,186 @@
       "additionalProperties": false,
       "description": "An interface besides the built-in one: static web files, served with the API beside them on a port of its own."
     },
+    "IqCapture": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Its folder's name."
+        },
+        "path": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "wideband",
+            "control",
+            "voice"
+          ],
+          "description": "What it's of."
+        },
+        "purpose": {
+          "type": "string",
+          "description": "`healthy` (made by hand) or `rule`."
+        },
+        "rule": {
+          "type": "string",
+          "description": "The rule that made it."
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "radios": {
+          "type": "number"
+        },
+        "bytes": {
+          "type": "number"
+        },
+        "note": {
+          "type": "string"
+        },
+        "lostSamples": {
+          "type": "number",
+          "description": "Samples the radios lost during it."
+        },
+        "messagesGood": {
+          "type": "number",
+          "description": "Control channel messages decoded and failed while it was made."
+        },
+        "messagesBad": {
+          "type": "number"
+        },
+        "calls": {
+          "type": "number",
+          "description": "Calls that ended while it was made."
+        },
+        "send": {
+          "$ref": "#/definitions/IqCaptureSend",
+          "description": "How sending it to the corpus stands, if it has been."
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "tier",
+        "purpose",
+        "seconds",
+        "radios",
+        "bytes",
+        "note",
+        "lostSamples",
+        "messagesGood",
+        "messagesBad",
+        "calls"
+      ],
+      "additionalProperties": false,
+      "description": "A recording of what the radios received."
+    },
+    "IqCaptureActive": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "elapsedS": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "seconds",
+        "elapsedS"
+      ],
+      "additionalProperties": false,
+      "description": "A capture being made."
+    },
+    "IqCaptureSend": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "sending",
+            "sent",
+            "failed"
+          ]
+        },
+        "receipt": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "doneBytes": {
+          "type": "number"
+        },
+        "totalBytes": {
+          "type": "number"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "receipt",
+        "id",
+        "doneBytes",
+        "totalBytes"
+      ],
+      "additionalProperties": false,
+      "description": "How the sending of a capture to the corpus stands."
+    },
+    "IqCaptureWaiting": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "number"
+        },
+        "text": {
+          "type": "string",
+          "description": "What it's of, in words."
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "elapsedS": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "key",
+        "text",
+        "elapsedS"
+      ],
+      "additionalProperties": false,
+      "description": "A capture asked for by hand that waits on the air: a control channel recording for `seconds`, or the next call."
+    },
+    "IqWaterfall": {
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "levels": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "levels"
+      ],
+      "additionalProperties": false,
+      "description": "A radio's power by frequency over time, as levels 0–255, in hex."
+    },
     "KeySource": {
       "type": "object",
       "properties": {
@@ -4235,20 +4990,24 @@
     "MonitorSettings": {
       "type": "object",
       "properties": {
-        "probeHosts": {
+        "checkHosts": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks."
+          "description": "Hosts to check the network reaches (host:port, a TCP connect every checkEveryS). Empty (the default): none; the dashboard goes by the services the plugins report. Applies at once."
+        },
+        "checkEveryS": {
+          "type": "number",
+          "description": "How often each of checkHosts is tried, s (5 at least)."
         },
         "networkChecks": {
           "type": "boolean",
-          "description": "Off: neither the internet checks nor the time server are asked, whatever's set. Applies at once."
+          "description": "Off: neither checkHosts nor the time server are asked, whatever's set. Applies at once."
         },
         "timeServer": {
           "type": "string",
-          "description": "The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked."
+          "description": "The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked. Applies at once."
         },
         "clockWarnMs": {
           "type": "number",
@@ -4256,7 +5015,8 @@
         }
       },
       "required": [
-        "probeHosts",
+        "checkHosts",
+        "checkEveryS",
         "networkChecks",
         "timeServer",
         "clockWarnMs"
@@ -4444,6 +5204,53 @@
         "carriers"
       ],
       "additionalProperties": false
+    },
+    "Origin": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/OriginKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "at": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "at"
+      ],
+      "additionalProperties": false,
+      "description": "Where a row's names came from: its last change, not its history. `name`: the file's or directory's; `at`: Unix s."
+    },
+    "OriginFrom": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/OriginKind"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "description": "Where a list sent came from (`setTalkgroups`, `setUnitNames`): the recorder gives it the time."
+    },
+    "OriginKind": {
+      "type": "string",
+      "enum": [
+        "file",
+        "radioReference",
+        "directory",
+        "trunkRecorder",
+        "edited"
+      ],
+      "description": "How a talkgroup's or radio's names came in (crates/trunk-core/src/trunk/names.rs)."
     },
     "OutOfBandRow": {
       "type": "object",
@@ -4715,6 +5522,80 @@
             "talkgroupIndex": {
               "type": "boolean"
             },
+            "registry": {
+              "type": "object",
+              "properties": {
+                "caps": {
+                  "type": "object",
+                  "properties": {
+                    "talkgroups": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "radios": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "pairs": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "days": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "talkgroups",
+                    "radios",
+                    "pairs",
+                    "days"
+                  ],
+                  "additionalProperties": false
+                },
+                "systems": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "system": {
+                        "type": "string"
+                      },
+                      "talkgroups": {
+                        "type": "number"
+                      },
+                      "radios": {
+                        "type": "number"
+                      },
+                      "pairs": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "system",
+                      "talkgroups",
+                      "radios",
+                      "pairs"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "caps",
+                "systems"
+              ],
+              "additionalProperties": false,
+              "description": "How full the radio registry is: each system's rows against the caps (null: none)."
+            },
             "sizes": {
               "$ref": "#/definitions/StoreSizes"
             },
@@ -4760,6 +5641,7 @@
             "backend",
             "radioIndex",
             "talkgroupIndex",
+            "registry",
             "sizes",
             "written"
           ],
@@ -5513,6 +6395,9 @@
         "airspy": {
           "$ref": "#/definitions/DriverState"
         },
+        "hydrasdr": {
+          "$ref": "#/definitions/DriverState"
+        },
         "bladerf": {
           "$ref": "#/definitions/DriverState"
         },
@@ -5524,6 +6409,7 @@
         "usrp",
         "hackrf",
         "airspy",
+        "hydrasdr",
         "bladerf"
       ],
       "additionalProperties": false
@@ -6585,13 +7471,6 @@
               "type": "string",
               "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
             },
-            "type": {
-              "type": "string",
-              "const": "airspy"
-            },
-            "serial": {
-              "type": "string"
-            },
             "gainMode": {
               "$ref": "#/definitions/AirspyGainMode"
             },
@@ -6609,6 +7488,13 @@
             },
             "agc": {
               "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "airspy"
+            },
+            "serial": {
+              "type": "string"
             },
             "biasTee": {
               "type": "boolean"
@@ -6629,6 +7515,85 @@
             "packing",
             "ppm",
             "rateHz",
+            "serial",
+            "type",
+            "vgaStep"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
+            "autoTune": {
+              "type": "boolean"
+            },
+            "guardHz": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
+            },
+            "gainMode": {
+              "$ref": "#/definitions/AirspyGainMode"
+            },
+            "gainStep": {
+              "type": "number"
+            },
+            "lnaStep": {
+              "type": "number"
+            },
+            "mixerStep": {
+              "type": "number"
+            },
+            "vgaStep": {
+              "type": "number"
+            },
+            "agc": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "hydrasdr"
+            },
+            "serial": {
+              "type": "string"
+            },
+            "biasTee": {
+              "type": "boolean",
+              "description": "On the ANT input only (the source won't start with it on another)."
+            },
+            "packing": {
+              "type": "boolean",
+              "description": "12-bit samples packed on the USB (default true)."
+            },
+            "rfPort": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "agc",
+            "biasTee",
+            "centerHz",
+            "gainMode",
+            "gainStep",
+            "lnaStep",
+            "mixerStep",
+            "packing",
+            "ppm",
+            "rateHz",
+            "rfPort",
             "serial",
             "type",
             "vgaStep"
@@ -6884,6 +7849,13 @@
         "rateMeasured": {
           "type": "number"
         },
+        "gainSet": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The gain its radio is set to, when that isn't the gain asked for (the radio's nearest step, or within its range here)."
+        },
         "dropped": {
           "type": "number"
         },
@@ -6997,6 +7969,14 @@
         "radioIndex": {
           "type": "boolean",
           "description": "Index calls by their radios (default true), so a radio's calls page back as far as the store keeps them; off, a radio's list is its recent calls. Most of what the call index writes on a busy system."
+        },
+        "registryRadios": {
+          "type": "number",
+          "description": "Radios the radio registry keeps a system (default 20,000): past it, the least recently heard go (talkgroups a quarter as many, 5,000 at least). 0: no cap, `registryDays` alone bounding it."
+        },
+        "registryDays": {
+          "type": "number",
+          "description": "Days a talkgroup, radio or pair the registry hasn't heard is kept (default 365); 0 keeps it however old."
         },
         "talkgroupIndex": {
           "type": "boolean",
@@ -7911,6 +8891,10 @@
           },
           "description": "The tone signals it sends (pages, alerts, digit strings, Morse IDs): see SignalDef."
         },
+        "preferredSite": {
+          "type": "string",
+          "description": "Multi-site: the site (by name) whose copy of a call is kept for the talkgroups whose row names none."
+        },
         "sites": {
           "type": "array",
           "items": {
@@ -8048,6 +9032,10 @@
             "maxItems": 2
           },
           "description": "Columns this app doesn't know, [name, value]: kept for the file it's downloaded as."
+        },
+        "origin": {
+          "$ref": "#/definitions/Origin",
+          "description": "Where its names came from (not in the file)."
         }
       },
       "required": [
@@ -8358,12 +9346,67 @@
               "items": {
                 "$ref": "#/definitions/Talkgroup"
               }
+            },
+            "from": {
+              "$ref": "#/definitions/OriginFrom"
             }
           },
           "required": [
             "type",
             "system",
             "talkgroups"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setUnitNames"
+            },
+            "system": {
+              "type": "string"
+            },
+            "unitNames": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/UnitName"
+              }
+            },
+            "from": {
+              "$ref": "#/definitions/OriginFrom"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "unitNames"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setUnitName"
+            },
+            "system": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "unit",
+            "name"
           ],
           "additionalProperties": false
         },
@@ -9076,6 +10119,240 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "iqCaptures"
+            },
+            "id": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureStart"
+            },
+            "id": {
+              "type": "number"
+            },
+            "seconds": {
+              "type": "number"
+            },
+            "note": {
+              "type": "string"
+            },
+            "what": {
+              "$ref": "#/definitions/CaptureWhat"
+            },
+            "problem": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "seconds"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureCancel"
+            },
+            "id": {
+              "type": "number"
+            },
+            "key": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "key"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureReview"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureSend"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureWithdraw"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqRuleCheck"
+            },
+            "id": {
+              "type": "number"
+            },
+            "rule": {
+              "$ref": "#/definitions/CaptureRule"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "rule"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iqCaptureDelete"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dataSummary"
+            },
+            "id": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "deleteData"
+            },
+            "id": {
+              "type": "number"
+            },
+            "kinds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/DataKind"
+              }
+            },
+            "system": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "kinds"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "compactData"
+            },
+            "id": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "quit"
             }
           },
@@ -9086,15 +10363,29 @@
         }
       ]
     },
-    "UnitNames": {
+    "UnitName": {
       "type": "object",
       "properties": {
-        "csv": {
+        "unit": {
           "type": "string"
         },
         "name": {
           "type": "string"
         },
+        "origin": {
+          "$ref": "#/definitions/Origin"
+        }
+      },
+      "required": [
+        "unit",
+        "name"
+      ],
+      "additionalProperties": false,
+      "description": "One of a system's own names for its radios: a line of Trunk Recorder's unitTagsFile, as the recorder keeps it. `unit`: the radio's ID, or a regular expression between slashes naming many (`/^1(\\d{3})$/`, named `Engine $1`); the first row that matches names a radio."
+    },
+    "UnitNames": {
+      "type": "object",
+      "properties": {
         "mode": {
           "type": "string",
           "enum": [
@@ -9107,7 +10398,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Names for a system's radios: Trunk Recorder's unitTagsFile, kept as text (headerless `unit,name`; a unit between slashes is a regular expression, `/^1(\\d{3})$/,Engine $1`), and unitTagsMode: \"user\" (these first, then the aliases heard; the default), \"ota\" (the aliases first), \"user_only\", \"none\"."
+      "description": "Which names a system's radios go by — Trunk Recorder's unitTagsMode: \"user\" (its own names first, then the aliases heard; the default), \"ota\" (the aliases first), \"user_only\", \"none\". Its own names are kept beside the config ( {@link  UnitName } )."
     },
     "UnitRow": {
       "type": "object",

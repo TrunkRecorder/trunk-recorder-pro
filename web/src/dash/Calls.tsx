@@ -5,8 +5,8 @@
 import { useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
 import { setListen, setView, useTopic, type AppState } from "../controller.ts";
-import type { CallView, TalkgroupName } from "../protocol.ts";
-import { unitName } from "../units.ts";
+import type { CallView, TalkgroupName, UnitName } from "../protocol.ts";
+import { unitNameOf } from "../rules.ts";
 import { tgText } from "./Systems.tsx";
 
 /** An analog call on one of its conventional system's AM channels (calls say only analog). */
@@ -33,28 +33,19 @@ export function Unit({ id, alias }: { id: number; alias: string | undefined }) {
   );
 }
 
-/** A unit's alias on a system: as learned, else as the call record saved it. */
 /**
- * A unit's name, by its system's unit names mode: the unit names file's, the
+ * A unit's name, by its system's unit names mode: its own names', the
  * talker alias heard (live, or `saved` with the call), as the recorder picks
- * a call's `tag`.
+ * a call's `tag` (the recorder's own lookup: units.rs UnitTags).
  */
-export const aliasOf = (s: Pick<AppState, "config" | "units">, system: string, id: number, saved?: string) => {
+export const aliasOf = (s: Pick<AppState, "config" | "units" | "unitNames">, system: string, id: number, saved?: string) => {
   const c = s.config;
-  const names = c?.systems.find((x) => x.shortName === system)?.unitNames ?? c?.conventional.find((x) => x.shortName === system)?.unitNames;
-  const heard = () => s.units[system]?.[id] || saved || undefined;
-  const user = () => (names?.csv ? unitName(names.csv, id) : undefined);
-  switch (names?.mode || "user") {
-    case "ota":
-      return heard() ?? user();
-    case "user_only":
-      return user();
-    case "none":
-      return undefined;
-    default:
-      return user() ?? heard();
-  }
+  const mode = (c?.systems.find((x) => x.shortName === system)?.unitNames ?? c?.conventional.find((x) => x.shortName === system)?.unitNames)?.mode || "user";
+  return unitNameOf(s.unitNames[system] ?? NONE, mode, id, s.units[system]?.[id] || saved || undefined);
 };
+
+/** No names of its own. */
+const NONE: UnitName[] = [];
 
 /** Under a call's talkgroup: what's patched with it. */
 /** A conventional call whose row files the air's talkgroup under another number: the air's. */
@@ -79,18 +70,19 @@ export function PatchedWith({ tgs }: { tgs: TalkgroupName[] }) {
 }
 
 export function reasonText(c: CallView): string {
-  if (c.state === "recording") return c.decrypted ? "recording (decrypted)" : c.encrypted ? "recording (encrypted)" : "recording";
+  if (c.state === "recording") return c.decrypted ? "recording · decrypted" : c.encrypted ? "recording · encrypted" : "recording";
+  // (Not recorded: the dot's colour says so; the words say why.)
   switch (c.reason) {
     case "encrypted":
-      return "encrypted — not recorded";
+      return "encrypted";
     case "no_source":
-      return "outside tuned range";
+      return "out of range";
     case "no_recorder":
       return "no free recorder";
     case "unknown_tg":
-      return "not in talkgroup list";
+      return "not in file";
     case "ignored":
-      return "ignored (talkgroup list)";
+      return "ignored";
     default:
       return "monitoring";
   }
@@ -117,7 +109,7 @@ export function ActiveCalls({ s, system }: { s: AppState; system: string }) {
       <header className="panel-head">
         <h2>Active calls</h2>
         <div className="row">
-          {s.listen && !mine && <span className="muted small">Listening to {s.listenSystem ?? "every system"}</span>}
+          {s.listen && !mine && <span className="muted small">Listening: <b>{s.listenSystem ?? "all systems"}</b></span>}
           <label className="toggle">
             <input type="checkbox" checked={mine} onChange={(e) => setListen(e.target.checked, e.target.checked ? system : null, null)} />
             <span>Listen live</span>
@@ -192,7 +184,7 @@ export function ActiveCalls({ s, system }: { s: AppState; system: string }) {
                     </td>
                     <td className="mono">{clock(Math.max(0, now - c.startS))}</td>
                     <td>
-                      <span className={`dot dot-${c.state}${c.encrypted ? " dot-enc" : ""}`} /> {reasonText(c)}
+                      <span className={`dot dot-${c.state}${c.encrypted ? " dot-enc" : ""}`} title={c.state === "recording" ? undefined : "Not recorded"} /> <span className={c.state === "recording" ? "" : "muted"} title={c.state === "recording" ? undefined : "Not recorded"}>{reasonText(c)}</span>
                     </td>
                     <td>
                       {c.state === "recording" && (
@@ -225,12 +217,12 @@ export function Log({ s, system }: { s: AppState; system: string }) {
     <details className="panel log" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="panel-head">
         <h2>Control channel log</h2>
-        {open && <span className="muted small">{mine.length} recent messages</span>}
+        {open && <span className="muted small"><b>{mine.length}</b> recent</span>}
       </summary>
       <div className="row log-filter">
         <label className="toggle">
           <input type="checkbox" checked={show === "all"} onChange={(e) => setShow(e.target.checked ? "all" : "calls")} />
-          <span>Show unit activity</span>
+          <span>Unit activity</span>
         </label>
       </div>
       <pre className="log-lines">

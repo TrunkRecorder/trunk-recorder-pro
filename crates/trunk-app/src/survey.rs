@@ -145,7 +145,8 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
             sc.tune_range_hz = (10e6, 6e9);
             sc.settle_s = 0.15;
         }
-        SourceKind::Airspy { .. } => {
+        // (The RFOne's R828D covers what the R2's R820T does.)
+        SourceKind::Airspy { .. } | SourceKind::Hydrasdr { .. } => {
             sc.tune_range_hz = (24e6, 1800e6);
             sc.settle_s = 0.2;
         }

@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, adjacentIdentity, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -116,7 +116,7 @@ test("SOURCE_KINDS: each kind's new source is that kind, and names its device wh
     assert.equal(k.fresh().type, type);
     if (k.device) assert.equal(deviceId(sourceFor(type, "x1")), "x1", type);
   }
-  assert.deepEqual(DRIVER_KINDS, ["usrp", "airspy", "bladerf", "hackrf", "soapy"]);
+  assert.deepEqual(DRIVER_KINDS, ["usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "soapy"]);
   assert.equal(sourceKey(sourceFor("bladerf", "f12ce103")), "bladerf:f12ce103");
 });
 
@@ -127,9 +127,24 @@ test("a new HackRF source: the driver's gain defaults, a native kind with a devi
   assert.equal(SOURCE_KINDS.hackrf.driver, undefined, "nothing to install");
   assert.equal(sourceKey(sourceFor("hackrf", "0000a1")), "hackrf:0000a1");
   const none = { available: true, detail: "", devices: [] };
-  const radios: Radios = { usrp: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] }, airspy: none, bladerf: none };
+  const radios: Radios = { usrp: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] }, airspy: none, hydrasdr: none, bladerf: none };
   assert.equal(foundRadio(radios, h)?.serial, "0000a1", "the first, when none is named");
   assert.equal(detectRadios([], radios)[0].kind, "hackrf");
+});
+
+test("a HydraSDR: found by its driver, started at a rate it runs at, its gain as an Airspy's; imported from gr-osmosdr's hydrasdr", () => {
+  const none = { available: true, detail: "", devices: [] };
+  const rfone = { serial: "1A2B3C4D5E6F7081", label: "HydraSDR RFOne · SN 1A2B3C4D5E6F7081", model: "RFOne", rates: [10_000_000, 5_000_000, 2_500_000, 1_250_000] };
+  const radios: Radios = { usrp: none, hackrf: none, airspy: none, hydrasdr: { available: true, detail: "libhydrasdr 1.1.4", devices: [rfone] }, bladerf: none };
+  const [found] = detectRadios([], radios);
+  assert.equal(found.kind, "hydrasdr");
+  assert.equal(found.key, "hydrasdr:1A2B3C4D5E6F7081");
+  assert.deepEqual(found.source, { ...newHydrasdr(), serial: "1A2B3C4D5E6F7081" });
+  assert.equal(radioName("hydrasdr", rfone), "HydraSDR RFOne");
+  const tr = JSON.stringify({ sources: [{ center: 857e6, rate: 2.5e6, device: "hydrasdr=0,bias=1", lnaGain: 12, mixGain: 8, ifGain: 9 }], systems: [] });
+  const s = importTrunkRecorderConfig(tr, defaultConfig()).config.sources.find((x) => x.type === "hydrasdr");
+  assert.ok(s && airspyGains(s));
+  assert.deepEqual([s.rateHz, s.gainMode, s.lnaStep, s.mixerStep, s.vgaStep, s.biasTee, s.type === "hydrasdr" && s.rfPort], [2_500_000, "manual", 12, 8, 9, true, 0]);
 });
 
 test("importing a bladeRF already set up keeps one source", () => {
@@ -145,7 +160,7 @@ test("foundRadio: what the picked radio runs at, once its driver has asked it; a
   const busy = { serial: "C", label: "Airspy · SN C" };
   const blade = { serial: "f12ce1037830a1b27f3ceeba1f521413", label: "bladeRF 2.0 · SN f12ce1037830…", model: "bladeRF 2.0", rateRange: [520_834, 61_440_000] as [number, number] };
   const driver = (devices: FoundRadio[] | null) => ({ available: true, detail: "", devices });
-  const radios: Radios = { usrp: driver(null), hackrf: driver([]), airspy: driver([r2, mini, busy]), bladerf: driver([blade]) };
+  const radios: Radios = { usrp: driver(null), hackrf: driver([]), airspy: driver([r2, mini, busy]), hydrasdr: driver([]), bladerf: driver([blade]) };
   const airspy = (serial: string) => ({ ...(SOURCE_KINDS.airspy.fresh() as Extract<Source, { type: "airspy" }>), serial });
   assert.equal(foundRadio(radios, airspy(r2.serial)), r2);
   assert.equal(foundRadio(radios, airspy("")), r2, "the first found");
@@ -170,4 +185,17 @@ test("foundRadio: what the picked radio runs at, once its driver has asked it; a
   assert.equal(sourceFor("airspy", mini.serial, mini).rateHz, 6_000_000);
   assert.equal(sourceFor("airspy", "C", busy).rateHz, 6_000_000, "not asked: the default");
   assert.equal(sourceFor("bladerf", blade.serial, blade).rateHz, 10_000_000, "in its range: the default");
+});
+
+test("advice for the sources (the recorder's Config::advice): a typed-in centre that misses the site's voice channels moves, and can go back to auto", () => {
+  const c = defaultConfig();
+  c.sources = [{ type: "rtlsdr", serial: "", centerHz: 849_500_000, rateHz: 2_400_000, gainDb: 25, agc: false, ppm: 0, bufLen: 0, buffers: 0 }];
+  c.systems.push(newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_012_500] }));
+  c.systems[0].sites[0].voiceChannelsHz = [851_512_500, 852_012_500];
+  const a = sourceAdvice(c, [undefined]);
+  assert.ok(a, "advice");
+  assert.ok(a.sources[0].changed && a.sources[0].auto && a.after.reached > a.before.reached, JSON.stringify(a));
+  c.sources[0].centerHz = a.sources[0].centerHz!;
+  c.sources[0].rateHz = a.sources[0].rateHz;
+  assert.equal(sourceAdvice(c, [undefined]), null, "taken: nothing more to say");
 });

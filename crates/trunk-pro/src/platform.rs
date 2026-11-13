@@ -16,10 +16,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use sysinfo::{Components, Disks, Networks, Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-use trunk_core::metrics::{key_part, Sink};
+use trunk_core::metrics::Sink;
 
-/// How often the connectivity probes run.
-pub const PROBE_EVERY: Duration = Duration::from_secs(15);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Disks and temperatures change slowly: this often.
 const SLOW_EVERY: Duration = Duration::from_secs(30);
@@ -162,35 +160,52 @@ pub struct Probes {
 pub type Transition = (String, bool, f64);
 
 impl Probes {
-    /// Probe `targets` (`host:port`) every [`PROBE_EVERY`] on a thread of its
-    /// own, while `on()`; `changed(target, up, down_for_s)` hears each
-    /// up/down change. Turned off, what they'd heard is forgotten.
-    pub fn start(targets: Vec<String>, on: impl Fn() -> bool + Send + 'static, changed: impl Fn(Transition) + Send + 'static) -> Arc<Probes> {
-        let p = Arc::new(Probes { probes: Mutex::new(targets.iter().map(|t| (t.clone(), Answers::default())).collect()), dns_ms: Mutex::new(None) });
-        if targets.is_empty() {
-            return p;
-        }
+    /// Probe the targets `plan()` names now (`host:port`), as often as it
+    /// says, on a thread of their own; `changed(target, up, down_for_s)`
+    /// hears each up/down change. A target taken off the list (all of them,
+    /// with the checks off) is forgotten; one added is tried at once.
+    pub fn start(plan: impl Fn() -> (Vec<String>, Duration) + Send + 'static, changed: impl Fn(Transition) + Send + 'static) -> Arc<Probes> {
+        let p = Arc::new(Probes::default());
         let p2 = p.clone();
-        let _ = std::thread::Builder::new().name("net-probe".into()).spawn(move || loop {
-            if !on() {
-                p2.probes.lock().unwrap().iter_mut().for_each(|(_, a)| *a = Answers::default());
-                *p2.dns_ms.lock().unwrap() = None;
+        let _ = std::thread::Builder::new().name("net-probe".into()).spawn(move || {
+            let mut next = Instant::now();
+            loop {
+                let (targets, every) = plan();
+                if p2.keep(&targets) {
+                    next = Instant::now();
+                }
+                if !targets.is_empty() && Instant::now() >= next {
+                    for t in &targets {
+                        let (ok, rtt, dns) = probe(t);
+                        if let Some(d) = dns {
+                            *p2.dns_ms.lock().unwrap() = Some(d);
+                        }
+                        let change = p2.probes.lock().unwrap().iter_mut().find(|(x, _)| x == t).and_then(|(_, a)| a.note(ok, rtt, crate::clock::unix_s()));
+                        if let Some((up, down)) = change {
+                            changed((t.clone(), up, down));
+                        }
+                    }
+                    next = Instant::now() + every;
+                }
                 std::thread::sleep(Duration::from_secs(1));
-                continue;
             }
-            for (i, t) in targets.iter().enumerate() {
-                let (ok, rtt, dns) = probe(t);
-                if let Some(d) = dns {
-                    *p2.dns_ms.lock().unwrap() = Some(d);
-                }
-                let change = p2.probes.lock().unwrap()[i].1.note(ok, rtt, crate::clock::unix_s());
-                if let Some((up, down)) = change {
-                    changed((t.clone(), up, down));
-                }
-            }
-            std::thread::sleep(PROBE_EVERY);
         });
         p
+    }
+
+    /// Make the rows `targets`, in order, keeping what's been heard of those
+    /// that stay: whether the list changed.
+    fn keep(&self, targets: &[String]) -> bool {
+        let mut v = self.probes.lock().unwrap();
+        if v.iter().map(|(t, _)| t).eq(targets) {
+            return false;
+        }
+        let mut old = std::mem::take(&mut *v);
+        *v = targets.iter().map(|t| old.iter().position(|(x, _)| x == t).map_or_else(|| (t.clone(), Answers::default()), |i| old.swap_remove(i))).collect();
+        if v.is_empty() {
+            *self.dns_ms.lock().unwrap() = None;
+        }
+        true
     }
 
     fn report(&self, sink: &mut dyn Sink) -> Vec<Value> {
@@ -205,11 +220,6 @@ impl Probes {
                 up += ok as u32;
                 if ok {
                     best = Some(best.map_or(p.rtt_ms.unwrap_or(0.0), |b: f64| b.min(p.rtt_ms.unwrap_or(b))));
-                }
-                let name = format!("net/probe/{}", key_part(target));
-                sink.gauge(&format!("{name}/up"), ok as u8 as f64);
-                if let Some(r) = p.rtt_ms {
-                    sink.gauge(&format!("{name}/rtt"), r);
                 }
             }
             rows.push(p.row(target));
@@ -438,6 +448,36 @@ mod tests {
         assert_eq!(a.note(true, Some(25.0), 160.0), Some((true, 45.0)), "back, down 45 s");
         assert_eq!((a.tries, a.fails, a.last_ok, a.last_fail, a.down_since), (4, 2, Some(160.0), Some(130.0), None));
         assert_eq!(a.row("pool.ntp.org")["rttMs"], 25.0);
+    }
+
+    /// The list edited while running: what's heard of a host that stays is
+    /// kept, one taken off is forgotten, and an emptied list (the checks off)
+    /// reports nothing.
+    #[test]
+    fn probes_follow_the_list() {
+        let p = Probes::default();
+        let hosts = |h: &[&str]| h.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(p.keep(&hosts(&["a:1", "b:2"])));
+        assert!(!p.keep(&hosts(&["a:1", "b:2"])), "the same list: no change");
+        p.probes.lock().unwrap()[1].1.note(true, Some(5.0), 1.0);
+        assert!(p.keep(&hosts(&["b:2", "c:3"])));
+        let rows = p.report(&mut Keys::default());
+        assert_eq!(rows.iter().map(|r| r["target"].as_str().unwrap()).collect::<Vec<_>>(), ["b:2", "c:3"]);
+        assert_eq!((rows[0]["tries"].as_u64(), rows[1]["tries"].as_u64()), (Some(1), Some(0)), "b:2 kept what it heard");
+        assert!(p.keep(&[]));
+        let mut k = Keys::default();
+        assert!(p.report(&mut k).is_empty() && k.0.is_empty());
+    }
+
+    #[test]
+    fn checks_off_ask_nothing() {
+        let mut m = trunk_app::config::MonitorSettings::default();
+        assert_eq!(m.checks(), (Vec::new(), Duration::from_secs(15)), "no hosts checked by default");
+        (m.check_hosts, m.check_every_s) = (vec![" 10.0.0.1:443 ".into(), "".into()], 1);
+        assert_eq!(m.checks(), (vec!["10.0.0.1:443".to_string()], Duration::from_secs(5)), "trimmed, and 5 s at least");
+        assert_eq!(m.time_server().as_deref(), Some("pool.ntp.org"));
+        m.network_checks = false;
+        assert_eq!((m.checks().0.len(), m.time_server()), (0, None));
     }
 
     #[test]

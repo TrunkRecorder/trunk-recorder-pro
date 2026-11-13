@@ -154,12 +154,12 @@ impl DmrVoice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dmr::slot::Lc;
+    use crate::dmr::slot::{Lc, FID_MOTOROLA};
 
-    /// Group voice link control to TG 201 from radio 5; `privacy`: the
-    /// service options' privacy bit.
-    fn lc(privacy: bool) -> Lc {
-        Lc([0, 0, if privacy { 0x40 } else { 0 }, 0, 0, 201, 0, 0, 5])
+    /// Voice link control `flco` (feature set `fid`) to 201 from radio 5;
+    /// `privacy`: the service options' privacy bit.
+    fn lc(flco: u8, fid: u8, privacy: bool) -> Lc {
+        Lc([flco, fid, if privacy { 0x40 } else { 0 }, 0, 0, 201, 0, 0, 5])
     }
 
     /// An encrypted transmission whose terminator is lost (a fade), then a
@@ -168,12 +168,29 @@ mod tests {
     fn a_new_transmission_starts_clear() {
         let mut v = DmrVoice::new(1);
         let mut out = Vec::new();
-        v.event(0, SlotEvent::Lc { lc: lc(true), from: LcFrom::Header }, 0.0, &mut out);
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, true), from: LcFrom::Header }, 0.0, &mut out);
         assert!(v.slots[0].encrypted);
-        v.event(0, SlotEvent::Lc { lc: lc(false), from: LcFrom::Header }, 1.0, &mut out);
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Header }, 1.0, &mut out);
         assert!(!v.slots[0].encrypted);
         // Embedded link control saying so mid-transmission still counts.
-        v.event(0, SlotEvent::Lc { lc: lc(true), from: LcFrom::Embedded }, 1.2, &mut out);
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, true), from: LcFrom::Embedded }, 1.2, &mut out);
+        assert!(v.slots[0].encrypted);
+    }
+
+    /// Motorola restricted access (RAS): a call's embedded LC sets the FLCO's
+    /// 0x20 bit. It is still a clear call, group (0x20) or private (0x23).
+    #[test]
+    fn restricted_access_link_control_is_a_clear_call() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc: lc(0, FID_MOTOROLA, false), from: LcFrom::Header }, 0.0, &mut out);
+        v.event(0, SlotEvent::Lc { lc: lc(0x20, FID_MOTOROLA, false), from: LcFrom::Embedded }, 0.4, &mut out);
+        assert!(!v.slots[0].encrypted && v.slots[0].group);
+        assert_eq!((v.slots[0].talkgroup, v.slots[0].source), (Some(201), Some(5)));
+        v.event(1, SlotEvent::Lc { lc: lc(0x23, FID_MOTOROLA, false), from: LcFrom::Embedded }, 0.4, &mut out);
+        assert!(!v.slots[1].encrypted && !v.slots[1].group);
+        // Encrypted is the privacy bit, restricted access or not.
+        v.event(0, SlotEvent::Lc { lc: lc(0x20, FID_MOTOROLA, true), from: LcFrom::Embedded }, 0.8, &mut out);
         assert!(v.slots[0].encrypted);
     }
 }

@@ -9,7 +9,7 @@
 //! late (its delays) goes to the [`Hold`] instead, which gives it to the
 //! plugin when it's due.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -23,8 +23,9 @@ use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
     format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, LogLine, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
-    SystemInfo, API_VERSION, EXIT_CONFIG,
+    SystemInfo, VoiceChunk, API_VERSION, EXIT_CONFIG,
 };
+use trunk_core::trunk::LiveAudio;
 
 use super::delay::About;
 use super::hold::{Hold, Offer, Outlet};
@@ -65,6 +66,32 @@ pub type Saves = Arc<dyn Fn(&str, serde_json::Map<String, Value>) -> Result<(), 
 /// Messages waiting for a plugin; beyond this it's behind, and loses them.
 const QUEUE: usize = 1024;
 
+/// A call's start or end, by its id. A plugin keeps track of what's going by
+/// these, so one isn't lost as other events are when the plugin falls behind.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Life {
+    Start(u32),
+    End(u32),
+}
+
+/// Starts and ends a plugin's queue had no room for, in order.
+#[derive(Default)]
+struct Owed(VecDeque<(Life, Arc<str>)>);
+
+impl Owed {
+    /// Owe it `l`. A call that begins and ends before the plugin has heard
+    /// of it needn't be told at all, so what's owed is at most the calls going.
+    fn add(&mut self, life: Life, l: &Arc<str>) {
+        if let Life::End(id) = life {
+            if let Some(i) = self.0.iter().position(|(o, _)| *o == Life::Start(id)) {
+                self.0.remove(i);
+                return;
+            }
+        }
+        self.0.push_back((life, l.clone()));
+    }
+}
+
 struct Plugin {
     id: String,
     manifest: Manifest,
@@ -74,6 +101,8 @@ struct Plugin {
     hello: Mutex<Hello>,
     tx: Mutex<Option<SyncSender<Arc<str>>>>,
     child: Mutex<Option<Child>>,
+    /// Given to it once its queue has emptied.
+    owed: Arc<Mutex<Owed>>,
     dropped: AtomicU64,
     last_drop_note: Mutex<Option<Instant>>,
     restarts: AtomicU64,
@@ -83,7 +112,7 @@ struct Plugin {
     /// It may be given calls decrypted with our keys (`shareDecrypted`); whether it was said when one was withheld.
     share_decrypted: bool,
     withheld_said: AtomicBool,
-    /// Whether it was said that it isn't streamed the live audio of calls it's delayed for.
+    /// Whether it was said that it isn't streamed the live media of calls it's delayed for.
     audio_held_said: AtomicBool,
 }
 
@@ -116,9 +145,9 @@ pub struct PluginHost {
     supervisors: Vec<JoinHandle<()>>,
     /// What the session should build for plugins.
     pub topics: PluginTopics,
-    /// Some plugin wants live audio.
-    pub audio: bool,
-    /// Each system's short name, by its number (for audio chunks).
+    /// Some plugin wants calls' live media ([`topic::is_live`]: audio, voice).
+    pub live: bool,
+    /// Each system's short name, by its number (for concluded calls).
     names: BTreeMap<u16, String>,
     /// The log's tap that hands its lines to the plugins taking `log` ([`crate::logging::tap`]).
     log_tap: Option<u64>,
@@ -258,7 +287,7 @@ impl PluginHost {
             notes(Note::Log { plugin: String::new(), level: Level::Warn, text });
         }
         let mut topics = PluginTopics::default();
-        let mut live_audio = false;
+        let mut live = false;
         let mut plugins = Vec::new();
         let mut queues = Vec::new();
         for (s, m, settings) in ready {
@@ -267,7 +296,7 @@ impl PluginHost {
             topics.units |= m.subscribes(topic::UNIT);
             topics.status |= m.subscribes(topic::STATUS);
             topics.tone_patterns |= m.subscribes(topic::TONE_PATTERN);
-            live_audio |= m.subscribes(topic::AUDIO);
+            live |= topic::ALL.iter().any(|&t| topic::is_live(t) && m.subscribes(t));
             let data_dir = s.data_dir.clone().unwrap_or_else(|| super::data_dir(&s.id));
             let _ = std::fs::create_dir_all(&data_dir);
             let mut formats = vec!["wav".to_string()];
@@ -301,6 +330,7 @@ impl PluginHost {
                 hello: Mutex::new(hello),
                 tx: Mutex::new(Some(tx)),
                 child: Mutex::new(None),
+                owed: Default::default(),
                 dropped: AtomicU64::new(0),
                 last_drop_note: Mutex::new(None),
                 restarts: AtomicU64::new(0),
@@ -331,7 +361,7 @@ impl PluginHost {
                 }
             }))
         });
-        PluginHost { shared, encoder, supervisors, topics, audio: live_audio, names, log_tap, done: false }
+        PluginHost { shared, encoder, supervisors, topics, live, names, log_tap, done: false }
     }
 
     /// Each plugin's process: drops, restarts, uptime.
@@ -374,12 +404,17 @@ impl PluginHost {
             HostMessage::TonePattern(t) => (topic::TONE_PATTERN, About { decrypted: t.decrypted, ..on(&t.short_name, Some(t.talkgroup)) }),
             // (No one system's: never delayed.)
             HostMessage::Status(_) => (topic::STATUS, About::default()),
-            // (Audio and concluded calls may be decrypted ones: they go only by `audio_frame` and
+            // (Live media and concluded calls may be decrypted ones: they go only by `live` and
             // `concluded`, which know.)
             _ => return,
         };
-        if self.shared.plugins.iter().any(|p| p.manifest.subscribes(t)) {
-            self.shared.dispatch(t, &line(m), &about, None);
+        let life = match m {
+            HostMessage::CallStart(c) => Some(Life::Start(c.id)),
+            HostMessage::CallEnd(c) => Some(Life::End(c.id)),
+            _ => None,
+        };
+        if self.shared.wants(t) {
+            self.shared.dispatch(t, &line(m), &about, None, life);
         }
     }
 
@@ -416,20 +451,23 @@ impl PluginHost {
         answer
     }
 
-    /// A live audio frame (the session's `[2][u16 system][u32 call][u32 tg][i16…]`).
-    /// `decrypted`: of a call decrypted with our keys (only plugins with `shareDecrypted` are given it).
-    pub fn audio_frame(&self, frame: &[u8], decrypted: bool) {
-        if !self.audio || frame.len() < 11 {
+    /// A call's live audio, to the plugins that take it: its PCM as an `audio` chunk, its vocoder frames
+    /// as a `voice` one (`unit_name`: the talker's, "": none). One decrypted with our keys goes only to
+    /// plugins with `shareDecrypted`.
+    pub fn live(&self, short_name: &str, unit_name: &str, a: &LiveAudio) {
+        if !self.live {
             return;
         }
-        let system = u16::from_le_bytes([frame[1], frame[2]]);
-        let call_id = u32::from_le_bytes([frame[3], frame[4], frame[5], frame[6]]);
-        let talkgroup = u32::from_le_bytes([frame[7], frame[8], frame[9], frame[10]]);
-        let pcm = trunk_recorder_plugin::base64::encode(&frame[11..]);
-        let short_name = self.names.get(&system).cloned().unwrap_or_default();
-        let about = About { system: short_name.clone(), talkgroup: Some(talkgroup), decrypted };
-        let chunk = AudioChunk { call_id, system, short_name, talkgroup, sample_rate: 8000, pcm };
-        self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)), &about, None);
+        let about = About { system: short_name.to_string(), talkgroup: Some(a.talkgroup), decrypted: a.decrypted };
+        if self.shared.wants(topic::AUDIO) {
+            let pcm = trunk_recorder_plugin::base64::encode(&trunk_core::wav::pcm16(&a.samples));
+            let chunk = AudioChunk { call_id: a.call_id, system: a.system, short_name: short_name.to_string(), talkgroup: a.talkgroup, sample_rate: 8000, pcm };
+            self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)), &about, None, None);
+        }
+        if !a.frames.is_empty() && self.shared.wants(topic::VOICE) {
+            let chunk = VoiceChunk { call_id: a.call_id, system: a.system, short_name: short_name.to_string(), talkgroup: a.talkgroup, unit: a.unit, unit_name: unit_name.to_string(), decrypted: a.decrypted, frames: a.frames.clone() };
+            self.shared.dispatch(topic::VOICE, &line(&HostMessage::Voice(chunk)), &about, None, None);
+        }
     }
 
     /// The plugins that take concluded calls (each reports on every one);
@@ -467,7 +505,7 @@ impl PluginHost {
         let short_name = self.names.get(&system).cloned().unwrap_or_else(|| record.short_name.clone());
         let about = About { system: short_name, talkgroup: Some(record.talkgroup), decrypted };
         let call = ConcludedCall { path: rel.to_string(), system, call: record, files };
-        self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)), &about, Some(rel));
+        self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)), &about, Some(rel), None);
     }
 
     /// Tell every plugin to stop, and give each `grace` to
@@ -617,29 +655,56 @@ impl Shared {
         }
     }
 
+    /// Some plugin subscribes to topic `t`.
+    fn wants(&self, t: &str) -> bool {
+        self.plugins.iter().any(|p| p.manifest.subscribes(t))
+    }
+
     /// Send `l` (of topic `t`) to each plugin that subscribed to it, now or,
     /// when its delays say so, later (by the hold). `about`: what it's about —
-    /// a call decrypted with our keys (or its audio) goes only to plugins with
-    /// `shareDecrypted`; `call`: it's that finished call.
-    fn dispatch(&self, t: &str, l: &Arc<str>, about: &About, call: Option<&str>) {
+    /// a call decrypted with our keys (or its live media) goes only to plugins with
+    /// `shareDecrypted`; `call`: it's that finished call; `life`: it's a
+    /// call's start or end, which a plugin is never left without.
+    fn dispatch(&self, t: &str, l: &Arc<str>, about: &About, call: Option<&str>, life: Option<Life>) {
         for p in self.plugins.iter().filter(|p| p.manifest.subscribes(t)) {
             if about.decrypted && !p.share_decrypted {
                 self.say_withheld(p);
                 continue;
             }
             if let Some(h) = self.hold.as_ref().filter(|h| !h.delay(&p.id, about).is_zero()) {
-                // Live audio late isn't live: a delayed call's isn't streamed at all.
-                if t == topic::AUDIO {
+                // Live media late isn't live: a delayed call's isn't streamed at all.
+                if topic::is_live(t) {
                     if !p.audio_held_said.swap(true, Ordering::Relaxed) {
-                        self.note_log(&p.id, Level::Info, "isn't given the live audio of calls it's delayed for");
+                        self.note_log(&p.id, Level::Info, "isn't given the live audio or voice of calls it's delayed for");
                     }
+                } else if life.is_some() {
+                    h.keep(&p.id, about, l, call);
                 } else if !h.push(&p.id, about, l, call) {
                     self.dropped(p);
                 }
                 continue;
             }
-            if self.give(p, l) == Offer::Full {
+            self.send(p, t, l, life);
+        }
+    }
+
+    /// Give `l` to `p` now. What's owed comes after what's queued, so a
+    /// call's end never passes its start; until it's caught up, it's spared
+    /// the live audio, the bulk of what fills its queue.
+    fn send(&self, p: &Plugin, t: &str, l: &Arc<str>, life: Option<Life>) {
+        let mut owed = p.owed.lock().unwrap();
+        match life {
+            Some(life) if !owed.0.is_empty() || self.give(p, l) == Offer::Full => owed.add(life, l),
+            Some(_) => {}
+            None if topic::is_live(t) && !owed.0.is_empty() => {
+                drop(owed);
                 self.dropped(p);
+            }
+            None => {
+                drop(owed);
+                if self.give(p, l) == Offer::Full {
+                    self.dropped(p);
+                }
             }
         }
     }
@@ -814,13 +879,21 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
     let hello = line(&HostMessage::Hello(p.hello.lock().unwrap().clone()));
     let dead2 = dead.clone();
     let drained_at = p.drained_at.clone();
+    let owed = p.owed.clone();
     let writer = std::thread::spawn(move || {
         let mut ok = stdin.write_all(hello.as_bytes()).and_then(|_| stdin.flush()).is_ok();
         let mut drained = false;
         while ok && !dead2.load(Ordering::Relaxed) {
-            match rx.recv_timeout(Duration::from_millis(100)) {
+            let wait = if owed.lock().unwrap().0.is_empty() { Duration::from_millis(100) } else { Duration::ZERO };
+            match rx.recv_timeout(wait) {
                 Ok(l) => ok = stdin.write_all(l.as_bytes()).and_then(|_| stdin.flush()).is_ok(),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                // (Its queue is empty: what it's owed comes after all of that.)
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    while ok {
+                        let Some((_, l)) = owed.lock().unwrap().0.pop_front() else { break };
+                        ok = stdin.write_all(l.as_bytes()).and_then(|_| stdin.flush()).is_ok();
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     *drained_at.lock().unwrap() = Some(Instant::now());
                     drained = true;
@@ -945,6 +1018,7 @@ mod tests {
             hello: Mutex::new(Hello::default()),
             tx: Mutex::new(Some(tx)),
             child: Mutex::new(None),
+            owed: Default::default(),
             dropped: AtomicU64::new(0),
             last_drop_note: Mutex::new(None),
             restarts: AtomicU64::new(0),
@@ -955,6 +1029,18 @@ mod tests {
             audio_held_said: AtomicBool::new(false),
         };
         (p, rx)
+    }
+
+    /// A plugin too far behind loses events, but not a call's start or end.
+    #[test]
+    fn a_full_queue_owes_a_plugin_its_calls_starts_and_ends() {
+        let mut o = Owed::default();
+        let l: Arc<str> = "x\n".into();
+        o.add(Life::Start(1), &l);
+        o.add(Life::End(2), &l);
+        o.add(Life::Start(3), &l);
+        o.add(Life::End(1), &l);
+        assert_eq!(o.0.iter().map(|x| x.0).collect::<Vec<_>>(), [Life::End(2), Life::Start(3)], "begun and ended unheard: nothing to tell");
     }
 
     /// A decrypted call (or its live audio) reaches only the plugins allowed it; a clear one reaches all.
@@ -981,10 +1067,10 @@ mod tests {
         };
         let msg: Arc<str> = "x\n".into();
         let (clear, decrypted) = (About { system: "dcfd".into(), ..Default::default() }, About { system: "dcfd".into(), decrypted: true, ..Default::default() });
-        sh.dispatch(topic::CALL_CONCLUDED, &msg, &clear, None);
+        sh.dispatch(topic::CALL_CONCLUDED, &msg, &clear, None, None);
         assert!(local_rx.try_recv().is_ok() && public_rx.try_recv().is_ok(), "a clear call goes to both");
-        sh.dispatch(topic::CALL_CONCLUDED, &msg, &decrypted, None);
-        sh.dispatch(topic::AUDIO, &msg, &decrypted, None);
+        sh.dispatch(topic::CALL_CONCLUDED, &msg, &decrypted, None, None);
+        sh.dispatch(topic::AUDIO, &msg, &decrypted, None, None);
         sh.say_all_withheld(topic::CALL_CONCLUDED);
         assert!(local_rx.try_recv().is_ok() && local_rx.try_recv().is_ok(), "the plugin that was allowed gets the call and its audio");
         assert!(public_rx.try_recv().is_err(), "the public one gets neither");
@@ -1077,10 +1163,8 @@ mod tests {
         };
         call("dcfd/held", 5);
         call("dcfd/now", 6);
-        let mut frame = vec![2u8, 0, 0, 1, 0, 0, 0];
-        frame.extend(5u32.to_le_bytes());
-        frame.extend([0u8; 320]);
-        host.audio_frame(&frame, false);
+        let frame = trunk_core::trunk::frames::VoiceFrame { codec: trunk_recorder_plugin::Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: trunk_recorder_plugin::FrameKind::Voice, tone: None };
+        host.live("dcfd", "", &LiveAudio { call_id: 1, system: 0, talkgroup: 5, unit: 0, samples: vec![0.0; 160], frames: vec![frame], decrypted: false });
         let got = dir.join("data/got.jsonl");
         let lines = || std::fs::read_to_string(&got).unwrap_or_default();
         let t0 = Instant::now();
