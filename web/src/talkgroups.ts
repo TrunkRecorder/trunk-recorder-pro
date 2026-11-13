@@ -64,13 +64,16 @@ function rrMode(cell: string): string | null {
 
 /**
  * A talkgroup table copied from RadioReference's web page (free to view, no
- * subscription): rows of DEC, HEX, Mode, Alpha Tag, Description, Tag — tab
- * separated when copied from a browser, else two or more spaces. A line with
- * no talkgroup number before a run of rows is the category heading they fall
- * under ("Metro County Fire"). The column header line is skipped.
+ * subscription): rows of DEC, HEX, Mode, Alpha Tag, Description, Tag, and on
+ * some pages Category and the date it was updated — tab separated when copied
+ * from a browser, else two or more spaces. A line with no talkgroup number
+ * before a run of rows is the category heading they fall under ("Metro County
+ * Fire"); a Category cell wins over it. The column header line is skipped.
  *
- * The page's badges come along: "ONLINE" after a number breaks the row in
- * two ("167" / "ONLINE<tab>0a7<tab>D…"), and "ENC" follows the mode ("D ENC").
+ * The page's badges come along: "ONLINE" (a live feed) after a number, beside
+ * it ("167 ONLINE"), stuck to it ("4407Online"), or breaking the row in two
+ * ("167" / "ONLINE<tab>0a7<tab>D…"); "ENC" follows the mode ("D ENC"), or breaks
+ * the row in two after it ("4411<tab>113b<tab>T" / "Enc<tab>Alpha Tag<tab>…").
  */
 export function parseRadioReferencePaste(text: string): Talkgroup[] {
   const out: Talkgroup[] = [];
@@ -78,10 +81,21 @@ export function parseRadioReferencePaste(text: string): Talkgroup[] {
   let category = "";
   // A number on a line of its own: the rest of its row is on the next line, after its badge.
   let pending: string | null = null;
+  // A row that stops at its mode: its ENC badge broke it, and the rest is on the next line, after the badge.
+  let held: { num: number; cells: string[] } | null = null;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
     let f = (raw.includes("\t") ? raw.split("\t") : line.split(/\s{2,}/)).map((x) => x.trim()).filter(Boolean);
+    if (held !== null) {
+      const { num, cells } = held;
+      held = null;
+      if (/^enc$/i.test(f[0] ?? "")) {
+        out.push(row(num, [...cells.slice(0, -1), `${cells.at(-1)} ENC`, ...f.slice(1)], category));
+        continue;
+      }
+      out.push(row(num, cells, category));
+    }
     if (pending !== null) {
       const num = pending;
       pending = null;
@@ -89,8 +103,8 @@ export function parseRadioReferencePaste(text: string): Talkgroup[] {
       else out.push(row(Number(num), [], category));
     }
     if (/^dec\b/i.test(f[0] ?? "")) continue;
-    // A badge in the number's cell ("167 ONLINE").
-    const num = /^(\d+)(\s+[A-Za-z].*)?$/.exec(f[0] ?? "");
+    // A badge in the number's cell ("167 ONLINE", or stuck to it: "4407Online").
+    const num = /^(\d+)(\s*online\b.*|\s+[A-Za-z].*)?$/i.exec(f[0] ?? "");
     if (!num) {
       // A heading: a category name, not a sentence of help text.
       if (f.length === 1 && line.length <= 60) category = line;
@@ -100,20 +114,24 @@ export function parseRadioReferencePaste(text: string): Talkgroup[] {
       pending = num[1];
       continue;
     }
-    out.push(row(Number(num[1]), f.slice(1), category));
+    const cells = f.slice(1);
+    if (cells.length <= 2 && rrMode(cells.at(-1) ?? "")) held = { num: Number(num[1]), cells };
+    else out.push(row(Number(num[1]), cells, category));
   }
+  if (held !== null) out.push(row(held.num, held.cells, category));
   if (pending !== null) out.push(row(Number(pending), [], category));
   return out.filter((t) => !seen.has(t.number) && !!seen.add(t.number));
 }
 
-/** A talkgroup from the cells after its number: HEX (optional), Mode, Alpha Tag, Description, Tag. */
+/** A talkgroup from the cells after its number: HEX (optional), Mode, Alpha Tag, Description, Tag, Category (optional; not the date after it). */
 function row(number: number, f: string[], category: string): Talkgroup {
   let k = 0;
   // The HEX column, when copied (it is the same number).
   if (f[k] && /^[0-9a-f]+$/i.test(f[k]) && Number.parseInt(f[k], 16) === number) k++;
   const m = f[k] ? rrMode(f[k]) : null;
   if (m) k++;
-  return talkgroup(number, { mode: m ?? "D", alphaTag: f[k] ?? "", description: f[k + 1] ?? "", tag: f[k + 2] ?? "", category });
+  const cat = f[k + 3] && !/^\d{4}-\d{2}-\d{2}/.test(f[k + 3]) ? f[k + 3] : category;
+  return talkgroup(number, { mode: m ?? "D", alphaTag: f[k] ?? "", description: f[k + 1] ?? "", tag: f[k + 2] ?? "", category: cat });
 }
 
 /** A talkgroup file's text read as the recorder reads one: its rows, and what in it was passed over. */
