@@ -332,32 +332,42 @@ trunk-pro rolloff --center 858500000
 ## tune
 
 ```bash
-trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--dwell 45] [--settle 8]
-               [--max-steps 20] [--margin 1] [--mode manual|linearity|sensitivity] [--apply]
+trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--slice 15] [--rounds 3]
+               [--settle 4] [--max-steps 12] [--margin 1] [--mode manual|linearity|sensitivity]
+               [--try stage=value,…] [--apply]
 ```
 
 Finds the gain at which a radio decodes its systems best. It works on a recorder that is
 **recording**, the one at `--url` (it can be another computer's: it uses the
 [interface API](api/README.md), so the recorder must be reachable there, and it needs the built-in
 interface's port, which has control access). It sets each gain to try as Setup does, which the radio
-takes at once, holds it for `--settle` seconds and then measures for `--dwell` seconds what the
-radio's systems decode:
+takes at once, and scores what the radio's systems decode while it is set:
 
 - **The control channel first.** P25's coverage (the share of the control channel's air decoded),
   else the share of messages decoded while it was locked. Without the control channel nothing is
   recorded.
-- **Then voice frames lost**, when a system had at least 5 seconds of voice in the step. A system's
-  score is 70 % control channel and 30 % voice then, else its control channel alone.
+- **Then voice frames lost**, when a system had at least 5 seconds of voice. A system's score is
+  70 % control channel and 30 % voice then, else its control channel alone.
 - **A gain that clips** (more than 0.5 % of samples at full scale) is refused, whatever it decoded.
 
 The setting's score (0 to 100) is the systems' average with the weakest counted twice, so a gain
-that helps the strong systems a little at a weak one's cost isn't chosen. The systems are those with
-a control channel in the radio's band, or `--systems`.
+that helps the strong systems a little at a weak one's cost isn't chosen. The systems scored are
+those with a control channel in the radio's band, or only `--systems`. The radio's other systems are
+still watched then, and shown (the scored ones starred): a gain that silences one of their control
+channels is given up as for the scored ones, so tuning for one system can't quietly lose another.
 
-The search starts where the radio is and moves one gain stage at a time, coarse steps first, keeping
-a move only when it scores more than `--margin` better. Then the best and the starting setting are
-measured once more each, since traffic changes from minute to minute, and the best is reported only
-if it is still ahead.
+**Settings are compared, not scored once.** How well a control channel decodes drifts from minute
+to minute (traffic, a simulcast site's fading) by more than a step of gain usually changes it: on
+one 800 MHz Airspy the same gain scored 92 and then 84 ten minutes apart. So each candidate is
+compared with the best so far by turns, `--slice` seconds each after `--settle` seconds to settle,
+for `--rounds` rounds (best first in one round, the candidate first in the next), and it is moved to
+only when it scored better on average by more than `--margin` **and** by more than twice the
+standard error of the rounds' differences. A candidate takes `rounds × 2 × (settle + slice)`
+seconds: 114 by default.
+
+The search starts where the radio is and moves one gain stage at a time, coarse steps first, never
+trying a setting twice. At the end the best is compared with the starting setting once more, and
+recommended only if it is still clearly better.
 
 | Radio | Stages tried |
 |---|---|
@@ -378,10 +388,12 @@ the frequency correction (ppm) should change, as Setup's **Set correction to** d
 |---|---|---|
 | `--url` | `http://127.0.0.1:8080` | The recorder's built-in interface |
 | `--source N` | the only one | The radio, by its place in Setup's list from 0. Needed when there are several: the error lists them |
-| `--systems a,b` | every system on the radio | Score only these (short names) |
-| `--dwell s` | 45 | How long each setting is measured. Busy systems need less; voice needs traffic |
-| `--settle s` | 8 | How long each setting runs before it is measured |
-| `--max-steps n` | 20 | At most this many settings measured. Each takes `--settle` + `--dwell` |
+| `--systems a,b` | every system on the radio | Score only these (short names); the others are still watched and guarded |
+| `--try stage=value,…` | | Compare this one setting with the one the radio is at, and nothing else: `lna=11,mixer=10,vga=9` (Airspy manual), `step=16` (Airspy linearity or sensitivity), `lna=32,vga=24,amp=on` (HackRF), `gain=33.8` (RTL-SDR). With `--apply`, kept if it is clearly better |
+| `--slice s` | 15 | How long each side of a round is measured |
+| `--rounds n` | 3 | Rounds per comparison (2 to 20). More rounds tell smaller differences apart |
+| `--settle s` | 4 | How long a gain runs before it is measured |
+| `--max-steps n` | 12 | At most this many candidates compared |
 | `--margin` | 1 | A move is kept only when it scores this much better (0–100 scale) |
 | `--mode` | the radio's | Airspy: search `manual`, `linearity` or `sensitivity` instead |
 | `--apply` | | Keep the best setting |
@@ -389,6 +401,7 @@ the frequency correction (ppm) should change, as Setup's **Set correction to** d
 ```bash
 trunk-pro tune --url http://192.168.1.20:8080 --source 1
 trunk-pro tune --source 0 --systems county,city --mode sensitivity --apply
+trunk-pro tune --source 1 --try lna=11,vga=9          # before applying what a --systems run found
 ```
 
 ## tool

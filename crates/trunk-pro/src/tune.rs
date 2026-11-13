@@ -1,5 +1,5 @@
-//! `trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--dwell 45]
-//! [--settle 8] [--max-steps 20] [--margin 1] [--mode manual|linearity|sensitivity] [--apply]` —
+//! `trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--slice 15]
+//! [--rounds 3] [--settle 4] [--max-steps 12] [--margin 1] [--mode manual|linearity|sensitivity] [--apply]` —
 //! finds the gain at which a radio decodes its systems best, on a recorder that is
 //! recording.
 //!
@@ -16,9 +16,14 @@
 //!
 //! The weakest system counts twice, so a gain that helps the strong systems a little
 //! at the cost of a weak one isn't chosen. The search ([`search`]) moves one gain
-//! stage at a time from where the radio is, coarse steps first, keeping a move only
-//! when it scores better by `--margin`; then the best and the starting setting are
-//! measured once more each, since traffic changes from minute to minute.
+//! stage at a time from where the radio is, coarse steps first.
+//!
+//! A control channel's decoding drifts by more from minute to minute (traffic,
+//! simulcast fading) than a step of gain usually moves it, so a setting is never
+//! judged by one measurement: each candidate is compared with the best so far by
+//! turns, a slice each, for a few rounds ([`Cmp`]), and moved to only when it is better
+//! by more than `--margin` and by more than twice the standard error of the rounds'
+//! differences. At the end the best is compared with the starting setting once more.
 //!
 //! Recording goes on throughout, so a bad setting costs that radio's systems while
 //! it is tried: a setting under which a control channel that was decoding stops for
@@ -149,6 +154,29 @@ impl Knobs {
         s
     }
 
+    /// `--try lna=11,vga=9`: `start` with these stages set. A stage is named by its
+    /// config key (`lnaStep`, `vgaDb`…) or its short name (`lna`, `mixer`, `vga`, `step`,
+    /// `gain`, `amp`); a value is snapped to the nearest the stage takes.
+    pub fn parse_try(&self, start: &[usize], spec: &str) -> Result<Vec<usize>, String> {
+        let mut p = start.to_vec();
+        for kv in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (k, v) = kv.split_once('=').ok_or_else(|| format!("--try {kv}: write stage=value"))?;
+            let k = k.trim().to_ascii_lowercase();
+            let ax = self
+                .axes
+                .iter()
+                .position(|a| a.key.to_ascii_lowercase() == k || a.name.split(' ').next().is_some_and(|n| n.to_ascii_lowercase() == k) || (k == "step" && a.key == "gainStep") || (k == "gain" && a.key == "gainDb"))
+                .ok_or_else(|| format!("--try {kv}: this radio's stages are {}", self.axes.iter().map(|a| a.key).collect::<Vec<_>>().join(", ")))?;
+            let v = match v.trim().to_ascii_lowercase().as_str() {
+                "on" | "true" => 1.0,
+                "off" | "false" => 0.0,
+                n => n.parse::<f64>().map_err(|_| format!("--try {kv}: not a number"))?,
+            };
+            p[ax] = nearest(&self.axes[ax].values, v);
+        }
+        Ok(p)
+    }
+
     /// "LNA 10 · mixer 7 · VGA 7".
     pub fn describe(&self, p: &[usize]) -> String {
         self.axes
@@ -222,6 +250,40 @@ impl Mean {
     pub fn get(&self) -> Option<f64> {
         (self.n > 0).then(|| self.sum / f64::from(self.n))
     }
+    fn merge(&mut self, o: &Mean) {
+        self.sum += o.sum;
+        self.n += o.n;
+    }
+}
+
+impl SysTally {
+    fn merge(&mut self, o: &SysTally) {
+        self.seconds += o.seconds;
+        self.locked_s += o.locked_s;
+        self.good += o.good;
+        self.bad += o.bad;
+        if let Some(s) = o.air_sym {
+            *self.air_sym.get_or_insert(0.0) += s;
+        }
+        self.snr.merge(&o.snr);
+        self.phase_err.merge(&o.phase_err);
+        self.voice_frames += o.voice_frames;
+        self.voice_bad += o.voice_bad;
+    }
+}
+
+impl Step {
+    /// Adds `o`'s tallies to these (a setting's slices, together). Its being given up isn't carried.
+    pub fn merge(&mut self, o: &Step) {
+        for (k, t) in &o.systems {
+            self.systems.entry(k.clone()).or_default().merge(t);
+        }
+        self.src.seconds += o.src.seconds;
+        self.src.clip.merge(&o.src.clip);
+        self.src.clip_max = self.src.clip_max.max(o.src.clip_max);
+        self.src.dropped += o.src.dropped;
+        self.src.noise.merge(&o.src.noise);
+    }
 }
 
 /// What one setting measured.
@@ -265,12 +327,15 @@ impl SysTally {
 
 impl Step {
     /// 0–100, the weakest system counted twice; `None` when the setting is refused
-    /// (given up, or clipping).
-    pub fn score(&self) -> Option<f64> {
-        if self.abandoned.is_some() || self.clipping() || self.systems.is_empty() {
+    /// (given up, or clipping). `only`: these systems alone (the others measured are only watched).
+    pub fn score_of(&self, only: Option<&[String]>) -> Option<f64> {
+        if self.abandoned.is_some() || self.clipping() {
             return None;
         }
-        let scores: Vec<f64> = self.systems.values().map(SysTally::score).collect();
+        let scores: Vec<f64> = self.systems.iter().filter(|(n, _)| only.is_none_or(|o| o.contains(n))).map(|(_, t)| t.score()).collect();
+        if scores.is_empty() {
+            return None;
+        }
         let worst = scores.iter().copied().fold(f64::INFINITY, f64::min);
         Some((scores.iter().sum::<f64>() + worst) / (scores.len() as f64 + 1.0))
     }
@@ -356,38 +421,58 @@ pub enum Stop {
     Interrupted(String),
 }
 
-/// What the search found: each setting tried and its score, in order.
+/// A candidate setting measured against the one it would replace, in rounds of a
+/// slice each, alternately first: how much better it scored (`diff`, candidate less
+/// incumbent, averaged over the rounds) and how sure that is (`se`, the standard
+/// error of the rounds' differences).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cmp {
+    pub diff: f64,
+    pub se: f64,
+    pub incumbent: f64,
+    pub candidate: f64,
+}
+
+impl Cmp {
+    /// From each round's (incumbent, candidate) scores; `None` where a slice was refused.
+    /// A candidate refused in any round is refused (`None`). An incumbent refused in a
+    /// round scores 0 there: whatever the candidate did, it did better.
+    pub fn of(rounds: &[(Option<f64>, Option<f64>)]) -> Option<Cmp> {
+        if rounds.is_empty() || rounds.iter().any(|(_, c)| c.is_none()) {
+            return None;
+        }
+        let pairs: Vec<(f64, f64)> = rounds.iter().map(|(i, c)| (i.unwrap_or(0.0), c.unwrap_or(0.0))).collect();
+        let n = pairs.len() as f64;
+        let diffs: Vec<f64> = pairs.iter().map(|(i, c)| c - i).collect();
+        let diff = diffs.iter().sum::<f64>() / n;
+        let se = if pairs.len() < 2 { 0.0 } else { (diffs.iter().map(|d| (d - diff).powi(2)).sum::<f64>() / (n - 1.0)).sqrt() / n.sqrt() };
+        Some(Cmp { diff, se, incumbent: pairs.iter().map(|p| p.0).sum::<f64>() / n, candidate: pairs.iter().map(|p| p.1).sum::<f64>() / n })
+    }
+
+    /// Better by more than `margin`, and by more than twice its standard error (so not
+    /// by the luck of the minute).
+    pub fn better(&self, margin: f64) -> bool {
+        self.diff > margin.max(2.0 * self.se)
+    }
+}
+
+/// What the search found: each candidate tried, against what, how it compared and
+/// whether it was moved to.
 #[derive(Debug, Default)]
 pub struct Found {
-    pub tried: Vec<(Vec<usize>, Option<f64>)>,
+    pub tried: Vec<(Vec<usize>, Vec<usize>, Option<Cmp>, bool)>,
     pub best: Vec<usize>,
-    pub best_score: f64,
     pub out_of_steps: bool,
 }
 
-/// Moves one axis at a time from `start` — each axis's coarse step first, then
-/// finer — and keeps a move only when it scores more than `margin` better.
-/// `measure` scores a setting (`None`: refused). At most `budget` settings are measured.
-pub fn search(axes: &[Axis], start: Vec<usize>, margin: f64, budget: usize, measure: &mut dyn FnMut(&[usize]) -> Result<Option<f64>, Stop>) -> Result<Found, Stop> {
+/// Moves one axis at a time from `start` — each axis's coarse step first, then finer —
+/// comparing each candidate with the best so far (`compare(best, candidate)`, `None`:
+/// the candidate was refused) and moving to it only when it is [`Cmp::better`] by
+/// `margin`. A setting is never tried twice. At most `budget` comparisons.
+pub fn search(axes: &[Axis], start: Vec<usize>, margin: f64, budget: usize, compare: &mut dyn FnMut(&[usize], &[usize]) -> Result<Option<Cmp>, Stop>) -> Result<Found, Stop> {
     let mut found = Found::default();
-    let mut seen: BTreeMap<Vec<usize>, Option<f64>> = BTreeMap::new();
-    let mut eval = |p: &[usize], found: &mut Found| -> Result<Option<Option<f64>>, Stop> {
-        if let Some(s) = seen.get(p) {
-            return Ok(Some(*s));
-        }
-        if seen.len() >= budget {
-            found.out_of_steps = true;
-            return Ok(None);
-        }
-        let s = measure(p)?;
-        seen.insert(p.to_vec(), s);
-        found.tried.push((p.to_vec(), s));
-        Ok(Some(s))
-    };
-    let Some(Some(base)) = eval(&start, &mut found)? else {
-        return Err(Stop::Interrupted("the starting setting couldn't be measured (its control channels aren't decoding)".into()));
-    };
-    let (mut best, mut best_s) = (start, base);
+    let mut visited: std::collections::BTreeSet<Vec<usize>> = std::collections::BTreeSet::from([start.clone()]);
+    let mut best = start;
     let levels = axes.iter().map(|a| a.steps.len()).max().unwrap_or(0);
     'levels: for level in 0..levels {
         // Passes over the axes at this step size, while one of them moves.
@@ -404,13 +489,20 @@ pub fn search(axes: &[Axis], start: Vec<usize>, margin: f64, budget: usize, meas
                         }
                         let mut p = best.clone();
                         p[ax] = to as usize;
-                        match eval(&p, &mut found)? {
-                            None => break 'levels,
-                            Some(Some(s)) if s > best_s + margin => {
-                                (best, best_s, went, moved) = (p, s, true, true);
-                            }
-                            Some(_) => break,
+                        if !visited.insert(p.clone()) {
+                            break;
                         }
+                        if found.tried.len() >= budget {
+                            found.out_of_steps = true;
+                            break 'levels;
+                        }
+                        let cmp = compare(&best, &p)?;
+                        let kept = cmp.is_some_and(|c| c.better(margin));
+                        found.tried.push((p.clone(), best.clone(), cmp, kept));
+                        if !kept {
+                            break;
+                        }
+                        (best, went, moved) = (p, true, true);
                     }
                     // Up helped: no need to look down from where it got to.
                     if went {
@@ -424,7 +516,6 @@ pub fn search(axes: &[Axis], start: Vec<usize>, margin: f64, budget: usize, meas
         }
     }
     found.best = best;
-    found.best_score = best_s;
     Ok(found)
 }
 
@@ -435,6 +526,8 @@ struct Conn {
     config: Value,
     version: Value,
     status: Option<Value>,
+    /// The last `stats` message's values.
+    last_stats: Value,
     phase: String,
     stop: Arc<AtomicBool>,
 }
@@ -451,7 +544,7 @@ impl Conn {
         if let MaybeTlsStream::Plain(s) = ws.get_ref() {
             s.set_read_timeout(Some(Duration::from_millis(500))).map_err(|e| e.to_string())?;
         }
-        let mut c = Conn { ws, config: Value::Null, version: Value::Null, status: None, phase: String::new(), stop };
+        let mut c = Conn { ws, config: Value::Null, version: Value::Null, status: None, last_stats: Value::Null, phase: String::new(), stop };
         // The greeting, up to hello.
         let until = Instant::now() + Duration::from_secs(15);
         loop {
@@ -485,6 +578,7 @@ impl Conn {
                 self.version = m["version"].clone();
             }
             Some("status") => self.status = Some(m.clone()),
+            Some("stats") => self.last_stats = m["values"].clone(),
             Some("state") => self.phase = m["phase"].as_str().unwrap_or("").to_string(),
             _ => {}
         }
@@ -588,36 +682,63 @@ pub fn cli(a: &Args) {
             });
         });
     }
-    match run(a, stop) {
-        Ok(()) => {}
-        Err(e) => die(&format!("tune: {e}")),
+    if let Err(e) = run(a, stop) {
+        die(&format!("tune: {e}"));
     }
 }
 
 const HELP: &str = "\
-trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--dwell 45]
-               [--settle 8] [--max-steps 20] [--margin 1] [--mode manual|linearity|sensitivity] [--apply]
+trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--slice 15] [--rounds 3]
+               [--settle 4] [--max-steps 12] [--margin 1] [--mode manual|linearity|sensitivity]
+               [--try stage=value,…] [--apply]
 
 Finds the gain at which a radio decodes its systems best, on a recorder that is
-recording. Each setting is held for --dwell seconds (after --settle) while the radio's
-systems are scored on control channel decoding first, then voice frames lost; a
-setting that clips is refused. Recording goes on throughout; the radio is put back as
-it was at the end (or on Ctrl-C) unless --apply keeps the best.
+recording. Each candidate gain is compared with the best so far by turns, a --slice
+of seconds each (after --settle), for --rounds rounds, and kept only if it scores
+better by more than --margin and by more than twice the rounds' spread. Systems are
+scored on control channel decoding first, then voice frames lost; a gain that clips is
+refused. Recording goes on throughout; the radio is put back as it was at the end (or on
+Ctrl-C) unless --apply keeps the best.
 
   --url        the recorder (its built-in interface's address)
   --source     the radio, by its place in Setup's list from 0 (needed with several)
-  --systems    only score these systems (default: every system with a control channel on the radio)
+  --systems    score only these systems; the radio's others are still watched, and a gain
+               that silences one of their control channels is given up
+  --try        compare one setting with the one it is at, no search: lna=11,mixer=10,vga=9
+               (Airspy manual), step=16 (Airspy linearity/sensitivity), lna=32,vga=24,amp=on
+               (HackRF), gain=33.8 (RTL-SDR)
   --mode       Airspy: search this gain mode instead of the one it is in
-  --max-steps  at most this many settings measured (each takes --settle + --dwell seconds)
+  --max-steps  at most this many candidates compared
   --margin     a move is kept only when it scores this much better (0–100 scale)
   --apply      keep the best setting
 ";
 
+/// What's fixed for a run: the radio, its systems, the timings.
+struct Plan<'a> {
+    i: usize,
+    original: &'a Value,
+    knobs: &'a Knobs,
+    /// Every system on the radio: measured, and a setting that silences one is given up.
+    watches: &'a [Watch],
+    /// The systems scored (`--systems`); `None`: all of them.
+    scored: Option<&'a [String]>,
+    label: &'a str,
+    settle: f64,
+    slice: f64,
+    rounds: usize,
+    /// The search's starting point, when it stands for the radio as it is but isn't
+    /// quite it (another Airspy mode, AGC on, a gain off the table): that point is
+    /// set as the radio was, so the first comparisons are against what it really had.
+    as_it_is: Option<&'a [usize]>,
+}
+
 fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
     let url = a.get("url").unwrap_or("http://127.0.0.1:8080");
-    let dwell = a.num("dwell", 45.0).max(5.0);
-    let settle = a.num("settle", 8.0).max(0.0);
-    let budget = a.num("max-steps", 20.0).max(2.0) as usize;
+    // (--dwell: the name of the slice before rounds.)
+    let slice = a.get("slice").or(a.get("dwell")).and_then(|s| s.parse().ok()).unwrap_or(15.0_f64).max(5.0);
+    let rounds = a.num("rounds", 3.0).clamp(2.0, 20.0) as usize;
+    let settle = a.num("settle", 4.0).max(0.0);
+    let budget = a.num("max-steps", 12.0).max(1.0) as usize;
     let margin = a.num("margin", 1.0).max(0.0);
     let apply = a.flag("apply");
 
@@ -647,47 +768,71 @@ fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
     let label = run_src["label"].as_str().unwrap_or("").to_string();
     let original = c.config["sources"].get(i).cloned().ok_or_else(|| format!("--source {i}: not in the config"))?;
     let knobs = Knobs::of(&original, a.get("mode"))?;
-    let mut watches = systems_on(&status, &run_src);
-    if let Some(only) = a.get("systems") {
-        let only: Vec<&str> = only.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
-        if let Some(missing) = only.iter().find(|s| !watches.iter().any(|w| w.short_name == **s)) {
-            let on: Vec<&str> = watches.iter().map(|w| w.short_name.as_str()).collect();
-            return Err(format!("--systems: {missing} has no control channel on {label} (it has: {})", on.join(", ")));
-        }
-        watches.retain(|w| only.contains(&w.short_name.as_str()));
-    }
+    let watches = systems_on(&status, &run_src);
     if watches.is_empty() {
         return Err(format!("{label} carries no trunked system's control channel: nothing to score"));
     }
-    let start = knobs.point(&original);
     let names: Vec<&str> = watches.iter().map(|w| w.short_name.as_str()).collect();
+    // --systems: score these; the rest are still watched (and guarded).
+    let scored: Option<Vec<String>> = match a.get("systems") {
+        Some(only) => {
+            let only: Vec<String> = only.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
+            if let Some(missing) = only.iter().find(|s| !names.contains(&s.as_str())) {
+                return Err(format!("--systems: {missing} has no control channel on {label} (it has: {})", names.join(", ")));
+            }
+            (!only.is_empty()).then_some(only)
+        }
+        None => None,
+    };
+    let start = knobs.point(&original);
+    // The search's start, written back, isn't what the radio has: the start stands for it as it is.
+    let as_it_is = (knobs.apply(&original, &start) != original).then_some(start.as_slice());
+    // What to call the start in what's printed.
+    let now = if as_it_is.is_some() { "the setting it had".to_string() } else { knobs.describe(&start) };
+    // --try: one setting against the one it is at, no search.
+    let tried = a.get("try").map(|t| knobs.parse_try(&start, t)).transpose()?;
+    if tried.as_ref() == Some(&start) && as_it_is.is_none() {
+        return Err(format!("--try: that is the setting it is at ({now})"));
+    }
+    let per = rounds as f64 * 2.0 * (settle + slice);
     println!("Tuning {label} (source {i}) on {url}");
-    println!("  systems: {}", names.join(", "));
-    println!("  now: {}", knobs.describe(&start));
-    println!("  each setting: {settle:.0} s to settle + {dwell:.0} s measured; at most {budget} settings (~{:.0} min)", budget as f64 * (settle + dwell) / 60.0);
-    println!("  to put it back by hand if this is killed: {}", original);
+    match &scored {
+        Some(s) => println!("  scoring: {} (also watching {})", s.join(", "), names.iter().filter(|n| !s.iter().any(|x| x == *n)).copied().collect::<Vec<_>>().join(", ")),
+        None => println!("  scoring: {}", names.join(", ")),
+    }
+    match as_it_is {
+        Some(_) => println!("  now: as it is (comparisons start against it; the search begins at {})", knobs.describe(&start)),
+        None => println!("  now: {}", knobs.describe(&start)),
+    }
+    match &tried {
+        Some(t) => println!("  trying: {} against it, {rounds} rounds of {slice:.0} s each way (after {settle:.0} s to settle): ~{:.0} min", knobs.describe(t), per / 60.0),
+        None => {
+            println!("  each candidate: {rounds} rounds against the best so far, {slice:.0} s each (after {settle:.0} s to settle): {per:.0} s");
+            println!("  at most {budget} candidates and a final check: up to ~{:.0} min", (budget + 1) as f64 * per / 60.0);
+        }
+    }
+    println!("  to put it back by hand if this is killed: {original}");
     println!();
 
-    let mut log: Vec<(Vec<usize>, Step)> = vec![];
+    let plan = Plan { i, original: &original, knobs: &knobs, watches: &watches, scored: scored.as_deref(), label: &label, settle, slice, rounds, as_it_is };
     let result = {
-        let mut measure = |p: &[usize]| -> Result<Option<f64>, Stop> {
-            let step = measure_one(&mut c, i, &original, &knobs, p, &watches, &label, settle, dwell).map_err(Stop::Interrupted)?;
-            let s = step.score();
-            println!("{}", line(&knobs, p, &step, &names));
-            log.push((p.to_vec(), step));
-            Ok(s)
+        let mut compare = |inc: &[usize], cand: &[usize]| -> Result<Option<Cmp>, Stop> {
+            let (cmp, inc_step, cand_step) = compare(&mut c, &plan, inc, cand).map_err(Stop::Interrupted)?;
+            println!("{}", line(&knobs, inc, cand, cmp, margin, &inc_step, &cand_step, &names, scored.as_deref()));
+            Ok(cmp)
         };
-        search(&knobs.axes, start.clone(), margin, budget, &mut measure).and_then(|found| {
-            // Traffic changes minute to minute: the best and the start once more each.
-            if found.best != start {
-                println!("  confirming: the best and the starting setting once more each");
-                let again_best = measure(&found.best)?;
-                let again_start = measure(&start)?;
-                Ok((found, again_best, again_start))
-            } else {
-                Ok((found, None, None))
-            }
-        })
+        match &tried {
+            Some(t) => compare(&start, t).map(|check| (Found { best: t.clone(), ..Default::default() }, Some(check).flatten())),
+            None => search(&knobs.axes, start.clone(), margin, budget, &mut compare).and_then(|found| {
+                // The search moved by steps; the best against the start, once more, decides.
+                if found.best == start {
+                    return Ok((found, None));
+                }
+                println!("  final check: the best against the starting setting");
+                let check = compare(&start, &found.best)?;
+                Ok((found, check))
+            }),
+        }
     };
 
     // Whatever happened, the radio goes back unless the best is to be kept.
@@ -698,39 +843,53 @@ fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
         };
         c.set_source(i, &src)
     };
-    let (found, again_best, again_start) = match result {
+    let (found, check) = match result {
         Ok(r) => r,
         Err(Stop::Interrupted(why)) => {
             // A fresh connection: the old one may be what failed.
             stop.store(false, Ordering::SeqCst);
             let restored = Conn::open(url, stop).and_then(|mut c2| finish(&mut c2, None));
             return Err(match restored {
-                Ok(()) => format!("{why}; the radio is back at {}", knobs.describe(&start)),
+                Ok(()) => format!("{why}; the radio is back at {}", now),
                 Err(e) => format!("{why}; and putting the radio back failed ({e}): set it by hand to {original}"),
             });
         }
     };
 
-    // The best and the start, over every measurement of each.
-    let avg = |p: &[usize]| {
-        let s: Vec<f64> = log.iter().filter(|(q, _)| q == p).filter_map(|(_, st)| st.score()).collect();
-        (!s.is_empty()).then(|| s.iter().sum::<f64>() / s.len() as f64)
-    };
-    let (base, best) = (avg(&start), avg(&found.best));
-    let better = found.best != start && matches!((base, best), (Some(b0), Some(b1)) if b1 > b0 + margin) && again_best.is_some() && again_best >= again_start;
+    let better = check.is_some_and(|c| c.better(margin));
     println!();
-    println!("Tried {} settings{}.", found.tried.len(), if found.out_of_steps { " (stopped at --max-steps)" } else { "" });
-    match (better, base, best) {
-        (true, Some(b0), Some(b1)) => println!("Best: {}  score {b1:.1} (was {b0:.1} at {})", knobs.describe(&found.best), knobs.describe(&start)),
-        (_, Some(b0), _) => println!("Best: keep {}  score {b0:.1}: nothing scored better by more than {margin}", knobs.describe(&start)),
-        _ => println!("Best: keep {}", knobs.describe(&start)),
+    if tried.is_none() {
+        println!("Compared {} candidates{}.", found.tried.len(), if found.out_of_steps { " (stopped at --max-steps)" } else { "" });
+    }
+    match check {
+        Some(ck) if better => println!(
+            "Best: {}: {:+.1} ± {:.1} over {} ({:.1} against {:.1})",
+            knobs.describe(&found.best),
+            ck.diff,
+            ck.se,
+            now,
+            ck.candidate,
+            ck.incumbent
+        ),
+        Some(ck) => println!(
+            "Best: keep {}: {} was {:+.1} ± {:.1} in the final check, not clearly better",
+            now,
+            knobs.describe(&found.best),
+            ck.diff,
+            ck.se
+        ),
+        None if found.best != start => println!("Best: keep {}: {} was refused (given up, or clipping)", now, knobs.describe(&found.best)),
+        None => println!("Best: keep {}: no candidate was clearly better", now),
     }
     // Frequency correction, as Setup works it out from the control channels.
     if let Some(now) = c.status.as_ref().and_then(|s| s["sources"].as_array()).and_then(|v| v.iter().find(|s| s["index"].as_u64() == Some(i as u64))) {
         let set = original["ppm"].as_f64().unwrap_or(0.0);
-        if let Some(apply_ppm) = now["ppmApply"].as_f64() {
-            if (apply_ppm - set).abs() >= 0.3 {
-                println!("PPM: measured error {:+.2} ppm: set the correction to {apply_ppm} ppm (now {set}){}", now["errorPpm"].as_f64().unwrap_or(0.0), if original["autoTune"] == true { "; AutoTune is covering it meanwhile" } else { "" });
+        if let Some(to) = now["ppmApply"].as_f64() {
+            // (+ 0.0: no "-0".)
+            let to = to + 0.0;
+            if (to - set).abs() >= 0.3 {
+                let covering = if original["autoTune"] == true { "; AutoTune is covering it meanwhile" } else { "" };
+                println!("PPM: set the correction to {to} ppm (now {set}): the control channels measure {:+.2} ppm against it{covering}", now["errorPpm"].as_f64().unwrap_or(0.0));
             } else {
                 println!("PPM: {set} is right (within 0.3 ppm of what the control channels measure)");
             }
@@ -740,27 +899,58 @@ fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
     finish(&mut c, keep)?;
     match (apply, better) {
         (true, true) => println!("Applied: {} is saved in the config.", knobs.describe(&found.best)),
-        (true, false) => println!("Nothing to apply: the radio is back at {}.", knobs.describe(&start)),
-        (false, true) => println!("The radio is back at {}. Run again with --apply, or set it in Setup, to keep the best.", knobs.describe(&start)),
-        (false, false) => println!("The radio is back at {}.", knobs.describe(&start)),
+        (true, false) => println!("Nothing to apply: the radio is back at {}.", now),
+        (false, true) => println!("The radio is back at {}. Run again with --apply, or set it in Setup, to keep the best.", now),
+        (false, false) => println!("The radio is back at {}.", now),
     }
     Ok(())
 }
 
-/// Sets `p`, lets it settle, and measures it for `dwell` seconds.
-#[allow(clippy::too_many_arguments)]
-fn measure_one(c: &mut Conn, i: usize, original: &Value, knobs: &Knobs, p: &[usize], watches: &[Watch], label: &str, settle: f64, dwell: f64) -> Result<Step, String> {
-    c.set_source(i, &knobs.apply(original, p))?;
-    let settle_until = Instant::now() + Duration::from_secs_f64(settle);
+/// `cand` against `inc`, by turns (inc first in even rounds, cand first in odd ones,
+/// so a trend over the minutes falls on both alike). A candidate refused in a slice
+/// ends it at once. Returns the comparison and each side's tallies, added up.
+fn compare(c: &mut Conn, plan: &Plan, inc: &[usize], cand: &[usize]) -> Result<(Option<Cmp>, Step, Step), String> {
+    let (mut inc_all, mut cand_all) = (Step::default(), Step::default());
+    let mut rounds = vec![];
+    for r in 0..plan.rounds {
+        // (Which side each slice is, by turns: the two can be the same point, see [`Plan::as_it_is`].)
+        let order = if r % 2 == 0 { [false, true] } else { [true, false] };
+        let (mut si, mut sc) = (None, None);
+        for is_cand in order {
+            let step = if is_cand { measure_slice(c, plan, cand, false)? } else { measure_slice(c, plan, inc, true)? };
+            let s = step.score_of(plan.scored);
+            if is_cand {
+                cand_all.merge(&step);
+                sc = Some(s);
+                if s.is_none() {
+                    rounds.push((si.flatten(), None));
+                    return Ok((Cmp::of(&rounds), inc_all, cand_all));
+                }
+            } else {
+                inc_all.merge(&step);
+                si = Some(s);
+            }
+        }
+        rounds.push((si.flatten(), sc.flatten()));
+    }
+    Ok((Cmp::of(&rounds), inc_all, cand_all))
+}
+
+/// Sets `p`, lets it settle, and measures it for a slice.
+/// `incumbent`: the setting being compared against, which at the start point is the radio as it is.
+fn measure_slice(c: &mut Conn, plan: &Plan, p: &[usize], incumbent: bool) -> Result<Step, String> {
+    // The control channels decoding before the change: losing one of them gives the setting up.
+    let locked = |values: &Value, w: &Watch| w.cc_keys.iter().any(|k| values.get(format!("{k}/cc/locked")).and_then(Value::as_f64).unwrap_or(0.0) >= 0.5);
+    let decoding: Vec<String> = plan.watches.iter().filter(|w| locked(&c.last_stats, w)).map(|w| w.short_name.clone()).collect();
+    let src = if incumbent && plan.as_it_is == Some(p) { plan.original.clone() } else { plan.knobs.apply(plan.original, p) };
+    c.set_source(plan.i, &src)?;
+    let settle_until = Instant::now() + Duration::from_secs_f64(plan.settle);
     let mut step = Step::default();
-    // Which control channels were decoding as the step began (they're the ones that count if lost).
-    let mut decoding: Vec<String> = vec![];
     let mut quiet: BTreeMap<String, f64> = BTreeMap::new();
     let mut last_t: Option<f64> = None;
-    let mut measuring = false;
-    let mut silent = Instant::now();
+    let mut heard = Instant::now();
     loop {
-        if Instant::now() - silent > Duration::from_secs(10) {
+        if heard.elapsed() > Duration::from_secs(10) {
             return Err("the recorder stopped sending stats (has recording stopped?)".into());
         }
         let Got::Msg(m) = c.next()? else { continue };
@@ -770,67 +960,64 @@ fn measure_one(c: &mut Conn, i: usize, original: &Value, knobs: &Knobs, p: &[usi
         if m["type"] != "stats" {
             continue;
         }
-        silent = Instant::now();
+        heard = Instant::now();
         let t = m["t"].as_f64().unwrap_or(0.0);
         let dt = last_t.map_or(1.0, |l| (t - l).clamp(0.2, 5.0));
         last_t = Some(t);
         let values = &m["values"];
-        if !measuring {
-            if Instant::now() < settle_until {
-                continue;
-            }
-            // Measuring from here: the dwell is counted in stats seconds below.
-            measuring = true;
-            decoding = watches
-                .iter()
-                .filter(|w| w.cc_keys.iter().any(|k| values.get(format!("{k}/cc/locked")).and_then(Value::as_f64).unwrap_or(0.0) >= 0.5))
-                .map(|w| w.short_name.clone())
-                .collect();
-            step = Step::default();
-        }
-        tally(&mut step, watches, label, values, dt);
-        for w in watches {
-            let locked = w.cc_keys.iter().any(|k| values.get(format!("{k}/cc/locked")).and_then(Value::as_f64).unwrap_or(0.0) >= 0.5);
+        // A control channel lost while settling counts toward giving the setting up.
+        for w in plan.watches {
             let q = quiet.entry(w.short_name.clone()).or_default();
-            *q = if locked { 0.0 } else { *q + dt };
+            *q = if locked(values, w) { 0.0 } else { *q + dt };
         }
         if let Some(why) = went_quiet(&quiet, &decoding) {
             step.abandoned = Some(why);
             return Ok(step);
         }
+        if Instant::now() < settle_until {
+            continue;
+        }
+        tally(&mut step, plan.watches, plan.label, values, dt);
         if step.src.clip.get().is_some_and(|c| c > 4.0 * CLIP_MAX_PCT) && step.src.seconds >= 5.0 {
             step.abandoned = Some(format!("clipping ({:.1}% of samples at full scale)", step.src.clip.get().unwrap_or(0.0)));
             return Ok(step);
         }
-        if step.src.seconds >= dwell {
+        if step.src.seconds >= plan.slice {
             return Ok(step);
         }
     }
 }
 
-/// One line of the table: the setting, its score, then each system.
-fn line(knobs: &Knobs, p: &[usize], step: &Step, names: &[&str]) -> String {
-    let score = match (&step.abandoned, step.score()) {
-        (Some(why), _) => format!("given up: {why}"),
-        (None, None) if step.clipping() => format!("refused: clipping {:.2}%", step.src.clip.get().unwrap_or(0.0)),
-        (None, None) => "—".into(),
-        (None, Some(s)) => format!("score {s:5.1}"),
+/// A comparison's lines: the candidate against the best so far, then each system
+/// (the candidate's figures, the incumbent's in brackets).
+#[allow(clippy::too_many_arguments)]
+fn line(knobs: &Knobs, inc: &[usize], cand: &[usize], cmp: Option<Cmp>, margin: f64, inc_step: &Step, cand_step: &Step, names: &[&str], scored: Option<&[String]>) -> String {
+    let verdict = match (cmp, &cand_step.abandoned) {
+        (_, Some(why)) => format!("given up: {why}"),
+        (None, None) if cand_step.clipping() => format!("refused: clipping {:.2}%", cand_step.src.clip.get().unwrap_or(0.0)),
+        (None, None) => "refused".into(),
+        (Some(c), None) => format!("{:+5.1} ± {:.1}  {}", c.diff, c.se, if c.better(margin) { "better: moving to it" } else { "not clearly better" }),
     };
-    let mut out = format!("  {:<34} {score}", knobs.describe(p));
+    let mut out = format!("  {}  vs {}:  {verdict}", knobs.describe(cand), knobs.describe(inc));
     for n in names {
-        if let Some(t) = step.systems.get(*n) {
-            let voice = t.voice_lost().map_or("voice —".to_string(), |l| format!("voice lost {:.1}%", l * 100.0));
-            let q = match (t.phase_err.get(), t.snr.get()) {
-                (Some(pe), _) => format!(" · {pe:.0}°"),
-                (None, Some(snr)) => format!(" · {snr:.0} dB"),
-                _ => String::new(),
-            };
-            out.push_str(&format!("\n      {n:<16} control {:5.1}% · {voice}{q}", t.control() * 100.0));
-        }
+        let (Some(t), Some(b)) = (cand_step.systems.get(*n), inc_step.systems.get(*n)) else { continue };
+        let voice = match (t.voice_lost(), b.voice_lost()) {
+            (Some(l), Some(m)) => format!(" · voice lost {:.1}% ({:.1}%)", l * 100.0, m * 100.0),
+            (Some(l), None) => format!(" · voice lost {:.1}%", l * 100.0),
+            _ => String::new(),
+        };
+        let q = match (t.phase_err.get(), b.phase_err.get(), t.snr.get(), b.snr.get()) {
+            (Some(pe), Some(pb), _, _) => format!(" · {pe:.0}° ({pb:.0}°)"),
+            (None, None, Some(s), Some(sb)) => format!(" · {s:.0} dB ({sb:.0} dB)"),
+            _ => String::new(),
+        };
+        // Scored systems are starred when only some are.
+        let star = if scored.is_some_and(|s| s.iter().any(|x| x == n)) { "*" } else { " " };
+        out.push_str(&format!("\n    {star} {n:<16} control {:5.1}% ({:5.1}%){voice}{q}", t.control() * 100.0, b.control() * 100.0));
     }
-    let clip = step.src.clip.get().unwrap_or(0.0);
-    if clip > 0.0 || step.src.dropped > 0.0 {
-        out.push_str(&format!("\n      radio: clipping {clip:.2}%{}", if step.src.dropped > 0.0 { format!(" · {:.0} samples dropped", step.src.dropped) } else { String::new() }));
+    let clip = cand_step.src.clip.get().unwrap_or(0.0);
+    if clip > 0.0 || cand_step.src.dropped > 0.0 {
+        out.push_str(&format!("\n      radio: clipping {clip:.2}%{}", if cand_step.src.dropped > 0.0 { format!(" · {:.0} samples dropped", cand_step.src.dropped) } else { String::new() }));
     }
     out
 }
@@ -887,6 +1074,19 @@ mod tests {
     }
 
     #[test]
+    fn a_setting_to_try_is_written_by_stage() {
+        let k = Knobs::of(&airspy(), None).unwrap();
+        let start = k.point(&airspy());
+        assert_eq!(k.parse_try(&start, "lna=11, vga=9").unwrap(), vec![11, 7, 9]);
+        assert_eq!(k.parse_try(&start, "mixerStep=20").unwrap(), vec![14, 15, 7], "snapped to what the stage takes");
+        assert!(k.parse_try(&start, "lnaDb=10").unwrap_err().contains("lnaStep, mixerStep, vgaStep"));
+        assert!(k.parse_try(&start, "lna").is_err());
+        let h = json!({ "type": "hackrf", "lnaDb": 40, "vgaDb": 18 });
+        let kh = Knobs::of(&h, None).unwrap();
+        assert_eq!(kh.describe(&kh.parse_try(&kh.point(&h), "lna=32,vga=24,amp=on").unwrap()), "LNA dB 32 · VGA dB 24 · amp on");
+    }
+
+    #[test]
     fn other_radios_are_refused_for_now() {
         assert!(Knobs::of(&json!({ "type": "usrp" }), None).unwrap_err().contains("isn't supported"));
     }
@@ -913,11 +1113,14 @@ mod tests {
         let mut step = Step::default();
         step.systems.insert("a".into(), sys(1.0));
         step.systems.insert("b".into(), sys(0.4));
-        assert!((step.score().unwrap() - (100.0 + 40.0 + 40.0) / 3.0).abs() < 1e-9);
+        assert!((step.score_of(None).unwrap() - (100.0 + 40.0 + 40.0) / 3.0).abs() < 1e-9);
+        // Scoring only some: the others are left out.
+        assert_eq!(step.score_of(Some(&["a".to_string()])), Some(100.0));
+        assert_eq!(step.score_of(Some(&["nobody".to_string()])), None);
         step.src.clip.add(0.8);
-        assert_eq!(step.score(), None);
+        assert_eq!(step.score_of(None), None);
         let given_up = Step { abandoned: Some("x".into()), ..Default::default() };
-        assert_eq!(given_up.score(), None);
+        assert_eq!(given_up.score_of(None), None);
     }
 
     #[test]
@@ -987,53 +1190,94 @@ mod tests {
         100.0 - d(p[0], 9.0) - d(p[1], 12.0) - d(p[2], 4.0)
     }
 
+    /// Compares on `f` exactly (three rounds with no spread).
+    fn exact(f: impl Fn(&[usize]) -> Option<f64>) -> impl FnMut(&[usize], &[usize]) -> Result<Option<Cmp>, Stop> {
+        move |inc, cand| Ok(Cmp::of(&[(f(inc), f(cand)); 3]))
+    }
+
+    #[test]
+    fn a_comparison_is_the_rounds_average_difference_and_its_spread() {
+        let c = Cmp::of(&[(Some(80.0), Some(84.0)), (Some(90.0), Some(92.0)), (Some(70.0), Some(76.0))]).unwrap();
+        assert!((c.diff - 4.0).abs() < 1e-9);
+        assert!((c.se - (4.0f64 / 3.0).sqrt()).abs() < 1e-9, "sd 2 over √3");
+        assert!((c.incumbent - 80.0).abs() < 1e-9 && (c.candidate - 84.0).abs() < 1e-9);
+        assert!(c.better(1.0));
+        // The same average, all over the place: luck, not better.
+        let noisy = Cmp::of(&[(Some(80.0), Some(100.0)), (Some(90.0), Some(78.0)), (Some(70.0), Some(74.0))]).unwrap();
+        assert!((noisy.diff - 4.0).abs() < 1e-9);
+        assert!(!noisy.better(1.0), "{noisy:?}");
+        // Refused in a round: refused. An incumbent refused scores 0 in its round.
+        assert_eq!(Cmp::of(&[(Some(80.0), Some(84.0)), (Some(80.0), None)]), None);
+        assert_eq!(Cmp::of(&[(None, Some(60.0)), (None, Some(60.0))]).unwrap().diff, 60.0);
+        assert_eq!(Cmp::of(&[]), None);
+    }
+
     #[test]
     fn the_search_climbs_one_stage_at_a_time_to_the_best() {
         let k = Knobs::of(&airspy(), None).unwrap();
-        let mut measured = 0;
-        let found = search(&k.axes, vec![14, 7, 7], 0.5, 60, &mut |p| {
-            measured += 1;
-            Ok(Some(hill(p)))
-        })
-        .unwrap();
+        let found = search(&k.axes, vec![14, 7, 7], 0.5, 60, &mut exact(|p| Some(hill(p)))).unwrap();
         assert_eq!(found.best, vec![9, 12, 4]);
-        assert_eq!(found.best_score, 100.0);
         assert!(!found.out_of_steps);
-        assert!(measured < 40, "{measured} settings: each is seen once");
-        assert_eq!(found.tried.len(), measured);
+        let tried: std::collections::BTreeSet<_> = found.tried.iter().map(|t| t.0.clone()).collect();
+        assert_eq!(tried.len(), found.tried.len(), "each setting is tried once");
+        assert!(found.tried.len() < 40, "{} candidates", found.tried.len());
+        // Each compared with the best of its moment.
+        assert_eq!(found.tried[0].1, vec![14, 7, 7]);
     }
 
     #[test]
     fn a_refused_setting_isnt_moved_to_and_the_budget_is_kept() {
         let k = Knobs::of(&airspy(), None).unwrap();
         // Above LNA 11 it clips: refused, though the hill would like more.
-        let found = search(&k.axes, vec![8, 12, 4], 0.5, 60, &mut |p| Ok(if p[0] > 11 { None } else { Some(100.0 - (p[0] as f64 - 14.0).powi(2)) })).unwrap();
+        let found = search(&k.axes, vec![8, 12, 4], 0.5, 60, &mut exact(|p| if p[0] > 11 { None } else { Some(100.0 - (p[0] as f64 - 14.0).powi(2)) })).unwrap();
         assert_eq!(found.best[0], 11);
-        let few = search(&k.axes, vec![14, 7, 7], 0.5, 4, &mut |p| Ok(Some(hill(p)))).unwrap();
+        let few = search(&k.axes, vec![14, 7, 7], 0.5, 4, &mut exact(|p| Some(hill(p)))).unwrap();
         assert!(few.out_of_steps);
         assert_eq!(few.tried.len(), 4);
     }
 
     #[test]
-    fn noise_within_the_margin_doesnt_move_it() {
+    fn noise_doesnt_move_it() {
         let k = Knobs::of(&airspy(), None).unwrap();
-        let found = search(&k.axes, vec![10, 10, 10], 2.0, 60, &mut |p| Ok(Some(80.0 + if p == [10, 13, 10] { 1.5 } else { 0.0 }))).unwrap();
+        // Within the margin.
+        let found = search(&k.axes, vec![10, 10, 10], 2.0, 60, &mut exact(|p| Some(80.0 + if p == [10, 13, 10] { 1.5 } else { 0.0 }))).unwrap();
+        assert_eq!(found.best, vec![10, 10, 10]);
+        // Ahead on average, by luck: one round far ahead, the others behind (what tr2's simulcast did).
+        let found = search(&k.axes, vec![10, 10, 10], 1.0, 60, &mut |_, _| Ok(Cmp::of(&[(Some(80.0), Some(97.0)), (Some(85.0), Some(82.0)), (Some(90.0), Some(86.0))]))).unwrap();
         assert_eq!(found.best, vec![10, 10, 10]);
     }
 
     #[test]
-    fn it_stops_when_interrupted_and_when_the_start_cant_be_measured() {
+    fn it_stops_when_interrupted() {
         let k = Knobs::of(&airspy(), None).unwrap();
         let mut n = 0;
-        let r = search(&k.axes, vec![10, 10, 10], 1.0, 60, &mut |_| {
+        let r = search(&k.axes, vec![10, 10, 10], 1.0, 60, &mut |_, _| {
             n += 1;
             if n == 3 {
                 Err(Stop::Interrupted("ctrl-c".into()))
             } else {
-                Ok(Some(50.0))
+                Ok(Cmp::of(&[(Some(50.0), Some(40.0)); 3]))
             }
         });
         assert_eq!(r.unwrap_err(), Stop::Interrupted("ctrl-c".into()));
-        assert!(search(&k.axes, vec![10, 10, 10], 1.0, 60, &mut |_| Ok(None)).is_err());
+    }
+
+    #[test]
+    fn slices_add_up() {
+        let mut a = Step::default();
+        a.systems.insert("s".into(), SysTally { seconds: 10.0, locked_s: 10.0, air_sym: Some(40_000.0), voice_frames: 200.0, voice_bad: 10.0, ..Default::default() });
+        a.src.clip.add(0.1);
+        let mut b = a.clone();
+        b.systems.get_mut("s").unwrap().air_sym = Some(48_000.0);
+        b.src.clip.add(0.3);
+        b.abandoned = Some("x".into());
+        let mut all = Step::default();
+        all.merge(&a);
+        all.merge(&b);
+        let s = &all.systems["s"];
+        assert_eq!((s.seconds, s.air_sym, s.voice_frames, s.voice_bad), (20.0, Some(88_000.0), 400.0, 20.0));
+        assert_eq!(s.voice_lost(), Some(0.05), "enough voice together, though neither slice had");
+        assert!((all.src.clip.get().unwrap() - 0.5 / 3.0).abs() < 1e-9);
+        assert_eq!(all.abandoned, None);
     }
 }
