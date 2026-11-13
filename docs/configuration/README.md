@@ -136,7 +136,7 @@ store keeps two indexes for finding calls:
 They're used when you pick a talkgroup or a radio on the dashboard's **Radio** page, whose call
 list pages back as far as the store keeps calls. They're also used by anything else that asks the
 recorder for one talkgroup's or one radio's calls: `callsQuery` with `talkgroup` or `unit`
-(interfaces, `client.js`'s `rec.calls`), `GET /api/v1/calls?talkgroup=…` or `?unit=…`, and
+(interfaces, `client.js`'s `rec.queryCalls`), `GET /api/v1/calls?talkgroup=…` or `?unit=…`, and
 plugins' `calls.query`.
 
 Turning one off saves the writes it costs. Its lists then show only the recent calls, and the

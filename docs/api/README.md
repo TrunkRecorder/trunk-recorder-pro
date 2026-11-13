@@ -258,7 +258,7 @@ whenever `change` fires.
 | `setTalkgroup(shortName, talkgroup, edit)` | change one talkgroup's cells (`{ alphaTag, description, tag, category, ignore }`, any of them) |
 | `setUnitNames(shortName, rows, from?)` | replace a system's own names for its radios (`{ unit, name }` rows; `[]` for none); `from`: where they came from (`{ kind: "file", name: "units.csv" }`) |
 | `setUnitName(shortName, unit, name)` | name one radio (`""`: its own name taken out) |
-| `calls(query)` | recorded calls, newest first (a promise): `query` has any of `system` (short name), `talkgroup`, `unit`, `from` / `to` (start time, Unix ms), `cursor`, `limit` (1 to 500, 100). Answers `{ entries, next?, error? }`; page on with `cursor` while `next` is there. Needs the `calls` capability |
+| `queryCalls(query)` | recorded calls, newest first (a promise): `query` has any of `system` (short name), `talkgroup`, `unit`, `from` / `to` (start time, Unix ms), `cursor`, `limit` (1 to 500, 100). Answers `{ entries, next?, error? }`; page on with `cursor` while `next` is there. Needs the `calls` capability |
 | `callUrl(entry, "wav" \| "json" \| "m4a")` | a recorded call's file URL |
 | `talkgroups(shortName)` | the system's talkgroups, from `talkgroupRows` and the edits since: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }`; a conventional system's channels (`alphaTag` the channel's name) |
 | `unitName(shortName, unit)` | a radio's name, as the system's `unitNames.mode` says: its unit names (`unitNameRows`, regular-expression rows too) and the alias heard; else `""` |

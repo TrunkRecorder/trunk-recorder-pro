@@ -73,7 +73,7 @@ export class TrunkClient {
     /** Each system's own names for its radios (`unitNames` messages, with `unitNameEdited` made: rows { unit, name, origin }, in order), by short name. */
     this.unitNameRows = {};
     this.log = [];
-    /** `calls` asked and not answered yet: id → resolve. */
+    /** `queryCalls` asked and not answered yet: id → resolve. */
     this._asked = new Map();
     this._nextId = 1;
     /** Talker aliases heard on the air (saved ones, then live): short name → { unit: alias }. */
@@ -117,9 +117,10 @@ export class TrunkClient {
    * talkgroup, unit (a radio), from / to (start time, Unix ms), cursor (the
    * previous page's `next`) and limit (1 to 500, 100). Answers
    * `{ entries, next?, error? }`; page on with `cursor` while `next` is there. Needs the
-   * `calls` capability; the desktop app answers from its call store.
+   * `calls` capability; the desktop app answers from its call store. (Not `calls`: that's
+   * the calls on the air now.)
    */
-  calls(query = {}) {
+  queryCalls(query = {}) {
     const id = this._nextId++;
     return new Promise((resolve) => {
       this._asked.set(id, resolve);
