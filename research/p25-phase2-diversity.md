@@ -25,8 +25,8 @@ differential detection. Each receiver has its own slot framer.
 
 ## Measured
 
-21 voice-channel captures of MetroC, a P25 Phase 2 CQPSK simulcast system (12 control channels,
-852–860 MHz), from an Airspy R2 at 10 MS/s via the RF page's **Next call** capture, 154 s of air on
+21 voice-channel captures of MetroC (Metrocrest), a P25 Phase 2 CQPSK simulcast system on Harris
+infrastructure (12 control channels, 852–860 MHz), from an Airspy R2 at 10 MS/s via the RF page's **Next call** capture, 154 s of air on
 six voice frequencies. Each was replayed with `tool channel` as captured (diversity) and with the
 bank's `cqpsk_eq` set off (one receiver, as before). The live control channel reads 17–19° RMS
 phase error on both an Airspy and a HackRF at the same site, so the distortion is the air's.
@@ -60,6 +60,24 @@ captured afterwards and not looked at before the choice, through the kept pair:
 | Diversity | 2967 | **343 (11.6 %)** | **2624** | 3344 |
 
 Every one of the 18 calls has more good frames; none has fewer.
+
+**Other systems, other infrastructure.** Two busier Phase 2 TDMA simulcast systems on Motorola
+infrastructure (DallasLayer1 and DallasLayer2, 800 MHz), 20 calls each, captured the same way, one on
+the Airspy R2 and one on a HackRF One at 16 MS/s, through the kept pair as chosen on MetroC:
+
+| System | Radio | Calls (air) | Bad AMBE frames, one receiver → diversity | Good frames | Calls better / worse / same |
+|---|---|---:|---|---:|---|
+| MetroC (Harris), held out | Airspy R2 | 18 | 459 (15.5 %) → **343 (11.6 %)**, −25 % | +4.8 % | 18 / 0 / 0 |
+| DallasLayer1 (Motorola) | Airspy R2 | 20 (162 s) | 170 (4.5 %) → **134 (3.6 %)**, −21 % | +1.0 % | 8 / 0 / 11 |
+| DallasLayer2 (Motorola) | HackRF One | 20 (201 s) | 341 (8.7 %) → **263 (6.7 %)**, −23 % | +2.2 % | 12 / 0 / 6 |
+
+The cleaner Motorola layers start from fewer errors, but lose about the same share of them; no call
+on any of the three is worse. (Calls with no voice, encrypted, are left out of the counts per call.)
+
+**Live.** With MetroC recorded by two recorders at once, one on the Airspy (this build) and one on a
+HackRF (the build before, as a control for traffic), the Airspy's voice frames lost against the
+HackRF's went from 18.2 % vs 24.8 % (30 min, both before) to 9.4 % vs 17.2 % (20 min, after): 27 %
+less than the control before, 45 % less after, about the quarter the captures predict.
 
 **Other Phase 2 recordings.** The corpus's `phase2` (17 calls, 700 MHz) and `voice-p25-phase2`
 decode the same good frames with fewer bit errors corrected (103 → 93, 21 → 20, 21 → 19): `changed`,
