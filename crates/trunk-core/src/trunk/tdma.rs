@@ -27,6 +27,47 @@ use std::sync::Arc;
 /// whole superframe, and so a 2V burst, between them.
 const SUPERFRAME_GAP_S: f64 = 0.3;
 
+/// Where a voice burst's AMBE codewords start (dibits into the burst): a 4V's four, a 2V's two.
+const VCW_AT_4V: [usize; 4] = [11, 48, 96, 133];
+const VCW_AT_2V: [usize; 2] = [11, 48];
+/// A codeword's dibits.
+const VCW_DIBITS: usize = 36;
+
+/// The burst type most copies decoded (the first copy's among equals); none
+/// when no copy decoded one.
+fn majority(kinds: &[i8]) -> Option<i8> {
+    let valid = || kinds.iter().copied().filter(|k| *k >= 0);
+    valid().max_by_key(|k| (valid().filter(|j| j == k).count(), std::cmp::Reverse(kinds.iter().position(|j| j == k))))
+}
+
+/// One voice burst from descrambled copies: the first copy's, with each AMBE
+/// codeword taken from the copy that decodes it with the fewest errors, then
+/// the highest mean reliability.
+fn best_codewords(bursts: &[([u8; BURST_DIBITS], Option<Vec<f32>>)], four: bool) -> ([u8; BURST_DIBITS], Option<Vec<f32>>) {
+    let (mut x, mut rel) = bursts[0].clone();
+    if bursts.len() < 2 {
+        return (x, rel);
+    }
+    let at: &[usize] = if four { &VCW_AT_4V } else { &VCW_AT_2V };
+    for &a in at {
+        let cost = |(bx, br): &([u8; BURST_DIBITS], Option<Vec<f32>>)| {
+            let r = br.as_ref().map(|r| &r[2 * a..2 * (a + VCW_DIBITS)]);
+            let errs = decode_vcw(&bx[a..a + VCW_DIBITS], r).errs;
+            let conf = r.map_or(0.0, |r| r.iter().sum::<f32>() / r.len() as f32);
+            (errs, -conf)
+        };
+        let best = (0..bursts.len()).min_by(|&i, &j| cost(&bursts[i]).partial_cmp(&cost(&bursts[j])).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0);
+        if best != 0 {
+            let (bx, br) = &bursts[best];
+            x[a..a + VCW_DIBITS].copy_from_slice(&bx[a..a + VCW_DIBITS]);
+            if let (Some(r), Some(br)) = (rel.as_mut(), br.as_ref()) {
+                r[2 * a..2 * (a + VCW_DIBITS)].copy_from_slice(&br[2 * a..2 * (a + VCW_DIBITS)]);
+            }
+        }
+    }
+    (x, rel)
+}
+
 /// A unit address that names a radio: not "no one" or "everyone" (BAAC-C §2.4).
 fn radio(id: u32) -> Option<u32> {
     (id != 0 && id != 0xff_ffff).then_some(id)
@@ -308,34 +349,59 @@ impl TdmaTracker {
     /// One slot packet at time `t` (s); what it produced goes to `out` as
     /// (logical channel, output).
     pub fn packet(&mut self, p: &Packet, t: f64, out: &mut Vec<(usize, TrackerOut)>) {
-        let c = SLOT_CHANNEL[p.sf_slot];
-        let burstp = &p.dibits[10..];
-        let brel = (self.soft && p.rel.len() >= 2 * (10 + BURST_DIBITS)).then(|| &p.rel[20..]);
-        let kind = match brel {
-            Some(r) => duid_decode_soft(burstp, r),
-            None => duid_decode(burstp),
-        };
-        if kind < 0 {
+        self.packets(&[p], t, out);
+    }
+
+    /// Copies of one slot packet from several receivers (receiver diversity:
+    /// the same air through differently equalised receivers), the first the
+    /// reference. Copies the reference's superframe slot disagrees with are
+    /// left out. The burst type is the copies' majority; each voice codeword
+    /// is the copy's that decodes with the fewest errors (then the most
+    /// confident); a MAC PDU is the first copy's that passes its CRC.
+    pub fn packets(&mut self, copies: &[&Packet], t: f64, out: &mut Vec<(usize, TrackerOut)>) {
+        let Some(base) = copies.first() else { return };
+        let copies: Vec<&Packet> = copies.iter().copied().filter(|p| p.sf_slot == base.sf_slot).collect();
+        let c = SLOT_CHANNEL[base.sf_slot];
+        let soft = self.soft;
+        let brel = |p: &Packet| -> Option<Vec<f32>> { (soft && p.rel.len() >= 2 * (10 + BURST_DIBITS)).then(|| p.rel[20..20 + 2 * BURST_DIBITS].to_vec()) };
+        // Each copy's burst type.
+        let kinds: Vec<i8> = copies
+            .iter()
+            .map(|p| match brel(p) {
+                Some(r) => duid_decode_soft(&p.dibits[10..], &r),
+                None => duid_decode(&p.dibits[10..]),
+            })
+            .collect();
+        let Some(kind) = majority(&kinds) else { return };
+        let scrambled = matches!(kind, BURST_4V | BURST_2V | BURST_SACCH_S | BURST_LCCH_S | BURST_FACCH_S);
+        if scrambled && self.mask.is_none() {
+            self.undecodable += 1;
             return;
         }
-        let scrambled = matches!(kind, BURST_4V | BURST_2V | BURST_SACCH_S | BURST_LCCH_S | BURST_FACCH_S);
-        let mut x = [0u8; BURST_DIBITS];
-        x.copy_from_slice(&burstp[..BURST_DIBITS]);
-        if scrambled {
-            let Some(m) = self.mask.as_ref() else {
-                self.undecodable += 1;
-                return;
-            };
-            let base = p.sf_slot * SLOT_DIBITS;
-            for (i, v) in x.iter_mut().enumerate() {
-                *v ^= m[base + i];
-            }
-        }
+        // The copies that agree on it, descrambled.
+        let bursts: Vec<([u8; BURST_DIBITS], Option<Vec<f32>>)> = copies
+            .iter()
+            .zip(&kinds)
+            .filter(|(_, k)| **k == kind)
+            .map(|(p, _)| {
+                let mut x = [0u8; BURST_DIBITS];
+                x.copy_from_slice(&p.dibits[10..10 + BURST_DIBITS]);
+                if let (true, Some(m)) = (scrambled, self.mask.as_ref()) {
+                    let at = p.sf_slot * SLOT_DIBITS;
+                    for (i, v) in x.iter_mut().enumerate() {
+                        *v ^= m[at + i];
+                    }
+                }
+                (x, brel(p))
+            })
+            .collect();
+        let p = copies[kinds.iter().position(|k| *k == kind).unwrap_or(0)];
         if kind == BURST_4V || kind == BURST_2V {
-            self.voice_burst(c, kind, &x, brel, p, t, out);
+            let (x, rel) = best_codewords(&bursts, kind == BURST_4V);
+            self.voice_burst(c, kind, &x, rel.as_deref(), p, t, out);
         } else if matches!(kind, BURST_SACCH_S | BURST_SACCH_U | BURST_FACCH_S | BURST_FACCH_U) {
             let sacch = matches!(kind, BURST_SACCH_S | BURST_SACCH_U);
-            if let Some(pdu) = decode_acch(&x, brel, !sacch) {
+            if let Some(pdu) = bursts.iter().find_map(|(x, r)| decode_acch(x, r.as_deref(), !sacch)) {
                 self.mac_pdus += 1;
                 self.mac(c, &pdu, sacch, p, t, out);
             }
@@ -400,9 +466,9 @@ impl TdmaTracker {
             }
             self.bad_frames += s.release_held(c, out);
         }
-        let at: &[usize] = if kind == BURST_4V { &[11, 48, 96, 133] } else { &[11, 48] };
+        let at: &[usize] = if kind == BURST_4V { &VCW_AT_4V } else { &VCW_AT_2V };
         for (j, &a) in at.iter().enumerate() {
-            let v = decode_vcw(&x[a..a + 36], rel.map(|r| &r[2 * a..2 * a + 72]));
+            let v = decode_vcw(&x[a..a + VCW_DIBITS], rel.map(|r| &r[2 * a..2 * (a + VCW_DIBITS)]));
             self.frames += 1;
             // Its frame of the superframe (none where the count is off).
             let f = match kind {
@@ -524,6 +590,45 @@ mod tests {
     use crate::p25::mac::{MAC_ACTIVE, MAC_END_PTT, MAC_HANGTIME, MAC_PTT};
     use crate::p25::phase2::{BURST_FACCH_S, BURST_FACCH_U, BURST_SACCH_S};
     use crate::p25::synth::{ambe, Tx2};
+
+    #[test]
+    fn the_burst_type_is_the_copies_majority() {
+        assert_eq!(majority(&[BURST_4V, BURST_4V]), Some(BURST_4V));
+        assert_eq!(majority(&[-1, BURST_2V]), Some(BURST_2V), "a copy that decoded none doesn't count");
+        assert_eq!(majority(&[BURST_2V, BURST_4V, BURST_4V]), Some(BURST_4V));
+        assert_eq!(majority(&[BURST_2V, BURST_4V]), Some(BURST_2V), "the first copy's among equals");
+        assert_eq!(majority(&[-1, -1]), None);
+    }
+
+    #[test]
+    fn each_codeword_comes_from_the_copy_that_decodes_it_best() {
+        // A 4V burst of four known codewords, and two copies of it each damaged in a different one.
+        let words: Vec<[u8; 49]> = (0..4u8).map(|k| std::array::from_fn(|i| ((i as u8 * 7 + k * 3) % 5 == 0) as u8)).collect();
+        let mut clean = [0u8; BURST_DIBITS];
+        for (w, &a) in words.iter().zip(&VCW_AT_4V) {
+            clean[a..a + VCW_DIBITS].copy_from_slice(&crate::ambe::encode_vcw(w));
+        }
+        let damage = |x: &mut [u8; BURST_DIBITS], a: usize| {
+            // Three dibits of c0 (Golay 24): correctable, but counted as errors.
+            for d in [a, a + 1, a + 2] {
+                x[d] ^= 1;
+            }
+        };
+        let (mut a, mut b) = (clean, clean);
+        damage(&mut a, VCW_AT_4V[1]);
+        damage(&mut b, VCW_AT_4V[2]);
+        let (x, _) = best_codewords(&[(a, None), (b, None)], true);
+        for (w, &at) in words.iter().zip(&VCW_AT_4V) {
+            let v = decode_vcw(&x[at..at + VCW_DIBITS], None);
+            assert_eq!((v.bits, v.errs), (*w, 0), "codeword at {at}: from the copy without errors there");
+        }
+        // One copy: as it is.
+        assert_eq!(best_codewords(&[(a, None)], true).0, a);
+        // A 2V's two codewords only: what is past them stays the first copy's.
+        let mut c = a;
+        c[VCW_AT_4V[2]] ^= 3;
+        assert_eq!(best_codewords(&[(c, None), (clean, None)], false).0[VCW_AT_4V[2]], c[VCW_AT_4V[2]]);
+    }
 
     const SEED: (u32, u32, u32) = (0x293, 0x1a5, 0xbee00);
 

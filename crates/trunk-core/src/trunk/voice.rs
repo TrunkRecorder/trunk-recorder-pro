@@ -284,8 +284,18 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             tracker.soft = spec.bank.soft;
             // Decision-feedback differential detection: ~1 dB in noise on Phase 2
             // voice (tool snr); not used on Phase 1, where simulcast didn't like it.
-            let rx = Cqpsk::new(spec.rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() });
-            Box::new(P25Tdma { rx, framer: phase2::Framer::new(), tracker, syms: Vec::new(), pkts: Vec::new(), tout: Vec::new(), t0: spec.t0, rate: spec.rate })
+            let plain = cqpsk::Options { baud: phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() };
+            let mut rxs = vec![P2Rx::new(spec.rate, plain)];
+            // Receiver diversity, as Phase 1's bank: the channel through a CMA-equalised receiver
+            // too, each AMBE codeword taken from whichever copy decodes it better. Simulcast's
+            // frequency-selective channel is what limits Phase 2 (research/weak-signal.md). The
+            // equalised receiver goes without decision feedback: on 21 MetroC simulcast calls,
+            // bad frames fell 17.7 % → 12.3 % so, against 14.0 % with it; a third receiver (both)
+            // gained half a point more for half as much work again (research/p25-phase2-diversity.md).
+            if spec.bank.cqpsk_eq {
+                rxs.push(P2Rx::new(spec.rate, cqpsk::Options { eq_taps: spec.bank.eq_taps, eq_mu: spec.bank.eq_mu, df_beta: 0.0, ..plain }));
+            }
+            Box::new(P25Tdma { rxs, groups: Vec::new(), pushed: 0, released: None, tracker, tout: Vec::new(), t0: spec.t0, rate: spec.rate })
         }
         VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
         VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
@@ -378,15 +388,61 @@ impl VoiceDecoder for P25Fdma {
 }
 
 /// P25 Phase 2: H-DQPSK, the slot framer, both slots' AMBE+2.
-struct P25Tdma {
+/// One of a Phase 2 channel's receivers, with its own framer.
+struct P2Rx {
     rx: Cqpsk,
     framer: phase2::Framer,
-    tracker: TdmaTracker,
     syms: Vec<Symbol>,
     pkts: Vec<Packet>,
+}
+
+impl P2Rx {
+    fn new(rate: f64, opt: cqpsk::Options) -> P2Rx {
+        P2Rx { rx: Cqpsk::new(rate, opt), framer: phase2::Framer::new(), syms: Vec::new(), pkts: Vec::new() }
+    }
+}
+
+/// One slot packet as each receiver framed it (`copies[i]`: receiver i's).
+struct P2Group {
+    sample: f64,
+    copies: Vec<Option<Packet>>,
+}
+
+/// Copies of a packet from different receivers start within this much of a
+/// slot of each other (the receivers' timing differs by a few symbols).
+const P2_MATCH_SLOTS: f64 = 0.5;
+/// A packet is passed on once every receiver has framed it, or this long (s)
+/// after it started: a receiver that missed it doesn't hold the others up.
+const P2_HOLD_S: f64 = 0.25;
+
+/// P25 Phase 2 TDMA: one receiver, or several (see [`P2Rx`], [`TdmaTracker::packets`]).
+struct P25Tdma {
+    rxs: Vec<P2Rx>,
+    /// Packets framed, waiting for every receiver's copy (in order of time).
+    groups: Vec<P2Group>,
+    /// Channel samples pushed.
+    pushed: u64,
+    /// The last packet passed on (its sample): a copy of it that comes later is dropped, not decoded twice.
+    released: Option<f64>,
+    tracker: TdmaTracker,
     tout: Vec<(usize, TrackerOut)>,
     t0: f64,
     rate: f64,
+}
+
+impl P25Tdma {
+    /// Packets to the tracker: those every receiver has framed, and those held long enough (`all`: every one).
+    fn release(&mut self, all: bool, out: &mut Vec<VoiceOut>) {
+        let hold = P2_HOLD_S * self.rate;
+        let n = self.groups.iter().take_while(|g| all || g.copies.iter().all(Option::is_some) || (self.pushed as f64 - g.sample) > hold).count();
+        for g in self.groups.drain(..n) {
+            self.released = Some(g.sample);
+            let copies: Vec<&Packet> = g.copies.iter().flatten().collect();
+            let t = self.t0 + g.sample / self.rate;
+            self.tracker.packets(&copies, t, &mut self.tout);
+            out.extend(self.tout.drain(..).map(|(slot, o)| VoiceOut { slot: slot as u8, out: o }));
+        }
+    }
 }
 
 impl VoiceDecoder for P25Tdma {
@@ -400,23 +456,47 @@ impl VoiceDecoder for P25Tdma {
         self.tracker.set_keys(keys);
     }
     fn quality(&self) -> ChannelQuality {
-        ChannelQuality { sep: None, phase_err_deg: self.rx.phase_error_deg() }
+        ChannelQuality { sep: None, phase_err_deg: self.rxs[0].rx.phase_error_deg() }
     }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
-        self.syms.clear();
-        self.pkts.clear();
-        self.rx.push(iq, &mut self.syms);
-        for s in &self.syms {
-            self.framer.push(s, &mut self.pkts);
+        self.pushed += iq.len() as u64;
+        let tol = P2_MATCH_SLOTS * phase2::SLOT_DIBITS as f64 / phase2::SYMBOL_RATE * self.rate;
+        let n = self.rxs.len();
+        for (i, r) in self.rxs.iter_mut().enumerate() {
+            r.syms.clear();
+            r.pkts.clear();
+            r.rx.push(iq, &mut r.syms);
+            for s in &r.syms {
+                r.framer.push(s, &mut r.pkts);
+            }
+            for p in r.pkts.drain(..) {
+                // A late copy of a packet already passed on.
+                if self.released.is_some_and(|at| p.sample < at + tol) {
+                    continue;
+                }
+                // The group it's a copy of (one this receiver hasn't given yet), or a new one, in time order.
+                match self.groups.iter_mut().find(|g| (g.sample - p.sample).abs() < tol && g.copies[i].is_none()) {
+                    Some(g) => {
+                        g.sample = g.sample.min(p.sample);
+                        g.copies[i] = Some(p);
+                    }
+                    None => {
+                        let at = self.groups.partition_point(|g| g.sample < p.sample);
+                        let mut copies: Vec<Option<Packet>> = (0..n).map(|_| None).collect();
+                        let sample = p.sample;
+                        copies[i] = Some(p);
+                        self.groups.insert(at, P2Group { sample, copies });
+                    }
+                }
+            }
         }
-        for p in &self.pkts {
-            let t = self.t0 + p.sample / self.rate;
-            self.tracker.packet(p, t, &mut self.tout);
-            out.extend(self.tout.drain(..).map(|(slot, o)| VoiceOut { slot: slot as u8, out: o }));
-        }
+        self.release(false, out);
+    }
+    fn flush(&mut self, out: &mut Vec<VoiceOut>) {
+        self.release(true, out);
     }
     fn offset_hz(&self) -> Option<f32> {
-        self.rx.offset_hz()
+        self.rxs[0].rx.offset_hz()
     }
     fn set_params(&mut self, p: &VoiceParams) {
         if let Some((nac, sys, wacn)) = p.tdma_key {

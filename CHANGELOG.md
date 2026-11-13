@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **P25 Phase 2 voice: receiver diversity**, as Phase 1 has. Phase 2 voice channels run a second receiver (CQPSK with the
+  CMA equaliser, without decision feedback) beside the first, and each AMBE codeword is taken from whichever copy decodes it
+  better. On a Phase 2 simulcast system, bad voice frames fell from 17.7 % to 12.3 % on 21 calls (good frames +7.8 %), and
+  from 15.5 % to 11.6 % on 18 more, every call better, for
+  about 0.2 % of a core more per open Phase 2 channel. It follows the bank's equaliser setting. See
+  [research/p25-phase2-diversity.md](research/p25-phase2-diversity.md).
+
 ## [0.3.7] — 2026-11-13
 
 - **NXDN Type-C: control loss is the control channel's** (#170). A site's decode rate counted every watched carrier's
