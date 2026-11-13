@@ -152,7 +152,35 @@ pub enum Message {
     TalkerAlias(super::alias::Segment),
     /// Manufacturer-specific, other than a Kenwood talker alias.
     PropForm { manufacturer: u8 },
+    /// REG (control): the site's answer to `unit` registering, with the
+    /// group it chose. (The layouts of these four are SDRTrunk's; TS 1-A's
+    /// mobility management.)
+    Reg { unit: u16, group: u16, cause: Cause },
+    /// REG_C (control): `unit`'s registration cleared (it was switched off).
+    RegC { unit: u16, cause: Cause },
+    /// REG_COMM (control): the site asks `unit` to register again.
+    RegComm { unit: u16 },
+    /// GRP_REG (control): the site's answer to `unit` joining `group`.
+    GrpReg { unit: u16, group: u16, cause: Cause },
     Other { kind: u8 },
+}
+
+/// A mobility-management answer's cause: 0x01 accepted, 0x04 / 0x05 the
+/// location accepted but not the group (failed / refused), 0x06 / 0x08
+/// refused; 0x20 added: the radio's ESN was valid too. 0x51–0x7F: the
+/// network's failures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cause(pub u8);
+
+impl Cause {
+    /// The radio is registered on the site.
+    pub fn registered(self) -> bool {
+        matches!(self.0 & !0x20, 0x01 | 0x04 | 0x05)
+    }
+    /// All it asked was accepted (a registration's group too).
+    pub fn accepted(self) -> bool {
+        self.0 & !0x20 == 0x01
+    }
 }
 
 pub const VCALL: u8 = 0x01;
@@ -169,6 +197,10 @@ pub const SITE_INFO: u8 = 0x18;
 pub const SRV_INFO: u8 = 0x19;
 pub const CCH_INFO: u8 = 0x1a;
 pub const ADJ_SITE_INFO: u8 = 0x1b;
+pub const REG: u8 = 0x20;
+pub const REG_C: u8 = 0x22;
+pub const REG_COMM: u8 = 0x23;
+pub const GRP_REG: u8 = 0x24;
 pub const PROP_FORM: u8 = 0x3f;
 
 fn u16_at(o: &[u8], i: usize) -> u16 {
@@ -233,6 +265,10 @@ impl Message {
                     .collect();
                 Message::AdjSiteInfo { sites }
             }
+            (REG, Context::Control) => Message::Reg { unit: u16_at(o, 4), group: u16_at(o, 6), cause: Cause(o[8]) },
+            (REG_C, Context::Control) => Message::RegC { unit: u16_at(o, 4), cause: Cause(o[6]) },
+            (REG_COMM, Context::Control) => Message::RegComm { unit: u16_at(o, 4) },
+            (GRP_REG, Context::Control) => Message::GrpReg { unit: u16_at(o, 2), group: u16_at(o, 4), cause: Cause(o[6]) },
             (PROP_FORM, _) => match super::alias::segment(&o[..n]) {
                 Some(seg) => Message::TalkerAlias(seg),
                 None => Message::PropForm { manufacturer: o[1] },
@@ -259,6 +295,10 @@ impl Message {
             Message::AdjSiteInfo { .. } => "ADJ_SITE_INFO",
             Message::TalkerAlias(_) => "TALKER_ALIAS",
             Message::PropForm { .. } => "PROP_FORM",
+            Message::Reg { .. } => "REG",
+            Message::RegC { .. } => "REG_C",
+            Message::RegComm { .. } => "REG_COMM",
+            Message::GrpReg { .. } => "GRP_REG",
             Message::Other { .. } => "OTHER",
         }
     }
@@ -299,6 +339,21 @@ pub mod build {
         o.push(timer << 2 | bandwidth & 3);
         o.extend([(ofn >> 8) as u8, ofn as u8, (ifn >> 8) as u8, ifn as u8]);
         o
+    }
+
+    /// REG (9 octets): `unit` with `group`, answered `cause`.
+    pub fn reg(unit: u16, group: u16, cause: u8) -> Vec<u8> {
+        vec![REG, 0, 0, 0, (unit >> 8) as u8, unit as u8, (group >> 8) as u8, group as u8, cause]
+    }
+
+    /// REG_C (7 octets).
+    pub fn reg_c(unit: u16, cause: u8) -> Vec<u8> {
+        vec![REG_C, 0, 0, 0, (unit >> 8) as u8, unit as u8, cause]
+    }
+
+    /// GRP_REG (7 octets).
+    pub fn grp_reg(unit: u16, group: u16, cause: u8) -> Vec<u8> {
+        vec![GRP_REG, 0, (unit >> 8) as u8, unit as u8, (group >> 8) as u8, group as u8, cause]
     }
 
     pub fn idle() -> Vec<u8> {

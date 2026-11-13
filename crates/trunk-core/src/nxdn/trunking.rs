@@ -30,7 +30,7 @@ use num_complex::Complex32;
 
 use super::channel::{self, SacchAssembler, Scch};
 use super::frame::{Body, Frame, Framer, Lich, RfChannel};
-use super::layer3::{CallHead, Channel, ChannelAccess, Context, Location, Message as L3};
+use super::layer3::{CallHead, Cause, Channel, ChannelAccess, Context, Location, Message as L3};
 use super::Rate;
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::{Receiver, Symbol};
@@ -179,6 +179,11 @@ pub struct Site {
     notes: Vec<(NoteLevel, String)>,
     now_s: f64,
     identity: Identity,
+}
+
+/// A refused answer's cause, for a message's text ("" when it was accepted).
+fn refused(ok: bool, cause: Cause) -> String {
+    if ok { String::new() } else { format!(" (refused: cause 0x{:02x})", cause.0) }
 }
 
 fn mhz(hz: u64) -> String {
@@ -427,8 +432,39 @@ impl Site {
                     out.push(m);
                 }
             }
+            L3::Reg { unit, group, cause } => {
+                let mut m = self.base(if cause.registered() { MessageType::Registration } else { MessageType::Unknown }, t);
+                m.source = unit as i64;
+                m.meta = format!("Registration {unit}{}", refused(cause.registered(), cause));
+                out.push(m);
+                // Registering names the group the radio is on.
+                if cause.accepted() && group != 0 {
+                    out.push(self.affiliation(unit, group, cause, t));
+                }
+            }
+            L3::RegC { unit, cause } => {
+                let mut m = self.base(if cause.accepted() { MessageType::Deregistration } else { MessageType::Unknown }, t);
+                m.source = unit as i64;
+                m.meta = format!("Deregistration {unit}{}", refused(cause.accepted(), cause));
+                out.push(m);
+            }
+            L3::RegComm { unit } => {
+                let mut m = self.base(MessageType::Unknown, t);
+                m.source = unit as i64;
+                m.meta = format!("Registration command to {unit}");
+                out.push(m);
+            }
+            L3::GrpReg { unit, group, cause } => out.push(self.affiliation(unit, group, cause, t)),
             _ => {}
         }
+    }
+
+    /// `unit` on `group`, as the site answered (`cause`).
+    fn affiliation(&self, unit: u16, group: u16, cause: Cause, t: f64) -> Message {
+        let mut m = self.base(if cause.accepted() { MessageType::Affiliation } else { MessageType::Unknown }, t);
+        (m.source, m.talkgroup) = (unit as i64, group as u32);
+        m.meta = format!("Affiliation {unit} → TG {group}{}", refused(cause.accepted(), cause));
+        m
     }
 
     fn set_location(&mut self, l: Location) {
@@ -708,6 +744,31 @@ mod tests {
         let out = run(&mut site, &[iq_of(&control_frames(&msgs, 5), Rate::N48, fs)], fs);
         let g = out.iter().find(|m| m.kind == MessageType::UuVGrant).expect("unit grant");
         assert_eq!((g.freq_hz, g.talkgroup, g.voice.nxdn()), (450_125_000, 55, Some(Rate::N96)));
+    }
+
+    /// Registrations on the control channel (#170's message 0x20): units
+    /// registered, on their groups, and gone, as P25's are.
+    #[test]
+    fn type_c_registrations_are_unit_messages() {
+        let fs = 24_000.0;
+        let mut site = Site::new(&[451_018_750.0], fs, NxdnConfig::default());
+        let mut msgs = vec![l3::reg(1466, 161, 0x01), l3::reg(1467, 162, 0x05), l3::reg(1468, 0, 0x08), l3::grp_reg(3583, 407, 0x21), l3::reg_c(2587, 0x01)];
+        msgs.extend(std::iter::repeat_n(l3::idle(), 4));
+        let out = run(&mut site, &[iq_of(&control_frames(&msgs, 14), Rate::N48, fs)], fs);
+        let got: Vec<(MessageType, i64, u32)> = out.iter().filter(|m| m.source != 0).map(|m| (m.kind, m.source, m.talkgroup)).collect();
+        assert_eq!(
+            got,
+            [
+                (MessageType::Registration, 1466, 0),
+                (MessageType::Affiliation, 1466, 161),
+                // Registered, its group refused: no affiliation.
+                (MessageType::Registration, 1467, 0),
+                (MessageType::Unknown, 1468, 0),
+                (MessageType::Affiliation, 3583, 407),
+                (MessageType::Deregistration, 2587, 0),
+            ]
+        );
+        assert!(out.iter().any(|m| m.meta == "Registration 1468 (refused: cause 0x08)"));
     }
 
     /// A Type-D repeater: idle messages, then a call whose who is in the SCCH.
