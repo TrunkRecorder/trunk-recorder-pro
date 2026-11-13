@@ -194,6 +194,8 @@ table.site-checks tr.q-poor td:first-child { box-shadow: inset 3px 0 0 var(--bad
 .tg-name { font-weight: 600; cursor: help; }
 .badge { margin-left: 6px; font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 700; letter-spacing: 0.04em; }
 .badge.bad { background: var(--bad); color: #fff; }
+.badge.update { background: var(--accent); color: var(--accent-ink); text-decoration: none; text-transform: uppercase; cursor: pointer; }
+.badge.update:hover { filter: brightness(1.1); }
 .patched { color: var(--muted); margin-top: 2px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 4px; }
 .dot-recording { background: var(--rec); }

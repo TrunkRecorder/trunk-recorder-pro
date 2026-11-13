@@ -1764,6 +1764,10 @@ pub struct Server {
     /// empty for https://trunkrecorder.pro; another for testing one.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub trp_api: String,
+    /// Ask GitHub once a day whether a newer release exists (trunk-pro's
+    /// `update_check`): some installs (closed networks, metered links) want
+    /// no outbound traffic they didn't ask for.
+    pub check_for_updates: bool,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1772,7 +1776,7 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), check_for_updates: true, other: BTreeMap::new() }
     }
 }
 
