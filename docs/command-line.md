@@ -386,8 +386,27 @@ setting hears them. Other radios aren't touched.
 A setting under which a control channel that was decoding stops for 10 seconds is given up at once,
 and one that clips heavily after 5. However it ends (done, an error, Ctrl-C), the radio is put back
 as it was, unless `--apply`, which keeps the best (and saves it in the config). It prints the
-radio's settings as they were first, to set by hand if it is killed. At the end it also says whether
-the frequency correction (ppm) should change, as Setup's **Set correction to** does.
+radio's settings as they were first, to set by hand if it is killed.
+
+Before it changes anything it says how long it will take ("This will take up to about 24
+minutes"), which systems may record worse meanwhile, whether the frequency correction is off, and
+waits for Enter (in a terminal; `--yes` doesn't ask). At the end a **summary** says what it
+recommends and what that does, system by system, from the final comparison of the new gain against
+the current one:
+
+```text
+Summary (21 min, 9 settings compared)
+  Recommended: gain LNA 9 · mixer 10 · VGA 10 (now LNA 10 · mixer 10 · VGA 10), and frequency correction 0 ppm (now -0.58).
+  With the new gain, measured against the current one by turns (3 rounds): score +4.2 ± 1.3
+     Balch            control channel 74.3% → 79.0% (+4.7) · phase error 21° → 20°
+     MetroC           control channel 75.6% → 80.7% (+5.1) · voice lost 13.3% → 6.5% · phase error 19° → 18°
+  Frequency correction: -0.58 → 0 ppm removes a tuning error of about 497 Hz that AutoTune is correcting for meanwhile.
+```
+
+It also says whether the frequency correction (ppm) should change, as Setup's **Set
+correction to** does: when the control channels measure it 0.3 ppm or more off. `--apply` sets that
+too. A ppm, unlike a gain, is taken when recording next starts (Stop, then Start); with AutoTune on,
+the recorder corrects for the error until then.
 
 | Option | Default | What it does |
 |---|---|---|
@@ -402,7 +421,8 @@ the frequency correction (ppm) should change, as Setup's **Set correction to** d
 | `--max-steps n` | 12 | At most this many candidates compared |
 | `--margin` | 1 | A move is kept only when it scores this much better (0–100 scale) |
 | `--mode` | the radio's | Airspy: search `manual`, `linearity` or `sensitivity` instead |
-| `--apply` | | Keep the best setting |
+| `--yes` | | Don't ask before starting |
+| `--apply` | | Keep the best gain, and set the ppm the control channels measure (at the next Start) |
 
 ```bash
 trunk-pro tune --url http://192.168.1.20:8080 --source 1

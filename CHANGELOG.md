@@ -12,7 +12,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   minute by more than a step of gain moves it, each candidate is compared with the best so far by turns over a few rounds,
   and kept only when it is better by more than twice the rounds' spread. A setting that loses a control channel is given
   up at once, and with `--systems` a setting that costs one of the radio's other systems more than `--protect` points is
-  refused; the radio is put back at the end unless `--apply`. It also says whether the ppm should change. It uses
+  refused; the radio is put back at the end unless `--apply`, which also sets the ppm the control channels measure. It uses
   the interface API, so it can tune another computer's recorder.
 
 ## [0.3.7] — 2026-11-13

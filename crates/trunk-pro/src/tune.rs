@@ -727,7 +727,9 @@ Ctrl-C) unless --apply keeps the best.
   --mode       Airspy: search this gain mode instead of the one it is in
   --max-steps  at most this many candidates compared
   --margin     a move is kept only when it scores this much better (0–100 scale)
-  --apply      keep the best setting
+  --yes        don't ask before starting
+  --apply      keep the best setting, and set the frequency correction (ppm) the control
+               channels measure when it is 0.3 ppm or more off (it takes effect at the next Start)
 ";
 
 /// What's fixed for a run: the radio, its systems, the timings.
@@ -841,20 +843,44 @@ fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
         None => println!("  now: {}", knobs.describe(&start)),
     }
     match &tried {
-        Some(t) => println!("  trying: {} against it, {rounds} rounds of {slice:.0} s each way (after {settle:.0} s to settle): ~{:.0} min", knobs.describe(t), per / 60.0),
-        None => {
-            println!("  each candidate: {rounds} rounds against the best so far, {slice:.0} s each (after {settle:.0} s to settle): {per:.0} s");
-            println!("  at most {budget} candidates and a final check: up to ~{:.0} min", (budget + 1) as f64 * per / 60.0);
-        }
+        Some(t) => println!("  trying: {} against it, {rounds} rounds of {slice:.0} s each way (after {settle:.0} s to settle)", knobs.describe(t)),
+        None => println!("  each candidate: {rounds} rounds against the best so far, {slice:.0} s each (after {settle:.0} s to settle): {per:.0} s; at most {budget} and a final check"),
     }
     println!("  to put it back by hand if this is killed: {original}");
     println!();
+    // What's going to happen, in plain words, before anything changes.
+    let total_s = match &tried {
+        Some(_) => per,
+        None => (budget + 1) as f64 * per,
+    };
+    println!("{}", estimate(total_s, tried.is_none(), &names, apply));
+    let ppm_now = sources.iter().find(|s| s["index"].as_u64() == Some(i as u64)).and_then(|r| ppm_change(original["ppm"].as_f64().unwrap_or(0.0), r["ppmApply"].as_f64()));
+    if let Some(to) = ppm_now {
+        println!(
+            "Its frequency correction is off: {} ppm is set, the control channels measure {to}.{}",
+            original["ppm"].as_f64().unwrap_or(0.0),
+            if apply { " --apply will set it, and it takes effect only when recording is restarted (Stop, then Start)." } else { "" }
+        );
+    }
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) && !a.flag("yes") {
+        println!("Press Enter to start, or Ctrl-C to leave without changing anything.");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        if stop.load(Ordering::SeqCst) {
+            return Err("left before starting; nothing was changed".into());
+        }
+    }
+    let began = Instant::now();
+    println!();
 
     let plan = Plan { i, original: &original, knobs: &knobs, watches: &watches, scored: scored.as_deref(), protected: &protected, protect, label: &label, settle, slice, rounds, as_it_is };
+    // The last comparison's tallies: the final check's (or --try's), for the summary.
+    let mut last: Option<(Step, Step)> = None;
     let result = {
         let mut compare = |inc: &[usize], cand: &[usize]| -> Result<Option<Cmp>, Stop> {
             let (cmp, inc_step, cand_step) = compare(&mut c, &plan, inc, cand).map_err(Stop::Interrupted)?;
             println!("{}", line(&knobs, inc, cand, cmp, margin, &inc_step, &cand_step, &names, scored.as_deref()));
+            last = Some((inc_step, cand_step));
             Ok(cmp)
         };
         match &tried {
@@ -894,52 +920,120 @@ fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
 
     let better = check.is_some_and(|c| c.better(margin));
     println!();
-    if tried.is_none() {
-        println!("Compared {} candidates{}.", found.tried.len(), if found.out_of_steps { " (stopped at --max-steps)" } else { "" });
+    let set_ppm = original["ppm"].as_f64().unwrap_or(0.0);
+    let run_src = c.status.as_ref().and_then(|s| s["sources"].as_array()).and_then(|v| v.iter().find(|s| s["index"].as_u64() == Some(i as u64))).cloned();
+    let ppm_to = run_src.as_ref().and_then(|r| ppm_change(set_ppm, r["ppmApply"].as_f64()));
+    let center = run_src.as_ref().and_then(|r| r["centerHz"].as_f64()).unwrap_or(0.0);
+    let mins = began.elapsed().as_secs_f64() / 60.0;
+    println!("Summary ({mins:.0} min{})", if tried.is_none() { format!(", {} settings compared{}", found.tried.len(), if found.out_of_steps { ", stopped at --max-steps" } else { "" }) } else { String::new() });
+
+    // What's recommended, and what it does.
+    let gain_part = better.then(|| format!("gain {} (now {now})", knobs.describe(&found.best)));
+    let ppm_part = ppm_to.map(|to| format!("frequency correction {to} ppm (now {set_ppm})"));
+    match (&gain_part, &ppm_part) {
+        (None, None) => println!("  No change recommended: the radio is set as well as this could find."),
+        (g, p) => println!("  Recommended: {}.", [g.clone(), p.clone()].into_iter().flatten().collect::<Vec<_>>().join(", and ")),
     }
-    match check {
-        Some(ck) if better => println!(
-            "Best: {}: {:+.1} ± {:.1} over {} ({:.1} against {:.1})",
-            knobs.describe(&found.best),
-            ck.diff,
-            ck.se,
-            now,
-            ck.candidate,
-            ck.incumbent
-        ),
-        Some(ck) => println!(
-            "Best: keep {}: {} was {:+.1} ± {:.1} in the final check, not clearly better",
-            now,
-            knobs.describe(&found.best),
-            ck.diff,
-            ck.se
-        ),
-        None if found.best != start => println!("Best: keep {}: {} was refused (given up, or clipping)", now, knobs.describe(&found.best)),
-        None => println!("Best: keep {}: no candidate was clearly better", now),
-    }
-    // Frequency correction, as Setup works it out from the control channels.
-    if let Some(now) = c.status.as_ref().and_then(|s| s["sources"].as_array()).and_then(|v| v.iter().find(|s| s["index"].as_u64() == Some(i as u64))) {
-        let set = original["ppm"].as_f64().unwrap_or(0.0);
-        if let Some(to) = now["ppmApply"].as_f64() {
-            // (+ 0.0: no "-0".)
-            let to = to + 0.0;
-            if (to - set).abs() >= 0.3 {
-                let covering = if original["autoTune"] == true { "; AutoTune is covering it meanwhile" } else { "" };
-                println!("PPM: set the correction to {to} ppm (now {set}): the control channels measure {:+.2} ppm against it{covering}", now["errorPpm"].as_f64().unwrap_or(0.0));
-            } else {
-                println!("PPM: {set} is right (within 0.3 ppm of what the control channels measure)");
+    match (better, check, &last) {
+        (true, Some(ck), Some((was, will))) => {
+            println!("  With the new gain, measured against the current one by turns ({rounds} rounds): score {:+.1} ± {:.1}", ck.diff, ck.se);
+            for b in benefits(was, will, &names, scored.as_deref()) {
+                println!("    {b}");
             }
         }
+        _ => {
+            let why = match check {
+                Some(ck) if found.best != start => format!("{} came closest, {:+.1} ± {:.1}: not clearly better", knobs.describe(&found.best), ck.diff, ck.se),
+                None if found.best != start => format!("{} was refused (it hurt another system, lost a control channel, or clipped)", knobs.describe(&found.best)),
+                _ => format!("no setting tried was clearly better than {now}"),
+            };
+            println!("  Gain: keep it. {why}.");
+        }
     }
+    if let Some(to) = ppm_to {
+        let off_hz = ((to - set_ppm) * center / 1e6).abs();
+        println!(
+            "  Frequency correction: {set_ppm} → {to} ppm removes a tuning error of about {off_hz:.0} Hz{}.",
+            if original["autoTune"] == true { " that AutoTune is correcting for meanwhile" } else { ", which costs decoding until it's set" }
+        );
+    }
+
+    // Apply, or put back.
     let keep = (apply && better).then_some(found.best.as_slice());
     finish(&mut c, keep)?;
+    // The ppm after the gain, as a change of its own: a gain is taken while recording, a ppm
+    // only at the next Start, and an edit with both would hold the gain back with it.
+    if let (true, Some(to)) = (apply, ppm_to) {
+        let mut src = match keep {
+            Some(p) => knobs.apply(&original, p),
+            None => original.clone(),
+        };
+        src["ppm"] = json!(to);
+        c.set_source(i, &src)?;
+    }
+    println!();
     match (apply, better) {
-        (true, true) => println!("Applied: {} is saved in the config.", knobs.describe(&found.best)),
-        (true, false) => println!("Nothing to apply: the radio is back at {}.", now),
-        (false, true) => println!("The radio is back at {}. Run again with --apply, or set it in Setup, to keep the best.", now),
-        (false, false) => println!("The radio is back at {}.", now),
+        (true, true) => println!("Applied: the gain {} is set now and saved.", knobs.describe(&found.best)),
+        (false, true) => println!("Nothing was changed: the radio is back at {now}. Run again with --apply, or set it in Setup, to make the change."),
+        (_, false) => println!("The gain is back at {now}."),
+    }
+    match (apply, ppm_to) {
+        (true, Some(to)) => println!("⚠ The frequency correction {to} ppm is saved, but takes effect only when recording restarts: Stop, then Start (or restart the service)."),
+        (false, Some(_)) => println!("The frequency correction wasn't changed: --apply sets it (or Setup's \"Set correction to\"); it then needs a restart of recording."),
+        _ => {}
     }
     Ok(())
+}
+
+/// Before anything changes: how long it will take, and what that means for the radio's systems.
+pub fn estimate(total_s: f64, search: bool, systems: &[&str], apply: bool) -> String {
+    let mins = (total_s / 60.0).ceil().max(1.0);
+    let what = if search { format!("This will take up to about {mins:.0} minutes (often less: settings that do badly are dropped early).") } else { format!("This will take about {mins:.0} minutes.") };
+    let after = if apply { "At the end it keeps the best gain (and sets the frequency correction if it's off)." } else { "At the end the radio goes back exactly as it was; nothing is saved (--apply keeps the best)." };
+    format!(
+        "{what}\nRecording and uploading carry on throughout, but {} may record worse while poorer settings are on the air, a minute or two at a time. {after}",
+        join_and(systems)
+    )
+}
+
+/// "a", "a and b", "a, b and c".
+fn join_and(v: &[&str]) -> String {
+    match v {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// What a change does, system by system: `was` and `will` are the current and the new
+/// setting's tallies from the same comparison. Starred: the systems scored, when only
+/// some were.
+pub fn benefits(was: &Step, will: &Step, names: &[&str], scored: Option<&[String]>) -> Vec<String> {
+    names
+        .iter()
+        .filter_map(|n| {
+            let (a, b) = (was.systems.get(*n)?, will.systems.get(*n)?);
+            let star = if scored.is_some_and(|s| s.iter().any(|x| x == n)) { "*" } else { " " };
+            let (c0, c1) = (a.control() * 100.0, b.control() * 100.0);
+            let mut out = format!("{star}{n:<16} control channel {c0:.1}% → {c1:.1}% ({:+.1})", c1 - c0);
+            if let (Some(v0), Some(v1)) = (a.voice_lost(), b.voice_lost()) {
+                out.push_str(&format!(" · voice lost {:.1}% → {:.1}%", v0 * 100.0, v1 * 100.0));
+            }
+            match (a.phase_err.get(), b.phase_err.get(), a.snr.get(), b.snr.get()) {
+                (Some(p0), Some(p1), _, _) => out.push_str(&format!(" · phase error {p0:.0}° → {p1:.0}°")),
+                (None, None, Some(s0), Some(s1)) => out.push_str(&format!(" · SNR {s0:.0} → {s1:.0} dB")),
+                _ => {}
+            }
+            Some(out)
+        })
+        .collect()
+}
+
+/// The correction to set: Setup's (`apply`, worked out from the control channels against
+/// the ppm the radio runs with), when it is 0.3 ppm or more from `set`.
+pub fn ppm_change(set: f64, apply: Option<f64>) -> Option<f64> {
+    // (+ 0.0: no "-0".)
+    apply.map(|a| a + 0.0).filter(|a| (a - set).abs() >= 0.3)
 }
 
 /// `cand` against `inc`, by turns (inc first in even rounds, cand first in odd ones,
@@ -1331,6 +1425,43 @@ mod tests {
         assert_eq!(harmed(&mixed, &protected, 5.0), None);
         // Only the protected are looked at.
         assert_eq!(harmed(&[(step(0.9, 0.9), step(0.1, 0.9))], &protected, 5.0), None);
+    }
+
+    #[test]
+    fn the_ppm_is_changed_only_when_it_is_off_by_enough() {
+        // tr1's HackRF: -0.29 set, -0.94 measured right; tr2's Airspy: -0.58 set, 0 right.
+        assert_eq!(ppm_change(-0.29, Some(-0.94)), Some(-0.94));
+        let to = ppm_change(-0.58, Some(-0.0)).unwrap();
+        assert!(to == 0.0 && to.is_sign_positive(), "printed as 0, not -0");
+        assert_eq!(ppm_change(1.0, Some(1.2)), None, "within 0.3");
+        assert_eq!(ppm_change(1.0, None), None, "not measured");
+    }
+
+    #[test]
+    fn the_estimate_says_how_long_and_who_is_affected() {
+        let e = estimate(24.0 * 60.0 + 10.0, true, &["Lewisville", "Balch", "MetroC"], false);
+        assert!(e.starts_with("This will take up to about 25 minutes"), "{e}");
+        assert!(e.contains("Lewisville, Balch and MetroC may record worse"), "{e}");
+        assert!(e.contains("nothing is saved"), "{e}");
+        assert!(estimate(200.0, false, &["A"], true).starts_with("This will take about 4 minutes."));
+        assert_eq!(join_and(&["a", "b"]), "a and b");
+    }
+
+    #[test]
+    fn benefits_are_told_system_by_system() {
+        let sys = |cov: f64, frames: f64, bad: f64, pe: f64| {
+            let mut t = SysTally { seconds: 1.0, locked_s: 1.0, air_sym: Some(4800.0 * cov), voice_frames: frames, voice_bad: bad, ..Default::default() };
+            t.phase_err.add(pe);
+            t
+        };
+        let (mut was, mut will) = (Step::default(), Step::default());
+        was.systems.insert("MetroC".into(), sys(0.756, 1000.0, 133.0, 19.0));
+        will.systems.insert("MetroC".into(), sys(0.807, 1000.0, 65.0, 18.0));
+        was.systems.insert("Balch".into(), sys(0.743, 0.0, 0.0, 21.0));
+        will.systems.insert("Balch".into(), sys(0.760, 0.0, 0.0, 21.0));
+        let b = benefits(&was, &will, &["Balch", "MetroC"], Some(&["MetroC".to_string()]));
+        assert_eq!(b[0], " Balch            control channel 74.3% → 76.0% (+1.7) · phase error 21° → 21°");
+        assert_eq!(b[1], "*MetroC           control channel 75.6% → 80.7% (+5.1) · voice lost 13.3% → 6.5% · phase error 19° → 18°");
     }
 
     #[test]
