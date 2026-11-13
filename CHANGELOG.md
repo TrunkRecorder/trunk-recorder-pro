@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **NXDN Type-C: control loss is the control channel's** (#170). A site's decode rate counted every watched carrier's
+  frames, so a voice channel's frames, and a few after each transmission, counted as control messages lost: the dashboard
+  and replay showed about 15 % loss where the control channel lost 5.5 %. It now counts the control channel's CAC frames only.
+- **NXDN Type-C registrations are decoded** (#170): REG, REG_C, REG_COMM and GRP_REG (message 0x20 and its family, laid out
+  as SDRTrunk reads them). Radios' registrations, groups and deregistrations count for units as P25's do: the unit pages,
+  plugins' `unit` topic.
+- `replay`'s summary names each protocol's own control blocks and site identity (NXDN: CAC frames, SysID and site; DMR:
+  blocks; EDACS: messages), not P25's TSBKs, NAC, WACN and RFSS for every protocol.
 - **`client.js`: `rec.queryCalls(query)` searches the recorded calls.** The method was called
   `calls`, the name of the array of calls on the air, which replaced it on every `TrunkClient`:
   `rec.calls({ … })` threw `rec.calls is not a function`. `rec.calls` is still the calls on the air.

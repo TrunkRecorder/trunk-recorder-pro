@@ -418,6 +418,10 @@ pub struct SiteStatus {
     pub identity: Identity,
     pub good: u64,
     pub bad: u64,
+    /// What `good` and `bad` count ([`super::control::ControlChannel::blocks`]).
+    pub blocks: &'static str,
+    /// The identity fields its protocol states.
+    pub id_fields: &'static [IdField],
     pub modulation: &'static str,
     pub active_calls: usize,
     pub recording: usize,
@@ -1523,9 +1527,9 @@ impl Trunk {
 
     fn status(&self, radio: &Radio, sys: &SystemConfig) -> SiteStatus {
         // (One lock at a time: a temporary guard lasts the whole expression.)
-        let (modulation, protocol) = {
+        let (modulation, blocks, protocol) = {
             let c = self.cc();
-            (c.modulation(), c.status())
+            (c.modulation(), c.blocks(), c.status())
         };
         SiteStatus {
             site: self.site,
@@ -1537,6 +1541,8 @@ impl Trunk {
             identity: self.identity.clone(),
             good: self.good,
             bad: self.bad,
+            blocks,
+            id_fields: self.id_fields,
             modulation,
             active_calls: self.calls.calls.len(),
             recording: self.calls.calls.iter().filter(|c| radio.recordings.contains_key(&c.id)).count(),
