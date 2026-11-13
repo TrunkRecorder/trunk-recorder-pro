@@ -22,7 +22,7 @@ pub fn run(a: &Args) {
 
 const USAGE: &str = "\
 trunk-pro access list [--config file.json]
-    Whether signing in is on, and the users.
+    Whether signing in is on, the proxy in front (if set), and the users.
 trunk-pro access add <name> [--access listen|control]
     A new user (control by default) with an access token, whose secret is
     printed this once.
@@ -52,6 +52,12 @@ fn list(a: &Args) {
     let auth = &cfg.server.auth;
     println!("{}", path.display());
     println!("  signing in {}, anonymous {}", if auth.enabled { "on" } else { "off" }, auth.anonymous.map_or("none", ApiAccess::name));
+    if let Some(p) = &auth.proxy {
+        println!("  proxy: {} from {}, others {}", p.header, p.from.join(", "), p.other.map_or("none", ApiAccess::name));
+        for (theirs, ours) in &p.users {
+            println!("    {theirs} is {ours}");
+        }
+    }
     let day = |t: i64| chrono::DateTime::from_timestamp(t, 0).map_or(String::new(), |d| format!(" {}", d.format("%Y-%m-%d")));
     for (name, u) in &auth.users {
         let token = u.token.as_ref().map_or("no token".to_string(), |t| format!("token{}", day(t.created)));

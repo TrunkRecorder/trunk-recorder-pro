@@ -74,15 +74,15 @@ test("View: every page renders on the config it's given, without setup, plugins,
   assert.equal(renderToString(<IgnoreToggle sys={sys} r={row} />), "", "no Ignore");
 });
 
-test("View: signed in, the user's name and Sign out; not signed in, with signing in on, Sign in", async () => {
+test("View: signed in, the user's name and Sign out (not when the proxy in front signed them in); not signed in, with signing in on, Sign in", async () => {
   hello(redacted(), "listen", "kiosk");
   setView("overview");
   assert.match(text(renderToString(<App />)), /kiosk Sign out/);
   const fetch0 = globalThis.fetch;
-  const session = (auth: boolean) =>
+  const session = (auth: boolean, user: string | null = null, proxy = false) =>
     (globalThis.fetch = (async (url: string) => {
       assert.equal(url, "/api/session");
-      return new Response(JSON.stringify({ auth, access: "listen", user: null }), { status: 200 });
+      return new Response(JSON.stringify({ auth, access: "listen", user, proxy }), { status: 200 });
     }) as typeof fetch);
   try {
     // Anonymous View: the session says signing in is on (the config it's given doesn't).
@@ -93,6 +93,14 @@ test("View: signed in, the user's name and Sign out; not signed in, with signing
     const html = renderToString(<App />);
     assert.match(html, /<a class="btn ghost small" href="\/signin">Sign in<\/a>/);
     assert.doesNotMatch(text(html), /Sign out/);
+    // Signed in by the proxy: their name, and signing out is the proxy's.
+    session(true, "kiosk", true);
+    hello(redacted(), "listen", "kiosk");
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(snapshot().proxied, true);
+    const page = text(renderToString(<App />));
+    assert.match(page, /kiosk/);
+    assert.doesNotMatch(page, /Sign (out|in)/);
     session(false);
     hello(full(), "control");
     await new Promise((r) => setTimeout(r, 20));
@@ -174,6 +182,22 @@ test("Access: each user's passkeys by name, to remove; Add passkey for this brow
   assert.doesNotMatch(last, /aria-label="Remove luke&#x27;s passkey iPhone"/);
   assert.match(last, /aria-label="Role of luke" disabled=""/, "a passkey alone makes them an Admin who can sign in");
   assert.doesNotMatch(renderToString(<AccessSection c={full()} />), /aria-label="Remove luke&#x27;s token"/, "a token alone: it stays");
+});
+
+test("Access: the proxy in front, set up with its addresses and header; then From, Header, Others and how many names are mapped", () => {
+  const c = full();
+  const none = text(renderToString(<AccessSection c={c} />));
+  assert.match(none, /Proxy None/);
+  assert.match(renderToString(<AccessSection c={c} />), />Set up</);
+  c.server.auth!.proxy = { from: ["127.0.0.1", "10.0.0.0/8"], header: "X-Forwarded-User", users: { "luke@example.com": "luke" }, other: "listen" };
+  const html = renderToString(<AccessSection c={c} />);
+  assert.match(text(html), /Proxy Signs people in/);
+  assert.match(html, /aria-label="Proxy addresses"[^>]*value="127.0.0.1, 10.0.0.0\/8"/);
+  assert.match(html, /aria-label="Proxy header"[^>]*value="X-Forwarded-User"/);
+  assert.match(html, /role="radio" aria-checked="true" class="on">View</);
+  assert.match(text(html), /1 mapped/);
+  assert.match(html, />Remove</);
+  assert.doesNotMatch(html, />Set up</);
 });
 
 test("Access: a passkey's default name is the system and browser", () => {

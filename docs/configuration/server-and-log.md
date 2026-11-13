@@ -85,7 +85,7 @@ On a recorder with no browser nearby, use the command line, then restart the rec
 trunk-pro access add luke                    # control by default; prints the token's secret once
 trunk-pro access add kiosk --access listen
 trunk-pro access on
-trunk-pro access list                        # on or off, anonymous, and each user
+trunk-pro access list                        # on or off, anonymous, the proxy, and each user
 trunk-pro access remove kiosk                # signs out whoever signed in as kiosk
 trunk-pro access passkey remove luke iPhone  # one of luke's passkeys, by its name
 ```
@@ -125,8 +125,9 @@ sign-in page (`/signin`).
 
 | Key | Default | Description |
 |---|---|---|
-| `enabled` | `false` | Signing in on. It needs a user with control access and a token or a passkey, so someone can turn it off again |
+| `enabled` | `false` | Signing in on. It needs a user with control access and a token or a passkey (or, with a [proxy](#behind-a-proxy-that-signs-people-in) set, nothing: the proxy can name them), so someone can turn it off again |
 | `anonymous` | none | `"listen"`: what a request without a token may do. `"control"` is refused (it would be the same as off) |
+| `proxy` | off | A reverse proxy in front that signs people in: `from`, `header`, `users`, `other`. See [Behind a proxy that signs people in](#behind-a-proxy-that-signs-people-in) |
 | `users` | `{}` | By name: `access` (`"listen"` or `"control"`) and what they sign in with: `token`, `hash` (the secret's SHA-256) and `created` (Unix s); `passkeys`, each `name`, `created`, `id` (the credential's, base64url) and `key` (its public key and counter, as the recorder's WebAuthn library keeps it). Made in Setup or with `trunk-pro access add`, not by hand; a passkey can be renamed or removed by hand |
 
 Changes in Setup apply at once: connections whose access changed are closed and reconnect with
@@ -168,6 +169,103 @@ somewhere else.)
 That's fine on your own network, over a VPN or an SSH tunnel. Otherwise turn on [HTTPS](#https),
 or put a reverse proxy that adds it in front. Across the internet, don't open the port: use a VPN
 or tunnel (see [Remote access](../guides/interface.md#remote-access)).
+
+### Behind a proxy that signs people in
+
+If a reverse proxy in front of the recorder already signs people in (Authelia, Authentik,
+oauth2-proxy, Cloudflare Access, `tailscale serve`, Caddy's `forward_auth`), the recorder can
+take its word for who they are, so nobody signs in twice. The proxy passes the name in a header;
+the recorder believes that header only from the proxy's own addresses. Off unless set; it does
+nothing while signing in is off.
+
+```json
+"auth": {
+  "enabled": true,
+  "users": {
+    "luke": { "access": "control" },
+    "kiosk": { "access": "listen", "token": { "hash": "…", "created": 1763000000 } }
+  },
+  "proxy": {
+    "from": ["127.0.0.1", "::1"],
+    "header": "Remote-User",
+    "users": { "luke@example.com": "luke" },
+    "other": "listen"
+  }
+}
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `from` | (needed) | The proxy's addresses, as the recorder sees its connections: IPs or CIDR blocks (`"127.0.0.1"`, `"10.0.0.0/8"`, `"fd7a:115c:a1e0::/48"`). From any other address the header is ignored, and the log says so once for each address (a proxy at an address not listed shows there). An entry that's neither isn't saved |
+| `header` | `"Remote-User"` | The header the proxy puts the name in |
+| `users` | `{}` | The proxy's names for users whose name here differs: `"luke@example.com": "luke"`. Edited in the config file, not in Setup |
+| `other` | none | `"listen"`: what someone the proxy signed in may do when their name is no user here. None: they aren't signed in (the sign-in page, or `anonymous`'s access). `"control"` is refused |
+
+- **Who they are.** The name is the user `users` maps it to, else the user of that name, with
+  that user's role. They need no token or passkey. Any other name gets `other`.
+- **A token or session says who first.** A request with a valid token (`Authorization: Bearer`,
+  `?token=`) or a browser already signed in here (the cookie) is that user; the header counts only
+  when none of those does.
+- **It counts where the cookie would**: from the recorder's own pages, an address typed in or a link
+  followed, and programs. Not from another site's page (even one `allowedOrigins` lets in), since
+  the browser sends its sign-in at the proxy along with that page's requests too.
+- **Changes apply at once.** Removing the user, changing their mapping or role, or removing the
+  proxy or its address closes their connections, as for any user.
+- **Signing out** is the proxy's: the dashboard shows no **Sign out** for someone the proxy signed in.
+- **A way back in.** With a proxy set, an Admin with no token counts as a way in (the proxy can
+  name them). If the proxy goes wrong, `trunk-pro access off` on the recorder's computer works as ever.
+- In the app: Setup → **Recording** → **Access** → **Proxy** sets `from`, `header` and **Others**
+  (`other`); `users` is edited in the config file.
+
+**Which header.** `Remote-User` is Authelia's. The others name it differently, so set `header` to match:
+
+| Proxy | `header` | Notes |
+|---|---|---|
+| Authelia | `Remote-User` (also `Remote-Email`, `Remote-Name`, `Remote-Groups`) | Its proxy integration must pass them on, as Caddy's `forward_auth` does with `copy_headers` |
+| Authentik | `X-authentik-username` (or `X-authentik-email`) | Caddy's `forward_auth` needs them in `copy_headers`, capitalised: `X-Authentik-Username` |
+| oauth2-proxy | `X-Forwarded-Email` (or `X-Forwarded-User`, `X-Forwarded-Preferred-Username`) | `--pass-user-headers` (on by default) in reverse-proxy mode; with nginx `auth_request`, `--set-xauthrequest` gives `X-Auth-Request-Email` and the proxy must copy it over |
+| Cloudflare Access | `Cf-Access-Authenticated-User-Email` | Cloudflare's own advice is to verify the signed `Cf-Access-Jwt-Assertion` at the origin, which the recorder doesn't: don't trust the plain header unless nothing but Access (a Tunnel) can reach the proxy |
+| `tailscale serve` | `Tailscale-User-Login` | Serve strips its own headers from what clients send. Only tailnet requests carry them: none from Funnel, none from tagged devices |
+
+**The proxy must strip the header from what clients send.** Anything that reaches the recorder from
+an address in `from` is believed, so a path through the proxy that passes a client's own
+`Remote-User` along lets anyone be anyone. Authelia, Authentik and oauth2-proxy expect the proxy in
+front to replace the header, and `tailscale serve` and Caddy's `forward_auth` `copy_headers` do;
+on any path that doesn't (and in a plain Nginx or Caddy proxy), take it out:
+
+```nginx
+proxy_set_header Remote-User "";      # nginx: an empty value isn't sent
+```
+
+```caddy
+reverse_proxy 127.0.0.1:8080 {
+    header_up -Remote-User            # Caddy
+}
+```
+
+With `from` set to `127.0.0.1`, every program on that computer can send the header too. With the
+proxy on the same computer, keep `bind` at `127.0.0.1`, so nothing else reaches the port at all, and
+set `hostname` to the name the proxy serves (bound to localhost, the recorder answers to it).
+
+| Proxy | `header` | Notes |
+|---|---|---|
+| Authelia | `Remote-User` | Its forward-auth (nginx `auth_request`, Traefik `forwardAuth`, Caddy `forward_auth`) copies it from its answer |
+| Authentik | `X-authentik-username` | Its proxy outpost's forward-auth; `X-authentik-email` for the email |
+| oauth2-proxy | `X-Forwarded-User` | As the proxy itself, with `--pass-user-headers`. Behind nginx's `auth_request` with `--set-xauthrequest`: `X-Auth-Request-User`, copied with `proxy_set_header` |
+| Cloudflare Access | `Cf-Access-Authenticated-User-Email` | An email: map it with `users`. `from` is where `cloudflared` runs; put every route to the recorder behind an Access application |
+| `tailscale serve` | `Tailscale-User-Login` | `luke@github` or an email, for people on your tailnet (not Funnel's visitors). `from`: `127.0.0.1` and `::1` |
+
+Caddy with Authelia, for example:
+
+```caddy
+radio.example.com {
+    forward_auth authelia:9091 {
+        uri /api/authz/forward-auth
+        copy_headers Remote-User
+    }
+    reverse_proxy 127.0.0.1:8080
+}
+```
 
 ## HTTPS
 

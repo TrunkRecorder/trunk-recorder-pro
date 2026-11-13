@@ -125,6 +125,7 @@ export function App() {
     access: x.access,
     user: x.user,
     signingIn: x.signingIn,
+    proxied: x.proxied,
   }));
   const s = { ...s0, view: shownView(s0.view) };
   const edit = mayEdit();
@@ -179,12 +180,15 @@ export function App() {
           <div className="row">
             {s.user ? (
               <span className="row" aria-label="Signed in">
-                <span className="muted small" title="Signed in as">
+                <span className="muted small" title={s.proxied ? "Signed in by the proxy" : "Signed in as"}>
                   {s.user}
                 </span>
-                <button className="btn ghost small" onClick={() => void signOut()}>
-                  Sign out
-                </button>
+                {/* (Signed in by the proxy in front: signing out is the proxy's.) */}
+                {!s.proxied && (
+                  <button className="btn ghost small" onClick={() => void signOut()}>
+                    Sign out
+                  </button>
+                )}
               </span>
             ) : (
               s.signingIn && (

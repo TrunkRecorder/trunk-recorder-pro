@@ -1827,6 +1827,85 @@ pub struct Auth {
     /// Who may sign in, by name.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub users: BTreeMap<String, AuthUser>,
+    /// Signed in by a reverse proxy in front, which says who in a header: off unless set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<AuthProxy>,
+}
+
+/// A reverse proxy that signs people in itself (Authelia, Authentik,
+/// oauth2-proxy, Cloudflare Access, `tailscale serve`) and says who in
+/// `header`: believed from the addresses in `from` alone. The name it gives
+/// is the recorder's user of that name (or the one `users` maps it to), with
+/// their role; a name that's no user here gets `other` (none: not signed in).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AuthProxy {
+    /// The proxy's addresses: IPs or CIDR blocks ("127.0.0.1", "10.0.0.0/8", "fd7a:115c:a1e0::/48").
+    pub from: Vec<String>,
+    pub header: String,
+    /// The proxy's names for recorder users, where they differ ("luke@example.com": "luke").
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub users: BTreeMap<String, String>,
+    /// What a name that's no user here may do (control is refused).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other: Option<ApiAccess>,
+}
+
+impl Default for AuthProxy {
+    fn default() -> Self {
+        AuthProxy { from: vec![], header: "Remote-User".into(), users: BTreeMap::new(), other: None }
+    }
+}
+
+impl AuthProxy {
+    /// Whether `ip` is one of the proxy's addresses (an IPv4 address as IPv6, `::ffff:a.b.c.d`, as itself).
+    pub fn trusts(&self, ip: std::net::IpAddr) -> bool {
+        self.from.iter().filter_map(|n| net(n).ok()).any(|(base, bits)| in_net(ip.to_canonical(), base, bits))
+    }
+
+    /// Why it can't be so, if it can't: no addresses or one that isn't, a header that's no header name, or control for anyone.
+    fn problem(&self) -> Option<String> {
+        if self.from.is_empty() {
+            return Some("The proxy needs its addresses (proxy from): the header is believed from them alone.".into());
+        }
+        if let Some(e) = self.from.iter().find_map(|n| net(n).err()) {
+            return Some(format!("The proxy's addresses: {e}"));
+        }
+        // (RFC 9110's token characters.)
+        if self.header.is_empty() || !self.header.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)) {
+            return Some(format!("The proxy's header \"{}\" isn't a header name (Remote-User, X-Forwarded-User…).", self.header));
+        }
+        if self.other == Some(ApiAccess::Control) {
+            return Some("Control access for whoever the proxy lets in is the same as signing in turned off: give others listen access or none.".into());
+        }
+        None
+    }
+}
+
+/// An address or CIDR block ("10.0.0.0/8", "::1"): its address and how many bits of it count, or why it isn't one.
+fn net(s: &str) -> Result<(std::net::IpAddr, u8), String> {
+    let s = s.trim();
+    let (ip, bits) = match s.split_once('/') {
+        Some((ip, bits)) => (ip, Some(bits)),
+        None => (s, None),
+    };
+    let ip = ip.parse::<std::net::IpAddr>().map_err(|_| format!("\"{s}\" isn't an IP address or CIDR block (\"127.0.0.1\", \"10.0.0.0/8\", \"fd7a:115c:a1e0::/48\")."))?.to_canonical();
+    let max = if ip.is_ipv4() { 32 } else { 128 };
+    match bits {
+        None => Ok((ip, max)),
+        Some(b) => b.parse::<u8>().ok().filter(|b| *b <= max).map(|b| (ip, b)).ok_or_else(|| format!("\"{s}\": a block's bits are 0 to {max}.")),
+    }
+}
+
+/// Whether `ip` is in the block of `base`'s first `bits` bits.
+fn in_net(ip: std::net::IpAddr, base: std::net::IpAddr, bits: u8) -> bool {
+    use std::net::IpAddr::{V4, V6};
+    let keep = |width: u32| if bits == 0 { 0 } else { u128::MAX << (width - bits as u32) };
+    match (ip, base) {
+        (V4(a), V4(b)) => (u32::from(a) as u128 ^ u32::from(b) as u128) & keep(32) & u32::MAX as u128 == 0,
+        (V6(a), V6(b)) => (u128::from(a) ^ u128::from(b)) & keep(128) == 0,
+        _ => false,
+    }
 }
 
 /// Someone (or a program) who may sign in: what they may do, and what they
@@ -1876,20 +1955,38 @@ impl AuthUser {
 }
 
 impl Auth {
-    /// Why it can't be so, if it can't: enabled, someone must still be able
-    /// to turn it off again (a control user who can sign in), and anonymous
-    /// control is off.
+    /// Why it can't be so, if it can't: a proxy set as it can't be (on or
+    /// off); enabled, someone must still be able to turn it off again (a
+    /// control user who can sign in, or whom the proxy can name), and
+    /// anonymous control is off. (Locked out all the same, the proxy gone
+    /// wrong: `trunk-pro access off` on the recorder's computer.)
     pub fn problem(&self) -> Option<String> {
+        if let Some(why) = self.proxy.as_ref().and_then(AuthProxy::problem) {
+            return Some(why);
+        }
         if !self.enabled {
             return None;
         }
         if self.anonymous == Some(ApiAccess::Control) {
             return Some("Anonymous control access is the same as signing in turned off: give anonymous listen access or none.".into());
         }
-        if !self.users.values().any(|u| u.access == ApiAccess::Control && u.can_sign_in()) {
-            return Some("Signing in needs a user with control access and an access token (or a passkey) first, or nobody could turn it off again.".into());
+        if !self.users.values().any(|u| u.access == ApiAccess::Control && (u.can_sign_in() || self.proxy.is_some())) {
+            return Some("Signing in needs a user with control access and an access token (or a passkey, or a proxy that signs them in) first, or nobody could turn it off again.".into());
         }
         None
+    }
+
+    /// Who the proxy's name `asserted` is here, and what they may do: the
+    /// user it's mapped to (`proxy.users`), else the user of that name, with
+    /// their role; else, by its own name, `proxy.other`'s. None: no proxy, or
+    /// nothing for them.
+    pub fn proxied(&self, asserted: &str) -> Option<(String, ApiAccess)> {
+        let p = self.proxy.as_ref()?;
+        let name = p.users.get(asserted).map_or(asserted, String::as_str);
+        match self.users.get(name) {
+            Some(u) => Some((name.to_string(), u.access)),
+            None => Some((asserted.to_string(), p.other?)),
+        }
     }
 }
 
@@ -4027,6 +4124,68 @@ mod tests {
         c.server.auth.users.get_mut("wall").unwrap().passkeys.push(passkey);
         let saved = serde_json::to_string(&c).unwrap();
         assert!(saved.contains(r#""wall":{"access":"listen","passkeys":[{"name":"iPhone","created":1794000000,"id":"AQID","key":{"cred":{}}}]}"#), "{saved}");
+        assert_eq!(Config::from_json(&saved).unwrap().server.auth, c.server.auth);
+    }
+
+    /// A proxy that signs people in: believed from its addresses alone (IPs
+    /// and CIDR blocks, v4 and v6; one that's neither refused, signing in on
+    /// or off); its names are users' (or mapped to them), else `other`'s; a
+    /// control user it can name is a way back in, needing no token.
+    #[test]
+    fn a_proxy_names_users_from_its_addresses() {
+        use std::net::IpAddr;
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let p = AuthProxy { from: vec!["127.0.0.1".into(), " 10.1.0.0/16".into(), "fd7a:115c:a1e0::/48".into(), "0.0.0.0/0".into()], ..Default::default() };
+        assert_eq!(p.header, "Remote-User", "Authelia's and Authentik's, by default");
+        let only = |n: &str| AuthProxy { from: vec![n.into()], ..Default::default() };
+        assert!(only("127.0.0.1").trusts(ip("127.0.0.1")) && !only("127.0.0.1").trusts(ip("127.0.0.2")));
+        assert!(only("127.0.0.1").trusts(ip("::ffff:127.0.0.1")), "an IPv4 address as IPv6 (bound to ::)");
+        assert!(only("10.1.0.0/16").trusts(ip("10.1.255.3")) && !only("10.1.0.0/16").trusts(ip("10.2.0.1")));
+        assert!(only("fd7a:115c:a1e0::/48").trusts(ip("fd7a:115c:a1e0:ab12::1")) && !only("fd7a:115c:a1e0::/48").trusts(ip("fd7a:115c:a1e1::1")));
+        assert!(only("::1").trusts(ip("::1")) && !only("::1").trusts(ip("127.0.0.1")), "v6 isn't v4");
+        assert!(only("0.0.0.0/0").trusts(ip("8.8.8.8")) && !only("0.0.0.0/0").trusts(ip("::2")), "/0: every v4 address");
+        assert!(only("10.1.2.3/32").trusts(ip("10.1.2.3")) && !only("10.1.2.3/31").trusts(ip("10.1.2.4")));
+        assert_eq!(p.problem(), None);
+        for (bad, says) in [("10.0.0.0/33", "0 to 32"), ("::/129", "0 to 128"),("radiobox.local", "isn't an IP"), ("10.0.0.0/", "bits"), ("10.0.0/8", "isn't an IP"), ("1.2.3.4/x", "bits")] {
+            let why = AuthProxy { from: vec!["127.0.0.1".into(), bad.into()], ..Default::default() }.problem().unwrap_or_default();
+            assert!(why.contains(bad.trim()) && why.contains(says), "{bad}: {why}");
+            assert!(!only(bad).trusts(ip("10.0.0.1")), "{bad}: nobody");
+        }
+        assert!(AuthProxy::default().problem().unwrap().contains("addresses"), "no addresses");
+        assert!(AuthProxy { header: "Remote User".into(), ..only("::1") }.problem().unwrap().contains("header"));
+        assert!(AuthProxy { header: String::new(), ..only("::1") }.problem().unwrap().contains("header"));
+        assert!(AuthProxy { other: Some(ApiAccess::Control), ..only("::1") }.problem().unwrap().contains("others listen"));
+        // Off, a bad one is refused all the same.
+        let mut a = Auth { proxy: Some(only("nope")), ..Default::default() };
+        assert!(a.problem().unwrap().contains("\"nope\""));
+        // A control user with no token: a way in only through the proxy.
+        a.proxy = Some(only("127.0.0.1"));
+        a.enabled = true;
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
+        a.users.insert("wall".into(), AuthUser { access: ApiAccess::Listen, token: None, passkeys: vec![] });
+        assert_eq!(a.problem(), None, "the proxy can name luke");
+        assert!(Auth { proxy: None, ..a.clone() }.problem().unwrap().contains("control"), "no proxy: nobody can");
+        a.users.remove("luke");
+        assert!(a.problem().unwrap().contains("control"), "a proxy with nobody with control to name");
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
+        // Its names: a user's, or mapped to one; else other's, by its own name.
+        a.proxy.as_mut().unwrap().users.insert("luke@example.com".into(), "luke".into());
+        a.proxy.as_mut().unwrap().users.insert("ghost@example.com".into(), "nobody".into());
+        assert_eq!(a.proxied("luke@example.com"), Some(("luke".into(), ApiAccess::Control)));
+        assert_eq!(a.proxied("wall"), Some(("wall".into(), ApiAccess::Listen)), "the same name");
+        assert_eq!((a.proxied("stranger"), a.proxied("ghost@example.com")), (None, None), "other none: nobody");
+        a.proxy.as_mut().unwrap().other = Some(ApiAccess::Listen);
+        assert_eq!(a.proxied("stranger"), Some(("stranger".into(), ApiAccess::Listen)));
+        assert_eq!(a.proxied("ghost@example.com"), Some(("ghost@example.com".into(), ApiAccess::Listen)), "mapped to no user: other's");
+        assert_eq!(Auth { proxy: None, ..a.clone() }.proxied("luke"), None, "no proxy: nobody");
+        // Saved: no proxy key unset; set, what isn't the default alone, read back the same.
+        assert!(!serde_json::to_string(&Auth { enabled: true, ..Default::default() }).unwrap().contains("proxy"));
+        let c = Config::from_json(r#"{ "server": { "auth": { "proxy": { "from": ["127.0.0.1"] } } } }"#).unwrap();
+        assert_eq!(c.server.auth.proxy, Some(only("127.0.0.1")));
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""auth":{"enabled":false,"proxy":{"from":["127.0.0.1"],"header":"Remote-User"}}"#));
+        let c = Config::from_json(r#"{ "server": { "auth": { "proxy": { "from": ["::1"], "header": "Tailscale-User-Login", "users": { "luke@github": "luke" }, "other": "listen" } } } }"#).unwrap();
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""proxy":{"from":["::1"],"header":"Tailscale-User-Login","users":{"luke@github":"luke"},"other":"listen"}"#), "{saved}");
         assert_eq!(Config::from_json(&saved).unwrap().server.auth, c.server.auth);
     }
 

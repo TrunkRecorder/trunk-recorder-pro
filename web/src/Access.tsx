@@ -4,14 +4,17 @@
 // user's role allows: View (listen) or Admin (control). Turned on in an order
 // that can't lock this browser out: an Admin user, this browser signed in as
 // them, and only then on. Each user adds their own passkeys, signed in
-// (where passkeys work: localhost, or server.hostname over HTTPS).
+// (where passkeys work: localhost, or server.hostname over HTTPS). A proxy
+// in front that signs people in (server.auth.proxy) is its addresses, its
+// header and what others get; its names mapped to users are a hand edit.
 
 import { useState } from "react";
 import { addPasskey, createToken, passkeyName, passkeySignIn, signIn, signOut, snapshot, subscribe, updateConfig, useSelect, type SignedIn } from "./controller.ts";
 import { Info } from "./charts.tsx";
-import { CopyButton, Field } from "./inputs.tsx";
+import { textList } from "./fieldText.ts";
+import { CopyButton, DraftInput, Field, TextInput } from "./inputs.tsx";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
-import type { ApiAccess, AuthSetup, AuthUser, Config } from "./protocol.ts";
+import type { ApiAccess, AuthProxy, AuthSetup, AuthUser, Config } from "./protocol.ts";
 
 /** The roles, as the interface calls them. */
 export const ROLE: Record<ApiAccess, string> = { listen: "View", control: "Admin" };
@@ -68,6 +71,117 @@ const canSignIn = (u: AuthUser) => !!u.token || !!u.passkeys?.length;
 const admin = (u: AuthUser) => u.access === "control" && canSignIn(u);
 
 const day = (t?: number) => (t ? new Date(t * 1000).toLocaleDateString() : "—");
+
+/** Addresses as typed: commas or spaces between. */
+const addresses = textList(/[\s,]+/);
+
+/** The proxy in front (server.auth.proxy): set up with its addresses and header, then edited in place. */
+function ProxyGroup(props: { proxy?: AuthProxy }) {
+  const saved = useSelect((x) => ({ status: x.saveStatus, error: x.saveError }));
+  const [draft, setDraft] = useState<{ from: string; header: string } | null>(null);
+  const [edited, setEdited] = useState(false);
+  const p = props.proxy;
+  const edit = (f: (p: AuthProxy) => void) => {
+    setEdited(true);
+    updateConfig((x) => {
+      const q = authOf(x).proxy;
+      if (q) f(q);
+    });
+  };
+  const save = () => {
+    if (!draft) return;
+    const from = addresses.parse(draft.from);
+    if (!from.length) return;
+    setEdited(true);
+    updateConfig((x) => void (authOf(x).proxy = { from, header: draft.header.trim() || "Remote-User" }));
+    setDraft(null);
+  };
+  const remove = () => {
+    if (!confirm("Remove the proxy? Whoever it signed in is signed out.")) return;
+    setEdited(true);
+    updateConfig((x) => void delete authOf(x).proxy);
+  };
+  const others = p?.other === "listen";
+  const mapped = Object.keys(p?.users ?? {}).length;
+  return (
+    <Group
+      title="Proxy"
+      hint={
+        <>
+          {p ? "Signs people in" : "None"}
+          <Info>
+            A reverse proxy in front that signs people in (Authelia, oauth2-proxy, Cloudflare Access, tailscale serve) and says who in a header: believed from its addresses alone. Its
+            name is the user of that name, with their role. It must strip the header from what clients send. Names that differ are mapped in the config file.
+          </Info>
+        </>
+      }
+      actions={
+        p ? (
+          <button type="button" className="btn ghost small danger" onClick={remove}>
+            Remove
+          </button>
+        ) : (
+          !draft && (
+            <button type="button" className="btn small" onClick={() => setDraft({ from: "127.0.0.1, ::1", header: "Remote-User" })}>
+              Set up
+            </button>
+          )
+        )
+      }
+      full
+    >
+      {draft && (
+        <form
+          className="row wide"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
+        >
+          <Field label="From">
+            <input className="mono" autoComplete="off" aria-label="Proxy addresses" value={draft.from} placeholder="127.0.0.1, 10.0.0.0/8" onChange={(e) => setDraft({ ...draft, from: e.target.value })} />
+          </Field>
+          <Field label="Header">
+            <input className="mono" autoComplete="off" aria-label="Proxy header" value={draft.header} onChange={(e) => setDraft({ ...draft, header: e.target.value })} />
+          </Field>
+          <button className="btn primary" type="submit" disabled={!addresses.parse(draft.from).length}>
+            Save
+          </button>
+          <button type="button" className="btn ghost" onClick={() => setDraft(null)}>
+            Cancel
+          </button>
+        </form>
+      )}
+      {p && (
+        <div className="row wide wrap">
+          <Field label="From" hint="IPs or CIDR blocks">
+            <DraftInput className="mono" aria-label="Proxy addresses" value={p.from} codec={addresses} onChange={(v) => edit((q) => void (q.from = v))} />
+          </Field>
+          <Field label="Header">
+            <TextInput className="mono" aria-label="Proxy header" value={p.header ?? "Remote-User"} onChange={(v) => edit((q) => void (q.header = v || "Remote-User"))} />
+          </Field>
+          <div className="field">
+            <span className="field-label">Others</span>
+            <div className="seg small" role="radiogroup" aria-label="Others">
+              <button type="button" role="radio" aria-checked={!others} className={others ? "" : "on"} onClick={() => edit((q) => void delete q.other)}>
+                None
+              </button>
+              <button type="button" role="radio" aria-checked={others} className={others ? "on" : ""} onClick={() => edit((q) => void (q.other = "listen"))}>
+                View
+              </button>
+            </div>
+          </div>
+          {mapped > 0 && (
+            <span className="chip" title="Names mapped to users (the config file)">
+              {mapped} mapped
+            </span>
+          )}
+        </div>
+      )}
+      {edited && saved.status === "failed" && saved.error && <p className="bad-text">{saved.error}</p>}
+    </Group>
+  );
+}
 
 /** `made`: a user just made (tests). */
 export function AccessSection(props: { c: Config; made?: Made }) {
@@ -375,6 +489,7 @@ export function AccessSection(props: { c: Config; made?: Made }) {
           {problem && <p className="bad-text">{problem}</p>}
           {enabling && saved.status === "failed" && saved.error && <p className="bad-text">{saved.error}</p>}
         </Group>
+        <ProxyGroup proxy={auth?.proxy} />
       </section>
     </Section>
   );

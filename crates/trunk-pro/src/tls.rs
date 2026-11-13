@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use axum::extract::connect_info::Connected;
+use axum::serve::IncomingStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -160,11 +162,30 @@ impl ResolvesServerCert for Certs {
     }
 }
 
-/// Serve `app` on `listener` until `shutdown`: over TLS with `tls`, else plain HTTP.
+/// Serve `app` on `listener` until `shutdown`: over TLS with `tls`, else
+/// plain HTTP. Each request carries its connection's [`Peer`].
 pub async fn serve(listener: TcpListener, tls: Option<&Tls>, app: axum::Router, shutdown: impl std::future::Future<Output = ()> + Send + 'static) -> io::Result<()> {
+    let app = app.into_make_service_with_connect_info::<Peer>();
     match tls {
         Some(tls) => axum::serve(TlsListener::new(listener, tls)?, app).with_graceful_shutdown(shutdown).await,
         None => axum::serve(listener, app).with_graceful_shutdown(shutdown).await,
+    }
+}
+
+/// Where a connection came from (its TCP peer's address), over HTTPS or plain
+/// HTTP: in each request's extensions, as `ConnectInfo<Peer>`.
+#[derive(Clone, Copy, Debug)]
+pub struct Peer(pub SocketAddr);
+
+impl Connected<IncomingStream<'_, TcpListener>> for Peer {
+    fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Peer {
+        Peer(*stream.remote_addr())
+    }
+}
+
+impl Connected<IncomingStream<'_, TlsListener>> for Peer {
+    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Peer {
+        Peer(*stream.remote_addr())
     }
 }
 

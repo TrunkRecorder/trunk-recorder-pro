@@ -144,6 +144,8 @@ export interface AppState {
   signingIn: boolean;
   /** Whether passkeys work where this page is (GET /api/session: localhost, or server.hostname over HTTPS). */
   passkeys: boolean;
+  /** Whether the proxy in front signed this browser in (GET /api/session): signing out is the proxy's. */
+  proxied: boolean;
   surveySpectrum: Spectrum | null;
   /** The licenses looked up for the survey's signals ("Identify surveyed sites"); null: none asked for since it started. */
   surveyLicenses: LicenseLookup | null;
@@ -246,6 +248,7 @@ let state: AppState = {
   user: null,
   signingIn: false,
   passkeys: false,
+  proxied: false,
   surveySpectrum: null,
   surveyLicenses: null,
   surveyFor: null,
@@ -393,7 +396,7 @@ function take(m: FromRecorder): void {
     // The greeting's end: everything before it said how things are now.
     case "hello":
       set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands, capabilities: m.capabilities, access: m.access, user: m.user ?? null });
-      void fetchSession().then((x) => x && set({ signingIn: x.auth, passkeys: !!x.passkeys }));
+      void fetchSession().then((x) => x && set({ signingIn: x.auth, passkeys: !!x.passkeys, proxied: !!x.proxy }));
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
       sendTopics(true);
@@ -757,7 +760,7 @@ export function createToken(name: string, access: ApiAccess): Promise<TokenCreat
 }
 
 /** How the recorder sees this browser (GET /api/session); null: it couldn't say (the browser build has no server). */
-export type Session = { auth: boolean; access: ApiAccess | null; user: string | null; passkeys?: boolean };
+export type Session = { auth: boolean; access: ApiAccess | null; user: string | null; proxy?: boolean; passkeys?: boolean };
 export async function fetchSession(): Promise<Session | null> {
   if (transport.kind !== "desktop") return null;
   try {

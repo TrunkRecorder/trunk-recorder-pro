@@ -616,15 +616,32 @@ export type ApiAccess = "listen" | "control";
 
 /**
  * Signing in. `enabled`: a request gets the lower of its port's access and its user's — signed in with their access
- * token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login (or a passkey's sign-in) sets — and
- * without one, `anonymous`'s (absent: it must sign in; GET /api/session says so). Enabled, it needs a user with control
- * access and a token or a passkey, and `anonymous` can't be "control".
+ * token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login (or a passkey's sign-in) sets, or
+ * by the `proxy` in front — and without one, `anonymous`'s (absent: it must sign in; GET /api/session says so). Enabled,
+ * it needs a user with control access and a token or a passkey (or a proxy set), and `anonymous` can't be "control".
  */
 export interface AuthSetup {
   enabled: boolean;
   anonymous?: ApiAccess;
   /** Who may sign in, by name. Made with createToken (the token's secret is shown once); removed by taking them out. */
   users?: Record<string, AuthUser>;
+  /** A reverse proxy in front that signs people in, and says who in a header. Absent: none. */
+  proxy?: AuthProxy;
+}
+
+/**
+ * A reverse proxy that signs people in (Authelia, oauth2-proxy, Cloudflare Access, tailscale serve): the name in its
+ * `header` is believed from the addresses in `from` alone (IPs or CIDR blocks; one that's neither isn't saved), and only
+ * when no token or session says who. The name is the user `users` maps it to, else the user of that name, with their
+ * role; any other name gets `other` (absent: not signed in; "control" is refused).
+ */
+export interface AuthProxy {
+  from: string[];
+  /** Default "Remote-User". */
+  header?: string;
+  /** The proxy's names for users whose name here differs ("luke@example.com": "luke"). */
+  users?: Record<string, string>;
+  other?: ApiAccess;
 }
 
 /** Someone (or a program) who may sign in: what they may do, and what they sign in with (neither: nothing yet). */

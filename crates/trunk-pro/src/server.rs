@@ -24,8 +24,8 @@
 //!
 //! Every request passes [`guard`]: pages from other sites are refused unless
 //! listed in `server.allowedOrigins`, and with signing in on (`server.auth`)
-//! a request without a user's access token that gives it access gets the
-//! sign-in page (or a 401). GET /signin is that page; POST /api/login and
+//! a request without a user's access token that gives it access (or the
+//! say-so of a proxy in front, from its addresses) gets the sign-in page (or a 401). GET /signin is that page; POST /api/login and
 //! /api/logout set and clear the cookie a browser signs in with, as do
 //! /api/passkey/login/… with a passkey (/api/passkey/register/… adds one,
 //! [`crate::access::passkey`]); GET /api/session says who this request is, and may do.
@@ -36,7 +36,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Extension, Path as UrlPath, Request, State};
+use axum::extract::{ConnectInfo, Extension, Path as UrlPath, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -247,7 +247,8 @@ async fn guard(State((ctx, loopback, door)): State<(Arc<Ctx>, bool, Door)>, mut 
             // the recorder's own port. A link followed to here (trunkrecorder.pro's `#import=…`,
             // an interface's link to the dashboard) still arrives signed in.
             let cookie_ok = !cors && cookies_count(req.headers());
-            let who = access::identify(&auth, &ctx.sessions, req.headers(), req.uri().query(), cookie_ok);
+            let peer = req.extensions().get::<ConnectInfo<crate::tls::Peer>>().map(|c| c.0 .0.ip());
+            let who = access::identify(&auth, &ctx.sessions, req.headers(), req.uri().query(), cookie_ok, peer);
             // An allowed origin's page sending `Authorization` asks first, with no credentials:
             // answered here, token or not. (No Allow-Credentials: its cookies stay unusable.)
             let mut res = if cors && req.method() == Method::OPTIONS && req.headers().contains_key(header::ACCESS_CONTROL_REQUEST_METHOD) {
@@ -356,15 +357,15 @@ fn passkey_answer<T: serde::Serialize>(r: Result<T, String>) -> Response {
 }
 
 /// Who may add a passkey: a user signed in (they add one for themselves, on
-/// their device), on a port with control access — a listen interface's page
+/// their device; by the proxy in front too), on a port with control access — a listen interface's page
 /// could otherwise give its own key to whoever's signed in there. Their name, or the answer.
 fn passkey_adder(ctx: &Ctx, caller: &Caller) -> Result<String, Response> {
-    let Who::User { name, .. } = &caller.who else { return Err((StatusCode::UNAUTHORIZED, "Sign in first (signing in on), then add a passkey.\n").into_response()) };
+    let Some(name) = caller.who.user() else { return Err((StatusCode::UNAUTHORIZED, "Sign in first (signing in on), then add a passkey.\n").into_response()) };
     let port = caller.port_access(ctx, &ctx.config.lock().unwrap());
     if port != Some(ApiAccess::Control) || caller.access(ctx).is_none() {
         return Err((StatusCode::FORBIDDEN, "Passkeys are added on the recorder's own page.\n").into_response());
     }
-    Ok(name.clone())
+    Ok(name.to_string())
 }
 
 /// `POST /api/passkey/register/start`: `{name}` (what to call it: "iPhone"),
@@ -465,10 +466,12 @@ async fn logout(State(ctx): State<Arc<Ctx>>) -> Response {
 
 /// `GET /api/session`: whether signing in is on, what this request may do
 /// on this port as whom (a page's WebSocket can't see a 401: this is how it
-/// learns it must sign in), and whether passkeys work on the host it's for.
+/// learns it must sign in), whether the proxy in front signed it in (then
+/// it's the proxy's to sign out of), and whether passkeys work on the host it's for.
 async fn signed_in(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap) -> Response {
     let enabled = ctx.config.lock().unwrap().server.auth.enabled;
-    axum::Json(json!({ "auth": enabled, "access": caller.access(&ctx), "user": caller.who.user(), "passkeys": passkey_rp(&ctx, &headers).is_some() })).into_response()
+    let proxy = matches!(caller.who, Who::Proxy { .. });
+    axum::Json(json!({ "auth": enabled, "access": caller.access(&ctx), "user": caller.who.user(), "proxy": proxy, "passkeys": passkey_rp(&ctx, &headers).is_some() })).into_response()
 }
 
 /// [`guard`]'s verdict: Ok(whether the answer needs CORS headers) or Err(why not).
@@ -1053,8 +1056,10 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, caller: Caller) {
                     let reply = match Command::parse(&t) {
                         Ok(c) if access >= c.needs() => {
                             // (Who changed what: by its kind alone, never what it carries.)
-                            if let (Who::User { name, .. }, ApiAccess::Control) = (&caller.who, c.needs()) {
-                                log::info!("User {name}: {}", c.kind());
+                            match (&caller.who, c.needs()) {
+                                (Who::User { name, .. }, ApiAccess::Control) => log::info!("User {name}: {}", c.kind()),
+                                (Who::Proxy { user, .. }, ApiAccess::Control) => log::info!("User {user} (by the proxy): {}", c.kind()),
+                                _ => {}
                             }
                             command(&ctx, c, &mut listen, &mut subs).await
                         }
@@ -1747,7 +1752,7 @@ mod tests {
         assert_eq!(get("/signin", bearer(&luke)).await.0, 200, "signed in too");
         assert_eq!(get("/api/version", vec![]).await.0, 200, "a second launch still finds it");
         let (code, _, who) = get("/api/session", vec![]).await;
-        assert_eq!((code, serde_json::from_str::<serde_json::Value>(&who).unwrap()), (200, serde_json::json!({ "auth": true, "access": null, "user": null, "passkeys": false })));
+        assert_eq!((code, serde_json::from_str::<serde_json::Value>(&who).unwrap()), (200, serde_json::json!({ "auth": true, "access": null, "user": null, "proxy": false, "passkeys": false })));
         // A token: what its user's role allows.
         assert_eq!(get("/api/v1/calls", bearer(&luke)).await.0, 200);
         assert_eq!(get("/calls/x.wav", bearer(&luke)).await.0, 404, "no such file, but let in");
@@ -1778,7 +1783,7 @@ mod tests {
             h.extend(extra);
             async move { serde_json::from_str::<serde_json::Value>(&get("/api/session", h).await.2).unwrap() }
         };
-        assert_eq!(session(vec![]).await, serde_json::json!({ "auth": true, "access": "control", "user": "luke", "passkeys": false }), "127.0.0.1: no passkeys");
+        assert_eq!(session(vec![]).await, serde_json::json!({ "auth": true, "access": "control", "user": "luke", "proxy": false, "passkeys": false }), "127.0.0.1: no passkeys");
         assert_eq!(session(vec![("sec-fetch-site", "same-origin".into())]).await["access"], "control");
         assert_eq!(session(vec![("sec-fetch-site", "same-site".into())]).await["access"], serde_json::Value::Null, "another port's page: its cookie doesn't count");
         let link = vec![("sec-fetch-site", "cross-site".into()), ("sec-fetch-mode", "navigate".into()), ("sec-fetch-dest", "document".into())];
@@ -1970,6 +1975,84 @@ mod tests {
         assert!(closed.is_ok(), "closed once their user went");
     }
 
+    /// Behind a proxy that signs people in: its header is who it says from
+    /// its addresses alone (the test server's peer is 127.0.0.1), a token
+    /// says who first, a name mapped is that user, one that's no user gets
+    /// `other`'s; a socket signed in so is greeted as them, and closed once
+    /// they're removed; a proxy set as it can't be isn't saved.
+    #[tokio::test]
+    async fn a_proxy_in_front_signs_people_in() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as Ws};
+        use trunk_app::config::AuthProxy;
+        let dir = crate::db::TestDir::new("signin-proxy");
+        let (ctx, _, kiosk) = signed_in_ctx(&dir, "signin-proxy");
+        let proxy = |from: &str| {
+            let mut p = AuthProxy { from: vec![from.into()], ..Default::default() };
+            p.users.insert("luke@example.com".into(), "luke".into());
+            p
+        };
+        ctx.config.lock().unwrap().server.auth.proxy = Some(proxy("127.0.0.0/8"));
+        let addr = super::test_server(&ctx, super::Door::Builtin).await;
+        let session = |headers: Vec<(&'static str, String)>| async move {
+            let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            serde_json::from_str::<serde_json::Value>(&http(addr, "GET", "/api/session", &h, None).await.2).unwrap()
+        };
+        let as_ = |name: &str| vec![("remote-user", name.to_string())];
+        assert_eq!(session(as_("luke@example.com")).await, serde_json::json!({ "auth": true, "access": "control", "user": "luke", "proxy": true, "passkeys": false }), "mapped");
+        assert_eq!((session(as_("kiosk")).await["user"].clone(), session(as_("kiosk")).await["access"].clone()), ("kiosk".into(), "listen".into()), "the same name");
+        assert_eq!(http(addr, "GET", "/api/v1/export/calls", &[("remote-user", "luke@example.com")], None).await.0, 200, "control's, let in");
+        let mut both = as_("luke@example.com");
+        both.push(("authorization", format!("Bearer {kiosk}")));
+        assert_eq!((session(both.clone()).await["user"].clone(), session(both).await["proxy"].clone()), ("kiosk".into(), false.into()), "a token says who first");
+        assert_eq!(session(as_("stranger")).await["access"], serde_json::Value::Null, "no user, other none: not signed in");
+        assert_eq!(http(addr, "GET", "/api/v1/calls", &[("remote-user", "stranger")], None).await.0, 401);
+        ctx.config.lock().unwrap().server.auth.proxy.as_mut().unwrap().other = Some(crate::config::ApiAccess::Listen);
+        assert_eq!(session(as_("stranger")).await["access"], "listen", "other's");
+        let mut cross = as_("luke@example.com");
+        cross.push(("sec-fetch-site", "cross-site".into()));
+        assert_eq!(session(cross).await["access"], serde_json::Value::Null, "another site's page: the header counts where the cookie would, so it's anonymous");
+        // Not from the proxy's addresses: ignored.
+        ctx.config.lock().unwrap().server.auth.proxy = Some(proxy("10.0.0.1"));
+        assert_eq!(session(as_("luke@example.com")).await["user"], serde_json::Value::Null, "127.0.0.1 isn't the proxy now");
+        ctx.config.lock().unwrap().server.auth.proxy = Some(proxy("127.0.0.1"));
+        // A socket: greeted as them; closed once they're removed.
+        let mut req = format!("ws://{addr}/api/ws").into_client_request().unwrap();
+        req.headers_mut().insert("remote-user", "luke@example.com".parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let hello = loop {
+            let v: serde_json::Value = ws.next().await.unwrap().unwrap().to_text().ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+            if v["type"] == "hello" {
+                break v;
+            }
+        };
+        assert_eq!((&hello["access"], &hello["user"]), (&"control".into(), &"luke".into()));
+        let ctx2 = ctx.clone();
+        tokio::task::spawn_blocking(move || super::edit_config(&ctx2, |c| drop(c.server.auth.users.remove("luke")))).await.unwrap().unwrap();
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match ws.next().await {
+                    Some(Ok(Ws::Close(_))) | None | Some(Err(_)) => return,
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "closed once luke went");
+        // A proxy set as it can't be: not saved, and said why.
+        use super::{command, Subs};
+        use trunk_app::protocol::{Command, ToClient};
+        let (mut listen, mut subs) = (None, Subs { ctx: ctx.clone(), topics: Default::default() });
+        let version = ctx.config_version.load(std::sync::atomic::Ordering::SeqCst);
+        let mut c = serde_json::to_value(ctx.config.lock().unwrap().clone()).unwrap();
+        c["server"]["auth"]["proxy"]["from"] = serde_json::json!(["127.0.0.1", "10.0.0.0/40"]);
+        match command(&ctx, Command::SetConfig { config: c, version }, &mut listen, &mut subs).await {
+            Some(ToClient::ConfigSaved { error: Some(e), .. }) => assert!(e.contains("10.0.0.0/40"), "{e}"),
+            r => panic!("not refused: {:?}", r.map(|m| m.to_value())),
+        }
+        assert_eq!(ctx.config.lock().unwrap().server.auth.proxy.as_ref().unwrap().from, vec!["127.0.0.1".to_string()]);
+    }
+
     /// `createToken` makes a user with a token and answers with its secret
     /// (once: the config keeps its hash), with signing in off too; a name
     /// taken is refused. A config that would turn signing in on with no
@@ -2032,6 +2115,11 @@ mod tests {
         let (_stop, stopped) = tokio::sync::watch::channel(false);
         let iface = super::test_server(&ctx, super::Door::Interface { id: "wall".into(), stop: stopped }).await;
         assert!(https(iface, "GET /api/version HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await.0.starts_with("HTTP/1.1 200"), "an interface's port too");
+        // A proxy in front: over HTTPS too, the connection's address is known.
+        ctx.config.lock().unwrap().server.auth.proxy = Some(trunk_app::config::AuthProxy { from: vec!["127.0.0.1".into()], ..Default::default() });
+        let (res, _) = https(addr, "GET /api/session HTTP/1.1\r\nHost: localhost\r\nRemote-User: luke\r\nConnection: close\r\n\r\n").await;
+        assert!(res.contains(r#""user":"luke""#) && res.contains(r#""proxy":true"#), "{res}");
+        ctx.config.lock().unwrap().server.auth.proxy = None;
         // A certificate that won't do: not saved.
         let (mut listen, mut subs) = (None, Subs { ctx: ctx.clone(), topics: Default::default() });
         let version = ctx.config_version.load(Ordering::SeqCst);

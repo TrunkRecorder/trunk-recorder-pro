@@ -28,7 +28,7 @@ every other interface's ([Serving your interface](#serving-your-interface)):
 | `GET /api/protocol.ts` | Every message, as TypeScript types with comments: **the definition** |
 | `GET /api/schema` | The same as JSON Schema (draft-07): `definitions.FromRecorder` / `definitions.ToRecorder` |
 | `GET /api/version` | `{"app": "trunk-pro", "version": "…", "api": 1}` (`api`: the interface API version). Always open, signed in or not |
-| `GET /api/session` | `{ auth, access, user, passkeys }`: whether signing in is on, what this request may do, and whether passkeys work here ([Signing in](#signing-in)) |
+| `GET /api/session` | `{ auth, access, user, proxy, passkeys }`: whether signing in is on, what this request may do, and whether passkeys work here ([Signing in](#signing-in)) |
 | `POST /api/login`, `POST /api/logout` | Sign a browser in with an access token (a session cookie; answers `{ access, user }`), and out |
 | `POST /api/passkey/login/…`, `/api/passkey/register/…` | Sign a browser in with a passkey, and add one ([Passkeys](#passkeys)) |
 | `GET /signin` | The sign-in page, on every port, whether or not a page needs it |
@@ -434,9 +434,19 @@ The query parameter ends up in browser history and proxy logs; prefer the
 other two. The cookie only counts for requests from the recorder's own pages
 (same origin), never from another site's.
 
+**A fourth: a proxy in front that signs people in** (Authelia, oauth2-proxy,
+Cloudflare Access, `tailscale serve`; `server.auth.proxy`, see
+[Behind a proxy that signs people in](../configuration/server-and-log.md#behind-a-proxy-that-signs-people-in)).
+The proxy says who in a header (`Remote-User` by default), which the
+recorder believes from the proxy's addresses alone, and only where the
+cookie would count. A token or the cookie says who first. A program going
+through such a proxy signs in at the proxy; a token works there as ever.
+`POST /api/logout` doesn't sign out someone the proxy signed in: that's the
+proxy's.
+
 **What you get** is the lower of the port's access and the user's role.
-`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null, "passkeys": true | false }`
-for the request it's asked with (`passkeys`: whether a browser may use them on the host it asked at), and `hello` carries `access` and `user`.
+`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null, "proxy": true | false, "passkeys": true | false }`
+for the request it's asked with (`proxy`: the proxy in front signed it in; `passkeys`: whether a browser may use them on the host it asked at), and `hello` carries `access` and `user`.
 `POST /api/login` answers `{ "access": "listen" | "control", "user": "kiosk" }`
 (the user's role and name, whatever the port; signing in on or off) with the
 cookie, or 401. When the owner changes access (a user removed, a role or an

@@ -22,7 +22,13 @@
 //! signing in sets ([`passkey`]); without one it gets
 //! `server.auth.anonymous` (none: it must sign in first). A secret is 32
 //! random bytes; the config keeps only its SHA-256.
+//!
+//! Behind a reverse proxy that signs people in itself (`server.auth.proxy`),
+//! a request none of those sign in is who the proxy's header says: from the
+//! proxy's addresses alone, and only where the cookie would count (the header
+//! is the proxy's stand-in for its own cookie). See [`proxied`].
 
+use std::net::IpAddr;
 use std::path::Path;
 
 use axum::http::{header, HeaderMap};
@@ -58,6 +64,10 @@ pub enum Who {
     /// again is another sign-in), or `pk:` and the id of the passkey a
     /// session was signed in with ([`passkey_credential`]).
     User { name: String, credential: String },
+    /// Signed in by the proxy in front ([`proxied`]), from `peer`, which
+    /// named them `asserted`: recorder user `user` (the user it's mapped to),
+    /// or by its own name, with `proxy.other`'s access.
+    Proxy { asserted: String, user: String, peer: IpAddr },
 }
 
 /// A request (or a WebSocket, for as long as it lasts): its port and who it is.
@@ -74,6 +84,11 @@ impl Who {
         match self {
             Who::Anonymous => auth.anonymous,
             Who::User { name, credential } => auth.users.get(name).filter(|u| holds(u, credential)).map(|u| u.access),
+            // (The proxy gone, `peer` no longer its, or its name another user's now: nothing.)
+            Who::Proxy { asserted, user, peer } => {
+                auth.proxy.as_ref().filter(|p| p.trusts(*peer))?;
+                auth.proxied(asserted).filter(|(u, _)| u == user).map(|(_, a)| a)
+            }
         }
     }
 
@@ -81,7 +96,7 @@ impl Who {
     pub fn user(&self) -> Option<&str> {
         match self {
             Who::Anonymous => None,
-            Who::User { name, .. } => Some(name),
+            Who::User { name, .. } | Who::Proxy { user: name, .. } => Some(name),
         }
     }
 }
@@ -140,11 +155,12 @@ pub fn holds(u: &AuthUser, credential: &str) -> bool {
     }
 }
 
-/// Who a request is: the first valid secret of its `Authorization: Bearer`
-/// and its `token=` query parameter, else (`cookie_ok`) a valid session in
-/// this recorder's cookie whose user still has its credential. Signing in
-/// off, or none valid: anonymous.
-pub fn identify(auth: &Auth, sessions: &Sessions, headers: &HeaderMap, query: Option<&str>, cookie_ok: bool) -> Who {
+/// Who a request from `peer` is: the first valid secret of its
+/// `Authorization: Bearer` and its `token=` query parameter, else
+/// (`cookie_ok`) a valid session in this recorder's cookie whose user still
+/// has its credential, else (`cookie_ok` too) who the proxy in front says
+/// ([`proxied`]). Signing in off, or none valid: anonymous.
+pub fn identify(auth: &Auth, sessions: &Sessions, headers: &HeaderMap, query: Option<&str>, cookie_ok: bool, peer: Option<IpAddr>) -> Who {
     if !auth.enabled {
         return Who::Anonymous;
     }
@@ -157,7 +173,36 @@ pub fn identify(auth: &Auth, sessions: &Sessions, headers: &HeaderMap, query: Op
     let secret = bearer.chain(param).find_map(|s| signs_in(auth, &s));
     // (A session's user removed, or their token made again since: nobody.)
     let session = || if cookie_ok { sessions.of(headers).filter(|w| w.grants(auth).is_some()) } else { None };
-    secret.or_else(session).unwrap_or(Who::Anonymous)
+    // (A browser sends the proxy its cookie from another site's page too: the header counts where the cookie would.)
+    let proxy = || if cookie_ok { proxied(auth, headers, peer?) } else { None };
+    secret.or_else(session).or_else(proxy).unwrap_or(Who::Anonymous)
+}
+
+/// Who the proxy in front (`server.auth.proxy`) says a request from `peer`
+/// is: the name in its header (one, not empty), if `peer` is one of the
+/// proxy's addresses, as [`Auth::proxied`] has it. From any other address
+/// the header is no one's (anyone can send it), and that's told once an
+/// address: a proxy at an address not listed shows in the log.
+fn proxied(auth: &Auth, headers: &HeaderMap, peer: IpAddr) -> Option<Who> {
+    let p = auth.proxy.as_ref()?;
+    let mut sent = headers.get_all(p.header.as_str()).iter();
+    let (Some(v), None) = (sent.next(), sent.next()) else { return None };
+    if !p.trusts(peer) {
+        static TOLD: std::sync::Mutex<Vec<IpAddr>> = std::sync::Mutex::new(Vec::new());
+        let mut told = TOLD.lock().unwrap();
+        if told.len() < 50 && !told.contains(&peer) {
+            log::warn!("Signing in: {} from {peer}, which isn't one of the proxy's addresses (server.auth.proxy.from): ignored", p.header);
+            told.push(peer);
+        }
+        return None;
+    }
+    // (UTF-8: a proxy's names needn't be ASCII.)
+    let asserted = std::str::from_utf8(v.as_bytes()).ok()?.trim();
+    if asserted.is_empty() {
+        return None;
+    }
+    let (user, _) = auth.proxied(asserted)?;
+    Some(Who::Proxy { asserted: asserted.to_string(), user, peer })
 }
 
 /// How long a browser stays signed in: 30 days.
@@ -333,10 +378,10 @@ pub fn refusal(ctx: &Ctx, caller: &Caller, ty: &str) -> String {
         Door::Interface { id, .. } => ctx.interfaces.access(&ctx.config.lock().unwrap(), id) == Some(ApiAccess::Listen),
         Door::Builtin => false,
     };
-    match &caller.who {
+    match caller.who.user() {
         _ if port_listens => format!("This interface may only listen, so it can't send \"{ty}\". Give it control access on the recorder's Interfaces page if it should."),
-        Who::User { name, .. } => format!("The user \"{name}\" may only listen, so they can't send \"{ty}\". Give them control access if they should."),
-        Who::Anonymous => format!("Not signed in, this page may only listen, so it can't send \"{ty}\". Sign in as a user with control access."),
+        Some(name) => format!("The user \"{name}\" may only listen, so they can't send \"{ty}\". Give them control access if they should."),
+        None => format!("Not signed in, this page may only listen, so it can't send \"{ty}\". Sign in as a user with control access."),
     }
 }
 
@@ -383,26 +428,86 @@ mod tests {
         };
         let none = HeaderMap::new();
         let sessions = Sessions::fresh();
-        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, false), luke);
+        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, false, None), luke);
         for v in [format!("bearer {s}"), format!("BEARER   {s}")] {
-            assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, v.clone()), None, false), luke, "{v}: any case, any spaces");
+            assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, v.clone()), None, false, None), luke, "{v}: any case, any spaces");
         }
-        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, format!("Basic {s}")), None, false), Who::Anonymous, "another scheme");
-        assert_eq!(identify(&auth, &sessions, &none, Some(&format!("a=1&token={s}")), false), luke);
+        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, format!("Basic {s}")), None, false, None), Who::Anonymous, "another scheme");
+        assert_eq!(identify(&auth, &sessions, &none, Some(&format!("a=1&token={s}")), false, None), luke);
         let cookie = with(header::COOKIE, format!("other=1; trp_00000000=nope; {}={}", sessions.cookie, sessions.issue("luke", &hash)));
-        assert_eq!(identify(&auth, &sessions, &cookie, None, true), luke, "a session in this recorder's cookie");
-        assert_eq!(identify(&auth, &sessions, &with(header::COOKIE, format!("{}={s}", sessions.cookie)), None, true), Who::Anonymous, "a secret is no session");
-        assert_eq!(identify(&auth, &sessions, &cookie, None, false), Who::Anonymous, "a cookie from another site's page doesn't count");
-        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, "Bearer trp_0123".into()), Some("token=trp_4567"), true), Who::Anonymous, "unknown secrets");
-        assert_eq!(identify(&Auth { enabled: false, ..auth.clone() }, &sessions, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, true), Who::Anonymous, "signing in off");
+        assert_eq!(identify(&auth, &sessions, &cookie, None, true, None), luke, "a session in this recorder's cookie");
+        assert_eq!(identify(&auth, &sessions, &with(header::COOKIE, format!("{}={s}", sessions.cookie)), None, true, None), Who::Anonymous, "a secret is no session");
+        assert_eq!(identify(&auth, &sessions, &cookie, None, false, None), Who::Anonymous, "a cookie from another site's page doesn't count");
+        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, "Bearer trp_0123".into()), Some("token=trp_4567"), true, None), Who::Anonymous, "unknown secrets");
+        assert_eq!(identify(&Auth { enabled: false, ..auth.clone() }, &sessions, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, true, None), Who::Anonymous, "signing in off");
         assert!(add_user(&mut auth, "luke", ApiAccess::Listen).unwrap_err().contains("already"));
         for bad in ["", "  ", "a\nb", &"x".repeat(65)] {
             assert!(add_user(&mut auth, bad, ApiAccess::Listen).is_err(), "{bad:?}");
         }
         // A user with no token signs in with nothing.
         auth.users.get_mut("luke").unwrap().token = None;
-        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, false), Who::Anonymous, "no token");
+        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, false, None), Who::Anonymous, "no token");
         assert_eq!(luke.grants(&auth), None);
+    }
+
+    /// The proxy's header is who it says from the proxy's addresses alone,
+    /// where the cookie would count, when no secret or session says who; its
+    /// name is a user's (or mapped to one), else `other`'s; and it's checked
+    /// again against the config as it is now, as any sign-in is.
+    #[test]
+    fn a_proxy_says_who_from_its_addresses_alone() {
+        use trunk_app::config::AuthProxy;
+        let mut auth = Auth { enabled: true, ..Default::default() };
+        let secret = add_user(&mut auth, "kiosk", ApiAccess::Listen).unwrap();
+        auth.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
+        let mut proxy = AuthProxy { from: vec!["127.0.0.1".into(), "fd00::/8".into()], ..Default::default() };
+        proxy.users.insert("luke@example.com".into(), "luke".into());
+        auth.proxy = Some(proxy);
+        let sessions = Sessions::fresh();
+        let (local, v6, elsewhere): (IpAddr, IpAddr, IpAddr) = ("127.0.0.1".parse().unwrap(), "fd00::5".parse().unwrap(), "192.168.1.9".parse().unwrap());
+        let named = |pairs: &[(&str, &str)]| {
+            let mut h = HeaderMap::new();
+            for (n, v) in pairs {
+                h.append(header::HeaderName::from_bytes(n.as_bytes()).unwrap(), HeaderValue::from_bytes(v.as_bytes()).unwrap());
+            }
+            h
+        };
+        let who = |auth: &Auth, h: &HeaderMap, cookie_ok: bool, peer: IpAddr| identify(auth, &sessions, h, None, cookie_ok, Some(peer));
+        let luke = Who::Proxy { asserted: "luke@example.com".into(), user: "luke".into(), peer: local };
+        let h = named(&[("remote-user", "luke@example.com")]);
+        assert_eq!(who(&auth, &h, true, local), luke, "mapped to luke");
+        assert_eq!((luke.user(), luke.grants(&auth)), (Some("luke"), Some(ApiAccess::Control)), "luke's role, no token needed");
+        assert_eq!(who(&auth, &named(&[("Remote-User", " luke ")]), true, v6), Who::Proxy { asserted: "luke".into(), user: "luke".into(), peer: v6 }, "the same name, trimmed; a v6 block");
+        assert_eq!(who(&auth, &h, true, elsewhere), Who::Anonymous, "from another address: anyone could send it");
+        assert_eq!(who(&auth, &h, false, local), Who::Anonymous, "another site's page: as the cookie, it doesn't count");
+        assert_eq!(identify(&auth, &sessions, &h, None, true, None), Who::Anonymous, "no peer known");
+        assert_eq!(who(&auth, &named(&[("Remote-User", "luke"), ("Remote-User", "kiosk")]), true, local), Who::Anonymous, "two names: neither");
+        assert_eq!(who(&auth, &named(&[("Remote-User", " ")]), true, local), Who::Anonymous, "no name");
+        assert_eq!(who(&auth, &named(&[("X-Forwarded-User", "luke")]), true, local), Who::Anonymous, "another header");
+        // A secret, or a session, says who first.
+        let kiosk = signs_in(&auth, secret.expose()).unwrap();
+        let both = named(&[("Remote-User", "luke"), ("Authorization", &format!("Bearer {}", secret.expose()))]);
+        assert_eq!(who(&auth, &both, true, local), kiosk, "a token wins");
+        let cookie = format!("{}={}", sessions.cookie, sessions.issue("kiosk", &auth.users["kiosk"].token.as_ref().unwrap().hash));
+        assert_eq!(who(&auth, &named(&[("Remote-User", "luke"), ("Cookie", &cookie)]), true, local), kiosk, "a session wins");
+        assert_eq!(who(&auth, &named(&[("Remote-User", "luke"), ("Authorization", "Bearer trp_00")]), true, local).user(), Some("luke"), "a secret that's nobody's: the header");
+        // Names that are no user here: other's, by their own name (none: nobody).
+        let stranger = named(&[("Remote-User", "Zoë")]);
+        assert_eq!(who(&auth, &stranger, true, local), Who::Anonymous);
+        auth.proxy.as_mut().unwrap().other = Some(ApiAccess::Listen);
+        let zoe = who(&auth, &stranger, true, local);
+        assert_eq!((zoe.user(), zoe.grants(&auth)), (Some("Zoë"), Some(ApiAccess::Listen)), "UTF-8, as sent");
+        // As the config is now: a mapping changed, the address no longer the proxy's, the proxy or the user gone.
+        let mut a = auth.clone();
+        a.proxy.as_mut().unwrap().users.insert("luke@example.com".into(), "kiosk".into());
+        assert_eq!(luke.grants(&a), None, "its name is another user's now");
+        let mut a = auth.clone();
+        a.proxy.as_mut().unwrap().from = vec!["10.0.0.1".into()];
+        assert_eq!(luke.grants(&a), None, "not the proxy's address now");
+        assert_eq!(luke.grants(&Auth { proxy: None, ..auth.clone() }), None, "no proxy");
+        auth.users.remove("luke");
+        assert_eq!(luke.grants(&auth), None, "luke removed");
+        assert_eq!(identify(&Auth { enabled: false, ..auth.clone() }, &sessions, &h, None, true, Some(local)), Who::Anonymous, "signing in off");
     }
 
     /// Signing in off, a request may do what its port allows; on, no more

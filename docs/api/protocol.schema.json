@@ -71,6 +71,36 @@
       "additionalProperties": false,
       "description": "A passkey: its name (\"iPhone\"), when it was added (Unix s), its credential id (base64url) and `key`, WebAuthn's record of it (its public key and counter; the recorder's to read)."
     },
+    "AuthProxy": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "header": {
+          "type": "string",
+          "description": "Default \"Remote-User\"."
+        },
+        "users": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The proxy's names for users whose name here differs (\"luke@example.com\": \"luke\")."
+        },
+        "other": {
+          "$ref": "#/definitions/ApiAccess"
+        }
+      },
+      "required": [
+        "from"
+      ],
+      "additionalProperties": false,
+      "description": "A reverse proxy that signs people in (Authelia, oauth2-proxy, Cloudflare Access, tailscale serve): the name in its `header` is believed from the addresses in `from` alone (IPs or CIDR blocks; one that's neither isn't saved), and only when no token or session says who. The name is the user `users` maps it to, else the user of that name, with their role; any other name gets `other` (absent: not signed in; \"control\" is refused)."
+    },
     "AuthSetup": {
       "type": "object",
       "properties": {
@@ -86,13 +116,17 @@
             "$ref": "#/definitions/AuthUser"
           },
           "description": "Who may sign in, by name. Made with createToken (the token's secret is shown once); removed by taking them out."
+        },
+        "proxy": {
+          "$ref": "#/definitions/AuthProxy",
+          "description": "A reverse proxy in front that signs people in, and says who in a header. Absent: none."
         }
       },
       "required": [
         "enabled"
       ],
       "additionalProperties": false,
-      "description": "Signing in. `enabled`: a request gets the lower of its port's access and its user's — signed in with their access token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login (or a passkey's sign-in) sets — and without one, `anonymous`'s (absent: it must sign in; GET /api/session says so). Enabled, it needs a user with control access and a token or a passkey, and `anonymous` can't be \"control\"."
+      "description": "Signing in. `enabled`: a request gets the lower of its port's access and its user's — signed in with their access token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login (or a passkey's sign-in) sets, or by the `proxy` in front — and without one, `anonymous`'s (absent: it must sign in; GET /api/session says so). Enabled, it needs a user with control access and a token or a passkey (or a proxy set), and `anonymous` can't be \"control\"."
     },
     "AuthToken": {
       "type": "object",
