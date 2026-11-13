@@ -334,7 +334,7 @@ trunk-pro rolloff --center 858500000
 ```bash
 trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--slice 15] [--rounds 3]
                [--settle 4] [--max-steps 12] [--margin 1] [--mode manual|linearity|sensitivity]
-               [--try stage=value,…] [--apply]
+               [--protect 5] [--try stage=value,…] [--apply]
 ```
 
 Finds the gain at which a radio decodes its systems best. It works on a recorder that is
@@ -353,8 +353,11 @@ takes at once, and scores what the radio's systems decode while it is set:
 The setting's score (0 to 100) is the systems' average with the weakest counted twice, so a gain
 that helps the strong systems a little at a weak one's cost isn't chosen. The systems scored are
 those with a control channel in the radio's band, or only `--systems`. The radio's other systems are
-still watched then, and shown (the scored ones starred): a gain that silences one of their control
-channels is given up as for the scored ones, so tuning for one system can't quietly lose another.
+still watched then, and shown (the scored ones starred), and protected: a candidate that costs one
+of them more than `--protect` points (5 by default) on average over the rounds is refused, and one
+that costs one of them more than twice that in its first round is refused at once, so it isn't kept
+on the air for the rest. On one 800 MHz Airspy, the LNA that suited a weak simulcast system best
+took a neighbouring system's control channel from 74 % to 45 %: that is what this stops.
 
 **Settings are compared, not scored once.** How well a control channel decodes drifts from minute
 to minute (traffic, a simulcast site's fading) by more than a step of gain usually changes it: on
@@ -377,7 +380,9 @@ recommended only if it is still clearly better.
 
 Other radios aren't supported yet.
 
-**Recording goes on while it runs**, so a poor setting costs the radio's systems while it is tried.
+**Recording and uploading go on while it runs**, for every system, so a poor setting costs the
+radio's systems while it is tried: their calls in those seconds are recorded (and uploaded) as that
+setting hears them. Other radios aren't touched.
 A setting under which a control channel that was decoding stops for 10 seconds is given up at once,
 and one that clips heavily after 5. However it ends (done, an error, Ctrl-C), the radio is put back
 as it was, unless `--apply`, which keeps the best (and saves it in the config). It prints the
@@ -389,6 +394,7 @@ the frequency correction (ppm) should change, as Setup's **Set correction to** d
 | `--url` | `http://127.0.0.1:8080` | The recorder's built-in interface |
 | `--source N` | the only one | The radio, by its place in Setup's list from 0. Needed when there are several: the error lists them |
 | `--systems a,b` | every system on the radio | Score only these (short names); the others are still watched and guarded |
+| `--protect points` | 5 | With `--systems`: the most one of the radio's other systems may lose (0–100 scale). `off` allows any loss |
 | `--try stage=value,…` | | Compare this one setting with the one the radio is at, and nothing else: `lna=11,mixer=10,vga=9` (Airspy manual), `step=16` (Airspy linearity or sensitivity), `lna=32,vga=24,amp=on` (HackRF), `gain=33.8` (RTL-SDR). With `--apply`, kept if it is clearly better |
 | `--slice s` | 15 | How long each side of a round is measured |
 | `--rounds n` | 3 | Rounds per comparison (2 to 20). More rounds tell smaller differences apart |

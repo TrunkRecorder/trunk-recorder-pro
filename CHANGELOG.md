@@ -11,7 +11,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   weakest system counted twice; a setting that clips is refused. Since a control channel's decoding drifts from minute to
   minute by more than a step of gain moves it, each candidate is compared with the best so far by turns over a few rounds,
   and kept only when it is better by more than twice the rounds' spread. A setting that loses a control channel is given
-  up at once, and the radio is put back at the end unless `--apply`. It also says whether the ppm should change. It uses
+  up at once, and with `--systems` a setting that costs one of the radio's other systems more than `--protect` points is
+  refused; the radio is put back at the end unless `--apply`. It also says whether the ppm should change. It uses
   the interface API, so it can tune another computer's recorder.
 
 ## [0.3.7] — 2026-11-13

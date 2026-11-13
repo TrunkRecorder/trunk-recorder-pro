@@ -412,6 +412,21 @@ pub fn went_quiet(quiet: &BTreeMap<String, f64>, decoding_before: &[String]) -> 
     (!lost.is_empty()).then(|| format!("control channel lost: {}", lost.join(", ")))
 }
 
+/// The unscored systems (`protected`) a candidate hurts: each one's score under the
+/// candidate less under the incumbent, averaged over the rounds (`(incumbent, candidate)`
+/// slices), where that is a drop of more than `limit` points. `None`: it hurts none.
+pub fn harmed(rounds: &[(Step, Step)], protected: &[String], limit: f64) -> Option<String> {
+    let hurt: Vec<String> = protected
+        .iter()
+        .filter_map(|n| {
+            let d: Vec<f64> = rounds.iter().filter_map(|(i, c)| Some(c.systems.get(n)?.score() - i.systems.get(n)?.score())).collect();
+            let mean = (!d.is_empty()).then(|| d.iter().sum::<f64>() / d.len() as f64)?;
+            (mean < -limit).then(|| format!("{n} {mean:+.1}"))
+        })
+        .collect();
+    (!hurt.is_empty()).then(|| format!("hurts {}", hurt.join(", ")))
+}
+
 // ───────────────────────────── the search ─────────────────────────────
 
 /// Why a search stopped before it was done.
@@ -690,7 +705,7 @@ pub fn cli(a: &Args) {
 const HELP: &str = "\
 trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--slice 15] [--rounds 3]
                [--settle 4] [--max-steps 12] [--margin 1] [--mode manual|linearity|sensitivity]
-               [--try stage=value,…] [--apply]
+               [--protect 5] [--try stage=value,…] [--apply]
 
 Finds the gain at which a radio decodes its systems best, on a recorder that is
 recording. Each candidate gain is compared with the best so far by turns, a --slice
@@ -704,6 +719,8 @@ Ctrl-C) unless --apply keeps the best.
   --source     the radio, by its place in Setup's list from 0 (needed with several)
   --systems    score only these systems; the radio's others are still watched, and a gain
                that silences one of their control channels is given up
+  --protect    with --systems: refuse a gain that costs one of the radio's other systems more
+               than this many points (0–100 scale; default 5, `off` to allow it)
   --try        compare one setting with the one it is at, no search: lna=11,mixer=10,vga=9
                (Airspy manual), step=16 (Airspy linearity/sensitivity), lna=32,vga=24,amp=on
                (HackRF), gain=33.8 (RTL-SDR)
@@ -722,6 +739,9 @@ struct Plan<'a> {
     watches: &'a [Watch],
     /// The systems scored (`--systems`); `None`: all of them.
     scored: Option<&'a [String]>,
+    /// `--systems`' others, and how many points one may lose before a candidate is refused (`--protect`).
+    protected: &'a [String],
+    protect: Option<f64>,
     label: &'a str,
     settle: f64,
     slice: f64,
@@ -784,6 +804,17 @@ fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
         }
         None => None,
     };
+    let protected: Vec<String> = match &scored {
+        Some(s) => names.iter().filter(|n| !s.iter().any(|x| x == *n)).map(|n| n.to_string()).collect(),
+        None => vec![],
+    };
+    // --protect N (points; default 5), or off.
+    let protect = match a.get("protect") {
+        Some("off" | "0") => None,
+        Some(v) => Some(v.parse::<f64>().map_err(|_| format!("--protect {v}: points (0–100), or off"))?.max(0.0)),
+        None => Some(5.0),
+    }
+    .filter(|_| !protected.is_empty());
     let start = knobs.point(&original);
     // The search's start, written back, isn't what the radio has: the start stands for it as it is.
     let as_it_is = (knobs.apply(&original, &start) != original).then_some(start.as_slice());
@@ -797,7 +828,12 @@ fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
     let per = rounds as f64 * 2.0 * (settle + slice);
     println!("Tuning {label} (source {i}) on {url}");
     match &scored {
-        Some(s) => println!("  scoring: {} (also watching {})", s.join(", "), names.iter().filter(|n| !s.iter().any(|x| x == *n)).copied().collect::<Vec<_>>().join(", ")),
+        Some(s) => println!(
+            "  scoring: {} (also watching {}{})",
+            s.join(", "),
+            protected.join(", "),
+            protect.map_or(String::new(), |p| format!(": a candidate that costs one of them more than {p} points is refused"))
+        ),
         None => println!("  scoring: {}", names.join(", ")),
     }
     match as_it_is {
@@ -814,7 +850,7 @@ fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
     println!("  to put it back by hand if this is killed: {original}");
     println!();
 
-    let plan = Plan { i, original: &original, knobs: &knobs, watches: &watches, scored: scored.as_deref(), label: &label, settle, slice, rounds, as_it_is };
+    let plan = Plan { i, original: &original, knobs: &knobs, watches: &watches, scored: scored.as_deref(), protected: &protected, protect, label: &label, settle, slice, rounds, as_it_is };
     let result = {
         let mut compare = |inc: &[usize], cand: &[usize]| -> Result<Option<Cmp>, Stop> {
             let (cmp, inc_step, cand_step) = compare(&mut c, &plan, inc, cand).map_err(Stop::Interrupted)?;
@@ -912,7 +948,9 @@ fn run(a: &Args, stop: Arc<AtomicBool>) -> Result<(), String> {
 fn compare(c: &mut Conn, plan: &Plan, inc: &[usize], cand: &[usize]) -> Result<(Option<Cmp>, Step, Step), String> {
     let (mut inc_all, mut cand_all) = (Step::default(), Step::default());
     let mut rounds = vec![];
+    let mut slices: Vec<(Step, Step)> = vec![];
     for r in 0..plan.rounds {
+        let (mut inc_slice, mut cand_slice) = (Step::default(), Step::default());
         // (Which side each slice is, by turns: the two can be the same point, see [`Plan::as_it_is`].)
         let order = if r % 2 == 0 { [false, true] } else { [true, false] };
         let (mut si, mut sc) = (None, None);
@@ -921,17 +959,30 @@ fn compare(c: &mut Conn, plan: &Plan, inc: &[usize], cand: &[usize]) -> Result<(
             let s = step.score_of(plan.scored);
             if is_cand {
                 cand_all.merge(&step);
-                sc = Some(s);
                 if s.is_none() {
+                    cand_all.abandoned = step.abandoned.clone();
                     rounds.push((si.flatten(), None));
                     return Ok((Cmp::of(&rounds), inc_all, cand_all));
                 }
+                sc = Some(s);
+                cand_slice = step;
             } else {
                 inc_all.merge(&step);
                 si = Some(s);
+                inc_slice = step;
             }
         }
         rounds.push((si.flatten(), sc.flatten()));
+        slices.push((inc_slice, cand_slice));
+        // The other systems: refused when one loses more than --protect over the rounds, or
+        // twice that in the first (so a setting that badly hurts one isn't kept on the air).
+        if let Some(limit) = plan.protect {
+            let limit = if r == 0 && plan.rounds > 1 { 2.0 * limit } else { limit };
+            if let Some(why) = harmed(&slices, plan.protected, limit).filter(|_| r == 0 || r + 1 == plan.rounds) {
+                cand_all.abandoned = Some(why);
+                return Ok((None, inc_all, cand_all));
+            }
+        }
     }
     Ok((Cmp::of(&rounds), inc_all, cand_all))
 }
@@ -1260,6 +1311,26 @@ mod tests {
             }
         });
         assert_eq!(r.unwrap_err(), Stop::Interrupted("ctrl-c".into()));
+    }
+
+    #[test]
+    fn a_candidate_that_hurts_another_system_is_named() {
+        let step = |a: f64, b: f64| {
+            let mut s = Step::default();
+            s.systems.insert("MetroC".into(), SysTally { seconds: 1.0, locked_s: 1.0, air_sym: Some(4800.0 * a), ..Default::default() });
+            s.systems.insert("Balch".into(), SysTally { seconds: 1.0, locked_s: 1.0, air_sym: Some(4800.0 * b), ..Default::default() });
+            s
+        };
+        let protected = ["Balch".to_string()];
+        // tr2's LNA 13 for MetroC: Balch 74 % → 45 %.
+        let rounds = [(step(0.756, 0.743), step(0.807, 0.446))];
+        assert_eq!(harmed(&rounds, &protected, 5.0).as_deref(), Some("hurts Balch -29.7"));
+        assert_eq!(harmed(&rounds, &protected, 30.0), None, "within what is allowed");
+        // A round worse, a round better: on average within the limit.
+        let mixed = [(step(0.8, 0.9), step(0.8, 0.8)), (step(0.8, 0.8), step(0.8, 0.86))];
+        assert_eq!(harmed(&mixed, &protected, 5.0), None);
+        // Only the protected are looked at.
+        assert_eq!(harmed(&[(step(0.9, 0.9), step(0.1, 0.9))], &protected, 5.0), None);
     }
 
     #[test]
