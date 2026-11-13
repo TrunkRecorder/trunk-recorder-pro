@@ -73,7 +73,7 @@ export class TrunkClient {
     /** Each system's own names for its radios (`unitNames` messages, with `unitNameEdited` made: rows { unit, name, origin }, in order), by short name. */
     this.unitNameRows = {};
     this.log = [];
-    /** `calls` asked and not answered yet: id → resolve. */
+    /** `queryCalls` asked and not answered yet: id → resolve. */
     this._asked = new Map();
     this._nextId = 1;
     /** Talker aliases heard on the air (saved ones, then live): short name → { unit: alias }. */
