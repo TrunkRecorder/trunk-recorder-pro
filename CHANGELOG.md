@@ -22,6 +22,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   such as MMDVM hotspots for DMR, P25 or NXDN radios, without decoding to audio and encoding again. Voice
   goes where live audio goes: not to a plugin delayed for the call, and decrypted voice only to plugins
   with `shareDecrypted`.
+- **Interfaces can take a call's voice as vocoder frames too.** `listen` takes `voice: true` (and
+  `audio: false` for the frames without the PCM): a `voice` message then comes just before each live audio
+  chunk, carrying the `voice` topic's chunk as plugins get it. client.js's `listen({ voice, audio })`.
 - A call's `.frames.jsonl` (NXDN's frame capture, and `tool sdr --frames`) names each frame's vocoder
   output `kind` (it was `out`) and no longer has `pos`: frame k starts k × 20 ms into the call.
 
