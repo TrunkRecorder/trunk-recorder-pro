@@ -187,8 +187,13 @@ conventional FM channels and on SmartNet analog calls:
   II's error-corrected framing isn't decoded.
 
 The ID goes into the call's `srcList`, the same as a digital radio's unit ID, so unit names apply
-to it (each conventional system has its own unit names). An MDC1200 emergency flag marks the call
-as an emergency.
+to it (each conventional system has its own unit names), with `signal_system` saying which kind it
+was: `MDC1200` or `FLEETSYNC`. An MDC1200 emergency flag marks the call as an emergency.
+
+The dashboard shows MDC1200 IDs in hex, as 4 digits, the way radios are programmed and agencies
+list them: 7187 is shown as `1C13`. A radio's page shows its decimal too. Search finds it either
+way (`1C13`, `0x1C13` or `7187`). What's saved stays decimal, as Trunk Recorder writes it: the call
+JSON, the unit names file, uploads and plugins.
 
 There is nothing to turn on: Trunk Recorder's `decodeMDC` and `decodeFSync` settings aren't needed
 and don't exist here.

@@ -190,6 +190,10 @@ pub struct Unit {
     pub tgs: Vec<(u32, u32)>,
     /// Its latest transmissions: (Unix s, talkgroup, seconds).
     pub recent: VecDeque<(i64, u32, f32)>,
+    /// The analog signalling its ID last came in (`signal_system`: "MDC1200",
+    /// "FLEETSYNC"; empty: the system's own).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub signal: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -569,6 +573,15 @@ impl Registry {
         self.caps
     }
 
+    /// System `system`'s radios whose IDs came in MDC1200, lowest first
+    /// (shown in hex, as they're programmed).
+    pub fn mdc_units(&self, system: &str) -> Vec<u32> {
+        let Some(s) = self.systems.get(system) else { return Vec::new() };
+        let mut v: Vec<u32> = s.units.iter().filter(|(_, u)| u.signal == trunk_core::dsp::inband::units::Kind::Mdc1200.name()).map(|(k, _)| *k).collect();
+        v.sort_unstable();
+        v
+    }
+
     /// How full it is: each system's talkgroups, radios and pairs against
     /// the caps (none: no cap), for the dashboard (Platform → Storage).
     pub fn fill(&self) -> Value {
@@ -659,6 +672,9 @@ impl Registry {
                 firsts.push(x.src);
             }
             u.last_tx = u.last_tx.max(at);
+            if let Some(k) = x.signal {
+                u.signal = k.name().into();
+            }
             u.tx += 1;
             u.tx_secs += turn;
             match u.tgs.iter_mut().find(|(g, _)| *g == c.talkgroup) {
@@ -1232,6 +1248,18 @@ mod tests {
         assert!(f.tg);
         assert_eq!(f.units, vec![9]);
         r.call_end("dcfd", &c2, t0 + 7203);
+        // Radios whose IDs came in MDC1200 (shown in hex), kept as it's saved.
+        use trunk_core::dsp::inband::units::Kind;
+        let mut c3 = call(300, &[(0x1c13, 0.0), (0x0703, 1.0), (1_011_270, 2.0)], 0.0, 3.0);
+        c3.sources[0].signal = Some(Kind::Mdc1200);
+        c3.sources[1].signal = Some(Kind::Mdc1200);
+        c3.sources[2].signal = Some(Kind::FleetSync);
+        r.call_end("conv", &c3, t0 + 7210);
+        assert_eq!(r.mdc_units("conv"), [0x0703, 0x1c13]);
+        assert!(r.mdc_units("nowhere").is_empty());
+        let saved: Unit = serde_json::from_value(serde_json::to_value(&r.systems["conv"].units[&0x1c13]).unwrap()).unwrap();
+        assert_eq!(saved.signal, "MDC1200");
+        assert!(serde_json::to_value(&r.systems["dcfd"].units[&7]).unwrap().get("signal").is_none(), "none: not saved");
 
         let (tg, unit) = names();
         let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
@@ -1427,7 +1455,7 @@ mod tests {
         let t = 1_790_000_000i64;
         let mut s = SystemRadio::new(t);
         for u in 0..6_000u32 {
-            s.units.insert(1_000_000 + u, Unit { first: t, last: t, last_tx: t, tx: 1, tx_secs: 1.0, aff: None, aff_t: 0, reg: None, tgs: Default::default(), recent: Default::default() });
+            s.units.insert(1_000_000 + u, Unit { first: t, last: t, last_tx: t, tx: 1, tx_secs: 1.0, aff: None, aff_t: 0, reg: None, tgs: Default::default(), recent: Default::default(), signal: String::new() });
         }
         let mut r = Registry::default();
         r.put("x", s);
@@ -1573,7 +1601,7 @@ mod tests {
             }
             for u in 0..units as u32 {
                 let recent = (0..MAX_RECENT_TX as i64).map(|k| (t + k * 60, 10_000 + u % 500, 4.25f32)).collect();
-                s.units.insert(1_000_000 + u, Unit { first: t, last: t + 600_000, last_tx: t + 599_000, tx: 321, tx_secs: 1234.5, aff: Some(10_001), aff_t: t, reg: Some(true), tgs: (0..TOP_TGS as u32).map(|k| (10_000 + k, 40 - k)).collect(), recent });
+                s.units.insert(1_000_000 + u, Unit { first: t, last: t + 600_000, last_tx: t + 599_000, tx: 321, tx_secs: 1234.5, aff: Some(10_001), aff_t: t, reg: Some(true), tgs: (0..TOP_TGS as u32).map(|k| (10_000 + k, 40 - k)).collect(), recent, signal: String::new() });
             }
             for p in 0..pairs as u64 {
                 s.pairs.insert(pair_key(1_000_000 + (p % 20_000) as u32, 1_020_000 + p as u32), Pair { n: 17, last: t });

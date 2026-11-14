@@ -12,6 +12,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   563 of 1,495, 38 %, where it said 466 of 792). `tool nxdn` prints the same count beside its per-frame ones.
 - NXDN: the framer finds a control channel's frames again after a fade. Its symbol timing could slip in the fade, and on
   the slipped grid the repeating idle frames could pass as valid every time, so it never looked for the sync again.
+- **The IQ corpus keeps captures that decode nothing** (#170). Its check deleted any capture nothing could be decoded
+  from, so the ones a no-audio capture rule makes, of the calls that failed, were the ones thrown away. It now checks
+  that each recording is a radio's IQ (its spectrum isn't flat as random or compressed bytes are, its samples are
+  centred and finite) and keeps it whatever it decodes to, for debugging and for decoders still to be written.
 ## [0.3.7] — 2026-11-13
 
 - **NXDN Type-C: control loss is the control channel's** (#170). A site's decode rate counted every watched carrier's
