@@ -176,6 +176,8 @@ pub struct Site {
     /// The site's RAN: configured, else the first CAC's.
     pub ran: Option<u8>,
     n_control: usize,
+    /// The control carrier's last counted frame: its carrier and time ([`Site::count`]).
+    control_clock: Option<(usize, f64)>,
     notes: Vec<(NoteLevel, String)>,
     now_s: f64,
     identity: Identity,
@@ -225,6 +227,7 @@ impl Site {
             access: None,
             location: None,
             n_control,
+            control_clock: None,
             notes: Vec::new(),
             now_s: 0.0,
             identity: Identity::default(),
@@ -239,8 +242,8 @@ impl Site {
         &self.identity
     }
 
-    /// Control frames decoded and lost: Type-C's CAC frames, Type-D's every
-    /// repeater's frames (see [`Site::frame`]).
+    /// Control frames decoded and lost: Type-C's CAC frames (with the slots
+    /// its framer missed), Type-D's every repeater's frames ([`Site::count`]).
     pub fn counts(&self) -> (u64, u64) {
         (self.carriers.iter().map(|c| c.good).sum(), self.carriers.iter().map(|c| c.bad).sum())
     }
@@ -338,9 +341,38 @@ impl Site {
         // continuously, so a frame lost there is a CAC lost); on Type-D,
         // with no control channel, every repeater's frames.
         let control = self.cfg.kind == Kind::TypeD || t - self.carriers[idx].control_s < CONTROL_HOLD_S;
-        let Some((lich, _)) = f.lich() else {
+        let lich = f.lich().map(|(l, _)| l);
+        // CAC: a control channel's frame, or a composite one's (its CRC
+        // decides). On a carrier sending CAC, a frame whose LICH was lost is
+        // tried as CAC too: the LICH (8 symbols, one parity bit) goes long
+        // before the CAC (CRC-16) as the signal weakens.
+        let cac_carrier = self.cfg.kind == Kind::TypeC && t - self.carriers[idx].control_s < CONTROL_HOLD_S;
+        let try_cac = match lich {
+            Some(l) => l.outbound() && (l.is_cac() || (self.cfg.kind == Kind::TypeC && l.rf() == RfChannel::Composite && l.fct() == 0)),
+            None => cac_carrier,
+        };
+        if try_cac
+            && let Some((sr, o, _)) = channel::cac(f)
+        {
+            self.count(idx, t, true);
+            self.carriers[idx].heard_s = t;
+            if !self.ran_ok(idx, sr.ran) {
+                return;
+            }
+            self.carriers[idx].control_s = t;
+            let dfa = self.access.is_some_and(|a| a.dfa);
+            let first = L3::parse(&o, Context::Control, dfa);
+            self.control(idx, first, t, out);
+            if sr.structure & 1 != 0 {
+                let second = L3::parse(&o[9..], Context::Control, dfa);
+                self.control(idx, second, t, out);
+            }
+            return;
+        }
+        // (A control channel's frame whose CAC failed is lost.)
+        let Some(lich) = lich.filter(|l| !(l.outbound() && l.is_cac())) else {
             if control {
-                self.carriers[idx].bad += 1;
+                self.count(idx, t, false);
             }
             return;
         };
@@ -349,33 +381,28 @@ impl Site {
             // A radio's own transmission (heard on a repeater input): not the site's.
             return;
         }
-        // The control channel; on Type-C also a composite one (its CRC decides).
-        let try_cac = lich.is_cac() || (self.cfg.kind == Kind::TypeC && lich.rf() == RfChannel::Composite && lich.fct() == 0);
-        if try_cac {
-            if let Some((sr, o, _)) = channel::cac(f) {
-                self.carriers[idx].good += 1;
-                if !self.ran_ok(idx, sr.ran) {
-                    return;
-                }
-                self.carriers[idx].control_s = t;
-                let dfa = self.access.is_some_and(|a| a.dfa);
-                let first = L3::parse(&o, Context::Control, dfa);
-                self.control(idx, first, t, out);
-                if sr.structure & 1 != 0 {
-                    let second = L3::parse(&o[9..], Context::Control, dfa);
-                    self.control(idx, second, t, out);
-                }
-                return;
-            }
-            if lich.is_cac() {
-                self.carriers[idx].bad += 1;
-                return;
-            }
-        }
         if self.cfg.kind == Kind::TypeD {
-            self.carriers[idx].good += 1;
+            self.count(idx, t, true);
         }
         self.traffic(idx, lich, f, t, out);
+    }
+
+    /// A frame that counts toward the decode rate ([`Site::frame`]), heard
+    /// at `t`. A Type-C control channel sends a frame every slot, so the
+    /// slots since its last one that the framer never saw (it let go in a
+    /// fade) are frames lost too, as P25 counts a lost TSBK.
+    fn count(&mut self, idx: usize, t: f64, good: bool) {
+        if self.cfg.kind == Kind::TypeC {
+            if let Some((i, t0)) = self.control_clock
+                && i == idx
+            {
+                let slots = ((t - t0) / self.cfg.rate.frame_s()).round() as u64;
+                self.carriers[idx].bad += slots.saturating_sub(1);
+            }
+            self.control_clock = Some((idx, t));
+        }
+        let c = &mut self.carriers[idx];
+        if good { c.good += 1 } else { c.bad += 1 }
     }
 
     /// Whether a frame with RAN `ran` belongs to the site; the first control
@@ -690,7 +717,8 @@ mod tests {
             for (i, iq) in carriers.iter().enumerate() {
                 if at < iq.len() {
                     let end = (at + block).min(iq.len());
-                    site.push(i, &iq[at..end], at as f64 / fs, fs, &mut out);
+                    // (`t0` is the channel's start, as the engine's: frames' samples count from it.)
+                    site.push(i, &iq[at..end], 0.0, fs, &mut out);
                 }
             }
             at += block;
@@ -744,6 +772,38 @@ mod tests {
         let out = run(&mut site, &[iq_of(&control_frames(&msgs, 5), Rate::N48, fs)], fs);
         let g = out.iter().find(|m| m.kind == MessageType::UuVGrant).expect("unit grant");
         assert_eq!((g.freq_hz, g.talkgroup, g.voice.nxdn()), (450_125_000, 55, Some(Rate::N96)));
+    }
+
+    /// A weak control channel (#170): a frame whose LICH is lost is still
+    /// read as CAC, the slots of a fade too deep for the framer count as
+    /// frames lost, so the decode rate is of every frame the site sent, and
+    /// the framer finds the grid again after it.
+    #[test]
+    fn a_weak_control_channel_counts_every_frame_it_sent() {
+        let fs = 24_000.0;
+        let mut site = Site::new(&[451_018_750.0], fs, NxdnConfig::default());
+        let msgs: Vec<Vec<u8>> = std::iter::once(l3::site_info(0x123 << 12 | 0x045, 0x0200, 0, 0, [1, 0])).chain(std::iter::repeat_n(l3::idle(), 79)).collect();
+        let mut frames = control_frames(&msgs, 5);
+        // Frames 5 and 6: their LICH hit (inner bits wrong), their CAC whole.
+        for f in &mut frames[5..7] {
+            for d in &mut f[10..13] {
+                *d ^= 1;
+            }
+        }
+        // Frames 20–29: faded out, the carrier gone.
+        let mut d: Vec<u8> = (0..600).map(|i| (i * 7 % 4) as u8).collect();
+        let lead = d.len();
+        d.extend(dibits(&frames));
+        d.extend((0..1200).map(|i| (i % 4) as u8));
+        let on: Vec<bool> = (0..d.len()).map(|i| i < lead || !(lead + 20 * 192..lead + 30 * 192).contains(&i)).collect();
+        let mut ph = 0.0;
+        let iq = modulate(&d, Some(&on), Rate::N48, fs, 0.0, 1.0, &mut ph);
+        run(&mut site, &[iq], fs);
+        let (good, bad) = site.counts();
+        // Every frame but the faded ones decoded, after the fade too (the
+        // receiver's timing slips in it: the framer moves its grid); lost:
+        // the 10 faded slots and the frame cut from the filler after the end.
+        assert_eq!((good, bad), (70, 11));
     }
 
     /// Registrations on the control channel (#170's message 0x20): units
