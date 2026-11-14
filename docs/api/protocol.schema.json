@@ -1428,12 +1428,17 @@
             "trpApi": {
               "type": "string",
               "description": "Where the trunkrecorder.pro API is, for the survey's license lookup (absent: https://trunkrecorder.pro)."
+            },
+            "checkForUpdates": {
+              "type": "boolean",
+              "description": "Ask GitHub once a day whether a newer release exists (default true)."
             }
           },
           "required": [
             "bind",
             "port",
-            "autoStart"
+            "autoStart",
+            "checkForUpdates"
           ],
           "additionalProperties": false
         },
@@ -5470,6 +5475,30 @@
             }
           ],
           "description": "macOS: whether Spotlight indexes the recordings folder (null: not checked yet, or not macOS)."
+        },
+        "update": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version",
+                "url"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A newer release on GitHub than the one running (checked once a day); null when up to date, not checked yet, or `server.checkForUpdates` is off."
         },
         "probes": {
           "type": "array",

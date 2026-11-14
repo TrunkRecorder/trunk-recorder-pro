@@ -122,6 +122,8 @@ export function App() {
   const own = usePluginPages();
   // The lights: recomputed with what they depend on, a few times a second at most.
   const health = useSelect((x) => pageHealth(x), (a, b) => Object.keys(a).every((k) => a[k].level === b[k].level && a[k].why === b[k].why));
+  // Only re-renders when a release actually shows up (or goes away), not every `host` tick.
+  const update = useSelect((x) => x.host?.platform.update ?? null, (a, b) => a?.version === b?.version);
   const running = isRecording(s.phase);
   // The browser build records in this tab: keep the screen (and so the tab) awake.
   useWakeLock(!!web && running);
@@ -157,7 +159,14 @@ export function App() {
           <span className="logo" aria-hidden="true" />
           <div className="brand-text">
             <b>Trunk Recorder Pro</b>
-            <span className="muted small">{s.version ? `v${s.version}` : ""}</span>
+            <span className="muted small">
+              {s.version ? `v${s.version}` : ""}
+              {update && (
+                <a className="badge update" href={update.url} target="_blank" rel="noreferrer" title={`A newer release, v${update.version}, is on GitHub`}>
+                  update
+                </a>
+              )}
+            </span>
           </div>
         </div>
         <Nav view={s.view} health={health} />

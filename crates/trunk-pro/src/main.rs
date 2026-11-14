@@ -137,6 +137,7 @@ mod protocol_tests;
 mod survey;
 mod tool;
 mod unlock;
+mod update_check;
 
 pub use trunk_app::config;
 

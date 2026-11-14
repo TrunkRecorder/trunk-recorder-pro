@@ -548,6 +548,8 @@ export interface Config {
     interfaces?: Record<string, InterfaceSetup>;
     /** Where the trunkrecorder.pro API is, for the survey's license lookup (absent: https://trunkrecorder.pro). */
     trpApi?: string;
+    /** Ask GitHub once a day whether a newer release exists (default true). */
+    checkForUpdates: boolean;
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
@@ -1656,6 +1658,8 @@ export interface PlatformInfo {
   disks: { name: string; path: string; mount: string; totalBytes: number; freeBytes: number; kind?: string; overflowed?: number; removed?: number; missing?: boolean }[];
   /** macOS: whether Spotlight indexes the recordings folder (null: not checked yet, or not macOS). */
   spotlight?: { path: string; state: "indexed" | "excluded" | "unknown"; why: string } | null;
+  /** A newer release on GitHub than the one running (checked once a day); null when up to date, not checked yet, or `server.checkForUpdates` is off. */
+  update?: { version: string; url: string } | null;
   probes: ProbeRow[];
   clock: ClockInfo;
   /** With the `platform` topic: each core's use, %, and the interfaces' traffic since the last sample. */

@@ -3471,6 +3471,12 @@ export function Setup() {
               <Group title="Startup and diagnostics">
                 <Toggle label="Record when the app starts" checked={c.server.autoStart} onChange={(v) => updateConfig((x) => void (x.server.autoStart = v))} />
                 <Toggle
+                  label="Check for updates"
+                  hint="Asks GitHub once a day whether a newer release exists"
+                  checked={c.server.checkForUpdates}
+                  onChange={(v) => updateConfig((x) => void (x.server.checkForUpdates = v))}
+                />
+                <Toggle
                   label="Save vocoder frames"
                   hint="<call>.sdr, for diagnostics and MimoSDR"
                   checked={c.recording.captureFrames}

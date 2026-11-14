@@ -67,6 +67,8 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
     let mut spool = SpoolWatch::default();
     let spotlight: Arc<Mutex<Option<Value>>> = Default::default();
     let mut spotlight_for: Option<(String, Instant)> = None;
+    let update: Arc<Mutex<Option<Value>>> = Default::default();
+    let mut update_checked: Option<Instant> = None;
     let sizes: Arc<Mutex<Option<crate::db::store::StoreSizes>>> = Default::default();
     // (PostgreSQL's server's write-ahead log, read with the sizes.)
     let server_wal: Arc<Mutex<Option<i64>>> = Default::default();
@@ -92,6 +94,24 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
             spotlight_for = Some((capture.clone(), Instant::now()));
             let out = spotlight.clone();
             let _ = std::thread::Builder::new().name("spotlight".into()).spawn(move || *out.lock().unwrap() = crate::spotlight::check(Path::new(&capture)));
+        }
+        if ctx.config.lock().unwrap().server.check_for_updates {
+            if update_checked.is_none_or(|at| at.elapsed() >= crate::update_check::EVERY) {
+                update_checked = Some(Instant::now());
+                let out = update.clone();
+                let _ = std::thread::Builder::new().name("update-check".into()).spawn(move || {
+                    if let Some(found) = crate::update_check::check(env!("CARGO_PKG_VERSION")) {
+                        *out.lock().unwrap() = Some(found);
+                    }
+                });
+            }
+            p["update"] = update.lock().unwrap().clone().unwrap_or(Value::Null);
+        } else {
+            // Turned off (maybe mid-run): stop claiming one's available, and
+            // check again from scratch if it's turned back on.
+            update_checked = None;
+            *update.lock().unwrap() = None;
+            p["update"] = Value::Null;
         }
         p["spotlight"] = spotlight.lock().unwrap().clone().unwrap_or(Value::Null);
         // The store's tables and indexes, measured on a thread of their own:
