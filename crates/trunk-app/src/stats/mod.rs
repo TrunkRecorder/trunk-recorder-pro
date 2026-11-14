@@ -16,6 +16,7 @@
 
 pub mod aggregate;
 pub mod events;
+pub mod health;
 pub mod history;
 pub mod meter;
 pub mod radio;
@@ -266,6 +267,8 @@ pub struct Stats {
     /// seen in progress.
     air: HashMap<CallId, (u64, u8)>,
     local_offset: crate::session::LocalOffset,
+    /// Totals for plugins' node health reports, kept while a plugin wants them.
+    pub health: Option<health::Totals>,
 }
 
 impl Stats {
@@ -287,6 +290,7 @@ impl Stats {
             minute_calls: BTreeMap::new(),
             air: HashMap::new(),
             local_offset,
+            health: None,
         }
     }
 
@@ -440,6 +444,9 @@ impl Stats {
         }
         self.count_air(engine, site_names);
         self.tally.report(&mut self.agg);
+        if self.health.is_some() {
+            self.tick_health(dt / 1000.0, engine);
+        }
         if dt > 0.0 {
             self.agg.gauge("eng/load", ((busy_ms - self.busy_mark) / dt).clamp(0.0, 64.0));
         }
@@ -451,6 +458,26 @@ impl Stats {
         self.edges(engine, out);
         out.push(Output::Message(ToClient::Stats { t: (self.now * 10.0).round() / 10.0, values: self.agg.values_json() }));
         self.details(engine, site_names, decode_sites, out);
+    }
+
+    /// The health totals' tick: each site's control channel, each conventional channel (measured
+    /// only when there are any), each source.
+    fn tick_health(&mut self, dt_s: f64, engine: &Engine) {
+        let systems = engine.systems();
+        let cfgs: Vec<_> = trunk_core::trunk::sites(&systems).collect();
+        let sites: Vec<(u16, u16, String, u64, u64)> = engine
+            .status()
+            .sites
+            .iter()
+            .filter_map(|y| {
+                let &(system, cfg) = cfgs.get(y.site as usize)?;
+                Some((y.system, y.site, systems[system as usize].site_key(cfg).stats_key(), y.good, y.bad))
+            })
+            .collect();
+        let channels = if systems.iter().any(|s| s.is_conventional()) { engine.channels() } else { Vec::new() };
+        if let Some(h) = self.health.as_mut() {
+            h.tick(dt_s, &self.agg, &sites, &channels, &self.names);
+        }
     }
 
     fn add_air(&mut self, sys: &str, ms: u64) {

@@ -54,6 +54,8 @@ For the whole recorder (Setup > **Plugins**, or `plugins.broadcastify.settings` 
 | `server` | | `https://api.broadcastify.com/call-upload` | string (URL) | **Upload server.** Leave it as it is, unless Broadcastify tells you to change it. |
 | `talkerAliases` | | `true` | bool | **Send talker aliases.** When the first radio on a call sent its name over the air, send that too. |
 | `skipCertificateCheck` | | `false` | bool | **Skip certificate checks.** Upload even when Broadcastify's certificate has expired. Leave it off unless uploads fail with a certificate error; the log warns while it's on. |
+| `healthReports` | | `true` | bool | **Send health reports.** Every 5 minutes, tell Broadcastify how well this recorder hears each system it uploads ([Health reports](#health-reports)). (Plugin 0.2.0 and later.) |
+| `healthServer` | | (beside `server`) | string (URL) | **Health report server.** Leave it empty: reports go to `…/call-health` beside the upload server. |
 
 For each system (the system's card, or its `plugins.broadcastify` in `config.json`):
 
@@ -100,6 +102,17 @@ audio played back to back, ending when the call was saved. The files on disk kee
 
 **Encrypted calls are never sent**, and neither are calls on talkgroups your lists leave out.
 Both are marked skipped.
+
+## Health reports
+
+Every 5 minutes, at a random point of its own, each system ID (and each site with a system ID of
+its own) sends Broadcastify a [node health report](../api/node-health.md): how long the recorder
+was decoding the control channel, the control messages decoded and lost, the calls announced and
+why any weren't recorded, the voice frames lost, and its radios' dropped samples and clipping.
+Totals only: no talkgroups, radios or audio. When several nodes upload one system, Broadcastify can
+take its calls from the one hearing it best, and tell a node that's up with no calls from one
+that's down. Reports go on a thread of their own, so uploads never wait on them. While Broadcastify
+doesn't take them, the plugin says so once and stops sending them until recording starts again.
 
 ## When an upload fails
 

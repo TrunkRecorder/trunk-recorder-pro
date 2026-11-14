@@ -415,6 +415,8 @@ pub struct SiteStatus {
     /// Its control channel's clock.
     pub now_s: f64,
     pub control_channel_hz: Option<u64>,
+    /// The source its control channel is received on.
+    pub control_source: Option<usize>,
     pub identity: Identity,
     pub good: u64,
     pub bad: u64,
@@ -498,6 +500,19 @@ pub struct ChannelSnapshot {
     pub calls: usize,
     /// A conventional channel: its rows' names, each once.
     pub names: Vec<String>,
+    /// A conventional channel: a signal is on it now.
+    pub open: bool,
+}
+
+/// A conventional frequency ([`Engine::conventional_channels`]).
+#[derive(Clone, Debug)]
+pub struct ConvInfo {
+    pub system: usize,
+    pub freq_hz: f64,
+    pub mode: ConvMode,
+    pub source: usize,
+    /// Its rows' names, each once.
+    pub names: Vec<String>,
 }
 
 /// What a channel is to the engine ([`ChannelSnapshot`]).
@@ -537,6 +552,7 @@ struct Want {
     quality: ChannelQuality,
     calls: usize,
     names: Vec<String>,
+    open: bool,
 }
 
 /// Noise profile slices per source for the dashboard.
@@ -1276,6 +1292,14 @@ impl Trunk {
     }
 
     /// Hunting: the control channel open, its source and frequency.
+    /// The source its control channel is received on (none: searching).
+    fn control_source(&self) -> Option<usize> {
+        match &self.listening {
+            Listening::Watching(carriers) => carriers.iter().find(|c| Some(c.hz.round() as u64) == self.cc_hz).map(|c| c.source),
+            _ => self.hunted().map(|(src, _)| src),
+        }
+    }
+
     fn hunted(&self) -> Option<(usize, f64)> {
         match (&self.listening, self.cc_hz) {
             (Listening::Hunting(h), Some(hz)) => Some((h.source, hz as f64)),
@@ -1538,6 +1562,7 @@ impl Trunk {
             site_name: self.cfg.name.clone(),
             now_s: self.now_s,
             control_channel_hz: self.cc_hz,
+            control_source: self.control_source(),
             identity: self.identity.clone(),
             good: self.good,
             bad: self.bad,
@@ -1838,6 +1863,7 @@ impl Core {
                 quality: c.quality,
                 calls: c.calls,
                 names: c.names.iter().map(|n| n.to_string()).collect(),
+                open: c.open,
             })
             .collect();
         (control, conv)
@@ -2474,6 +2500,12 @@ impl Engine {
         p.iter().map(|&v| metrics::bin_dbfs(v, s.chz.fft_size())).collect()
     }
 
+    /// Each conventional frequency: its system, mode, source and rows' names.
+    pub fn conventional_channels(&self) -> Vec<ConvInfo> {
+        let c = self.core();
+        c.conv.channels().map(|n| ConvInfo { system: n.system, freq_hz: n.freq_hz, mode: n.mode, source: n.source, names: n.names.iter().map(|s| s.to_string()).collect() }).collect()
+    }
+
     /// Every channel listened to now — control channels, voice channels,
     /// conventional channels — with its power and the floor under it. About
     /// a millisecond's work: for the dashboard, once a second at most. (What
@@ -2495,6 +2527,7 @@ impl Engine {
                 quality: w.quality,
                 calls: w.calls,
                 names: w.names.clone(),
+                open: w.open,
             }
         };
         let (mut control_out, mut conv_out): (Vec<Option<ChannelSnapshot>>, Vec<Option<ChannelSnapshot>>) = (control.iter().map(|_| None).collect(), conv.iter().map(|_| None).collect());

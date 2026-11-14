@@ -770,3 +770,39 @@ fn live_voice_is_the_plugin_topics_chunk() {
     check("FromRecorder", &ToClient::Voice { chunk: trunk_app::session::voice_chunk("dcfd", "", &tone).unwrap() }.to_value()).unwrap();
     assert!(trunk_app::session::voice_chunk("dcfd", "", &trunk_core::trunk::LiveAudio { frames: vec![], ..audio }).is_none(), "analog: none");
 }
+
+/// Node health totals: a conventional channel's one transmission (0.5–2.5 s in, with its
+/// code) as a plugin's health report has it.
+#[test]
+fn health_totals_make_a_node_health_report() {
+    use trunk_recorder_plugin::health::{report, Recorder, Select};
+    let epoch = 1.75e12;
+    let mut s = Session::new(conventional_config(), &Default::default(), epoch, &|_| None, |_| 0).unwrap();
+    s.plugin_topics.health = true;
+    let (mut out, mut health) = (Vec::new(), Vec::new());
+    let mut take = |out: &mut Vec<Output>| {
+        health.extend(out.drain(..).filter_map(|o| if let Output::Plugin(trunk_recorder_plugin::HostMessage::Health(h)) = o { Some(h) } else { None }));
+    };
+    air(2_400_000.0, 4.5, |iq, t| {
+        s.push_iq(0, iq, 0, epoch + t * 1000.0);
+        s.poll(epoch + t * 1000.0, &mut out);
+        take(&mut out);
+    });
+    s.poll(epoch + 15_000.0, &mut out);
+    take(&mut out);
+    assert_eq!(health.len(), 2, "at once, then 10 s on");
+    let h = health.pop().unwrap();
+    assert_eq!(h.since * 1000.0, health[0].since * 1000.0);
+    assert!(h.sites.is_empty());
+    let r = report(None, &h, &Select::system("conv"), json!({ "systemId": 1 }), Recorder::new("trunk-recorder-pro", "test"), 0).expect("its channel");
+    let c = &r.channels[0];
+    assert_eq!((c.hz, c.mode.as_str(), c.name.as_str()), (155_200_000, "fm", "Fire"));
+    assert_eq!((c.opens, c.calls, c.opened_by_other), (1, 1, 0));
+    assert!((1.0..=3.0).contains(&c.open_s), "open {} s", c.open_s);
+    assert!(c.heard_s >= 3.0, "heard {} s", c.heard_s);
+    let (signal, noise, snr) = (c.signal_db.unwrap(), c.noise_db.unwrap(), c.snr_db.unwrap());
+    assert!(signal > noise + 10.0 && snr > 10.0, "signal {signal} noise {noise} snr {snr}");
+    assert_eq!(r.radios.len(), 1);
+    assert_eq!((r.radios[0].kind.as_str(), r.radios[0].dropped_s), ("rtlsdr", 0.0));
+    assert!(c.voice.is_empty(), "analog: no frames");
+}

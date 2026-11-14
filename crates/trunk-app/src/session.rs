@@ -67,6 +67,8 @@ pub enum Output {
 const STATUS_EVERY_S: f64 = 200.0;
 /// The control channel decode rate is checked over this long, s.
 const RATE_EVERY_S: f64 = 10.0;
+/// Node health totals go to plugins this often, ms.
+const HEALTH_EVERY_MS: f64 = 10_000.0;
 /// A running source that sends nothing for this long is fed silence in its
 /// place ([`Engine::push_gap`]), so time goes on: calls on it end, and its
 /// clock stays in step with the others'. ms of wall clock.
@@ -91,6 +93,8 @@ pub struct PluginTopics {
     pub call_updates: bool,
     pub units: bool,
     pub status: bool,
+    /// Node health totals ([`trunk_recorder_plugin::Health`]).
+    pub health: bool,
     pub tone_patterns: bool,
     pub voice: bool,
 }
@@ -387,6 +391,7 @@ pub struct Session {
     wall_correction_ms: f64,
     last_plugin_status_ms: f64,
     plugin_good: Vec<u64>,
+    last_plugin_health_ms: f64,
     /// The codes conventional frequencies carried ([`crate::heard`]).
     heard: HeardCodes,
     /// AutoTune scores by source label, as loaded and as last given to save.
@@ -460,6 +465,7 @@ impl Session {
             wall_correction_ms: 0.0,
             last_plugin_status_ms: 0.0,
             plugin_good: Vec::new(),
+            last_plugin_health_ms: 0.0,
             heard: HeardCodes::default(),
             tune: Default::default(),
             tune_saved: String::new(),
@@ -657,6 +663,9 @@ impl Session {
         self.steer_clocks();
         self.meas.set_now(now_ms / 1000.0);
         self.fill_quiet(now_ms);
+        if self.plugin_topics.health && self.meas.health.is_none() {
+            self.meas.health = Some(crate::stats::health::Totals::new(self.cfg.sources.len()));
+        }
         for ev in self.engine.drain_events() {
             self.handle(ev, out);
         }
@@ -704,6 +713,10 @@ impl Session {
                 let dt = if self.last_plugin_status_ms == 0.0 { 0.0 } else { (now_ms - self.last_plugin_status_ms) / 1000.0 };
                 self.last_plugin_status_ms = now_ms;
                 out.push(Output::Plugin(HostMessage::Status(self.plugin_status(dt))));
+            }
+            if self.plugin_topics.health && now_ms - self.last_plugin_health_ms >= HEALTH_EVERY_MS {
+                self.last_plugin_health_ms = now_ms;
+                out.push(Output::Plugin(HostMessage::Health(self.plugin_health(start / 1000.0))));
             }
             self.poll_share(now_ms, out);
             let load = self.busy_ms() / (now_ms - start).max(1.0);
@@ -1136,6 +1149,93 @@ impl Session {
         trunk_recorder_plugin::Status { time: self.wall(st.now_s), systems }
     }
 
+    /// The node health totals for plugins (`since`: when recording started, Unix s).
+    fn plugin_health(&self, since: f64) -> trunk_recorder_plugin::Health {
+        use trunk_recorder_plugin::{ChannelHealth, SiteHealth, SourceHealth};
+        let Some(h) = self.meas.health.as_ref() else { return Default::default() };
+        let st = self.engine.status();
+        let kinds: std::collections::HashMap<u16, &str> = self.cfg.call_systems().iter().map(|c| (c.index, c.kind)).collect();
+        let sites = st
+            .sites
+            .iter()
+            .map(|y| {
+                let t = h.sites.get(&(y.system, y.site)).cloned().unwrap_or_default();
+                SiteHealth {
+                    system: y.system,
+                    short_name: y.short_name.clone(),
+                    site_name: y.site_name.clone(),
+                    protocol: kinds.get(&y.system).copied().unwrap_or("").to_string(),
+                    control_channel_hz: y.control_channel_hz,
+                    source: y.control_source,
+                    nac: y.identity.get(IdField::Nac),
+                    wacn: y.identity.get(IdField::Wacn),
+                    sys_id: y.identity.get(IdField::SysId),
+                    rfss: y.identity.get(IdField::Rfss),
+                    site: y.identity.get(IdField::Site),
+                    locked_s: t.locked_s,
+                    good: t.good,
+                    bad: t.bad,
+                    air_sym: t.air_sym.map(|a| a.round() as u64),
+                    // (Only P25 measures it.)
+                    symbol_rate: t.air_sym.map(|_| 4800),
+                    snr_db_total: t.snr_db_total,
+                    snr_s: t.snr_s,
+                    phase_err_deg_total: t.phase_err_deg_total,
+                    phase_err_s: t.phase_err_s,
+                    calls: t.calls,
+                    voice: t.voice,
+                }
+            })
+            .collect();
+        let rows = self.engine.conventional_channels();
+        let channels = h
+            .channels
+            .iter()
+            .map(|(&(system, hz), t)| {
+                let row = rows.iter().find(|r| r.system == system as usize && r.freq_hz.round() as u64 == hz);
+                ChannelHealth {
+                    system,
+                    short_name: self.system_name(system).to_string(),
+                    freq_hz: hz,
+                    mode: row.map_or(String::new(), |r| r.mode.as_str().to_string()),
+                    names: row.map_or(Vec::new(), |r| r.names.clone()),
+                    source: row.map(|r| r.source),
+                    heard_s: t.heard_s,
+                    open_s: t.open_s,
+                    signal_db_total: t.signal_db_total,
+                    closed_db_total: t.closed_db_total,
+                    closed_s: t.closed_s,
+                    snr_db_total: t.snr_db_total,
+                    calls: t.calls.clone(),
+                    skipped: t.skipped,
+                    voice: t.voice.clone(),
+                }
+            })
+            .collect();
+        let sources = self
+            .cfg
+            .sources
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let t = h.sources.get(i).cloned().unwrap_or_default();
+                let driver = serde_json::to_value(&s.kind).ok().and_then(|v| v["type"].as_str().map(str::to_string)).unwrap_or_default();
+                SourceHealth {
+                    index: i,
+                    name: s.label(),
+                    driver,
+                    seconds: t.seconds,
+                    dropped_s: t.dropped_s,
+                    clip_pct_total: t.clip_pct_total,
+                    ppm_error: st.sources.get(i).and_then(|r| r.error_ppm),
+                }
+            })
+            .collect();
+        // The recorder's clock less the systems': the latest any site said.
+        let system_offset_ms = self.radio_clocks().into_iter().filter(|c| c.valid).max_by(|a, b| a.at_s.total_cmp(&b.at_s)).map(|c| -c.offset_ms);
+        trunk_recorder_plugin::Health { time: self.meas.now(), since, sites, channels, sources, system_offset_ms }
+    }
+
     fn flush_log(&mut self, out: &mut Vec<Output>) {
         if !self.log.is_empty() {
             out.push(Output::Topic { topic: "log".into(), msg: ToClient::Log { lines: std::mem::take(&mut self.log) } });
@@ -1148,6 +1248,9 @@ impl Session {
     }
 
     fn handle(&mut self, ev: Event, out: &mut Vec<Output>) {
+        if let Some(h) = self.meas.health.as_mut() {
+            h.observe(&ev);
+        }
         if let Some(sys) = self.event_system(&ev) {
             let name = self.system_name(sys).to_string();
             self.meas.observe(&ev, &name, &self.engine, out);

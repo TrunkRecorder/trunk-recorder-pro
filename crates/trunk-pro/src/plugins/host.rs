@@ -295,6 +295,7 @@ impl PluginHost {
             topics.call_updates |= m.subscribes(topic::CALL_UPDATE);
             topics.units |= m.subscribes(topic::UNIT);
             topics.status |= m.subscribes(topic::STATUS);
+            topics.health |= m.subscribes(topic::HEALTH);
             topics.tone_patterns |= m.subscribes(topic::TONE_PATTERN);
             topics.voice |= m.subscribes(topic::VOICE);
             live |= topic::ALL.iter().any(|&t| topic::is_live(t) && m.subscribes(t));
@@ -405,6 +406,7 @@ impl PluginHost {
             HostMessage::TonePattern(t) => (topic::TONE_PATTERN, About { decrypted: t.decrypted, ..on(&t.short_name, Some(t.talkgroup)) }),
             // (No one system's: never delayed.)
             HostMessage::Status(_) => (topic::STATUS, About::default()),
+            HostMessage::Health(_) => (topic::HEALTH, About::default()),
             // (Live media and concluded calls may be decrypted ones: they go only by `live` and
             // `concluded`, which know.)
             _ => return,

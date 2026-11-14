@@ -83,6 +83,15 @@ recorded calls (by system, talkgroup, radio and time, a page at a time); the pag
 `Plugin::calls(request, page)` with the request number it returned. A `CallsPage` is `entries`, `next` (present when more calls remain: put it in the next query's `cursor`) and `error` (the call store is off: the page is the recent calls alone). The recorder answers from its call store, the
 latest calls included. On the wire the request number rides beside the query and the page: `{"type":"calls.query","request":1,"talkgroup":101}` and `{"type":"calls","request":1,"entries":[...],"next":"..."}`. (Since SDK 0.9.0.)
 
+## Node health reports
+
+Subscribe to `health` and the recorder sends running totals of how well it hears each site,
+conventional channel and radio every 10 s (`Plugin::health`). The `health` module turns them into
+a [node health report](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/api/node-health.md)
+for a service: `History` keeps the totals, a `Reporter` per node says when its report is due (a
+random point in each interval, jittered) and makes it, and is told how the send went
+(`delivered`, `failed`). (Since SDK 0.12.0.)
+
 ## Versions
 
 The crate follows semver. The protocol's `API_VERSION` is separate: it changes

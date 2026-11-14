@@ -45,6 +45,9 @@ pub trait Plugin: Sized {
     /// Live voice as vocoder frames (subscribe to `voice`).
     fn voice(&mut self, _chunk: VoiceChunk) {}
     fn status(&mut self, _status: Status) {}
+    /// How well the recorder hears each site, channel and radio: running totals, every 10 s
+    /// ([`topic::HEALTH`]). [`crate::health`] makes node health reports of them.
+    fn health(&mut self, _health: Health) {}
     /// A call's tones made a pattern: every one heard (subscribe to `tone_pattern`).
     fn tone_pattern(&mut self, _t: TonePatternEvent) {}
     /// A line TRP logged (subscribe to `log`): its own, not the plugin's. Don't log
@@ -342,6 +345,7 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
             HostMessage::Audio(a) => p.audio(a),
             HostMessage::Voice(v) => p.voice(v),
             HostMessage::Status(s) => p.status(s),
+            HostMessage::Health(h) => p.health(h),
             HostMessage::TonePattern(t) => p.tone_pattern(t),
             HostMessage::Log(l) => p.log_line(l),
             HostMessage::Action(a) => {
