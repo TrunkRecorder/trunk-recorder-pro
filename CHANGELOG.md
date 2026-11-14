@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **NXDN Type-C: more of a weak control channel decoded, and its loss counted honestly** (#170). A frame whose LICH was
+  lost is now tried as CAC too (its CRC decides): on a contributor's captures, one Green Mountain capture went from 1,378 to
+  all 1,495 frames and a weak one from 466 to 563, with grants heard sooner. Loss counts the frames the control channel
+  sent, as P25 counts lost TSBKs: the slots of a fade too deep for the receiver to follow count as lost (the weak capture:
+  563 of 1,495, 38 %, where it said 466 of 792). `tool nxdn` prints the same count beside its per-frame ones.
+- NXDN: the framer finds a control channel's frames again after a fade. Its symbol timing could slip in the fade, and on
+  the slipped grid the repeating idle frames could pass as valid every time, so it never looked for the sync again.
 ## [0.3.7] — 2026-11-13
 
 - **NXDN Type-C: control loss is the control channel's** (#170). A site's decode rate counted every watched carrier's
