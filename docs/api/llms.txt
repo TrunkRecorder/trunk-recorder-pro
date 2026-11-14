@@ -63,9 +63,10 @@ page the recorder serves needs nothing: the browser signs in on the
 recorder's sign-in page and its session cookie covers every port; to offer a way to
 sign in (anonymous "listen" access lets visitors in without one), link to
 /signin. Anything else sends the secret: as Authorization: Bearer <secret> (programs, curl,
-fetch() from an allowed origin), or as ?token=<secret> in the URL (a
+fetch() from an allowed origin; preferred), or as ?token=<secret> in the URL (a
 browser WebSocket or <audio> on another origin; client.js does this when
-given { token }). Never hard-code a secret in a page: ask the user for it.
+given { token }): a URL's token lands in history and proxy logs, so only
+where a header can't go. Never hard-code a secret in a page: ask the user for it.
 Behind a proxy that signs people in (server.auth.proxy), the proxy's
 header (Remote-User by default) says who, believed from the proxy's
 addresses only and where the cookie would count; behind Cloudflare Access
@@ -73,12 +74,16 @@ addresses only and where the cookie would count; behind Cloudflare Access
 token or the cookie says who first.
 GET /api/session → { auth, access ("listen" | "control" | null), user,
 proxy (the proxy in front signed it in: sign out there, not with
-/api/logout), passkeys (whether a browser may sign in with a passkey on this host: the
-recorder's sign-in page offers it; POST /api/passkey/login/… and
-/register/…, same origin only) }.
+/api/logout), passkeys (whether a browser may sign in with a passkey here: the
+built-in interface's port only; POST /api/passkey/login/… and
+/register/…, same origin only; 403 on an interface's port), passkeyOrigin
+(the one origin passkeys work at, from any port: link to its /signin) }.
+POST /api/logout {"all": true} (built-in port): every browser session of the
+user ends (another user's with "user": name, control only); tokens don't.
 Without access: 401 (a browser page: the sign-in page). Access is the lower
-of the port's and the user's; hello.access says which. When it changes the
-socket is closed; reconnect (client.js does).
+of the port's and the user's; hello.access says which. When it changes, or
+the session or Cloudflare token it opened with expires, the socket is
+closed; reconnect (client.js does).
 
 
 ## Template

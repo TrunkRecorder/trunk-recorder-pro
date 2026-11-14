@@ -28,8 +28,8 @@ every other interface's ([Serving your interface](#serving-your-interface)):
 | `GET /api/protocol.ts` | Every message, as TypeScript types with comments: **the definition** |
 | `GET /api/schema` | The same as JSON Schema (draft-07): `definitions.FromRecorder` / `definitions.ToRecorder` |
 | `GET /api/version` | `{"app": "trunk-pro", "version": "…", "api": 1}` (`api`: the interface API version). Always open, signed in or not |
-| `GET /api/session` | `{ auth, access, user, proxy, passkeys }`: whether signing in is on, what this request may do, and whether passkeys work here ([Signing in](#signing-in)) |
-| `POST /api/login`, `POST /api/logout` | Sign a browser in with an access token (a session cookie; answers `{ access, user }`), and out |
+| `GET /api/session` | `{ auth, access, user, proxy, passkeys, passkeyOrigin }`: whether signing in is on, what this request may do, and whether (and where) passkeys work ([Signing in](#signing-in)) |
+| `POST /api/login`, `POST /api/logout` | Sign a browser in with an access token (a session cookie; answers `{ access, user }`), and out (`{"all": true}`: everywhere) |
 | `POST /api/passkey/login/…`, `/api/passkey/register/…` | Sign a browser in with a passkey, and add one ([Passkeys](#passkeys)) |
 | `GET /signin` | The sign-in page, on every port, whether or not a page needs it |
 | `WS /api/ws` | The connection: JSON messages both ways, plus binary live audio |
@@ -430,9 +430,13 @@ and `/calls/` too):
 | The cookie `POST /api/login` sets, body `{"token": "trp_…"}` | Browsers. It holds a signed session, not the secret, and covers the WebSocket and `<audio>` too, on every port of that host name, for 30 days or until `POST /api/logout` |
 | `?token=trp_…` in the URL | Browser pages that can't set a header (a WebSocket, an `<audio src>`) and can't use the cookie (another origin's page) |
 
-The query parameter ends up in browser history and proxy logs; prefer the
-other two. The cookie only counts for requests from the recorder's own pages
-(same origin), never from another site's.
+**Prefer `Authorization: Bearer`.** A `?token=` is part of the URL, so the
+secret ends up wherever URLs go: browser history, bookmarks, the logs of
+any proxy or tunnel in front, and screenshots of the address bar. (The
+recorder's answers carry `Referrer-Policy: no-referrer`, so its own pages
+don't pass their URL on to other sites.) Use it only where nothing else
+can carry the token. The cookie only counts for requests from the
+recorder's own pages (same origin), never from another site's.
 
 **A fourth: a proxy in front that signs people in** (Authelia, oauth2-proxy,
 Cloudflare Access, `tailscale serve`; `server.auth.proxy`, see
@@ -448,14 +452,24 @@ through such a proxy signs in at the proxy; a token works there as ever.
 proxy's.
 
 **What you get** is the lower of the port's access and the user's role.
-`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null, "proxy": true | false, "passkeys": true | false }`
-for the request it's asked with (`proxy`: the proxy in front signed it in; `passkeys`: whether a browser may use them on the host it asked at), and `hello` carries `access` and `user`.
+`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null, "proxy": true | false, "passkeys": true | false, "passkeyOrigin": "https://radio.example.com" }`
+for the request it's asked with (`proxy`: the proxy in front signed it in; `passkeys`: whether they work on this port, the built-in interface's, for the host it asked at; `passkeyOrigin`, from any port: the one origin they work at, left out where there's none; a page at another origin links there), and `hello` carries `access` and `user`.
 `POST /api/login` answers `{ "access": "listen" | "control", "user": "kiosk" }`
 (the user's role and name, whatever the port; signing in on or off) with the
 cookie, or 401. When the owner changes access (a user removed, a role or an
 interface's access changed, signing in turned on), connections it affects
 are closed; reconnect, and the new `hello` says what you have now
-(client.js does this).
+(client.js does this). A connection opened with a session (the cookie) or
+Cloudflare Access's token is closed when that expires.
+
+**Signing out everywhere.** `POST /api/logout` with `{"all": true}`, on
+the built-in interface's port, signs the user this request is out
+everywhere: every browser's session of theirs signed in until now ends
+(their connections close), this one's cookie too; 204. `{"all": true,
+"user": "kiosk"}` does it for another user, with control access. It's
+recorded in the config (the user's `signedOut`). It ends sessions only: an
+access token sent with each request (`Authorization: Bearer`, `?token=`)
+still works, so a token that may have been seen is to be made again.
 
 **An interface the recorder serves needs no change.** The browser signs in
 once, on the sign-in page, and the cookie covers the dashboard and every
@@ -467,16 +481,23 @@ Otherwise the owner can turn on HTTPS (`server.tls`, see
 [HTTPS](../configuration/server-and-log.md#https)), or put a reverse proxy
 that adds it in front; across the internet, use a VPN or tunnel rather than
 exposing the port. Over HTTPS, or behind a proxy that sets
-`X-Forwarded-Proto: https`, the cookie is marked `Secure`.
+`X-Forwarded-Proto: https`, the cookie is marked `Secure`. Sent over plain
+HTTP to a recorder that serves HTTPS, a request that carries a token, the
+cookie or a sign-in isn't redirected but refused (400): the secret already
+crossed the network; make that token again.
 
 ### Passkeys
 
 Browsers sign in with a passkey too: the sign-in page and Setup do it, and
-another page on the recorder's own origin can (never another origin's: these
-routes have no CORS). Passkeys work where browsers allow them: on `localhost`,
-or over HTTPS on the recorder's `server.hostname` (see
-[Passkeys](../configuration/server-and-log.md#passkeys)), any port of it;
-elsewhere these routes answer 400 and `GET /api/session` says
+another page on the built-in interface's origin can (never another origin's:
+these routes have no CORS). Passkeys work where browsers allow them, on
+`localhost` or over HTTPS on the recorder's `server.hostname`, and at one
+origin there, the dashboard's, which the recorder works out itself
+(`passkeyOrigin`; see
+[Passkeys](../configuration/server-and-log.md#passkeys)): an answer made at
+any other origin, another port of the same name included, is refused. On
+an interface's port these routes answer 403 (an interface's page links to
+the dashboard's `/signin` instead); on a host with no passkeys, 400 and
 `"passkeys": false`. Each is a WebAuthn ceremony in two steps, all `POST`
 and JSON, its binary values base64url (no padding), as webauthn-rs reads them:
 
@@ -487,11 +508,12 @@ and JSON, its binary values base64url (no padding), as webauthn-rs reads them:
 | `/api/passkey/register/start` | `{ name }`: what to call it (1–40 characters) | `{ id, options }`: `options.publicKey` for `navigator.credentials.create` |
 | `/api/passkey/register/finish` | `{ id, credential }`: what `create` made (`id`, `rawId`, `type`, `response`: `attestationObject`, `clientDataJSON`) | `{ name, id }`: its name (made the user's alone: "iPhone 2") and credential id, saved to the config |
 
-Registering is for a user signed in (a session or a token) on a port with
-control access (the built-in interface's), and adds the passkey to that
-user alone. Signing in needs nothing. A ceremony waits 5 minutes for its
-finish, and is finished once. A session signed in with a passkey ends when
-the passkey is removed from the config.
+Registering is for a user signed in (a session or a token), and adds the
+passkey to that user alone. Signing in needs nothing. A ceremony waits 5
+minutes for its finish, and signs in once (a sign-in's `id` is the waiting
+state itself, signed by the recorder: nothing's kept for it until it
+finishes). A session signed in with a passkey ends when the passkey is
+removed from the config.
 
 ### curl
 
@@ -554,7 +576,7 @@ The cookie is `HttpOnly`: the page never reads it back (signing in again
 replaces it). Sign in before
 making the client; a client already connected keeps the access it was
 greeted with until it reconnects. After a sign-out (`POST /api/logout`), the
-recorder closes nothing by itself; reload the page. A page that would rather
+recorder closes nothing by itself (signing out everywhere does); reload the page. A page that would rather
 not ask for the secret itself links to `/signin`, the recorder's sign-in
 page, which goes on to `/` once signed in (the dashboard's **Sign in** does
 this).

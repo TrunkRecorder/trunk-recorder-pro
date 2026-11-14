@@ -46,8 +46,9 @@ sha2 = "0.11"
 hmac = "0.13"
 # Passkeys (access/passkey.rs): WebAuthn's checks, over RustCrypto (no OpenSSL, no C).
 # No attestation (any authenticator will do); conditional-ui: signing in with
-# no name typed (discoverable credentials).
-webauthn-rs = { version = "0.6.2", default-features = false, features = ["conditional-ui"] }
+# no name typed (discoverable credentials); danger-allow-state-serialisation: a
+# sign-in waiting kept by the browser, signed, not in memory (serde derives, no more crates).
+webauthn-rs = { version = "0.6.2", default-features = false, features = ["conditional-ui", "danger-allow-state-serialisation"] }
 # Passkeys' credential ids (base64url): the version trunk-app has.
 base64 = "0.23"
 # Cloudflare Access's tokens (access/cloudflare.rs): RS256, with the ring rustls has already.

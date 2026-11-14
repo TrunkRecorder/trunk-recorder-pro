@@ -16,7 +16,7 @@
   label { font-size: 13px; color: var(--muted); display: grid; gap: 4px; }
   input { width: 100%; padding: 9px 10px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
   input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  button { padding: 9px; font: inherit; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
+  button, a.button { padding: 9px; font: inherit; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; text-align: center; text-decoration: none; }
   button:disabled { opacity: .6; cursor: default; }
   .error { margin: 0; min-height: 1.4em; color: var(--bad); font-size: 13px; }
   .or { margin: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
@@ -29,6 +29,7 @@
   <h1>Trunk Recorder Pro</h1>
   <p class="sub">Sign in</p>
   <button id="p" type="button" hidden>Passkey</button>
+  <a id="pl" class="button" hidden>Passkey ↗</a>
   <p class="or" id="or" hidden>or</p>
   <label>Access token
     <input id="t" type="password" name="token" autocomplete="current-password webauthn" autofocus required>
@@ -37,7 +38,7 @@
   <p class="error" id="e" role="alert"></p>
 </form>
 <script>
-  const f = document.getElementById("f"), t = document.getElementById("t"), b = document.getElementById("b"), e = document.getElementById("e"), p = document.getElementById("p");
+  const f = document.getElementById("f"), t = document.getElementById("t"), b = document.getElementById("b"), e = document.getElementById("e"), p = document.getElementById("p"), pl = document.getElementById("pl");
   // Asked for at /signin: on to the start page; in place of another page: that page again.
   const signedIn = () => (location.pathname === "/signin" ? location.replace("/") : location.reload());
   f.addEventListener("submit", async (ev) => {
@@ -55,7 +56,7 @@
     t.select();
   });
 
-  // Passkeys (where the recorder says browsers allow them): WebAuthn, its binary values base64url.
+  // Passkeys: where the recorder says they work, at the one origin it says (the dashboard's). WebAuthn, its binary values base64url.
   const bytes = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
   const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
@@ -89,10 +90,23 @@
     await passkey(false).catch(failed);
     p.disabled = false;
   });
+  // "here": this page is at their origin; "there": another port or address (an interface's, a tunnel's), so a link to theirs (its cookie is this host's too); null: none.
+  const passkeysAt = (s, origin) => (!s.passkeyOrigin ? null : s.passkeys && s.passkeyOrigin === origin ? "here" : "there");
+  // Whether anything answers at `origin` within 3 s (its answer unread: another origin's; a refused connection or a bad certificate doesn't).
+  const answers = (origin) => fetch(origin + "/api/version", { mode: "no-cors", cache: "no-store", signal: AbortSignal.timeout(3000) }).then(() => true, () => false);
   fetch("/api/session", { cache: "no-store" })
     .then((r) => r.json())
     .then(async (s) => {
-      if (!s.passkeys || !window.PublicKeyCredential) return;
+      const at = passkeysAt(s, location.origin);
+      if (at === "there") {
+        // Only if something answers there (nothing serving HTTPS on the host name: no link to nowhere).
+        if (!(await answers(s.passkeyOrigin))) return;
+        pl.href = s.passkeyOrigin + "/signin";
+        pl.title = s.passkeyOrigin;
+        pl.hidden = document.getElementById("or").hidden = false;
+        return;
+      }
+      if (at !== "here" || !window.PublicKeyCredential) return;
       p.hidden = document.getElementById("or").hidden = false;
       if (await PublicKeyCredential.isConditionalMediationAvailable?.()) passkey(true).catch(failed);
     })

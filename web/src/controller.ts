@@ -143,7 +143,7 @@ export interface AppState {
   user: string | null;
   /** Whether signing in is on (GET /api/session, asked after each hello: a listen-only connection's config doesn't say). */
   signingIn: boolean;
-  /** Whether passkeys work where this page is (GET /api/session: localhost, or server.hostname over HTTPS). */
+  /** Whether passkeys work where this page is (GET /api/session: the built-in interface's port, localhost or server.hostname, and this page at their one origin). */
   passkeys: boolean;
   /** Whether the proxy in front signed this browser in (GET /api/session): signing out is the proxy's. */
   proxied: boolean;
@@ -767,7 +767,7 @@ export function createToken(name: string, access: ApiAccess): Promise<TokenCreat
 export type OwnPasskey = Pick<AuthPasskey, "id" | "name" | "created">;
 
 /** How the recorder sees this browser (GET /api/session); null: it couldn't say (the browser build has no server). */
-export type Session = { auth: boolean; access: ApiAccess | null; user: string | null; proxy?: boolean; passkeys?: boolean; ownPasskeys?: OwnPasskey[] };
+export type Session = { auth: boolean; access: ApiAccess | null; user: string | null; proxy?: boolean; passkeys?: boolean; passkeyOrigin?: string; ownPasskeys?: OwnPasskey[] };
 export async function fetchSession(): Promise<Session | null> {
   if (transport.kind !== "desktop") return null;
   try {
@@ -778,10 +778,13 @@ export async function fetchSession(): Promise<Session | null> {
   }
 }
 
+/** Whether passkeys work on this page, by session `x`: the recorder says so, and this page is at the one origin they work at (not a tunnel's other port). */
+export const passkeysHere = (x: Pick<Session, "passkeys" | "passkeyOrigin">, origin: string = typeof location === "undefined" ? "" : location.origin) => !!x.passkeys && x.passkeyOrigin === origin;
+
 /** The session asked again, into the state: signing in, passkeys here, the proxy, the user's own passkeys. */
 export async function refreshSession(): Promise<void> {
   const x = await fetchSession();
-  if (x) set({ signingIn: x.auth, passkeys: !!x.passkeys, proxied: !!x.proxy, ownPasskeys: x.ownPasskeys ?? [] });
+  if (x) set({ signingIn: x.auth, passkeys: passkeysHere(x), proxied: !!x.proxy, ownPasskeys: x.ownPasskeys ?? [] });
 }
 
 /** Who signed in (POST /api/login's answer): the user's role and name. */
@@ -860,6 +863,21 @@ export function passkeyName(ua: string = typeof navigator === "undefined" ? "" :
   const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /CrOS/.test(ua) ? "Chromebook" : /Linux/.test(ua) ? "Linux" : "";
   const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
   return [os, browser].filter(Boolean).join(" ") || "Passkey";
+}
+
+/**
+ * Sign `user` out everywhere (POST /api/logout `{all: true}`): every browser's session of theirs signed in until now ends
+ * (access tokens don't). Left out, the user this browser signed in as (this browser too: then the page again). Why not, or null.
+ */
+export async function signOutEverywhere(user?: string): Promise<string | null> {
+  try {
+    const r = await fetch("/api/logout", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(user ? { all: true, user } : { all: true }), cache: "no-store" });
+    if (!r.ok) return (await r.text()).trim() || `Failed: ${r.status}`;
+  } catch {
+    return "No answer";
+  }
+  if (!user) location.reload();
+  return null;
 }
 
 /** Sign out (the cookie cleared), and the page again (`reload`): the server's sign-in page, or the app as anyone may see it. */

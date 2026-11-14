@@ -1,9 +1,9 @@
 // Passkeys, as a signed-in user sees their own: listed (the session's,
 // any role), and one added for this browser. Setup → Access shows everyone's; the top bar, by the signed-in
-// name, the user's own (any role: the server lets each add their own).
+// name, the user's own (any role: the server lets each add their own), and Sign out everywhere.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { addPasskey, passkeyName, signOut, useSelect } from "./controller.ts";
+import { addPasskey, passkeyName, signOut, signOutEverywhere, useSelect } from "./controller.ts";
 import { Field } from "./inputs.tsx";
 import type { AuthPasskey } from "./protocol.ts";
 
@@ -77,34 +77,56 @@ export function AddPasskey() {
   );
 }
 
-/** What the signed-in name opens: the user's passkeys (as the session lists them) and Add passkey. */
-export function UserPasskeys() {
+/** Sign this user out everywhere (every browser's session of theirs, this one's too), asked first. */
+function SignOutEverywhere() {
+  const [problem, setProblem] = useState<string | null>(null);
+  const go = async () => {
+    if (!confirm("Sign out everywhere? Every browser signed in as you signs in again, this one too. Access tokens keep working.")) return;
+    setProblem(await signOutEverywhere());
+  };
+  return (
+    <div className="row wrap">
+      <button type="button" className="btn ghost small danger" onClick={() => void go()}>
+        Sign out everywhere
+      </button>
+      {problem && <span className="bad-text small">{problem}</span>}
+    </div>
+  );
+}
+
+/** What the signed-in name opens: where passkeys work, the user's passkeys (as the session lists them) and Add passkey; Sign out everywhere (not when the proxy signed them in). */
+export function UserPasskeys(props: { passkeys: boolean; proxied: boolean }) {
   const keys = useSelect((x) => x.ownPasskeys);
   return (
-    <div className="user-pop" role="dialog" aria-label="Your passkeys">
-      <span className="field-label">Passkeys</span>
-      {keys && (
-        <ul className="user-keys">
-          {keys.map((p) => (
-            <li key={p.id} className="row">
-              <span>{p.name}</span>
-              <span className="muted small">{day(p.created)}</span>
-            </li>
-          ))}
-          {!keys.length && <li className="muted small">None</li>}
-        </ul>
+    <div className="user-pop" role="dialog" aria-label="Your sign-in">
+      {props.passkeys && (
+        <>
+          <span className="field-label">Passkeys</span>
+          {keys && (
+            <ul className="user-keys">
+              {keys.map((p) => (
+                <li key={p.id} className="row">
+                  <span>{p.name}</span>
+                  <span className="muted small">{day(p.created)}</span>
+                </li>
+              ))}
+              {!keys.length && <li className="muted small">None</li>}
+            </ul>
+          )}
+          <div className="row wrap">
+            <AddPasskey />
+          </div>
+        </>
       )}
-      <div className="row wrap">
-        <AddPasskey />
-      </div>
+      {!props.proxied && <SignOutEverywhere />}
     </div>
   );
 }
 
 /**
  * The top bar's signed-in name, its Sign out beside it (not when the proxy in
- * front signed them in: that's the proxy's), and, where passkeys work, the
- * name opens the user's passkeys.
+ * front signed them in: that's the proxy's), and the name opens the user's
+ * passkeys (where passkeys work) and Sign out everywhere (not the proxy's).
  */
 export function SignedInAs() {
   const s = useSelect((x) => ({ user: x.user, proxied: x.proxied, passkeys: x.passkeys }));
@@ -123,9 +145,10 @@ export function SignedInAs() {
   }, [open]);
   if (!s.user) return null;
   const title = s.proxied ? "Signed in by the proxy" : "Signed in as";
+  const opens = s.passkeys || !s.proxied;
   return (
     <span className="row user-menu" aria-label="Signed in" ref={box}>
-      {s.passkeys ? (
+      {opens ? (
         <button type="button" className="btn ghost small" title={title} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>
           {s.user}
         </button>
@@ -139,7 +162,7 @@ export function SignedInAs() {
           Sign out
         </button>
       )}
-      {open && s.passkeys && <UserPasskeys />}
+      {open && opens && <UserPasskeys passkeys={s.passkeys} proxied={s.proxied} />}
     </span>
   );
 }

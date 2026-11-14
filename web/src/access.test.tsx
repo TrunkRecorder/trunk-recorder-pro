@@ -9,9 +9,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToString } from "react-dom/server";
 import { App } from "./App.tsx";
-import { AccessSection, enableWith } from "./Access.tsx";
+import { AccessSection, enableWith, unencrypted } from "./Access.tsx";
 import { defaultConfig, newSystem } from "./config.ts";
-import { mayEdit, passkeyName, type OwnPasskey, setSetupTab, setView, snapshot, transport, type View } from "./controller.ts";
+import { mayEdit, passkeyName, passkeysHere, type OwnPasskey, setSetupTab, setView, snapshot, transport, type View } from "./controller.ts";
 import { IgnoreToggle, NameButton } from "./dash/Radio.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
 import { UserPasskeys } from "./Passkeys.tsx";
@@ -153,7 +153,7 @@ test("Access: the users, each's role and when their token was made; the last Adm
 /** `hello` as `user`, the session saying whether passkeys work here. */
 async function helloWithPasskeys(c: Config, user: string, passkeys: boolean): Promise<void> {
   const fetch0 = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(JSON.stringify({ auth: true, access: "control", user, passkeys }), { status: 200 })) as typeof fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ auth: true, access: "control", user, passkeys, ...(passkeys ? { passkeyOrigin: location.origin } : {}) }), { status: 200 })) as typeof fetch;
   try {
     hello(c, "control", user);
     await new Promise((r) => setTimeout(r, 20));
@@ -188,7 +188,7 @@ test("Access: each user's passkeys by name, to remove; Add passkey for this brow
 /** `hello` with `access` as `user` (none: not signed in), the session saying whether passkeys work here and whether the proxy signed them in. */
 async function helloSession(c: Config, access: ApiAccess, user: string | null, passkeys: boolean, proxy = false, ownPasskeys?: OwnPasskey[]): Promise<void> {
   const fetch0 = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(JSON.stringify({ auth: true, access, user, passkeys, proxy, ...(ownPasskeys ? { ownPasskeys } : {}) }), { status: 200 })) as typeof fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ auth: true, access, user, passkeys, proxy, ...(passkeys ? { passkeyOrigin: location.origin } : {}), ...(ownPasskeys ? { ownPasskeys } : {}) }), { status: 200 })) as typeof fetch;
   try {
     hello(c, access, user ?? undefined);
     await new Promise((r) => setTimeout(r, 20));
@@ -197,10 +197,17 @@ async function helloSession(c: Config, access: ApiAccess, user: string | null, p
   }
 }
 
+test("Passkeys here: the recorder says so, and this page is at their one origin (not a tunnel's other port)", () => {
+  assert.equal(passkeysHere({ passkeys: true, passkeyOrigin: "http://localhost:8080" }, "http://localhost:8080"), true);
+  assert.equal(passkeysHere({ passkeys: true, passkeyOrigin: "http://localhost:8080" }, "http://localhost:9000"), false, "an SSH tunnel's port");
+  assert.equal(passkeysHere({ passkeys: false, passkeyOrigin: "https://radio.example.com" }, "https://radio.example.com:8081"), false, "an interface's port");
+  assert.equal(passkeysHere({ passkeys: true }, "http://localhost"), false, "no origin said");
+});
+
 /** The signed-in name's button that opens their passkeys (closed). */
 const NAME_BUTTON = /<button type="button" class="btn ghost small" title="Signed in (as|by the proxy)" aria-expanded="false" aria-haspopup="dialog">(\w+)<\/button>/;
 
-test("Top bar: the signed-in name opens their passkeys where passkeys work, any role; nothing passkey-related elsewhere or signed out", async () => {
+test("Top bar: the signed-in name opens their passkeys where passkeys work, any role, and Sign out everywhere; nothing passkey-related elsewhere or signed out", async () => {
   setView("overview");
   const added = new Date(1_763_200_000_000).toLocaleDateString();
   // View, signed in, passkeys work here: the name opens them; Sign out beside it.
@@ -209,30 +216,35 @@ test("Top bar: the signed-in name opens their passkeys where passkeys work, any 
   assert.equal(NAME_BUTTON.exec(html)?.[2], "kiosk");
   assert.match(text(html), /kiosk Sign out/);
   // Their config is redacted: their list from the session.
-  let pop = text(renderToString(<UserPasskeys />));
-  assert.equal(pop.trim(), `Passkeys Wall tablet ${added} Add passkey`);
+  let pop = text(renderToString(<UserPasskeys passkeys proxied={false} />));
+  assert.equal(pop.trim(), `Passkeys Wall tablet ${added} Add passkey Sign out everywhere`);
   await helloSession(redacted(), "listen", "kiosk", true);
-  assert.equal(text(renderToString(<UserPasskeys />)).trim(), "Passkeys None Add passkey", "none: the session leaves them out");
-  // Passkeys don't work here: the name alone, nothing about passkeys.
+  assert.equal(text(renderToString(<UserPasskeys passkeys proxied={false} />)).trim(), "Passkeys None Add passkey Sign out everywhere", "none: the session leaves them out");
+  // Passkeys don't work here: the name opens Sign out everywhere alone, nothing about passkeys.
   await helloSession(redacted(), "listen", "kiosk", false);
   html = renderToString(<App />);
-  assert.doesNotMatch(html, /aria-haspopup|[Pp]asskey/);
+  assert.equal(NAME_BUTTON.exec(html)?.[2], "kiosk");
+  assert.doesNotMatch(html, /[Pp]asskey/);
   assert.match(text(html), /kiosk Sign out/);
+  assert.equal(text(renderToString(<UserPasskeys passkeys={false} proxied={false} />)).trim(), "Sign out everywhere");
   // Not signed in: no name, no passkeys.
   await helloSession(redacted(), "listen", null, true);
   html = renderToString(<App />);
   assert.doesNotMatch(html, /aria-haspopup|[Pp]asskey|Sign out/);
-  // Signed in by the proxy: the name opens their passkeys, and no Sign out.
+  // Signed in by the proxy: the name opens their passkeys, and no Sign out (nor everywhere: the proxy's); no passkeys either, nothing to open.
   await helloSession(redacted(), "listen", "kiosk", true, true);
   html = renderToString(<App />);
   assert.equal(NAME_BUTTON.exec(html)?.[1], "by the proxy");
   assert.doesNotMatch(text(html), /Sign (out|in)/);
+  assert.doesNotMatch(text(renderToString(<UserPasskeys passkeys proxied />)), /Sign out/);
+  await helloSession(redacted(), "listen", "kiosk", false, true);
+  assert.doesNotMatch(renderToString(<App />), /aria-haspopup/);
   // Admin: the name opens them too, their own (the session's) listed with when each was added.
   await helloSession(full(), "control", "luke", true, false, [{ id: "BAUG", name: "Mac Safari", created: 1_763_200_000 }]);
   html = renderToString(<App />);
   assert.equal(NAME_BUTTON.exec(html)?.[2], "luke");
-  pop = text(renderToString(<UserPasskeys />));
-  assert.equal(pop.trim(), `Passkeys Mac Safari ${added} Add passkey`);
+  pop = text(renderToString(<UserPasskeys passkeys proxied={false} />));
+  assert.equal(pop.trim(), `Passkeys Mac Safari ${added} Add passkey Sign out everywhere`);
 });
 
 test("Access: the proxy in front, set up with its addresses and header; then From, Header, Others and how many names are mapped", () => {
@@ -329,6 +341,33 @@ test("Interfaces: with signing in on, an allowed origin needs an Admin's token t
   assert.equal(snapshot().user, null);
 });
 
+test("Access: each user signed out everywhere from their row, signing in on; Unencrypted over plain HTTP from another computer", () => {
+  const html = renderToString(<AccessSection c={full()} />);
+  for (const u of ["luke", "kiosk"]) assert.match(html, new RegExp(`aria-label="Sign ${u} out everywhere"`), u);
+  const off = full();
+  off.server.auth!.enabled = false;
+  assert.doesNotMatch(renderToString(<AccessSection c={off} />), /out everywhere/, "off: no sessions to end");
+  const out = full();
+  out.server.auth!.users!.kiosk.signedOut = 1_763_400_000;
+  assert.match(renderToString(<AccessSection c={out} />), new RegExp(`title="Every browser of theirs · last ${new Date(1_763_400_000_000).toLocaleDateString().replace(/\//g, "\\/")}"`));
+  // Where this page is.
+  assert.equal(unencrypted({ protocol: "http:", hostname: "localhost" }), false);
+  assert.equal(unencrypted({ protocol: "http:", hostname: "127.0.0.1" }), false);
+  assert.equal(unencrypted({ protocol: "http:", hostname: "[::1]" }), false);
+  assert.equal(unencrypted({ protocol: "https:", hostname: "radio.example.com" }), false);
+  assert.equal(unencrypted({ protocol: "http:", hostname: "192.168.1.5" }), true);
+  assert.equal(unencrypted({ protocol: "http:", hostname: "radiobox.tail1234.ts.net" }), true, "a VPN's name too: the notice says it's fine there");
+  assert.doesNotMatch(text(html), /Unencrypted/, "localhost");
+  const loc = globalThis.location;
+  (globalThis as Record<string, unknown>).location = { ...loc, hostname: "192.168.1.5", host: "192.168.1.5:8080", origin: "http://192.168.1.5:8080" };
+  try {
+    assert.match(text(renderToString(<AccessSection c={full()} />)), /Access Unencrypted/);
+    assert.doesNotMatch(text(renderToString(<AccessSection c={off} />)), /Unencrypted/, "signing in off: nothing to say");
+  } finally {
+    (globalThis as Record<string, unknown>).location = loc;
+  }
+});
+
 test("Interfaces: HTTPS's certificate and key, and the host name, beside the ports", () => {
   const c = full();
   hello(c, "control", "luke");
@@ -340,6 +379,10 @@ test("Interfaces: HTTPS's certificate and key, and the host name, beside the por
   assert.match(html, /aria-label="Certificate" [^>]*value="\/etc\/ssl\/radiobox.crt"/);
   assert.match(html, /aria-label="Key" [^>]*value="\/etc\/ssl\/radiobox.key"/);
   assert.match(text(html), /From next restart/, "served over plain HTTP until then");
+  assert.match(text(html), /HSTS a year .* Off/, "HSTS: off unless set");
+  c.server.tls.hsts = true;
+  hello(c, "control", "luke");
+  assert.match(text(renderToString(<InterfacesPage />)), /HSTS a year .* On Once HTTPS/, "sent over HTTPS alone");
   assert.match(text(html), /Host name passkeys .* None/);
   c.server.hostname = "radiobox.tail1234.ts.net";
   hello(c, "control", "luke");

@@ -8,7 +8,8 @@
 //! connection's handshake runs on its own, under [`HANDSHAKE`], so a stalled
 //! one holds nothing up, and one that fails is only logged (at debug:
 //! scanners). A browser or program speaking plain HTTP to the port gets
-//! `GET /api/version` answered as ever (a second launch asks it) and a
+//! `GET /api/version` answered as ever (a second launch asks it), a refusal
+//! for anything that carried a credential (sent in the clear already), and a
 //! redirect to https:// for anything else ([`plain`]).
 
 use std::io;
@@ -260,8 +261,11 @@ async fn handshake(tcp: TcpStream, acceptor: TlsAcceptor) -> io::Result<Option<T
 }
 
 /// Plain HTTP on an HTTPS port: `GET /api/version` answered as ever (how a
-/// second launch, or a script, finds the recorder), anything else sent to
-/// the same address over https:// (308, so a POST stays one).
+/// second launch, or a script, finds the recorder); one that carried a
+/// credential ([`credential_in`]) refused, not sent on (it crossed the
+/// network readable: it's not to work, nor to be sent again over HTTPS
+/// without a word), told once a kind in the log; anything else sent to the
+/// same address over https:// (308, so a POST stays one).
 async fn plain(mut tcp: TcpStream) -> io::Result<()> {
     let mut head = Vec::new();
     let mut buf = [0u8; 1024];
@@ -276,10 +280,20 @@ async fn plain(mut tcp: TcpStream) -> io::Result<()> {
     let mut lines = text.split("\r\n");
     let mut line = lines.next().unwrap_or("").split(' ');
     let (method, target) = (line.next().unwrap_or(""), line.next().unwrap_or(""));
-    let host = lines.take_while(|l| !l.is_empty()).find_map(|l| l.split_once(':').filter(|(n, _)| n.trim().eq_ignore_ascii_case("host")).map(|(_, v)| v.trim()));
+    let headers: Vec<(&str, &str)> = lines.take_while(|l| !l.is_empty()).filter_map(|l| l.split_once(':')).map(|(n, v)| (n.trim(), v.trim())).collect();
+    let host = headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("host")).map(|(_, v)| *v);
     let answer = |status: &str, headers: &str, body: &str| format!("HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
     let res = if method == "GET" && target.split('?').next() == Some("/api/version") {
         answer("200 OK", "Content-Type: application/json\r\n", &crate::server::version().to_string())
+    } else if let Some(kind) = credential_in(method, target, &headers) {
+        static TOLD: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+        let mut told = TOLD.lock().unwrap();
+        if !told.contains(&kind) {
+            let from = tcp.peer_addr().map(|p| format!(" from {}", p.ip())).unwrap_or_default();
+            log::warn!("HTTPS: {kind} came over plain HTTP{from}: refused. It crossed the network unencrypted (an access token sent so should be made again).");
+            told.push(kind);
+        }
+        answer("400 Bad Request", "Content-Type: text/plain; charset=utf-8\r\n", &format!("Refused: {kind} was sent unencrypted, over plain HTTP. This recorder serves HTTPS: use https://. An access token sent this way should be made again.\n"))
     } else {
         match host.filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._:[]".contains(&b))) {
             Some(host) => {
@@ -292,6 +306,25 @@ async fn plain(mut tcp: TcpStream) -> io::Result<()> {
     };
     tcp.write_all(res.as_bytes()).await?;
     tcp.shutdown().await
+}
+
+/// What credential a plain HTTP request (`method`, `target`, `headers`)
+/// carries, if it does: an `Authorization` header, `?token=`, this
+/// recorder's session cookie (`trp_…`), or signing in itself (its body).
+fn credential_in(method: &str, target: &str, headers: &[(&str, &str)]) -> Option<&'static str> {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let header = |name: &'static str| headers.iter().filter(move |(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| *v);
+    if header("authorization").next().is_some() {
+        Some("an Authorization header")
+    } else if query.split('&').any(|kv| kv.starts_with("token=")) {
+        Some("an access token (?token=)")
+    } else if header("cookie").flat_map(|c| c.split(';')).any(|c| c.trim().starts_with("trp_")) {
+        Some("a session cookie")
+    } else if method == "POST" && (path == "/api/login" || path.starts_with("/api/passkey/")) {
+        Some("signing in")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -307,7 +340,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn config_of(cert: &Path, key: &Path) -> config::Tls {
-        config::Tls { cert: cert.display().to_string(), key: key.display().to_string() }
+        config::Tls { cert: cert.display().to_string(), key: key.display().to_string(), ..Default::default() }
     }
 
     /// A TLS client trusting the fixtures' certificates.
@@ -367,7 +400,7 @@ pub(crate) mod tests {
         assert!(Tls::new(&config::Tls::default(), dir).err().unwrap().contains("needs a certificate file"));
         // Relative: from the config's folder.
         let fixtures = a.parent().unwrap();
-        assert!(Tls::new(&config::Tls { cert: "a.crt".into(), key: "a.key".into() }, &fixtures.join("config.json")).is_ok());
+        assert!(Tls::new(&config::Tls { cert: "a.crt".into(), key: "a.key".into(), ..Default::default() }, &fixtures.join("config.json")).is_ok());
         let mut cfg = config::Config::default();
         assert_eq!(problem(&cfg, dir), None, "off: nothing to check");
         cfg.server.tls = Some(config_of(&a, &b_key));
@@ -375,7 +408,8 @@ pub(crate) mod tests {
     }
 
     /// HTTPS with the certificate; plain HTTP to the same port gets the
-    /// version and a redirect; a client that never shakes hands holds up nobody.
+    /// version and a redirect, or a refusal when it carried a credential; a
+    /// client that never shakes hands holds up nobody.
     #[tokio::test]
     async fn https_and_plain_http_on_one_port() {
         let (a, a_key) = fixture("a");
@@ -392,8 +426,18 @@ pub(crate) mod tests {
         assert!(res.starts_with("HTTP/1.1 200 OK") && res.contains(&format!("\"app\":\"{}\"", crate::server::APP_ID)), "{res}");
         let res = http(addr, &format!("GET /?x=1 HTTP/1.1\r\nHost: localhost:{}\r\n\r\n", addr.port())).await;
         assert!(res.starts_with("HTTP/1.1 308") && res.contains(&format!("\r\nLocation: https://localhost:{}/?x=1\r\n", addr.port())), "{res}");
-        let res = http(addr, "POST /api/login HTTP/1.1\r\nHost: radiobox.example\r\nContent-Length: 0\r\n\r\n").await;
-        assert!(res.contains("\r\nLocation: https://radiobox.example/api/login\r\n"), "{res}");
+        let res = http(addr, "POST /api/v1/x HTTP/1.1\r\nHost: radiobox.example\r\nContent-Length: 0\r\n\r\n").await;
+        assert!(res.starts_with("HTTP/1.1 308") && res.contains("\r\nLocation: https://radiobox.example/api/v1/x\r\n"), "{res}");
+        // A credential, sent in the clear already: refused, not sent on.
+        for (req, kind) in [("GET /api/v1/calls HTTP/1.1\r\nHost: localhost\r\nauthorization: Bearer trp_00\r\n\r\n", "an Authorization header"),
+                            ("GET /api/v1/calls?a=1&token=trp_00 HTTP/1.1\r\nHost: localhost\r\n\r\n", "?token="),
+                            ("GET / HTTP/1.1\r\nHost: localhost\r\nCookie: a=1; trp_0badc0de=luke.h.1.00\r\n\r\n", "a session cookie"),
+                            ("POST /api/login HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n", "signing in"),
+                            ("POST /api/passkey/login/finish HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n", "signing in")] {
+            let res = http(addr, req).await;
+            assert!(res.starts_with("HTTP/1.1 400") && !res.contains("Location") && res.contains(kind) && res.contains("unencrypted") && res.contains("made again"), "{req}: {res}");
+        }
+        assert!(http(addr, "GET / HTTP/1.1\r\nHost: localhost\r\nCookie: theme=dark\r\n\r\n").await.starts_with("HTTP/1.1 308"), "another cookie: no credential");
         assert!(http(addr, "GET / HTTP/1.1\r\nHost: a b\r\n\r\n").await.starts_with("HTTP/1.1 400"), "no Location from a Host that's no host");
     }
 

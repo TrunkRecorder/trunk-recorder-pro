@@ -86,6 +86,7 @@ pub const APP_ID: &str = "trunk-pro";
 pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::Result<()> {
     listener.set_nonblocking(true)?;
     let loopback = listener.local_addr()?.ip().is_loopback();
+    ctx.interfaces.listening_on(listener.local_addr()?.port());
     let listener = tokio::net::TcpListener::from_std(listener)?;
     let app = builtin_app(ctx.clone(), loopback);
     let tls = ctx.tls.get().cloned();
@@ -162,12 +163,16 @@ pub(crate) fn interface_app(ctx: Arc<Ctx>, id: String, stop: tokio::sync::watch:
 /// localhost, through [`guard`]; over HTTPS when `ctx.tls` is set), for tests: its address.
 #[cfg(test)]
 pub(crate) async fn test_server(ctx: &Arc<Ctx>, door: Door) -> std::net::SocketAddr {
+    let builtin = matches!(door, Door::Builtin);
     let app = match door {
         Door::Builtin => builtin_app(ctx.clone(), true),
         Door::Interface { id, stop } => interface_app(ctx.clone(), id, stop, true),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    if builtin {
+        ctx.interfaces.listening_on(addr.port());
+    }
     let tls = ctx.tls.get().cloned();
     tokio::spawn(async move { crate::tls::serve(listener, tls.as_ref(), app, std::future::pending()).await });
     addr
@@ -228,7 +233,27 @@ async fn terminate() {
 /// as a [`Caller`] of `door`, which every handler asks what it may do. With
 /// signing in on, one whose credential gives it nothing may only ask for
 /// what's [`open`]; a browser asking for a page gets the sign-in page.
-async fn guard(State((ctx, loopback, door)): State<(Arc<Ctx>, bool, Door)>, mut req: Request, next: Next) -> Response {
+/// Every answer carries [`safe_headers`].
+async fn guard(State((ctx, loopback, door)): State<(Arc<Ctx>, bool, Door)>, req: Request, next: Next) -> Response {
+    let mut res = admitted(&ctx, loopback, door, req, next).await;
+    safe_headers(&ctx, &mut res);
+    res
+}
+
+/// What every answer [`guard`] gives carries: no `Referer` sent on from its
+/// pages (a `?token=` in their URL stays there), no type sniffed; and, over
+/// HTTPS here with `server.tls.hsts` set, browsers told to keep to HTTPS
+/// for a year (every port of the host name: why it's off unless set).
+fn safe_headers(ctx: &Ctx, res: &mut Response) {
+    let h = res.headers_mut();
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    if ctx.tls.get().is_some() && ctx.config.lock().unwrap().server.tls.as_ref().is_some_and(|t| t.hsts) {
+        h.insert(header::STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=31536000"));
+    }
+}
+
+async fn admitted(ctx: &Arc<Ctx>, loopback: bool, door: Door, mut req: Request, next: Next) -> Response {
     // (In a block: a closure borrowing the request mustn't live across the await.)
     let (host, origin) = {
         let header = |name| req.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -308,9 +333,11 @@ fn sign_in(req: &Request) -> Response {
     (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE, "Bearer")], "Sign in first: an access token as Authorization: Bearer, ?token=, or POST /api/login.\n").into_response()
 }
 
-/// The sign-in page, as `status`: 401 in place of a page asked for, 200 at /signin.
+/// The sign-in page, as `status`: 401 in place of a page asked for, 200 at
+/// /signin. Never in another page's frame (nothing here frames it): typed
+/// into, or clicked, under a page made to look like something else.
 fn sign_in_page(status: StatusCode) -> Response {
-    (status, [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], SIGN_IN).into_response()
+    (status, [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store"), (header::X_FRAME_OPTIONS, "DENY")], SIGN_IN).into_response()
 }
 
 /// `POST /api/login`: `{"token": secret}` (or the secret alone), a user's
@@ -335,27 +362,40 @@ fn signed_in_as(ctx: &Ctx, headers: &HeaderMap, user: &str, role: ApiAccess, cre
     }
 }
 
-/// Whether a request came over HTTPS: served so here, or by a proxy in front that says so.
+/// Whether a request came over HTTPS: served so here, or by a proxy in front
+/// that says so (`X-Forwarded-Proto`, or the page's `Origin`). It decides one
+/// thing, the session cookie's `Secure`, so it's believed from anyone (a
+/// Cloudflare Tunnel or Docker in front needs no `auth.proxy`): a forged
+/// one only has the forger's own browser drop its cookie over plain HTTP.
+/// Passkeys' origin never comes from it ([`passkey::Rp::of`]).
 fn https(ctx: &Ctx, headers: &HeaderMap) -> bool {
     let h = |n: header::HeaderName| headers.get(n).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
     ctx.tls.get().is_some() || h(header::ORIGIN).starts_with("https://") || h(header::HeaderName::from_static("x-forwarded-proto")) == "https"
 }
 
-/// Where passkeys are for a request, if a browser allows them on the host it's for ([`passkey::Rp::of`]).
+/// Where passkeys are for a request, if a browser allows them on the host it's
+/// for (its `Host` picks localhost's or the host name's, no more), at the
+/// built-in interface's origin ([`passkey::Rp::of`]).
 fn passkey_rp(ctx: &Ctx, headers: &HeaderMap) -> Option<passkey::Rp> {
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
-    passkey::Rp::of(ctx.config.lock().unwrap().server.host().as_deref(), host, https(ctx, headers))
+    passkey::Rp::of(&ctx.config.lock().unwrap().server, ctx.interfaces.builtin_port(), ctx.tls.get().is_some(), host)
 }
 
-/// A passkey request's relying party: from a page of this origin's alone (or
-/// no page: none of another's, even one `allowedOrigins` lets in), on a host
-/// passkeys work on. Else the answer to it.
-fn passkey_request(ctx: &Ctx, headers: &HeaderMap) -> Result<passkey::Rp, Response> {
+/// A passkey request's relying party: on the built-in interface's port alone
+/// (an interface's page could otherwise have a passkey answer for it, its
+/// session good on every port), from a page of this origin's (or no page:
+/// none of another's, even one `allowedOrigins` lets in), on a host passkeys
+/// work on. Else the answer to it.
+fn passkey_request(ctx: &Ctx, caller: &Caller, headers: &HeaderMap) -> Result<passkey::Rp, Response> {
+    if let Door::Interface { .. } = caller.door {
+        let at = passkey_rp(ctx, headers).map(|rp| format!(": {}/signin", rp.origin())).unwrap_or_default();
+        return Err((StatusCode::FORBIDDEN, format!("Passkeys are on the recorder's own page{at}\n")).into_response());
+    }
     let h = |n| headers.get(n).and_then(|v| v.to_str().ok());
     if admit(false, h(header::HOST), h(header::ORIGIN), &[]).is_err() {
         return Err((StatusCode::FORBIDDEN, "Passkeys: from this recorder's own pages only.\n").into_response());
     }
-    passkey_rp(ctx, headers).ok_or_else(|| (StatusCode::BAD_REQUEST, "Passkeys work on localhost, or over HTTPS on the host name in server.hostname.\n").into_response())
+    passkey_rp(ctx, headers).ok_or_else(|| (StatusCode::BAD_REQUEST, "Passkeys work on localhost, or on the host name in server.hostname over HTTPS.\n").into_response())
 }
 
 /// A passkey route's answer: its JSON, or why not (400).
@@ -381,7 +421,7 @@ fn passkey_adder(ctx: &Ctx, caller: &Caller) -> Result<String, Response> {
 /// `POST /api/passkey/register/start`: `{name}` (what to call it: "iPhone"),
 /// for the user signed in: `{id, options}` ([`passkey::add_start`]).
 async fn passkey_add_start(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap, body: String) -> Response {
-    let rp = match passkey_request(&ctx, &headers) {
+    let rp = match passkey_request(&ctx, &caller, &headers) {
         Ok(rp) => rp,
         Err(r) => return r,
     };
@@ -398,7 +438,7 @@ async fn passkey_add_start(State(ctx): State<Arc<Ctx>>, Extension(caller): Exten
 /// `navigator.credentials.create` made, as JSON, binary values base64url):
 /// added to the user's passkeys and saved; `{name, id}` (its name, made theirs alone; its id).
 async fn passkey_add_finish(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap, body: String) -> Response {
-    let rp = match passkey_request(&ctx, &headers) {
+    let rp = match passkey_request(&ctx, &caller, &headers) {
         Ok(rp) => rp,
         Err(r) => return r,
     };
@@ -424,9 +464,9 @@ async fn passkey_add_finish(State(ctx): State<Arc<Ctx>>, Extension(caller): Exte
 }
 
 /// `POST /api/passkey/login/start`: `{id, options}` ([`passkey::sign_in_start`]). Open: it signs in.
-async fn passkey_sign_in_start(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
-    match passkey_request(&ctx, &headers) {
-        Ok(rp) => passkey_answer(passkey::sign_in_start(&ctx.passkeys, &rp)),
+async fn passkey_sign_in_start(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap) -> Response {
+    match passkey_request(&ctx, &caller, &headers) {
+        Ok(rp) => passkey_answer(passkey::sign_in_start(&ctx.sessions, &rp)),
         Err(r) => r,
     }
 }
@@ -434,52 +474,96 @@ async fn passkey_sign_in_start(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) 
 /// `POST /api/passkey/login/finish`: `{id, credential}` (what
 /// `navigator.credentials.get` answered): signed in as the passkey's user, as
 /// `/api/login` signs in — the cookie, and `{access, user}`.
-async fn passkey_sign_in_finish(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: String) -> Response {
-    let rp = match passkey_request(&ctx, &headers) {
+async fn passkey_sign_in_finish(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap, body: String) -> Response {
+    let rp = match passkey_request(&ctx, &caller, &headers) {
         Ok(rp) => rp,
         Err(r) => return r,
     };
     let v = serde_json::from_str::<Value>(&body).unwrap_or_default();
     let auth = ctx.config.lock().unwrap().server.auth.clone();
-    let signed = match passkey::sign_in_finish(&ctx.passkeys, &rp, &auth, v["id"].as_str().unwrap_or(""), v["credential"].clone()) {
+    let signed = match passkey::sign_in_finish(&ctx.passkeys, &ctx.sessions, &rp, &auth, v["id"].as_str().unwrap_or(""), v["credential"].clone()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::UNAUTHORIZED, format!("{e}\n")).into_response(),
     };
-    if let Some(key) = signed.updated.clone() {
-        // (Its count, kept: see passkey::sign_in_finish.)
-        let (ctx2, user, id) = (ctx.clone(), signed.user.clone(), signed.id.clone());
-        let kept = tokio::task::spawn_blocking(move || {
-            edit_config(&ctx2, |c| {
-                if let Some(p) = c.server.auth.users.get_mut(&user).and_then(|u| u.passkeys.iter_mut().find(|p| p.id == id)) {
-                    p.key = key;
-                }
-            })
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()));
+    if signed.counted.is_some() {
+        // (Its count, kept against the record as it is then: see passkey::keep_count. Not kept, a
+        // copy of the passkey could count from the old number: no sign-in.)
+        let (ctx2, signed2) = (ctx.clone(), signed.clone());
+        let kept = tokio::task::spawn_blocking(move || edit_config(&ctx2, |c| void(passkey::keep_count(&mut c.server.auth, &signed2)))).await.unwrap_or_else(|e| Err(e.to_string()));
         if let Err(e) = kept {
-            log::warn!("Passkey {} of {}: its counter wasn't kept ({e})", signed.id, signed.user);
+            log::warn!("Passkey {} of {}: its counter couldn't be kept ({e}): not signed in", signed.id, signed.user);
+            return (StatusCode::SERVICE_UNAVAILABLE, format!("Not signed in: the passkey's count couldn't be saved ({e}).\n")).into_response();
         }
     }
-    let role = auth.users[&signed.user].access;
+    let Some(role) = ctx.config.lock().unwrap().server.auth.users.get(&signed.user).map(|u| u.access) else { return (StatusCode::UNAUTHORIZED, "Not a passkey of this recorder's (removed?).\n").into_response() };
     signed_in_as(&ctx, &headers, &signed.user, role, &access::passkey_credential(&signed.id))
 }
 
 /// `POST /api/logout`: this recorder's cookie, expired (other recorders' on
-/// the same host name are theirs).
-async fn logout(State(ctx): State<Arc<Ctx>>) -> Response {
-    match HeaderValue::from_str(&ctx.sessions.clear_cookie()) {
-        Ok(v) => (StatusCode::NO_CONTENT, [(header::SET_COOKIE, v)]).into_response(),
-        Err(_) => StatusCode::NO_CONTENT.into_response(),
+/// the same host name are theirs). `{"all": true}`: signed out everywhere
+/// too, every browser's session of the user's signed in until now
+/// (`signedOut`; their access token's still good: made again, it isn't), on
+/// the built-in interface's port; `{"all": true, "user": name}` another
+/// user, by a user with control access.
+async fn logout(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, body: String) -> Response {
+    let v = serde_json::from_str::<Value>(&body).unwrap_or_default();
+    let signed_out = |clear: bool| {
+        let mut res = StatusCode::NO_CONTENT.into_response();
+        if let (true, Ok(v)) = (clear, HeaderValue::from_str(&ctx.sessions.clear_cookie())) {
+            res.headers_mut().insert(header::SET_COOKIE, v);
+        }
+        res
+    };
+    if v["all"] != true {
+        return signed_out(true);
+    }
+    if !matches!(caller.door, Door::Builtin) {
+        return (StatusCode::FORBIDDEN, "Signing out everywhere is on the recorder's own page.\n").into_response();
+    }
+    let me = match &caller.who {
+        Who::User { name, .. } if caller.who.grants(&ctx.config.lock().unwrap().server.auth).is_some() => Some(name.clone()),
+        _ => None,
+    };
+    let user = match v["user"].as_str() {
+        Some(u) if me.as_deref() != Some(u) && caller.access(&ctx) != Some(ApiAccess::Control) => return (StatusCode::FORBIDDEN, "Another user is signed out everywhere by a user with control access.\n").into_response(),
+        Some(u) => u.to_string(),
+        None => match me.clone() {
+            Some(u) => u,
+            None if matches!(caller.who, Who::Proxy { .. }) => return (StatusCode::FORBIDDEN, "Signed in by the proxy in front: signing out is the proxy's.\n").into_response(),
+            None => return (StatusCode::UNAUTHORIZED, "Sign in first.\n").into_response(),
+        },
+    };
+    let (ctx2, who) = (ctx.clone(), user.clone());
+    let done = tokio::task::spawn_blocking(move || {
+        let mut found = false;
+        edit_config(&ctx2, |c| {
+            if let Some(u) = c.server.auth.users.get_mut(&who) {
+                u.signed_out = Some(crate::clock::unix_s() as i64);
+                found = true;
+            }
+        })?;
+        found.then_some(()).ok_or_else(|| format!("There's no user named \"{who}\"."))
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match done {
+        Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")).into_response(),
+        Ok(()) => {
+            let by = caller.who.user().filter(|u| *u != user).map(|u| format!(" by {u}")).unwrap_or_default();
+            log::info!("User {user}: signed out everywhere{by}");
+            signed_out(me.as_deref() == Some(&user))
+        }
     }
 }
 
 /// `GET /api/session`: whether signing in is on, what this request may do
 /// on this port as whom (a page's WebSocket can't see a 401: this is how it
 /// learns it must sign in), whether the proxy in front signed it in (then
-/// it's the proxy's to sign out of), whether passkeys work on the host it's
-/// for, and the user's own passkeys (`ownPasskeys`: `{id, name, created}`
-/// each, never their keys; left out when none, or not signed in as a user).
+/// it's the proxy's to sign out of), whether passkeys work here (the built-in
+/// interface's port, on a host they work on) and the one origin they work
+/// at (`passkeyOrigin`, from any port: a page elsewhere links there), and
+/// the user's own passkeys (`ownPasskeys`: `{id, name, created}` each, never
+/// their keys; left out when none, or not signed in as a user).
 async fn signed_in(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap) -> Response {
     let access = caller.access(&ctx);
     let (enabled, own) = {
@@ -489,7 +573,12 @@ async fn signed_in(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Cal
         (c.server.auth.enabled, own)
     };
     let proxy = matches!(caller.who, Who::Proxy { .. });
-    let mut answer = json!({ "auth": enabled, "access": access, "user": caller.who.user(), "proxy": proxy, "passkeys": passkey_rp(&ctx, &headers).is_some() });
+    let rp = passkey_rp(&ctx, &headers);
+    let builtin = matches!(caller.door, Door::Builtin);
+    let mut answer = json!({ "auth": enabled, "access": access, "user": caller.who.user(), "proxy": proxy, "passkeys": builtin && rp.is_some() });
+    if let Some(rp) = rp {
+        answer["passkeyOrigin"] = rp.origin().into();
+    }
     if !own.is_empty() {
         answer["ownPasskeys"] = Value::Array(own);
     }
@@ -534,16 +623,21 @@ fn is_loopback_name(name: &str) -> bool {
 }
 
 /// The built-in interface's file `path` (its index.html for anything else:
-/// it routes with the URL's #). Only on its own port.
+/// it routes with the URL's #). Only on its own port. Its page is never in
+/// another page's frame, as the sign-in page isn't ([`sign_in_page`]).
 fn builtin(path: &str) -> Response {
     let path = if path.is_empty() { "index.html" } else { path };
     match Ui::get(path).or_else(|| Ui::get("index.html")) {
         Some(f) => {
             let mime = mime_guess::from_path(if Ui::get(path).is_some() { path } else { "index.html" }).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref().to_string())], f.data).into_response()
+            let mut res = ([(header::CONTENT_TYPE, mime.as_ref().to_string())], f.data).into_response();
+            if mime.essence_str() == "text/html" {
+                res.headers_mut().insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+            }
+            res
         }
         None => (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8".to_string())],
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()), (header::X_FRAME_OPTIONS, "DENY".to_string())],
             "<h1>Trunk Recorder Pro</h1><p>The web interface wasn't built into this binary. Run <code>npm run build</code> in <code>web/</code>, then rebuild.</p>",
         )
             .into_response(),
@@ -987,8 +1081,9 @@ async fn send(socket: &mut WebSocket, m: Message) -> bool {
 }
 
 /// One WebSocket, with the access `caller` had when it connected. Once that
-/// changes (the config's interfaces or users did), it's closed: it
-/// reconnects, and is greeted afresh with what it has now.
+/// changes (the config's interfaces or users did), or what it signed in
+/// with expires (a session's cookie, Cloudflare's token: [`Who::until`]),
+/// it's closed: it reconnects, and is greeted afresh with what it has now.
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, caller: Caller) {
     let mut rx = ctx.hub.subscribe();
     let Some(access) = caller.access(&ctx) else {
@@ -1068,6 +1163,10 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, caller: Caller) {
                 send(&mut socket, Message::Close(None)).await;
                 return;
             },
+            _ = expiry(caller.who.until()) => {
+                send(&mut socket, Message::Close(None)).await;
+                return;
+            },
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(t))) => {
                     // As it is now, not as the last config message this connection saw.
@@ -1098,6 +1197,14 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, caller: Caller) {
                 _ => {}
             },
         }
+    }
+}
+
+/// Until `until` (Unix s) has passed; None: never.
+async fn expiry(until: Option<u64>) {
+    match until {
+        Some(t) => tokio::time::sleep(std::time::Duration::from_secs(t.saturating_sub(crate::clock::unix_s() as u64))).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -1769,8 +1876,17 @@ mod tests {
         }
         let (code, h, page) = get("/", vec![("accept", "text/html,*/*".into())]).await;
         assert!(code == 401 && page.contains("/api/login") && h["content-type"].to_str().unwrap().starts_with("text/html"), "{code} {page}");
-        let (code, _, page) = get("/signin", vec![]).await;
+        let (code, h, page) = get("/signin", vec![]).await;
         assert!(code == 200 && page.contains("/api/login"), "/signin: the page, asked for");
+        // Every answer: no Referer from its pages, no sniffing; the sign-in page in no frame; HSTS never over plain HTTP.
+        ctx.config.lock().unwrap().server.tls = Some(trunk_app::config::Tls { cert: "c.pem".into(), key: "k.pem".into(), hsts: true });
+        let hv = |h: &axum::http::HeaderMap, n: &str| h.get(n).map(|v| v.to_str().unwrap().to_string());
+        assert_eq!((hv(&h, "referrer-policy"), hv(&h, "x-content-type-options"), hv(&h, "x-frame-options")), (Some("no-referrer".into()), Some("nosniff".into()), Some("DENY".into())));
+        for (p, headers) in [("/api/v1/calls", vec![]), ("/api/version", vec![]), ("/api/session", vec![("origin", "https://evil.example".to_string())])] {
+            let (code, h, _) = get(p, headers).await;
+            assert_eq!((hv(&h, "referrer-policy"), hv(&h, "x-content-type-options"), hv(&h, "x-frame-options"), hv(&h, "strict-transport-security")), (Some("no-referrer".into()), Some("nosniff".into()), None, None), "{p} ({code})");
+        }
+        ctx.config.lock().unwrap().server.tls = None;
         assert_eq!(get("/signin", bearer(&luke)).await.0, 200, "signed in too");
         assert_eq!(get("/api/version", vec![]).await.0, 200, "a second launch still finds it");
         let (code, _, who) = get("/api/session", vec![]).await;
@@ -1793,7 +1909,7 @@ mod tests {
         assert_eq!((code, serde_json::from_str::<serde_json::Value>(&who).unwrap()), (200, serde_json::json!({ "access": "control", "user": "luke" })));
         assert!(name.starts_with("trp_") && value.starts_with("luke.") && !set.contains(&luke), "{set}");
         assert!(set.contains("; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax") && !set.contains("Secure"), "{set}");
-        assert_eq!(ctx.sessions.verify(&value), Some(super::Who::User { name: "luke".into(), credential: crate::toolkit::sha256_hex(luke.as_bytes()) }));
+        assert!(matches!(ctx.sessions.verify(&value), Some(super::Who::User { name, credential, until: Some(_) }) if name == "luke" && credential == crate::toolkit::sha256_hex(luke.as_bytes())));
         let (_, h, _) = http(addr, "POST", "/api/login", &[("x-forwarded-proto", "https")], Some(&luke)).await;
         assert!(h["set-cookie"].to_str().unwrap().ends_with("; Secure"), "behind https; and the secret alone is a body too");
         let (_, _, who) = http(addr, "POST", "/api/login", &[], Some(&kiosk)).await;
@@ -1871,11 +1987,13 @@ mod tests {
         assert_eq!(get("/signin", vec![]).await.0, 200);
     }
 
-    /// Passkeys: usable on localhost or the host name over HTTPS (the session
-    /// says); signing in with one is open, adding one is for a user signed in
-    /// on a control port; another origin's page may do neither; a bogus answer
-    /// signs nobody in. Then the whole of it over HTTP, with a software key:
-    /// added (saved), signed in with (the cookie), and signed out once removed.
+    /// Passkeys: usable on localhost or the host name, on the built-in
+    /// interface's port alone (the session says, and where they are); signing
+    /// in with one is open, adding one is for a user signed in; an
+    /// interface's port refuses both, another origin's page may do neither; a
+    /// bogus answer signs nobody in. Then the whole of it over HTTP, with a
+    /// software key: added (saved), signed in with (the cookie), an answer
+    /// made on the interface's page refused, and signed out once removed.
     #[tokio::test]
     async fn passkeys_add_and_sign_in() {
         let dir = crate::db::TestDir::new("passkey-http");
@@ -1891,12 +2009,28 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&http(addr, "GET", "/api/session", &h, None).await.2).unwrap()
         };
         assert_eq!(session(vec![]).await["passkeys"], false, "127.0.0.1");
-        assert_eq!(session(vec![("host", local.clone())]).await["passkeys"], true, "localhost");
+        assert!(session(vec![]).await.get("passkeyOrigin").is_none());
+        let here = session(vec![("host", local.clone())]).await;
+        assert_eq!((&here["passkeys"], &here["passkeyOrigin"]), (&true.into(), &format!("http://localhost:{port}").into()), "localhost, at this port");
+        let on_wall = |extra: Vec<(&'static str, String)>| {
+            let mut h = vec![("host", format!("localhost:{}", wall.port()))];
+            h.extend(extra);
+            h
+        };
+        let h: Vec<(String, String)> = on_wall(vec![]).into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        let hr: Vec<(&str, &str)> = h.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let there = json(&http(wall, "GET", "/api/session", &hr, None).await.2);
+        assert_eq!((&there["passkeys"], &there["passkeyOrigin"]), (&false.into(), &format!("http://localhost:{port}").into()), "an interface's port: none there, but where they are");
         let named = vec![("host", format!("radio.ts.net:{port}")), ("x-forwarded-proto", "https".to_string())];
         assert_eq!(http(addr, "GET", "/api/session", &[("host", "radio.ts.net")], None).await.0, 403, "bound to localhost, another name is refused");
         ctx.config.lock().unwrap().server.hostname = "radio.ts.net".into();
-        assert_eq!(session(named.clone()).await["passkeys"], true, "the host name, over HTTPS");
-        assert_eq!(session(vec![("host", format!("radio.ts.net:{port}"))]).await["passkeys"], false, "the host name over plain HTTP");
+        let at_name = session(named.clone()).await;
+        assert_eq!((&at_name["passkeys"], &at_name["passkeyOrigin"]), (&true.into(), &"https://radio.ts.net".into()), "the host name: https, at 443 (no HTTPS here: a proxy's in front)");
+        let plain = session(vec![("host", format!("radio.ts.net:{port}"))]).await;
+        assert_eq!(plain["passkeyOrigin"], "https://radio.ts.net", "what the request says is no say");
+        ctx.config.lock().unwrap().server.hostname = format!("radio.ts.net:{port}");
+        assert_eq!(session(named.clone()).await["passkeyOrigin"], format!("https://radio.ts.net:{port}"), "the port written in server.hostname");
+        ctx.config.lock().unwrap().server.hostname = "radio.ts.net".into();
         // Signing in starts for anyone, on a host passkeys work on.
         let post = |path: &'static str, headers: Vec<(&'static str, String)>, body: Option<String>| async move {
             let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -1914,9 +2048,18 @@ mod tests {
         assert_eq!(post("/api/passkey/register/start", host.clone(), name.clone()).await.0, 401, "nobody signed in");
         let as_ = |secret: &str| vec![("host", local.clone()), ("authorization", format!("Bearer {secret}"))];
         assert_eq!(post("/api/passkey/register/start", as_(&kiosk), name.clone()).await.0, 200, "a View user adds their own");
-        let on_wall = [("host", format!("localhost:{}", wall.port())), ("authorization", format!("Bearer {luke}"))];
-        let h: Vec<(&str, &str)> = on_wall.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        assert_eq!(http(wall, "POST", "/api/passkey/register/start", &h, name.as_deref()).await.0, 403, "not through a listen interface's port");
+        // An interface's port: none of it (its page could have an answer made for the built-in port's sign-in).
+        let wall_post = |path: &'static str, extra: Vec<(&'static str, String)>, body: Option<String>| {
+            let h = on_wall(extra);
+            async move {
+                let h: Vec<(&str, &str)> = h.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                http(wall, "POST", path, &h, body.as_deref()).await
+            }
+        };
+        assert_eq!(wall_post("/api/passkey/register/start", vec![("authorization", format!("Bearer {luke}"))], name.clone()).await.0, 403, "not through an interface's port");
+        let (code, _, why) = wall_post("/api/passkey/login/start", vec![], None).await;
+        assert!(code == 403 && why.contains(&format!("http://localhost:{port}/signin")), "{code} {why}");
+        assert_eq!(wall_post("/api/passkey/login/finish", vec![], Some(format!(r#"{{"id":{},"credential":{{}}}}"#, started["id"]))).await.0, 403);
         // Another origin's page: not even one allowedOrigins lets in.
         ctx.config.lock().unwrap().server.allowed_origins = vec!["https://app.example".into()];
         let mut from_app = as_(&luke);
@@ -1935,18 +2078,72 @@ mod tests {
         assert_eq!((code, json(&added)["name"].clone()), (200, "Test key".into()), "{added}");
         let saved = ctx.config.lock().unwrap().server.auth.users["luke"].passkeys.clone();
         assert!(saved.len() == 1 && std::fs::read_to_string(&ctx.config_path).unwrap().contains(&saved[0].id), "saved");
+        // The interface's page, its server having started a sign-in on the built-in port: its answer's origin is the interface's. Refused.
+        let (_, _, started) = post("/api/passkey/login/start", host.clone(), None).await;
+        let started = json(&started);
+        let relayed = key.get(&started["options"]["publicKey"], &format!("http://localhost:{}", wall.port()), 0, "luke");
+        let (code, h, why) = post("/api/passkey/login/finish", host.clone(), Some(serde_json::json!({ "id": started["id"], "credential": relayed }).to_string())).await;
+        assert!(code == 401 && h.get("set-cookie").is_none() && why.contains(&format!("work at http://localhost:{port} alone")), "{code} {why}");
         let (_, _, started) = post("/api/passkey/login/start", host.clone(), None).await;
         let started = json(&started);
         let answer = key.get(&started["options"]["publicKey"], &format!("http://{local}"), 0, "luke");
-        let (code, h, who) = post("/api/passkey/login/finish", host.clone(), Some(serde_json::json!({ "id": started["id"], "credential": answer }).to_string())).await;
+        let finish = Some(serde_json::json!({ "id": started["id"], "credential": answer }).to_string());
+        let (code, h, who) = post("/api/passkey/login/finish", host.clone(), finish.clone()).await;
         assert_eq!((code, json(&who)), (200, serde_json::json!({ "access": "control", "user": "luke" })));
         let cookie = h["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
         assert_eq!(ctx.sessions.verify(cookie.split_once('=').unwrap().1).unwrap().grants(&ctx.config.lock().unwrap().server.auth), Some(crate::config::ApiAccess::Control));
         let signed = session(vec![("cookie", cookie.clone())]).await;
         assert_eq!((&signed["user"], &signed["access"]), (&"luke".into(), &"control".into()));
+        let (code, _, why) = post("/api/passkey/login/finish", host.clone(), finish).await;
+        assert!(code == 401 && why.contains("used already"), "the same answer again: {code} {why}");
         // Removed (a config edit, as Setup makes it): signed out.
         ctx.config.lock().unwrap().server.auth.users.get_mut("luke").unwrap().passkeys.clear();
         assert_eq!(session(vec![("cookie", cookie)]).await["user"], serde_json::Value::Null);
+    }
+
+    /// A passkey that counts its uses: its count kept as it goes up; when it
+    /// can't be (the config can't be written), no sign-in.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_passkey_s_count_unsaved_signs_nobody_in() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::db::TestDir::new("passkey-count");
+        let (ctx, luke, _) = signed_in_ctx(&dir, "passkey-count");
+        let addr = super::test_server(&ctx, super::Door::Builtin).await;
+        let local = format!("localhost:{}", addr.port());
+        let origin = format!("http://{local}");
+        let json = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap_or_default();
+        let post = |path: &'static str, extra: Vec<(&'static str, String)>, body: Option<String>| {
+            let mut h = vec![("host", local.clone()), ("origin", origin.clone())];
+            h.extend(extra);
+            async move {
+                let h: Vec<(&str, &str)> = h.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                http(addr, "POST", path, &h, body.as_deref()).await
+            }
+        };
+        let key = crate::access::passkey::soft::Key::new();
+        let as_luke = vec![("authorization", format!("Bearer {luke}"))];
+        let started = json(&post("/api/passkey/register/start", as_luke.clone(), Some(r#"{"name":"Key"}"#.into())).await.2);
+        let made = key.create(&started["options"]["publicKey"], &origin, 1);
+        assert_eq!(post("/api/passkey/register/finish", as_luke, Some(serde_json::json!({ "id": started["id"], "credential": made }).to_string())).await.0, 200);
+        let sign_in = |n: u32| {
+            let post = post.clone();
+            let key = &key;
+            let origin = origin.clone();
+            async move {
+                let started = json(&post("/api/passkey/login/start", vec![], None).await.2);
+                let answer = key.get(&started["options"]["publicKey"], &origin, n, "luke");
+                post("/api/passkey/login/finish", vec![], Some(serde_json::json!({ "id": started["id"], "credential": answer }).to_string())).await
+            }
+        };
+        let (code, h, _) = sign_in(5).await;
+        assert!(code == 200 && h.get("set-cookie").is_some());
+        assert_eq!(ctx.config.lock().unwrap().server.auth.users["luke"].passkeys[0].key["cred"]["counter"], 5, "kept");
+        let folder = ctx.config_path.parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let (code, h, why) = sign_in(6).await;
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(code == 503 && h.get("set-cookie").is_none() && why.contains("count couldn't be saved"), "{code} {why}");
     }
 
     /// A WebSocket is greeted with what it may do and as whom; a listen
@@ -1982,8 +2179,9 @@ mod tests {
         assert!(hello["configPath"].is_string());
         let (_, hello) = greeted(wall, luke.clone()).await;
         assert_eq!(hello["access"], "listen", "the lower of the port's and the user's");
-        let (code, _, page) = http(wall, "GET", "/signin", &[], None).await;
+        let (code, h, page) = http(wall, "GET", "/signin", &[], None).await;
         assert!(code == 200 && page.contains("/api/login"), "an interface's port has it too, before its own folder");
+        assert_eq!((h["referrer-policy"].to_str().unwrap(), h["x-content-type-options"].to_str().unwrap()), ("no-referrer", "nosniff"), "an interface's port's answers too");
         let (mut ws, hello) = greeted(builtin, kiosk.clone()).await;
         assert_eq!((&hello["access"], &hello["user"]), (&"listen".into(), &"kiosk".into()));
         ws.send(Ws::text(r#"{"type":"start"}"#)).await.unwrap();
@@ -2121,7 +2319,7 @@ mod tests {
         assert!(code == 403 && why.contains("only answers to localhost"), "no server.hostname: refused ({code} {why})");
         ctx.config.lock().unwrap().server.hostname = "radio.example.com".into();
         let (code, _, who) = call("GET", "/api/session", tunnel(vec![]), None).await;
-        assert_eq!((code, json(&who)), (200, serde_json::json!({ "auth": true, "access": null, "user": null, "proxy": false, "passkeys": true })), "named: let in, passkeys there");
+        assert_eq!((code, json(&who)), (200, serde_json::json!({ "auth": true, "access": null, "user": null, "proxy": false, "passkeys": true, "passkeyOrigin": "https://radio.example.com" })), "named: let in, passkeys there");
         let (code, h, _) = call("POST", "/api/login", tunnel(vec![]), Some(luke.clone())).await;
         assert!(code == 200 && h["set-cookie"].to_str().unwrap().ends_with("; Secure"), "{code} {h:?}");
         // Passkeys over the tunnel: added and signed in with, from https://radio.example.com (no port).
@@ -2178,9 +2376,109 @@ mod tests {
             }
         };
         assert_eq!((&hello["access"], &hello["user"]), (&"control".into(), &"luke".into()));
+        // One whose token is about to expire (its minute's leeway nearly gone): closed when it does.
+        let mut c = claims("luke@example.com", now);
+        c["exp"] = serde_json::json!(crate::clock::unix_s() as u64 + 2 - 60);
+        let mut req = format!("ws://{addr}/api/ws").into_client_request().unwrap();
+        for (k, v) in tunnel(vec![("cf-access-jwt-assertion", a.sign(&c))]) {
+            req.headers_mut().insert(k, v.parse().unwrap());
+        }
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(6), async {
+            let mut greeted = false;
+            loop {
+                match ws.next().await {
+                    Some(Ok(m)) if !m.is_close() => greeted |= m.to_text().is_ok_and(|t| t.contains(r#""type":"hello""#)),
+                    _ => return greeted,
+                }
+            }
+        })
+        .await;
+        assert_eq!(closed, Ok(true), "greeted, then closed as its token expired");
         // Keys that can't be had: nobody.
         ctx.cloudflare.use_source(|_| Err("offline".into()));
         assert_eq!(session(vec![("cf-access-jwt-assertion", token)]).await["user"], serde_json::Value::Null, "no keys: no fallback");
+    }
+
+    /// A session ends when its cookie expires (a socket it opened is closed
+    /// then), and when its user is signed out everywhere: by themselves (on
+    /// the built-in interface's port), or by a user with control; sessions
+    /// signed in later, and access tokens sent with each request, still count.
+    #[tokio::test]
+    async fn sessions_end_when_they_expire_or_are_signed_out_everywhere() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as Ws};
+        let dir = crate::db::TestDir::new("signin-expiry");
+        let (ctx, luke, kiosk) = signed_in_ctx(&dir, "signin-expiry");
+        ctx.config.lock().unwrap().server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, ..Default::default() });
+        let (_tx, stop) = tokio::sync::watch::channel(false);
+        let addr = super::test_server(&ctx, super::Door::Builtin).await;
+        let wall = super::test_server(&ctx, super::Door::Interface { id: "wall".into(), stop }).await;
+        let json = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap_or_default();
+        let hash = |u: &str| ctx.config.lock().unwrap().server.auth.users[u].token.as_ref().unwrap().hash.clone();
+        let name = ctx.sessions.set_cookie("x", "y", false).split('=').next().unwrap().to_string();
+        let cookie = |u: &str, expires: u64| format!("{name}={}", ctx.sessions.issue_until(u, &hash(u), expires));
+        let user = |headers: Vec<(&'static str, String)>| async move {
+            let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            json(&http(addr, "GET", "/api/session", &h, None).await.2)["user"].clone()
+        };
+        let now = crate::clock::unix_s() as u64;
+        assert_eq!(user(vec![("cookie", cookie("luke", now + 60))]).await, "luke");
+        assert_eq!(user(vec![("cookie", cookie("luke", now - 1))]).await, serde_json::Value::Null, "expired");
+        // A socket opened with a session: closed when it expires.
+        let socket = |cookie: String| async move {
+            let mut req = format!("ws://{addr}/api/ws").into_client_request().unwrap();
+            req.headers_mut().insert("cookie", cookie.parse().unwrap());
+            let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+            loop {
+                let v: serde_json::Value = ws.next().await.unwrap().unwrap().to_text().ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+                if v["type"] == "hello" {
+                    assert_eq!(v["user"], "luke");
+                    return ws;
+                }
+            }
+        };
+        let closes = |mut ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, within: u64| async move {
+            tokio::time::timeout(std::time::Duration::from_secs(within), async {
+                loop {
+                    match ws.next().await {
+                        Some(Ok(Ws::Close(_))) | None | Some(Err(_)) => return,
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .is_ok()
+        };
+        let t = std::time::Instant::now();
+        let ws = socket(cookie("luke", crate::clock::unix_s() as u64 + 2)).await;
+        assert!(closes(ws, 6).await && t.elapsed() >= std::time::Duration::from_millis(900), "closed as it expired");
+        // Signed out everywhere, by luke: this browser's cookie cleared, every session of theirs until now ended (an open socket too).
+        let (_, h, _) = http(addr, "POST", "/api/login", &[], Some(&luke)).await;
+        let signed = h["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+        let ws = socket(signed.clone()).await;
+        let all = Some(r#"{"all":true}"#);
+        assert_eq!(http(wall, "POST", "/api/logout", &[("cookie", &signed)], all).await.0, 403, "not through an interface's port");
+        assert_eq!(http(addr, "POST", "/api/logout", &[], all).await.0, 401, "nobody signed in");
+        let (code, h, _) = http(addr, "POST", "/api/logout", &[("cookie", &signed)], all).await;
+        assert!(code == 204 && h["set-cookie"].to_str().unwrap().contains("Max-Age=0"), "{code}");
+        let at = ctx.config.lock().unwrap().server.auth.users["luke"].signed_out.unwrap();
+        assert!(at.abs_diff(crate::clock::unix_s() as i64) <= 2 && std::fs::read_to_string(&ctx.config_path).unwrap().contains("\"signedOut\""), "saved");
+        assert_eq!(user(vec![("cookie", signed.clone())]).await, serde_json::Value::Null, "signed out");
+        assert_eq!(user(vec![("cookie", cookie("luke", now + 60))]).await, serde_json::Value::Null, "every session signed in before");
+        assert!(closes(ws, 5).await, "its socket closed");
+        assert_eq!(user(vec![("cookie", cookie("luke", crate::clock::unix_s() as u64 + crate::access::SESSION_S + 2))]).await, "luke", "one signed in since");
+        assert_eq!(user(vec![("authorization", format!("Bearer {luke}"))]).await, "luke", "the access token: made again, it wouldn't be");
+        // Another user: by an Admin alone.
+        let bearer = |s: &str| format!("Bearer {s}");
+        let kiosk_cookie = cookie("kiosk", now + 60);
+        assert_eq!(http(addr, "POST", "/api/logout", &[("authorization", &bearer(&kiosk))], Some(r#"{"all":true,"user":"luke"}"#)).await.0, 403, "a View user: themselves alone");
+        let (code, h, _) = http(addr, "POST", "/api/logout", &[("authorization", &bearer(&luke))], Some(r#"{"all":true,"user":"kiosk"}"#)).await;
+        assert!(code == 204 && h.get("set-cookie").is_none(), "an Admin's own cookie stays");
+        assert_eq!(user(vec![("cookie", kiosk_cookie)]).await, serde_json::Value::Null);
+        assert_eq!(http(addr, "POST", "/api/logout", &[("authorization", &bearer(&luke))], Some(r#"{"all":true,"user":"nobody"}"#)).await.0, 400);
+        // Plain sign out: as ever.
+        assert_eq!(http(addr, "POST", "/api/logout", &[], None).await.0, 204);
     }
 
     /// `createToken` makes a user with a token and answers with its secret
@@ -2239,6 +2537,15 @@ mod tests {
         assert!(res.starts_with("HTTP/1.1 200") && set.ends_with("; HttpOnly; SameSite=Lax; Secure"), "{res}");
         let (res, _) = https(addr, "GET /api/v1/calls HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await;
         assert!(res.starts_with("HTTP/1.1 401"), "guarded as ever: {res}");
+        // HSTS: told only when server.tls.hsts is set (it binds every port of the name).
+        assert!(!res.contains("strict-transport-security"), "off unless set: {res}");
+        ctx.config.lock().unwrap().server.tls = Some(trunk_app::config::Tls { hsts: true, ..config_of(&cert, &key) });
+        for path in ["/api/v1/calls", "/signin", "/api/version"] {
+            let (res, _) = https(addr, &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")).await;
+            assert!(res.contains("\r\nstrict-transport-security: max-age=31536000\r\n"), "{path}: {res}");
+        }
+        assert!(!http(addr, "GET /api/version HTTP/1.0\r\nHost: localhost\r\n\r\n").await.contains("strict-transport-security"), "never over plain HTTP");
+        ctx.config.lock().unwrap().server.tls = None;
         let (res, _) = https(addr, &format!("GET /api/v1/calls HTTP/1.1\r\nHost: localhost:{0}\r\nAuthorization: Bearer {luke}\r\nOrigin: https://localhost:{0}\r\nConnection: close\r\n\r\n", addr.port())).await;
         assert!(res.starts_with("HTTP/1.1 200"), "its own https:// page: {res}");
         assert!(http(addr, "GET /api/version HTTP/1.0\r\nHost: localhost\r\n\r\n").await.contains("\"app\":\"trunk-pro\""), "a second launch still finds it");

@@ -94,7 +94,7 @@
 //!     Interfaces besides the built-in one (the config's `server.interfaces`), each on a
 //!     port of its own: find them in the store, install, update, add a folder of your own.
 //!
-//! trunk-pro access list | add <name> [--access listen|control] | remove <name> | on | off
+//! trunk-pro access list | add <name> [--access listen|control] | remove <name> | signout <name> | on | off
 //!     Signing in (the config's `server.auth`): its users and their access tokens, and on or off.
 //! ```
 
@@ -308,7 +308,7 @@ usage:
       Interfaces besides the built-in one, each on a port of its own: find
       them in the store, install and update them, add a folder of your own
       (`trunk-pro interface` for the options).
-  trunk-pro access list | add <name> [--access listen|control] | remove <name> | on | off
+  trunk-pro access list | add <name> [--access listen|control] | remove <name> | signout <name> | on | off
       Signing in: add and remove users, each with an access token (its
       secret is printed once), and turn it on or off. A running recorder
       takes the change when it's restarted.

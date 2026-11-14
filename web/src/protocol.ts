@@ -552,7 +552,7 @@ export interface Config {
     auth?: AuthSetup;
     /** HTTPS on every interface's port (absent: plain HTTP). Read as the app starts; a renewed certificate is picked up without a restart. */
     tls?: TlsSetup;
-    /** The name this computer is reached by over HTTPS (its certificate's): the URLs the recorder logs and opens, and where passkeys work besides localhost (absent: none). */
+    /** The name this computer is reached by over HTTPS (its certificate's): the URLs the recorder logs and opens, and where passkeys work besides localhost (absent: none). With a port ("radio.example.com:8443"): the dashboard's, where a proxy in front serves it. */
     hostname?: string;
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
@@ -663,6 +663,8 @@ export interface AuthUser {
   token?: AuthToken;
   /** Their passkeys: added by them, signed in, from a browser (POST /api/passkey/register/…); removed or renamed by editing this. */
   passkeys?: AuthPasskey[];
+  /** When they were signed out everywhere (Unix s, POST /api/logout `{all: true}`): browsers' sessions signed in then or before end; access tokens sent with each request don't. */
+  signedOut?: number;
 }
 
 /** A passkey: its name ("iPhone"), when it was added (Unix s), its credential id (base64url) and `key`, WebAuthn's record of it (its public key and counter; the recorder's to read). */
@@ -688,6 +690,8 @@ export interface AuthToken {
 export interface TlsSetup {
   cert: string;
   key: string;
+  /** Strict-Transport-Security, a year: browsers keep to HTTPS on every port of this host name (absent: off). */
+  hsts?: boolean;
 }
 
 /** An interface besides the built-in one: static web files, served with the API beside them on a port of its own. */

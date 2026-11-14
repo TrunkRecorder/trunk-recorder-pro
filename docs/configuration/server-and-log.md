@@ -26,7 +26,7 @@ too) on the **Interfaces** page.
 | `interfaces` | | `{}` | object | The other interfaces, by id. See below |
 | `auth` | | off | object | Signing in: who may, with what role. See [Access](#access) |
 | `tls` | | off | object | HTTPS on every interface's port: `cert` and `key`, PEM files. See [HTTPS](#https) |
-| `hostname` | | `""` | string | The name this computer is reached by over HTTPS, the one its certificate is for (`"radiobox.tail1234.ts.net"`). The log and the browser the app opens use it; [passkeys](#passkeys) work on it (besides `localhost`); bound to `127.0.0.1`, the recorder answers to it too (a proxy in front, `tailscale serve`, [Cloudflare Tunnel](#cloudflare-tunnel-and-access)) |
+| `hostname` | | `""` | string | The name this computer is reached by over HTTPS, the one its certificate is for (`"radiobox.tail1234.ts.net"`). The log and the browser the app opens use it; [passkeys](#passkeys) work on it (besides `localhost`); bound to `127.0.0.1`, the recorder answers to it too (a proxy in front, `tailscale serve`, [Cloudflare Tunnel](#cloudflare-tunnel-and-access)). A port after it (`"radio.example.com:8443"`) says where the dashboard is reached when a proxy in front serves it on a port other than 443: passkeys work at that address alone |
 | `trpApi` | | `""` (https://trunkrecorder.pro) | string | Where the trunkrecorder.pro API is, for **Identify** and [sharing with the directory](systems.md#sharing-with-the-directory). Only for testing another copy of it (`"http://localhost:8788"`) |
 
 `bind`, `port` and `tls` are read when the app starts; the rest apply at once.
@@ -77,7 +77,22 @@ signed with a key the recorder keeps in `session-key` beside the config (made th
 readable by its owner alone, never in the config). Removing the user, making their token again
 or removing the passkey ends their sessions; deleting `session-key` (then restarting the recorder) signs every browser
 out. If the recorder can't keep the file it says so in the log, and browsers are signed out
-whenever it restarts.
+whenever it restarts. A dashboard left open is closed when its session expires, and asks to sign in again.
+
+**Signing out everywhere.** A browser that may have been left signed in somewhere (a lost phone, a
+shared computer): click your name in the top bar → **Sign out everywhere**, or, as an Admin, a
+user's **Sign out** in Setup → **Access** (or `trunk-pro access signout <name>`). Every browser
+signed in as them until then signs in again, this one too, and their open dashboards close. It
+ends sessions, not credentials: a program that sends the access token with each request
+(`Authorization: Bearer`, `?token=`) keeps working, and so does anyone who has the token or a
+passkey. For a token that may have been seen, make it again (remove the user and add them, or
+remove the token); for a device that's gone, remove its passkey (every user's are listed in
+**Access**, by name and the day each was added).
+
+**Plain HTTP from another computer.** Setup → **Access** says **Unencrypted** when the page was
+opened over plain HTTP from another computer: the token you paste and the sign-in cookie cross
+the network readable, to anyone who can watch it. Over a VPN (Tailscale, WireGuard) that's fine;
+otherwise turn on [HTTPS](#https).
 
 On a recorder with no browser nearby, use the command line, then restart the recorder:
 
@@ -87,6 +102,7 @@ trunk-pro access add kiosk --access listen
 trunk-pro access on
 trunk-pro access list                        # on or off, anonymous, the proxy, and each user
 trunk-pro access remove kiosk                # signs out whoever signed in as kiosk
+trunk-pro access signout luke                # every browser signed in as luke signs in again
 trunk-pro access passkey remove luke iPhone  # one of luke's passkeys, by its name
 ```
 
@@ -128,7 +144,7 @@ sign-in page (`/signin`).
 | `enabled` | `false` | Signing in on. It needs a user with control access and a token or a passkey (or, with a [proxy](#behind-a-proxy-that-signs-people-in) set, nothing: the proxy can name them), so someone can turn it off again |
 | `anonymous` | none | `"listen"`: what a request without a token may do. `"control"` is refused (it would be the same as off) |
 | `proxy` | off | A reverse proxy in front that signs people in: `from`, `header` (or `cloudflare`), `users`, `other`. See [Behind a proxy that signs people in](#behind-a-proxy-that-signs-people-in) |
-| `users` | `{}` | By name: `access` (`"listen"` or `"control"`) and what they sign in with: `token`, `hash` (the secret's SHA-256) and `created` (Unix s); `passkeys`, each `name`, `created`, `id` (the credential's, base64url) and `key` (its public key and counter, as the recorder's WebAuthn library keeps it). Made in Setup or with `trunk-pro access add`, not by hand; a passkey can be renamed or removed by hand |
+| `users` | `{}` | By name: `access` (`"listen"` or `"control"`) and what they sign in with: `token`, `hash` (the secret's SHA-256) and `created` (Unix s); `passkeys`, each `name`, `created`, `id` (the credential's, base64url) and `key` (its public key and counter, as the recorder's WebAuthn library keeps it); `signedOut` (Unix s), when they were last [signed out everywhere](#access): browsers' sessions from then or before don't count. Made in Setup or with `trunk-pro access add`, not by hand; a passkey can be renamed or removed by hand |
 
 Changes in Setup apply at once: connections whose access changed are closed and reconnect with
 what they have now. Changes made with `trunk-pro access` are written to the config file and take
@@ -146,7 +162,28 @@ just work. From other devices, set `server.hostname` to the name the certificate
 (`tailscale cert`'s, say) and open `https://radiobox.tail1234.ts.net:8443`. Anywhere else (an IP
 address, plain HTTP on the name) the sign-in page and Setup don't offer them. A passkey belongs to
 the name it was made on: one made at `localhost` isn't offered at the host name, and the other way
-round; every port of that name shares it.
+round.
+
+**One address: the dashboard's.** The recorder takes a passkey's answer only from the built-in
+interface's own page, at an address it works out itself, never from what a request says:
+
+| Signed in at | Passkeys work at |
+|---|---|
+| `localhost` | `http://localhost:<port>` (`https://` with [HTTPS](#https) on), the built-in interface's port as the recorder listens on it |
+| `server.hostname` | `https://<hostname>`: the port written in `hostname` if it has one (`"radio.example.com:8443"`); else the built-in interface's port when the recorder serves HTTPS itself; else 443 (a proxy or tunnel in front serves the HTTPS) |
+
+- **Not on an interface's port.** Interfaces are other people's pages, and a sign-in counts on every
+  port of the name, so an interface's page could otherwise have your passkey sign its own server in
+  with your role. On an interface's port the sign-in page offers **Passkey ↗** instead, which opens
+  the dashboard's sign-in page; signed in there, the interface's port is signed in too (the cookie
+  covers the name, whatever the port).
+- **Reached at another port** (an SSH tunnel's `localhost:9000`, Docker publishing `8080` as
+  `9080`, a proxy at a port `hostname` doesn't name): signing in with a passkey is refused with
+  "Passkeys work at … alone", the address they do work at; tokens work as ever. Use that address,
+  map the same port, or write the proxy's port in `hostname`.
+- **`localhost` is a computer's own.** A passkey made at `http://localhost:8080` signs in whatever
+  answers at `localhost:8080` on that computer: an SSH tunnel's or Docker's port mapped to that
+  number is, to the browser, the same place.
 
 **Adding one.** Signed in (with your token, the first time), open Setup → **Recording** →
 **Access**: your row has **Add passkey**, with a name for it (the browser and system, unless you
@@ -156,10 +193,14 @@ remove your token (the **×** by its date), as long as you can still sign in.
 
 **Signing in.** The sign-in page has **Passkey** above the token field; browsers that fill in
 passkeys also offer them from the field itself. No name to type: the passkey says whose it is.
+A sign-in waits with the browser while you answer (signed by the recorder, good for 5 minutes,
+and good once), so opening the sign-in page again and again keeps nothing on the recorder and
+can't push anyone else's out.
 
 The config keeps each passkey's public key, never anything secret. A passkey kept on one device
-(a security key) counts its uses, and the count is saved when it goes up, so a copy is refused;
-passkeys synced between devices don't count, so signing in with them writes nothing.
+(a security key) counts its uses, and the count is saved when it goes up (never down), so a copy
+is refused; if the count can't be saved (the config can't be written), the sign-in is refused
+too. Passkeys synced between devices don't count, so signing in with them writes nothing.
 
 **Locked out?** On the recorder's computer, `trunk-pro access off`, then restart the recorder.
 Open Setup, add a new Admin, and turn **Sign-in** back on. (`--config file.json` for a config
@@ -198,7 +239,7 @@ Access](#cloudflare-tunnel-and-access)). Off unless set; it does nothing while s
 
 | Key | Default | Description |
 |---|---|---|
-| `from` | (needed) | The proxy's addresses, as the recorder sees its connections: IPs or CIDR blocks (`"127.0.0.1"`, `"10.0.0.0/8"`, `"fd7a:115c:a1e0::/48"`). From any other address the header is ignored, and the log says so once for each address (a proxy at an address not listed shows there). An entry that's neither isn't saved. Not needed (and not used) with `cloudflare` |
+| `from` | (needed) | The proxy's addresses, as the recorder sees its connections: IPs or CIDR blocks (`"127.0.0.1"`, `"10.0.0.0/8"`, `"fd7a:115c:a1e0::/48"`). From any other address the header is ignored, and the log says so once for each address (a proxy at an address not listed shows there). An entry that's neither isn't saved, nor is a block of every address (`"0.0.0.0/0"`, `"::/0"`): anyone could send the header, the same as signing in turned off. Not needed (and not used) with `cloudflare` |
 | `header` | `"Remote-User"` | The header the proxy puts the name in. Not used with `cloudflare` |
 | `cloudflare` | off | Cloudflare Access in front: `{ "team": "myteam", "aud": "…" }`. The name is the email in its signed token, checked; `from` and `header` aren't used. See [Cloudflare Tunnel and Access](#cloudflare-tunnel-and-access) |
 | `users` | `{}` | The proxy's names for users whose name here differs: `"luke@example.com": "luke"`. Edited in the config file, not in Setup |
@@ -309,7 +350,8 @@ programs on this computer (cloudflared among them) reach the port:
 - Without `hostname`, a recorder bound to localhost refuses the tunnel's requests ("this server only
   answers to localhost"): they're for `radio.example.com`, which it doesn't know as its own.
 - Cloudflare tells the recorder the browser came over HTTPS (`X-Forwarded-Proto: https`), so the
-  sign-in cookie is `Secure`, and [passkeys](#passkeys) work at `https://radio.example.com`.
+  sign-in cookie is `Secure`. [Passkeys](#passkeys) work at `https://radio.example.com` (the
+  recorder serves no HTTPS itself, so the proxy in front does, at 443).
 - Turn [signing in](#access) on: through a tunnel, the recorder is on the internet. Tokens and
   passkeys work through the tunnel with nothing else set up.
 
@@ -366,7 +408,9 @@ Or in the app: Setup → **Recording** → **Access** → **Proxy** → **Set up
   (Cloudflare rotates them), at most once a minute. The recorder must reach that address. If it
   can't, Access signs nobody in (the log says so once); tokens and passkeys still work.
 - A token, a session or a passkey's sign-in says who first, as for any proxy; another site's page
-  gets nobody. Signing out is Cloudflare's (its session lasts as long as the application says).
+  gets nobody. Signing out is Cloudflare's (its session lasts as long as the application says). A
+  dashboard open with Access's token is closed when that token expires (a minute's leeway), and
+  reconnects with the one the browser has then.
 - A service token's requests carry no email, so they sign nobody in; give a program an access
   token of the recorder's instead.
 - A token refused (another application's, expired, a clock far off) is logged once a reason, so an
@@ -386,6 +430,7 @@ the certificate you give it. It works with [signing in](#access) on or off.
 |---|---|---|
 | `cert` | | The certificate, PEM, its chain after it (Let's Encrypt's `fullchain.pem`). Absolute, `~/…`, or relative to the config file's folder |
 | `key` | | Its private key, PEM (`privkey.pem`) |
+| `hsts` | `false` | Send `Strict-Transport-Security` (a year) over HTTPS. See below |
 
 - **Read when the app starts.** Turning it on or off, or pointing at other files, takes a restart.
   A pair that can't be read, isn't PEM, or whose key isn't the certificate's stops the app with
@@ -393,9 +438,20 @@ the certificate you give it. It works with [signing in](#access) on or off.
 - **Renewals need no restart.** The files are looked at once a minute; a renewed pair is served
   from then on. If the new pair doesn't load, the recorder warns once and keeps serving the old one.
 - **Plain HTTP to the port** is redirected to `https://` (308). `GET /api/version` still answers
-  over plain HTTP, so scripts and a second launch still find the recorder.
-- **Cookies** from [signing in](#access) are `Secure` over HTTPS. There's no HSTS, so you can
-  turn HTTPS off again without browsers refusing the plain-HTTP port.
+  over plain HTTP, so scripts and a second launch still find the recorder. A plain-HTTP request
+  that carried a credential (an `Authorization` header, `?token=`, the sign-in cookie, or signing
+  in itself) isn't redirected: it's refused (400), since the credential already crossed the
+  network readable, and the log says so once for each kind. Use `https://`, and make again an
+  access token that was sent that way.
+- **Cookies** from [signing in](#access) are `Secure` over HTTPS.
+- **HSTS** (`hsts`, off by default; Interfaces → Ports → **HSTS**): browsers that have been here
+  over HTTPS go straight to `https://` for a year after, even for an `http://` address typed in,
+  so nothing is ever sent in the clear first. Off, a typed `http://` address sends its first
+  request in the clear before the redirect. It's off by default because it binds the whole host
+  name, every port: other programs on this computer serving plain HTTP at the same name (a
+  router page, another web app) stop opening in those browsers, and turning the recorder's HTTPS
+  off again leaves its own port unreachable to them until the year is out. Sent over the
+  recorder's own HTTPS alone; behind a proxy that serves the HTTPS, set it at the proxy.
 - The certificate must name the address you open it at (a phone at `https://radiobox.tail1234.ts.net:8443`
   needs a certificate for `radiobox.tail1234.ts.net`). Set `server.hostname` to that name, and
   the log and the browser the app opens use it; without it they use `https://localhost:…` (or the

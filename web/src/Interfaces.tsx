@@ -271,6 +271,7 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
             );
           })}
         <TlsRow c={c} />
+        {c.server.tls && <HstsRow c={c} />}
         <HostnameRow c={c} />
       </div>
       <p className="muted small">
@@ -296,7 +297,7 @@ function TlsRow(props: { c: Config }) {
   const save = () => {
     const [c, k] = [cert.trim(), key.trim()];
     if (half || (c === (tls?.cert ?? "") && k === (tls?.key ?? ""))) return;
-    updateConfig((x) => void (x.server.tls = c ? { cert: c, key: k } : undefined));
+    updateConfig((x) => void (x.server.tls = c ? { ...x.server.tls, cert: c, key: k } : undefined));
   };
   const input = (label: string, value: string, set: (v: string) => void, placeholder: string) => (
     <input
@@ -327,7 +328,29 @@ function TlsRow(props: { c: Config }) {
   );
 }
 
-/** The name the recorder is reached by over HTTPS (server.hostname): passkeys there, and the URLs it logs. */
+/** HSTS (server.tls.hsts): browsers told to keep to HTTPS on this host name, every port of it. Off unless set. */
+function HstsRow(props: { c: Config }) {
+  const on = !!props.c.server.tls?.hsts;
+  return (
+    <div className="iface-ports-row" role="row">
+      <span role="cell">
+        <strong>HSTS</strong> <span className="muted small">a year</span>
+        <Info>
+          Browsers that have been here over HTTPS refuse plain HTTP to this host name for a year, every port of it: other programs&apos; plain HTTP pages on this computer&apos;s name stop opening too. Off
+          leaves a typed http:// address open to a redirect.
+        </Info>
+      </span>
+      <span role="cell">
+        <Switch label={on ? "On" : "Off"} checked={on} onChange={(v) => updateConfig((x) => void (x.server.tls && (v ? (x.server.tls.hsts = true) : delete x.server.tls.hsts)))} />
+      </span>
+      <span role="cell" className="small muted">
+        {on && (location.protocol === "https:" ? "Sent" : "Once HTTPS")}
+      </span>
+    </div>
+  );
+}
+
+/** The name the recorder is reached by over HTTPS (server.hostname, a port after it when a proxy in front serves the dashboard elsewhere): passkeys there, and the URLs it logs. */
 function HostnameRow(props: { c: Config }) {
   const saved = props.c.server.hostname ?? "";
   const [name, setName] = useState(saved);
@@ -340,13 +363,16 @@ function HostnameRow(props: { c: Config }) {
     <div className="iface-ports-row" role="row">
       <span role="cell">
         <strong>Host name</strong> <span className="muted small">passkeys</span>
-        <Info>The name the certificate is for (radio.tail1234.ts.net). Passkeys work there over HTTPS, and on localhost; never on an IP address.</Info>
+        <Info>
+          The name the certificate is for (radio.tail1234.ts.net). Passkeys work there over HTTPS, and on localhost; never on an IP address. A port after it (radio.example.com:8443): where a proxy in front serves this
+          page; none, 443 (or this port, served over HTTPS here).
+        </Info>
       </span>
       <span role="cell" className="iface-tls">
         <input className="mono" aria-label="Host name" value={name} placeholder="radio.tail1234.ts.net" onChange={(e) => setName(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
       </span>
       <span role="cell" className="small muted">
-        {!saved ? "None" : location.hostname === saved.toLowerCase() ? "This page" : "Set"}
+        {!saved ? "None" : location.hostname === saved.toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "") ? "This page" : "Set"}
       </span>
     </div>
   );

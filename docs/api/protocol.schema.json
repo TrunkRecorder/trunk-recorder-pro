@@ -183,6 +183,10 @@
             "$ref": "#/definitions/AuthPasskey"
           },
           "description": "Their passkeys: added by them, signed in, from a browser (POST /api/passkey/register/…); removed or renamed by editing this."
+        },
+        "signedOut": {
+          "type": "number",
+          "description": "When they were signed out everywhere (Unix s, POST /api/logout `{all: true}`): browsers' sessions signed in then or before end; access tokens sent with each request don't."
         }
       },
       "required": [
@@ -1582,7 +1586,7 @@
             },
             "hostname": {
               "type": "string",
-              "description": "The name this computer is reached by over HTTPS (its certificate's): the URLs the recorder logs and opens, and where passkeys work besides localhost (absent: none)."
+              "description": "The name this computer is reached by over HTTPS (its certificate's): the URLs the recorder logs and opens, and where passkeys work besides localhost (absent: none). With a port (\"radio.example.com:8443\"): the dashboard's, where a proxy in front serves it."
             }
           },
           "required": [
@@ -9382,6 +9386,10 @@
         },
         "key": {
           "type": "string"
+        },
+        "hsts": {
+          "type": "boolean",
+          "description": "Strict-Transport-Security, a year: browsers keep to HTTPS on every port of this host name (absent: off)."
         }
       },
       "required": [

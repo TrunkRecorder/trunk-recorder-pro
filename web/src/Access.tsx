@@ -4,13 +4,15 @@
 // user's role allows: View (listen) or Admin (control). Turned on in an order
 // that can't lock this browser out: an Admin user, this browser signed in as
 // them, and only then on. Each user adds their own passkeys, signed in
-// (where passkeys work: localhost, or server.hostname over HTTPS). A proxy
+// (where passkeys work: the dashboard's own origin, on localhost or
+// server.hostname). An Admin signs a user out everywhere (every browser of
+// theirs). Over plain HTTP from another computer, it says so. A proxy
 // in front that signs people in (server.auth.proxy) is its addresses and
 // header, or Cloudflare Access's team and Audience tag, and what others get;
 // its names mapped to users are a hand edit.
 
 import { useState } from "react";
-import { createToken, passkeySignIn, signIn, signOut, snapshot, subscribe, updateConfig, useSelect, type SignedIn } from "./controller.ts";
+import { createToken, passkeySignIn, signIn, signOut, signOutEverywhere, snapshot, subscribe, updateConfig, useSelect, type SignedIn } from "./controller.ts";
 import { Info } from "./charts.tsx";
 import { textList } from "./fieldText.ts";
 import { CopyButton, DraftInput, Field, TextInput } from "./inputs.tsx";
@@ -71,6 +73,12 @@ export type Made = { name: string; access: ApiAccess; secret: string };
 const canSignIn = (u: AuthUser) => !!u.token || !!u.passkeys?.length;
 /** Who can turn signing in off again: an Admin with something to sign in with. */
 const admin = (u: AuthUser) => u.access === "control" && canSignIn(u);
+
+/** Whether this page crosses the network unencrypted: plain HTTP, from a host that isn't this computer. */
+export const unencrypted = (loc: Pick<Location, "protocol" | "hostname"> = location) => {
+  const h = (loc.hostname ?? "").toLowerCase().replace(/^\[|\]$/g, "");
+  return loc.protocol === "http:" && !(h === "localhost" || h.endsWith(".localhost") || /^127\./.test(h) || h === "::1");
+};
 
 /** Addresses as typed: commas or spaces between. */
 const addresses = textList(/[\s,]+/);
@@ -300,6 +308,10 @@ export function AccessSection(props: { c: Config; made?: Made }) {
     if (!confirm(`Remove ${name}'s token? Browsers signed in with it are signed out; their passkeys stay.`)) return;
     updateConfig((x) => void delete authOf(x).users![name].token);
   };
+  const signOutAll = async (name: string) => {
+    if (!confirm(`Sign ${name} out everywhere? Every browser signed in as them signs in again${me.user === name ? ", this one too" : ""}. Their access token keeps working.`)) return;
+    setProblem(await signOutEverywhere(me.user === name ? undefined : name));
+  };
   const removePasskey = (name: string, id: string, label: string) => {
     if (!confirm(`Remove ${name}'s passkey ${label}? Browsers signed in with it are signed out.`)) return;
     updateConfig((x) => void (authOf(x).users![name].passkeys = authOf(x).users![name].passkeys?.filter((p) => p.id !== id)));
@@ -309,7 +321,22 @@ export function AccessSection(props: { c: Config; made?: Made }) {
   const adminKeys = me.passkeys && rows.some(([, u]) => u.access === "control" && u.passkeys?.length);
 
   return (
-    <Section title="Access" hint="Tokens, passkeys" actions={<Switch label="Sign-in" checked={on} disabled={busy} onChange={turn} />}>
+    <Section
+      title="Access"
+      hint={
+        on && unencrypted() ? (
+          <span className="warn-text" role="status" aria-label="Unencrypted">
+            Unencrypted
+            <Info>
+              This page is plain HTTP from another computer: access tokens and the sign-in cookie cross the network readable. Fine over a VPN (Tailscale, WireGuard); otherwise turn on HTTPS (Interfaces → Ports) or put an HTTPS proxy in front.
+            </Info>
+          </span>
+        ) : (
+          "Tokens, passkeys"
+        )
+      }
+      actions={<Switch label="Sign-in" checked={on} disabled={busy} onChange={turn} />}
+    >
       <section className="set-card">
         {step === "paste" && (
           <Group title="Sign in first" hint="An Admin token's secret" cols={1}>
@@ -367,7 +394,9 @@ export function AccessSection(props: { c: Config; made?: Made }) {
             ) : (
               <>
                 View or Admin
-                <Info>View: sees and plays, changes nothing. Admin: everything. Each signs in with a token or a passkey of theirs; removing either signs their browsers out. Passkeys: added by each user, signed in, here.</Info>
+                <Info>
+                  View: sees and plays, changes nothing. Admin: everything. Each signs in with a token or a passkey of theirs; removing either signs their browsers out. Passkeys: added by each user, signed in, here. Sign out: every browser signed in as them signs in again; their token keeps working (make it again for that).
+                </Info>
               </>
             )
           }
@@ -473,11 +502,24 @@ export function AccessSection(props: { c: Config; made?: Made }) {
                         </div>
                       </td>
                       <td>
-                        {!lastAdmin(u) && (
-                          <button type="button" className="btn ghost small danger" aria-label={`Remove ${name}`} onClick={() => remove(name)}>
-                            Remove
-                          </button>
-                        )}
+                        <div className="row">
+                          {on && (
+                            <button
+                              type="button"
+                              className="btn ghost small"
+                              aria-label={`Sign ${name} out everywhere`}
+                              title={u.signedOut ? `Every browser of theirs · last ${day(u.signedOut)}` : "Every browser of theirs"}
+                              onClick={() => void signOutAll(name)}
+                            >
+                              Sign out
+                            </button>
+                          )}
+                          {!lastAdmin(u) && (
+                            <button type="button" className="btn ghost small danger" aria-label={`Remove ${name}`} onClick={() => remove(name)}>
+                              Remove
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}

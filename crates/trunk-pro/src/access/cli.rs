@@ -13,6 +13,7 @@ pub fn run(a: &Args) {
         Some("list") => list(a),
         Some("add") => add(a),
         Some("remove") => remove(a),
+        Some("signout") => sign_out(a),
         Some("passkey") if a.positional.get(1).map(String::as_str) == Some("remove") => remove_passkey(a),
         Some("on") => on(a, true),
         Some("off") => on(a, false),
@@ -28,6 +29,10 @@ trunk-pro access add <name> [--access listen|control]
     printed this once.
 trunk-pro access remove <name>
     Remove a user: whoever signed in as them is signed out.
+trunk-pro access signout <name>
+    Sign a user out everywhere: every browser signed in as them until now
+    signs in again (an access token sent with each request still works:
+    make it again for that).
 trunk-pro access passkey remove <name> <passkey>
     Remove one of a user's passkeys (by its name, as list shows it): whoever
     signed in with it is signed out. (Passkeys are added from a browser.)
@@ -61,7 +66,8 @@ fn list(a: &Args) {
     let day = |t: i64| chrono::DateTime::from_timestamp(t, 0).map_or(String::new(), |d| format!(" {}", d.format("%Y-%m-%d")));
     for (name, u) in &auth.users {
         let token = u.token.as_ref().map_or("no token".to_string(), |t| format!("token{}", day(t.created)));
-        println!("  {name} [{}] {token}", u.access.name());
+        let out = u.signed_out.map(|t| format!(", signed out everywhere{}", day(t))).unwrap_or_default();
+        println!("  {name} [{}] {token}{out}", u.access.name());
         for p in &u.passkeys {
             println!("    passkey \"{}\"{}", p.name, day(p.created));
         }
@@ -93,6 +99,15 @@ fn remove(a: &Args) {
     }
     save(&path, &cfg);
     println!("{} removed.", name.trim());
+}
+
+fn sign_out(a: &Args) {
+    let name = a.positional.get(1).unwrap_or_else(|| die("trunk-pro access signout <name>"));
+    let (path, mut cfg) = load_config(a);
+    let Some(u) = cfg.server.auth.users.get_mut(name.trim()) else { die(&format!("There's no user named \"{}\".", name.trim())) };
+    u.signed_out = Some(crate::clock::unix_s() as i64);
+    save(&path, &cfg);
+    println!("{} signed out everywhere.", name.trim());
 }
 
 fn remove_passkey(a: &Args) {

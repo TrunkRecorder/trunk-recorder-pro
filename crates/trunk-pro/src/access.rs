@@ -65,8 +65,9 @@ pub enum Who {
     /// Signed in as user `name` with `credential`: their access token's
     /// secret's hash (as a secret sent, or a session names it; a token made
     /// again is another sign-in), or `pk:` and the id of the passkey a
-    /// session was signed in with ([`passkey_credential`]).
-    User { name: String, credential: String },
+    /// session was signed in with ([`passkey_credential`]); `until`, a
+    /// session's expiry (Unix s: a cookie's; none, a secret sent each time).
+    User { name: String, credential: String, until: Option<u64> },
     /// Signed in by the proxy in front ([`proxied`]) `via` its header or
     /// Cloudflare's token, which named them `asserted`: recorder user `user`
     /// (the user it's mapped to), or by its own name, with `proxy.other`'s access.
@@ -78,8 +79,8 @@ pub enum Who {
 pub enum Via {
     /// Its header, from `peer`, one of its addresses.
     Header(IpAddr),
-    /// A token Cloudflare Access signed, for this team and application.
-    Cloudflare(AuthCloudflare),
+    /// A token Cloudflare Access signed, for this team and application, good `until` (Unix s, its leeway in).
+    Cloudflare { app: AuthCloudflare, until: u64 },
 }
 
 /// A request (or a WebSocket, for as long as it lasts): its port and who it is.
@@ -91,20 +92,34 @@ pub struct Caller {
 
 impl Who {
     /// What its credential allows with signing in on (none: it must sign in),
-    /// as the config has it now.
+    /// as the config has it now, and the clock: nothing once it's expired ([`Who::until`]).
     pub fn grants(&self, auth: &Auth) -> Option<ApiAccess> {
+        if self.until().is_some_and(|t| crate::clock::unix_s() as u64 >= t) {
+            return None;
+        }
         match self {
             Who::Anonymous => auth.anonymous,
-            Who::User { name, credential } => auth.users.get(name).filter(|u| holds(u, credential)).map(|u| u.access),
+            // (A session signed in before they were signed out everywhere: nothing.)
+            Who::User { name, credential, until } => auth.users.get(name).filter(|u| holds(u, credential) && !until.is_some_and(|t| signed_out(u, t))).map(|u| u.access),
             // (The proxy gone, `peer` no longer its (or Cloudflare's in its place), Cloudflare's
             // application another, or its name another user's now: nothing.)
             Who::Proxy { asserted, user, via } => {
                 auth.proxy.as_ref().filter(|p| match via {
                     Via::Header(peer) => p.cloudflare.is_none() && p.trusts(*peer),
-                    Via::Cloudflare(cf) => p.cloudflare.as_ref() == Some(cf),
+                    Via::Cloudflare { app, .. } => p.cloudflare.as_ref() == Some(app),
                 })?;
                 auth.proxied(asserted).filter(|(u, _)| u == user).map(|(_, a)| a)
             }
+        }
+    }
+
+    /// When it stops signing anyone in (Unix s): a session's cookie, or
+    /// Cloudflare's token, expiring. A WebSocket it opened is closed then.
+    pub fn until(&self) -> Option<u64> {
+        match self {
+            Who::User { until, .. } => *until,
+            Who::Proxy { via: Via::Cloudflare { until, .. }, .. } => Some(*until),
+            _ => None,
         }
     }
 
@@ -155,12 +170,19 @@ pub fn user_of<'a>(auth: &'a Auth, secret: &str) -> Option<(&'a String, &'a Auth
 /// Who signs in with `secret`: [`Who::User`], or None.
 pub fn signs_in(auth: &Auth, secret: &str) -> Option<Who> {
     let (name, u) = user_of(auth, secret)?;
-    Some(Who::User { name: name.clone(), credential: u.token.as_ref()?.hash.clone() })
+    Some(Who::User { name: name.clone(), credential: u.token.as_ref()?.hash.clone(), until: None })
 }
 
 /// A session's credential when signed in with the passkey whose id is `id`.
 pub fn passkey_credential(id: &str) -> String {
     format!("pk:{id}")
+}
+
+/// Whether a session of user `u`'s that expires at `until` was signed in
+/// when (or before) they were signed out everywhere (`signedOut`): it was
+/// signed in [`SESSION_S`] before it expires.
+fn signed_out(u: &AuthUser, until: u64) -> bool {
+    u.signed_out.is_some_and(|at| (until.saturating_sub(SESSION_S) as i64) <= at)
 }
 
 /// Whether user `u` still has `credential`: their token's hash, or a passkey of theirs ([`passkey_credential`]).
@@ -206,8 +228,8 @@ fn proxied(auth: &Auth, keys: &cloudflare::Keys, headers: &HeaderMap, peer: Opti
     if let Some(cf) = &p.cloudflare {
         let mut sent = headers.get_all(cloudflare::HEADER).iter();
         let (Some(v), None) = (sent.next(), sent.next()) else { return None };
-        let asserted = match keys.email(cf, v.to_str().ok()?) {
-            Ok(email) => email,
+        let (asserted, until) = match keys.email(cf, v.to_str().ok()?) {
+            Ok(said) => said,
             Err(why) => {
                 // (Once a reason: a misconfigured Audience tag shows in the log, a stream of forgeries doesn't.)
                 static TOLD: std::sync::Mutex<Vec<&str>> = std::sync::Mutex::new(Vec::new());
@@ -220,7 +242,7 @@ fn proxied(auth: &Auth, keys: &cloudflare::Keys, headers: &HeaderMap, peer: Opti
             }
         };
         let (user, _) = auth.proxied(&asserted)?;
-        return Some(Who::Proxy { asserted, user, via: Via::Cloudflare(cf.clone()) });
+        return Some(Who::Proxy { asserted, user, via: Via::Cloudflare { app: cf.clone(), until } });
     }
     let peer = peer?;
     let mut sent = headers.get_all(p.header.as_str()).iter();
@@ -253,8 +275,9 @@ pub const SESSION_KEY_FILE: &str = "session-key";
 /// what credential (an access token's hash, or a passkey's id) and until
 /// when, signed with this recorder's key, which nothing else knows (it's
 /// never in the config, which control pages are sent). Removing the user,
-/// making their token again or removing the passkey ends the session (it no
-/// longer [`Who::grants`] anything); so does a new key.
+/// making their token again, removing the passkey or signing them out
+/// everywhere (`signedOut`, after it was signed in) ends the session (it no
+/// longer [`Who::grants`] anything); so does a new key, and its expiry.
 pub struct Sessions {
     key: [u8; 32],
     /// The cookie's name: this key's, so recorders on one host name (other
@@ -305,7 +328,7 @@ impl Sessions {
         self.issue_until(user, credential, crate::clock::unix_s() as u64 + SESSION_S)
     }
 
-    fn issue_until(&self, user: &str, credential: &str, expires: u64) -> String {
+    pub(crate) fn issue_until(&self, user: &str, credential: &str, expires: u64) -> String {
         let body = format!("{}.{}.{expires}", percent_encode(user), percent_encode(credential));
         let mac = hex(&self.mac(&body).finalize().into_bytes());
         format!("{body}.{mac}")
@@ -322,11 +345,32 @@ impl Sessions {
         let mut parts = body.split('.');
         let (user, credential, expires) = (parts.next()?, parts.next()?, parts.next()?.parse::<u64>().ok()?);
         (parts.next().is_none() && now < expires).then_some(())?;
-        Some(Who::User { name: percent_decode(user)?, credential: percent_decode(credential)? })
+        Some(Who::User { name: percent_decode(user)?, credential: percent_decode(credential)?, until: Some(expires) })
     }
 
     fn mac(&self, body: &str) -> Hmac<Sha256> {
         let mut m = Hmac::<Sha256>::new_from_slice(&self.key).expect("HMAC takes a key of any length");
+        m.update(body.as_bytes());
+        m
+    }
+
+    /// `body` signed for `purpose` (a passkey sign-in waiting, [`passkey`]):
+    /// `<body>.<HMAC-SHA256, hex>`, with a key made from this one for that
+    /// purpose alone, so it's never a session (nor a session one of these).
+    pub fn seal(&self, purpose: &str, body: &str) -> String {
+        format!("{body}.{}", hex(&self.purpose_mac(purpose, body).finalize().into_bytes()))
+    }
+
+    /// The body of `value`, if it's one [`Sessions::seal`] signed for `purpose`.
+    pub fn unseal<'a>(&self, purpose: &str, value: &'a str) -> Option<&'a str> {
+        let (body, mac) = value.rsplit_once('.')?;
+        self.purpose_mac(purpose, body).verify_slice(&unhex(mac)?).ok()?;
+        Some(body)
+    }
+
+    fn purpose_mac(&self, purpose: &str, body: &str) -> Hmac<Sha256> {
+        let key = self.mac(&format!("trunk-pro key for: {purpose}")).finalize().into_bytes();
+        let mut m = Hmac::<Sha256>::new_from_slice(&key).expect("HMAC takes a key of any length");
         m.update(body.as_bytes());
         m
     }
@@ -381,7 +425,7 @@ pub fn add_user(auth: &mut Auth, name: &str, access: ApiAccess) -> Result<Secret
     getrandom::fill(&mut b).map_err(|e| format!("No random numbers to make a secret with: {e}"))?;
     let secret = format!("trp_{}", hex(&b));
     let token = AuthToken { hash: sha256_hex(secret.as_bytes()), created: crate::clock::unix_s() as i64 };
-    auth.users.insert(name.into(), AuthUser { access, token: Some(token), passkeys: vec![] });
+    auth.users.insert(name.into(), AuthUser { access, token: Some(token), passkeys: vec![], signed_out: None });
     Ok(Secret::new(secret))
 }
 
@@ -456,7 +500,7 @@ mod tests {
         let secret = add_user(&mut auth, " luke ", ApiAccess::Control).unwrap();
         let s = secret.expose();
         assert!(s.starts_with("trp_") && s.len() == 4 + 64, "{s}");
-        let luke = Who::User { name: "luke".into(), credential: sha256_hex(s.as_bytes()) };
+        let luke = Who::User { name: "luke".into(), credential: sha256_hex(s.as_bytes()), until: None };
         let hash = auth.users["luke"].token.as_ref().unwrap().hash.clone();
         assert_eq!(hash, sha256_hex(s.as_bytes()), "the config keeps its hash, by its trimmed name");
         let with = |name: header::HeaderName, v: String| {
@@ -474,7 +518,8 @@ mod tests {
         assert_eq!(identify(&auth, &sessions, &keys, &with(header::AUTHORIZATION, format!("Basic {s}")), None, false, None), Who::Anonymous, "another scheme");
         assert_eq!(identify(&auth, &sessions, &keys, &none, Some(&format!("a=1&token={s}")), false, None), luke);
         let cookie = with(header::COOKIE, format!("other=1; trp_00000000=nope; {}={}", sessions.cookie, sessions.issue("luke", &hash)));
-        assert_eq!(identify(&auth, &sessions, &keys, &cookie, None, true, None), luke, "a session in this recorder's cookie");
+        let session = identify(&auth, &sessions, &keys, &cookie, None, true, None);
+        assert!(matches!(&session, Who::User { name, credential, until: Some(_) } if *name == "luke" && *credential == hash), "a session in this recorder's cookie, until it expires: {session:?}");
         assert_eq!(identify(&auth, &sessions, &keys, &with(header::COOKIE, format!("{}={s}", sessions.cookie)), None, true, None), Who::Anonymous, "a secret is no session");
         assert_eq!(identify(&auth, &sessions, &keys, &cookie, None, false, None), Who::Anonymous, "a cookie from another site's page doesn't count");
         assert_eq!(identify(&auth, &sessions, &keys, &with(header::AUTHORIZATION, "Bearer trp_0123".into()), Some("token=trp_4567"), true, None), Who::Anonymous, "unknown secrets");
@@ -498,7 +543,7 @@ mod tests {
         use trunk_app::config::AuthProxy;
         let mut auth = Auth { enabled: true, ..Default::default() };
         let secret = add_user(&mut auth, "kiosk", ApiAccess::Listen).unwrap();
-        auth.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
+        auth.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![], signed_out: None });
         let mut proxy = AuthProxy { from: vec!["127.0.0.1".into(), "fd00::/8".into()], ..Default::default() };
         proxy.users.insert("luke@example.com".into(), "luke".into());
         auth.proxy = Some(proxy);
@@ -529,7 +574,8 @@ mod tests {
         let both = named(&[("Remote-User", "luke"), ("Authorization", &format!("Bearer {}", secret.expose()))]);
         assert_eq!(who(&auth, &both, true, local), kiosk, "a token wins");
         let cookie = format!("{}={}", sessions.cookie, sessions.issue("kiosk", &auth.users["kiosk"].token.as_ref().unwrap().hash));
-        assert_eq!(who(&auth, &named(&[("Remote-User", "luke"), ("Cookie", &cookie)]), true, local), kiosk, "a session wins");
+        let session = who(&auth, &named(&[("Remote-User", "luke"), ("Cookie", &cookie)]), true, local);
+        assert!(session.user() == Some("kiosk") && session.until().is_some(), "a session wins: {session:?}");
         assert_eq!(who(&auth, &named(&[("Remote-User", "luke"), ("Authorization", "Bearer trp_00")]), true, local).user(), Some("luke"), "a secret that's nobody's: the header");
         // Names that are no user here: other's, by their own name (none: nobody).
         let stranger = named(&[("Remote-User", "Zoë")]);
@@ -563,7 +609,7 @@ mod tests {
         let keys = cloudflare::Keys::from(move |_| Ok(served.clone()));
         let mut auth = Auth { enabled: true, ..Default::default() };
         let secret = add_user(&mut auth, "kiosk", ApiAccess::Listen).unwrap();
-        auth.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
+        auth.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![], signed_out: None });
         let cf = AuthCloudflare { team: "radio".into(), aud: AUD.into() };
         let mut proxy = AuthProxy { cloudflare: Some(cf.clone()), from: vec!["127.0.0.1".into()], ..Default::default() };
         proxy.users.insert("luke@example.com".into(), "luke".into());
@@ -581,7 +627,7 @@ mod tests {
         };
         let elsewhere: IpAddr = "203.0.113.9".parse().unwrap();
         let who = |auth: &Auth, h: &HeaderMap, cookie_ok: bool| identify(auth, &sessions, &keys, h, None, cookie_ok, Some(elsewhere));
-        let luke = Who::Proxy { asserted: "luke@example.com".into(), user: "luke".into(), via: Via::Cloudflare(cf.clone()) };
+        let luke = Who::Proxy { asserted: "luke@example.com".into(), user: "luke".into(), via: Via::Cloudflare { app: cf.clone(), until: now + 3600 + 60 } };
         let h = named(&[("Cf-Access-Jwt-Assertion", &token)]);
         assert_eq!(who(&auth, &h, true), luke, "from an address not listed: the signature is the proof");
         assert_eq!(identify(&auth, &sessions, &keys, &h, None, true, None), luke, "no peer known");
@@ -660,8 +706,8 @@ mod tests {
         let mut auth = Auth { enabled: true, ..Default::default() };
         add_user(&mut auth, "luke.b ÿ", ApiAccess::Control).unwrap();
         let hash = auth.users["luke.b ÿ"].token.as_ref().unwrap().hash.clone();
-        let luke = Who::User { name: "luke.b ÿ".into(), credential: hash.clone() };
         let v = sessions.issue("luke.b ÿ", &hash);
+        let luke = Who::User { name: "luke.b ÿ".into(), credential: hash.clone(), until: v.split('.').nth(2).and_then(|t| t.parse().ok()) };
         assert!(v.starts_with("luke%2Eb%20%C3%BF.") && v.split('.').count() == 4, "{v}");
         assert_eq!(sessions.verify(&v), Some(luke.clone()), "dots and more in a name");
         assert_eq!(luke.grants(&auth), Some(ApiAccess::Control));
@@ -684,7 +730,7 @@ mod tests {
         let (a, b, other) = (Sessions::load(&dir), Sessions::load(&dir), Sessions::load(&elsewhere));
         assert_eq!((a.key, &a.cookie), (b.key, &b.cookie));
         assert!(a.cookie != other.cookie && a.cookie.starts_with("trp_") && a.cookie.len() == 12, "{}", a.cookie);
-        assert_eq!(b.verify(&a.issue("luke", "h")), Some(Who::User { name: "luke".into(), credential: "h".into() }), "a restart keeps sessions");
+        assert_eq!(b.verify(&a.issue("luke", "h")).and_then(|w| w.user().map(str::to_string)), Some("luke".into()), "a restart keeps sessions");
         let kept = std::fs::read_to_string(dir.join(SESSION_KEY_FILE)).unwrap();
         assert_eq!(kept, hex(&a.key), "the key, in hex");
         #[cfg(unix)]

@@ -158,8 +158,9 @@ impl Keys {
         }
     }
 
-    /// Who `token` says, checked with the keys kept: its email, or why not.
-    pub fn email(&self, cf: &AuthCloudflare, token: &str) -> Result<String, Refused> {
+    /// Who `token` says, checked with the keys kept: its email and until when
+    /// it's good (Unix s, the leeway in), or why not.
+    pub fn email(&self, cf: &AuthCloudflare, token: &str) -> Result<(String, u64), Refused> {
         let team = cf.issuer().ok_or(Refused::Config)?;
         let k = self.kept.lock().unwrap();
         let keys = if k.team == team { &k.keys } else { &HashMap::new() };
@@ -217,8 +218,8 @@ impl Refused {
 
 /// Who `token` says at `now` (Unix s), if it's an RS256 JWT signed by one of
 /// `keys` (by its `kid`), issued by `iss`, for `aud`, and valid now (a
-/// minute's leeway): its `email`.
-fn verify(token: &str, iss: &str, aud: &str, keys: &HashMap<String, Key>, now: u64) -> Result<String, Refused> {
+/// minute's leeway): its `email`, and until when it's good (its `exp`, and the leeway).
+fn verify(token: &str, iss: &str, aud: &str, keys: &HashMap<String, Key>, now: u64) -> Result<(String, u64), Refused> {
     let mut parts = token.trim().split('.');
     let (Some(h), Some(p), Some(s), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else { return Err(Refused::Malformed) };
     let json = |part: &str| b64(part).and_then(|b| serde_json::from_slice::<Value>(&b).ok()).ok_or(Refused::Malformed);
@@ -245,7 +246,8 @@ fn verify(token: &str, iss: &str, aud: &str, keys: &HashMap<String, Key>, now: u
     if claims["nbf"].as_u64().is_some_and(|nbf| nbf > now + LEEWAY_S) {
         return Err(Refused::NotYet);
     }
-    claims["email"].as_str().map(str::trim).filter(|e| !e.is_empty()).map(str::to_string).ok_or(Refused::NoEmail)
+    let email = claims["email"].as_str().map(str::trim).filter(|e| !e.is_empty()).ok_or(Refused::NoEmail)?;
+    Ok((email.to_string(), exp + LEEWAY_S))
 }
 
 #[cfg(test)]
@@ -309,9 +311,10 @@ pub(crate) mod tests {
         let (a, b) = (TestKey::new("a"), TestKey::new("b"));
         let keys = parse_certs(&certs(&[&a])).unwrap();
         let now = 1_794_000_000;
-        let at = |t: &str, now| verify(t, TEAM, AUD, &keys, now);
+        let at = |t: &str, now| verify(t, TEAM, AUD, &keys, now).map(|(email, _)| email);
         let good = a.sign(&claims("luke@example.com", now));
         assert_eq!(at(&good, now), Ok("luke@example.com".into()));
+        assert_eq!(verify(&good, TEAM, AUD, &keys, now).map(|(_, until)| until), Ok(now + 3600 + LEEWAY_S), "good until it expires, and the leeway");
         assert_eq!(at(&good, now + 3600 + LEEWAY_S - 1), Ok("luke@example.com".into()), "a minute's leeway");
         assert_eq!(at(&good, now + 3600 + LEEWAY_S), Err(Refused::Expired));
         assert_eq!(at(&good, now - LEEWAY_S - 1), Err(Refused::NotYet));
@@ -367,7 +370,7 @@ pub(crate) mod tests {
         assert_eq!(keys.email(&cf, &by_a), Err(Refused::UnknownKey), "none fetched yet");
         assert!(keys.wanted(&cf, &by_a) && !keys.wanted(&cf, "not a token"));
         keys.refresh(&cf);
-        assert_eq!((keys.email(&cf, &by_a), fetches.load(Ordering::SeqCst)), (Ok("luke@example.com".into()), 1));
+        assert_eq!((keys.email(&cf, &by_a).map(|(e, _)| e), fetches.load(Ordering::SeqCst)), (Ok("luke@example.com".into()), 1));
         assert!(!keys.wanted(&cf, &by_a), "kept");
         // A key not known, and a fetch a moment ago: not fetched again (anyone can send such a token).
         assert!(!keys.wanted(&cf, &by_b));
@@ -375,7 +378,7 @@ pub(crate) mod tests {
         *served.lock().unwrap() = certs(&[&a, &b]);
         assert!(keys.wanted_at(&cf, &by_b, Instant::now() + REFETCH));
         keys.refresh(&cf);
-        assert_eq!((keys.email(&cf, &by_b), fetches.load(Ordering::SeqCst)), (Ok("ann@example.com".into()), 2));
+        assert_eq!((keys.email(&cf, &by_b).map(|(e, _)| e), fetches.load(Ordering::SeqCst)), (Ok("ann@example.com".into()), 2));
         assert!(!keys.wanted(&cf, &by_a) && !keys.wanted(&cf, &by_b));
         assert!(keys.wanted_at(&cf, &by_a, Instant::now() + KEEP), "kept an hour: fetched again all the same");
         keys.refresh(&cf);
@@ -392,6 +395,6 @@ pub(crate) mod tests {
         assert!(!down.wanted(&cf, &by_a), "not tried again within the minute");
         served.lock().unwrap().clear();
         keys.refresh(&cf);
-        assert_eq!(keys.email(&cf, &by_a), Ok("luke@example.com".into()), "a failed fetch keeps the keys had");
+        assert_eq!(keys.email(&cf, &by_a).map(|(e, _)| e), Ok("luke@example.com".into()), "a failed fetch keeps the keys had");
     }
 }
