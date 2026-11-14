@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { unitNameOf, unitNamesReplace } from "./rules.ts";
-import { ownUnitName, readUnitNamesFile, unitNamesFileText, withUnitName } from "./units.ts";
+import type { CallEntry, CallRecord } from "./protocol.ts";
+import { mdcHeard, ownUnitName, readUnitNamesFile, unitIdMatches, unitIdText, unitNamesFileText, withUnitName, type MdcUnits } from "./units.ts";
 
 const BY_HAND = { kind: "edited" as const, at: 1_762_500_000 };
 
@@ -26,4 +27,17 @@ test("a radio named by hand: its own row, ahead of the patterns, its origin; cle
   assert.equal(unitNameOf(named, "none", 7042, "HEARD"), undefined);
   assert.equal(unitNameOf(named, "user_only", 5, "HEARD"), undefined);
   assert.equal(unitNameOf(withUnitName(named, 7042, "", BY_HAND), "user", 7042, undefined), "Medic 042");
+});
+
+test("an MDC1200 radio's ID in hex, 4 digits, as radios are programmed; any other in decimal; found either way", () => {
+  const call = (short_name: string, srcs: [number, string][]): CallEntry => ({ path: `${short_name}/x`, record: { short_name, srcList: srcs.map(([src, signal_system]) => ({ src, signal_system })) } as unknown as CallRecord });
+  const mdc: MdcUnits = mdcHeard({}, [call("conv", [[7187, "MDC1200"], [1795, "MDC1200"], [1011270, "FLEETSYNC"]]), call("p25", [[7187, ""]])]);
+  assert.deepEqual(mdc, { conv: { 7187: true, 1795: true } } as MdcUnits);
+  assert.equal(mdcHeard(mdc, [call("conv", [[7187, "MDC1200"]])]), mdc, "nothing new: the same");
+  assert.equal(unitIdText(mdc.conv, 7187), "1C13");
+  assert.equal(unitIdText(mdc.conv, 1795), "0703");
+  assert.equal(unitIdText(mdc.conv, 1011270), "1011270", "FleetSync stays decimal");
+  assert.equal(unitIdText(mdc.p25, 7187), "7187", "the same number on another system");
+  for (const f of ["1c13", "0x1c13", "7187", "c1"]) assert.ok(unitIdMatches(mdc.conv, 7187, f), f);
+  assert.ok(!unitIdMatches(mdc.p25, 7187, "1c13"), "hex only where it's shown in hex");
 });

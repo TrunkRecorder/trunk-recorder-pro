@@ -7,6 +7,7 @@ import { formatMhz, systemColor } from "../config.ts";
 import { setListen, setView, useTopic, type AppState } from "../controller.ts";
 import type { CallView, TalkgroupName, UnitName } from "../protocol.ts";
 import { unitNameOf } from "../rules.ts";
+import { unitIdText } from "../units.ts";
 import { tgText } from "./Systems.tsx";
 
 /** An analog call on one of its conventional system's AM channels (calls say only analog). */
@@ -22,8 +23,8 @@ export function clock(s: number): string {
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`;
 }
 
-/** A radio: its talker alias when known (the unit ID on hover), else its unit ID. */
-export function Unit({ id, alias }: { id: number; alias: string | undefined }) {
+/** A radio: its talker alias when known (the unit ID on hover), else its unit ID (as shown: unitIdOf). */
+export function Unit({ id, alias }: { id: string; alias: string | undefined }) {
   return alias ? (
     <span className="unit" title={`Unit ${id}`}>
       {alias}
@@ -46,6 +47,9 @@ export const aliasOf = (s: Pick<AppState, "config" | "units" | "unitNames">, sys
 
 /** No names of its own. */
 const NONE: UnitName[] = [];
+
+/** A radio's ID as shown on system `system`: an MDC1200 one in hex (units.ts unitIdText). */
+export const unitIdOf = (s: Pick<AppState, "mdcUnits">, system: string, id: number) => unitIdText(s.mdcUnits[system], id);
 
 /** Under a call's talkgroup: what's patched with it. */
 /** A conventional call whose row files the air's talkgroup under another number: the air's. */
@@ -103,7 +107,7 @@ export function ActiveCalls({ s, system }: { s: AppState; system: string }) {
   const mine = s.listen && s.listenSystem === system;
   const playingCall = mine && s.nowPlaying ? s.calls.find((c) => c.id === s.nowPlaying?.callId) : undefined;
   const talkerId = playingCall?.sources.at(-1);
-  const talker = playingCall && talkerId !== undefined ? { id: talkerId, alias: aliasOf(s, system, talkerId) } : null;
+  const talker = playingCall && talkerId !== undefined ? { id: unitIdOf(s, system, talkerId), alias: aliasOf(s, system, talkerId) } : null;
   return (
     <section className="panel">
       <header className="panel-head">
@@ -176,7 +180,7 @@ export function ActiveCalls({ s, system }: { s: AppState; system: string }) {
                     <td className="unit-cell">
                       {unit !== undefined ? (
                         <button className="linkish" onClick={() => setView("radio", system, "unit", unit)} title="This radio's page">
-                          <Unit id={unit} alias={aliasOf(s, system, unit)} />
+                          <Unit id={unitIdOf(s, system, unit)} alias={aliasOf(s, system, unit)} />
                         </button>
                       ) : (
                         "—"

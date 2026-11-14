@@ -176,6 +176,8 @@ pub struct CallSource {
     pub flags: Flags,
     /// Where the radio said it was (GPS) while it talked: latitude, longitude.
     pub position: Option<(f64, f64)>,
+    /// The analog signalling its ID came in (none: the system's own).
+    pub signal: Option<crate::dsp::inband::units::Kind>,
 }
 
 /// What a radio's transmission said of itself: P25's service options
@@ -617,7 +619,7 @@ impl CallManager {
             return std::mem::replace(&mut s.flags, merged) != merged;
         }
         let Some(src) = src else { return false };
-        c.sources.push(CallSource { src, time_s, audio_pos: None, flags, position: None });
+        c.sources.push(CallSource { src, time_s, audio_pos: None, flags, position: None, signal: None });
         true
     }
 
@@ -635,10 +637,14 @@ impl CallManager {
     }
 
     /// Unit IDs its voice carried (analog: MDC1200, FleetSync), at `now_s`:
-    /// who is talking, as a voice channel's link control says it. Returns
-    /// whether the call changed.
+    /// who is talking, as a voice channel's link control says it, and the
+    /// signalling it said it in. Returns whether the call changed.
     pub fn note_units(c: &mut Call, tx: &mut super::record::Transmissions, units: &[crate::dsp::inband::units::UnitId], now_s: f64) -> bool {
-        units.iter().fold(false, |changed, u| changed | Self::note_info(c, Some(&mut *tx), Some(u.unit), Flags::emergency(u.emergency), now_s))
+        units.iter().fold(false, |changed, u| {
+            let noted = Self::note_info(c, Some(&mut *tx), Some(u.unit), Flags::emergency(u.emergency), now_s);
+            let kind = c.sources.last_mut().filter(|s| s.src == u.unit).is_some_and(|s| s.signal.replace(u.kind) != Some(u.kind));
+            changed | noted | kind
+        })
     }
 
     /// Its voice was decrypted (at `now_s`): its transmission's audio is kept. Returns whether the call changed.
@@ -809,7 +815,7 @@ impl CallManager {
             last_update_s: m.time_s,
             heard_s: now_s,
             last_audio_s: m.time_s,
-            sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, audio_pos: None, flags: Flags::of(m), position: None }] } else { vec![] },
+            sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, audio_pos: None, flags: Flags::of(m), position: None, signal: None }] } else { vec![] },
             talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
             ran: m.ran,
