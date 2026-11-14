@@ -201,7 +201,7 @@ a player's address, not the recorder's.
 Never open the port to the internet. On plain HTTP a token typed on another computer crosses the
 network in the clear. On your own network or a VPN that's fine; otherwise turn on
 [HTTPS](../configuration/server-and-log.md#https), or put a reverse proxy that adds it in front.
-From outside, use a VPN or the SSH tunnel below, with signing in on.
+From outside, use a VPN, the SSH tunnel below, or [Cloudflare Tunnel](../configuration/server-and-log.md#cloudflare-tunnel-and-access), with signing in on.
 
 A safer way, from a machine that can SSH to the recorder, is an SSH tunnel. Leave the recorder
 bound to `127.0.0.1`, then on your machine:

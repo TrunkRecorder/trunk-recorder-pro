@@ -439,7 +439,10 @@ Cloudflare Access, `tailscale serve`; `server.auth.proxy`, see
 [Behind a proxy that signs people in](../configuration/server-and-log.md#behind-a-proxy-that-signs-people-in)).
 The proxy says who in a header (`Remote-User` by default), which the
 recorder believes from the proxy's addresses alone, and only where the
-cookie would count. A token or the cookie says who first. A program going
+cookie would count. Cloudflare Access (`proxy.cloudflare`) says who in the
+token it signs (`Cf-Access-Jwt-Assertion`), which the recorder checks
+against the team's keys, from any address; its plain email header counts
+for nothing. A token or the cookie says who first. A program going
 through such a proxy signs in at the proxy; a token works there as ever.
 `POST /api/logout` doesn't sign out someone the proxy signed in: that's the
 proxy's.

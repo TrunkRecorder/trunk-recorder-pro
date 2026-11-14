@@ -26,7 +26,9 @@
 //! Behind a reverse proxy that signs people in itself (`server.auth.proxy`),
 //! a request none of those sign in is who the proxy's header says: from the
 //! proxy's addresses alone, and only where the cookie would count (the header
-//! is the proxy's stand-in for its own cookie). See [`proxied`].
+//! is the proxy's stand-in for its own cookie). See [`proxied`]. Behind
+//! Cloudflare Access (`proxy.cloudflare`), who its signed token says, from
+//! anywhere ([`cloudflare`]).
 
 use std::net::IpAddr;
 use std::path::Path;
@@ -35,7 +37,7 @@ use axum::http::{header, HeaderMap};
 use hmac::{Hmac, KeyInit, Mac};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use trunk_app::config::{Auth, AuthToken, AuthUser};
+use trunk_app::config::{Auth, AuthCloudflare, AuthToken, AuthUser};
 use trunk_app::protocol::Secret;
 
 use crate::config::ApiAccess;
@@ -43,6 +45,7 @@ use crate::runtime::Ctx;
 use crate::toolkit::{hex, percent_decode, percent_encode, sha256_hex, unhex};
 
 pub mod cli;
+pub mod cloudflare;
 pub mod passkey;
 
 /// Which port a request came in on.
@@ -64,10 +67,19 @@ pub enum Who {
     /// again is another sign-in), or `pk:` and the id of the passkey a
     /// session was signed in with ([`passkey_credential`]).
     User { name: String, credential: String },
-    /// Signed in by the proxy in front ([`proxied`]), from `peer`, which
-    /// named them `asserted`: recorder user `user` (the user it's mapped to),
-    /// or by its own name, with `proxy.other`'s access.
-    Proxy { asserted: String, user: String, peer: IpAddr },
+    /// Signed in by the proxy in front ([`proxied`]) `via` its header or
+    /// Cloudflare's token, which named them `asserted`: recorder user `user`
+    /// (the user it's mapped to), or by its own name, with `proxy.other`'s access.
+    Proxy { asserted: String, user: String, via: Via },
+}
+
+/// How the proxy in front said who.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Via {
+    /// Its header, from `peer`, one of its addresses.
+    Header(IpAddr),
+    /// A token Cloudflare Access signed, for this team and application.
+    Cloudflare(AuthCloudflare),
 }
 
 /// A request (or a WebSocket, for as long as it lasts): its port and who it is.
@@ -84,9 +96,13 @@ impl Who {
         match self {
             Who::Anonymous => auth.anonymous,
             Who::User { name, credential } => auth.users.get(name).filter(|u| holds(u, credential)).map(|u| u.access),
-            // (The proxy gone, `peer` no longer its, or its name another user's now: nothing.)
-            Who::Proxy { asserted, user, peer } => {
-                auth.proxy.as_ref().filter(|p| p.trusts(*peer))?;
+            // (The proxy gone, `peer` no longer its (or Cloudflare's in its place), Cloudflare's
+            // application another, or its name another user's now: nothing.)
+            Who::Proxy { asserted, user, via } => {
+                auth.proxy.as_ref().filter(|p| match via {
+                    Via::Header(peer) => p.cloudflare.is_none() && p.trusts(*peer),
+                    Via::Cloudflare(cf) => p.cloudflare.as_ref() == Some(cf),
+                })?;
                 auth.proxied(asserted).filter(|(u, _)| u == user).map(|(_, a)| a)
             }
         }
@@ -159,8 +175,8 @@ pub fn holds(u: &AuthUser, credential: &str) -> bool {
 /// `Authorization: Bearer` and its `token=` query parameter, else
 /// (`cookie_ok`) a valid session in this recorder's cookie whose user still
 /// has its credential, else (`cookie_ok` too) who the proxy in front says
-/// ([`proxied`]). Signing in off, or none valid: anonymous.
-pub fn identify(auth: &Auth, sessions: &Sessions, headers: &HeaderMap, query: Option<&str>, cookie_ok: bool, peer: Option<IpAddr>) -> Who {
+/// ([`proxied`]; Cloudflare's token checked with `keys`). Signing in off, or none valid: anonymous.
+pub fn identify(auth: &Auth, sessions: &Sessions, keys: &cloudflare::Keys, headers: &HeaderMap, query: Option<&str>, cookie_ok: bool, peer: Option<IpAddr>) -> Who {
     if !auth.enabled {
         return Who::Anonymous;
     }
@@ -174,7 +190,7 @@ pub fn identify(auth: &Auth, sessions: &Sessions, headers: &HeaderMap, query: Op
     // (A session's user removed, or their token made again since: nobody.)
     let session = || if cookie_ok { sessions.of(headers).filter(|w| w.grants(auth).is_some()) } else { None };
     // (A browser sends the proxy its cookie from another site's page too: the header counts where the cookie would.)
-    let proxy = || if cookie_ok { proxied(auth, headers, peer?) } else { None };
+    let proxy = || if cookie_ok { proxied(auth, keys, headers, peer) } else { None };
     secret.or_else(session).or_else(proxy).unwrap_or(Who::Anonymous)
 }
 
@@ -182,9 +198,31 @@ pub fn identify(auth: &Auth, sessions: &Sessions, headers: &HeaderMap, query: Op
 /// is: the name in its header (one, not empty), if `peer` is one of the
 /// proxy's addresses, as [`Auth::proxied`] has it. From any other address
 /// the header is no one's (anyone can send it), and that's told once an
-/// address: a proxy at an address not listed shows in the log.
-fn proxied(auth: &Auth, headers: &HeaderMap, peer: IpAddr) -> Option<Who> {
+/// address: a proxy at an address not listed shows in the log. Behind
+/// Cloudflare Access, the email in its token (one), checked ([`cloudflare`]),
+/// from any address; the header and its email header are no one's.
+fn proxied(auth: &Auth, keys: &cloudflare::Keys, headers: &HeaderMap, peer: Option<IpAddr>) -> Option<Who> {
     let p = auth.proxy.as_ref()?;
+    if let Some(cf) = &p.cloudflare {
+        let mut sent = headers.get_all(cloudflare::HEADER).iter();
+        let (Some(v), None) = (sent.next(), sent.next()) else { return None };
+        let asserted = match keys.email(cf, v.to_str().ok()?) {
+            Ok(email) => email,
+            Err(why) => {
+                // (Once a reason: a misconfigured Audience tag shows in the log, a stream of forgeries doesn't.)
+                static TOLD: std::sync::Mutex<Vec<&str>> = std::sync::Mutex::new(Vec::new());
+                let mut told = TOLD.lock().unwrap();
+                if !told.contains(&why.says()) {
+                    log::warn!("Signing in: a Cloudflare Access token that {}{}: ignored", why.says(), peer.map(|p| format!(", from {p}")).unwrap_or_default());
+                    told.push(why.says());
+                }
+                return None;
+            }
+        };
+        let (user, _) = auth.proxied(&asserted)?;
+        return Some(Who::Proxy { asserted, user, via: Via::Cloudflare(cf.clone()) });
+    }
+    let peer = peer?;
     let mut sent = headers.get_all(p.header.as_str()).iter();
     let (Some(v), None) = (sent.next(), sent.next()) else { return None };
     if !p.trusts(peer) {
@@ -202,7 +240,7 @@ fn proxied(auth: &Auth, headers: &HeaderMap, peer: IpAddr) -> Option<Who> {
         return None;
     }
     let (user, _) = auth.proxied(asserted)?;
-    Some(Who::Proxy { asserted: asserted.to_string(), user, peer })
+    Some(Who::Proxy { asserted: asserted.to_string(), user, via: Via::Header(peer) })
 }
 
 /// How long a browser stays signed in: 30 days.
@@ -428,25 +466,26 @@ mod tests {
         };
         let none = HeaderMap::new();
         let sessions = Sessions::fresh();
-        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, false, None), luke);
+        let keys = cloudflare::Keys::from(|_| Err("offline".into()));
+        assert_eq!(identify(&auth, &sessions, &keys, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, false, None), luke);
         for v in [format!("bearer {s}"), format!("BEARER   {s}")] {
-            assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, v.clone()), None, false, None), luke, "{v}: any case, any spaces");
+            assert_eq!(identify(&auth, &sessions, &keys, &with(header::AUTHORIZATION, v.clone()), None, false, None), luke, "{v}: any case, any spaces");
         }
-        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, format!("Basic {s}")), None, false, None), Who::Anonymous, "another scheme");
-        assert_eq!(identify(&auth, &sessions, &none, Some(&format!("a=1&token={s}")), false, None), luke);
+        assert_eq!(identify(&auth, &sessions, &keys, &with(header::AUTHORIZATION, format!("Basic {s}")), None, false, None), Who::Anonymous, "another scheme");
+        assert_eq!(identify(&auth, &sessions, &keys, &none, Some(&format!("a=1&token={s}")), false, None), luke);
         let cookie = with(header::COOKIE, format!("other=1; trp_00000000=nope; {}={}", sessions.cookie, sessions.issue("luke", &hash)));
-        assert_eq!(identify(&auth, &sessions, &cookie, None, true, None), luke, "a session in this recorder's cookie");
-        assert_eq!(identify(&auth, &sessions, &with(header::COOKIE, format!("{}={s}", sessions.cookie)), None, true, None), Who::Anonymous, "a secret is no session");
-        assert_eq!(identify(&auth, &sessions, &cookie, None, false, None), Who::Anonymous, "a cookie from another site's page doesn't count");
-        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, "Bearer trp_0123".into()), Some("token=trp_4567"), true, None), Who::Anonymous, "unknown secrets");
-        assert_eq!(identify(&Auth { enabled: false, ..auth.clone() }, &sessions, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, true, None), Who::Anonymous, "signing in off");
+        assert_eq!(identify(&auth, &sessions, &keys, &cookie, None, true, None), luke, "a session in this recorder's cookie");
+        assert_eq!(identify(&auth, &sessions, &keys, &with(header::COOKIE, format!("{}={s}", sessions.cookie)), None, true, None), Who::Anonymous, "a secret is no session");
+        assert_eq!(identify(&auth, &sessions, &keys, &cookie, None, false, None), Who::Anonymous, "a cookie from another site's page doesn't count");
+        assert_eq!(identify(&auth, &sessions, &keys, &with(header::AUTHORIZATION, "Bearer trp_0123".into()), Some("token=trp_4567"), true, None), Who::Anonymous, "unknown secrets");
+        assert_eq!(identify(&Auth { enabled: false, ..auth.clone() }, &sessions, &keys, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, true, None), Who::Anonymous, "signing in off");
         assert!(add_user(&mut auth, "luke", ApiAccess::Listen).unwrap_err().contains("already"));
         for bad in ["", "  ", "a\nb", &"x".repeat(65)] {
             assert!(add_user(&mut auth, bad, ApiAccess::Listen).is_err(), "{bad:?}");
         }
         // A user with no token signs in with nothing.
         auth.users.get_mut("luke").unwrap().token = None;
-        assert_eq!(identify(&auth, &sessions, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, false, None), Who::Anonymous, "no token");
+        assert_eq!(identify(&auth, &sessions, &keys, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, false, None), Who::Anonymous, "no token");
         assert_eq!(luke.grants(&auth), None);
     }
 
@@ -464,6 +503,7 @@ mod tests {
         proxy.users.insert("luke@example.com".into(), "luke".into());
         auth.proxy = Some(proxy);
         let sessions = Sessions::fresh();
+        let keys = cloudflare::Keys::from(|_| Err("offline".into()));
         let (local, v6, elsewhere): (IpAddr, IpAddr, IpAddr) = ("127.0.0.1".parse().unwrap(), "fd00::5".parse().unwrap(), "192.168.1.9".parse().unwrap());
         let named = |pairs: &[(&str, &str)]| {
             let mut h = HeaderMap::new();
@@ -472,15 +512,15 @@ mod tests {
             }
             h
         };
-        let who = |auth: &Auth, h: &HeaderMap, cookie_ok: bool, peer: IpAddr| identify(auth, &sessions, h, None, cookie_ok, Some(peer));
-        let luke = Who::Proxy { asserted: "luke@example.com".into(), user: "luke".into(), peer: local };
+        let who = |auth: &Auth, h: &HeaderMap, cookie_ok: bool, peer: IpAddr| identify(auth, &sessions, &keys, h, None, cookie_ok, Some(peer));
+        let luke = Who::Proxy { asserted: "luke@example.com".into(), user: "luke".into(), via: Via::Header(local) };
         let h = named(&[("remote-user", "luke@example.com")]);
         assert_eq!(who(&auth, &h, true, local), luke, "mapped to luke");
         assert_eq!((luke.user(), luke.grants(&auth)), (Some("luke"), Some(ApiAccess::Control)), "luke's role, no token needed");
-        assert_eq!(who(&auth, &named(&[("Remote-User", " luke ")]), true, v6), Who::Proxy { asserted: "luke".into(), user: "luke".into(), peer: v6 }, "the same name, trimmed; a v6 block");
+        assert_eq!(who(&auth, &named(&[("Remote-User", " luke ")]), true, v6), Who::Proxy { asserted: "luke".into(), user: "luke".into(), via: Via::Header(v6) }, "the same name, trimmed; a v6 block");
         assert_eq!(who(&auth, &h, true, elsewhere), Who::Anonymous, "from another address: anyone could send it");
         assert_eq!(who(&auth, &h, false, local), Who::Anonymous, "another site's page: as the cookie, it doesn't count");
-        assert_eq!(identify(&auth, &sessions, &h, None, true, None), Who::Anonymous, "no peer known");
+        assert_eq!(identify(&auth, &sessions, &keys, &h, None, true, None), Who::Anonymous, "no peer known");
         assert_eq!(who(&auth, &named(&[("Remote-User", "luke"), ("Remote-User", "kiosk")]), true, local), Who::Anonymous, "two names: neither");
         assert_eq!(who(&auth, &named(&[("Remote-User", " ")]), true, local), Who::Anonymous, "no name");
         assert_eq!(who(&auth, &named(&[("X-Forwarded-User", "luke")]), true, local), Who::Anonymous, "another header");
@@ -507,7 +547,70 @@ mod tests {
         assert_eq!(luke.grants(&Auth { proxy: None, ..auth.clone() }), None, "no proxy");
         auth.users.remove("luke");
         assert_eq!(luke.grants(&auth), None, "luke removed");
-        assert_eq!(identify(&Auth { enabled: false, ..auth.clone() }, &sessions, &h, None, true, Some(local)), Who::Anonymous, "signing in off");
+        assert_eq!(identify(&Auth { enabled: false, ..auth.clone() }, &sessions, &keys, &h, None, true, Some(local)), Who::Anonymous, "signing in off");
+    }
+
+    /// Behind Cloudflare Access: who its token says, checked, from any
+    /// address, mapped as the header's name is; its email header alone, or a
+    /// token that won't check, is nobody; a token or a session first; only
+    /// where the cookie would count; and again by the config as it is now.
+    #[test]
+    fn cloudflare_says_who_by_its_token() {
+        use cloudflare::tests::{certs, claims, TestKey, AUD};
+        use trunk_app::config::AuthProxy;
+        let a = TestKey::new("a");
+        let served = certs(&[&a]);
+        let keys = cloudflare::Keys::from(move |_| Ok(served.clone()));
+        let mut auth = Auth { enabled: true, ..Default::default() };
+        let secret = add_user(&mut auth, "kiosk", ApiAccess::Listen).unwrap();
+        auth.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
+        let cf = AuthCloudflare { team: "radio".into(), aud: AUD.into() };
+        let mut proxy = AuthProxy { cloudflare: Some(cf.clone()), from: vec!["127.0.0.1".into()], ..Default::default() };
+        proxy.users.insert("luke@example.com".into(), "luke".into());
+        auth.proxy = Some(proxy);
+        keys.refresh(&cf);
+        let sessions = Sessions::fresh();
+        let now = crate::clock::unix_s() as u64;
+        let token = a.sign(&claims("luke@example.com", now));
+        let named = |pairs: &[(&str, &str)]| {
+            let mut h = HeaderMap::new();
+            for (n, v) in pairs {
+                h.append(header::HeaderName::from_bytes(n.as_bytes()).unwrap(), HeaderValue::from_bytes(v.as_bytes()).unwrap());
+            }
+            h
+        };
+        let elsewhere: IpAddr = "203.0.113.9".parse().unwrap();
+        let who = |auth: &Auth, h: &HeaderMap, cookie_ok: bool| identify(auth, &sessions, &keys, h, None, cookie_ok, Some(elsewhere));
+        let luke = Who::Proxy { asserted: "luke@example.com".into(), user: "luke".into(), via: Via::Cloudflare(cf.clone()) };
+        let h = named(&[("Cf-Access-Jwt-Assertion", &token)]);
+        assert_eq!(who(&auth, &h, true), luke, "from an address not listed: the signature is the proof");
+        assert_eq!(identify(&auth, &sessions, &keys, &h, None, true, None), luke, "no peer known");
+        assert_eq!(luke.grants(&auth), Some(ApiAccess::Control));
+        assert_eq!(who(&auth, &h, false), Who::Anonymous, "another site's page: as the cookie, it doesn't count");
+        for (pairs, why) in [(vec![("Cf-Access-Authenticated-User-Email", "luke@example.com")], "the email header alone"), (vec![("Remote-User", "luke")], "the proxy's header: not Cloudflare's"),
+                             (vec![("Cf-Access-Jwt-Assertion", "nope")], "not a token"), (vec![("Cf-Access-Jwt-Assertion", token.as_str()), ("Cf-Access-Jwt-Assertion", token.as_str())], "two tokens")] {
+            assert_eq!(identify(&auth, &sessions, &keys, &named(&pairs), None, true, Some("127.0.0.1".parse().unwrap())), Who::Anonymous, "{why}");
+        }
+        let mut c = claims("luke@example.com", now);
+        c["aud"] = serde_json::json!(["another application"]);
+        assert_eq!(who(&auth, &named(&[("Cf-Access-Jwt-Assertion", &a.sign(&c))]), true), Who::Anonymous, "another application's");
+        // A stranger: other's, by their email.
+        let ann = named(&[("Cf-Access-Jwt-Assertion", &a.sign(&claims("ann@example.com", now)))]);
+        assert_eq!(who(&auth, &ann, true), Who::Anonymous, "other none");
+        auth.proxy.as_mut().unwrap().other = Some(ApiAccess::Listen);
+        assert_eq!(who(&auth, &ann, true).grants(&auth), Some(ApiAccess::Listen));
+        // A token says who first.
+        let both = named(&[("Cf-Access-Jwt-Assertion", &token), ("Authorization", &format!("Bearer {}", secret.expose()))]);
+        assert_eq!(who(&auth, &both, true), signs_in(&auth, secret.expose()).unwrap(), "a token wins");
+        // As the config is now: Cloudflare's application another, or Cloudflare gone (the header's way instead).
+        let mut b = auth.clone();
+        b.proxy.as_mut().unwrap().cloudflare.as_mut().unwrap().aud = "another".into();
+        assert_eq!(luke.grants(&b), None, "another application");
+        let mut b = auth.clone();
+        b.proxy.as_mut().unwrap().cloudflare = None;
+        assert_eq!(luke.grants(&b), None, "no Cloudflare");
+        let by_header = Who::Proxy { asserted: "luke".into(), user: "luke".into(), via: Via::Header("127.0.0.1".parse().unwrap()) };
+        assert_eq!((by_header.grants(&b), by_header.grants(&auth)), (Some(ApiAccess::Control), None), "the header's sign-in, with Cloudflare set: nobody");
     }
 
     /// Signing in off, a request may do what its port allows; on, no more

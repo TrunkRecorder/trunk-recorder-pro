@@ -123,7 +123,8 @@ To keep the interface to the host itself, publish it on localhost only:
 ```
 
 and reach it from elsewhere through an SSH tunnel (`ssh -L 8080:localhost:8080 you@host`, then
-`http://localhost:8080`). To use another port on the host, change only the left-hand number:
+`http://localhost:8080`), or put it at a name of yours with a `cloudflared` service beside it
+([Cloudflare Tunnel and Access](../configuration/server-and-log.md#cloudflare-tunnel-and-access)). To use another port on the host, change only the left-hand number:
 `"8081:8080"`.
 
 ### HTTPS

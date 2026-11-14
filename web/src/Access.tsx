@@ -5,15 +5,17 @@
 // that can't lock this browser out: an Admin user, this browser signed in as
 // them, and only then on. Each user adds their own passkeys, signed in
 // (where passkeys work: localhost, or server.hostname over HTTPS). A proxy
-// in front that signs people in (server.auth.proxy) is its addresses, its
-// header and what others get; its names mapped to users are a hand edit.
+// in front that signs people in (server.auth.proxy) is its addresses and
+// header, or Cloudflare Access's team and Audience tag, and what others get;
+// its names mapped to users are a hand edit.
 
 import { useState } from "react";
-import { addPasskey, createToken, passkeyName, passkeySignIn, signIn, signOut, snapshot, subscribe, updateConfig, useSelect, type SignedIn } from "./controller.ts";
+import { createToken, passkeySignIn, signIn, signOut, snapshot, subscribe, updateConfig, useSelect, type SignedIn } from "./controller.ts";
 import { Info } from "./charts.tsx";
 import { textList } from "./fieldText.ts";
 import { CopyButton, DraftInput, Field, TextInput } from "./inputs.tsx";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
+import { AddPasskey, day, PasskeyChip } from "./Passkeys.tsx";
 import type { ApiAccess, AuthProxy, AuthSetup, AuthUser, Config } from "./protocol.ts";
 
 /** The roles, as the interface calls them. */
@@ -70,17 +72,19 @@ const canSignIn = (u: AuthUser) => !!u.token || !!u.passkeys?.length;
 /** Who can turn signing in off again: an Admin with something to sign in with. */
 const admin = (u: AuthUser) => u.access === "control" && canSignIn(u);
 
-const day = (t?: number) => (t ? new Date(t * 1000).toLocaleDateString() : "—");
-
 /** Addresses as typed: commas or spaces between. */
 const addresses = textList(/[\s,]+/);
 
-/** The proxy in front (server.auth.proxy): set up with its addresses and header, then edited in place. */
+/** A proxy's draft: its kind, and what that kind is set up with. */
+type ProxyDraft = { kind: "header" | "cloudflare"; from: string; header: string; team: string; aud: string };
+
+/** The proxy in front (server.auth.proxy): set up as a header from its addresses, or Cloudflare Access (its team and Audience tag), then edited in place. */
 function ProxyGroup(props: { proxy?: AuthProxy }) {
   const saved = useSelect((x) => ({ status: x.saveStatus, error: x.saveError }));
-  const [draft, setDraft] = useState<{ from: string; header: string } | null>(null);
+  const [draft, setDraft] = useState<ProxyDraft | null>(null);
   const [edited, setEdited] = useState(false);
   const p = props.proxy;
+  const cf = p?.cloudflare;
   const edit = (f: (p: AuthProxy) => void) => {
     setEdited(true);
     updateConfig((x) => {
@@ -88,12 +92,16 @@ function ProxyGroup(props: { proxy?: AuthProxy }) {
       if (q) f(q);
     });
   };
+  const ready = (d: ProxyDraft) => (d.kind === "cloudflare" ? !!d.team.trim() && !!d.aud.trim() : !!addresses.parse(d.from).length);
   const save = () => {
-    if (!draft) return;
-    const from = addresses.parse(draft.from);
-    if (!from.length) return;
+    if (!draft || !ready(draft)) return;
     setEdited(true);
-    updateConfig((x) => void (authOf(x).proxy = { from, header: draft.header.trim() || "Remote-User" }));
+    const d = draft;
+    updateConfig(
+      (x) =>
+        void (authOf(x).proxy =
+          d.kind === "cloudflare" ? { from: [], header: "Remote-User", cloudflare: { team: d.team.trim(), aud: d.aud.trim() } } : { from: addresses.parse(d.from), header: d.header.trim() || "Remote-User" }),
+    );
     setDraft(null);
   };
   const remove = () => {
@@ -103,15 +111,28 @@ function ProxyGroup(props: { proxy?: AuthProxy }) {
   };
   const others = p?.other === "listen";
   const mapped = Object.keys(p?.users ?? {}).length;
+  const kinds = draft && (
+    <div className="field">
+      <span className="field-label">Kind</span>
+      <div className="seg small" role="radiogroup" aria-label="Proxy kind">
+        {(["header", "cloudflare"] as const).map((k) => (
+          <button key={k} type="button" role="radio" aria-checked={draft.kind === k} className={draft.kind === k ? "on" : ""} onClick={() => setDraft({ ...draft, kind: k })}>
+            {k === "header" ? "Header" : "Cloudflare"}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
   return (
     <Group
       title="Proxy"
       hint={
         <>
-          {p ? "Signs people in" : "None"}
+          {cf ? "Cloudflare Access" : p ? "Signs people in" : "None"}
           <Info>
-            A reverse proxy in front that signs people in (Authelia, oauth2-proxy, Cloudflare Access, tailscale serve) and says who in a header: believed from its addresses alone. Its
-            name is the user of that name, with their role. It must strip the header from what clients send. Names that differ are mapped in the config file.
+            A reverse proxy in front that signs people in (Authelia, oauth2-proxy, tailscale serve) and says who in a header: believed from its addresses alone. It must strip the
+            header from what clients send. Or Cloudflare Access: who its signed token says, checked against the team&apos;s keys and the application&apos;s Audience tag, from any
+            address. The name is the user of that name, with their role. Names that differ are mapped in the config file.
           </Info>
         </>
       }
@@ -122,7 +143,7 @@ function ProxyGroup(props: { proxy?: AuthProxy }) {
           </button>
         ) : (
           !draft && (
-            <button type="button" className="btn small" onClick={() => setDraft({ from: "127.0.0.1, ::1", header: "Remote-User" })}>
+            <button type="button" className="btn small" onClick={() => setDraft({ kind: "header", from: "127.0.0.1, ::1", header: "Remote-User", team: "", aud: "" })}>
               Set up
             </button>
           )
@@ -132,19 +153,33 @@ function ProxyGroup(props: { proxy?: AuthProxy }) {
     >
       {draft && (
         <form
-          className="row wide"
+          className="row wide wrap"
           onSubmit={(e) => {
             e.preventDefault();
             save();
           }}
         >
-          <Field label="From">
-            <input className="mono" autoComplete="off" aria-label="Proxy addresses" value={draft.from} placeholder="127.0.0.1, 10.0.0.0/8" onChange={(e) => setDraft({ ...draft, from: e.target.value })} />
-          </Field>
-          <Field label="Header">
-            <input className="mono" autoComplete="off" aria-label="Proxy header" value={draft.header} onChange={(e) => setDraft({ ...draft, header: e.target.value })} />
-          </Field>
-          <button className="btn primary" type="submit" disabled={!addresses.parse(draft.from).length}>
+          {kinds}
+          {draft.kind === "header" ? (
+            <>
+              <Field label="From">
+                <input className="mono" autoComplete="off" aria-label="Proxy addresses" value={draft.from} placeholder="127.0.0.1, 10.0.0.0/8" onChange={(e) => setDraft({ ...draft, from: e.target.value })} />
+              </Field>
+              <Field label="Header">
+                <input className="mono" autoComplete="off" aria-label="Proxy header" value={draft.header} onChange={(e) => setDraft({ ...draft, header: e.target.value })} />
+              </Field>
+            </>
+          ) : (
+            <>
+              <Field label="Team">
+                <input className="mono" autoComplete="off" aria-label="Cloudflare team" value={draft.team} placeholder="myteam" onChange={(e) => setDraft({ ...draft, team: e.target.value })} />
+              </Field>
+              <Field label="Audience">
+                <input className="mono" autoComplete="off" aria-label="Cloudflare audience" value={draft.aud} placeholder="AUD tag" onChange={(e) => setDraft({ ...draft, aud: e.target.value })} />
+              </Field>
+            </>
+          )}
+          <button className="btn primary" type="submit" disabled={!ready(draft)}>
             Save
           </button>
           <button type="button" className="btn ghost" onClick={() => setDraft(null)}>
@@ -154,12 +189,25 @@ function ProxyGroup(props: { proxy?: AuthProxy }) {
       )}
       {p && (
         <div className="row wide wrap">
-          <Field label="From" hint="IPs or CIDR blocks">
-            <DraftInput className="mono" aria-label="Proxy addresses" value={p.from} codec={addresses} onChange={(v) => edit((q) => void (q.from = v))} />
-          </Field>
-          <Field label="Header">
-            <TextInput className="mono" aria-label="Proxy header" value={p.header ?? "Remote-User"} onChange={(v) => edit((q) => void (q.header = v || "Remote-User"))} />
-          </Field>
+          {cf ? (
+            <>
+              <Field label="Team" hint="myteam.cloudflareaccess.com">
+                <TextInput className="mono" aria-label="Cloudflare team" value={cf.team} onChange={(v) => edit((q) => void (q.cloudflare = { ...cf, ...q.cloudflare, team: v.trim() }))} />
+              </Field>
+              <Field label="Audience" hint="AUD tag">
+                <TextInput className="mono" aria-label="Cloudflare audience" value={cf.aud} onChange={(v) => edit((q) => void (q.cloudflare = { ...cf, ...q.cloudflare, aud: v.trim() }))} />
+              </Field>
+            </>
+          ) : (
+            <>
+              <Field label="From" hint="IPs or CIDR blocks">
+                <DraftInput className="mono" aria-label="Proxy addresses" value={p.from} codec={addresses} onChange={(v) => edit((q) => void (q.from = v))} />
+              </Field>
+              <Field label="Header">
+                <TextInput className="mono" aria-label="Proxy header" value={p.header ?? "Remote-User"} onChange={(v) => edit((q) => void (q.header = v || "Remote-User"))} />
+              </Field>
+            </>
+          )}
           <div className="field">
             <span className="field-label">Others</span>
             <div className="seg small" role="radiogroup" aria-label="Others">
@@ -201,9 +249,6 @@ export function AccessSection(props: { c: Config; made?: Made }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [enabling, setEnabling] = useState(false);
-  // A passkey being added for this browser's user: its name.
-  const [naming, setNaming] = useState<string | null>(null);
-  const [addedKey, setAddedKey] = useState<string | null>(null);
 
   const finish = async (secret: string, passkey = false) => {
     setBusy(true);
@@ -258,16 +303,6 @@ export function AccessSection(props: { c: Config; made?: Made }) {
   const removePasskey = (name: string, id: string, label: string) => {
     if (!confirm(`Remove ${name}'s passkey ${label}? Browsers signed in with it are signed out.`)) return;
     updateConfig((x) => void (authOf(x).users![name].passkeys = authOf(x).users![name].passkeys?.filter((p) => p.id !== id)));
-  };
-  const add = async () => {
-    if (!naming?.trim()) return;
-    setBusy(true);
-    setProblem(null);
-    const r = await addPasskey(naming.trim());
-    setBusy(false);
-    if (typeof r === "string") return setProblem(r);
-    setNaming(null);
-    setAddedKey(r.name);
   };
   const anon = auth?.anonymous === "listen";
   // Signing in with a passkey to turn it on: an Admin has one, and passkeys work here.
@@ -360,35 +395,6 @@ export function AccessSection(props: { c: Config; made?: Made }) {
               </button>
             </div>
           )}
-          {addedKey && (
-            <div className="banner" role="status" aria-label="Passkey added">
-              <span>
-                Passkey <b>{addedKey}</b> added
-              </span>
-              <button className="btn ghost small" onClick={() => setAddedKey(null)}>
-                Done
-              </button>
-            </div>
-          )}
-          {naming !== null && (
-            <form
-              className="row wide"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void add();
-              }}
-            >
-              <Field label="Passkey name">
-                <input autoComplete="off" maxLength={40} value={naming} aria-label="Passkey name" onChange={(e) => setNaming(e.target.value)} />
-              </Field>
-              <button className="btn primary" type="submit" disabled={busy || !naming.trim()}>
-                Add
-              </button>
-              <button type="button" className="btn ghost" onClick={() => setNaming(null)}>
-                Cancel
-              </button>
-            </form>
-          )}
           {adding && (
             <form
               className="row wide"
@@ -454,21 +460,16 @@ export function AccessSection(props: { c: Config; made?: Made }) {
                       <td>
                         <div className="row wrap">
                           {(u.passkeys ?? []).map((p) => (
-                            <span key={p.id} className="chip" title={`Added ${day(p.created)}`}>
-                              {p.name}
+                            <PasskeyChip key={p.id} p={p}>
                               {keepsWayIn(u, { ...u, passkeys: u.passkeys!.filter((q) => q.id !== p.id) }) && (
                                 <button type="button" className="btn ghost small danger" title="Remove" aria-label={`Remove ${name}'s passkey ${p.name}`} onClick={() => removePasskey(name, p.id, p.name)}>
                                   ×
                                 </button>
                               )}
-                            </span>
+                            </PasskeyChip>
                           ))}
                           {!u.passkeys?.length && <span className="small">—</span>}
-                          {me.passkeys && me.user === name && naming === null && (
-                            <button type="button" className="btn small" disabled={busy} onClick={() => setNaming(passkeyName())}>
-                              Add passkey
-                            </button>
-                          )}
+                          {me.passkeys && me.user === name && <AddPasskey />}
                         </div>
                       </td>
                       <td>

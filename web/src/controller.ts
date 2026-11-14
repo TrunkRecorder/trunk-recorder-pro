@@ -10,6 +10,7 @@ import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
 import type {
   ApiAccess,
+  AuthPasskey,
   MonitorEvent,
   PlatformInfo,
   RadioResult,
@@ -146,6 +147,8 @@ export interface AppState {
   passkeys: boolean;
   /** Whether the proxy in front signed this browser in (GET /api/session): signing out is the proxy's. */
   proxied: boolean;
+  /** The signed-in user's own passkeys (GET /api/session), any role; null: the session couldn't say. */
+  ownPasskeys: OwnPasskey[] | null;
   surveySpectrum: Spectrum | null;
   /** The licenses looked up for the survey's signals ("Identify surveyed sites"); null: none asked for since it started. */
   surveyLicenses: LicenseLookup | null;
@@ -249,6 +252,7 @@ let state: AppState = {
   signingIn: false,
   passkeys: false,
   proxied: false,
+  ownPasskeys: null,
   surveySpectrum: null,
   surveyLicenses: null,
   surveyFor: null,
@@ -396,7 +400,7 @@ function take(m: FromRecorder): void {
     // The greeting's end: everything before it said how things are now.
     case "hello":
       set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands, capabilities: m.capabilities, access: m.access, user: m.user ?? null });
-      void fetchSession().then((x) => x && set({ signingIn: x.auth, passkeys: !!x.passkeys, proxied: !!x.proxy }));
+      void refreshSession();
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
       sendTopics(true);
@@ -759,8 +763,11 @@ export function createToken(name: string, access: ApiAccess): Promise<TokenCreat
   return ask<TokenCreated>({ type: "createToken", id: nextId++, name, access });
 }
 
+/** A passkey of the signed-in user's, as the session lists it: never its key. */
+export type OwnPasskey = Pick<AuthPasskey, "id" | "name" | "created">;
+
 /** How the recorder sees this browser (GET /api/session); null: it couldn't say (the browser build has no server). */
-export type Session = { auth: boolean; access: ApiAccess | null; user: string | null; proxy?: boolean; passkeys?: boolean };
+export type Session = { auth: boolean; access: ApiAccess | null; user: string | null; proxy?: boolean; passkeys?: boolean; ownPasskeys?: OwnPasskey[] };
 export async function fetchSession(): Promise<Session | null> {
   if (transport.kind !== "desktop") return null;
   try {
@@ -769,6 +776,12 @@ export async function fetchSession(): Promise<Session | null> {
   } catch {
     return null;
   }
+}
+
+/** The session asked again, into the state: signing in, passkeys here, the proxy, the user's own passkeys. */
+export async function refreshSession(): Promise<void> {
+  const x = await fetchSession();
+  if (x) set({ signingIn: x.auth, passkeys: !!x.passkeys, proxied: !!x.proxy, ownPasskeys: x.ownPasskeys ?? [] });
 }
 
 /** Who signed in (POST /api/login's answer): the user's role and name. */
@@ -832,7 +845,11 @@ export async function addPasskey(name: string): Promise<{ name: string } | strin
     const a = cred.response as AuthenticatorAttestationResponse;
     const response = { attestationObject: b64url(a.attestationObject), clientDataJSON: b64url(a.clientDataJSON) };
     const done = await post("/api/passkey/register/finish", { id, credential: { id: cred.id, rawId: b64url(cred.rawId), type: cred.type, extensions: {}, response } });
-    return done.ok ? ((await done.json()) as { name: string }) : (await done.text()).trim();
+    if (!done.ok) return (await done.text()).trim();
+    const added = (await done.json()) as { name: string };
+    // (Its list, again: a View user's config doesn't hold it.)
+    await refreshSession();
+    return added;
   } catch (x) {
     return passkeyFailed(x);
   }

@@ -1500,6 +1500,11 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .info:hover, .info:focus-visible { color: var(--accent); }
 .info-pop { display: none; position: absolute; z-index: 30; left: 50%; top: calc(100% + 6px); transform: translateX(-50%); width: max-content; max-width: 320px; padding: 9px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); box-shadow: 0 6px 24px rgb(0 0 0 / 0.35); color: var(--text); font-size: 13px; font-weight: 400; line-height: 1.45; text-transform: none; letter-spacing: 0; white-space: normal; text-align: left; }
 .info:hover .info-pop, .info:focus .info-pop, .info:focus-within .info-pop { display: block; }
+/* The signed-in name's passkeys (top bar): an .info-pop that stays open, under the name. */
+.user-menu { position: relative; }
+.user-pop { position: absolute; z-index: 30; right: 0; top: calc(100% + 6px); display: grid; gap: 8px; width: max-content; min-width: 220px; max-width: 340px; padding: 10px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); box-shadow: 0 6px 24px rgb(0 0 0 / 0.35); color: var(--text); font-size: 13px; }
+.user-keys { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.user-keys li { justify-content: space-between; }
 
 /* Sources' suggested settings (sourceAdvice.tsx): the banner's figures, a card's line. */
 .advice-banner { justify-content: flex-start; flex-wrap: wrap; gap: 10px 24px; }

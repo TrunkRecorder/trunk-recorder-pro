@@ -1038,6 +1038,7 @@ fn serve(a: &Args) {
         iq: Default::default(),
         sessions: access::Sessions::load(&paths::data_dir()),
         passkeys: Default::default(),
+        cloudflare: Default::default(),
         tls: tls.map(std::sync::OnceLock::from).unwrap_or_default(),
     });
     monitor::start(ctx.clone());

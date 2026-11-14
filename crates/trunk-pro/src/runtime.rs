@@ -152,6 +152,8 @@ pub struct Ctx {
     pub sessions: crate::access::Sessions,
     /// Passkey sign-ins and adds started and not yet finished ([`crate::access::passkey`]).
     pub passkeys: crate::access::passkey::Ceremonies,
+    /// The keys Cloudflare Access's tokens are checked with, as last fetched ([`crate::access::cloudflare`]).
+    pub cloudflare: crate::access::cloudflare::Keys,
     /// HTTPS, when it's served (`server.tls` as the app started): every port's.
     pub tls: std::sync::OnceLock<crate::tls::Tls>,
 }

@@ -26,7 +26,7 @@ too) on the **Interfaces** page.
 | `interfaces` | | `{}` | object | The other interfaces, by id. See below |
 | `auth` | | off | object | Signing in: who may, with what role. See [Access](#access) |
 | `tls` | | off | object | HTTPS on every interface's port: `cert` and `key`, PEM files. See [HTTPS](#https) |
-| `hostname` | | `""` | string | The name this computer is reached by over HTTPS, the one its certificate is for (`"radiobox.tail1234.ts.net"`). The log and the browser the app opens use it; [passkeys](#passkeys) work on it (besides `localhost`); bound to `127.0.0.1`, the recorder answers to it too (a proxy in front, `tailscale serve`) |
+| `hostname` | | `""` | string | The name this computer is reached by over HTTPS, the one its certificate is for (`"radiobox.tail1234.ts.net"`). The log and the browser the app opens use it; [passkeys](#passkeys) work on it (besides `localhost`); bound to `127.0.0.1`, the recorder answers to it too (a proxy in front, `tailscale serve`, [Cloudflare Tunnel](#cloudflare-tunnel-and-access)) |
 | `trpApi` | | `""` (https://trunkrecorder.pro) | string | Where the trunkrecorder.pro API is, for **Identify** and [sharing with the directory](systems.md#sharing-with-the-directory). Only for testing another copy of it (`"http://localhost:8788"`) |
 
 `bind`, `port` and `tls` are read when the app starts; the rest apply at once.
@@ -127,7 +127,7 @@ sign-in page (`/signin`).
 |---|---|---|
 | `enabled` | `false` | Signing in on. It needs a user with control access and a token or a passkey (or, with a [proxy](#behind-a-proxy-that-signs-people-in) set, nothing: the proxy can name them), so someone can turn it off again |
 | `anonymous` | none | `"listen"`: what a request without a token may do. `"control"` is refused (it would be the same as off) |
-| `proxy` | off | A reverse proxy in front that signs people in: `from`, `header`, `users`, `other`. See [Behind a proxy that signs people in](#behind-a-proxy-that-signs-people-in) |
+| `proxy` | off | A reverse proxy in front that signs people in: `from`, `header` (or `cloudflare`), `users`, `other`. See [Behind a proxy that signs people in](#behind-a-proxy-that-signs-people-in) |
 | `users` | `{}` | By name: `access` (`"listen"` or `"control"`) and what they sign in with: `token`, `hash` (the secret's SHA-256) and `created` (Unix s); `passkeys`, each `name`, `created`, `id` (the credential's, base64url) and `key` (its public key and counter, as the recorder's WebAuthn library keeps it). Made in Setup or with `trunk-pro access add`, not by hand; a passkey can be renamed or removed by hand |
 
 Changes in Setup apply at once: connections whose access changed are closed and reconnect with
@@ -168,15 +168,17 @@ somewhere else.)
 **HTTPS.** On plain HTTP the secret crosses the network in the clear, as everything else does.
 That's fine on your own network, over a VPN or an SSH tunnel. Otherwise turn on [HTTPS](#https),
 or put a reverse proxy that adds it in front. Across the internet, don't open the port: use a VPN
-or tunnel (see [Remote access](../guides/interface.md#remote-access)).
+or tunnel (see [Remote access](../guides/interface.md#remote-access), and [Cloudflare
+Tunnel](#cloudflare-tunnel-and-access)).
 
 ### Behind a proxy that signs people in
 
 If a reverse proxy in front of the recorder already signs people in (Authelia, Authentik,
-oauth2-proxy, Cloudflare Access, `tailscale serve`, Caddy's `forward_auth`), the recorder can
-take its word for who they are, so nobody signs in twice. The proxy passes the name in a header;
-the recorder believes that header only from the proxy's own addresses. Off unless set; it does
-nothing while signing in is off.
+oauth2-proxy, `tailscale serve`, Caddy's `forward_auth`), the recorder can take its word for who
+they are, so nobody signs in twice. The proxy passes the name in a header; the recorder believes
+that header only from the proxy's own addresses. Cloudflare Access is different: the recorder
+checks the token it signs, so it needs no addresses (see [Cloudflare Tunnel and
+Access](#cloudflare-tunnel-and-access)). Off unless set; it does nothing while signing in is off.
 
 ```json
 "auth": {
@@ -196,8 +198,9 @@ nothing while signing in is off.
 
 | Key | Default | Description |
 |---|---|---|
-| `from` | (needed) | The proxy's addresses, as the recorder sees its connections: IPs or CIDR blocks (`"127.0.0.1"`, `"10.0.0.0/8"`, `"fd7a:115c:a1e0::/48"`). From any other address the header is ignored, and the log says so once for each address (a proxy at an address not listed shows there). An entry that's neither isn't saved |
-| `header` | `"Remote-User"` | The header the proxy puts the name in |
+| `from` | (needed) | The proxy's addresses, as the recorder sees its connections: IPs or CIDR blocks (`"127.0.0.1"`, `"10.0.0.0/8"`, `"fd7a:115c:a1e0::/48"`). From any other address the header is ignored, and the log says so once for each address (a proxy at an address not listed shows there). An entry that's neither isn't saved. Not needed (and not used) with `cloudflare` |
+| `header` | `"Remote-User"` | The header the proxy puts the name in. Not used with `cloudflare` |
+| `cloudflare` | off | Cloudflare Access in front: `{ "team": "myteam", "aud": "…" }`. The name is the email in its signed token, checked; `from` and `header` aren't used. See [Cloudflare Tunnel and Access](#cloudflare-tunnel-and-access) |
 | `users` | `{}` | The proxy's names for users whose name here differs: `"luke@example.com": "luke"`. Edited in the config file, not in Setup |
 | `other` | none | `"listen"`: what someone the proxy signed in may do when their name is no user here. None: they aren't signed in (the sign-in page, or `anonymous`'s access). `"control"` is refused |
 
@@ -214,18 +217,18 @@ nothing while signing in is off.
 - **Signing out** is the proxy's: the dashboard shows no **Sign out** for someone the proxy signed in.
 - **A way back in.** With a proxy set, an Admin with no token counts as a way in (the proxy can
   name them). If the proxy goes wrong, `trunk-pro access off` on the recorder's computer works as ever.
-- In the app: Setup → **Recording** → **Access** → **Proxy** sets `from`, `header` and **Others**
-  (`other`); `users` is edited in the config file.
+- In the app: Setup → **Recording** → **Access** → **Proxy** sets `from`, `header` (or, for
+  **Cloudflare**, **Team** and **Audience**) and **Others** (`other`); `users` is edited in the config file.
 
 **Which header.** `Remote-User` is Authelia's. The others name it differently, so set `header` to match:
 
 | Proxy | `header` | Notes |
 |---|---|---|
-| Authelia | `Remote-User` (also `Remote-Email`, `Remote-Name`, `Remote-Groups`) | Its proxy integration must pass them on, as Caddy's `forward_auth` does with `copy_headers` |
-| Authentik | `X-authentik-username` (or `X-authentik-email`) | Caddy's `forward_auth` needs them in `copy_headers`, capitalised: `X-Authentik-Username` |
-| oauth2-proxy | `X-Forwarded-Email` (or `X-Forwarded-User`, `X-Forwarded-Preferred-Username`) | `--pass-user-headers` (on by default) in reverse-proxy mode; with nginx `auth_request`, `--set-xauthrequest` gives `X-Auth-Request-Email` and the proxy must copy it over |
-| Cloudflare Access | `Cf-Access-Authenticated-User-Email` | Cloudflare's own advice is to verify the signed `Cf-Access-Jwt-Assertion` at the origin, which the recorder doesn't: don't trust the plain header unless nothing but Access (a Tunnel) can reach the proxy |
-| `tailscale serve` | `Tailscale-User-Login` | Serve strips its own headers from what clients send. Only tailnet requests carry them: none from Funnel, none from tagged devices |
+| Authelia | `Remote-User` (also `Remote-Email`, `Remote-Name`, `Remote-Groups`) | Its forward-auth (nginx `auth_request`, Traefik `forwardAuth`, Caddy `forward_auth`) must pass them on, as Caddy's does with `copy_headers` |
+| Authentik | `X-authentik-username` (or `X-authentik-email`) | Its proxy outpost's forward-auth. Caddy's `forward_auth` needs them in `copy_headers`, capitalised: `X-Authentik-Username` |
+| oauth2-proxy | `X-Forwarded-Email` (or `X-Forwarded-User`, `X-Forwarded-Preferred-Username`) | `--pass-user-headers` (on by default) in reverse-proxy mode; with nginx `auth_request`, `--set-xauthrequest` gives `X-Auth-Request-Email` (or `-User`) and the proxy must copy it over with `proxy_set_header` |
+| Cloudflare Access | none: set `cloudflare` | The recorder checks Access's signed token (`Cf-Access-Jwt-Assertion`) and ignores its plain email header. See [Cloudflare Tunnel and Access](#cloudflare-tunnel-and-access) |
+| `tailscale serve` | `Tailscale-User-Login` | `luke@github` or an email. Serve strips its own headers from what clients send. Only tailnet requests carry them: none from Funnel, none from tagged devices. `from`: `127.0.0.1` and `::1` |
 
 **The proxy must strip the header from what clients send.** Anything that reaches the recorder from
 an address in `from` is believed, so a path through the proxy that passes a client's own
@@ -247,14 +250,6 @@ With `from` set to `127.0.0.1`, every program on that computer can send the head
 proxy on the same computer, keep `bind` at `127.0.0.1`, so nothing else reaches the port at all, and
 set `hostname` to the name the proxy serves (bound to localhost, the recorder answers to it).
 
-| Proxy | `header` | Notes |
-|---|---|---|
-| Authelia | `Remote-User` | Its forward-auth (nginx `auth_request`, Traefik `forwardAuth`, Caddy `forward_auth`) copies it from its answer |
-| Authentik | `X-authentik-username` | Its proxy outpost's forward-auth; `X-authentik-email` for the email |
-| oauth2-proxy | `X-Forwarded-User` | As the proxy itself, with `--pass-user-headers`. Behind nginx's `auth_request` with `--set-xauthrequest`: `X-Auth-Request-User`, copied with `proxy_set_header` |
-| Cloudflare Access | `Cf-Access-Authenticated-User-Email` | An email: map it with `users`. `from` is where `cloudflared` runs; put every route to the recorder behind an Access application |
-| `tailscale serve` | `Tailscale-User-Login` | `luke@github` or an email, for people on your tailnet (not Funnel's visitors). `from`: `127.0.0.1` and `::1` |
-
 Caddy with Authelia, for example:
 
 ```caddy
@@ -266,6 +261,116 @@ radio.example.com {
     reverse_proxy 127.0.0.1:8080
 }
 ```
+
+### Cloudflare Tunnel and Access
+
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/)
+puts the recorder at a name of yours (`https://radio.example.com`) with no port opened: `cloudflared`,
+on the recorder's computer or beside it in Docker, connects out to Cloudflare, and Cloudflare
+passes requests for that name back down it to `http://localhost:8080`. Cloudflare serves the
+HTTPS, so the recorder needs no `server.tls`. WebSockets (the dashboard's live updates and audio)
+work through it as they are.
+
+**1. The tunnel.** Either way, the name ends up pointing at the recorder's plain-HTTP port.
+
+- *From the dashboard* (a remotely-managed tunnel): in Zero Trust, create a tunnel, run the
+  `cloudflared` command it shows with its token, then add a published application (public
+  hostname): your name, service URL `http://localhost:8080`.
+- *From the command line* (a locally-managed tunnel):
+
+  ```bash
+  cloudflared tunnel login
+  cloudflared tunnel create radio
+  cloudflared tunnel route dns radio radio.example.com
+  cloudflared tunnel run radio
+  ```
+
+  with `~/.cloudflared/config.yml`:
+
+  ```yaml
+  tunnel: <the tunnel's UUID>
+  credentials-file: /home/you/.cloudflared/<the tunnel's UUID>.json
+  ingress:
+    - hostname: radio.example.com
+      service: http://localhost:8080
+    - service: http_status:404      # the catch-all rule a config file must end with
+  ```
+
+  `cloudflared service install` keeps it running as a service (on Linux, with `sudo`, give it the
+  config: `sudo cloudflared --config /home/you/.cloudflared/config.yml service install`).
+
+**2. The recorder.** Set `hostname` to the tunnel's name, and keep `bind` at `127.0.0.1` so only
+programs on this computer (cloudflared among them) reach the port:
+
+```json
+"server": { "bind": "127.0.0.1", "port": 8080, "hostname": "radio.example.com" }
+```
+
+- Without `hostname`, a recorder bound to localhost refuses the tunnel's requests ("this server only
+  answers to localhost"): they're for `radio.example.com`, which it doesn't know as its own.
+- Cloudflare tells the recorder the browser came over HTTPS (`X-Forwarded-Proto: https`), so the
+  sign-in cookie is `Secure`, and [passkeys](#passkeys) work at `https://radio.example.com`.
+- Turn [signing in](#access) on: through a tunnel, the recorder is on the internet. Tokens and
+  passkeys work through the tunnel with nothing else set up.
+
+**In Docker**, run `cloudflared` as a second service beside the recorder, and point the tunnel at
+the recorder's service name instead of localhost (service URL `http://trunk-pro:8080`, the name in
+[docker-compose.yml](../install/docker.md)). Drop the recorder's `ports:` then, or keep it to
+`"127.0.0.1:8080:8080"`; only the tunnel needs to reach it:
+
+```yaml
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}   # the dashboard tunnel's token, in .env
+```
+
+In the container the recorder listens on every address (`--bind 0.0.0.0`), so it answers to any
+name; set `hostname` all the same, for passkeys and the URLs it logs.
+
+**3. Access (optional): Cloudflare signs people in.** With an
+[Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)
+in front, people sign in at Cloudflare (with the identity providers you give it) before a
+request reaches the tunnel, and the recorder can take Cloudflare's word for who they are:
+
+1. In Zero Trust → **Access controls** → **Applications**, add a **Self-hosted** application for
+   `radio.example.com`, with a policy for who may in (an application lets nobody in until one does).
+2. Open it again and copy its **Application Audience (AUD) Tag**.
+3. Set `proxy.cloudflare` to your team name (the `myteam` of `myteam.cloudflareaccess.com`) and
+   that tag, and map the emails Access signs people in with to the recorder's users:
+
+```json
+"auth": {
+  "enabled": true,
+  "users": { "luke": { "access": "control" }, "kiosk": { "access": "listen", "token": { "hash": "…", "created": 1763000000 } } },
+  "proxy": {
+    "cloudflare": { "team": "myteam", "aud": "4714c1358e65fe4b408ad6d432a5f878f08194bdb4752441fd56faefa9b2b6f2" },
+    "users": { "luke@example.com": "luke" },
+    "other": "listen"
+  }
+}
+```
+
+Or in the app: Setup → **Recording** → **Access** → **Proxy** → **Set up** → **Cloudflare**.
+
+- **The token, not the header.** Access sends each request with the email it signed in
+  (`Cf-Access-Authenticated-User-Email`) and a token it signed (`Cf-Access-Jwt-Assertion`).
+  Anything that reaches the port can send the email header, cloudflared's neighbours on
+  `127.0.0.1` included, so the recorder ignores it and, as
+  [Cloudflare advises](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/),
+  checks the token: signed (RS256) by one of your team's keys, issued by your team, for this
+  application's Audience tag, and not expired. Then the email in it is the name, mapped through
+  `users` and `other` as any proxy's is. No `from` is needed: the signature is the proof.
+- **The team's keys** are fetched from `https://myteam.cloudflareaccess.com/cdn-cgi/access/certs`
+  when first needed, kept, and fetched again hourly and for a token signed by a key not kept
+  (Cloudflare rotates them), at most once a minute. The recorder must reach that address. If it
+  can't, Access signs nobody in (the log says so once); tokens and passkeys still work.
+- A token, a session or a passkey's sign-in says who first, as for any proxy; another site's page
+  gets nobody. Signing out is Cloudflare's (its session lasts as long as the application says).
+- A service token's requests carry no email, so they sign nobody in; give a program an access
+  token of the recorder's instead.
+- A token refused (another application's, expired, a clock far off) is logged once a reason, so an
+  Audience tag pasted wrong shows in the log.
 
 ## HTTPS
 
@@ -310,6 +415,9 @@ the certificate you give it. It works with [signing in](#access) on or off.
 
 A self-signed certificate works too, but every browser warns about it, and [passkeys](#passkeys)
 (and other features browsers keep to secure pages) won't work with it.
+
+**No certificate at all:** behind [Cloudflare Tunnel](#cloudflare-tunnel-and-access) (or another
+proxy that serves HTTPS), the recorder stays on plain HTTP and the proxy serves the certificate.
 
 ## Log
 

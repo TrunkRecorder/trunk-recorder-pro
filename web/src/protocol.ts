@@ -630,18 +630,31 @@ export interface AuthSetup {
 }
 
 /**
- * A reverse proxy that signs people in (Authelia, oauth2-proxy, Cloudflare Access, tailscale serve): the name in its
- * `header` is believed from the addresses in `from` alone (IPs or CIDR blocks; one that's neither isn't saved), and only
- * when no token or session says who. The name is the user `users` maps it to, else the user of that name, with their
+ * A reverse proxy that signs people in (Authelia, oauth2-proxy, tailscale serve): the name in its `header` is believed
+ * from the addresses in `from` alone (IPs or CIDR blocks; one that's neither isn't saved), and only when no token or
+ * session says who. With `cloudflare` set, Cloudflare Access instead: the email in its signed token, checked, from any
+ * address (`from` and `header` unused). The name is the user `users` maps it to, else the user of that name, with their
  * role; any other name gets `other` (absent: not signed in; "control" is refused).
  */
 export interface AuthProxy {
+  /** Empty with `cloudflare` set. */
   from: string[];
   /** Default "Remote-User". */
   header?: string;
+  /** Cloudflare Access in front. Absent: none. */
+  cloudflare?: AuthCloudflare;
   /** The proxy's names for users whose name here differs ("luke@example.com": "luke"). */
   users?: Record<string, string>;
   other?: ApiAccess;
+}
+
+/**
+ * Cloudflare Access's application: its tokens (`Cf-Access-Jwt-Assertion`) are checked against `team`'s keys (its name,
+ * or `https://<team>.cloudflareaccess.com`), for its Audience (AUD) tag `aud`. Either not so isn't saved.
+ */
+export interface AuthCloudflare {
+  team: string;
+  aud: string;
 }
 
 /** Someone (or a program) who may sign in: what they may do, and what they sign in with (neither: nothing yet). */

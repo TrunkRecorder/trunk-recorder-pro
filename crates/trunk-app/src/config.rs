@@ -1833,16 +1833,21 @@ pub struct Auth {
 }
 
 /// A reverse proxy that signs people in itself (Authelia, Authentik,
-/// oauth2-proxy, Cloudflare Access, `tailscale serve`) and says who in
-/// `header`: believed from the addresses in `from` alone. The name it gives
-/// is the recorder's user of that name (or the one `users` maps it to), with
-/// their role; a name that's no user here gets `other` (none: not signed in).
+/// oauth2-proxy, `tailscale serve`) and says who in `header`: believed from
+/// the addresses in `from` alone. Or Cloudflare Access (`cloudflare`): who
+/// its signed token says, wherever the request comes from (the signature is
+/// the proof; `from` and `header` aren't used). The name it gives is the
+/// recorder's user of that name (or the one `users` maps it to), with their
+/// role; a name that's no user here gets `other` (none: not signed in).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AuthProxy {
     /// The proxy's addresses: IPs or CIDR blocks ("127.0.0.1", "10.0.0.0/8", "fd7a:115c:a1e0::/48").
     pub from: Vec<String>,
     pub header: String,
+    /// Cloudflare Access in front: its token (`Cf-Access-Jwt-Assertion`), checked, says who.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloudflare: Option<AuthCloudflare>,
     /// The proxy's names for recorder users, where they differ ("luke@example.com": "luke").
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub users: BTreeMap<String, String>,
@@ -1853,7 +1858,43 @@ pub struct AuthProxy {
 
 impl Default for AuthProxy {
     fn default() -> Self {
-        AuthProxy { from: vec![], header: "Remote-User".into(), users: BTreeMap::new(), other: None }
+        AuthProxy { from: vec![], header: "Remote-User".into(), cloudflare: None, users: BTreeMap::new(), other: None }
+    }
+}
+
+/// Cloudflare Access's application in front: its team (the name, or
+/// `https://<team>.cloudflareaccess.com`), whose keys sign its tokens, and the
+/// application's Audience (AUD) tag, which its tokens are for.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AuthCloudflare {
+    pub team: String,
+    pub aud: String,
+}
+
+impl AuthCloudflare {
+    /// The team's URL, its tokens' issuer (`https://<team>.cloudflareaccess.com`), if `team` is a team name (or that URL).
+    pub fn issuer(&self) -> Option<String> {
+        let t = self.team.trim().to_ascii_lowercase();
+        let t = t.trim_end_matches('/');
+        let name = match t.strip_prefix("https://") {
+            Some(host) => host.strip_suffix(".cloudflareaccess.com")?,
+            None => t,
+        };
+        // (A DNS label: letters, digits and hyphens, not at either end.)
+        let label = !name.is_empty() && name.len() <= 63 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') && !name.starts_with('-') && !name.ends_with('-');
+        label.then(|| format!("https://{name}.cloudflareaccess.com"))
+    }
+
+    /// Why it can't be so, if it can't: a team that's no team name, or no Audience tag.
+    fn problem(&self) -> Option<String> {
+        if self.issuer().is_none() {
+            return Some(format!("Cloudflare's team \"{}\" isn't a team name (the part before .cloudflareaccess.com, or that URL).", self.team.trim()));
+        }
+        if self.aud.trim().is_empty() || self.aud.trim().chars().any(char::is_whitespace) {
+            return Some("Cloudflare needs the application's Audience (AUD) tag: its tokens are checked for it.".into());
+        }
+        None
     }
 }
 
@@ -1863,8 +1904,15 @@ impl AuthProxy {
         self.from.iter().filter_map(|n| net(n).ok()).any(|(base, bits)| in_net(ip.to_canonical(), base, bits))
     }
 
-    /// Why it can't be so, if it can't: no addresses or one that isn't, a header that's no header name, or control for anyone.
+    /// Why it can't be so, if it can't: Cloudflare's set as it can't be; else no addresses or one that isn't, a
+    /// header that's no header name; or control for anyone.
     fn problem(&self) -> Option<String> {
+        if self.other == Some(ApiAccess::Control) {
+            return Some("Control access for whoever the proxy lets in is the same as signing in turned off: give others listen access or none.".into());
+        }
+        if let Some(cf) = &self.cloudflare {
+            return cf.problem();
+        }
         if self.from.is_empty() {
             return Some("The proxy needs its addresses (proxy from): the header is believed from them alone.".into());
         }
@@ -1874,9 +1922,6 @@ impl AuthProxy {
         // (RFC 9110's token characters.)
         if self.header.is_empty() || !self.header.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)) {
             return Some(format!("The proxy's header \"{}\" isn't a header name (Remote-User, X-Forwarded-User…).", self.header));
-        }
-        if self.other == Some(ApiAccess::Control) {
-            return Some("Control access for whoever the proxy lets in is the same as signing in turned off: give others listen access or none.".into());
         }
         None
     }
@@ -4187,6 +4232,31 @@ mod tests {
         let saved = serde_json::to_string(&c).unwrap();
         assert!(saved.contains(r#""proxy":{"from":["::1"],"header":"Tailscale-User-Login","users":{"luke@github":"luke"},"other":"listen"}"#), "{saved}");
         assert_eq!(Config::from_json(&saved).unwrap().server.auth, c.server.auth);
+    }
+
+    /// Cloudflare Access: its team a team name or its URL (the tokens'
+    /// issuer, either way), an Audience tag needed; no addresses needed (its
+    /// signature is the proof); control for others refused as ever.
+    #[test]
+    fn cloudflare_is_a_team_and_an_audience() {
+        let cf = |team: &str, aud: &str| AuthCloudflare { team: team.into(), aud: aud.into() };
+        for team in ["radio", " Radio ", "https://radio.cloudflareaccess.com", "https://RADIO.cloudflareaccess.com/", "my-team-2"] {
+            assert!(cf(team, "a1b2").issuer().is_some_and(|i| i.starts_with("https://") && i.ends_with(".cloudflareaccess.com")), "{team}");
+        }
+        assert_eq!(cf("https://radio.cloudflareaccess.com/", "x").issuer().as_deref(), Some("https://radio.cloudflareaccess.com"));
+        assert_eq!(cf("Radio", "x").issuer().as_deref(), Some("https://radio.cloudflareaccess.com"));
+        for team in ["", "radio.example.com", "https://radio.example.com", "http://radio.cloudflareaccess.com", "-radio", "radio team", "https://.cloudflareaccess.com", &"x".repeat(64)] {
+            assert_eq!(cf(team, "a1b2").issuer(), None, "{team:?}");
+        }
+        let p = |c: AuthCloudflare| AuthProxy { cloudflare: Some(c), ..Default::default() };
+        assert_eq!(p(cf("radio", "a1b2")).problem(), None, "no addresses needed");
+        assert!(p(cf("radio.example.com", "a1b2")).problem().unwrap().contains("team"));
+        assert!(p(cf("radio", " ")).problem().unwrap().contains("Audience"));
+        assert!(AuthProxy { other: Some(ApiAccess::Control), ..p(cf("radio", "a1b2")) }.problem().unwrap().contains("others listen"));
+        let c = Config::from_json(r#"{ "server": { "auth": { "proxy": { "cloudflare": { "team": "radio", "aud": "a1b2" }, "users": { "luke@example.com": "luke" } } } } }"#).unwrap();
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""proxy":{"from":[],"header":"Remote-User","cloudflare":{"team":"radio","aud":"a1b2"},"users":{"luke@example.com":"luke"}}"#), "{saved}");
+        assert!(!serde_json::to_string(&Config::from_json(r#"{ "server": { "auth": { "proxy": { "from": ["::1"] } } } }"#).unwrap()).unwrap().contains("cloudflare"), "unset: no key");
     }
 
     /// HTTPS off is saved as a config always was; on, its two paths, from

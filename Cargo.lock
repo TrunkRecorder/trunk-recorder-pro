@@ -3578,6 +3578,7 @@ dependencies = [
  "nusb",
  "p256",
  "postgres",
+ "ring",
  "rtlsdr-nusb",
  "rusqlite",
  "rust-embed",

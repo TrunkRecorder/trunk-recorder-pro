@@ -68,8 +68,9 @@ browser WebSocket or <audio> on another origin; client.js does this when
 given { token }). Never hard-code a secret in a page: ask the user for it.
 Behind a proxy that signs people in (server.auth.proxy), the proxy's
 header (Remote-User by default) says who, believed from the proxy's
-addresses only and where the cookie would count; a token or the cookie
-says who first.
+addresses only and where the cookie would count; behind Cloudflare Access
+(proxy.cloudflare), its signed Cf-Access-Jwt-Assertion token, checked; a
+token or the cookie says who first.
 GET /api/session → { auth, access ("listen" | "control" | null), user,
 proxy (the proxy in front signed it in: sign out there, not with
 /api/logout), passkeys (whether a browser may sign in with a passkey on this host: the

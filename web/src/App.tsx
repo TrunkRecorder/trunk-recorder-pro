@@ -4,11 +4,12 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { startProblem } from "./config.ts";
 import { ARRIVED_TO_IMPORT, DirectoryImport } from "./directoryImport.tsx";
-import { isRecording, can, closeGuide, dismissError, mayEdit, openGuide, quitApp, setNotice, setView, signOut, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
+import { isRecording, can, closeGuide, dismissError, mayEdit, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
 import { PluginPage, PluginsPage, usePluginPages } from "./Plugins.tsx";
 import { Setup } from "./Setup.tsx";
+import { SignedInAs } from "./Passkeys.tsx";
 import { Light } from "./charts.tsx";
 import { ListenPage } from "./dash/Listen.tsx";
 import { pageHealth, type Health } from "./dash/data.ts";
@@ -125,7 +126,6 @@ export function App() {
     access: x.access,
     user: x.user,
     signingIn: x.signingIn,
-    proxied: x.proxied,
   }));
   const s = { ...s0, view: shownView(s0.view) };
   const edit = mayEdit();
@@ -179,17 +179,7 @@ export function App() {
           </div>
           <div className="row">
             {s.user ? (
-              <span className="row" aria-label="Signed in">
-                <span className="muted small" title={s.proxied ? "Signed in by the proxy" : "Signed in as"}>
-                  {s.user}
-                </span>
-                {/* (Signed in by the proxy in front: signing out is the proxy's.) */}
-                {!s.proxied && (
-                  <button className="btn ghost small" onClick={() => void signOut()}>
-                    Sign out
-                  </button>
-                )}
-              </span>
+              <SignedInAs />
             ) : (
               s.signingIn && (
                 <a className="btn ghost small" href="/signin">

@@ -50,6 +50,8 @@ hmac = "0.13"
 webauthn-rs = { version = "0.6.2", default-features = false, features = ["conditional-ui"] }
 # Passkeys' credential ids (base64url): the version trunk-app has.
 base64 = "0.23"
+# Cloudflare Access's tokens (access/cloudflare.rs): RS256, with the ring rustls has already.
+ring = "0.17"
 cel = "0.15"
 rustfft.workspace = true
 # The install's anonymous directory recorder ID (directory.rs).

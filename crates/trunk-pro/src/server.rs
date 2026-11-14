@@ -25,7 +25,7 @@
 //! Every request passes [`guard`]: pages from other sites are refused unless
 //! listed in `server.allowedOrigins`, and with signing in on (`server.auth`)
 //! a request without a user's access token that gives it access (or the
-//! say-so of a proxy in front, from its addresses) gets the sign-in page (or a 401). GET /signin is that page; POST /api/login and
+//! say-so of a proxy in front, from its addresses, or Cloudflare Access's signed token) gets the sign-in page (or a 401). GET /signin is that page; POST /api/login and
 //! /api/logout set and clear the cookie a browser signs in with, as do
 //! /api/passkey/login/… with a passkey (/api/passkey/register/… adds one,
 //! [`crate::access::passkey`]); GET /api/session says who this request is, and may do.
@@ -248,7 +248,17 @@ async fn guard(State((ctx, loopback, door)): State<(Arc<Ctx>, bool, Door)>, mut 
             // an interface's link to the dashboard) still arrives signed in.
             let cookie_ok = !cors && cookies_count(req.headers());
             let peer = req.extensions().get::<ConnectInfo<crate::tls::Peer>>().map(|c| c.0 .0.ip());
-            let who = access::identify(&auth, &ctx.sessions, req.headers(), req.uri().query(), cookie_ok, peer);
+            // Behind Cloudflare Access: its team's keys, fetched first if its token's isn't kept (off the runtime: it blocks).
+            let cf = auth.proxy.as_ref().and_then(|p| p.cloudflare.clone()).filter(|_| auth.enabled && cookie_ok);
+            let token = req.headers().get(access::cloudflare::HEADER).and_then(|v| v.to_str().ok());
+            if let (Some(cf), Some(token)) = (cf, token) {
+                if ctx.cloudflare.wanted(&cf, token) {
+                    let ctx2 = ctx.clone();
+                    let token = token.to_string();
+                    let _ = tokio::task::spawn_blocking(move || ctx2.cloudflare.ready(&cf, &token)).await;
+                }
+            }
+            let who = access::identify(&auth, &ctx.sessions, &ctx.cloudflare, req.headers(), req.uri().query(), cookie_ok, peer);
             // An allowed origin's page sending `Authorization` asks first, with no credentials:
             // answered here, token or not. (No Allow-Credentials: its cookies stay unusable.)
             let mut res = if cors && req.method() == Method::OPTIONS && req.headers().contains_key(header::ACCESS_CONTROL_REQUEST_METHOD) {
@@ -467,11 +477,23 @@ async fn logout(State(ctx): State<Arc<Ctx>>) -> Response {
 /// `GET /api/session`: whether signing in is on, what this request may do
 /// on this port as whom (a page's WebSocket can't see a 401: this is how it
 /// learns it must sign in), whether the proxy in front signed it in (then
-/// it's the proxy's to sign out of), and whether passkeys work on the host it's for.
+/// it's the proxy's to sign out of), whether passkeys work on the host it's
+/// for, and the user's own passkeys (`ownPasskeys`: `{id, name, created}`
+/// each, never their keys; left out when none, or not signed in as a user).
 async fn signed_in(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap) -> Response {
-    let enabled = ctx.config.lock().unwrap().server.auth.enabled;
+    let access = caller.access(&ctx);
+    let (enabled, own) = {
+        let c = ctx.config.lock().unwrap();
+        let user = access.and(caller.who.user()).and_then(|u| c.server.auth.users.get(u));
+        let own: Vec<Value> = user.map(|u| u.passkeys.iter().map(|p| json!({ "id": p.id, "name": p.name, "created": p.created })).collect()).unwrap_or_default();
+        (c.server.auth.enabled, own)
+    };
     let proxy = matches!(caller.who, Who::Proxy { .. });
-    axum::Json(json!({ "auth": enabled, "access": caller.access(&ctx), "user": caller.who.user(), "proxy": proxy, "passkeys": passkey_rp(&ctx, &headers).is_some() })).into_response()
+    let mut answer = json!({ "auth": enabled, "access": access, "user": caller.who.user(), "proxy": proxy, "passkeys": passkey_rp(&ctx, &headers).is_some() });
+    if !own.is_empty() {
+        answer["ownPasskeys"] = Value::Array(own);
+    }
+    axum::Json(answer).into_response()
 }
 
 /// [`guard`]'s verdict: Ok(whether the answer needs CORS headers) or Err(why not).
@@ -1785,6 +1807,23 @@ mod tests {
         };
         assert_eq!(session(vec![]).await, serde_json::json!({ "auth": true, "access": "control", "user": "luke", "proxy": false, "passkeys": false }), "127.0.0.1: no passkeys");
         assert_eq!(session(vec![("sec-fetch-site", "same-origin".into())]).await["access"], "control");
+        // The user's own passkeys, by name and when added: never another's, never a key.
+        {
+            let mut c = ctx.config.lock().unwrap();
+            let pk = |name: &str, id: &str| crate::config::AuthPasskey { name: name.into(), created: 1_763_200_000, id: id.into(), key: serde_json::json!({ "secret": "public key" }) };
+            c.server.auth.users.get_mut("luke").unwrap().passkeys = vec![pk("Mac Safari", "BAUG")];
+            c.server.auth.users.get_mut("kiosk").unwrap().passkeys = vec![pk("Wall tablet", "AQID")];
+        }
+        let own = session(vec![]).await;
+        assert_eq!(own["ownPasskeys"], serde_json::json!([{ "id": "BAUG", "name": "Mac Safari", "created": 1_763_200_000 }]));
+        assert!(!own.to_string().contains("Wall tablet") && !own.to_string().contains("public key"), "{own}");
+        let anon = serde_json::from_str::<serde_json::Value>(&get("/api/session", vec![]).await.2).unwrap();
+        assert!(anon.get("ownPasskeys").is_none(), "not signed in: none");
+        let (_, _, viewer) = get("/api/session", bearer(&kiosk)).await;
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&viewer).unwrap()["ownPasskeys"][0]["name"], "Wall tablet", "a View user: theirs");
+        for u in ["luke", "kiosk"] {
+            ctx.config.lock().unwrap().server.auth.users.get_mut(u).unwrap().passkeys.clear();
+        }
         assert_eq!(session(vec![("sec-fetch-site", "same-site".into())]).await["access"], serde_json::Value::Null, "another port's page: its cookie doesn't count");
         let link = vec![("sec-fetch-site", "cross-site".into()), ("sec-fetch-mode", "navigate".into()), ("sec-fetch-dest", "document".into())];
         assert_eq!(session(link).await["user"], "luke", "a link followed here arrives signed in");
@@ -2051,6 +2090,97 @@ mod tests {
             r => panic!("not refused: {:?}", r.map(|m| m.to_value())),
         }
         assert_eq!(ctx.config.lock().unwrap().server.auth.proxy.as_ref().unwrap().from, vec!["127.0.0.1".to_string()]);
+    }
+
+    /// Behind Cloudflare Tunnel (cloudflared on this computer, plain HTTP to
+    /// localhost, the browser on https://radio.example.com): let in once
+    /// `server.hostname` names it, signed in with a `Secure` cookie, and
+    /// passkeys there (its relying party the host name, its origin https with
+    /// no port). With Access in front too (`proxy.cloudflare`): who its token
+    /// says, from any address; its email header alone nobody; a token first;
+    /// another site's page nobody; a socket as them.
+    #[tokio::test]
+    async fn behind_cloudflare_tunnel_and_access() {
+        use crate::access::cloudflare::tests::{certs, claims, TestKey, AUD};
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let dir = crate::db::TestDir::new("signin-cloudflare");
+        let (ctx, luke, kiosk) = signed_in_ctx(&dir, "signin-cloudflare");
+        let addr = super::test_server(&ctx, super::Door::Builtin).await;
+        let json = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap_or_default();
+        let call = |method: &'static str, path: &'static str, headers: Vec<(&'static str, String)>, body: Option<String>| async move {
+            let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            http(addr, method, path, &h, body.as_deref()).await
+        };
+        // What cloudflared passes on: the browser's Host and Origin, and that it came over https.
+        let tunnel = |mut extra: Vec<(&'static str, String)>| {
+            extra.extend([("host", "radio.example.com".to_string()), ("origin", "https://radio.example.com".to_string()), ("x-forwarded-proto", "https".to_string()), ("cf-connecting-ip", "203.0.113.9".to_string())]);
+            extra
+        };
+        let (code, _, why) = call("GET", "/api/session", tunnel(vec![]), None).await;
+        assert!(code == 403 && why.contains("only answers to localhost"), "no server.hostname: refused ({code} {why})");
+        ctx.config.lock().unwrap().server.hostname = "radio.example.com".into();
+        let (code, _, who) = call("GET", "/api/session", tunnel(vec![]), None).await;
+        assert_eq!((code, json(&who)), (200, serde_json::json!({ "auth": true, "access": null, "user": null, "proxy": false, "passkeys": true })), "named: let in, passkeys there");
+        let (code, h, _) = call("POST", "/api/login", tunnel(vec![]), Some(luke.clone())).await;
+        assert!(code == 200 && h["set-cookie"].to_str().unwrap().ends_with("; Secure"), "{code} {h:?}");
+        // Passkeys over the tunnel: added and signed in with, from https://radio.example.com (no port).
+        let key = crate::access::passkey::soft::Key::new();
+        let name = Some(r#"{"name":"Phone"}"#.to_string());
+        let (code, _, started) = call("POST", "/api/passkey/register/start", tunnel(vec![("authorization", format!("Bearer {luke}"))]), name).await;
+        let started = json(&started);
+        assert_eq!((code, &started["options"]["publicKey"]["rp"]["id"]), (200, &"radio.example.com".into()), "{started}");
+        let made = key.create(&started["options"]["publicKey"], "https://radio.example.com", 0);
+        let (code, _, added) = call("POST", "/api/passkey/register/finish", tunnel(vec![("authorization", format!("Bearer {luke}"))]), Some(serde_json::json!({ "id": started["id"], "credential": made }).to_string())).await;
+        assert_eq!(code, 200, "{added}");
+        let (_, _, started) = call("POST", "/api/passkey/login/start", tunnel(vec![]), None).await;
+        let started = json(&started);
+        assert_eq!(started["options"]["publicKey"]["rpId"], "radio.example.com", "{started}");
+        let plain = key.get(&started["options"]["publicKey"], "http://radio.example.com", 1, "luke");
+        let (code, _, _) = call("POST", "/api/passkey/login/finish", tunnel(vec![]), Some(serde_json::json!({ "id": started["id"], "credential": plain }).to_string())).await;
+        assert_eq!(code, 401, "an http:// origin isn't the page's");
+        let (_, _, started) = call("POST", "/api/passkey/login/start", tunnel(vec![]), None).await;
+        let started = json(&started);
+        let answer = key.get(&started["options"]["publicKey"], "https://radio.example.com", 2, "luke");
+        let (code, h, who) = call("POST", "/api/passkey/login/finish", tunnel(vec![]), Some(serde_json::json!({ "id": started["id"], "credential": answer }).to_string())).await;
+        assert_eq!((code, json(&who)), (200, serde_json::json!({ "access": "control", "user": "luke" })));
+        assert!(h["set-cookie"].to_str().unwrap().ends_with("; Secure"));
+        // Access in front: its token, checked against the team's keys (served here, not fetched), from an address not listed.
+        let a = TestKey::new("a");
+        let served = certs(&[&a]);
+        ctx.cloudflare.use_source(move |team| if team == "https://radio.cloudflareaccess.com" { Ok(served.clone()) } else { Err("another team".into()) });
+        let mut proxy = trunk_app::config::AuthProxy { from: vec!["10.0.0.1".into()], cloudflare: Some(trunk_app::config::AuthCloudflare { team: "radio".into(), aud: AUD.into() }), ..Default::default() };
+        proxy.users.insert("luke@example.com".into(), "luke".into());
+        ctx.config.lock().unwrap().server.auth.proxy = Some(proxy);
+        let now = crate::clock::unix_s() as u64;
+        let token = a.sign(&claims("luke@example.com", now));
+        let session = |extra: Vec<(&'static str, String)>| async move { json(&call("GET", "/api/session", tunnel(extra), None).await.2) };
+        let mapped = session(vec![("cf-access-jwt-assertion", token.clone())]).await;
+        assert_eq!((&mapped["access"], &mapped["user"], &mapped["proxy"], &mapped["passkeys"]), (&"control".into(), &"luke".into(), &true.into(), &true.into()), "mapped, from 127.0.0.1 (not proxy.from): {mapped}");
+        assert_eq!(call("GET", "/api/v1/export/calls", tunnel(vec![("cf-access-jwt-assertion", token.clone())]), None).await.0, 200, "control's, let in");
+        assert_eq!(session(vec![("cf-access-authenticated-user-email", "luke@example.com".into())]).await["user"], serde_json::Value::Null, "its email header alone: anyone's to send");
+        assert_eq!(session(vec![("remote-user", "luke@example.com".into())]).await["user"], serde_json::Value::Null, "nor the proxy's header");
+        let forged = TestKey::new("b").sign_with(serde_json::json!({ "kid": "a" }), &claims("luke@example.com", now));
+        assert_eq!(session(vec![("cf-access-jwt-assertion", forged)]).await["user"], serde_json::Value::Null, "not the team's key");
+        let both = vec![("cf-access-jwt-assertion", token.clone()), ("authorization", format!("Bearer {kiosk}"))];
+        assert_eq!((session(both.clone()).await["user"].clone(), session(both).await["proxy"].clone()), ("kiosk".into(), false.into()), "a token says who first");
+        assert_eq!(session(vec![("cf-access-jwt-assertion", token.clone()), ("sec-fetch-site", "cross-site".into())]).await["user"], serde_json::Value::Null, "another site's page");
+        // A socket over the tunnel: greeted as them.
+        let mut req = format!("ws://{addr}/api/ws").into_client_request().unwrap();
+        for (k, v) in tunnel(vec![("cf-access-jwt-assertion", token.clone())]) {
+            req.headers_mut().insert(k, v.parse().unwrap());
+        }
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let hello = loop {
+            let v: serde_json::Value = ws.next().await.unwrap().unwrap().to_text().ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+            if v["type"] == "hello" {
+                break v;
+            }
+        };
+        assert_eq!((&hello["access"], &hello["user"]), (&"control".into(), &"luke".into()));
+        // Keys that can't be had: nobody.
+        ctx.cloudflare.use_source(|_| Err("offline".into()));
+        assert_eq!(session(vec![("cf-access-jwt-assertion", token)]).await["user"], serde_json::Value::Null, "no keys: no fallback");
     }
 
     /// `createToken` makes a user with a token and answers with its secret

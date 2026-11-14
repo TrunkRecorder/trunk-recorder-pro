@@ -11,9 +11,10 @@ import { renderToString } from "react-dom/server";
 import { App } from "./App.tsx";
 import { AccessSection, enableWith } from "./Access.tsx";
 import { defaultConfig, newSystem } from "./config.ts";
-import { mayEdit, passkeyName, setSetupTab, setView, snapshot, transport, type View } from "./controller.ts";
+import { mayEdit, passkeyName, type OwnPasskey, setSetupTab, setView, snapshot, transport, type View } from "./controller.ts";
 import { IgnoreToggle, NameButton } from "./dash/Radio.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
+import { UserPasskeys } from "./Passkeys.tsx";
 import type { ApiAccess, Config, EngineStatus, FromRecorder, Phase, TgRow, ToRecorder } from "./protocol.ts";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
@@ -184,6 +185,56 @@ test("Access: each user's passkeys by name, to remove; Add passkey for this brow
   assert.doesNotMatch(renderToString(<AccessSection c={full()} />), /aria-label="Remove luke&#x27;s token"/, "a token alone: it stays");
 });
 
+/** `hello` with `access` as `user` (none: not signed in), the session saying whether passkeys work here and whether the proxy signed them in. */
+async function helloSession(c: Config, access: ApiAccess, user: string | null, passkeys: boolean, proxy = false, ownPasskeys?: OwnPasskey[]): Promise<void> {
+  const fetch0 = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ auth: true, access, user, passkeys, proxy, ...(ownPasskeys ? { ownPasskeys } : {}) }), { status: 200 })) as typeof fetch;
+  try {
+    hello(c, access, user ?? undefined);
+    await new Promise((r) => setTimeout(r, 20));
+  } finally {
+    globalThis.fetch = fetch0;
+  }
+}
+
+/** The signed-in name's button that opens their passkeys (closed). */
+const NAME_BUTTON = /<button type="button" class="btn ghost small" title="Signed in (as|by the proxy)" aria-expanded="false" aria-haspopup="dialog">(\w+)<\/button>/;
+
+test("Top bar: the signed-in name opens their passkeys where passkeys work, any role; nothing passkey-related elsewhere or signed out", async () => {
+  setView("overview");
+  const added = new Date(1_763_200_000_000).toLocaleDateString();
+  // View, signed in, passkeys work here: the name opens them; Sign out beside it.
+  await helloSession(redacted(), "listen", "kiosk", true, false, [{ id: "AQID", name: "Wall tablet", created: 1_763_200_000 }]);
+  let html = renderToString(<App />);
+  assert.equal(NAME_BUTTON.exec(html)?.[2], "kiosk");
+  assert.match(text(html), /kiosk Sign out/);
+  // Their config is redacted: their list from the session.
+  let pop = text(renderToString(<UserPasskeys />));
+  assert.equal(pop.trim(), `Passkeys Wall tablet ${added} Add passkey`);
+  await helloSession(redacted(), "listen", "kiosk", true);
+  assert.equal(text(renderToString(<UserPasskeys />)).trim(), "Passkeys None Add passkey", "none: the session leaves them out");
+  // Passkeys don't work here: the name alone, nothing about passkeys.
+  await helloSession(redacted(), "listen", "kiosk", false);
+  html = renderToString(<App />);
+  assert.doesNotMatch(html, /aria-haspopup|[Pp]asskey/);
+  assert.match(text(html), /kiosk Sign out/);
+  // Not signed in: no name, no passkeys.
+  await helloSession(redacted(), "listen", null, true);
+  html = renderToString(<App />);
+  assert.doesNotMatch(html, /aria-haspopup|[Pp]asskey|Sign out/);
+  // Signed in by the proxy: the name opens their passkeys, and no Sign out.
+  await helloSession(redacted(), "listen", "kiosk", true, true);
+  html = renderToString(<App />);
+  assert.equal(NAME_BUTTON.exec(html)?.[1], "by the proxy");
+  assert.doesNotMatch(text(html), /Sign (out|in)/);
+  // Admin: the name opens them too, their own (the session's) listed with when each was added.
+  await helloSession(full(), "control", "luke", true, false, [{ id: "BAUG", name: "Mac Safari", created: 1_763_200_000 }]);
+  html = renderToString(<App />);
+  assert.equal(NAME_BUTTON.exec(html)?.[2], "luke");
+  pop = text(renderToString(<UserPasskeys />));
+  assert.equal(pop.trim(), `Passkeys Mac Safari ${added} Add passkey`);
+});
+
 test("Access: the proxy in front, set up with its addresses and header; then From, Header, Others and how many names are mapped", () => {
   const c = full();
   const none = text(renderToString(<AccessSection c={c} />));
@@ -198,6 +249,18 @@ test("Access: the proxy in front, set up with its addresses and header; then Fro
   assert.match(text(html), /1 mapped/);
   assert.match(html, />Remove</);
   assert.doesNotMatch(html, />Set up</);
+});
+
+test("Access: Cloudflare Access in front: its Team and Audience in place of From and Header, and Others", () => {
+  const c = full();
+  c.server.auth!.proxy = { from: [], header: "Remote-User", cloudflare: { team: "radio", aud: "4714c1358e65" }, other: "listen" };
+  const html = renderToString(<AccessSection c={c} />);
+  assert.match(text(html), /Proxy Cloudflare Access/);
+  assert.match(html, /aria-label="Cloudflare team"[^>]*value="radio"/);
+  assert.match(html, /aria-label="Cloudflare audience"[^>]*value="4714c1358e65"/);
+  assert.doesNotMatch(html, /aria-label="Proxy addresses"|aria-label="Proxy header"/, "the token is the proof: no addresses, no header");
+  assert.match(html, /role="radio" aria-checked="true" class="on">View</);
+  assert.match(html, />Remove</);
 });
 
 test("Access: a passkey's default name is the system and browser", () => {
