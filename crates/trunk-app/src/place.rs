@@ -25,6 +25,9 @@ pub struct Placing {
     pub guard_hz: f64,
     #[serde(default)]
     pub fixed_hz: Option<f64>,
+    /// The band it's placed within, Hz ([`lmr_band`]); None: anywhere.
+    #[serde(skip)]
+    pub band: Option<(f64, f64)>,
 }
 
 fn guard_default() -> f64 {
@@ -40,6 +43,20 @@ impl Placing {
     pub fn reaches(&self, center: f64, hz: f64) -> bool {
         (hz - center).abs() <= self.half()
     }
+    /// Whether `hz` is within its band, when it has one.
+    fn in_band(&self, hz: f64) -> bool {
+        self.band.is_none_or(|(lo, hi)| hz >= lo && hz < hi)
+    }
+}
+
+/// The land mobile band `hz` is in, Hz: VHF low (below 100 MHz), VHF high
+/// and 220 (to 300), UHF and T-band (to 600), 700/800/900 (above). A
+/// radio's antenna, filters and preamp are chosen for one, so advice keeps a
+/// centre set by hand within its band.
+pub fn lmr_band(hz: f64) -> (f64, f64) {
+    const EDGES: [f64; 5] = [0.0, 100e6, 300e6, 600e6, f64::INFINITY];
+    let k = EDGES.iter().rposition(|&e| hz >= e).unwrap_or(0).min(EDGES.len() - 2);
+    (EDGES[k], EDGES[k + 1])
 }
 
 /// What the radios are placed to reach: groups of channels, each received
@@ -112,17 +129,17 @@ pub fn place_sources(sources: &[Placing], t: &Targets) -> Vec<Option<f64>> {
         if out[k].is_some() {
             continue;
         }
+        let s = &sources[k];
         let mine: Vec<&Group> = t.groups.iter().filter(|g| g.pins.allows(k)).collect();
         let reached = |g: &Group, hz: f64| receiver(sources, &out, &g.pins, hz).is_some();
-        // Each group's need not met yet: what of it is still wanted.
-        let open: Vec<Vec<f64>> = mine.iter().map(|g| g.wanting(|f| reached(g, f))).filter(|w| !w.is_empty()).collect();
+        // Each group's need not met yet: what of it is still wanted (within its band).
+        let open: Vec<Vec<f64>> = mine.iter().map(|g| g.wanting(|f| reached(g, f)).into_iter().filter(|&f| s.in_band(f)).collect::<Vec<f64>>()).filter(|w| !w.is_empty()).collect();
         let left: Vec<Weighted> = mine
             .iter()
-            .flat_map(|g| g.channels.iter().filter(|c| !reached(g, c.hz)).copied())
+            .flat_map(|g| g.channels.iter().filter(|c| s.in_band(c.hz) && !reached(g, c.hz)).copied())
             .chain(open.iter().flatten().map(|&hz| Weighted { hz, weight: need }))
             .collect();
-        let all: Vec<f64> = mine.iter().flat_map(|g| g.hz()).collect();
-        let s = &sources[k];
+        let all: Vec<f64> = mine.iter().flat_map(|g| g.hz()).filter(|&f| s.in_band(f)).collect();
         let center = match busiest_window(&left, s, open.first().map(Vec::as_slice)) {
             Some(c) => Some(c),
             None => alongside(&out, sources, s, &all),
@@ -293,15 +310,14 @@ pub struct Choices {
     #[serde(default)]
     pub rates: Vec<u32>,
     /// The highest it runs at dependably ([`crate::rates::steady_max`]): advice
-    /// goes past it only when that reaches more.
+    /// never goes past it (one set past it by hand stays).
     #[serde(default)]
     pub steady_max: Option<u32>,
 }
 
 /// How good a way of tuning the sources is, compared in this order: every
-/// need met, the weight of channels reached, the radios needed, those run
-/// past their dependable top rate, their total sample rate (less CPU and
-/// USB), and how little changes.
+/// need met, the weight of channels reached, the radios needed, their total
+/// sample rate (less CPU and USB), and how little changes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Score {
@@ -311,8 +327,6 @@ pub struct Score {
     pub reached: f64,
     /// Sources something listed needs ([`Coverage::needed`]).
     pub needed: usize,
-    /// Of those, the ones past their dependable top rate.
-    pub unsteady: usize,
     /// Their sample rates, together, Hz.
     pub rate_hz: f64,
     /// Sources whose centre or rate changes.
@@ -327,7 +341,6 @@ impl Score {
             o.unmet.cmp(&self.unmet),
             if (self.reached - o.reached).abs() < 1e-9 { Equal } else { self.reached.total_cmp(&o.reached) },
             o.needed.cmp(&self.needed),
-            o.unsteady.cmp(&self.unsteady),
             if (self.rate_hz - o.rate_hz).abs() < 1.0 { Equal } else { o.rate_hz.total_cmp(&self.rate_hz) },
             o.changes.cmp(&self.changes),
         ];
@@ -367,13 +380,19 @@ pub struct Suggested {
 }
 
 /// A better way to tune `sources` for `t`, if there is one: sources whose
-/// set centre may move ([`Choices::movable`]) released to auto (none, each
-/// alone, or all), and each source's rates tried in turn, [`place_sources`]
-/// placing what's on auto every time. None when nothing does better than now
+/// set centre may move ([`Choices::movable`]) released (none, each alone, or
+/// all) to be placed within their band ([`lmr_band`]), and each source's
+/// rates up to its dependable one tried in turn, [`place_sources`] placing
+/// what's released every time. None when nothing does better than now
 /// ([`Score::better`]).
 pub fn advise(sources: &[Placing], choices: &[Choices], t: &Targets) -> Option<Advice> {
     let rated = |rates: &[f64], released: &[bool]| -> Vec<Placing> {
-        sources.iter().zip(rates).zip(released).map(|((s, &r), &free)| Placing { rate_hz: r, fixed_hz: if free { None } else { s.fixed_hz }, ..*s }).collect()
+        sources
+            .iter()
+            .zip(rates)
+            .zip(released)
+            .map(|((s, &r), &free)| if free { Placing { rate_hz: r, fixed_hz: None, band: s.fixed_hz.map(lmr_band), ..*s } } else { Placing { rate_hz: r, ..*s } })
+            .collect()
     };
     let score = |p: &[Placing]| -> (Score, Vec<Option<f64>>, Coverage) {
         let centers = place_sources(p, t);
@@ -382,9 +401,8 @@ pub fn advise(sources: &[Placing], choices: &[Choices], t: &Targets) -> Option<A
         let changes = (0..p.len())
             .filter(|&k| (p[k].rate_hz - sources[k].rate_hz).abs() >= 1.0 || (sources[k].fixed_hz.is_some() && p[k].fixed_hz.is_none() && centers[k].zip(sources[k].fixed_hz).is_none_or(|(a, b)| (a - b).abs() >= 1000.0)))
             .count();
-        let unsteady = (0..p.len()).filter(|&k| needed(k) && choices.get(k).and_then(|c| c.steady_max).is_some_and(|m| p[k].rate_hz > m as f64 + 1.0)).count();
         let rate_hz = (0..p.len()).filter(|&k| needed(k)).map(|k| p[k].rate_hz).sum();
-        (Score { unmet: cov.unmet(), reached: cov.reached(), needed: cov.needed(), unsteady, rate_hz, changes }, centers, cov)
+        (Score { unmet: cov.unmet(), reached: cov.reached(), needed: cov.needed(), rate_hz, changes }, centers, cov)
     };
     let now: Vec<f64> = sources.iter().map(|s| s.rate_hz).collect();
     let (before, ..) = score(sources);
@@ -407,9 +425,10 @@ pub fn advise(sources: &[Placing], choices: &[Choices], t: &Targets) -> Option<A
         for _ in 0..3 {
             let mut moved = false;
             for k in 0..sources.len() {
-                for &r in choices.get(k).map_or(&[][..], |c| &c.rates) {
+                let c = choices.get(k);
+                for &r in c.map_or(&[][..], |c| &c.rates) {
                     let r = r as f64;
-                    if (r - rates[k]).abs() < 1.0 {
+                    if (r - rates[k]).abs() < 1.0 || c.and_then(|c| c.steady_max).is_some_and(|m| r > m as f64 + 1.0) {
                         continue;
                     }
                     let mut tried = rates.clone();
@@ -434,16 +453,19 @@ pub fn advise(sources: &[Placing], choices: &[Choices], t: &Targets) -> Option<A
     }
     let advised = rated(&rates, &released);
     let (_, centers, cov) = score(&advised);
+    // Set back to auto only when auto, which knows no band, places them there too.
+    let unbanded: Vec<Placing> = advised.iter().map(|p| Placing { band: None, ..*p }).collect();
+    let to_auto = place_sources(&unbanded, t).iter().zip(&centers).all(|(a, b)| a.zip(*b).map_or(a.is_none() && b.is_none(), |(a, b)| (a - b).abs() < 1000.0));
     let suggested = (0..sources.len())
         .map(|k| {
             let changed = (rates[k] - now[k]).abs() >= 1.0 || centers[k].zip(sources[k].fixed_hz).is_some_and(|(a, b)| (a - b).abs() >= 1000.0);
             // On auto alone (the others as they are now, its rate as advised): placed here too?
             let auto = sources[k].fixed_hz.is_none() || {
                 let mut alone = sources.to_vec();
-                alone[k] = Placing { rate_hz: rates[k], fixed_hz: None, ..sources[k] };
+                alone[k] = Placing { rate_hz: rates[k], fixed_hz: None, band: None, ..sources[k] };
                 place_sources(&alone, t)[k].zip(centers[k]).is_some_and(|(a, b)| (a - b).abs() < 1000.0)
             };
-            Suggested { center_hz: centers[k], rate_hz: rates[k], changed, auto, released: advised[k].fixed_hz.is_none(), needed: cov.listed[k] > 0 }
+            Suggested { center_hz: centers[k], rate_hz: rates[k], changed, auto, released: advised[k].fixed_hz.is_none() && (sources[k].fixed_hz.is_none() || to_auto), needed: cov.listed[k] > 0 }
         })
         .collect();
     Some(Advice { before, after, sources: suggested })
@@ -453,7 +475,7 @@ pub fn advise(sources: &[Placing], choices: &[Choices], t: &Targets) -> Option<A
 mod tests {
     use super::*;
 
-    const RTL: Placing = Placing { rate_hz: 2_400_000.0, guard_hz: DEFAULT_GUARD_HZ, fixed_hz: None };
+    const RTL: Placing = Placing { rate_hz: 2_400_000.0, guard_hz: DEFAULT_GUARD_HZ, fixed_hz: None, band: None };
     fn fixed(hz: f64) -> Placing {
         Placing { fixed_hz: Some(hz), ..RTL }
     }
@@ -607,25 +629,41 @@ mod tests {
         assert_eq!(advise(&[at(s.rate_hz, s.center_hz)], &[Choices { movable: false, ..rtl_choices() }], &t), None);
     }
 
-    /// A wider rate that lets one radio do two radios' work is advised, past
-    /// the dependable top rate if that's what it takes; past it for nothing
-    /// isn't.
+    /// Advice never runs an RTL-SDR past its dependable rate, not even to
+    /// free a radio; one set past it by hand comes down when that reaches
+    /// as much.
     #[test]
-    fn advice_frees_a_radio_and_minds_the_dependable_rate() {
+    fn advice_keeps_to_the_dependable_rate() {
         // 2.7 MHz of channels: two RTL-SDRs at 2.4, or one at 3.2.
         let voice: Vec<Weighted> = (0..=9).map(|k| Weighted { hz: 851_000_000.0 + k as f64 * 300_000.0, weight: 1.0 }).collect();
         let t = one(voice, &[851_000_000.0]);
         let both = [at(2_400_000.0, None), at(2_400_000.0, None)];
         let a = advise(&both, &[rtl_choices(), rtl_choices()], &t).expect("advice");
-        assert_eq!((a.before.needed, a.after.needed, a.after.unmet), (2, 1, 0), "{a:?}");
-        let used: Vec<&Suggested> = a.sources.iter().filter(|s| s.needed).collect();
-        assert_eq!(used.len(), 1);
-        assert!(used[0].rate_hz > 2_560_000.0, "past the dependable rate, to free a radio: {a:?}");
-        assert_eq!(a.after.unsteady, 1);
-        // 2.0 MHz of channels at 3.2 MSPS: 2.4 covers it, so not past the dependable rate.
+        assert!(a.after.needed == 2 && a.sources.iter().all(|s| s.rate_hz <= 2_400_000.0), "both kept, neither past 2.4: {a:?}");
+        // 2.0 MHz of channels at 3.2 MSPS: 2.4 or less covers it.
         let narrow = one(chans(&[(851_000_000.0, 1.0), (852_000_000.0, 1.0)]), &[851_500_000.0]);
         let b = advise(&[at(3_200_000.0, None)], &[rtl_choices()], &narrow).expect("advice");
-        assert!(b.sources[0].rate_hz <= 2_560_000.0 && b.after.unsteady == 0, "{b:?}");
+        assert!(b.sources[0].rate_hz <= 2_400_000.0, "{b:?}");
+        // 2.7 MHz on one radio at 3.2: 2.4 reaches less, so it's left as set.
+        let wide = one((0..=9).map(|k| Weighted { hz: 851_000_000.0 + k as f64 * 300_000.0, weight: 1.0 }).collect(), &[851_000_000.0]);
+        assert!(advise(&[at(3_200_000.0, None)], &[rtl_choices()], &wide).is_none_or(|a| a.sources[0].rate_hz > 2_400_000.0));
+    }
+
+    /// A centre set by hand moves only within its band: a 700 MHz radio
+    /// isn't sent to UHF (its antenna and filters are for 700).
+    #[test]
+    fn advice_keeps_a_set_centre_in_its_band() {
+        let uhf = Group { channels: chans(&[(452_400_000.0, 1.0), (452_700_000.0, 1.0)]), need: vec![452_562_500.0], ..Group::default() };
+        let t700 = Group { channels: chans(&[(770_500_000.0, 1.0), (771_100_000.0, 1.0), (771_600_000.0, 1.0)]), need: vec![770_300_000.0], ..Group::default() };
+        let both = Targets { groups: vec![uhf.clone(), t700] };
+        // Tuned to 772.9: misses the 700 control channel. Advice moves it within 700, not to UHF.
+        let a = advise(&[at(2_400_000.0, Some(772_906_250.0))], &[rtl_choices()], &both).expect("advice");
+        let c = a.sources[0].center_hz.unwrap();
+        assert!((600e6..1e9).contains(&c) && at(2_400_000.0, None).reaches(c, 770_300_000.0), "{a:?}");
+        assert!(!a.sources[0].released, "auto, knowing no band, could pick UHF: {a:?}");
+        // Only UHF to receive: nothing in its band to move to.
+        assert_eq!(advise(&[at(2_400_000.0, Some(772_906_250.0))], &[rtl_choices()], &Targets { groups: vec![uhf] }), None);
+        assert_eq!((lmr_band(155e6), lmr_band(460e6).0, lmr_band(851e6).0), ((100e6, 300e6), 300e6, 600e6));
     }
 
     /// A capture file's centre and rate are the recording's: never advised.

@@ -205,8 +205,6 @@ export interface AdviceScore {
   reached: number;
   /** Sources something needs. */
   needed: number;
-  /** Of those, the ones past their dependable top rate (an RTL-SDR past 2.56 MSPS). */
-  unsteady: number;
   /** Their sample rates together, Hz. */
   rateHz: number;
   /** Sources whose centre or rate changes. */
