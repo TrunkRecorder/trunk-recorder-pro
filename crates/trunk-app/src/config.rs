@@ -1911,7 +1911,8 @@ impl AuthProxy {
 
     /// Why it can't be so, if it can't: Cloudflare's set as it can't be; else no addresses, one that isn't or a
     /// block of every address (`0.0.0.0/0`, `::/0`), a header that's no header name; or control for anyone.
-    fn problem(&self) -> Option<String> {
+    /// (One that can't be so, written into the config by hand, signs nobody in.)
+    pub fn problem(&self) -> Option<String> {
         if self.other == Some(ApiAccess::Control) {
             return Some("Control access for whoever the proxy lets in is the same as signing in turned off: give others listen access or none.".into());
         }

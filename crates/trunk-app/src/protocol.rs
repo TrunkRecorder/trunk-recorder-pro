@@ -786,4 +786,37 @@ mod tests {
         assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":0,"what":{"kind":"call","system":"dcfd","talkgroup":101}}"#).0, CaptureWhat::Call { system: "dcfd".into(), talkgroup: Some(101) });
         assert_eq!(Command::parse(r#"{"type":"iqCaptureCancel","id":1,"key":3}"#).unwrap().needs(), ApiAccess::Control);
     }
+
+    /// Who hears each message, decided for every one: control access alone
+    /// for plugin and interface management and key containers; everyone else
+    /// (a View user too) the rest, each reviewed for what it carries (the
+    /// config goes out without its secrets: `trunk-pro`'s `redact_config`;
+    /// answers to commands go to whoever sent them, and those that need
+    /// control are refused to the rest). A message that's new fails this test
+    /// until it's decided here.
+    #[test]
+    fn every_message_has_a_decided_audience() {
+        let control = [
+            ToClient::Plugins(Body::new()),
+            ToClient::PluginRuntime { id: "x".into(), runtime: Value::Null },
+            ToClient::Interfaces(Body::new()),
+            ToClient::Store { kind: StoreKind::Plugin, list: Body::new() },
+            ToClient::InstallProgress { kind: StoreKind::Plugin, key: "x".into(), id: "x".into(), stage: "done", message: None },
+            ToClient::Keys { sources: Value::Null },
+        ];
+        for m in &control {
+            assert_eq!(m.audience(), Audience::Control, "{}", m.kind());
+        }
+        let everyone = [
+            "hello", "history", "units", "radios", "state", "config", "configSaved", "talkgroups", "talkgroupEdited", "unitNames", "unitNameEdited", "status", "voice", "spectrum", "log", "concluded", "callFiles",
+            "unitAlias", "heard", "survey", "surveySpectrum", "licenseResult", "callSignResult", "sourceProfile", "devices", "dir", "trConfig", "error", "notice", "pluginActionResult", "stats", "host", "rfDetail",
+            "decodeDetail", "monitorEvent", "subscribed", "statsResult", "radioResult", "callsResult", "dataSummary", "iqCaptures", "iqCaptureReview", "iqRuleChecked", "dataDeleted", "dataCompacted", "tokenCreated", "quit",
+        ];
+        let mut decided: Vec<&str> = control.iter().map(ToClient::kind).chain(everyone).collect();
+        decided.sort();
+        let mut all = ToClient::TYPES.to_vec();
+        all.sort();
+        assert_eq!(decided, all, "every message, once: a new one needs deciding here");
+        assert_eq!((ToClient::notice("x").audience(), ToClient::Quit.audience()), (Audience::Everyone, Audience::Everyone));
+    }
 }

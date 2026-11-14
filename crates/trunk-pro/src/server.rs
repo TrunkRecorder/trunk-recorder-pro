@@ -2537,6 +2537,28 @@ mod tests {
         assert!(res.starts_with("HTTP/1.1 200") && set.ends_with("; HttpOnly; SameSite=Lax; Secure"), "{res}");
         let (res, _) = https(addr, "GET /api/v1/calls HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await;
         assert!(res.starts_with("HTTP/1.1 401"), "guarded as ever: {res}");
+        // The socket over TLS (wss://): signed in with a token, greeted as them; without one, refused.
+        let wss = |secret: Option<String>| async move {
+            use futures_util::StreamExt;
+            use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let tls = crate::tls::tests::client().connect("localhost".try_into().unwrap(), tcp).await.unwrap();
+            let mut req = format!("wss://localhost:{}/api/ws", addr.port()).into_client_request().unwrap();
+            if let Some(s) = secret {
+                req.headers_mut().insert("authorization", format!("Bearer {s}").parse().unwrap());
+            }
+            let (mut ws, _) = tokio_tungstenite::client_async(req, tls).await.ok()?;
+            while let Some(Ok(m)) = ws.next().await {
+                let v: serde_json::Value = m.to_text().ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+                if v["type"] == "hello" {
+                    return Some(v);
+                }
+            }
+            None
+        };
+        let hello = wss(Some(luke.clone())).await.expect("greeted over wss://");
+        assert_eq!((&hello["access"], &hello["user"]), (&"control".into(), &"luke".into()));
+        assert!(wss(None).await.is_none(), "no token: no socket");
         // HSTS: told only when server.tls.hsts is set (it binds every port of the name).
         assert!(!res.contains("strict-transport-security"), "off unless set: {res}");
         ctx.config.lock().unwrap().server.tls = Some(trunk_app::config::Tls { hsts: true, ..config_of(&cert, &key) });
@@ -2567,6 +2589,369 @@ mod tests {
             r => panic!("not refused: {:?}", r.map(|m| m.to_value())),
         }
         assert!(ctx.config.lock().unwrap().server.tls.is_none());
+    }
+
+    /// A WebSocket to `addr` with `headers`, greeted: it, and its `hello`.
+    async fn socket(addr: std::net::SocketAddr, headers: &[(&str, &str)]) -> (tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, serde_json::Value) {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderName};
+        let mut req = format!("ws://{addr}/api/ws").into_client_request().unwrap();
+        for (k, v) in headers {
+            req.headers_mut().insert(HeaderName::from_bytes(k.as_bytes()).unwrap(), v.parse().unwrap());
+        }
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        while let Some(Ok(m)) = ws.next().await {
+            let v: serde_json::Value = m.to_text().ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+            if v["type"] == "hello" {
+                return (ws, v);
+            }
+        }
+        panic!("no hello from {addr}");
+    }
+
+    /// Every command, as an interface sends it, and the access it takes:
+    /// listen for looking, control for everything else. A command that's new
+    /// fails [`every_command_has_a_decided_role`] until it has its row here.
+    fn commands() -> Vec<(&'static str, crate::config::ApiAccess)> {
+        use crate::config::ApiAccess::{Control as C, Listen as L};
+        vec![
+            (r#"{"type":"setConfig","config":{},"version":1}"#, C),
+            (r#"{"type":"setTalkgroups","system":"x","talkgroups":[]}"#, C),
+            (r#"{"type":"setUnitNames","system":"x","unitNames":[]}"#, C),
+            (r#"{"type":"setUnitName","system":"x","unit":1,"name":"a"}"#, C),
+            (r#"{"type":"setTalkgroup","system":"x","talkgroup":1,"edit":{}}"#, C),
+            (r#"{"type":"start"}"#, C),
+            (r#"{"type":"stop"}"#, C),
+            (r#"{"type":"devices"}"#, C),
+            (r#"{"type":"findRadios"}"#, C),
+            (r#"{"type":"listDir"}"#, C),
+            (r#"{"type":"readTrConfig","path":"/"}"#, C),
+            (r#"{"type":"listen","on":true}"#, L),
+            (r#"{"type":"unlockKeys","source":"a","password":"b"}"#, C),
+            (r#"{"type":"lockKeys","source":"a"}"#, C),
+            (r#"{"type":"channelFile","index":0,"path":""}"#, C),
+            (r#"{"type":"surveyStart"}"#, C),
+            (r#"{"type":"surveyListen","freqHz":1.0}"#, C),
+            (r#"{"type":"surveyRescan"}"#, C),
+            (r#"{"type":"surveyStop"}"#, C),
+            (r#"{"type":"licenseQuery","id":1,"lat":0,"lon":0,"radiusM":1,"signals":[]}"#, C),
+            (r#"{"type":"callSignQuery","id":1,"callSigns":[]}"#, C),
+            (r#"{"type":"profileSource"}"#, C),
+            (r#"{"type":"plugins"}"#, C),
+            (r#"{"type":"addPlugin","path":"/x"}"#, C),
+            (r#"{"type":"removePlugin","id":"x"}"#, C),
+            (r#"{"type":"interfaces"}"#, C),
+            (r#"{"type":"store","kind":"plugin"}"#, C),
+            (r#"{"type":"install","kind":"plugin","id":"x"}"#, C),
+            (r#"{"type":"addInterface","path":"/x"}"#, C),
+            (r#"{"type":"removeInterface","id":"x"}"#, C),
+            (r#"{"type":"subscribe","topics":["log"]}"#, L),
+            (r#"{"type":"statsQuery","id":1,"series":["a"]}"#, L),
+            (r#"{"type":"radioQuery"}"#, L),
+            (r#"{"type":"callsQuery","id":1}"#, L),
+            (r#"{"type":"pluginAction","id":1,"plugin":"x","action":"y"}"#, C),
+            (r#"{"type":"iqCaptures","id":1}"#, C),
+            (r#"{"type":"iqCaptureStart","id":1,"seconds":1}"#, C),
+            (r#"{"type":"iqCaptureCancel","id":1,"key":1}"#, C),
+            (r#"{"type":"iqCaptureReview","id":1,"name":"x"}"#, C),
+            (r#"{"type":"iqCaptureSend","id":1,"name":"x"}"#, C),
+            (r#"{"type":"iqCaptureWithdraw","id":1,"name":"x"}"#, C),
+            (r#"{"type":"iqRuleCheck","id":1,"rule":{}}"#, C),
+            (r#"{"type":"iqCaptureDelete","id":1,"name":"x"}"#, C),
+            (r#"{"type":"dataSummary","id":1}"#, C),
+            (r#"{"type":"deleteData","id":1,"kinds":[]}"#, C),
+            (r#"{"type":"compactData","id":1}"#, C),
+            (r#"{"type":"createToken","id":1,"name":"intruder","access":"control"}"#, C),
+            (r#"{"type":"quit"}"#, C),
+        ]
+    }
+
+    /// Every command the recorder takes is in [`commands`], with the access
+    /// `Command::needs` gives it: a new one can't be sent by a View user
+    /// unnoticed (it needs control until it's listed as looking, and this
+    /// test fails until it's decided).
+    #[test]
+    fn every_command_has_a_decided_role() {
+        use trunk_app::protocol::Command;
+        let listed: std::collections::BTreeSet<&str> = commands().iter().map(|(j, _)| Command::parse(j).unwrap_or_else(|e| panic!("{j}: {e}")).kind()).collect();
+        let all: std::collections::BTreeSet<&str> = Command::TYPES.iter().copied().collect();
+        assert_eq!(listed, all, "every command, once: a new one needs its row in commands()");
+        for (j, needs) in commands() {
+            assert_eq!(Command::parse(j).unwrap().needs(), needs, "{j}");
+        }
+    }
+
+    /// Whoever may only listen (a View user; nobody signed in, anonymous
+    /// View; an Admin through a listen interface's port; anyone there with
+    /// signing in off) is refused every command but looking, over a real
+    /// socket, and told why; what it may send is answered. Nothing refused
+    /// was done (no user made).
+    #[tokio::test]
+    async fn a_listen_socket_is_refused_every_command_but_looking() {
+        use crate::config::ApiAccess;
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message as Ws;
+        let dir = crate::db::TestDir::new("ws-matrix");
+        let (ctx, luke, kiosk) = signed_in_ctx(&dir, "ws-matrix");
+        ctx.config.lock().unwrap().server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, ..Default::default() });
+        let (_tx, stop) = tokio::sync::watch::channel(false);
+        let builtin = super::test_server(&ctx, super::Door::Builtin).await;
+        let wall = super::test_server(&ctx, super::Door::Interface { id: "wall".into(), stop }).await;
+        let (looking, changing): (Vec<_>, Vec<_>) = commands().into_iter().partition(|(_, a)| *a == ApiAccess::Listen);
+        let kind = |j: &str| trunk_app::protocol::Command::parse(j).unwrap().kind();
+        let want: std::collections::BTreeSet<&str> = changing.iter().map(|(j, _)| kind(j)).collect();
+        let (bearer_kiosk, bearer_luke) = (format!("Bearer {kiosk}"), format!("Bearer {luke}"));
+        let cases: [(&str, std::net::SocketAddr, Vec<(&str, &str)>, bool, Option<ApiAccess>, &str); 4] = [
+            ("a View user", builtin, vec![("authorization", &bearer_kiosk)], true, None, "The user \"kiosk\" may only listen"),
+            ("anonymous View", builtin, vec![], true, Some(ApiAccess::Listen), "Not signed in, this page may only listen"),
+            ("an Admin on a listen port", wall, vec![("authorization", &bearer_luke)], true, None, "This interface may only listen"),
+            ("signing in off, a listen port", wall, vec![], false, None, "This interface may only listen"),
+        ];
+        for (who, addr, headers, enabled, anonymous, says) in cases {
+            {
+                let mut c = ctx.config.lock().unwrap();
+                c.server.auth.enabled = enabled;
+                c.server.auth.anonymous = anonymous;
+            }
+            let (mut ws, hello) = socket(addr, &headers).await;
+            assert_eq!(hello["access"], "listen", "{who}");
+            for (j, _) in looking.iter().chain(&changing) {
+                ws.send(Ws::text(*j)).await.unwrap();
+            }
+            let (mut refused, mut answered) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+            let heard = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+                while refused.len() < want.len() {
+                    let Some(Ok(m)) = ws.next().await else { return false };
+                    let v: serde_json::Value = m.to_text().ok().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+                    let message = v["message"].as_str().unwrap_or("");
+                    if v["type"] == "error" && message.contains("may only listen") {
+                        assert!(message.starts_with(says), "{who}: {message}");
+                        refused.insert(message.split("send \"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string());
+                    } else if let Some(t) = v["type"].as_str() {
+                        answered.insert(t.to_string());
+                    }
+                }
+                true
+            })
+            .await;
+            assert_eq!(heard, Ok(true), "{who}: refused {refused:?}");
+            assert_eq!(refused.iter().map(String::as_str).collect::<std::collections::BTreeSet<_>>(), want, "{who}: every command but looking, and no more");
+            for t in ["subscribed", "statsResult", "radioResult", "callsResult"] {
+                assert!(answered.contains(t), "{who}: {t} answered ({answered:?})");
+            }
+        }
+        let users: Vec<String> = ctx.config.lock().unwrap().server.auth.users.keys().cloned().collect();
+        assert_eq!(users, ["kiosk", "luke"], "nothing refused was done");
+        assert_eq!(ctx.phase.lock().unwrap().message().kind(), "state");
+    }
+
+    /// Every route the recorder serves, on both kinds of port (the built-in
+    /// interface's; a listen interface's), for each kind of caller: signing
+    /// in off; on, and nobody signed in; on, anonymous View; a View user's
+    /// token; an Admin's. "g" is the guard's 401 (sign in first); anything
+    /// else, the status the route answers with. The routes are read from
+    /// the source, so a route that's new fails this test until it's decided.
+    #[tokio::test]
+    async fn every_route_is_decided_for_every_caller_on_both_ports() {
+        use crate::config::ApiAccess;
+        let dir = crate::db::TestDir::new("route-matrix");
+        let (ctx, luke, kiosk) = signed_in_ctx(&dir, "route-matrix");
+        let ui = dir.join("wall-ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), "wall").unwrap();
+        let cap = std::path::PathBuf::from(&ctx.config.lock().unwrap().recording.capture_dir);
+        std::fs::create_dir_all(&cap).unwrap();
+        std::fs::write(cap.join("x.wav"), b"RIFF").unwrap();
+        ctx.config.lock().unwrap().server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, path: ui.display().to_string(), ..Default::default() });
+        let (_tx, stop) = tokio::sync::watch::channel(false);
+        let builtin = super::test_server(&ctx, super::Door::Builtin).await;
+        let wall = super::test_server(&ctx, super::Door::Interface { id: "wall".into(), stop }).await;
+        // (route as the source writes it, method, path asked, body, extra header; then by caller: off, anonymous, anonymous View, View, Admin.)
+        type Row = (&'static str, &'static str, &'static str, Option<&'static str>, Option<(&'static str, &'static str)>, [&'static str; 5], Option<[&'static str; 5]>);
+        const ALL: fn(&'static str) -> [&'static str; 5] = |s| [s; 5];
+        let rows: Vec<Row> = vec![
+            ("/api/ws", "GET", "/api/ws", None, None, ["400", "g", "400", "400", "400"], Some(["400", "g", "400", "400", "400"])),
+            ("/api/version", "GET", "/api/version", None, None, ALL("200"), Some(ALL("200"))),
+            ("/api/login", "POST", "/api/login", Some(""), None, ALL("401"), Some(ALL("401"))),
+            ("/api/logout", "POST", "/api/logout", Some(""), None, ALL("204"), Some(ALL("204"))),
+            ("/api/session", "GET", "/api/session", None, None, ALL("200"), Some(ALL("200"))),
+            ("/api/passkey/register/start", "POST", "/api/passkey/register/start", Some(r#"{"name":"Key"}"#), None, ["401", "g", "401", "200", "200"], Some(["403", "g", "403", "403", "403"])),
+            ("/api/passkey/register/finish", "POST", "/api/passkey/register/finish", Some("{}"), None, ["401", "g", "401", "400", "400"], Some(["403", "g", "403", "403", "403"])),
+            ("/api/passkey/login/start", "POST", "/api/passkey/login/start", Some(""), None, ALL("200"), Some(ALL("403"))),
+            ("/api/passkey/login/finish", "POST", "/api/passkey/login/finish", Some("{}"), None, ALL("401"), Some(ALL("403"))),
+            ("/signin", "GET", "/signin", None, None, ALL("200"), Some(ALL("200"))),
+            ("/api/docs", "GET", "/api/docs", None, None, ALL("200"), Some(ALL("200"))),
+            ("/api/schema", "GET", "/api/schema", None, None, ALL("200"), Some(ALL("200"))),
+            ("/api/protocol.ts", "GET", "/api/protocol.ts", None, None, ALL("200"), Some(ALL("200"))),
+            ("/api/{*path}", "GET", "/api/client.js", None, None, ALL("200"), Some(ALL("200"))),
+            ("/api/{*path}", "GET", "/api/nothing.js", None, None, ["404", "g", "404", "404", "404"], Some(["404", "g", "404", "404", "404"])),
+            ("/api/v1/calls", "GET", "/api/v1/calls", None, None, ["200", "g", "200", "200", "200"], Some(["200", "g", "200", "200", "200"])),
+            ("/api/v1/calls/{*path}", "GET", "/api/v1/calls/nope.json", None, None, ["404", "g", "404", "404", "404"], Some(["404", "g", "404", "404", "404"])),
+            ("/api/v1/storage", "GET", "/api/v1/storage", None, None, ["200", "g", "200", "200", "200"], Some(["200", "g", "200", "200", "200"])),
+            ("/api/v1/export/{table}", "GET", "/api/v1/export/calls", None, None, ["200", "g", "403", "403", "200"], Some(["403", "g", "403", "403", "403"])),
+            ("/calls/{*path}", "GET", "/calls/x.wav", None, None, ["200", "g", "200", "200", "200"], Some(["200", "g", "200", "200", "200"])),
+            ("/store/screenshots/{sha256}", "GET", "/store/screenshots/00", None, None, ["404", "g", "403", "403", "404"], None),
+            ("/interfaces/{id}/screenshots/{n}", "GET", "/interfaces/wall/screenshots/0", None, None, ["404", "g", "403", "403", "404"], None),
+            ("fallback", "GET", "/", None, None, ["200", "g", "200", "200", "200"], Some(["200", "g", "200", "200", "200"])),
+            ("fallback", "GET", "/", None, Some(("accept", "text/html")), ["200", "401", "200", "200", "200"], Some(["200", "401", "200", "200", "200"])),
+        ];
+        // Every route the source has: the API's (the call store's under /api/v1), the built-in interface's.
+        let routes = |src: &str, prefix: &str| src.split(".route(\"").skip(1).map(|r| format!("{prefix}{}", r.split('"').next().unwrap())).collect::<Vec<_>>();
+        let mut served: std::collections::BTreeSet<String> = routes(include_str!("server.rs"), "").into_iter().chain(routes(include_str!("api_v1.rs"), "/api/v1")).collect();
+        served.insert("fallback".into());
+        assert_eq!(rows.iter().map(|r| r.0.to_string()).collect::<std::collections::BTreeSet<_>>(), served, "every route, decided: a new one needs its row here");
+        let callers: [(&str, bool, Option<ApiAccess>, Option<String>); 5] =
+            [("off", false, None, None), ("anonymous", true, None, None), ("anonymous View", true, Some(ApiAccess::Listen), None), ("View", true, None, Some(kiosk.clone())), ("Admin", true, None, Some(luke.clone()))];
+        let mut wrong = vec![];
+        for (i, (caller, enabled, anonymous, secret)) in callers.iter().enumerate() {
+            {
+                let mut c = ctx.config.lock().unwrap();
+                c.server.auth.enabled = *enabled;
+                c.server.auth.anonymous = *anonymous;
+            }
+            for (route, method, path, body, extra, on_builtin, on_wall) in &rows {
+                for (door, addr, expect) in [("built-in", builtin, Some(on_builtin)), ("wall", wall, on_wall.as_ref())] {
+                    let Some(expect) = expect else { continue };
+                    let host = format!("localhost:{}", addr.port());
+                    let bearer = secret.as_ref().map(|s| format!("Bearer {s}"));
+                    let mut h: Vec<(&str, &str)> = vec![("host", &host)];
+                    h.extend(bearer.as_deref().map(|b| ("authorization", b)));
+                    h.extend(*extra);
+                    let (code, headers, _) = http(addr, method, path, &h, *body).await;
+                    let got = if code == 401 && headers.get("www-authenticate").is_some() { "g".to_string() } else { code.to_string() };
+                    if got != expect[i] {
+                        wrong.push(format!("{method} {path} ({route}) on the {door} port, {caller}: {got}, not {}", expect[i]));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+    }
+
+    /// Nothing secret reaches a View user: not in what a socket is greeted
+    /// with, nor a config sent later, nor the session, nor the call store's
+    /// routes. The secrets: plugins' settings (the recorder's and a
+    /// system's), key sources (files and passwords' files), the database's
+    /// connection string, the users (their tokens' hashes, passkeys' records),
+    /// the proxy and Cloudflare's settings. (Paths that are no credential, the
+    /// HTTPS files' among them, are the config as a View user sees it.)
+    /// An Admin is sent them: they were there to find.
+    #[tokio::test]
+    async fn a_view_user_is_sent_no_secret() {
+        use crate::config::ApiAccess;
+        let dir = crate::db::TestDir::new("redaction");
+        let (ctx, luke, kiosk) = signed_in_ctx(&dir, "redaction");
+        {
+            let mut c = ctx.config.lock().unwrap();
+            let mut v = serde_json::to_value(&*c).unwrap();
+            v["plugins"] = serde_json::json!({ "openmhz": { "enabled": false, "settings": { "apiKey": "SECRET-1" } } });
+            v["keys"] = serde_json::json!({ "radio": { "file": "SECRET-2.json", "passwordFile": "SECRET-3.txt" } });
+            v["systems"][0]["keys"] = "SECRET-4".into();
+            v["systems"][0]["plugins"] = serde_json::json!({ "openmhz": { "apiKey": "SECRET-5" } });
+            v["conventional"] = serde_json::json!([{ "shortName": "conv", "plugins": { "openmhz": { "apiKey": "SECRET-6" } } }]);
+            v["storage"]["url"] = "postgres://trp:SECRET-7@db/trunk".into();
+            v["server"]["auth"]["proxy"] = serde_json::json!({ "cloudflare": { "team": "secret8team", "aud": "SECRET9aud" }, "users": { "SECRET-10@example.com": "luke" } });
+            v["server"]["auth"]["users"]["luke"]["passkeys"] = serde_json::json!([{ "name": "SECRET-11", "created": 1, "id": "SECRET-12", "key": { "cred": "SECRET-13" } }]);
+            *c = crate::config::Config::from_value(v).unwrap();
+        }
+        let hashes: Vec<String> = ctx.config.lock().unwrap().server.auth.users.values().filter_map(|u| u.token.as_ref().map(|t| t.hash.clone())).collect();
+        let secret_in = |text: &str| text.contains("SECRET") || text.to_ascii_lowercase().contains("secret8team") || hashes.iter().any(|h| text.contains(h.as_str())) || text.contains(&luke) || text.contains(&kiosk);
+        let sent = |access: ApiAccess| {
+            let ctx = ctx.clone();
+            async move {
+                let m = super::greeting(&ctx, access, Some("kiosk".into())).await;
+                m.iter().filter_map(|m| super::text_for(&crate::runtime::Out::of(m), access == ApiAccess::Control)).collect::<Vec<_>>().join("\n")
+            }
+        };
+        let view = sent(ApiAccess::Listen).await;
+        assert!(view.contains(r#""type":"config""#) && view.contains(r#""shortName":"conv""#), "the config, without its secrets");
+        assert!(!secret_in(&view), "{view}");
+        let admin = sent(ApiAccess::Control).await;
+        for n in 1..=13 {
+            assert!(admin.contains(&format!("SECRET-{n}")) || (n == 8 || n == 9), "SECRET-{n} was there to find");
+        }
+        // A config sent later, as everyone hears it.
+        let config = crate::runtime::Out::of(&trunk_app::protocol::ToClient::Config { config: Box::new(ctx.config.lock().unwrap().clone()), version: 2 });
+        let later = super::text_for(&config, false).unwrap();
+        assert!(later.contains(r#""shortName":"conv""#) && !secret_in(&later), "{later}");
+        // Over the wire: the greeting, the session, the call store.
+        let addr = super::test_server(&ctx, super::Door::Builtin).await;
+        let bearer = format!("Bearer {kiosk}");
+        let (mut ws, hello) = socket(addr, &[("authorization", &bearer)]).await;
+        assert!(hello["configPath"].is_null() && !secret_in(&hello.to_string()), "{hello}");
+        drop(ws.close(None).await);
+        for path in ["/api/session", "/api/v1/storage", "/api/v1/calls"] {
+            let (code, _, body) = http(addr, "GET", path, &[("authorization", &bearer)], None).await;
+            assert!(code == 200 && !secret_in(&body), "{path}: {code} {body}");
+        }
+    }
+
+    /// Which requests' cookies (and so the proxy's header) count: a page of
+    /// this origin, one typed in or a bookmark, a program (no `Sec-Fetch-*`),
+    /// a link followed to here; never another site's, another port's
+    /// (same-site), or another site's frame or form.
+    #[test]
+    fn whose_cookies_count() {
+        let h = |pairs: &[(&str, &str)]| {
+            let mut m = HeaderMap::new();
+            for (n, v) in pairs {
+                m.insert(axum::http::HeaderName::from_bytes(n.as_bytes()).unwrap(), v.parse().unwrap());
+            }
+            super::cookies_count(&m)
+        };
+        use axum::http::HeaderMap;
+        let site = |s: &str, mode: &str, dest: &str| h(&[("sec-fetch-site", s), ("sec-fetch-mode", mode), ("sec-fetch-dest", dest)]);
+        assert!(h(&[]) && h(&[("sec-fetch-site", "same-origin")]) && h(&[("sec-fetch-site", "none")]));
+        assert!(site("same-origin", "cors", "empty") && site("none", "navigate", "document"));
+        assert!(site("cross-site", "navigate", "document") && site("same-site", "navigate", "document"), "a link followed here");
+        for (s, mode, dest) in [("same-site", "cors", "empty"), ("cross-site", "cors", "empty"), ("cross-site", "no-cors", "image"), ("cross-site", "navigate", "iframe"), ("same-site", "websocket", "websocket"), ("cross-site", "navigate", "frame"), ("cross-site", "no-cors", "script"), ("CROSS-SITE", "cors", "empty")] {
+            assert!(!site(s, mode, dest), "{s} {mode} {dest}");
+        }
+        assert!(!h(&[("sec-fetch-site", "garbage")]), "a value that's none of them");
+    }
+
+    /// What CORS lets in (`allowedOrigins`, `*` too) signs in with a token
+    /// alone: never the browser's cookie, nor the proxy's header; its socket
+    /// too. A page from an origin not allowed is refused, token or not.
+    #[tokio::test]
+    async fn what_cors_lets_in_signs_in_with_a_token_alone() {
+        let dir = crate::db::TestDir::new("cors-token");
+        let (ctx, luke, _) = signed_in_ctx(&dir, "cors-token");
+        ctx.config.lock().unwrap().server.auth.proxy = Some(trunk_app::config::AuthProxy { from: vec!["127.0.0.1".into()], ..Default::default() });
+        let addr = super::test_server(&ctx, super::Door::Builtin).await;
+        let (_, h, _) = http(addr, "POST", "/api/login", &[], Some(&luke)).await;
+        let cookie = h["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+        let bearer = format!("Bearer {luke}");
+        let user = |headers: Vec<(&'static str, String)>| async move {
+            let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let (code, h, body) = http(addr, "GET", "/api/session", &h, None).await;
+            (code, h.get("access-control-allow-origin").map(|v| v.to_str().unwrap().to_string()), serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default()["user"].clone())
+        };
+        let evil = || ("origin", "https://evil.example".to_string());
+        assert_eq!(user(vec![("cookie", cookie.clone())]).await.2, "luke", "its own page");
+        assert_eq!(user(vec![("remote-user", "luke".into())]).await.2, "luke", "the proxy, from its address");
+        for allowed in [vec!["https://evil.example".to_string()], vec!["*".to_string()]] {
+            ctx.config.lock().unwrap().server.allowed_origins = allowed.clone();
+            assert_eq!(user(vec![evil(), ("cookie", cookie.clone())]).await, (200, Some("https://evil.example".into()), serde_json::Value::Null), "{allowed:?}: its cookie doesn't count");
+            assert_eq!(user(vec![evil(), ("remote-user", "luke".into())]).await.2, serde_json::Value::Null, "{allowed:?}: nor the proxy's header");
+            assert_eq!(user(vec![evil(), ("authorization", bearer.clone())]).await.2, "luke", "{allowed:?}: a token does");
+            assert_eq!(http(addr, "GET", "/api/v1/calls", &[("origin", "https://evil.example"), ("cookie", &cookie)], None).await.0, 401);
+            let mut req = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://{addr}/api/ws")).unwrap();
+            req.headers_mut().insert("origin", "https://evil.example".parse().unwrap());
+            req.headers_mut().insert("cookie", cookie.parse().unwrap());
+            assert!(tokio_tungstenite::connect_async(req).await.is_err(), "{allowed:?}: no socket on its cookie");
+            let (_, hello) = socket(addr, &[("origin", "https://evil.example"), ("authorization", &bearer)]).await;
+            assert_eq!(hello["user"], "luke", "{allowed:?}: a socket on its token");
+        }
+        ctx.config.lock().unwrap().server.allowed_origins = vec![];
+        assert_eq!(user(vec![evil(), ("authorization", bearer.clone())]).await.0, 403, "not allowed: refused, token or not");
+        let mut req = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://{addr}/api/ws")).unwrap();
+        req.headers_mut().insert("origin", "https://evil.example".parse().unwrap());
+        req.headers_mut().insert("authorization", bearer.parse().unwrap());
+        assert!(tokio_tungstenite::connect_async(req).await.is_err(), "nor its socket");
+        // A proxy's user signs out at the proxy; signing out everywhere is refused them.
+        let (code, _, why) = http(addr, "POST", "/api/logout", &[("remote-user", "luke")], Some(r#"{"all":true}"#)).await;
+        assert!(code == 403 && why.contains("proxy"), "{code} {why}");
     }
 
     #[tokio::test]

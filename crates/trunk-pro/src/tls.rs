@@ -199,9 +199,14 @@ pub struct TlsListener {
 
 impl TlsListener {
     pub fn new(listener: TcpListener, tls: &Tls) -> io::Result<TlsListener> {
+        Self::waiting(listener, tls, HANDSHAKE)
+    }
+
+    /// One whose connections have `wait` to shake hands ([`HANDSHAKE`]; tests: less).
+    fn waiting(listener: TcpListener, tls: &Tls, wait: Duration) -> io::Result<TlsListener> {
         let addr = listener.local_addr()?;
         let (tx, done) = mpsc::channel(32);
-        tokio::spawn(accept(listener, TlsAcceptor::from(tls.config.clone()), tx));
+        tokio::spawn(accept(listener, TlsAcceptor::from(tls.config.clone()), tx, wait));
         Ok(TlsListener { done, addr })
     }
 }
@@ -223,9 +228,9 @@ impl axum::serve::Listener for TlsListener {
     }
 }
 
-/// Take `listener`'s connections, each shaking hands on its own, until the
-/// [`TlsListener`] is gone (then the port is let go of).
-async fn accept(mut listener: TcpListener, acceptor: TlsAcceptor, tx: mpsc::Sender<(TlsStream<TcpStream>, SocketAddr)>) {
+/// Take `listener`'s connections, each shaking hands on its own within
+/// `wait`, until the [`TlsListener`] is gone (then the port is let go of).
+async fn accept(mut listener: TcpListener, acceptor: TlsAcceptor, tx: mpsc::Sender<(TlsStream<TcpStream>, SocketAddr)>, wait: Duration) {
     loop {
         // (axum's accept: it retries what fails, as axum does for plain HTTP.)
         let (tcp, peer) = tokio::select! {
@@ -234,13 +239,13 @@ async fn accept(mut listener: TcpListener, acceptor: TlsAcceptor, tx: mpsc::Send
         };
         let (acceptor, tx) = (acceptor.clone(), tx.clone());
         tokio::spawn(async move {
-            match tokio::time::timeout(HANDSHAKE, handshake(tcp, acceptor)).await {
+            match tokio::time::timeout(wait, handshake(tcp, acceptor)).await {
                 Ok(Ok(Some(tls))) => {
                     let _ = tx.send((tls, peer)).await;
                 }
                 Ok(Ok(None)) => {}
                 Ok(Err(e)) => log::debug!("HTTPS: {peer}: {e}"),
-                Err(_) => log::debug!("HTTPS: {peer}: no handshake in {} s", HANDSHAKE.as_secs()),
+                Err(_) => log::debug!("HTTPS: {peer}: no handshake in {} s", wait.as_secs()),
             }
         });
     }
@@ -344,7 +349,7 @@ pub(crate) mod tests {
     }
 
     /// A TLS client trusting the fixtures' certificates.
-    fn client() -> TlsConnector {
+    pub(crate) fn client() -> TlsConnector {
         let mut roots = RootCertStore::empty();
         for n in ["a", "b"] {
             roots.add(CertificateDer::from_pem_file(fixture(n).0).unwrap()).unwrap();
@@ -466,5 +471,51 @@ pub(crate) mod tests {
         let f = std::fs::File::options().write(true).open(&key).unwrap();
         f.set_modified(SystemTime::now() + Duration::from_secs(20)).unwrap();
         assert_eq!(ask().await.1, der(&fixture("b").0), "a renewal gone wrong: the one before, still");
+    }
+
+    /// A connection that doesn't finish its handshake in time is closed (one
+    /// silent, one that sent half a request); so is plain HTTP whose request
+    /// is longer than any of ours, unanswered; and the port serves on.
+    #[tokio::test]
+    async fn a_connection_that_never_finishes_is_let_go() {
+        let (a, a_key) = fixture("a");
+        let tls = Tls::new(&config_of(&a, &a_key), Path::new("/")).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { "hello" })).into_make_service_with_connect_info::<Peer>();
+        let listening = TlsListener::waiting(listener, &tls, Duration::from_millis(300)).unwrap();
+        tokio::spawn(async move { axum::serve(listening, app).await });
+        // Read until it closes: what it sent (nothing, for these), or None if it's still open after 3 s.
+        let until_closed = |mut s: TcpStream| async move {
+            let mut got = Vec::new();
+            let r = tokio::time::timeout(Duration::from_secs(3), async {
+                let mut buf = [0u8; 512];
+                loop {
+                    match s.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => got.extend_from_slice(&buf[..n]),
+                    }
+                }
+            })
+            .await;
+            r.ok().map(|_| got)
+        };
+        let silent = TcpStream::connect(addr).await.unwrap();
+        let mut half = TcpStream::connect(addr).await.unwrap();
+        half.write_all(b"GET /api/version HT").await.unwrap();
+        let mut tls_half = TcpStream::connect(addr).await.unwrap();
+        tls_half.write_all(&[0x16, 0x03, 0x01, 0x00, 0x40, 0x01]).await.unwrap();
+        let mut long = TcpStream::connect(addr).await.unwrap();
+        let _ = long.write_all(format!("GET /api/version HTTP/1.1\r\nHost: localhost\r\nX-Pad: {}\r\n\r\n", "a".repeat(PLAIN_MAX)).as_bytes()).await;
+        let t = Instant::now();
+        assert_eq!(until_closed(silent).await, Some(vec![]), "silent: closed");
+        assert_eq!(until_closed(half).await, Some(vec![]), "half a request: closed, unanswered");
+        assert_eq!(until_closed(tls_half).await, Some(vec![]), "half a handshake: closed");
+        assert!(t.elapsed() >= Duration::from_millis(250), "not before its time is up");
+        assert_eq!(until_closed(long).await, Some(vec![]), "more than any request of ours: closed, unanswered");
+        let (res, _) = https(addr, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await;
+        assert!(res.ends_with("hello"), "served on: {res}");
+        let res = http(addr, "GET /api/version HTTP/1.1\r\nHost: localhost\r\n\r\n").await;
+        assert!(res.starts_with("HTTP/1.1 200"), "{res}");
     }
 }

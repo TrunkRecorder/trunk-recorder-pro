@@ -101,10 +101,10 @@ impl Who {
             Who::Anonymous => auth.anonymous,
             // (A session signed in before they were signed out everywhere: nothing.)
             Who::User { name, credential, until } => auth.users.get(name).filter(|u| holds(u, credential) && !until.is_some_and(|t| signed_out(u, t))).map(|u| u.access),
-            // (The proxy gone, `peer` no longer its (or Cloudflare's in its place), Cloudflare's
-            // application another, or its name another user's now: nothing.)
+            // (The proxy gone, or set as it can't be, `peer` no longer its (or Cloudflare's in its
+            // place), Cloudflare's application another, or its name another user's now: nothing.)
             Who::Proxy { asserted, user, via } => {
-                auth.proxy.as_ref().filter(|p| match via {
+                auth.proxy.as_ref().filter(|p| p.problem().is_none()).filter(|p| match via {
                     Via::Header(peer) => p.cloudflare.is_none() && p.trusts(*peer),
                     Via::Cloudflare { app, .. } => p.cloudflare.as_ref() == Some(app),
                 })?;
@@ -222,9 +222,12 @@ pub fn identify(auth: &Auth, sessions: &Sessions, keys: &cloudflare::Keys, heade
 /// the header is no one's (anyone can send it), and that's told once an
 /// address: a proxy at an address not listed shows in the log. Behind
 /// Cloudflare Access, the email in its token (one), checked ([`cloudflare`]),
-/// from any address; the header and its email header are no one's.
+/// from any address; the header and its email header are no one's. A proxy
+/// set as it can't be ([`trunk_app::config::AuthProxy::problem`]: written so by hand, as the
+/// interface won't save it; the log says why as the recorder starts) says
+/// nobody: `from` with every address in it would let anyone say who they are.
 fn proxied(auth: &Auth, keys: &cloudflare::Keys, headers: &HeaderMap, peer: Option<IpAddr>) -> Option<Who> {
-    let p = auth.proxy.as_ref()?;
+    let p = auth.proxy.as_ref().filter(|p| p.problem().is_none())?;
     if let Some(cf) = &p.cloudflare {
         let mut sent = headers.get_all(cloudflare::HEADER).iter();
         let (Some(v), None) = (sent.next(), sent.next()) else { return None };
@@ -743,5 +746,140 @@ mod tests {
         let set = a.set_cookie("luke", "h", true);
         assert!(set.starts_with(&format!("{}=luke.h.", a.cookie)) && set.contains("; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax; Secure"), "{set}");
         assert_eq!(a.clear_cookie(), format!("{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax", a.cookie));
+    }
+
+    /// Every change to a session's cookie, or to a passkey sign-in sealed with
+    /// the same key, is refused: each character replaced (by a digit, a letter
+    /// that's no hex digit, a separator, `+`, which `u8::from_str_radix` would
+    /// take for a sign), taken out or one put in, and every part of it short.
+    /// A sign-in sealed for one purpose is nothing for another.
+    #[test]
+    fn no_change_to_a_session_or_a_sealed_sign_in_is_taken() {
+        let sessions = Sessions::fresh();
+        let changed = |s: &str| {
+            let chars: Vec<char> = s.chars().collect();
+            let mut out: Vec<String> = (0..chars.len()).map(|n| chars[..n].iter().collect()).collect();
+            for i in 0..=chars.len() {
+                for c in ['0', '9', 'f', 'z', '.', '%', '+', '-', ' ', '"'] {
+                    let mut put = chars.clone();
+                    put.insert(i, c);
+                    out.push(put.into_iter().collect());
+                    if i < chars.len() && chars[i] != c {
+                        let mut swapped = chars.clone();
+                        swapped[i] = c;
+                        out.push(swapped.into_iter().collect());
+                    }
+                }
+                if i < chars.len() {
+                    let mut gone = chars.clone();
+                    gone.remove(i);
+                    out.push(gone.into_iter().collect());
+                }
+            }
+            out.retain(|m| m != s);
+            out
+        };
+        let v = sessions.issue("luke.b", &sha256_hex(b"secret"));
+        assert!(sessions.verify(&v).is_some());
+        let tried = changed(&v);
+        assert!(tried.len() > 2000, "{}", tried.len());
+        for m in &tried {
+            assert_eq!(sessions.verify(m), None, "{m}");
+        }
+        let sealed = sessions.seal("passkey sign-in", "eyJycCI6ImxvY2FsaG9zdCJ9");
+        assert_eq!(sessions.unseal("passkey sign-in", &sealed), Some("eyJycCI6ImxvY2FsaG9zdCJ9"));
+        for m in changed(&sealed) {
+            assert_eq!(sessions.unseal("passkey sign-in", &m), None, "{m}");
+        }
+        assert_eq!(sessions.unseal("another purpose", &sealed), None);
+        // (Hex of either case is the same MAC: the one spelling of it that isn't refused.)
+        let (body, mac) = v.rsplit_once('.').unwrap();
+        assert!(sessions.verify(&format!("{body}.{}", mac.to_ascii_uppercase())).is_some());
+    }
+
+    /// Signed out everywhere at `t`: a session signed in at `t` or before is
+    /// ended, one signed in a second later counts.
+    #[test]
+    fn signed_out_everywhere_ends_sessions_signed_in_until_then() {
+        let mut auth = Auth { enabled: true, ..Default::default() };
+        add_user(&mut auth, "luke", ApiAccess::Control).unwrap();
+        let hash = auth.users["luke"].token.as_ref().unwrap().hash.clone();
+        let now = crate::clock::unix_s() as u64;
+        let signed_in_at = |t: u64| Who::User { name: "luke".into(), credential: hash.clone(), until: Some(t + SESSION_S) };
+        assert_eq!(signed_in_at(now - 100).grants(&auth), Some(ApiAccess::Control), "never signed out");
+        auth.users.get_mut("luke").unwrap().signed_out = Some(now as i64);
+        assert_eq!(signed_in_at(now - 100).grants(&auth), None, "before");
+        assert_eq!(signed_in_at(now).grants(&auth), None, "at the same second");
+        assert_eq!(signed_in_at(now + 1).grants(&auth), Some(ApiAccess::Control), "after");
+        let token = Who::User { name: "luke".into(), credential: hash, until: None };
+        assert_eq!(token.grants(&auth), Some(ApiAccess::Control), "a secret sent with each request: not a session");
+    }
+
+    /// What a request carries that isn't a credential signs nobody in: a
+    /// header that isn't UTF-8, a scheme with no secret, the config's hash of
+    /// a secret sent as the secret (a control user sees the config), a secret
+    /// 64 KiB long; of several, the first that is one signs in, wherever it
+    /// came in, and the spaces around one are no part of it.
+    #[test]
+    fn what_isnt_a_credential_signs_nobody_in() {
+        let mut auth = Auth { enabled: true, ..Default::default() };
+        let secret = add_user(&mut auth, "luke", ApiAccess::Control).unwrap();
+        let s = secret.expose();
+        let hash = auth.users["luke"].token.as_ref().unwrap().hash.clone();
+        let sessions = Sessions::fresh();
+        let keys = cloudflare::Keys::from(|_| Err("offline".into()));
+        let who = |pairs: &[(&str, &[u8])], query: Option<&str>| {
+            let mut h = HeaderMap::new();
+            for (n, v) in pairs {
+                h.append(header::HeaderName::from_bytes(n.as_bytes()).unwrap(), HeaderValue::from_bytes(v).unwrap());
+            }
+            identify(&auth, &sessions, &keys, &h, query, true, None).user().map(str::to_string)
+        };
+        let luke = Some("luke".to_string());
+        let bearer = format!("Bearer {s}");
+        assert_eq!(who(&[("authorization", bearer.as_bytes())], None), luke);
+        assert_eq!(who(&[("authorization", format!("Bearer \t {s}  ").as_bytes())], None), luke, "spaces around it");
+        let mut not_utf8 = bearer.clone().into_bytes();
+        not_utf8.push(0xff);
+        assert_eq!(who(&[("authorization", &not_utf8)], None), None, "not UTF-8");
+        for v in ["Bearer", "Bearer ", "Bearer  ", s, &format!("Token {s}"), &format!("Bearer{s}")] {
+            assert_eq!(who(&[("authorization", v.as_bytes())], None), None, "{v:?}");
+        }
+        assert_eq!(who(&[("authorization", format!("Bearer {hash}").as_bytes())], Some(&format!("token={hash}"))), None, "its hash is no secret");
+        assert_eq!(who(&[("authorization", format!("Bearer {}", "a".repeat(64 << 10)).as_bytes())], None), None, "64 KiB");
+        assert_eq!(who(&[("authorization", b"Bearer trp_00"), ("authorization", bearer.as_bytes())], None), luke, "the second of two");
+        assert_eq!(who(&[("authorization", b"Bearer trp_00")], Some(&format!("token=trp_11&token={s}"))), luke, "the first that's one");
+        assert_eq!(who(&[], Some(&format!("xtoken={s}&token_={s}"))), None, "another parameter");
+        let mut cookie = format!("{}={}", sessions.cookie, sessions.issue("luke", &hash)).into_bytes();
+        assert_eq!(who(&[("cookie", &cookie)], None), luke);
+        cookie.push(0xff);
+        assert_eq!(who(&[("cookie", &cookie)], None), None, "a cookie header that isn't UTF-8");
+    }
+
+    /// A proxy set as it can't be (written so by hand: the interface won't
+    /// save it) signs nobody in: `from` with every address in it, `other`
+    /// control. Set as it can be, the same request is who it says.
+    #[test]
+    fn a_proxy_set_as_it_cant_be_signs_nobody_in() {
+        use trunk_app::config::AuthProxy;
+        let mut auth = Auth { enabled: true, ..Default::default() };
+        add_user(&mut auth, "luke", ApiAccess::Control).unwrap();
+        let sessions = Sessions::fresh();
+        let keys = cloudflare::Keys::from(|_| Err("offline".into()));
+        let anyone: IpAddr = "203.0.113.9".parse().unwrap();
+        let mut h = HeaderMap::new();
+        h.insert("remote-user", HeaderValue::from_static("luke"));
+        let forged = Who::Proxy { asserted: "luke".into(), user: "luke".into(), via: Via::Header(anyone) };
+        for (from, other) in [("0.0.0.0/0", None), ("::/0", None), ("203.0.113.0/24", Some(ApiAccess::Control)), ("203.0.113.9/40", None)] {
+            auth.proxy = Some(AuthProxy { from: vec![from.into()], other, ..Default::default() });
+            assert!(auth.problem().is_some(), "{from}");
+            for peer in [anyone, "::ffff:203.0.113.9".parse().unwrap()] {
+                assert_eq!(identify(&auth, &sessions, &keys, &h, None, true, Some(peer)), Who::Anonymous, "{from} {peer}");
+            }
+            assert_eq!(forged.grants(&auth), None, "{from}");
+        }
+        auth.proxy = Some(AuthProxy { from: vec!["203.0.113.0/24".into()], ..Default::default() });
+        assert_eq!(identify(&auth, &sessions, &keys, &h, None, true, Some(anyone)), forged, "as it can be");
+        assert_eq!(forged.grants(&auth), Some(ApiAccess::Control));
     }
 }

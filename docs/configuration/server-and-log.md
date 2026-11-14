@@ -239,7 +239,7 @@ Access](#cloudflare-tunnel-and-access)). Off unless set; it does nothing while s
 
 | Key | Default | Description |
 |---|---|---|
-| `from` | (needed) | The proxy's addresses, as the recorder sees its connections: IPs or CIDR blocks (`"127.0.0.1"`, `"10.0.0.0/8"`, `"fd7a:115c:a1e0::/48"`). From any other address the header is ignored, and the log says so once for each address (a proxy at an address not listed shows there). An entry that's neither isn't saved, nor is a block of every address (`"0.0.0.0/0"`, `"::/0"`): anyone could send the header, the same as signing in turned off. Not needed (and not used) with `cloudflare` |
+| `from` | (needed) | The proxy's addresses, as the recorder sees its connections: IPs or CIDR blocks (`"127.0.0.1"`, `"10.0.0.0/8"`, `"fd7a:115c:a1e0::/48"`). From any other address the header is ignored, and the log says so once for each address (a proxy at an address not listed shows there). An entry that's neither isn't saved, nor is a block of every address (`"0.0.0.0/0"`, `"::/0"`): anyone could send the header, the same as signing in turned off. A proxy set so by hand signs nobody in (the log says why as the recorder starts). Not needed (and not used) with `cloudflare` |
 | `header` | `"Remote-User"` | The header the proxy puts the name in. Not used with `cloudflare` |
 | `cloudflare` | off | Cloudflare Access in front: `{ "team": "myteam", "aud": "…" }`. The name is the email in its signed token, checked; `from` and `header` aren't used. See [Cloudflare Tunnel and Access](#cloudflare-tunnel-and-access) |
 | `users` | `{}` | The proxy's names for users whose name here differs: `"luke@example.com": "luke"`. Edited in the config file, not in Setup |

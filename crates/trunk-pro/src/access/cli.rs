@@ -130,7 +130,8 @@ fn remove_passkey(a: &Args) {
 fn on(a: &Args, enabled: bool) {
     let (path, mut cfg) = load_config(a);
     cfg.server.auth.enabled = enabled;
-    if let Some(why) = cfg.server.auth.problem() {
+    // (Off is the way back in, whatever else is wrong: a proxy set as it can't be too.)
+    if let Some(why) = cfg.server.auth.problem().filter(|_| enabled) {
         die(&format!("{why} (trunk-pro access add <name>)"));
     }
     save(&path, &cfg);

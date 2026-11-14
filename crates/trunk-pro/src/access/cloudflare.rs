@@ -397,4 +397,85 @@ pub(crate) mod tests {
         keys.refresh(&cf);
         assert_eq!(keys.email(&cf, &by_a).map(|(e, _)| e), Ok("luke@example.com".into()), "a failed fetch keeps the keys had");
     }
+
+    /// Every change to a token Access signed is refused: each character of it
+    /// replaced, taken out or one put in. And only RS256 is taken, as Access
+    /// signs (not RS384, PS256, ES256, a lowercase name, or none named).
+    #[test]
+    fn no_change_to_a_token_is_taken() {
+        let a = TestKey::new("a");
+        let keys = parse_certs(&certs(&[&a])).unwrap();
+        let now = 1_794_000_000;
+        let good = a.sign(&claims("luke@example.com", now));
+        assert!(verify(&good, TEAM, AUD, &keys, now).is_ok());
+        let chars: Vec<char> = good.chars().collect();
+        let mut tried = 0;
+        for i in 0..=chars.len() {
+            for c in ['A', 'z', '0', '-', '_', '.', '='] {
+                let mut variants = vec![];
+                let mut put = chars.clone();
+                put.insert(i, c);
+                variants.push(put);
+                if i < chars.len() && chars[i] != c {
+                    let mut swapped = chars.clone();
+                    swapped[i] = c;
+                    variants.push(swapped);
+                }
+                if i < chars.len() && c == 'A' {
+                    let mut gone = chars.clone();
+                    gone.remove(i);
+                    variants.push(gone);
+                }
+                for v in variants {
+                    let t: String = v.into_iter().collect();
+                    // (Padding at the end of a part decodes as none: the same token, written another way.)
+                    if t == good || t.trim_end_matches('=') == good || t.replace("=.", ".") == good {
+                        continue;
+                    }
+                    tried += 1;
+                    assert!(verify(&t, TEAM, AUD, &keys, now).is_err(), "{t}");
+                }
+            }
+        }
+        assert!(tried > 4000, "{tried}");
+        for alg in ["RS384", "RS512", "PS256", "ES256", "rs256", ""] {
+            assert_eq!(verify(&a.sign_with(json!({ "alg": alg }), &claims("luke@example.com", now)), TEAM, AUD, &keys, now), Err(Refused::Malformed), "{alg:?}");
+        }
+        assert_eq!(verify(&a.sign_with(json!({ "alg": null }), &claims("luke@example.com", now)), TEAM, AUD, &keys, now), Err(Refused::Malformed), "no alg");
+        // Its claims as Access writes them, but `email` not a string, or empty: nobody.
+        for email in [json!(""), json!("  "), json!(["luke@example.com"]), json!(null)] {
+            let mut c = claims("x", now);
+            c["email"] = email.clone();
+            assert_eq!(verify(&a.sign(&c), TEAM, AUD, &keys, now), Err(Refused::NoEmail), "{email}");
+        }
+    }
+
+    /// A key Cloudflare no longer lists stops signing in once the keys are
+    /// fetched again (hourly at most), and a fetch that fails meanwhile keeps
+    /// the keys had: what's checked is only ever a key the team served.
+    #[test]
+    fn a_key_cloudflare_dropped_stops_signing_in() {
+        let (a, b) = (TestKey::new("a"), TestKey::new("b"));
+        let served = Arc::new(Mutex::new(certs(&[&a, &b])));
+        let s = served.clone();
+        let keys = Keys::from(move |_| {
+            let body = s.lock().unwrap().clone();
+            if body.is_empty() { Err("offline".into()) } else { Ok(body) }
+        });
+        let cf = AuthCloudflare { team: "radio".into(), aud: AUD.into() };
+        let now = crate::clock::unix_s() as u64;
+        let by_a = a.sign(&claims("luke@example.com", now));
+        keys.refresh(&cf);
+        assert!(keys.email(&cf, &by_a).is_ok());
+        *served.lock().unwrap() = certs(&[&b]);
+        assert!(keys.email(&cf, &by_a).is_ok(), "until they're fetched again");
+        assert!(keys.wanted_at(&cf, &by_a, Instant::now() + KEEP));
+        keys.refresh(&cf);
+        assert_eq!(keys.email(&cf, &by_a), Err(Refused::UnknownKey), "dropped");
+        assert!(!keys.wanted(&cf, &by_a), "and not fetched again for a token by it, within the minute");
+        served.lock().unwrap().clear();
+        keys.refresh(&cf);
+        assert_eq!(keys.email(&cf, &by_a), Err(Refused::UnknownKey), "a failed fetch brings back nothing");
+        assert!(keys.email(&cf, &b.sign(&claims("ann@example.com", now))).is_ok(), "the keys had are kept");
+    }
 }
