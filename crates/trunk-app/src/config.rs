@@ -341,7 +341,7 @@ impl Source {
     }
     /// It to place: its centre stays when set.
     pub fn placing(&self) -> Placing {
-        Placing { rate_hz: self.rate_hz, guard_hz: self.guard_hz, fixed_hz: (self.center_hz > 0.0).then_some(self.center_hz) }
+        Placing { rate_hz: self.rate_hz, guard_hz: self.guard_hz, fixed_hz: (self.center_hz > 0.0).then_some(self.center_hz), band: None }
     }
     /// Its `type` ("rtlsdr", "airspy", …), as the config names it.
     pub fn kind_name(&self) -> &'static str {
