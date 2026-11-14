@@ -11,8 +11,19 @@ info:
     connection with listen or control access. When the call store could not
     be opened, /storage answers 503, and the calls routes answer from the recent calls alone. A parameter given empty is treated
     as not given. (Plugins ask over their own channel: calls.query.)
+
+    With signing in on (server.auth), a request without a user's access token
+    that gives it access is answered 401 with `WWW-Authenticate: Bearer`. Send
+    the token's secret as `Authorization: Bearer trp_…`, as `?token=trp_…`, or
+    (a browser page of the same origin) the cookie POST /api/login sets.
+    With signing in off, no token is needed.
 servers:
   - url: http://localhost:8080
+# Optional: only with signing in on. `{}` is no token (signing in off, or anonymous listen).
+security:
+  - {}
+  - bearer: []
+  - token: []
 paths:
   /api/v1/calls:
     get:
@@ -83,6 +94,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
 components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, description: "An access token's secret (trp_ and 64 hex digits)." }
+    token: { type: apiKey, in: query, name: token, description: "The same secret in the URL. It ends up in history and proxy logs: prefer the header." }
   schemas:
     Error:
       type: object

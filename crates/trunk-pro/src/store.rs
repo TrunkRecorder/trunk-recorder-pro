@@ -26,9 +26,9 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::runtime::{publish, Hub};
+use crate::toolkit::sha256_hex;
 
 /// What an archive may unpack to, in all.
 const MAX_UNPACKED: u64 = 1 << 30;
@@ -273,10 +273,6 @@ pub fn download(url: &str, sha256: &str, limit: u64, what: &str) -> Result<Vec<u
         return Err(format!("The download of {what} doesn't match its checksum, so it wasn't installed. Try again; if it happens again, report it."));
     }
     Ok(data)
-}
-
-pub fn sha256_hex(b: &[u8]) -> String {
-    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// Is version `a` newer than `b`? Semver: a prerelease is older than its release.

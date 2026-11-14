@@ -96,6 +96,7 @@ import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from ".
 import { TalkgroupsField, UnitNamesField } from "./TalkgroupsField.tsx";
 import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "./NameFields.tsx";
 import { ManageData, RemoveSystem } from "./DataTools.tsx";
+import { AccessSection } from "./Access.tsx";
 import { BiasT, DraftInput, Field, FileInput, NumberInput, ReleaseSlider, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { SourceSuggestion, SourcesAdvice, useSourceAdvice } from "./sourceAdvice.tsx";
@@ -3481,6 +3482,7 @@ export function Setup() {
           </section>
         </Section>
       )}
+      {tab === "recording" && can("service") && <AccessSection c={c} />}
       {tab === "recording" && can("keys") && s.lockable.length > 0 && (
         <Section
           title="Key containers"

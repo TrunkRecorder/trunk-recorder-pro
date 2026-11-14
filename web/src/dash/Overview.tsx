@@ -3,7 +3,7 @@
 // plugins and the computer in a line each, and what happened lately.
 
 import { formatMhz } from "../config.ts";
-import { can, pluginOn, radioQuery, statsSince, setView, start, usePolled, useApp, type AppState } from "../controller.ts";
+import { can, mayEdit, pluginOn, radioQuery, statsSince, setView, start, usePolled, useApp, type AppState } from "../controller.ts";
 import { Card, Fig, Figs, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
@@ -414,14 +414,16 @@ export function Overview() {
               {s.config && systems.length ? `${systems.length} system${systems.length > 1 ? "s" : ""} set up` : "Set up a source and a system, then Start"}
             </p>
           </div>
-          <div className="row">
-            <button className="btn primary" onClick={start} disabled={!s.connected}>
-              Start
-            </button>
-            <button className="btn ghost" onClick={() => setView("setup")}>
-              Setup
-            </button>
-          </div>
+          {mayEdit() && (
+            <div className="row">
+              <button className="btn primary" onClick={start} disabled={!s.connected}>
+                Start
+              </button>
+              <button className="btn ghost" onClick={() => setView("setup")}>
+                Setup
+              </button>
+            </div>
+          )}
         </section>
       )}
       <div className="overview-grid">
@@ -445,7 +447,7 @@ export function Overview() {
           )}
           <h2 className="section-title">Status</h2>
           {can("host") && <PlatformLine s={s} />}
-          {can("plugins") && <PluginsLine s={s} />}
+          {can("plugins") && mayEdit() && <PluginsLine s={s} />}
           <EventFeed events={s.events} />
         </div>
       </div>

@@ -1361,7 +1361,9 @@ calls give it): the session's file name formats and the runtime's file rules.
 
 `bind` 127.0.0.1, `port` 8080, `autoStart` false, `allowedOrigins` [], `interfaces` {} (by id:
 `port`, `enabled` true, `access` "listen", `path` ""; a port of 0 gets the next free one on load;
-the old list form `[{name, path}]` is read as this map, and `home` is dropped).
+the old list form `[{name, path}]` is read as this map, and `home` is dropped), `auth` (`enabled`
+false, `anonymous` none or `listen`, `users` by name: `access` and `token` (`hash`, `created`;
+absent: nothing to sign in with); enabled needs a control user who can sign in, `Auth::problem`).
 
 ### 10.9 `log`
 
@@ -1736,7 +1738,7 @@ One WebSocket, `/api/ws`: JSON text both ways plus binary frames for live audio.
 `web/src/protocol.ts` is the source of truth; `docs/api/protocol.schema.json` is generated from it
 (`npm run schema`). The Rust side is two enums in `trunk-app/src/protocol.rs`: `ToClient` (every
 message, serialized as `{"type": <variant>, …}`, with `audience()`) and `Command` (every command,
-read strictly by `Command::parse`, with `listen_may_send()`). `trunk-pro/src/protocol_tests.rs`
+read strictly by `Command::parse`, with `needs()`: the access it takes to send it). `trunk-pro/src/protocol_tests.rs`
 checks their variants against protocol.ts both ways and the messages against the schema. The
 full reference is `docs/api/README.md`.
 
@@ -1809,6 +1811,7 @@ hub skips the oldest without notice.
 |---|---|
 | `/api/ws` | the WebSocket |
 | `/api/version`, `/api/schema`, `/api/protocol.ts`, `/api/docs`, `/api/*` | version (and interface API), schema, TypeScript types, API docs and examples |
+| `/api/login`, `/api/logout`, `/api/session`, `/signin` | signing in: set a browser's session cookie (answering who signed in) and clear it; who this request is and what it may do; the sign-in page |
 | `/api/v1/calls`, `/api/v1/calls/<path>`, `/api/v1/storage` | the call store as JSON (`docs/api/calls.openapi.yaml`), with listen or control access; 503 when the store is off |
 | `/api/v1/export/<table>` | a table of the store as a CSV file, streamed a page at a time (`data.rs`), control access only |
 | `/calls/<path>` | recordings (folder, then RAM spool), WAV ↔ M4A substitution, Range requests |
@@ -1824,8 +1827,26 @@ without plugin settings and key sources.
 
 Every request passes a guard. Programs that aren't browsers send no `Origin` and are let in. A
 browser page must be the recorder's own origin or listed in `server.allowedOrigins` (which also
-gets CORS headers); anything else gets 403. Bound to localhost, the `Host` must be localhost too,
-which defeats DNS rebinding.
+gets CORS headers, and its preflight an answer); anything else gets 403. Bound to localhost, the
+`Host` must be localhost too, which defeats DNS rebinding.
+
+With signing in on (`server.auth`), the guard also identifies the request (`access::identify`):
+the first valid secret of an `Authorization: Bearer` or a `?token=`, else a session in the
+recorder's cookie (cookies only from the recorder's own pages, by `Sec-Fetch-Site`, so another
+port's page can't borrow them). The secret is a user's access token (`server.auth.users`,
+`Who::User`). A session (`access::Sessions`, issued by `/api/login`) is `user.credential.expires.mac`:
+the credential is the token's hash, the MAC an HMAC-SHA256 under a 32-byte key kept in
+`session-key` beside the config (0600, never in the config); the cookie is named `trp_` + 8 hex of
+the key's SHA-256, so recorders on one host name keep apart, and it lasts 30 days. A request gets the
+lower of its port's access and its user's role (`Caller::access`, looked up in the config as it is
+now, so a removed user, or a token made again, gives nothing at once); with no token,
+`anonymous`'s. With nothing, only what `server::open` lets through answers: `/api/version`,
+`/api/login`, `/api/logout`, `/api/session`, `/signin`, and the API's static files (docs, schema,
+types, client.js, examples); a browser asking for any other page gets `signin.html` in its place,
+anything else 401 `WWW-Authenticate: Bearer`. A WebSocket's access is checked again at each `config` message
+and each command; when it has changed, the socket is closed and the client reconnects to a new
+greeting. Secrets are 32 random bytes (`trp_` + hex), stored as SHA-256; `createToken` and
+`trunk-pro access` (`access/cli.rs`) make a user with one (`access::add_user`).
 
 ---
 

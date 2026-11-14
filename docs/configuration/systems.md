@@ -369,9 +369,10 @@ sync). **Lock** forgets the keys and they stop at once. The password is never sa
 - The keys last until Lock or until the app stops. After a restart, a crash or an update, the
   container is locked again until someone types the password, and its encrypted calls are left
   out as any encrypted call is. Use `passwordFile` for a recorder that must decrypt unattended.
-- Anyone who can open the interface can unlock and lock it. The interface is plain HTTP, so a
-  password typed on another computer crosses the network unencrypted; by default the interface
-  is only reachable from the recorder's own computer (`server.bind`).
+- Anyone who can open the interface with control access can unlock and lock it (with
+  [signing in](server-and-log.md#access) on, only a `control` user). The interface is plain
+  HTTP, so a password typed on another computer crosses the network unencrypted; by default the
+  interface is only reachable from the recorder's own computer (`server.bind`).
 
 ## Talkgroup file
 

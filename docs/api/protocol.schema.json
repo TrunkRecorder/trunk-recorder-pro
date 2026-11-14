@@ -48,6 +48,153 @@
       ],
       "description": "What a page may do with the recorder's API. \"listen\": see what the recorder does and play its calls, change nothing (its config comes without plugin settings and key sources). \"control\": everything the built-in interface can."
     },
+    "AuthCloudflare": {
+      "type": "object",
+      "properties": {
+        "team": {
+          "type": "string"
+        },
+        "aud": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "team",
+        "aud"
+      ],
+      "additionalProperties": false,
+      "description": "Cloudflare Access's application: its tokens (`Cf-Access-Jwt-Assertion`) are checked against `team`'s keys (its name, or `https://<team>.cloudflareaccess.com`), for its Audience (AUD) tag `aud`. Either not so isn't saved."
+    },
+    "AuthPasskey": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "created": {
+          "type": "number"
+        },
+        "id": {
+          "type": "string"
+        },
+        "key": {}
+      },
+      "required": [
+        "name",
+        "created",
+        "id",
+        "key"
+      ],
+      "additionalProperties": false,
+      "description": "A passkey: its name (\"iPhone\"), when it was added (Unix s), its credential id (base64url) and `key`, WebAuthn's record of it (its public key and counter; the recorder's to read)."
+    },
+    "AuthProxy": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Empty with `cloudflare` set."
+        },
+        "header": {
+          "type": "string",
+          "description": "Default \"Remote-User\"."
+        },
+        "cloudflare": {
+          "$ref": "#/definitions/AuthCloudflare",
+          "description": "Cloudflare Access in front. Absent: none."
+        },
+        "users": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The proxy's names for users whose name here differs (\"luke@example.com\": \"luke\")."
+        },
+        "other": {
+          "$ref": "#/definitions/ApiAccess"
+        }
+      },
+      "required": [
+        "from"
+      ],
+      "additionalProperties": false,
+      "description": "A reverse proxy that signs people in (Authelia, oauth2-proxy, tailscale serve): the name in its `header` is believed from the addresses in `from` alone (IPs or CIDR blocks; one that's neither isn't saved), and only when no token or session says who. With `cloudflare` set, Cloudflare Access instead: the email in its signed token, checked, from any address (`from` and `header` unused). The name is the user `users` maps it to, else the user of that name, with their role; any other name gets `other` (absent: not signed in; \"control\" is refused)."
+    },
+    "AuthSetup": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "anonymous": {
+          "$ref": "#/definitions/ApiAccess"
+        },
+        "users": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/AuthUser"
+          },
+          "description": "Who may sign in, by name. Made with createToken (the token's secret is shown once); removed by taking them out."
+        },
+        "proxy": {
+          "$ref": "#/definitions/AuthProxy",
+          "description": "A reverse proxy in front that signs people in, and says who in a header. Absent: none."
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false,
+      "description": "Signing in. `enabled`: a request gets the lower of its port's access and its user's — signed in with their access token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login (or a passkey's sign-in) sets, or by the `proxy` in front — and without one, `anonymous`'s (absent: it must sign in; GET /api/session says so). Enabled, it needs a user with control access and a token or a passkey (or a proxy set), and `anonymous` can't be \"control\"."
+    },
+    "AuthToken": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "created": {
+          "type": "number",
+          "description": "When it was made, Unix s."
+        }
+      },
+      "required": [
+        "hash",
+        "created"
+      ],
+      "additionalProperties": false,
+      "description": "An access token: its secret's SHA-256 (hex). The secret itself is never kept."
+    },
+    "AuthUser": {
+      "type": "object",
+      "properties": {
+        "access": {
+          "$ref": "#/definitions/ApiAccess"
+        },
+        "token": {
+          "$ref": "#/definitions/AuthToken"
+        },
+        "passkeys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AuthPasskey"
+          },
+          "description": "Their passkeys: added by them, signed in, from a browser (POST /api/passkey/register/…); removed or renamed by editing this."
+        },
+        "signedOut": {
+          "type": "number",
+          "description": "When they were signed out everywhere (Unix s, POST /api/logout `{all: true}`): browsers' sessions signed in then or before end; access tokens sent with each request don't."
+        }
+      },
+      "required": [
+        "access"
+      ],
+      "additionalProperties": false,
+      "description": "Someone (or a program) who may sign in: what they may do, and what they sign in with (neither: nothing yet)."
+    },
     "CallEntry": {
       "type": "object",
       "properties": {
@@ -1428,6 +1575,18 @@
             "trpApi": {
               "type": "string",
               "description": "Where the trunkrecorder.pro API is, for the survey's license lookup (absent: https://trunkrecorder.pro)."
+            },
+            "auth": {
+              "$ref": "#/definitions/AuthSetup",
+              "description": "Signing in, on every interface's port (absent: off). Not in a listen-only connection's config."
+            },
+            "tls": {
+              "$ref": "#/definitions/TlsSetup",
+              "description": "HTTPS on every interface's port (absent: plain HTTP). Read as the app starts; a renewed certificate is picked up without a restart."
+            },
+            "hostname": {
+              "type": "string",
+              "description": "The name this computer is reached by over HTTPS (its certificate's): the URLs the recorder logs and opens, and where passkeys work besides localhost (absent: none). With a port (\"radio.example.com:8443\"): the dashboard's, where a proxy in front serves it."
             }
           },
           "required": [
@@ -2232,6 +2391,14 @@
                 "$ref": "#/definitions/Capability"
               },
               "description": "What this recorder can do beyond recording: show only what works. The desktop app can do all of them; the browser build, none."
+            },
+            "access": {
+              "$ref": "#/definitions/ApiAccess",
+              "description": "What this connection may do: its port's access, and no more than its user's with signing in on."
+            },
+            "user": {
+              "type": "string",
+              "description": "The user it signed in as, by name."
             }
           },
           "required": [
@@ -2240,7 +2407,8 @@
             "platform",
             "api",
             "surveyBands",
-            "capabilities"
+            "capabilities",
+            "access"
           ],
           "additionalProperties": false
         },
@@ -4330,6 +4498,33 @@
             "id",
             "beforeBytes",
             "afterBytes"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tokenCreated"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            },
+            "secret": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
           ],
           "additionalProperties": false
         },
@@ -9207,6 +9402,27 @@
       "additionalProperties": false,
       "description": "A talkgroup as heard (radioQuery talkgroups / tg)."
     },
+    "TlsSetup": {
+      "type": "object",
+      "properties": {
+        "cert": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "hsts": {
+          "type": "boolean",
+          "description": "Strict-Transport-Security, a year: browsers keep to HTTPS on every port of this host name (absent: off)."
+        }
+      },
+      "required": [
+        "cert",
+        "key"
+      ],
+      "additionalProperties": false,
+      "description": "HTTPS: PEM files on the recorder's computer, each absolute, `~/…` or relative to the config file's folder. `cert`: the certificate, its chain after it (Let's Encrypt's fullchain.pem); `key`: its private key. A config whose pair can't be read, or whose key isn't the certificate's, isn't saved."
+    },
     "TonePatternKind": {
       "type": "string",
       "enum": [
@@ -10392,6 +10608,31 @@
           "required": [
             "type",
             "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "createToken"
+            },
+            "id": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string"
+            },
+            "access": {
+              "$ref": "#/definitions/ApiAccess"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "access"
           ],
           "additionalProperties": false
         },

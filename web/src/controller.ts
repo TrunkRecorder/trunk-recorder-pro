@@ -9,6 +9,8 @@ import { copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
 import type {
+  ApiAccess,
+  AuthPasskey,
   MonitorEvent,
   PlatformInfo,
   RadioResult,
@@ -137,6 +139,18 @@ export interface AppState {
   surveyBands: SurveyBand[];
   /** What the recorder can do beyond recording (hello): see [`can`]. */
   capabilities: Capability[];
+  /** What this connection may do (hello): see [`mayEdit`]; null before the first hello. */
+  access: ApiAccess | null;
+  /** The user this browser signed in as, by name (hello); null: none (signing in off, or not signed in). */
+  user: string | null;
+  /** Whether signing in is on (GET /api/session, asked after each hello: a listen-only connection's config doesn't say). */
+  signingIn: boolean;
+  /** Whether passkeys work where this page is (GET /api/session: the built-in interface's port, localhost or server.hostname, and this page at their one origin). */
+  passkeys: boolean;
+  /** Whether the proxy in front signed this browser in (GET /api/session): signing out is the proxy's. */
+  proxied: boolean;
+  /** The signed-in user's own passkeys (GET /api/session), any role; null: the session couldn't say. */
+  ownPasskeys: OwnPasskey[] | null;
   surveySpectrum: Spectrum | null;
   /** The licenses looked up for the survey's signals ("Identify surveyed sites"); null: none asked for since it started. */
   surveyLicenses: LicenseLookup | null;
@@ -236,6 +250,12 @@ let state: AppState = {
   survey: { stage: "idle" },
   surveyBands: [],
   capabilities: [],
+  access: null,
+  user: null,
+  signingIn: false,
+  passkeys: false,
+  proxied: false,
+  ownPasskeys: null,
   surveySpectrum: null,
   surveyLicenses: null,
   surveyFor: null,
@@ -337,6 +357,14 @@ export function can(c: Capability): boolean {
   return state.capabilities.includes(c);
 }
 
+/**
+ * Whether this connection may change the recorder (hello.access is control):
+ * what to show. A view-only one sees no setup, no Start and no editors.
+ */
+export function mayEdit(): boolean {
+  return state.access === "control";
+}
+
 export const web: WorkerTransport | null = import.meta.env.MODE === "web" ? new (await import("./web/workerTransport.ts")).WorkerTransport() : null;
 export const transport: Transport = web ?? new WsTransport();
 
@@ -356,7 +384,7 @@ export function onRecorderMessage(f: (m: FromRecorder) => void): void {
 
 transport.onConnection = (connected) => {
   set({ connected, ...(connected ? {} : { phase: "idle" as Phase }) });
-  if (!connected) return;
+  if (!connected) return void signedOut();
   // A new connection's greeting says how things are, from nothing: what
   // collects (events, files by system) starts over, an edit awaiting an
   // answer won't get one (a talkgroup edit's is sent again: "hello").
@@ -374,7 +402,8 @@ function take(m: FromRecorder): void {
   switch (m.type) {
     // The greeting's end: everything before it said how things are now.
     case "hello":
-      set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands, capabilities: m.capabilities });
+      set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands, capabilities: m.capabilities, access: m.access, user: m.user ?? null });
+      void refreshSession();
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
       sendTopics(true);
@@ -517,6 +546,7 @@ function take(m: FromRecorder): void {
     case "dataSummary":
     case "dataDeleted":
     case "dataCompacted":
+    case "tokenCreated":
     case "pluginActionResult": {
       const r = pending.get(m.id);
       pending.delete(m.id);
@@ -724,6 +754,171 @@ export type PluginActionResult = Extract<FromRecorder, { type: "pluginActionResu
 /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited): how it went, as the plugin says. */
 export function pluginAction(plugin: string, action: string, value: unknown): Promise<PluginActionResult> {
   return ask<PluginActionResult>({ type: "pluginAction", id: nextId++, plugin, action, value });
+}
+
+// ── signing in ───────────────────────────────────────────────────────────────
+//
+// Optional (server.auth): a browser signs in as a user with their access
+// token's secret, and keeps a session cookie (POST /api/login). The desktop app's server alone: the
+// browser build is its own recorder, with nothing to sign in to.
+
+export type TokenCreated = Extract<FromRecorder, { type: "tokenCreated" }>;
+
+/** A new user `name` with `access` and an access token: its secret, in the answer alone (shown this once). */
+export function createToken(name: string, access: ApiAccess): Promise<TokenCreated> {
+  return ask<TokenCreated>({ type: "createToken", id: nextId++, name, access });
+}
+
+/** A passkey of the signed-in user's, as the session lists it: never its key. */
+export type OwnPasskey = Pick<AuthPasskey, "id" | "name" | "created">;
+
+/** How the recorder sees this browser (GET /api/session); null: it couldn't say (the browser build has no server). */
+export type Session = { auth: boolean; access: ApiAccess | null; user: string | null; proxy?: boolean; passkeys?: boolean; passkeyOrigin?: string; ownPasskeys?: OwnPasskey[] };
+export async function fetchSession(): Promise<Session | null> {
+  if (transport.kind !== "desktop") return null;
+  try {
+    const r = await fetch("/api/session", { cache: "no-store" });
+    return r.ok ? ((await r.json()) as Session) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether passkeys work on this page, by session `x`: the recorder says so, and this page is at the one origin they work at (not a tunnel's other port). */
+export const passkeysHere = (x: Pick<Session, "passkeys" | "passkeyOrigin">, origin: string = typeof location === "undefined" ? "" : location.origin) => !!x.passkeys && x.passkeyOrigin === origin;
+
+/** The session asked again, into the state: signing in, passkeys here, the proxy, the user's own passkeys. */
+export async function refreshSession(): Promise<void> {
+  const x = await fetchSession();
+  if (x) set({ signingIn: x.auth, passkeys: passkeysHere(x), proxied: !!x.proxy, ownPasskeys: x.ownPasskeys ?? [] });
+}
+
+/** Who signed in (POST /api/login's answer): the user's role and name. */
+export type SignedIn = { access: ApiAccess; user: string };
+
+/** Sign this browser in with access token `secret` (its cookie set): who it signed in as; null: the recorder didn't take it. */
+export async function signIn(secret: string): Promise<SignedIn | null> {
+  if (transport.kind !== "desktop") return null;
+  try {
+    const r = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: secret.trim() }), cache: "no-store" });
+    return r.ok ? ((await r.json()) as SignedIn) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Passkeys: WebAuthn ceremonies with the recorder (POST /api/passkey/…), its binary values base64url.
+// (The sign-in page, signin.html, has its own copy: it's served alone, before signing in.)
+
+const bytes = (s: string) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+const b64url = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const post = (url: string, body?: unknown) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}), cache: "no-store" });
+
+/** Why a passkey ceremony didn't finish, in a word or three. */
+function passkeyFailed(x: unknown): string {
+  const name = (x as { name?: string } | null)?.name;
+  if (name === "NotAllowedError" || name === "AbortError") return "Cancelled";
+  if (name === "InvalidStateError") return "On this device already";
+  return String((x as { message?: string } | null)?.message ?? x).trim() || "Failed";
+}
+
+/** Sign this browser in with a passkey (the browser asks which): who it signed in as, or why not. */
+export async function passkeySignIn(): Promise<SignedIn | string> {
+  try {
+    const r = await post("/api/passkey/login/start");
+    if (!r.ok) return (await r.text()).trim();
+    const { id, options } = (await r.json()) as { id: string; options: { publicKey: Record<string, unknown> & { challenge: string } } };
+    const publicKey = { ...options.publicKey, challenge: bytes(options.publicKey.challenge) } as unknown as PublicKeyCredentialRequestOptions;
+    const cred = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null;
+    if (!cred) return "Cancelled";
+    const a = cred.response as AuthenticatorAssertionResponse;
+    const response = { authenticatorData: b64url(a.authenticatorData), clientDataJSON: b64url(a.clientDataJSON), signature: b64url(a.signature), userHandle: a.userHandle ? b64url(a.userHandle) : null };
+    const done = await post("/api/passkey/login/finish", { id, credential: { id: cred.id, rawId: b64url(cred.rawId), type: cred.type, extensions: {}, response } });
+    return done.ok ? ((await done.json()) as SignedIn) : done.status === 401 ? "Not a passkey here" : (await done.text()).trim();
+  } catch (x) {
+    return passkeyFailed(x);
+  }
+}
+
+/** Add a passkey called `name` for the user this browser signed in as (the browser makes it): its name as saved, or why not. */
+export async function addPasskey(name: string): Promise<{ name: string } | string> {
+  try {
+    const r = await post("/api/passkey/register/start", { name });
+    if (!r.ok) return (await r.text()).trim();
+    type Options = { publicKey: Record<string, unknown> & { challenge: string; user: { id: string }; excludeCredentials?: { id: string }[] } };
+    const { id, options } = (await r.json()) as { id: string; options: Options };
+    const o = options.publicKey;
+    const publicKey = { ...o, challenge: bytes(o.challenge), user: { ...o.user, id: bytes(o.user.id) }, excludeCredentials: (o.excludeCredentials ?? []).map((c) => ({ ...c, id: bytes(c.id) })) } as unknown as PublicKeyCredentialCreationOptions;
+    const cred = (await navigator.credentials.create({ publicKey })) as PublicKeyCredential | null;
+    if (!cred) return "Cancelled";
+    const a = cred.response as AuthenticatorAttestationResponse;
+    const response = { attestationObject: b64url(a.attestationObject), clientDataJSON: b64url(a.clientDataJSON) };
+    const done = await post("/api/passkey/register/finish", { id, credential: { id: cred.id, rawId: b64url(cred.rawId), type: cred.type, extensions: {}, response } });
+    if (!done.ok) return (await done.text()).trim();
+    const added = (await done.json()) as { name: string };
+    // (Its list, again: a View user's config doesn't hold it.)
+    await refreshSession();
+    return added;
+  } catch (x) {
+    return passkeyFailed(x);
+  }
+}
+
+/** A name for a passkey made in this browser: its system and browser ("Mac Safari"), 1–3 words. */
+export function passkeyName(ua: string = typeof navigator === "undefined" ? "" : navigator.userAgent): string {
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /CrOS/.test(ua) ? "Chromebook" : /Linux/.test(ua) ? "Linux" : "";
+  const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
+  return [os, browser].filter(Boolean).join(" ") || "Passkey";
+}
+
+/**
+ * Sign `user` out everywhere (POST /api/logout `{all: true}`): every browser's session of theirs signed in until now ends
+ * (access tokens don't). Left out, the user this browser signed in as (this browser too: then the page again). Why not, or null.
+ */
+export async function signOutEverywhere(user?: string): Promise<string | null> {
+  try {
+    const r = await fetch("/api/logout", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(user ? { all: true, user } : { all: true }), cache: "no-store" });
+    if (!r.ok) return (await r.text()).trim() || `Failed: ${r.status}`;
+  } catch {
+    return "No answer";
+  }
+  if (!user) location.reload();
+  return null;
+}
+
+/** Sign out (the cookie cleared), and the page again (`reload`): the server's sign-in page, or the app as anyone may see it. */
+export async function signOut(reload = true): Promise<void> {
+  try {
+    await fetch("/api/logout", { method: "POST", cache: "no-store" });
+  } catch {
+    // Reloaded anyway.
+  }
+  if (reload) location.reload();
+}
+
+const RELOADED_KEY = "trp.signedOutAt";
+let askingSession = false;
+
+/**
+ * The connection dropped, or couldn't be made: a WebSocket refused for want
+ * of access (a user removed, signing in turned on) can't say so, the
+ * session does. Without access, the page again: the server's sign-in page in
+ * its place. Not when the session couldn't be asked (the recorder down), nor
+ * twice within a minute.
+ */
+async function signedOut(): Promise<void> {
+  if (askingSession || transport.kind !== "desktop") return;
+  askingSession = true;
+  const s = await fetchSession();
+  askingSession = false;
+  if (!s?.auth || s.access !== null) return;
+  try {
+    if (Date.now() - Number(sessionStorage.getItem(RELOADED_KEY) ?? 0) < 60_000) return;
+    sessionStorage.setItem(RELOADED_KEY, String(Date.now()));
+  } catch {
+    // Not remembered: reloaded all the same.
+  }
+  location.reload();
 }
 
 /**

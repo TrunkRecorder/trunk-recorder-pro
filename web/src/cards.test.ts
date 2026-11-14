@@ -14,7 +14,7 @@ test("a card key follows its system when one before it is removed, and isn't sen
   transport.onConnection(true);
   const greeting: FromRecorder[] = [
     { type: "config", config: c, version: 1 },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: [] },
+    { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: [] },
   ];
   for (const m of greeting) transport.onMessage(m);
   const key = (i: number) => cardKey(snapshot().config!.systems[i], `sys:${snapshot().config!.systems[i].shortName}`, snapshot().config!.systems);

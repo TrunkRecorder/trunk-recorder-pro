@@ -45,12 +45,45 @@ Unless the user asks otherwise, deliver an interface the recorder serves:
 
 For a program rather than a page (logging, forwarding, alerts), write a
 Node 22+ .mjs that imports a local copy of client.js. Node has WebSocket
-built in. Programs need no access settings.
+built in. Programs need no access settings, except a token when signing in
+is on (below): new TrunkClient({ server, token: process.env.TRP_TOKEN }).
 
 A page served from somewhere else (another machine, a dev server) needs its
 origin in the recorder's config: "server": {"allowedOrigins":
 ["http://host:port"]}. It must import client.js by full URL, and pass
 `new TrunkClient({ server: "host:port" })`. Prefer serving from the recorder.
+
+Signing in (server.auth) is off unless the recorder's owner turns it on. On,
+every request needs a user's access token (the user's role "listen" or
+"control"; secret "trp_" + 64 hex), except GET /api/version, /api/session
+and /signin (the sign-in page), POST /api/login (answers { access, user })
+and /api/logout, and the static files under /api/ (client.js, docs, schema,
+protocol.ts, this file, examples: importing client.js needs no token). A
+page the recorder serves needs nothing: the browser signs in on the
+recorder's sign-in page and its session cookie covers every port; to offer a way to
+sign in (anonymous "listen" access lets visitors in without one), link to
+/signin. Anything else sends the secret: as Authorization: Bearer <secret> (programs, curl,
+fetch() from an allowed origin; preferred), or as ?token=<secret> in the URL (a
+browser WebSocket or <audio> on another origin; client.js does this when
+given { token }): a URL's token lands in history and proxy logs, so only
+where a header can't go. Never hard-code a secret in a page: ask the user for it.
+Behind a proxy that signs people in (server.auth.proxy), the proxy's
+header (Remote-User by default) says who, believed from the proxy's
+addresses only and where the cookie would count; behind Cloudflare Access
+(proxy.cloudflare), its signed Cf-Access-Jwt-Assertion token, checked; a
+token or the cookie says who first.
+GET /api/session → { auth, access ("listen" | "control" | null), user,
+proxy (the proxy in front signed it in: sign out there, not with
+/api/logout), passkeys (whether a browser may sign in with a passkey here: the
+built-in interface's port only; POST /api/passkey/login/… and
+/register/…, same origin only; 403 on an interface's port), passkeyOrigin
+(the one origin passkeys work at, from any port: link to its /signin) }.
+POST /api/logout {"all": true} (built-in port): every browser session of the
+user ends (another user's with "user": name, control only); tokens don't.
+Without access: 401 (a browser page: the sign-in page). Access is the lower
+of the port's and the user's; hello.access says which. When it changes, or
+the session or Cloudflare token it opened with expires, the socket is
+closed; reconnect (client.js does).
 
 
 ## Template
@@ -98,8 +131,10 @@ draw();
 
 ## client.js (all of it)
 
-new TrunkClient({ server?, secure?, historyLimit? })
+new TrunkClient({ server?, secure?, historyLimit?, token? })
   server defaults to the page's host; in Node, localhost:8080.
+  token: an access token's secret, for signing in; put on the WebSocket's and
+  callUrl's URLs as ?token=. Leave it out on a page the recorder serves.
   It connects, reconnects by itself, and keeps this state (read only):
   connected   true while connected
   version     the recorder's version
@@ -116,6 +151,8 @@ new TrunkClient({ server?, secure?, historyLimit? })
               (after rec.subscribe(["log"]); the recorder's own lines have time (Unix s) and level)
   aliases     talker aliases heard on the air: { shortName: { unit: alias } }
   capabilities  hello.capabilities: what the recorder can do beyond recording
+  access      hello.access: "listen" or "control" (null before hello)
+  user        hello.user: the user it signed in as, or null
   error       the text of the latest error message (or why a setConfig was refused), or null
   exited      true after the recorder said it was exiting; it keeps
               reconnecting (every 5 s), and this clears when it's back
@@ -149,7 +186,8 @@ new TrunkClient({ server?, secure?, historyLimit? })
                                      Unix ms), cursor, limit (1–500, default 100). Answers
                                      { entries, next?, error? }: page on with cursor: next
                                      while next is there. Needs the "calls" capability
-  rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL
+  rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL (?token= when given one)
+  await rec.session()                { auth, access, user }: GET /api/session (access null: sign in first)
   rec.talkgroups(shortName)          Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode }
                                      (a conventional system's: its channels, alphaTag the channel's name)
   rec.unitName(shortName, unit)      a radio's name (the user's unit names and the aliases heard,
@@ -259,7 +297,8 @@ From the recorder:
   missing before it):
   state, config, talkgroups, units, heard, history, radios, survey, monitorEvent, host
   (with control access also devices, keys, plugins, interfaces), then
-  hello        { version, platform, api, configPath?, surveyBands, capabilities }
+  hello        { version, platform, api, configPath?, surveyBands, capabilities, access, user? }
+               access: "listen" | "control", what this connection may do; user: who signed in
                capabilities: what it can do beyond recording, of "service" (quit, files by path, log,
                M4A), "drivers" (USRP/Airspy/SoapySDR), "plugins", "interfaces", "host", "keys",
                "calls" (the call store: callsQuery), "history" (statsQuery further back than a
@@ -360,9 +399,13 @@ system is a system's short name; you get its audio from whichever of its sites c
 9. Keep the page alive through disconnects and restarts. Show the
    connection state (rec.connected, rec.exited); client.js reconnects by
    itself.
-10. The API has no login. Don't put the recorder on the internet. If the user
-    wants remote access, tell them to use a VPN, an SSH tunnel, or a reverse
-    proxy with authentication.
+10. Signing in is optional and off by default. Don't put the recorder on the
+    internet. On plain HTTP a token crosses the network in the clear; the
+    recorder can serve HTTPS (server.tls, off by default). If the user wants
+    remote access, tell them to use a VPN or an SSH tunnel, with signing in
+    on, and HTTPS (or a reverse proxy that adds it) off their own network.
+    Build URLs from the page's own location: wss:// on an https:// page.
+    Don't build your own login: use the recorder's (above).
 
 
 ## Before you finish

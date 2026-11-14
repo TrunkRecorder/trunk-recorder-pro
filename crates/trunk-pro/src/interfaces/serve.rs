@@ -57,7 +57,8 @@ pub async fn reconcile(ctx: Arc<Ctx>) {
         match bind(addr).await {
             Ok(listener) => {
                 let (stop, stopped) = watch::channel(false);
-                log::info!("Interface {id}: http://{}:{port}/", if ctx.bind.is_unspecified() { "localhost".to_string() } else { ctx.bind.to_string() });
+                let host = ctx.config.lock().unwrap().server.url_host(&ctx.bind.to_string());
+                log::info!("Interface {id}: {}://{host}:{port}/", ctx.scheme());
                 tokio::spawn(run(ctx.clone(), id.clone(), listener, stopped));
                 ctx.interfaces.serving.lock().unwrap().insert(id, Serving { port, stop });
             }
@@ -104,7 +105,7 @@ async fn run(ctx: Arc<Ctx>, id: String, listener: std::net::TcpListener, stop: w
     let shutdown = async move {
         let _ = until.wait_for(|stopped| *stopped).await;
     };
-    if let Err(e) = axum::serve(listener, app).with_graceful_shutdown(shutdown).await {
+    if let Err(e) = crate::tls::serve(listener, ctx.tls.get(), app, shutdown).await {
         log::warn!("Interface {id}: {e}");
     }
 }

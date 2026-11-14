@@ -33,7 +33,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::iq_capture;
-use crate::toolkit::hex;
+use crate::toolkit::{hex, sha256_hex};
 use crate::{die, Args};
 
 const EXPECTED: &str = "corpus/expected";
@@ -293,7 +293,7 @@ const SAME_LENGTH_MS: i64 = 500;
 const LOG_DIFFERENCES: usize = 15;
 
 pub(crate) fn short_hash(bytes: &[u8], hex_chars: usize) -> String {
-    hex(&Sha256::digest(bytes))[..hex_chars].to_string()
+    sha256_hex(bytes)[..hex_chars].to_string()
 }
 
 /// The messages among a replay's `--messages` lines: `  12.34s  [site] kind text`, by what they say, not when.
@@ -903,7 +903,7 @@ mod tests {
     }
 
     fn file(name: &str, bytes: &[u8]) -> FileRef {
-        FileRef { name: name.into(), sha256: hex(&Sha256::digest(bytes)), bytes: bytes.len() as u64 }
+        FileRef { name: name.into(), sha256: sha256_hex(bytes), bytes: bytes.len() as u64 }
     }
 
     /// Serves `body` at any URL, `n` times, honouring a `Range: bytes=N-`; says what ranges it was asked for.

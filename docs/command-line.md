@@ -33,6 +33,7 @@ tools. Most people only ever run `trunk-pro` with no arguments and do the rest i
 | [`tool …`](#tool) | Diagnostics: one channel's decode, scans, weak-signal curves, re-vocoding |
 | [`plugin …`](#plugin) | Find, install, update, remove and test plugins |
 | [`interface …`](#interface) | Find, install, update and remove interfaces, or add a folder of your own |
+| [`access …`](#access) | Signing in: users and their access tokens, and turning it on or off |
 
 ## Running the app (`serve`)
 
@@ -50,7 +51,7 @@ you press **Start** in the interface, or right away with `--start` or the config
 |---|---|---|
 | `--config file.json` | the app's config folder | The config file to use. Everything the app learns and installs (band plans, unit names, plugins, stats history, logs) is kept in the folder this file is in, so two recorders with their own configs never share them. |
 | `--port n` | `server.port` (8080) | The built-in interface's port, for this run only. |
-| `--bind address` | `server.bind` (`127.0.0.1`) | The address to listen on, for this run only. `0.0.0.0` makes the interface reachable from other machines. There is no login: see [Remote access](guides/interface.md#remote-access). |
+| `--bind address` | `server.bind` (`127.0.0.1`) | The address to listen on, for this run only. `0.0.0.0` makes the interface reachable from other machines. Signing in is off unless you turn it on ([`access`](#access)): see [Remote access](guides/interface.md#remote-access). |
 | `--no-open` | | Don't open a browser (headless machines, services). |
 | `--start` | `server.autoStart` | Start recording at once with the saved settings. If the settings can't start, the reason is logged as `Not started: …` and the app keeps running. |
 | `--ui folder` | | Serve a folder with an `index.html` as an interface for this run, with control access, on the first free port above the built-in interface's, and open it instead of the built-in one. Nothing is saved. See [Interfaces](interfaces/README.md). |
@@ -638,6 +639,36 @@ at once.
 trunk-pro interface search player
 trunk-pro interface install trunkamp
 trunk-pro interface add ~/wall-display --port 8090
+```
+
+## access
+
+```bash
+trunk-pro access list | add <name> [--access listen|control] | remove <name> | signout <name> | on | off
+```
+
+Signing in: who may, each user with a role and an access token (see
+[Access](configuration/server-and-log.md#access)), for a recorder with no browser nearby, and the
+way back in when you've lost your token. Every subcommand takes `--config file.json`, for a
+recorder that runs with a config other than the default (run it as the account the recorder runs
+as). They write the config file; a running recorder picks the change up when it restarts, so
+restart it right away (a setting saved from the browser before then would write over the change).
+Setup → **Recording** → **Access** does the same at once.
+
+| Subcommand | What it does |
+|---|---|
+| `access list` | Whether signing in is on, what `anonymous` allows, the [proxy in front](configuration/server-and-log.md#behind-a-proxy-that-signs-people-in) if set (its header, addresses, what others get and its names mapped to users), and each user: their name, role, the day their token was made, the day they were last signed out everywhere, and their passkeys (name and day). |
+| `access add <name> [--access listen\|control]` | Add a user (control unless `--access listen`) with an access token. Its secret is printed once, on stdout (the rest on stderr), so `trunk-pro access add kiosk --access listen > kiosk.token` keeps it in a file. |
+| `access remove <name>` | Remove a user: whoever signed in as them is signed out. Refused if they're the last one with control access while signing in is on. |
+| `access signout <name>` | Sign a user out everywhere: every browser signed in as them until now signs in again (the user's `signedOut`). Their access token still works for a program that sends it with each request: remove the token, or the user, for that. `access list` shows the day. |
+| `access passkey remove <name> <passkey>` | Remove one of a user's passkeys, by its name as `access list` shows it: whoever signed in with it is signed out. Refused if it's the last way in for the last control user while signing in is on. (Passkeys are added from a browser: Setup → Access.) |
+| `access on` | Turn signing in on. Refused until there's a user with control access. |
+| `access off` | Turn signing in off: the recovery when you're locked out. |
+
+```bash
+trunk-pro access add luke
+trunk-pro access on
+systemctl --user restart trunk-pro    # or however the recorder runs
 ```
 
 ## Environment variables

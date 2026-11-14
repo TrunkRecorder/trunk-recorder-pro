@@ -189,12 +189,19 @@ trunk-pro serve --bind 0.0.0.0 --no-open
 Then browse to `http://<that machine's address>:8080`. The other interfaces are reachable the
 same way, each at its own port (`:8081`, …), which the firewall must let through too.
 
-**There is no login.** Anyone who can reach the built-in interface's port can change the
-settings, start and stop recording, quit the app, listen, and download your recordings. Only do
-this on a network you trust, never on a port open to the internet. An interface with listen
-access is safer to share: on its port, the recorder can be listened to but not changed. That's
-what the other interfaces are for — give the people who listen a player's address, not the
-recorder's.
+**Signing in is off by default.** Until you turn it on, anyone who can reach the built-in
+interface's port can change the settings, start and stop recording, quit the app, listen, and
+download your recordings. Turn it on with **Sign-in** in Setup → **Recording** → **Access**
+([Access](../configuration/server-and-log.md#access)): then every browser and program signs in as a
+user, with their access token, and gets no more than the user's role allows (View or Admin). An
+interface with listen access is safer to share either way: on its port, the recorder can be
+listened to but not changed. That's what the other interfaces are for — give the people who listen
+a player's address, not the recorder's.
+
+Never open the port to the internet. On plain HTTP a token typed on another computer crosses the
+network in the clear. On your own network or a VPN that's fine; otherwise turn on
+[HTTPS](../configuration/server-and-log.md#https), or put a reverse proxy that adds it in front.
+From outside, use a VPN, the SSH tunnel below, or [Cloudflare Tunnel](../configuration/server-and-log.md#cloudflare-tunnel-and-access), with signing in on.
 
 A safer way, from a machine that can SSH to the recorder, is an SSH tunnel. Leave the recorder
 bound to `127.0.0.1`, then on your machine:
@@ -221,7 +228,8 @@ To allow a page, add its origin to **Pages served elsewhere** on the Interfaces 
 (`server.allowedOrigins`), one per line, as the browser sends it
 (`http://192.168.1.50:3000`). `null` allows pages opened from a file, and `*` allows any page:
 only on a private network. Programs that aren't browsers (scripts, `curl`) aren't affected by any
-of this.
+of this. With signing in on, a page on an allowed origin also needs an access token: being listed
+only lets it in the door.
 
 ## Other interfaces
 

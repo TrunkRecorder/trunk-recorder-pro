@@ -1764,6 +1764,18 @@ pub struct Server {
     /// empty for https://trunkrecorder.pro; another for testing one.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub trp_api: String,
+    /// Who may use the API, on every interface's port: off unless enabled.
+    #[serde(skip_serializing_if = "is_default")]
+    pub auth: Auth,
+    /// Serve HTTPS, on every interface's port: off (plain HTTP) unless set.
+    /// Read as the app starts; a renewed certificate is picked up without a restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<Tls>,
+    /// The name this computer is reached by over HTTPS (`radio.tail1234.ts.net`, the one its
+    /// certificate is for): the URLs the recorder logs and opens, and where passkeys work
+    /// besides `localhost` (browsers allow them on no IP address). Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hostname: String,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1772,11 +1784,314 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), auth: Auth::default(), tls: None, hostname: String::new(), other: BTreeMap::new() }
+    }
+}
+
+/// HTTPS: a certificate (its chain, leaf first) and its private key, PEM
+/// files, each absolute, `~/…` or relative to the config file's folder
+/// (`tailscale cert`'s, Let's Encrypt's `fullchain.pem` and `privkey.pem`, mkcert's).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Tls {
+    pub cert: String,
+    pub key: String,
+    /// Tell browsers to come back over HTTPS alone, for a year
+    /// (`Strict-Transport-Security`): every port of this host name, other
+    /// programs' plain HTTP on it too, so off unless set.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hsts: bool,
+}
+
+impl Tls {
+    /// Where its certificate and key are, for the config at `config_path`.
+    pub fn paths(&self, config_path: &Path) -> (PathBuf, PathBuf) {
+        let at = |f: &str| {
+            let f = f.trim();
+            match f.strip_prefix("~/") {
+                Some(rest) => home().join(rest),
+                None if Path::new(f).is_absolute() => PathBuf::from(f),
+                None => config_path.parent().unwrap_or(Path::new(".")).join(f),
+            }
+        };
+        (at(&self.cert), at(&self.key))
+    }
+}
+
+/// Signing in to the API: the people and programs who may, each with a role
+/// and what they sign in with (an access token, passkeys). Enabled, a request
+/// gets the lower of its port's access and its user's role (`anonymous`
+/// without one; none: it must sign in); off, its port's alone.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Auth {
+    pub enabled: bool,
+    /// What a request without a user may do (control would be the same as off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anonymous: Option<ApiAccess>,
+    /// Who may sign in, by name.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub users: BTreeMap<String, AuthUser>,
+    /// Signed in by a reverse proxy in front, which says who in a header: off unless set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<AuthProxy>,
+}
+
+/// A reverse proxy that signs people in itself (Authelia, Authentik,
+/// oauth2-proxy, `tailscale serve`) and says who in `header`: believed from
+/// the addresses in `from` alone. Or Cloudflare Access (`cloudflare`): who
+/// its signed token says, wherever the request comes from (the signature is
+/// the proof; `from` and `header` aren't used). The name it gives is the
+/// recorder's user of that name (or the one `users` maps it to), with their
+/// role; a name that's no user here gets `other` (none: not signed in).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AuthProxy {
+    /// The proxy's addresses: IPs or CIDR blocks ("127.0.0.1", "10.0.0.0/8", "fd7a:115c:a1e0::/48").
+    pub from: Vec<String>,
+    pub header: String,
+    /// Cloudflare Access in front: its token (`Cf-Access-Jwt-Assertion`), checked, says who.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloudflare: Option<AuthCloudflare>,
+    /// The proxy's names for recorder users, where they differ ("luke@example.com": "luke").
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub users: BTreeMap<String, String>,
+    /// What a name that's no user here may do (control is refused).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other: Option<ApiAccess>,
+}
+
+impl Default for AuthProxy {
+    fn default() -> Self {
+        AuthProxy { from: vec![], header: "Remote-User".into(), cloudflare: None, users: BTreeMap::new(), other: None }
+    }
+}
+
+/// Cloudflare Access's application in front: its team (the name, or
+/// `https://<team>.cloudflareaccess.com`), whose keys sign its tokens, and the
+/// application's Audience (AUD) tag, which its tokens are for.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AuthCloudflare {
+    pub team: String,
+    pub aud: String,
+}
+
+impl AuthCloudflare {
+    /// The team's URL, its tokens' issuer (`https://<team>.cloudflareaccess.com`), if `team` is a team name (or that URL).
+    pub fn issuer(&self) -> Option<String> {
+        let t = self.team.trim().to_ascii_lowercase();
+        let t = t.trim_end_matches('/');
+        let name = match t.strip_prefix("https://") {
+            Some(host) => host.strip_suffix(".cloudflareaccess.com")?,
+            None => t,
+        };
+        // (A DNS label: letters, digits and hyphens, not at either end.)
+        let label = !name.is_empty() && name.len() <= 63 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') && !name.starts_with('-') && !name.ends_with('-');
+        label.then(|| format!("https://{name}.cloudflareaccess.com"))
+    }
+
+    /// Why it can't be so, if it can't: a team that's no team name, or no Audience tag.
+    fn problem(&self) -> Option<String> {
+        if self.issuer().is_none() {
+            return Some(format!("Cloudflare's team \"{}\" isn't a team name (the part before .cloudflareaccess.com, or that URL).", self.team.trim()));
+        }
+        if self.aud.trim().is_empty() || self.aud.trim().chars().any(char::is_whitespace) {
+            return Some("Cloudflare needs the application's Audience (AUD) tag: its tokens are checked for it.".into());
+        }
+        None
+    }
+}
+
+impl AuthProxy {
+    /// Whether `ip` is one of the proxy's addresses (an IPv4 address as IPv6, `::ffff:a.b.c.d`, as itself).
+    pub fn trusts(&self, ip: std::net::IpAddr) -> bool {
+        self.from.iter().filter_map(|n| net(n).ok()).any(|(base, bits)| in_net(ip.to_canonical(), base, bits))
+    }
+
+    /// Why it can't be so, if it can't: Cloudflare's set as it can't be; else no addresses, one that isn't or a
+    /// block of every address (`0.0.0.0/0`, `::/0`), a header that's no header name; or control for anyone.
+    /// (One that can't be so, written into the config by hand, signs nobody in.)
+    pub fn problem(&self) -> Option<String> {
+        if self.other == Some(ApiAccess::Control) {
+            return Some("Control access for whoever the proxy lets in is the same as signing in turned off: give others listen access or none.".into());
+        }
+        if let Some(cf) = &self.cloudflare {
+            return cf.problem();
+        }
+        if self.from.is_empty() {
+            return Some("The proxy needs its addresses (proxy from): the header is believed from them alone.".into());
+        }
+        if let Some(e) = self.from.iter().find_map(|n| net(n).err()) {
+            return Some(format!("The proxy's addresses: {e}"));
+        }
+        // (Every address: anyone who sends the header is whoever it names.)
+        if let Some(n) = self.from.iter().find(|n| net(n).is_ok_and(|(_, bits)| bits == 0)) {
+            return Some(format!("The proxy's addresses: \"{}\" is every address, so anyone could say who they are: the same as signing in turned off.", n.trim()));
+        }
+        // (RFC 9110's token characters.)
+        if self.header.is_empty() || !self.header.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)) {
+            return Some(format!("The proxy's header \"{}\" isn't a header name (Remote-User, X-Forwarded-User…).", self.header));
+        }
+        None
+    }
+}
+
+/// An address or CIDR block ("10.0.0.0/8", "::1"): its address and how many bits of it count, or why it isn't one.
+fn net(s: &str) -> Result<(std::net::IpAddr, u8), String> {
+    let s = s.trim();
+    let (ip, bits) = match s.split_once('/') {
+        Some((ip, bits)) => (ip, Some(bits)),
+        None => (s, None),
+    };
+    let ip = ip.parse::<std::net::IpAddr>().map_err(|_| format!("\"{s}\" isn't an IP address or CIDR block (\"127.0.0.1\", \"10.0.0.0/8\", \"fd7a:115c:a1e0::/48\")."))?.to_canonical();
+    let max = if ip.is_ipv4() { 32 } else { 128 };
+    match bits {
+        None => Ok((ip, max)),
+        Some(b) => b.parse::<u8>().ok().filter(|b| *b <= max).map(|b| (ip, b)).ok_or_else(|| format!("\"{s}\": a block's bits are 0 to {max}.")),
+    }
+}
+
+/// Whether `ip` is in the block of `base`'s first `bits` bits.
+fn in_net(ip: std::net::IpAddr, base: std::net::IpAddr, bits: u8) -> bool {
+    use std::net::IpAddr::{V4, V6};
+    let keep = |width: u32| if bits == 0 { 0 } else { u128::MAX << (width - bits as u32) };
+    match (ip, base) {
+        (V4(a), V4(b)) => (u32::from(a) as u128 ^ u32::from(b) as u128) & keep(32) & u32::MAX as u128 == 0,
+        (V6(a), V6(b)) => (u128::from(a) ^ u128::from(b)) & keep(128) == 0,
+        _ => false,
+    }
+}
+
+/// Someone (or a program) who may sign in: what they may do, and what they
+/// sign in with. With neither a token nor a passkey they can't sign in (yet).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthUser {
+    pub access: ApiAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<AuthToken>,
+    /// Their passkeys, each a device (or password manager) of theirs: added
+    /// by them, signed in, from a browser.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passkeys: Vec<AuthPasskey>,
+    /// When they were signed out everywhere, Unix s: a browser's session
+    /// signed in then or before no longer counts (an access token sent with
+    /// each request still does: made again, it doesn't).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_out: Option<i64>,
+}
+
+/// An access token: its secret's SHA-256 (hex), never the secret.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthToken {
+    pub hash: String,
+    /// When it was made, Unix s.
+    #[serde(default)]
+    pub created: i64,
+}
+
+/// A passkey: what it's called, when it was added, its credential id
+/// (base64url) and `key`, WebAuthn's record of it (webauthn-rs's `Passkey`,
+/// as it serializes: its public key, counter and flags; nothing secret), which
+/// the recorder alone reads.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthPasskey {
+    pub name: String,
+    /// When it was added, Unix s.
+    #[serde(default)]
+    pub created: i64,
+    pub id: String,
+    pub key: serde_json::Value,
+}
+
+impl AuthUser {
+    /// Whether they have anything to sign in with: a token or a passkey.
+    pub fn can_sign_in(&self) -> bool {
+        self.token.is_some() || !self.passkeys.is_empty()
+    }
+}
+
+impl Auth {
+    /// Why it can't be so, if it can't: a proxy set as it can't be (on or
+    /// off); enabled, someone must still be able to turn it off again (a
+    /// control user who can sign in, or whom the proxy can name), and
+    /// anonymous control is off. (Locked out all the same, the proxy gone
+    /// wrong: `trunk-pro access off` on the recorder's computer.)
+    pub fn problem(&self) -> Option<String> {
+        if let Some(why) = self.proxy.as_ref().and_then(AuthProxy::problem) {
+            return Some(why);
+        }
+        if !self.enabled {
+            return None;
+        }
+        if self.anonymous == Some(ApiAccess::Control) {
+            return Some("Anonymous control access is the same as signing in turned off: give anonymous listen access or none.".into());
+        }
+        if !self.users.values().any(|u| u.access == ApiAccess::Control && (u.can_sign_in() || self.proxy.is_some())) {
+            return Some("Signing in needs a user with control access and an access token (or a passkey, or a proxy that signs them in) first, or nobody could turn it off again.".into());
+        }
+        None
+    }
+
+    /// Who the proxy's name `asserted` is here, and what they may do: the
+    /// user it's mapped to (`proxy.users`), else the user of that name, with
+    /// their role; else, by its own name, `proxy.other`'s. None: no proxy, or
+    /// nothing for them.
+    pub fn proxied(&self, asserted: &str) -> Option<(String, ApiAccess)> {
+        let p = self.proxy.as_ref()?;
+        let name = p.users.get(asserted).map_or(asserted, String::as_str);
+        match self.users.get(name) {
+            Some(u) => Some((name.to_string(), u.access)),
+            None => Some((asserted.to_string(), p.other?)),
+        }
     }
 }
 
 impl Server {
+    /// "https" with `tls` set, else "http": its interfaces' URLs.
+    pub fn scheme(&self) -> &'static str {
+        if self.tls.is_some() { "https" } else { "http" }
+    }
+
+    /// `hostname` as a host name is compared (trimmed, lowercase, no final dot, no port), if set.
+    pub fn host(&self) -> Option<String> {
+        let (name, _) = self.hostname_parts();
+        let h = name.trim_end_matches('.').to_ascii_lowercase();
+        (!h.is_empty()).then_some(h)
+    }
+
+    /// The port written in `hostname` ("radio.example.com:8443": where the
+    /// dashboard is reached, a proxy's port in front), if one is.
+    pub fn host_port(&self) -> Option<u16> {
+        self.hostname_parts().1
+    }
+
+    fn hostname_parts(&self) -> (&str, Option<u16>) {
+        let h = self.hostname.trim();
+        match h.rsplit_once(':') {
+            Some((name, port)) => match port.parse::<u16>() {
+                Ok(p) if p > 0 => (name, Some(p)),
+                _ => (name, None),
+            },
+            None => (h, None),
+        }
+    }
+
+    /// The host name of the URLs its ports are at, when it listens on `bind`:
+    /// `hostname`, else localhost for all addresses or the loopback one, else
+    /// the address.
+    pub fn url_host(&self, bind: &str) -> String {
+        match bind.trim().parse::<std::net::IpAddr>() {
+            _ if self.host().is_some() => self.host().unwrap_or_default(),
+            Ok(ip) if ip.is_unspecified() || ip.is_loopback() => "localhost".into(),
+            Ok(std::net::IpAddr::V6(ip)) => format!("[{ip}]"),
+            _ => bind.trim().to_string(),
+        }
+    }
+
     /// The trunkrecorder.pro API's base URL (no trailing slash).
     pub fn trp_api_base(&self) -> &str {
         let t = self.trp_api.trim().trim_end_matches('/');
@@ -3852,6 +4167,166 @@ mod tests {
         assert_eq!(c.server.interfaces["city"].access, ApiAccess::Control);
         let saved = serde_json::to_string(&c).unwrap();
         assert!(saved.contains(r#""type":"rtlsdr""#) && saved.contains(r#""level":"warning""#) && saved.contains(r#""talkgroupDisplayFormat":"id_tag""#) && saved.contains(r#""access":"control""#), "{saved}");
+    }
+
+    /// Signing in off is saved as a config always was; on, it needs a control
+    /// user who can sign in (to turn it off again), and anonymous control is
+    /// no such thing.
+    #[test]
+    fn signing_in_needs_a_way_back_out() {
+        let c = Config::default();
+        assert!(!serde_json::to_string(&c).unwrap().contains("auth"), "off: no auth key");
+        assert_eq!(c.server.auth.problem(), None);
+        let user = |access| AuthUser { access, token: Some(AuthToken { hash: "ab".repeat(32), created: 1_794_000_000 }), passkeys: vec![], signed_out: None };
+        let mut a = Auth { enabled: true, ..Default::default() };
+        assert!(a.problem().unwrap().contains("control"), "nobody at all");
+        a.users.insert("wall".into(), user(ApiAccess::Listen));
+        assert!(a.problem().is_some(), "a listen user can't turn it off");
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![], signed_out: None });
+        assert!(a.problem().is_some(), "a control user with nothing to sign in with can't either");
+        let passkey = AuthPasskey { name: "iPhone".into(), created: 1_794_000_000, id: "AQID".into(), key: serde_json::json!({ "cred": {} }) };
+        a.users.get_mut("luke").unwrap().passkeys.push(passkey.clone());
+        assert!(a.users["luke"].can_sign_in() && a.problem().is_none(), "a passkey alone will do");
+        a.users.insert("luke".into(), user(ApiAccess::Control));
+        assert_eq!(a.problem(), None);
+        a.anonymous = Some(ApiAccess::Listen);
+        assert_eq!(a.problem(), None);
+        a.anonymous = Some(ApiAccess::Control);
+        assert!(a.problem().unwrap().contains("nonymous"));
+        assert_eq!(Auth { enabled: false, ..a.clone() }.problem(), None, "off, anything goes");
+        let c = Config::from_json(r#"{ "server": { "auth": { "enabled": true, "anonymous": "listen", "users": { "luke": { "access": "control", "token": { "hash": "00", "created": 1794000000 } }, "wall": { "access": "listen" } } } } }"#).unwrap();
+        assert_eq!((c.server.auth.anonymous, c.server.auth.users["luke"].access, c.server.auth.users["wall"].token.is_none()), (Some(ApiAccess::Listen), ApiAccess::Control, true));
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""auth":{"enabled":true,"anonymous":"listen","users":{"luke":{"access":"control","token":{"hash":"00","created":1794000000}},"wall":{"access":"listen"}}}"#), "no passkeys: no passkeys key");
+        // Passkeys, saved as they were read (the key as webauthn-rs wrote it).
+        let mut c = c;
+        c.server.auth.users.get_mut("wall").unwrap().passkeys.push(passkey);
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""wall":{"access":"listen","passkeys":[{"name":"iPhone","created":1794000000,"id":"AQID","key":{"cred":{}}}]}"#), "{saved}");
+        assert_eq!(Config::from_json(&saved).unwrap().server.auth, c.server.auth);
+    }
+
+    /// A proxy that signs people in: believed from its addresses alone (IPs
+    /// and CIDR blocks, v4 and v6; one that's neither, or every address,
+    /// refused, signing in on or off); its names are users' (or mapped to them), else `other`'s; a
+    /// control user it can name is a way back in, needing no token.
+    #[test]
+    fn a_proxy_names_users_from_its_addresses() {
+        use std::net::IpAddr;
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let p = AuthProxy { from: vec!["127.0.0.1".into(), " 10.1.0.0/16".into(), "fd7a:115c:a1e0::/48".into(), "0.0.0.0/1".into()], ..Default::default() };
+        assert_eq!(p.header, "Remote-User", "Authelia's and Authentik's, by default");
+        let only = |n: &str| AuthProxy { from: vec![n.into()], ..Default::default() };
+        assert!(only("127.0.0.1").trusts(ip("127.0.0.1")) && !only("127.0.0.1").trusts(ip("127.0.0.2")));
+        assert!(only("127.0.0.1").trusts(ip("::ffff:127.0.0.1")), "an IPv4 address as IPv6 (bound to ::)");
+        assert!(only("10.1.0.0/16").trusts(ip("10.1.255.3")) && !only("10.1.0.0/16").trusts(ip("10.2.0.1")));
+        assert!(only("fd7a:115c:a1e0::/48").trusts(ip("fd7a:115c:a1e0:ab12::1")) && !only("fd7a:115c:a1e0::/48").trusts(ip("fd7a:115c:a1e1::1")));
+        assert!(only("::1").trusts(ip("::1")) && !only("::1").trusts(ip("127.0.0.1")), "v6 isn't v4");
+        assert!(only("0.0.0.0/0").trusts(ip("8.8.8.8")) && !only("0.0.0.0/0").trusts(ip("::2")), "/0: every v4 address");
+        assert!(only("10.1.2.3/32").trusts(ip("10.1.2.3")) && !only("10.1.2.3/31").trusts(ip("10.1.2.4")));
+        assert_eq!(p.problem(), None);
+        for (bad, says) in [("10.0.0.0/33", "0 to 32"), ("::/129", "0 to 128"),("radiobox.local", "isn't an IP"), ("10.0.0.0/", "bits"), ("10.0.0/8", "isn't an IP"), ("1.2.3.4/x", "bits")] {
+            let why = AuthProxy { from: vec!["127.0.0.1".into(), bad.into()], ..Default::default() }.problem().unwrap_or_default();
+            assert!(why.contains(bad.trim()) && why.contains(says), "{bad}: {why}");
+            assert!(!only(bad).trusts(ip("10.0.0.1")), "{bad}: nobody");
+        }
+        assert!(AuthProxy::default().problem().unwrap().contains("addresses"), "no addresses");
+        for every in ["0.0.0.0/0", " ::/0", "10.0.0.0/0"] {
+            let why = AuthProxy { from: vec!["127.0.0.1".into(), every.into()], ..Default::default() }.problem().unwrap_or_default();
+            assert!(why.contains(every.trim()) && why.contains("every address") && why.contains("turned off"), "{every}: the same as signing in off: {why}");
+        }
+        assert!(AuthProxy { header: "Remote User".into(), ..only("::1") }.problem().unwrap().contains("header"));
+        assert!(AuthProxy { header: String::new(), ..only("::1") }.problem().unwrap().contains("header"));
+        assert!(AuthProxy { other: Some(ApiAccess::Control), ..only("::1") }.problem().unwrap().contains("others listen"));
+        // Off, a bad one is refused all the same.
+        let mut a = Auth { proxy: Some(only("nope")), ..Default::default() };
+        assert!(a.problem().unwrap().contains("\"nope\""));
+        // A control user with no token: a way in only through the proxy.
+        a.proxy = Some(only("127.0.0.1"));
+        a.enabled = true;
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![], signed_out: None });
+        a.users.insert("wall".into(), AuthUser { access: ApiAccess::Listen, token: None, passkeys: vec![], signed_out: None });
+        assert_eq!(a.problem(), None, "the proxy can name luke");
+        assert!(Auth { proxy: None, ..a.clone() }.problem().unwrap().contains("control"), "no proxy: nobody can");
+        a.users.remove("luke");
+        assert!(a.problem().unwrap().contains("control"), "a proxy with nobody with control to name");
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![], signed_out: None });
+        // Its names: a user's, or mapped to one; else other's, by its own name.
+        a.proxy.as_mut().unwrap().users.insert("luke@example.com".into(), "luke".into());
+        a.proxy.as_mut().unwrap().users.insert("ghost@example.com".into(), "nobody".into());
+        assert_eq!(a.proxied("luke@example.com"), Some(("luke".into(), ApiAccess::Control)));
+        assert_eq!(a.proxied("wall"), Some(("wall".into(), ApiAccess::Listen)), "the same name");
+        assert_eq!((a.proxied("stranger"), a.proxied("ghost@example.com")), (None, None), "other none: nobody");
+        a.proxy.as_mut().unwrap().other = Some(ApiAccess::Listen);
+        assert_eq!(a.proxied("stranger"), Some(("stranger".into(), ApiAccess::Listen)));
+        assert_eq!(a.proxied("ghost@example.com"), Some(("ghost@example.com".into(), ApiAccess::Listen)), "mapped to no user: other's");
+        assert_eq!(Auth { proxy: None, ..a.clone() }.proxied("luke"), None, "no proxy: nobody");
+        // Saved: no proxy key unset; set, what isn't the default alone, read back the same.
+        assert!(!serde_json::to_string(&Auth { enabled: true, ..Default::default() }).unwrap().contains("proxy"));
+        let c = Config::from_json(r#"{ "server": { "auth": { "proxy": { "from": ["127.0.0.1"] } } } }"#).unwrap();
+        assert_eq!(c.server.auth.proxy, Some(only("127.0.0.1")));
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""auth":{"enabled":false,"proxy":{"from":["127.0.0.1"],"header":"Remote-User"}}"#));
+        let c = Config::from_json(r#"{ "server": { "auth": { "proxy": { "from": ["::1"], "header": "Tailscale-User-Login", "users": { "luke@github": "luke" }, "other": "listen" } } } }"#).unwrap();
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""proxy":{"from":["::1"],"header":"Tailscale-User-Login","users":{"luke@github":"luke"},"other":"listen"}"#), "{saved}");
+        assert_eq!(Config::from_json(&saved).unwrap().server.auth, c.server.auth);
+    }
+
+    /// Cloudflare Access: its team a team name or its URL (the tokens'
+    /// issuer, either way), an Audience tag needed; no addresses needed (its
+    /// signature is the proof); control for others refused as ever.
+    #[test]
+    fn cloudflare_is_a_team_and_an_audience() {
+        let cf = |team: &str, aud: &str| AuthCloudflare { team: team.into(), aud: aud.into() };
+        for team in ["radio", " Radio ", "https://radio.cloudflareaccess.com", "https://RADIO.cloudflareaccess.com/", "my-team-2"] {
+            assert!(cf(team, "a1b2").issuer().is_some_and(|i| i.starts_with("https://") && i.ends_with(".cloudflareaccess.com")), "{team}");
+        }
+        assert_eq!(cf("https://radio.cloudflareaccess.com/", "x").issuer().as_deref(), Some("https://radio.cloudflareaccess.com"));
+        assert_eq!(cf("Radio", "x").issuer().as_deref(), Some("https://radio.cloudflareaccess.com"));
+        for team in ["", "radio.example.com", "https://radio.example.com", "http://radio.cloudflareaccess.com", "-radio", "radio team", "https://.cloudflareaccess.com", &"x".repeat(64)] {
+            assert_eq!(cf(team, "a1b2").issuer(), None, "{team:?}");
+        }
+        let p = |c: AuthCloudflare| AuthProxy { cloudflare: Some(c), ..Default::default() };
+        assert_eq!(p(cf("radio", "a1b2")).problem(), None, "no addresses needed");
+        assert!(p(cf("radio.example.com", "a1b2")).problem().unwrap().contains("team"));
+        assert!(p(cf("radio", " ")).problem().unwrap().contains("Audience"));
+        assert!(AuthProxy { other: Some(ApiAccess::Control), ..p(cf("radio", "a1b2")) }.problem().unwrap().contains("others listen"));
+        let c = Config::from_json(r#"{ "server": { "auth": { "proxy": { "cloudflare": { "team": "radio", "aud": "a1b2" }, "users": { "luke@example.com": "luke" } } } } }"#).unwrap();
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""proxy":{"from":[],"header":"Remote-User","cloudflare":{"team":"radio","aud":"a1b2"},"users":{"luke@example.com":"luke"}}"#), "{saved}");
+        assert!(!serde_json::to_string(&Config::from_json(r#"{ "server": { "auth": { "proxy": { "from": ["::1"] } } } }"#).unwrap()).unwrap().contains("cloudflare"), "unset: no key");
+    }
+
+    /// HTTPS off is saved as a config always was; on, its two paths, from
+    /// the config's folder unless absolute or `~/…`.
+    #[test]
+    fn https_is_two_files_and_off_unless_set() {
+        let c = Config::from_json(r#"{ "server": { "bind": "0.0.0.0", "port": 8443 } }"#).unwrap();
+        assert_eq!((c.server.tls.as_ref(), c.server.scheme()), (None, "http"));
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(!saved.contains(r#""tls""#), "off: no tls key");
+        assert_eq!(serde_json::to_string(&Config::from_json(&saved).unwrap()).unwrap(), saved);
+        let c = Config::from_json(r#"{ "server": { "tls": { "cert": "certs/radiobox.crt", "key": "/etc/ssl/radiobox.key" } } }"#).unwrap();
+        assert_eq!(c.server.scheme(), "https");
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""tls":{"cert":"certs/radiobox.crt","key":"/etc/ssl/radiobox.key"}"#));
+        let t = c.server.tls.unwrap();
+        assert_eq!(t.paths(Path::new("/home/luke/trunk-pro/config.json")), (PathBuf::from("/home/luke/trunk-pro/certs/radiobox.crt"), PathBuf::from("/etc/ssl/radiobox.key")));
+        assert_eq!(Tls { cert: "~/c.pem".into(), key: "k.pem".into(), ..Default::default() }.paths(Path::new("config.json")).0, home().join("c.pem"));
+        // HSTS: off unless set, and no key then.
+        assert!(!t.hsts);
+        let c = Config::from_json(r#"{ "server": { "tls": { "cert": "c.pem", "key": "k.pem", "hsts": true } } }"#).unwrap();
+        assert!(c.server.tls.as_ref().unwrap().hsts && serde_json::to_string(&c).unwrap().contains(r#""tls":{"cert":"c.pem","key":"k.pem","hsts":true}"#));
+        // The URLs' host: the host name when set, else localhost for any or the loopback address.
+        let mut s = Server::default();
+        assert_eq!((s.url_host("127.0.0.1"), s.url_host("0.0.0.0"), s.url_host("::1"), s.url_host("192.168.1.5"), s.url_host("fd00::5")), ("localhost".into(), "localhost".into(), "localhost".into(), "192.168.1.5".into(), "[fd00::5]".into()));
+        assert!(!serde_json::to_string(&s).unwrap().contains("hostname"), "none: no hostname key");
+        s.hostname = " Radio.tail1234.ts.net. ".into();
+        assert_eq!(s.url_host("0.0.0.0"), "radio.tail1234.ts.net");
+        assert_eq!((s.host().as_deref(), s.host_port()), (Some("radio.tail1234.ts.net"), None));
+        // With a port: where the dashboard is reached (a proxy in front); the name alone is the host.
+        s.hostname = "Radio.example.com.:8443".into();
+        assert_eq!((s.host().as_deref(), s.host_port(), s.url_host("0.0.0.0")), (Some("radio.example.com"), Some(8443), "radio.example.com".into()));
+        s.hostname = "radio.example.com:0".into();
+        assert_eq!((s.host().as_deref(), s.host_port()), (Some("radio.example.com"), None), "no port 0");
     }
 
     #[test]

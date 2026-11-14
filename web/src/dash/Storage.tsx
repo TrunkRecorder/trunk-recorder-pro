@@ -6,7 +6,7 @@
 
 import { Fragment, useState } from "react";
 import type { PlatformInfo, StoreSizes } from "../protocol.ts";
-import { setSetupTab, setView, type StatsRange } from "../controller.ts";
+import { mayEdit, setSetupTab, setView, type StatsRange } from "../controller.ts";
 import { Card, Choice, Fig, Figs, Info, Stat, TimeSeries } from "../charts.tsx";
 import { bytes, num } from "../fmt.ts";
 import { total, useHistory, useRanges } from "./data.ts";
@@ -87,9 +87,11 @@ export function StorageView(props: { store: { backend: string; radioIndex: boole
         <p className="row">
           <b>Not indexed</b> <Fig v={off.join(" · ")} level="warn" />
           <Info>A {off.join(" or ")}'s list of calls shows only its recent calls.</Info>{" "}
-          <button className="btn ghost small" onClick={toData}>
-            Setup → Data
-          </button>
+          {mayEdit() && (
+            <button className="btn ghost small" onClick={toData}>
+              Setup → Data
+            </button>
+          )}
         </p>
       )}
       <div className="row">
@@ -195,9 +197,11 @@ function RegistryCard(props: { registry: Registry; toData: () => void }) {
       <p className="row">
         <Figs inline items={[caps.days === null ? { k: "Kept", v: "forever" } : { k: "Forgotten after", v: num(caps.days, 0), u: "days unheard" }]} />
         <Info>At a limit, the least recently heard go.</Info>{" "}
-        <button className="btn ghost small" onClick={props.toData}>
-          Setup → Data
-        </button>
+        {mayEdit() && (
+          <button className="btn ghost small" onClick={props.toData}>
+            Setup → Data
+          </button>
+        )}
       </p>
     </Card>
   );

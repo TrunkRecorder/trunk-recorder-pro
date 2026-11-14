@@ -6,8 +6,9 @@
 #   sudo loginctl enable-linger "$USER"      # keep it running when logged out
 #
 # The interface listens on localhost:8080. To reach it from another machine,
-# add --bind 0.0.0.0 below (there is no login: only on a network you trust),
-# or use an SSH tunnel: ssh -L 8080:localhost:8080 <this machine>.
+# add --bind 0.0.0.0 below (only on a network you trust, and turn signing in
+# on first: trunk-pro access add <name>, then trunk-pro access on), or use an
+# SSH tunnel: ssh -L 8080:localhost:8080 <this machine>.
 # Configure it once in the browser; with "Start recording when the app starts"
 # on (or --start below), recording resumes after every restart.
 

@@ -522,6 +522,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
         surveyBands: await ready.then(() => JSON.parse(survey_bands())).catch(() => []),
         // The page is the recorder: no program of its own, no drivers but WebUSB's RTL-SDR, no plugins.
         capabilities: [],
+        access: "control",
       });
       break;
     case "setConfig": {

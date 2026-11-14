@@ -93,6 +93,9 @@
 //! trunk-pro interface search | install | update | add | uninstall | list …
 //!     Interfaces besides the built-in one (the config's `server.interfaces`), each on a
 //!     port of its own: find them in the store, install, update, add a folder of your own.
+//!
+//! trunk-pro access list | add <name> [--access listen|control] | remove <name> | signout <name> | on | off
+//!     Signing in (the config's `server.auth`): its users and their access tokens, and on or off.
 //! ```
 
 mod access;
@@ -130,6 +133,7 @@ mod statstore;
 mod store;
 mod submission;
 mod tape_file;
+mod tls;
 mod waterfall;
 mod toolkit;
 #[cfg(test)]
@@ -221,7 +225,8 @@ conventional channels from SDRs.
 usage:
   trunk-pro [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start] [--ui folder]
       Start the recorder and open its web interface (the default). Use
-      --bind 0.0.0.0 to reach it from other machines (no authentication!).
+      --bind 0.0.0.0 to reach it from other machines; turn signing in on
+      first (`trunk-pro access`), or anyone who reaches it can run it.
       --ui serves a folder with an index.html as an interface for this run,
       on the next free port, and opens it. See docs/interfaces.
       --start begins recording with the saved settings at once.
@@ -303,6 +308,10 @@ usage:
       Interfaces besides the built-in one, each on a port of its own: find
       them in the store, install and update them, add a folder of your own
       (`trunk-pro interface` for the options).
+  trunk-pro access list | add <name> [--access listen|control] | remove <name> | signout <name> | on | off
+      Signing in: add and remove users, each with an access token (its
+      secret is printed once), and turn it on or off. A running recorder
+      takes the change when it's restarted.
   trunk-pro --version
 
 Docs: https://github.com/TrunkRecorder/trunk-recorder-pro
@@ -324,6 +333,7 @@ fn main() {
         Some("rolloff") => profile::cli(&Args::parse(&argv[1..])),
         Some("plugin") => plugins::cli::run(&Args::parse(&argv[1..])),
         Some("interface") => interfaces::cli::run(&Args::parse(&argv[1..])),
+        Some("access") => access::cli::run(&Args::parse(&argv[1..])),
         _ => die(USAGE),
     }
 }
@@ -901,6 +911,11 @@ fn serve(a: &Args) {
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
     let (hub, _) = tokio::sync::broadcast::channel(4096);
     logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level, hub.clone());
+    if let Some(why) = cfg.server.auth.problem() {
+        log::warn!("{}: signing in: {why} (trunk-pro access)", config_path.display());
+    }
+    // (Asked for and not possible: not served over plain HTTP instead.)
+    let tls = cfg.server.tls.as_ref().map(|t| tls::Tls::new(t, &config_path).unwrap_or_else(|e| fatal(&format!("{}: HTTPS (server.tls): {e}", config_path.display()))));
     // An older config, upgraded: saved so (the old one kept beside it), and told.
     if !cfg.notes.is_empty() {
         match trunk_app::migrate::save(&cfg, &config_path) {
@@ -924,8 +939,9 @@ fn serve(a: &Args) {
     };
     let bind = a.get("bind").unwrap_or(&cfg.server.bind);
     let addr: std::net::SocketAddr = format!("{bind}:{port}").parse().unwrap_or_else(|e| fatal(&format!("bind address: {e}")));
-    let host = if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() };
-    let url = format!("http://{host}:{}", addr.port());
+    // (localhost for the loopback address too: browsers allow passkeys there, on no IP address.)
+    let host = cfg.server.url_host(&addr.ip().to_string());
+    let url = format!("{}://{host}:{}", cfg.server.scheme(), addr.port());
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -958,7 +974,7 @@ fn serve(a: &Args) {
         s.interfaces.remove(&id);
         interfaces::Dev { id, folder: d, port: s.free_port(&[]) }
     });
-    let ui_url = dev.as_ref().map(|d| format!("http://{host}:{}/", d.port));
+    let ui_url = dev.as_ref().map(|d| format!("{}://{host}:{}/", cfg.server.scheme(), d.port));
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
     let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
@@ -1020,6 +1036,10 @@ fn serve(a: &Args) {
         clock: Default::default(),
         unlocked: Default::default(),
         iq: Default::default(),
+        sessions: access::Sessions::load(&paths::data_dir()),
+        passkeys: Default::default(),
+        cloudflare: Default::default(),
+        tls: tls.map(std::sync::OnceLock::from).unwrap_or_default(),
     });
     monitor::start(ctx.clone());
     iq_send::resume(&ctx, &iq_capture::root(&ctx.config.lock().unwrap()));

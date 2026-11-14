@@ -39,7 +39,20 @@ log = { version = "0.4", features = ["std"] }
 # The plugin store (plugins/store.rs): the registry and release downloads,
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
 ureq = "3"
+# HTTPS (tls.rs): over the rustls (and ring) ureq has, pure Rust, no OpenSSL.
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 sha2 = "0.11"
+# Signing browsers' sessions (access.rs): the version trunk-app has.
+hmac = "0.13"
+# Passkeys (access/passkey.rs): WebAuthn's checks, over RustCrypto (no OpenSSL, no C).
+# No attestation (any authenticator will do); conditional-ui: signing in with
+# no name typed (discoverable credentials); danger-allow-state-serialisation: a
+# sign-in waiting kept by the browser, signed, not in memory (serde derives, no more crates).
+webauthn-rs = { version = "0.6.2", default-features = false, features = ["conditional-ui", "danger-allow-state-serialisation"] }
+# Passkeys' credential ids (base64url): the version trunk-app has.
+base64 = "0.23"
+# Cloudflare Access's tokens (access/cloudflare.rs): RS256, with the ring rustls has already.
+ring = "0.17"
 cel = "0.15"
 rustfft.workspace = true
 # The install's anonymous directory recorder ID (directory.rs).
@@ -65,5 +78,8 @@ sdr-hackrf = "0.1"
 libc = "0.2.190"
 
 [dev-dependencies]
+# A software authenticator for the passkey tests (access/passkey.rs): what webauthn-rs has already.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
+serde_cbor_2 = "0.13"
 jsonschema = { version = "0.58.4", default-features = false }
 tokio-tungstenite = "0.29"

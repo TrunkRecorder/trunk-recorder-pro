@@ -548,6 +548,12 @@ export interface Config {
     interfaces?: Record<string, InterfaceSetup>;
     /** Where the trunkrecorder.pro API is, for the survey's license lookup (absent: https://trunkrecorder.pro). */
     trpApi?: string;
+    /** Signing in, on every interface's port (absent: off). Not in a listen-only connection's config. */
+    auth?: AuthSetup;
+    /** HTTPS on every interface's port (absent: plain HTTP). Read as the app starts; a renewed certificate is picked up without a restart. */
+    tls?: TlsSetup;
+    /** The name this computer is reached by over HTTPS (its certificate's): the URLs the recorder logs and opens, and where passkeys work besides localhost (absent: none). With a port ("radio.example.com:8443"): the dashboard's, where a proxy in front serves it. */
+    hostname?: string;
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
@@ -607,6 +613,86 @@ export interface MonitorSettings {
  * everything the built-in interface can.
  */
 export type ApiAccess = "listen" | "control";
+
+/**
+ * Signing in. `enabled`: a request gets the lower of its port's access and its user's — signed in with their access
+ * token's secret as `Authorization: Bearer`, `?token=`, or the cookie POST /api/login (or a passkey's sign-in) sets, or
+ * by the `proxy` in front — and without one, `anonymous`'s (absent: it must sign in; GET /api/session says so). Enabled,
+ * it needs a user with control access and a token or a passkey (or a proxy set), and `anonymous` can't be "control".
+ */
+export interface AuthSetup {
+  enabled: boolean;
+  anonymous?: ApiAccess;
+  /** Who may sign in, by name. Made with createToken (the token's secret is shown once); removed by taking them out. */
+  users?: Record<string, AuthUser>;
+  /** A reverse proxy in front that signs people in, and says who in a header. Absent: none. */
+  proxy?: AuthProxy;
+}
+
+/**
+ * A reverse proxy that signs people in (Authelia, oauth2-proxy, tailscale serve): the name in its `header` is believed
+ * from the addresses in `from` alone (IPs or CIDR blocks; one that's neither isn't saved), and only when no token or
+ * session says who. With `cloudflare` set, Cloudflare Access instead: the email in its signed token, checked, from any
+ * address (`from` and `header` unused). The name is the user `users` maps it to, else the user of that name, with their
+ * role; any other name gets `other` (absent: not signed in; "control" is refused).
+ */
+export interface AuthProxy {
+  /** Empty with `cloudflare` set. */
+  from: string[];
+  /** Default "Remote-User". */
+  header?: string;
+  /** Cloudflare Access in front. Absent: none. */
+  cloudflare?: AuthCloudflare;
+  /** The proxy's names for users whose name here differs ("luke@example.com": "luke"). */
+  users?: Record<string, string>;
+  other?: ApiAccess;
+}
+
+/**
+ * Cloudflare Access's application: its tokens (`Cf-Access-Jwt-Assertion`) are checked against `team`'s keys (its name,
+ * or `https://<team>.cloudflareaccess.com`), for its Audience (AUD) tag `aud`. Either not so isn't saved.
+ */
+export interface AuthCloudflare {
+  team: string;
+  aud: string;
+}
+
+/** Someone (or a program) who may sign in: what they may do, and what they sign in with (neither: nothing yet). */
+export interface AuthUser {
+  access: ApiAccess;
+  token?: AuthToken;
+  /** Their passkeys: added by them, signed in, from a browser (POST /api/passkey/register/…); removed or renamed by editing this. */
+  passkeys?: AuthPasskey[];
+  /** When they were signed out everywhere (Unix s, POST /api/logout `{all: true}`): browsers' sessions signed in then or before end; access tokens sent with each request don't. */
+  signedOut?: number;
+}
+
+/** A passkey: its name ("iPhone"), when it was added (Unix s), its credential id (base64url) and `key`, WebAuthn's record of it (its public key and counter; the recorder's to read). */
+export interface AuthPasskey {
+  name: string;
+  created: number;
+  id: string;
+  key: unknown;
+}
+
+/** An access token: its secret's SHA-256 (hex). The secret itself is never kept. */
+export interface AuthToken {
+  hash: string;
+  /** When it was made, Unix s. */
+  created: number;
+}
+
+/**
+ * HTTPS: PEM files on the recorder's computer, each absolute, `~/…` or relative to the config file's folder. `cert`: the
+ * certificate, its chain after it (Let's Encrypt's fullchain.pem); `key`: its private key. A config whose pair can't be
+ * read, or whose key isn't the certificate's, isn't saved.
+ */
+export interface TlsSetup {
+  cert: string;
+  key: string;
+  /** Strict-Transport-Security, a year: browsers keep to HTTPS on every port of this host name (absent: off). */
+  hsts?: boolean;
+}
 
 /** An interface besides the built-in one: static web files, served with the API beside them on a port of its own. */
 export interface InterfaceSetup {
@@ -2094,6 +2180,10 @@ export type FromRecorder =
       surveyBands: SurveyBand[];
       /** What this recorder can do beyond recording: show only what works. The desktop app can do all of them; the browser build, none. */
       capabilities: Capability[];
+      /** What this connection may do: its port's access, and no more than its user's with signing in on. */
+      access: ApiAccess;
+      /** The user it signed in as, by name. */
+      user?: string;
     }
   /** The latest calls, newest first: on connecting (then `concluded` for each new one). */
   | { type: "history"; entries: CallEntry[]; next?: string }
@@ -2180,6 +2270,8 @@ export type FromRecorder =
   | { type: "dataDeleted"; id: number; deleted: DataCounts; error?: string }
   /** Answers compactData: the store's size in bytes before and after (SQLite: its files; PostgreSQL: its tables and indexes); `error`: it couldn't. */
   | { type: "dataCompacted"; id: number; beforeBytes: number; afterBytes: number; error?: string }
+  /** Answers createToken, to that connection alone: the new user's access token's `secret`, shown this once (the config keeps its hash); `error`: it wasn't made. */
+  | { type: "tokenCreated"; id: number; name: string; secret?: string; error?: string }
   | { type: "quit" };
 
 export type ToRecorder =
@@ -2274,6 +2366,8 @@ export type ToRecorder =
   | { type: "deleteData"; id: number; kinds: DataKind[]; system?: number }
   /** Give the space deleted data left in the store back to the disk (SQLite: VACUUM; PostgreSQL: VACUUM FULL); writes wait meanwhile. Answered with dataCompacted. */
   | { type: "compactData"; id: number }
+  /** A new user `name` (1–64 characters, not taken) with `access` and an access token, put in the config's server.auth.users; works with signing in off too. Answered with tokenCreated. */
+  | { type: "createToken"; id: number; name: string; access: ApiAccess }
   | { type: "quit" };
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */

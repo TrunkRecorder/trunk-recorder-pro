@@ -2,7 +2,7 @@
 // rather than run the recorder. Each is served on a port of its own, a site
 // of its own to the browser, with the recorder's API beside it and the
 // access the config gives it (docs/interfaces). This page lists them (open,
-// on or off, access, update, remove), sets their ports, installs them from
+// on or off, access, update, remove), sets their ports (and HTTPS's files), installs them from
 // the interface store, adds folders of one's own, and lists the pages
 // elsewhere allowed to use this interface's API. All of it is in the
 // config's `server`, saved as it's changed; the recorder serves the changes
@@ -270,6 +270,9 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
               </div>
             );
           })}
+        <TlsRow c={c} />
+        {c.server.tls && <HstsRow c={c} />}
+        <HostnameRow c={c} />
       </div>
       <p className="muted small">
         Listening on <code>{c.server.bind}</code>
@@ -278,6 +281,100 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
         </Info>
       </p>
     </section>
+  );
+}
+
+/** HTTPS on every port: the certificate's and key's files, saved once both are given (or both cleared). */
+function TlsRow(props: { c: Config }) {
+  const tls = props.c.server.tls;
+  const [cert, setCert] = useState(tls?.cert ?? "");
+  const [key, setKey] = useState(tls?.key ?? "");
+  useEffect(() => {
+    setCert(tls?.cert ?? "");
+    setKey(tls?.key ?? "");
+  }, [tls?.cert, tls?.key]);
+  const half = !cert.trim() !== !key.trim();
+  const save = () => {
+    const [c, k] = [cert.trim(), key.trim()];
+    if (half || (c === (tls?.cert ?? "") && k === (tls?.key ?? ""))) return;
+    updateConfig((x) => void (x.server.tls = c ? { ...x.server.tls, cert: c, key: k } : undefined));
+  };
+  const input = (label: string, value: string, set: (v: string) => void, placeholder: string) => (
+    <input
+      className="mono"
+      aria-label={label}
+      aria-invalid={half && !value.trim()}
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => set(e.target.value)}
+      onBlur={save}
+      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+    />
+  );
+  return (
+    <div className="iface-ports-row" role="row">
+      <span role="cell">
+        <strong>HTTPS</strong> <span className="muted small">every port</span>
+        <Info>PEM files on the recorder&apos;s computer: tailscale cert, Let&apos;s Encrypt (fullchain.pem, privkey.pem) or mkcert. Renewals are picked up without a restart.</Info>
+      </span>
+      <span role="cell" className="iface-tls">
+        {input("Certificate", cert, setCert, "cert.pem")}
+        {input("Key", key, setKey, "key.pem")}
+      </span>
+      <span role="cell" className="small muted">
+        {half ? <span className="bad-text">Needs both</span> : !tls ? "Off" : location.protocol === "https:" ? "On" : "From next restart"}
+      </span>
+    </div>
+  );
+}
+
+/** HSTS (server.tls.hsts): browsers told to keep to HTTPS on this host name, every port of it. Off unless set. */
+function HstsRow(props: { c: Config }) {
+  const on = !!props.c.server.tls?.hsts;
+  return (
+    <div className="iface-ports-row" role="row">
+      <span role="cell">
+        <strong>HSTS</strong> <span className="muted small">a year</span>
+        <Info>
+          Browsers that have been here over HTTPS refuse plain HTTP to this host name for a year, every port of it: other programs&apos; plain HTTP pages on this computer&apos;s name stop opening too. Off
+          leaves a typed http:// address open to a redirect.
+        </Info>
+      </span>
+      <span role="cell">
+        <Switch label={on ? "On" : "Off"} checked={on} onChange={(v) => updateConfig((x) => void (x.server.tls && (v ? (x.server.tls.hsts = true) : delete x.server.tls.hsts)))} />
+      </span>
+      <span role="cell" className="small muted">
+        {on && (location.protocol === "https:" ? "Sent" : "Once HTTPS")}
+      </span>
+    </div>
+  );
+}
+
+/** The name the recorder is reached by over HTTPS (server.hostname, a port after it when a proxy in front serves the dashboard elsewhere): passkeys there, and the URLs it logs. */
+function HostnameRow(props: { c: Config }) {
+  const saved = props.c.server.hostname ?? "";
+  const [name, setName] = useState(saved);
+  useEffect(() => setName(saved), [saved]);
+  const save = () => {
+    const n = name.trim();
+    if (n !== saved) updateConfig((x) => void (x.server.hostname = n || undefined));
+  };
+  return (
+    <div className="iface-ports-row" role="row">
+      <span role="cell">
+        <strong>Host name</strong> <span className="muted small">passkeys</span>
+        <Info>
+          The name the certificate is for (radio.tail1234.ts.net). Passkeys work there over HTTPS, and on localhost; never on an IP address. A port after it (radio.example.com:8443): where a proxy in front serves this
+          page; none, 443 (or this port, served over HTTPS here).
+        </Info>
+      </span>
+      <span role="cell" className="iface-tls">
+        <input className="mono" aria-label="Host name" value={name} placeholder="radio.tail1234.ts.net" onChange={(e) => setName(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
+      </span>
+      <span role="cell" className="small muted">
+        {!saved ? "None" : location.hostname === saved.toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "") ? "This page" : "Set"}
+      </span>
+    </div>
   );
 }
 
@@ -323,7 +420,7 @@ function StoreSection(props: { list: InterfaceInfo[] }) {
   return <StorePanel kind="interface" words={INTERFACE_STORE} card={(l) => <StoreListingCard key={l.id} l={l} installed={props.list.find((i) => i.id === l.id)} install={installs[l.id]} />} />;
 }
 
-/** Pages served elsewhere that may use this interface's API (with control). */
+/** Pages served elsewhere that may use this interface's API (with control; signing in on, an Admin token too). */
 function OriginsPanel(props: { c: Config }) {
   const saved = props.c.server.allowedOrigins ?? [];
   const [origins, setOrigins] = useState(saved.join("\n"));
@@ -335,7 +432,7 @@ function OriginsPanel(props: { c: Config }) {
       </header>
       <div className="field">
         <label className="field-label" htmlFor="ui-origins">
-          Allowed origins (with control)
+          Allowed origins ({props.c.server.auth?.enabled ? "control, with an Admin token" : "with control"})
           <Info>
             For a page served by something else, such as a dev server. One origin per line (scheme://host:port). <code>null</code>: a page opened from a file; <code>*</code>: any
             page — private networks only. An interface the recorder serves needs none of this.

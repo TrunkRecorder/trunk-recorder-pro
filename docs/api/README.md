@@ -27,7 +27,11 @@ every other interface's ([Serving your interface](#serving-your-interface)):
 | `GET /api/examples/…` | The examples, runnable: e.g. `/api/examples/wall.html` |
 | `GET /api/protocol.ts` | Every message, as TypeScript types with comments: **the definition** |
 | `GET /api/schema` | The same as JSON Schema (draft-07): `definitions.FromRecorder` / `definitions.ToRecorder` |
-| `GET /api/version` | `{"app": "trunk-pro", "version": "…", "api": 1}` (`api`: the interface API version) |
+| `GET /api/version` | `{"app": "trunk-pro", "version": "…", "api": 1}` (`api`: the interface API version). Always open, signed in or not |
+| `GET /api/session` | `{ auth, access, user, proxy, passkeys, passkeyOrigin }`: whether signing in is on, what this request may do, and whether (and where) passkeys work ([Signing in](#signing-in)) |
+| `POST /api/login`, `POST /api/logout` | Sign a browser in with an access token (a session cookie; answers `{ access, user }`), and out (`{"all": true}`: everywhere) |
+| `POST /api/passkey/login/…`, `/api/passkey/register/…` | Sign a browser in with a passkey, and add one ([Passkeys](#passkeys)) |
+| `GET /signin` | The sign-in page, on every port, whether or not a page needs it |
 | `WS /api/ws` | The connection: JSON messages both ways, plus binary live audio |
 | `GET /calls/<path>.wav` / `.json` | A recorded call's audio and details |
 
@@ -41,16 +45,17 @@ The recorder listens on `http://localhost:8080` unless it was started with
 3. [client.js](#clientjs)
 4. [Examples](#examples)
 5. [Access from elsewhere](#access-from-elsewhere)
-6. [How a connection goes](#how-a-connection-goes)
-7. [Concepts](#concepts)
-8. [Messages from the recorder](#messages-from-the-recorder)
-9. [Commands to the recorder](#commands-to-the-recorder)
-10. [Live audio](#live-audio)
-11. [Recorded calls](#recorded-calls)
-12. [Recipes](#recipes)
-13. [Having an LLM build an interface](#having-an-llm-build-an-interface)
-14. [Statistics and history](#statistics-and-history)
-15. [Compatibility](#compatibility)
+6. [Signing in](#signing-in)
+7. [How a connection goes](#how-a-connection-goes)
+8. [Concepts](#concepts)
+9. [Messages from the recorder](#messages-from-the-recorder)
+10. [Commands to the recorder](#commands-to-the-recorder)
+11. [Live audio](#live-audio)
+12. [Recorded calls](#recorded-calls)
+13. [Recipes](#recipes)
+14. [Having an LLM build an interface](#having-an-llm-build-an-interface)
+15. [Statistics and history](#statistics-and-history)
+16. [Compatibility](#compatibility)
 
 ## Quick start
 
@@ -184,6 +189,11 @@ A listen-only connection may send `subscribe`, `statsQuery`, `radioQuery`,
 `"access": "control"` in its `interface.json`; the store shows that before
 it's installed, and the user can change it either way at any time.
 
+With [signing in](#signing-in) on, a page also gets no more than its user's
+role allows: the lower of the two. A `control` user on a `listen`
+interface's port listens; a `listen` user on the built-in interface's port
+listens too. `hello.access` says what a connection got.
+
 ## client.js
 
 `/api/client.js` (in the repository: `docs/api/client.js`) is an ES module
@@ -198,7 +208,9 @@ import { TrunkClient, LivePlayer, decodeAudioFrame, systemName, duration, mhz, e
 
 From a page served elsewhere, import it by its full URL and say which
 recorder to use. The page's origin must be allowed; see
-[Access from elsewhere](#access-from-elsewhere).
+[Access from elsewhere](#access-from-elsewhere). The import needs no token,
+signing in on or not (client.js and the other files under `/api/` are
+open); connecting does ([A page on another origin](#a-page-on-another-origin)).
 
 ```js
 import { TrunkClient } from "http://radio.local:8080/api/client.js";
@@ -212,6 +224,7 @@ const rec = new TrunkClient({ server: "radio.local:8080" });
 | `server` | the page's host; Node: `localhost:8080` | `host:port` of the recorder |
 | `secure` | when the page is https | use `wss://` and `https://` |
 | `historyLimit` | 500 | recorded calls kept in `history` |
+| `token` | none | an access token's secret (`trp_…`), for a recorder with [signing in](#signing-in) on: added to the WebSocket's and `callUrl`'s URLs as `?token=`. Not needed with signing in off, or by a page the recorder serves once its browser is signed in |
 
 **State.** Read these properties; don't change them. They are current
 whenever `change` fires.
@@ -221,6 +234,8 @@ whenever `change` fires.
 | `connected` | `true` while connected (from `hello` on) |
 | `version` | the recorder's version |
 | `capabilities` | what the recorder can do beyond recording (`hello.capabilities`): `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys`, `calls`, `history` |
+| `access` | what this connection may do (`hello.access`): `"listen"` or `"control"`; `null` before `hello` |
+| `user` | the user it signed in as, by name (`hello.user`), or `null` |
 | `config` | the config (`Config`) |
 | `phase` | `{ phase: "idle" \| "starting" \| "running" \| "stopping", error, ended }` |
 | `status` | `EngineStatus` while running: `nowS`, totals, `systems[]` |
@@ -259,7 +274,8 @@ whenever `change` fires.
 | `setUnitNames(shortName, rows, from?)` | replace a system's own names for its radios (`{ unit, name }` rows; `[]` for none); `from`: where they came from (`{ kind: "file", name: "units.csv" }`) |
 | `setUnitName(shortName, unit, name)` | name one radio (`""`: its own name taken out) |
 | `queryCalls(query)` | recorded calls, newest first (a promise): `query` has any of `system` (short name), `talkgroup`, `unit`, `from` / `to` (start time, Unix ms), `cursor`, `limit` (1 to 500, 100). Answers `{ entries, next?, error? }`; page on with `cursor` while `next` is there. Needs the `calls` capability |
-| `callUrl(entry, "wav" \| "json" \| "m4a")` | a recorded call's file URL |
+| `callUrl(entry, "wav" \| "json" \| "m4a")` | a recorded call's file URL (with `?token=` when the client has a `token`) |
+| `session()` | `GET /api/session` (a promise): `{ auth, access, user }`. A WebSocket that isn't let in just closes; this tells that apart from a recorder that's down (it rejects) |
 | `talkgroups(shortName)` | the system's talkgroups, from `talkgroupRows` and the edits since: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }`; a conventional system's channels (`alphaTag` the channel's name) |
 | `unitName(shortName, unit)` | a radio's name, as the system's `unitNames.mode` says: its unit names (`unitNameRows`, regular-expression rows too) and the alias heard; else `""` |
 | `close()` | disconnect for good |
@@ -327,13 +343,15 @@ and add the folder as an interface.
 
 ## Access from elsewhere
 
-The API has **no authentication**. Anyone who can reach the port can change
-the config, start and stop recording, and list folders on the recorder's
-computer. Two things keep that safe:
+Signing in is **off by default**. Then anyone who can reach the port can
+change the config, start and stop recording, and list folders on the
+recorder's computer. Three things keep that safe:
 
 - **The recorder only listens on `127.0.0.1`** unless it's told otherwise
   (`--bind 0.0.0.0` or `server.bind` in the config). Only do that on a network
-  you trust, or put it behind a reverse proxy that adds authentication.
+  you trust.
+- **[Signing in](#signing-in)**, when it's on: every request needs a user's
+  access token, except what its `anonymous` setting allows.
 - **Web pages from other sites are refused.** Every web page a browser shows
   could otherwise reach `ws://localhost:8080`. A browser sends the page's
   origin with each request. Each port accepts its own pages and anything that
@@ -345,8 +363,10 @@ computer. Two things keep that safe:
 To use the API from a page the recorder **doesn't** serve (a dev server, a
 page on another machine, a file), add the page's origin to `allowedOrigins`
 in the `server` section of the config, or on the Interfaces page under
-**Pages served elsewhere**. Such a page gets control access on the port it
-uses:
+**Pages served elsewhere**. Such a page gets the access of the port it uses
+(control on the recorder's own). With signing in on, being listed only lets
+it in the door: it must also send a token ([below](#a-page-on-another-origin)),
+because the browser's sign-in cookie doesn't count for another site's page.
 
 ```json
 "server": {
@@ -370,10 +390,237 @@ name. This blocks DNS rebinding, where another site points its name at
 127.0.0.1. A reverse proxy that passes its own `Host` therefore needs its
 origin listed (e.g. `"https://radio.example.com"`).
 
+## Signing in
+
+Signing in is optional and off unless the recorder's owner turns it on
+(`server.auth` in the config; Setup or `trunk-pro access on`, see
+[Access](../configuration/server-and-log.md#access)). With it off, nothing
+on this page changes and no token is needed.
+
+With it on, every request needs a user's **access token** (or a browser's
+session, signed in with a token or a [passkey](#passkeys)), except
+`GET /api/version`, `/api/session`, `/api/login`, `/api/logout`,
+`/api/passkey/login/start` and `/finish`, `/signin` and the API's static files (`/api/client.js`, `/api/docs`, `/api/schema`,
+`/api/protocol.ts`, `/api/llms.txt`, `/api/examples/…`: nothing of the
+recorder's own). A user is a person or program the owner adds: a name and
+a role, `listen` or `control` (the same two as an interface's
+[Access](#access); the dashboard calls them View and Admin), and an access
+token to sign in with, whose secret is `trp_` and 64 hex digits. The
+recorder makes the secret and shows it once; the config keeps only its
+SHA-256. Ask the recorder's owner for one, `listen` unless your program
+changes things.
+
+Without a token that gives it access, a request gets `anonymous`'s access
+(none unless set to `listen`). With none:
+
+- a browser asking for a page gets the recorder's sign-in page in its place,
+  at the same URL (`GET /signin` is the same page on purpose: a visitor
+  with anonymous `listen` access goes there to sign in, and is sent on to
+  `/` after);
+- everything else gets **401** with `WWW-Authenticate: Bearer`. A WebSocket
+  is refused before it opens, so a browser only sees it close: ask
+  `GET /api/session` to tell why.
+
+**Three ways to send the token**, any of them, on any route (the WebSocket
+and `/calls/` too):
+
+| How | For |
+|---|---|
+| `Authorization: Bearer trp_…` | Scripts and programs, in any language, and WebSocket libraries that can set headers |
+| The cookie `POST /api/login` sets, body `{"token": "trp_…"}` | Browsers. It holds a signed session, not the secret, and covers the WebSocket and `<audio>` too, on every port of that host name, for 30 days or until `POST /api/logout` |
+| `?token=trp_…` in the URL | Browser pages that can't set a header (a WebSocket, an `<audio src>`) and can't use the cookie (another origin's page) |
+
+**Prefer `Authorization: Bearer`.** A `?token=` is part of the URL, so the
+secret ends up wherever URLs go: browser history, bookmarks, the logs of
+any proxy or tunnel in front, and screenshots of the address bar. (The
+recorder's answers carry `Referrer-Policy: no-referrer`, so its own pages
+don't pass their URL on to other sites.) Use it only where nothing else
+can carry the token. The cookie only counts for requests from the
+recorder's own pages (same origin), never from another site's.
+
+**A fourth: a proxy in front that signs people in** (Authelia, oauth2-proxy,
+Cloudflare Access, `tailscale serve`; `server.auth.proxy`, see
+[Behind a proxy that signs people in](../configuration/server-and-log.md#behind-a-proxy-that-signs-people-in)).
+The proxy says who in a header (`Remote-User` by default), which the
+recorder believes from the proxy's addresses alone, and only where the
+cookie would count. Cloudflare Access (`proxy.cloudflare`) says who in the
+token it signs (`Cf-Access-Jwt-Assertion`), which the recorder checks
+against the team's keys, from any address; its plain email header counts
+for nothing. A token or the cookie says who first. A program going
+through such a proxy signs in at the proxy; a token works there as ever.
+`POST /api/logout` doesn't sign out someone the proxy signed in: that's the
+proxy's.
+
+**What you get** is the lower of the port's access and the user's role.
+`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null, "proxy": true | false, "passkeys": true | false, "passkeyOrigin": "https://radio.example.com" }`
+for the request it's asked with (`proxy`: the proxy in front signed it in; `passkeys`: whether they work on this port, the built-in interface's, for the host it asked at; `passkeyOrigin`, from any port: the one origin they work at, left out where there's none; a page at another origin links there), and `hello` carries `access` and `user`.
+`POST /api/login` answers `{ "access": "listen" | "control", "user": "kiosk" }`
+(the user's role and name, whatever the port; signing in on or off) with the
+cookie, or 401. When the owner changes access (a user removed, a role or an
+interface's access changed, signing in turned on), connections it affects
+are closed; reconnect, and the new `hello` says what you have now
+(client.js does this). A connection opened with a session (the cookie) or
+Cloudflare Access's token is closed when that expires.
+
+**Signing out everywhere.** `POST /api/logout` with `{"all": true}`, on
+the built-in interface's port, signs the user this request is out
+everywhere: every browser's session of theirs signed in until now ends
+(their connections close), this one's cookie too; 204. `{"all": true,
+"user": "kiosk"}` does it for another user, with control access. It's
+recorded in the config (the user's `signedOut`). It ends sessions only: an
+access token sent with each request (`Authorization: Bearer`, `?token=`)
+still works, so a token that may have been seen is to be made again.
+
+**An interface the recorder serves needs no change.** The browser signs in
+once, on the sign-in page, and the cookie covers the dashboard and every
+interface's port on that host name.
+
+**Over plain HTTP the token travels in the clear**, like everything else the
+recorder sends. That's fine on your own network, a VPN or an SSH tunnel.
+Otherwise the owner can turn on HTTPS (`server.tls`, see
+[HTTPS](../configuration/server-and-log.md#https)), or put a reverse proxy
+that adds it in front; across the internet, use a VPN or tunnel rather than
+exposing the port. Over HTTPS, or behind a proxy that sets
+`X-Forwarded-Proto: https`, the cookie is marked `Secure`. Sent over plain
+HTTP to a recorder that serves HTTPS, a request that carries a token, the
+cookie or a sign-in isn't redirected but refused (400): the secret already
+crossed the network; make that token again.
+
+### Passkeys
+
+Browsers sign in with a passkey too: the sign-in page and Setup do it, and
+another page on the built-in interface's origin can (never another origin's:
+these routes have no CORS). Passkeys work where browsers allow them, on
+`localhost` or over HTTPS on the recorder's `server.hostname`, and at one
+origin there, the dashboard's, which the recorder works out itself
+(`passkeyOrigin`; see
+[Passkeys](../configuration/server-and-log.md#passkeys)): an answer made at
+any other origin, another port of the same name included, is refused. On
+an interface's port these routes answer 403 (an interface's page links to
+the dashboard's `/signin` instead); on a host with no passkeys, 400 and
+`"passkeys": false`. Each is a WebAuthn ceremony in two steps, all `POST`
+and JSON, its binary values base64url (no padding), as webauthn-rs reads them:
+
+| Route | Body | Answer |
+|---|---|---|
+| `/api/passkey/login/start` | none | `{ id, options }`: `options.publicKey` for `navigator.credentials.get` (no credentials listed: the passkey says whose it is), `options.mediation` `"conditional"` (for autofill; leave it out to ask at once) |
+| `/api/passkey/login/finish` | `{ id, credential }`: what `get` answered (`id`, `rawId`, `type`, `response`: `authenticatorData`, `clientDataJSON`, `signature`, `userHandle`) | As `/api/login`: the cookie and `{ access, user }`, or 401 |
+| `/api/passkey/register/start` | `{ name }`: what to call it (1–40 characters) | `{ id, options }`: `options.publicKey` for `navigator.credentials.create` |
+| `/api/passkey/register/finish` | `{ id, credential }`: what `create` made (`id`, `rawId`, `type`, `response`: `attestationObject`, `clientDataJSON`) | `{ name, id }`: its name (made the user's alone: "iPhone 2") and credential id, saved to the config |
+
+Registering is for a user signed in (a session or a token), and adds the
+passkey to that user alone. Signing in needs nothing. A ceremony waits 5
+minutes for its finish, and signs in once (a sign-in's `id` is the waiting
+state itself, signed by the recorder: nothing's kept for it until it
+finishes). A session signed in with a passkey ends when the passkey is
+removed from the config.
+
+### curl
+
+```sh
+TOKEN=trp_…   # from the recorder's owner
+curl -H "Authorization: Bearer $TOKEN" "http://radio.local:8080/api/v1/calls?limit=5"
+curl -H "Authorization: Bearer $TOKEN" -o call.wav "http://radio.local:8080/calls/<path>.wav"
+curl http://radio.local:8080/api/session -H "Authorization: Bearer $TOKEN"
+```
+
+### Python (WebSocket)
+
+With [`websockets`](https://websockets.readthedocs.io/) 14 or later
+(`pip install websockets`; older versions call the argument `extra_headers`):
+
+```python
+import asyncio, json, os
+from websockets.asyncio.client import connect
+
+async def main():
+    headers = {"Authorization": f"Bearer {os.environ['TRP_TOKEN']}"}
+    async with connect("ws://radio.local:8080/api/ws", additional_headers=headers) as ws:
+        async for text in ws:
+            if isinstance(text, bytes):
+                continue  # live audio
+            m = json.loads(text)
+            if m["type"] == "hello":
+                print("access:", m["access"], "as", m.get("user"))
+            elif m["type"] == "concluded":
+                print(m["entry"]["record"]["talkgroup"], m["entry"]["path"])
+
+asyncio.run(main())
+```
+
+A wrong token, or a removed user's, fails the handshake with HTTP 401.
+
+### A page on the recorder's own origin
+
+A page the recorder serves is behind the sign-in page already, so by the
+time it runs the browser is signed in and `new TrunkClient()` just works. A
+page that offers its own sign-in (say, to step up from anonymous `listen` to
+`control`) posts the secret, then connects:
+
+```js
+import { TrunkClient } from "/api/client.js";
+
+async function signIn(secret) {
+  const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: secret }) });
+  if (!r.ok) throw new Error(await r.text()); // 401: not a token of this recorder
+  return r.json(); // { access, user }: who signed in
+}
+
+const session = await (await fetch("/api/session")).json();
+if (session.access !== "control") console.log(await signIn(prompt("Access token")));
+const rec = new TrunkClient();
+rec.on("hello", (m) => console.log(`${m.access} access, as ${m.user ?? "nobody"}`));
+```
+
+The cookie is `HttpOnly`: the page never reads it back (signing in again
+replaces it). Sign in before
+making the client; a client already connected keeps the access it was
+greeted with until it reconnects. After a sign-out (`POST /api/logout`), the
+recorder closes nothing by itself (signing out everywhere does); reload the page. A page that would rather
+not ask for the secret itself links to `/signin`, the recorder's sign-in
+page, which goes on to `/` once signed in (the dashboard's **Sign in** does
+this).
+
+### A page on another origin
+
+A page served by something else (a dev server, another machine) needs its
+origin in `server.allowedOrigins` ([above](#access-from-elsewhere)) **and** a
+token: the cookie doesn't count for it. Send it as a Bearer header on
+`fetch()` (the recorder answers the CORS preflight that brings). A browser
+can't put a header on a WebSocket, so client.js puts the token on the
+WebSocket's URL, and on `callUrl`'s for `<audio>`:
+
+```js
+const server = "radio.local:8080";
+const token = localStorage.getItem("trpToken"); // however your page keeps it
+
+const { TrunkClient } = await import(`http://${server}/api/client.js`);
+const rec = new TrunkClient({ server, token });
+const res = await fetch(`http://${server}/api/v1/calls?limit=20`, { headers: { Authorization: `Bearer ${token}` } });
+const { entries } = await res.json();
+```
+
+`client.js` and the rest of `/api/`'s static files are open, so the import
+needs no token; everything that shows the recorder (the WebSocket,
+`/api/v1/`, `/calls/`) does.
+
+### Making users
+
+The owner adds users in Setup (**New token**) or with `trunk-pro access add
+<name> [--access listen|control]`. A program with control access can add one
+too: `{"type": "createToken", "id": 1, "name": "wall", "access": "listen"}`
+makes user `wall` with an access token, answered to it alone with
+`tokenCreated` (`id`, `name`, and the token's `secret`, or `error`). It works
+with signing in off too. Removing a user is a `setConfig` without them in
+`server.auth.users`. A listen-only connection's config has no `server.auth`.
+
 ## How a connection goes
 
-1. **Connect** to `ws://<host>:<port>/api/ws`. Set `binaryType = "arraybuffer"`
-   if you'll want live audio.
+1. **Connect** to `ws://<host>:<port>/api/ws` (`wss://` when the recorder
+   serves HTTPS: a page served by it uses its own scheme, `wss:` from an
+   `https:` page; client.js does this). Set `binaryType = "arraybuffer"`
+   if you'll want live audio. With signing in on, bring an access token
+   ([Signing in](#signing-in)).
 2. **The greeting.** The recorder sends how things are now as ordinary
    messages, the same ones it sends later when they change: `state`,
    `config`, `talkgroups` (one for each system), `units` (each system with
@@ -411,8 +658,9 @@ origin listed (e.g. `"https://radio.example.com"`).
    `addPlugin`, `removePlugin` or a plugin's `install` everyone gets `plugins`,
    and after `setConfig` or `channelFile` everyone gets `config`; every
    `setConfig` is answered to its sender with `configSaved`.
-6. **Reconnect** when the socket closes: the recorder may have restarted. A
-   new greeting brings you up to date. Per-connection settings (live audio,
+6. **Reconnect** when the socket closes: the recorder may have restarted, or
+   your access changed ([Signing in](#signing-in)). A new greeting brings you
+   up to date, `hello.access` included. Per-connection settings (live audio,
    subscriptions) must be sent again after it.
 7. **`quit`** means the recorder is exiting (Quit, Ctrl-C, a service stop or
    restart). The built-in interface stops there. A display that should come
@@ -484,7 +732,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 
 | `type` | When | What's in it |
 |---|---|---|
-| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host`, `keys`, `calls` (the call store, for `callsQuery`) and `history` (the dashboard's history further back than a week, for `statsQuery`'s `30d`, `90d` and `1y`; the desktop app has all of them, `calls` and `history` while its call store is open, and the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
+| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `access` (`"listen"` or `"control"`: what this connection may do), `user` (the user it [signed in](#signing-in) as, by name; absent without one), `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host`, `keys`, `calls` (the call store, for `callsQuery`) and `history` (the dashboard's history further back than a week, for `statsQuery`'s `30d`, `90d` and `1y`; the desktop app has all of them, `calls` and `history` while its call store is open, and the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
 | `history` | On connecting | `entries`: the latest calls (≤ 300 `CallEntry`), newest first; `next?`: where older calls go on from (a `callsQuery` `cursor`), present when there are more. Then `concluded` for each new one |
 | `units` | On connecting, for each system with some | `system` (short name), `csv`: the talker aliases saved, as CSV: `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins. Then `unitAlias` for each new one |
 | `talkgroups` | On connecting, for each system with some; whenever they're replaced | `system` (short name), `talkgroups`: its talkgroups, a row each in Trunk Recorder's columns: `number`, `mode`, `alphaTag`, `description`, `tag`, `category`, `priority` (1 unless set; −1 means ignore), `preferredNac` (0: none), `preferredSite`, `ignore`, and `comment` (the `#` lines above its row in the file it came from), `extra` (`[column, value]` pairs of columns Trunk Recorder doesn't know) and `origin` when it has them. `[]`: none now. A row's `origin` is where its names came from — its last change, not its history: `kind` (`"file"`, `"radioReference"`, `"directory"`, `"trunkRecorder"`, `"edited"`), `name` (the file's or directory's), `at` (Unix s) |
@@ -514,6 +762,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `heard` | On connecting; conventional codes heard changed | `heard`: frequency (Hz, as a string) → `HeardCode[]` |
 | `config` | On connecting; the config changed (anyone's `setConfig`, a plugin added…) | `config`, `version` (what an edit is sent with) |
 | `configSaved` | Answers `setConfig`, to its sender | `version` (the config's now), `error` when the edit wasn't taken (the config changed elsewhere meanwhile, or it's bad) or couldn't be saved |
+| `tokenCreated` | Answers `createToken`, to its sender | `id`, `name`, `secret` (the new user's access token's, shown this once: the config keeps its hash) or `error` (a bad or taken name) |
 | `devices` | On connecting (control access); answers `devices` | `devices`: RTL-SDR dongles plugged in (`busy` when another program has one) |
 | `radios` | On connecting; answers `findRadios` | `radios`: the optional USRP / Airspy / SoapySDR drivers and their devices |
 | `dir` | Answers `listDir` | a folder: `path`, `parent`, `dirs`, `files` (.json), `home`, `sep`, `error` |
@@ -573,6 +822,7 @@ too.
 | `callsQuery` | `id`, `system?` (short name), `talkgroup?`, `unit?` (a radio), `from?` / `to?` (start time, Unix ms: `from` inclusive, `to` exclusive), `cursor?` (the previous page's `next`), `limit?` (1 to 500, default 100) | Recorded calls, newest first (→ `callsResult`). Talkgroup and radio numbers are a system's own: asked without `system`, each configured system's calls are searched. The desktop app answers from its call store with the latest calls included; the browser build from its own list. Listen-only connections may send it. |
 | `unlockKeys` | `source`, `password` | Open a key container that has no password file; the password is kept in memory only. `keys` follows. |
 | `lockKeys` | `source` | Forget a container's keys: its systems stop decrypting at once. |
+| `createToken` | `id`, `name` (1–64 characters, not taken), `access` (`"listen"` or `"control"`) | Add a user with an access token for [signing in](#signing-in), saved in `server.auth.users` (control access, signing in on or off). Answered with `tokenCreated`, its secret in it. |
 | `quit` | — | Stop recording and exit the recorder. |
 
 A listening-only interface needs nothing but `listen`, and perhaps

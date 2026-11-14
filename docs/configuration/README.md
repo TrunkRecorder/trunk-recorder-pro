@@ -11,7 +11,7 @@ guides; these pages list what each key does.
 | [systems.md](systems.md) | Trunked systems (`systems`), talkgroup files, unit names, site lock |
 | [conventional.md](conventional.md) | Conventional systems and channels (`conventional`), the channel CSV |
 | [recording.md](recording.md) | Where and how calls are saved (`recording`), per-system rules, file names |
-| [server-and-log.md](server-and-log.md) | The web server (`server`), the log (`log`), the dashboard's checks (`monitor`) |
+| [server-and-log.md](server-and-log.md) | The web server (`server`) and signing in (`server.auth`), the log (`log`), the dashboard's checks (`monitor`) |
 | [plugins.md](plugins.md) | Which plugins run and their settings (`plugins`) |
 
 ## Where the file is
@@ -83,7 +83,7 @@ with `--config` files in different folders never share band plans, talker aliase
 | `systems` | | `[]` | array | Trunked systems, each with its sites. [systems.md](systems.md) |
 | `conventional` | | `[]` | array | Conventional systems, each a group of single-frequency channels. [conventional.md](conventional.md) |
 | `recording` | | see page | object | Where calls go and which are kept. [recording.md](recording.md) |
-| `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
+| `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own; signing in. [server-and-log.md](server-and-log.md#server) |
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
 | `monitor` | | see page | object | What the dashboard checks: hosts, the time server, the clock. [server-and-log.md](server-and-log.md#monitor) |
 | `storage` | | `{ "backend": "sqlite", "retentionDays": 120, "commitSeconds": 300, "statsDays": 365 }` | object | The call store: where it's kept, how long calls stay in it, and how far apart it commits. [See below](#the-store-storage) |
@@ -381,7 +381,7 @@ then Start). A few apply at once:
 | A trunked system's talkgroup file: an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
 | Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them | Recording rules, `filenameFormat`, `captureDir` | |
 | `log` settings, `monitor` (the hosts checked, the time server, the Checks switch) | `recording.ramSpool` (the interface says "from the next start") | |
-| `server.allowedOrigins`, `server.interfaces` (an interface moves to its new port at once) | A linked `channelFile` is re-read at every Start | |
+| `server.allowedOrigins`, `server.interfaces` (an interface moves to its new port at once), `server.auth` from the interface (`trunk-pro access` edits the file: at the restart) | A linked `channelFile` is re-read at every Start | |
 
 ## Files kept beside the config
 
@@ -399,6 +399,7 @@ plans, talker aliases, the Heard list, the radio registry and the dashboard's hi
 | `interfaces/<id>/` | Interfaces installed from the interface store |
 | `interface-registry.json` | The interface store's cached index |
 | `plugin-hold/` | Finished calls waiting out a [plugin delay](plugins.md#delays), one `.json` each. Deleting one drops that call for its plugin |
+| `session-key` | What browsers' sign-ins are signed with ([Access](server-and-log.md#access)). Deleting it signs every browser out |
 | `logs/` | Log files, when `log.file` is on and `log.dir` is empty |
 | `spool/` | macOS only: where the RAM spool's RAM disk is mounted, when `recording.ramSpool` is on |
 

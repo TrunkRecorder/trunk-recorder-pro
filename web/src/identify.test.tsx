@@ -30,7 +30,7 @@ function surveyed(): ToRecorder[] {
   transport.onConnection(true);
   const greeting: FromRecorder[] = [
     { type: "config", config: defaultConfig(), version: 1 },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [{ id: "800", label: "800 MHz", loHz: 851e6, hiHz: 869e6, defaultOn: true }], capabilities: [] },
+    { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [{ id: "800", label: "800 MHz", loHz: 851e6, hiHz: 869e6, defaultOn: true }], capabilities: [] },
     {
       type: "survey", stage: "done", source: 0, bands: ["800"], message: "", error: null, progress: null, monitor: null, suggest: null,
       candidates: [
