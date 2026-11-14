@@ -2,6 +2,8 @@
 // The same rules as the recorder's (crates/trunk-core/src/dsp/tones.rs:
 // Tone::parse, Tone::matches) — keep them together.
 
+import { MODES, type Mode } from "./modes.ts";
+
 /** The CTCSS tones, tenths of a hertz. */
 export const CTCSS = [
   670, 693, 719, 744, 770, 797, 825, 854, 885, 915, 948, 974, 1000, 1035, 1072, 1109, 1148, 1188, 1230, 1273, 1318, 1365, 1413, 1462, 1500, 1514, 1567,
@@ -92,20 +94,20 @@ export interface AccessParts {
  * A row's Code column (or the old Tone) for its mode, split into the
  * recorder's code, slot and talkgroup (crates/trunk-core
  * src/trunk/conventional.rs: Access::parse and Access::parts — keep them
- * together): FM as parseTone; AM none; P25's NAC (`293`, `293 NAC`, `$293`,
+ * together): FM as parseTone; AM and auto none; P25's NAC (`293`, `293 NAC`, `$293`,
  * `0x293` → `293`; `F7E` / `F7F` = any) and talkgroup (`NAC 293 TG 1`,
  * `TG 1`); DMR's colour code, slot and talkgroup (`CC1`, `1`,
  * `CC1 TS2 TG201`, `CC 1 TG 201 SL 2`); NXDN's RAN and group (`RAN 5`, `5`,
  * `ran5 tg 201`; RAN 0 = any).
  */
-export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96", text: string): AccessParts | { error: string } {
+export function parseAccess(mode: Mode, text: string): AccessParts | { error: string } {
   if (mode === "fm") {
     const t = parseTone(text);
     return "tone" in t ? { code: t.tone } : t;
   }
   const up = text.trim().toUpperCase();
   if (["", "0", "S", "ANY", "NONE", "SEARCH"].includes(up)) return { code: "" };
-  if (mode === "am") return { error: `"${text.trim()}": AM channels carry no tone or code — leave it empty` };
+  if (!MODES[mode].takesCode) return { error: `"${text.trim()}": ${MODES[mode].name} channels carry no tone or code — leave it empty` };
   if (mode === "p25") {
     const bad = { error: `"${text.trim()}" isn't a NAC (up to 3 hex digits, like 293) or talkgroup (TG 1)` };
     const spaced = up.replace(/[,:=]/g, " ");

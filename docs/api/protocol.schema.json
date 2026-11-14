@@ -956,7 +956,8 @@
             "p25",
             "dmr",
             "nxdn48",
-            "nxdn96"
+            "nxdn96",
+            "auto"
           ]
         },
         "name": {
@@ -1085,7 +1086,8 @@
             "p25",
             "dmr",
             "nxdn48",
-            "nxdn96"
+            "nxdn96",
+            "auto"
           ],
           "description": "A conventional channel: its mode."
         },

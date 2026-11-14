@@ -88,7 +88,7 @@ Notes:
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `freqHz` | ✓ | | number | The frequency, Hz |
-| `mode` | | `"fm"` | string | `"fm"` (analog FM), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"` (any case; anything else is refused when the config is read) |
+| `mode` | | `"fm"` | string | `"fm"` (analog FM), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"`, `"auto"` (whichever turns up: analog FM, P25, DMR or NXDN; see [Auto](../guides/conventional.md#auto)) (any case; anything else is refused when the config is read) |
 | `name` | | `""` | string | Alpha tag, written to the call JSON |
 | `description` | | `""` | string | Description in the call JSON |
 | `tag` | | `""` | string | Tag in the call JSON |
@@ -204,7 +204,7 @@ A header row is required. Columns are matched in any case and any order; others 
 | Column | Also accepted | Meaning |
 |---|---|---|
 | `Frequency` ✓ | `Freq`, `FreqHz` | MHz when it has a decimal point (`154.4300`), otherwise Hz (`154430000`) |
-| `Mode` | | `fm`, `am`, `p25`, `dmr`, `nxdn48` (or `nxdn`), `nxdn96`; also `nfm`, `analog`, `A` (= fm), `digital`, `D` (= p25). Empty = `fm`, or `p25` / `dmr` / `nxdn48` when `Code` holds a NAC / colour code / RAN |
+| `Mode` | | `fm`, `am`, `p25`, `dmr`, `nxdn48` (or `nxdn`), `nxdn96`, `auto` (or `any`); also `nfm`, `analog`, `A` (= fm), `digital`, `D` (= p25). Empty = `fm`, or `p25` / `dmr` / `nxdn48` when `Code` holds a NAC / colour code / RAN |
 | `TG Number` | `Talkgroup`, `TG` | A positive whole number; empty = as [above](#talkgroup-numbers) |
 | `Code` | `Tone` | As `code` above. RadioReference's spellings (`151.4 PL`, `023 DPL`, `293 NAC`, `CC1 TS2 TG201`, `RAN 5`) work; a slot or talkgroup in it fills `Slot` / `Match TG` |
 | `Slot` | `TS` | As `slot` above |

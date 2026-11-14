@@ -18,7 +18,7 @@
 //!   and `Bandwidth kHz` are additions.
 //! - `Frequency`: MHz when it has a decimal point (and is under 10 000), else Hz.
 //! - `Mode`: `fm` / `analog` / `A`, `am`, `p25` / `digital` / `D`, `dmr`,
-//!   `nxdn48` (or `nxdn`) / `nxdn96`; empty = fm.
+//!   `nxdn48` (or `nxdn`) / `nxdn96`, `auto` (or `any`): whichever is on it; empty = fm.
 //! - `TG Number`: what calls are filed under; empty = the talkgroup the air
 //!   names (p25, dmr, nxdn), else the frequency in kHz (further rows on the
 //!   same frequency: that and a digit, 1543251, 1543252 …).
@@ -151,6 +151,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             "dmr" => ChannelMode::Dmr,
             "nxdn" | "nxdn48" => ChannelMode::Nxdn48,
             "nxdn96" => ChannelMode::Nxdn96,
+            "auto" | "any" => ChannelMode::Auto,
             _ => {
                 bad_mode.push(row);
                 ChannelMode::Fm
@@ -180,7 +181,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         let bandwidth_khz = match at(c_bw) {
             "" => None,
             s => match (if decimal_comma { s.replace(',', ".") } else { s.to_string() }).parse::<f64>() {
-                Ok(v) if (lo..=hi).contains(&v) && matches!(mode, ChannelMode::Fm | ChannelMode::Am) => Some(v),
+                Ok(v) if (lo..=hi).contains(&v) && mode.conv().analog() => Some(v),
                 _ => {
                     bad_bw.push(row);
                     None
@@ -231,7 +232,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         out.notes.push(format!("Skipped row(s) {} — no usable frequency.", rows_list(&bad_freq)));
     }
     if !bad_mode.is_empty() {
-        out.notes.push(format!("Row(s) {}: unknown Mode (use fm, am, p25, dmr, nxdn48 or nxdn96) — read as fm.", rows_list(&bad_mode)));
+        out.notes.push(format!("Row(s) {}: unknown Mode (use fm, am, p25, dmr, nxdn48, nxdn96 or auto) — read as fm.", rows_list(&bad_mode)));
     }
     if !bad_tg.is_empty() {
         out.notes.push(format!("Row(s) {}: TG Number isn't a positive whole number — using the default.", rows_list(&bad_tg)));
@@ -288,6 +289,7 @@ pub fn write(channels: &[Channel]) -> String {
                 ChannelMode::Dmr => "dmr".into(),
                 ChannelMode::Nxdn48 => "nxdn48".into(),
                 ChannelMode::Nxdn96 => "nxdn96".into(),
+                ChannelMode::Auto => "auto".into(),
             },
             cell(&c.name),
             cell(&c.description),
@@ -427,6 +429,20 @@ mod tests {
         // The same columns from the new writer: nothing written in.
         let new = parse("Frequency,Mode,Code\n453.5,p25,293\n453.5,p25,4F1\n").unwrap();
         assert_eq!(new.channels.iter().map(|c| c.talkgroup).collect::<Vec<_>>(), [None, None]);
+    }
+
+    #[test]
+    fn auto_channels_read_and_write() {
+        let p = parse("Frequency,Mode,Alpha Tag,Code,Bandwidth kHz\n462.5625,auto,FRS 1,,\n462.5875,ANY,FRS 2,,16\n462.6125,auto,FRS 3,100.0,\n").unwrap();
+        assert!(p.channels.iter().all(|c| c.mode == ChannelMode::Auto), "{:?}", p.channels.iter().map(|c| c.mode).collect::<Vec<_>>());
+        // A width is for FM and AM: an auto channel opens every receiver the same.
+        assert_eq!(p.channels[1].bandwidth_khz, None);
+        assert!(p.notes.iter().any(|n| n.contains("Row(s) 3: Bandwidth")), "{:?}", p.notes);
+        // A tone it can't have is said so, and left out.
+        assert_eq!(p.channels[2].code, "");
+        assert!(p.notes.iter().any(|n| n.contains("row 4") && n.contains("auto channels carry no tone or code")), "{:?}", p.notes);
+        assert!(write(&p.channels).contains(",auto,"));
+        assert_eq!(parse(&write(&p.channels)).unwrap().channels, p.channels);
     }
 
     #[test]

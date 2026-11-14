@@ -22,6 +22,7 @@ Each channel has a mode:
 | DMR | `dmr` | DMR Tier II; both slots, each recording its own calls (the channel is opened 6.25 kHz wide, as for trunked DMR) |
 | NXDN48 | `nxdn48` | NXDN at 4800 bps (6.25 kHz) |
 | NXDN96 | `nxdn96` | NXDN at 9600 bps (12.5 kHz) |
+| Auto | `auto` | Whatever turns up: analog FM, P25, DMR or NXDN (see [Auto](#auto)) |
 
 One list can mix modes. A config can have trunked systems, conventional channels, or both. With
 no trunked system at all, it records conventional channels only.
@@ -138,7 +139,7 @@ TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,S
 ```
 
 - `Frequency` is MHz when it has a decimal point, otherwise Hz.
-- `Mode` is `fm`, `am`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Code` holds
+- `Mode` is `fm`, `am`, `p25`, `dmr`, `nxdn48`, `nxdn96` or `auto` (`any` reads as `auto`); empty means `fm`, unless `Code` holds
   a NAC (then `p25`), a colour code (`dmr`) or a RAN (`nxdn48`). An old `Tone` column still reads,
   as `Code`. A combined string such as `CC1 TS2 TG201` in `Code` is split into `Code`, `Slot` and
   `Match TG`.
@@ -227,6 +228,43 @@ Things that follow from this:
   Recording tab is for trunked calls (audio before each grant) and doesn't change it.
 - A call longer than **Longest call, s** is saved and a new one started. With no limit set, a
   stuck carrier is saved in 600 s parts.
+
+## Auto
+
+A channel whose mode is `auto` records whatever is on it. Use it where the protocol isn't one thing: the
+FRS and GMRS channels, say, where almost everything is analog FM but a digital radio can turn up.
+
+When the channel opens, the analog FM receiver and each digital one (P25, DMR, NXDN48 and NXDN96) all
+listen to it, and what each one puts out is held back. The channel then settles on one of them:
+
+- A **digital** receiver is settled on once it has decoded about two P25 LDUs' worth of voice frames (or six
+  DMR bursts), or two of anything else only a checked frame carries (a radio ID, a cipher, a position), or
+  some of each. Noise and speech don't pass those checks, and one stray message isn't enough.
+- Otherwise **analog FM** is, two seconds after the channel opened. A digital signal sounds like noise
+  in an FM receiver, so the wait is how analog is told from it.
+
+The call is then recorded as what it settled on: its JSON says `p25`, `dmr`, `nxdn48`, `nxdn96` or `fm`
+as for a channel of that mode, with the talkgroup, NAC, colour code or RAN the air named. The analog
+audio is the call's from its start; the recording just isn't handed on until the channel has settled,
+so a live listener hears an analog call about two seconds late. A key-up shorter than that settles
+when the carrier goes, and is kept.
+
+What it can't do:
+
+- It is one row to a frequency, with no tone, code, slot or **Match TG** (a second row, or a code, is
+  refused). To split a frequency by tone or NAC, give it that mode.
+- It doesn't cover AM, or P25 Phase 2.
+- It runs five receivers while a channel is open and undecided, where a channel of one mode runs one; a
+  busy band of auto channels costs noticeably more CPU, about the first two seconds of each
+  transmission. Give a channel known to be analog the mode `fm`.
+- It settles once per transmission: a different protocol arriving on the same carrier within the receiver's
+  half-second hang isn't noticed until the channel closes.
+- It has no **Bandwidth** setting: every receiver is opened 12.5 kHz wide (the narrowest of P25's, DMR's and
+  NXDN96's), which on a 6.25 kHz channel lets a neighbour's leakage in, and the analog receiver is the narrowband
+  one. A wide-FM (25 kHz) channel takes the mode `fm`. The Demodulation settings (de-emphasis, squelch open
+  delay and hang) apply to its analog receiver, and the FM receiver's squelch decides the carrier, as for an
+  `fm` channel, once it has settled on analog.
+- Its tapes and **Record the next call** work as for any channel, and replay as auto.
 
 ## Airband (AM)
 
@@ -378,6 +416,7 @@ saved. There is no separate log line for each detection.
 | `Conventional channel ... MHz is in both A and B` | A frequency can belong to only one conventional system. |
 | `Conventional channel ... MHz is listed with different modes` | Rows sharing a frequency need the same mode. |
 | `Conventional channel ... MHz is listed twice without a tone` (or NAC, or code) | Give each row its own code; one may have none. |
+| `Conventional channel ... MHz is auto` | An auto channel is one row without a code: remove the other rows or the code, or give the channel a mode. |
 | `Conventional channel ... MHz has two rows for ...` | Two rows ask for the same code (or two DCS codes that are the same signal). |
 | `A conventional channel has no frequency yet.` | A row was added and left empty. |
 | `Channel file ...: ...` | The linked CSV couldn't be read. |

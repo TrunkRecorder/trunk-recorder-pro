@@ -369,6 +369,25 @@ mod tests {
     }
 
     #[test]
+    fn an_auto_channel_settles_on_nxdn() {
+        let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_056_250.0);
+        for rate in [Rate::N48, Rate::N96] {
+            let cfg = EngineConfig {
+                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                conventional: vec![ConvChannel::new(freq, ConvMode::Auto)],
+                ..Default::default()
+            };
+            let (done, _) = run_engine(cfg, &keyed(&conv_tx(rate), fs, freq - center));
+            assert_eq!(done.len(), 1, "{rate:?}: {:?}", done.iter().map(|k| &k.call).collect::<Vec<_>>());
+            let c = &done[0].call;
+            assert_eq!((c.talkgroup, c.ran, c.voice.nxdn()), (3100, Some(3), Some(rate)), "{rate:?}");
+            let secs = done[0].audio.len() as f64 / 8000.0;
+            let want = if rate == Rate::N48 { 3.2 } else { 1.6 };
+            assert!((secs - want).abs() < 0.15, "{rate:?}: {secs:.2} s of audio");
+        }
+    }
+
+    #[test]
     fn engine_names_a_conventional_radio_by_its_kenwood_alias() {
         let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_056_250.0);
         for rate in [Rate::N48, Rate::N96] {

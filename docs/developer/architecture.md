@@ -1306,7 +1306,7 @@ system) is rewritten on load by `migrate::config`; the desktop app saves it upgr
 | `squelchDb` | 8 | open threshold above the noise floor |
 | `demod` | {} | analog: `fmDeemphasis`, `amLevel` (fast / slow), `amLowCutHz` (0–600), `squelchOpenMs` (0–500), `squelchHangMs` (0–1000) |
 | `channelFile` | "" | CSV path; when set, `channels` is read from it |
-| `channels[]` | [] | `{freqHz (required), mode: fm/am/p25/dmr/nxdn48/nxdn96, name, talkgroup, code, slot (DMR, 1/2), matchTalkgroup (P25/DMR/NXDN), description, tag, group, squelchDb, bandwidthKhz (analog, 4–20), enabled}` |
+| `channels[]` | [] | `{freqHz (required), mode: fm/am/p25/dmr/nxdn48/nxdn96/auto, name, talkgroup, code, slot (DMR, 1/2), matchTalkgroup (P25/DMR/NXDN), description, tag, group, squelchDb, bandwidthKhz (analog, 4–20), enabled}` |
 | `recording`, `plugins`, `pluginDelays`, `unitNames`, `keys` | | as for systems |
 
 Its P25, DMR and NXDN channels name the talkgroups they hear by its own talkgroup file

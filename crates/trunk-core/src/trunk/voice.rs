@@ -57,6 +57,9 @@ pub enum VoiceKind {
     Nxdn(Rate),
     /// EDACS ProVoice (9600 baud 2FSK, IMBE 7100).
     ProVoice,
+    /// Any of the conventional ones but AM: analog FM and each digital receiver listen together
+    /// until one hears its protocol ([`Auto`]).
+    Auto,
 }
 
 impl VoiceKind {
@@ -72,6 +75,8 @@ impl VoiceKind {
             VoiceKind::Nxdn(r) => r.cutoff_hz(),
             VoiceKind::Dmr => crate::dmr::CHANNEL_CUTOFF_HZ,
             VoiceKind::ProVoice => crate::edacs::CHANNEL_CUTOFF_HZ,
+            // The narrowest of P25's, DMR's and NXDN96's: the channels it is for are 12.5 kHz wide.
+            VoiceKind::Auto => crate::dmr::CHANNEL_CUTOFF_HZ,
             // (P25 Phase 1 and 2, and SmartNet's analog FM.)
             _ => 7000.0,
         }
@@ -255,6 +260,11 @@ pub trait VoiceDecoder: Send {
     }
     /// How well its receiver hears the channel (the dashboard's).
     fn quality(&self) -> ChannelQuality;
+    /// The kind of voice it is decoding: its own, except for [`build_auto`]'s, which is None
+    /// until it has settled on one.
+    fn resolved(&self) -> Option<VoiceKind> {
+        Some(self.kind())
+    }
 }
 
 /// How well a receiver hears its channel, as the dashboard shows it.
@@ -297,6 +307,161 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
         }),
         VoiceKind::ProVoice => Box::new(ProVoice { pv: crate::edacs::ProVoice::new(spec.rate, spec.seed, spec.vocoder), t0: spec.t0, air: None }),
         VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, carrier: false }),
+        VoiceKind::Auto => Auto::new(spec),
+    }
+}
+
+/// Analog FM and each digital receiver, all fed the same channel ([`VoiceKind::Auto`]). What each
+/// puts out is held back until one is settled on, then that one's goes on and the others are dropped:
+///
+/// - a digital receiver is settled on when its output adds up to [`Auto::LOCK_POINTS`]: a frame of voice
+///   is one point, anything else it sends only after the frame's own check (a talker, a cipher, a
+///   position) is [`Auto::CHECKED_POINTS`], which noise or speech doesn't pass. One such message
+///   alone isn't enough, so a stray decode in an analog call doesn't take it;
+/// - else analog is, [`Auto::DECIDE_S`] after the channel opened. The wait is the price of telling
+///   speech from a digital signal, which sounds like noise in FM; it is the recording that waits
+///   (a call keeps the audio from its start), not the radio's carrier.
+///
+/// Where the channel closes first, whatever is held is settled the same way ([`VoiceDecoder::flush`]),
+/// with [`Auto::END_POINTS`] enough then: a short call has few frames.
+///
+/// Every [`VoiceDecoder`] method goes to the receiver settled on, or to all of them while none is.
+struct Auto {
+    candidates: Vec<Box<dyn VoiceDecoder>>,
+    /// What each has put out while none is settled on.
+    held: Vec<Vec<VoiceOut>>,
+    locked: Option<usize>,
+    /// Channel time heard since it opened, s.
+    heard_s: f64,
+    rate: f64,
+    /// When each receiver first put its voice on the air, per slot, while none is settled on: a receiver
+    /// says only what its last push heard ([`VoiceDecoder::air`]), and what is held reaches the call
+    /// pushes after it was heard.
+    first_air: Vec<[Option<f64>; 2]>,
+    /// The settled receiver's [`Auto::first_air`], until its air is next asked after it has settled.
+    air_from: std::cell::Cell<[Option<f64>; 2]>,
+}
+
+impl Auto {
+    /// Analog first, which is what a channel with nothing digital on it settles on.
+    const KINDS: [VoiceKind; 5] = [VoiceKind::Analog, VoiceKind::Fdma, VoiceKind::Dmr, VoiceKind::Nxdn(Rate::N48), VoiceKind::Nxdn(Rate::N96)];
+    /// Points that rule analog out: two P25 LDUs' frames (9 each), six DMR bursts (3), a few NXDN frames;
+    /// or two checked messages, or one and some voice.
+    const LOCK_POINTS: usize = 18;
+    /// What the channel closing with a short call still needs: one P25 LDU's frames, or three DMR bursts'.
+    const END_POINTS: usize = 10;
+    /// A checked message's worth: half of [`Self::LOCK_POINTS`], so it takes two.
+    const CHECKED_POINTS: usize = 9;
+    /// How long analog waits for a digital receiver, s: a DMR or P25 call's first voice comes up to
+    /// a second after the carrier does.
+    const DECIDE_S: f64 = 2.0;
+
+    fn new(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
+        let candidates: Vec<Box<dyn VoiceDecoder>> = Self::KINDS.iter().map(|&kind| build(&VoiceSpec { kind, subaudible: spec.subaudible && kind == VoiceKind::Analog, ..spec.clone() })).collect();
+        Box::new(Auto { held: candidates.iter().map(|_| Vec::new()).collect(), first_air: candidates.iter().map(|_| [None; 2]).collect(), candidates, locked: None, heard_s: 0.0, rate: spec.rate, air_from: Default::default() })
+    }
+
+    /// How far a receiver's held output goes toward being the protocol.
+    fn points(held: &[VoiceOut]) -> usize {
+        held.iter()
+            .map(|v| match v.out {
+                TrackerOut::Audio(..) => 1,
+                TrackerOut::AnalogAudio(_) | TrackerOut::Subaudible(_) => 0,
+                _ => Self::CHECKED_POINTS,
+            })
+            .sum()
+    }
+
+    /// Settle on a receiver if the evidence says (`end`: nothing more is coming).
+    fn settle(&mut self, end: bool, out: &mut Vec<VoiceOut>) {
+        let need = if end { Self::END_POINTS } else { Self::LOCK_POINTS };
+        let best = (1..self.candidates.len()).map(|i| (i, Self::points(&self.held[i]))).filter(|&(_, p)| p >= need).max_by_key(|&(_, p)| p).map(|(i, _)| i);
+        let Some(i) = best.or_else(|| (end || self.heard_s >= Self::DECIDE_S).then_some(0)) else { return };
+        self.locked = Some(i);
+        self.air_from.set(self.first_air[i]);
+        out.append(&mut self.held[i]);
+        self.held.iter_mut().for_each(Vec::clear);
+    }
+
+    /// `f` on the receiver settled on, or on every one while none is.
+    fn each(&mut self, mut f: impl FnMut(&mut dyn VoiceDecoder)) {
+        match self.locked {
+            Some(i) => f(self.candidates[i].as_mut()),
+            None => self.candidates.iter_mut().for_each(|c| f(c.as_mut())),
+        }
+    }
+
+    /// The receiver settled on, if one is.
+    fn settled(&self) -> Option<&dyn VoiceDecoder> {
+        self.locked.map(|i| self.candidates[i].as_ref())
+    }
+}
+
+impl VoiceDecoder for Auto {
+    fn kind(&self) -> VoiceKind {
+        VoiceKind::Auto
+    }
+    fn resolved(&self) -> Option<VoiceKind> {
+        self.settled().map(|c| c.kind())
+    }
+    fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
+        if let Some(i) = self.locked {
+            return self.candidates[i].push(iq, out);
+        }
+        self.heard_s += iq.len() as f64 / self.rate;
+        for ((c, held), first) in self.candidates.iter_mut().zip(&mut self.held).zip(&mut self.first_air) {
+            c.push(iq, held);
+            for (slot, f) in first.iter_mut().enumerate() {
+                if let Some((from, _)) = c.air(slot as u8).air {
+                    *f = Some(f.map_or(from, |f| f.min(from)));
+                }
+            }
+        }
+        self.settle(false, out);
+    }
+    fn flush(&mut self, out: &mut Vec<VoiceOut>) {
+        if let Some(i) = self.locked {
+            return self.candidates[i].flush(out);
+        }
+        for (c, held) in self.candidates.iter_mut().zip(&mut self.held) {
+            c.flush(held);
+        }
+        self.settle(true, out);
+    }
+    fn listen(&mut self, slots: [Option<u32>; 2]) {
+        self.each(|c| c.listen(slots));
+    }
+    fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
+        self.each(|c| c.set_keys(keys.clone()));
+    }
+    fn set_params(&mut self, p: &VoiceParams) {
+        self.each(|c| c.set_params(p));
+    }
+    fn set_squelch(&mut self, open_power: f32) {
+        self.each(|c| c.set_squelch(open_power));
+    }
+    fn set_ignore(&mut self, ignore: &[(f64, f64)]) {
+        self.each(|c| c.set_ignore(ignore));
+    }
+    /// Once settled, the receiver's; before, analog's (the one that can say).
+    fn carrier(&self) -> Option<bool> {
+        self.settled().unwrap_or(self.candidates[0].as_ref()).carrier()
+    }
+    fn air(&self, slot: u8) -> AirInfo {
+        let mut air = self.settled().map(|c| c.air(slot)).unwrap_or_default();
+        // The first time after settling: from when its voice began, not when this push's did.
+        let mut first = self.air_from.get();
+        if let (Some(from), Some((start, _))) = (first[slot as usize & 1].take(), air.air.as_mut()) {
+            *start = start.min(from);
+        }
+        self.air_from.set(first);
+        air
+    }
+    fn offset_hz(&self) -> Option<f32> {
+        self.settled().and_then(|c| c.offset_hz())
+    }
+    fn quality(&self) -> ChannelQuality {
+        self.settled().map(|c| c.quality()).unwrap_or_default()
     }
 }
 
@@ -602,5 +767,106 @@ impl VoiceDecoder for Analog {
     }
     fn quality(&self) -> ChannelQuality {
         ChannelQuality::default()
+    }
+}
+
+#[cfg(test)]
+mod auto_tests {
+    use super::*;
+    use crate::trunk::frames::{Codec, VoiceFrame};
+    use trunk_recorder_plugin::FrameKind;
+
+    /// A receiver that, on its first push, puts out `frames` frames of voice and `checked` checked messages.
+    struct Stub {
+        kind: VoiceKind,
+        frames: usize,
+        checked: usize,
+        air: Option<(f64, f64)>,
+        pushes: usize,
+    }
+
+    impl VoiceDecoder for Stub {
+        fn kind(&self) -> VoiceKind {
+            self.kind
+        }
+        fn push(&mut self, _: &[Complex32], out: &mut Vec<VoiceOut>) {
+            self.pushes += 1;
+            if self.pushes == 1 {
+                let frame = VoiceFrame { codec: Codec::Imbe, bits: Vec::new(), e0: 0, errs: 0, erased: false, kind: FrameKind::Voice, tone: None };
+                out.extend((0..self.frames).map(|_| VoiceOut { slot: 0, out: TrackerOut::Audio(Vec::new(), frame.clone()) }));
+                out.extend((0..self.checked).map(|_| VoiceOut { slot: 0, out: TrackerOut::Cipher(CipherId { algid: 0x80, keyid: 1 }) }));
+                self.air = Some((10.0, 10.18));
+            } else if self.pushes == 2 {
+                self.air = Some((10.18, 10.36));
+            }
+        }
+        fn air(&self, _: u8) -> AirInfo {
+            AirInfo { air: self.air, ..Default::default() }
+        }
+        fn offset_hz(&self) -> Option<f32> {
+            None
+        }
+        fn quality(&self) -> ChannelQuality {
+            ChannelQuality::default()
+        }
+    }
+
+    /// An auto decoder whose P25 receiver puts out `frames` and `checked` at its first push, the others nothing.
+    fn auto(frames: usize, checked: usize) -> Auto {
+        let stub = |kind: VoiceKind| -> Box<dyn VoiceDecoder> { Box::new(Stub { kind, frames: if kind == VoiceKind::Fdma { frames } else { 0 }, checked: if kind == VoiceKind::Fdma { checked } else { 0 }, air: None, pushes: 0 }) };
+        let candidates: Vec<Box<dyn VoiceDecoder>> = Auto::KINDS.iter().map(|&k| stub(k)).collect();
+        Auto { held: candidates.iter().map(|_| Vec::new()).collect(), first_air: candidates.iter().map(|_| [None; 2]).collect(), candidates, locked: None, heard_s: 0.0, rate: 8000.0, air_from: Default::default() }
+    }
+
+    /// Push `secs` of channel (in 0.1 s blocks), then close it: what it settled on.
+    fn settles(mut a: Auto, secs: f64, close: bool) -> Option<VoiceKind> {
+        let block = vec![Complex32::default(); 800];
+        let mut out = Vec::new();
+        for _ in 0..(secs * 10.0) as usize {
+            a.push(&block, &mut out);
+        }
+        if close {
+            a.flush(&mut out);
+        }
+        a.resolved()
+    }
+
+    #[test]
+    fn a_digital_receiver_needs_more_than_one_checked_message() {
+        // Two LDUs' frames, or two messages, or one message and some voice: digital, at once.
+        for (frames, checked) in [(18, 0), (0, 2), (9, 1)] {
+            assert_eq!(settles(auto(frames, checked), 0.1, false), Some(VoiceKind::Fdma), "{frames} frames and {checked} messages");
+        }
+        // One stray message isn't: analog, once its wait is over, not before.
+        assert_eq!(settles(auto(0, 1), 1.0, false), None);
+        assert_eq!(settles(auto(0, 1), Auto::DECIDE_S + 0.1, false), Some(VoiceKind::Analog));
+        // A call the channel closes on has fewer frames, still enough at one LDU's, not at a message's.
+        assert_eq!(settles(auto(10, 0), 0.1, true), Some(VoiceKind::Fdma));
+        assert_eq!(settles(auto(0, 1), 0.1, true), Some(VoiceKind::Analog));
+        assert_eq!(settles(auto(5, 0), 0.1, true), Some(VoiceKind::Analog));
+    }
+
+    #[test]
+    fn the_settled_receivers_voice_is_the_calls_from_when_it_began() {
+        // Settled a push after it first spoke: its air starts then, not at the push that settled it.
+        let mut a = auto(9, 0);
+        let (block, mut out) = (vec![Complex32::default(); 800], Vec::new());
+        a.push(&block, &mut out);
+        assert_eq!(a.resolved(), None);
+        a.candidates[1].push(&block, &mut Vec::new());
+        a.held[1].push(VoiceOut { slot: 0, out: TrackerOut::Cipher(CipherId { algid: 0x80, keyid: 1 }) });
+        a.push(&block, &mut out);
+        assert_eq!(a.resolved(), Some(VoiceKind::Fdma));
+        assert_eq!(a.air(0).air.map(|(from, _)| from), Some(10.0));
+        // Once, not each time after.
+        assert_eq!(a.air(0).air.map(|(from, _)| from), Some(10.18));
+    }
+
+    #[test]
+    fn it_reports_what_it_is_now() {
+        let mut a = auto(18, 0);
+        assert_eq!((a.kind(), a.resolved()), (VoiceKind::Auto, None));
+        a.push(&vec![Complex32::default(); 800], &mut Vec::new());
+        assert_eq!((a.kind(), a.resolved()), (VoiceKind::Auto, Some(VoiceKind::Fdma)));
     }
 }
