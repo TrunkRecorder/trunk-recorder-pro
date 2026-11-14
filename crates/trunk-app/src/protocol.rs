@@ -82,6 +82,10 @@ pub enum ToClient {
     /// A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV):
     /// one for each system with some, on connecting (then `unitAlias` for each new one).
     Units { system: String, csv: String },
+    /// A system's radios whose IDs came in MDC1200 (the radio registry's):
+    /// one for each system with some, on connecting (then each call's
+    /// `srcList` says it). Their IDs are shown in hex.
+    MdcUnits { system: String, units: Vec<u32> },
     /// Which key containers are unlocked.
     Keys { sources: Value },
     Radios { radios: Value },
@@ -735,6 +739,8 @@ mod tests {
     fn a_message_is_its_type_and_its_fields() {
         let m = ToClient::UnitAlias { system: "dcfd".into(), unit: 7, alias: "E1".into() };
         assert_eq!(m.to_json(), r#"{"type":"unitAlias","system":"dcfd","unit":7,"alias":"E1"}"#);
+        let m = ToClient::MdcUnits { system: "conv".into(), units: vec![1795, 7187] };
+        assert_eq!(m.to_json(), r#"{"type":"mdcUnits","system":"conv","units":[1795,7187]}"#);
         assert_eq!(ToClient::Quit.to_json(), r#"{"type":"quit"}"#);
         let s = ToClient::Spectrum { source: 1, center_hz: 2.0, rate_hz: 3.0, bins: vec![] };
         assert_eq!(s.to_json(), r#"{"type":"spectrum","source":1,"centerHz":2.0,"rateHz":3.0,"bins":[]}"#);
@@ -809,7 +815,7 @@ mod tests {
         }
         let everyone = [
             "hello", "history", "units", "radios", "state", "config", "configSaved", "talkgroups", "talkgroupEdited", "unitNames", "unitNameEdited", "status", "voice", "spectrum", "log", "concluded", "callFiles",
-            "unitAlias", "heard", "survey", "surveySpectrum", "licenseResult", "callSignResult", "sourceProfile", "devices", "dir", "trConfig", "error", "notice", "pluginActionResult", "stats", "host", "rfDetail",
+            "unitAlias", "mdcUnits", "heard", "survey", "surveySpectrum", "licenseResult", "callSignResult", "sourceProfile", "devices", "dir", "trConfig", "error", "notice", "pluginActionResult", "stats", "host", "rfDetail",
             "decodeDetail", "monitorEvent", "subscribed", "statsResult", "radioResult", "callsResult", "dataSummary", "iqCaptures", "iqCaptureReview", "iqRuleChecked", "dataDeleted", "dataCompacted", "tokenCreated", "quit",
         ];
         let mut decided: Vec<&str> = control.iter().map(ToClient::kind).chain(everyone).collect();

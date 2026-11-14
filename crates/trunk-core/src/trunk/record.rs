@@ -277,7 +277,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
                 duplex: s.flags.duplex,
                 mode: s.flags.packet,
                 priority: s.flags.priority as i64,
-                signal_system: String::new(),
+                signal_system: s.signal.map_or("", |k| k.name()).into(),
                 tag: UnitTags::name(info.unit_tags, info.units, s.src).unwrap_or_default(),
                 tag_ota: info.units.and_then(|u| u.get(s.src)).unwrap_or("").to_string(),
                 lat: s.position.map(|p| p.0),
@@ -367,7 +367,7 @@ mod tests {
     fn tones_are_written_with_their_sender() {
         use super::super::calls::CallSource;
         use crate::dsp::inband::{Origin, ToneKind};
-        let src = |src, audio_pos| CallSource { src, time_s: 0.0, audio_pos, flags: Default::default(), position: None };
+        let src = |src, audio_pos| CallSource { src, time_s: 0.0, audio_pos, ..Default::default() };
         let sources = [src(7, Some(0)), src(9, Some(16000)), src(11, None)];
         let t = ToneSeg { kind: ToneKind::Dtmf('#'), start: 20000, len: 800, level: Some(127), origin: Origin::Frame };
         let e = tone_entry(&t, &sources);
@@ -467,6 +467,16 @@ mod tests {
         assert!(json.contains("\"src\":7,\"time\":0,\"pos\":0,\"emergency\":0,\"encrypted\":0,\"duplex\":0,\"mode\":0,\"priority\":0,"), "{json}");
         assert!(json.contains("\"src\":8,\"time\":0,\"pos\":0,\"emergency\":1,\"encrypted\":0,\"duplex\":0,\"mode\":0,\"priority\":7,"), "{json}");
         assert!(json.contains("\"tag_ota\":\"\",\"lat\":30.052900,\"lon\":-83.175650}]"), "{json}");
+        // An analog radio's ID: the signalling it came in, by Trunk Recorder's decoders' names.
+        use crate::dsp::inband::units::{Kind, UnitId};
+        let mut tx = Transmissions::default();
+        let mdc = UnitId { kind: Kind::Mdc1200, unit: 0x1c13, emergency: false };
+        assert!(CallManager::note_units(&mut call, &mut tx, &[mdc], 1.0));
+        assert!(!CallManager::note_units(&mut call, &mut tx, &[mdc], 1.1), "the same again");
+        CallManager::note_units(&mut call, &mut tx, &[UnitId { kind: Kind::FleetSync, unit: 1_011_270, emergency: false }], 2.0);
+        let r = call_record(&call, &info).0;
+        let signals: Vec<_> = r.src_list.iter().map(|s| (s.src, s.signal_system.as_str())).collect();
+        assert_eq!(signals, [(7, ""), (8, ""), (7187, "MDC1200"), (1_011_270, "FLEETSYNC")]);
     }
 }
 

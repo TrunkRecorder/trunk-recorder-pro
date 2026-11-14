@@ -4,12 +4,39 @@
 // them — Trunk Recorder's unitTagsOTA CSV (crates/trunk-core/src/trunk/units.rs):
 // headerless, unitID,alias,source,timestamp,WACN,SYS,talkgroup; the newest line wins.
 
-import type { Origin, UnitName } from "./protocol.ts";
+import { systemOf, type CallEntry, type Origin, type UnitName } from "./protocol.ts";
 import { unitNamesEdit, unitNamesFromCsv, unitNamesToCsv, type UnitNamesFileReport } from "./rules.ts";
 import { splitCsvLine } from "./talkgroups.ts";
 
 /** Unit ID → alias. */
 export type UnitAliases = Record<number, string>;
+
+/** Each system's radios whose IDs came in MDC1200 (by short name, then unit ID). */
+export type MdcUnits = Record<string, Record<number, true>>;
+
+/** `mdc` with the MDC1200 radios of `calls` (their `srcList`'s `signal_system`); `mdc` itself when there are none new. */
+export function mdcHeard(mdc: MdcUnits, calls: CallEntry[]): MdcUnits {
+  let out = mdc;
+  for (const c of calls) {
+    const system = systemOf(c);
+    for (const x of c.record.srcList ?? []) {
+      if (x.signal_system !== "MDC1200" || out[system]?.[x.src]) continue;
+      if (out === mdc) out = { ...mdc };
+      out[system] = { ...out[system], [x.src]: true };
+    }
+  }
+  return out;
+}
+
+/** A radio's ID as shown: an MDC1200 one in hex, 4 digits, as radios are programmed (7187 → "1C13"); any other in decimal. */
+export function unitIdText(mdc: Record<number, true> | undefined, id: number): string {
+  return mdc?.[id] ? id.toString(16).toUpperCase().padStart(4, "0") : String(id);
+}
+
+/** Whether a radio's ID matches `filter` (lower case) as typed: its decimal, or the hex it's shown in (with or without 0x). */
+export function unitIdMatches(mdc: Record<number, true> | undefined, id: number, filter: string): boolean {
+  return String(id).includes(filter) || (!!mdc?.[id] && unitIdText(mdc, id).toLowerCase().includes(filter.replace(/^0x/, "")));
+}
 
 /** A unit names file (Trunk Recorder's unitTagsFile) read as the recorder reads one. */
 export function readUnitNamesFile(text: string): UnitNamesFileReport {

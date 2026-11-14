@@ -2461,6 +2461,30 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "mdcUnits"
+            },
+            "system": {
+              "type": "string"
+            },
+            "units": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "units"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "keys"
             },
             "sources": {

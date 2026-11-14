@@ -82,7 +82,7 @@ import {
   trpBase,
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
-import { parseUnitsCsv, withUnitName, type UnitAliases } from "./units.ts";
+import { mdcHeard, parseUnitsCsv, withUnitName, type MdcUnits, type UnitAliases } from "./units.ts";
 import { ignoreEdit, sameEdit, withEdit } from "./talkgroups.ts";
 import { editedNow, fromNow } from "./origins.ts";
 import { talkgroupsReplace, unitNamesReplace } from "./rules.ts";
@@ -123,6 +123,8 @@ export interface AppState {
   history: CallEntry[];
   /** Each system's radios' talker aliases, by short name. */
   units: Record<string, UnitAliases>;
+  /** Each system's radios whose IDs came in MDC1200, by short name: shown in hex (unitIdOf). */
+  mdcUnits: MdcUnits;
   /** The codes each conventional frequency (Hz, as a string) carried. */
   heard: Record<string, HeardCode[]>;
   listen: boolean;
@@ -239,6 +241,7 @@ let state: AppState = {
   log: [],
   history: [],
   units: {},
+  mdcUnits: {},
   heard: {},
   listen: false,
   listenSystem: null,
@@ -387,7 +390,7 @@ transport.onConnection = (connected) => {
   // answer won't get one (a talkgroup edit's is sent again: "hello").
   saving = queued = false;
   wholeSent.clear();
-  set({ events: [], talkgroups: {}, unitNames: {}, units: {} });
+  set({ events: [], talkgroups: {}, unitNames: {}, units: {}, mdcUnits: {} });
 };
 transport.onAudio = onAudio;
 transport.onMessage = (m: FromRecorder) => {
@@ -437,8 +440,11 @@ function take(m: FromRecorder): void {
     case "units":
       set({ units: { ...state.units, [m.system]: parseUnitsCsv(m.csv) } });
       break;
+    case "mdcUnits":
+      set({ mdcUnits: { ...state.mdcUnits, [m.system]: { ...state.mdcUnits[m.system], ...Object.fromEntries(m.units.map((u) => [u, true])) } } });
+      break;
     case "history":
-      set({ history: m.entries });
+      set({ history: m.entries, mdcUnits: mdcHeard(state.mdcUnits, m.entries) });
       break;
     case "status":
       set({ status: m.status, sources: m.sources, load: m.load, calls: m.calls });
@@ -454,7 +460,7 @@ function take(m: FromRecorder): void {
       set({ log: [...state.log, ...m.lines].slice(-2000) });
       break;
     case "concluded":
-      set({ history: [m.entry, ...state.history].slice(0, 500) });
+      set({ history: [m.entry, ...state.history].slice(0, 500), mdcUnits: mdcHeard(state.mdcUnits, [m.entry]) });
       break;
     case "callFiles":
       set({ history: state.history.map((e) => (e.path === m.path ? { ...e, audio: m.audio, json: m.json } : e)) });

@@ -174,6 +174,20 @@ test("Radio: a system's page has its calls on the air now, saying the site and t
   assert.match(page, /Control channel log/);
 });
 
+test("Radio: an MDC1200 radio's ID is shown in hex, as radios are programmed (#167); the same number elsewhere in decimal", () => {
+  twoSites([
+    { id: 7, system: 0, systemName: "dcfd", site: "dcfd", alsoOn: [], talkgroup: 100, alphaTag: "Fire", freqHz: 851_600_000, slot: null, state: "recording", reason: null, sources: [7187], startS: 1 },
+    { id: 8, system: 1, systemName: "other", site: "other", alsoOn: [], talkgroup: 555, alphaTag: "Elsewhere", freqHz: 852_600_000, slot: null, state: "recording", reason: null, sources: [7187], startS: 1 },
+  ]);
+  transport.onMessage({ type: "mdcUnits", system: "dcfd", units: [7187] });
+  setView("radio", "dcfd");
+  assert.match(text(renderToString(<RadioPage />)), /100 Fire .* 1C13 /);
+  setView("radio", "other");
+  const other = text(renderToString(<RadioPage />));
+  assert.match(other, /555 Elsewhere .* 7187 /);
+  assert.doesNotMatch(other, /1C13/);
+});
+
 test("Radio: a talkgroup's names are edited on its page, as its talkgroup file's row, the system's tags offered; and where they came from said", () => {
   twoSites();
   const origin = { kind: "radioReference" as const, at: Math.floor(Date.now() / 1000) - 7200 };

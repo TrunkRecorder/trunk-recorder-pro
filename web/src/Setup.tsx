@@ -1247,6 +1247,10 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
               <span className="warn-text" title={`This ${radioName(src.type, found)} runs at ${foundRates} MSPS, not ${src.rateHz / 1e6}`}>
                 Won&apos;t start · {radioName(src.type, found)}: {foundRates}
               </span>
+            ) : src.type === "rtlsdr" && src.rateHz > 2_400_000 ? (
+              <span className="warn-text" title="Past 2.4 MSPS an RTL-SDR loses samples without saying so, most of all beside another dongle: fine for a waterfall, not for decoding">
+                May drop samples · 2.4 is dependable
+              </span>
             ) : foundRates ? (
               `This ${radioName(src.type, found)}: ${foundRates}`
             ) : (

@@ -509,9 +509,11 @@ output of the next release or of a version. `release` makes the unreleased expec
 trunk-pro tool submission <folder> --out dir
 ```
 
-Checks that a capture is what it says it is: its hash, size, clipping and lost samples, and whether anything decodes. It
-writes `checks.json` and a `waterfall-N.bin` for each radio to `dir`, as counts and levels, and fails if the capture
-doesn't check out.
+Checks that a capture is what it says it is: its hash and size, and that each radio's recording is IQ from a radio (not
+random or compressed bytes, whose spectrum is flat, nor text or other bytes that sit to one side of zero). It counts
+clipping, lost samples and what decodes, but a capture that decodes nothing still passes: that's what a new decoder, or
+a failure being debugged, needs. It writes `checks.json` and a `waterfall-N.bin` for each radio to `dir`, as counts and
+levels, and fails if the capture doesn't check out.
 
 ### tool channel
 
