@@ -21,11 +21,12 @@ struct Slot {
     group: bool,
     encrypted: bool,
     emergency: bool,
+    aliases: super::alias::Tracker,
 }
 
 impl Slot {
     fn new(seed: u32) -> Self {
-        Slot { dec: mbe::Decoder::new(mbe::lcg(seed), mbe::Profile::Enhanced), talkgroup: None, source: None, group: true, encrypted: false, emergency: false }
+        Slot { dec: mbe::Decoder::new(mbe::lcg(seed), mbe::Profile::Enhanced), talkgroup: None, source: None, group: true, encrypted: false, emergency: false, aliases: super::alias::Tracker::default() }
     }
 }
 
@@ -96,6 +97,10 @@ impl DmrVoice {
         let mut push = |o: TrackerOut| out.push(Out { slot, t, out: o });
         match e {
             SlotEvent::Lc { lc, from } => {
+                if let Some(alias) = s.aliases.observe(lc, from, t, self.chan.xpt).and_then(|a| a.alias()) {
+                    push(TrackerOut::Alias(alias));
+                }
+                let lc = super::xpt::voice_lc(lc, self.chan.xpt);
                 let Some(group) = lc.voice_user() else { return };
                 if from == LcFrom::Terminator {
                     // End of the transmission (repeated through the hang time): not a call of its own.
@@ -193,4 +198,38 @@ mod tests {
         v.event(0, SlotEvent::Lc { lc: lc(0x20, FID_MOTOROLA, true), from: LcFrom::Embedded }, 0.8, &mut out);
         assert!(v.slots[0].encrypted);
     }
+
+    #[test]
+    fn complete_alias_reaches_existing_unit_name_path_without_changing_privacy() {
+        let mut v = DmrVoice::new(1);
+        v.chan.xpt = true;
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc: crate::dmr::Lc([0, 0x68, 0, 0x50, 0, 149, 0, 0x13, 0x8e]), from: LcFrom::Header }, 0.0, &mut out);
+        // The captured UTF-16 payload, with its declared length set to the six
+        // units actually supplied. The original declares 13 and stays partial.
+        v.event(0, SlotEvent::Lc { lc: crate::dmr::Lc([4, 0x68, 0xcc, 0, 0x48, 0, 0x79, 0, 0x74]), from: LcFrom::Embedded }, 0.2, &mut out);
+        v.event(0, SlotEvent::Lc { lc: crate::dmr::Lc([5, 0x68, 0, 0x65, 0, 0x72, 0, 0x61, 0]), from: LcFrom::Embedded }, 0.9, &mut out);
+        let aliases: Vec<_> = out.iter().filter_map(|o| match &o.out { TrackerOut::Alias(a) => Some((o.slot, a)), _ => None }).collect();
+        assert_eq!(aliases.len(), 1);
+        assert_eq!((aliases[0].0, aliases[0].1.unit, aliases[0].1.alias.as_str(), aliases[0].1.talkgroup), (0, 5006, "Hytera", Some(149)));
+        assert!(!v.slots[0].encrypted && !v.slots[0].emergency, "alias format byte is not service options");
+        assert!(v.slots[1].source.is_none());
+    }
+    #[test]
+    fn xpt_voice_ids_and_privacy_do_not_depend_on_a_new_receiver_hearing_setup() {
+        let mut v = DmrVoice::new(1);
+        v.chan.xpt = true; // supplied through the control channel's VoiceParams
+        let lc = Lc([3, 0x68, 0x40, 0xab, 0, 25, 0xcd, 0x12, 0x34]);
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc, from: LcFrom::Embedded }, 0.0, &mut out);
+        assert_eq!(v.talkgroup(0), Some(25));
+        assert_eq!(v.slots[0].source, Some(0x1234));
+        assert!(v.private(0) && v.slots[0].encrypted);
+        v.event(0, SlotEvent::Voice { frame: crate::ambe::AmbeFrame { bits: [0; 49], errs: 0 }, pos: Some(0) }, 0.1, &mut out);
+        assert!(out.iter().all(|v| !matches!(v.out, TrackerOut::Audio(..))), "encrypted frames are never vocoded");
+        let mut ordinary = DmrVoice::new(1);
+        ordinary.event(0, SlotEvent::Lc { lc, from: LcFrom::Header }, 0.0, &mut out);
+        assert_eq!(ordinary.talkgroup(0), Some(0xab0019), "non-XPT Hytera keeps standard 24-bit IDs");
+    }
+
 }

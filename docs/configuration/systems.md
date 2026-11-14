@@ -177,10 +177,14 @@ Find my system fills in the four `400_custom` numbers for SmartNet OBT systems.
 |---|:---:|---|---|---|
 | `dmrChannelsHz` | | `[]` | array of numbers | Voice frequencies to watch besides the control channels, Hz (Trunk Recorder's `channels`; for Capacity Plus, every repeater of the site). Each must be inside a source |
 | `lcnTableHz` | | `{}` | object | Logical channel number → frequency, Hz: `{ "101": 452275000 }` (Trunk Recorder's `lcnTable`). Wins over channels learned from the air; channels left out are learned |
-| `colorCode` | | `null` | integer or null | Only this colour code, 0–15. `null`: the control channel's |
+| `colorCode` | | `null` | integer or null | Only this colour code, 0–15. `null`: the control channel's (XPT: configured frequencies may use different codes) |
+| `dmrColorCodes` | | `{}` | object | Per-frequency color codes, 0–15: `{ "451000000": 1 }`. Overrides the global filter on that carrier |
+| `xptHomeGroups` | | `{}` | object | XPT programmed home talkgroup → repeater (1–8): `{ "25": 1 }`. Informational; overflow calls do not change it |
 
-DMR sites announce no system identity, so `expect` is ignored; use `colorCode`, and list the sites
-of one system under it.
+DMR sites announce no reliable system identity, so `expect` is ignored; use explicit frequency
+and color-code filters and separate configurations for each site. See [Hytera XPT](../guides/xpt.md)
+for receive-only XPT support, repeater mappings, ID widths and validation limits. All configured
+DMR mapping frequencies are watched; XPT mappings use repeater LCNs and are not learned from hashes.
 
 ## NXDN
 

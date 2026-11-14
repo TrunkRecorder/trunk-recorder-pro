@@ -9,11 +9,15 @@
 //! ```
 
 pub mod burst;
+pub mod alias;
 pub mod fec;
+pub mod hytera;
 pub mod slot;
 pub mod synth;
 pub mod trunking;
 pub mod voice;
+pub mod xpt;
+pub mod short_lc;
 
 pub use burst::{Burst, Framer, SyncKind};
 pub use slot::{Channel, Csbk, Lc, LcFrom, SlotDecoder, SlotEvent};

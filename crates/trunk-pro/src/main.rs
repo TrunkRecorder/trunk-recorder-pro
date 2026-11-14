@@ -486,6 +486,7 @@ fn replay(a: &Args) {
                 channels: hz_list("dmr-channels"),
                 lcn_table: lcn_table(a),
                 color_code: a.get("color-code").and_then(|v| v.parse().ok()),
+                ..Default::default()
             }) {
                 Some(dc) => Protocol::Dmr(dc),
                 None if a.get("nxdn-trunk").is_some() => {

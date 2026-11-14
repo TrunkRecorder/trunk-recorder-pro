@@ -333,7 +333,7 @@ impl ControlChannel for P25 {
             (Some(nac), Some(sys), Some(wacn)) => Some((nac as u32, sys, wacn)),
             _ => None,
         };
-        VoiceParams { tdma_key, nac: id.nac().map(|n| n as u16) }
+        VoiceParams { tdma_key, nac: id.nac().map(|n| n as u16), ..Default::default() }
     }
     fn modulation(&self) -> &'static str {
         if let Some(m) = self.bank.detected() {
@@ -510,6 +510,9 @@ struct Dmr {
 }
 
 impl ControlChannel for Dmr {
+    fn voice_params(&self, _identity: &Identity) -> VoiceParams {
+        VoiceParams { dmr_xpt: self.site.variant == Some(dmr::Variant::Xpt), ..Default::default() }
+    }
     fn name(&self) -> &'static str {
         "DMR"
     }
