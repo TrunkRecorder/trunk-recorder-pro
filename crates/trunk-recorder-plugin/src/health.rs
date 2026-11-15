@@ -460,6 +460,9 @@ pub struct Reporter {
     backoff: Option<f64>,
     /// The end of the last report delivered (its totals' `time`), and its recording's `since`.
     delivered_to: Option<(f64, f64)>,
+    /// The totals the last report was made from (`time`, `since`), exactly: the report's own
+    /// figures are rounded, and the next window must start where this one ended.
+    built: Option<(f64, f64)>,
     seq: u64,
     /// The credentials were refused: no more reports.
     pub stopped: bool,
@@ -468,7 +471,7 @@ pub struct Reporter {
 impl Reporter {
     /// `key`: something of the node's own (its ID), to spread nodes started together.
     pub fn new(select: Select, key: &str) -> Reporter {
-        Reporter { select, rng: seed(key), interval: INTERVAL_S, slot: None, next_at: None, backoff: None, delivered_to: None, seq: 0, stopped: false }
+        Reporter { select, rng: seed(key), interval: INTERVAL_S, slot: None, next_at: None, backoff: None, delivered_to: None, built: None, seq: 0, stopped: false }
     }
 
     /// For tests: a fixed seed.
@@ -526,7 +529,7 @@ impl Reporter {
 
     /// The report due: from the end of the last one delivered (or, after more than
     /// [`MAX_WINDOW_S`] undelivered, the window's latest start, with `gap`) to the latest totals.
-    pub fn report(&self, history: &History, node: Value, recorder: Recorder) -> Option<Report> {
+    pub fn report(&mut self, history: &History, node: Value, recorder: Recorder) -> Option<Report> {
         let now = history.latest()?;
         let from = self.delivered_to.filter(|&(_, since)| since == now.since).map(|(t, _)| t);
         let oldest = now.time - MAX_WINDOW_S;
@@ -539,14 +542,16 @@ impl Reporter {
         };
         let mut r = report(base, now, &self.select, node, recorder, self.seq)?;
         r.window.gap = gap;
+        self.built = Some((now.time, now.since));
         Some(r)
     }
 
     /// `r` was delivered; the service may have set the interval (`next_s`).
     pub fn delivered(&mut self, r: &Report, next_s: Option<f64>) {
         self.seq += 1;
-        let since = r.window.end - r.recorder.up_s.unwrap_or(0.0);
-        self.delivered_to = Some((r.window.end, since));
+        // (A report this Reporter didn't make: its own, rounded, figures.)
+        let made = self.built.take().unwrap_or((r.window.end, r.window.end - r.recorder.up_s.unwrap_or(0.0)));
+        self.delivered_to = Some(made);
         self.backoff = None;
         match next_s.filter(|n| n.is_finite()) {
             Some(n) => {
@@ -677,6 +682,37 @@ mod tests {
         // Spread over the interval, not bunched.
         starts.sort_by(f64::total_cmp);
         assert!(starts[49] - starts[0] > INTERVAL_S * 0.7, "{starts:?}");
+    }
+
+    #[test]
+    fn delivered_windows_follow_on_at_times_that_are_not_round() {
+        // Recording started, and totals come, at times a report rounds (to 0.1 s).
+        let since = 1000.0437;
+        let mut n = Reporter::seeded(Select::system("dcfd"), 5);
+        let mut hist = History::default();
+        let (mut seqs, mut good, mut last_end) = (Vec::new(), 0, None);
+        let mut t = since;
+        while t < since + 2000.0 {
+            let mut h = totals(t, ((t - since) / 10.0) as u64 * 37, 0, 0);
+            h.since = since;
+            hist.push(h.clone());
+            if n.due(&h) {
+                let r = n.report(&hist, Value::Null, Recorder::default()).unwrap();
+                if let Some(end) = last_end {
+                    assert_eq!(r.window.start, end, "each window starts where the last ended");
+                }
+                seqs.push(r.window.seq);
+                good += r.sites.iter().map(|s| s.cc.good).sum::<u64>();
+                last_end = Some(r.window.end);
+                n.delivered(&r, None);
+            }
+            t += 10.0037;
+        }
+        assert!(seqs.len() >= 5, "{seqs:?}");
+        assert_eq!(seqs, (0..seqs.len() as u64).collect::<Vec<_>>(), "numbered on, not started over");
+        // Every block counted once: the windows' sum is the total at the last one's end.
+        let at_end = hist.at_or_after(n.delivered_to.unwrap().0).unwrap();
+        assert_eq!(good, at_end.sites.iter().filter(|s| Select::system("dcfd").site_in(s)).map(|s| s.good).sum::<u64>());
     }
 
     #[test]
