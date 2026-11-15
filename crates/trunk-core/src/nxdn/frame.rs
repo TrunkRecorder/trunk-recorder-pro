@@ -207,6 +207,8 @@ pub struct Framer {
     fresh: bool,
     /// Symbols arrive sign-flipped (locked on the inverted FSW).
     pub inverted: bool,
+    /// The grid's last FSW wasn't there.
+    missed: bool,
     bad: u32,
     pub frames: u64,
     pub syncs: u64,
@@ -220,7 +222,7 @@ impl Default for Framer {
 
 impl Framer {
     pub fn new() -> Self {
-        Framer { buf: VecDeque::new(), win: 0, n: 0, next_fsw: None, frame_end: 0, pending: None, fresh: false, inverted: false, bad: 0, frames: 0, syncs: 0 }
+        Framer { buf: VecDeque::new(), win: 0, n: 0, next_fsw: None, frame_end: 0, pending: None, fresh: false, inverted: false, missed: false, bad: 0, frames: 0, syncs: 0 }
     }
 
     pub fn locked(&self) -> bool {
@@ -233,6 +235,7 @@ impl Framer {
         self.frame_end = i + BODY_SYMBOLS as u64;
         self.next_fsw = Some(i + FRAME_SYMBOLS as u64);
         self.fresh = true;
+        self.missed = false;
         self.bad = 0;
     }
 
@@ -253,11 +256,15 @@ impl Framer {
             Some(at) if at == i => {
                 let e = if self.inverted { errs_inv } else { errs };
                 self.pending = (e <= GRID_ERRS).then_some(e);
+                self.missed = self.pending.is_none();
                 self.frame_end = i + BODY_SYMBOLS as u64;
                 self.next_fsw = Some(i + FRAME_SYMBOLS as u64);
             }
-            // A clean FSW off the grid, when the grid's last one was missed: the grid moved.
-            Some(_) if best <= LOCK_ERRS && self.bad > 0 && full => self.lock(i, best, best_inv),
+            // A clean FSW off the grid, when the grid's last one was missed:
+            // the grid moved. (Not only after a frame with no LICH either: a
+            // control channel's idle frames repeat, and on a slipped grid the
+            // same 8 symbols can pass as a LICH every frame.)
+            Some(_) if best <= LOCK_ERRS && self.missed && full => self.lock(i, best, best_inv),
             None if best <= LOCK_ERRS && full => self.lock(i, best, best_inv),
             _ => {}
         }

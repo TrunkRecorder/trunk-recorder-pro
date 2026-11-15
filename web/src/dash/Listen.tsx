@@ -32,10 +32,10 @@ import {
 } from "../listen.ts";
 import type { CallEntry, Config, RecordingOverride } from "../protocol.ts";
 import { BrowserStorage } from "../web/BrowserStorage.tsx";
-import { aliasOf, AirTg } from "./Calls.tsx";
+import { aliasOf, AirTg, unitIdOf } from "./Calls.tsx";
 
 /** What the Listen page reads of the store (the page selects only this). */
-type ListenState = Pick<AppState, "connected" | "config" | "units" | "unitNames" | "talkgroups">;
+type ListenState = Pick<AppState, "connected" | "config" | "units" | "mdcUnits" | "unitNames" | "talkgroups">;
 
 /** A talkgroup as the scanner shows it. */
 interface Tg {
@@ -105,7 +105,7 @@ const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).
 function unitOf(s: ListenState, c: CallEntry): string {
   const u = c.record.srcList?.find((x) => x.src > 0);
   if (!u) return "";
-  return aliasOf(s, systemOf(c), u.src, u.tag || u.tag_ota) ?? String(u.src);
+  return aliasOf(s, systemOf(c), u.src, u.tag || u.tag_ota) ?? unitIdOf(s, systemOf(c), u.src);
 }
 
 function Led({ color, blink }: { color: string; blink?: boolean }) {
@@ -480,7 +480,7 @@ export function Talkgroups({ s }: { s: ListenState }) {
 
 /** `tab`: the side panel's tab to open on (the calls). */
 export function ListenPage({ tab: first = "calls" }: { tab?: "calls" | "talkgroups" } = {}) {
-  const s: ListenState = useSelect((x) => ({ connected: x.connected, config: x.config, units: x.units, unitNames: x.unitNames, talkgroups: x.talkgroups }));
+  const s: ListenState = useSelect((x) => ({ connected: x.connected, config: x.config, units: x.units, mdcUnits: x.mdcUnits, unitNames: x.unitNames, talkgroups: x.talkgroups }));
   const [tab, setTab] = useState<"calls" | "talkgroups">(first);
   const off = useListen((x) => x.sel.offSystems.length + x.sel.offTalkgroups.length);
   return (

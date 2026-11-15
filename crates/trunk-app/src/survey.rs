@@ -388,7 +388,7 @@ fn plan_json(p: &trunk_core::smartnet::plan::PlanConfig) -> Value {
 /// channel and as many of the voice channels (and other control channels) as
 /// fit; and how many voice channels that covers.
 pub fn best_center(primary: f64, ccs: &[f64], voice: &[f64], rate_hz: f64, guard_hz: f64) -> (f64, usize) {
-    let s = Placing { rate_hz, guard_hz, fixed_hz: None };
+    let s = Placing { rate_hz, guard_hz, fixed_hz: None, band: None };
     // Voice channels count; the other control channels only break a tie.
     let chans: Vec<Weighted> = voice.iter().map(|&hz| Weighted { hz, weight: 1.0 }).chain(ccs.iter().chain([&primary]).map(|&hz| Weighted { hz, weight: 1e-3 })).collect();
     let center = busiest_window(&chans, &s, Some(&[primary])).unwrap_or(primary + 250_000.0);
@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(n, 5);
         assert!((c - 851.5e6).abs() > 20_000.0, "on DC");
         for f in &voice[..5] {
-            assert!(Placing { rate_hz: 2_400_000.0, guard_hz: DEFAULT_GUARD_HZ, fixed_hz: None }.reaches(c, *f), "{f} outside {c}");
+            assert!(Placing { rate_hz: 2_400_000.0, guard_hz: DEFAULT_GUARD_HZ, fixed_hz: None, band: None }.reaches(c, *f), "{f} outside {c}");
         }
     }
 

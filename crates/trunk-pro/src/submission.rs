@@ -1,7 +1,9 @@
 //! `trunk-pro tool submission <folder> --out dir`: is a contributed capture
 //! what it says it is (research/iq-corpus.md)? Its checks and waterfalls go in
 //! `dir`, as counts and levels: the service publishes those, not what's decoded.
-//! Exits non-zero if it fails: the service deletes those.
+//! Exits non-zero if it fails (it isn't a radio's IQ, or doesn't match its
+//! hash): the service deletes those. What it decodes to, nothing included, is
+//! counted, not judged.
 
 use std::fs;
 use std::path::Path;
@@ -66,8 +68,12 @@ fn check(folder: &Path, out: &Path) -> Result<Value, String> {
             return Err(format!("Recording {i} doesn't match its hash."));
         }
         seconds = seconds.max((len / bps) as f64 / r.rate_hz);
-        fs::write(out.join(format!("waterfall-{i}.bin")), waterfall::of_recording(r)?.to_bytes()).map_err(|e| e.to_string())?;
-        radios.push(json!({ "center_hz": r.center_hz, "rate_hz": r.rate_hz, "clipping_pct": clipping_pct(r)?, "lost_samples": r.gaps.iter().map(|g| g.1).sum::<u64>() }));
+        let (image, shape) = waterfall::of_recording(r)?;
+        // It must be a radio's IQ; what it decodes to doesn't matter (one that
+        // decodes nothing is what a new decoder, or a debugged failure, needs).
+        shape.check().map_err(|why| format!("Recording {i} isn't IQ: {why}"))?;
+        fs::write(out.join(format!("waterfall-{i}.bin")), image.to_bytes()).map_err(|e| e.to_string())?;
+        radios.push(json!({ "center_hz": r.center_hz, "rate_hz": r.rate_hz, "clipping_pct": clipping_pct(r)?, "lost_samples": r.gaps.iter().map(|g| g.1).sum::<u64>(), "spectrum_spread_db": (shape.spread_db * 10.0).round() / 10.0 }));
     }
     let meta: Value = serde_json::from_str(&fs::read_to_string(opened.recordings[0].data.with_extension("sigmf-meta")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let tier = meta["global"]["trp:tier"].as_str().unwrap_or("wideband").to_string();
@@ -82,9 +88,6 @@ fn check(folder: &Path, out: &Path) -> Result<Value, String> {
     let (messages, calls): (u64, u64) = (decoded.messages.values().sum(), decoded.calls.len() as u64);
     // (In case it becomes a test: hashes and counts, nothing decoded.)
     fs::write(out.join("expected.jsonl"), corpus::expected_text("submission", env!("CARGO_PKG_VERSION"), &decoded)).map_err(|e| e.to_string())?;
-    if messages == 0 && calls == 0 {
-        return Err("Nothing could be decoded from it.".into());
-    }
     let live = &meta["global"]["trp:live"];
     let live_good: u64 = live["sites"].as_array().map_or(0, |a| a.iter().filter_map(|s| s["messages_good"].as_u64()).sum());
     Ok(json!({
