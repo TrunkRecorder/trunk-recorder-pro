@@ -201,6 +201,8 @@ pub struct RadioReport {
     pub clip_pct: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ppm_error: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ppm_applied: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -382,6 +384,7 @@ fn radio(a: &SourceHealth, b: Option<&SourceHealth>) -> RadioReport {
         dropped_s: r1(d(|s| s.dropped_s)),
         clip_pct: (secs >= 1.0).then(|| (d(|s| s.clip_pct_total) / secs * 1000.0).round() / 1000.0),
         ppm_error: a.ppm_error.map(|p| (p * 100.0).round() / 100.0),
+        ppm_applied: a.ppm_applied.map(|p| (p * 100.0).round() / 100.0),
     }
 }
 
@@ -641,7 +644,7 @@ mod tests {
             ],
             channels: vec![ChannelHealth { short_name: "fire".into(), freq_hz: 154_430_000, mode: "fm".into(), source: Some(1), heard_s: time - 1000.0, ..Default::default() }],
             sources: vec![
-                SourceHealth { index: 0, name: "800".into(), driver: "airspy".into(), seconds: time - 1000.0, clip_pct_total: 0.1 * (time - 1000.0), ..Default::default() },
+                SourceHealth { index: 0, name: "800".into(), driver: "airspy".into(), seconds: time - 1000.0, clip_pct_total: 0.1 * (time - 1000.0), ppm_error: Some(1.134), ppm_applied: Some(1.1), ..Default::default() },
                 SourceHealth { index: 1, name: "vhf".into(), driver: "rtlsdr".into(), seconds: time - 1000.0, ..Default::default() },
             ],
             system_offset_ms: Some(12.4),
@@ -666,6 +669,9 @@ mod tests {
         assert!(r.channels.is_empty(), "another system's");
         assert_eq!(r.radios.len(), 1, "only the radio its sites are on");
         assert_eq!(r.radios[0].clip_pct, Some(0.1));
+        assert_eq!((r.radios[0].ppm_error, r.radios[0].ppm_applied), (Some(1.13), Some(1.1)), "the error, and what AutoTune corrects of it");
+        let json = serde_json::to_value(&r.radios[0]).unwrap();
+        assert_eq!((json["ppmError"].as_f64(), json["ppmApplied"].as_f64()), (Some(1.13), Some(1.1)));
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["sites"][0]["cc"]["lockedS"], 300.0);
         assert_eq!(v["recorder"]["upS"], 600.0);

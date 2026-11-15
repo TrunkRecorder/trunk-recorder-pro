@@ -1281,9 +1281,14 @@ pub struct SourceHealth {
     pub dropped_s: f64,
     /// The share of samples at full scale, %, summed over its seconds.
     pub clip_pct_total: f64,
-    /// Its frequency error left after correction, ppm, now (none: not measured).
+    /// Its frequency error, ppm, now, measured against the correction it's configured with (none: not
+    /// measured).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ppm_error: Option<f64>,
+    /// The correction AutoTune applies on top of the configured one, ppm, now (none: AutoTune off).
+    /// `ppm_error - ppm_applied` is how far off it still tunes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ppm_applied: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

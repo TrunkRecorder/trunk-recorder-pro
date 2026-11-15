@@ -184,7 +184,8 @@ lean on what it sees itself as well: which node delivers transmissions the other
 | `seconds` | number | Seconds of the window it was running |
 | `droppedS` | number | Seconds in which it lost any samples (USB too slow, a CPU too busy): a second with one lost buffer counts as a whole second |
 | `clipPct` | number | Share of samples at full scale, % |
-| `ppmError` | number | Its frequency error left after correction, ppm, as measured on signals of known frequency |
+| `ppmError` | number | Its frequency error, ppm, as measured on signals of known frequency, against the correction it's configured with |
+| `ppmApplied` | number | The correction the recorder applies by itself on top of the configured one (Trunk Recorder Pro's AutoTune), ppm; left out when it applies none. `ppmError − ppmApplied` is how far off it still tunes: a large `ppmError` with a `ppmApplied` close to it is a radio being corrected, not a mistuned one. A recorder whose automatic correction changes the radio's own setting (SDRTrunk's Auto-PPM) leaves it out: its `ppmError` is already what's left |
 
 ### Clock
 
@@ -272,3 +273,4 @@ don't change `v`; a change in a field's meaning does.
 | Date | Change |
 |---|---|
 | 2026-11-15 | Still `1`, all additive or clarifying, after reviewing what SDRTrunk and SDRTrunk VCE can measure: what a node's report covers (whole sites, a site in several nodes' reports, several receivers on one site, `receiver`); protocols `mpt1327`, `ltr`, `ltrnet`, `passport`; control message units per protocol, `symbolRate` in baud, rest channels; `cc.syncLossSym`, `cc.merDb`, `voice.*.missing`; `calls.recorded` defined; reasons `data` and `noFrequency`; conventional `noiseDb` optional; the answers a recorder acts on |
+| 2026-11-15 | Still `1`, additive and clarifying: radio `ppmApplied`; `ppmError` said to be measured against the configured correction (as recorders already measured it) |

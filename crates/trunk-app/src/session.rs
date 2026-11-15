@@ -1230,6 +1230,7 @@ impl Session {
                     dropped_s: t.dropped_s,
                     clip_pct_total: t.clip_pct_total,
                     ppm_error: st.sources.get(i).and_then(|r| r.error_ppm),
+                    ppm_applied: s.auto_tune.then(|| st.sources.get(i).map_or(0.0, |r| r.applied_ppm)),
                 }
             })
             .collect();
