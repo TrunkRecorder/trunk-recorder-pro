@@ -104,6 +104,9 @@ impl Window {
 pub struct SiteReport {
     pub name: String,
     pub protocol: String,
+    /// Which receiver, when the recorder decodes the site with more than one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub id: BTreeMap<String, u32>,
     pub cc: CcReport,
@@ -119,13 +122,18 @@ pub struct CcReport {
     pub hz: Option<u64>,
     pub locked_s: f64,
     pub good: u64,
-    pub bad: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bad: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_loss_sym: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub air_sym: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol_rate: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snr_db: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mer_db: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_err_deg: Option<f64>,
 }
@@ -160,13 +168,20 @@ pub struct ChannelReport {
     pub mode: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// Which receiver, when the recorder hears the channel on more than one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver: Option<String>,
+    /// The code it records by: `CTCSS 151.4`, `DCS 023N`, `NAC 293`, `CC 1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
     pub heard_s: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub noise_db: Option<f64>,
     pub opens: u64,
     pub open_s: f64,
     pub calls: u64,
-    pub opened_by_other: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_by_other: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal_db: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,7 +280,12 @@ fn r1(v: f64) -> f64 {
 
 fn frames(a: FrameTotals, b: Option<&FrameTotals>) -> Option<FrameTotals> {
     let b = b.copied().unwrap_or_default();
-    let d = FrameTotals { frames: a.frames.saturating_sub(b.frames), bad: a.bad.saturating_sub(b.bad), errors: a.errors.saturating_sub(b.errors) };
+    let d = FrameTotals {
+        frames: a.frames.saturating_sub(b.frames),
+        bad: a.bad.saturating_sub(b.bad),
+        errors: a.errors.saturating_sub(b.errors),
+        missing: a.missing.map(|m| m.saturating_sub(b.missing.unwrap_or(0))),
+    };
     (d.frames > 0).then_some(d)
 }
 
@@ -311,15 +331,18 @@ fn site(a: &SiteHealth, b: Option<&SiteHealth>) -> SiteReport {
     SiteReport {
         name: a.site_name.clone(),
         protocol: a.protocol.clone(),
+        receiver: None,
         id,
         cc: CcReport {
             hz: a.control_channel_hz,
             locked_s: r1(d(|s| s.locked_s)),
             good: a.good.saturating_sub(b.map_or(0, |b| b.good)),
-            bad: a.bad.saturating_sub(b.map_or(0, |b| b.bad)),
+            bad: Some(a.bad.saturating_sub(b.map_or(0, |b| b.bad))),
+            sync_loss_sym: None,
             air_sym: a.air_sym.map(|n| n.saturating_sub(b.and_then(|b| b.air_sym).unwrap_or(0))),
             symbol_rate: a.symbol_rate,
             snr_db: mean(d(|s| s.snr_db_total), d(|s| s.snr_s)),
+            mer_db: None,
             phase_err_deg: mean(d(|s| s.phase_err_deg_total), d(|s| s.phase_err_s)),
         },
         calls: calls(&a.calls, b.map(|b| &b.calls)),
@@ -335,12 +358,14 @@ fn channel(a: &ChannelHealth, b: Option<&ChannelHealth>) -> ChannelReport {
         hz: a.freq_hz,
         mode: a.mode.clone(),
         name: a.names.join(", "),
+        receiver: None,
+        access: None,
         heard_s: r1(d(|c| c.heard_s)),
         noise_db: mean(d(|c| c.closed_db_total), d(|c| c.closed_s)),
         opens: c.started + skipped,
         open_s: r1(d(|c| c.open_s)),
         calls: c.recorded,
-        opened_by_other: skipped,
+        opened_by_other: Some(skipped),
         signal_db: mean(d(|c| c.signal_db_total), d(|c| c.open_s)),
         snr_db: mean(d(|c| c.snr_db_total), d(|c| c.open_s)),
         voice: voice(&a.voice, b.map(|b| &b.voice)),
@@ -609,7 +634,7 @@ mod tests {
                     snr_db_total: 15.0 * (time - 1000.0),
                     snr_s: time - 1000.0,
                     calls,
-                    voice: VoiceTotals { imbe: FrameTotals { frames, bad, errors: bad * 3 }, ..Default::default() },
+                    voice: VoiceTotals { imbe: FrameTotals { frames, bad, errors: bad * 3, missing: None }, ..Default::default() },
                     ..Default::default()
                 },
                 SiteHealth { short_name: "dcfd".into(), site_name: "south".into(), protocol: "p25".into(), ..Default::default() },
@@ -631,12 +656,12 @@ mod tests {
         assert_eq!((r.window.start, r.window.end, r.window.seq), (1300.0, 1600.0, 3));
         assert_eq!(r.sites.len(), 1);
         let s = &r.sites[0];
-        assert_eq!((s.cc.locked_s, s.cc.good, s.cc.bad, s.cc.air_sym), (300.0, 1500, 75, Some(150_000)));
+        assert_eq!((s.cc.locked_s, s.cc.good, s.cc.bad, s.cc.air_sym), (300.0, 1500, Some(75), Some(150_000)));
         assert_eq!(s.cc.snr_db, Some(15.0));
         assert_eq!(s.id["wacn"], 0xBEE00);
         assert_eq!(s.calls.started, 150);
         assert_eq!(s.calls.not_recorded["noSource"], 15);
-        assert_eq!(s.voice.imbe, Some(FrameTotals { frames: 400, bad: 20, errors: 60 }));
+        assert_eq!(s.voice.imbe, Some(FrameTotals { frames: 400, bad: 20, errors: 60, missing: None }));
         assert_eq!(s.voice.ambe, None, "no frames: left out, not 0");
         assert!(r.channels.is_empty(), "another system's");
         assert_eq!(r.radios.len(), 1, "only the radio its sites are on");

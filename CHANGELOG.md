@@ -15,6 +15,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Plugins: the `health` topic** (SDK 0.12.0): those totals every 10 s, running since recording started. The SDK's
   `health` module makes a node's report of them and keeps its schedule (random phase, jitter, a failed report's window
   carried by the next, backing off when the service is busy, the interval the service asks for).
+- **Node health reports: one format for every recorder.** After reviewing what SDRTrunk and SDRTrunk VCE can measure,
+  still version 1, all additive: a node's report covers whole sites (a site can be in several nodes' reports), several
+  receivers on one site (`receiver`), MPT1327, LTR, LTR-Net and Passport, each protocol's unit of control message,
+  `symbolRate` in baud, rest channels, `cc.syncLossSym`, `cc.merDb`, `voice.*.missing`, `calls.recorded` defined, the
+  reasons `data` and `noFrequency`, conventional `noiseDb` optional, and the answers a recorder acts on. Example reports
+  in `docs/api/node-health/` are the conformance cases; the SDK's report types read and write each unchanged.
 
 ## [0.3.7] — 2026-11-13
 

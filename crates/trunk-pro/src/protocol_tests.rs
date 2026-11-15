@@ -797,7 +797,7 @@ fn health_totals_make_a_node_health_report() {
     let r = report(None, &h, &Select::system("conv"), json!({ "systemId": 1 }), Recorder::new("trunk-recorder-pro", "test"), 0).expect("its channel");
     let c = &r.channels[0];
     assert_eq!((c.hz, c.mode.as_str(), c.name.as_str()), (155_200_000, "fm", "Fire"));
-    assert_eq!((c.opens, c.calls, c.opened_by_other), (1, 1, 0));
+    assert_eq!((c.opens, c.calls, c.opened_by_other), (1, 1, Some(0)));
     assert!((1.0..=3.0).contains(&c.open_s), "open {} s", c.open_s);
     assert!(c.heard_s >= 3.0, "heard {} s", c.heard_s);
     let (signal, noise, snr) = (c.signal_db.unwrap(), c.noise_db.unwrap(), c.snr_db.unwrap());
@@ -805,4 +805,25 @@ fn health_totals_make_a_node_health_report() {
     assert_eq!(r.radios.len(), 1);
     assert_eq!((r.radios[0].kind.as_str(), r.radios[0].dropped_s), ("rtlsdr", 0.0));
     assert!(c.voice.is_empty(), "analog: no frames");
+}
+
+/// The node health spec's example reports (docs/api/node-health/), each as a recorder of its kind
+/// sends it, read into the SDK's report types and written back: unchanged, so the types hold every
+/// field the spec has, and leave out what a recorder leaves out.
+#[test]
+fn node_health_examples_read_and_write_back_unchanged() {
+    let examples = [
+        ("p25-trunked.json", include_str!("../../../docs/api/node-health/p25-trunked.json")),
+        ("dmr-capacity-plus-two-receivers.json", include_str!("../../../docs/api/node-health/dmr-capacity-plus-two-receivers.json")),
+        ("conventional-relative-levels.json", include_str!("../../../docs/api/node-health/conventional-relative-levels.json")),
+    ];
+    let listed = std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/api/node-health")).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "json")).count();
+    assert_eq!(listed, examples.len(), "every example is checked here");
+    let spec = include_str!("../../../docs/api/node-health.md");
+    for (name, text) in examples {
+        assert!(spec.contains(&format!("(node-health/{name})")), "{name} is listed in the spec");
+        let sent: Value = serde_json::from_str(text).unwrap();
+        let report: trunk_recorder_plugin::health::Report = serde_json::from_value(sent.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(serde_json::to_value(&report).unwrap(), sent, "{name} comes back as it was");
+    }
 }

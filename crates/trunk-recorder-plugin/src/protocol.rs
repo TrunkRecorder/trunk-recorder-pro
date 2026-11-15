@@ -1224,6 +1224,10 @@ pub struct FrameTotals {
     pub bad: u64,
     /// Bit errors FEC corrected.
     pub errors: u64,
+    /// Frames the calls' lengths say should have come but never did (not in `frames`), when the
+    /// recorder can tell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing: Option<u64>,
 }
 
 /// One conventional frequency's totals ([`Health`]).
