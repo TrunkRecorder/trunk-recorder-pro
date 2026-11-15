@@ -471,11 +471,19 @@ impl Cmp {
     }
 }
 
+/// One candidate the search tried: the candidate, the best it was compared with, how
+/// it compared (`None`: refused) and whether the search moved to it.
+pub type Tried = (Vec<usize>, Vec<usize>, Option<Cmp>, bool);
+
+/// How the search compares two settings: `compare(best, candidate)`, `None` when the
+/// candidate was refused.
+pub type Compare<'a> = dyn FnMut(&[usize], &[usize]) -> Result<Option<Cmp>, Stop> + 'a;
+
 /// What the search found: each candidate tried, against what, how it compared and
 /// whether it was moved to.
 #[derive(Debug, Default)]
 pub struct Found {
-    pub tried: Vec<(Vec<usize>, Vec<usize>, Option<Cmp>, bool)>,
+    pub tried: Vec<Tried>,
     pub best: Vec<usize>,
     pub out_of_steps: bool,
 }
@@ -484,7 +492,7 @@ pub struct Found {
 /// comparing each candidate with the best so far (`compare(best, candidate)`, `None`:
 /// the candidate was refused) and moving to it only when it is [`Cmp::better`] by
 /// `margin`. A setting is never tried twice. At most `budget` comparisons.
-pub fn search(axes: &[Axis], start: Vec<usize>, margin: f64, budget: usize, compare: &mut dyn FnMut(&[usize], &[usize]) -> Result<Option<Cmp>, Stop>) -> Result<Found, Stop> {
+pub fn search(axes: &[Axis], start: Vec<usize>, margin: f64, budget: usize, compare: &mut Compare) -> Result<Found, Stop> {
     let mut found = Found::default();
     let mut visited: std::collections::BTreeSet<Vec<usize>> = std::collections::BTreeSet::from([start.clone()]);
     let mut best = start;
