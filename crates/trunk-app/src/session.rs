@@ -383,6 +383,9 @@ pub struct Session {
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
     recordings: Vec<crate::config::Recording>,
     pub plugin_topics: PluginTopics,
+    /// How the computer's clock is kept, as node health reports name it (`ntp`, `gps`, `ptp`,
+    /// `none`, `unknown`), as the app last saw; none: the operating system doesn't say.
+    pub clock_sync: Option<String>,
     /// Wall clock (Unix ms) at the engine's time 0, as at Start: the clock
     /// sources are measured against. What times are given out by is the
     /// engine's ([`Session::correct_wall_clock`]).
@@ -461,6 +464,7 @@ impl Session {
             sites,
             recordings,
             plugin_topics: PluginTopics::default(),
+            clock_sync: None,
             epoch_ms,
             wall_correction_ms: 0.0,
             last_plugin_status_ms: 0.0,
@@ -1236,7 +1240,7 @@ impl Session {
             .collect();
         // The recorder's clock less the systems': the latest any site said.
         let system_offset_ms = self.radio_clocks().into_iter().filter(|c| c.valid).max_by(|a, b| a.at_s.total_cmp(&b.at_s)).map(|c| -c.offset_ms);
-        trunk_recorder_plugin::Health { time: self.meas.now(), since, sites, channels, sources, system_offset_ms }
+        trunk_recorder_plugin::Health { time: self.meas.now(), since, sites, channels, sources, system_offset_ms, clock_sync: self.clock_sync.clone() }
     }
 
     fn flush_log(&mut self, out: &mut Vec<Output>) {

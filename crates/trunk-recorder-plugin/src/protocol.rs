@@ -1146,6 +1146,11 @@ pub struct Health {
     /// latest heard on any site (none: no site broadcasts it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_offset_ms: Option<f64>,
+    /// How the recorder's clock is kept: `ntp`, `gps`, `ptp`, `none` (not synchronized),
+    /// `unknown` (synchronized, by a time service the recorder can't name); none: the operating
+    /// system doesn't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_sync: Option<String>,
 }
 
 /// One trunked site's totals ([`Health`]).

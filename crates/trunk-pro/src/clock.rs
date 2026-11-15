@@ -287,6 +287,12 @@ impl Clock {
         }
     }
 
+    /// How the computer's clock is kept, as node health reports name it ([`sync_kind`]).
+    pub fn sync_kind(&self) -> Option<&'static str> {
+        let x = self.inner.lock().unwrap();
+        sync_kind(x.health.os, x.health.service.as_ref())
+    }
+
     /// The radio systems' clocks, as the recording last heard them.
     pub fn set_radio(&self, radio: Vec<RadioClock>) {
         self.inner.lock().unwrap().health.radio = radio;
@@ -391,6 +397,29 @@ impl StepWatch {
 fn step(wall_ms: f64, mono_ms: f64) -> Option<f64> {
     let jump = wall_ms - mono_ms;
     (jump.abs() >= STEP_MS).then_some(jump)
+}
+
+/// How the computer's clock is kept, as node health reports name it (`clock.sync`): `none`
+/// when the OS says it isn't synchronized; synchronized, by what its time service follows:
+/// chrony on a GPS receiver or its pulse (a refclock named GPS, PPS, NMEA, SHM or SOCK) `gps`,
+/// on a PTP hardware clock (PHC) `ptp`, on a server `ntp`; systemd-timesyncd `ntp`; a service
+/// that doesn't say `unknown`. None when the OS doesn't say either way.
+pub fn sync_kind(os: Option<OsClock>, service: Option<&Service>) -> Option<&'static str> {
+    if !os?.synced {
+        return Some("none");
+    }
+    let Some(s) = service else { return Some("unknown") };
+    if s.name != "chrony" {
+        return Some("ntp");
+    }
+    let reference = s.server.as_deref().unwrap_or("").to_ascii_uppercase();
+    Some(if ["GPS", "PPS", "NMEA", "SHM", "SOCK"].iter().any(|r| reference.starts_with(r)) {
+        "gps"
+    } else if reference.starts_with("PHC") {
+        "ptp"
+    } else {
+        "ntp"
+    })
 }
 
 /// The time service and what it follows: chrony (`chronyc -c -n tracking`),
@@ -658,6 +687,22 @@ mod tests {
         // With a time server answer, the radio systems are shown, not judged by.
         let both = Health { radio: radio(&[900.0], 30.0).radio, ..server(10.0, Some(0.0)) };
         assert_eq!(both.said(now), None);
+    }
+
+    #[test]
+    fn reports_name_how_the_clock_is_kept() {
+        let synced = Some(OsClock { synced: true, max_error_ms: 50.0 });
+        let chrony = |server: &str| Service { name: "chrony", server: Some(server.into()), stratum: Some(1), last_sync: None };
+        let timesyncd = Service { name: "systemd-timesyncd", server: Some("ntp.ubuntu.com (91.189.91.157)".into()), stratum: Some(2), last_sync: None };
+        assert_eq!(sync_kind(synced, Some(&timesyncd)), Some("ntp"));
+        assert_eq!(sync_kind(synced, Some(&chrony("162.159.200.123"))), Some("ntp"));
+        assert_eq!(sync_kind(synced, Some(&chrony("PPS"))), Some("gps"), "a GPS receiver's pulse");
+        assert_eq!(sync_kind(synced, Some(&chrony("NMEA"))), Some("gps"));
+        assert_eq!(sync_kind(synced, Some(&chrony("SHM0"))), Some("gps"), "gpsd through shared memory");
+        assert_eq!(sync_kind(synced, Some(&chrony("PHC0"))), Some("ptp"));
+        assert_eq!(sync_kind(synced, None), Some("unknown"), "synchronized, by a service that doesn't say");
+        assert_eq!(sync_kind(Some(OsClock { synced: false, max_error_ms: 16_000.0 }), Some(&timesyncd)), Some("none"));
+        assert_eq!(sync_kind(None, Some(&timesyncd)), None, "the OS doesn't say");
     }
 
     #[test]

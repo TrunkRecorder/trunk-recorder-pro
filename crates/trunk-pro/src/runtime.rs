@@ -1154,6 +1154,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         if radio_at.elapsed() >= Duration::from_secs(5) {
             radio_at = Instant::now();
             ctx.clock.set_radio(session.radio_clocks());
+            session.clock_sync = ctx.clock.sync_kind().map(str::to_string);
         }
     }
     *ctx.engine.lock().unwrap() = None;

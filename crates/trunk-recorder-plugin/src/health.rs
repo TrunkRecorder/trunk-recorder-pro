@@ -419,7 +419,8 @@ pub fn report(base: Option<&Health>, now: &Health, sel: &Select, node: Value, re
         sites,
         channels,
         radios,
-        clock: now.system_offset_ms.map(|ms| Clock { sync: None, system_offset_ms: Some(ms.round()) }),
+        clock: (now.clock_sync.is_some() || now.system_offset_ms.is_some())
+            .then(|| Clock { sync: now.clock_sync.clone(), system_offset_ms: now.system_offset_ms.map(f64::round) }),
     })
 }
 
@@ -648,6 +649,7 @@ mod tests {
                 SourceHealth { index: 1, name: "vhf".into(), driver: "rtlsdr".into(), seconds: time - 1000.0, ..Default::default() },
             ],
             system_offset_ms: Some(12.4),
+            clock_sync: Some("ntp".into()),
         }
     }
 
@@ -676,6 +678,7 @@ mod tests {
         assert_eq!(v["sites"][0]["cc"]["lockedS"], 300.0);
         assert_eq!(v["recorder"]["upS"], 600.0);
         assert_eq!(v["clock"]["systemOffsetMs"], 12.0);
+        assert_eq!(v["clock"]["sync"], "ntp");
         assert!(v["window"].get("gap").is_none());
         assert!(report(None, &b, &Select::system("nope"), Value::Null, Recorder::default(), 0).is_none());
     }
