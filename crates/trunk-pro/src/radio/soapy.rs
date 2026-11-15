@@ -16,7 +16,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{cstr, ppm_corrected, Caps, Deadline, DriverInfo, Handed, Rates};
-use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Block, Control, Gain, Regained, Retuned, Sink, Tunable};
 
 type Dev = *mut c_void;
 type Stream = *mut c_void;
@@ -627,7 +627,6 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
             .and_then(|c| c.current_soapy.lock().unwrap().clone())
             .unwrap_or_else(|| crate::sdr::SoapyGain { agc: cfg.agc, db: cfg.gain_db, stages: cfg.gains.clone() });
         d.gains(&g)?;
-        }
         d.tune(cfg.center_hz)?;
         if !g.agc {
             sink.gained(g.db.map(|db| Gain::Db(db as f32)), d.gain_set());
