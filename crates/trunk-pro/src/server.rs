@@ -587,6 +587,16 @@ pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, his
     // Each system's talker aliases; the codes conventional frequencies carried: as last told, else as saved.
     let (heard, units): (Vec<ToClient>, Vec<ToClient>) = kept.into_iter().partition(|k| matches!(k, ToClient::Heard { .. }));
     m.extend(units);
+    // Each system's MDC1200 radios, as the registry has them (their IDs shown in hex).
+    {
+        let radio = ctx.shared.radio.lock().unwrap();
+        for system in radio.systems.keys() {
+            let units = radio.mdc_units(system);
+            if !units.is_empty() {
+                m.push(ToClient::MdcUnits { system: system.clone(), units });
+            }
+        }
+    }
     m.extend(ctx.heard_last.lock().unwrap().clone().or_else(|| heard.into_iter().next()));
     m.push(history);
     m.push(ToClient::Radios { radios });

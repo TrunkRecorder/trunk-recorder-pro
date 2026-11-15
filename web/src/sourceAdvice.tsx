@@ -42,7 +42,6 @@ export function adviceFigs(a: Advice): { k: string; v: string; u?: string; title
   if (x.unmet < b.unmet) out.push({ k: "Systems missed", v: `${b.unmet} → ${x.unmet}`, title: "Systems or sites whose channels no source reaches" });
   if (x.reached > b.reached + 1e-9) out.push({ k: "Channels reached", v: b.reached > 0 ? `+${Math.max(1, Math.round((x.reached / b.reached - 1) * 100))}` : "more", u: b.reached > 0 ? "%" : undefined, title: "The channels the systems use, weighed by calls heard" });
   if (x.needed < b.needed) out.push({ k: "Radios needed", v: `${b.needed} → ${x.needed}` });
-  if (x.unsteady < b.unsteady) out.push({ k: "RTL-SDRs over 2.56 MSPS", v: `${b.unsteady} → ${x.unsteady}`, title: "Past an RTL-SDR's dependable rate" });
   if (x.rateHz < b.rateHz - 1) out.push({ k: "Sample rate", v: `−${rate.format(b.rateHz - x.rateHz)}`, u: "MSPS", title: "Less CPU and USB" });
   return out;
 }

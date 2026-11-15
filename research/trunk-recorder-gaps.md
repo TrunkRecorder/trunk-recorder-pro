@@ -33,7 +33,8 @@ None left open. The three that were here are decided:
   high-pass, low-pass and band-reject filters, `ffmpeg_filter`, the
   loudnorm targets, and `outputRawAudio` (an unprocessed copy).
 - Call JSON: `source_num` and `spike_count` are 0; `freqList` has one
-  entry; `srcList`'s `signal_system` is empty.
+  entry. (`srcList`'s `signal_system` is filled here, `MDC1200` or
+  `FLEETSYNC`; Trunk Recorder leaves it empty.)
 - `compressBitrate` per system: the M4A bitrate is one setting for all.
 - Defaults differ: Trunk Recorder's `compressWav` is on by default, here
   off. An imported config that relied on the default gets no M4A files.
