@@ -46,12 +46,9 @@ impl Assembler {
     }
 }
 
-/// MSB-first CRC8, polynomial x^8+x^2+x+1, initial/final zero.
+/// CRC8 (x⁸+x²+x+1, preset 0) of `bits`, MSB first: 0 over data and its CRC.
 fn crc8(bits: &[u8]) -> u8 {
-    bits.iter().fold(0u8, |crc, &bit| {
-        let feedback = (crc >> 7) ^ bit;
-        (crc << 1) ^ if feedback != 0 { 0x07 } else { 0 }
-    })
+    crate::bits::crc(bits, 8, 0x07, 0) as u8
 }
 
 #[cfg(test)]

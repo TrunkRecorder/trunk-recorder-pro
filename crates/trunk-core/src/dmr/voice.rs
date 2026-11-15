@@ -4,6 +4,7 @@
 //! each slot independently.
 
 use crate::trunk::Flags;
+use super::alias::{self, Assembler};
 use super::burst::{Burst, Framer};
 use super::slot::{Channel, LcFrom, SlotEvent};
 use crate::dsp::Symbol;
@@ -21,12 +22,14 @@ struct Slot {
     group: bool,
     encrypted: bool,
     emergency: bool,
-    aliases: super::alias::Tracker,
+    /// The talker alias being put together (embedded LC), and when voice LC last named the talker.
+    alias: Assembler,
+    lc_s: f64,
 }
 
 impl Slot {
     fn new(seed: u32) -> Self {
-        Slot { dec: mbe::Decoder::new(mbe::lcg(seed), mbe::Profile::Enhanced), talkgroup: None, source: None, group: true, encrypted: false, emergency: false, aliases: super::alias::Tracker::default() }
+        Slot { dec: mbe::Decoder::new(mbe::lcg(seed), mbe::Profile::Enhanced), talkgroup: None, source: None, group: true, encrypted: false, emergency: false, alias: Assembler::default(), lc_s: f64::NEG_INFINITY }
     }
 }
 
@@ -97,13 +100,19 @@ impl DmrVoice {
         let mut push = |o: TrackerOut| out.push(Out { slot, t, out: o });
         match e {
             SlotEvent::Lc { lc, from } => {
-                if let Some(alias) = s.aliases.observe(lc, from, t, self.chan.xpt).and_then(|a| a.alias()) {
-                    push(TrackerOut::Alias(alias));
+                if from == LcFrom::Embedded {
+                    // A talker alias block: whole, it names the radio voice LC named lately.
+                    let fresh = t - s.lc_s < alias::HOLD_S;
+                    let name = s.alias.push(lc, t).and_then(|d| d.alias(s.source.filter(|&u| u != 0 && fresh)?, s.talkgroup));
+                    if let Some(a) = name {
+                        push(TrackerOut::Alias(a));
+                    }
                 }
                 let lc = super::xpt::voice_lc(lc, self.chan.xpt);
                 let Some(group) = lc.voice_user() else { return };
                 if from == LcFrom::Terminator {
                     // End of the transmission (repeated through the hang time): not a call of its own.
+                    s.alias.reset();
                     s.source = None;
                     s.encrypted = false;
                     s.emergency = false;
@@ -111,6 +120,11 @@ impl DmrVoice {
                 }
                 let (tg, src) = (lc.target(), lc.source());
                 let fresh = s.talkgroup != Some(tg) || s.source != Some(src) || s.encrypted != lc.encrypted() || s.emergency != lc.emergency();
+                if s.source != Some(src) {
+                    // Another talker: the alias heard so far isn't its.
+                    s.alias.reset();
+                }
+                s.lc_s = t;
                 s.talkgroup = Some(tg);
                 s.group = group;
                 s.source = Some(src);
@@ -214,6 +228,34 @@ mod tests {
         assert_eq!((aliases[0].0, aliases[0].1.unit, aliases[0].1.alias.as_str(), aliases[0].1.talkgroup), (0, 5006, "Hytera", Some(149)));
         assert!(!v.slots[0].encrypted && !v.slots[0].emergency, "alias format byte is not service options");
         assert!(v.slots[1].source.is_none());
+    }
+
+    #[test]
+    fn alias_names_the_slots_talker_until_it_changes_ends_or_goes_stale() {
+        use crate::dmr::{slot::FID_HYTERA, Lc};
+        // "DESK 123", Latin-1, Hytera FID: a header block and one more.
+        let ms = [Lc([4, FID_HYTERA, 0x50, 0x44, 0x45, 0x53, 0x4b, 0x20, 0x31]), Lc([5, FID_HYTERA, 0x32, 0x33, 0, 0, 0, 0, 0])];
+        let voice = |src: u8, enc: bool| Lc([0, FID_HYTERA, if enc { 0x40 } else { 0 }, 0, 0, 149, 0, 0x13, src]);
+        let names = |out: &[Out]| out.iter().filter_map(|o| match &o.out { TrackerOut::Alias(a) => Some((o.slot, a.unit, a.alias.clone())), _ => None }).collect::<Vec<_>>();
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc: voice(0x8e, true), from: LcFrom::Header }, 0.0, &mut out);
+        v.event(1, SlotEvent::Lc { lc: voice(0x8f, false), from: LcFrom::Header }, 0.0, &mut out);
+        v.event(0, SlotEvent::Lc { lc: ms[0], from: LcFrom::Embedded }, 0.2, &mut out);
+        v.event(1, SlotEvent::Lc { lc: ms[1], from: LcFrom::Embedded }, 0.3, &mut out);
+        v.event(0, SlotEvent::Lc { lc: ms[1], from: LcFrom::Embedded }, 0.9, &mut out);
+        assert_eq!(names(&out), [(0, 5006, "DESK 123".to_string())], "slot-local, and an encrypted call's alias is clear");
+        out.clear();
+        v.event(0, SlotEvent::Lc { lc: ms[0], from: LcFrom::Embedded }, 1.0, &mut out);
+        v.event(0, SlotEvent::Lc { lc: voice(0x8f, false), from: LcFrom::Embedded }, 1.1, &mut out);
+        v.event(0, SlotEvent::Lc { lc: ms[1], from: LcFrom::Embedded }, 1.7, &mut out);
+        v.event(0, SlotEvent::Lc { lc: ms[0], from: LcFrom::Embedded }, 1.8, &mut out);
+        v.event(0, SlotEvent::Lc { lc: voice(0x8f, false), from: LcFrom::Terminator }, 1.9, &mut out);
+        v.event(0, SlotEvent::Lc { lc: ms[1], from: LcFrom::Embedded }, 2.0, &mut out);
+        assert!(names(&out).is_empty(), "a new talker or the end of the transmission starts over");
+        v.event(1, SlotEvent::Lc { lc: ms[0], from: LcFrom::Embedded }, 4.1, &mut out);
+        v.event(1, SlotEvent::Lc { lc: ms[1], from: LcFrom::Embedded }, 4.5, &mut out);
+        assert!(names(&out).is_empty(), "no name for a talker last named long ago");
     }
     #[test]
     fn xpt_voice_ids_and_privacy_do_not_depend_on_a_new_receiver_hearing_setup() {

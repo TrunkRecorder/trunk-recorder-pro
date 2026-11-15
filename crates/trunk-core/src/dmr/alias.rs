@@ -1,14 +1,16 @@
 //! DMR over-the-air talker aliases (ETSI TS 102 361-2 §§5.4.3, 7.2.18–19).
 //! FID 0 / 0x68 use FLCO 4–7; Motorola's equivalent uses 0x14–0x17.
 //! Only integrity-checked, unprotected embedded LC enters assembly. Aliases do
-//! not contain a radio ID: attribution requires fresh voice LC on the same slot.
+//! not contain a radio ID: the voice decoder ([`super::voice`]) names the radio,
+//! from the slot's voice LC, and resets the assembly when its talker changes.
 
-use super::slot::{Lc, LcFrom, FID_HYTERA, FID_MOTOROLA};
+use super::slot::{Lc, FID_HYTERA, FID_MOTOROLA};
 use crate::alias::Alias;
 use crate::bits::field;
 use serde::Serialize;
 
-const HOLD_S: f64 = 4.0;
+/// Fragments (and a talker named by voice LC) older than this are not used.
+pub const HOLD_S: f64 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Format { Ascii7, Latin1, Utf8, Utf16Be }
@@ -33,20 +35,10 @@ impl Decoded {
     fn source(&self) -> &'static str {
         match self.fid { FID_HYTERA => "HyteraDMR", FID_MOTOROLA => "MotoDMR", _ => "DMR" }
     }
-}
 
-/// Partial results are diagnostics only; they must not overwrite learned names.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Observation {
-    pub unit: Option<u32>,
-    pub talkgroup: Option<u32>,
-    pub decoded: Decoded,
-}
-
-impl Observation {
-    pub fn alias(&self) -> Option<Alias> {
-        self.decoded.complete.then_some(())?;
-        Some(Alias { unit: self.unit?, alias: self.decoded.text.clone(), source: self.decoded.source(), talkgroup: self.talkgroup })
+    /// Radio `unit`'s name, once the alias is whole (a partial one is only shown by `tool dmr`).
+    pub fn alias(&self, unit: u32, talkgroup: Option<u32>) -> Option<Alias> {
+        self.complete.then(|| Alias { unit, alias: self.text.clone(), source: self.source(), talkgroup })
     }
 }
 
@@ -145,38 +137,6 @@ fn decode(format: Format, units: &[u16], complete: bool) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// Keep one tracker per physical carrier/slot. Audio encryption does not
-/// decide whether metadata is readable: protected LC is rejected separately.
-#[derive(Default)]
-pub struct Tracker {
-    assembler: Assembler,
-    identity: Option<(u32, u32)>,
-    voice_s: f64,
-}
-
-impl Tracker {
-    pub fn observe(&mut self, lc: Lc, from: LcFrom, t: f64, xpt: bool) -> Option<Observation> {
-        if self.identity.is_some() && t - self.voice_s > HOLD_S { *self = Self::default(); }
-        if lc.voice_user().is_some() {
-            let lc = super::xpt::voice_lc(lc, xpt);
-            let id = (lc.source(), lc.target());
-            if lc.0[0] & 0x80 != 0 { *self = Self::default(); return None; }
-            if from == LcFrom::Terminator {
-                if self.identity == Some(id) { *self = Self::default(); }
-            } else {
-                if self.identity != Some(id) { self.assembler.reset(); }
-                self.identity = (id.0 != 0).then_some(id);
-                self.voice_s = t;
-            }
-            return None;
-        }
-        if from != LcFrom::Embedded { return None; }
-        if lc.0[0] & 0x80 != 0 { self.assembler.reset(); return None; }
-        let decoded = self.assembler.push(lc, t)?;
-        Some(Observation { unit: self.identity.map(|i| i.0), talkgroup: self.identity.map(|i| i.1), decoded })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,11 +173,6 @@ mod tests {
         out.unwrap()
     }
 
-    fn voice(source: u16) -> Lc {
-        let [a, b] = source.to_be_bytes();
-        Lc([0, 0x68, 0, 0x50, 0, 149, 0, a, b])
-    }
-
     #[test]
     fn all_encodings_and_vendor_opcodes_use_code_units() {
         for fid in [0, FID_HYTERA, FID_MOTOROLA] {
@@ -240,14 +195,12 @@ mod tests {
 
     #[test]
     fn captured_hytera_alias_is_an_incomplete_prefix_not_a_saved_name() {
-        let mut tracker = Tracker::default();
-        tracker.observe(voice(5006), LcFrom::Embedded, 3.1, true);
-        let a = tracker.observe(Lc([4, 0x68, 0xda, 0, 0x48, 0, 0x79, 0, 0x74]), LcFrom::Embedded, 3.5447, true).unwrap();
-        assert_eq!((a.decoded.text.as_str(), a.decoded.complete), ("Hyt", false));
-        let a = tracker.observe(Lc([5, 0x68, 0, 0x65, 0, 0x72, 0, 0x61, 0]), LcFrom::Embedded, 4.2647, true).unwrap();
-        assert_eq!((a.unit, a.talkgroup), (Some(5006), Some(149)));
-        assert_eq!((a.decoded.text.as_str(), a.decoded.declared_units, a.decoded.received_units), ("Hytera", 13, 6));
-        assert!(!a.decoded.complete && a.alias().is_none());
+        let mut a = Assembler::default();
+        let d = a.push(Lc([4, 0x68, 0xda, 0, 0x48, 0, 0x79, 0, 0x74]), 3.5447).unwrap();
+        assert_eq!((d.text.as_str(), d.complete), ("Hyt", false));
+        let d = a.push(Lc([5, 0x68, 0, 0x65, 0, 0x72, 0, 0x61, 0]), 4.2647).unwrap();
+        assert_eq!((d.text.as_str(), d.declared_units, d.received_units), ("Hytera", 13, 6));
+        assert!(!d.complete && d.alias(5006, Some(149)).is_none());
     }
 
     #[test]
@@ -295,27 +248,5 @@ mod tests {
         assert!(decode(Format::Utf16Be, &[0xd800], true).is_none());
         assert!(decode(Format::Latin1, &[10, 65], true).is_none());
         assert!(decode(Format::Latin1, &[65, 0, 66], true).is_none());
-    }
-
-    #[test]
-    fn attribution_is_slot_local_expires_and_survives_audio_encryption() {
-        let mut slots = [Tracker::default(), Tracker::default()];
-        let mut encrypted_voice = voice(5006); encrypted_voice.0[2] = 0x40;
-        slots[0].observe(encrypted_voice, LcFrom::Header, 0.0, true);
-        slots[1].observe(voice(6007), LcFrom::Header, 0.0, true);
-        let ms = messages(FID_HYTERA, 1, &b"DESK 123".iter().map(|&b| b as u16).collect::<Vec<_>>());
-        slots[0].observe(ms[0], LcFrom::Embedded, 0.2, true);
-        assert!(slots[1].observe(ms[1], LcFrom::Embedded, 0.3, true).is_none());
-        let a = slots[0].observe(ms[1], LcFrom::Embedded, 0.9, true).unwrap().alias().unwrap();
-        assert_eq!((a.unit, a.talkgroup, a.alias.as_str(), a.source), (5006, Some(149), "DESK 123", "HyteraDMR"));
-        slots[0].observe(ms[0], LcFrom::Embedded, 1.0, true);
-        slots[0].observe(voice(6007), LcFrom::Header, 1.1, true);
-        assert!(slots[0].observe(ms[1], LcFrom::Embedded, 1.7, true).is_none(), "source change clears fragments");
-        slots[0].observe(ms[0], LcFrom::Embedded, 1.8, true);
-        slots[0].observe(voice(6007), LcFrom::Terminator, 1.9, true);
-        assert!(slots[0].observe(ms[1], LcFrom::Embedded, 2.0, true).is_none());
-        let one = messages(0, 0, &[65]);
-        let a = slots[1].observe(one[0], LcFrom::Embedded, 4.1, true).unwrap();
-        assert!(a.decoded.complete && a.unit.is_none() && a.alias().is_none(), "no attribution after lost LC");
     }
 }

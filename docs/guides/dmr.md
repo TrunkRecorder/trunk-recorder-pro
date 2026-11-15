@@ -38,7 +38,7 @@ In **Setup** → **Systems**, **Add a system** and set **Type** to **DMR (trunke
   site's voice frequencies. This is Trunk Recorder's `channels`.
 - **Colour code** (`colorCode`): leave empty ("auto") to take the control channel's.
 - **Channel table** (`lcnTableHz`): channel numbers you already know, as
-  `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Mapped frequencies are also watched. Leave it empty to learn them (XPT requires explicit repeater mappings).
+  `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Leave it empty to learn them.
 
 In the config file (frequencies in Hz):
 
@@ -139,7 +139,7 @@ and four-second timeouts discard incomplete state. An alias cannot establish
 a call's identity or change its encryption state.
 
 `tool dmr` emits `alias` JSON records with text, format, declared/received code
-units, `complete`, and the radio/talkgroup when known. Valid partial Unicode
+units and `complete` (its `lc` records name the radio). Valid partial Unicode
 prefixes are shown without replacement characters; partial or unattributed
 results never overwrite saved radio names. For example, the supplied Hytera
 capture declares 13 UTF-16 units but only supplies six (`Hytera`) before its

@@ -6,10 +6,11 @@ No transmitter, registration, affiliation or decryption is implemented.
 
 ## Configuration
 
-Each configured site owns independent XPT state. List only repeaters belonging
-to that site, and provide SDR coverage for all of them. A repeater is a physical
-carrier with two slots; its **LCN is not its logical slot number (LSN)**:
-`LSN = 2 * (LCN - 1) + slot`, where the displayed slot is 1 or 2 (the API uses 0 or 1).
+XPT is set up as [Capacity Plus](dmr.md) is: there is no dedicated control
+channel, so list every repeater of the site and give the recorder SDR coverage
+of all of them. A repeater is a physical carrier with two slots; its **LCN
+(repeater number, from 1) is not its logical slot number (LSN)**:
+`LSN = 2 * (LCN - 1) + slot`, where the displayed slot is 1 or 2.
 
 Example site settings within a system with `"type": "dmr"`:
 
@@ -17,116 +18,76 @@ Example site settings within a system with `"type": "dmr"`:
 {
   "controlChannelsHz": [451000000],
   "dmrChannelsHz": [451012500],
-  "lcnTableHz": {"1": 451000000, "2": 451012500},
-  "dmrColorCodes": {"451000000": 1, "451012500": 2},
-  "xptHomeGroups": {"25": 1, "26": 2}
+  "lcnTableHz": {"1": 451000000, "2": 451012500}
 }
 ```
 
-`controlChannelsHz` names the initial/home frequencies to monitor, not a
-permanent XPT control channel. Every frequency in that list, `dmrChannelsHz`,
-and `lcnTableHz` is watched simultaneously. Mapping keys are repeater numbers,
-starting at 1; **do not enter logical slot numbers as repeater numbers**.
-Calls can still be found by voice LC on explicitly listed frequencies without
-a map; the repeater number remains unknown. XPT does not learn mappings from
-status target hints, because private-target hashes are not unique IDs.
+`controlChannelsHz` and `dmrChannelsHz` together are the watched repeaters;
+which one is listed as the control channel doesn't matter. `lcnTableHz` gives
+repeater numbers; a repeater left out is learned when a call setup for it is
+followed by that call's voice on a listed frequency. **Do not enter logical
+slot numbers as repeater numbers.** Nothing is learned from status target
+hints, because private-target hashes are not unique IDs.
 
-`xptHomeGroups` records the home-group programming supplied by the operator.
-Calls on overflow repeaters never change this table. The implemented on-air
-messages do not establish authoritative home-group ownership.
+Hytera permits different colour codes on the repeaters of one site. Leave
+`colorCode` empty in that case: once XPT is identified, every listed frequency
+is taken as the site's, whatever its code. A `colorCode` that is set still
+filters every carrier. Do not put unrelated systems or different sites in one
+site configuration; co-channel sites with identical colour codes cannot be
+separated by the implemented signalling.
 
-Hytera permits different color codes on repeaters in one site. Leave the global
-`colorCode` unset in that case and use `dmrColorCodes` for explicit per-frequency
-filters. A per-frequency code overrides the global code. Without explicit filters,
-XPT site membership is the configured frequency list. A neighbor announcement
-never merges its activity or changes the current site's identity. Do not put
-unrelated systems or different sites in one site configuration. Co-channel sites
-with identical color codes cannot be reliably separated by the implemented
-signaling; configuration and RF coverage must distinguish them.
-
-The normal recording pool and source bandwidth determine concurrency. Both
-slots and multiple configured repeaters can be decoded at the same time. Calls
-are opened/refreshed from voice LC on their actual carrier and slot. This avoids
-recording a target hash, data indication or unconfirmed alert as a voice call.
-The existing pre-roll preserves the beginning of a transmission when available.
-A receiver covering only the home frequency cannot follow an uncovered repeater.
+Both slots and several repeaters are decoded at the same time; the recording
+pool and source bandwidth decide how many calls. Calls are opened and
+refreshed from voice LC on their actual carrier and slot, so a target hash, a
+data preamble or an unconfirmed setup is never recorded as a call.
 
 ## Decoding and tracking
 
-`dmr::xpt` is a pure payload parser plus a separate site-local tracker. It receives
-integrity-checked payloads from the existing slot decoder. The common
-`dmr::short_lc` transport assembles first/continuation/continuation/last CACH
-fragments, deinterleaves BPTC(68,36), corrects Hamming rows, checks column parity
-and CRC8, and emits short LC. An incomplete sequence is discarded.
+`dmr::xpt` parses integrity-checked payloads from the slot decoder;
+`dmr::trunking::Site` puts them into the site state every DMR variant uses.
+The common `dmr::short_lc` transport assembles first/continuation/continuation/last
+CACH fragments, deinterleaves BPTC(68,36), corrects Hamming rows, checks column
+parity and CRC8, and emits short LC. An incomplete sequence is discarded.
 
-| Message | Implemented fields / behavior |
+| Message | What the recorder does with it |
 | --- | --- |
-| FID `0x68`, CSBK `0x0A` | Sequence (top two bits, not protect/LB flags), free repeater, six two-bit slot states and eight-bit target hints; banks 0–2 remain separate |
-| FID `0x68`, CSBK `0x0B` | Four neighbor site numbers, free repeaters, reserved fields; informational only |
-| SLCO `0x08` | Free repeater, priority repeater and target hash; no FID in short LC |
-| FID `0x68`, FLCO `0x09` | Setup/alert repeater, encoded slot, group/private, 16-bit target/source, free repeater, handshake and reserved fields |
-| FID `0x68`, CSBK `0x3D` | Data/control preamble: group/private, blocks to follow, 16-bit target/source, free/priority repeater hints, priority hash and reserved bits; identifies XPT but never grants voice |
-| Voice FLCO `0x00` / `0x03` | Confirmed group/private call on received carrier and slot, target/source, privacy and emergency options |
-| Voice terminator | Ends the matching tracker call; normal recorder hang-time rules apply |
-| Privacy indicator | Marks encrypted traffic; the existing decoder suppresses encrypted audio |
+| FID `0x68`, CSBK `0x0A` | Status bank (sequence 0–2, six slots each): its free repeater is the site's rest channel; busy slots and their 8-bit target hints go in the site status line |
+| FID `0x68`, CSBK `0x0B` | Neighbour sites and their free repeaters: a status line |
+| SLCO `0x08` | Free repeater (the rest channel); priority repeater and target hash are not used |
+| FID `0x68`, FLCO `0x09` | Call setup: repeater, slot, group/private, 16-bit target/source, free repeater. A status line, and like a grant it lets an unlisted repeater number be learned; it is not a call |
+| FID `0x68`, CSBK `0x3D` | Data/control preamble: a status line. Identifies XPT; never a voice grant, never the free repeater |
+| Voice FLCO `0x00` / `0x03` | The call, on the carrier and slot it is heard on, with 16-bit IDs |
 
-**TGID / RID correction:** after positive XPT identification, voice target bits
-32–47 and source bits 56–71 are used. Bytes at bits 24–31 and 48–55 are not part
-of either ID. Previously the ordinary 24-bit LC interpretation could turn those
-bytes into very large TGIDs/RIDs. Both the control and voice paths now use the
-same XPT interpretation, including a newly opened receiver which has not yet
-heard setup itself: the control channel passes XPT context through `VoiceParams`.
-Raw payloads are preserved. FID `0x68` alone does not establish XPT; ordinary
-Hytera/standard DMR keeps its 24-bit interpretation. Before any positive XPT
-signaling is heard, this distinction remains unknown.
+A setup is often carried in a terminator burst; it is **not** the end of a call.
 
-A setup carried in a terminator burst is **not** a voice termination. A setup is
-pending until actual voice LC arrives; it expires after four seconds. Free,
-priority, neighbor and bank observations and confirmed tracker calls expire
-after three seconds without refresh. A zero free-repeater value clears the
-previous assignment. A delayed terminator naming a different call cannot end
-the replacement tracker call. Slot state values and private-target hashes remain
-raw observations; they cannot override a confirmed call's identity or encryption.
+**TGID / RID width:** after positive XPT identification, voice target bits
+32–47 and source bits 56–71 are used; the bytes above them are not part of
+either ID (the ordinary 24-bit reading turns them into very large TGIDs/RIDs).
+Voice channels opened later get the same reading from the control channel
+through `VoiceParams`. FID `0x68` alone does not establish XPT; ordinary
+Hytera/standard DMR keeps its 24-bit IDs.
 
 ## Diagnostics
 
-The normal decoded-message stream includes deduplicated XPT status records with
-raw hex and all parsed control fields. The site's DMR API status includes `xpt`
-(home groups, free/priority observations, occupancy by logical slot, neighbors,
-pending setups and confirmed calls). `availableRepeaters` lists repeaters with
-at least one fresh, explicitly idle slot; unknown/private/inactive states do not
-imply availability. Each observation carries its receive time.
+The dashboard shows an XPT site as it shows Capacity Plus: the variant, the rest
+channel (the free repeater), and each carrier's slots with their calls. The
+message log has the deduplicated status lines above.
 
-Data/control preambles are reported as observations. They do not replace the
-voice-site free/priority state: in the supplied capture the data carrier's
-preambles advertise free repeater 15 while the voice carriers advertise 5.
-The meaning of that difference is unverified. Preamble addresses and hashes
-never create voice calls, establish home groups or learn frequency mappings.
-Protected preambles are not interpreted as clear XPT identification.
-
-The same message stream reports Hytera CSBK `0x0D`, full LC `0x0D`, short LC
-`0x0C` with the observed embedded `0x68` manufacturer value, and data terminator
-LC `0x30`. The proprietary forms retain their opcode/flags and raw payload;
-their field meanings remain unverified. In particular the repeated `0x7FFF`
-value is not treated as a site, radio or talkgroup ID. These diagnostics alone
-do not identify XPT or alter voice, privacy, availability or site membership.
-Data terminators are informational and cannot end a voice call.
-
-For undeduplicated control diagnostics, use the existing tool:
+For raw control, use the existing tool:
 
 ```sh
 trunk-pro tool dmr site.cu8 --center 451000000 --rate 2400000 --freq 451012500 --bursts
 ```
 
-It emits JSON lines for raw CSBK, full LC and short LC, plus decoded XPT fields.
-Voice IDs use the XPT interpretation after detection; raw hex stays unchanged.
-Additional `hytera` records expose the data terminator and proprietary forms.
-`alias` records show complete or partial over-the-air radio names; see
-[DMR radio-name decoding](dmr.md#over-the-air-radio-names).
-The CLI's `encrypted`/`emergency` fields apply to recognized voice-user LCs;
-nonvoice payload bits are not interpreted as voice service options.
-Privacy indicators and service-option encryption flags are reported. Encrypted
-frames are not vocoded by either the recorder or the tool. No key is requested.
+It emits JSON lines for raw CSBK, full LC and short LC, plus decoded `xpt`
+fields. Voice IDs use the XPT reading after detection; raw hex stays unchanged.
+`hytera` records show Hytera CSBK `0x0D`, full LC `0x0D`, short LC `0x0C` (with
+the observed embedded `0x68` manufacturer value) and data terminator LC `0x30`,
+whose field meanings are unverified (the repeated `0x7FFF` is not taken as a
+site, radio or talkgroup ID); the recorder itself ignores them. `alias` records
+show complete or partial over-the-air radio names; see
+[DMR radio-name decoding](dmr.md#over-the-air-radio-names). Encrypted frames are
+not vocoded by either the recorder or the tool.
 
 ## Evidence and milestones
 
@@ -164,7 +125,7 @@ the tests include the observed control payloads.
 | Hytera DMR Systems White Paper, “How XPT Works” and “Multi-Site XPT” | Dynamic sharing of two-slot repeaters and separate sites connected over IP |
 | Hytera priority-signaling patent US20180176984A1, table 6 | CSBK `0x3D` preamble layout and 16-bit addressing |
 | ETSI TS 102 361-3 §7.1.1.1 (TD_LC) | FLCO `0x30` in a terminator burst is data control, not voice |
-| Synthetic payload, FEC and IQ tests | Parser bounds, field extraction, bank/free changes, setup, mapping, late entry, concurrent tracking, termination, stale state, site isolation, privacy and correct recorded IDs across concurrent repeaters |
+| Synthetic payload, FEC and IQ tests | Parser bounds, field extraction, free repeater, setup learning, per-repeater colour codes, data preambles, and correct recorded IDs across concurrent repeaters |
 
 Milestone 1 is implemented and synthetic-tested: positive signaling identifies
 XPT and decodes the supported CSBK/SLCO/FLCO control messages. Milestone 2 has a

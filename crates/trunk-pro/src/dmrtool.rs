@@ -115,7 +115,7 @@ pub fn run(a: &Args) {
     // Per slot: the last LC printed (only changes are), voice frames since.
     let mut last_lc: [Option<dmr::Lc>; 2] = [None, None];
     let mut encrypted = [false; 2];
-    let mut aliases = [dmr::alias::Tracker::default(), dmr::alias::Tracker::default()];
+    let mut aliases = [dmr::alias::Assembler::default(), dmr::alias::Assembler::default()];
     let t0 = Instant::now();
     cap.channelize(&mut chz, |chz| {
         syms.clear();
@@ -155,13 +155,7 @@ pub fn run(a: &Args) {
                 let _ = writeln!(out, "{line}");
             }
             for (s, e) in ev.drain(..) {
-                let control = match &e {
-                    SlotEvent::Csbk { csbk, mbc: false } => dmr::xpt::csbk(&csbk.0),
-                    SlotEvent::Lc { lc, .. } => dmr::xpt::flco(&lc.0),
-                    SlotEvent::Slco(raw) => dmr::xpt::slco(raw),
-                    _ => None,
-                };
-                if let Some(xpt) = control {
+                if let Some(xpt) = dmr::xpt::control(&e) {
                     let _ = writeln!(out, "{}", serde_json::json!({ "t": t, "slot": s, "xpt": xpt }));
                 }
                 if let Some(hytera) = dmr::hytera::diagnostic(&e) {
@@ -183,7 +177,7 @@ pub fn run(a: &Args) {
                         }
                     }
                     SlotEvent::Lc { lc, from } => {
-                        if let Some(alias) = aliases[s as usize].observe(lc, from, t, chan.xpt) {
+                        if let Some(alias) = (from == LcFrom::Embedded).then(|| aliases[s as usize].push(lc, t)).flatten() {
                             let _ = writeln!(out, "{}", serde_json::json!({ "t": t, "slot": s, "alias": alias }));
                         }
                         if lc.voice_user().is_some() {
@@ -198,7 +192,7 @@ pub fn run(a: &Args) {
                                 "{{\"t\":{t:.4},\"slot\":{s},\"lc\":\"{from:?}\",\"flco\":{},\"fid\":{},\"group\":{},\"target\":{},\"source\":{},\"emergency\":{},\"encrypted\":{},\"hex\":\"{}\"}}",
                                 lc.flco(),
                                 lc.fid(),
-                                lc.voice_user().unwrap_or_else(|| matches!(dmr::xpt::flco(&lc.0), Some(dmr::xpt::Control::Setup { group: true, .. }))),
+                                lc.voice_user().unwrap_or(false),
                                 decoded.target(),
                                 decoded.source(),
                                 lc.voice_user().is_some() && lc.emergency(),

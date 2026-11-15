@@ -21,7 +21,7 @@ use crate::config::{Config, System};
 /// A site's keys in a system's config (before sites, a system had them itself).
 const SITE_KEYS: &[&str] = &[
     "controlChannelsHz", "modulation", "expect", "voiceChannelsHz", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz",
-    "lcnTableHz", "dmrChannelsHz", "dmrColorCodes", "xptHomeGroups", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran",
+    "lcnTableHz", "dmrChannelsHz", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran",
 ];
 
 /// Before systems had sites, each site was a system of its own (its control

@@ -1,4 +1,5 @@
-//! Informational Hytera signaling outside the confirmed XPT voice controls.
+//! Informational Hytera signaling outside the confirmed XPT voice controls,
+//! for `tool dmr` (the recorder doesn't report these).
 //! Inputs have already passed the slot decoder's integrity checks. Unknown
 //! fields remain payload bytes: none of these messages establishes XPT, opens
 //! a voice call, changes privacy, or learns a frequency/site identifier.

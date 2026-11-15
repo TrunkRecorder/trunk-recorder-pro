@@ -436,7 +436,7 @@ mod tests {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             systems: vec![SystemConfig::trunked("xpt", vec![SiteConfig {
                 control_channels: vec![frequencies[0] as f64],
-                protocol: crate::trunk::Protocol::Dmr(DmrConfig { lcn_table: BTreeMap::from([(1, frequencies[0]), (2, frequencies[1])]), ..Default::default() }),
+                protocol: crate::trunk::Protocol::Dmr(DmrConfig { channels: vec![frequencies[1] as f64], lcn_table: BTreeMap::from([(1, frequencies[0]), (2, frequencies[1])]), ..Default::default() }),
                 ..Default::default()
             }])], ..Default::default()
         };

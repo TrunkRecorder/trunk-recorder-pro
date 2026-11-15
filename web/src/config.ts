@@ -322,13 +322,13 @@ export function systemType(t: unknown): System["type"] {
 /** Frequencies a watching protocol (DMR, NXDN, EDACS) needs besides the control channels (the recorder's Site::watched_channels). */
 export function watchedChannels(sys: Pick<System, "type">, x: Site): number[] {
   if (sys.type === "edacs") return Object.entries(x.lcnTableHz ?? {}).filter(([k, f]) => +k >= 1 && +k <= 25 && f > 0).map(([, f]) => f);
-  return sys.type === "dmr" ? [...new Set([...(x.dmrChannelsHz ?? []), ...Object.values(x.lcnTableHz ?? {})])] : sys.type === "nxdn" ? (x.nxdnChannelsHz ?? []) : [];
+  return sys.type === "dmr" ? (x.dmrChannelsHz ?? []) : sys.type === "nxdn" ? (x.nxdnChannelsHz ?? []) : [];
 }
 
 /** A site's fields in an older config's system (before sites, each system was one, its fields at the top). */
 const SITE_KEYS = [
   "controlChannelsHz", "modulation", "expect", "voiceChannelsHz", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz",
-  "lcnTableHz", "dmrChannelsHz", "dmrColorCodes", "xptHomeGroups", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran", "esk",
+  "lcnTableHz", "dmrChannelsHz", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran", "esk",
 ] as const satisfies readonly (keyof Site)[];
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
@@ -402,8 +402,6 @@ export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site
       ? {
           ...(x.lcnTableHz && Object.keys(x.lcnTableHz).length ? { lcnTableHz: x.lcnTableHz } : {}),
           ...(x.dmrChannelsHz?.length ? { dmrChannelsHz: x.dmrChannelsHz } : {}),
-          ...(x.dmrColorCodes && Object.keys(x.dmrColorCodes).length ? { dmrColorCodes: x.dmrColorCodes } : {}),
-          ...(x.xptHomeGroups && Object.keys(x.xptHomeGroups).length ? { xptHomeGroups: x.xptHomeGroups } : {}),
           ...(typeof x.colorCode === "number" ? { colorCode: x.colorCode } : {}),
         }
       : {}),

@@ -78,11 +78,11 @@ impl Lc {
         self.0[2]
     }
     pub fn emergency(&self) -> bool {
-        !(self.fid() == FID_HYTERA && self.flco() == 9) && self.0[2] & 0x80 != 0
+        self.0[2] & 0x80 != 0
     }
     /// The privacy (encryption) service option.
     pub fn encrypted(&self) -> bool {
-        !(self.fid() == FID_HYTERA && self.flco() == 9) && self.0[2] & 0x40 != 0
+        self.0[2] & 0x40 != 0
     }
     /// The talkgroup (or radio) called. Capacity Plus wide-area (linked)
     /// groups are 8 bits.
@@ -90,7 +90,6 @@ impl Lc {
         let b = &self.0;
         match (self.fid(), self.flco()) {
             (FID_MOTOROLA, 4) => b[5] as u32,
-            (FID_HYTERA, 9) => u32::from_be_bytes([0, 0, b[4], b[5]]),
             _ => u32::from_be_bytes([0, b[3], b[4], b[5]]),
         }
     }
@@ -98,7 +97,7 @@ impl Lc {
     pub fn source(&self) -> u32 {
         let b = &self.0;
         match (self.fid(), self.flco()) {
-            (FID_MOTOROLA, 4) | (FID_HYTERA, 9) => u32::from_be_bytes([0, 0, b[7], b[8]]),
+            (FID_MOTOROLA, 4) => u32::from_be_bytes([0, 0, b[7], b[8]]),
             _ => u32::from_be_bytes([0, b[6], b[7], b[8]]),
         }
     }
@@ -475,10 +474,10 @@ impl Channel {
             // A repeater after all: its CACH names the slots.
             self.anchor = None;
         }
+        let start = out.len();
         let (tact, fragment) = cach(&b.cach);
         if self.anchor.is_none() {
             if let Some(raw) = self.short_lc.push(tact.map(|t| t.lcss), fragment) {
-                self.xpt |= super::xpt::slco(&raw).is_some();
                 out.push((slot, SlotEvent::Slco(raw)));
             }
         } else {
@@ -491,13 +490,7 @@ impl Channel {
         if k[slot as usize].keyed != k[1 - slot as usize].keyed && k[slot as usize].keyed {
             k[1 - slot as usize].keyed = true;
         }
-        for e in &self.ev {
-            self.xpt |= match e {
-                SlotEvent::Csbk { csbk, mbc: false } => super::xpt::csbk(&csbk.0).is_some(),
-                SlotEvent::Lc { lc, .. } => super::xpt::flco(&lc.0).is_some(),
-                _ => false,
-            };
-        }
         out.extend(self.ev.drain(..).map(|e| (slot, e)));
+        self.xpt |= out[start..].iter().any(|(_, e)| super::xpt::control(e).is_some());
     }
 }
