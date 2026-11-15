@@ -198,6 +198,10 @@ pub fn build(cfg: &SiteConfig, rate: f64) -> Box<dyn ControlChannel> {
             good: 0,
             bad: 0,
             air: 0,
+            sync_end_s: None,
+            unsynced_s: 0.0,
+            pushed: 0,
+            sync_loss_sym: std::cell::Cell::new(0),
             notes: Vec::new(),
             t0: 0.0,
             rate,
@@ -233,11 +237,31 @@ struct P25 {
     bad: u64,
     /// Symbols of air the decoded blocks account for (see [`crate::p25::diversity::air_symbols`]).
     air: u64,
+    /// Time without frame sync, between frames: a control channel sends without
+    /// a pause, so a gap between one frame's end and the next's start is time no
+    /// receiver framed. `sync_end_s`: where the last frame ended (None: since a
+    /// restart); `unsynced_s`: the gaps closed; `pushed`: samples in since the
+    /// bank started (frames' `sample` counts from there too, `t0` being the
+    /// tap's start); `sync_loss_sym`: what [`ControlChannel::report`] said, which only grows.
+    sync_end_s: Option<f64>,
+    unsynced_s: f64,
+    pushed: u64,
+    sync_loss_sym: std::cell::Cell<u64>,
     notes: Vec<(NoteLevel, String)>,
     /// The last push's start time and rate (for the flush).
     t0: f64,
     rate: f64,
 }
+
+/// P25 Phase 1's symbol rate, symbols a second.
+const P25_SYMBOL_RATE: f64 = 4800.0;
+
+/// A gap between control channel frames shorter than this is the framer's
+/// rounding, not lost sync, s.
+const SYNC_GAP_S: f64 = 0.005;
+/// A gap still open is counted less this: the frames the receivers hold
+/// while they pick the best copy, not yet out, s.
+const SYNC_PENDING_S: f64 = 0.5;
 
 impl P25 {
     fn groups(&mut self, groups: &[Group], out: &mut Vec<Step>) {
@@ -249,6 +273,13 @@ impl P25 {
             let cf = control_frame(g, f.nid.duid);
             self.bad += cf.lost as u64;
             self.air += cf.air;
+            let end = t + cf.framed as f64 / P25_SYMBOL_RATE;
+            if let Some(e) = self.sync_end_s {
+                if t - e > SYNC_GAP_S {
+                    self.unsynced_s += t - e;
+                }
+            }
+            self.sync_end_s = Some(self.sync_end_s.map_or(end, |e| e.max(end)));
             for o in &cf.osps {
                 self.good += 1;
                 let msgs = self.parser.parse(o, f.nid.nac, t);
@@ -283,12 +314,22 @@ impl ControlChannel for P25 {
         self.bank.report(sink);
         // A rate: over the symbol rate, the share of the channel's air decoded.
         sink.counter("airSym", self.air);
+        // A rate: over the symbol rate, the share of the time running without frame sync.
+        let pushed_s = self.t0 + self.pushed as f64 / self.rate;
+        let open = self.sync_end_s.map_or(0.0, |e| (pushed_s - e - SYNC_PENDING_S).max(0.0));
+        let now = ((self.unsynced_s + open) * P25_SYMBOL_RATE) as u64;
+        self.sync_loss_sym.set(self.sync_loss_sym.get().max(now));
+        sink.counter("syncLossSym", self.sync_loss_sym.get());
     }
     fn plan(&self) -> CarrierPlan {
         CarrierPlan::Hunt { cutoff_hz: P25_CUTOFF_HZ }
     }
     fn restart(&mut self, rate: f64) {
         self.bank = Bank::new(rate, self.bank_cfg);
+        // Time stopped isn't time without sync (gaps already counted stay counted);
+        // the new bank counts samples from 0.
+        self.sync_end_s = None;
+        self.pushed = 0;
     }
     fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
         std::mem::take(&mut self.notes)
@@ -299,6 +340,7 @@ impl ControlChannel for P25 {
     }
     fn push(&mut self, _carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
         (self.t0, self.rate) = (t0, rate);
+        self.pushed += iq.len() as u64;
         let mut groups = Vec::new();
         let was = self.bank.detected();
         self.bank.push(iq, &mut groups);
@@ -627,6 +669,62 @@ impl ControlChannel for Nxdn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a control channel reports: its counters, by name.
+    #[derive(Default)]
+    struct Counters(std::collections::BTreeMap<String, u64>);
+    impl Sink for Counters {
+        fn counter(&mut self, name: &str, total: u64) {
+            self.0.insert(name.to_string(), total);
+        }
+        fn gauge(&mut self, _: &str, _: f64) {}
+    }
+
+    /// A P25 control channel's TSDU frame as dibits: sync, NID, its TSBKs'
+    /// air (zeros: they won't decode, but the frame is framed all the same),
+    /// status symbols where they go.
+    fn tsdu(nac: u16) -> Vec<u8> {
+        use crate::p25::frame::{encode_nid, TSDU};
+        const SYNC: u64 = 0x5575_F5FF_77FF;
+        let nid = encode_nid(nac, TSDU);
+        let mut bits = (0..64).map(|i| ((nid >> (63 - i)) & 1) as u8);
+        let mut d: Vec<u8> = (0..24).map(|k| ((SYNC >> (2 * (23 - k))) & 3) as u8).collect();
+        for p in 24..360 {
+            d.push(if (p + 1) % 36 == 0 { 0b01 } else { bits.next().unwrap_or(0) << 1 | bits.next().unwrap_or(0) });
+        }
+        d
+    }
+
+    /// The time a control channel runs without frame sync is counted from
+    /// the gaps between its frames: none while frames run back to back, the
+    /// gap's length after a second of nothing, and it never goes down.
+    #[test]
+    fn time_without_frame_sync_is_the_gaps_between_frames() {
+        let rate = 37_500.0;
+        let frames: Vec<u8> = (0..40).flat_map(|_| tsdu(0x293)).collect(); // 3 s
+        let mut ph = 0.0;
+        let mut iq = crate::p25::synth::modulate(&frames, rate, 0.0, 0.3, &mut ph);
+        let first = iq.len();
+        iq.extend(vec![Complex32::default(); rate as usize]); // 1 s of nothing
+        iq.extend(crate::p25::synth::modulate(&frames, rate, 0.0, 0.3, &mut ph));
+        iq.extend(vec![Complex32::default(); (0.3 * rate) as usize]);
+        crate::nxdn::synth::add_noise(&mut iq, 0.01, &mut 1);
+        let cfg = SiteConfig { protocol: Protocol::P25, ..Default::default() };
+        let mut cc = build(&cfg, rate);
+        let (mut out, mut reported) = (Vec::new(), Vec::new());
+        for (k, c) in iq.chunks(1875).enumerate() {
+            // (Its tap's start time: frames count samples from there.)
+            cc.push(0, c, 0.0, rate, &mut out);
+            let mut n = Counters::default();
+            cc.report(&mut n);
+            reported.push((k * 1875, n.0.get("syncLossSym").copied().unwrap_or(0)));
+        }
+        let at = |sample: usize| reported.iter().rev().find(|(s, _)| *s <= sample).map_or(0, |(_, n)| *n);
+        assert!(at(first - 1875) < 100, "back to back: none ({})", at(first - 1875));
+        let total = reported.last().unwrap().1;
+        assert!((4300..=5600).contains(&total), "a second of nothing is about 4800 symbols: {total}");
+        assert!(reported.windows(2).all(|w| w[1].1 >= w[0].1), "only grows");
+    }
 
     /// A voice channel naming another talkgroup ends a call only where grants
     /// number talkgroups as the voice does: a SmartNet system's P25 voice

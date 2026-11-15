@@ -192,6 +192,19 @@ pub enum Access {
     Nxdn { ran: Option<u8>, tg: Option<u32> },
 }
 
+impl Access {
+    /// As a node health report gives a conventional channel's `access`:
+    /// `CTCSS 151.4`, `DCS 023N`, `NAC 293`, `CC 1 TS 2`, `RAN 1`, with a
+    /// talkgroup when the row records by one.
+    pub fn report_label(&self) -> String {
+        match *self {
+            Access::Tone(Tone::Ctcss(_)) => format!("CTCSS {self}"),
+            Access::Tone(Tone::Dcs(c, inv)) => format!("DCS {c:03}{}", if inv { 'I' } else { 'N' }),
+            _ => self.to_string(),
+        }
+    }
+}
+
 impl std::fmt::Display for Access {
     /// `151.4`, `D023N` (Trunk Recorder's); `NAC 293 TG 1`; `CC 1 TS 2 TG 201`.
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -559,6 +572,9 @@ pub struct ConvNow<'a> {
     pub source: usize,
     /// Its rows' names (alpha tags), each once, in order.
     pub names: Vec<&'a str>,
+    /// The code its rows record by, when every row has the same one
+    /// ([`Access::report_label`]); None when they differ or have none.
+    pub access: Option<String>,
     /// A signal is on it now.
     pub open: bool,
     /// Calls in progress on it.
@@ -812,12 +828,15 @@ impl Conventional {
                 }
             }
             let open = c.open.as_ref();
+            let first = c.rows.first().and_then(|r| r.access);
+            let access = first.filter(|a| c.rows.iter().all(|r| r.access.as_ref() == Some(a))).map(|a| a.report_label());
             ConvNow {
                 freq_hz: c.freq_hz,
                 system: c.system,
                 mode: c.mode,
                 source: c.source,
                 names,
+                access,
                 open: open.is_some(),
                 calls: open.map_or(0, |o| o.live.iter().flatten().count()),
                 offset_hz: open.and_then(|o| o.voice.offset_hz()),
@@ -1358,6 +1377,15 @@ impl Conventional {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_is_labelled_as_node_health_reports_give_it() {
+        assert_eq!(Access::Tone(Tone::Ctcss(1514)).report_label(), "CTCSS 151.4");
+        assert_eq!(Access::Tone(Tone::Dcs(23, false)).report_label(), "DCS 023N");
+        assert_eq!(Access::Tone(Tone::Dcs(754, true)).report_label(), "DCS 754I");
+        assert_eq!(Access::P25 { nac: Some(0x293), tg: None }.report_label(), "NAC 293");
+        assert_eq!(Access::Dmr { cc: Some(1), slot: None, tg: None }.report_label(), "CC 1");
+    }
     use crate::trunk::engine::{Engine, EngineConfig, Event, SourceConfig};
     use crate::trunk::{CallConfig, SystemConfig};
     use std::f64::consts::PI;

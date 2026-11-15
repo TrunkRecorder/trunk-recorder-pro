@@ -1184,6 +1184,9 @@ pub struct SiteHealth {
     /// for protocols that don't measure it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub air_sym: Option<u64>,
+    /// Symbols the control channel ran without frame sync (None: not measured).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_loss_sym: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol_rate: Option<u32>,
     /// The control channel over the noise floor beside it, dB, summed over the seconds
@@ -1242,6 +1245,9 @@ pub struct ChannelHealth {
     /// Its rows' names.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub names: Vec<String>,
+    /// The code it records by (`CTCSS 151.4`, `DCS 023N`, `NAC 293`, `CC 1`), when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
     /// The radio it's heard on ([`SourceHealth::index`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<usize>,

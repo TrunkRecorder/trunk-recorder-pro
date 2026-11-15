@@ -422,6 +422,9 @@ pub struct SiteStatus {
     pub bad: u64,
     /// What `good` and `bad` count ([`super::control::ControlChannel::blocks`]).
     pub blocks: &'static str,
+    /// Calls granted on a channel never turned into a frequency, since the start
+    /// ([`super::calls::CallManager::no_frequency`]).
+    pub no_frequency: u64,
     /// The identity fields its protocol states.
     pub id_fields: &'static [IdField],
     pub modulation: &'static str,
@@ -513,6 +516,8 @@ pub struct ConvInfo {
     pub source: usize,
     /// Its rows' names, each once.
     pub names: Vec<String>,
+    /// The code its rows record by, when they share one (`CTCSS 151.4`, `NAC 293`).
+    pub access: Option<String>,
 }
 
 /// What a channel is to the engine ([`ChannelSnapshot`]).
@@ -1567,6 +1572,7 @@ impl Trunk {
             good: self.good,
             bad: self.bad,
             blocks,
+            no_frequency: self.calls.no_frequency,
             id_fields: self.id_fields,
             modulation,
             active_calls: self.calls.calls.len(),
@@ -2503,7 +2509,10 @@ impl Engine {
     /// Each conventional frequency: its system, mode, source and rows' names.
     pub fn conventional_channels(&self) -> Vec<ConvInfo> {
         let c = self.core();
-        c.conv.channels().map(|n| ConvInfo { system: n.system, freq_hz: n.freq_hz, mode: n.mode, source: n.source, names: n.names.iter().map(|s| s.to_string()).collect() }).collect()
+        c.conv
+            .channels()
+            .map(|n| ConvInfo { system: n.system, freq_hz: n.freq_hz, mode: n.mode, source: n.source, names: n.names.iter().map(|s| s.to_string()).collect(), access: n.access })
+            .collect()
     }
 
     /// Every channel listened to now — control channels, voice channels,

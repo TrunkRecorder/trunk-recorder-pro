@@ -465,13 +465,20 @@ impl Stats {
     fn tick_health(&mut self, dt_s: f64, engine: &Engine) {
         let systems = engine.systems();
         let cfgs: Vec<_> = trunk_core::trunk::sites(&systems).collect();
-        let sites: Vec<(u16, u16, String, u64, u64)> = engine
+        let sites: Vec<health::SiteCounts> = engine
             .status()
             .sites
             .iter()
             .filter_map(|y| {
                 let &(system, cfg) = cfgs.get(y.site as usize)?;
-                Some((y.system, y.site, systems[system as usize].site_key(cfg).stats_key(), y.good, y.bad))
+                Some(health::SiteCounts {
+                    system: y.system,
+                    site: y.site,
+                    key: systems[system as usize].site_key(cfg).stats_key(),
+                    good: y.good,
+                    bad: y.bad,
+                    no_frequency: y.no_frequency,
+                })
             })
             .collect();
         let channels = if systems.iter().any(|s| s.is_conventional()) { engine.channels() } else { Vec::new() };

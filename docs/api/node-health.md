@@ -129,7 +129,7 @@ fed by both has both. [Examples](#examples) shows reports as different recorders
 | `cc.snrDb` | | number | Mean level of the control channel over the noise floor beside it, dB, over the seconds locked |
 | `cc.merDb` | | number | Modulation error ratio of its symbols, dB, over the seconds locked: the power of the ideal symbol points over that of the symbols' distance from them. A recorder that can't measure `snrDb` can send this; both may be sent |
 | `cc.phaseErrDeg` | | number | Mean RMS phase error of its symbols, degrees, over the seconds locked (PSK/C4FM) |
-| `calls.started` | ✓ | int | Calls (voice grants) the control channel announced |
+| `calls.started` | ✓ | int | Calls the control channel announced: voice grants, and data grants for a recorder that counts them as calls (then `data` says how many it didn't follow) |
 | `calls.recorded` | ✓ | int | Of those, calls a recorder was assigned to and followed, whether or not they then went to any service |
 | `calls.notRecorded` | | object | Of those, calls not recorded, by why: `ignored` (the user chose not to), `unknownTg` (not in the talkgroup file, and only those are recorded), `encrypted`, `data` (data calls, not followed), `noFrequency` (the grant's channel number couldn't be turned into a frequency: a channel map missing from the recorder's settings), `noSource` (no receiver covers the frequency), `noRecorder` (every recorder busy). The last three are calls the node missed |
 | `voice.imbe`, `voice.ambe` | | object | Vocoder frames of recorded calls, by codec: IMBE (P25 Phase 1, 20 ms) and AMBE+2 half rate (P25 Phase 2, DMR, NXDN, 20 ms) |
@@ -241,6 +241,7 @@ call but delivering fewer than another is wrong somewhere.
 | `node` | `{ "systemId": 2898, "apiKey": "…" }`: as uploads send them |
 | Nodes | One report per system ID. A recorder system uploaded as one system ID is one node; a site uploaded as a system ID of its own is a node of its own |
 | Off | Recorders send reports unless their user turns them off; Broadcastify uses them to choose between nodes and to tell their owners about problems |
+| Validate | `POST …/call-health?validate=1` checks a report and answers its figures: `200 {"ok":true,"valid":true,"summary":{…}}`, or `400` saying what's wrong. No API key check, nothing stored, no rate limit: for recorder developers to try their reports |
 
 ## In Trunk Recorder Pro
 

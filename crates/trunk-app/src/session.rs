@@ -1176,6 +1176,7 @@ impl Session {
                     good: t.good,
                     bad: t.bad,
                     air_sym: t.air_sym.map(|a| a.round() as u64),
+                    sync_loss_sym: t.sync_loss_sym.map(|a| a.round() as u64),
                     // (Only P25 measures it.)
                     symbol_rate: t.air_sym.map(|_| 4800),
                     snr_db_total: t.snr_db_total,
@@ -1199,6 +1200,7 @@ impl Session {
                     freq_hz: hz,
                     mode: row.map_or(String::new(), |r| r.mode.as_str().to_string()),
                     names: row.map_or(Vec::new(), |r| r.names.clone()),
+                    access: row.and_then(|r| r.access.clone()),
                     source: row.map(|r| r.source),
                     heard_s: t.heard_s,
                     open_s: t.open_s,

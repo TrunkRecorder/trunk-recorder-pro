@@ -491,6 +491,9 @@ pub struct ControlFrame {
     pub lost: usize,
     /// Symbols of air the decoded ones account for ([`air_symbols`]).
     pub air: u64,
+    /// Symbols of air the frame took, decoded or not: its length (a PDU
+    /// whose header said nothing, at 3 blocks).
+    pub framed: u64,
 }
 
 /// A control channel frame group's messages (its frame's DUID `duid`).
@@ -498,16 +501,17 @@ pub fn control_frame(g: &Group, duid: u8) -> ControlFrame {
     match duid {
         TSDU => {
             let (blocks, lost) = best_tsbks(g);
-            ControlFrame { air: air_symbols(blocks.len() + lost, blocks.len()), lost, osps: blocks.iter().map(osp::from_tsbk).collect() }
+            let n = blocks.len() + lost;
+            ControlFrame { air: air_symbols(n, blocks.len()), lost, osps: blocks.iter().map(osp::from_tsbk).collect(), framed: air_symbols(n, n) }
         }
         PDU => match best_pdu(g) {
-            Pdu::Mbt(m) => ControlFrame { air: air_symbols(m.blocks(), m.blocks()), lost: 0, osps: vec![osp::from_mbt(&m)] },
-            Pdu::Other(_) => ControlFrame::default(),
-            Pdu::Lost => ControlFrame { lost: 1, ..Default::default() },
+            Pdu::Mbt(m) => ControlFrame { air: air_symbols(m.blocks(), m.blocks()), lost: 0, osps: vec![osp::from_mbt(&m)], framed: air_symbols(m.blocks(), m.blocks()) },
+            Pdu::Other(_) => ControlFrame { framed: frame_dibits(PDU) as u64, ..Default::default() },
+            Pdu::Lost => ControlFrame { lost: 1, framed: frame_dibits(PDU) as u64, ..Default::default() },
         },
         // A TDU between frames is filler: decoded air all the same.
-        TDU => ControlFrame { air: frame_dibits(TDU) as u64, ..Default::default() },
-        _ => ControlFrame::default(),
+        TDU => ControlFrame { air: frame_dibits(TDU) as u64, framed: frame_dibits(TDU) as u64, ..Default::default() },
+        d => ControlFrame { framed: frame_dibits(d) as u64, ..Default::default() },
     }
 }
 

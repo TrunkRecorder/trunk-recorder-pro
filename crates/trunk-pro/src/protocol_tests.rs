@@ -798,6 +798,7 @@ fn health_totals_make_a_node_health_report() {
     let c = &r.channels[0];
     assert_eq!((c.hz, c.mode.as_str(), c.name.as_str()), (155_200_000, "fm", "Fire"));
     assert_eq!((c.opens, c.calls, c.opened_by_other), (1, 1, Some(0)));
+    assert_eq!(c.access.as_deref(), Some("CTCSS 151.4"), "the code it records by");
     assert!((1.0..=3.0).contains(&c.open_s), "open {} s", c.open_s);
     assert!(c.heard_s >= 3.0, "heard {} s", c.heard_s);
     let (signal, noise, snr) = (c.signal_db.unwrap(), c.noise_db.unwrap(), c.snr_db.unwrap());
