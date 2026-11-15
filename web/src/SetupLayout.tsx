@@ -27,6 +27,8 @@ export function Section(props: { title: string; hint?: ReactNode; actions?: Reac
  * card's whole width (a table); `actions`: buttons beside the name. `fold`:
  * it folds to its name (a long list): remembered by `key`, as cards are;
  * open at first if `open`; `summary` says what is in it while folded.
+ * `when`, while `recording`: whether its settings apply at once ("live") or at
+ * the next Start ("start"), shown beside its name and on its fields (kit).
  */
 export function Group(props: {
   title: string;
@@ -36,12 +38,22 @@ export function Group(props: {
   cols?: 1 | 2 | 3;
   full?: boolean;
   fold?: { key: string; open: boolean; summary?: ReactNode };
+  when?: "start" | "live";
+  recording?: boolean;
 }) {
   const o = useOpened();
   const body = useId();
   const open = props.fold ? (o[props.fold.key] ?? props.fold.open) : true;
+  const when = props.recording && props.when && (
+    <span
+      className={`chip when-chip ${props.when === "start" ? "warn" : "ok"}`}
+      title={props.when === "start" ? "Changed while recording, these apply when recording next starts (Stop, then Start)" : "These apply at once, also while recording"}
+    >
+      {props.when === "start" ? "Next Start" : "Live"}
+    </span>
+  );
   return (
-    <div className={`set-group${props.full ? " full" : ""}${open ? "" : " folded"}`}>
+    <div className={`set-group${props.full ? " full" : ""}${open ? "" : " folded"}${when ? ` recording when-${props.when}` : ""}`}>
       <div className="set-group-head">
         <div>
           {props.fold ? (
@@ -49,10 +61,16 @@ export function Group(props: {
               <svg className="set-card-chevron" viewBox="0 0 16 16" aria-hidden="true">
                 <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              <h4>{props.title}</h4>
+              <h4>
+                {props.title}
+                {when}
+              </h4>
             </button>
           ) : (
-            <h4>{props.title}</h4>
+            <h4>
+              {props.title}
+              {when}
+            </h4>
           )}
           {props.hint && <p>{props.hint}</p>}
           {!open && props.fold?.summary && <p className="set-group-summary">{props.fold.summary}</p>}

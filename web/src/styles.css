@@ -1571,3 +1571,15 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .src-tune .chip { font-size: 12.5px; }
 .src-facts { gap: 6px 18px; margin-top: 10px; font-size: 14px; }
 .line-list li .figs.inline { gap: 4px 12px; font-size: 13.5px; }
+
+/* While recording, a setup group's fields that apply at the next Start (kit): an amber edge; live ones as usual. */
+.when-chip { margin-left: 8px; vertical-align: middle; }
+.set-group.recording.when-start .set-group-body .field:not(.live-field) :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  border-color: color-mix(in srgb, var(--warn) 70%, var(--line));
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+.set-group.recording.when-start .set-group-body .field.live-field .field-label::after { content: " · live"; color: var(--ok); font-weight: normal; }
+.found-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.found-list .found-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; }
+.found-list .found-row.taken { opacity: 0.6; }
+.found-list .found-row.picked { border-color: color-mix(in srgb, var(--ok) 60%, var(--line)); }

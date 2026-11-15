@@ -80,6 +80,7 @@ import {
   useApp,
   useSelect,
   web,
+  holdsRadios,
   type SetupTab,
 } from "./controller.ts";
 import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } from "./Plugins.tsx";
@@ -603,7 +604,7 @@ function DriverMissing(props: { kind: Source["type"]; detail: string }) {
 }
 
 /** A radio picked by serial from those its driver found (Airspy, HydraSDR, bladeRF, HackRF). */
-function SerialPicker(props: { kind: SerialKind; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
+function SerialPicker(props: { kind: SerialKind; serial: string; used: Set<string>; usedBy?: Map<string, string>; onChange: (serial: string) => void }) {
   const s = useApp();
   const { kind, serial, used } = props;
   const k = SOURCE_KINDS[kind];
@@ -617,10 +618,11 @@ function SerialPicker(props: { kind: SerialKind; serial: string; used: Set<strin
           {serial && !devices.some((d) => d.serial === serial) && <option value={serial}>SN {serial} (not connected)</option>}
           {devices.map((d) => {
             const inUse = used.has(deviceKey(kind, d.serial ?? ""));
+            const by = props.usedBy?.get(deviceKey(kind, d.serial ?? ""));
             return (
               <option key={d.serial} value={d.serial} disabled={inUse}>
                 {d.label}
-                {inUse ? " (in use)" : ""}
+                {inUse ? (by ? ` (in use by ${by})` : " (in use)") : ""}
               </option>
             );
           })}
@@ -949,6 +951,54 @@ function ReceiveOnSelect(props: { c: Config; ch: Channel; disabled?: boolean; on
   );
 }
 
+/**
+ * What Find found, as a list under the device field (kit): each radio's label and
+ * address, which source already has it, and a button to take it.
+ */
+function FoundRadios(props: {
+  devices: { label: string; args?: string }[] | null;
+  searching: boolean;
+  value: string;
+  keyOf: (args: string) => string;
+  usedBy: Map<string, string>;
+  onPick: (args: string) => void;
+  onHide: () => void;
+}) {
+  const list = props.devices ?? [];
+  return (
+    <div className="found-list" role="list" aria-label="Radios found">
+      <div className="row small muted">
+        <span>{props.searching ? "Searching…" : list.length ? `Found ${list.length}` : "Found none"}</span>
+        <button type="button" className="btn ghost small" onClick={(e) => (e.preventDefault(), props.onHide())}>
+          Hide
+        </button>
+      </div>
+      {list.map((d) => {
+        const args = d.args ?? "";
+        const by = props.usedBy.get(props.keyOf(args));
+        const picked = args === props.value;
+        return (
+          <div key={args || d.label} role="listitem" className={`found-row${by ? " taken" : ""}${picked ? " picked" : ""}`}>
+            <span>
+              {d.label}
+              <span className="mono small muted"> {args}</span>
+            </span>
+            {picked ? (
+              <span className="chip ok">this source</span>
+            ) : by ? (
+              <span className="chip">in use by {by}</span>
+            ) : (
+              <button type="button" className="btn ghost small" onClick={(e) => (e.preventDefault(), props.onPick(args))}>
+                Use
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function SourceCard(props: { c: Config; i: number; advice?: Advice | null; fresh?: boolean; onFreshDone?: () => void }) {
   const s = useApp();
   const { c, i } = props;
@@ -983,6 +1033,16 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
   const fileRef = useRef<HTMLInputElement>(null);
   const others = c.sources.filter((_, k) => k !== i);
   const used = new Set(others.map(sourceKey));
+  // Which source has each radio, to say so where it's listed (kit).
+  const usedBy = new Map(c.sources.flatMap((x, k) => (k === i ? [] : [[sourceKey(x), sourceTitle(c, k)] as [string, string]])));
+  // While recording, what applies at once and what waits for the next Start (Config::needs_restart).
+  const recording = holdsRadios(s.phase);
+  // The radios Find found, listed under the field after a Find here.
+  const [showFound, setShowFound] = useState(false);
+  const find = () => {
+    setShowFound(true);
+    void findRadios();
+  };
   const radios = s.radios;
   // Its driver isn't installed (desktop app).
   const driverState = needsDriver(src) ? radios?.[src.type] : undefined;
@@ -1025,8 +1085,8 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
       }
       note={needs && <div className="field-needs set-card-needs">{needs}</div>}
     >
-      <Group title="Device" hint={src.type === "file" ? "A capture, replayed" : undefined}>
-        <Field label="Name">
+      <Group title="Device" hint={src.type === "file" ? "A capture, replayed" : undefined} when="start" recording={recording}>
+        <Field label="Name" className="live-field">
           <TextInput value={src.name ?? ""} placeholder="e.g. the antenna it is on" onChange={(v) => edit((x) => void (x.name = v || undefined))} />
         </Field>
         <div className="field wide">
@@ -1133,10 +1193,21 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
                     </option>
                   ))}
                 </datalist>
-                <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
+                <button className="btn ghost small" disabled={s.findingRadios} onClick={find}>
                   {s.findingRadios ? "Searching…" : "Find"}
                 </button>
               </div>
+              {showFound && (
+                <FoundRadios
+                  devices={radios?.usrp.devices ?? null}
+                  searching={s.findingRadios}
+                  value={src.args}
+                  keyOf={(a) => deviceKey("usrp", a)}
+                  usedBy={usedBy}
+                  onPick={(a) => edit((x) => x.type === "usrp" && void (x.args = a))}
+                  onHide={() => setShowFound(false)}
+                />
+              )}
             </Field>
         )}
         {src.type === "usrp" && (
@@ -1159,6 +1230,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             kind={src.type}
             serial={src.serial}
             used={used}
+            usedBy={usedBy}
             onChange={(v) =>
               edit((x) => {
                 if (!pickedBySerial(x)) return;
@@ -1212,17 +1284,31 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
                     onChange={(v) => edit((x) => x.type === "soapy" && void (x.args = v))}
                   />
                   <datalist id={`soapy-${i}`}>
-                    {(radios?.soapy?.devices ?? []).map((d) => (
-                      <option key={d.args} value={d.args} disabled={used.has(deviceKey("soapy", d.args))}>
-                        {d.label}
-                        {used.has(deviceKey("soapy", d.args)) ? " (in use)" : ""}
-                      </option>
-                    ))}
+                    {(radios?.soapy?.devices ?? []).map((d) => {
+                      const by = usedBy.get(deviceKey("soapy", d.args));
+                      return (
+                        <option key={d.args} value={d.args} disabled={!!by}>
+                          {d.label}
+                          {by ? ` (in use by ${by})` : ""}
+                        </option>
+                      );
+                    })}
                   </datalist>
-                  <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
+                  <button className="btn ghost small" disabled={s.findingRadios} onClick={find}>
                     {s.findingRadios ? "Searching…" : "Find"}
                   </button>
                 </div>
+                {showFound && (
+                  <FoundRadios
+                    devices={radios?.soapy?.devices ?? null}
+                    searching={s.findingRadios}
+                    value={src.args}
+                    keyOf={(a) => deviceKey("soapy", a)}
+                    usedBy={usedBy}
+                    onPick={(a) => edit((x) => x.type === "soapy" && void (x.args = a))}
+                    onHide={() => setShowFound(false)}
+                  />
+                )}
               </Field>
               <Field label="Antenna">
                 <TextInput className="mono" value={src.antenna} placeholder="default" onChange={(v) => edit((x) => x.type === "soapy" && void (x.antenna = v))} />
@@ -1277,7 +1363,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
         )}
         {src.type === "file" && <Toggle label="Real-time pace" hint="Off: as fast as it decodes" checked={src.realtime} onChange={(v) => edit((x) => x.type === "file" && void (x.realtime = v))} />}
       </Group>
-      <Group title="Tuning" hint="What falls in the band is recorded">
+      <Group title="Tuning" hint="What falls in the band is recorded" when="start" recording={recording}>
         <Field
           label="Center frequency, MHz"
           hint={src.centerHz ? undefined : auto ? <>Auto <Fig v={formatMhz(auto, 4)} u="MHz" /></> : "Auto: nothing left to cover"}
@@ -1340,6 +1426,8 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
       {src.type !== "file" && (
         <Group
           title="Gain"
+          when="live"
+          recording={recording}
           hint={
             <>
               {SOURCE_KINDS[src.type].liveAgc || src.type === "hackrf" ? "Live, also while recording" : "dB live; AGC from next Start"}
@@ -1400,7 +1488,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
         </Group>
       )}
       {src.type !== "spyserver" && (
-        <Group title="Frequency correction" hint={<>Crystal error<Info>Its crystal&apos;s error, corrected so channels land where they should.</Info></>}>
+        <Group title="Frequency correction" when="start" recording={recording} hint={<>Crystal error<Info>Its crystal&apos;s error, corrected so channels land where they should.</Info></>}>
           {src.type !== "file" && <PpmField src={src} edit={edit} />}
           <AutoTune c={c} src={src} i={i} edit={edit} />
         </Group>
