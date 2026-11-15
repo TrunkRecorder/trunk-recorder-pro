@@ -1048,6 +1048,9 @@ export interface CallEntry {
   json?: boolean;
 }
 
+/** A recorded call's system: its record's short_name, else its folder. */
+export const systemOf = (c: CallEntry) => c.record.short_name || c.path.split("/")[0] || "";
+
 export interface Spectrum {
   source: number;
   centerHz: number;
@@ -2096,6 +2099,8 @@ export type FromRecorder =
   | { type: "history"; entries: CallEntry[]; next?: string }
   /** A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV): one for each system with some, on connecting (then `unitAlias` for each new one). */
   | { type: "units"; system: string; csv: string }
+  /** A system's radios whose IDs came in MDC1200 (the radio registry's): one for each system with some, on connecting (then each call's `srcList` says it). */
+  | { type: "mdcUnits"; system: string; units: number[] }
   /** Which key containers are unlocked, after an unlock, a lock or a config change. */
   | { type: "keys"; sources: LockableKeys[] }
   | { type: "radios"; radios: Radios }

@@ -901,7 +901,7 @@ pub fn review(ctx: &Ctx, id: u64, name: &str) -> ToClient {
     let reviewed = (|| -> Result<ToClient, String> {
         let dir = capture_dir(ctx, name)?;
         let opened = open(dir.to_str().ok_or("Its path isn't text")?)?;
-        let images = opened.recordings.iter().map(crate::waterfall::of_recording).collect::<Result<Vec<_>, _>>()?;
+        let images = opened.recordings.iter().map(|r| crate::waterfall::of_recording(r).map(|(image, _)| image)).collect::<Result<Vec<_>, _>>()?;
         let read = |f: &str| fs::read_to_string(dir.join(f)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
         let waterfalls = images.into_iter().map(|i| IqWaterfall { width: i.width, height: i.height, levels: crate::toolkit::hex(&i.pixels) }).collect();
         Ok(ToClient::IqCaptureReview { id, name: name.to_string(), metadata: read("source-0.sigmf-meta").map_or(Value::Null, |m| m["global"].clone()), diagnostics: read(DIAGNOSTICS).unwrap_or(Value::Null), waterfalls, error: None })
