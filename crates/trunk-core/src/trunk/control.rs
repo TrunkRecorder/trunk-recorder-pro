@@ -274,10 +274,10 @@ impl P25 {
             self.bad += cf.lost as u64;
             self.air += cf.air;
             let end = t + cf.framed as f64 / P25_SYMBOL_RATE;
-            if let Some(e) = self.sync_end_s {
-                if t - e > SYNC_GAP_S {
-                    self.unsynced_s += t - e;
-                }
+            if let Some(e) = self.sync_end_s
+                && t - e > SYNC_GAP_S
+            {
+                self.unsynced_s += t - e;
             }
             self.sync_end_s = Some(self.sync_end_s.map_or(end, |e| e.max(end)));
             for o in &cf.osps {
