@@ -35,6 +35,10 @@ impl DeviceDescriptor {
         self.manufacturer.as_deref() == Some("RTLSDRBlog")
             && self.product.as_deref() == Some("Blog V4")
     }
+    pub(crate) fn blog_v4l(&self) -> bool {
+        self.manufacturer.as_deref() == Some("RTLSDRBlog")
+            && self.product.as_deref() == Some("Blog V4L")
+    }
     pub(crate) fn read_missing_strings<F, M>(
         mut self,
         manufacturer_index: Option<NonZeroU8>,

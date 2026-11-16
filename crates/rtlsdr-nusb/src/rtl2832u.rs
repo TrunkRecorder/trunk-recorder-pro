@@ -124,16 +124,19 @@ impl Hardware {
         if config.frequency_hz < XTAL_HZ
             && config.direct_sampling == DirectSampling::Off
             && !descriptor.blog_v4()
+            && !descriptor.blog_v4l()
         {
             return Err(Error::invalid_config(
                 "frequency_hz",
-                "below 28.8 MHz requires Blog V4 or direct sampling",
+                "below 28.8 MHz requires Blog V4/V4L or direct sampling",
             ));
         }
-        if descriptor.blog_v4() && config.direct_sampling != DirectSampling::Off {
+        if (descriptor.blog_v4() || descriptor.blog_v4l())
+            && config.direct_sampling != DirectSampling::Off
+        {
             return Err(Error::invalid_config(
                 "direct_sampling",
-                "Blog V4 uses its upconverter; select Off",
+                "Blog V4/V4L uses its upconverter; select Off",
             ));
         }
         Ok(())
@@ -209,7 +212,10 @@ impl Hardware {
             if descriptor.blog_v4() && kind != TunerKind::R828D {
                 return Err(Error::UnsupportedTuner);
             }
-            self.tuner = Some(Tuner::new(kind, descriptor.blog_v4()));
+            if descriptor.blog_v4l() && kind != TunerKind::R820T {
+                return Err(Error::UnsupportedTuner);
+            }
+            self.tuner = Some(Tuner::new(kind, descriptor.blog_v4(), descriptor.blog_v4l()));
             self.direct = false;
         }
         let crystal = corrected_crystal(config.correction_ppm);

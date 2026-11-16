@@ -90,10 +90,10 @@ impl Tuner {
         }
         Err(disconnected.unwrap_or(Error::UnsupportedTuner))
     }
-    pub fn new(kind: TunerKind, blog_v4: bool) -> Self {
+    pub fn new(kind: TunerKind, blog_v4: bool, blog_v4l: bool) -> Self {
         match kind {
             TunerKind::E4000 => Tuner::E4000(E4000::new()),
-            _ => Tuner::R82xx(R82xx::new(kind, blog_v4)),
+            _ => Tuner::R82xx(R82xx::new(kind, blog_v4, blog_v4l)),
         }
     }
     pub fn kind(&self) -> TunerKind {

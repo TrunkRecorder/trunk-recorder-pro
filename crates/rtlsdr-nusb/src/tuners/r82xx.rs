@@ -13,6 +13,7 @@ pub(crate) const IF_HZ: u64 = 3_570_000;
 pub(crate) struct R82xx {
     pub kind: TunerKind,
     pub blog_v4: bool,
+    pub blog_v4l: bool,
     pub crystal_hz: u64,
     /// R5–R31 as written (the chip's status registers R0–R4 are read).
     pub(super) regs: Registers,
@@ -20,10 +21,11 @@ pub(crate) struct R82xx {
 }
 
 impl R82xx {
-    pub fn new(kind: TunerKind, blog_v4: bool) -> Self {
+    pub fn new(kind: TunerKind, blog_v4: bool, blog_v4l: bool) -> Self {
         Self {
             kind,
             blog_v4,
+            blog_v4l,
             crystal_hz: XTAL_HZ,
             regs: Registers::new(kind.address(), Reads::FromZeroReversed, &[]).holding(5, &INITIAL),
             input: None,
@@ -58,11 +60,11 @@ impl R82xx {
         }
     }
     pub async fn tune<C: ControlBackend>(&mut self, com: &Com<'_, C>, hz: u64) -> Result<u64> {
-        let upconvert = if self.blog_v4 && hz < XTAL_HZ { XTAL_HZ } else { 0 };
+        let upconvert = if (self.blog_v4 || self.blog_v4l) && hz < XTAL_HZ { XTAL_HZ } else { 0 };
         let lo = hz + upconvert + IF_HZ;
         let &(_, drain, filter, corner) = STANDARD_MUX.iter().rev().find(|row| row.0 <= lo).expect("table starts at zero");
         // V4 notch filters follow antenna RF, not the LO used by the mux.
-        let drain = if self.blog_v4 {
+        let drain = if self.blog_v4 || self.blog_v4l {
             match hz {
                 0..=2_200_000 | 85_000_000..=112_000_000 | 172_000_000..=242_000_000 => 0,
                 _ => 8,
@@ -71,6 +73,10 @@ impl R82xx {
             drain
         };
         self.regs.write_many(com, &[(0x17, drain, 8), (0x1a, filter, 0xc3), (0x1b, corner, 0xff), (0x10, 0, 0x0b), (0x08, 0, 0x3f), (0x09, 0, 0x3f)]).await?;
+        if self.blog_v4l && hz < XTAL_HZ {
+            // The HF upconverter path does not benefit from the tracking filter.
+            self.regs.write_many(com, &[(0x1a, 0x40, 0xc3), (0x1b, 0, 0xff)]).await?;
+        }
         let actual_lo = self.set_pll(com, lo).await?;
         if self.kind == TunerKind::R828D {
             let input = if self.blog_v4 { v4_input(hz) } else { u8::from(hz <= 345_000_000) };
@@ -92,6 +98,17 @@ impl R82xx {
                 } else {
                     self.regs.write(com, 0x05, if input == 0 { 0 } else { 0x60 }, 0x60).await?;
                 }
+                self.input = Some(input);
+            }
+        }
+        if self.blog_v4l {
+            let hf = hz < XTAL_HZ;
+            let input = u8::from(!hf);
+            if self.input != Some(input) {
+                // V4L's R828S has two inputs: cable 1 is HF, air-in is VHF/UHF.
+                self.regs.write(com, 0x05, if hf { 0x40 } else { 0 }, 0x40).await?;
+                self.regs.write(com, 0x05, if hf { 0x20 } else { 0 }, 0x20).await?;
+                com.gpio(5, !hf).await?;
                 self.input = Some(input);
             }
         }
@@ -118,7 +135,7 @@ impl R82xx {
     pub(super) async fn set_pll<C: ControlBackend>(&mut self, com: &Com<'_, C>, hz: u64) -> Result<u64> {
         self.regs.write_many(com, &[(0x10, 0, 0x10), (0x1a, 0, 0x0c), (0x12, 0x80, 0xe0)]).await?;
         let fine = (self.regs.read_from_zero(com, 5).await?[4] >> 4) & 3;
-        let power_ref = if self.kind == TunerKind::R820T { 2 } else { 1 };
+        let power_ref = if self.kind == TunerKind::R820T && !self.blog_v4l { 2 } else { 1 };
         for shift in [0, -1, 1] {
             let Ok(plan) = pll(hz, self.crystal_hz, fine, power_ref, shift) else { continue };
             let sdm_zero = if plan.sdm == 0 { 8 } else { 0 };
@@ -232,7 +249,7 @@ mod tests {
     fn v4_hf_bypasses_tracking_filter_on_retunes_and_restores_it_above_hf() {
         let control = FakeTransport::default();
         control.state.tuner_address.store(0x74, Ordering::SeqCst);
-        let mut tuner = R82xx::new(TunerKind::R828D, true);
+        let mut tuner = R82xx::new(TunerKind::R828D, true, false);
         for (hz, filter, corner) in [
             (7_100_000, 0x40, 0),
             (14_200_000, 0x40, 0),
@@ -254,7 +271,7 @@ mod tests {
     fn v4_notches_follow_rf_at_every_band_edge_and_retune() {
         let control = FakeTransport::default();
         control.state.tuner_address.store(0x74, Ordering::SeqCst);
-        let mut tuner = R82xx::new(TunerKind::R828D, true);
+        let mut tuner = R82xx::new(TunerKind::R828D, true, false);
         for (hz, notch) in [
             (1_000_000, 0),
             (2_200_000, 0),
@@ -285,7 +302,7 @@ mod tests {
         for kind in [TunerKind::R820T, TunerKind::R828D] {
             let control = FakeTransport::default();
             control.state.tuner_address.store(kind.address(), Ordering::SeqCst);
-            let mut tuner = R82xx::new(kind, false);
+            let mut tuner = R82xx::new(kind, false, false);
             for (hz, drain) in [(50_000_000, 8), (83_000_000, 0)] {
                 futures_lite::future::block_on(tuner.tune(&Com(&control), hz)).unwrap();
                 assert_eq!(tuner.regs.get(0x17).unwrap() & 8, drain);
@@ -307,7 +324,7 @@ mod tests {
     fn calibration_keeps_first_valid_result() {
         for code in 1..15 {
             let control = calibration_responses(&[code, 0]);
-            let mut tuner = R82xx::new(TunerKind::R820T, false);
+            let mut tuner = R82xx::new(TunerKind::R820T, false, false);
             assert_eq!(futures_lite::future::block_on(tuner.calibrate(&Com(&control))).unwrap(), code);
             assert_eq!(control.state.responses.lock().unwrap().len(), 3);
         }
@@ -317,7 +334,7 @@ mod tests {
         for invalid in [0, 15] {
             for second in [0, 7, 15] {
                 let control = calibration_responses(&[invalid, second]);
-                let mut tuner = R82xx::new(TunerKind::R820T, false);
+                let mut tuner = R82xx::new(TunerKind::R820T, false, false);
                 assert_eq!(futures_lite::future::block_on(tuner.calibrate(&Com(&control))).unwrap(), if second == 15 { 0 } else { second });
                 assert!(control.state.responses.lock().unwrap().is_empty());
             }
@@ -327,7 +344,7 @@ mod tests {
     fn pll_reports_unlock_after_retry_instead_of_returning_a_frequency() {
         let control = FakeTransport::default();
         control.state.pll_locked.store(false, Ordering::SeqCst);
-        let mut tuner = R82xx::new(TunerKind::R820T, false);
+        let mut tuner = R82xx::new(TunerKind::R820T, false, false);
         assert!(matches!(futures_lite::future::block_on(tuner.set_pll(&Com(&control), 103_570_000)), Err(Error::PllUnlocked)));
         let reads = control.state.control_in_requests.lock().unwrap();
         assert_eq!(reads.iter().filter(|r| r.index == 0x600 && r.length == 3).count(), 2);

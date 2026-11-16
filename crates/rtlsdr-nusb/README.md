@@ -18,6 +18,8 @@ close/shutdown and sync/async APIs follow
 - RTL2832U with R820T/R820T2/R860-compatible, R828D or Elonics E4000 tuners.
 - R828D input selection and RTL-SDR Blog V4 HF upconversion/filter switching.
   V4 detection uses USB manufacturer `RTLSDRBlog` and product `Blog V4`.
+- RTL-SDR Blog V4L (R828S) detection and its two-input HF upconverter path;
+  detection uses manufacturer `RTLSDRBlog` and product `Blog V4L`.
 - Frequency, sample rate, automatic/manual tuner gain, ppm correction, GPIO 0
   bias tee (off by default), and I/Q direct sampling on suitably wired boards.
 - Typed raw unsigned eight-bit I/Q blocks or converted `Complex32` samples.
@@ -26,7 +28,7 @@ close/shutdown and sync/async APIs follow
 
 The current range is 900,001–3,200,000 complex samples/s. Rates above 2.4 MS/s
 may drop samples. Tuner operation starts at 28.8 MHz; lower frequencies require
-Blog V4 or a suitable direct-sampling input. The nominal upper limit is
+Blog V4/V4L or a suitable direct-sampling input. The nominal upper limit is
 1.766 GHz, subject to the individual tuner's PLL locking. Manual gain is an
 approximation based on the reference driver's LNA/mixer steps, not librtlsdr's
 gain table. Generic R828D boards currently assume a 28.8 MHz tuner crystal;
@@ -35,7 +37,7 @@ boards with a different tuner crystal are not supported.
 Hardware validation so far: an R820T-family `0bda:2838` receiver on Linux, with
 blocking/async capture, retuning at 100, 433.92 and 1090 MHz, sample rates of
 1.024, 2.048 and 2.4 MS/s, stop/restart, raw IQ and final-owner cleanup.
-R828D/Blog V4, direct sampling and bias power switching need hardware validation.
+R828D/Blog V4/V4L, direct sampling and bias power switching need hardware validation.
 E4000 (zero IF): about 52–2200 MHz with a gap where its PLL does not lock
 (1090–1230 MHz on the unit tested; here capped at 1.766 GHz like the others);
 manual gain is librtlsdr's nearest step from -1 to 42 dB; its IF filters

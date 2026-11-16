@@ -123,8 +123,8 @@ The defaults (128 transfers of 16 KiB) suit any number of dongles on one bus, so
 changes only the tuner; the samples the chip dropped meanwhile (it counts them itself) are reported
 as dropped. A USB stall is cleared in place, without reopening the dongle.
 
-The native driver handles R820T and R828D tuners (the RTL-SDR Blog V3 and V4, and most current
-dongles) and the older Elonics E4000. The E4000 runs at zero IF, so a small DC spike sits at the
+The native driver handles R820T, R828D and R828S tuners (the RTL-SDR Blog V3, V4 and V4L, and
+most current dongles) and the older Elonics E4000. The E4000 runs at zero IF, so a small DC spike sits at the
 center frequency (keep a control channel off it); a manual `gain` is the nearest of its steps
 from -1 to 42 dB, and manual gain is better than AGC, which sits low. It can't tune about
 1090–1230 MHz. For a dongle with an FC0012, FC0013 or FC2580 tuner, use a `soapy` source with
