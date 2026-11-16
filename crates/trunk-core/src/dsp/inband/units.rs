@@ -46,6 +46,17 @@ pub enum Kind {
     FleetSync,
 }
 
+impl Kind {
+    /// Its name in a call's `srcList` (`signal_system`): Trunk Recorder's
+    /// decoders' names for them.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Mdc1200 => "MDC1200",
+            Kind::FleetSync => "FLEETSYNC",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnitId {
     pub kind: Kind,

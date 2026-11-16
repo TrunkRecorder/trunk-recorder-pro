@@ -21,6 +21,30 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   `symbolRate` in baud, rest channels, `cc.syncLossSym`, `cc.merDb`, `voice.*.missing`, `calls.recorded` defined, the
   reasons `data` and `noFrequency`, conventional `noiseDb` optional, and the answers a recorder acts on. Example reports
   in `docs/api/node-health/` are the conformance cases; the SDK's report types read and write each unchanged.
+- Node health reports: a radio says the correction AutoTune applies on top of its ppm (`ppmApplied`), so a service can
+  tell a radio being corrected from a mistuned one, and the recorder says how its clock is kept (`clock.sync`: `ntp`,
+  `gps` or `ptp`, from chrony or systemd-timesyncd; `none` when the system says it isn't synchronized).
+
+## [0.3.8] — 2026-11-14
+
+- **NXDN Type-C: more of a weak control channel decoded, and its loss counted honestly** (#170). A frame whose LICH was
+  lost is now tried as CAC too (its CRC decides): on a contributor's captures, one Green Mountain capture went from 1,378 to
+  all 1,495 frames and a weak one from 466 to 563, with grants heard sooner. Loss counts the frames the control channel
+  sent, as P25 counts lost TSBKs: the slots of a fade too deep for the receiver to follow count as lost (the weak capture:
+  563 of 1,495, 38 %, where it said 466 of 792). `tool nxdn` prints the same count beside its per-frame ones.
+- NXDN: the framer finds a control channel's frames again after a fade. Its symbol timing could slip in the fade, and on
+  the slipped grid the repeating idle frames could pass as valid every time, so it never looked for the sync again.
+- **MDC1200 IDs are shown in hex** (#167): four hex digits wherever the dashboard shows a radio (Calls, Listen, the
+  Radios card and a radio's page, Tones), its decimal on the radio's page too; the Radios search finds `1C13`, `0x1C13` or
+  `7187`. Each call source keeps the signalling its ID came in, and the call JSON's `signal_system` says `MDC1200` or
+  `FLEETSYNC`. What's saved stays decimal.
+- **Tuning advice keeps RTL-SDRs at 2.4 MSPS.** Past that, an RTL-SDR silently loses blocks of samples once a second
+  dongle streams beside it, so advice never goes higher (a rate set by hand stays) and Setup warns about one set above
+  it. A centre typed in is advised only within its land mobile band (VHF low, VHF high/220, UHF/T-band, 700/800/900).
+- **The IQ corpus keeps captures that decode nothing** (#170). Its check deleted any capture nothing could be decoded
+  from, so the ones a no-audio capture rule makes, of the calls that failed, were the ones thrown away. It now checks
+  that each recording is a radio's IQ (its spectrum isn't flat as random or compressed bytes are, its samples are
+  centred and finite) and keeps it whatever it decodes to, for debugging and for decoders still to be written.
 
 ## [0.3.7] — 2026-11-13
 

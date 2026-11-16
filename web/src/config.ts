@@ -95,7 +95,7 @@ export interface SourceKind {
 }
 
 export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
-  rtlsdr: { label: "RTL-SDR", fresh: newDongle, get rates() { return sourceRates("rtlsdr"); }, device: "serial", soapyDriver: "rtlsdr", liveAgc: true },
+  rtlsdr: { label: "RTL-SDR", fresh: newDongle, get rates() { return sourceRates("rtlsdr"); }, rateHint: "2.4 or less is dependable", device: "serial", soapyDriver: "rtlsdr", liveAgc: true },
   usrp: {
     label: "USRP",
     fresh: newUsrp,

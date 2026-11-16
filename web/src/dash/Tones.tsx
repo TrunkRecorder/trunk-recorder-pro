@@ -6,7 +6,7 @@
 // card in Setup), by an id the call JSON and plugins use.
 
 import { useState } from "react";
-import { radioQuery, usePolled, type AppState, type SystemRef } from "../controller.ts";
+import { radioQuery, usePolled, useSelect, type AppState, type SystemRef } from "../controller.ts";
 import { Card, Choice, Info } from "../charts.tsx";
 import { ago } from "../fmt.ts";
 import type { Conventional, SignalDef, System, ToneRow } from "../protocol.ts";
@@ -14,6 +14,7 @@ import { PlayButton } from "../PlayButton.tsx";
 import { signalId } from "../rules.ts";
 import { showTodo } from "../Setup.tsx";
 import { addSignal } from "../Signals.tsx";
+import { unitIdText } from "../units.ts";
 import { running, type DashSystem } from "./data.ts";
 
 const rowKey = (r: ToneRow) => `${r.tg}|${r.pattern}|${r.knox}|${r.digits}|${r.tones.join(",")}`;
@@ -43,6 +44,7 @@ function systemOf(s: AppState, name: string): { sys: System | Conventional; at: 
 
 /** The tones log's table (rows as the recorder sent them). */
 export function ToneTable({ rows, system, at }: { rows: ToneRow[]; system: string; at: SystemRef | null }) {
+  const mdc = useSelect((x) => x.mdcUnits[system]);
   return (
     <div className="table-wrap tall">
       <table className="calls">
@@ -83,7 +85,7 @@ export function ToneTable({ rows, system, at }: { rows: ToneRow[]; system: strin
               </td>
               <td className="mono">{x.count}</td>
               <td className="small">{ago(x.last)}</td>
-              <td className="small">{x.radios.map((u) => u.name || u.unit).join(", ") || "—"}</td>
+              <td className="small">{x.radios.map((u) => u.name || unitIdText(mdc, u.unit)).join(", ") || "—"}</td>
               <td className="nowrap">
                 <PlayButton spec={x} />
                 {x.signals.length ? (
