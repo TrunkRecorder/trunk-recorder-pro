@@ -7086,10 +7086,28 @@
             "number",
             "null"
           ]
+        },
+        "colorCode": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "network": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "ran": {
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
-      "description": "A site's identity (NAC, WACN, System ID are hex on the air): what a site in the config expects (absent: any), and what a control channel said of itself in status and the survey (absent: not heard yet). Compare with `!= null`."
+      "description": "A site's identity (NAC, WACN, System ID are hex on the air): what a site in the config expects (absent: any), and what a control channel said of itself in status and the survey (absent: not heard yet). Compare with `!= null`. P25 states nac…site; SmartNet sysId, site; DMR colorCode (Tier III also network, site, as sent); NXDN ran (Type-C also sysId, its system, and site)."
     },
     "SiteStatus": {
       "type": "object",
