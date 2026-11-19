@@ -89,6 +89,16 @@ passkey. For a token that may have been seen, make it again (remove the user and
 remove the token); for a device that's gone, remove its passkey (every user's are listed in
 **Access**, by name and the day each was added).
 
+**In the log.** Each sign-in that starts a browser's session, with how (`User luke: signed in with
+passkey "iPhone"`, `… with their access token`); each passkey added, with how the one adding it was
+signed in (`User luke: passkey "iPad" added (signed in with their access token)`), so one added
+from a session someone else got hold of shows there and by its date in **Access**; each passkey
+removed in Setup, and by whom; and signing out everywhere. Programs that send a token with each
+request, and people the [proxy](#behind-a-proxy-that-signs-people-in) signs in, aren't logged at
+each request. Refused sign-ins are logged at `debug` only (anyone may try, again and again). The
+lines name users and passkeys, never a secret, and not the address a sign-in came from: View users
+can watch the log, and plugins that take it get every line.
+
 **Plain HTTP from another computer.** Setup → **Access** says **Unencrypted** when the page was
 opened over plain HTTP from another computer: the token you paste and the sign-in cookie cross
 the network readable, to anyone who can watch it. Over a VPN (Tailscale, WireGuard) that's fine;
@@ -193,6 +203,8 @@ remove your token (the **×** by its date), as long as you can still sign in.
 
 **Signing in.** The sign-in page has **Passkey** above the token field; browsers that fill in
 passkeys also offer them from the field itself. No name to type: the passkey says whose it is.
+The device must check it's you (a fingerprint, a face, a PIN, its password), adding and signing
+in: a security key that's only touched is refused.
 A sign-in waits with the browser while you answer (signed by the recorder, good for 5 minutes,
 and good once), so opening the sign-in page again and again keeps nothing on the recorder and
 can't push anyone else's out.

@@ -10,11 +10,12 @@ import type { AuthPasskey } from "./protocol.ts";
 /** A day from a Unix time, as this browser writes dates ("—": none). */
 export const day = (t?: number) => (t ? new Date(t * 1000).toLocaleDateString() : "—");
 
-/** A passkey, by its name; when it was added on hover. `children`: what goes beside its name (Remove). */
+/** A passkey: its name and the day it was added. `children`: what goes beside them (Remove). */
 export function PasskeyChip(props: { p: Pick<AuthPasskey, "name" | "created">; children?: ReactNode }) {
   return (
     <span className="chip" title={`Added ${day(props.p.created)}`}>
       {props.p.name}
+      <span className="small">{day(props.p.created)}</span>
       {props.children}
     </span>
   );

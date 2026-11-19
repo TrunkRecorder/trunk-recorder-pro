@@ -421,6 +421,10 @@ fn signing_in_from_the_command_line_to_the_socket() {
         }
     }
     assert!(log.contains("User luke: setConfig"), "who changed what is logged, by its kind: {log}");
+    // Each sign-in that made a browser's session, and how (luke's two, kiosk's one): not each
+    // request a token's sent with, nor a refused one (at debug alone), nor the token's hash.
+    assert_eq!((log.matches("User luke: signed in with their access token").count(), log.matches("User kiosk: signed in with their access token").count()), (2, 1), "{log}");
+    assert!(!log.contains("Signing in: refused") && !log.contains(&hash), "{log}");
 }
 
 /// Served over HTTPS (the fixtures' certificate for localhost): every port

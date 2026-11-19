@@ -130,6 +130,52 @@ impl Who {
             Who::User { name, .. } | Who::Proxy { user: name, .. } => Some(name),
         }
     }
+
+    /// How it signed in, in words for the log ([`Logged`]): "signed in with
+    /// their access token", "… with passkey "iPhone"" (its name as `auth` has
+    /// it), "… by the proxy", "… by Cloudflare Access", or "not signed in".
+    /// Never the credential itself.
+    pub fn how(&self, auth: &Auth) -> String {
+        match self {
+            Who::Anonymous => "not signed in".into(),
+            Who::User { name, credential, .. } => match credential.strip_prefix("pk:") {
+                Some(id) => match auth.users.get(name).and_then(|u| u.passkeys.iter().find(|p| p.id == id)) {
+                    Some(p) => format!("signed in with passkey \"{}\"", p.name),
+                    None => "signed in with a passkey since removed".into(),
+                },
+                None => "signed in with their access token".into(),
+            },
+            Who::Proxy { via: Via::Header(_), .. } => "signed in by the proxy".into(),
+            Who::Proxy { via: Via::Cloudflare { .. }, .. } => "signed in by Cloudflare Access".into(),
+        }
+    }
+}
+
+/// What the log says of signing in and passkeys: user and passkey names, and
+/// how the one doing it signed in ([`Who::how`]); never a secret, nor where
+/// from — View users can watch the log (its topic, and every warning), and
+/// plugins taking it are handed every line.
+pub enum Logged<'a> {
+    /// `user` signed in `how`: a browser's session made (`/api/login`, a passkey's sign-in).
+    SignedIn { user: &'a str, how: String },
+    /// A sign-in refused, of `what` (debug: anyone may try, again and again).
+    Refused { what: &'a str },
+    /// Passkey `passkey` added to `user`'s, by them signed in `how`.
+    PasskeyAdded { user: &'a str, passkey: &'a str, how: String },
+    /// Passkey `passkey` of `user`'s removed, `by` another user (None: by
+    /// themselves, or nobody signed in), signed in `how`.
+    PasskeyRemoved { user: &'a str, passkey: &'a str, by: Option<&'a str>, how: String },
+}
+
+impl std::fmt::Display for Logged<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Logged::SignedIn { user, how } => write!(f, "User {user}: {how}"),
+            Logged::Refused { what } => write!(f, "Signing in: refused {what}"),
+            Logged::PasskeyAdded { user, passkey, how } => write!(f, "User {user}: passkey \"{passkey}\" added ({how})"),
+            Logged::PasskeyRemoved { user, passkey, by, how } => write!(f, "User {user}: passkey \"{passkey}\" removed{} ({how})", by.map(|b| format!(" by {b}")).unwrap_or_default()),
+        }
+    }
 }
 
 impl Caller {
@@ -535,6 +581,47 @@ mod tests {
         auth.users.get_mut("luke").unwrap().token = None;
         assert_eq!(identify(&auth, &sessions, &keys, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, false, None), Who::Anonymous, "no token");
         assert_eq!(luke.grants(&auth), None);
+    }
+
+    /// What the log says of signing in and passkeys: who, which passkey (by
+    /// name) and how the one doing it signed in, and never a secret, its
+    /// hash, a passkey's id or key, nor the address it came from (View users
+    /// can watch the log).
+    #[test]
+    fn the_log_says_who_and_how_and_no_secret() {
+        let mut auth = Auth { enabled: true, ..Default::default() };
+        let secret = add_user(&mut auth, "luke", ApiAccess::Control).unwrap();
+        add_user(&mut auth, "kiosk", ApiAccess::Listen).unwrap();
+        let hash = auth.users["luke"].token.as_ref().unwrap().hash.clone();
+        auth.users.get_mut("luke").unwrap().passkeys.push(trunk_app::config::AuthPasskey { name: "Mac".into(), created: 1, id: "PKID-42".into(), key: serde_json::json!({ "cred": "KEY-43" }) });
+        let peer: IpAddr = "203.0.113.7".parse().unwrap();
+        let app = AuthCloudflare { team: "radio".into(), aud: "aud".into() };
+        let token = Who::User { name: "luke".into(), credential: hash.clone(), until: Some(9) };
+        let passkey = Who::User { name: "luke".into(), credential: passkey_credential("PKID-42"), until: Some(9) };
+        let gone = Who::User { name: "luke".into(), credential: passkey_credential("other"), until: Some(9) };
+        let proxy = Who::Proxy { asserted: "luke@example.com".into(), user: "luke".into(), via: Via::Header(peer) };
+        let cf = Who::Proxy { asserted: "luke@example.com".into(), user: "luke".into(), via: Via::Cloudflare { app, until: 9 } };
+        let hows: Vec<String> = [&token, &passkey, &gone, &proxy, &cf, &Who::Anonymous].iter().map(|w| w.how(&auth)).collect();
+        assert_eq!(hows, ["signed in with their access token", "signed in with passkey \"Mac\"", "signed in with a passkey since removed", "signed in by the proxy", "signed in by Cloudflare Access", "not signed in"]);
+        let lines = [
+            Logged::SignedIn { user: "luke", how: token.how(&auth) }.to_string(),
+            Logged::SignedIn { user: "luke", how: passkey.how(&auth) }.to_string(),
+            Logged::Refused { what: "an access token that isn't one of this recorder's" }.to_string(),
+            Logged::PasskeyAdded { user: "luke", passkey: "iPhone", how: passkey.how(&auth) }.to_string(),
+            Logged::PasskeyRemoved { user: "kiosk", passkey: "Wall tablet", by: Some("luke"), how: proxy.how(&auth) }.to_string(),
+            Logged::PasskeyRemoved { user: "luke", passkey: "Mac", by: None, how: cf.how(&auth) }.to_string(),
+        ];
+        assert_eq!(lines[0], "User luke: signed in with their access token");
+        assert_eq!(lines[1], "User luke: signed in with passkey \"Mac\"");
+        assert_eq!(lines[2], "Signing in: refused an access token that isn't one of this recorder's");
+        assert_eq!(lines[3], "User luke: passkey \"iPhone\" added (signed in with passkey \"Mac\")");
+        assert_eq!(lines[4], "User kiosk: passkey \"Wall tablet\" removed by luke (signed in by the proxy)");
+        assert_eq!(lines[5], "User luke: passkey \"Mac\" removed (signed in by Cloudflare Access)");
+        for l in lines.iter().chain(&hows) {
+            for secret in [secret.expose(), &hash, &hash[..16], "PKID-42", "KEY-43", "203.0.113.7", "luke@example.com"] {
+                assert!(!l.contains(secret), "{l}: {secret}");
+            }
+        }
     }
 
     /// The proxy's header is who it says from the proxy's addresses alone,

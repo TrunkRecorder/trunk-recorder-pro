@@ -68,8 +68,9 @@ list read from the source); **M** = rendered against a mocked server.
 | 20 | Access is the lower of the port's and the user's | `access::access_is_the_lower_of_the_port_and_the_user`; the route matrix; e2e (Admin on the wall port: listen, export 403) | B |
 | 21 | A socket is closed when its access changes (user removed, role changed, passkey removed, signed out everywhere) or what it signed in with expires (cookie, Cloudflare token) | `a_socket_has_its_users_access_until_it_changes`, `a_proxy_in_front_signs_people_in`, `sessions_end_…`, `behind_cloudflare_…`; browser (passkey removed → dashboard back to the sign-in page) | B |
 | 22 | Passkey routes answer on the built-in port alone, from its own pages (not even an allowed origin's), only on localhost or `server.hostname`; the one origin taken is the recorder's (port, scheme), never the request's | `passkey::passkeys_are_for_localhost_or_the_host_name…`, `on_the_host_name_the_origin_s_port_is_the_dashboard_s`, `server::passkeys_add_and_sign_in`; route matrix (403 on the wall port for every caller); browser (a real answer made on the interface's page, relayed: 401 "work at … alone") | B |
-| 23 | Passkey ceremonies: an add taken once within 5 min, 2 per user; a sign-in sealed, once, within 5 min, for its RP; counter only raised, and an unsaved count refuses the sign-in | `passkey::*` (8 tests, software ES256 key), `server::a_passkey_s_count_unsaved_signs_nobody_in`; browser (counter in the config equals the authenticator's after each sign-in) | B |
+| 23 | Passkey ceremonies: an add taken once within 5 min, 2 per user; a sign-in sealed, once, within 5 min, for its RP; counter only raised, and an unsaved count refuses the sign-in and isn't kept in memory either (the next sign-in counts from what's on disk) | `passkey::*` (9 tests, software ES256 key), `server::a_passkey_s_count_unsaved_signs_nobody_in`; browser (counter in the config equals the authenticator's after each sign-in) | B |
 | 24 | Only control users sign other users out everywhere; a proxy's user can't (signing out is the proxy's); only on the built-in port | `sessions_end_…`; added check in `what_cors_lets_in_…` (proxy user → 403) | B |
+| 41 | A passkey must verify its user (UV), adding and signing in: an authenticator that's only touched (user present, not verified) is refused. The policy is webauthn-rs's for passkeys (`UserVerificationPolicy::Required` in `start_passkey_registration` and `start_discoverable_authentication`), not set here; the options sent say `userVerification: "required"` | added `passkey::a_passkey_that_doesn_t_verify_its_user_is_refused` (the software key with its UV flag off) | B |
 
 ### Secrets
 
@@ -79,6 +80,7 @@ list read from the source); **M** = rendered against a mocked server.
 | 26 | A token's secret is shown once (`tokenCreated`, CLI stdout), never in `Debug`, never saved | `protocol::a_secret_is_sent_but_never_shown`, `server::a_user_is_made_…`; e2e (config has hashes only; `access list` shows no secret) | B |
 | 27 | No secret in the log; who changed what is logged by kind | e2e: four runs' stdout+stderr searched for both tokens, the session cookies and the session key; `User luke: setConfig` present | B |
 | 28 | The session key is kept beside the config, mode 0600, never in the config, survives a restart | `a_session_is_signed_and_ends`; e2e (mode, a cookie still good after a restart) | B |
+| 42 | The log says who signed in and how (token; passkey, by name) when a browser's session is made, each passkey added (and how the adder was signed in), each removed in Setup (whose, by whom, how), refused sign-ins at debug; never a secret, hash, passkey id or key, nor the peer's address (View users watch the log; plugins taking it get every line); Bearer, proxy and Cloudflare callers aren't logged per request | added `access::the_log_says_who_and_how_and_no_secret` (every line, built by `access::Logged`, checked for the token, its hash, the passkey's id and key, the address); `passkey::names_and_adding` (`passkey::removed`). The handlers only format `Logged`: no test reads the log itself (its tap is one global, shared with other tests) | B |
 
 ### Transport and headers
 
@@ -106,6 +108,7 @@ list read from the source); **M** = rendered against a mocked server.
 | 38 | View mode: no Setup/Plugins/Interfaces, no Start/Stop/Setup guide, no editors | `access.test.tsx` (every route rendered); browser (the real dashboard as `kiosk`) | M; B |
 | 39 | The sign-in page: Passkey only at the recorder's one origin; elsewhere a link to it (only if it answers); none on an IP address; base64url | `signin.test.ts` (**regex over `signin.html`**, plus its `passkeysAt`/base64url lines extracted and run); browser (button on localhost:port; link on the interface's port; neither on 127.0.0.1) | S; B |
 | 40 | Passkeys from the top bar: add (name prefilled, listed), sign in by conditional UI (autofill) and by the button, sign out everywhere | `access.test.tsx` (mocked); browser (virtual CTAP2 authenticator, resident key, UV: the real `navigator.credentials` calls in `controller.ts` and `signin.html`) | M; B |
+| 43 | Setup → Access shows each passkey's day beside its name (one added unnoticed shows when); the top bar's list too | `access.test.tsx` (the users' passkeys, each name followed by its day; the top bar's) | M |
 
 ## Findings
 
@@ -130,26 +133,34 @@ Fixed (small, clear):
    same MAC bytes, no new session), but it made "no change is accepted"
    false; found by the new property test. `unhex` now takes hex digits alone.
    (Upper- and lowercase hex remain the same MAC; that's documented.)
+4. **A raised passkey counter stayed in memory when its save failed** (the
+   sign-in refused, disk on the old count): the next sign-in was then
+   checked against a count that was never kept. `server::edit_config` now
+   leaves the config in memory as it was when the save fails, for every
+   edit it makes. Proven by `a_passkey_s_count_unsaved_signs_nobody_in` (the
+   same count signs in once the folder is writable again).
 
 Not fixed, for a decision:
 
-4. **Warnings in the log go to every connection, View users included**
+5. **Warnings in the log go to every connection, View users included**
    (`logging::to_browsers` publishes level ≥ warning as `Out::Text`). A
    plugin that logs an error with its API key in a URL, or a key file's path
    in an error, shows it to View users. Not this branch's code, but it's the
    one path by which a secret could reach a View user that the redaction
    doesn't cover. Options: plugin lines to control only, or no log for
-   listen access.
-5. **On macOS, a startup failure opens a modal alert** (`fatal()` runs
+   listen access. (Info lines go to every connection that subscribes to
+   `log`, a View user's too: why the sign-in and passkey lines (#42) carry
+   names alone, no address.)
+6. **On macOS, a startup failure opens a modal alert** (`fatal()` runs
    `osascript display alert` when stderr isn't a terminal) that waits for
    someone to close it; a test (or a LaunchAgent) that starts the binary with
    a bad config hangs until then. The e2e test therefore checks "a bad pair
    stops it starting" on Linux only. (One such alert was raised on this Mac
    while writing the test, before it was skipped there.)
-6. Known and accepted (from the review reply): sessions can't be revoked one
+7. Known and accepted (from the review reply): sessions can't be revoked one
    by one; `X-Forwarded-Proto`/`Origin` decide the cookie's `Secure` from
-   anyone; a raised counter stays in memory when its save fails; a passkey
-   made on `localhost` belongs to whatever answers on that port. Paths that
+   anyone; a passkey made on `localhost` belongs to whatever answers on
+   that port. Paths that
    aren't credentials (TLS files, capture folder, interface folders) are in a
    View user's config by design (`hello.configPath` isn't).
 
@@ -223,6 +234,18 @@ like. Each says why it isn't automated.
     `http://localhost:9000`): expect no Passkey button on its sign-in page,
     a link to `http://localhost:8080/signin` only if that answers on this
     computer, and the token still works. *Why: real tunnel.*
+11. **Add a passkey: the log line.** Signed in with luke's token, add a
+    passkey "Mac"; then, signed in with it, add another. Expect, in the
+    terminal: `User luke: passkey "Mac" added (signed in with their access
+    token)`, then `… added (signed in with passkey "Mac")`; signing in with
+    it, `User luke: signed in with passkey "Mac"`; removing one in Setup as
+    another Admin, `User luke: passkey "Mac" removed by ann (…)`. No token,
+    hash or address in any line. *Why: the lines are unit-tested as built,
+    not read from a running recorder's log.*
+12. **The Users table shows each passkey's date.** Setup → Access: each
+    passkey chip reads its name and the day it was added (today, for one
+    just added); the top bar's list the same. *Why: the render test checks
+    the text, not how it looks.*
 
 ### Certificates and HTTPS
 

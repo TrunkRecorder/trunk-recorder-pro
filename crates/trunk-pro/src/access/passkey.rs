@@ -234,6 +234,13 @@ pub fn add(auth: &mut Auth, user: &str, mut p: AuthPasskey) -> Result<String, St
     Ok(name)
 }
 
+/// The passkeys `before` has that `after` doesn't (removed, or their user
+/// removed): each one's user and name.
+pub fn removed(before: &Auth, after: &Auth) -> Vec<(String, String)> {
+    let kept = |user: &str, id: &str| after.users.get(user).is_some_and(|u| u.passkeys.iter().any(|p| p.id == id));
+    before.users.iter().flat_map(|(user, u)| u.passkeys.iter().filter(|p| !kept(user, &p.id)).map(move |p| (user.clone(), p.name.clone()))).collect()
+}
+
 /// A sign-in waiting, as the browser keeps it: for `rp` (its id and origin),
 /// until when (Unix s), its nonce, and webauthn-rs's state.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -411,6 +418,13 @@ mod tests {
         assert!(add(&mut auth, "ann", p("AA")).unwrap_err().contains("someone's"));
         assert!(add(&mut auth, "nobody", p("CC")).is_err());
         assert_eq!(add(&mut auth, "ann", p("CC")), Ok("iPhone".into()), "another user's names are theirs");
+        // Removed: by user and name, a user's removal taking theirs with it.
+        let mut after = auth.clone();
+        after.users.get_mut("luke").unwrap().passkeys.retain(|q| q.id != "AA");
+        assert_eq!(removed(&auth, &after), [("luke".to_string(), "iPhone".to_string())]);
+        after.users.remove("ann");
+        assert_eq!(removed(&auth, &after).len(), 2, "ann's went with them");
+        assert!(removed(&auth, &auth).is_empty() && removed(&after, &auth).is_empty(), "added is no removal");
     }
 
     /// A session signed in with a passkey lasts as long as the passkey does.
@@ -552,6 +566,39 @@ mod tests {
         assert!(sign_in(11, origin, "luke", &auth).2.unwrap_err().contains("removed?"));
     }
 
+    /// A passkey must verify its user (a PIN, a fingerprint, the device's
+    /// password: webauthn-rs's passkeys require it, adding and signing in):
+    /// one that only says someone's there (a touch) neither is added nor signs in.
+    #[test]
+    fn a_passkey_that_doesn_t_verify_its_user_is_refused() {
+        let c = Ceremonies::default();
+        let sessions = Sessions::fresh();
+        let rp = localhost();
+        let origin = "http://localhost:8080";
+        let mut auth = Auth { enabled: true, ..Default::default() };
+        add_user(&mut auth, "luke", ApiAccess::Control).unwrap();
+        let mut key = super::soft::Key::new();
+        let started = add_start(&c, &rp, &auth, "luke", "Key").unwrap();
+        assert_eq!(started["options"]["publicKey"]["authenticatorSelection"]["userVerification"], "required");
+        key.verifies = false;
+        let why = add_finish(&c, &rp, "luke", started["id"].as_str().unwrap(), key.create(&started["options"]["publicKey"], origin, 1)).unwrap_err();
+        assert!(why.contains("wasn't taken"), "added unverified: {why}");
+        // Added verified; signing in unverified, refused; verified, signed in.
+        key.verifies = true;
+        let started = add_start(&c, &rp, &auth, "luke", "Key").unwrap();
+        add(&mut auth, "luke", add_finish(&c, &rp, "luke", started["id"].as_str().unwrap(), key.create(&started["options"]["publicKey"], origin, 1)).unwrap()).unwrap();
+        let sign_in = |key: &super::soft::Key, n: u32| {
+            let started = sign_in_start(&sessions, &rp).unwrap();
+            assert_eq!(started["options"]["publicKey"]["userVerification"], "required");
+            sign_in_finish(&c, &sessions, &rp, &auth, started["id"].as_str().unwrap(), key.get(&started["options"]["publicKey"], origin, n, "luke"))
+        };
+        key.verifies = false;
+        let why = sign_in(&key, 2).unwrap_err();
+        assert!(why.contains("didn't sign in"), "{why}");
+        key.verifies = true;
+        assert_eq!(sign_in(&key, 3).map(|s| s.user), Ok("luke".into()));
+    }
+
     /// The host name's relying party: answers from its https origin alone,
     /// the port as the config has it (none written: 443).
     #[test]
@@ -593,6 +640,8 @@ pub(crate) mod soft {
     pub struct Key {
         pub id: Vec<u8>,
         sk: SigningKey,
+        /// Whether it says it verified the user (a PIN, a fingerprint): true unless set otherwise.
+        pub verifies: bool,
     }
 
     fn unb64(v: &Value) -> Vec<u8> {
@@ -604,7 +653,7 @@ pub(crate) mod soft {
         json!({ "type": ty, "challenge": options["challenge"], "origin": origin, "crossOrigin": false }).to_string().into_bytes()
     }
 
-    /// rpIdHash, flags (user present and verified, + attested data), counter.
+    /// rpIdHash, flags (user present, verified, attested data), counter.
     fn auth_data(rp: &str, flags: u8, counter: u32) -> Vec<u8> {
         let mut d = Sha256::digest(rp.as_bytes()).to_vec();
         d.push(flags);
@@ -619,7 +668,12 @@ pub(crate) mod soft {
             seed[0] = 1;
             let mut id = vec![0u8; 16];
             getrandom::fill(&mut id).unwrap();
-            Key { id, sk: SigningKey::from_slice(&seed).unwrap() }
+            Key { id, sk: SigningKey::from_slice(&seed).unwrap(), verifies: true }
+        }
+
+        /// User present, and verified if it [`Key::verifies`].
+        fn flags(&self) -> u8 {
+            0x01 | if self.verifies { 0x04 } else { 0 }
         }
 
         /// `navigator.credentials.create`'s answer to `options`, from `origin`.
@@ -627,7 +681,7 @@ pub(crate) mod soft {
             use serde_cbor_2::Value as C;
             let point = self.sk.verifying_key().to_sec1_point(false);
             let cose = C::Map([(C::Integer(1), C::Integer(2)), (C::Integer(3), C::Integer(-7)), (C::Integer(-1), C::Integer(1)), (C::Integer(-2), C::Bytes(point.x().unwrap().to_vec())), (C::Integer(-3), C::Bytes(point.y().unwrap().to_vec()))].into_iter().collect());
-            let mut data = auth_data(options["rp"]["id"].as_str().unwrap(), 0x01 | 0x04 | 0x40, counter);
+            let mut data = auth_data(options["rp"]["id"].as_str().unwrap(), self.flags() | 0x40, counter);
             data.extend([0u8; 16]);
             data.extend((self.id.len() as u16).to_be_bytes());
             data.extend(&self.id);
@@ -642,7 +696,7 @@ pub(crate) mod soft {
         pub fn get(&self, options: &Value, origin: &str, counter: u32, user: &str) -> Value {
             assert!(options["challenge"].is_string() && unb64(&options["challenge"]).len() >= 16);
             let rp = options["rpId"].as_str().unwrap();
-            let data = auth_data(rp, 0x01 | 0x04, counter);
+            let data = auth_data(rp, self.flags(), counter);
             let cd = client_data("webauthn.get", options, origin);
             let mut signed = data.clone();
             signed.extend(Sha256::digest(&cd));

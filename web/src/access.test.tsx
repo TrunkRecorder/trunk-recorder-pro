@@ -170,6 +170,9 @@ test("Access: each user's passkeys by name, to remove; Add passkey for this brow
   assert.equal(snapshot().passkeys, true);
   const html = renderToString(<AccessSection c={c} />);
   assert.match(text(html), /luke .*Mac Safari .*iPhone .*Add passkey .*kiosk .*Wall tablet/);
+  // Each passkey's day beside its name: one added unnoticed (a stolen session's) shows when.
+  const added = (t: number) => new Date(t * 1000).toLocaleDateString();
+  for (const [name, t] of [["Mac Safari", 1_763_200_000], ["iPhone", 1_763_300_000], ["Wall tablet", 1_763_200_000]] as const) assert.ok(text(html).includes(`${name} ${added(t)}`), `${name}: ${added(t)}`);
   assert.equal(html.match(/>Add passkey</g)?.length, 1, "only for luke, signed in here");
   for (const l of ["Remove luke's passkey Mac Safari", "Remove luke's passkey iPhone", "Remove kiosk's passkey Wall tablet", "Remove luke's token", "Remove kiosk's token"]) assert.match(html, new RegExp(`aria-label="${l.replace("'", "&#x27;")}"`), l);
   // Passkeys don't work where this page is (an IP address, plain HTTP on a name): no Add passkey.

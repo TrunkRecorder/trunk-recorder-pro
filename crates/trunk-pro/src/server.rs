@@ -349,15 +349,22 @@ async fn login(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: String) ->
     let secret = serde_json::from_str::<Value>(&body).ok().and_then(|v| v["token"].as_str().map(str::to_string)).unwrap_or(body);
     let secret = secret.trim();
     let found = access::user_of(&ctx.config.lock().unwrap().server.auth, secret).and_then(|(name, u)| Some((name.clone(), u.access, u.token.as_ref()?.hash.clone())));
-    let Some((user, role, hash)) = found else { return (StatusCode::UNAUTHORIZED, "That isn't an access token of this recorder.\n").into_response() };
+    let Some((user, role, hash)) = found else {
+        log::debug!("{}", access::Logged::Refused { what: "an access token that isn't one of this recorder's" });
+        return (StatusCode::UNAUTHORIZED, "That isn't an access token of this recorder.\n").into_response();
+    };
     signed_in_as(&ctx, &headers, &user, role, &hash)
 }
 
-/// A browser signed in as `user` (with `role`) with `credential`: its session's cookie, and `{access, user}`.
+/// A browser signed in as `user` (with `role`) with `credential`: its session's cookie, and `{access, user}`; logged, and how.
 fn signed_in_as(ctx: &Ctx, headers: &HeaderMap, user: &str, role: ApiAccess, credential: &str) -> Response {
     let cookie = ctx.sessions.set_cookie(user, credential, https(ctx, headers));
     match HeaderValue::from_str(&cookie) {
-        Ok(v) => ([(header::SET_COOKIE, v)], axum::Json(json!({ "access": role, "user": user }))).into_response(),
+        Ok(v) => {
+            let how = Who::User { name: user.into(), credential: credential.into(), until: None }.how(&ctx.config.lock().unwrap().server.auth);
+            log::info!("{}", access::Logged::SignedIn { user, how });
+            ([(header::SET_COOKIE, v)], axum::Json(json!({ "access": role, "user": user }))).into_response()
+        }
         Err(_) => StatusCode::BAD_REQUEST.into_response(),
     }
 }
@@ -437,6 +444,7 @@ async fn passkey_add_start(State(ctx): State<Arc<Ctx>>, Extension(caller): Exten
 /// `POST /api/passkey/register/finish`: `{id, credential}` (what
 /// `navigator.credentials.create` made, as JSON, binary values base64url):
 /// added to the user's passkeys and saved; `{name, id}` (its name, made theirs alone; its id).
+/// Logged, with how the one adding it signed in: one added with a stolen session shows there.
 async fn passkey_add_finish(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap, body: String) -> Response {
     let rp = match passkey_request(&ctx, &caller, &headers) {
         Ok(rp) => rp,
@@ -452,14 +460,18 @@ async fn passkey_add_finish(State(ctx): State<Arc<Ctx>>, Extension(caller): Exte
         Err(e) => return passkey_answer::<()>(Err(e)),
     };
     let id = p.id.clone();
-    let ctx2 = ctx.clone();
+    let (ctx2, user2) = (ctx.clone(), user.clone());
     let added = tokio::task::spawn_blocking(move || {
         let mut added = Err(String::new());
-        edit_config(&ctx2, |c| added = passkey::add(&mut c.server.auth, &user, p))?;
+        edit_config(&ctx2, |c| added = passkey::add(&mut c.server.auth, &user2, p))?;
         added
     })
     .await
     .unwrap_or_else(|e| Err(e.to_string()));
+    if let Ok(name) = &added {
+        let how = caller.who.how(&ctx.config.lock().unwrap().server.auth);
+        log::info!("{}", access::Logged::PasskeyAdded { user: &user, passkey: name, how });
+    }
     passkey_answer(added.map(|name| json!({ "name": name, "id": id })))
 }
 
@@ -483,7 +495,11 @@ async fn passkey_sign_in_finish(State(ctx): State<Arc<Ctx>>, Extension(caller): 
     let auth = ctx.config.lock().unwrap().server.auth.clone();
     let signed = match passkey::sign_in_finish(&ctx.passkeys, &ctx.sessions, &rp, &auth, v["id"].as_str().unwrap_or(""), v["credential"].clone()) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::UNAUTHORIZED, format!("{e}\n")).into_response(),
+        Err(e) => {
+            // (Not why: the answer's the browser's to make up, and its words could pass for the log's.)
+            log::debug!("{}", access::Logged::Refused { what: "a passkey's answer" });
+            return (StatusCode::UNAUTHORIZED, format!("{e}\n")).into_response();
+        }
     };
     if signed.counted.is_some() {
         // (Its count, kept against the record as it is then: see passkey::keep_count. Not kept, a
@@ -1192,7 +1208,17 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, caller: Caller) {
                                 (Who::Proxy { user, .. }, ApiAccess::Control) => log::info!("User {user} (by the proxy): {}", c.kind()),
                                 _ => {}
                             }
-                            command(&ctx, c, &mut listen, &mut subs).await
+                            // (Passkeys removed by an edit of the config: whose, and by whom, signed in how.)
+                            let before = matches!(c, Command::SetConfig { .. }).then(|| ctx.config.lock().unwrap().server.auth.clone());
+                            let reply = command(&ctx, c, &mut listen, &mut subs).await;
+                            if let Some(before) = before {
+                                let auth = ctx.config.lock().unwrap().server.auth.clone();
+                                for (user, name) in passkey::removed(&before, &auth) {
+                                    let by = caller.who.user().filter(|u| *u != user);
+                                    log::info!("{}", access::Logged::PasskeyRemoved { user: &user, passkey: &name, by, how: caller.who.how(&before) });
+                                }
+                            }
+                            reply
                         }
                         Ok(c) => Some(ToClient::error(access::refusal(&ctx, &caller, c.kind()))),
                         Err(e) => Some(ToClient::error(e)),
@@ -1220,6 +1246,7 @@ async fn expiry(until: Option<u64>) {
 
 /// Change the config on the recorder's side (a plugin added or removed):
 /// saved, sent to every browser, and the plugins restarted if it changes them.
+/// Not saved, it's left as it was (what's on disk, then, is what's in use).
 pub(crate) fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<(), String> {
     let mut cfg = ctx.config.lock().unwrap();
     let old = cfg.clone();
@@ -1227,7 +1254,10 @@ pub(crate) fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config))
     if *cfg == old {
         return Ok(());
     }
-    cfg.save(&ctx.config_path).map_err(|e| format!("Couldn't save the config: {e}"))?;
+    if let Err(e) = cfg.save(&ctx.config_path) {
+        *cfg = old;
+        return Err(format!("Couldn't save the config: {e}"));
+    }
     ctx.config_changed(&cfg);
     let c = cfg.clone();
     drop(cfg);
@@ -2154,6 +2184,13 @@ mod tests {
         let (code, h, why) = sign_in(6).await;
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(code == 503 && h.get("set-cookie").is_none() && why.contains("count couldn't be saved"), "{code} {why}");
+        // Not saved, not kept: the config in use is what's on disk (edit_config leaves it as it was).
+        assert_eq!(ctx.config.lock().unwrap().server.auth.users["luke"].passkeys[0].key["cred"]["counter"], 5, "as on disk");
+        let on_disk = std::fs::read_to_string(&ctx.config_path).unwrap();
+        assert_eq!(json(&on_disk)["server"]["auth"]["users"]["luke"]["passkeys"][0]["key"]["cred"]["counter"], 5);
+        let (code, _, _) = sign_in(6).await;
+        assert_eq!(code, 200, "saved now");
+        assert_eq!(ctx.config.lock().unwrap().server.auth.users["luke"].passkeys[0].key["cred"]["counter"], 6);
     }
 
     /// A WebSocket is greeted with what it may do and as whom; a listen
