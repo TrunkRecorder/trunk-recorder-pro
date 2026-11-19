@@ -1830,7 +1830,7 @@
             "string",
             "null"
           ],
-          "description": "\"DMR Capacity Plus\" | \"DMR Capacity Max\" | \"DMR Connect Plus\" | \"DMR Tier III\" | null (not known yet)."
+          "description": "\"DMR Capacity Plus\" | \"DMR Capacity Max\" | \"DMR Connect Plus\" | \"DMR Tier III\" | \"Hytera XPT\" | null (not known yet)."
         },
         "colorCode": {
           "type": [

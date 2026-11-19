@@ -91,6 +91,12 @@ const H15: [u32; 11] = [0b1001, 0b1101, 0b1111, 0b1110, 0b0111, 0b1010, 0b0101, 
 const H13: [u32; 9] = [0b1111, 0b1110, 0b0111, 0b1010, 0b0101, 0b1011, 0b1100, 0b0110, 0b0011];
 const H16: [u32; 11] = [0b10011, 0b11010, 0b11111, 0b11100, 0b01110, 0b10101, 0b01011, 0b10110, 0b11001, 0b01101, 0b00111];
 
+/// Correct one systematic Hamming(17,12,3) short-LC row.
+pub(crate) fn short_lc_row(row: &mut [u8]) -> Option<u32> {
+    const H17: [u32; 12] = [0b11011, 0b11111, 0b11101, 0b11100, 0b01110, 0b00111, 0b10001, 0b11010, 0b01101, 0b10100, 0b01010, 0b00101];
+    hamming_fix(&H17, 5, row)
+}
+
 /// Parity of `bits` (bits[i] = data bit i) under the parity rows.
 fn parity_of(rows: &[u32], bits: &[u8]) -> u32 {
     rows.iter().zip(bits).filter(|&(_, &b)| b != 0).fold(0, |p, (r, _)| p ^ r)

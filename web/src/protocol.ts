@@ -782,7 +782,7 @@ export interface SiteDetail {
 }
 
 export interface DmrSiteStatus {
-  /** "DMR Capacity Plus" | "DMR Capacity Max" | "DMR Connect Plus" | "DMR Tier III" | null (not known yet). */
+  /** "DMR Capacity Plus" | "DMR Capacity Max" | "DMR Connect Plus" | "DMR Tier III" | "Hytera XPT" | null (not known yet). */
   variant: string | null;
   colorCode: number | null;
   /** Capacity Plus: the rest channel's logical slot number, and its frequency once known. */
