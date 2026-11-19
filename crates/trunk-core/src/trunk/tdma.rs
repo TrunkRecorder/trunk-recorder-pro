@@ -22,11 +22,48 @@ use crate::p25::phase2::{
     BURST_FACCH_U, BURST_LCCH_S, BURST_SACCH_S, BURST_SACCH_U, SLOT_CHANNEL, SLOT_DIBITS, VCW_AT_2V, VCW_AT_4V, VCW_DIBITS,
 };
 use crate::p25::voice::{EncryptionSync, ALGID_CLEAR};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// A logical channel's voice bursts more than this far apart (s) have a
 /// whole superframe, and so a 2V burst, between them.
 const SUPERFRAME_GAP_S: f64 = 0.3;
+
+/// Slot packets heard before the scrambling (NAC, System ID, WACN) is known
+/// wait this long (s) for it: the control channel's, or the voice channel's
+/// own Network Status Broadcast among them. A voice channel opened as the
+/// recorder starts is often heard first. After that they go on without it,
+/// their scrambled bursts undecodable.
+const KEY_WAIT_S: f64 = 2.0;
+
+/// A copy's burst's bit reliabilities (`soft`: when they are used).
+fn burst_rel(soft: bool, p: &Packet) -> Option<&[f32]> {
+    (soft && p.rel.len() >= 2 * (10 + BURST_DIBITS)).then(|| &p.rel[20..20 + 2 * BURST_DIBITS])
+}
+
+/// A copy's burst type.
+fn burst_kind(soft: bool, p: &Packet) -> i8 {
+    match burst_rel(soft, p) {
+        Some(r) => duid_decode_soft(&p.dibits[10..], r),
+        None => duid_decode(&p.dibits[10..]),
+    }
+}
+
+/// The scrambling a Network Status Broadcast among a group's copies names
+/// (it is sent unscrambled, BBAC Figure 8-47): NAC, System ID, WACN.
+fn network_status(soft: bool, g: &[Packet]) -> Option<(u32, u32, u32)> {
+    g.iter().find_map(|p| {
+        let kind = burst_kind(soft, p);
+        if !matches!(kind, BURST_FACCH_U | BURST_SACCH_U) {
+            return None;
+        }
+        let pdu = decode_acch(&p.dibits[10..10 + BURST_DIBITS], burst_rel(soft, p), kind == BURST_FACCH_U)?;
+        pdu.messages().iter().find_map(|m| match m.decode() {
+            Mac::NetworkStatus { wacn, sys_id, color_code } => Some((color_code as u32, sys_id as u32, wacn)),
+            _ => None,
+        })
+    })
+}
 
 /// A unit address that names a radio: not "no one" or "everyone" (BAAC-C §2.4).
 fn radio(id: u32) -> Option<u32> {
@@ -246,8 +283,10 @@ pub struct TdmaTracker {
     /// Vocoder frames / repeated, muted or erased, over the channel's life.
     pub frames: u64,
     pub bad_frames: u64,
-    /// Scrambled bursts seen before the key (WACN / System ID / NAC) was known.
+    /// Scrambled bursts that waited for the key (WACN / System ID / NAC) in vain.
     pub undecodable: u64,
+    /// Slot packets waiting for the key (with their times, s; [`KEY_WAIT_S`]).
+    waiting: VecDeque<(Vec<Packet>, f64)>,
     /// MAC PDUs decoded (PTT, END_PTT, …).
     pub mac_pdus: u64,
 }
@@ -287,6 +326,7 @@ impl TdmaTracker {
             frames: 0,
             bad_frames: 0,
             undecodable: 0,
+            waiting: VecDeque::new(),
             mac_pdus: 0,
         }
     }
@@ -313,26 +353,42 @@ impl TdmaTracker {
     }
 
     /// One slot packet as several receivers framed it (a
-    /// [`Group`](crate::p25::diversity::Group) of the receiver bank), the first the reference. Copies the reference's
-    /// superframe slot disagrees with are left out; the rest are chosen
-    /// from ([`best_burst_kind`], [`best_ambe`], a MAC PDU the first copy's
-    /// that passes its CRC).
+    /// [`Group`](crate::p25::diversity::Group) of the receiver bank), the first the reference.
+    /// Before the scrambling is known it waits for it ([`KEY_WAIT_S`]).
     pub fn group(&mut self, g: &[Packet], t: f64, out: &mut Vec<(usize, TrackerOut)>) {
+        if self.mask.is_none() {
+            if let Some((nac, sys_id, wacn)) = network_status(self.soft, g) {
+                self.set_key(nac, sys_id, wacn);
+            }
+        }
+        if self.mask.is_none() {
+            self.waiting.push_back((g.to_vec(), t));
+            while self.waiting.front().is_some_and(|(_, at)| t - at > KEY_WAIT_S) {
+                let (g, at) = self.waiting.pop_front().unwrap();
+                self.decode(&g, at, out);
+            }
+            return;
+        }
+        self.flush(out);
+        self.decode(g, t, out);
+    }
+
+    /// The slot packets waiting for the scrambling, decoded (with it, or
+    /// without it at the end of input).
+    pub fn flush(&mut self, out: &mut Vec<(usize, TrackerOut)>) {
+        for (g, at) in std::mem::take(&mut self.waiting) {
+            self.decode(&g, at, out);
+        }
+    }
+
+    /// Copies the reference's superframe slot disagrees with are left out;
+    /// the rest are chosen from ([`best_burst_kind`], [`best_ambe`], a MAC
+    /// PDU the first copy's that passes its CRC).
+    fn decode(&mut self, g: &[Packet], t: f64, out: &mut Vec<(usize, TrackerOut)>) {
         let Some(base) = g.first() else { return };
         let copies: Vec<&Packet> = g.iter().filter(|p| p.sf_slot == base.sf_slot).collect();
         let c = SLOT_CHANNEL[base.sf_slot];
-        // A copy's burst's bit reliabilities.
-        fn burst_rel(soft: bool, p: &Packet) -> Option<&[f32]> {
-            (soft && p.rel.len() >= 2 * (10 + BURST_DIBITS)).then(|| &p.rel[20..20 + 2 * BURST_DIBITS])
-        }
-        // Each copy's burst type.
-        let kinds: Vec<i8> = copies
-            .iter()
-            .map(|p| match burst_rel(self.soft, p) {
-                Some(r) => duid_decode_soft(&p.dibits[10..], r),
-                None => duid_decode(&p.dibits[10..]),
-            })
-            .collect();
+        let kinds: Vec<i8> = copies.iter().map(|p| burst_kind(self.soft, p)).collect();
         let Some(kind) = best_burst_kind(&kinds) else { return };
         let scrambled = matches!(kind, BURST_4V | BURST_2V | BURST_SACCH_S | BURST_LCCH_S | BURST_FACCH_S);
         if scrambled && self.mask.is_none() {
@@ -516,12 +572,6 @@ impl TdmaTracker {
                     if !(sacch && p.ultraframe == Some(3)) {
                         s.talker(c, m.talker().and_then(radio), Flags::default(), out);
                     }
-                }
-                // Unscrambled, with what scrambling is seeded from: the voice
-                // channel says it before the control channel may have.
-                Mac::NetworkStatus { wacn, sys_id, color_code } if self.mask.is_none() => {
-                    self.key = Some((color_code as u32, sys_id as u32, wacn));
-                    self.mask = Some(xor_mask(color_code as u32, sys_id as u32, wacn));
                 }
                 Mac::BaseStationId(cs) if !cs.text().is_empty() => out.push((c, TrackerOut::BaseStationId(cs.text()))),
                 _ => {}
@@ -768,6 +818,37 @@ mod tests {
         p.extend(tx.packets());
         let heard = outs(&mut t, &p).into_iter().filter(|o| matches!(o, TrackerOut::Audio(..))).count();
         assert_eq!((t.undecodable, heard), (0, 18));
+    }
+
+    /// Voice heard before the control channel names the scrambling waits
+    /// for it, and is heard once it does.
+    #[test]
+    fn voice_waits_for_the_scrambling() {
+        let tx = tx(None, 1);
+        let mut t = TdmaTracker::new(1, None);
+        let audio = |o: &[TrackerOut]| o.iter().filter(|o| matches!(o, TrackerOut::Audio(..))).count();
+        let p = tx.packets();
+        let (first, rest) = p.split_at(p.len() / 2);
+        assert_eq!(audio(&outs(&mut t, first)), 0, "nothing yet");
+        t.set_key(SEED.0, SEED.1, SEED.2);
+        assert_eq!((audio(&outs(&mut t, rest)), t.undecodable), (18, 0));
+    }
+
+    /// Without it, packets go on after a while, their scrambled bursts lost.
+    #[test]
+    fn packets_wait_for_the_scrambling_only_so_long() {
+        let p = tx(None, 1).packets();
+        let mut t = TdmaTracker::new(1, None);
+        outs(&mut t, &p);
+        assert_eq!(t.undecodable, 0, "all waiting");
+        t.flush(&mut Vec::new());
+        let lost = t.undecodable;
+        assert!(lost > 0);
+        // A packet this much later: the others have waited long enough.
+        let mut t = TdmaTracker::new(1, None);
+        let late = (p[0].0.clone(), p[p.len() - 1].1 + KEY_WAIT_S + 0.1);
+        outs(&mut t, &[p.as_slice(), &[late]].concat());
+        assert_eq!(t.undecodable, lost);
     }
 
     /// A slot nobody records isn't vocoded.

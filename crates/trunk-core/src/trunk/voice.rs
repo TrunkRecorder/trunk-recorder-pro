@@ -415,6 +415,8 @@ impl VoiceDecoder for P25Tdma {
     fn flush(&mut self, out: &mut Vec<VoiceOut>) {
         self.bank.flush(&mut self.groups);
         self.track(out);
+        self.tracker.flush(&mut self.tout);
+        out.extend(self.tout.drain(..).map(|(slot, o)| VoiceOut { slot: slot as u8, out: o }));
     }
     fn offset_hz(&self) -> Option<f32> {
         self.bank.offset_hz()
