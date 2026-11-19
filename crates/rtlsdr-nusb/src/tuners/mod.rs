@@ -25,6 +25,43 @@ pub enum TunerKind {
     E4000,
 }
 
+/// The board around the tuner, known by its USB strings. The RTL-SDR Blog
+/// boards add an HF upconverter (below 28.8 MHz, so no direct sampling) and
+/// switch the tuner's inputs themselves.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Board {
+    /// Any other board: the tuner alone.
+    #[default]
+    Generic,
+    /// RTL-SDR Blog V4: an R828D with notch filters and three inputs.
+    BlogV4,
+    /// RTL-SDR Blog V4L: an R828S, which answers as an R820T, with two inputs.
+    BlogV4L,
+}
+
+impl Board {
+    pub(crate) fn from_usb(manufacturer: Option<&str>, product: Option<&str>) -> Self {
+        match (manufacturer, product) {
+            (Some("RTLSDRBlog"), Some("Blog V4")) => Board::BlogV4,
+            (Some("RTLSDRBlog"), Some("Blog V4L")) => Board::BlogV4L,
+            _ => Board::Generic,
+        }
+    }
+    /// Whether it upconverts below 28.8 MHz.
+    pub fn upconverter(self) -> bool {
+        self != Board::Generic
+    }
+    /// The tuner the board is built with, if it is a known board.
+    pub(crate) fn tuner(self) -> Option<TunerKind> {
+        match self {
+            Board::Generic => None,
+            Board::BlogV4 => Some(TunerKind::R828D),
+            Board::BlogV4L => Some(TunerKind::R820T),
+        }
+    }
+}
+
 /// Each tuner's I2C address, the register that identifies it and what it
 /// holds there, in the order probed: the R82xx first, so their dongles see
 /// no extra NAKed request.
@@ -90,10 +127,10 @@ impl Tuner {
         }
         Err(disconnected.unwrap_or(Error::UnsupportedTuner))
     }
-    pub fn new(kind: TunerKind, blog_v4: bool, blog_v4l: bool) -> Self {
+    pub fn new(kind: TunerKind, board: Board) -> Self {
         match kind {
             TunerKind::E4000 => Tuner::E4000(E4000::new()),
-            _ => Tuner::R82xx(R82xx::new(kind, blog_v4, blog_v4l)),
+            _ => Tuner::R82xx(R82xx::new(kind, board)),
         }
     }
     pub fn kind(&self) -> TunerKind {

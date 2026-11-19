@@ -16,10 +16,10 @@ close/shutdown and sync/async APIs follow
 ## Hardware and controls
 
 - RTL2832U with R820T/R820T2/R860-compatible, R828D or Elonics E4000 tuners.
-- R828D input selection and RTL-SDR Blog V4 HF upconversion/filter switching.
-  V4 detection uses USB manufacturer `RTLSDRBlog` and product `Blog V4`.
-- RTL-SDR Blog V4L (R828S) detection and its two-input HF upconverter path;
-  detection uses manufacturer `RTLSDRBlog` and product `Blog V4L`.
+- R828D input selection, and the RTL-SDR Blog boards' HF upconversion and
+  input switching: the V4 (R828D, with notch filters) and the V4L (R828S,
+  which answers as an R820T). `Board` names them from the USB manufacturer
+  `RTLSDRBlog` and product `Blog V4` or `Blog V4L`.
 - Frequency, sample rate, automatic/manual tuner gain, ppm correction, GPIO 0
   bias tee (off by default), and I/Q direct sampling on suitably wired boards.
 - Typed raw unsigned eight-bit I/Q blocks or converted `Complex32` samples.
@@ -37,7 +37,8 @@ boards with a different tuner crystal are not supported.
 Hardware validation so far: an R820T-family `0bda:2838` receiver on Linux, with
 blocking/async capture, retuning at 100, 433.92 and 1090 MHz, sample rates of
 1.024, 2.048 and 2.4 MS/s, stop/restart, raw IQ and final-owner cleanup.
-R828D/Blog V4/V4L, direct sampling and bias power switching need hardware validation.
+A Blog V4L was reported working (PR #183). R828D/Blog V4, direct sampling and
+bias power switching need hardware validation.
 E4000 (zero IF): about 52–2200 MHz with a gap where its PLL does not lock
 (1090–1230 MHz on the unit tested; here capped at 1.766 GHz like the others);
 manual gain is librtlsdr's nearest step from -1 to 42 dB; its IF filters

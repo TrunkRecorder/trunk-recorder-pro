@@ -183,9 +183,8 @@ A SoapySDR source with `driver=hackrf` still works, for a rad1o or a HackRF behi
 
 ## Older RTL-SDR dongles
 
-Trunk Recorder Pro's own RTL-SDR driver handles the **R820T**, **R828D** and **R828S** tuners,
-including the RTL-SDR Blog V3, V4 and V4L, and the older **E4000**. The V4L is detected by its
-`RTLSDRBlog` / `Blog V4L` USB identity and uses its R828S HF upconverter path.
+Trunk Recorder Pro's own RTL-SDR driver handles the **R820T** and **R828D** tuners, which are in
+nearly every dongle sold today, including the RTL-SDR Blog V3, V4 and V4L, and the older **E4000**.
 Dongles with an **FC0012**, **FC0013** or **FC2580** tuner show up in the list but fail to open
 with a message that the tuner isn't supported natively.
 

@@ -1,6 +1,6 @@
 //! Device enumeration, selection, and USB identity completion.
 use crate::maybe_future::{Either, MaybeFutureExt, NonWasmSend, ready};
-use crate::{Error, Result};
+use crate::{Board, Error, Result};
 use nusb::MaybeFuture;
 use std::num::NonZeroU8;
 
@@ -31,13 +31,9 @@ impl DeviceDescriptor {
             product: info.product_string().map(str::to_owned),
         }
     }
-    pub(crate) fn blog_v4(&self) -> bool {
-        self.manufacturer.as_deref() == Some("RTLSDRBlog")
-            && self.product.as_deref() == Some("Blog V4")
-    }
-    pub(crate) fn blog_v4l(&self) -> bool {
-        self.manufacturer.as_deref() == Some("RTLSDRBlog")
-            && self.product.as_deref() == Some("Blog V4L")
+    /// The board its USB strings name.
+    pub fn board(&self) -> Board {
+        Board::from_usb(self.manufacturer.as_deref(), self.product.as_deref())
     }
     pub(crate) fn read_missing_strings<F, M>(
         mut self,
@@ -165,7 +161,7 @@ mod tests {
         );
         assert!(reads.lock().unwrap().is_empty());
         let result = operation.wait();
-        assert!(result.blog_v4());
+        assert_eq!(result.board(), Board::BlogV4);
         assert_eq!(result.serial.as_deref(), Some("00000001"));
         assert_eq!(*reads.lock().unwrap(), [1]);
     }
@@ -186,7 +182,19 @@ mod tests {
                 })
                 .into_future(),
         );
-        assert!(result.blog_v4());
+        assert_eq!(result.board(), Board::BlogV4);
+    }
+
+    #[test]
+    fn blog_boards_are_told_apart_by_exact_product() {
+        for (manufacturer, product, board) in [
+            ("RTLSDRBlog", "Blog V4", Board::BlogV4),
+            ("RTLSDRBlog", "Blog V4L", Board::BlogV4L),
+            ("RTLSDRBlog", "Blog V3", Board::Generic),
+            ("Realtek", "Blog V4L", Board::Generic),
+        ] {
+            assert_eq!(descriptor(Some(manufacturer), Some(product)).board(), board, "{product}");
+        }
     }
 
     #[test]
@@ -208,7 +216,7 @@ mod tests {
                 ready(None)
             })
             .wait();
-        assert!(!result.blog_v4());
+        assert_eq!(result.board(), Board::Generic);
         assert_eq!(result.manufacturer, None);
         assert_eq!(result.product, None);
     }
