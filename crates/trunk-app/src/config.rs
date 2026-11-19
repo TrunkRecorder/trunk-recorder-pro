@@ -10,7 +10,7 @@ use trunk_core::dsp::inband::pattern::PatternKind;
 use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
-    check_channels, Access, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
+    check_channels, Access, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, Identity, SaveRules, SourceConfig,
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
@@ -1053,47 +1053,10 @@ impl Default for Site {
     }
 }
 
-/// A P25 site's identity. NAC, WACN and System ID are shown in hex.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct SiteIdentity {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub nac: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wacn: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sys_id: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rfss: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub site: Option<u32>,
-}
-
-/// What a control channel says of itself, as the config writes a site's
-/// identity: the one shape status, the survey and the config share.
-impl From<&Identity> for SiteIdentity {
-    fn from(id: &Identity) -> Self {
-        SiteIdentity {
-            nac: id.get(IdField::Nac).map(|v| v as u16),
-            wacn: id.get(IdField::Wacn),
-            sys_id: id.get(IdField::SysId),
-            rfss: id.get(IdField::Rfss),
-            site: id.get(IdField::Site),
-        }
-    }
-}
-
-impl SiteIdentity {
-    pub(crate) fn engine(&self) -> Identity {
-        let mut id = Identity::default();
-        id.set_opt(IdField::Nac, self.nac.map(u32::from));
-        id.set_opt(IdField::Wacn, self.wacn);
-        id.set_opt(IdField::SysId, self.sys_id);
-        id.set_opt(IdField::Rfss, self.rfss);
-        id.set_opt(IdField::Site, self.site);
-        id
-    }
-}
+/// A site's identity: what a site expects (`expect`), and what a control channel said of
+/// itself in status and the survey. NAC, WACN and System ID are shown in hex. (The plugin
+/// SDK's: plugins are told it too.)
+pub use trunk_core::trunk::identity::SiteIdentity;
 
 /// A conventional system (Trunk Recorder's `conventional`, `conventionalP25`
 /// and `conventionalDMR` systems): channels of one frequency each, found by
@@ -2888,7 +2851,7 @@ impl Config {
                 let rules = self.recording.with(&sys.recording);
                 let sites = sys
                     .active_sites()
-                    .map(|s| SiteConfig { name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: s.expect.engine(), protocol: s.protocol(sys) })
+                    .map(|s| SiteConfig { name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: Identity::of_site(&s.expect), protocol: s.protocol(sys) })
                     .collect();
                 SystemConfig {
                     calls: rules.call_config(),

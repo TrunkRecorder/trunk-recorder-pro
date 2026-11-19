@@ -217,6 +217,7 @@ impl Site {
                 bad: 0,
             })
             .collect();
+        let identity = cfg.ran.map_or_else(Identity::default, |r| Identity::default().with(IdField::Ran, r as u32));
         Site {
             carriers,
             ran: cfg.ran,
@@ -230,7 +231,7 @@ impl Site {
             control_clock: None,
             notes: Vec::new(),
             now_s: 0.0,
-            identity: Identity::default(),
+            identity,
         }
     }
 
@@ -413,6 +414,7 @@ impl Site {
         // The site's RAN, from its control channel.
         if self.ran.is_none() && control {
             self.ran = Some(ran);
+            self.identity.set(IdField::Ran, ran as u32);
             self.notes.push((NoteLevel::Info, format!("RAN {ran}")));
         }
         // Another system's carrier (a neighbour on a listed frequency, or a stray): not followed.
@@ -758,6 +760,7 @@ mod tests {
         assert_eq!(site.resolve(20), Some(voice as u64));
         assert_eq!(site.identity().sys_id(), Some(0x123));
         assert_eq!(site.ran, Some(5));
+        assert_eq!(site.identity().get(IdField::Ran), Some(5), "its RAN, as its identity");
         let st = site.status();
         assert_eq!(st.location, Some((0, 0x123, 0x045)));
         assert!(st.unknown.is_empty());

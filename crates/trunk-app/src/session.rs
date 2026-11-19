@@ -4,7 +4,8 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus};
+use trunk_core::metrics;
+use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus};
 
 use crate::filename;
 use sdr_core::clock::{ClockEvent, SampleClock};
@@ -67,6 +68,8 @@ pub enum Output {
 const STATUS_EVERY_S: f64 = 200.0;
 /// The control channel decode rate is checked over this long, s.
 const RATE_EVERY_S: f64 = 10.0;
+/// Every series' running totals go to plugins this often, ms.
+const TOTALS_EVERY_MS: f64 = 10_000.0;
 /// A running source that sends nothing for this long is fed silence in its
 /// place ([`Engine::push_gap`]), so time goes on: calls on it end, and its
 /// clock stays in step with the others'. ms of wall clock.
@@ -91,6 +94,8 @@ pub struct PluginTopics {
     pub call_updates: bool,
     pub units: bool,
     pub status: bool,
+    /// Every series' running totals ([`trunk_recorder_plugin::Totals`]).
+    pub totals: bool,
     pub tone_patterns: bool,
     pub voice: bool,
 }
@@ -379,6 +384,9 @@ pub struct Session {
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
     recordings: Vec<crate::config::Recording>,
     pub plugin_topics: PluginTopics,
+    /// How the computer's clock is kept ([`trunk_recorder_plugin::ClockState::sync`]), as the
+    /// app last saw; none: the operating system doesn't say.
+    pub clock_sync: Option<String>,
     /// Wall clock (Unix ms) at the engine's time 0, as at Start: the clock
     /// sources are measured against. What times are given out by is the
     /// engine's ([`Session::correct_wall_clock`]).
@@ -387,6 +395,7 @@ pub struct Session {
     wall_correction_ms: f64,
     last_plugin_status_ms: f64,
     plugin_good: Vec<u64>,
+    last_plugin_totals_ms: f64,
     /// The codes conventional frequencies carried ([`crate::heard`]).
     heard: HeardCodes,
     /// AutoTune scores by source label, as loaded and as last given to save.
@@ -456,10 +465,12 @@ impl Session {
             sites,
             recordings,
             plugin_topics: PluginTopics::default(),
+            clock_sync: None,
             epoch_ms,
             wall_correction_ms: 0.0,
             last_plugin_status_ms: 0.0,
             plugin_good: Vec::new(),
+            last_plugin_totals_ms: 0.0,
             heard: HeardCodes::default(),
             tune: Default::default(),
             tune_saved: String::new(),
@@ -709,6 +720,10 @@ impl Session {
                 let dt = if self.last_plugin_status_ms == 0.0 { 0.0 } else { (now_ms - self.last_plugin_status_ms) / 1000.0 };
                 self.last_plugin_status_ms = now_ms;
                 out.push(Output::Plugin(HostMessage::Status(self.plugin_status(dt))));
+            }
+            if self.plugin_topics.totals && now_ms - self.last_plugin_totals_ms >= TOTALS_EVERY_MS {
+                self.last_plugin_totals_ms = now_ms;
+                out.push(Output::Plugin(HostMessage::Totals(self.plugin_totals(start / 1000.0))));
             }
             self.poll_share(now_ms, out);
             let load = self.busy_ms() / (now_ms - start).max(1.0);
@@ -1122,23 +1137,47 @@ impl Session {
                 let i = y.site as usize;
                 let rate = if dt > 0.0 { y.good.saturating_sub(self.plugin_good[i]) as f64 / dt } else { 0.0 };
                 self.plugin_good[i] = y.good;
-                PluginSystemStatus {
-                    index: y.system,
-                    short_name: y.short_name.clone(),
-                    site_name: y.site_name.clone(),
-                    control_channel_hz: y.control_channel_hz,
-                    decode_rate: (rate * 10.0).round() / 10.0,
-                    active_calls: y.active_calls as u32,
-                    recording: y.recording as u32,
-                    nac: y.identity.get(IdField::Nac),
-                    wacn: y.identity.get(IdField::Wacn),
-                    sys_id: y.identity.get(IdField::SysId),
-                    rfss: y.identity.get(IdField::Rfss),
-                    site: y.identity.get(IdField::Site),
-                }
+                PluginSystemStatus { scope: Self::site_scope(y), decode_rate: (rate * 10.0).round() / 10.0, active_calls: y.active_calls as u32, recording: y.recording as u32 }
             })
             .collect();
         trunk_recorder_plugin::Status { time: self.wall(st.now_s), systems }
+    }
+
+    /// Which site `y` is, as plugins are told ([`trunk_recorder_plugin::SiteScope`]).
+    fn site_scope(y: &trunk_core::trunk::SiteStatus) -> trunk_recorder_plugin::SiteScope {
+        trunk_recorder_plugin::SiteScope {
+            index: y.system,
+            short_name: y.short_name.clone(),
+            site_name: y.site_name.clone(),
+            key: y.key.clone(),
+            protocol: y.kind.to_string(),
+            control_channel_hz: y.control_channel_hz,
+            source: y.source,
+            symbol_rate: y.symbol_rate,
+            identity: y.identity.to_site(),
+        }
+    }
+
+    /// Every series' running totals for plugins, and which sites, channels and radios they're
+    /// of (`since`: when recording started, Unix s).
+    fn plugin_totals(&self, since: f64) -> trunk_recorder_plugin::Totals {
+        use trunk_recorder_plugin::{ChannelScope, ClockState, SourceScope};
+        let sites = self.engine.status().sites.iter().map(Self::site_scope).collect();
+        let channels = self
+            .engine
+            .channels()
+            .into_iter()
+            .filter_map(|c| {
+                let ChannelKind::Conventional(mode) = c.kind else { return None };
+                let short_name = self.system_name(c.system).to_string();
+                Some(ChannelScope { key: metrics::channel_key(&short_name, c.freq_hz as f64), index: c.system, short_name, freq_hz: c.freq_hz, mode: mode.as_str().to_string(), names: c.names, access: c.access, source: c.source })
+            })
+            .collect();
+        let sources = self.cfg.sources.iter().enumerate().map(|(i, s)| SourceScope { key: format!("src/{}", metrics::key_part(&s.label())), index: i, name: s.label(), driver: s.kind_name().to_string(), auto_tune: s.auto_tune }).collect();
+        // The recorder's clock less the systems': the latest any site said.
+        let system_offset_ms = self.radio_clocks().into_iter().filter(|c| c.valid).max_by(|a, b| a.at_s.total_cmp(&b.at_s)).map(|c| -c.offset_ms);
+        let clock = (self.clock_sync.is_some() || system_offset_ms.is_some()).then(|| ClockState { sync: self.clock_sync.clone(), system_offset_ms });
+        trunk_recorder_plugin::Totals { time: self.meas.now(), since, series: self.meas.totals(), sites, channels, sources, clock }
     }
 
     fn flush_log(&mut self, out: &mut Vec<Output>) {
@@ -1463,9 +1502,9 @@ pub fn call_entry(rel: &str, record: &trunk_recorder_plugin::CallRecord) -> Valu
 }
 
 /// A site's identity as messages carry it: the config's [`crate::config::SiteIdentity`]
-/// (`{nac, wacn, sysId, rfss, site}`, a field not stated yet left out).
+/// (`{nac, wacn, sysId, rfss, site, colorCode, network, ran}`, a field not stated yet left out).
 pub(crate) fn identity_json(id: &Identity) -> Value {
-    json!(crate::config::SiteIdentity::from(id))
+    json!(id.to_site())
 }
 
 /// The name a site's band plan is kept under ([`trunk_core::trunk::SiteKey::file_stem`]).

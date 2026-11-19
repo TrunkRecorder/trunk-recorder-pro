@@ -2,12 +2,15 @@
 //! parts report each tick becomes a value per series — a gauge as it is, a
 //! running total as its rate per second — and, each wall-clock minute, a
 //! [`Rollup`] (average, lowest, highest of those values over the minute) for
-//! the history. It knows nothing about which series exist or what they mean.
+//! the history — and each series' running [`Total`] since it began, for
+//! plugins ([`Aggregator::totals`]). It knows nothing about which series
+//! exist or what they mean.
 
 use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
 use trunk_core::metrics::Sink;
+use trunk_recorder_plugin::Total;
 
 /// A tick this long after the last one isn't made a rate of (the session
 /// stalled, the machine slept): the totals are only remembered.
@@ -85,6 +88,8 @@ pub fn round(v: f32) -> f64 {
 #[derive(Default)]
 pub struct Aggregator {
     series: BTreeMap<String, Series>,
+    /// Since the first tick (kept when a series stops reporting).
+    totals: BTreeMap<String, Total>,
     t: Option<f64>,
     dt: f64,
     minute: Option<i64>,
@@ -126,14 +131,14 @@ impl Aggregator {
         self.series.iter().filter_map(|(k, s)| s.now.map(|v| (k.as_str(), v)))
     }
 
-    /// A running total that starts now, from 0 (one counted between ticks
-    /// would otherwise make no rate until the next).
-    pub fn seed(&mut self, key: &str) {
-        self.series.entry(key.to_string()).or_default().last_total.get_or_insert(0);
-    }
-
     pub fn get(&self, key: &str) -> Option<f32> {
         self.series.get(key).and_then(|s| s.now)
+    }
+
+    /// Every series' running total: a counter's count (across restarts of the part
+    /// counting), a gauge's value times the seconds it held it; with the latest tick's value.
+    pub fn totals(&self) -> BTreeMap<String, Total> {
+        self.totals.iter().map(|(k, t)| (k.clone(), Total { now: self.series.get(k).and_then(|s| s.now).map(|v| v as f64), ..*t })).collect()
     }
 
     /// This tick's values as a JSON object, rounded.
@@ -151,16 +156,30 @@ impl Aggregator {
 impl Sink for Aggregator {
     fn counter(&mut self, name: &str, total: u64) {
         let dt = self.dt;
+        // A tick (not the first) that measures time: not after a stall.
+        let timed = dt > 0.0 && dt <= MAX_TICK_S;
         let s = self.series.entry(name.to_string()).or_default();
-        let last = s.last_total.replace(total);
-        let Some(last) = last.filter(|_| dt > 0.0 && dt <= MAX_TICK_S) else { return };
+        // A series that appears after the first tick counts from 0 (what it counted came since the last).
+        let last = s.last_total.replace(total).or((self.t.is_some() && dt > 0.0).then_some(0));
         // Fewer than last time: the part was replaced and counts from 0 again.
-        let d = if total >= last { total - last } else { total };
-        self.set(name, (d as f64 / dt) as f32);
+        let d = last.map_or(total, |l| if total >= l { total - l } else { total });
+        let t = self.totals.entry(name.to_string()).or_default();
+        t.sum += d as f64;
+        if timed && d > 0 {
+            t.s += dt;
+        }
+        if timed && last.is_some() {
+            self.set(name, (d as f64 / dt) as f32);
+        }
     }
 
     fn gauge(&mut self, name: &str, value: f64) {
         if value.is_finite() {
+            if self.dt > 0.0 && self.dt <= MAX_TICK_S {
+                let t = self.totals.entry(name.to_string()).or_default();
+                t.sum += value * self.dt;
+                t.s += self.dt;
+            }
             self.set(name, value as f32);
         }
     }
@@ -192,6 +211,31 @@ mod tests {
         assert_eq!(r.values["noise"], [-75.0, -80.0, -70.0]);
         let back = Rollup::from_json(&r.to_json()).unwrap();
         assert_eq!(back, r);
+    }
+
+    /// Since the first tick: a counter's every count, across a restart of the part counting
+    /// and a series that appears late; a gauge's value over the seconds it held it.
+    #[test]
+    fn totals_keep_every_count_and_each_gauges_seconds() {
+        let mut a = Aggregator::default();
+        a.begin(60.0);
+        a.counter("good", 100);
+        a.gauge("locked", 1.0);
+        a.begin(61.0);
+        a.counter("good", 140);
+        a.gauge("locked", 1.0);
+        a.begin(62.0);
+        a.counter("good", 5);
+        a.counter("why/noRecorder", 2);
+        a.gauge("locked", 0.0);
+        assert_eq!(a.get("why/noRecorder"), Some(2.0), "new: counted from 0");
+        a.begin(92.0); // a stall: counted, but not as time
+        a.counter("good", 7);
+        a.gauge("locked", 1.0);
+        let t = a.totals();
+        assert_eq!((t["good"].sum, t["good"].s), (147.0, 2.0));
+        assert_eq!(t["why/noRecorder"].sum, 2.0);
+        assert_eq!((t["locked"].sum, t["locked"].s, t["locked"].now), (1.0, 2.0, Some(1.0)));
     }
 
     #[test]
