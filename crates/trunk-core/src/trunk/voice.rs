@@ -227,8 +227,9 @@ pub trait VoiceDecoder: Send {
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>);
     /// End of input: decode what the receivers still hold.
     fn flush(&mut self, _out: &mut Vec<VoiceOut>) {}
-    /// The talkgroup (or radio) each slot's call was granted for; None:
-    /// no call there, and nothing to vocode (decoders that can, don't).
+    /// The talkgroup (or radio) each slot's call was granted for; None: no
+    /// call there. (Every slot is vocoded all the same: the engine keeps a
+    /// slot's voice for a call put on it later.)
     fn listen(&mut self, _slots: [Option<u32>; 2]) {}
     /// The system's keys changed: P25 voice is decrypted with these from now on, calls in progress
     /// too (a call is decrypted from its next encryption sync; with none, it stops at once).
@@ -408,6 +409,9 @@ impl VoiceDecoder for P25Tdma {
     fn quality(&self) -> ChannelQuality {
         self.bank.quality()
     }
+    fn air(&self, slot: u8) -> AirInfo {
+        AirInfo { talkgroup: self.tracker.talkgroup(slot as usize), ..Default::default() }
+    }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
         self.bank.push(iq, &mut self.groups);
         self.track(out);
@@ -459,9 +463,6 @@ impl VoiceDecoder for Dmr {
             }
             out.push(VoiceOut { slot: v.slot, out: v.out });
         }
-    }
-    fn listen(&mut self, slots: [Option<u32>; 2]) {
-        self.voice.vocode = slots.map(|s| s.is_some());
     }
     fn air(&self, slot: u8) -> AirInfo {
         AirInfo { talkgroup: self.voice.talkgroup(slot), nac: None, color_code: self.voice.color_code(slot), ran: None, air: self.air[slot as usize & 1] }

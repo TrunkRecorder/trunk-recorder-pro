@@ -1,4 +1,4 @@
-{"capture":"phase2","commit":"b70f7de","date":"2026-11-19","trp":"next"}
+{"capture":"phase2","commit":"8e72df3","date":"2026-11-19","trp":"next"}
 {"k":"registration","m":"008290e1","n":2}
 {"k":"data_grant","m":"019cbf74","n":6}
 {"k":"unknown","m":"01a5abae","n":3}
@@ -405,7 +405,7 @@
 {"c":"7414ec39","f":769906250,"t":362,"l":0,"frames":0,"bad":0,"errs":0}
 {"c":"d8662c0c","f":770968750,"t":362,"l":0,"frames":0,"bad":0,"errs":0}
 {"c":"56b19b67","f":858587500,"t":512,"l":0,"frames":0,"bad":0,"errs":0}
-{"c":"fecf3b9c","f":770968750,"t":512,"l":1320,"frames":66,"bad":2,"errs":18,"h":"cf78b0309a269781"}
+{"c":"fecf3b9c","f":770968750,"t":512,"l":1880,"frames":94,"bad":3,"errs":25,"h":"3b5654e3cd127084062e"}
 {"c":"e04c1750","f":859037500,"t":662,"l":0,"frames":0,"bad":0,"errs":0}
 {"c":"e04c1750","f":858587500,"t":2837,"l":0,"frames":0,"bad":0,"errs":0}
 {"c":"15db2373","f":859037500,"t":12662,"l":4860,"frames":243,"bad":0,"errs":146,"h":"1be5b309bf9f254e49e4250acb161dcf73e982ac514a453b6b2b"}

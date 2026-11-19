@@ -11,6 +11,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   frames are lost (Harris: 15.5 % → 11.6 %; Motorola: 4.5 % → 3.6 % and 8.7 % → 6.7 %), and no call decodes worse, for
   about 0.2 % of a core more per open Phase 2 channel. It follows the bank's equaliser setting. See
   [research/p25-phase2-diversity.md](research/p25-phase2-diversity.md).
+- **A call on the other slot of a TDMA voice channel already open keeps its start.** A new voice channel replays a second
+  of air (pre-roll), but a call put on the free slot of one already open (P25 Phase 2, DMR) lost what aired before the
+  control channel's grant reached the recorder: its first voice and talker. Every slot is now vocoded, and a slot's
+  outputs while no call is on it are kept, a pre-roll's worth; a call put on it takes the latest not named for another
+  talkgroup. In a Phase 2 capture, such a call went from 1.3 s to 1.9 s. Vocoding a slot nobody records costs about
+  0.2 % of a core while it carries voice.
+- **P25 Phase 2 voice heard before the scrambling is known waits for it** (up to 2 s), instead of being dropped: the
+  first calls after the recorder starts, before the control channel names the WACN and System ID, keep their start.
 
 ## [0.3.8] — 2026-11-14
 

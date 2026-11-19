@@ -114,8 +114,6 @@ struct Slot {
     /// key by talkgroup is found with them.
     talkgroup: Option<u32>,
     granted: Option<u32>,
-    /// Someone records this slot: its voice is vocoded.
-    listened: bool,
     aliases: MacAliases,
 }
 
@@ -141,7 +139,6 @@ impl Slot {
             flags: Flags::default(),
             talkgroup: None,
             granted: None,
-            listened: true,
             aliases: MacAliases::default(),
         }
     }
@@ -201,9 +198,6 @@ impl Slot {
                 _ if self.decrypting => (bits, errs, erased) = ([0; 49], 99, true),
                 _ => return false,
             }
-        }
-        if !self.listened {
-            return false;
         }
         let mut buf = [0f32; FRAME_SAMPLES];
         let kind = self.dec.ambe(&bits, errs, &mut buf);
@@ -302,11 +296,9 @@ impl TdmaTracker {
         }
     }
 
-    /// The talkgroup each slot's call was granted for (None: no call there,
-    /// and its voice isn't vocoded).
+    /// The talkgroup each slot's call was granted for (None: no call there).
     pub fn listen(&mut self, slots: [Option<u32>; 2]) {
         for (s, tg) in self.slots.iter_mut().zip(slots) {
-            s.listened = tg.is_some();
             if s.granted != tg {
                 s.granted = tg;
                 let es = s.es.take();
@@ -329,6 +321,12 @@ impl TdmaTracker {
             waiting: VecDeque::new(),
             mac_pdus: 0,
         }
+    }
+
+    /// The talkgroup logical channel `c`'s transmission is for (its MAC_PTT's,
+    /// or a voice channel user message's), when one has named it.
+    pub fn talkgroup(&self, c: usize) -> Option<u32> {
+        self.slots[c & 1].talkgroup
     }
 
     /// The encryption sync logical channel `c`'s current superframe is under
@@ -356,10 +354,8 @@ impl TdmaTracker {
     /// [`Group`](crate::p25::diversity::Group) of the receiver bank), the first the reference.
     /// Before the scrambling is known it waits for it ([`KEY_WAIT_S`]).
     pub fn group(&mut self, g: &[Packet], t: f64, out: &mut Vec<(usize, TrackerOut)>) {
-        if self.mask.is_none() {
-            if let Some((nac, sys_id, wacn)) = network_status(self.soft, g) {
-                self.set_key(nac, sys_id, wacn);
-            }
+        if let Some((nac, sys_id, wacn)) = self.mask.is_none().then(|| network_status(self.soft, g)).flatten() {
+            self.set_key(nac, sys_id, wacn);
         }
         if self.mask.is_none() {
             self.waiting.push_back((g.to_vec(), t));
@@ -560,6 +556,10 @@ impl TdmaTracker {
                     if !(sacch && p.ultraframe == Some(3)) {
                         if let Mac::GroupVoiceUser { group, .. } = m.decode() {
                             s.named(c, group as u32, out);
+                            // (Joined after its MAC_PTT.)
+                            if s.active && s.talkgroup.is_none() && group != 0 {
+                                s.talkgroup = Some(group as u32);
+                            }
                         }
                         s.talker(c, m.talker().and_then(radio), opts.into(), out);
                     }
@@ -851,12 +851,17 @@ mod tests {
         assert_eq!(t.undecodable, lost);
     }
 
-    /// A slot nobody records isn't vocoded.
+    /// A slot nobody records is vocoded all the same (the engine keeps its
+    /// voice for a call put on it later), and says whose it is.
     #[test]
-    fn an_unrecorded_slot_isnt_vocoded() {
+    fn an_unrecorded_slot_is_vocoded_and_named() {
         let tx = tx(None, 1);
+        let vcu = pdu(MAC_ACTIVE, 7, &[0x01, 0x80, 0x08, 0x9f, 0x12, 0x34, 0x56]);
         let mut t = tracker();
         t.listen([None, Some(101)]);
-        assert!(!outs(&mut t, &tx.packets()).iter().any(|o| matches!(o, TrackerOut::Audio(..))));
+        let mut p = tx.packets();
+        p.push((tx.mac_packet(11, BURST_SACCH_S, &vcu, Some(0)), 0.36));
+        assert_eq!(outs(&mut t, &p).iter().filter(|o| matches!(o, TrackerOut::Audio(..))).count(), 18, "for a call put on it later");
+        assert_eq!(t.talkgroup(0), Some(0x089f), "joined after its MAC_PTT: a voice channel user names it");
     }
 }
