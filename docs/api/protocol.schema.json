@@ -1837,6 +1837,54 @@
             "null"
           ]
         },
+        "sysCode": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "number"
+                },
+                "model": {
+                  "type": "string",
+                  "enum": [
+                    "Tiny",
+                    "Small",
+                    "Large",
+                    "Huge"
+                  ]
+                },
+                "net": {
+                  "type": "number"
+                },
+                "site": {
+                  "type": "number"
+                },
+                "par": {
+                  "type": "string",
+                  "enum": [
+                    "reserved",
+                    "A",
+                    "B",
+                    "A+B"
+                  ]
+                }
+              },
+              "required": [
+                "code",
+                "model",
+                "net",
+                "site",
+                "par"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tier III / Capacity Max: the system identity code from the control channel, split by its model."
+        },
         "rest": {
           "anyOf": [
             {

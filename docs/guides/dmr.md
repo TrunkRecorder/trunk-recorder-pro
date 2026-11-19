@@ -79,6 +79,12 @@ channel and slot. The recorder turns the channel number into a frequency from, i
    (some Tier III systems);
 3. what it has learned.
 
+**System code.** Tier III and Capacity Max control channels send a 16-bit system code. The
+system's Decode page shows it under the graphs, where a P25 site shows its NAC and WACN, with its
+parts (for example `B013`, Large, net 12, site 4, category A+B): the network model (Tiny, Small, Large or Huge, which sets how the other bits split
+between network and site), the network, the site, and which category of radio may use the site.
+The log notes it when first heard and whenever it changes.
+
 **Learning a channel.** When a grant names a channel it doesn't know, the recorder notes the
 talkgroup and slot and waits up to 4 seconds. If that talkgroup's link control then shows up on
 the same slot of one of the watched voice frequencies, that frequency is the channel. The log

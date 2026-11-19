@@ -179,8 +179,9 @@ Find my system fills in the four `400_custom` numbers for SmartNet OBT systems.
 | `lcnTableHz` | | `{}` | object | Logical channel number → frequency, Hz: `{ "101": 452275000 }` (Trunk Recorder's `lcnTable`). Wins over channels learned from the air; channels left out are learned |
 | `colorCode` | | `null` | integer or null | Only this colour code, 0–15. `null`: the control channel's |
 
-DMR sites announce no system identity, so `expect` is ignored; use `colorCode`, and list the sites
-of one system under it.
+`expect` is ignored for DMR; use `colorCode`, and list the sites of one system under it. (Tier III
+and Capacity Max control channels send a system code, which the dashboard shows, but it isn't
+checked against the config.)
 
 ## NXDN
 

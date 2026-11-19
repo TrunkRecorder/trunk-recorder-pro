@@ -1516,6 +1516,9 @@ fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>,
                 json!({
                     "variant": d.variant.map(|v| v.name()),
                     "colorCode": d.color_code,
+                    "sysCode": d.sys_code.map(|c| json!({
+                        "code": c.0, "model": c.model_name(), "net": c.net(), "site": c.site(), "par": c.par_name(),
+                    })),
                     "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
                     "keyed": d.keyed,
                     "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),

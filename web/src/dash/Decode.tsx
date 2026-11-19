@@ -8,7 +8,7 @@ import { formatMhz } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Fig, Figs, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
-import type { ChannelSnapshot, FreqRow, SeriesData } from "../protocol.ts";
+import type { ChannelSnapshot, DmrSiteStatus, FreqRow, SeriesData } from "../protocol.ts";
 import { change, coverage, dashSystems, K, KIND_LABEL, perLive, recentAvg, running, runningSites, siteHealth, systemHealth, useHistory, useRanges, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
 import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 
@@ -292,6 +292,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
           </span>
         </div>
       )}
+      {x.kind === "dmr" && x.status && <DmrIdentity d={here.find((y) => y.dmr)?.dmr ?? null} calls={x.status.callsConcluded} active={x.status.activeCalls} />}
       {x.kind === "conventional" && x.status && (
         <div className="kv small">
           <span title="Calls saved since start">
@@ -471,6 +472,59 @@ export function DecodePage() {
             : [<DecodeCard key={x.name} s={s} x={x} usual={null} freqs={rows} />];
         })}
       </div>
+    </div>
+  );
+}
+
+/** A DMR site's identity, where a P25 site shows its NAC, WACN, system and site: the type, the
+ *  Tier III / Capacity Max system code and its parts, the colour code, Capacity Plus's rest channel. */
+export function DmrIdentity(props: { d: DmrSiteStatus | null; calls: number; active: number }) {
+  const { d } = props;
+  const c = d?.sysCode;
+  return (
+    <div className="kv small">
+      <span>
+        Type <b>{d?.variant?.replace(/^DMR /, "") ?? "—"}</b>
+      </span>
+      {c && (
+        <>
+          <span title="System identity code, from the control channel">
+            Sys code <b className="mono">{c.code.toString(16).toUpperCase().padStart(4, "0")}</b>
+          </span>
+          <span title="Network model: how the code splits between network and site">
+            Model <b>{c.model}</b>
+          </span>
+          <span>
+            Net <b className="mono">{c.net}</b>
+          </span>
+          <span>
+            Site <b className="mono">{c.site}</b>
+          </span>
+          <span title="Which categories of radio may use this control channel">
+            Category <b>{c.par}</b>
+          </span>
+        </>
+      )}
+      <span>
+        CC <b className="mono">{d?.colorCode ?? "—"}</b>
+      </span>
+      {d?.rest && (
+        <span title="Capacity Plus rest channel (logical slot number)">
+          Rest <b className="mono">LSN {d.rest.lsn}</b>
+          {d.rest.freqHz ? <span className="muted">{` ${formatMhz(d.rest.freqHz, 4)}`}</span> : null}
+        </span>
+      )}
+      {d?.keyed && (
+        <span title="Its control blocks' CRCs are keyed (restricted access)">
+          <b>Keyed</b>
+        </span>
+      )}
+      <span title="Calls saved since start">
+        Calls <b>{props.calls}</b>
+      </span>
+      <span>
+        Active <b>{props.active}</b>
+      </span>
     </div>
   );
 }
