@@ -163,10 +163,11 @@ How to set it:
 - **Let the survey do it.** On an RTL-SDR, Find my system tries gains from 19.7 to 49.6 dB while
   listening to the control channel and keeps the lowest one within 1 dB of the best signal that
   doesn't clip. See [Find my system](find-my-system.md#gain).
-- **Let `trunk-pro tune` do it.** On any radio but a USRP, bladeRF or SoapySDR device, while
-  recording, `trunk-pro tune` tries the gain stage by stage and scores each setting by what that
-  radio's systems decode: control channel first, then voice. It puts the radio back unless you
-  pass `--apply`. See the [command line](../command-line.md#tune).
+- **Let `trunk-pro tune` do it.** While recording, `trunk-pro tune` tries gains on the radio,
+  following a plan for its kind (an Airspy along its linearity table, an RTL-SDR along its tuner's
+  gains, a HackRF's LNA before its VGA and its amp last), and scores each by what that radio's
+  systems decode: control channel first, then voice. Nothing is saved while it tries; the radio
+  goes back unless you pass `--apply`. See the [command line](../command-line.md#tune).
 - **Watch the dashboard.** While recording, a source's line warns *the gain is too high* when more
   than 0.5 % of samples are at full scale, and *little headroom left* when peaks reach full scale.
   Lower it a few dB. The **RF** page shows each radio's headroom and noise floor over time.

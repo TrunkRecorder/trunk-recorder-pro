@@ -415,6 +415,8 @@ pub struct SiteStatus {
     /// Its control channel's clock.
     pub now_s: f64,
     pub control_channel_hz: Option<u64>,
+    /// The source its control channel is received on (none: hunting with none open).
+    pub source: Option<usize>,
     pub identity: Identity,
     pub good: u64,
     pub bad: u64,
@@ -1538,6 +1540,7 @@ impl Trunk {
             site_name: self.cfg.name.clone(),
             now_s: self.now_s,
             control_channel_hz: self.cc_hz,
+            source: self.hunted().map(|(s, _)| s),
             identity: self.identity.clone(),
             good: self.good,
             bad: self.bad,

@@ -334,30 +334,33 @@ trunk-pro rolloff --center 858500000
 ```bash
 trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--slice 15] [--rounds 3]
                [--settle 4] [--max-steps 12] [--margin 1] [--mode manual|linearity|sensitivity]
-               [--protect 5] [--try stage=value,…] [--apply]
+               [--protect 5] [--try stage=value,…] [--yes] [--apply]
 ```
 
-Finds the gain at which a radio decodes its systems best. It works on a recorder that is
-**recording**, the one at `--url` (it can be another computer's: it uses the
-[interface API](api/README.md), so the recorder must be reachable there, and it needs the built-in
-interface's port, which has control access). It sets each gain to try as Setup does, which the radio
-takes at once, and scores what the radio's systems decode while it is set:
+Asks a recorder that is **recording** to find the gain at which one of its radios decodes its
+systems best. The recorder at `--url` does the tuning (it can be another computer's; it is the
+[interface API](api/README.md)'s `tuneGain`, which needs control access); this command asks for it
+and shows how it goes. Each gain to try goes on the radio as a **trial**: the radio takes it at once,
+as a gain edited in Setup, but nothing is saved and the config isn't changed. The recorder scores
+what the radio's systems decode while it is set:
 
 - **The control channel first.** P25's coverage (the share of the control channel's air decoded),
   else the share of messages decoded while it was locked. Without the control channel nothing is
   recorded.
 - **Then voice frames lost**, when a system had at least 5 seconds of voice. A system's score is
   70 % control channel and 30 % voice then, else its control channel alone.
-- **A gain that clips** (more than 0.5 % of samples at full scale) is refused, whatever it decoded.
+- **A gain that clips** (more than 0.5 % of samples at full scale, as the dashboard warns) is
+  refused, whatever it decoded.
 
 The setting's score (0 to 100) is the systems' average with the weakest counted twice, so a gain
 that helps the strong systems a little at a weak one's cost isn't chosen. The systems scored are
-those with a control channel in the radio's band, or only `--systems`. The radio's other systems are
-still watched then, and shown (the scored ones starred), and protected: a candidate that costs one
-of them more than `--protect` points (5 by default) on average over the rounds is refused, and one
-that costs one of them more than twice that in its first round is refused at once, so it isn't kept
-on the air for the rest. On one 800 MHz Airspy, the LNA that suited a weak simulcast system best
-took a neighbouring system's control channel from 74 % to 45 %: that is what this stops.
+those whose control channels the recorder receives on that radio, or only `--systems`. The radio's
+other systems are still watched then, and shown (the scored ones starred), and protected: a
+candidate that costs one of them more than `--protect` points (5 by default) on average over the
+rounds is refused, and one that costs one of them more than twice that in its first round is
+refused at once, so it isn't kept on the air for the rest. On one 800 MHz Airspy, the LNA that
+suited a weak simulcast system best took a neighbouring system's control channel from 74 % to 45 %:
+that is what this stops.
 
 **Settings are compared, not scored once.** How well a control channel decodes drifts from minute
 to minute (traffic, a simulcast site's fading) by more than a step of gain usually changes it: on
@@ -368,66 +371,69 @@ only when it scored better on average by more than `--margin` **and** by more th
 standard error of the rounds' differences. A candidate takes `rounds × 2 × (settle + slice)`
 seconds: 114 by default.
 
-The search starts where the radio is and moves one gain stage at a time, coarse steps first, never
-trying a setting twice. At the end the best is compared with the starting setting once more, and
-recommended only if it is still clearly better.
+**Each kind of radio has a plan**, from how it is built. The front of the chain (the LNA) sets the
+noise figure and is what strong signals overload, so it moves first; the stages after it only bring
+the level into the ADC's range, so they move last. Where the radio's maker drew a path through its
+stages (libairspy's tables, an R820T's gain table, the gain table behind an AD9361's one number),
+the search goes along that path: each step on it is a setting the maker measured. A move goes one
+way while each step is better; refused at its first step, it tries the other way. When any move
+was kept, the moves are walked once more (one stage moved can change what suits another), never
+trying a setting twice.
 
-| Radio | Stages tried |
+| Radio | Plan |
 |---|---|
-| Airspy, HydraSDR | **Manual**: LNA (0–14), mixer and VGA (0–15), in steps of 3, then 1. **Linearity** or **sensitivity**: the step (0–21), by 4, then 1. The mode it is in, or `--mode` |
-| HackRF | LNA (0–40 dB, by 8), VGA (0–62 dB, by 6, then 2), the amp |
-| RTL-SDR | The tuner's gains (0–49.6 dB), four places along the table, then one |
+| Airspy, HydraSDR | **Linearity** or **sensitivity** (the mode it is in, or `--mode`): the table's step (0–21), by 3, then 1. Linearity gives up the LNA and mixer before the VGA, what wins against strong signals. **Manual**: the LNA (0–14), then the mixer (0–15), by 3 then 1, and the VGA last, down first, kept to 12 (higher with the LNA up saturates the ADC); AGC off |
+| HackRF | The LNA first (0–40 dB, by 8), then the VGA (by 6 dB, then 2, to 40 dB), the RF amp last, and tried on only with the LNA at 24 dB or under: it adds little and puts strong signals at the mixer (more than −5 dBm at the input damages a HackRF) |
+| RTL-SDR | The tuner's gain table (0–49.6 dB; the LNA and mixer together, the VGA fixed), about 5 dB at a time, then one entry; AGC off |
+| bladeRF, USRP, SoapySDR | The overall gain, which the driver shares over the stages front first: by 6 dB, then 1. Its AGC must be off (that takes a Stop and Start), and a SoapySDR radio needs an overall gain set |
 
-Other radios aren't supported yet.
+At the end the best is compared with the starting setting once more, and recommended only if it is
+still clearly better.
 
 **Recording and uploading go on while it runs**, for every system, so a poor setting costs the
 radio's systems while it is tried: their calls in those seconds are recorded (and uploaded) as that
-setting hears them. Other radios aren't touched.
-A setting under which a control channel that was decoding stops for 10 seconds is given up at once,
-and one that clips heavily after 5. However it ends (done, an error, Ctrl-C), the radio is put back
-as it was, unless `--apply`, which keeps the best (and saves it in the config). It prints the
-radio's settings as they were first, to set by hand if it is killed.
+setting hears them. Other radios aren't touched. A setting under which a control channel that was
+decoding stops for 10 seconds is given up at once, and one that clips heavily after 5. However it
+ends (done, an error, Ctrl-C), the radio goes back as it was, unless `--apply` keeps the best, which
+is then saved in the config as an edit in Setup would be. Since the trials are never saved, a
+tuning cut short (the recorder stopped, this command killed) leaves the config as it was; stopping
+recording, or editing that radio in Setup, stops the tuning.
 
-Before it changes anything it says how long it will take ("This will take up to about 24
-minutes"), which systems may record worse meanwhile, whether the frequency correction is off, and
-waits for Enter (in a terminal; `--yes` doesn't ask). At the end a **summary** says what it
-recommends and what that does, system by system, from the final comparison of the new gain against
-the current one:
+Before anything changes, it shows the plan, how long it will take ("This will take up to about 24
+minutes") and which systems may record worse meanwhile, and waits for Enter (in a terminal; `--yes`
+doesn't ask). At the end a **summary** says what it recommends and what that does, system by system,
+from the final comparison of the new gain against the current one:
 
 ```text
 Summary (21 min, 9 settings compared)
-  Recommended: gain LNA 9 · mixer 10 · VGA 10 (now LNA 10 · mixer 10 · VGA 10), and frequency correction 0 ppm (now -0.58).
-  With the new gain, measured against the current one by turns (3 rounds): score +4.2 ± 1.3
-     Balch            control channel 74.3% → 79.0% (+4.7) · phase error 21° → 20°
-     MetroC           control channel 75.6% → 80.7% (+5.1) · voice lost 13.3% → 6.5% · phase error 19° → 18°
-  Frequency correction: -0.58 → 0 ppm removes a tuning error of about 497 Hz that AutoTune is correcting for meanwhile.
+  Recommended: gain LNA 9 · MIX 10 · VGA 10 (now LNA 10 · MIX 10 · VGA 10).
+  With it, measured against the current one by turns (3 rounds): score +4.2 ± 1.3
+     Balch            control channel 74.3% → 79.0% (+4.7)
+     MetroC           control channel 75.6% → 80.7% (+5.1) · voice lost 13.3% → 6.5%
 ```
 
-It also says whether the frequency correction (ppm) should change, as Setup's **Set
-correction to** does: when the control channels measure it 0.3 ppm or more off. `--apply` sets that
-too. A ppm, unlike a gain, is taken when recording next starts (Stop, then Start); with AutoTune on,
-the recorder corrects for the error until then.
+The frequency correction is Setup's (its **Set correction to**), not this command's.
 
 | Option | Default | What it does |
 |---|---|---|
 | `--url` | `http://127.0.0.1:8080` | The recorder's built-in interface |
-| `--source N` | the only one | The radio, by its place in Setup's list from 0. Needed when there are several: the error lists them |
+| `--source N` | the only one | The radio, by its number in Setup's list (from 1). Needed when there are several |
 | `--systems a,b` | every system on the radio | Score only these (short names); the others are still watched and guarded |
 | `--protect points` | 5 | With `--systems`: the most one of the radio's other systems may lose (0–100 scale). `off` allows any loss |
-| `--try stage=value,…` | | Compare this one setting with the one the radio is at, and nothing else: `lna=11,mixer=10,vga=9` (Airspy manual), `step=16` (Airspy linearity or sensitivity), `lna=32,vga=24,amp=on` (HackRF), `gain=33.8` (RTL-SDR). With `--apply`, kept if it is clearly better |
+| `--try stage=value,…` | | Compare this one setting with the one the radio has, and nothing else: `lna=11,mixer=10,vga=9` (Airspy manual), `step=16` (Airspy linearity or sensitivity), `lna=32,vga=24,amp=on` (HackRF), `gain=33.8` (RTL-SDR, bladeRF, USRP, SoapySDR). With `--apply`, kept if it is clearly better |
 | `--slice s` | 15 | How long each side of a round is measured |
 | `--rounds n` | 3 | Rounds per comparison (2 to 20). More rounds tell smaller differences apart |
 | `--settle s` | 4 | How long a gain runs before it is measured |
 | `--max-steps n` | 12 | At most this many candidates compared |
 | `--margin` | 1 | A move is kept only when it scores this much better (0–100 scale) |
-| `--mode` | the radio's | Airspy: search `manual`, `linearity` or `sensitivity` instead |
+| `--mode` | the radio's | Airspy, HydraSDR: search `manual`, `linearity` or `sensitivity` instead |
 | `--yes` | | Don't ask before starting |
-| `--apply` | | Keep the best gain, and set the ppm the control channels measure (at the next Start) |
+| `--apply` | | Keep the best gain, and save it |
 
 ```bash
-trunk-pro tune --url http://192.168.1.20:8080 --source 1
-trunk-pro tune --source 0 --systems county,city --mode sensitivity --apply
-trunk-pro tune --source 1 --try lna=11,vga=9          # before applying what a --systems run found
+trunk-pro tune --url http://192.168.1.20:8080 --source 2
+trunk-pro tune --source 1 --systems county,city --mode sensitivity --apply
+trunk-pro tune --source 2 --try lna=11,vga=9          # before applying what a --systems run found
 ```
 
 ## tool

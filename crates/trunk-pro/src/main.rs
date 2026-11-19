@@ -264,10 +264,10 @@ usage:
       How far in from each edge of the band the noise floor sags, and the
       guard band to leave there (--full: with the spectra and waterfall).
   trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--rounds 3] [--apply]
-      On a recorder that is recording: try a radio's gains one stage at a
-      time, each compared with the best so far by turns, and keep the one its
-      systems decode best at (control channel, then voice). The radio is put
-      back unless --apply. tune --help: more.
+      Ask a recorder that is recording to tune a radio's gain: it follows a
+      plan for the radio's kind, compares each candidate with the best so far
+      by turns, and finds the one its systems decode best at (control channel,
+      then voice). Nothing is saved unless --apply. tune --help: more.
   trunk-pro tool cc|voice|frames|p2 <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) …
       One P25 channel's decode as JSON lines (diagnostics; frames: counts
       of each frame type; p2: a Phase 2 channel, --nac --sysid --wacn).
@@ -1013,6 +1013,7 @@ fn serve(a: &Args) {
         db,
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
+        tune: Default::default(),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: addr.ip(),
         interfaces: interfaces::Interfaces::new(dev, addr.port()),

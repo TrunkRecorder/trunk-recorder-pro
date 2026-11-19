@@ -5,15 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **`trunk-pro tune` finds a radio's best gain** from what its systems decode. On a recorder that is recording, it tries
-  the radio's gain stage by stage (Airspy and HydraSDR in manual, linearity or sensitivity mode, HackRF, RTL-SDR) and
-  scores each setting by the control channels of the systems on that radio first, then their voice frames lost, the
-  weakest system counted twice; a setting that clips is refused. Since a control channel's decoding drifts from minute to
-  minute by more than a step of gain moves it, each candidate is compared with the best so far by turns over a few rounds,
-  and kept only when it is better by more than twice the rounds' spread. A setting that loses a control channel is given
-  up at once, and with `--systems` a setting that costs one of the radio's other systems more than `--protect` points is
-  refused; the radio is put back at the end unless `--apply`, which also sets the ppm the control channels measure. It uses
-  the interface API, so it can tune another computer's recorder.
+- **Tuning a radio's gain by what it decodes, while recording** (`trunk-pro tune`, the interface's `tuneGain`). The
+  recorder tries gains on one radio, following a plan for its kind: an Airspy or HydraSDR along its linearity (or
+  sensitivity) table, or in manual its LNA, then mixer, then VGA kept low; an RTL-SDR along its tuner's gain table; a
+  HackRF's LNA, then VGA, its amp last and only with the LNA low; a bladeRF's, USRP's or SoapySDR radio's overall gain.
+  Each setting is scored by the control channels of the systems on that radio first, then their voice frames lost, the
+  weakest system counted twice; a setting that clips is refused. Since a control channel's decoding drifts from minute
+  to minute by more than a step of gain moves it, each candidate is compared with the best so far by turns over a few
+  rounds, and kept only when it is better by more than twice the rounds' spread. A setting that loses a control channel
+  is given up at once, and with `--systems` one that costs another system on the radio more than `--protect` points is
+  refused. The candidates go on the radio as trials, never saved: the radio goes back at the end, or `--apply` saves the
+  best. Site status says which source each control channel is on (`source`).
 
 ## [0.3.8] — 2026-11-14
 
