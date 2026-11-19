@@ -320,7 +320,8 @@ share one bandwidth: changing it on one row in Setup changes them all.
 ## Demodulation settings
 
 Each conventional system's **Demodulation** group (in its card on the Conventional tab, shown
-when it has analog channels) applies to all of its FM and AM channels. Everything left at
+when it has analog or auto channels) applies to all of its FM and AM channels and its auto
+channels' analog receivers. Everything left at
 **Default** behaves as before. To use other settings for some channels, put them in a
 conventional system of their own.
 

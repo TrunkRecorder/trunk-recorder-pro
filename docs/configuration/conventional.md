@@ -31,7 +31,7 @@ anywhere a source covers, including alongside a trunked system. Analog channels 
 | `fcc` | | `{}` | object | Optional: who is licensed on each channel's frequency (they can be different licensees'). See [FCC licenses](systems.md#fcc-licenses) |
 | `enabled` | | `true` | bool | `false` keeps it without recording any of its channels |
 | `squelchDb` | | `8` | number | How far above the measured noise floor a signal must rise to open a channel, dB. The interface allows 3–40 |
-| `demod` | | `{}` | object | How its FM and AM channels are demodulated. See [Demodulation](#demodulation-demod) |
+| `demod` | | `{}` | object | How its FM, AM and auto channels are demodulated (an auto one's analog receiver). See [Demodulation](#demodulation-demod) |
 | `channels` | | `[]` | array | The channels. See [Channel keys](#channel-keys) |
 | `channelFile` | | `""` | string | A CSV to read the channels from instead (desktop app only). Absolute, or relative to the config file's folder. See [Channel file](#channel-file-channelfile) |
 | `recording` | | `{}` | object | Its own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
@@ -45,7 +45,7 @@ A frequency belongs to only one conventional system.
 
 ### Demodulation (`demod`)
 
-Applies to every FM and AM channel in the system. Each key left out is the default; an empty
+Applies to every FM, AM and auto channel in the system (an auto channel's analog receiver). Each key left out is the default; an empty
 `demod` isn't written. See the [conventional guide](../guides/conventional.md#demodulation-settings)
 for when to change them.
 

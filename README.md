@@ -22,7 +22,7 @@ The same engine also runs in the browser with nothing to install. On a Raspberry
 - **EDACS**: Standard and Networked sites, analog and ProVoice voice. Analog calls tested live on
   a three-site networked system; ProVoice on synthesized signals.
 - **Conventional channels**: analog FM and AM (airband), P25, DMR and NXDN, split by CTCSS / DCS tone, NAC, colour
-  code or RAN
+  code or RAN; or `auto`, whichever of them turns up
 - Several systems and several sites at once; a call heard on more than one site is saved once,
   from the best copy
 
