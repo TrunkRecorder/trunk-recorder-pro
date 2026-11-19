@@ -54,8 +54,9 @@ pub enum GainConfig {
     Manual(f32),
 }
 
-/// Direct ADC input for frequencies below 28.8 MHz on non-V4 dongles.
-/// Requires appropriate board wiring. Blog V4 uses its own upconverter instead.
+/// Direct ADC input for frequencies below 28.8 MHz on dongles without an
+/// upconverter. Requires appropriate board wiring. The Blog V4 and V4L use
+/// their own upconverter instead (see [`Board`](crate::Board)).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DirectSampling {
     /// Use the RF tuner; reject frequencies below its supported range.
