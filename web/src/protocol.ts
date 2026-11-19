@@ -2013,6 +2013,8 @@ export interface UnitRow {
   reg: boolean | null;
   /** [talkgroup, transmissions], most first. */
   tgs: [number, number][];
+  /** Every talkgroup it was heard affiliated with: [talkgroup, times it joined, first, last (Unix s)], most recently heard first. */
+  affs: [number, number, number, number][];
   /** [radio, calls together], most first. */
   partners: [number, number][];
   new: boolean;
@@ -2096,6 +2098,8 @@ export interface RadioResultBody {
   week?: number[];
   talkers?: { unit: number; alias: string; n: number; lastTx: number }[];
   affiliated?: { unit: number; alias: string }[];
+  /** tg: every radio ever heard affiliated with it, the most joins first (`last`: Unix s). */
+  joined?: { unit: number; alias: string; n: number; last: number }[];
   lengths?: LengthHistogram;
   /** unit: its latest transmissions, affiliations, talkgroups, and the radios it's heard with. */
   recent?: { t: number; tg: number; alphaTag: string; secs: number }[];

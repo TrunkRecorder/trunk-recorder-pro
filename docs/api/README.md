@@ -1097,9 +1097,12 @@ the minutes measured in it — so a rate's amount over a step is `v × n × 60`.
 The **radio registry** (`radioQuery`) is what the recorder has heard of each
 system: talkgroups (first and last heard, calls and airtime by hour, whether
 in the talkgroup file or ignored), radios (transmissions, affiliation, the
-talkgroups they use, the radios heard with them), and each frequency's voice
+talkgroups they use, every talkgroup each was heard affiliated with (`affs`,
+and a talkgroup's `joined`: whoever ever affiliated with it, though never heard
+to talk), the radios heard with them), and each frequency's voice
 quality and calls out of band (`freqs`: `rows`, the frequencies with a call
-recorded; `outOfBand`, those granted calls no source covered). It is kept in the call store between runs (`storage.registryRadios` and `storage.registryDays` bound it); with the store off it isn't kept.
+recorded; `outOfBand`, those granted calls no source covered). `hours` goes up
+to 720 (30 days); the affiliation log keeps the latest 200,000 joins. It is kept in the call store between runs (`storage.registryRadios` and `storage.registryDays` bound it); with the store off it isn't kept.
 
 ## Compatibility
 
