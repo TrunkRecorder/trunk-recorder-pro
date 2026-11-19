@@ -181,7 +181,8 @@ impl NameRow for UnitNameRow {
 }
 
 /// A unit names file read ([`read_unit_names`]): its rows, in order, and
-/// the patterns that aren't regular expressions (kept; they name nothing).
+/// the units it can't read (kept; they name nothing): patterns that aren't
+/// regular expressions, and IDs after `0x` that aren't hex.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnitNamesFile {
@@ -190,26 +191,34 @@ pub struct UnitNamesFile {
 }
 
 /// A unit names file's rows (`#` comments and lines without both a unit and
-/// a name passed over). A unit in two rows: the first, as the first match
-/// names a radio.
+/// a name passed over). A unit in hex after `0x` (`0x1C13`, as MDC1200 IDs
+/// are programmed) is kept as its decimal ID (7187), as Trunk Recorder
+/// writes it; a bare number is decimal. A unit in two rows: the first, as
+/// the first match names a radio.
 pub fn read_unit_names(text: &str) -> UnitNamesFile {
     let mut out = UnitNamesFile::default();
     let mut seen = std::collections::HashSet::new();
     for line in csv_lines(text).map(str::trim) {
         let f = split_csv_line(line);
         let (Some(unit), Some(name)) = (f.first().map(|s| s.trim()), f.get(1).map(|s| s.trim())) else { continue };
-        if unit.is_empty() || name.is_empty() || !seen.insert(unit.to_string()) {
+        let hex = unit.strip_prefix("0x").or_else(|| unit.strip_prefix("0X")).map(|h| u32::from_str_radix(h, 16));
+        let unit = match hex {
+            Some(Ok(id)) => id.to_string(),
+            _ => unit.to_string(),
+        };
+        if unit.is_empty() || name.is_empty() || !seen.insert(unit.clone()) {
             continue;
         }
-        if pattern(unit).is_none() {
-            out.bad.push(unit.to_string());
+        if matches!(hex, Some(Err(_))) || pattern(&unit).is_none() {
+            out.bad.push(unit.clone());
         }
-        out.unit_names.push(UnitNameRow { unit: unit.into(), name: name.into(), origin: None });
+        out.unit_names.push(UnitNameRow { unit, name: name.into(), origin: None });
     }
     out
 }
 
-/// `rows` as a unit names file: a `unit,name` line each, in their order.
+/// `rows` as a unit names file: a `unit,name` line each, in their order
+/// (IDs in decimal, however they were loaded).
 pub fn unit_names_csv(rows: &[UnitNameRow]) -> String {
     rows.iter().map(|r| format!("{},{}\n", field(&r.unit), field(&r.name))).collect()
 }
@@ -330,6 +339,14 @@ mod tests {
         assert_eq!(t.user(12345), None, "a plain number matches only itself");
         assert_eq!(t.user(7042).as_deref(), Some("Medic 042"));
         assert_eq!(t.user(812).as_deref(), Some("Car 2-1x"));
+        // Hex after 0x: kept as the decimal ID, the same radio as its decimal; a bare number stays decimal.
+        let h = read_unit_names("0x1C13,Medic 13\n0X0703,Engine 3\n7187,Again\n1013,Car 1013\n0xZZ,Broken\n");
+        let units: Vec<_> = h.unit_names.iter().map(|r| (r.unit.as_str(), r.name.as_str())).collect();
+        assert_eq!(units, [("7187", "Medic 13"), ("1795", "Engine 3"), ("1013", "Car 1013"), ("0xZZ", "Broken")]);
+        assert_eq!(h.bad, ["0xZZ"], "not hex: it names nothing");
+        assert_eq!(unit_names_csv(&h.unit_names[..2]), "7187,Medic 13\n1795,Engine 3\n", "written in decimal");
+        let ht = UnitTags::new(&h.unit_names, UnitTagsMode::UserFirst);
+        assert_eq!((ht.user(7187).as_deref(), ht.user(1013).as_deref(), ht.user(4115)), (Some("Medic 13"), Some("Car 1013"), None));
         let heard = UnitAliases::parse_csv("1234,E12 CAPT,,1,,,\n555,HEARD,,1,,,\n");
         assert_eq!(UnitTags::name(Some(&t), Some(&heard), 1234).as_deref(), Some("Engine 12"));
         assert_eq!(UnitTags::name(Some(&t), Some(&heard), 555).as_deref(), Some("HEARD"));

@@ -179,8 +179,8 @@ export function UnitNamesField(props: { system: string; value: UnitNames | undef
         <div className="row tg-facts">
           <OriginChips rows={rows} />
           {bad.length > 0 && (
-            <span className="chip warn" title={`Not regular expressions; they name nothing:\n${bad.slice(0, 5).join("\n")}`}>
-              {bad.length} bad pattern{bad.length === 1 ? "" : "s"}
+            <span className="chip warn" title={`Not a regular expression, or not hex after 0x; they name nothing:\n${bad.slice(0, 5).join("\n")}`}>
+              {bad.length} unreadable
             </span>
           )}
         </div>
