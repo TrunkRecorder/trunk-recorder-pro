@@ -2748,8 +2748,9 @@ impl Config {
                     if !(1e6..=20e6).contains(&s.rate_hz) {
                         return Some(format!("{}: a HackRF runs at 1 to 20 MSPS.", s.title(i)));
                     }
-                    if *lna_db > 40 || lna_db % 8 != 0 || *vga_db > 62 || vga_db % 2 != 0 {
-                        return Some(format!("{}: a HackRF's LNA gain is 0–40 dB in 8 dB steps, its VGA gain 0–62 dB in 2 dB steps.", s.title(i)));
+                    let ((lna_max, lna_by), (vga_max, vga_by)) = (crate::gain::HACKRF_LNA, crate::gain::HACKRF_VGA);
+                    if *lna_db > lna_max || lna_db % lna_by != 0 || *vga_db > vga_max || vga_db % vga_by != 0 {
+                        return Some(format!("{}: a HackRF's LNA gain is 0–{lna_max} dB in {lna_by} dB steps, its VGA gain 0–{vga_max} dB in {vga_by} dB steps.", s.title(i)));
                     }
                 }
                 SourceKind::Hydrasdr { rf_port, bias_tee, .. } => {

@@ -220,7 +220,7 @@ whenever `change` fires.
 |---|---|
 | `connected` | `true` while connected (from `hello` on) |
 | `version` | the recorder's version |
-| `capabilities` | what the recorder can do beyond recording (`hello.capabilities`): `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys`, `calls`, `history` |
+| `capabilities` | what the recorder can do beyond recording (`hello.capabilities`): `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys`, `calls`, `history`, `tuneGain` |
 | `config` | the config (`Config`) |
 | `phase` | `{ phase: "idle" \| "starting" \| "running" \| "stopping", error, ended }` |
 | `status` | `EngineStatus` while running: `nowS`, totals, `systems[]` |
@@ -521,6 +521,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `survey` | The survey's progress | `stage` (`idle` / `scanning` / `monitoring` / `done`), candidates, the channel monitored, the suggested system |
 | `licenseResult` | Answers `licenseQuery`, to its sender | `id`, `results[]` of `{ freqHz, historical, licenses[] }` (each license: `callSign`, `licensee`, `serviceCode`, `serviceDesc`, `freqHz`, `emission`, `distanceM`, `bearingDeg`, `bearingCardinal`, `city`, `state`, `status`, `locationKind`; `historical`: none active, so lapsed ones), or `error` |
 | `surveySpectrum` | While surveying | like `spectrum` |
+| `tune` | A radio's gain being tuned, each time it moves; on connecting, the last (control access); answers `tuneGain` with `check` | `phase` (`planned` / `running` / `done` / `stopped` / `failed`), `source`, `radio`, `plan` (its steps, in words), `scored`, `watched`, `start`, `tried[]` (each `candidate`, `against`, `cmp` `{ diff, se }` or `why` it was refused, `kept`, `systems[]` figures, `clipPct`), `now`, `estimateS`, `elapsedS`, `best`, `applied`, `error`. A gain setting is `[knob, value][]`: `lna`, `mixer`, `vga`, `amp`, `step` (an Airspy table's), `gain` (dB) |
 | `sourceProfile` | Answers `profileSource` | `source`, then `error`, or `centerHz`, `rateHz`, `spectrum` / `floor` (1024 points, dB, −rate/2 … +rate/2), `rows` (a waterfall), `referenceDb`, `lowHz` / `highHz` (how far in the floor is 3 dB down), `lowDropDb` / `highDropDb`, `suggestedGuardHz` |
 | `pluginRuntime` | A plugin's totals changed (control access) | `id`, `runtime` (state, counts, recent log; `metrics` — queue, upload time, endpoints — when the plugin reports them; restarts, events dropped, uptime; results per minute for the last hour) |
 | `interfaces` | On connecting (control access);  after interface changes; answers `interfaces` | `interfaces` (`InterfaceInfo[]`: each one's port, access, whether it's served and why not), `api` |
@@ -555,6 +556,8 @@ too.
 | `surveyStart` | `source`, `bands` (ids from `hello.surveyBands`), `findGain` | Scan for systems with radio `source` (not while recording). |
 | `surveyListen` | `freqHz` | Monitor this signal. |
 | `surveyRescan` / `surveyStop` | — | Scan again / end the survey. |
+| `tuneGain` | `source`, and optionally `systems[]`, `protect`, `sliceS`, `settleS`, `rounds`, `maxSteps`, `margin`, `mode`, `try` (a gain setting), `apply`, `check` | While recording: tune radio `source`'s gain by what its systems decode, following the plan for its kind (→ `tune` as it goes). Each candidate goes on the radio as a trial, never saved; at the end it goes back, or `apply` saves the best. `check`: only the plan (→ `tune`, phase `planned`), nothing changed. One at a time; stopping recording, or editing that radio, stops it. See [`trunk-pro tune`](../command-line.md#tune). |
+| `tuneStop` | — | Stop tuning: the radio goes back as it was. |
 | `licenseQuery` | `id`, `lat`, `lon`, `radiusM`, `signals[]` of `{ freqHz, widthHz? }` | Who is licensed on these frequencies within `radiusM` (at most 150 km) of the location (→ `licenseResult`). The recorder sends the frequencies and the location to trunkrecorder.pro (`server.trpApi`); only when the user asks. |
 | `callSignQuery` | `id`, `callSigns[]` | Who holds these call signs (heard on the air), from trunkrecorder.pro, no location (→ `callSignResult`: `id`, `results[]` of `{ callSign, licensee, serviceCode, serviceDesc, status, city, state }` for each active one, or `error`). |
 | `profileSource` | `source`, `centerHz` | Look at radio `source`'s band for a couple of seconds, tuned to `centerHz` (a capture keeps its own), and measure how it rolls off at the edges (→ `sourceProfile`; not while recording). |

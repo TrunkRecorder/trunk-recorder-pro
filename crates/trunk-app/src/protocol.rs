@@ -120,6 +120,8 @@ pub enum ToClient {
     Heard { heard: Value },
     Survey(Body),
     SurveySpectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
+    /// A radio's gain being tuned ([`Command::TuneGain`]), each time it moves; on connecting, the last.
+    Tune(crate::tune::TuneReport),
     /// Answers `licenseQuery`, to its sender: the API's `results`, or why there are none.
     LicenseResult { id: u64, results: Vec<Value>, error: Option<String> },
     /// Answers `callSignQuery`, to its sender: each active call sign's holder, or why there are none.
@@ -397,6 +399,8 @@ pub enum Capability {
     /// The dashboard's history further back than a week (`statsQuery`'s
     /// `30d`, `90d`, `1y`), as far as `storage.statsDays` keeps: the store.
     History,
+    /// Tuning a radio's gain while recording: `tuneGain`.
+    TuneGain,
 }
 
 impl Capability {
@@ -424,7 +428,7 @@ impl ToClient {
     pub fn audience(&self) -> Audience {
         use ToClient::*;
         match self {
-            Plugins(_) | PluginRuntime { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } => Audience::Control,
+            Plugins(_) | PluginRuntime { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } | Tune(_) => Audience::Control,
             _ => Audience::Everyone,
         }
     }
@@ -553,6 +557,12 @@ pub enum Command {
     SurveyListen { freq_hz: f64 },
     SurveyRescan,
     SurveyStop,
+    /// Tune a radio's gain by what its systems decode, while recording
+    /// ([`crate::tune`]): each candidate is set on the radio as a trial, not
+    /// saved; at the end it goes back, or, with `apply`, the best is saved.
+    TuneGain(crate::tune::TuneRequest),
+    /// Stop tuning: the radio goes back as it was.
+    TuneStop,
     /// Who is licensed on `signals` within `radius_m` of the location the
     /// user gave (sent to trunkrecorder.pro): answered with `licenseResult`.
     LicenseQuery { id: u64, lat: f64, lon: f64, radius_m: f64, signals: Vec<crate::licenses::Signal> },

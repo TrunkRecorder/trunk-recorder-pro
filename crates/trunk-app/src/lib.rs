@@ -10,6 +10,7 @@ pub mod channels;
 pub mod config;
 pub mod ekc;
 pub mod filename;
+pub mod gain;
 pub mod heard;
 pub mod keys;
 pub mod licenses;
@@ -25,6 +26,7 @@ pub mod session;
 pub mod share;
 pub mod stats;
 pub mod survey;
+pub mod tune;
 
 pub use config::Config;
 pub use session::{Feeder, Output, PluginTopics, Session};
