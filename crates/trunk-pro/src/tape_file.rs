@@ -14,7 +14,6 @@ use trunk_app::config::{Config, NameLists};
 use trunk_core::dsp::squelch::SquelchTiming;
 use trunk_core::dsp::AnalogTuning;
 use trunk_core::mbe::Profile;
-use trunk_core::nxdn::Rate;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::p25::frame::FramerOptions;
 use trunk_core::trunk::control::{self, ControlChannel};
@@ -26,35 +25,6 @@ use crate::corpus::{envelope_of, frame_hashes, short_hash, CallSummary, Results}
 use crate::toolkit::hex;
 
 const COLLECTION: &str = "capture.sigmf-collection";
-
-fn kind_name(k: VoiceKind) -> &'static str {
-    match k {
-        VoiceKind::Fdma => "p25",
-        VoiceKind::Tdma => "p25_phase2",
-        VoiceKind::Analog => "fm",
-        VoiceKind::Am => "am",
-        VoiceKind::Dmr => "dmr",
-        VoiceKind::Nxdn(Rate::N48) => "nxdn48",
-        VoiceKind::Nxdn(Rate::N96) => "nxdn96",
-        VoiceKind::ProVoice => "provoice",
-        VoiceKind::Auto => "auto",
-    }
-}
-
-fn kind_of(s: &str) -> Option<VoiceKind> {
-    Some(match s {
-        "p25" => VoiceKind::Fdma,
-        "p25_phase2" => VoiceKind::Tdma,
-        "fm" => VoiceKind::Analog,
-        "am" => VoiceKind::Am,
-        "dmr" => VoiceKind::Dmr,
-        "nxdn48" => VoiceKind::Nxdn(Rate::N48),
-        "nxdn96" => VoiceKind::Nxdn(Rate::N96),
-        "provoice" => VoiceKind::ProVoice,
-        "auto" => VoiceKind::Auto,
-        _ => return None,
-    })
-}
 
 fn profile_name(p: Profile) -> &'static str {
     match p {
@@ -76,7 +46,7 @@ fn profile_of(s: &str) -> Option<Profile> {
 fn spec_json(s: &VoiceSpec) -> Value {
     let (b, a) = (&s.bank, &s.analog);
     json!({
-        "kind": kind_name(s.kind),
+        "kind": s.kind.name(),
         "rate": s.rate,
         "t0_s": s.t0,
         "seed": s.seed,
@@ -95,7 +65,7 @@ fn spec_from(v: &Value) -> Option<VoiceSpec> {
     let t = |x: &Value| x.as_bool();
     let u = |x: &Value| x.as_u64();
     Some(VoiceSpec {
-        kind: kind_of(v["kind"].as_str()?)?,
+        kind: VoiceKind::from_name(v["kind"].as_str()?)?,
         rate: f(&v["rate"])?,
         t0: f(&v["t0_s"])?,
         seed: u(&v["seed"])? as u32,
@@ -168,7 +138,7 @@ fn write_folder(dir: &Path, global: Value, freq_hz: f64, annotations: Vec<Value>
 pub fn write_voice(dir: &Path, t: &VoiceTape, extra: Value) -> Result<(), String> {
     let mut global = json!({
         "core:sample_rate": t.spec.rate,
-        "core:description": format!("{} voice channel", kind_name(t.spec.kind)),
+        "core:description": format!("{} voice channel", t.spec.kind.name()),
         "trp:tier": "voice",
         "trp:channel": { "freq_hz": t.freq_hz, "first": t.first, "block": t.block, "truncated": t.truncated, "spec": spec_json(&t.spec) },
     });
@@ -331,8 +301,8 @@ mod tests {
         let spec = VoiceSpec { kind: VoiceKind::Tdma, rate: 37500.0, t0: 1.5, seed: 77, vocoder: Profile::Enhanced, bank: BankConfig { soft: false, ..Default::default() }, squelch: 0.25, subaudible: true, analog: AnalogTuning { data_mute: true, ..Default::default() }, ignore_hz: vec![(1.0, 2.0)], keys: None };
         let back = spec_from(&spec_json(&spec)).unwrap();
         assert_eq!(format!("{spec:?}"), format!("{back:?}"));
-        for k in [VoiceKind::Fdma, VoiceKind::Tdma, VoiceKind::Analog, VoiceKind::Am, VoiceKind::Dmr, VoiceKind::Nxdn(Rate::N48), VoiceKind::Nxdn(Rate::N96), VoiceKind::ProVoice] {
-            assert_eq!(kind_of(kind_name(k)), Some(k));
+        for k in VoiceKind::ALL {
+            assert_eq!(VoiceKind::from_name(k.name()), Some(k));
         }
     }
 

@@ -79,8 +79,6 @@ use crate::p25::diversity::BankConfig;
 
 /// Half-width of the band the detector sums, Hz (a 12.5 kHz channel's signal).
 const DETECT_HALF_BW: f64 = 5000.0;
-/// Head filter cutoff (the carrier meter narrows it further), Hz.
-const HEAD_CUTOFF_HZ: f64 = 7000.0;
 /// Band power smoothing, s.
 const DETECT_TAU_S: f64 = 0.02;
 /// Noise floor refresh, s, and its smoothing per refresh.
@@ -96,9 +94,13 @@ const CLOSE_HANG_S: f64 = 0.5;
 /// A held transmission with no tone yet goes to the row without one after this, s.
 const TONE_WAIT_S: f64 = 1.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A conventional channel's mode: the decoder it opens ([`ConvMode::kind`]), from which every question
+/// of what a row of it can say is answered (the predicates below; Setup asks them through trunk-web).
+/// The config and channel files name it as [`ConvMode::as_str`] does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ConvMode {
     /// Analog FM (12.5 kHz, or 25 kHz wide).
+    #[default]
     Fm,
     /// Analog AM (airband).
     Am,
@@ -109,12 +111,15 @@ pub enum ConvMode {
     /// NXDN at either rate.
     Nxdn(Rate),
     /// Any of the above but AM: every receiver listens until one hears its protocol
-    /// ([`voice::build_auto`]); the call is the one it settled on. For a channel that may carry
+    /// ([`VoiceKind::Auto`]); the call is the one it settled on. For a channel that may carry
     /// analog and digital both, FRS and GMRS's, say.
     Auto,
 }
 
 impl ConvMode {
+    /// Every mode, in the order Setup lists them.
+    pub const ALL: [ConvMode; 7] = [ConvMode::Fm, ConvMode::Am, ConvMode::P25, ConvMode::Dmr, ConvMode::Nxdn(Rate::N48), ConvMode::Nxdn(Rate::N96), ConvMode::Auto];
+
     /// What a call on a channel of this mode is on: slot `slot` (DMR), its colour code once heard.
     /// None for auto, which is nothing in particular until a channel settles ([`Chan::mode`]).
     fn voice(self, slot: u8, color_code: Option<u8>) -> Option<Voice> {
@@ -128,6 +133,7 @@ impl ConvMode {
         })
     }
 
+    /// As the config and a channel file name it.
     pub fn as_str(self) -> &'static str {
         match self {
             ConvMode::Fm => "fm",
@@ -139,8 +145,31 @@ impl ConvMode {
         }
     }
 
+    /// The mode [`ConvMode::as_str`] names, in any case.
+    pub fn parse(text: &str) -> Option<ConvMode> {
+        Self::ALL.into_iter().find(|m| m.as_str().eq_ignore_ascii_case(text.trim()))
+    }
+
+    /// Every mode's name, for a message ("fm, am, … or auto").
+    pub fn names() -> String {
+        let names = Self::ALL.map(Self::as_str);
+        format!("{} or {}", names[..names.len() - 1].join(", "), names[names.len() - 1])
+    }
+
+    /// As a message names it ("AM channels carry no tone or code").
+    pub fn name(self) -> &'static str {
+        match self {
+            ConvMode::Fm => "FM",
+            ConvMode::Am => "AM",
+            ConvMode::P25 => "P25",
+            ConvMode::Dmr => "DMR",
+            ConvMode::Nxdn(_) => "NXDN",
+            ConvMode::Auto => "auto",
+        }
+    }
+
     /// The decoder a channel of this mode opens with.
-    fn kind(self) -> VoiceKind {
+    pub fn kind(self) -> VoiceKind {
         match self {
             ConvMode::Fm => VoiceKind::Analog,
             ConvMode::Am => VoiceKind::Am,
@@ -151,47 +180,87 @@ impl ConvMode {
         }
     }
 
-    /// The mode of what a decoder of `kind` decodes (none: not a conventional kind).
+    /// The mode whose decoder is of `kind` (none: not a conventional kind).
     fn of(kind: VoiceKind) -> Option<ConvMode> {
-        Some(match kind {
-            VoiceKind::Analog => ConvMode::Fm,
-            VoiceKind::Am => ConvMode::Am,
-            VoiceKind::Fdma => ConvMode::P25,
-            VoiceKind::Dmr => ConvMode::Dmr,
-            VoiceKind::Nxdn(r) => ConvMode::Nxdn(r),
-            VoiceKind::Auto => ConvMode::Auto,
-            VoiceKind::Tdma | VoiceKind::ProVoice => return None,
-        })
+        Self::ALL.into_iter().find(|m| m.kind() == kind)
     }
 
-    /// Analog (FM or AM) and nothing else: demodulated as [`ConvChannel::analog`] says.
+    /// The receivers its decoder runs ([`VoiceKind::receivers`]).
+    fn receivers(self) -> &'static [VoiceKind] {
+        self.kind().receivers()
+    }
+
+    /// Analog (FM or AM) and nothing else: demodulated as [`ConvChannel::analog`] says, metered by its receiver.
     pub fn analog(self) -> bool {
-        matches!(self, ConvMode::Fm | ConvMode::Am)
+        self.receivers().iter().all(|k| k.analog())
     }
 
-    /// Has an analog receiver: analog, or auto's, which has one among others (its calls' demodulation settings).
+    /// Has an analog receiver: analog, or auto, which has one among others. [`ConvChannel::analog`]
+    /// (bandwidth, de-emphasis, squelch timing) is its.
     pub fn has_analog_receiver(self) -> bool {
-        self.analog() || self == ConvMode::Auto
+        self.receivers().iter().any(|k| k.analog())
     }
 
     /// Has an FM receiver, which hears a call's tone and unit IDs.
     pub fn has_fm(self) -> bool {
-        matches!(self, ConvMode::Fm | ConvMode::Auto)
+        self.receivers().contains(&VoiceKind::Analog)
     }
 
-    /// Its rows can be told apart by a tone or code: not AM's, nor auto's, which has none to give.
+    /// What tells its rows on a frequency apart (none: AM has no code, and auto's receivers none in common).
+    pub fn code_name(self) -> Option<&'static str> {
+        match self {
+            ConvMode::Fm => Some("tone"),
+            ConvMode::P25 => Some("NAC or talkgroup"),
+            ConvMode::Dmr => Some("colour code, slot or talkgroup"),
+            ConvMode::Nxdn(_) => Some("RAN or talkgroup"),
+            ConvMode::Am | ConvMode::Auto => None,
+        }
+    }
+
+    /// Its rows can be told apart by a tone or code ([`ConvMode::code_name`]).
     pub fn takes_code(self) -> bool {
-        !matches!(self, ConvMode::Am | ConvMode::Auto)
+        self.code_name().is_some()
     }
 
-    /// A transmission names its talkgroup, which a row can match: the digital modes.
+    /// Every transmission names its talkgroup, which a row can match: the digital modes.
     pub fn matches_talkgroup(self) -> bool {
-        !self.analog() && self != ConvMode::Auto
+        !self.has_analog_receiver()
     }
 
     /// A call's talkgroup may be the air's: the digital modes, and auto when it settles on one.
     pub fn air_names_talkgroup(self) -> bool {
         !self.analog()
+    }
+
+    /// Its calls are on one of two slots, which a row can pick: DMR's.
+    pub fn slotted(self) -> bool {
+        self.kind().slotted()
+    }
+
+    /// Trunk Recorder's talkgroup Mode for its calls: A (analog), D (digital), M (either).
+    pub fn talkgroup_mode(self) -> &'static str {
+        match (self.analog(), self.has_analog_receiver()) {
+            (true, _) => "A",
+            (false, false) => "D",
+            (false, true) => "M",
+        }
+    }
+}
+
+impl serde::Serialize for ConvMode {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ConvMode {
+    /// [`ConvMode::parse`]; empty is the default (FM).
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(d)?;
+        if text.trim().is_empty() {
+            return Ok(ConvMode::default());
+        }
+        ConvMode::parse(&text).ok_or_else(|| serde::de::Error::custom(format!("unknown mode `{}`, expected {}", text.trim(), ConvMode::names())))
     }
 }
 
@@ -279,7 +348,7 @@ impl Access {
             return Ok(None);
         }
         if !mode.takes_code() {
-            return Err(format!("\"{}\": {} channels carry no tone or code — leave it empty", text.trim(), if mode == ConvMode::Am { "AM" } else { "auto" }));
+            return Err(format!("\"{}\": {} channels carry no tone or code — leave it empty", text.trim(), mode.name()));
         }
         if mode == ConvMode::P25 {
             let bad = || format!("\"{}\" isn't a NAC (up to 3 hex digits, like 293) or talkgroup (TG 1)", text.trim());
@@ -359,14 +428,14 @@ impl Access {
             return Err(format!("\"{}\" names another slot or talkgroup than its own columns", code.trim()));
         }
         let (slot, tg) = (slot.or(s), tg.or(t));
-        if slot.is_some() && mode != ConvMode::Dmr {
+        if slot.is_some() && !mode.slotted() {
             return Err(format!("Slot {}: only DMR has slots — leave it empty", slot.unwrap()));
         }
         if slot.is_some_and(|s| !(1..=2).contains(&s)) {
             return Err(format!("Slot {}: the slot is 1 or 2", slot.unwrap()));
         }
         if tg.is_some() && !mode.matches_talkgroup() {
-            return Err(format!("Match TG {}: {} names no talkgroup — leave it empty", tg.unwrap(), match mode { ConvMode::Fm => "FM", ConvMode::Am => "AM", _ => "auto" }));
+            return Err(format!("Match TG {}: {} names no talkgroup — leave it empty", tg.unwrap(), mode.name()));
         }
         let max = if mode == ConvMode::Dmr { 1 << 24 } else { 1 << 16 };
         if tg.is_some_and(|t| t == 0 || t >= max) {
@@ -392,7 +461,7 @@ impl Access {
     }
 
     /// Two rows can't tell these apart.
-    fn same(self, other: Access) -> bool {
+    pub fn same(self, other: Access) -> bool {
         match (self, other) {
             (Access::Tone(a), Access::Tone(b)) => a.matches(b),
             _ => self == other,
@@ -701,12 +770,16 @@ struct ChannelShape {
 
 impl ChannelShape {
     fn of(mode: ConvMode, analog: &AnalogTuning) -> Self {
-        // An analog channel's widths follow its bandwidth, from the 12.5 kHz FM channel's.
+        // An analog receiver's widths follow its bandwidth, from the 12.5 kHz FM channel's.
         let wider = |base: f64| analog.half_bw_hz + (base - fm::CHANNEL_HALF_BW);
-        match mode {
-            m if m.analog() => ChannelShape { detect_half_bw: wider(DETECT_HALF_BW), head_cutoff_hz: wider(HEAD_CUTOFF_HZ), meter_bw: 2.0 * analog.half_bw_hz },
+        let digital = |k: VoiceKind| ChannelShape { detect_half_bw: if k == VoiceKind::Nxdn(Rate::N48) { 3125.0 } else { DETECT_HALF_BW }, head_cutoff_hz: k.cutoff_hz(), meter_bw: ChannelFilter::noise_bandwidth() };
+        match mode.kind() {
+            _ if mode.analog() => ChannelShape { detect_half_bw: wider(DETECT_HALF_BW), head_cutoff_hz: analog.head_cutoff_hz(), meter_bw: 2.0 * analog.half_bw_hz },
             // Digital: the head as a trunked channel of its kind opens.
-            m => ChannelShape { detect_half_bw: if m == ConvMode::Nxdn(Rate::N48) { 3125.0 } else { DETECT_HALF_BW }, head_cutoff_hz: m.kind().cutoff_hz(), meter_bw: ChannelFilter::noise_bandwidth() },
+            k if !mode.has_analog_receiver() => digital(k),
+            // Auto: as its analog receiver, which its digital ones each narrow ([`VoiceKind::Auto`]); the meter
+            // is for a digital receiver, which can't say.
+            _ => ChannelShape { detect_half_bw: wider(DETECT_HALF_BW), head_cutoff_hz: analog.head_cutoff_hz(), meter_bw: ChannelFilter::noise_bandwidth() },
         }
     }
 }
@@ -813,16 +886,11 @@ impl Conventional {
         if rows.iter().any(|r| r.analog.half_bw_hz != rows[0].analog.half_bw_hz) {
             return Err(format!("Conventional channel {mhz} MHz is listed with different bandwidths — rows sharing a frequency need the same one."));
         }
-        if !rows[0].mode.takes_code() && (rows.len() > 1 || rows[0].access.is_some()) {
-            let mode = if rows[0].mode == ConvMode::Am { "AM" } else { "auto" };
-            return Err(format!("Conventional channel {mhz} MHz is {mode} — it has no tone or code to split a frequency by, so it is one row without one."));
-        }
-        let what = match rows[0].mode {
-            ConvMode::Fm => "tone",
-            ConvMode::Am | ConvMode::Auto => "code",
-            ConvMode::P25 => "NAC or talkgroup",
-            ConvMode::Dmr => "colour code, slot or talkgroup",
-            ConvMode::Nxdn(_) => "RAN or talkgroup",
+        let Some(what) = rows[0].mode.code_name() else {
+            if rows.len() > 1 || rows[0].access.is_some() {
+                return Err(format!("Conventional channel {mhz} MHz is {} — it has no tone or code to split a frequency by, so it is one row without one.", rows[0].mode.name()));
+            }
+            return Ok(());
         };
         for (i, a) in rows.iter().enumerate() {
             for b in &rows[..i] {
@@ -1243,7 +1311,7 @@ impl Conventional {
         let (on, tune) = (ch.on(num as usize), ch.tune_ref);
         // FM: who is talking by its unit IDs, and its CTCSS tone or DCS code.
         let mode = ch.mode();
-        // (What it heard is a protocol's, so an auto channel has settled by now.)
+        // (An auto decoder puts nothing out before it settles, so what was heard is a settled mode's.)
         let Some(voice) = mode.voice(slot as u8, h.color_code) else { return };
         let fm = (mode == ConvMode::Fm).then_some(ch.analog.deemph_tau_s);
         let spec = InBandSpec { units: fm, subaudible: fm.is_some() };
@@ -1611,6 +1679,10 @@ mod tests {
 
     /// Plain P25 voice on a channel given as `mode`: its calls.
     fn p25_call_on(mode: ConvMode) -> Vec<Call> {
+        p25_call_on_channel(ConvChannel::new(155_100_000.0, mode))
+    }
+
+    fn p25_call_on_channel(ch: ConvChannel) -> Vec<Call> {
         use crate::p25::synth::{dibits, imbe, modulate, Tx};
         let (fs, center, freq) = (1_200_000.0, 155_000_000.0, 155_100_000.0);
         let tx = Tx { nac: 0x293, talkgroup: 716, source: 42, cipher: None, voice: (0..72).map(imbe).collect() };
@@ -1624,7 +1696,7 @@ mod tests {
         crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
-            conventional: vec![ConvChannel::new(freq, mode)],
+            conventional: vec![ch],
             systems: vec![conv_system("conv")],
             ..Default::default()
         };
@@ -1646,6 +1718,25 @@ mod tests {
         // As P25 hears it, from the same frames: the wait before settling costs it nothing.
         assert_eq!((a.sources.iter().map(|s| s.src).collect::<Vec<_>>(), a.voice, a.nac), (p.sources.iter().map(|s| s.src).collect::<Vec<_>>(), p.voice, p.nac));
         assert!((a.last_audio_s - p.last_audio_s).abs() < 0.05 && (a.start_s - p.start_s).abs() < 0.05, "{:.2}..{:.2} against {:.2}..{:.2}", a.start_s, a.last_audio_s, p.start_s, p.last_audio_s);
+    }
+
+    #[test]
+    fn a_wide_auto_channel_opens_as_its_analog_receiver_and_still_hears_p25() {
+        let mut wide = ConvChannel::new(155_100_000.0, ConvMode::Auto);
+        wide.analog.half_bw_hz = 10_000.0;
+        assert_eq!(ChannelShape::of(ConvMode::Auto, &wide.analog).head_cutoff_hz, ChannelShape::of(ConvMode::Fm, &wide.analog).head_cutoff_hz);
+        let calls = p25_call_on_channel(wide);
+        let [a] = &calls[..] else { panic!("{} calls: {calls:?}", calls.len()) };
+        assert_eq!((a.voice, a.talkgroup, a.nac), (Voice::P25, 716, Some(0x293)));
+    }
+
+    #[test]
+    fn a_mode_reads_and_writes_as_the_config_names_it() {
+        for m in ConvMode::ALL {
+            assert_eq!(ConvMode::parse(m.as_str()), Some(m));
+        }
+        assert_eq!((ConvMode::parse(" AUTO "), ConvMode::parse("tdma")), (Some(ConvMode::Auto), None));
+        assert_eq!(ConvMode::ALL.map(ConvMode::talkgroup_mode), ["A", "A", "D", "D", "D", "D", "M"]);
     }
 
     #[test]

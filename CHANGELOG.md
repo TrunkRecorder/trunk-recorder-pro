@@ -11,8 +11,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   digital one once it has decoded a couple of frames of voice or two of anything else only a checked frame
   carries, else analog FM two seconds after the channel opened. The call is recorded as what it settled
   on (`voice_mode`, talkgroup, NAC / colour code / RAN as for a channel of that mode), with its analog
-  audio whole. It is one row to a frequency, without a code, and costs more CPU than a channel of one
-  mode while it is undecided.
+  audio whole. Its **Bandwidth** is its analog receiver's (16 kHz for GMRS's 20 kHz channels). It is one
+  row to a frequency, without a code, and costs more CPU than a channel of one mode while it is undecided.
 
 ## [0.3.8] — 2026-11-14
 

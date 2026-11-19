@@ -48,6 +48,12 @@ impl AnalogTuning {
     pub fn am(freq_hz: f64) -> Self {
         AnalogTuning { half_bw_hz: am::default_half_bw(freq_hz), ..Default::default() }
     }
+
+    /// The cutoff a channel's head opens at to carry its passband, Hz: 1.5 kHz past it (7 kHz for
+    /// narrowband FM), so the channel filter narrows it, not the head's skirt.
+    pub fn head_cutoff_hz(&self) -> f64 {
+        self.half_bw_hz + 1500.0
+    }
 }
 
 /// One decided symbol from a receiver: the dibit, the channel-sample instant

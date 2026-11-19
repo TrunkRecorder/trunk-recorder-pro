@@ -371,10 +371,15 @@ mod tests {
     #[test]
     fn an_auto_channel_settles_on_nxdn() {
         let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_056_250.0);
-        for rate in [Rate::N48, Rate::N96] {
+        // (Also on a 20 kHz channel, which its analog receiver sets the width of.)
+        for (rate, half_bw) in [(Rate::N48, None), (Rate::N96, None), (Rate::N48, Some(10_000.0))] {
+            let mut ch = ConvChannel::new(freq, ConvMode::Auto);
+            if let Some(hz) = half_bw {
+                ch.analog.half_bw_hz = hz;
+            }
             let cfg = EngineConfig {
                 sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
-                conventional: vec![ConvChannel::new(freq, ConvMode::Auto)],
+                conventional: vec![ch],
                 ..Default::default()
             };
             let (done, _) = run_engine(cfg, &keyed(&conv_tx(rate), fs, freq - center));

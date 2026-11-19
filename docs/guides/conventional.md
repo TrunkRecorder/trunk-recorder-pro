@@ -56,8 +56,8 @@ panel that appears:
    if you like, a **Name** such as "County Fire".
 2. Type frequencies in MHz into **Add frequencies, MHz** (for example `154.430, 155.100,
    460.125`), pick the mode beside it, and click **Add**. Or click **Add a channel** for one row.
-3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Bandwidth** (analog
-   only; see [Bandwidth](#bandwidth)), **Records** (what it takes, as chips), **Name** (the alpha
+3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Bandwidth** (FM, AM
+   and auto; see [Bandwidth](#bandwidth)), **Records** (what it takes, as chips), **Name** (the alpha
    tag), **TG Number** and **Squelch**. **Edit** opens the rest of the row: its **Code**, DMR's
    **Slot** and a digital row's **Match TG**, and the **Description**, **Tag** and **Category** its
    calls carry (offering the tags and categories the system uses already). A row's tag and category
@@ -144,7 +144,7 @@ TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,S
   as `Code`. A combined string such as `CC1 TS2 TG201` in `Code` is split into `Code`, `Slot` and
   `Match TG`.
 - `Squelch dB` is 3-40 dB above the noise floor; empty uses the system's.
-- `Bandwidth kHz` is an `fm` or `am` row's filter width, 4-20; empty uses the mode's default.
+- `Bandwidth kHz` is an `fm`, `am` or `auto` row's filter width, 4-20; empty uses the mode's default.
 - `Enable` set to `false`, `no`, `0` or `off` turns a row off.
 - `AutoTune` set to `true`, `yes`, `1` or `on` lets a digital row's calls correct its source's
   frequency error; empty is off. See [Frequency correction](#frequency-correction).
@@ -259,11 +259,11 @@ What it can't do:
   transmission. Give a channel known to be analog the mode `fm`.
 - It settles once per transmission: a different protocol arriving on the same carrier within the receiver's
   half-second hang isn't noticed until the channel closes.
-- It has no **Bandwidth** setting: every receiver is opened 12.5 kHz wide (the narrowest of P25's, DMR's and
-  NXDN96's), which on a 6.25 kHz channel lets a neighbour's leakage in, and the analog receiver is the narrowband
-  one. A wide-FM (25 kHz) channel takes the mode `fm`. The Demodulation settings (de-emphasis, squelch open
-  delay and hang) apply to its analog receiver, and the FM receiver's squelch decides the carrier, as for an
-  `fm` channel, once it has settled on analog.
+- Its **Bandwidth** is its analog receiver's, as an `fm` channel's is: 16 kHz for GMRS's 20 kHz main and
+  repeater channels. The digital receivers hear the channel as wide as that; in noise they decode as on a
+  channel of their own mode (NXDN48, the narrowest, at 20 kHz too), but a neighbour closer than that gets in.
+  The Demodulation settings (de-emphasis, squelch open delay and hang) apply to its analog receiver, and the
+  FM receiver's squelch decides the carrier, as for an `fm` channel, once it has settled on analog.
 - Its tapes and **Record the next call** work as for any channel, and replay as auto.
 
 ## Airband (AM)
@@ -302,13 +302,13 @@ long call, cut into parts at **Longest call, s** if you have set one.
 
 ## Bandwidth
 
-An analog channel's **Bandwidth** is the width of the filter its audio and carrier meter come
+An analog channel's **Bandwidth** (an `auto` one's too: its analog receiver's) is the width of the filter its audio and carrier meter come
 through. Leave it at **Default** unless one of these applies:
 
 | Mode | Width | Use for |
 |---|---|---|
 | `fm` | 11 kHz (default) | Narrowband FM: 12.5 kHz channels, ±2.5 kHz deviation. Almost all US public safety and business radio since 2013 |
-| `fm` | 16 kHz | Wide FM: 25 kHz channels, ±5 kHz deviation. Older systems, some federal, and many outside the US. Loud voice distorts through the narrow filter |
+| `fm` | 16 kHz | Wide FM: 25 kHz channels, ±5 kHz deviation. Older systems, some federal, GMRS's main and repeater channels, and many outside the US. Loud voice distorts through the narrow filter |
 | `am` | 6 kHz | 8.33 kHz airband channels (Europe) |
 | `am` | 11 kHz (default below 225 MHz) | 25 kHz airband channels |
 | `am` | 16 kHz (default from 225 MHz) | UHF military air, a transmitter that is well off frequency, or offset-carrier sites |
