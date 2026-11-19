@@ -19,7 +19,7 @@ pub use squelch::SquelchTiming;
 
 /// How an analog channel is demodulated (a conventional system and its
 /// channels choose; trunked analog calls take [`AnalogTuning::default`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AnalogTuning {
     /// One-sided passband of the channel filter / carrier meter, Hz.
     pub half_bw_hz: f64,
@@ -29,6 +29,7 @@ pub struct AnalogTuning {
     pub level_tau_s: f64,
     /// AM: the audio high-pass's corner, Hz (0: none).
     pub low_cut_hz: f64,
+    #[serde(flatten)]
     pub squelch: SquelchTiming,
     /// FM: leave out data bursts (EDACS's 9600 baud signalling at the start
     /// of a transmission, on the voice channel): [`fm::DataBurst`].

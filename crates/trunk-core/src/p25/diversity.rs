@@ -25,13 +25,14 @@ use crate::metrics::{Instrumented, Sink};
 /// One frame slot as seen by every receiver that found it.
 pub type Group = Vec<Frame>;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BankConfig {
     pub cqpsk: bool,
     pub cqpsk_eq: bool,
     pub c4fm: bool,
     pub eq_taps: usize,
     pub eq_mu: f32,
+    #[serde(flatten)]
     pub framer: FramerOptions,
     /// Pass bit reliabilities to the framer (soft Viterbi / soft FEC). Off:
     /// hard decisions only, for comparisons.

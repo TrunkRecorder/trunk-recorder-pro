@@ -12,7 +12,7 @@ can open the recording and ignore these fields.
 | `trp:tier` | string | What the file holds: `wideband`, `control` or `voice` |
 | `trp:purpose` | string | Why it was made: by hand, `bug` (showing a problem) or `healthy` (a system working well); or `rule` |
 | `trp:rule` | object | The rule that made it: `id`, `on`, `if` |
-| `trp:channel` | object | A channel tape's: for `voice`, how its decoder is built (`spec`), `first` and `block` (its push sizes); for `control`, `site`, `carrier`, `block`, `t0_s`, `bandplan`  |
+| `trp:channel` | object | A channel tape's (`VoiceTape` / `ControlTape` as serde writes them, the IQ and marks aside): for `voice`, `freq_hz`, how its decoder is built (`spec`: `voice::VoiceSpec` without keys), `first` and `block` (its push sizes) and `truncated`; for `control`, `site`, `carrier`, `freq_hz`, `rate`, `block`, `t0_s` and `bandplan` |
 | `trp:app` | object | The recorder that made it: `version` |
 | `trp:source` | object | How the radio was set: `type`, `rateHz`, `ppm`, `autoTune`, `guardHz` and its gain settings. No serial number or device address |
 | `trp:start_unix_ms` | double | When the first sample was received, Unix milliseconds (radios of a collection start together by it) |

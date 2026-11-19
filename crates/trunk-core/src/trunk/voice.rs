@@ -125,6 +125,8 @@ impl VoiceKind {
     }
 }
 
+serde_by_name!(VoiceKind, name, from_name, "voice kind");
+
 /// The cipher a transmission is encrypted with, as its encryption sync named
 /// it (P25: the ALGID and key ID).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -261,7 +263,7 @@ pub struct AirInfo {
 }
 
 /// What a system's control channel tells its voice channels.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VoiceParams {
     /// P25 Phase 2 scrambling: (NAC, System ID, WACN).
     pub tdma_key: Option<(u32, u32, u32)>,
@@ -271,12 +273,14 @@ pub struct VoiceParams {
 }
 
 /// How to make a decoder.
-#[derive(Clone, Debug)]
+/// (As a voice tape keeps it, without the keys: [`crate::trunk::tape::VoiceTape`].)
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct VoiceSpec {
     pub kind: VoiceKind,
     /// The channel's sample rate, Hz.
     pub rate: f64,
     /// Air time of the channel's first sample, s.
+    #[serde(rename = "t0_s")]
     pub t0: f64,
     /// Seeds the vocoders' noise (the frequency, as Trunk Recorder does).
     pub seed: u32,
@@ -295,6 +299,7 @@ pub struct VoiceSpec {
     /// which its squelch doesn't listen to.
     pub ignore_hz: Vec<(f64, f64)>,
     /// The system's keys: P25 voice it has the key for is decrypted.
+    #[serde(skip)]
     pub keys: Option<Arc<Keyring>>,
 }
 

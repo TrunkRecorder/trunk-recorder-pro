@@ -145,8 +145,11 @@ impl ConvMode {
         }
     }
 
-    /// The mode [`ConvMode::as_str`] names, in any case.
+    /// The mode [`ConvMode::as_str`] names, in any case; empty is the default (FM).
     pub fn parse(text: &str) -> Option<ConvMode> {
+        if text.trim().is_empty() {
+            return Some(ConvMode::default());
+        }
         Self::ALL.into_iter().find(|m| m.as_str().eq_ignore_ascii_case(text.trim()))
     }
 
@@ -247,22 +250,7 @@ impl ConvMode {
     }
 }
 
-impl serde::Serialize for ConvMode {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ConvMode {
-    /// [`ConvMode::parse`]; empty is the default (FM).
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let text = <String as serde::Deserialize>::deserialize(d)?;
-        if text.trim().is_empty() {
-            return Ok(ConvMode::default());
-        }
-        ConvMode::parse(&text).ok_or_else(|| serde::de::Error::custom(format!("unknown mode `{}`, expected {}", text.trim(), ConvMode::names())))
-    }
-}
+serde_by_name!(ConvMode, as_str, parse, format!("mode: use {}", ConvMode::names()));
 
 #[derive(Clone, Debug)]
 pub struct ConvChannel {
