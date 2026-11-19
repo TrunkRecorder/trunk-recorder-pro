@@ -148,6 +148,8 @@ pub struct Ctx {
     pub unlocked: crate::unlock::Unlocked,
     /// Recordings of what the radios receive ([`crate::iq_capture`]).
     pub iq: crate::iq_capture::Captures,
+    /// A radio's gain being tuned ([`crate::tune`]), and its last report (for browsers that connect).
+    pub tune: crate::tune::Slot,
 }
 
 /// Something for the running session to do: the one way into the engine
@@ -182,6 +184,8 @@ pub enum EngineCmd {
     IqKeepTapes { on: bool },
     /// The control channels' latest tapes, and what a capture keeps of the session.
     IqControl { done: mpsc::Sender<(Vec<trunk_core::trunk::tape::ControlTape>, crate::iq_capture::Live)> },
+    /// The sites running, each with the source its control channel is on (the gain tuner's systems).
+    Sites { done: mpsc::Sender<Vec<trunk_core::trunk::SiteStatus>> },
 }
 
 impl Ctx {
@@ -250,6 +254,10 @@ impl Ctx {
     }
 
     pub fn set_phase(&self, phase: Phase, error: Option<String>, ended: bool) {
+        // A gain being tuned stops with the recording (the radio is closed: nothing to put back).
+        if phase != Phase::Running {
+            self.tune.recording_ended();
+        }
         if phase == Phase::Idle {
             *self.run.lock().unwrap() = None;
         }
@@ -458,6 +466,21 @@ impl Ctx {
             out.push((i, gain));
         }
         out
+    }
+}
+
+impl Ctx {
+    /// Put `src` (the run's source `k`, its gain changed) on the air as a
+    /// trial: the radio takes it now, and nothing is saved or told — the run
+    /// still has what it had ([`Ctx::run`]), which is what it goes back to.
+    pub fn trial_gain(&self, k: usize, src: &Source) -> Result<Gain, String> {
+        let l = self.lifecycle.lock().unwrap();
+        let Some(r) = l.recording.as_ref().filter(|r| !r.finished()) else { return Err("recording stopped".into()) };
+        let run = self.run.lock().unwrap();
+        let now = run.as_ref().and_then(|c| c.sources.get(k)).ok_or("the radio isn't recording")?;
+        let gain = live_gain(now, src).ok_or("this radio takes that gain only at the next start")?;
+        *r.controls.get(k).ok_or("the radio isn't recording")?.gain.lock().unwrap() = Some(gain);
+        Ok(gain)
     }
 }
 
@@ -1135,6 +1158,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     let _ = done.send((session.control_tapes(), iq_live(&session)));
                 }
                 EngineCmd::IqKeepTapes { on } => session.keep_tapes(on),
+                EngineCmd::Sites { done } => {
+                    let _ = done.send(session.sites());
+                }
             }
             next = rx.try_recv().ok();
         }
@@ -1307,6 +1333,9 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
             Output::Message(m) => {
                 if matches!(m, ToClient::Heard { .. }) {
                     *ctx.heard_last.lock().unwrap() = Some(m.clone());
+                }
+                if let ToClient::Stats { t, values } = &m {
+                    ctx.tune.stats(*t, values);
                 }
                 publish(&ctx.hub, m)
             }

@@ -1,16 +1,21 @@
 //! Receiver diversity: several receivers on one channel (CQPSK, CQPSK with the
-//! T/2 CMA equaliser, C4FM), each with its own framer. Frames that start at the
-//! same channel-sample instant (within half a TDU) form a group; a group is
-//! released, oldest first, once every receiver's output has passed it, and the
-//! consumer takes the best of it — per TSBK the CRC-valid copy, per IMBE
-//! codeword the one the soft decoder trusted most. No receiver has to be right
-//! about the whole channel, only one of them about each frame.
+//! T/2 CMA equaliser, C4FM), each with its own framer. Frames (Phase 1) or slot
+//! packets (Phase 2, [`Framing`]) that start at the same channel-sample instant
+//! form a group; a group is released, oldest first, once every receiver's
+//! output has passed it, and the consumer takes the best of it — per TSBK the
+//! CRC-valid copy, per IMBE or AMBE codeword the one that decoded best. No
+//! receiver has to be right about the whole channel, only one of them about
+//! each frame.
+
+use std::borrow::Cow;
 
 use std::collections::VecDeque;
 
 use num_complex::Complex32;
 
 use super::frame::{blocks_dibits, frame_dibits, Frame, Framer, FramerOptions, HDU, LDU1, LDU2, PDU, TDU, TSDU};
+use super::phase2::{self, Packet, BURST_DIBITS, VCW_AT_2V, VCW_AT_4V, VCW_DIBITS};
+use crate::ambe::decode_vcw;
 use super::mbt::{self, Pdu};
 use super::osp::{self, Osp};
 use super::tsbk::{trellis_list, tsbk_last, tsbk_ok, trellis_viterbi, Tsbk};
@@ -22,8 +27,74 @@ use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::{Receiver, Symbol};
 use crate::metrics::{Instrumented, Sink};
 
-/// One frame slot as seen by every receiver that found it.
-pub type Group = Vec<Frame>;
+/// One frame slot as seen by every receiver that found it, in the order of
+/// the bank's receivers (the plain CQPSK receiver's first).
+pub type Group<U = Frame> = Vec<U>;
+
+/// What a bank's receivers frame: Phase 1's frames ([`Framer`]) or Phase 2's
+/// slot packets ([`phase2::Framer`]).
+pub trait Framing {
+    /// A frame as one receiver framed it.
+    type Unit;
+    /// Copies that start within this of each other (s) are one group (the
+    /// receivers' timing differs by a few symbols).
+    const GUARD_S: f64;
+    /// Every receiver must be this far (s) past a group's start before the
+    /// group is released.
+    const HOLD_S: f64;
+    fn make(cfg: &BankConfig) -> Self;
+    fn push(&mut self, s: &Symbol, out: &mut Vec<Self::Unit>);
+    fn expect_nac(&mut self, nac: Option<u16>);
+    /// The channel-sample instant it starts at.
+    fn sample(u: &Self::Unit) -> f64;
+    /// Corrections its header needed, for [`Detect`].
+    fn errors(u: &Self::Unit) -> u8;
+}
+
+impl Framing for Framer {
+    type Unit = Frame;
+    /// Half a TDU.
+    const GUARD_S: f64 = 36.0 / SYMBOL_RATE;
+    /// The longest frame (LDU, 0.18 s) + the C4FM receiver's latency (~0.1 s) + slack.
+    const HOLD_S: f64 = 0.35;
+    fn make(cfg: &BankConfig) -> Self {
+        Framer::new(cfg.framer)
+    }
+    fn push(&mut self, s: &Symbol, out: &mut Vec<Frame>) {
+        Framer::push(self, s, out)
+    }
+    fn expect_nac(&mut self, nac: Option<u16>) {
+        Framer::expect_nac(self, nac)
+    }
+    fn sample(f: &Frame) -> f64 {
+        f.sample
+    }
+    fn errors(f: &Frame) -> u8 {
+        f.nid.errors
+    }
+}
+
+impl Framing for phase2::Framer {
+    type Unit = Packet;
+    /// Half a slot.
+    const GUARD_S: f64 = 0.5 * phase2::SLOT_DIBITS as f64 / phase2::SYMBOL_RATE;
+    /// A receiver that missed a packet doesn't hold the others up longer.
+    const HOLD_S: f64 = 0.25;
+    fn make(_: &BankConfig) -> Self {
+        phase2::Framer::new()
+    }
+    fn push(&mut self, s: &Symbol, out: &mut Vec<Packet>) {
+        phase2::Framer::push(self, s, out)
+    }
+    fn expect_nac(&mut self, _: Option<u16>) {}
+    fn sample(p: &Packet) -> f64 {
+        p.sample
+    }
+    /// (Phase 2 runs CQPSK receivers only, so never detects.)
+    fn errors(_: &Packet) -> u8 {
+        0
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct BankConfig {
@@ -92,9 +163,9 @@ enum Demod {
     Other(Box<dyn Receiver + Send>),
 }
 
-struct Rx {
+struct Rx<F> {
     demod: Demod,
-    framer: Framer,
+    framer: F,
     /// Sample instant of the latest symbol.
     progress: f64,
     frames: u64,
@@ -102,22 +173,22 @@ struct Rx {
     offset: f64,
 }
 
-struct Pending {
+struct Pending<U> {
     sample: f64,
-    frames: Group,
-    /// Each frame's kind of receiver.
-    kinds: Vec<usize>,
+    frames: Group<U>,
+    /// Each frame's receiver.
+    rx: Vec<usize>,
 }
 
-pub struct Bank {
-    rx: Vec<Rx>,
-    pending: VecDeque<Pending>,
+pub struct Bank<F: Framing = Framer> {
+    rx: Vec<Rx<F>>,
+    pending: VecDeque<Pending<F::Unit>>,
     guard: f64,
     hold: f64,
     soft: bool,
     last_released: Option<f64>,
     syms: Vec<Symbol>,
-    new_frames: Vec<Frame>,
+    new_frames: Vec<F::Unit>,
     /// The lead CQPSK receiver's matched filter output for this push.
     filtered: [Vec<f32>; 2],
     pub groups: u64,
@@ -126,11 +197,13 @@ pub struct Bank {
     /// To start the other kind's receivers afresh when detecting again.
     rate: f64,
     cfg: BankConfig,
+    /// The plain CQPSK receiver's options (the equalised one's: these with the equaliser, [`Bank::receivers`]).
+    cqpsk: cqpsk::Options,
     c4fm: C4fmOptions,
     nac: Option<u16>,
 }
 
-impl Bank {
+impl<F: Framing> Bank<F> {
     /// The site's NAC, for the framers' NID recovery ([`Framer::expect_nac`]).
     pub fn expect_nac(&mut self, nac: Option<u16>) {
         self.nac = nac;
@@ -139,15 +212,17 @@ impl Bank {
         }
     }
 
-    /// Its receivers, by kind, as configured.
-    fn receivers(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Vec<Rx> {
+    /// Its receivers, by kind, as configured. The equalised CQPSK receiver
+    /// goes without decision feedback (Phase 2: on 21 MetroC simulcast calls,
+    /// bad AMBE frames 12.3 % without it, 14.0 % with; research/p25-phase2-diversity.md).
+    fn receivers(rate: f64, cfg: BankConfig, cq: cqpsk::Options, c4fm: C4fmOptions) -> Vec<Rx<F>> {
         let mut rx = Vec::new();
-        let mut add = |d: Demod| rx.push(Rx { demod: d, framer: Framer::new(cfg.framer), progress: 0.0, frames: 0, offset: 0.0 });
+        let mut add = |d: Demod| rx.push(Rx { demod: d, framer: F::make(&cfg), progress: 0.0, frames: 0, offset: 0.0 });
         if cfg.cqpsk {
-            add(Demod::Cqpsk(Box::new(Cqpsk::new(rate, cqpsk::Options::default()))));
+            add(Demod::Cqpsk(Box::new(Cqpsk::new(rate, cq))));
         }
         if cfg.cqpsk_eq {
-            add(Demod::Cqpsk(Box::new(Cqpsk::new(rate, cqpsk::Options { eq_taps: cfg.eq_taps, eq_mu: cfg.eq_mu, ..Default::default() }))));
+            add(Demod::Cqpsk(Box::new(Cqpsk::new(rate, cqpsk::Options { eq_taps: cfg.eq_taps, eq_mu: cfg.eq_mu, df_beta: 0.0, ..cq }))));
         }
         if cfg.c4fm {
             add(Demod::Other(Box::new(C4fm::with_options(rate, c4fm))));
@@ -155,7 +230,7 @@ impl Bank {
         rx
     }
 
-    fn kind(r: &Rx) -> usize {
+    fn kind(r: &Rx<F>) -> usize {
         match r.demod {
             Demod::Cqpsk(_) => CQPSK_KIND,
             Demod::Other(_) => C4FM_KIND,
@@ -163,7 +238,7 @@ impl Bank {
     }
 
     /// Whether receiver `r` runs now.
-    fn running(&self, r: &Rx) -> bool {
+    fn running(&self, r: &Rx<F>) -> bool {
         self.detect.as_ref().is_none_or(|d| d.locked.is_none_or(|k| k == Self::kind(r)))
     }
 
@@ -178,7 +253,7 @@ impl Bank {
         let Some(chosen) = d.locked.take() else { return };
         *d = Detect { pos: d.pos, last_slot: d.pos, ..Default::default() };
         let (k, pos) = (1 - chosen, d.pos);
-        let fresh = Self::receivers(self.rate, self.cfg, self.c4fm);
+        let fresh = Self::receivers(self.rate, self.cfg, self.cqpsk, self.c4fm);
         for (r, f) in self.rx.iter_mut().zip(fresh) {
             if Self::kind(r) == k {
                 let frames = r.frames;
@@ -190,26 +265,20 @@ impl Bank {
         }
     }
 
-    pub fn new(rate: f64, cfg: BankConfig) -> Self {
-        Self::with_c4fm(rate, cfg, C4fmOptions::default())
-    }
-
-    /// With the C4FM receiver's variant options (weak-signal comparisons).
-    pub fn with_c4fm(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Self {
-        let rx = Self::receivers(rate, cfg, c4fm);
+    fn build(rate: f64, cfg: BankConfig, cq: cqpsk::Options, c4fm: C4fmOptions) -> Self {
+        let rx = Self::receivers(rate, cfg, cq, c4fm);
         let both = rx.iter().any(|r| Self::kind(r) == CQPSK_KIND) && rx.iter().any(|r| Self::kind(r) == C4FM_KIND);
         Bank {
             detect: (cfg.detect && both).then(Detect::default),
             rate,
             cfg,
+            cqpsk: cq,
             c4fm,
             nac: None,
             rx,
             pending: VecDeque::new(),
-            guard: 36.0 * rate / SYMBOL_RATE,
-            // Every receiver must be this far past a group's start: the longest
-            // frame (LDU, 0.18 s) + the C4FM receiver's latency (~0.1 s) + slack.
-            hold: 0.35 * rate,
+            guard: F::GUARD_S * rate,
+            hold: F::HOLD_S * rate,
             soft: cfg.soft,
             last_released: None,
             syms: Vec::new(),
@@ -220,7 +289,7 @@ impl Bank {
     }
 
     /// Feed channel IQ; groups that are complete are appended to `out`, in time order.
-    pub fn push(&mut self, iq: &[Complex32], out: &mut Vec<Group>) {
+    pub fn push(&mut self, iq: &[Complex32], out: &mut Vec<Group<F::Unit>>) {
         if self.detect.as_ref().is_some_and(|d| d.locked.is_some() && d.pos - d.last_slot > DETECT_LOST_S * self.rate) {
             self.redetect();
         }
@@ -264,13 +333,13 @@ impl Bank {
             }
             r.frames += self.new_frames.len() as u64;
             for f in self.new_frames.drain(..) {
-                let sample = f.sample;
+                let sample = F::sample(&f);
                 if let Some(g) = self.pending.iter_mut().find(|g| (g.sample - sample).abs() < self.guard) {
                     g.frames.push(f);
-                    g.kinds.push(kind);
+                    g.rx.push(i);
                 } else {
                     let at = self.pending.iter().position(|g| g.sample > sample).unwrap_or(self.pending.len());
-                    self.pending.insert(at, Pending { sample, frames: vec![f], kinds: vec![kind] });
+                    self.pending.insert(at, Pending { sample, frames: vec![f], rx: vec![i] });
                 }
             }
         }
@@ -281,7 +350,7 @@ impl Bank {
     }
 
     /// Release everything still held (end of input).
-    pub fn flush(&mut self, out: &mut Vec<Group>) {
+    pub fn flush(&mut self, out: &mut Vec<Group<F::Unit>>) {
         self.release(true, out);
     }
 
@@ -299,11 +368,47 @@ impl Bank {
     }
 }
 
+/// Phase 1: frames.
+impl Bank {
+    pub fn new(rate: f64, cfg: BankConfig) -> Self {
+        Self::with_c4fm(rate, cfg, C4fmOptions::default())
+    }
+
+    /// With the C4FM receiver's variant options (weak-signal comparisons).
+    pub fn with_c4fm(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Self {
+        Self::build(rate, cfg, cqpsk::Options::default(), c4fm)
+    }
+}
+
+/// Phase 2: slot packets, from CQPSK receivers only (the bank's `cqpsk`
+/// receiver, always, and the equalised one as configured). Simulcast's
+/// frequency-selective channel is what limits Phase 2 (research/weak-signal.md):
+/// on 21 MetroC simulcast calls the equalised receiver beside the plain one
+/// took bad AMBE frames from 17.7 % to 12.3 %; a third receiver gained half
+/// a point more for half as much work again (research/p25-phase2-diversity.md).
+impl Bank<phase2::Framer> {
+    pub fn phase2(rate: f64, cfg: BankConfig) -> Self {
+        Self::phase2_with(rate, cfg, Self::phase2_cqpsk())
+    }
+
+    /// The plain receiver's options: decision-feedback differential
+    /// detection, ~1 dB in noise on Phase 2 voice (`tool snr`; not used on
+    /// Phase 1, where simulcast didn't like it).
+    pub fn phase2_cqpsk() -> cqpsk::Options {
+        cqpsk::Options { baud: phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() }
+    }
+
+    /// With the plain receiver's variant options (weak-signal comparisons).
+    pub fn phase2_with(rate: f64, cfg: BankConfig, cq: cqpsk::Options) -> Self {
+        Self::build(rate, BankConfig { cqpsk: true, c4fm: false, ..cfg }, cq, C4fmOptions::default())
+    }
+}
+
 /// The receivers' framing and demodulation, summed over the bank: frame
 /// syncs found, NIDs that failed, frames carried over a missed sync
 /// (flywheel), CQPSK equaliser resets — the C4FM receiver's eye opening and
 /// the lead CQPSK receiver's phase error.
-impl Bank {
+impl<F: Framing> Bank<F> {
     /// The running C4FM receiver's eye opening, and the lead CQPSK receiver's phase error.
     pub fn quality(&self) -> crate::trunk::voice::ChannelQuality {
         crate::trunk::voice::ChannelQuality {
@@ -348,8 +453,8 @@ impl Instrumented for Bank {
     }
 }
 
-impl Bank {
-    fn release(&mut self, all: bool, out: &mut Vec<Group>) {
+impl<F: Framing> Bank<F> {
+    fn release(&mut self, all: bool, out: &mut Vec<Group<F::Unit>>) {
         // (The kind not chosen doesn't hold the other up.)
         let min_progress = self.rx.iter().filter(|r| self.running(r)).map(|r| r.progress).fold(f64::INFINITY, f64::min);
         while let Some(front) = self.pending.front() {
@@ -364,20 +469,24 @@ impl Bank {
             self.last_released = Some(g.sample);
             self.groups += 1;
             self.detect_on(&g);
-            out.push(g.frames);
+            // In the receivers' order, not the order they framed it in.
+            let mut frames: Vec<(usize, F::Unit)> = g.rx.into_iter().zip(g.frames).collect();
+            frames.sort_by_key(|(i, _)| *i);
+            out.push(frames.into_iter().map(|(_, f)| f).collect());
         }
     }
 
     /// One more frame slot for [`Detect`]: each kind's NID corrections; a kind chosen once one is clearly better.
-    fn detect_on(&mut self, g: &Pending) {
+    fn detect_on(&mut self, g: &Pending<F::Unit>) {
         let Some(d) = self.detect.as_mut() else { return };
         d.last_slot = d.last_slot.max(g.sample);
         if d.locked.is_some() {
             return;
         }
         let mut best = [None::<u8>; KINDS];
-        for (f, &k) in g.frames.iter().zip(&g.kinds) {
-            best[k] = Some(best[k].map_or(f.nid.errors, |e| e.min(f.nid.errors)));
+        for (f, &i) in g.frames.iter().zip(&g.rx) {
+            let (k, e) = (Self::kind(&self.rx[i]), F::errors(f));
+            best[k] = Some(best[k].map_or(e, |b| b.min(e)));
         }
         d.slots += 1;
         for k in 0..KINDS {
@@ -548,6 +657,45 @@ fn imbe_score(p: &ImbeParams) -> f32 {
     (p.cost + p.erased as f32 * mean / 2.0) / mean
 }
 
+/// A Phase 2 slot's burst type: the one most copies decoded (the first
+/// copy's among equals); none when no copy decoded one.
+pub fn best_burst_kind(kinds: &[i8]) -> Option<i8> {
+    let valid = || kinds.iter().copied().filter(|k| *k >= 0);
+    valid().max_by_key(|k| (valid().filter(|j| j == k).count(), std::cmp::Reverse(kinds.iter().position(|j| j == k))))
+}
+
+/// A Phase 2 voice burst (a 4V's four AMBE codewords, a 2V's two) from
+/// descrambled copies and their bit reliabilities: the first copy's, with
+/// each codeword taken from the copy that decodes it with the fewest
+/// errors, then the highest mean reliability. (Not [`imbe_score`]: an AMBE
+/// codeword's decoder counts its corrections only.)
+pub fn best_ambe<'a>(copies: &[([u8; BURST_DIBITS], Option<&'a [f32]>)], four: bool) -> ([u8; BURST_DIBITS], Option<Cow<'a, [f32]>>) {
+    let (mut x, rel) = copies[0];
+    let mut rel = rel.map(Cow::Borrowed);
+    if copies.len() < 2 {
+        return (x, rel);
+    }
+    let at: &[usize] = if four { &VCW_AT_4V } else { &VCW_AT_2V };
+    for &a in at {
+        let (d, b) = (a..a + VCW_DIBITS, 2 * a..2 * (a + VCW_DIBITS));
+        let cost = |(cx, cr): &([u8; BURST_DIBITS], Option<&[f32]>)| {
+            let r = cr.map(|r| &r[b.clone()]);
+            let errs = decode_vcw(&cx[d.clone()], r).errs;
+            let conf = r.map_or(0.0, |r| r.iter().sum::<f32>() / r.len() as f32);
+            (errs, -conf)
+        };
+        let best = (0..copies.len()).min_by(|&i, &j| cost(&copies[i]).partial_cmp(&cost(&copies[j])).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0);
+        if best != 0 {
+            let (cx, cr) = &copies[best];
+            x[d.clone()].copy_from_slice(&cx[d.clone()]);
+            if let (Some(r), Some(cr)) = (rel.as_mut(), cr) {
+                r.to_mut()[b.clone()].copy_from_slice(&cr[b.clone()]);
+            }
+        }
+    }
+    (x, rel)
+}
+
 /// The HDU, from whichever receivers' copy decodes.
 pub fn best_hdu(g: &Group) -> Option<HduInfo> {
     g.iter().filter(|f| f.nid.duid == HDU).find_map(|f| decode_hdu(f, true))
@@ -562,6 +710,47 @@ pub fn best_es(g: &Group) -> Option<EncryptionSync> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::p25::phase2::{BURST_2V, BURST_4V};
+
+    #[test]
+    fn a_phase2_burst_type_is_the_copies_majority_is_the_copies_best_burst_kind() {
+        assert_eq!(best_burst_kind(&[BURST_4V, BURST_4V]), Some(BURST_4V));
+        assert_eq!(best_burst_kind(&[-1, BURST_2V]), Some(BURST_2V), "a copy that decoded none doesn't count");
+        assert_eq!(best_burst_kind(&[BURST_2V, BURST_4V, BURST_4V]), Some(BURST_4V));
+        assert_eq!(best_burst_kind(&[BURST_2V, BURST_4V]), Some(BURST_2V), "the first copy's among equals");
+        assert_eq!(best_burst_kind(&[-1, -1]), None);
+    }
+
+    #[test]
+    fn each_codeword_comes_from_the_copy_that_decodes_it_best() {
+        // A 4V burst of four known codewords, and two copies of it each damaged in a different one.
+        let words: Vec<[u8; 49]> = (0..4u8).map(|k| std::array::from_fn(|i| ((i as u8 * 7 + k * 3) % 5 == 0) as u8)).collect();
+        let mut clean = [0u8; BURST_DIBITS];
+        for (w, &a) in words.iter().zip(&VCW_AT_4V) {
+            clean[a..a + VCW_DIBITS].copy_from_slice(&crate::ambe::encode_vcw(w));
+        }
+        let damage = |x: &mut [u8; BURST_DIBITS], a: usize| {
+            // Three dibits of c0 (Golay 24): correctable, but counted as errors.
+            for d in [a, a + 1, a + 2] {
+                x[d] ^= 1;
+            }
+        };
+        let (mut a, mut b) = (clean, clean);
+        damage(&mut a, VCW_AT_4V[1]);
+        damage(&mut b, VCW_AT_4V[2]);
+        let (x, _) = best_ambe(&[(a, None), (b, None)], true);
+        for (w, &at) in words.iter().zip(&VCW_AT_4V) {
+            let v = decode_vcw(&x[at..at + VCW_DIBITS], None);
+            assert_eq!((v.bits, v.errs), (*w, 0), "codeword at {at}: from the copy without errors there");
+        }
+        // One copy: as it is.
+        assert_eq!(best_ambe(&[(a, None)], true).0, a);
+        // A 2V's two codewords only: what is past them stays the first copy's.
+        let mut c = a;
+        c[VCW_AT_4V[2]] ^= 3;
+        assert_eq!(best_ambe(&[(c, None), (clean, None)], false).0[VCW_AT_4V[2]], c[VCW_AT_4V[2]]);
+    }
+
 
     #[test]
     fn airtime_is_the_frames_length_shared_over_its_blocks() {

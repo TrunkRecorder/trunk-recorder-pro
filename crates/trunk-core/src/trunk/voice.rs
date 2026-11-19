@@ -28,7 +28,6 @@ use crate::alias::Alias;
 use crate::position::Position;
 use crate::dmr::voice::{DmrVoice, VOICE_BURST_S};
 use crate::dsp::c4fm::C4fm;
-use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::am::Am;
 use crate::dsp::fm::Nbfm;
 use crate::dsp::{AnalogTuning, Receiver, Symbol};
@@ -228,8 +227,9 @@ pub trait VoiceDecoder: Send {
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>);
     /// End of input: decode what the receivers still hold.
     fn flush(&mut self, _out: &mut Vec<VoiceOut>) {}
-    /// The talkgroup (or radio) each slot's call was granted for; None:
-    /// no call there, and nothing to vocode (decoders that can, don't).
+    /// The talkgroup (or radio) each slot's call was granted for; None: no
+    /// call there. (Every slot is vocoded all the same: the engine keeps a
+    /// slot's voice for a call put on it later.)
     fn listen(&mut self, _slots: [Option<u32>; 2]) {}
     /// The system's keys changed: P25 voice is decrypted with these from now on, calls in progress
     /// too (a call is decrypted from its next encryption sync; with none, it stops at once).
@@ -282,10 +282,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
         VoiceKind::Tdma => {
             let mut tracker = TdmaTracker::new(spec.seed, spec.keys.clone());
             tracker.soft = spec.bank.soft;
-            // Decision-feedback differential detection: ~1 dB in noise on Phase 2
-            // voice (tool snr); not used on Phase 1, where simulcast didn't like it.
-            let rx = Cqpsk::new(spec.rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() });
-            Box::new(P25Tdma { rx, framer: phase2::Framer::new(), tracker, syms: Vec::new(), pkts: Vec::new(), tout: Vec::new(), t0: spec.t0, rate: spec.rate })
+            Box::new(P25Tdma { bank: Bank::phase2(spec.rate, spec.bank), tracker, groups: Vec::new(), tout: Vec::new(), t0: spec.t0, rate: spec.rate })
         }
         VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
         VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
@@ -377,16 +374,26 @@ impl VoiceDecoder for P25Fdma {
     }
 }
 
-/// P25 Phase 2: H-DQPSK, the slot framer, both slots' AMBE+2.
+/// P25 Phase 2: H-DQPSK receivers (a [`Bank`]), the slot framer, both slots' AMBE+2.
 struct P25Tdma {
-    rx: Cqpsk,
-    framer: phase2::Framer,
+    bank: Bank<phase2::Framer>,
     tracker: TdmaTracker,
-    syms: Vec<Symbol>,
-    pkts: Vec<Packet>,
+    groups: Vec<Group<Packet>>,
     tout: Vec<(usize, TrackerOut)>,
     t0: f64,
     rate: f64,
+}
+
+impl P25Tdma {
+    /// Run the tracker over `self.groups`.
+    fn track(&mut self, out: &mut Vec<VoiceOut>) {
+        for g in self.groups.drain(..) {
+            // (Its earliest copy's start: the receivers' timing differs by a few symbols.)
+            let t = self.t0 + g.iter().map(|p| p.sample).fold(f64::INFINITY, f64::min) / self.rate;
+            self.tracker.group(&g, t, &mut self.tout);
+            out.extend(self.tout.drain(..).map(|(slot, o)| VoiceOut { slot: slot as u8, out: o }));
+        }
+    }
 }
 
 impl VoiceDecoder for P25Tdma {
@@ -400,23 +407,23 @@ impl VoiceDecoder for P25Tdma {
         self.tracker.set_keys(keys);
     }
     fn quality(&self) -> ChannelQuality {
-        ChannelQuality { sep: None, phase_err_deg: self.rx.phase_error_deg() }
+        self.bank.quality()
+    }
+    fn air(&self, slot: u8) -> AirInfo {
+        AirInfo { talkgroup: self.tracker.talkgroup(slot as usize), ..Default::default() }
     }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
-        self.syms.clear();
-        self.pkts.clear();
-        self.rx.push(iq, &mut self.syms);
-        for s in &self.syms {
-            self.framer.push(s, &mut self.pkts);
-        }
-        for p in &self.pkts {
-            let t = self.t0 + p.sample / self.rate;
-            self.tracker.packet(p, t, &mut self.tout);
-            out.extend(self.tout.drain(..).map(|(slot, o)| VoiceOut { slot: slot as u8, out: o }));
-        }
+        self.bank.push(iq, &mut self.groups);
+        self.track(out);
+    }
+    fn flush(&mut self, out: &mut Vec<VoiceOut>) {
+        self.bank.flush(&mut self.groups);
+        self.track(out);
+        self.tracker.flush(&mut self.tout);
+        out.extend(self.tout.drain(..).map(|(slot, o)| VoiceOut { slot: slot as u8, out: o }));
     }
     fn offset_hz(&self) -> Option<f32> {
-        self.rx.offset_hz()
+        self.bank.offset_hz()
     }
     fn set_params(&mut self, p: &VoiceParams) {
         if let Some((nac, sys, wacn)) = p.tdma_key {
@@ -456,9 +463,6 @@ impl VoiceDecoder for Dmr {
             }
             out.push(VoiceOut { slot: v.slot, out: v.out });
         }
-    }
-    fn listen(&mut self, slots: [Option<u32>; 2]) {
-        self.voice.vocode = slots.map(|s| s.is_some());
     }
     fn air(&self, slot: u8) -> AirInfo {
         AirInfo { talkgroup: self.voice.talkgroup(slot), nac: None, color_code: self.voice.color_code(slot), ran: None, air: self.air[slot as usize & 1] }

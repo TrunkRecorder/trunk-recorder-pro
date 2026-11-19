@@ -2531,6 +2531,7 @@ dependencies = [
  "trunk-app",
  "trunk-core",
  "trunk-recorder-plugin",
+ "tungstenite",
  "ureq",
  "winresource",
  "zeroize",

@@ -446,6 +446,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         db,
         quit: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
+        tune: Default::default(),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: std::net::Ipv4Addr::LOCALHOST.into(),
         interfaces: crate::interfaces::Interfaces::new(None, 8080),
