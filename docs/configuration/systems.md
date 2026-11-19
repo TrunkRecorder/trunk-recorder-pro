@@ -180,7 +180,8 @@ Find my system fills in the four `400_custom` numbers for SmartNet OBT systems.
 | `colorCode` | | `null` | integer or null | Only this colour code, 0–15. `null`: the control channel's |
 
 DMR sites announce no system identity, so `expect` is ignored; use `colorCode`, and list the sites
-of one system under it.
+of one system under it. A [Hytera XPT](../guides/xpt.md) site's repeaters may each have their own
+colour code: leave `colorCode` empty and every listed frequency is taken as the site's.
 
 ## NXDN
 

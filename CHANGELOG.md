@@ -5,6 +5,31 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Tuning a radio's gain by what it decodes, while recording** (`trunk-pro tune`, the interface's `tuneGain`). The
+  recorder tries gains on one radio, following a plan for its kind: an Airspy or HydraSDR along its linearity (or
+  sensitivity) table, or in manual its LNA, then mixer, then VGA kept low; an RTL-SDR along its tuner's gain table; a
+  HackRF's LNA, then VGA, its amp last and only with the LNA low; a bladeRF's, USRP's or SoapySDR radio's overall gain.
+  Each setting is scored by the control channels of the systems on that radio first, then their voice frames lost, the
+  weakest system counted twice; a setting that clips is refused. Since a control channel's decoding drifts from minute
+  to minute by more than a step of gain moves it, each candidate is compared with the best so far by turns over a few
+  rounds, and kept only when it is better by more than twice the rounds' spread. A setting that loses a control channel
+  is given up at once, and with `--systems` one that costs another system on the radio more than `--protect` points is
+  refused. The candidates go on the radio as trials, never saved: the radio goes back at the end, or `--apply` saves the
+  best. Site status says which source each control channel is on (`source`).
+- **P25 Phase 2 voice: receiver diversity**, as Phase 1 has. Phase 2 voice channels run a second receiver (CQPSK with the
+  CMA equaliser, without decision feedback) beside the first, and each AMBE codeword is taken from whichever copy decodes it
+  better. On Phase 2 simulcast systems of both Harris and Motorola infrastructure, about a fifth to a quarter fewer voice
+  frames are lost (Harris: 15.5 % → 11.6 %; Motorola: 4.5 % → 3.6 % and 8.7 % → 6.7 %), and no call decodes worse, for
+  about 0.2 % of a core more per open Phase 2 channel. It follows the bank's equaliser setting. See
+  [research/p25-phase2-diversity.md](research/p25-phase2-diversity.md).
+- **A call on the other slot of a TDMA voice channel already open keeps its start.** A new voice channel replays a second
+  of air (pre-roll), but a call put on the free slot of one already open (P25 Phase 2, DMR) lost what aired before the
+  control channel's grant reached the recorder: its first voice and talker. Every slot is now vocoded, and a slot's
+  outputs while no call is on it are kept, a pre-roll's worth; a call put on it takes the latest not named for another
+  talkgroup. In a Phase 2 capture, such a call went from 1.3 s to 1.9 s. Vocoding a slot nobody records costs about
+  0.2 % of a core while it carries voice.
+- **P25 Phase 2 voice heard before the scrambling is known waits for it** (up to 2 s), instead of being dropped: the
+  first calls after the recorder starts, before the control channel names the WACN and System ID, keep their start.
 - **A conventional channel can be `auto`: whatever is on it.** For a frequency that may carry analog or
   digital, FRS and GMRS's say, the mode `auto` (`any` in a channel file; **Auto** in Setup) runs analog FM
   and the P25, DMR and NXDN receivers on it together and settles on the one that hears its protocol: a

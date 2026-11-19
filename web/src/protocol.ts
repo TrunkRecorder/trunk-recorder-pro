@@ -738,6 +738,8 @@ export interface SiteStatus {
   name: string;
   nowS: number;
   controlChannelHz: number | null;
+  /** The source (its index) its control channel is received on; null while none is open. */
+  source: number | null;
   identity: SiteIdentity;
   good: number;
   bad: number;
@@ -780,7 +782,7 @@ export interface SiteDetail {
 }
 
 export interface DmrSiteStatus {
-  /** "DMR Capacity Plus" | "DMR Capacity Max" | "DMR Connect Plus" | "DMR Tier III" | null (not known yet). */
+  /** "DMR Capacity Plus" | "DMR Capacity Max" | "DMR Connect Plus" | "DMR Tier III" | "Hytera XPT" | null (not known yet). */
   variant: string | null;
   colorCode: number | null;
   /** Capacity Plus: the rest channel's logical slot number, and its frequency once known. */
@@ -1912,8 +1914,83 @@ export interface RadioResultBody {
  * - `host`: the computer's and plugins' figures (`host`)
  * - `keys`: key containers opened with a password
  * - `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open
+ * - `tuneGain`: tuning a radio's gain while recording (`tuneGain`, `tune`)
  */
-export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys" | "calls" | "history";
+export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys" | "calls" | "history" | "tuneGain";
+
+/** A gain as set: each knob (`lna`, `mixer`, `vga`, `amp`, `pga`; `step`: an Airspy table's; `gain`: the overall dB) and its value. */
+export type GainSetting = [string, number][];
+
+/** How a candidate gain compared with the one it would replace, over the rounds: `diff` (candidate less incumbent, 0–100 points) and its standard error `se`. */
+export interface GainCmp {
+  diff: number;
+  se: number;
+  incumbent: number;
+  candidate: number;
+}
+
+/** One system's figures in a comparison: [incumbent, candidate]. */
+export interface TuneSystemFigures {
+  system: string;
+  /** Scored, not only watched. */
+  scored: boolean;
+  controlPct: [number, number];
+  voiceLostPct?: [number, number];
+  phaseErr?: [number, number];
+  snrDb?: [number, number];
+}
+
+export interface TuneTry {
+  candidate: GainSetting;
+  against: GainSetting;
+  /** None: refused (`why`). */
+  cmp?: GainCmp;
+  kept: boolean;
+  why?: string;
+  systems: TuneSystemFigures[];
+  clipPct: number;
+  /** The best against where it started. */
+  finalCheck?: boolean;
+}
+
+/** A radio's gain being tuned (`tuneGain`), each time it moves. `planned`: what it would do (`check`), nothing changed. */
+export interface TuneReport {
+  phase: "planned" | "running" | "done" | "stopped" | "failed";
+  source: number;
+  radio: string;
+  /** The plan for the radio's kind, a line a step: which stage moves first, which way, in what steps. */
+  plan: string[];
+  scored: string[];
+  watched: string[];
+  start: GainSetting;
+  tried: TuneTry[];
+  now?: GainSetting;
+  estimateS: number;
+  elapsedS: number;
+  best?: GainSetting;
+  applied: boolean;
+  error?: string;
+}
+
+/** `tuneGain`: tune source `source`'s gain by what its systems decode, while recording. Each candidate goes on the air as a trial, not saved; at the end the radio goes back, or `apply` saves the best. */
+export interface TuneRequest {
+  source: number;
+  /** Score only these systems (short names); the radio's others are watched and guarded by `protect` (points). */
+  systems?: string[];
+  protect?: number | null;
+  sliceS?: number;
+  settleS?: number;
+  rounds?: number;
+  maxSteps?: number;
+  margin?: number;
+  /** An Airspy's or HydraSDR's: search this gain mode instead. */
+  mode?: "linearity" | "sensitivity" | "manual" | null;
+  /** Compare this one setting with the radio's, and nothing else. */
+  try?: GainSetting | null;
+  apply?: boolean;
+  /** Only say what it would do: answered with a `tune` of phase `planned`. */
+  check?: boolean;
+}
 
 /**
  * A system's talkgroup: one row of its talkgroup file (Trunk Recorder's
@@ -2130,6 +2207,8 @@ export type FromRecorder =
   | { type: "heard"; heard: Record<string, HeardCode[]> }
   | ({ type: "survey" } & SurveyState)
   | ({ type: "surveySpectrum" } & Spectrum)
+  /** A radio's gain being tuned, to control connections; on connecting, the last. */
+  | ({ type: "tune" } & TuneReport)
   /** Answers licenseQuery: the licenses found on each frequency, or why there are none. */
   | { type: "licenseResult"; id: number; results: LicenseResultRow[]; error: string | null }
   /** Answers callSignQuery: each active call sign's holder (unknown or lapsed ones left out), or why there are none. */
@@ -2219,6 +2298,9 @@ export type ToRecorder =
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
   | { type: "surveyStop" }
+  | ({ type: "tuneGain" } & TuneRequest)
+  /** Stop tuning: the radio goes back as it was. */
+  | { type: "tuneStop" }
   /** Who is licensed on these frequencies within `radiusM` of (lat, lon): sent to trunkrecorder.pro; answered with licenseResult. */
   /** Who holds these call signs (heard on the air): sent to trunkrecorder.pro, no location; answered with callSignResult. */
   | { type: "callSignQuery"; id: number; callSigns: string[] }

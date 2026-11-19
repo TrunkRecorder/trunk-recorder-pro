@@ -135,7 +135,7 @@ impl<C: ControlBackend + 'static> Session<C> {
                         .set(DeviceInfo {
                             descriptor: shared.descriptor.clone(),
                             tuner,
-                            rtl_sdr_blog_v4: shared.descriptor.blog_v4(),
+                            board: shared.descriptor.board(),
                         })
                         .expect("metadata initialized once");
                     Either::left(ready(Ok((shared, applied))))

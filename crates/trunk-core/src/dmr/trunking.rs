@@ -46,12 +46,13 @@ const REST_RUN_S: f64 = 3.0;
 /// A carrier counts as the control (or rest) channel this long after its last control block.
 const CONTROL_HOLD_S: f64 = 2.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Variant {
     CapacityPlus,
     ConnectPlus,
     CapacityMax,
     TierIII,
+    Xpt,
 }
 
 impl Variant {
@@ -61,6 +62,7 @@ impl Variant {
             Variant::ConnectPlus => "DMR Connect Plus",
             Variant::CapacityMax => "DMR Capacity Max",
             Variant::TierIII => "DMR Tier III",
+            Variant::Xpt => "Hytera XPT",
         }
     }
 }
@@ -164,6 +166,9 @@ pub struct Site {
     now_s: f64,
     /// Site statuses reported lately, and when (each repeats several times a second).
     recent_status: Vec<(String, f64)>,
+    /// The carrier taken as the control channel: kept while it sends control
+    /// blocks, though others do too (Capacity Plus, XPT repeaters with a free slot).
+    control: Option<usize>,
 }
 
 fn mhz(hz: u64) -> String {
@@ -173,10 +178,8 @@ fn mhz(hz: u64) -> String {
 impl Site {
     pub fn new(freqs: &[f64], rate: f64, cfg: DmrConfig) -> Self {
         let n_control = freqs.len();
-        let mut hzs: Vec<u64> = freqs.iter().chain(cfg.channels.iter()).map(|f| f.round() as u64).collect();
-        hzs.dedup();
         let mut seen = std::collections::HashSet::new();
-        hzs.retain(|h| seen.insert(*h));
+        let hzs: Vec<u64> = freqs.iter().chain(cfg.channels.iter()).map(|f| f.round() as u64).filter(|h| seen.insert(*h)).collect();
         let carriers = hzs
             .into_iter()
             .map(|hz| Carrier {
@@ -208,6 +211,7 @@ impl Site {
             notes: Vec::new(),
             now_s: 0.0,
             recent_status: Vec::new(),
+            control: None,
         }
     }
 
@@ -245,9 +249,19 @@ impl Site {
         self.table.resolve(lcn)
     }
 
-    /// The carrier sending control blocks now (control or rest channel).
+    /// The carrier sending control blocks now: the rest channel's, else the one taken lately.
     fn control_carrier(&self) -> Option<&Carrier> {
-        self.carriers.iter().filter(|c| self.now_s - c.control_s < CONTROL_HOLD_S).max_by(|a, b| a.control_s.total_cmp(&b.control_s))
+        let sending = |c: &&Carrier| self.now_s - c.control_s < CONTROL_HOLD_S;
+        let rest = self.rest.map(|(_, hz)| hz).filter(|&hz| hz > 0);
+        self.carriers.iter().filter(sending).find(|c| Some(c.hz) == rest).or_else(|| self.control.map(|i| &self.carriers[i]).filter(sending))
+    }
+
+    /// Carrier `idx` sent a control block: the control channel, unless another still is.
+    fn heard_control(&mut self, idx: usize, t: f64) {
+        if !self.control.is_some_and(|i| i != idx && t - self.carriers[i].control_s < CONTROL_HOLD_S) {
+            self.control = Some(idx);
+        }
+        self.carriers[idx].control_s = t;
     }
 
     pub fn control_hz(&self) -> Option<u64> {
@@ -320,12 +334,27 @@ impl Site {
                 self.notes.push(format!("Colour code {c}"));
             }
         }
+        let xpt = super::xpt::control(&e);
+        let is_xpt = xpt.is_some() || self.variant == Some(Variant::Xpt);
         // Another system's carrier (a neighbour on a listed frequency, or a stray): not followed.
-        if !site_code(self.color_code, cc, idx < self.n_control, self.n_control > 0) {
+        // XPT repeaters may each have their own colour code: every listed one is the site's
+        // (unless the config names one code).
+        let want = if is_xpt { self.cfg.color_code } else { self.color_code };
+        if !site_code(want, cc, idx < self.n_control, self.n_control > 0 && !is_xpt) {
+            return;
+        }
+        if let Some(c) = xpt {
+            if matches!(e, SlotEvent::Csbk { .. }) {
+                self.heard_control(idx, t);
+            }
+            self.xpt(idx, slot, c, t, out);
             return;
         }
         match e {
             SlotEvent::Lc { lc, from } => {
+                if is_xpt && lc.target() == 0 {
+                    return;
+                }
                 let Some(group) = lc.voice_user() else { return };
                 if from == LcFrom::Terminator {
                     // The end of a transmission still says where the talkgroup was.
@@ -355,7 +384,7 @@ impl Site {
                 out.push(m);
             }
             SlotEvent::Csbk { csbk, mbc } => {
-                self.carriers[idx].control_s = t;
+                self.heard_control(idx, t);
                 if mbc {
                     self.carriers[idx].mbc[slot as usize] = Some(csbk);
                     return;
@@ -371,11 +400,92 @@ impl Site {
         }
     }
 
+    /// Hytera XPT signalling. The free repeater is the site's rest channel
+    /// (where the next call starts); status banks name the busy slots; a call
+    /// setup is a grant (a repeater not in the table is learned when its
+    /// talkgroup comes up on a listed carrier). The call itself is recorded
+    /// from its voice LC.
+    fn xpt(&mut self, idx: usize, slot: u8, c: super::xpt::Control, t: f64, out: &mut Vec<Message>) {
+        use super::xpt::Control;
+        self.set_variant(Variant::Xpt);
+        match c {
+            Control::Status { sequence, free, slots } => {
+                self.free_repeater(free);
+                // A busy slot's target is 8 bits: a group's low byte or a private
+                // call's hash. Shown, but nothing is learned from it.
+                let busy: Vec<(u32, Option<u32>)> = (sequence as u32 * 6 + 1..)
+                    .zip(slots)
+                    .filter(|&(n, o)| n <= 16 && o.status != 0)
+                    .map(|(n, o)| (n, (o.target_hint != 0).then_some(o.target_hint as u32)))
+                    .collect();
+                self.report_site("XPT", &busy, idx, slot, t, out);
+            }
+            Control::Short { free, .. } => {
+                self.free_repeater(free);
+                self.report_site("XPT", &[], idx, slot, t, out);
+            }
+            Control::Setup { repeater, slot: s, group, target, source, free, .. } => {
+                self.free_repeater(free);
+                if let Some(lcn) = super::xpt::repeater(repeater).filter(|&l| target != 0 && self.resolve(l).is_none()) {
+                    self.pending.retain(|q| !(q.lcn == lcn && q.slot == s));
+                    self.pending.push(Pending { lcn, slot: s, talkgroup: target as u32, low8: false, t });
+                }
+                let what = if group { "TG" } else { "radio" };
+                self.status_once(idx, slot, format!("XPT call setup: {what} {target} from {source} on repeater {repeater} slot {}", s + 1), t, out);
+            }
+            Control::Adjacent { sites, .. } => {
+                let s: Vec<String> = sites
+                    .iter()
+                    .filter(|n| n.site != 0)
+                    .map(|n| format!("site {}{}", n.site, super::xpt::repeater(n.free).map_or(String::new(), |r| format!(" (free repeater {r})"))))
+                    .collect();
+                if !s.is_empty() {
+                    self.status_once(idx, slot, format!("XPT neighbours: {}", s.join(", ")), t, out);
+                }
+            }
+            Control::Preamble { data, group, target, source, .. } => {
+                // Data to come (not a voice grant), as heard on a data carrier. One line
+                // per transfer: each preamble counts down the blocks still to come.
+                let what = if group { "TG" } else { "radio" };
+                let kind = if data { "data" } else { "control" };
+                self.status_once(idx, slot, format!("XPT {kind} preamble: {what} {target} from {source}"), t, out);
+            }
+        }
+    }
+
+    /// XPT: repeater `n` is the free one, the rest channel (or none is).
+    fn free_repeater(&mut self, n: u8) {
+        self.rest = super::xpt::repeater(n).map(|lcn| (2 * lcn - 1, self.resolve(lcn).unwrap_or(0)));
+    }
+
+    /// A site status (Capacity Plus, XPT): the rest channel and the busy
+    /// logical slots, with their talkgroups' low bytes where known.
+    fn report_site(&mut self, what: &str, busy: &[(u32, Option<u32>)], idx: usize, slot: u8, t: f64, out: &mut Vec<Message>) {
+        let rest_s = self.rest.map_or(String::new(), |(n, hz)| if hz > 0 { format!("rest channel LSN {n} ({})", mhz(hz)) } else { format!("rest channel LSN {n}") });
+        let busy_s: Vec<String> = busy.iter().map(|(n, tg)| format!("LSN {n}{}", tg.map_or(String::new(), |g| format!(" TG …{g}")))).collect();
+        let meta = format!("{what} site status: {rest_s}{}{}", if busy.is_empty() { "" } else { "; busy: " }, busy_s.join(", "));
+        self.status_once(idx, slot, meta, t, out);
+    }
+
+    /// A status line, when it changes (or every so often): site statuses come several times a second.
+    fn status_once(&mut self, idx: usize, slot: u8, meta: String, t: f64, out: &mut Vec<Message>) {
+        self.recent_status.retain(|(_, at)| t - at < STATUS_REPEAT_S);
+        if self.recent_status.iter().any(|(m, _)| *m == meta) {
+            return;
+        }
+        self.recent_status.push((meta.clone(), t));
+        self.status_msg(idx, slot, meta, t, out);
+    }
+
     fn set_variant(&mut self, v: Variant) {
         // Capacity Max also sends the standard (Tier III) blocks: it wins.
         if self.variant != Some(v) && !(self.variant == Some(Variant::CapacityMax) && v == Variant::TierIII) {
             self.variant = Some(v);
             self.notes.push(format!("This is a {} system", v.name()));
+            // Every carrier is the site's: their decoders read its link control as the site's kind.
+            for c in &mut self.carriers {
+                c.chan.variant = Some(v);
+            }
         }
     }
 
@@ -558,16 +668,7 @@ impl Site {
                 }
             }
         }
-        let rest_s = self.rest.map_or(String::new(), |(n, hz)| if hz > 0 { format!("rest channel LSN {n} ({})", mhz(hz)) } else { format!("rest channel LSN {n}") });
-        let busy_s: Vec<String> = busy.iter().map(|(n, tg)| format!("LSN {n}{}", tg.map_or(String::new(), |g| format!(" TG …{g}")))).collect();
-        let meta = format!("Capacity Plus site status: {rest_s}{}{}", if busy.is_empty() { "" } else { "; busy: " }, busy_s.join(", "));
-        // Only when it changes (or every so often): it comes several times a second.
-        self.recent_status.retain(|(_, at)| t - at < STATUS_REPEAT_S);
-        if self.recent_status.iter().any(|(m, _)| *m == meta) {
-            return;
-        }
-        self.recent_status.push((meta.clone(), t));
-        self.status_msg(idx, slot, meta, t, out);
+        self.report_site("Capacity Plus", &busy, idx, slot, t, out);
     }
 }
 
@@ -719,4 +820,111 @@ mod tests {
         assert_eq!(kinds, [MessageType::Grant, MessageType::Update, MessageType::Update]);
         assert_eq!((out[0].talkgroup, out[0].source, out[0].freq_hz), (25, 470, 463_550_000));
     }
+    #[test]
+    fn xpt_free_repeater_is_the_rest_channel_and_calls_come_from_voice_lc() {
+        use crate::dmr::slot::Lc;
+        let mut s = Site::new(&[451_000_000.0], 24_000.0, DmrConfig {
+            channels: vec![452_000_000.0],
+            lcn_table: BTreeMap::from([(1, 451_000_000)]),
+            ..Default::default()
+        });
+        // Repeaters of one XPT site with their own colour codes.
+        s.carriers[0].chan.slots[0].color_code = Some(1);
+        s.carriers[1].chan.slots[1].color_code = Some(2);
+        let mut out = Vec::new();
+        // Status bank 0: free repeater 2, LSN 1 busy (TG …25).
+        s.event(0, 0, SlotEvent::Csbk { csbk: Csbk([0x0a, 0x68, 0x28, 0, 25, 0, 0, 0, 0, 0]), mbc: false }, 0.0, &mut out);
+        assert_eq!(s.variant, Some(Variant::Xpt));
+        assert_eq!(s.rest, Some((3, 0)), "repeater 2 is LSN 3, its frequency not known yet");
+        assert_eq!(s.control_hz(), Some(451_000_000));
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].kind, out[0].meta.as_str()), (MessageType::Status, "XPT site status: rest channel LSN 3; busy: LSN 1 TG …25"));
+        s.event(0, 0, SlotEvent::Csbk { csbk: Csbk([0x0a, 0x68, 0x28, 0, 25, 0, 0, 0, 0, 0]), mbc: false }, 0.5, &mut out);
+        assert_eq!(out.len(), 1, "an unchanged status is reported once");
+        // A setup for repeater 2 slot 2 (in a terminator burst: not the end of a call).
+        let setup = Lc([0xc9, 0x68, 0x27, 0x10, 0, 25, 0, 0x12, 0x34]);
+        out.clear();
+        s.event(0, 0, SlotEvent::Lc { lc: setup, from: LcFrom::Terminator }, 0.1, &mut out);
+        assert!(out.iter().all(|m| m.kind == MessageType::Status), "a setup is not a call");
+        // Its voice LC on 452 MHz slot 2 (16-bit IDs, as the channel hands it on): the call, and repeater 2 is learned.
+        out.clear();
+        assert_eq!(s.carriers[1].chan.variant, Some(Variant::Xpt), "every carrier reads the site's link control as XPT's");
+        let lc = Lc([0, 0x68, 0, 0, 0, 25, 0, 0x12, 0x34]);
+        s.event(1, 1, SlotEvent::Lc { lc, from: LcFrom::Embedded }, 0.2, &mut out);
+        assert_eq!((out[0].kind, out[0].talkgroup, out[0].source, out[0].freq_hz, out[0].voice.slot()), (MessageType::Grant, 25, 0x1234, 452_000_000, Some(1)));
+        assert_eq!(s.resolve(2), Some(452_000_000));
+        assert_eq!(s.status().carriers[1].slots[1], Some((25, 0x1234)));
+        s.event(1, 1, SlotEvent::Lc { lc, from: LcFrom::Terminator }, 0.4, &mut out);
+        assert_eq!(s.status().carriers[1].slots[1], None);
+    }
+
+    #[test]
+    fn the_control_channel_stays_put_while_it_sends() {
+        let mut s = Site::new(&[451_000_000.0, 452_000_000.0, 453_000_000.0], 24_000.0, DmrConfig::default());
+        let mut out = Vec::new();
+        // Two carriers sending control blocks by turns (XPT repeaters with a free slot, say).
+        let block = SlotEvent::Csbk { csbk: Csbk([0x3f, 0, 0, 0, 0, 0, 0, 0, 0, 0]), mbc: false };
+        for i in 0..10 {
+            let t = i as f64 * 0.1;
+            s.now_s = t;
+            s.event(i % 2 + 1, 0, block.clone(), t, &mut out);
+            assert_eq!(s.control_hz(), Some(452_000_000), "{t}");
+        }
+        // The first stops: the other takes over.
+        s.now_s = 3.5;
+        s.event(2, 0, block.clone(), 3.5, &mut out);
+        assert_eq!(s.control_hz(), Some(453_000_000));
+        // The rest channel, once its frequency is known, is the control channel.
+        s.event(0, 0, block.clone(), 3.6, &mut out);
+        s.now_s = 3.6;
+        assert_eq!(s.control_hz(), Some(453_000_000));
+        s.rest = Some((1, 451_000_000));
+        assert_eq!(s.control_hz(), Some(451_000_000));
+    }
+
+    #[test]
+    fn xpt_configured_colour_code_still_filters() {
+        use crate::dmr::slot::Lc;
+        let mut s = Site::new(&[451_000_000.0, 452_000_000.0], 24_000.0, DmrConfig { color_code: Some(1), ..Default::default() });
+        let mut out = Vec::new();
+        s.carriers[0].chan.slots[0].color_code = Some(1);
+        s.carriers[1].chan.slots[0].color_code = Some(2);
+        s.event(0, 0, SlotEvent::Csbk { csbk: Csbk([0x0a, 0x68, 0, 0, 0, 0, 0, 0, 0, 0]), mbc: false }, 0.0, &mut out);
+        assert_eq!(s.variant, Some(Variant::Xpt));
+        out.clear();
+        s.event(1, 0, SlotEvent::Lc { lc: Lc([0, 0x68, 0, 0, 0, 25, 0, 0, 5]), from: LcFrom::Header }, 0.1, &mut out);
+        assert!(out.is_empty());
+        s.cfg.color_code = None;
+        s.event(1, 0, SlotEvent::Lc { lc: Lc([0, 0x68, 0, 0, 0, 25, 0, 0, 5]), from: LcFrom::Header }, 0.1, &mut out);
+        assert_eq!((out.len(), out[0].voice.color_code()), (1, Some(2)));
+    }
+
+    #[test]
+    fn data_carrier_identifies_xpt_only_from_preamble_and_never_grants_voice() {
+        use crate::dmr::slot::Lc;
+        let mut s = Site::new(&[453_637_500.0], 24_000.0, DmrConfig::default());
+        s.carriers[0].chan.slots[0].color_code = Some(13);
+        let mut out = Vec::new();
+        // Hytera proprietary blocks as heard on the data carrier: not XPT, not reported.
+        let observed = [
+            SlotEvent::Csbk { csbk: Csbk([0x8d, 0x68, 0x7f, 0xff, 0, 0, 0, 0, 0, 0]), mbc: false },
+            SlotEvent::Slco([0xc6, 0x87, 0xff, 0xfe, 0xe0]),
+            SlotEvent::Lc { lc: Lc([0x0d, 0x68, 0, 0x7f, 0xff, 0x80, 0, 2, 8]), from: LcFrom::Terminator },
+            SlotEvent::Lc { lc: Lc([0x30, 0x68, 0xf0, 0x7f, 0xff, 0, 0, 0x10, 0x60]), from: LcFrom::Terminator },
+        ];
+        for e in observed { s.event(0, 0, e, 0.0, &mut out); }
+        assert!(out.is_empty());
+        assert_eq!(s.variant, None, "proprietary payloads do not establish XPT");
+        s.event(0, 0, SlotEvent::Csbk { csbk: Csbk([0xbd, 0x68, 0x80, 0x12, 0xf0, 2, 8, 0, 0, 16]), mbc: false }, 0.1, &mut out);
+        assert_eq!(s.variant, Some(Variant::Xpt));
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].kind, out[0].meta.as_str()), (MessageType::Status, "XPT data preamble: radio 520 from 16"));
+        assert!(s.rest.is_none() && s.pending.is_empty(), "a preamble's free repeater and addresses are not the voice site's");
+        assert!(s.table.saved().is_empty(), "no channel mapping learned from data addresses");
+        // Voice after a data terminator is still the voice.
+        let lc = Lc([0, 0x68, 0, 0, 0, 149, 0, 0x13, 0x8e]);
+        s.event(0, 0, SlotEvent::Lc { lc, from: LcFrom::Header }, 0.3, &mut out);
+        assert_eq!((out.last().unwrap().talkgroup, out.last().unwrap().source), (149, 5006));
+    }
+
 }

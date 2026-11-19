@@ -511,6 +511,11 @@ impl Session {
     }
 
     /// The system named `short_name`'s own names for its radios are now `rows`: calls from now on are named by them.
+    /// The sites running, each with the source its control channel is on.
+    pub fn sites(&self) -> Vec<trunk_core::trunk::SiteStatus> {
+        self.engine.status().sites
+    }
+
     pub fn set_unit_names(&mut self, short_name: &str, rows: &[trunk_core::trunk::UnitNameRow]) -> bool {
         let set = self.engine.set_unit_names(short_name, rows);
         self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
@@ -1384,7 +1389,7 @@ impl Session {
         // Each running site, as its control channel describes it.
         let site_json = |y: &trunk_core::trunk::SiteStatus| {
             json!({
-                "index": y.site, "name": y.site_name, "nowS": y.now_s, "controlChannelHz": y.control_channel_hz,
+                "index": y.site, "name": y.site_name, "nowS": y.now_s, "controlChannelHz": y.control_channel_hz, "source": y.source,
                 "identity": identity_json(&y.identity),
                 "good": y.good, "bad": y.bad, "modulation": if y.modulation.is_empty() { None } else { Some(y.modulation) },
                 "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,

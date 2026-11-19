@@ -143,6 +143,8 @@ pub enum SlotEvent {
     Csbk { csbk: Csbk, mbc: bool },
     /// An MBC continuation block's 12 bytes (no CRC of its own).
     MbcContinuation([u8; 12]),
+    /// BPTC- and CRC8-checked carrier-wide short link control (36 packed bits).
+    Slco([u8; 5]),
     /// Privacy indicator header: encrypted, with this algorithm and key.
     Privacy { alg: u8, key: u8 },
     /// A data burst of another type (idle, data blocks, a bad CRC …).
@@ -410,6 +412,12 @@ impl SlotDecoder {
 #[derive(Default)]
 pub struct Channel {
     pub slots: [SlotDecoder; 2],
+    /// The kind of trunked system this carrier belongs to, once known: its
+    /// site's, its control channel's (a voice channel's [`VoiceParams`](crate::trunk::voice::VoiceParams)),
+    /// or XPT signalling heard on it (FID alone is not enough). XPT link
+    /// control reaches the decoders with its 16-bit IDs ([`super::xpt::voice_lc`]).
+    pub variant: Option<super::trunking::Variant>,
+    short_lc: super::short_lc::Assembler,
     last_slot: u8,
     /// Bursts whose CACH didn't decode (the slot was inferred).
     pub tact_errors: u64,
@@ -462,11 +470,21 @@ impl Channel {
         if b.rel.iter().all(|&r| r == 0.0) {
             // Nothing on the air (a mobile's other slot): nothing to decode.
             self.quiet_bursts += 1;
+            self.short_lc.push(None, [0; 17]);
             return;
         }
         if b.sync.is_some_and(|k| k.is_bs()) {
             // A repeater after all: its CACH names the slots.
             self.anchor = None;
+        }
+        let start = out.len();
+        let (tact, fragment) = cach(&b.cach);
+        if self.anchor.is_none() {
+            if let Some(raw) = self.short_lc.push(tact.map(|t| t.lcss), fragment) {
+                out.push((slot, SlotEvent::Slco(raw)));
+            }
+        } else {
+            self.short_lc.push(None, [0; 17]);
         }
         self.ev.clear();
         self.slots[slot as usize].burst(b, &mut self.ev);
@@ -476,5 +494,15 @@ impl Channel {
             k[1 - slot as usize].keyed = true;
         }
         out.extend(self.ev.drain(..).map(|e| (slot, e)));
+        if out[start..].iter().any(|(_, e)| super::xpt::control(e).is_some()) {
+            self.variant = Some(super::trunking::Variant::Xpt);
+        }
+        if self.variant == Some(super::trunking::Variant::Xpt) {
+            for (_, e) in &mut out[start..] {
+                if let SlotEvent::Lc { lc, .. } = e {
+                    *lc = super::xpt::voice_lc(*lc);
+                }
+            }
+        }
     }
 }
