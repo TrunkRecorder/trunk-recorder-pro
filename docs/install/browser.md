@@ -55,7 +55,7 @@ The browser has to be allowed to open the dongle, the same as any SDR program:
 - **macOS:** nothing to do. Quit any other SDR program that holds the dongle.
 
 Dongles with an **R820T, R828D or E4000** tuner work in the browser (nearly all of them; the
-RTL-SDR Blog V3 and V4 included). Older FC0012, FC0013 and FC2580 dongles can only be used by the
+RTL-SDR Blog V3, V4 and V4L included). Older FC0012, FC0013 and FC2580 dongles can only be used by the
 desktop app, through SoapySDR.
 
 ## Hosting it yourself

@@ -49,8 +49,6 @@ pub struct NxdnVoice {
     /// Voice codewords / those not synthesized as sent, over the carrier's life.
     pub vch: u64,
     pub bad_vch: u64,
-    /// Vocode (a monitored-only channel can skip it).
-    pub vocode: bool,
 }
 
 impl NxdnVoice {
@@ -73,7 +71,6 @@ impl NxdnVoice {
             keep_messages: false,
             vch: 0,
             bad_vch: 0,
-            vocode: true,
         }
     }
 
@@ -257,7 +254,7 @@ impl NxdnVoice {
 
     fn voice(&mut self, d: &[u8; 36], r: &[f32; 72], t: f64, out: &mut Vec<Out>) {
         self.vch += 1;
-        if self.encrypted || self.efr || !self.vocode {
+        if self.encrypted || self.efr {
             return;
         }
         let v = decode_vcw(d, Some(r));

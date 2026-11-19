@@ -1397,6 +1397,18 @@ call signs, a channel file's status), the recording rules — and the `state` me
 verdict as `restartNeeded`, with the phase (`idle`, `starting`, `running`, `stopping`). The
 interface shows it; it doesn't work it out.
 
+**Tuning a gain while recording** (`tuneGain`; `trunk-app/src/gain.rs`, `trunk-app/src/tune.rs`,
+`trunk-pro/src/tune.rs`). `GainPlan::of` is each radio kind's gain as something to search: its
+axes (a table step, the overall gain, or stages), the moves in order (front of the chain first, the
+VGA last, a HackRF's amp gated on its LNA) and the ranges config validation and Find my system
+read too. A tuning thread walks the plan (`Walk`), comparing each candidate with the best so far by
+turns; each candidate goes on the radio through `Ctx::trial_gain` (the radio's `Control`, as a
+live edit, but `Ctx.run` and the config keep what they had, so putting it back is setting the run's
+gain again). Each second's `stats` values reach it from `deliver` (`Slot::stats`), and the systems
+it scores are the engine's sites on that radio (`SiteStatus::source`, asked with
+`EngineCmd::Sites`). `apply` keeps the best: the run has it, and `edit_config` saves it. Stopping
+recording, or an edit of that radio (`Slot::edited`), stops the tuning.
+
 ### 10.11 Validation at Start (`Config::problem`, first failure wins)
 
 1. No sources.

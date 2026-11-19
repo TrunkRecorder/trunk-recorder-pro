@@ -415,6 +415,8 @@ pub struct SiteStatus {
     /// Its control channel's clock.
     pub now_s: f64,
     pub control_channel_hz: Option<u64>,
+    /// The source its control channel is received on (none: hunting with none open).
+    pub source: Option<usize>,
     pub identity: Identity,
     pub good: u64,
     pub bad: u64,
@@ -683,6 +685,51 @@ struct Channel {
     noise: f64,
     /// What it received ([`EngineConfig::tapes`]).
     tape: Option<VoiceTape>,
+    /// What each slot with no call on it decoded ([`Unclaimed`]).
+    unclaimed: [Unclaimed; 2],
+}
+
+/// A voice channel's outputs for a slot no call is on, a pre-roll's worth,
+/// each with the talkgroup the voice channel named for it then. A call put
+/// on the slot later (the other TDMA slot of a channel already open) takes
+/// the latest not named for another talkgroup, as a new channel's pre-roll
+/// gives it its start: the control channel tells of a grant some time after
+/// the voice began.
+#[derive(Default)]
+struct Unclaimed {
+    outs: VecDeque<(u64, Option<u32>, TrackerOut)>,
+    /// Channel samples decoded, and how many of them it keeps.
+    pos: u64,
+    keep: u64,
+}
+
+impl Unclaimed {
+    fn new(keep: u64) -> Self {
+        Unclaimed { keep, ..Default::default() }
+    }
+
+    /// `n` more channel samples decoded.
+    fn advance(&mut self, n: usize) {
+        self.pos += n as u64;
+        while self.outs.front().is_some_and(|(at, _, _)| at + self.keep < self.pos) {
+            self.outs.pop_front();
+        }
+    }
+
+    fn push(&mut self, talkgroup: Option<u32>, o: TrackerOut) {
+        if self.keep > 0 {
+            self.outs.push_back((self.pos, talkgroup, o));
+        }
+    }
+
+    /// What a call on `talkgroup` takes: the latest outputs named for it, or
+    /// for none yet (a transmission joined late).
+    fn claim(&mut self, talkgroup: u32) -> impl Iterator<Item = TrackerOut> {
+        let n = self.outs.iter().rev().take_while(|(_, tg, _)| tg.is_none_or(|g| g == talkgroup)).count();
+        let outs = std::mem::take(&mut self.outs);
+        let skip = outs.len() - n;
+        outs.into_iter().skip(skip).map(|(_, _, o)| o)
+    }
 }
 
 /// A call on a voice channel's slot, and the talkgroup it was granted for.
@@ -966,21 +1013,28 @@ impl Radio {
             t.run(iq, *params, slots, squelch);
         }
         ch.voice.set_params(params);
-        // Vocode only the slots somebody is recording.
         ch.voice.listen(ch.calls.map(|c| c.map(|c| c.talkgroup)));
         let mut out = Vec::new();
         ch.voice.push(iq, &mut out);
+        for u in &mut ch.unclaimed {
+            u.advance(iq.len());
+        }
         if flush {
             ch.voice.flush(&mut out);
         }
         tout.extend(out.into_iter().map(|v| (v.slot as usize, v.out)));
     }
 
-    /// Hand a channel's outputs to the calls on its slots.
-    fn route(ch: &Channel, tout: &mut Vec<(usize, TrackerOut)>, pending: &mut Vec<(u16, CallId, TrackerOut)>) {
+    /// Hand a channel's outputs to the calls on its slots (a slot's with
+    /// none, kept for one put on it later).
+    fn route(ch: &mut Channel, tout: &mut Vec<(usize, TrackerOut)>, pending: &mut Vec<(u16, CallId, TrackerOut)>) {
         for (slot, o) in tout.drain(..) {
-            if let Some(c) = ch.calls[slot & 1] {
-                pending.push((ch.site, c.id, o));
+            match ch.calls[slot & 1] {
+                Some(c) => pending.push((ch.site, c.id, o)),
+                None => {
+                    let tg = ch.voice.air(slot as u8 & 1).talkgroup;
+                    ch.unclaimed[slot & 1].push(tg, o);
+                }
             }
         }
     }
@@ -1009,6 +1063,8 @@ impl SysHost<'_> {
         if let Some(ch) = rx.channels.get_mut(&key) {
             if ch.voice.kind() == kind {
                 ch.calls[slot] = Some(OnSlot::of(call));
+                // What the slot already heard of it.
+                r.pending.extend(ch.unclaimed[slot].claim(call.talkgroup).map(|o| (self.site, call.id, o)));
                 return;
             }
             // The frequency carries another kind of call now (P25 Dynamic
@@ -1049,12 +1105,14 @@ impl SysHost<'_> {
         let tape = r.tape_sink.on().then(|| VoiceTape::new(spec, call.freq_hz as f64));
         let mut calls = [None, None];
         calls[slot] = Some(OnSlot::of(call));
-        let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tuning, meter: ChannelFilter::new(rate), noise, tape };
+        let keep = (r.preroll_s * rate) as u64;
+        let unclaimed = [Unclaimed::new(keep), Unclaimed::new(keep)];
+        let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tuning, meter: ChannelFilter::new(rate), noise, tape, unclaimed };
         // Pre-roll: decode the replayed air now.
         let params = rx.voice_params.get(self.site as usize).copied().unwrap_or_default();
         rx.tout.clear();
         Radio::run_channel(&mut ch, &pre, &params, &mut rx.tout, false);
-        Radio::route(&ch, &mut rx.tout, &mut r.pending);
+        Radio::route(&mut ch, &mut rx.tout, &mut r.pending);
         rx.channels.insert(key, ch);
     }
 
@@ -1538,6 +1596,7 @@ impl Trunk {
             site_name: self.cfg.name.clone(),
             now_s: self.now_s,
             control_channel_hz: self.cc_hz,
+            source: self.hunted().map(|(s, _)| s),
             identity: self.identity.clone(),
             good: self.good,
             bad: self.bad,
@@ -2780,6 +2839,28 @@ mod tests {
     use super::*;
     use super::super::calls::Voice;
     use super::super::voice::VoiceKind;
+
+    /// A call put on a slot later takes what the slot heard of it: the
+    /// latest outputs not named for another talkgroup, a pre-roll's worth.
+    #[test]
+    fn a_slot_keeps_what_it_heard_for_a_call_put_on_it() {
+        let info = |source: u32| TrackerOut::Info { source: Some(source), flags: super::super::calls::Flags::default() };
+        let mut u = Unclaimed::new(100);
+        u.push(Some(7), info(1));
+        u.advance(50);
+        u.push(Some(9), info(2));
+        u.push(None, info(3));
+        u.push(Some(9), info(4));
+        assert_eq!(u.claim(9).collect::<Vec<_>>(), [info(2), info(3), info(4)], "not the other talkgroup's");
+        assert_eq!(u.claim(9).count(), 0, "taken once");
+        u.push(None, info(5));
+        u.advance(101);
+        u.push(None, info(6));
+        assert_eq!(u.claim(9).collect::<Vec<_>>(), [info(6)], "a pre-roll's worth");
+        let mut off = Unclaimed::new(0);
+        off.push(None, info(1));
+        assert_eq!(off.claim(9).count(), 0, "no pre-roll: nothing kept");
+    }
 
     #[test]
     fn pins_choose_the_first_allowed_source_that_reaches() {

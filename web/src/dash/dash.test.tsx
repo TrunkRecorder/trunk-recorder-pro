@@ -20,7 +20,7 @@ import { StorageView, tablesOf } from "./Storage.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>, adjacent: AdjacentSite[] = []): SiteStatus => ({
-  index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
+  index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000, source: 0,
   identity: { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: null, ...identity },
   good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent,
 });

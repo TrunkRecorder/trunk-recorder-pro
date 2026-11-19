@@ -107,7 +107,6 @@ pub fn run(a: &Args) {
     let mut framer = Framer::new();
     let mut audio_out = AudioOut::open(a, "audio");
     let mut voice = dmr::voice::DmrVoice::new(1);
-    voice.vocode = std::array::from_fn(|s| audio_out.is_some() && s == want_slot as usize);
     let mut vout = Vec::new();
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
@@ -206,7 +205,9 @@ pub fn run(a: &Args) {
                 voice.event(s, e, t, &mut vout);
                 for o in vout.drain(..) {
                     if let (TrackerOut::Audio(buf, _), Some(w)) = (&o.out, audio_out.as_mut()) {
-                        w.samples(buf);
+                        if o.slot == want_slot {
+                            w.samples(buf);
+                        }
                     }
                 }
                 // The talker alias as it comes together (partial ones too: the recorder names a radio only by a whole one).

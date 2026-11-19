@@ -25,8 +25,8 @@ use crate::protocol::ToClient;
 use crate::config::DEFAULT_GUARD_HZ;
 use crate::session::Output;
 
-/// R820T / R828D gain steps worth trying (dB).
-const RTL_GAINS: [f32; 7] = [19.7, 28.0, 33.8, 38.6, 42.1, 44.5, 49.6];
+/// The R820T / R828D gains worth trying (19.7 to 49.6 dB), by place in its table ([`crate::gain::R82XX_DB`]).
+const RTL_GAINS: [usize; 7] = [11, 15, 18, 21, 23, 26, 28];
 
 /// The bands the survey knows, for the interface.
 pub fn bands_json() -> Value {
@@ -138,7 +138,7 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
             sc.tune_range_hz = (24e6, 1766e6);
             sc.settle_s = 0.03;
             if req.find_gain {
-                sc.gains = RTL_GAINS.to_vec();
+                sc.gains = RTL_GAINS.iter().map(|&i| crate::gain::R82XX_DB[i] as f32).collect();
             }
         }
         SourceKind::Usrp { .. } => {

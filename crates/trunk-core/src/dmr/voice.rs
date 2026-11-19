@@ -49,8 +49,6 @@ pub struct DmrVoice {
     /// Voice codewords / those not synthesized as sent, over the carrier's life.
     pub frames: u64,
     pub bad_frames: u64,
-    /// Which slots to vocode (a trunked voice channel skips the slot nobody records).
-    pub vocode: [bool; 2],
 }
 
 impl DmrVoice {
@@ -63,7 +61,6 @@ impl DmrVoice {
             ev: Vec::new(),
             frames: 0,
             bad_frames: 0,
-            vocode: [true; 2],
         }
     }
 
@@ -158,7 +155,7 @@ impl DmrVoice {
                     // A new superframe with no LC yet: a fresh transmission's vocoder state.
                     s.dec.reset();
                 }
-                if s.encrypted || !self.vocode[slot as usize] {
+                if s.encrypted {
                     return;
                 }
                 let mut buf = [0f32; FRAME_SAMPLES];

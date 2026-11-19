@@ -218,11 +218,14 @@ fn run_voice(meta: &Value, iq: &[Complex32], freq_hz: u64) -> Result<Results, St
     let mut d = voice::build(&spec);
     let mut out = Vec::new();
     let (mut pos, mut m) = (0, 0);
+    // The slots a call was on: the others' outputs went to none.
+    let mut on = [true; 2];
     while pos < iq.len() {
         while marks.get(m).is_some_and(|x| x.sample as usize <= pos) {
             d.set_params(&marks[m].params);
-            // (Which talkgroup doesn't matter to a decoder alone: only whether it's listening.)
-            d.listen(marks[m].slots.map(|on| on.then_some(0)));
+            on = marks[m].slots;
+            // (Which talkgroup doesn't matter to a decoder alone: only whether a call is on the slot.)
+            d.listen(on.map(|on| on.then_some(0)));
             d.set_squelch(marks[m].squelch);
             m += 1;
         }
@@ -231,10 +234,14 @@ fn run_voice(meta: &Value, iq: &[Complex32], freq_hz: u64) -> Result<Results, St
         if let Some(next) = marks.get(m) {
             n = n.min(next.sample as usize - pos);
         }
-        d.push(&iq[pos..pos + n], &mut out);
+        let mut fresh = Vec::new();
+        d.push(&iq[pos..pos + n], &mut fresh);
+        out.extend(fresh.into_iter().filter(|v| on[v.slot as usize & 1]));
         pos += n;
     }
-    d.flush(&mut out);
+    let mut fresh = Vec::new();
+    d.flush(&mut fresh);
+    out.extend(fresh.into_iter().filter(|v| on[v.slot as usize & 1]));
     let mut frames: BTreeMap<usize, Vec<_>> = BTreeMap::new();
     let mut audio: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
     for v in out {
