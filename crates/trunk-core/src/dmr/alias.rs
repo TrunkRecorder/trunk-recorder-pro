@@ -64,6 +64,9 @@ pub struct Assembler {
 impl Assembler {
     pub fn reset(&mut self) { *self = Self::default(); }
 
+    /// What has been put together so far, whole or not.
+    pub fn so_far(&self) -> Option<&Decoded> { self.last.as_ref() }
+
     pub fn push(&mut self, lc: Lc, t: f64) -> Option<Decoded> {
         let index = block(lc)?;
         if t - self.last_s > HOLD_S || lc.0[0] & 0x80 != 0 { self.reset(); }

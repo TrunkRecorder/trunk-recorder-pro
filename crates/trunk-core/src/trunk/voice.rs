@@ -183,15 +183,16 @@ pub struct AirInfo {
 }
 
 /// What a system's control channel tells its voice channels.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct VoiceParams {
-    /// DMR: site has positively identified Hytera XPT (16-bit voice IDs).
-    pub dmr_xpt: bool,
     /// P25 Phase 2 scrambling: (NAC, System ID, WACN).
     pub tdma_key: Option<(u32, u32, u32)>,
     /// P25: the site's NAC. Phase 1 frames with another are another site's
     /// (a co-channel one), not the call's.
     pub nac: Option<u16>,
+    /// DMR: the kind of system the site is (Hytera XPT's link control has 16-bit IDs).
+    pub dmr: Option<crate::dmr::Variant>,
 }
 
 /// How to make a decoder.
@@ -440,7 +441,9 @@ struct Dmr {
 
 impl VoiceDecoder for Dmr {
     fn set_params(&mut self, p: &VoiceParams) {
-        self.voice.chan.xpt |= p.dmr_xpt;
+        if p.dmr.is_some() {
+            self.voice.chan.variant = p.dmr;
+        }
     }
     fn kind(&self) -> VoiceKind {
         VoiceKind::Dmr

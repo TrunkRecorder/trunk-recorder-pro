@@ -210,13 +210,15 @@ pub fn build(cfg: &SiteConfig, rate: f64) -> Box<dyn ControlChannel> {
             Box::new(Edacs { site, identity: Identity::default(), note })
         }
         Protocol::Dmr(dc) => {
-            let note = format!("Watching {} DMR frequencies", cfg.control_channels.len() + dc.channels.len());
-            Box::new(Dmr { site: dmr::Site::new(&cfg.control_channels, rate, dc.clone()), note })
+            let site = dmr::Site::new(&cfg.control_channels, rate, dc.clone());
+            let note = format!("Watching {} DMR frequencies", site.carriers.len());
+            Box::new(Dmr { site, note })
         }
         Protocol::Nxdn(nc) => {
             let what = if nc.kind == nxdn::trunking::Kind::TypeD { "repeaters" } else { "frequencies" };
-            let note = format!("Watching {} NXDN {what} ({})", cfg.control_channels.len() + nc.channels.len(), nc.kind.name());
-            Box::new(Nxdn { site: nxdn::trunking::Site::new(&cfg.control_channels, rate, nc.clone()), note })
+            let site = nxdn::trunking::Site::new(&cfg.control_channels, rate, nc.clone());
+            let note = format!("Watching {} NXDN {what} ({})", site.carriers.len(), nc.kind.name());
+            Box::new(Nxdn { site, note })
         }
     }
 }
@@ -511,7 +513,7 @@ struct Dmr {
 
 impl ControlChannel for Dmr {
     fn voice_params(&self, _identity: &Identity) -> VoiceParams {
-        VoiceParams { dmr_xpt: self.site.variant == Some(dmr::Variant::Xpt), ..Default::default() }
+        VoiceParams { dmr: self.site.variant, ..Default::default() }
     }
     fn name(&self) -> &'static str {
         "DMR"

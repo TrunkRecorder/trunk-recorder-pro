@@ -129,7 +129,7 @@ mod tests {
             };
             channel.burst(&burst, &mut out);
         }
-        assert!(channel.xpt);
+        assert_eq!(channel.variant, Some(crate::dmr::Variant::Xpt));
         assert!(out.iter().any(|(_, e)| matches!(e, SlotEvent::Slco(b) if b[0] == 0x80 && b[1] == 2)));
     }
 }

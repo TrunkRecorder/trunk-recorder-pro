@@ -412,8 +412,11 @@ impl SlotDecoder {
 #[derive(Default)]
 pub struct Channel {
     pub slots: [SlotDecoder; 2],
-    /// Positive XPT signaling observed on this receiver. FID alone is insufficient.
-    pub xpt: bool,
+    /// The kind of trunked system this carrier belongs to, once known: its
+    /// site's, its control channel's (a voice channel's [`VoiceParams`](crate::trunk::voice::VoiceParams)),
+    /// or XPT signalling heard on it (FID alone is not enough). XPT link
+    /// control reaches the decoders with its 16-bit IDs ([`super::xpt::voice_lc`]).
+    pub variant: Option<super::trunking::Variant>,
     short_lc: super::short_lc::Assembler,
     last_slot: u8,
     /// Bursts whose CACH didn't decode (the slot was inferred).
@@ -491,6 +494,15 @@ impl Channel {
             k[1 - slot as usize].keyed = true;
         }
         out.extend(self.ev.drain(..).map(|e| (slot, e)));
-        self.xpt |= out[start..].iter().any(|(_, e)| super::xpt::control(e).is_some());
+        if out[start..].iter().any(|(_, e)| super::xpt::control(e).is_some()) {
+            self.variant = Some(super::trunking::Variant::Xpt);
+        }
+        if self.variant == Some(super::trunking::Variant::Xpt) {
+            for (_, e) in &mut out[start..] {
+                if let SlotEvent::Lc { lc, .. } = e {
+                    *lc = super::xpt::voice_lc(*lc);
+                }
+            }
+        }
     }
 }

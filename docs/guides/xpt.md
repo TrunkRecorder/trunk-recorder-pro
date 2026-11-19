@@ -55,7 +55,7 @@ parity and CRC8, and emits short LC. An incomplete sequence is discarded.
 | FID `0x68`, CSBK `0x0B` | Neighbour sites and their free repeaters: a status line |
 | SLCO `0x08` | Free repeater (the rest channel); priority repeater and target hash are not used |
 | FID `0x68`, FLCO `0x09` | Call setup: repeater, slot, group/private, 16-bit target/source, free repeater. A status line, and like a grant it lets an unlisted repeater number be learned; it is not a call |
-| FID `0x68`, CSBK `0x3D` | Data/control preamble: a status line. Identifies XPT; never a voice grant, never the free repeater |
+| FID `0x68`, CSBK `0x3D` | Data/control preamble: one status line per transfer (each preamble counts down the blocks to come). Identifies XPT; never a voice grant, never the free repeater |
 | Voice FLCO `0x00` / `0x03` | The call, on the carrier and slot it is heard on, with 16-bit IDs |
 
 A setup is often carried in a terminator burst; it is **not** the end of a call.
@@ -63,15 +63,19 @@ A setup is often carried in a terminator burst; it is **not** the end of a call.
 **TGID / RID width:** after positive XPT identification, voice target bits
 32–47 and source bits 56–71 are used; the bytes above them are not part of
 either ID (the ordinary 24-bit reading turns them into very large TGIDs/RIDs).
-Voice channels opened later get the same reading from the control channel
-through `VoiceParams`. FID `0x68` alone does not establish XPT; ordinary
-Hytera/standard DMR keeps its 24-bit IDs.
+The DMR channel decoder applies it, once its carrier is known to be XPT's: from
+XPT signalling heard on it, from its site, or (a voice channel opened later)
+from the control channel's `VoiceParams`, which carry the site's DMR variant.
+FID `0x68` alone does not establish XPT; ordinary Hytera/standard DMR keeps its
+24-bit IDs.
 
 ## Diagnostics
 
 The dashboard shows an XPT site as it shows Capacity Plus: the variant, the rest
-channel (the free repeater), and each carrier's slots with their calls. The
-message log has the deduplicated status lines above.
+channel (the free repeater), and each carrier's slots with their calls. Every
+repeater with a free slot sends status, so the control channel shown is the free
+repeater when its frequency is known, else the one taken first while it keeps
+sending. The message log has the deduplicated status lines above.
 
 For raw control, use the existing tool:
 
@@ -79,15 +83,15 @@ For raw control, use the existing tool:
 trunk-pro tool dmr site.cu8 --center 451000000 --rate 2400000 --freq 451012500 --bursts
 ```
 
-It emits JSON lines for raw CSBK, full LC and short LC, plus decoded `xpt`
-fields. Voice IDs use the XPT reading after detection; raw hex stays unchanged.
-`hytera` records show Hytera CSBK `0x0D`, full LC `0x0D`, short LC `0x0C` (with
-the observed embedded `0x68` manufacturer value) and data terminator LC `0x30`,
-whose field meanings are unverified (the repeated `0x7FFF` is not taken as a
-site, radio or talkgroup ID); the recorder itself ignores them. `alias` records
-show complete or partial over-the-air radio names; see
-[DMR radio-name decoding](dmr.md#over-the-air-radio-names). Encrypted frames are
-not vocoded by either the recorder or the tool.
+It emits JSON lines for raw CSBK, full LC and short LC (with their hex), plus
+decoded `xpt` fields. After detection, voice LC is shown as the decoders get
+it: 16-bit IDs, the bytes above them cleared. Hytera CSBK `0x0D`, full LC
+`0x0D`, short LC `0x0C` and data terminator LC `0x30` are in the raw lines; their
+field meanings are unverified and the recorder ignores them. `alias` records
+show the over-the-air radio name as it comes together, whole or partial; see
+[DMR radio-name decoding](dmr.md#over-the-air-radio-names). The tool's voice,
+its muting of encrypted frames and its aliases come from the recorder's own DMR
+voice decoder.
 
 ## Evidence and milestones
 
@@ -113,6 +117,12 @@ Subsequent supplied captures now validate part of the receive path:
   `Hytera`. Its header declares 13 code units, but only six arrive in the
   header/block-1 sequence; it is exposed as partial and does not replace the
   saved name for radio 5006. Alias format bits are not voice privacy flags.
+- Corpus capture `4aa34b203c13d715` (the same system, radio 3) and voice tapes
+  `a7a6bb2cf35d069a` and `b69007e66f75c602` replay to TG 149 / RID 5006, with
+  the same audio as before XPT support; the setup learns repeater 4 as
+  453.5375 MHz. The free repeater (5) and repeaters 1–3 stayed unmatched to a
+  frequency in its 30 seconds, and the alias again stops at `Hytera` (blocks 0
+  and 1 of a 13-unit name).
 
 The supplied ZIPs contain individual radios while the original collection and
 configuration reference five. Keep originals intact; use an explicitly isolated

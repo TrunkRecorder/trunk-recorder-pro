@@ -105,12 +105,17 @@ pub fn flco(b: &[u8]) -> Option<Control> {
     })
 }
 
+/// A repeater number (1–8) as signalled; 0 and the rest say none.
+pub fn repeater(n: u8) -> Option<u32> {
+    (1..=8).contains(&n).then_some(n as u32)
+}
+
 /// XPT voice IDs occupy 16 bits: the bytes above them (bits 24–31, 48–55)
-/// are cleared, so [`Lc::target`] and [`Lc::source`] read them. Apply only
-/// after this receiver/site detected XPT; FID 0x68 alone also occurs on other
-/// Hytera systems.
-pub fn voice_lc(mut lc: Lc, detected: bool) -> Lc {
-    if detected && matches!(lc.fid(), 0 | FID_HYTERA) && matches!(lc.flco(), 0 | 3) {
+/// are cleared, so [`Lc::target`] and [`Lc::source`] read them. The channel
+/// ([`super::Channel`]) applies it once its carrier is known to be XPT's;
+/// FID 0x68 alone also occurs on other Hytera systems.
+pub fn voice_lc(mut lc: Lc) -> Lc {
+    if matches!(lc.fid(), 0 | FID_HYTERA) && matches!(lc.flco(), 0 | 3) {
         lc.0[3] = 0;
         lc.0[6] = 0;
     }
@@ -155,9 +160,9 @@ mod tests {
         assert!(csbk(&[0x0a, 0x10, 0, 0, 0, 0, 0, 0, 0, 0]).is_none());
         assert!(flco(&[0, 0x68, 0, 0, 0, 0, 0, 0, 0]).is_none(), "FID alone does not establish XPT");
         assert_eq!(Lc([0xc9, 0x68, 0xc7, 0x30, 0, 25, 0xaa, 0x12, 0x34]).voice_user(), None, "a setup is not voice");
-        let lc = voice(25, false);
-        assert_eq!(voice_lc(lc, false), lc);
-        assert_eq!((voice_lc(lc, true).target(), voice_lc(lc, true).source()), (25, 0x1234));
+        let lc = voice_lc(voice(25, false));
+        assert_eq!((lc.target(), lc.source()), (25, 0x1234));
+        assert_eq!((repeater(0), repeater(5), repeater(15)), (None, Some(5), None));
     }
 
     #[test]

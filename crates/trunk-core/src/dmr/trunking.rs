@@ -46,7 +46,7 @@ const REST_RUN_S: f64 = 3.0;
 /// A carrier counts as the control (or rest) channel this long after its last control block.
 const CONTROL_HOLD_S: f64 = 2.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Variant {
     CapacityPlus,
     ConnectPlus,
@@ -166,6 +166,9 @@ pub struct Site {
     now_s: f64,
     /// Site statuses reported lately, and when (each repeats several times a second).
     recent_status: Vec<(String, f64)>,
+    /// The carrier taken as the control channel: kept while it sends control
+    /// blocks, though others do too (Capacity Plus, XPT repeaters with a free slot).
+    control: Option<usize>,
 }
 
 fn mhz(hz: u64) -> String {
@@ -175,10 +178,8 @@ fn mhz(hz: u64) -> String {
 impl Site {
     pub fn new(freqs: &[f64], rate: f64, cfg: DmrConfig) -> Self {
         let n_control = freqs.len();
-        let mut hzs: Vec<u64> = freqs.iter().chain(cfg.channels.iter()).map(|f| f.round() as u64).collect();
-        hzs.dedup();
         let mut seen = std::collections::HashSet::new();
-        hzs.retain(|h| seen.insert(*h));
+        let hzs: Vec<u64> = freqs.iter().chain(cfg.channels.iter()).map(|f| f.round() as u64).filter(|h| seen.insert(*h)).collect();
         let carriers = hzs
             .into_iter()
             .map(|hz| Carrier {
@@ -210,6 +211,7 @@ impl Site {
             notes: Vec::new(),
             now_s: 0.0,
             recent_status: Vec::new(),
+            control: None,
         }
     }
 
@@ -247,9 +249,19 @@ impl Site {
         self.table.resolve(lcn)
     }
 
-    /// The carrier sending control blocks now (control or rest channel).
+    /// The carrier sending control blocks now: the rest channel's, else the one taken lately.
     fn control_carrier(&self) -> Option<&Carrier> {
-        self.carriers.iter().filter(|c| self.now_s - c.control_s < CONTROL_HOLD_S).max_by(|a, b| a.control_s.total_cmp(&b.control_s))
+        let sending = |c: &&Carrier| self.now_s - c.control_s < CONTROL_HOLD_S;
+        let rest = self.rest.map(|(_, hz)| hz).filter(|&hz| hz > 0);
+        self.carriers.iter().filter(sending).find(|c| Some(c.hz) == rest).or_else(|| self.control.map(|i| &self.carriers[i]).filter(sending))
+    }
+
+    /// Carrier `idx` sent a control block: the control channel, unless another still is.
+    fn heard_control(&mut self, idx: usize, t: f64) {
+        if !self.control.is_some_and(|i| i != idx && t - self.carriers[i].control_s < CONTROL_HOLD_S) {
+            self.control = Some(idx);
+        }
+        self.carriers[idx].control_s = t;
     }
 
     pub fn control_hz(&self) -> Option<u64> {
@@ -333,14 +345,13 @@ impl Site {
         }
         if let Some(c) = xpt {
             if matches!(e, SlotEvent::Csbk { .. }) {
-                self.carriers[idx].control_s = t;
+                self.heard_control(idx, t);
             }
             self.xpt(idx, slot, c, t, out);
             return;
         }
         match e {
             SlotEvent::Lc { lc, from } => {
-                let lc = super::xpt::voice_lc(lc, is_xpt);
                 if is_xpt && lc.target() == 0 {
                     return;
                 }
@@ -373,7 +384,7 @@ impl Site {
                 out.push(m);
             }
             SlotEvent::Csbk { csbk, mbc } => {
-                self.carriers[idx].control_s = t;
+                self.heard_control(idx, t);
                 if mbc {
                     self.carriers[idx].mbc[slot as usize] = Some(csbk);
                     return;
@@ -415,33 +426,36 @@ impl Site {
             }
             Control::Setup { repeater, slot: s, group, target, source, free, .. } => {
                 self.free_repeater(free);
-                let lcn = repeater as u32;
-                if target != 0 && lcn != 0 && self.resolve(lcn).is_none() {
+                if let Some(lcn) = super::xpt::repeater(repeater).filter(|&l| target != 0 && self.resolve(l).is_none()) {
                     self.pending.retain(|q| !(q.lcn == lcn && q.slot == s));
                     self.pending.push(Pending { lcn, slot: s, talkgroup: target as u32, low8: false, t });
                 }
                 let what = if group { "TG" } else { "radio" };
-                self.status_once(idx, slot, format!("XPT call setup: {what} {target} from {source} on repeater {lcn} slot {}", s + 1), t, out);
+                self.status_once(idx, slot, format!("XPT call setup: {what} {target} from {source} on repeater {repeater} slot {}", s + 1), t, out);
             }
             Control::Adjacent { sites, .. } => {
-                let s: Vec<String> = sites.iter().filter(|n| n.site != 0).map(|n| format!("site {} (free repeater {})", n.site, n.free)).collect();
+                let s: Vec<String> = sites
+                    .iter()
+                    .filter(|n| n.site != 0)
+                    .map(|n| format!("site {}{}", n.site, super::xpt::repeater(n.free).map_or(String::new(), |r| format!(" (free repeater {r})"))))
+                    .collect();
                 if !s.is_empty() {
                     self.status_once(idx, slot, format!("XPT neighbours: {}", s.join(", ")), t, out);
                 }
             }
-            Control::Preamble { data, group, blocks, target, source, .. } => {
-                // Data to come (not a voice grant), as heard on a data carrier.
+            Control::Preamble { data, group, target, source, .. } => {
+                // Data to come (not a voice grant), as heard on a data carrier. One line
+                // per transfer: each preamble counts down the blocks still to come.
                 let what = if group { "TG" } else { "radio" };
                 let kind = if data { "data" } else { "control" };
-                self.status_once(idx, slot, format!("XPT {kind} preamble: {what} {target} from {source}, {blocks} blocks to follow"), t, out);
+                self.status_once(idx, slot, format!("XPT {kind} preamble: {what} {target} from {source}"), t, out);
             }
         }
     }
 
-    /// XPT: repeater `n` (1–8) is the free one, the rest channel; 0: none is.
+    /// XPT: repeater `n` is the free one, the rest channel (or none is).
     fn free_repeater(&mut self, n: u8) {
-        let lcn = n as u32;
-        self.rest = (1..=8).contains(&lcn).then(|| (2 * lcn - 1, self.resolve(lcn).unwrap_or(0)));
+        self.rest = super::xpt::repeater(n).map(|lcn| (2 * lcn - 1, self.resolve(lcn).unwrap_or(0)));
     }
 
     /// A site status (Capacity Plus, XPT): the rest channel and the busy
@@ -468,6 +482,10 @@ impl Site {
         if self.variant != Some(v) && !(self.variant == Some(Variant::CapacityMax) && v == Variant::TierIII) {
             self.variant = Some(v);
             self.notes.push(format!("This is a {} system", v.name()));
+            // Every carrier is the site's: their decoders read its link control as the site's kind.
+            for c in &mut self.carriers {
+                c.chan.variant = Some(v);
+            }
         }
     }
 
@@ -828,15 +846,40 @@ mod tests {
         out.clear();
         s.event(0, 0, SlotEvent::Lc { lc: setup, from: LcFrom::Terminator }, 0.1, &mut out);
         assert!(out.iter().all(|m| m.kind == MessageType::Status), "a setup is not a call");
-        // Its voice LC on 452 MHz slot 2: the call (16-bit IDs), and repeater 2 is learned.
+        // Its voice LC on 452 MHz slot 2 (16-bit IDs, as the channel hands it on): the call, and repeater 2 is learned.
         out.clear();
-        let lc = Lc([0, 0x68, 0, 0xab, 0, 25, 0xcd, 0x12, 0x34]);
+        assert_eq!(s.carriers[1].chan.variant, Some(Variant::Xpt), "every carrier reads the site's link control as XPT's");
+        let lc = Lc([0, 0x68, 0, 0, 0, 25, 0, 0x12, 0x34]);
         s.event(1, 1, SlotEvent::Lc { lc, from: LcFrom::Embedded }, 0.2, &mut out);
         assert_eq!((out[0].kind, out[0].talkgroup, out[0].source, out[0].freq_hz, out[0].voice.slot()), (MessageType::Grant, 25, 0x1234, 452_000_000, Some(1)));
         assert_eq!(s.resolve(2), Some(452_000_000));
         assert_eq!(s.status().carriers[1].slots[1], Some((25, 0x1234)));
         s.event(1, 1, SlotEvent::Lc { lc, from: LcFrom::Terminator }, 0.4, &mut out);
         assert_eq!(s.status().carriers[1].slots[1], None);
+    }
+
+    #[test]
+    fn the_control_channel_stays_put_while_it_sends() {
+        let mut s = Site::new(&[451_000_000.0, 452_000_000.0, 453_000_000.0], 24_000.0, DmrConfig::default());
+        let mut out = Vec::new();
+        // Two carriers sending control blocks by turns (XPT repeaters with a free slot, say).
+        let block = SlotEvent::Csbk { csbk: Csbk([0x3f, 0, 0, 0, 0, 0, 0, 0, 0, 0]), mbc: false };
+        for i in 0..10 {
+            let t = i as f64 * 0.1;
+            s.now_s = t;
+            s.event(i % 2 + 1, 0, block.clone(), t, &mut out);
+            assert_eq!(s.control_hz(), Some(452_000_000), "{t}");
+        }
+        // The first stops: the other takes over.
+        s.now_s = 3.5;
+        s.event(2, 0, block.clone(), 3.5, &mut out);
+        assert_eq!(s.control_hz(), Some(453_000_000));
+        // The rest channel, once its frequency is known, is the control channel.
+        s.event(0, 0, block.clone(), 3.6, &mut out);
+        s.now_s = 3.6;
+        assert_eq!(s.control_hz(), Some(453_000_000));
+        s.rest = Some((1, 451_000_000));
+        assert_eq!(s.control_hz(), Some(451_000_000));
     }
 
     #[test]
@@ -875,11 +918,11 @@ mod tests {
         s.event(0, 0, SlotEvent::Csbk { csbk: Csbk([0xbd, 0x68, 0x80, 0x12, 0xf0, 2, 8, 0, 0, 16]), mbc: false }, 0.1, &mut out);
         assert_eq!(s.variant, Some(Variant::Xpt));
         assert_eq!(out.len(), 1);
-        assert_eq!((out[0].kind, out[0].meta.as_str()), (MessageType::Status, "XPT data preamble: radio 520 from 16, 18 blocks to follow"));
+        assert_eq!((out[0].kind, out[0].meta.as_str()), (MessageType::Status, "XPT data preamble: radio 520 from 16"));
         assert!(s.rest.is_none() && s.pending.is_empty(), "a preamble's free repeater and addresses are not the voice site's");
         assert!(s.table.saved().is_empty(), "no channel mapping learned from data addresses");
         // Voice after a data terminator is still the voice.
-        let lc = Lc([0, 0x68, 0, 0x50, 0, 149, 0, 0x13, 0x8e]);
+        let lc = Lc([0, 0x68, 0, 0, 0, 149, 0, 0x13, 0x8e]);
         s.event(0, 0, SlotEvent::Lc { lc, from: LcFrom::Header }, 0.3, &mut out);
         assert_eq!((out.last().unwrap().talkgroup, out.last().unwrap().source), (149, 5006));
     }
