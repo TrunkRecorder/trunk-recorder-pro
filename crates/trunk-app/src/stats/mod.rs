@@ -40,8 +40,9 @@ pub use radio::{Names, Registry, TgInfo};
 
 /// The `stats` message and the rollups come this often, ms of wall clock.
 const TICK_MS: f64 = 1000.0;
-/// A source clipping more than this share of samples, %, is an event.
-const CLIP_EVENT_PCT: f64 = 0.5;
+/// A source clipping more than this share of samples, %, is an event (and a
+/// gain the tuner tries that clips so is refused, [`crate::tune`]).
+pub const CLIP_PCT: f64 = 0.5;
 
 /// What outlives a session: the radio registry, the names it answers with,
 /// and the event monitor (shared with the platform, which answers queries
@@ -489,7 +490,7 @@ impl Stats {
             let drops = self.agg.get(&format!("src/{n}/dropped")).unwrap_or(0.0) as f64;
             let clip = self.agg.get(&format!("src/{n}/clipPct")).unwrap_or(0.0) as f64;
             let (was_d, was_c) = self.trouble[i];
-            let (d, c) = (drops > 0.0, clip > CLIP_EVENT_PCT);
+            let (d, c) = (drops > 0.0, clip > CLIP_PCT);
             self.trouble[i] = (d, c);
             let source = n.clone();
             if d && !was_d {
