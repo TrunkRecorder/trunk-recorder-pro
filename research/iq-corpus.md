@@ -595,7 +595,9 @@ through a file. It hasn't run against production.
 
 *New repo, plus workflows in this repo.*
 
-- The decode job and checks (`tool submission`). Unvalidated uploads are deleted. Only IQ, diagnostics, a waterfall and counts are
+- The decode job and checks (`tool submission`). Unvalidated uploads are deleted. (Since 2026-11-14 the check is
+  "is this a radio's IQ" — spectrum not flat, samples centred, numbers finite — not "does it decode": #170's two
+  no-audio voice captures, which decoded nothing, were deleted by the old rule.) Only IQ, diagnostics, a waterfall and counts are
   published. **Built.**
 - The public list page, with waterfalls. **Built.**
 - Promotion and removal on the page, with optional GitHub sign-in. **Built.**

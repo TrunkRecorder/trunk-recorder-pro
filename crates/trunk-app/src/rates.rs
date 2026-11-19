@@ -73,10 +73,11 @@ pub fn of_kind(kind: &str) -> &'static [u32] {
 }
 
 /// The highest rate a source of kind `kind` runs at dependably: an RTL-SDR
-/// past 2.56 MSPS drops samples on many machines. Advice goes past it only
-/// when that reaches more. None: any it offers.
+/// past 2.4 MSPS loses blocks of samples without saying so once a second
+/// dongle streams beside it (measured on Pi, Mac and x86 hosts alike), which
+/// breaks decoding. Advice never goes past it. None: any it offers.
 pub fn steady_max(kind: &str) -> Option<u32> {
-    (kind == "rtlsdr").then_some(2_560_000)
+    (kind == "rtlsdr").then_some(2_400_000)
 }
 
 /// The rates a source of kind `kind` may run at: what its radio said
@@ -104,6 +105,6 @@ mod tests {
         assert_eq!(offered("bladerf", Some(&Rates::Range { min: 1e6, max: 5e6 })), [2_400_000, 4_000_000, 5_000_000], "its kind's, within its range");
         assert_eq!(offered("rtlsdr", None)[0], 2_400_000, "the usual first");
         assert_eq!((r2.to_string(), blade.to_string()), ("10 / 2.5".to_string(), "0.52–61.44".to_string()));
-        assert_eq!((steady_max("rtlsdr"), steady_max("airspy")), (Some(2_560_000), None));
+        assert_eq!((steady_max("rtlsdr"), steady_max("airspy")), (Some(2_400_000), None));
     }
 }

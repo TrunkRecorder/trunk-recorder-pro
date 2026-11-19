@@ -1771,7 +1771,7 @@ mod plugin_tests {
         .unwrap();
         let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
         let mut call = trunk_core::trunk::Call { talkgroup: 1001, ..Default::default() };
-        call.sources.push(trunk_core::trunk::CallSource { src: 1234567, time_s: 1.0, audio_pos: None, flags: Default::default(), position: None });
+        call.sources.push(trunk_core::trunk::CallSource { src: 1234567, time_s: 1.0, ..Default::default() });
         let updates = |s: &mut Session, c: &trunk_core::trunk::Call| {
             let mut out = Vec::new();
             s.handle(Event::CallUpdate(c.clone()), &mut out);
