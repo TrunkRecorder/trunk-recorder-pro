@@ -100,6 +100,16 @@ impl Voice {
         }
     }
 
+    /// Its vocoder (none: analog).
+    pub fn codec(self) -> Option<crate::trunk::frames::Codec> {
+        use crate::trunk::frames::Codec;
+        match self {
+            Voice::P25 | Voice::ProVoice => Some(Codec::Imbe),
+            Voice::P25Tdma { .. } | Voice::Dmr { .. } | Voice::Nxdn(_) => Some(Codec::Ambe),
+            Voice::Fm | Voice::Am => None,
+        }
+    }
+
     /// NXDN: its rate.
     pub fn nxdn(self) -> Option<crate::nxdn::Rate> {
         match self {
@@ -149,9 +159,15 @@ pub enum Reason {
     Encrypted,
     NoSource,
     NoRecorder,
+    /// Its grants named a channel never turned into a frequency (no channel
+    /// table for its band): never a call, only counted ([`super::tally::CopyTally`]).
+    NoFrequency,
 }
 
 impl Reason {
+    pub const ALL: [Reason; 6] = [Reason::Ignored, Reason::UnknownTg, Reason::Encrypted, Reason::NoSource, Reason::NoRecorder, Reason::NoFrequency];
+
+    /// As calls carry it (Trunk Recorder's words).
     pub fn as_str(self) -> &'static str {
         match self {
             Reason::Ignored => "ignored",
@@ -159,6 +175,19 @@ impl Reason {
             Reason::Encrypted => "encrypted",
             Reason::NoSource => "no_source",
             Reason::NoRecorder => "no_recorder",
+            Reason::NoFrequency => "no_frequency",
+        }
+    }
+
+    /// As series keys name it (`calls/why/noRecorder`), the way node health reports do.
+    pub fn key(self) -> &'static str {
+        match self {
+            Reason::Ignored => "ignored",
+            Reason::UnknownTg => "unknownTg",
+            Reason::Encrypted => "encrypted",
+            Reason::NoSource => "noSource",
+            Reason::NoRecorder => "noRecorder",
+            Reason::NoFrequency => "noFrequency",
         }
     }
 }
@@ -564,17 +593,18 @@ pub struct CallManager {
     ids: CallIds,
     /// The site's standing patches.
     pub patches: Patches,
-    /// Calls granted on a channel never turned into a frequency, since the
-    /// start: each counted once, when it ends unresolved, and not in the first
-    /// [`NO_FREQUENCY_GRACE_S`] (node health reports' `noFrequency`).
-    pub no_frequency: u64,
+    /// What became of the site's copies of calls, since the start: each
+    /// counted when it ends ([`Engine`](super::engine::Engine) adds its
+    /// frames), and calls granted on a channel never turned into a frequency
+    /// once, when they end unresolved, but not in the first [`NO_FREQUENCY_GRACE_S`].
+    pub tally: super::tally::CopyTally,
     unresolved: Vec<Unresolved>,
     first_grant_s: Option<f64>,
 }
 
 impl CallManager {
     pub fn new(cfg: CallConfig) -> Self {
-        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default(), no_frequency: 0, unresolved: Vec::new(), first_grant_s: None }
+        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default(), tally: Default::default(), unresolved: Vec::new(), first_grant_s: None }
     }
 
     /// For site `site` of system `system`, drawing ids from `ids` (shared with the other sites).
@@ -719,15 +749,14 @@ impl CallManager {
     /// missed for want of a frequency, unless it began in the start-up grace.
     fn end_unresolved(&mut self, now_s: f64) {
         let (timeout, start) = (self.cfg.call_timeout_s, self.first_grant_s.unwrap_or(now_s));
-        let mut counted = 0u64;
+        let tally = &mut self.tally;
         self.unresolved.retain(|u| {
             let over = now_s - u.heard_s > timeout;
             if over && u.first_s - start >= NO_FREQUENCY_GRACE_S {
-                counted += 1;
+                tally.missed(Reason::NoFrequency);
             }
             !over
         });
-        self.no_frequency += counted;
     }
 
     /// Conversation mode off ([`CallConfig::conversation`]): recorded call
@@ -984,7 +1013,8 @@ mod tests {
         // Start-up: grants before the channel tables come round aren't counted.
         m.handle(&[unresolved(0.0, 101)], &mut Host, &mut ev);
         m.tick(1.0 + timeout, &mut Host, &mut ev);
-        assert_eq!(m.no_frequency, 0, "in the start-up grace");
+        let missed = |m: &CallManager| m.tally.not_recorded(Reason::NoFrequency);
+        assert_eq!(missed(&m), 0, "in the start-up grace");
         // After the grace: a call granted again and again, never resolved, counts once.
         for t in [20.0, 20.5, 21.0, 21.5] {
             m.handle(&[unresolved(t, 101)], &mut Host, &mut ev);
@@ -993,14 +1023,14 @@ mod tests {
         // An update for it keeps it going.
         m.handle(&[Message { freq_hz: 0, ..msg(MessageType::Update, 22.0, 101) }], &mut Host, &mut ev);
         m.tick(22.0 + timeout - 0.1, &mut Host, &mut ev);
-        assert_eq!(m.no_frequency, 0, "still going");
+        assert_eq!(missed(&m), 0, "still going");
         m.tick(22.1 + timeout, &mut Host, &mut ev);
-        assert_eq!(m.no_frequency, 1);
+        assert_eq!((missed(&m), m.tally.started), (1, 1));
         // A call whose grants become resolvable while it goes is a call, not missed.
         m.handle(&[unresolved(40.0, 102)], &mut Host, &mut ev);
         m.handle(&[msg(MessageType::Grant, 40.5, 102)], &mut Host, &mut ev);
         m.tick(50.0 + timeout, &mut Host, &mut ev);
-        assert_eq!(m.no_frequency, 1, "resolved: not missed");
+        assert_eq!(missed(&m), 1, "resolved: not missed");
         assert!(ev.iter().any(|e| matches!(e, CallEvent::Start(c) if c.talkgroup == 102)));
         assert!(!ev.iter().any(|e| matches!(e, CallEvent::Start(c) if c.talkgroup == 101)), "never a call");
     }

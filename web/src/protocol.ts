@@ -1522,9 +1522,11 @@ export interface DirListing {
 // Series are named by `/`-separated keys (crates/trunk-app/src/stats):
 //   src/<label>/{noise,peak,clipPct,samples,dropped,errors,ppm,tune}
 //   sys/<shortName>/{active,recording,calls,airMs,audioBytes,notSaved,dup}
-//   sys/<shortName>/cc/{good,bad,locked,syncs,nidFails,flywheels,eqResets,frames,sep,offset,signal,noise,snr,inSync,deviation}
-//   sys/<shortName>/why/<recorded|monitored|ignored|encrypted|unknown_tg|no_source|no_recorder>
-//   sys/<shortName>/voice/{frames,errors,bad}
+//   <site>/cc/{good,bad,locked,syncs,nidFails,flywheels,eqResets,frames,sep,offset,signal,noise,snr,inSync,deviation,airSym,syncLossSym,phaseErr}
+//   <site>, <channel>: calls/{started,recorded,skipped}  calls/why/<ignored|unknownTg|encrypted|noSource|noRecorder|noFrequency>
+//                      voice/<imbe|ambe>/{frames,bad,errors}   (each copy of a call, where it was heard)
+//   <channel>/{open,signal,closed,noise,snr}
+//     <site> = sys/<shortName>, or sys/<shortName>/site/<site> (several sites); <channel> = sys/<shortName>/ch/<Hz>
 //   all/{calls,airMs,audioBytes}  day/{calls,airS,audioBytes}  eng/{load,recording,channels,recorders}
 //   plat/{cpu,proCpu,proCores,proMem,mem,memAvail,swap,memPsi,memLevel,load1,temp,throttledUs,piThrottled}
 //   plat/disk/<recordings|data>/{free,freePct}  net/{rx,tx,errors,up,rtt,dns}

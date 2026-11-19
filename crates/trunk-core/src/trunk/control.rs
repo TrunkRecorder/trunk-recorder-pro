@@ -136,6 +136,10 @@ pub trait ControlChannel: Send {
     fn counts(&self) -> (u64, u64);
     /// What those blocks are called, plural ("TSBKs"), for summaries.
     fn blocks(&self) -> &'static str;
+    /// Its symbol rate, baud, when it counts the air its blocks account for (`airSym`).
+    fn symbol_rate(&self) -> Option<u32> {
+        None
+    }
     /// How far off the control channel comes in, Hz, when known (AutoTune,
     /// the dashboard). No default: each protocol says.
     fn offset_hz(&self) -> Option<f32>;
@@ -201,7 +205,7 @@ pub fn build(cfg: &SiteConfig, rate: f64) -> Box<dyn ControlChannel> {
             sync_end_s: None,
             unsynced_s: 0.0,
             pushed: 0,
-            sync_loss_sym: std::cell::Cell::new(0),
+            sync_loss_sym: 0,
             notes: Vec::new(),
             t0: 0.0,
             rate,
@@ -242,11 +246,11 @@ struct P25 {
     /// receiver framed. `sync_end_s`: where the last frame ended (None: since a
     /// restart); `unsynced_s`: the gaps closed; `pushed`: samples in since the
     /// bank started (frames' `sample` counts from there too, `t0` being the
-    /// tap's start); `sync_loss_sym`: what [`ControlChannel::report`] said, which only grows.
+    /// tap's start); `sync_loss_sym`: the symbols of both, as of the last push (a counter: it only grows).
     sync_end_s: Option<f64>,
     unsynced_s: f64,
     pushed: u64,
-    sync_loss_sym: std::cell::Cell<u64>,
+    sync_loss_sym: u64,
     notes: Vec<(NoteLevel, String)>,
     /// The last push's start time and rate (for the flush).
     t0: f64,
@@ -315,11 +319,7 @@ impl ControlChannel for P25 {
         // A rate: over the symbol rate, the share of the channel's air decoded.
         sink.counter("airSym", self.air);
         // A rate: over the symbol rate, the share of the time running without frame sync.
-        let pushed_s = self.t0 + self.pushed as f64 / self.rate;
-        let open = self.sync_end_s.map_or(0.0, |e| (pushed_s - e - SYNC_PENDING_S).max(0.0));
-        let now = ((self.unsynced_s + open) * P25_SYMBOL_RATE) as u64;
-        self.sync_loss_sym.set(self.sync_loss_sym.get().max(now));
-        sink.counter("syncLossSym", self.sync_loss_sym.get());
+        sink.counter("syncLossSym", self.sync_loss_sym);
     }
     fn plan(&self) -> CarrierPlan {
         CarrierPlan::Hunt { cutoff_hz: P25_CUTOFF_HZ }
@@ -349,6 +349,10 @@ impl ControlChannel for P25 {
             self.notes.push((NoteLevel::Info, format!("Modulation detected: {what}; only its receivers run now (set modulation \"{setting}\" to skip detecting it)")));
         }
         self.groups(&groups, out);
+        // The gaps closed, and the one still open (less the frames the receivers still hold).
+        let pushed_s = t0 + self.pushed as f64 / rate;
+        let open = self.sync_end_s.map_or(0.0, |e| (pushed_s - e - SYNC_PENDING_S).max(0.0));
+        self.sync_loss_sym = self.sync_loss_sym.max(((self.unsynced_s + open) * P25_SYMBOL_RATE) as u64);
     }
     fn flush(&mut self, out: &mut Vec<Step>) {
         let mut groups = Vec::new();
@@ -360,6 +364,9 @@ impl ControlChannel for P25 {
     }
     fn blocks(&self) -> &'static str {
         "TSBKs"
+    }
+    fn symbol_rate(&self) -> Option<u32> {
+        Some(P25_SYMBOL_RATE as u32)
     }
     fn offset_hz(&self) -> Option<f32> {
         self.bank.offset_hz()

@@ -66,6 +66,12 @@ pub fn system_key(short_name: &str) -> String {
     format!("sys/{}", key_part(short_name))
 }
 
+/// Where conventional frequency `hz` of system `short_name` has its series:
+/// `sys/<short name>/ch/<Hz>`.
+pub fn channel_key(short_name: &str, hz: f64) -> String {
+    format!("{}/ch/{}", system_key(short_name), hz.round() as u64)
+}
+
 /// |X|² per FFT bin (the channelizer's units) as dBFS, for an `n`-point FFT.
 pub fn bin_dbfs(power: f64, n: usize) -> f64 {
     10.0 * (power / (n as f64 * n as f64) + 1e-14).log10()

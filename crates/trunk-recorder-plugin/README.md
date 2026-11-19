@@ -85,8 +85,8 @@ latest calls included. On the wire the request number rides beside the query and
 
 ## Node health reports
 
-Subscribe to `health` and the recorder sends running totals of how well it hears each site,
-conventional channel and radio every 10 s (`Plugin::health`). The `health` module turns them into
+Subscribe to `totals` and the recorder sends every series it measures as running totals, with the
+sites, conventional channels and radios they're of, every 10 s (`Plugin::totals`). The `health` module turns them into
 a [node health report](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/api/node-health.md)
 for a service: `History` keeps the totals, a `Reporter` per node says when its report is due (a
 random point in each interval, jittered) and makes it, and is told how the send went

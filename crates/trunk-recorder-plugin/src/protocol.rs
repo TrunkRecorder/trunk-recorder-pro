@@ -8,6 +8,7 @@
 //!
 //! `plugin --describe` prints the plugin's [`Manifest`] (one JSON object) and exits.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -45,10 +46,9 @@ pub mod topic {
     pub const VOICE: &str = "voice";
     /// Every system's state, every few seconds ([`super::Status`]).
     pub const STATUS: &str = "status";
-    /// How well the recorder hears each site, conventional channel and radio, as running totals
-    /// since recording started, every 10 s ([`super::Health`]): for [node health
-    /// reports](super::health).
-    pub const HEALTH: &str = "health";
+    /// Every series the recorder measures, as running totals since recording started, every
+    /// 10 s ([`super::Totals`]): node health reports ([`crate::health`]) are made of them.
+    pub const TOTALS: &str = "totals";
     /// A call's tones made a pattern ([`super::TonePatternEvent`]): every page,
     /// alert tone, DTMF string and Morse ID heard, named by the system's signals or not.
     pub const TONE_PATTERN: &str = "tone_pattern";
@@ -57,7 +57,7 @@ pub mod topic {
     /// elsewhere. A plugin isn't sent its own lines.
     pub const LOG: &str = "log";
 
-    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, VOICE, STATUS, HEALTH, TONE_PATTERN, LOG];
+    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, VOICE, STATUS, TOTALS, TONE_PATTERN, LOG];
 
     /// A call's live media ([`AUDIO`], [`VOICE`]): late isn't live, so a plugin
     /// delayed for the call, or catching up, isn't given it.
@@ -193,8 +193,8 @@ pub enum HostMessage {
     Voice(VoiceChunk),
     #[serde(rename = "status")]
     Status(Status),
-    #[serde(rename = "health")]
-    Health(Health),
+    #[serde(rename = "totals")]
+    Totals(Totals),
     #[serde(rename = "tone_pattern")]
     TonePattern(TonePatternEvent),
     #[serde(rename = "log")]
@@ -953,6 +953,16 @@ pub enum Codec {
 }
 
 impl Codec {
+    pub const ALL: [Codec; 2] = [Codec::Imbe, Codec::Ambe];
+
+    /// As its serde name, series keys and node health reports have it: `imbe`, `ambe`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Codec::Imbe => "imbe",
+            Codec::Ambe => "ambe",
+        }
+    }
+
     /// Information bits in one of its frames.
     pub fn bits(self) -> usize {
         match self {
@@ -1098,17 +1108,41 @@ pub struct Status {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SystemStatus {
-    pub index: u16,
-    pub short_name: String,
-    /// One entry per site: this one's name (a system of one site: its short
-    /// name). `site` below is its number, as the control channel says it.
-    pub site_name: String,
-    /// The control channel being decoded (none: searching).
-    pub control_channel_hz: Option<u64>,
+    /// Which site (one entry per site).
+    #[serde(flatten)]
+    pub scope: SiteScope,
     /// Control channel messages decoded per second.
     pub decode_rate: f64,
     pub active_calls: u32,
     pub recording: u32,
+}
+
+/// One trunked site: which it is, and what its control channel says it is ([`SystemStatus`],
+/// [`Totals::sites`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SiteScope {
+    /// Its system's [`SystemInfo::index`] and `short_name`.
+    pub index: u16,
+    pub short_name: String,
+    /// This site's name (a system of one site: its short name).
+    pub site_name: String,
+    /// Its series' key (`sys/<short name>`, or `sys/<short name>/site/<site>`): [`Totals::series`]
+    /// has its control channel under `<key>/cc/…`, its copies of calls under `<key>/calls/…`
+    /// and `<key>/voice/…`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub key: String,
+    /// [`SystemInfo::kind`]: `p25`, `smartnet`, `edacs`, `dmr`, `nxdn`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub protocol: String,
+    /// The control channel being decoded (none: searching).
+    pub control_channel_hz: Option<u64>,
+    /// The radio it's heard on ([`SourceScope::index`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<usize>,
+    /// Its control channel's symbol rate, baud, when it counts the air its blocks account for (`cc/airSym`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_rate: Option<u32>,
     /// The system's identity, as far as its control channel has stated it
     /// (none until it has): P25 NAC, WACN, system ID, RFSS and site; site
     /// also for SmartNet when its OBT sends one.
@@ -1124,176 +1158,126 @@ pub struct SystemStatus {
     pub site: Option<u32>,
 }
 
-/// How well the recorder hears what it records ([`topic::HEALTH`]): running totals since
-/// recording started, so a plugin takes the difference between two to have a window of its own
-/// choosing ([`crate::health`] does, and makes a node health report of it). Means are given as a
-/// total and the seconds it's over (`snr_db_total` / `snr_s`), so they difference too.
+/// Every series the recorder measures, as running totals since recording started
+/// ([`topic::TOTALS`]), and what their keys are of. A plugin takes the difference between two to
+/// have a window of its own choosing ([`Totals::since`]); [`crate::health`] makes node health
+/// reports of them. The series are the dashboard's (`docs/plugins/writing-plugins.md#series`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Health {
+pub struct Totals {
     /// Unix seconds.
     pub time: f64,
     /// When recording started (Unix s): the totals count from here. A later `since` than the
     /// last message's means recording restarted, and the totals with it.
     pub since: f64,
+    /// By key (`sys/dcfd/cc/good`, `src/800/dropped`…).
+    pub series: BTreeMap<String, Total>,
     /// Each trunked site.
-    pub sites: Vec<SiteHealth>,
+    pub sites: Vec<SiteScope>,
     /// Each conventional frequency.
-    pub channels: Vec<ChannelHealth>,
+    pub channels: Vec<ChannelScope>,
     /// Each radio.
-    pub sources: Vec<SourceHealth>,
-    /// The recorder's clock less the time a P25 system broadcasts (SYNC_BCST), ms: the
-    /// latest heard on any site (none: no site broadcasts it).
+    pub sources: Vec<SourceScope>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_offset_ms: Option<f64>,
-    /// How the recorder's clock is kept: `ntp`, `gps`, `ptp`, `none` (not synchronized),
-    /// `unknown` (synchronized, by a time service the recorder can't name); none: the operating
-    /// system doesn't say.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub clock_sync: Option<String>,
+    pub clock: Option<ClockState>,
 }
 
-/// One trunked site's totals ([`Health`]).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SiteHealth {
-    /// [`SystemInfo::index`] and `short_name`, and the site's name as calls carry it.
-    pub system: u16,
-    pub short_name: String,
-    pub site_name: String,
-    /// [`SystemInfo::kind`].
-    pub protocol: String,
-    /// The control channel being decoded (none: searching).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub control_channel_hz: Option<u64>,
-    /// The radio it's heard on ([`SourceHealth::index`]).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<usize>,
-    /// As [`SystemStatus`] has them.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub nac: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wacn: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sys_id: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rfss: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub site: Option<u32>,
-    /// Seconds its control channel was decoding: a good block within the last 2 s.
-    pub locked_s: f64,
-    /// Control channel blocks decoded, and framed but not decoded.
-    pub good: u64,
-    pub bad: u64,
-    /// Symbols of air the good blocks account for, and the channel's symbol rate (P25; none
-    /// for protocols that don't measure it).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub air_sym: Option<u64>,
-    /// Symbols the control channel ran without frame sync (None: not measured).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sync_loss_sym: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub symbol_rate: Option<u32>,
-    /// The control channel over the noise floor beside it, dB, summed over the seconds
-    /// measured while locked.
-    pub snr_db_total: f64,
-    pub snr_s: f64,
-    /// Its symbols' RMS phase error, degrees, summed over the seconds measured while locked.
-    pub phase_err_deg_total: f64,
-    pub phase_err_s: f64,
-    pub calls: CallTotals,
-    pub voice: VoiceTotals,
+impl Totals {
+    /// Series `key`'s total (none: never reported).
+    pub fn get(&self, key: &str) -> Option<&Total> {
+        self.series.get(key)
+    }
+
+    /// What `self` counted since `base` (none, or from before a restart of recording: since
+    /// recording started): every series' difference, as [`Total::since`].
+    pub fn since(&self, base: Option<&Totals>) -> Totals {
+        let base = base.filter(|b| b.since == self.since && b.time <= self.time);
+        let series = self.series.iter().map(|(k, t)| (k.clone(), t.since(base.and_then(|b| b.series.get(k))))).collect();
+        Totals { series, ..self.clone() }
+    }
 }
 
-/// Calls the control channel announced ([`SiteHealth`]), or a conventional channel took.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct CallTotals {
-    pub started: u64,
-    pub recorded: u64,
-    /// Not recorded, by why ([`CallInfo::reason`]: `ignored`, `unknown_tg`, `encrypted`,
-    /// `no_source`, `no_recorder`).
-    pub not_recorded: std::collections::BTreeMap<String, u64>,
-}
-
-/// Vocoder frames of recorded calls, by codec ([`Codec`]).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct VoiceTotals {
-    pub imbe: FrameTotals,
-    pub ambe: FrameTotals,
-}
-
+/// One series' running total ([`Totals`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct FrameTotals {
-    pub frames: u64,
-    /// Too damaged to use.
-    pub bad: u64,
-    /// Bit errors FEC corrected.
-    pub errors: u64,
-    /// Frames the calls' lengths say should have come but never did (not in `frames`), when the
-    /// recorder can tell.
+pub struct Total {
+    /// A counter: what it counted. A gauge: its value times the seconds it held it, summed.
+    pub sum: f64,
+    /// Seconds: a gauge's, measured; a counter's, in which it counted any.
+    pub s: f64,
+    /// Its value in the latest tick: a gauge's as it is, a counter's a second (none: not reported then).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub missing: Option<u64>,
+    pub now: Option<f64>,
 }
 
-/// One conventional frequency's totals ([`Health`]).
+impl Total {
+    /// What it added since `base` (none: everything).
+    pub fn since(&self, base: Option<&Total>) -> Total {
+        let b = base.copied().unwrap_or_default();
+        Total { sum: self.sum - b.sum, s: self.s - b.s, now: self.now }
+    }
+
+    /// A gauge's mean over its seconds (none: under a second of them).
+    pub fn mean(&self) -> Option<f64> {
+        (self.s >= 1.0).then(|| self.sum / self.s)
+    }
+
+    /// A counter's count.
+    pub fn count(&self) -> u64 {
+        self.sum.max(0.0).round() as u64
+    }
+}
+
+/// One conventional frequency ([`Totals::channels`]).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ChannelHealth {
-    pub system: u16,
+pub struct ChannelScope {
+    /// Its series' key (`sys/<short name>/ch/<Hz>`): `<key>/{open,signal,closed,noise,snr}`, its
+    /// transmissions under `<key>/calls/…`, their frames under `<key>/voice/…`.
+    pub key: String,
+    /// [`SystemInfo::index`] and `short_name`.
+    pub index: u16,
     pub short_name: String,
     pub freq_hz: u64,
-    /// `fm`, `am`, `p25`, `dmr`, `nxdn`, …
+    /// `fm`, `am`, `p25`, `dmr`, `nxdn48`, `nxdn96`.
     pub mode: String,
-    /// Its rows' names.
+    /// Its rows' names, each once.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub names: Vec<String>,
-    /// The code it records by (`CTCSS 151.4`, `DCS 023N`, `NAC 293`, `CC 1`), when it has one.
+    /// The code its rows record by, when they share one (`CTCSS 151.4`, `DCS 023N`, `NAC 293`, `CC 1`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
-    /// The radio it's heard on ([`SourceHealth::index`]).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<usize>,
-    /// Seconds its radio delivered samples without drops.
-    pub heard_s: f64,
-    /// Seconds open (a transmission on it), and the level then, dBFS, summed over them.
-    pub open_s: f64,
-    pub signal_db_total: f64,
-    /// The level while closed, dBFS, summed over the seconds closed.
-    pub closed_db_total: f64,
-    pub closed_s: f64,
-    /// The level over the noise floor under it, dB, summed over the seconds open.
-    pub snr_db_total: f64,
-    /// Transmissions a row took (calls), and that none did (another code, or none).
-    pub calls: CallTotals,
-    pub skipped: u64,
-    pub voice: VoiceTotals,
+    /// The radio it's heard on ([`SourceScope::index`]).
+    pub source: usize,
 }
 
-/// One radio's totals ([`Health`]).
+/// One radio ([`Totals::sources`]).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SourceHealth {
+pub struct SourceScope {
+    /// Its series' key (`src/<label>`): `<key>/{samples,dropped,clipPct,ppm,tune}`.
+    pub key: String,
     pub index: usize,
     /// Its label, as Setup shows it.
     pub name: String,
     /// `airspy`, `hackrf`, `rtlsdr`, …
     pub driver: String,
-    /// Seconds running, and of those, seconds it lost samples in.
-    pub seconds: f64,
-    pub dropped_s: f64,
-    /// The share of samples at full scale, %, summed over its seconds.
-    pub clip_pct_total: f64,
-    /// Its frequency error, ppm, now, measured against the correction it's configured with (none: not
-    /// measured).
+    /// AutoTune corrects it (`<key>/tune`: the correction on top of the configured ppm).
+    pub auto_tune: bool,
+}
+
+/// How right the recorder's clock is ([`Totals::clock`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClockState {
+    /// How it's kept: `ntp`, `gps`, `ptp`, `none` (not synchronized), `unknown` (synchronized,
+    /// by a time service the recorder can't name); none: the operating system doesn't say.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ppm_error: Option<f64>,
-    /// The correction AutoTune applies on top of the configured one, ppm, now (none: AutoTune off).
-    /// `ppm_error - ppm_applied` is how far off it still tunes.
+    pub sync: Option<String>,
+    /// The recorder's clock less the time a P25 system broadcasts (SYNC_BCST, when the system
+    /// marks it valid), ms: the latest heard on any site.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ppm_applied: Option<f64>,
+    pub system_offset_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1670,11 +1654,12 @@ mod tests {
     fn system_identity_is_there_once_stated() {
         // From a recorder that doesn't send it: none of it.
         let s: SystemStatus = serde_json::from_str(r#"{"index":0,"short_name":"county","decode_rate":39.8}"#).unwrap();
-        assert_eq!((s.nac, s.wacn, s.sys_id, s.rfss, s.site), (None, None, None, None, None));
+        let i = &s.scope;
+        assert_eq!((i.nac, i.wacn, i.sys_id, i.rfss, i.site), (None, None, None, None, None));
         // Nothing stated yet: nothing written.
         let v = serde_json::to_value(&s).unwrap();
         assert!(["nac", "wacn", "sys_id", "rfss", "site"].iter().all(|k| v.get(k).is_none()), "{v}");
-        let s = SystemStatus { nac: Some(0x3A0), wacn: Some(0xBEE00), sys_id: Some(0x3AB), rfss: Some(1), site: Some(5), ..s };
+        let s = SystemStatus { scope: SiteScope { nac: Some(0x3A0), wacn: Some(0xBEE00), sys_id: Some(0x3AB), rfss: Some(1), site: Some(5), ..s.scope }, ..s };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!((v["nac"].as_u64(), v["wacn"].as_u64(), v["site"].as_u64()), (Some(0x3A0), Some(0xBEE00), Some(5)));
     }

@@ -99,7 +99,7 @@ far behind loses events (counted on the dashboard) rather than slowing the recor
 | `audio` | `AudioChunk` | Live audio of recording calls: 16-bit mono PCM at 8 kHz, base64 |
 | `voice` | `VoiceChunk` | The vocoder frames each `audio` chunk of a recording digital call is made from, FEC-corrected and in order, with the call, talkgroup and who is talking (`unit`, `unit_name`). Each frame (`VoiceFrame`, as a line of a call's `.frames.jsonl`) has its `codec` (`imbe`: P25 Phase 1, ProVoice, 88 bits; `ambe`: AMBE+2 half rate, P25 Phase 2, DMR, NXDN, 49 bits), its `bits` as hex, the bit errors FEC corrected (`errs`, and IMBE's `e0`), and what the vocoder made of it (`kind`: `voice`, `repeat`, `muted`, `erasure`, `tone`). Voice goes where live audio goes: not to a plugin delayed for the call, decrypted only to plugins with `shareDecrypted`, and encrypted voice the recorder can't decrypt not at all. (Since SDK 0.11.0.) |
 | `status` | `Status` | Every system's state every few seconds: control channel, decode rate, active and recording calls |
-| `health` | `Health` | How well the recorder hears what it records, every 10 s: each trunked site's control channel (seconds decoding, blocks decoded and lost, SNR, phase error), the calls it announced and why any weren't recorded, and voice frames lost; each conventional channel's time open and closed, levels, calls and transmissions no row took; each radio's dropped samples and clipping. Running totals since recording started, for [node health reports](../api/node-health.md): the SDK's `health` module turns them into one. (Since SDK 0.12.0.) |
+| `totals` | `Totals` | Every series the recorder measures, as running totals since recording started, every 10 s ([Series](#series)): with the sites, conventional channels and radios they're of. Take the difference of two for a window of your own (`Totals::since`). Node health reports are made of them: the SDK's `health` module turns them into one ([node health reports](../api/node-health.md)). (Since SDK 0.12.0.) |
 | `log` | `LogLine` | Each line TRP logs, at the level its log is set to: `time` (Unix s), `level` (`trace` … `fatal`), `system` (when it's one's), `text`, and `line`, the whole line as the console prints it (no colour). For sending the log on (to MQTT, a chat). A plugin isn't sent its own lines; don't log for each one you get. (Since SDK 0.10.0.) |
 
 Every event carries the system's `short_name`, which is its identity. The numeric `system` index is
@@ -112,6 +112,29 @@ entry per site, with its `site_name`. A call heard on several sites of a system 
 `freq_hz` are those of the copy speaking for it (one being recorded, if any is), and a `call.update` says when that changes.
 `call.concluded` is for the copy kept, and it and live audio carry that site's own call id. A plugin too far behind can lose
 other events, but not a call's start or end.
+
+### Series
+
+The `totals` topic carries what the dashboard charts, by key. Each is a `Total`: a counter's count (`sum`) and the
+seconds in which it counted any (`s`), or a gauge's value times the seconds it held it (`sum`) and those seconds (`s`,
+so its mean is `sum / s`); with its latest value (`now`). Counts are kept where they happen, at the finest grain:
+each site's copies of calls (a call heard on two sites counts at both) and each conventional frequency's. A system's
+figures are the sum of its sites' and channels'.
+
+| Key | What |
+|---|---|
+| `<site>/cc/{good,bad,airSym,syncLossSym}` | Control channel blocks decoded and lost; the symbols of air the good ones account for, and of time without frame sync (P25; `SiteScope::symbol_rate`) |
+| `<site>/cc/{locked,snr,phaseErr,signal,noise}` | Gauges: decoding (1/0), its level over the floor beside it, its symbols' phase error |
+| `<site>/calls/{started,recorded}`, `<site>/calls/why/<reason>` | Each copy of a call, when it ends, by what finally became of it: `ignored`, `unknownTg`, `encrypted`, `noSource`, `noRecorder`, `noFrequency` |
+| `<site>/voice/<imbe\|ambe>/{frames,bad,errors}` | The vocoder frames of every copy recorded (saved or not), by codec |
+| `<channel>/{calls,voice}/…` | As for a site, with `calls/skipped`: transmissions no row took |
+| `<channel>/{open,signal,closed,noise,snr}` | Gauges: open (1/0), its level while open and while closed, the floor beside it, open over the floor |
+| `src/<label>/{samples,dropped,clipPct,ppm,tune}` | Each radio: samples and samples lost (their `s`: seconds running, and seconds losing any), clipping, its frequency error and AutoTune's correction |
+| `sys/<short name>/{calls,airMs,audioBytes,notSaved,dup}` | Each system's calls (once each, however many sites heard them) |
+
+`<site>` is `SiteScope::key` (`sys/<short name>`, or `sys/<short name>/site/<site>` for a system of several), `<channel>`
+`ChannelScope::key` (`sys/<short name>/ch/<Hz>`), and a radio's `SourceScope::key`. A count appears once it has counted
+something.
 
 ### What a plugin sends back
 

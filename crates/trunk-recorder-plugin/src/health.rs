@@ -1,24 +1,25 @@
 //! Node health reports: telling a call-collecting service how well this recorder hears what it
 //! uploads (`docs/api/node-health.md`, version 1).
 //!
-//! The recorder sends the [`health`](crate::topic::HEALTH) topic every 10 s: running totals for
-//! each site, conventional channel and radio ([`Health`]). A plugin keeps them in a [`History`]
+//! The recorder sends the [`totals`](crate::topic::TOTALS) topic every 10 s: every series it
+//! measures as a running total, and which sites, conventional channels and radios they're of
+//! ([`Totals`]). A plugin keeps them in a [`History`]
 //! and a [`Reporter`] for each node it reports on, which says when that node's next report is
 //! due — at a random point in each interval, its own, so a service's nodes don't all report at
 //! once — and makes the [`Report`] from the totals: what changed since its last delivered one.
 //!
 //! ```no_run
-//! # use trunk_recorder_plugin::{health::*, Health};
+//! # use trunk_recorder_plugin::{health::*, Totals};
 //! # fn post(_: &Report) -> Result<Answer, Failure> { unimplemented!() }
 //! # let mut history = History::default();
 //! # let mut node = Reporter::new(Select::system("dcfd"), "1234");
-//! # let health = Health::default();
-//! history.push(health.clone());
-//! if node.due(&health) {
+//! # let totals = Totals::default();
+//! history.push(totals.clone());
+//! if node.due(&totals) {
 //!     if let Some(r) = node.report(&history, serde_json::json!({ "systemId": 1234 }), Recorder::new("my-recorder", "1.0")) {
 //!         match post(&r) {
 //!             Ok(answer) => node.delivered(&r, answer.next_s),
-//!             Err(f) => node.failed(&health, f),
+//!             Err(f) => node.failed(&totals, f),
 //!         }
 //!     }
 //! }
@@ -29,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::protocol::{CallTotals, ChannelHealth, FrameTotals, Health, SiteHealth, SourceHealth, VoiceTotals};
+use crate::protocol::{ChannelScope, Codec, SiteScope, SourceScope, Total, Totals};
 
 /// This format's version.
 pub const VERSION: u32 = 1;
@@ -147,6 +148,20 @@ pub struct CallsReport {
     pub not_recorded: BTreeMap<String, u64>,
 }
 
+/// Vocoder frames of recorded calls, of one codec.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameTotals {
+    pub frames: u64,
+    /// Too damaged to use.
+    pub bad: u64,
+    /// Bit errors FEC corrected.
+    pub errors: u64,
+    /// Frames the calls' lengths say should have come but never did (not in `frames`), when the
+    /// recorder can tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<u64>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VoiceReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -262,154 +277,143 @@ impl Select {
         self.except.insert(site.to_string());
         self
     }
-    fn site_in(&self, s: &SiteHealth) -> bool {
+    fn site_in(&self, s: &SiteScope) -> bool {
         s.short_name == self.short_name && self.only.as_ref().is_none_or(|o| o.contains(&s.site_name)) && !self.except.contains(&s.site_name)
     }
-    fn channel_in(&self, c: &ChannelHealth) -> bool {
+    fn channel_in(&self, c: &ChannelScope) -> bool {
         c.short_name == self.short_name && self.only.is_none()
     }
 }
 
 // ─── Making a report from two snapshots ──────────────────────────────────────
 
-fn mean(total: f64, s: f64) -> Option<f64> {
-    (s >= 1.0).then(|| (total / s * 10.0).round() / 10.0)
-}
-
 fn r1(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
 
-fn frames(a: FrameTotals, b: Option<&FrameTotals>) -> Option<FrameTotals> {
-    let b = b.copied().unwrap_or_default();
-    let d = FrameTotals {
-        frames: a.frames.saturating_sub(b.frames),
-        bad: a.bad.saturating_sub(b.bad),
-        errors: a.errors.saturating_sub(b.errors),
-        missing: a.missing.map(|m| m.saturating_sub(b.missing.unwrap_or(0))),
-    };
-    (d.frames > 0).then_some(d)
+/// A window's series ([`Totals::since`]) under one key.
+struct Scope<'a> {
+    w: &'a Totals,
+    key: &'a str,
 }
 
-fn voice(a: &VoiceTotals, b: Option<&VoiceTotals>) -> VoiceReport {
-    VoiceReport { imbe: frames(a.imbe, b.map(|b| &b.imbe)), ambe: frames(a.ambe, b.map(|b| &b.ambe)) }
-}
-
-fn calls(a: &CallTotals, b: Option<&CallTotals>) -> CallsReport {
-    let started = a.started.saturating_sub(b.map_or(0, |b| b.started));
-    let recorded = a.recorded.saturating_sub(b.map_or(0, |b| b.recorded));
-    let not_recorded = a
-        .not_recorded
-        .iter()
-        .map(|(k, &n)| (camel(k), n.saturating_sub(b.and_then(|b| b.not_recorded.get(k)).copied().unwrap_or(0))))
-        .filter(|&(_, n)| n > 0)
-        .collect();
-    CallsReport { started, recorded, not_recorded }
-}
-
-/// `no_source` → `noSource`.
-fn camel(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut up = false;
-    for c in s.chars() {
-        if c == '_' {
-            up = true;
-        } else if up {
-            out.extend(c.to_uppercase());
-            up = false;
-        } else {
-            out.push(c);
-        }
+impl Scope<'_> {
+    fn get(&self, name: &str) -> Option<&Total> {
+        self.w.get(&format!("{}/{name}", self.key))
     }
-    out
+    fn count(&self, name: &str) -> Option<u64> {
+        self.get(name).map(Total::count)
+    }
+    /// A gauge's seconds-weighted sum: the seconds it was 1 (`locked`, `open`).
+    fn seconds(&self, name: &str) -> f64 {
+        r1(self.get(name).map_or(0.0, |t| t.sum))
+    }
+    fn mean(&self, name: &str) -> Option<f64> {
+        self.get(name).and_then(Total::mean).map(r1)
+    }
+    fn calls(&self) -> CallsReport {
+        let why = format!("{}/calls/why/", self.key);
+        let not_recorded = self.w.series.range(why.clone()..).take_while(|(k, _)| k.starts_with(&why)).map(|(k, t)| (k[why.len()..].to_string(), t.count())).filter(|&(_, n)| n > 0).collect();
+        CallsReport { started: self.count("calls/started").unwrap_or(0), recorded: self.count("calls/recorded").unwrap_or(0), not_recorded }
+    }
+    fn voice(&self) -> VoiceReport {
+        let codec = |c: Codec| {
+            let n = |k: &str| self.count(&format!("voice/{}/{k}", c.key())).unwrap_or(0);
+            Some(FrameTotals { frames: n("frames"), bad: n("bad"), errors: n("errors"), missing: None }).filter(|f| f.frames > 0)
+        };
+        VoiceReport { imbe: codec(Codec::Imbe), ambe: codec(Codec::Ambe) }
+    }
 }
 
-fn site(a: &SiteHealth, b: Option<&SiteHealth>) -> SiteReport {
-    let d = |f: fn(&SiteHealth) -> f64| f(a) - b.map_or(0.0, f);
-    let id = [("wacn", a.wacn), ("sysId", a.sys_id), ("rfss", a.rfss), ("site", a.site), ("nac", a.nac)]
+fn site(w: &Totals, s: &SiteScope) -> SiteReport {
+    let k = Scope { w, key: &s.key };
+    let id = [("wacn", s.wacn), ("sysId", s.sys_id), ("rfss", s.rfss), ("site", s.site), ("nac", s.nac)]
         .into_iter()
         .filter_map(|(k, v)| v.map(|v| (k.to_string(), v)))
         .collect();
+    let air_sym = k.count("cc/airSym");
     SiteReport {
-        name: a.site_name.clone(),
-        protocol: a.protocol.clone(),
+        name: s.site_name.clone(),
+        protocol: s.protocol.clone(),
         receiver: None,
         id,
         cc: CcReport {
-            hz: a.control_channel_hz,
-            locked_s: r1(d(|s| s.locked_s)),
-            good: a.good.saturating_sub(b.map_or(0, |b| b.good)),
-            bad: Some(a.bad.saturating_sub(b.map_or(0, |b| b.bad))),
-            sync_loss_sym: a.sync_loss_sym.map(|n| n.saturating_sub(b.and_then(|b| b.sync_loss_sym).unwrap_or(0))),
-            air_sym: a.air_sym.map(|n| n.saturating_sub(b.and_then(|b| b.air_sym).unwrap_or(0))),
-            symbol_rate: a.symbol_rate,
-            snr_db: mean(d(|s| s.snr_db_total), d(|s| s.snr_s)),
+            hz: s.control_channel_hz,
+            locked_s: k.seconds("cc/locked"),
+            good: k.count("cc/good").unwrap_or(0),
+            bad: k.count("cc/bad"),
+            sync_loss_sym: k.count("cc/syncLossSym"),
+            air_sym,
+            symbol_rate: s.symbol_rate.filter(|_| air_sym.is_some()),
+            snr_db: k.mean("cc/snr"),
             mer_db: None,
-            phase_err_deg: mean(d(|s| s.phase_err_deg_total), d(|s| s.phase_err_s)),
+            phase_err_deg: k.mean("cc/phaseErr"),
         },
-        calls: calls(&a.calls, b.map(|b| &b.calls)),
-        voice: voice(&a.voice, b.map(|b| &b.voice)),
+        calls: k.calls(),
+        voice: k.voice(),
     }
 }
 
-fn channel(a: &ChannelHealth, b: Option<&ChannelHealth>) -> ChannelReport {
-    let d = |f: fn(&ChannelHealth) -> f64| f(a) - b.map_or(0.0, f);
-    let c = calls(&a.calls, b.map(|b| &b.calls));
-    let skipped = a.skipped.saturating_sub(b.map_or(0, |b| b.skipped));
+/// Seconds source `src` delivered samples, and of those, seconds it lost some in.
+fn source_seconds(w: &Totals, src: &SourceScope) -> (f64, f64) {
+    let k = Scope { w, key: &src.key };
+    (k.get("samples").map_or(0.0, |t| t.s), k.get("dropped").map_or(0.0, |t| t.s))
+}
+
+fn channel(w: &Totals, c: &ChannelScope) -> ChannelReport {
+    let k = Scope { w, key: &c.key };
+    let calls = k.calls();
+    let skipped = k.count("calls/skipped").unwrap_or(0);
+    let heard_s = w.sources.iter().find(|s| s.index == c.source).map_or(0.0, |s| {
+        let (secs, dropped) = source_seconds(w, s);
+        secs - dropped
+    });
     ChannelReport {
-        hz: a.freq_hz,
-        mode: a.mode.clone(),
-        name: a.names.join(", "),
+        hz: c.freq_hz,
+        mode: c.mode.clone(),
+        name: c.names.join(", "),
         receiver: None,
-        access: a.access.clone(),
-        heard_s: r1(d(|c| c.heard_s)),
-        noise_db: mean(d(|c| c.closed_db_total), d(|c| c.closed_s)),
-        opens: c.started + skipped,
-        open_s: r1(d(|c| c.open_s)),
-        calls: c.recorded,
+        access: c.access.clone(),
+        heard_s: r1(heard_s),
+        noise_db: k.mean("closed"),
+        opens: calls.started + skipped,
+        open_s: k.seconds("open"),
+        calls: calls.recorded,
         opened_by_other: Some(skipped),
-        signal_db: mean(d(|c| c.signal_db_total), d(|c| c.open_s)),
-        snr_db: mean(d(|c| c.snr_db_total), d(|c| c.open_s)),
-        voice: voice(&a.voice, b.map(|b| &b.voice)),
+        signal_db: k.mean("signal"),
+        snr_db: k.mean("snr"),
+        voice: k.voice(),
     }
 }
 
-fn radio(a: &SourceHealth, b: Option<&SourceHealth>) -> RadioReport {
-    let d = |f: fn(&SourceHealth) -> f64| f(a) - b.map_or(0.0, f);
-    let secs = d(|s| s.seconds);
+fn radio(w: &Totals, s: &SourceScope) -> RadioReport {
+    let k = Scope { w, key: &s.key };
+    let (secs, dropped) = source_seconds(w, s);
+    let r2 = |p: f64| (p * 100.0).round() / 100.0;
     RadioReport {
-        name: a.name.clone(),
-        kind: a.driver.clone(),
+        name: s.name.clone(),
+        kind: s.driver.clone(),
         seconds: r1(secs),
-        dropped_s: r1(d(|s| s.dropped_s)),
-        clip_pct: (secs >= 1.0).then(|| (d(|s| s.clip_pct_total) / secs * 1000.0).round() / 1000.0),
-        ppm_error: a.ppm_error.map(|p| (p * 100.0).round() / 100.0),
-        ppm_applied: a.ppm_applied.map(|p| (p * 100.0).round() / 100.0),
+        dropped_s: r1(dropped),
+        clip_pct: k.get("clipPct").and_then(Total::mean).map(|p| (p * 1000.0).round() / 1000.0),
+        ppm_error: k.get("ppm").and_then(|t| t.now).map(r2),
+        ppm_applied: k.get("tune").and_then(|t| t.now).filter(|_| s.auto_tune).map(r2),
     }
 }
 
 /// The report of what changed from `base` to `now` for the node `sel` names (`base` none, or
 /// from before a restart of recording: from when recording started). None when nothing of the
 /// recorder is that node's.
-pub fn report(base: Option<&Health>, now: &Health, sel: &Select, node: Value, recorder: Recorder, seq: u64) -> Option<Report> {
+pub fn report(base: Option<&Totals>, now: &Totals, sel: &Select, node: Value, recorder: Recorder, seq: u64) -> Option<Report> {
     let base = base.filter(|b| b.since == now.since && b.time <= now.time);
-    let sites: Vec<SiteReport> = now
-        .sites
-        .iter()
-        .filter(|s| sel.site_in(s))
-        .map(|a| site(a, base.and_then(|b| b.sites.iter().find(|s| s.short_name == a.short_name && s.site_name == a.site_name))))
-        .collect();
-    let channels: Vec<ChannelReport> = now
-        .channels
-        .iter()
-        .filter(|c| sel.channel_in(c))
-        .map(|a| channel(a, base.and_then(|b| b.channels.iter().find(|c| c.short_name == a.short_name && c.freq_hz == a.freq_hz))))
-        .collect();
+    let w = now.since(base);
+    let sites: Vec<SiteReport> = now.sites.iter().filter(|s| sel.site_in(s)).map(|s| site(&w, s)).collect();
+    let channels: Vec<ChannelReport> = now.channels.iter().filter(|c| sel.channel_in(c)).map(|c| channel(&w, c)).collect();
     if sites.is_empty() && channels.is_empty() {
         return None;
     }
-    let used: BTreeSet<usize> = now.sites.iter().filter(|s| sel.site_in(s)).filter_map(|s| s.source).chain(now.channels.iter().filter(|c| sel.channel_in(c)).filter_map(|c| c.source)).collect();
-    let radios = now.sources.iter().filter(|s| used.contains(&s.index)).map(|a| radio(a, base.and_then(|b| b.sources.iter().find(|s| s.name == a.name)))).collect();
+    let used: BTreeSet<usize> = now.sites.iter().filter(|s| sel.site_in(s)).filter_map(|s| s.source).chain(now.channels.iter().filter(|c| sel.channel_in(c)).map(|c| c.source)).collect();
+    let radios = now.sources.iter().filter(|s| used.contains(&s.index)).map(|s| radio(&w, s)).collect();
     let start = base.map_or(now.since, |b| b.time);
     Some(Report {
         v: VERSION,
@@ -419,8 +423,7 @@ pub fn report(base: Option<&Health>, now: &Health, sel: &Select, node: Value, re
         sites,
         channels,
         radios,
-        clock: (now.clock_sync.is_some() || now.system_offset_ms.is_some())
-            .then(|| Clock { sync: now.clock_sync.clone(), system_offset_ms: now.system_offset_ms.map(f64::round) }),
+        clock: now.clock.as_ref().filter(|c| c.sync.is_some() || c.system_offset_ms.is_some()).map(|c| Clock { sync: c.sync.clone(), system_offset_ms: c.system_offset_ms.map(f64::round) }),
     })
 }
 
@@ -430,11 +433,11 @@ pub fn report(base: Option<&Health>, now: &Health, sel: &Select, node: Value, re
 /// [`MAX_WINDOW_S`].
 #[derive(Clone, Debug, Default)]
 pub struct History {
-    snaps: VecDeque<Health>,
+    snaps: VecDeque<Totals>,
 }
 
 impl History {
-    pub fn push(&mut self, h: Health) {
+    pub fn push(&mut self, h: Totals) {
         if self.snaps.back().is_some_and(|b| b.since != h.since) {
             self.snaps.clear();
         }
@@ -445,12 +448,12 @@ impl History {
         self.snaps.push_back(h);
     }
 
-    pub fn latest(&self) -> Option<&Health> {
+    pub fn latest(&self) -> Option<&Totals> {
         self.snaps.back()
     }
 
     /// The earliest totals at or after `t`.
-    fn at_or_after(&self, t: f64) -> Option<&Health> {
+    fn at_or_after(&self, t: f64) -> Option<&Totals> {
         self.snaps.iter().find(|h| h.time >= t)
     }
 }
@@ -534,7 +537,7 @@ impl Reporter {
     }
 
     /// Whether a report is due now, given the latest totals.
-    pub fn due(&mut self, now: &Health) -> bool {
+    pub fn due(&mut self, now: &Totals) -> bool {
         if self.stopped {
             return false;
         }
@@ -592,7 +595,7 @@ impl Reporter {
     }
 
     /// The report due at `now` wasn't delivered.
-    pub fn failed(&mut self, now: &Health, why: Failure) {
+    pub fn failed(&mut self, now: &Totals, why: Failure) {
         match why {
             Failure::Refused => self.stopped = true,
             Failure::Busy(Some(after)) => self.next_at = Some(now.time + after.clamp(1.0, MAX_INTERVAL_S)),
@@ -615,41 +618,51 @@ impl Reporter {
 mod tests {
     use super::*;
 
-    fn totals(time: f64, good: u64, frames: u64, bad: u64) -> Health {
-        let mut calls = CallTotals { started: good / 10, recorded: good / 12, ..Default::default() };
-        calls.not_recorded.insert("no_source".into(), good / 100);
-        Health {
+    /// A counter's total.
+    fn n(v: u64) -> Total {
+        Total { sum: v as f64, s: 0.0, now: None }
+    }
+    /// A gauge held at `v` for `s` seconds.
+    fn g(v: f64, s: f64) -> Total {
+        Total { sum: v * s, s, now: Some(v) }
+    }
+
+    fn totals(time: f64, good: u64, frames: u64, bad: u64) -> Totals {
+        let up = time - 1000.0;
+        let north = "sys/dcfd/site/north";
+        let series = [
+            (format!("{north}/cc/good"), n(good)),
+            (format!("{north}/cc/bad"), n(good / 20)),
+            (format!("{north}/cc/airSym"), n(good * 100)),
+            (format!("{north}/cc/locked"), g(1.0, up)),
+            (format!("{north}/cc/snr"), g(15.0, up)),
+            (format!("{north}/calls/started"), n(good / 10)),
+            (format!("{north}/calls/recorded"), n(good / 12)),
+            (format!("{north}/calls/why/noSource"), n(good / 100)),
+            (format!("{north}/voice/imbe/frames"), n(frames)),
+            (format!("{north}/voice/imbe/bad"), n(bad)),
+            (format!("{north}/voice/imbe/errors"), n(bad * 3)),
+            ("src/800/samples".to_string(), Total { sum: 1e9, s: up, now: None }),
+            ("src/800/clipPct".to_string(), g(0.1, up)),
+            ("src/800/ppm".to_string(), g(1.134, up)),
+            ("src/800/tune".to_string(), g(1.1, up)),
+            ("src/vhf/samples".to_string(), Total { sum: 1e9, s: up, now: None }),
+        ];
+        let site = |name: &str, key: &str| SiteScope { short_name: "dcfd".into(), site_name: name.into(), key: key.into(), protocol: "p25".into(), ..Default::default() };
+        Totals {
             time,
             since: 1000.0,
+            series: series.into_iter().collect(),
             sites: vec![
-                SiteHealth {
-                    short_name: "dcfd".into(),
-                    site_name: "north".into(),
-                    protocol: "p25".into(),
-                    control_channel_hz: Some(851_000_000),
-                    wacn: Some(0xBEE00),
-                    sys_id: Some(0x3AB),
-                    source: Some(0),
-                    locked_s: time - 1000.0,
-                    good,
-                    bad: good / 20,
-                    air_sym: Some(good * 100),
-                    symbol_rate: Some(4800),
-                    snr_db_total: 15.0 * (time - 1000.0),
-                    snr_s: time - 1000.0,
-                    calls,
-                    voice: VoiceTotals { imbe: FrameTotals { frames, bad, errors: bad * 3, missing: None }, ..Default::default() },
-                    ..Default::default()
-                },
-                SiteHealth { short_name: "dcfd".into(), site_name: "south".into(), protocol: "p25".into(), ..Default::default() },
+                SiteScope { control_channel_hz: Some(851_000_000), wacn: Some(0xBEE00), sys_id: Some(0x3AB), source: Some(0), symbol_rate: Some(4800), ..site("north", north) },
+                site("south", "sys/dcfd/site/south"),
             ],
-            channels: vec![ChannelHealth { short_name: "fire".into(), freq_hz: 154_430_000, mode: "fm".into(), source: Some(1), heard_s: time - 1000.0, ..Default::default() }],
+            channels: vec![ChannelScope { key: "sys/fire/ch/154430000".into(), short_name: "fire".into(), freq_hz: 154_430_000, mode: "fm".into(), source: 1, ..Default::default() }],
             sources: vec![
-                SourceHealth { index: 0, name: "800".into(), driver: "airspy".into(), seconds: time - 1000.0, clip_pct_total: 0.1 * (time - 1000.0), ppm_error: Some(1.134), ppm_applied: Some(1.1), ..Default::default() },
-                SourceHealth { index: 1, name: "vhf".into(), driver: "rtlsdr".into(), seconds: time - 1000.0, ..Default::default() },
+                SourceScope { key: "src/800".into(), index: 0, name: "800".into(), driver: "airspy".into(), auto_tune: true },
+                SourceScope { key: "src/vhf".into(), index: 1, name: "vhf".into(), driver: "rtlsdr".into(), auto_tune: false },
             ],
-            system_offset_ms: Some(12.4),
-            clock_sync: Some("ntp".into()),
+            clock: Some(crate::protocol::ClockState { sync: Some("ntp".into()), system_offset_ms: Some(12.4) }),
         }
     }
 
@@ -746,7 +759,7 @@ mod tests {
         assert_eq!(seqs, (0..seqs.len() as u64).collect::<Vec<_>>(), "numbered on, not started over");
         // Every block counted once: the windows' sum is the total at the last one's end.
         let at_end = hist.at_or_after(n.delivered_to.unwrap().0).unwrap();
-        assert_eq!(good, at_end.sites.iter().filter(|s| Select::system("dcfd").site_in(s)).map(|s| s.good).sum::<u64>());
+        assert_eq!(good, at_end.get("sys/dcfd/site/north/cc/good").unwrap().count());
     }
 
     #[test]
@@ -809,11 +822,5 @@ mod tests {
         assert!((next - 2000.0 - 1200.0).abs() <= JITTER_S + 1.0, "{next}");
         n.delivered(&r, Some(5.0));
         assert!(n.next_at().unwrap() - 2000.0 >= MIN_INTERVAL_S - JITTER_S);
-    }
-
-    #[test]
-    fn snake_case_reasons_become_camel_case() {
-        assert_eq!(camel("no_recorder"), "noRecorder");
-        assert_eq!(camel("encrypted"), "encrypted");
     }
 }

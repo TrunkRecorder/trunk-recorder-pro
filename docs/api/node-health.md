@@ -246,8 +246,9 @@ call but delivering fewer than another is wrong somewhere.
 
 ## In Trunk Recorder Pro
 
-The recorder sends plugins that subscribe to `health` its running totals every 10 s
-([Writing plugins](../plugins/writing-plugins.md#topics)). The plugin SDK's `health` module keeps
+The recorder sends plugins that subscribe to `totals` every series it measures as running totals,
+every 10 s ([Writing plugins](../plugins/writing-plugins.md#series)): a report is the difference of
+two. Each site counts its own copies of calls, when they end, by what finally became of them. The plugin SDK's `health` module keeps
 them (`History`), schedules each node (`Reporter`: the random phase, jitter, carried windows and
 backing off above) and makes its report (`report`), so every plugin reports the same figures the
 same way. A plugin adds the HTTP and its service's `node` fields.

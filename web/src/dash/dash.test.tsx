@@ -79,6 +79,16 @@ test("Decode: a card per site; a system's page picks the site", () => {
   assert.doesNotMatch(page, /No system called/);
 });
 
+test("Decode: each site's card shows its own copies' voice lost, not its system's", () => {
+  twoSites();
+  feedSeries(Date.now() / 1000, { "sys/dcfd/site/south/voice/imbe/frames": 100, "sys/dcfd/site/south/voice/imbe/bad": 10, "sys/dcfd/voice/ambe/frames": 50, "sys/dcfd/voice/ambe/bad": 0 });
+  setView("decode");
+  const cards = renderToString(<DecodePage />).split("<section").map(text);
+  const voice = (title: string) => cards.find((c) => c.includes(title))?.match(/Voice lost ([—0-9.]+)/)?.[1];
+  assert.equal(voice("dcfd / south"), "10.0", "south's own frames");
+  assert.equal(voice("dcfd / dcfd"), "0.0", "the first site's, not the system's");
+});
+
 test("Decode: a site's neighbours by address (status); its patches once watched (decodeDetail)", () => {
   twoSites([], [
     { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 9, freqHz: 853_000_000 },
@@ -223,7 +233,7 @@ test("Radio: a system's page goes back as Decode's does, with the systems beside
 
 test("Radio: calls missed on one of several systems name it, in the navigation's light and on its card", () => {
   twoSites();
-  feedSeries(Date.now() / 1000, { "sys/other/why/no_source": 1 });
+  feedSeries(Date.now() / 1000, { "sys/other/calls/why/noSource": 1 });
   const h = pageHealth(snapshot()).radio;
   assert.equal(h.level, "warn");
   assert.match(h.why, /^other: .*outside every source's band/);
@@ -262,7 +272,7 @@ test("Radio: a system's Tones card names its signals and goes to them in Setup; 
 
 test("Radio: a warning of calls out of band links to the frequencies, on the Overview and the system's page", () => {
   twoSites();
-  feedSeries(Date.now() / 1000, { "sys/other/why/no_source": 1 });
+  feedSeries(Date.now() / 1000, { "sys/other/calls/why/noSource": 1 });
   setView("overview");
   assert.match(renderToString(<Overview />), /<button class="linkish why-link">Missing calls: outside every source(?:'|&#x27;)s band(?:<!-- -->)? <span aria-hidden="true">→/);
   setView("radio", "other");

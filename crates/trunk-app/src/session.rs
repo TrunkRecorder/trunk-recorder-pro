@@ -4,7 +4,8 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus};
+use trunk_core::metrics;
+use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, IdField, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus};
 
 use crate::filename;
 use sdr_core::clock::{ClockEvent, SampleClock};
@@ -67,8 +68,8 @@ pub enum Output {
 const STATUS_EVERY_S: f64 = 200.0;
 /// The control channel decode rate is checked over this long, s.
 const RATE_EVERY_S: f64 = 10.0;
-/// Node health totals go to plugins this often, ms.
-const HEALTH_EVERY_MS: f64 = 10_000.0;
+/// Every series' running totals go to plugins this often, ms.
+const TOTALS_EVERY_MS: f64 = 10_000.0;
 /// A running source that sends nothing for this long is fed silence in its
 /// place ([`Engine::push_gap`]), so time goes on: calls on it end, and its
 /// clock stays in step with the others'. ms of wall clock.
@@ -93,8 +94,8 @@ pub struct PluginTopics {
     pub call_updates: bool,
     pub units: bool,
     pub status: bool,
-    /// Node health totals ([`trunk_recorder_plugin::Health`]).
-    pub health: bool,
+    /// Every series' running totals ([`trunk_recorder_plugin::Totals`]).
+    pub totals: bool,
     pub tone_patterns: bool,
     pub voice: bool,
 }
@@ -383,8 +384,8 @@ pub struct Session {
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
     recordings: Vec<crate::config::Recording>,
     pub plugin_topics: PluginTopics,
-    /// How the computer's clock is kept, as node health reports name it (`ntp`, `gps`, `ptp`,
-    /// `none`, `unknown`), as the app last saw; none: the operating system doesn't say.
+    /// How the computer's clock is kept ([`trunk_recorder_plugin::ClockState::sync`]), as the
+    /// app last saw; none: the operating system doesn't say.
     pub clock_sync: Option<String>,
     /// Wall clock (Unix ms) at the engine's time 0, as at Start: the clock
     /// sources are measured against. What times are given out by is the
@@ -394,7 +395,7 @@ pub struct Session {
     wall_correction_ms: f64,
     last_plugin_status_ms: f64,
     plugin_good: Vec<u64>,
-    last_plugin_health_ms: f64,
+    last_plugin_totals_ms: f64,
     /// The codes conventional frequencies carried ([`crate::heard`]).
     heard: HeardCodes,
     /// AutoTune scores by source label, as loaded and as last given to save.
@@ -469,7 +470,7 @@ impl Session {
             wall_correction_ms: 0.0,
             last_plugin_status_ms: 0.0,
             plugin_good: Vec::new(),
-            last_plugin_health_ms: 0.0,
+            last_plugin_totals_ms: 0.0,
             heard: HeardCodes::default(),
             tune: Default::default(),
             tune_saved: String::new(),
@@ -667,9 +668,6 @@ impl Session {
         self.steer_clocks();
         self.meas.set_now(now_ms / 1000.0);
         self.fill_quiet(now_ms);
-        if self.plugin_topics.health && self.meas.health.is_none() {
-            self.meas.health = Some(crate::stats::health::Totals::new(self.cfg.sources.len()));
-        }
         for ev in self.engine.drain_events() {
             self.handle(ev, out);
         }
@@ -718,9 +716,9 @@ impl Session {
                 self.last_plugin_status_ms = now_ms;
                 out.push(Output::Plugin(HostMessage::Status(self.plugin_status(dt))));
             }
-            if self.plugin_topics.health && now_ms - self.last_plugin_health_ms >= HEALTH_EVERY_MS {
-                self.last_plugin_health_ms = now_ms;
-                out.push(Output::Plugin(HostMessage::Health(self.plugin_health(start / 1000.0))));
+            if self.plugin_topics.totals && now_ms - self.last_plugin_totals_ms >= TOTALS_EVERY_MS {
+                self.last_plugin_totals_ms = now_ms;
+                out.push(Output::Plugin(HostMessage::Totals(self.plugin_totals(start / 1000.0))));
             }
             self.poll_share(now_ms, out);
             let load = self.busy_ms() / (now_ms - start).max(1.0);
@@ -1134,113 +1132,51 @@ impl Session {
                 let i = y.site as usize;
                 let rate = if dt > 0.0 { y.good.saturating_sub(self.plugin_good[i]) as f64 / dt } else { 0.0 };
                 self.plugin_good[i] = y.good;
-                PluginSystemStatus {
-                    index: y.system,
-                    short_name: y.short_name.clone(),
-                    site_name: y.site_name.clone(),
-                    control_channel_hz: y.control_channel_hz,
-                    decode_rate: (rate * 10.0).round() / 10.0,
-                    active_calls: y.active_calls as u32,
-                    recording: y.recording as u32,
-                    nac: y.identity.get(IdField::Nac),
-                    wacn: y.identity.get(IdField::Wacn),
-                    sys_id: y.identity.get(IdField::SysId),
-                    rfss: y.identity.get(IdField::Rfss),
-                    site: y.identity.get(IdField::Site),
-                }
+                PluginSystemStatus { scope: Self::site_scope(y), decode_rate: (rate * 10.0).round() / 10.0, active_calls: y.active_calls as u32, recording: y.recording as u32 }
             })
             .collect();
         trunk_recorder_plugin::Status { time: self.wall(st.now_s), systems }
     }
 
-    /// The node health totals for plugins (`since`: when recording started, Unix s).
-    fn plugin_health(&self, since: f64) -> trunk_recorder_plugin::Health {
-        use trunk_recorder_plugin::{ChannelHealth, SiteHealth, SourceHealth};
-        let Some(h) = self.meas.health.as_ref() else { return Default::default() };
-        let st = self.engine.status();
-        let kinds: std::collections::HashMap<u16, &str> = self.cfg.call_systems().iter().map(|c| (c.index, c.kind)).collect();
-        let sites = st
-            .sites
-            .iter()
-            .map(|y| {
-                let t = h.sites.get(&(y.system, y.site)).cloned().unwrap_or_default();
-                SiteHealth {
-                    system: y.system,
-                    short_name: y.short_name.clone(),
-                    site_name: y.site_name.clone(),
-                    protocol: kinds.get(&y.system).copied().unwrap_or("").to_string(),
-                    control_channel_hz: y.control_channel_hz,
-                    source: y.control_source,
-                    nac: y.identity.get(IdField::Nac),
-                    wacn: y.identity.get(IdField::Wacn),
-                    sys_id: y.identity.get(IdField::SysId),
-                    rfss: y.identity.get(IdField::Rfss),
-                    site: y.identity.get(IdField::Site),
-                    locked_s: t.locked_s,
-                    good: t.good,
-                    bad: t.bad,
-                    air_sym: t.air_sym.map(|a| a.round() as u64),
-                    sync_loss_sym: t.sync_loss_sym.map(|a| a.round() as u64),
-                    // (Only P25 measures it.)
-                    symbol_rate: t.air_sym.map(|_| 4800),
-                    snr_db_total: t.snr_db_total,
-                    snr_s: t.snr_s,
-                    phase_err_deg_total: t.phase_err_deg_total,
-                    phase_err_s: t.phase_err_s,
-                    calls: t.calls,
-                    voice: t.voice,
-                }
+    /// Which site `y` is, as plugins are told ([`trunk_recorder_plugin::SiteScope`]).
+    fn site_scope(y: &trunk_core::trunk::SiteStatus) -> trunk_recorder_plugin::SiteScope {
+        trunk_recorder_plugin::SiteScope {
+            index: y.system,
+            short_name: y.short_name.clone(),
+            site_name: y.site_name.clone(),
+            key: y.key.clone(),
+            protocol: y.kind.to_string(),
+            control_channel_hz: y.control_channel_hz,
+            source: y.control_source,
+            symbol_rate: y.symbol_rate,
+            nac: y.identity.get(IdField::Nac),
+            wacn: y.identity.get(IdField::Wacn),
+            sys_id: y.identity.get(IdField::SysId),
+            rfss: y.identity.get(IdField::Rfss),
+            site: y.identity.get(IdField::Site),
+        }
+    }
+
+    /// Every series' running totals for plugins, and which sites, channels and radios they're
+    /// of (`since`: when recording started, Unix s).
+    fn plugin_totals(&self, since: f64) -> trunk_recorder_plugin::Totals {
+        use trunk_recorder_plugin::{ChannelScope, ClockState, SourceScope};
+        let sites = self.engine.status().sites.iter().map(Self::site_scope).collect();
+        let channels = self
+            .engine
+            .channels()
+            .into_iter()
+            .filter_map(|c| {
+                let ChannelKind::Conventional(mode) = c.kind else { return None };
+                let short_name = self.system_name(c.system).to_string();
+                Some(ChannelScope { key: metrics::channel_key(&short_name, c.freq_hz as f64), index: c.system, short_name, freq_hz: c.freq_hz, mode: mode.as_str().to_string(), names: c.names, access: c.access, source: c.source })
             })
             .collect();
-        let rows = self.engine.conventional_channels();
-        let channels = h
-            .channels
-            .iter()
-            .map(|(&(system, hz), t)| {
-                let row = rows.iter().find(|r| r.system == system as usize && r.freq_hz.round() as u64 == hz);
-                ChannelHealth {
-                    system,
-                    short_name: self.system_name(system).to_string(),
-                    freq_hz: hz,
-                    mode: row.map_or(String::new(), |r| r.mode.as_str().to_string()),
-                    names: row.map_or(Vec::new(), |r| r.names.clone()),
-                    access: row.and_then(|r| r.access.clone()),
-                    source: row.map(|r| r.source),
-                    heard_s: t.heard_s,
-                    open_s: t.open_s,
-                    signal_db_total: t.signal_db_total,
-                    closed_db_total: t.closed_db_total,
-                    closed_s: t.closed_s,
-                    snr_db_total: t.snr_db_total,
-                    calls: t.calls.clone(),
-                    skipped: t.skipped,
-                    voice: t.voice.clone(),
-                }
-            })
-            .collect();
-        let sources = self
-            .cfg
-            .sources
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                let t = h.sources.get(i).cloned().unwrap_or_default();
-                let driver = serde_json::to_value(&s.kind).ok().and_then(|v| v["type"].as_str().map(str::to_string)).unwrap_or_default();
-                SourceHealth {
-                    index: i,
-                    name: s.label(),
-                    driver,
-                    seconds: t.seconds,
-                    dropped_s: t.dropped_s,
-                    clip_pct_total: t.clip_pct_total,
-                    ppm_error: st.sources.get(i).and_then(|r| r.error_ppm),
-                    ppm_applied: s.auto_tune.then(|| st.sources.get(i).map_or(0.0, |r| r.applied_ppm)),
-                }
-            })
-            .collect();
+        let sources = self.cfg.sources.iter().enumerate().map(|(i, s)| SourceScope { key: format!("src/{}", metrics::key_part(&s.label())), index: i, name: s.label(), driver: s.kind_name().to_string(), auto_tune: s.auto_tune }).collect();
         // The recorder's clock less the systems': the latest any site said.
         let system_offset_ms = self.radio_clocks().into_iter().filter(|c| c.valid).max_by(|a, b| a.at_s.total_cmp(&b.at_s)).map(|c| -c.offset_ms);
-        trunk_recorder_plugin::Health { time: self.meas.now(), since, sites, channels, sources, system_offset_ms, clock_sync: self.clock_sync.clone() }
+        let clock = (self.clock_sync.is_some() || system_offset_ms.is_some()).then(|| ClockState { sync: self.clock_sync.clone(), system_offset_ms });
+        trunk_recorder_plugin::Totals { time: self.meas.now(), since, series: self.meas.totals(), sites, channels, sources, clock }
     }
 
     fn flush_log(&mut self, out: &mut Vec<Output>) {
@@ -1255,9 +1191,6 @@ impl Session {
     }
 
     fn handle(&mut self, ev: Event, out: &mut Vec<Output>) {
-        if let Some(h) = self.meas.health.as_mut() {
-            h.observe(&ev);
-        }
         if let Some(sys) = self.event_system(&ev) {
             let name = self.system_name(sys).to_string();
             self.meas.observe(&ev, &name, &self.engine, out);

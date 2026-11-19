@@ -12,9 +12,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   and lost, share of its air decoded, SNR, phase error, calls announced and why any weren't recorded, voice frames lost
   by codec. Conventional channels: time heard, open and closed, levels, calls and transmissions no row took. Radios:
   dropped samples, clipping, frequency error. Counts, not scores: a service weighs them its own way.
-- **Plugins: the `health` topic** (SDK 0.12.0): those totals every 10 s, running since recording started. The SDK's
-  `health` module makes a node's report of them and keeps its schedule (random phase, jitter, a failed report's window
-  carried by the next, backing off when the service is busy, the interval the service asks for).
+- **Plugins: the `totals` topic** (SDK 0.12.0): every series the dashboard charts, as running totals since recording
+  started, every 10 s, with the sites, conventional channels and radios they're of. The SDK's `health` module makes a
+  node's report of them and keeps its schedule (random phase, jitter, a failed report's window carried by the next,
+  backing off when the service is busy, the interval the service asks for).
+- **Calls counted where they're heard.** Each site counts its own copies of calls (a call heard on two sites counts at
+  both) when they end, by what finally became of them (one refused as an unknown talkgroup and recorded once patched
+  counts as recorded), with the frames each decoded, saved or not; each conventional frequency counts its own. A system's
+  figures on the dashboard are the sum of its sites' and channels', and a site's card shows its own voice. Grants on a
+  channel never turned into a frequency are counted (`noFrequency`, shown as "No channel table"). The series:
+  `<site>/calls/…` and `<site>/voice/<codec>/…` replace `sys/<name>/why/…` and `sys/<name>/voice/…`, so those charts
+  start again from now.
 - **Node health reports: one format for every recorder.** After reviewing what SDRTrunk and SDRTrunk VCE can measure,
   still version 1, all additive: a node's report covers whole sites (a site can be in several nodes' reports), several
   receivers on one site (`receiver`), MPT1327, LTR, LTR-Net and Passport, each protocol's unit of control message,

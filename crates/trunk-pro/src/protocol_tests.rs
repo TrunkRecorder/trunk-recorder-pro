@@ -771,17 +771,17 @@ fn live_voice_is_the_plugin_topics_chunk() {
     assert!(trunk_app::session::voice_chunk("dcfd", "", &trunk_core::trunk::LiveAudio { frames: vec![], ..audio }).is_none(), "analog: none");
 }
 
-/// Node health totals: a conventional channel's one transmission (0.5–2.5 s in, with its
-/// code) as a plugin's health report has it.
+/// Every series' running totals: a conventional channel's one transmission (0.5–2.5 s in,
+/// with its code) as its series count it, and as a plugin's node health report has it.
 #[test]
-fn health_totals_make_a_node_health_report() {
+fn totals_make_a_node_health_report() {
     use trunk_recorder_plugin::health::{report, Recorder, Select};
     let epoch = 1.75e12;
     let mut s = Session::new(conventional_config(), &Default::default(), epoch, &|_| None, |_| 0).unwrap();
-    s.plugin_topics.health = true;
+    s.plugin_topics.totals = true;
     let (mut out, mut health) = (Vec::new(), Vec::new());
     let mut take = |out: &mut Vec<Output>| {
-        health.extend(out.drain(..).filter_map(|o| if let Output::Plugin(trunk_recorder_plugin::HostMessage::Health(h)) = o { Some(h) } else { None }));
+        health.extend(out.drain(..).filter_map(|o| if let Output::Plugin(trunk_recorder_plugin::HostMessage::Totals(h)) = o { Some(h) } else { None }));
     };
     air(2_400_000.0, 4.5, |iq, t| {
         s.push_iq(0, iq, 0, epoch + t * 1000.0);
@@ -794,6 +794,11 @@ fn health_totals_make_a_node_health_report() {
     let h = health.pop().unwrap();
     assert_eq!(h.since * 1000.0, health[0].since * 1000.0);
     assert!(h.sites.is_empty());
+    // The channel's own series: one transmission taken, and the time it was open.
+    let ch = &h.channels[0];
+    assert_eq!((ch.key.as_str(), ch.source), ("sys/conv/ch/155200000", 0));
+    let count = |k: &str| h.get(&format!("{}/{k}", ch.key)).map(|t| t.count());
+    assert_eq!((count("calls/started"), count("calls/recorded")), (Some(1), Some(1)));
     let r = report(None, &h, &Select::system("conv"), json!({ "systemId": 1 }), Recorder::new("trunk-recorder-pro", "test"), 0).expect("its channel");
     let c = &r.channels[0];
     assert_eq!((c.hz, c.mode.as_str(), c.name.as_str()), (155_200_000, "fm", "Fire"));

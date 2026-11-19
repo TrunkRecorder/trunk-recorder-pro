@@ -3,8 +3,10 @@
 //! ```text
 //! engine / DSP parts ── Instrumented::report ──┐
 //! SampleMeter (headroom, clipping) ────────────┤
-//! Tally (calls, airtime, reasons, voice errors)┴─► Aggregator ─► `stats` (1 s)
-//!                                                       └──────► Rollup (1 min) ─► History / stats files
+//! engine: each site's and channel's copies ─────┤
+//! Tally (calls, airtime, audio)────────────────┴─► Aggregator ─► `stats` (1 s)
+//!                                                       ├──────► Rollup (1 min) ─► History / stats files
+//!                                                       └──────► totals since start ─► plugins' `totals`
 //! session events ─► Stats::observe ─► Registry (talkgroups, radios, frequencies)
 //!                                  └─► Monitor (notable events ─► watchers, the feed)
 //! ```
@@ -16,7 +18,6 @@
 
 pub mod aggregate;
 pub mod events;
-pub mod health;
 pub mod history;
 pub mod meter;
 pub mod radio;
@@ -187,28 +188,19 @@ impl Topics {
     }
 }
 
-/// Running totals of what calls did, per system, by name.
+/// Running totals of what calls did, per system, by name. (What became of
+/// each site's and channel's copies of calls, and their frames, the engine
+/// counts: [`trunk_core::trunk::tally`].)
 #[derive(Default)]
 struct Tally {
     counts: BTreeMap<String, u64>,
-    /// Keys new since the last report: they count from 0.
-    fresh: Vec<String>,
 }
 
 impl Tally {
     fn add(&mut self, key: String, n: u64) {
-        match self.counts.get_mut(&key) {
-            Some(v) => *v += n,
-            None => {
-                self.fresh.push(key.clone());
-                self.counts.insert(key, n);
-            }
-        }
+        *self.counts.entry(key).or_default() += n;
     }
     fn report(&mut self, agg: &mut Aggregator) {
-        for k in self.fresh.drain(..) {
-            agg.seed(&k);
-        }
         for (k, v) in &self.counts {
             agg.counter(k, *v);
         }
@@ -267,8 +259,6 @@ pub struct Stats {
     /// seen in progress.
     air: HashMap<CallId, (u64, u8)>,
     local_offset: crate::session::LocalOffset,
-    /// Totals for plugins' node health reports, kept while a plugin wants them.
-    pub health: Option<health::Totals>,
 }
 
 impl Stats {
@@ -290,7 +280,6 @@ impl Stats {
             minute_calls: BTreeMap::new(),
             air: HashMap::new(),
             local_offset,
-            health: None,
         }
     }
 
@@ -338,8 +327,6 @@ impl Stats {
         let sys = system_key(name);
         match ev {
             Event::CallStart(c) => {
-                let why = if c.recording { "recorded" } else { c.reason.map_or("monitored", |r| r.as_str()) };
-                self.tally.add(format!("{sys}/why/{why}"), 1);
                 let firsts = self.shared.radio.lock().unwrap().call_start(name, c, t);
                 if firsts.tg {
                     let alpha_tag = c.talkgroup_info.as_ref().map_or(String::new(), |g| g.alpha_tag.clone());
@@ -404,11 +391,6 @@ impl Stats {
                 self.tally.add("all/audioBytes".into(), bytes);
                 self.roll_day();
                 self.day.audio_bytes += bytes;
-                for i in &record.error_list {
-                    self.tally.add(format!("{sys}/voice/frames"), i.frames);
-                    self.tally.add(format!("{sys}/voice/errors"), i.error_count);
-                    self.tally.add(format!("{sys}/voice/bad"), i.bad_frames);
-                }
                 self.shared.radio.lock().unwrap().concluded(name, record, t);
             }
             Event::NotSaved(_) => self.tally.add(format!("{sys}/notSaved"), 1),
@@ -444,9 +426,6 @@ impl Stats {
         }
         self.count_air(engine, site_names);
         self.tally.report(&mut self.agg);
-        if self.health.is_some() {
-            self.tick_health(dt / 1000.0, engine);
-        }
         if dt > 0.0 {
             self.agg.gauge("eng/load", ((busy_ms - self.busy_mark) / dt).clamp(0.0, 64.0));
         }
@@ -460,31 +439,9 @@ impl Stats {
         self.details(engine, site_names, decode_sites, out);
     }
 
-    /// The health totals' tick: each site's control channel, each conventional channel (measured
-    /// only when there are any), each source.
-    fn tick_health(&mut self, dt_s: f64, engine: &Engine) {
-        let systems = engine.systems();
-        let cfgs: Vec<_> = trunk_core::trunk::sites(&systems).collect();
-        let sites: Vec<health::SiteCounts> = engine
-            .status()
-            .sites
-            .iter()
-            .filter_map(|y| {
-                let &(system, cfg) = cfgs.get(y.site as usize)?;
-                Some(health::SiteCounts {
-                    system: y.system,
-                    site: y.site,
-                    key: systems[system as usize].site_key(cfg).stats_key(),
-                    good: y.good,
-                    bad: y.bad,
-                    no_frequency: y.no_frequency,
-                })
-            })
-            .collect();
-        let channels = if systems.iter().any(|s| s.is_conventional()) { engine.channels() } else { Vec::new() };
-        if let Some(h) = self.health.as_mut() {
-            h.tick(dt_s, &self.agg, &sites, &channels, &self.names);
-        }
+    /// Every series' running total since recording started ([`Aggregator::totals`]).
+    pub fn totals(&self) -> BTreeMap<String, trunk_recorder_plugin::Total> {
+        self.agg.totals()
     }
 
     fn add_air(&mut self, sys: &str, ms: u64) {
