@@ -1117,6 +1117,32 @@ pub struct SystemStatus {
     pub recording: u32,
 }
 
+/// What a site says it is, as far as its control channel has stated it (a field not stated
+/// left out): P25 its NAC, WACN, System ID, RFSS and site; SmartNet its System ID and site
+/// (when OBT sends it); DMR its colour code, Tier III also its network and site (its System
+/// Identity Code's, as sent); NXDN its RAN, Type-C also its system (`sys_id`) and site. The
+/// recorder's config writes a site lock the same way (`expect`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SiteIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nac: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wacn: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sys_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rfss: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_code: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ran: Option<u8>,
+}
+
 /// One trunked site: which it is, and what its control channel says it is ([`SystemStatus`],
 /// [`Totals::sites`]).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1143,19 +1169,8 @@ pub struct SiteScope {
     /// Its control channel's symbol rate, baud, when it counts the air its blocks account for (`cc/airSym`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol_rate: Option<u32>,
-    /// The system's identity, as far as its control channel has stated it
-    /// (none until it has): P25 NAC, WACN, system ID, RFSS and site; site
-    /// also for SmartNet when its OBT sends one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub nac: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wacn: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sys_id: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rfss: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub site: Option<u32>,
+    /// What its control channel has said it is (none of it until it has).
+    pub identity: SiteIdentity,
 }
 
 /// Every series the recorder measures, as running totals since recording started
@@ -1654,13 +1669,16 @@ mod tests {
     fn system_identity_is_there_once_stated() {
         // From a recorder that doesn't send it: none of it.
         let s: SystemStatus = serde_json::from_str(r#"{"index":0,"short_name":"county","decode_rate":39.8}"#).unwrap();
-        let i = &s.scope;
-        assert_eq!((i.nac, i.wacn, i.sys_id, i.rfss, i.site), (None, None, None, None, None));
+        assert_eq!(s.scope.identity, SiteIdentity::default());
         // Nothing stated yet: nothing written.
         let v = serde_json::to_value(&s).unwrap();
-        assert!(["nac", "wacn", "sys_id", "rfss", "site"].iter().all(|k| v.get(k).is_none()), "{v}");
-        let s = SystemStatus { scope: SiteScope { nac: Some(0x3A0), wacn: Some(0xBEE00), sys_id: Some(0x3AB), rfss: Some(1), site: Some(5), ..s.scope }, ..s };
+        assert_eq!(v["identity"], serde_json::json!({}), "{v}");
+        let identity = SiteIdentity { nac: Some(0x3A0), wacn: Some(0xBEE00), sys_id: Some(0x3AB), rfss: Some(1), site: Some(5), ..Default::default() };
+        let s = SystemStatus { scope: SiteScope { identity, ..s.scope }, ..s };
         let v = serde_json::to_value(&s).unwrap();
-        assert_eq!((v["nac"].as_u64(), v["wacn"].as_u64(), v["site"].as_u64()), (Some(0x3A0), Some(0xBEE00), Some(5)));
+        assert_eq!((v["identity"]["nac"].as_u64(), v["identity"]["sysId"].as_u64(), v["identity"]["site"].as_u64()), (Some(0x3A0), Some(0x3AB), Some(5)));
+        // A DMR site's: its colour code (Tier III: its network and site too).
+        let dmr = serde_json::to_value(SiteIdentity { color_code: Some(1), network: Some(12), site: Some(3), ..Default::default() }).unwrap();
+        assert_eq!(dmr, serde_json::json!({ "colorCode": 1, "network": 12, "site": 3 }));
     }
 }

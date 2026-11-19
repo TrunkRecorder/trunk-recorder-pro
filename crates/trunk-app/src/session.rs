@@ -5,7 +5,7 @@
 
 use serde_json::{json, Value};
 use trunk_core::metrics;
-use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, IdField, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus};
+use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus};
 
 use crate::filename;
 use sdr_core::clock::{ClockEvent, SampleClock};
@@ -1149,11 +1149,7 @@ impl Session {
             control_channel_hz: y.control_channel_hz,
             source: y.control_source,
             symbol_rate: y.symbol_rate,
-            nac: y.identity.get(IdField::Nac),
-            wacn: y.identity.get(IdField::Wacn),
-            sys_id: y.identity.get(IdField::SysId),
-            rfss: y.identity.get(IdField::Rfss),
-            site: y.identity.get(IdField::Site),
+            identity: y.identity.to_site(),
         }
     }
 
@@ -1501,9 +1497,9 @@ pub fn call_entry(rel: &str, record: &trunk_recorder_plugin::CallRecord) -> Valu
 }
 
 /// A site's identity as messages carry it: the config's [`crate::config::SiteIdentity`]
-/// (`{nac, wacn, sysId, rfss, site}`, a field not stated yet left out).
+/// (`{nac, wacn, sysId, rfss, site, colorCode, network, ran}`, a field not stated yet left out).
 pub(crate) fn identity_json(id: &Identity) -> Value {
-    json!(crate::config::SiteIdentity::from(id))
+    json!(id.to_site())
 }
 
 /// The name a site's band plan is kept under ([`trunk_core::trunk::SiteKey::file_stem`]).

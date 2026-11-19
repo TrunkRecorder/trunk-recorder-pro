@@ -30,6 +30,7 @@ use super::slot::{Channel, Csbk, LcFrom, SlotEvent, FID_MOTOROLA, FID_STANDARD};
 use crate::bits::field;
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::{Receiver, Symbol};
+use crate::trunk::identity::{IdField, Identity};
 use crate::trunk::message::{site_code, ChannelTable, LastCall, Message, MessageType};
 use crate::trunk::Voice;
 
@@ -158,6 +159,8 @@ pub struct Site {
     pub keyed: bool,
     /// The site's colour code: configured, else the first control block's on a control channel.
     pub color_code: Option<u8>,
+    /// What it says it is: its colour code; Tier III its network and site (C_ALOHA).
+    identity: Identity,
     /// Carriers `0..n_control` are the configured control channels.
     n_control: usize,
     notes: Vec<String>,
@@ -199,6 +202,7 @@ impl Site {
             carriers,
             variant: None,
             color_code: cfg.color_code,
+            identity: cfg.color_code.map_or_else(Identity::default, |c| Identity::default().with(IdField::ColorCode, c as u32)),
             table: ChannelTable::new(cfg.lcn_table.clone()),
             cfg,
             pending: Vec::new(),
@@ -209,6 +213,11 @@ impl Site {
             now_s: 0.0,
             recent_status: Vec::new(),
         }
+    }
+
+    /// What the site says it is ([`IdField::ColorCode`]; Tier III also network and site).
+    pub fn identity(&self) -> &Identity {
+        &self.identity
     }
 
     /// For the dashboard: what the site looks like now.
@@ -317,6 +326,7 @@ impl Site {
         if self.color_code.is_none() && idx < self.n_control && matches!(e, SlotEvent::Csbk { .. }) {
             if let Some(c) = cc {
                 self.color_code = Some(c);
+                self.identity.set(IdField::ColorCode, c as u32);
                 self.notes.push(format!("Colour code {c}"));
             }
         }
@@ -494,7 +504,16 @@ impl Site {
             }
             (FID_CONNECT_PLUS, _) => self.set_variant(Variant::ConnectPlus),
             // ── Tier III (ETSI) ──
-            (FID_STANDARD, 0x19) => self.set_variant(Variant::TierIII),
+            (FID_STANDARD, 0x19) => {
+                // C_ALOHA: the site's System Identity Code.
+                self.set_variant(Variant::TierIII);
+                let (net, site) = sys_code(k.bits(40, 56) as u32);
+                if self.identity.get(IdField::Network) != Some(net) || self.identity.site() != Some(site) {
+                    self.identity.set(IdField::Network, net);
+                    self.identity.set(IdField::Site, site);
+                    self.notes.push(format!("Network {net}, site {site}"));
+                }
+            }
             (FID_STANDARD, 0x30..=0x32) => {
                 self.set_variant(Variant::TierIII);
                 let ch = k.bits(16, 28);
@@ -571,6 +590,20 @@ impl Site {
     }
 }
 
+/// A Tier III System Identity Code (C_ALOHA's 16 bits): its network and site, as sent
+/// (ETSI TS 102 361-4). Its top two bits, the model, say how the 12 after them divide
+/// between the two; the last two are the partition.
+fn sys_code(code: u32) -> (u32, u32) {
+    let site_bits = match code >> 14 {
+        0 => 3,  // tiny: 9-bit network
+        1 => 5,  // small: 7
+        2 => 8,  // large: 4
+        _ => 10, // huge: 2
+    };
+    let body = (code >> 2) & 0xfff;
+    (body >> site_bits, body & ((1 << site_bits) - 1))
+}
+
 /// An MBC continuation's absolute channel parameters → downlink frequency.
 fn absolute_downlink(c: &[u8; 12]) -> Option<u64> {
     let hz = field(c, 57, 67) as u64 * 1_000_000 + field(c, 67, 80) as u64 * 125;
@@ -609,6 +642,30 @@ mod tests {
         let mut t = Site::new(&[452_175_000.0], 24_000.0, DmrConfig::default());
         t.map_from_str(&s.map_to_string());
         assert_eq!(t.resolve(101), Some(452_275_000));
+    }
+
+    /// A System Identity Code splits by its model: tiny 9 + 3 bits, small 7 + 5, large 4 + 8,
+    /// huge 2 + 10, then two of partition.
+    #[test]
+    fn a_system_identity_code_is_its_network_and_site() {
+        let code = |model: u32, net: u32, site: u32, site_bits: u32| model << 14 | (net << site_bits | site) << 2;
+        assert_eq!(sys_code(code(0, 300, 5, 3)), (300, 5));
+        assert_eq!(sys_code(code(1, 100, 17, 5)), (100, 17));
+        assert_eq!(sys_code(code(2, 9, 200, 8)), (9, 200));
+        assert_eq!(sys_code(code(3, 2, 1000, 10) | 0b11), (2, 1000), "the partition isn't the site's");
+    }
+
+    /// A site says what it is: its colour code, and from a Tier III C_ALOHA its network and site.
+    #[test]
+    fn a_tier_iii_site_states_its_colour_code_network_and_site() {
+        let mut s = Site::new(&[452_175_000.0], 24_000.0, DmrConfig { color_code: Some(1), ..Default::default() });
+        assert_eq!(s.identity().get(IdField::ColorCode), Some(1));
+        let mut b = [0u8; 10];
+        b[0] = 0x80 | 0x19;
+        put(&mut b, 40, 56, (1 << 14 | (100 << 5 | 17) << 2) as u64);
+        s.csbk(0, 0, &Csbk(b), None, 1.0, &mut Vec::new());
+        assert_eq!((s.identity().get(IdField::Network), s.identity().site()), (Some(100), Some(17)));
+        assert_eq!(s.variant, Some(Variant::TierIII));
     }
 
     #[test]

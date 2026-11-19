@@ -325,12 +325,18 @@ impl Scope<'_> {
     }
 }
 
+/// A site's `id` as the spec names it: its [`SiteIdentity`](crate::protocol::SiteIdentity)'s own
+/// names, an NXDN system's `system`.
+fn site_id(s: &SiteScope) -> BTreeMap<String, u32> {
+    let Ok(Value::Object(m)) = serde_json::to_value(s.identity) else { return BTreeMap::new() };
+    m.into_iter()
+        .filter_map(|(k, v)| Some((if k == "sysId" && s.protocol == "nxdn" { "system".to_string() } else { k }, v.as_u64()? as u32)))
+        .collect()
+}
+
 fn site(w: &Totals, s: &SiteScope) -> SiteReport {
     let k = Scope { w, key: &s.key };
-    let id = [("wacn", s.wacn), ("sysId", s.sys_id), ("rfss", s.rfss), ("site", s.site), ("nac", s.nac)]
-        .into_iter()
-        .filter_map(|(k, v)| v.map(|v| (k.to_string(), v)))
-        .collect();
+    let id = site_id(s);
     let air_sym = k.count("cc/airSym");
     SiteReport {
         name: s.site_name.clone(),
@@ -407,7 +413,16 @@ fn radio(w: &Totals, s: &SourceScope) -> RadioReport {
 pub fn report(base: Option<&Totals>, now: &Totals, sel: &Select, node: Value, recorder: Recorder, seq: u64) -> Option<Report> {
     let base = base.filter(|b| b.since == now.since && b.time <= now.time);
     let w = now.since(base);
-    let sites: Vec<SiteReport> = now.sites.iter().filter(|s| sel.site_in(s)).map(|s| site(&w, s)).collect();
+    let mut sites: Vec<SiteReport> = now.sites.iter().filter(|s| sel.site_in(s)).map(|s| site(&w, s)).collect();
+    // Sites that say they're the same one (each its own control channel decoder, on its own
+    // radio): receivers of one site, each entry named by its radio.
+    let scopes: Vec<&SiteScope> = now.sites.iter().filter(|s| sel.site_in(s)).collect();
+    let ids: Vec<BTreeMap<String, u32>> = sites.iter().map(|r| r.id.clone()).collect();
+    for (r, sc) in sites.iter_mut().zip(&scopes) {
+        if !r.id.is_empty() && ids.iter().filter(|&i| *i == r.id).count() > 1 {
+            r.receiver = Some(now.sources.iter().find(|x| Some(x.index) == sc.source).map_or_else(|| sc.site_name.clone(), |x| x.name.clone()));
+        }
+    }
     let channels: Vec<ChannelReport> = now.channels.iter().filter(|c| sel.channel_in(c)).map(|c| channel(&w, c)).collect();
     if sites.is_empty() && channels.is_empty() {
         return None;
@@ -617,6 +632,7 @@ impl Reporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::SiteIdentity;
 
     /// A counter's total.
     fn n(v: u64) -> Total {
@@ -654,7 +670,7 @@ mod tests {
             since: 1000.0,
             series: series.into_iter().collect(),
             sites: vec![
-                SiteScope { control_channel_hz: Some(851_000_000), wacn: Some(0xBEE00), sys_id: Some(0x3AB), source: Some(0), symbol_rate: Some(4800), ..site("north", north) },
+                SiteScope { control_channel_hz: Some(851_000_000), identity: SiteIdentity { wacn: Some(0xBEE00), sys_id: Some(0x3AB), ..Default::default() }, source: Some(0), symbol_rate: Some(4800), ..site("north", north) },
                 site("south", "sys/dcfd/site/south"),
             ],
             channels: vec![ChannelScope { key: "sys/fire/ch/154430000".into(), short_name: "fire".into(), freq_hz: 154_430_000, mode: "fm".into(), source: 1, ..Default::default() }],
@@ -694,6 +710,28 @@ mod tests {
         assert_eq!(v["clock"]["sync"], "ntp");
         assert!(v["window"].get("gap").is_none());
         assert!(report(None, &b, &Select::system("nope"), Value::Null, Recorder::default(), 0).is_none());
+    }
+
+    /// Two of the recorder's sites saying they're one (the same identity, each on its own radio)
+    /// are receivers of it; an NXDN system's number is its `system`, a DMR site's colour code
+    /// its `colorCode`.
+    #[test]
+    fn sites_saying_they_are_one_are_its_receivers_and_ids_take_the_specs_names() {
+        let mut t = totals(1300.0, 1000, 0, 0);
+        let same = t.sites[0].identity;
+        t.sites[1].identity = same;
+        t.sites[1].source = Some(1);
+        let r = report(None, &t, &Select::system("dcfd"), Value::Null, Recorder::default(), 0).unwrap();
+        assert_eq!(r.sites.iter().map(|s| s.receiver.as_deref()).collect::<Vec<_>>(), [Some("800"), Some("vhf")]);
+        assert_eq!(r.sites[0].id, r.sites[1].id);
+        // Told apart by what they say: not receivers.
+        t.sites[1].identity.site = Some(9);
+        let r = report(None, &t, &Select::system("dcfd"), Value::Null, Recorder::default(), 0).unwrap();
+        assert!(r.sites.iter().all(|s| s.receiver.is_none()));
+        let nxdn = SiteScope { protocol: "nxdn".into(), identity: SiteIdentity { sys_id: Some(123), site: Some(2), ran: Some(5), ..Default::default() }, ..Default::default() };
+        assert_eq!(site_id(&nxdn), [("ran".to_string(), 5), ("site".into(), 2), ("system".into(), 123)].into());
+        let dmr = SiteScope { protocol: "dmr".into(), identity: SiteIdentity { color_code: Some(1), ..Default::default() }, ..Default::default() };
+        assert_eq!(site_id(&dmr), [("colorCode".to_string(), 1)].into());
     }
 
     #[test]

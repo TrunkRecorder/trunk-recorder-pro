@@ -375,7 +375,7 @@ impl ControlChannel for P25 {
         true
     }
     fn identity_fields(&self) -> &'static [IdField] {
-        &IdField::ALL
+        &[IdField::Nac, IdField::Wacn, IdField::SysId, IdField::Rfss, IdField::Site]
     }
     fn voice_params(&self, id: &Identity) -> VoiceParams {
         let tdma_key = match (id.nac(), id.sys_id(), id.wacn()) {
@@ -552,7 +552,8 @@ impl ControlChannel for Edacs {
 }
 
 /// Trunked DMR: every carrier of the site at once (link control and CSBKs).
-/// Sites are told apart by colour code, not by the site lock.
+/// Sites are told apart by colour code; it states that (and Tier III its
+/// network and site) as its identity.
 struct Dmr {
     site: dmr::Site,
     note: String,
@@ -570,7 +571,7 @@ impl ControlChannel for Dmr {
         let mut msgs = Vec::new();
         self.site.push(carrier, iq, t0, rate, &mut msgs);
         let decoded = self.counts().0 > good0;
-        out.push(Step::new(msgs, Identity::default(), decoded));
+        out.push(Step::new(msgs, self.site.identity().clone(), decoded));
     }
     fn counts(&self) -> (u64, u64) {
         // Blocks (CSBKs, link control) decoded and lost, on every carrier.
@@ -579,6 +580,11 @@ impl ControlChannel for Dmr {
     }
     fn blocks(&self) -> &'static str {
         "blocks"
+    }
+    /// Its colour code; Tier III also its network and site. (A configured colour code holds
+    /// the site to its own; [`IdField`]s add nothing to that unless a site lock names them.)
+    fn identity_fields(&self) -> &'static [IdField] {
+        &[IdField::ColorCode, IdField::Network, IdField::Site]
     }
     fn modulation(&self) -> &'static str {
         self.site.variant.map_or("DMR", |v| v.name())
@@ -639,8 +645,8 @@ impl ControlChannel for Nxdn {
     }
     fn identity_fields(&self) -> &'static [IdField] {
         match self.site.kind() {
-            nxdn::trunking::Kind::TypeC => &[IdField::SysId, IdField::Site],
-            nxdn::trunking::Kind::TypeD => &[],
+            nxdn::trunking::Kind::TypeC => &[IdField::SysId, IdField::Site, IdField::Ran],
+            nxdn::trunking::Kind::TypeD => &[IdField::Ran],
         }
     }
     fn modulation(&self) -> &'static str {

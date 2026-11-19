@@ -89,6 +89,19 @@ test("Decode: each site's card shows its own copies' voice lost, not its system'
   assert.equal(voice("dcfd / dcfd"), "0.0", "the first site's, not the system's");
 });
 
+test("Decode: a DMR site's page says its colour code, network and site; an NXDN site's its RAN, system and site", () => {
+  const c = defaultConfig();
+  c.systems.push(newSystem(c, { shortName: "cap", type: "dmr", controlChannelsHz: [452_175_000] }), newSystem(c, { shortName: "nx", type: "nxdn", controlChannelsHz: [451_000_000] }));
+  running(c, [
+    system(0, "cap", [site(0, "cap", { nac: null, wacn: null, sysId: null, rfss: null, colorCode: 0, network: 1, site: 16 })]),
+    system(1, "nx", [site(1, "nx", { nac: null, wacn: null, sysId: 0x123, rfss: null, ran: 5, site: 2 })]),
+  ]);
+  setView("decode", "cap");
+  assert.match(text(renderToString(<DecodePage />)), /CC 0 Network 1 Site 16/);
+  setView("decode", "nx");
+  assert.match(text(renderToString(<DecodePage />)), /RAN 5 System 123 Site 2/);
+});
+
 test("Decode: a site's neighbours by address (status); its patches once watched (decodeDetail)", () => {
   twoSites([], [
     { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 9, freqHz: 853_000_000 },

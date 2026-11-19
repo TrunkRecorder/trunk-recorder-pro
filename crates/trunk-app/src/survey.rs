@@ -82,7 +82,7 @@ impl LookFor {
                     .map(|s| Site {
                         label: s["label"].as_str().unwrap_or("").to_string(),
                         freqs_hz: hz(&s["freqsHz"]),
-                        expect: serde_json::from_value::<SiteIdentity>(s["expect"].clone()).unwrap_or_default().engine(),
+                        expect: trunk_core::trunk::Identity::of_site(&serde_json::from_value::<SiteIdentity>(s["expect"].clone()).unwrap_or_default()),
                         color_code: s["colorCode"].as_u64().map(|c| c as u8),
                     })
                     .collect()

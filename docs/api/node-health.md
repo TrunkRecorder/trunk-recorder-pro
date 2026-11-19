@@ -253,6 +253,15 @@ them (`History`), schedules each node (`Reporter`: the random phase, jitter, car
 backing off above) and makes its report (`report`), so every plugin reports the same figures the
 same way. A plugin adds the HTTP and its service's `node` fields.
 
+- **`id`:** P25 its NAC, WACN, System ID, RFSS and site; SmartNet its System ID and site; DMR its
+  colour code, and on Tier III and Capacity Max its network and site from C_ALOHA's System
+  Identity Code, as sent (some tools show each one higher); NXDN its RAN, and on Type-C its system
+  and site. Capacity Plus sends no network or site: its `id` is its colour code.
+- **`receiver`:** a site is decoded by one control channel decoder. Its demodulators (CQPSK, CQPSK
+  equalised and C4FM for P25) are combined frame by frame, so it is one entry. Two of the recorder's
+  sites that state the same `id` (one site set up twice, on different radios) are receivers of it:
+  each entry's `receiver` is the radio it's heard on.
+
 ## Examples
 
 [`node-health/`](node-health/) holds example reports, each as a recorder of that kind would send

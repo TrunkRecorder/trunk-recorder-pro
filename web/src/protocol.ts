@@ -202,6 +202,8 @@ export interface ShareStatus {
  * A site's identity (NAC, WACN, System ID are hex on the air): what a site in
  * the config expects (absent: any), and what a control channel said of itself
  * in status and the survey (absent: not heard yet). Compare with `!= null`.
+ * P25 states nac…site; SmartNet sysId, site; DMR colorCode (Tier III also
+ * network, site, as sent); NXDN ran (Type-C also sysId, its system, and site).
  */
 export interface SiteIdentity {
   nac?: number | null;
@@ -209,6 +211,9 @@ export interface SiteIdentity {
   sysId?: number | null;
   rfss?: number | null;
   site?: number | null;
+  colorCode?: number | null;
+  network?: number | null;
+  ran?: number | null;
 }
 
 /** A SmartNet band plan the survey learned, in Trunk Recorder's names (Hz; offset a channel number). */

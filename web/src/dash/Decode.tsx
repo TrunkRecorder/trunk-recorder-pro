@@ -262,6 +262,18 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
         {x.sites.length > 1 && site && <Choice value={site.name} options={x.sites.map((y) => ({ v: y.name, label: y.name }))} onChange={(v) => setView("decode", name, v)} label="Site" />}
       </BackBar>
       <DecodeCard s={s} x={x} site={site} usual={usual[cc("good")]} freqs={rows} />
+      {st && (x.kind === "dmr" || x.kind === "nxdn") && (
+        <div className="kv small">
+          {(x.kind === "dmr"
+            ? [["CC", st.identity.colorCode], ["Network", st.identity.network], ["Site", st.identity.site]]
+            : [["RAN", st.identity.ran], ["System", st.identity.sysId != null ? hex(st.identity.sysId) : null], ["Site", st.identity.site]]
+          ).map(([k, v]) => (
+            <span key={k as string}>
+              {k} <b className="mono">{v ?? "—"}</b>
+            </span>
+          ))}
+        </div>
+      )}
       {st && x.kind !== "dmr" && x.kind !== "nxdn" && (
         <div className="kv small">
           <span>
