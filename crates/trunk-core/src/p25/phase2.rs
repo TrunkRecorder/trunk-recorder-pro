@@ -25,6 +25,11 @@ use crate::tables::{DUID_LOOKUP, ISCH_CODEWORDS, LFSR_SEED_MATRIX};
 pub const SYMBOL_RATE: f64 = 6000.0;
 pub const SLOT_DIBITS: usize = 180;
 pub const BURST_DIBITS: usize = 170;
+/// Where a voice burst's AMBE codewords start (dibits into the burst): a 4V's four, a 2V's two.
+pub const VCW_AT_4V: [usize; 4] = [11, 48, 96, 133];
+pub const VCW_AT_2V: [usize; 2] = [11, 48];
+/// An AMBE codeword's dibits.
+pub const VCW_DIBITS: usize = 36;
 /// 40-bit S-ISCH / frame sync (op25 P25P2_FRAME_SYNC_MAGIC).
 const SYNC: u64 = 0x57_5D57_F7FF;
 const SYNC_INV: u64 = SYNC ^ 0xAA_AAAA_AAAA;
@@ -422,8 +427,8 @@ mod tests {
         let m = xor_mask(0x443, 0x445, 0xbee00);
         let x = descramble(&dibits(V4), 4, &m);
         let want = [[0x123u32, 0x456, 0x78, 0x1abc], [0xfff, 0, 0x7ff, 0x3fff], [0x800, 1, 0x400, 0x2000], [0xf0, 0xf0f, 0x155, 0x2aaa]];
-        for (k, &a) in [11, 48, 96, 133].iter().enumerate() {
-            let f = decode_vcw(&x[a..a + 36], None);
+        for (k, &a) in VCW_AT_4V.iter().enumerate() {
+            let f = decode_vcw(&x[a..a + VCW_DIBITS], None);
             assert_eq!(f.errs, 0);
             let mut u = [0u32; 4];
             let mut p = 0;

@@ -8,20 +8,23 @@ the noise, that limits Phase 2", with per-burst diversity first on its list of w
 
 ## What it does
 
-`trunk::voice::P25Tdma` runs a second receiver when the bank's `cqpsk_eq` is on (the default): the
+`trunk::voice::P25Tdma` runs its receivers through the same bank as Phase 1 (`Bank<phase2::Framer>`,
+made by `Bank::phase2`): a second receiver when the bank's `cqpsk_eq` is on (the default), the
 same CQPSK receiver with the T/2 CMA equaliser (9 taps, μ 0.02) and **without** decision-feedback
-differential detection. Each receiver has its own slot framer.
+differential detection. Each receiver has its own slot framer, and the two share one matched filter.
 
-- **Matching copies.** Each framed packet joins the group of packets from the other receiver that
-  started within half a slot of it (the receivers' timing loops differ by a few symbols). A group
-  goes to the tracker, in time order, once both receivers have framed it or 0.25 s after it began.
-  A copy that turns up after its group went on is dropped, so nothing is decoded twice. The
-  harness prototype weak-signal.md mentions failed at this step; the slot framers' timing makes it
+- **Matching copies.** The bank groups packets that started within half a slot of each other (the
+  receivers' timing loops differ by a few symbols; Phase 1 frames: within half a TDU), and passes a
+  group on, in time order, once every receiver is 0.25 s past its start (Phase 1: 0.35 s). A copy
+  that turns up after its group went on is dropped, so nothing is decoded twice. The harness
+  prototype weak-signal.md mentions failed at this step; the slot framers' timing makes it
   straightforward.
-- **Choosing.** `TdmaTracker::packets` takes the copies: those whose superframe slot disagrees with
-  the first receiver's are left out, the burst type is the majority's, each AMBE codeword is the
-  copy's that decodes with the fewest errors (then the highest mean reliability), and a MAC PDU is the
-  first copy's that passes its CRC. One copy goes through as before (`packet` is the one-copy case).
+- **Choosing.** `TdmaTracker::group` takes the copies, in the bank's receiver order: those whose
+  superframe slot disagrees with the first receiver's are left out, the burst type is the majority's
+  (`diversity::best_burst_kind`), each AMBE codeword is the copy's that decodes with the fewest errors,
+  then the highest mean reliability (`diversity::best_ambe`, beside Phase 1's `best_imbe`), and a MAC
+  PDU is the first copy's that passes its CRC. One copy goes through as before (`packet` is the
+  one-copy case).
 
 ## Measured
 
