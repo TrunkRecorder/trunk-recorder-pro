@@ -1402,8 +1402,16 @@ impl Trunk {
     /// The source its control channel is received on (none: searching).
     fn control_source(&self) -> Option<usize> {
         match &self.listening {
-            Listening::Watching(carriers) => carriers.iter().find(|c| Some(c.hz.round() as u64) == self.cc_hz).map(|c| c.source),
+            Listening::Watching(_) => self.watched().map(|c| c.source),
             _ => self.hunted().map(|(src, _)| src),
+        }
+    }
+
+    /// Watching: the carrier its control channel is on now.
+    fn watched(&self) -> Option<&Carrier> {
+        match &self.listening {
+            Listening::Watching(carriers) => carriers.iter().find(|c| Some(c.hz.round() as u64) == self.cc_hz),
+            _ => None,
         }
     }
 
@@ -2015,6 +2023,16 @@ impl Core {
             t.cc().report(&mut cc);
             if let Some((src, hz)) = t.hunted() {
                 levels.push(Leveled { key: format!("{key}/cc"), src, hz, open: None });
+            } else if let Some(w) = t.watched() {
+                // A watched site (DMR, NXDN, EDACS): what a hunted channel's
+                // decoder reports itself, its offset and eye opening, and its level.
+                if let Some(off) = t.cc().offset_hz() {
+                    cc.gauge("offset", off as f64);
+                }
+                if let Some(q) = t.cc().quality().sep {
+                    cc.gauge("sep", q as f64);
+                }
+                levels.push(Leveled { key: format!("{key}/cc"), src: w.source, hz: w.hz, open: None });
             }
         }
         for c in self.conv.channels() {
