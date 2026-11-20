@@ -3,8 +3,10 @@
 //! ```text
 //! engine / DSP parts ── Instrumented::report ──┐
 //! SampleMeter (headroom, clipping) ────────────┤
-//! Tally (calls, airtime, reasons, voice errors)┴─► Aggregator ─► `stats` (1 s)
-//!                                                       └──────► Rollup (1 min) ─► History / stats files
+//! engine: each site's and channel's copies ─────┤
+//! Tally (calls, airtime, audio)────────────────┴─► Aggregator ─► `stats` (1 s)
+//!                                                       ├──────► Rollup (1 min) ─► History / stats files
+//!                                                       └──────► totals since start ─► plugins' `totals`
 //! session events ─► Stats::observe ─► Registry (talkgroups, radios, frequencies)
 //!                                  └─► Monitor (notable events ─► watchers, the feed)
 //! ```
@@ -187,28 +189,19 @@ impl Topics {
     }
 }
 
-/// Running totals of what calls did, per system, by name.
+/// Running totals of what calls did, per system, by name. (What became of
+/// each site's and channel's copies of calls, and their frames, the engine
+/// counts: [`trunk_core::trunk::tally`].)
 #[derive(Default)]
 struct Tally {
     counts: BTreeMap<String, u64>,
-    /// Keys new since the last report: they count from 0.
-    fresh: Vec<String>,
 }
 
 impl Tally {
     fn add(&mut self, key: String, n: u64) {
-        match self.counts.get_mut(&key) {
-            Some(v) => *v += n,
-            None => {
-                self.fresh.push(key.clone());
-                self.counts.insert(key, n);
-            }
-        }
+        *self.counts.entry(key).or_default() += n;
     }
     fn report(&mut self, agg: &mut Aggregator) {
-        for k in self.fresh.drain(..) {
-            agg.seed(&k);
-        }
         for (k, v) in &self.counts {
             agg.counter(k, *v);
         }
@@ -335,8 +328,6 @@ impl Stats {
         let sys = system_key(name);
         match ev {
             Event::CallStart(c) => {
-                let why = if c.recording { "recorded" } else { c.reason.map_or("monitored", |r| r.as_str()) };
-                self.tally.add(format!("{sys}/why/{why}"), 1);
                 let firsts = self.shared.radio.lock().unwrap().call_start(name, c, t);
                 if firsts.tg {
                     let alpha_tag = c.talkgroup_info.as_ref().map_or(String::new(), |g| g.alpha_tag.clone());
@@ -401,11 +392,6 @@ impl Stats {
                 self.tally.add("all/audioBytes".into(), bytes);
                 self.roll_day();
                 self.day.audio_bytes += bytes;
-                for i in &record.error_list {
-                    self.tally.add(format!("{sys}/voice/frames"), i.frames);
-                    self.tally.add(format!("{sys}/voice/errors"), i.error_count);
-                    self.tally.add(format!("{sys}/voice/bad"), i.bad_frames);
-                }
                 self.shared.radio.lock().unwrap().concluded(name, record, t);
             }
             Event::NotSaved(_) => self.tally.add(format!("{sys}/notSaved"), 1),
@@ -452,6 +438,11 @@ impl Stats {
         self.edges(engine, out);
         out.push(Output::Message(ToClient::Stats { t: (self.now * 10.0).round() / 10.0, values: self.agg.values_json() }));
         self.details(engine, site_names, decode_sites, out);
+    }
+
+    /// Every series' running total since recording started ([`Aggregator::totals`]).
+    pub fn totals(&self) -> BTreeMap<String, trunk_recorder_plugin::Total> {
+        self.agg.totals()
     }
 
     fn add_air(&mut self, sys: &str, ms: u64) {

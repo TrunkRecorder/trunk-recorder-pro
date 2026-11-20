@@ -17,6 +17,7 @@ pub mod patches;
 pub mod record;
 pub mod recorded;
 pub mod sdr;
+pub mod tally;
 pub mod talkgroups;
 pub mod tape;
 pub mod tdma;

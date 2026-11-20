@@ -59,6 +59,7 @@ use super::engine::{Event, LiveAudio, Pins, SystemConfig, Tuning};
 use super::inband::InBandSpec;
 use super::record::RecordedOn;
 use super::recorded::Recorded;
+use super::tally::{CopyTally, FrameCount};
 use super::tape::{Tapes, VoiceTape};
 use super::voice::CipherId;
 use super::talkgroups::{Talkgroup, Talkgroups};
@@ -293,6 +294,19 @@ pub enum Access {
     Dmr { cc: Option<u8>, slot: Option<u8>, tg: Option<u32> },
     /// NXDN: whichever of RAN and group (or unit) are given.
     Nxdn { ran: Option<u8>, tg: Option<u32> },
+}
+
+impl Access {
+    /// As a node health report gives a conventional channel's `access`:
+    /// `CTCSS 151.4`, `DCS 023N`, `NAC 293`, `CC 1 TS 2`, `RAN 1`, with a
+    /// talkgroup when the row records by one.
+    pub fn report_label(&self) -> String {
+        match *self {
+            Access::Tone(Tone::Ctcss(_)) => format!("CTCSS {self}"),
+            Access::Tone(Tone::Dcs(c, inv)) => format!("DCS {c:03}{}", if inv { 'I' } else { 'N' }),
+            _ => self.to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for Access {
@@ -661,8 +675,13 @@ pub struct ConvNow<'a> {
     pub source: usize,
     /// Its rows' names (alpha tags), each once, in order.
     pub names: Vec<&'a str>,
+    /// The code its rows record by, when every row has the same one
+    /// ([`Access::report_label`]); None when they differ or have none.
+    pub access: Option<String>,
     /// A signal is on it now.
     pub open: bool,
+    /// What became of its transmissions.
+    pub tally: &'a CopyTally,
     /// Calls in progress on it.
     pub calls: usize,
     /// While open: how far above the channel its carrier is, Hz, and how
@@ -690,6 +709,8 @@ struct Chan {
     /// worth (a pause shorter than the call timeout continues it), as a
     /// recorded call would be counted.
     skipped: [Option<(String, f64)>; 2],
+    /// What became of its transmissions, since the start.
+    tally: CopyTally,
     source: usize,
     /// Where it is placed in its source (`offset_hz`): AutoTune's
     /// correction is taken up between calls ([`Conventional::on_block`]).
@@ -831,7 +852,7 @@ impl Conventional {
             let bar = squelch_db.unwrap_or(cfg.squelch_db);
             let (freq_hz, mode, system, analog, shape) = (c.freq_hz, c.mode, c.system, c.analog, ChannelShape::of(c.mode, &c.analog));
             let tune_ref = !mode.analog() && rows.iter().any(|r| r.tune_ref);
-            chans.push(Chan { freq_hz, chosen: mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], source: src, tuning, tune_ref, offset_hz, slice, power: 0.0, watch: (mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
+            chans.push(Chan { freq_hz, chosen: mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], tally: CopyTally::default(), source: src, tuning, tune_ref, offset_hz, slice, power: 0.0, watch: (mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
         }
         if !outside.is_empty() {
             return Err(format!("Conventional channel(s) outside every source's bandwidth: {} MHz — move a center frequency or disable them.", outside.join(", ")));
@@ -924,18 +945,29 @@ impl Conventional {
                 }
             }
             let open = c.open.as_ref();
+            let first = c.rows.first().and_then(|r| r.access);
+            let access = first.filter(|a| c.rows.iter().all(|r| r.access.as_ref() == Some(a))).map(|a| a.report_label());
             ConvNow {
                 freq_hz: c.freq_hz,
                 system: c.system,
                 mode: c.mode(),
                 source: c.source,
                 names,
+                access,
                 open: open.is_some(),
+                tally: &c.tally,
                 calls: open.map_or(0, |o| o.live.iter().flatten().count()),
                 offset_hz: open.and_then(|o| o.voice.offset_hz()),
                 quality: open.map(|o| o.voice.quality()).unwrap_or_default(),
             }
         })
+    }
+
+    /// Copy `c` of a call on one of its channels ended, having decoded `frames` ([`CopyTally::copy_end`]).
+    pub fn copy_end(&mut self, c: &Call, frames: FrameCount) {
+        if let Some(ch) = self.chans.iter_mut().find(|h| h.system == c.system as usize && h.freq_hz.round() as u64 == c.freq_hz) {
+            ch.tally.copy_end(c, frames);
+        }
     }
 
     /// Calls in progress.
@@ -1177,13 +1209,13 @@ impl Conventional {
         }
         if ch.routed && mode == ConvMode::Fm {
             if let Some(code) = Self::route(&ch.rows, &mut o.tx, &mut heard[0], carrier) {
-                Self::skip(&mut ch.skipped[0], ch.freq_hz, code, now_s, rules, out);
+                Self::skip(&mut ch.skipped[0], &mut ch.tally, ch.freq_hz, code, now_s, rules, out);
             }
         }
         if ch.routed && mode != ConvMode::Fm {
             for (slot, h) in heard.iter_mut().enumerate() {
                 if let Some(code) = Self::route_digital(&ch.rows, slot, h) {
-                    Self::skip(&mut ch.skipped[slot], ch.freq_hz, code, now_s, rules, out);
+                    Self::skip(&mut ch.skipped[slot], &mut ch.tally, ch.freq_hz, code, now_s, rules, out);
                 }
             }
         }
@@ -1235,8 +1267,9 @@ impl Conventional {
 
     /// Report traffic no row took: once for a new code, or for the same
     /// after a pause longer than the call timeout.
-    fn skip(last: &mut Option<(String, f64)>, freq_hz: f64, code: String, now_s: f64, rules: &CallRules, out: &mut Vec<ConvOut>) {
+    fn skip(last: &mut Option<(String, f64)>, tally: &mut CopyTally, freq_hz: f64, code: String, now_s: f64, rules: &CallRules, out: &mut Vec<ConvOut>) {
         if last.as_ref().is_none_or(|(c, t)| *c != code || now_s - t > rules.calls.call_timeout_s) {
+            tally.skipped += 1;
             out.push(ConvOut::Event(Event::ConvSkipped { freq_hz: freq_hz.round() as u64, code: code.clone() }));
         }
         *last = Some((code, now_s));
@@ -1492,6 +1525,15 @@ impl Conventional {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_is_labelled_as_node_health_reports_give_it() {
+        assert_eq!(Access::Tone(Tone::Ctcss(1514)).report_label(), "CTCSS 151.4");
+        assert_eq!(Access::Tone(Tone::Dcs(23, false)).report_label(), "DCS 023N");
+        assert_eq!(Access::Tone(Tone::Dcs(754, true)).report_label(), "DCS 754I");
+        assert_eq!(Access::P25 { nac: Some(0x293), tg: None }.report_label(), "NAC 293");
+        assert_eq!(Access::Dmr { cc: Some(1), slot: None, tg: None }.report_label(), "CC 1");
+    }
     use crate::trunk::engine::{Engine, EngineConfig, Event, SourceConfig};
     use crate::trunk::{CallConfig, SystemConfig};
     use std::f64::consts::PI;

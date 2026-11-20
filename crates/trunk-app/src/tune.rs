@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use trunk_core::metrics::{key_part, system_key};
-use trunk_core::trunk::{SiteKey, SiteStatus};
+use trunk_core::trunk::SiteStatus;
 
 use crate::gain::{GainPlan, Point, Setting};
 pub use crate::stats::CLIP_PCT;
@@ -230,7 +230,7 @@ impl Step {
 }
 
 /// Where one system's numbers are in the `stats` values: its control
-/// channels' ([`SiteKey::stats_key`], one per site the radio receives) and its own.
+/// channels' ([`trunk_core::trunk::SiteKey::stats_key`], one per site the radio receives) and its own.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Watch {
     pub short_name: String,
@@ -242,7 +242,7 @@ pub struct Watch {
 pub fn watches(sites: &[SiteStatus], source: usize) -> Vec<Watch> {
     let mut out: Vec<Watch> = vec![];
     for y in sites.iter().filter(|y| y.source == Some(source)) {
-        let key = SiteKey { system: &y.short_name, site: &y.site_name }.stats_key();
+        let key = y.key.clone();
         match out.iter_mut().find(|w| w.short_name == y.short_name) {
             Some(w) => w.cc_keys.push(key),
             None => out.push(Watch { short_name: y.short_name.clone(), cc_keys: vec![key] }),
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn the_watches_are_the_sites_the_engine_has_on_the_radio() {
-        let site = |sys: &str, name: &str, source| SiteStatus { short_name: sys.into(), site_name: name.into(), source, ..Default::default() };
+        let site = |sys: &str, name: &str, source| SiteStatus { short_name: sys.into(), site_name: name.into(), key: trunk_core::trunk::SiteKey { system: sys, site: name }.stats_key(), source, ..Default::default() };
         let sites = [site("metro", "metro", Some(0)), site("county", "North", Some(0)), site("county", "South", Some(1)), site("county", "East", Some(0)), site("far", "far", None)];
         let w = watches(&sites, 0);
         assert_eq!(w.iter().map(|w| w.short_name.as_str()).collect::<Vec<_>>(), ["metro", "county"]);

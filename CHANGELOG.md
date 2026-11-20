@@ -5,6 +5,39 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Node health reports** (`docs/api/node-health.md`, draft): a common way for a recorder to tell a call-collecting
+  service (Broadcastify Calls, OpenMHz, …) how well it hears each node it uploads, every 5 minutes at a random point of
+  its own, so a service fed by several recorders for one system or channel can prefer the one hearing it best, and can
+  tell a recorder that's up but quiet from one that's down. Trunked sites: control channel time decoding, blocks decoded
+  and lost, share of its air decoded, SNR, phase error, calls announced and why any weren't recorded, voice frames lost
+  by codec. Conventional channels: time heard, open and closed, levels, calls and transmissions no row took. Radios:
+  dropped samples, clipping, frequency error. Counts, not scores: a service weighs them its own way.
+- **Plugins: the `totals` topic** (SDK 0.12.0): every series the dashboard charts, as running totals since recording
+  started, every 10 s, with the sites, conventional channels and radios they're of. The SDK's `health` module makes a
+  node's report of them and keeps its schedule (random phase, jitter, a failed report's window carried by the next,
+  backing off when the service is busy, the interval the service asks for).
+- **Calls counted where they're heard.** Each site counts its own copies of calls (a call heard on two sites counts at
+  both) when they end, by what finally became of them (one refused as an unknown talkgroup and recorded once patched
+  counts as recorded), with the frames each decoded, saved or not; each conventional frequency counts its own. A system's
+  figures on the dashboard are the sum of its sites' and channels', and a site's card shows its own voice. Grants on a
+  channel never turned into a frequency are counted (`noFrequency`, shown as "No channel table"). The series:
+  `<site>/calls/…` and `<site>/voice/<codec>/…` replace `sys/<name>/why/…` and `sys/<name>/voice/…`, so those charts
+  start again from now.
+- **DMR and NXDN sites say what they are.** A DMR site's identity is its colour code, and on Tier III and Capacity Max
+  also its network and site (C_ALOHA's System Identity Code: the Capacity Max capture's is network 1, site 16). An
+  NXDN site's is its RAN, and on Type-C also its system and site. The Decode page shows them, and status, plugins and
+  node health reports carry them. In node health reports, two sites set up for one site on different radios (the same
+  identity) are its receivers (`receiver`: each one's radio). Plugins: `SiteIdentity` is the SDK's, shared by the
+  config's site lock, status (`SystemStatus::scope.identity`, an `identity` object in the JSON) and `totals`.
+- **Node health reports: one format for every recorder.** After reviewing what SDRTrunk and SDRTrunk VCE can measure,
+  still version 1, all additive: a node's report covers whole sites (a site can be in several nodes' reports), several
+  receivers on one site (`receiver`), MPT1327, LTR, LTR-Net and Passport, each protocol's unit of control message,
+  `symbolRate` in baud, rest channels, `cc.syncLossSym`, `cc.merDb`, `voice.*.missing`, `calls.recorded` defined, the
+  reasons `data` and `noFrequency`, conventional `noiseDb` optional, and the answers a recorder acts on. Example reports
+  in `docs/api/node-health/` are the conformance cases; the SDK's report types read and write each unchanged.
+- Node health reports: a radio says the correction AutoTune applies on top of its ppm (`ppmApplied`), so a service can
+  tell a radio being corrected from a mistuned one, and the recorder says how its clock is kept (`clock.sync`: `ntp`,
+  `gps` or `ptp`, from chrony or systemd-timesyncd; `none` when the system says it isn't synchronized).
 - **Tuning a radio's gain by what it decodes, while recording** (`trunk-pro tune`, the interface's `tuneGain`). The
   recorder tries gains on one radio, following a plan for its kind: an Airspy or HydraSDR along its linearity (or
   sensitivity) table, or in manual its LNA, then mixer, then VGA kept low; an RTL-SDR along its tuner's gain table; a
