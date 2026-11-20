@@ -9,7 +9,7 @@ import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { coverage, dashSystems, pageHealth, rangesFor } from "./data.ts";
 import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
-import { DecodePage, DmrIdentity } from "./Decode.tsx";
+import { DecodePage, SiteIdentityLine } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { OriginNote, RadioPage, TalkgroupNamesEditor } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
@@ -152,13 +152,17 @@ test("RF: the control channels of adjacent sites on a source, faint, by address;
   assert.doesNotMatch(page, /1-7/, "off every source");
 });
 
-test("Decode: a DMR site's identity where a P25 site's is: type, system code and its parts, colour code, calls", () => {
-  const d = { variant: "DMR Tier III", colorCode: 4, sysCode: { code: 0xb013, model: "Large" as const, net: 12, site: 4, par: "A+B" as const }, rest: null, keyed: false, channels: [], carriers: [] };
-  const html = renderToString(<DmrIdentity d={d} calls={7} active={1} />).replace(/<!-- -->/g, "");
-  for (const want of ["Tier III", ">B013<", "Large", "Net <b class=\"mono\">12", "Site <b class=\"mono\">4", "A+B", "CC <b class=\"mono\">4", "Calls <b>7", "Active <b>1"]) assert.ok(html.includes(want), `${want} in ${html}`);
-  // Before the site detail arrives: still the calls, no code.
-  const bare = renderToString(<DmrIdentity d={null} calls={0} active={0} />);
-  assert.ok(!bare.includes("Sys code") && bare.includes("Calls"));
+test("Decode: a DMR site's identity on the one identity line: CC, network, site, then its system code's model and category, calls", () => {
+  const st = site(0, "cap", { colorCode: 4, network: 12, site: 4 });
+  const dmr = { variant: "DMR Tier III", colorCode: 4, sysCode: { code: 0xb013, model: "Large" as const, category: "A+B" as const }, rest: null, keyed: false, channels: [], carriers: [] };
+  const html = renderToString(<SiteIdentityLine kind="dmr" st={st} dmr={dmr} calls={7} active={1} />).replace(/<!-- -->/g, "");
+  for (const want of ['CC <b class="mono">4', 'Network <b class="mono">12', 'Site <b class="mono">4', ">B013<", ">Large<", ">A+B<", "Calls <b>7", "Active <b>1"]) assert.ok(html.includes(want), `${want} in ${html}`);
+  // Each said once: the type, rest channel and keyed are the DMR panel's.
+  assert.equal(html.match(/CC </g)?.length, 1);
+  assert.ok(!html.includes("Tier III"));
+  // Before the site detail arrives: the identity and calls, no code.
+  const bare = renderToString(<SiteIdentityLine kind="dmr" st={st} dmr={null} calls={0} active={0} />);
+  assert.ok(!bare.includes("Sys code") && bare.includes("Network") && bare.includes("Calls"));
 });
 
 test("Decode: a site's FCC call sign, once its control channel has said it", () => {

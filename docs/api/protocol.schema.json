@@ -1855,13 +1855,7 @@
                     "Huge"
                   ]
                 },
-                "net": {
-                  "type": "number"
-                },
-                "site": {
-                  "type": "number"
-                },
-                "par": {
+                "category": {
                   "type": "string",
                   "enum": [
                     "reserved",
@@ -1874,9 +1868,7 @@
               "required": [
                 "code",
                 "model",
-                "net",
-                "site",
-                "par"
+                "category"
               ],
               "additionalProperties": false
             },
@@ -1884,7 +1876,7 @@
               "type": "null"
             }
           ],
-          "description": "Tier III / Capacity Max: the system identity code from the control channel, split by its model."
+          "description": "Tier III / Capacity Max: the System Identity Code its control channel sends, its model (how it splits into the network and site the site's `identity` carries) and which category of radio may use the site."
         },
         "rest": {
           "anyOf": [
@@ -1999,6 +1991,7 @@
       "required": [
         "variant",
         "colorCode",
+        "sysCode",
         "rest",
         "keyed",
         "channels",

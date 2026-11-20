@@ -790,8 +790,10 @@ export interface DmrSiteStatus {
   /** "DMR Capacity Plus" | "DMR Capacity Max" | "DMR Connect Plus" | "DMR Tier III" | "Hytera XPT" | null (not known yet). */
   variant: string | null;
   colorCode: number | null;
-  /** Tier III / Capacity Max: the system identity code from the control channel, split by its model. */
-  sysCode?: { code: number; model: "Tiny" | "Small" | "Large" | "Huge"; net: number; site: number; par: "reserved" | "A" | "B" | "A+B" } | null;
+  /** Tier III / Capacity Max: the System Identity Code its control channel sends, its model (how
+   *  it splits into the network and site the site's `identity` carries) and which category of
+   *  radio may use the site. */
+  sysCode: { code: number; model: "Tiny" | "Small" | "Large" | "Huge"; category: "reserved" | "A" | "B" | "A+B" } | null;
   /** Capacity Plus: the rest channel's logical slot number, and its frequency once known. */
   rest: { lsn: number; freqHz: number | null } | null;
   /** Keyed CRCs (restricted access). */

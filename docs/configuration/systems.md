@@ -179,8 +179,9 @@ Find my system fills in the four `400_custom` numbers for SmartNet OBT systems.
 | `lcnTableHz` | | `{}` | object | Logical channel number → frequency, Hz: `{ "101": 452275000 }` (Trunk Recorder's `lcnTable`). Wins over channels learned from the air; channels left out are learned |
 | `colorCode` | | `null` | integer or null | Only this colour code, 0–15. `null`: the control channel's |
 
-DMR sites announce no system identity, so `expect` is ignored; use `colorCode`, and list the sites
-of one system under it. A [Hytera XPT](../guides/xpt.md) site's repeaters may each have their own
+Use `colorCode` to tell DMR sites apart, and list the sites of one system under it. A Tier III or
+Capacity Max site also states a network and site (its System Identity Code's), which `expect` can
+lock: `{ "network": 12, "site": 4 }`. A [Hytera XPT](../guides/xpt.md) site's repeaters may each have their own
 colour code: leave `colorCode` empty and every listed frequency is taken as the site's.
 
 ## NXDN
