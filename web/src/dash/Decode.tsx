@@ -8,7 +8,7 @@ import { formatMhz } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Fig, Figs, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
-import type { ChannelSnapshot, FreqRow, SeriesData } from "../protocol.ts";
+import type { ChannelSnapshot, DmrSiteStatus, FreqRow, SeriesData, SiteStatus } from "../protocol.ts";
 import { modeInfo } from "../modes.ts";
 import { change, coverage, dashSystems, K, KIND_LABEL, recentAvg, recentSum, running, runningSites, siteHealth, sumSeries, systemHealth, useHistory, useRanges, useUsual, val, voiceKeys, type DashSite, type DashSystem, type Usual } from "./data.ts";
 import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
@@ -261,61 +261,8 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
         {x.sites.length > 1 && site && <Choice value={site.name} options={x.sites.map((y) => ({ v: y.name, label: y.name }))} onChange={(v) => setView("decode", name, v)} label="Site" />}
       </BackBar>
       <DecodeCard s={s} x={x} site={site} usual={usual[cc("good")]} freqs={rows} />
-      {st && (x.kind === "dmr" || x.kind === "nxdn") && (
-        <div className="kv small">
-          {(x.kind === "dmr"
-            ? [["CC", st.identity.colorCode], ["Network", st.identity.network], ["Site", st.identity.site]]
-            : [["RAN", st.identity.ran], ["System", st.identity.sysId != null ? hex(st.identity.sysId) : null], ["Site", st.identity.site]]
-          ).map(([k, v]) => (
-            <span key={k as string}>
-              {k} <b className="mono">{v ?? "—"}</b>
-            </span>
-          ))}
-        </div>
-      )}
-      {st && x.kind !== "dmr" && x.kind !== "nxdn" && (
-        <div className="kv small">
-          <span>
-            NAC <b className="mono">{hex(st.identity.nac)}</b>
-          </span>
-          <span>
-            WACN <b className="mono">{hex(st.identity.wacn)}</b>
-          </span>
-          <span>
-            SysID <b className="mono">{hex(st.identity.sysId)}</b>
-          </span>
-          <span>
-            Site <b className="mono">{st.identity.site != null ? `${st.identity.rfss ?? "?"}-${st.identity.site}` : "—"}</b>
-          </span>
-          {!!st.callsigns?.length && (
-            <span title="The FCC call signs its control channel's base station IDs say, each for a channel">
-              Call sign{st.callsigns.length > 1 ? "s" : ""}{" "}
-              {st.callsigns.map((x, i) => (
-                <Fragment key={x.callSign}>
-                  {i > 0 && ", "}
-                  <b className="mono">{x.callSign}</b>
-                  {x.freqHz ? <span className="muted">{` ${formatMhz(x.freqHz, 4)}`}</span> : null}
-                </Fragment>
-              ))}
-            </span>
-          )}
-          <span title="Calls saved since start">
-            Calls <b>{x.status?.callsConcluded ?? 0}</b>
-          </span>
-          <span>
-            Active <b>{x.status?.activeCalls ?? 0}</b>
-          </span>
-        </div>
-      )}
-      {x.kind === "conventional" && x.status && (
-        <div className="kv small">
-          <span title="Calls saved since start">
-            Calls <b>{x.status.callsConcluded}</b>
-          </span>
-          <span>
-            Active <b>{x.status.activeCalls}</b>
-          </span>
-        </div>
+      {(st || (x.kind === "conventional" && x.status)) && (
+        <SiteIdentityLine kind={x.kind} st={st ?? null} dmr={here.find((y) => y.dmr)?.dmr ?? null} calls={x.status?.callsConcluded ?? 0} active={x.status?.activeCalls ?? 0} />
       )}
       {live && live.channels.length > 0 && (
         <Card title="Channels now">
@@ -486,6 +433,69 @@ export function DecodePage() {
             : [<DecodeCard key={x.name} s={s} x={x} usual={null} freqs={rows} />];
         })}
       </div>
+    </div>
+  );
+}
+
+/** Under the graphs: what the site says it is (its identity, as each protocol states it; a DMR
+ *  Tier III / Capacity Max site also its System Identity Code's model and category), its calls. */
+export function SiteIdentityLine(props: { kind: DashSystem["kind"]; st: SiteStatus | null; dmr: DmrSiteStatus | null; calls: number; active: number }) {
+  const { kind, st, dmr } = props;
+  const id = st?.identity;
+  const code = dmr?.sysCode;
+  // [label, value, title]
+  const fields: [string, ReactNode, string?][] = !id
+    ? []
+    : kind === "dmr"
+      ? [
+          ["CC", id.colorCode],
+          ["Network", id.network],
+          ["Site", id.site],
+          ...(code
+            ? ([
+                ["Sys code", code.code.toString(16).toUpperCase().padStart(4, "0"), "System Identity Code, from the control channel"],
+                ["Model", code.model, "Network model: how the code splits between network and site"],
+                ["Category", code.category, "Which category of radio may use the site"],
+              ] as [string, ReactNode, string][])
+            : []),
+        ]
+      : kind === "nxdn"
+        ? [
+            ["RAN", id.ran],
+            ["System", id.sysId != null ? hex(id.sysId) : null],
+            ["Site", id.site],
+          ]
+        : [
+            ["NAC", hex(id.nac)],
+            ["WACN", hex(id.wacn)],
+            ["SysID", hex(id.sysId)],
+            ["Site", id.site != null ? `${id.rfss ?? "?"}-${id.site}` : null],
+          ];
+  return (
+    <div className="kv small">
+      {fields.map(([k, v, title]) => (
+        <span key={k} title={title}>
+          {k} <b className="mono">{v ?? "—"}</b>
+        </span>
+      ))}
+      {!!st?.callsigns?.length && (
+        <span title="The FCC call signs its control channel's base station IDs say, each for a channel">
+          Call sign{st.callsigns.length > 1 ? "s" : ""}{" "}
+          {st.callsigns.map((x, i) => (
+            <Fragment key={x.callSign}>
+              {i > 0 && ", "}
+              <b className="mono">{x.callSign}</b>
+              {x.freqHz ? <span className="muted">{` ${formatMhz(x.freqHz, 4)}`}</span> : null}
+            </Fragment>
+          ))}
+        </span>
+      )}
+      <span title="Calls saved since start">
+        Calls <b>{props.calls}</b>
+      </span>
+      <span>
+        Active <b>{props.active}</b>
+      </span>
     </div>
   );
 }

@@ -1560,6 +1560,9 @@ fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>,
                 json!({
                     "variant": d.variant.map(|v| v.name()),
                     "colorCode": d.color_code,
+                    // Tier III / Capacity Max: its System Identity Code, beside the network and
+                    // site it gives the identity.
+                    "sysCode": d.sys_code.map(|c| json!({ "code": c.0, "model": c.model(), "category": c.category() })),
                     "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
                     "keyed": d.keyed,
                     "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),

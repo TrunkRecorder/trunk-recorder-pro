@@ -24,8 +24,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   `<site>/calls/…` and `<site>/voice/<codec>/…` replace `sys/<name>/why/…` and `sys/<name>/voice/…`, so those charts
   start again from now.
 - **DMR and NXDN sites say what they are.** A DMR site's identity is its colour code, and on Tier III and Capacity Max
-  also its network and site (C_ALOHA's System Identity Code: the Capacity Max capture's is network 1, site 16). An
-  NXDN site's is its RAN, and on Type-C also its system and site. The Decode page shows them, and status, plugins and
+  also its network and site (the System Identity Code in C_ALOHA and C_BCAST, read on control channels only: the
+  Capacity Max capture's is network 1, site 16), which `expect` can lock. An NXDN site's is its RAN, and on Type-C also
+  its system and site. The Decode page shows them on one line with the calls, a DMR site's also with its code, model
+  and which category of radio may use it (#185, from taclane: `decodeDetail`'s `sysCode`), and status, plugins and
   node health reports carry them. In node health reports, two sites set up for one site on different radios (the same
   identity) are its receivers (`receiver`: each one's radio). Plugins: `SiteIdentity` is the SDK's, shared by the
   config's site lock, status (`SystemStatus::scope.identity`, an `identity` object in the JSON) and `totals`.

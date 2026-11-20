@@ -68,6 +68,42 @@ impl Variant {
     }
 }
 
+/// A Tier III / Capacity Max site's System Identity Code (C_ALOHA's and C_BCAST's 16 bits,
+/// ETSI TS 102 361-4). Its top two bits, the model, say how the 12 after them divide between
+/// network and site (both as sent); the last two, the partition, which category of radio may
+/// use the site. Its network and site are the site's [`Identity`]; the rest is detail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SysCode(pub u16);
+
+impl SysCode {
+    /// Site bits for each model (the network gets the other 12): tiny, small, large, huge.
+    const SITE_BITS: [u32; 4] = [3, 5, 8, 10];
+
+    fn site_bits(self) -> u32 {
+        Self::SITE_BITS[(self.0 >> 14) as usize]
+    }
+    pub fn model(self) -> &'static str {
+        ["Tiny", "Small", "Large", "Huge"][(self.0 >> 14) as usize]
+    }
+    pub fn network(self) -> u32 {
+        (self.0 as u32 >> 2 & 0xfff) >> self.site_bits()
+    }
+    pub fn site(self) -> u32 {
+        (self.0 as u32 >> 2) & ((1 << self.site_bits()) - 1)
+    }
+    /// Which category of radio may use the site.
+    pub fn category(self) -> &'static str {
+        ["reserved", "A", "B", "A+B"][(self.0 & 3) as usize]
+    }
+}
+
+impl std::fmt::Display for SysCode {
+    /// "B013 (Large, network 12, site 4, category A+B)".
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:04X} ({}, network {}, site {}, category {})", self.0, self.model(), self.network(), self.site(), self.category())
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DmrConfig {
     /// Logical channel number → frequency (Trunk Recorder's `lcnTable`); wins over what is learned.
@@ -83,6 +119,8 @@ pub struct DmrConfig {
 pub struct SiteStatus {
     pub variant: Option<Variant>,
     pub color_code: Option<u8>,
+    /// Tier III / Capacity Max: the system identity code from the control channel.
+    pub sys_code: Option<SysCode>,
     /// Capacity Plus: the rest channel (logical slot number, frequency; 0 = not known yet).
     pub rest: Option<(u32, u64)>,
     /// Keyed CRCs (restricted access).
@@ -161,7 +199,9 @@ pub struct Site {
     pub keyed: bool,
     /// The site's colour code: configured, else the first control block's on a control channel.
     pub color_code: Option<u8>,
-    /// What it says it is: its colour code; Tier III its network and site (C_ALOHA).
+    /// Tier III / Capacity Max: the System Identity Code, last heard on a control channel.
+    sys_code: Option<SysCode>,
+    /// What it says it is: its colour code; Tier III its network and site (its [`SysCode`]'s).
     identity: Identity,
     /// Carriers `0..n_control` are the configured control channels.
     n_control: usize,
@@ -205,6 +245,7 @@ impl Site {
             carriers,
             variant: None,
             color_code: cfg.color_code,
+            sys_code: None,
             identity: cfg.color_code.map_or_else(Identity::default, |c| Identity::default().with(IdField::ColorCode, c as u32)),
             table: ChannelTable::new(cfg.lcn_table.clone()),
             cfg,
@@ -240,7 +281,7 @@ impl Site {
                 slots: std::array::from_fn(|i| c.last[i].shown(self.now_s)),
             })
             .collect();
-        SiteStatus { variant: self.variant, color_code: self.color_code, rest: self.rest, keyed: self.keyed, channels, carriers }
+        SiteStatus { variant: self.variant, color_code: self.color_code, sys_code: self.sys_code, rest: self.rest, keyed: self.keyed, channels, carriers }
     }
 
     /// Bursts carrier `idx` has framed with a sync, so far.
@@ -499,6 +540,19 @@ impl Site {
         }
     }
 
+    /// C_ALOHA and C_BCAST carry the site's System Identity Code (bits 40–55): heard on a
+    /// control channel, its network and site are the site's identity.
+    fn set_sys_code(&mut self, idx: usize, k: &Csbk) {
+        let c = SysCode(k.bits(40, 56) as u16);
+        if idx >= self.n_control || self.sys_code == Some(c) {
+            return;
+        }
+        self.sys_code = Some(c);
+        self.identity.set(IdField::Network, c.network());
+        self.identity.set(IdField::Site, c.site());
+        self.notes.push(format!("System code {c}"));
+    }
+
     /// Site status named rest channel LSN `n`. A repeater with a call on one
     /// slot sends site status on the other, naming the rest channel elsewhere,
     /// and one in hang time may send it on both for a while; the rest channel
@@ -615,14 +669,8 @@ impl Site {
             (FID_CONNECT_PLUS, _) => self.set_variant(Variant::ConnectPlus),
             // ── Tier III (ETSI) ──
             (FID_STANDARD, 0x19) => {
-                // C_ALOHA: the site's System Identity Code.
                 self.set_variant(Variant::TierIII);
-                let (net, site) = sys_code(k.bits(40, 56) as u32);
-                if self.identity.get(IdField::Network) != Some(net) || self.identity.site() != Some(site) {
-                    self.identity.set(IdField::Network, net);
-                    self.identity.set(IdField::Site, site);
-                    self.notes.push(format!("Network {net}, site {site}"));
-                }
+                self.set_sys_code(idx, k);
             }
             (FID_STANDARD, 0x30..=0x32) => {
                 self.set_variant(Variant::TierIII);
@@ -634,6 +682,7 @@ impl Site {
             }
             (FID_STANDARD, 0x28) => {
                 self.set_variant(Variant::TierIII);
+                self.set_sys_code(idx, k);
                 // C_BCAST: a channel's frequency (type 5, with absolute parameters).
                 if k.bits(16, 21) == 5 {
                     if let Some(c) = cont {
@@ -691,20 +740,6 @@ impl Site {
     }
 }
 
-/// A Tier III System Identity Code (C_ALOHA's 16 bits): its network and site, as sent
-/// (ETSI TS 102 361-4). Its top two bits, the model, say how the 12 after them divide
-/// between the two; the last two are the partition.
-fn sys_code(code: u32) -> (u32, u32) {
-    let site_bits = match code >> 14 {
-        0 => 3,  // tiny: 9-bit network
-        1 => 5,  // small: 7
-        2 => 8,  // large: 4
-        _ => 10, // huge: 2
-    };
-    let body = (code >> 2) & 0xfff;
-    (body >> site_bits, body & ((1 << site_bits) - 1))
-}
-
 /// An MBC continuation's absolute channel parameters → downlink frequency.
 fn absolute_downlink(c: &[u8; 12]) -> Option<u64> {
     let hz = field(c, 57, 67) as u64 * 1_000_000 + field(c, 67, 80) as u64 * 125;
@@ -749,11 +784,14 @@ mod tests {
     /// huge 2 + 10, then two of partition.
     #[test]
     fn a_system_identity_code_is_its_network_and_site() {
-        let code = |model: u32, net: u32, site: u32, site_bits: u32| model << 14 | (net << site_bits | site) << 2;
-        assert_eq!(sys_code(code(0, 300, 5, 3)), (300, 5));
-        assert_eq!(sys_code(code(1, 100, 17, 5)), (100, 17));
-        assert_eq!(sys_code(code(2, 9, 200, 8)), (9, 200));
-        assert_eq!(sys_code(code(3, 2, 1000, 10) | 0b11), (2, 1000), "the partition isn't the site's");
+        let code = |model: u16, net: u16, site: u16, site_bits: u16| SysCode(model << 14 | (net << site_bits | site) << 2);
+        let parts = |c: SysCode| (c.model(), c.network(), c.site());
+        assert_eq!(parts(code(0, 300, 5, 3)), ("Tiny", 300, 5));
+        assert_eq!(parts(code(1, 100, 17, 5)), ("Small", 100, 17));
+        assert_eq!(parts(code(2, 9, 200, 8)), ("Large", 9, 200));
+        let h = SysCode(code(3, 2, 1000, 10).0 | 0b10);
+        assert_eq!((parts(h), h.category()), (("Huge", 2, 1000), "B"), "the partition isn't the site's");
+        assert_eq!(SysCode(0xb013).to_string(), "B013 (Large, network 12, site 4, category A+B)");
     }
 
     /// A site says what it is: its colour code, and from a Tier III C_ALOHA its network and site.
@@ -767,6 +805,25 @@ mod tests {
         s.csbk(0, 0, &Csbk(b), None, 1.0, &mut Vec::new());
         assert_eq!((s.identity().get(IdField::Network), s.identity().site()), (Some(100), Some(17)));
         assert_eq!(s.variant, Some(Variant::TierIII));
+    }
+
+    /// C_ALOHA and C_BCAST both carry it, read from a control channel only.
+    #[test]
+    fn aloha_and_bcast_give_the_sys_code() {
+        let mut s = Site::new(&[453_000_000.0], 24_000.0, DmrConfig { channels: vec![453_100_000.0], ..Default::default() });
+        let mut out = Vec::new();
+        // ALOHA, system code B013 at bits 40–55.
+        s.csbk(0, 0, &csbk([0x99, 0x00, 0x00, 0x00, 0x00, 0xb0, 0x13, 0x00, 0x00, 0x00]), None, 1.0, &mut out);
+        assert_eq!((s.variant, s.status().sys_code), (Some(Variant::TierIII), Some(SysCode(0xb013))));
+        assert_eq!((s.identity().get(IdField::Network), s.identity().site()), (Some(12), Some(4)));
+        assert_eq!(s.notes.iter().filter(|n| n.starts_with("System code B013")).count(), 1);
+        // Not from a voice carrier.
+        s.csbk(1, 0, &csbk([0x99, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x00, 0x00, 0x00]), None, 2.0, &mut out);
+        assert_eq!(s.sys_code, Some(SysCode(0xb013)));
+        // C_BCAST carries it at the same place.
+        s.csbk(0, 0, &csbk([0xa8, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x00, 0x00, 0x00]), None, 3.0, &mut out);
+        assert_eq!(s.sys_code, Some(SysCode(0x4005)));
+        assert_eq!((s.identity().get(IdField::Network), s.identity().site()), (Some(0), Some(1)));
     }
 
     #[test]

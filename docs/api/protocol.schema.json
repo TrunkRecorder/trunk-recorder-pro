@@ -1840,6 +1840,46 @@
             "null"
           ]
         },
+        "sysCode": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "number"
+                },
+                "model": {
+                  "type": "string",
+                  "enum": [
+                    "Tiny",
+                    "Small",
+                    "Large",
+                    "Huge"
+                  ]
+                },
+                "category": {
+                  "type": "string",
+                  "enum": [
+                    "reserved",
+                    "A",
+                    "B",
+                    "A+B"
+                  ]
+                }
+              },
+              "required": [
+                "code",
+                "model",
+                "category"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tier III / Capacity Max: the System Identity Code its control channel sends, its model (how it splits into the network and site the site's `identity` carries) and which category of radio may use the site."
+        },
         "rest": {
           "anyOf": [
             {
@@ -1953,6 +1993,7 @@
       "required": [
         "variant",
         "colorCode",
+        "sysCode",
         "rest",
         "keyed",
         "channels",
