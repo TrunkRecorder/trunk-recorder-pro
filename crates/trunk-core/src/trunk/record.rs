@@ -605,11 +605,25 @@ pub struct RecordedOn {
     pub source: usize,
 }
 
+/// A recorded call that wasn't saved ([`save_call`]), and what it had.
+#[derive(Clone, Debug)]
+pub struct Unsaved {
+    pub call: Call,
+    /// "silent" (no audio kept) or "short" (less than its system's minimum).
+    pub why: &'static str,
+    /// Seconds of audio, its voice frames and how many were bad: what was left once short and encrypted transmissions were.
+    pub audio_s: f64,
+    pub frames: u64,
+    pub bad_frames: u64,
+    pub on: RecordedOn,
+    pub reception: Reception,
+}
+
 /// A finished call made ready to save: transmissions shorter than its
 /// rules allow left out, its loudness and level set, Trunk Recorder's call
-/// JSON written. `Err(call)` when it isn't kept (silent, or shorter than
-/// its system's minimum).
-pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
+/// JSON written. `Err` when it isn't kept (silent, or shorter than its
+/// system's minimum).
+pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Unsaved> {
     let rules = &cx.rules;
     // Short transmissions and encrypted ones left out (an encrypted one's
     // "audio" is a few frames vocoded before the cipher was known: noise).
@@ -619,7 +633,8 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
     let Recorded { mut audio, frames, inband, reception, .. } = rec;
     let short = (audio.len() as f64) < rules.min_call_s * mbe::SAMPLE_RATE as f64 && !audio.is_empty();
     if (audio.is_empty() && !(rules.keep_silent || call.encrypted && cx.keep_encrypted)) || short {
-        return Err(call);
+        let bad_frames = frames.errors.intervals.iter().map(|i| i.bad_frames as u64).sum();
+        return Err(Unsaved { why: if short { "short" } else { "silent" }, audio_s: audio.len() as f64 / mbe::SAMPLE_RATE as f64, frames: frames.count() as u64, bad_frames, on, reception, call });
     }
     let gain_db = if call.voice.analog() { rules.analog_gain_db } else { rules.digital_gain_db } as f64;
     if rules.normalize {

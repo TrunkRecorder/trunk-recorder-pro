@@ -1361,15 +1361,11 @@ impl Session {
                     out.push(Output::Plugin(HostMessage::CallStart(self.call_info(&c))));
                 }
             }
-            Event::NotSaved(c) => {
+            Event::NotSaved(u) => {
                 if self.want_facts {
-                    out.push(Output::Fact { on: "call.not_saved", facts: json!({ "call": {
-                        "system": self.system_name(c.system), "site": self.site_name(c.site), "talkgroup": c.talkgroup, "freq": c.freq_hz, "start_time": self.wall(c.start_s),
-                        "call_length": (c.last_update_s - c.start_s).max(0.0), "clean_voice_pct": 0.0, "snr": 0.0, "signal": 0.0, "noise": 0.0, "freq_error": 0,
-                        "encrypted": c.encrypted, "decrypted": c.decrypted, "emergency": false, "analog": c.voice.analog(), "tdma_slot": 0, "units": 0,
-                    } }) });
+                    out.push(Output::Fact { on: "call.not_saved", facts: self.unsaved_facts(&u).facts() });
                 }
-                let r = self.call_record(Level::Info, &c, Body::Dropped);
+                let r = self.call_record(Level::Info, &u.call, Body::Dropped);
                 self.records.push(r);
             }
             Event::CallEnd(c) => {
@@ -1385,11 +1381,48 @@ impl Session {
         }
     }
 
+    /// A call not saved, as capture rules see it.
+    fn unsaved_facts(&self, u: &trunk_core::trunk::Unsaved) -> crate::facts::CallFacts {
+        let c = &u.call;
+        let wall = |s: f64| self.wall_of(s, c.start_s);
+        let db = |v: Option<f64>| v.unwrap_or(0.0);
+        let units: Vec<u32> = c.sources.iter().map(|s| s.src).collect();
+        crate::facts::CallFacts {
+            system: self.system_name(c.system).to_string(),
+            site: self.site_name(c.site),
+            talkgroup: c.talkgroup,
+            freq: c.freq_hz,
+            start_time: wall(c.start_s),
+            stop_time: wall(c.last_update_s.max(c.start_s)),
+            call_length: (c.last_update_s - c.start_s).max(0.0),
+            clean_voice_pct: if u.frames > 0 { (u.frames - u.bad_frames) as f64 / u.frames as f64 * 100.0 } else { 0.0 },
+            snr: db(u.reception.snr_db()),
+            signal: db(u.reception.signal_db()),
+            noise: db(u.reception.noise_db()),
+            encrypted: c.encrypted,
+            decrypted: c.decrypted,
+            emergency: c.emergency,
+            analog: c.voice.analog(),
+            voice: c.voice.mode_name().to_string(),
+            tdma_slot: c.voice.slot().unwrap_or(0) as i64,
+            units: units.len(),
+            unit_ids: units,
+            not_saved: u.why.to_string(),
+            audio_s: u.audio_s,
+            frames: u.frames,
+            bad_frames: u.bad_frames,
+            recorder: u.on.recorder as i64,
+            source: u.on.source as i64,
+            ..Default::default()
+        }
+    }
+
     /// The system an event is counted for in the stats.
     fn event_system(&self, ev: &Event) -> Option<u16> {
         match ev {
             Event::Message { site, .. } => Some(self.system_of(*site)),
-            Event::CallStart(c) | Event::CallEnd(c) | Event::NotSaved(c) => Some(c.system),
+            Event::CallStart(c) | Event::CallEnd(c) => Some(c.system),
+            Event::NotSaved(u) => Some(u.call.system),
             Event::Concluded(k) => Some(k.call.system),
             Event::Duplicate { call, .. } => Some(call.system),
             Event::TonePattern(t) => Some(t.system),
@@ -1554,40 +1587,8 @@ fn tg_names(names: &NameBook, system: &str, tgs: impl IntoIterator<Item = u32>) 
 fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>, Vec<Value>) {
     let (mut sites, mut patches) = (Vec::new(), Vec::<Value>::new());
     for y in engine.status().sites.iter().filter(|y| y.short_name == system) {
-        sites.push(json!({
-            "index": y.site, "name": y.site_name,
-            "dmr": match &y.protocol { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
-                json!({
-                    "variant": d.variant.map(|v| v.name()),
-                    "colorCode": d.color_code,
-                    // Tier III / Capacity Max: its System Identity Code, beside the network and
-                    // site it gives the identity.
-                    "sysCode": d.sys_code.map(|c| json!({ "code": c.0, "model": c.model(), "category": c.category() })),
-                    "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
-                    "keyed": d.keyed,
-                    "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
-                    "carriers": d.carriers.iter().map(|c| json!({
-                        "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
-                        "slots": c.slots.iter().map(|s| s.map(|(tg, src)| json!({ "talkgroup": tg_names(names, system, [tg])[0], "source": src }))).collect::<Vec<_>>(),
-                    })).collect::<Vec<_>>(),
-                })
-            }),
-            "nxdn": match &y.protocol { ProtocolStatus::Nxdn(n) => Some(n), _ => None }.map(|n| {
-                json!({
-                    "kind": n.kind.name(),
-                    "rate": n.rate.map(|r| r.name()),
-                    "location": n.location.map(|(cat, sys, site)| json!({ "category": cat, "system": sys, "site": site })),
-                    "ran": n.ran,
-                    "dfa": n.dfa.map(|(base, step)| json!({ "baseHz": base, "stepHz": step })),
-                    "channels": n.channels.iter().map(|c| json!({ "channel": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
-                    "unknownChannels": n.unknown,
-                    "carriers": n.carriers.iter().map(|c| json!({
-                        "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
-                        "call": c.call.map(|(tg, src)| json!({ "talkgroup": tg_names(names, system, [tg])[0], "source": src })),
-                    })).collect::<Vec<_>>(),
-                })
-            }),
-        }));
+        let (dmr, nxdn) = protocol_detail(&y.protocol, &|tg| tg_names(names, system, [tg]).remove(0));
+        sites.push(json!({ "index": y.site, "name": y.site_name, "dmr": dmr, "nxdn": nxdn }));
         for (sg, members) in &y.patches {
             let p = json!({ "supergroup": tg_names(names, system, [*sg])[0], "members": tg_names(names, system, members.iter().copied()) });
             if !patches.iter().any(|h| h["supergroup"] == p["supergroup"]) {
@@ -1596,6 +1597,45 @@ fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>,
         }
     }
     (sites, patches)
+}
+
+/// A DMR or NXDN site's channel table and carriers (its kind, colour code or
+/// RAN, rest channel…), as (DMR, NXDN): the other is none. `tg`: a
+/// talkgroup on a carrier as it's shown.
+pub fn protocol_detail(p: &ProtocolStatus, tg: &dyn Fn(u32) -> Value) -> (Option<Value>, Option<Value>) {
+    (
+        match p { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
+            json!({
+                "variant": d.variant.map(|v| v.name()),
+                "colorCode": d.color_code,
+                // Tier III / Capacity Max: its System Identity Code, beside the network and
+                // site it gives the identity.
+                "sysCode": d.sys_code.map(|c| json!({ "code": c.0, "model": c.model(), "category": c.category() })),
+                "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
+                "keyed": d.keyed,
+                "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                "carriers": d.carriers.iter().map(|c| json!({
+                    "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
+                    "slots": c.slots.iter().map(|s| s.map(|(t, src)| json!({ "talkgroup": tg(t), "source": src }))).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            })
+        }),
+        match p { ProtocolStatus::Nxdn(n) => Some(n), _ => None }.map(|n| {
+            json!({
+                "kind": n.kind.name(),
+                "rate": n.rate.map(|r| r.name()),
+                "location": n.location.map(|(cat, sys, site)| json!({ "category": cat, "system": sys, "site": site })),
+                "ran": n.ran,
+                "dfa": n.dfa.map(|(base, step)| json!({ "baseHz": base, "stepHz": step })),
+                "channels": n.channels.iter().map(|c| json!({ "channel": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                "unknownChannels": n.unknown,
+                "carriers": n.carriers.iter().map(|c| json!({
+                    "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
+                    "call": c.call.map(|(t, src)| json!({ "talkgroup": tg(t), "source": src })),
+                })).collect::<Vec<_>>(),
+            })
+        }),
+    )
 }
 
 #[cfg(test)]
