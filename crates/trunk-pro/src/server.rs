@@ -601,6 +601,7 @@ pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, his
     m.push(history);
     m.push(ToClient::Radios { radios });
     m.push(ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle));
+    m.extend(ctx.tune.last());
     // The dashboard: recent notable events (oldest first), the computer as last sampled.
     m.extend(ctx.shared.recent_events().into_iter().map(|e| ToClient::MonitorEvent(body(e))));
     m.extend(ctx.host_last.lock().unwrap().clone());
@@ -930,6 +931,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 // A radio's gain changed while recording: it takes it now (the ones that can), the
                 // rest at the next start, which the log says; the banner says whether a restart waits.
                 for (i, g) in ctx.live_sources(&old, &c) {
+                    // A radio whose gain is being tuned: the edit wins.
+                    ctx.tune.edited(&c.sources[i]);
                     if let Some(g) = g {
                         log::info!("{}: gain changed while recording, applied now: {g}", c.sources[i].title(i));
                     } else {
@@ -1124,6 +1127,19 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 Ok(v) => ToClient::CallSignResult { id, results: v["results"].as_array().cloned().unwrap_or_default(), error: None },
                 Err(e) => ToClient::CallSignResult { id, results: vec![], error: Some(e) },
             })
+        }
+        // (The plan asks the engine for its sites: off the async workers.)
+        Command::TuneGain(req) => {
+            let ctx2 = ctx.clone();
+            match tokio::task::spawn_blocking(move || crate::tune::start(&ctx2, req)).await {
+                Ok(Ok(reply)) => reply,
+                Ok(Err(e)) => Some(ToClient::error(e)),
+                Err(e) => Some(ToClient::error(e.to_string())),
+            }
+        }
+        Command::TuneStop => {
+            ctx.tune.stop("asked to stop");
+            None
         }
         Command::SurveyStop => {
             let ctx2 = ctx.clone();

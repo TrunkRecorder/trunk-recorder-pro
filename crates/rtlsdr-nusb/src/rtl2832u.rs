@@ -4,7 +4,7 @@ use crate::{
     DeviceDescriptor, DirectSampling, Error, GainConfig, Result,
     config::Settings,
     protocol::{Com, DROPPED_BLOCKS, DROPPED_BLOCK_SAMPLES},
-    tuners::{Output, Tuner, TunerKind, XTAL_HZ},
+    tuners::{Output, Tuner, XTAL_HZ},
     usb::ControlBackend,
 };
 
@@ -121,19 +121,17 @@ impl Hardware {
         descriptor: &DeviceDescriptor,
     ) -> Result<()> {
         config.validate()?;
-        if config.frequency_hz < XTAL_HZ
-            && config.direct_sampling == DirectSampling::Off
-            && !descriptor.blog_v4()
-        {
+        let upconverter = descriptor.board().upconverter();
+        if config.frequency_hz < XTAL_HZ && config.direct_sampling == DirectSampling::Off && !upconverter {
             return Err(Error::invalid_config(
                 "frequency_hz",
-                "below 28.8 MHz requires Blog V4 or direct sampling",
+                "below 28.8 MHz requires Blog V4/V4L or direct sampling",
             ));
         }
-        if descriptor.blog_v4() && config.direct_sampling != DirectSampling::Off {
+        if upconverter && config.direct_sampling != DirectSampling::Off {
             return Err(Error::invalid_config(
                 "direct_sampling",
-                "Blog V4 uses its upconverter; select Off",
+                "Blog V4/V4L uses its upconverter; select Off",
             ));
         }
         Ok(())
@@ -206,10 +204,11 @@ impl Hardware {
             }
             com.i2c_gate(true).await?;
             let kind = Tuner::detect(com).await?;
-            if descriptor.blog_v4() && kind != TunerKind::R828D {
+            let board = descriptor.board();
+            if board.tuner().is_some_and(|tuner| tuner != kind) {
                 return Err(Error::UnsupportedTuner);
             }
-            self.tuner = Some(Tuner::new(kind, descriptor.blog_v4()));
+            self.tuner = Some(Tuner::new(kind, board));
             self.direct = false;
         }
         let crystal = corrected_crystal(config.correction_ppm);
@@ -366,7 +365,7 @@ fn if_word(hz: u64, crystal: u64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::FakeTransport;
+    use crate::{TunerKind, test_support::FakeTransport};
     #[test]
     fn ppm_changes_correction_registers_without_changing_resampler_divider() {
         let control = FakeTransport::default();

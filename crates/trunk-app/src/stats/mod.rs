@@ -3,8 +3,10 @@
 //! ```text
 //! engine / DSP parts ── Instrumented::report ──┐
 //! SampleMeter (headroom, clipping) ────────────┤
-//! Tally (calls, airtime, reasons, voice errors)┴─► Aggregator ─► `stats` (1 s)
-//!                                                       └──────► Rollup (1 min) ─► History / stats files
+//! engine: each site's and channel's copies ─────┤
+//! Tally (calls, airtime, audio)────────────────┴─► Aggregator ─► `stats` (1 s)
+//!                                                       ├──────► Rollup (1 min) ─► History / stats files
+//!                                                       └──────► totals since start ─► plugins' `totals`
 //! session events ─► Stats::observe ─► Registry (talkgroups, radios, frequencies)
 //!                                  └─► Monitor (notable events ─► watchers, the feed)
 //! ```
@@ -40,8 +42,9 @@ pub use radio::{Names, Registry, TgInfo};
 
 /// The `stats` message and the rollups come this often, ms of wall clock.
 const TICK_MS: f64 = 1000.0;
-/// A source clipping more than this share of samples, %, is an event.
-const CLIP_EVENT_PCT: f64 = 0.5;
+/// A source clipping more than this share of samples, %, is an event (and a
+/// gain the tuner tries that clips so is refused, [`crate::tune`]).
+pub const CLIP_PCT: f64 = 0.5;
 
 /// What outlives a session: the radio registry, the names it answers with,
 /// and the event monitor (shared with the platform, which answers queries
@@ -186,28 +189,19 @@ impl Topics {
     }
 }
 
-/// Running totals of what calls did, per system, by name.
+/// Running totals of what calls did, per system, by name. (What became of
+/// each site's and channel's copies of calls, and their frames, the engine
+/// counts: [`trunk_core::trunk::tally`].)
 #[derive(Default)]
 struct Tally {
     counts: BTreeMap<String, u64>,
-    /// Keys new since the last report: they count from 0.
-    fresh: Vec<String>,
 }
 
 impl Tally {
     fn add(&mut self, key: String, n: u64) {
-        match self.counts.get_mut(&key) {
-            Some(v) => *v += n,
-            None => {
-                self.fresh.push(key.clone());
-                self.counts.insert(key, n);
-            }
-        }
+        *self.counts.entry(key).or_default() += n;
     }
     fn report(&mut self, agg: &mut Aggregator) {
-        for k in self.fresh.drain(..) {
-            agg.seed(&k);
-        }
         for (k, v) in &self.counts {
             agg.counter(k, *v);
         }
@@ -334,8 +328,6 @@ impl Stats {
         let sys = system_key(name);
         match ev {
             Event::CallStart(c) => {
-                let why = if c.recording { "recorded" } else { c.reason.map_or("monitored", |r| r.as_str()) };
-                self.tally.add(format!("{sys}/why/{why}"), 1);
                 let firsts = self.shared.radio.lock().unwrap().call_start(name, c, t);
                 if firsts.tg {
                     let alpha_tag = c.talkgroup_info.as_ref().map_or(String::new(), |g| g.alpha_tag.clone());
@@ -400,11 +392,6 @@ impl Stats {
                 self.tally.add("all/audioBytes".into(), bytes);
                 self.roll_day();
                 self.day.audio_bytes += bytes;
-                for i in &record.error_list {
-                    self.tally.add(format!("{sys}/voice/frames"), i.frames);
-                    self.tally.add(format!("{sys}/voice/errors"), i.error_count);
-                    self.tally.add(format!("{sys}/voice/bad"), i.bad_frames);
-                }
                 self.shared.radio.lock().unwrap().concluded(name, record, t);
             }
             Event::NotSaved(_) => self.tally.add(format!("{sys}/notSaved"), 1),
@@ -453,6 +440,11 @@ impl Stats {
         self.details(engine, site_names, decode_sites, out);
     }
 
+    /// Every series' running total since recording started ([`Aggregator::totals`]).
+    pub fn totals(&self) -> BTreeMap<String, trunk_recorder_plugin::Total> {
+        self.agg.totals()
+    }
+
     fn add_air(&mut self, sys: &str, ms: u64) {
         self.tally.add(format!("{sys}/airMs"), ms);
         self.tally.add("all/airMs".into(), ms);
@@ -489,7 +481,7 @@ impl Stats {
             let drops = self.agg.get(&format!("src/{n}/dropped")).unwrap_or(0.0) as f64;
             let clip = self.agg.get(&format!("src/{n}/clipPct")).unwrap_or(0.0) as f64;
             let (was_d, was_c) = self.trouble[i];
-            let (d, c) = (drops > 0.0, clip > CLIP_EVENT_PCT);
+            let (d, c) = (drops > 0.0, clip > CLIP_PCT);
             self.trouble[i] = (d, c);
             let source = n.clone();
             if d && !was_d {

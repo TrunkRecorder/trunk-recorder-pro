@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 
 use num_complex::Complex32;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
 use trunk_app::config::{Config, NameLists};
@@ -117,14 +118,13 @@ fn spec_from(v: &Value) -> Option<VoiceSpec> {
 }
 
 fn mark_json(m: &TapeMark) -> Value {
-    json!({ "core:sample_start": m.sample, "core:label": "decoder", "trp:voice_params": { "tdma_key": m.params.tdma_key, "nac": m.params.nac }, "trp:slots": m.slots, "trp:squelch": m.squelch })
+    json!({ "core:sample_start": m.sample, "core:label": "decoder", "trp:voice_params": m.params, "trp:slots": m.slots, "trp:squelch": m.squelch })
 }
 
 fn mark_from(v: &Value) -> Option<TapeMark> {
-    let p = &v["trp:voice_params"];
-    let key = p["tdma_key"].as_array().and_then(|k| Some((k.first()?.as_u64()? as u32, k.get(1)?.as_u64()? as u32, k.get(2)?.as_u64()? as u32)));
+    let params = VoiceParams::deserialize(&v["trp:voice_params"]).ok()?;
     let slots = v["trp:slots"].as_array()?;
-    Some(TapeMark { sample: v["core:sample_start"].as_u64()?, params: VoiceParams { tdma_key: key, nac: p["nac"].as_u64().map(|n| n as u16) }, slots: [slots.first()?.as_bool()?, slots.get(1)?.as_bool()?], squelch: v["trp:squelch"].as_f64()? as f32 })
+    Some(TapeMark { sample: v["core:sample_start"].as_u64()?, params, slots: [slots.first()?.as_bool()?, slots.get(1)?.as_bool()?], squelch: v["trp:squelch"].as_f64()? as f32 })
 }
 
 /// As `cf32_le`, what a head put out.
@@ -218,11 +218,14 @@ fn run_voice(meta: &Value, iq: &[Complex32], freq_hz: u64) -> Result<Results, St
     let mut d = voice::build(&spec);
     let mut out = Vec::new();
     let (mut pos, mut m) = (0, 0);
+    // The slots a call was on: the others' outputs went to none.
+    let mut on = [true; 2];
     while pos < iq.len() {
         while marks.get(m).is_some_and(|x| x.sample as usize <= pos) {
             d.set_params(&marks[m].params);
-            // (Which talkgroup doesn't matter to a decoder alone: only whether it's listening.)
-            d.listen(marks[m].slots.map(|on| on.then_some(0)));
+            on = marks[m].slots;
+            // (Which talkgroup doesn't matter to a decoder alone: only whether a call is on the slot.)
+            d.listen(on.map(|on| on.then_some(0)));
             d.set_squelch(marks[m].squelch);
             m += 1;
         }
@@ -231,10 +234,14 @@ fn run_voice(meta: &Value, iq: &[Complex32], freq_hz: u64) -> Result<Results, St
         if let Some(next) = marks.get(m) {
             n = n.min(next.sample as usize - pos);
         }
-        d.push(&iq[pos..pos + n], &mut out);
+        let mut fresh = Vec::new();
+        d.push(&iq[pos..pos + n], &mut fresh);
+        out.extend(fresh.into_iter().filter(|v| on[v.slot as usize & 1]));
         pos += n;
     }
-    d.flush(&mut out);
+    let mut fresh = Vec::new();
+    d.flush(&mut fresh);
+    out.extend(fresh.into_iter().filter(|v| on[v.slot as usize & 1]));
     let mut frames: BTreeMap<usize, Vec<_>> = BTreeMap::new();
     let mut audio: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
     for v in out {
@@ -336,9 +343,13 @@ mod tests {
 
     #[test]
     fn marks_read_back_and_hold_no_talkgroup() {
-        let m = TapeMark { sample: 9, params: VoiceParams { tdma_key: Some((1, 2, 3)), nac: Some(4) }, slots: [true, false], squelch: 0.5 };
+        let m = TapeMark { sample: 9, params: VoiceParams { tdma_key: Some((1, 2, 3)), nac: Some(4), dmr: Some(trunk_core::dmr::Variant::Xpt) }, slots: [true, false], squelch: 0.5 };
         let v = mark_json(&m);
         assert_eq!(mark_from(&v), Some(m));
         assert!(!v.to_string().contains("talkgroup"));
+        // A tape made before a field was added reads with it unset.
+        let mut older = v;
+        older["trp:voice_params"].as_object_mut().unwrap().remove("dmr");
+        assert_eq!(mark_from(&older).unwrap().params.dmr, None);
     }
 }

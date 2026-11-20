@@ -107,8 +107,11 @@ pub fn dibits(tx: &Tx) -> Vec<u8> {
 /// … and, per dibit, whether anything is on the air (a mobile is off between
 /// its bursts and before / after the transmission).
 pub fn dibits_on(tx: &Tx) -> (Vec<u8>, Vec<bool>) {
+    dibits_on_lc(tx, lc_bytes(tx.talkgroup, tx.source))
+}
+
+fn dibits_on_lc(tx: &Tx, lc: [u8; 9]) -> (Vec<u8>, Vec<bool>) {
     let (vsync, dsync) = if tx.mobile { (SyncKind::MsVoice, SyncKind::MsData) } else { (SyncKind::BsVoice, SyncKind::BsData) };
-    let lc = lc_bytes(tx.talkgroup, tx.source);
     let emb_lc = embedded_lc_encode(&unpack(&lc).try_into().unwrap());
     let idle = data_burst(tx.cc, DT_IDLE, &[0; 196]);
     // The voice slot's bursts, in order.
@@ -411,4 +414,58 @@ mod tests {
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");
     }
+    #[test]
+    fn xpt_records_concurrent_repeaters_with_correct_tgid_and_rid() {
+        use crate::dmr::{DmrConfig, Variant};
+        use crate::trunk::control::ProtocolStatus;
+        use std::collections::BTreeMap;
+        let (fs, center) = (240_000.0, 460_000_000.0);
+        let frequencies = [459_950_000u64, 460_050_000];
+        let mut iq = Vec::<Complex32>::new();
+        for (i, &hz) in frequencies.iter().enumerate() {
+            let t = Tx { cc: 5 + i as u8, slot: i as u8, csbks: vec![[0x0a, 0x68, 0x10, 0, 0, 0, 0, 0, 0, 0]], ..tx() };
+            // Adjacent signaling bytes must not become the high byte of the IDs.
+            let lc = [if i == 0 { 0 } else { 3 }, 0x68, 0, 0xab, 0, 25 + i as u8, 0xcd, 0x12, 0x34 + i as u8];
+            let (d, on) = dibits_on_lc(&t, lc);
+            let mut ph = 0.0;
+            let channel = modulate_on(&d, Some(&on), fs, hz as f64 - center, 0.25, &mut ph);
+            iq.resize(channel.len(), Complex32::new(0.0, 0.0));
+            for (sum, sample) in iq.iter_mut().zip(channel) { *sum += sample; }
+        }
+        let cfg = EngineConfig {
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            systems: vec![SystemConfig::trunked("xpt", vec![SiteConfig {
+                control_channels: vec![frequencies[0] as f64],
+                protocol: crate::trunk::Protocol::Dmr(DmrConfig { channels: vec![frequencies[1] as f64], lcn_table: BTreeMap::from([(1, frequencies[0]), (2, frequencies[1])]), ..Default::default() }),
+                ..Default::default()
+            }])], ..Default::default()
+        };
+        let (mut done, engine) = run_on(cfg, &iq);
+        done.sort_by_key(|d| d.call.freq_hz);
+        assert_eq!(done.len(), 2, "{:?}", done.iter().map(|d| &d.call).collect::<Vec<_>>());
+        for (i, d) in done.iter().enumerate() {
+            assert_eq!((d.call.talkgroup, d.call.freq_hz, d.call.voice.slot()), (25 + i as u32, frequencies[i], Some(i as u8)));
+            assert_eq!(d.call.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [0x1234 + i as u32]);
+            assert!(d.audio.len() > 8_000, "clear voice passes the existing AMBE decoder");
+        }
+        assert!(matches!(&engine.status().sites[0].protocol, ProtocolStatus::Dmr(d) if d.variant == Some(Variant::Xpt)));
+    }
+
+    /// A carrier's link control reaches the decoders with XPT's 16-bit IDs only
+    /// once the channel knows it is XPT's (its site or control channel said so).
+    #[test]
+    fn xpt_ids_come_from_the_channel_once_it_knows_the_variant() {
+        use crate::dmr::{Burst, Variant};
+        let lc = [3, 0x68, 0x40, 0xab, 0, 25, 0xcd, 0x12, 0x34];
+        let burst = Burst { cach: cach_dibits(0), dibits: lc_burst(1, DT_VOICE_LC_HEADER, &lc, SyncKind::BsData), rel: [1.0; 264], sync: Some(SyncKind::BsData), sync_errs: 0, sample: 0.0 };
+        for (variant, ids) in [(None, (0xab0019, 0xcd1234)), (Some(Variant::CapacityPlus), (0xab0019, 0xcd1234)), (Some(Variant::Xpt), (25, 0x1234))] {
+            let mut chan = Channel::default();
+            chan.variant = variant;
+            let mut out = Vec::new();
+            chan.burst(&burst, &mut out);
+            let lc = out.iter().find_map(|(_, e)| match e { SlotEvent::Lc { lc, .. } => Some(*lc), _ => None }).unwrap();
+            assert_eq!((lc.target(), lc.source()), ids, "{variant:?}");
+        }
+    }
+
 }

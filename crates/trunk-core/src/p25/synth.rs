@@ -13,7 +13,7 @@ use num_complex::Complex32;
 use super::crypt::{next_mi, Algorithm, Keystream, Phase};
 use super::fec::{golay24_encode, hamming1063_encode, rs_encode};
 use super::frame::{encode_nid, frame_dibits, HDU, LDU1, LDU2, SYNC_BITS, TDU};
-use super::phase2::{crc12, duid_codeword, xor_mask, Packet, BURST_2V, BURST_4V, BURST_DIBITS, BURST_FACCH_S, BURST_SACCH_S, SLOT_DIBITS};
+use super::phase2::{crc12, duid_codeword, xor_mask, Packet, BURST_2V, BURST_4V, BURST_DIBITS, BURST_FACCH_S, BURST_SACCH_S, SLOT_DIBITS, VCW_AT_2V, VCW_AT_4V, VCW_DIBITS};
 use super::voice::{bytes_to_hexbits, imbe_bits_to_params, imbe_header_encode, EncryptionSync};
 use crate::ambe::encode_vcw;
 use crate::dsp::c4fm::SYMBOL_RATE;
@@ -284,9 +284,9 @@ impl Tx2 {
                     })
                     .collect();
                 let mut x = [0u8; BURST_DIBITS];
-                let at: &[usize] = if burst < 4 { &[11, 48, 96, 133] } else { &[11, 48] };
+                let at: &[usize] = if burst < 4 { &VCW_AT_4V } else { &VCW_AT_2V };
                 for (f, &a) in frames.iter().zip(at) {
-                    x[a..a + 36].copy_from_slice(&encode_vcw(f));
+                    x[a..a + VCW_DIBITS].copy_from_slice(&encode_vcw(f));
                 }
                 let mut put_hexbit = |at: usize, h: u8| {
                     x[at..at + 3].copy_from_slice(&[h >> 4 & 3, h >> 2 & 3, h & 3]);

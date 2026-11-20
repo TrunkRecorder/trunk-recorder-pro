@@ -3,13 +3,17 @@
 //!
 //! An identity is a set of facts, each an [`IdField`]. Each protocol says
 //! which it states ([`super::control::ControlChannel::identity_fields`]):
-//! P25 all of them, SmartNet its System ID and site, DMR none (its sites are
-//! told apart by colour code). The lock compares only the fields the
+//! P25 its NAC, WACN, System ID, RFSS and site; SmartNet its System ID and
+//! site; DMR its colour code (Tier III also its network and site); NXDN its
+//! RAN (Type-C also its system and site). The lock compares only the fields the
 //! protocol states, so a lock field it never sends can't hold a system off
 //! for ever, and a new protocol adds the fields it has instead of more
 //! optional ones.
 
 use std::collections::BTreeMap;
+
+// (The plugin SDK's: the shape the config, status and plugins share.)
+pub use trunk_recorder_plugin::SiteIdentity;
 
 /// One fact a control channel can state about its site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -22,12 +26,18 @@ pub enum IdField {
     SysId,
     /// P25 RF subsystem.
     Rfss,
-    /// Site (P25; SmartNet when OBT sends it).
+    /// Site (P25; SmartNet when OBT sends it; NXDN Type-C; DMR Tier III).
     Site,
+    /// DMR colour code.
+    ColorCode,
+    /// DMR Tier III network (its System Identity Code's).
+    Network,
+    /// NXDN Radio Access Number.
+    Ran,
 }
 
 impl IdField {
-    pub const ALL: [IdField; 5] = [IdField::Nac, IdField::Wacn, IdField::SysId, IdField::Rfss, IdField::Site];
+    pub const ALL: [IdField; 8] = [IdField::Nac, IdField::Wacn, IdField::SysId, IdField::Rfss, IdField::Site, IdField::ColorCode, IdField::Network, IdField::Ran];
 
     /// As log lines name it.
     pub fn label(self) -> &'static str {
@@ -37,6 +47,9 @@ impl IdField {
             IdField::SysId => "SysID",
             IdField::Rfss => "RFSS",
             IdField::Site => "site",
+            IdField::ColorCode => "CC",
+            IdField::Network => "network",
+            IdField::Ran => "RAN",
         }
     }
 
@@ -48,6 +61,9 @@ impl IdField {
             IdField::SysId => "sysId",
             IdField::Rfss => "rfss",
             IdField::Site => "site",
+            IdField::ColorCode => "colorCode",
+            IdField::Network => "network",
+            IdField::Ran => "ran",
         }
     }
 
@@ -106,6 +122,35 @@ impl Identity {
     }
     pub fn site(&self) -> Option<u32> {
         self.get(IdField::Site)
+    }
+
+    /// As the config, status and plugins write it ([`SiteIdentity`]).
+    pub fn to_site(&self) -> SiteIdentity {
+        let narrow = |f: IdField| self.get(f).map(|v| v as u8);
+        SiteIdentity {
+            nac: self.nac(),
+            wacn: self.wacn(),
+            sys_id: self.sys_id(),
+            rfss: self.rfss(),
+            site: self.site(),
+            color_code: narrow(IdField::ColorCode),
+            network: self.get(IdField::Network),
+            ran: narrow(IdField::Ran),
+        }
+    }
+
+    /// The fields `s` names.
+    pub fn of_site(s: &SiteIdentity) -> Identity {
+        let mut id = Identity::default();
+        id.set_opt(IdField::Nac, s.nac.map(u32::from));
+        id.set_opt(IdField::Wacn, s.wacn);
+        id.set_opt(IdField::SysId, s.sys_id);
+        id.set_opt(IdField::Rfss, s.rfss);
+        id.set_opt(IdField::Site, s.site);
+        id.set_opt(IdField::ColorCode, s.color_code.map(u32::from));
+        id.set_opt(IdField::Network, s.network);
+        id.set_opt(IdField::Ran, s.ran.map(u32::from));
+        id
     }
 
     /// The `fields` both know and disagree on, e.g. "site 3 (expected 4)";

@@ -7,7 +7,7 @@ import { can, pluginOn, radioQuery, statsSince, setView, start, usePolled, useAp
 import { Card, Fig, Figs, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
-import { change, connections, connectionsSummary, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
+import { change, connections, connectionsSummary, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, scoped, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
 import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
@@ -16,7 +16,9 @@ import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
 
 function Today({ s }: { s: AppState }) {
   const systems = dashSystems(s);
-  const h24 = useHistory(["all/calls", "all/audioBytes", "all/airMs", ...systems.flatMap((x) => [K.sys(x.name, "why/no_recorder"), K.sys(x.name, "why/no_source")])], "24h", 48);
+  // Copies of calls missed for want of a recorder or a source, by system (its sites' and channels').
+  const missedKeys = (x: DashSystem) => [...scoped(x.scopes, "calls/why/noRecorder"), ...scoped(x.scopes, "calls/why/noSource")];
+  const h24 = useHistory(["all/calls", "all/audioBytes", "all/airMs", ...systems.flatMap(missedKeys)], "24h", 48);
   // Today (since local midnight) from the history: it spans restarts. This run's own count covers the minute not yet in it.
   const midnight = new Date();
   midnight.setHours(0, 0, 0, 0);
@@ -34,7 +36,7 @@ function Today({ s }: { s: AppState }) {
   const recMax = val(s, "eng/recorders") ?? s.config?.recording.maxRecorders ?? 0;
   // Each system's, most first: with several, the stat says which.
   const missedBy = systems
-    .map((x) => ({ name: x.name, n: Math.round((total(h24?.[K.sys(x.name, "why/no_recorder")]) ?? 0) + (total(h24?.[K.sys(x.name, "why/no_source")]) ?? 0)) }))
+    .map((x) => ({ name: x.name, n: Math.round(missedKeys(x).reduce((a, k) => a + (total(h24?.[k]) ?? 0), 0)) }))
     .filter((m) => m.n > 0)
     .sort((a, b) => b.n - a.n);
   const missed = missedBy.reduce((a, m) => a + m.n, 0);
@@ -104,7 +106,7 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
   const callsMin = (recentAvg(K.sys(x.name, "calls"), 600) ?? 0) * 60;
   const onAir = s.calls.filter((c) => c.systemName === x.name);
   const tgs = [...new Map(onAir.map((c) => [c.talkgroup, c])).values()].slice(0, 4);
-  const lost = voiceBadPct(x.name);
+  const lost = voiceBadPct(x.scopes);
   const snr = val(s, cc("snr"));
   // Not recording: the last day from the history instead.
   const day = useHistory([cc("good"), K.sys(x.name, "calls")], "24h", 48);

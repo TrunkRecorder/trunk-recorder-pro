@@ -100,6 +100,16 @@ impl Voice {
         }
     }
 
+    /// Its vocoder (none: analog).
+    pub fn codec(self) -> Option<crate::trunk::frames::Codec> {
+        use crate::trunk::frames::Codec;
+        match self {
+            Voice::P25 | Voice::ProVoice => Some(Codec::Imbe),
+            Voice::P25Tdma { .. } | Voice::Dmr { .. } | Voice::Nxdn(_) => Some(Codec::Ambe),
+            Voice::Fm | Voice::Am => None,
+        }
+    }
+
     /// NXDN: its rate.
     pub fn nxdn(self) -> Option<crate::nxdn::Rate> {
         match self {
@@ -149,9 +159,15 @@ pub enum Reason {
     Encrypted,
     NoSource,
     NoRecorder,
+    /// Its grants named a channel never turned into a frequency (no channel
+    /// table for its band): never a call, only counted ([`super::tally::CopyTally`]).
+    NoFrequency,
 }
 
 impl Reason {
+    pub const ALL: [Reason; 6] = [Reason::Ignored, Reason::UnknownTg, Reason::Encrypted, Reason::NoSource, Reason::NoRecorder, Reason::NoFrequency];
+
+    /// As calls carry it (Trunk Recorder's words).
     pub fn as_str(self) -> &'static str {
         match self {
             Reason::Ignored => "ignored",
@@ -159,6 +175,19 @@ impl Reason {
             Reason::Encrypted => "encrypted",
             Reason::NoSource => "no_source",
             Reason::NoRecorder => "no_recorder",
+            Reason::NoFrequency => "no_frequency",
+        }
+    }
+
+    /// As series keys name it (`calls/why/noRecorder`), the way node health reports do.
+    pub fn key(self) -> &'static str {
+        match self {
+            Reason::Ignored => "ignored",
+            Reason::UnknownTg => "unknownTg",
+            Reason::Encrypted => "encrypted",
+            Reason::NoSource => "noSource",
+            Reason::NoRecorder => "noRecorder",
+            Reason::NoFrequency => "noFrequency",
         }
     }
 }
@@ -539,6 +568,21 @@ pub struct Policy<'a> {
     pub can_decrypt: bool,
 }
 
+/// Grants a site's calls are not counted as missed for while it starts:
+/// the channel tables (P25 IDEN_UP and the like) take a few seconds to come
+/// round, and until then a grant can't be turned into a frequency, s.
+pub const NO_FREQUENCY_GRACE_S: f64 = 10.0;
+
+/// A call whose grants name a channel that can't be turned into a frequency
+/// (no channel table for its band yet, or one the site never sends).
+#[derive(Clone, Debug)]
+struct Unresolved {
+    talkgroup: u32,
+    unit_to_unit: bool,
+    first_s: f64,
+    heard_s: f64,
+}
+
 #[derive(Default)]
 pub struct CallManager {
     pub calls: Vec<Call>,
@@ -549,11 +593,18 @@ pub struct CallManager {
     ids: CallIds,
     /// The site's standing patches.
     pub patches: Patches,
+    /// What became of the site's copies of calls, since the start: each
+    /// counted when it ends ([`Engine`](super::engine::Engine) adds its
+    /// frames), and calls granted on a channel never turned into a frequency
+    /// once, when they end unresolved, but not in the first [`NO_FREQUENCY_GRACE_S`].
+    pub tally: super::tally::CopyTally,
+    unresolved: Vec<Unresolved>,
+    first_grant_s: Option<f64>,
 }
 
 impl CallManager {
     pub fn new(cfg: CallConfig) -> Self {
-        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default() }
+        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default(), tally: Default::default(), unresolved: Vec::new(), first_grant_s: None }
     }
 
     /// For site `site` of system `system`, drawing ids from `ids` (shared with the other sites).
@@ -681,6 +732,31 @@ impl CallManager {
             }
         }
         self.patches.expire(now_s);
+        self.end_unresolved(now_s);
+    }
+
+    /// A grant (or update) whose channel can't be turned into a frequency:
+    /// its call, new or going on. `create`: a grant (an update only refreshes).
+    fn unresolved(&mut self, m: &Message, now_s: f64, unit_to_unit: bool, create: bool) {
+        if let Some(u) = self.unresolved.iter_mut().find(|u| u.talkgroup == m.talkgroup && u.unit_to_unit == unit_to_unit) {
+            u.heard_s = now_s;
+        } else if create {
+            self.unresolved.push(Unresolved { talkgroup: m.talkgroup, unit_to_unit, first_s: now_s, heard_s: now_s });
+        }
+    }
+
+    /// Unresolved calls quiet for the call timeout are over: each is a call
+    /// missed for want of a frequency, unless it began in the start-up grace.
+    fn end_unresolved(&mut self, now_s: f64) {
+        let (timeout, start) = (self.cfg.call_timeout_s, self.first_grant_s.unwrap_or(now_s));
+        let tally = &mut self.tally;
+        self.unresolved.retain(|u| {
+            let over = now_s - u.heard_s > timeout;
+            if over && u.first_s - start >= NO_FREQUENCY_GRACE_S {
+                tally.missed(Reason::NoFrequency);
+            }
+            !over
+        });
     }
 
     /// Conversation mode off ([`CallConfig::conversation`]): recorded call
@@ -768,6 +844,11 @@ impl CallManager {
     }
 
     fn update(&mut self, m: &Message, now_s: f64, ev: &mut Vec<CallEvent>) {
+        if m.freq_hz == 0 {
+            let uu = matches!(m.kind, MessageType::UuVUpdate | MessageType::PhoneUpdate);
+            self.unresolved(m, now_s, uu, false);
+            return;
+        }
         for c in self.calls.iter_mut().filter(|c| Self::matches(c, m)) {
             if Self::refresh(c, m, now_s, &self.patches) {
                 ev.push(CallEvent::Update(c.clone()));
@@ -776,9 +857,15 @@ impl CallManager {
     }
 
     fn grant(&mut self, m: &Message, now_s: f64, unit_to_unit: bool, p: Policy, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+        self.first_grant_s.get_or_insert(now_s);
         if m.freq_hz == 0 {
-            return; // channel not resolvable yet (no IDEN seen)
+            // Channel not resolvable (no IDEN for its band yet): counted as
+            // missed if it never is ([`Self::end_unresolved`]).
+            self.unresolved(m, now_s, unit_to_unit, true);
+            return;
         }
+        // Resolved now: not missed after all (it becomes a call below).
+        self.unresolved.retain(|u| !(u.talkgroup == m.talkgroup && u.unit_to_unit == unit_to_unit));
         if let Some(c) = self.calls.iter_mut().find(|c| Self::matches(c, m)) {
             if Self::refresh(c, m, now_s, &self.patches) {
                 ev.push(CallEvent::Update(c.clone()));
@@ -915,6 +1002,37 @@ mod tests {
     fn manager() -> Sys {
         let tgs = [(101, Talkgroup { number: 101, alpha_tag: "Fire Disp".into(), ..Default::default() })].into_iter().collect();
         Sys::new(CallConfig { record_unknown: false, ..Default::default() }, tgs)
+    }
+
+    #[test]
+    fn a_call_on_a_channel_never_resolved_is_counted_once_as_missed() {
+        let mut m = manager();
+        let mut ev = Vec::new();
+        let unresolved = |t: f64, tg: u32| Message { freq_hz: 0, ..msg(MessageType::Grant, t, tg) };
+        let timeout = m.cfg.call_timeout_s;
+        // Start-up: grants before the channel tables come round aren't counted.
+        m.handle(&[unresolved(0.0, 101)], &mut Host, &mut ev);
+        m.tick(1.0 + timeout, &mut Host, &mut ev);
+        let missed = |m: &CallManager| m.tally.not_recorded(Reason::NoFrequency);
+        assert_eq!(missed(&m), 0, "in the start-up grace");
+        // After the grace: a call granted again and again, never resolved, counts once.
+        for t in [20.0, 20.5, 21.0, 21.5] {
+            m.handle(&[unresolved(t, 101)], &mut Host, &mut ev);
+            m.tick(t, &mut Host, &mut ev);
+        }
+        // An update for it keeps it going.
+        m.handle(&[Message { freq_hz: 0, ..msg(MessageType::Update, 22.0, 101) }], &mut Host, &mut ev);
+        m.tick(22.0 + timeout - 0.1, &mut Host, &mut ev);
+        assert_eq!(missed(&m), 0, "still going");
+        m.tick(22.1 + timeout, &mut Host, &mut ev);
+        assert_eq!((missed(&m), m.tally.started), (1, 1));
+        // A call whose grants become resolvable while it goes is a call, not missed.
+        m.handle(&[unresolved(40.0, 102)], &mut Host, &mut ev);
+        m.handle(&[msg(MessageType::Grant, 40.5, 102)], &mut Host, &mut ev);
+        m.tick(50.0 + timeout, &mut Host, &mut ev);
+        assert_eq!(missed(&m), 1, "resolved: not missed");
+        assert!(ev.iter().any(|e| matches!(e, CallEvent::Start(c) if c.talkgroup == 102)));
+        assert!(!ev.iter().any(|e| matches!(e, CallEvent::Start(c) if c.talkgroup == 101)), "never a call");
     }
 
     #[test]
