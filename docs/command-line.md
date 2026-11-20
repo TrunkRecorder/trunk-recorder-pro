@@ -263,12 +263,14 @@ called `conv`.
 | `--tapes dir` | | Also write each channel as a SigMF tape in `dir`: its IQ and what its decoder needs, for [`tool channel`](#tool-channel) |
 | `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
 | `--messages` | off | Print every control channel message |
+| `--summary file` | | Also write each site's control channel blocks, good and bad, as JSON: over all of it and, for one of our captures, over the part its live figures (`trp:live`) cover |
 | `--quiet` | off | Don't print control channels, calls and files as they happen |
 
 At the end it prints how fast it ran, how many calls it wrote, and for each system the control
 channel's good and bad message counts, modulation and identity (NAC, WACN, SysID, RFSS, site).
-A system whose control channel belonged to another site says `NOT FOLLOWED` and why. Each source's
-measured frequency error is printed too.
+A system whose control channel belonged to another site says `NOT FOLLOWED` and why. For one of our
+captures, each site's blocks over the part live counted ("As live counted, 0.9–20.0 s"), to set beside
+its `trp:live`. Each source's measured frequency error is printed too.
 
 ```bash
 # A UHF SmartNet OBT system: the band plan numbers come from your system's listing
@@ -620,7 +622,9 @@ Checks that a capture is what it says it is: its hash and size, and that each ra
 random or compressed bytes, whose spectrum is flat, nor text or other bytes that sit to one side of zero). It counts
 clipping, lost samples and what decodes, but a capture that decodes nothing still passes: that's what a new decoder, or
 a failure being debugged, needs. It writes `checks.json` and a `waterfall-N.bin` for each radio to `dir`, as counts and
-levels, and fails if the capture doesn't check out.
+levels, and fails if the capture doesn't check out. For a wideband capture, `sites` sets each site's control channel
+blocks as live decoded them beside the replay's over the same part of it (`live_window`; none for an older capture,
+when the replay's are over all of it): `live_good`, `live_bad`, `replay_good`, `replay_bad`, and their totals.
 
 ### tool channel
 

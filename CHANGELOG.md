@@ -5,6 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A rule's capture says what set it off.** `trp:trigger` holds the event's facts as the rule's condition saw them (a
+  call's system, site, talkgroup, frequency, slot, times, radios, recorder, and for a call not saved why — `silent` or
+  `short` — with its audio and voice frames, good and bad), and when it fired, seconds into the capture and Unix ms.
+  `trp:state` holds what a replay can't tell: recorders in use then, and each DMR / NXDN site's channel table and
+  carriers as learned so far. Conditions can name the new call facts too (`call.not_saved`, `frames`, `unit_ids`, …).
+- **Live and replayed figures compare like for like.** A capture's `trp:live` now says which part of it it counts
+  (`from_s`, `to_s`) and, with a look-back, covers all of it, not just what came after the rule fired. `replay` prints
+  each site's control channel blocks over that part ("As live counted"), `replay --summary FILE` writes them as JSON, and
+  `tool submission` reports them beside live's for each site (`sites`, `live_good` / `replay_good`, …).
+
 ## [0.3.9] — 2026-11-20
 
 - **A newer release, said in the sidebar** (#173, from jlutz33): once a day, and at start, the recorder asks GitHub for

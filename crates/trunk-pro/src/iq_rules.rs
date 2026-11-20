@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use cel::{Context, Program, Value as CelValue};
 use serde_json::{json, Value};
 use trunk_app::config::{CaptureBudget, CaptureRule, CaptureTarget, Config, Diagnostics};
+use trunk_app::facts::CallFacts;
 use trunk_core::trunk::tape::VoiceTape;
 use trunk_recorder_plugin::CallRecord;
 
@@ -24,6 +25,8 @@ use crate::runtime::{Ctx, EngineCmd};
 const TAPE_HOLD: Duration = Duration::from_secs(30);
 const WANTED_HOLD: Duration = Duration::from_secs(10);
 const TICK: Duration = Duration::from_secs(10);
+/// How often the sites' counts are kept while rules look back ([`iq_capture::Counts`]).
+const COUNT_EVERY: Duration = Duration::from_secs(1);
 /// How long a wideband capture runs after what set it off, unless the rule says.
 const DEFAULT_AFTER_S: f64 = 10.0;
 
@@ -36,11 +39,11 @@ pub struct Fact {
 /// The events rules can be on, and an example of each one's facts: what a
 /// condition may name is checked against it when a rule is saved.
 fn sample(on: &str) -> Option<Value> {
-    let call = json!({ "system": "x", "site": "x", "talkgroup": 1, "freq": 1, "start_time": 1.0, "call_length": 1.0, "clean_voice_pct": 1.0, "snr": 1.0, "signal": 1.0, "noise": 1.0, "freq_error": 1, "encrypted": false, "decrypted": false, "emergency": false, "analog": false, "tdma_slot": 0, "units": 1 });
+    let call = CallFacts::default();
     let control = json!({ "system": "x", "site": "x", "freq_hz": 1 });
     let source = json!({ "index": 0, "pct": 1.0, "per_s": 1.0, "peak_db": 1.0 });
     Some(match on {
-        "call.end" | "call.not_saved" => json!({ "call": call }),
+        "call.end" | "call.not_saved" => call.facts(),
         "control.lost" | "control.regained" => json!({ "control": control }),
         "source.clipping" | "source.drops" | "source.quiet" => json!({ "source": source }),
         "note.warning" => json!({ "note": { "system": "x", "site": "x", "text": "x" } }),
@@ -260,13 +263,7 @@ impl RuleSet {
 
 /// A call's facts, as conditions see them: nothing from it is stored unless a rule keeps a capture.
 pub fn call_facts(r: &CallRecord) -> Value {
-    json!({ "call": {
-        "system": r.short_name, "site": r.site, "talkgroup": r.talkgroup, "freq": r.freq, "start_time": r.start_time, "call_length": r.call_length,
-        // (An analog call has no vocoder frames to be clean or not.)
-        "clean_voice_pct": r.clean_voice_pct.unwrap_or(100.0),
-        "snr": r.snr.unwrap_or(0.0), "signal": r.signal.unwrap_or(0.0), "noise": r.noise.unwrap_or(0.0), "freq_error": r.freq_error,
-        "encrypted": r.encrypted, "decrypted": r.decrypted, "emergency": r.emergency, "analog": r.audio_type == "analog", "tdma_slot": r.tdma_slot, "units": r.src_list.len(),
-    } })
+    CallFacts::of_record(r).facts()
 }
 
 /// A recent event (a `monitorEvent`, [`trunk_app::stats::MonitorEvent::to_json`]) as a fact, if a
@@ -313,6 +310,9 @@ struct Worker {
     /// The engine is taping channels (for a rule, or a capture asked for), since when.
     taping: bool,
     taping_since: Instant,
+    /// How far wideband captures look back (0: they don't), s, and when the sites' counts were last kept.
+    lookback_s: f64,
+    counted: Option<Instant>,
 }
 
 fn ask<T>(ctx: &Ctx, cmd: impl FnOnce(Sender<T>) -> EngineCmd) -> Option<T> {
@@ -331,7 +331,7 @@ impl Worker {
         let fired = self.rules.event(f.on, &f.facts, now);
         for rule in fired {
             log::info!("Capture rule {} fired on {}", rule.id, f.on);
-            self.act(&rule, &f.facts);
+            self.act(&rule, f, now);
         }
         if matches!(f.on, "call.end" | "call.not_saved") {
             self.next_call(&f.facts["call"]);
@@ -352,10 +352,12 @@ impl Worker {
         }
     }
 
-    fn act(&mut self, rule: &CaptureRule, facts: &Value) {
+    /// What `rule` keeps, set off by `f` at `now` (Unix s).
+    fn act(&mut self, rule: &CaptureRule, f: &Fact, now: f64) {
+        let facts = &f.facts;
         for target in &rule.capture {
             match target.tier.as_str() {
-                "wideband" => self.wideband(rule, target),
+                "wideband" => self.wideband(rule, target, iq_capture::trigger(f.on, facts, now * 1000.0)),
                 "control" => {
                     let after = target.after.as_deref().and_then(|a| seconds(a).ok()).unwrap_or(0.0);
                     let system = system_of(facts).map(str::to_string);
@@ -371,7 +373,7 @@ impl Worker {
         }
     }
 
-    fn wideband(&mut self, rule: &CaptureRule, target: &CaptureTarget) {
+    fn wideband(&mut self, rule: &CaptureRule, target: &CaptureTarget, trigger: Value) {
         let after = target.after.as_deref().and_then(|a| seconds(a).ok()).unwrap_or(DEFAULT_AFTER_S);
         let before = target.before.as_deref().and_then(|b| seconds(b).ok()).unwrap_or(0.0);
         let bytes = iq_capture::estimate(&self.cfg, before + after);
@@ -379,7 +381,7 @@ impl Worker {
             log::info!("Capture rule {}: today's capture budget is spent", rule.id);
             return;
         }
-        let req = Request { after_s: after.max(1.0), before_s: before, note: format!("Rule {}", rule.id), purpose: "rule", rule: Some(rule_json(rule)) };
+        let req = Request { after_s: after.max(1.0), before_s: before, note: format!("Rule {}", rule.id), purpose: "rule", rule: Some(rule_json(rule)), trigger: Some(trigger) };
         if let Err(e) = iq_capture::begin_capture(&self.ctx, &req) {
             log::info!("Capture rule {}: {e}", rule.id);
         }
@@ -487,9 +489,10 @@ impl Worker {
                 self.later.push((at, rule, system));
             }
         }
-        for rule in self.rules.scheduled(Self::now()) {
+        let now = Self::now();
+        for rule in self.rules.scheduled(now) {
             log::info!("Capture rule {} is due", rule.id);
-            self.act(&rule, &json!({}));
+            self.act(&rule, &Fact { on: "schedule", facts: json!({}) }, now);
         }
         // What the monitor said since last time.
         let recent = self.ctx.shared.recent_events();
@@ -500,6 +503,13 @@ impl Worker {
             }
         }
         self.seen_t = last;
+        // (A capture's live figures start where its first sample is, as far back as it looks.)
+        if self.lookback_s > 0.0 && self.counted.is_none_or(|t| t.elapsed() >= COUNT_EVERY) {
+            self.counted = Some(Instant::now());
+            if let Some(live) = ask(&self.ctx, |done| EngineCmd::IqLive { done }) {
+                self.ctx.iq.counted(iq_capture::Counts::of(&live.status, crate::clock::unix_ms() as f64), self.lookback_s + iq_capture::MAX_S as f64 + 10.0);
+            }
+        }
         if self.rules.wants("tick") && self.last_tick.elapsed() >= TICK {
             self.last_tick = Instant::now();
             self.tick();
@@ -528,7 +538,7 @@ pub fn spawn(ctx: Arc<Ctx>, cfg: &Config) -> Option<SyncSender<Fact>> {
     let rules = RuleSet::new(&cfg.diagnostics);
     let (tx, rx) = mpsc::sync_channel::<Fact>(256);
     let labels = cfg.sources.iter().map(|s| trunk_core::metrics::key_part(&s.label())).collect();
-    let mut w = Worker { ctx, cfg: cfg.clone(), rules, labels, seen_t: crate::clock::unix_s(), tapes: VecDeque::new(), wanted: Vec::new(), later: Vec::new(), last_tick: Instant::now(), counts: BTreeMap::new(), taping: cfg.diagnostics.needs_tapes(), taping_since: Instant::now() };
+    let mut w = Worker { ctx, cfg: cfg.clone(), rules, labels, seen_t: crate::clock::unix_s(), tapes: VecDeque::new(), wanted: Vec::new(), later: Vec::new(), last_tick: Instant::now(), counts: BTreeMap::new(), taping: cfg.diagnostics.needs_tapes(), taping_since: Instant::now(), lookback_s: cfg.diagnostics.wideband_lookback(|d| seconds(d).unwrap_or(0.0)), counted: None };
     let spawned = std::thread::Builder::new().name("iq-rules".into()).spawn(move || loop {
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(f) => w.fact(&f),
@@ -595,6 +605,16 @@ mod tests {
         assert!(s.event("call.end", &call(90.0, 1), 1.0).is_empty());
         assert!(s.event("control.lost", &call(50.0, 1), 2.0).is_empty(), "another event");
         assert!(s.event("call.end", &json!({ "call": { "clean_voice_pct": 50.0 } }), 3.0).is_empty(), "no encrypted field: an error, not a match");
+    }
+
+    #[test]
+    fn a_call_not_saved_says_why_and_what_it_had() {
+        let r = rule("call.not_saved", "call.not_saved == \"silent\" && call.frames > 100 && call.recorder >= 0 && 1201u in call.unit_ids");
+        check(&r).unwrap();
+        let mut s = set(vec![r]);
+        let facts = |why: &str| CallFacts { not_saved: why.into(), frames: 300, recorder: 2, unit_ids: vec![1201], ..Default::default() }.facts();
+        assert_eq!(s.event("call.not_saved", &facts("silent"), 0.0).len(), 1);
+        assert!(s.event("call.not_saved", &facts("short"), 1.0).is_empty());
     }
 
     #[test]
