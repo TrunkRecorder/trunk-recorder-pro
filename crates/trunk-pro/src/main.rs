@@ -138,7 +138,6 @@ mod survey;
 mod tool;
 mod tune;
 mod unlock;
-mod update_check;
 
 pub use trunk_app::config;
 

@@ -422,11 +422,18 @@ test("Platform: the Network card's Checks switch turns the hosts checked and the
   assert.match(page, /Offset, measured — not asked: checks off/);
 });
 
+test("Platform: the daily look for a newer release is on by default, switched on the Network card", () => {
+  setView("platform");
+  host({ os: synced });
+  assert.equal(snapshot().config!.monitor!.checkUpdates, true);
+  assert.match(text(renderToString(<PlatformPage />)), /Check for updates.*GitHub, once a day/);
+});
+
 test("Platform: the connections are the hosts checked and the plugins' services; none checked by default (#148)", () => {
   uploader("broadcastify");
   setView("platform");
   host({ os: synced });
-  assert.deepEqual(snapshot().config!.monitor!.checkHosts, [], "no traffic of the recorder's own by default");
+  assert.deepEqual(snapshot().config!.monitor!.checkHosts, [], "no hosts checked by default");
   let page = text(renderToString(<PlatformPage />));
   assert.match(page, /Connections\s*—\s*nothing to check/);
   assert.match(page, /No hosts to check\s*No history kept/);

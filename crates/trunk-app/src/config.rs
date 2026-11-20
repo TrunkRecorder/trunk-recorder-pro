@@ -1688,10 +1688,6 @@ pub struct Server {
     /// empty for https://trunkrecorder.pro; another for testing one.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub trp_api: String,
-    /// Ask GitHub once a day whether a newer release exists (trunk-pro's
-    /// `update_check`): some installs (closed networks, metered links) want
-    /// no outbound traffic they didn't ask for.
-    pub check_for_updates: bool,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1700,7 +1696,7 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), check_for_updates: true, other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), other: BTreeMap::new() }
     }
 }
 
@@ -2060,11 +2056,14 @@ pub struct MonitorSettings {
     /// The clock off by this much or more, ms: a warning, and calls marked
     /// `clock_off` (a problem at 5 s, or 4 times this). Applies at once.
     pub clock_warn_ms: f64,
+    /// Ask GitHub once a day for the app's latest release: the dashboard
+    /// says when there's a newer one. Applies at once.
+    pub check_updates: bool,
 }
 
 impl Default for MonitorSettings {
     fn default() -> Self {
-        MonitorSettings { check_hosts: Vec::new(), check_every_s: 15, network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0 }
+        MonitorSettings { check_hosts: Vec::new(), check_every_s: 15, network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0, check_updates: true }
     }
 }
 

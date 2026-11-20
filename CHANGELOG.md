@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A newer release, said in the sidebar** (#173, from jlutz33): once a day, and at start, the recorder asks GitHub for
+  its latest release; when it's newer than the one running, **v… available** beside the version links to it. Nothing is
+  downloaded. On by default; **Check for updates** on the Platform page's Network card (`monitor.checkUpdates`) turns
+  it off, and "What the recorder connects to" lists it.
 - **Node health reports** (`docs/api/node-health.md`, draft): a common way for a recorder to tell a call-collecting
   service (Broadcastify Calls, OpenMHz, …) how well it hears each node it uploads, every 5 minutes at a random point of
   its own, so a service fed by several recorders for one system or channel can prefer the one hearing it best, and can

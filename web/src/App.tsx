@@ -162,8 +162,8 @@ export function App() {
             <span className="muted small">
               {s.version ? `v${s.version}` : ""}
               {update && (
-                <a className="badge update" href={update.url} target="_blank" rel="noreferrer" title={`A newer release, v${update.version}, is on GitHub`}>
-                  update
+                <a className="badge update" href={update.url} target="_blank" rel="noreferrer" title="A newer release, on GitHub">
+                  v{update.version} available
                 </a>
               )}
             </span>
