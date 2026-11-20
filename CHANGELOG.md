@@ -35,6 +35,19 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   node health reports carry them. In node health reports, two sites set up for one site on different radios (the same
   identity) are its receivers (`receiver`: each one's radio). Plugins: `SiteIdentity` is the SDK's, shared by the
   config's site lock, status (`SystemStatus::scope.identity`, an `identity` object in the JSON) and `totals`.
+- **Hytera XPT** (#164, from n71fs): receive-only, decoded like Capacity Plus: list the site's repeaters in
+  `dmrChannelsHz`; the free repeater is its rest channel, a call setup teaches a repeater's number, and calls take
+  Hytera's 16-bit radio and talkgroup IDs. Once a site is known to be XPT every listed repeater is its, whatever its
+  colour code (a set `colorCode` still filters). See the [Hytera XPT guide](docs/guides/xpt.md). Not yet confirmed on
+  real captures: the setup's slot and repeater fields and the status banks' slot states.
+- **DMR talker aliases** (#164): a radio's name sent over the air, once all of it has arrived, names the radio (as P25
+  and NXDN aliases do). On the one real capture so far only the first blocks ever arrive, so none has been saved yet.
+- **RTL-SDR Blog V4L** (#183, from penguinzephyr): its R828S tuner and two-input HF upconverter, with HF tuning and the
+  input switch. Tested by its contributor.
+- **Unit names: hex IDs after `0x`** (#186, the last of #167): `0x1C13,Medic 13` names radio 7187, the way MDC1200 IDs
+  are programmed; a bare number stays decimal, so existing files read as before. A download is always decimal, which
+  Trunk Recorder reads. An ID after `0x` that isn't hex names nothing and counts as **unreadable** on the Unit names
+  card.
 - **Node health reports: one format for every recorder.** After reviewing what SDRTrunk and SDRTrunk VCE can measure,
   still version 1, all additive: a node's report covers whole sites (a site can be in several nodes' reports), several
   receivers on one site (`receiver`), MPT1327, LTR, LTR-Net and Passport, each protocol's unit of control message,

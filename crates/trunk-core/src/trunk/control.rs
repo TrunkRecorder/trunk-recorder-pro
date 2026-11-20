@@ -586,10 +586,15 @@ impl ControlChannel for Dmr {
     fn blocks(&self) -> &'static str {
         "blocks"
     }
-    /// Its colour code; Tier III also its network and site. (A configured colour code holds
-    /// the site to its own; [`IdField`]s add nothing to that unless a site lock names them.)
+    /// Its colour code; Tier III and Capacity Max (and a site not known yet) also its network
+    /// and site, which Capacity Plus, Connect Plus and XPT never send. (A configured colour
+    /// code holds the site to its own; [`IdField`]s add nothing to that unless a site lock
+    /// names them.)
     fn identity_fields(&self) -> &'static [IdField] {
-        &[IdField::ColorCode, IdField::Network, IdField::Site]
+        match self.site.variant {
+            Some(dmr::Variant::CapacityPlus | dmr::Variant::ConnectPlus | dmr::Variant::Xpt) => &[IdField::ColorCode],
+            _ => &[IdField::ColorCode, IdField::Network, IdField::Site],
+        }
     }
     fn modulation(&self) -> &'static str {
         self.site.variant.map_or("DMR", |v| v.name())

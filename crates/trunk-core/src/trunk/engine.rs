@@ -861,6 +861,9 @@ struct CcResult {
     counts: (u64, u64),
     /// How far off the control channel comes in, Hz (AutoTune).
     offset_hz: Option<f32>,
+    /// The identity fields it states now ([`ControlChannel::identity_fields`]: DMR's
+    /// depend on what it turns out to be).
+    id_fields: &'static [IdField],
 }
 
 impl SourceRx {
@@ -937,10 +940,10 @@ impl BlockDsp {
         let mut out: Vec<CcResult> = Vec::new();
         for (site, carrier, head, cc, iq, t0) in self.taps.drain(..) {
             let mut steps = Vec::new();
-            let (params, notes, control_hz, counts, offset_hz) = {
+            let (params, notes, control_hz, counts, offset_hz, id_fields) = {
                 let mut cc = cc.lock().unwrap();
                 cc.push(carrier, &iq, t0, self.rate, &mut steps);
-                (steps.iter().map(|st| cc.voice_params(&st.identity)).collect::<Vec<_>>(), cc.take_notes(), cc.control_hz(), cc.counts(), cc.offset_hz())
+                (steps.iter().map(|st| cc.voice_params(&st.identity)).collect::<Vec<_>>(), cc.take_notes(), cc.control_hz(), cc.counts(), cc.offset_hz(), cc.identity_fields())
             };
             match out.last_mut().filter(|r| r.site == site) {
                 Some(r) => {
@@ -948,9 +951,9 @@ impl BlockDsp {
                     r.params.extend(params);
                     r.notes.extend(notes);
                     r.samples += iq.len() as u64;
-                    (r.control_hz, r.counts, r.offset_hz) = (control_hz, counts, offset_hz);
+                    (r.control_hz, r.counts, r.offset_hz, r.id_fields) = (control_hz, counts, offset_hz, id_fields);
                 }
-                None => out.push(CcResult { site, head: Some(head), steps, params, samples: iq.len() as u64, notes, control_hz, counts, offset_hz }),
+                None => out.push(CcResult { site, head: Some(head), steps, params, samples: iq.len() as u64, notes, control_hz, counts, offset_hz, id_fields }),
             }
         }
         out
@@ -1288,8 +1291,9 @@ struct Trunk {
     callsigns: std::collections::BTreeMap<u64, String>,
     /// Its system's time, last said ([`SiteStatus::system_time`]).
     system_time: Option<(f64, i64, bool)>,
-    /// What its protocol says of itself, once: the identity fields its site
-    /// lock goes by, and whether a control channel is reopened at a correction.
+    /// What its protocol says of itself: the identity fields its site lock goes by
+    /// (as its control channel last said), and whether a control channel is
+    /// reopened at a correction.
     id_fields: &'static [IdField],
     reopens: bool,
     /// What its control channel tells its voice channels (each source has a copy).
@@ -1511,6 +1515,7 @@ impl Trunk {
             events.push(self.note(level, text));
         }
         // The site lock: on the fields its protocol states (none: no lock).
+        self.id_fields = cc.id_fields;
         let fields = self.id_fields;
         let lock = !fields.is_empty();
         for (st, p) in cc.steps.into_iter().zip(cc.params) {
@@ -2078,7 +2083,7 @@ impl Core {
                 let mut steps = Vec::new();
                 c.flush(&mut steps);
                 let params = steps.iter().map(|st| c.voice_params(&st.identity)).collect();
-                CcResult { site: t.site, head: None, steps, params, samples: 0, notes: c.take_notes(), control_hz: c.control_hz(), counts: c.counts(), offset_hz: c.offset_hz() }
+                CcResult { site: t.site, head: None, steps, params, samples: 0, notes: c.take_notes(), control_hz: c.control_hz(), counts: c.counts(), offset_hz: c.offset_hz(), id_fields: c.identity_fields() }
             };
             t.follow(&mut self.radio, &self.systems[t.system as usize].cfg, cc, &mut self.events, &mut self.call_events);
         }
@@ -3022,7 +3027,7 @@ mod tests {
         let t = &mut trunks[i];
         t.now_s = now_s;
         let step = Step { good: true, msgs: msgs.to_vec(), identity: t.identity.clone() };
-        let cc = CcResult { site: t.site, head: None, steps: vec![step], params: vec![VoiceParams::default()], samples: 0, notes: Vec::new(), control_hz: None, counts: (t.good, t.bad), offset_hz: None };
+        let cc = CcResult { site: t.site, head: None, steps: vec![step], params: vec![VoiceParams::default()], samples: 0, notes: Vec::new(), control_hz: None, counts: (t.good, t.bad), offset_hz: None, id_fields: t.id_fields };
         t.follow(radio, &systems[t.system as usize].cfg, cc, events, call_events);
     }
 

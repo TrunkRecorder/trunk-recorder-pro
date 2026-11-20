@@ -12,11 +12,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
 use trunk_app::config::{Config, NameLists};
-use trunk_core::dsp::AnalogTuning;
-use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::control::{self, ControlChannel};
 use trunk_core::trunk::tape::{ControlTape, TapeMark, VoiceTape};
-use trunk_core::trunk::voice::{self, TrackerOut, VoiceKind, VoiceParams, VoiceSpec};
+use trunk_core::trunk::voice::{self, TrackerOut};
 use trunk_core::trunk::sites;
 
 use crate::corpus::{envelope_of, frame_hashes, short_hash, CallSummary, Results};
@@ -234,7 +232,10 @@ pub fn cli(a: &crate::Args) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trunk_core::dsp::AnalogTuning;
     use trunk_core::mbe::Profile;
+    use trunk_core::p25::diversity::BankConfig;
+    use trunk_core::trunk::voice::{VoiceKind, VoiceParams, VoiceSpec};
 
     #[test]
     fn a_decoders_settings_read_back_the_same() {
