@@ -1757,6 +1757,38 @@ mod tone_tests {
         assert_eq!(feed, Some(json!("Fire Dispatch")));
     }
 
+    /// An RTL-SDR whose samples hardly move (the corpus capture at 25 dB:
+    /// ±3 counts) is a `sourceQuiet` event once, after a minute; turned up,
+    /// `sourceRecovered`. Clipping is still its own.
+    #[test]
+    fn a_source_too_quiet_for_a_minute_is_an_event() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "wood", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire Dispatch" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let iq = |counts: u8| (0..4096).map(|i| if i % 2 == 0 { 128 + counts } else { 127 - counts }).collect::<Vec<u8>>();
+        let mut t = 1.75e12;
+        // (Its meter and ticks alone: a second of 2.4 MS/s through the engine each would be slow.)
+        let mut seconds = |s: &mut Session, b: &[u8], n: usize| {
+            let mut kinds = Vec::new();
+            for _ in 0..n {
+                t += 1000.0;
+                s.meas.meter(0).u8(b);
+                s.meas.set_now(t / 1000.0);
+                let mut out = Vec::new();
+                s.meas.tick(t, 0.0, &s.engine, &|_, _| (String::new(), String::new()), decode_sites, &mut out);
+                kinds.extend(out.iter().filter_map(|o| match o { Output::Message(ToClient::MonitorEvent(b)) => Some((b["kind"].as_str().unwrap_or("").to_string(), b.get("peakDb").cloned())), _ => None }));
+            }
+            kinds
+        };
+        assert_eq!(seconds(&mut s, &iq(3), 70), [("sourceQuiet".to_string(), Some(json!(-31.0)))]);
+        assert_eq!(seconds(&mut s, &iq(20), 60), [("sourceRecovered".to_string(), None)]);
+        let rails: Vec<u8> = (0..4096).map(|i| if i % 2 == 0 { 255 } else { 0 }).collect();
+        assert_eq!(seconds(&mut s, &rails, 3).first().map(|k| k.0.as_str()), Some("sourceClipping"));
+    }
+
     /// Live voice's frames are built only while plugins take topic `voice` or
     /// interfaces listen with it, and go to interfaces only in the second case.
     #[test]

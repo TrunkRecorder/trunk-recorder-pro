@@ -46,6 +46,7 @@ import type {
   SourceStatus,
   SiteIdentity,
   SourceProfile,
+  TuneReport,
   Spectrum,
   SurveyBand,
   Capability,
@@ -145,6 +146,8 @@ export interface AppState {
   /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
   profile: SourceProfile | null;
   profiling: number | null;
+  /** A radio's gain being tuned (tuneGain), or the last tuning, as the recorder last reported it; `source` is its place in Setup. */
+  tune: TuneReport | null;
   /** Settings changed since this run started that only apply after a restart: the recorder's verdict (Config::needs_restart), with its phase. */
   restartNeeded: boolean;
   /** This browser's changes: being saved, all saved, or the last one wasn't (`saveError`: why); idle before any. */
@@ -241,6 +244,7 @@ let state: AppState = {
   surveyFor: null,
   profile: null,
   profiling: null,
+  tune: null,
   restartNeeded: false,
   saveStatus: "idle",
   saveError: null,
@@ -506,6 +510,12 @@ function take(m: FromRecorder): void {
     case "monitorEvent":
       set({ events: [...state.events, m].slice(-200) });
       break;
+    case "tune": {
+      const { type: _, ...tune } = m;
+      // (A `check`'s plan changes nothing: not a tuning to show.)
+      if (tune.phase !== "planned") set({ tune });
+      break;
+    }
     case "subscribed":
       break;
     case "statsResult":
@@ -1440,6 +1450,16 @@ export function profileSource(source: number, centerHz: number): void {
   flushConfig();
   set({ profile: null, profiling: source });
   transport.send({ type: "profileSource", source, centerHz });
+}
+
+/** Tune Setup's source `source` (configIndex) by what its systems decode, while recording, and keep the best (saved); progress in `tune`. */
+export function tuneGain(source: number): void {
+  flushConfig();
+  transport.send({ type: "tuneGain", source, apply: true });
+}
+/** Stop tuning: the radio goes back as it was. */
+export function tuneStop(): void {
+  transport.send({ type: "tuneStop" });
 }
 export function surveyListen(freqHz: number): void {
   transport.send({ type: "surveyListen", freqHz });
