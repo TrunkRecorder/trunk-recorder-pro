@@ -51,7 +51,7 @@ pub use errors::{Error, ErrorKind, Result};
 pub use num_complex::Complex32;
 pub use nusb::MaybeFuture;
 pub use rx::{MAX_F32_IQ_SAMPLES_PER_TRANSFER, RxBuffers, RxStream, SampleBlock, StreamingStats};
-pub use tuners::TunerKind;
+pub use tuners::{Board, TunerKind};
 
 /// What a device's control pipe has counted since it opened.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

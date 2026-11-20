@@ -462,10 +462,10 @@ fn run_p2(a: &Args) {
             }
             if kind == BURST_4V || kind == BURST_2V {
                 line.push_str(",\"vcw\":[");
-                let at: &[usize] = if kind == BURST_4V { &[11, 48, 96, 133] } else { &[11, 48] };
+                let at: &[usize] = if kind == BURST_4V { &VCW_AT_4V } else { &VCW_AT_2V };
                 for (k, &o) in at.iter().enumerate() {
-                    let rel = &p.rel[2 * (10 + o)..2 * (10 + o) + 72];
-                    let f = decode_vcw(&x[o..o + 36], soft.then_some(rel));
+                    let rel = &p.rel[2 * (10 + o)..2 * (10 + o + VCW_DIBITS)];
+                    let f = decode_vcw(&x[o..o + VCW_DIBITS], soft.then_some(rel));
                     vcw += 1;
                     vcw_errs += f.errs as u64;
                     vcw_clean += (f.errs <= 1) as u64;

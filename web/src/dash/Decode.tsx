@@ -8,8 +8,9 @@ import { formatMhz } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Fig, Figs, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
-import type { ChannelSnapshot, FreqRow, SeriesData } from "../protocol.ts";
-import { change, coverage, dashSystems, K, KIND_LABEL, perLive, recentAvg, running, runningSites, siteHealth, systemHealth, useHistory, useRanges, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
+import type { ChannelSnapshot, DmrSiteStatus, FreqRow, SeriesData, SiteStatus } from "../protocol.ts";
+import { modeInfo } from "../modes.ts";
+import { change, coverage, dashSystems, K, KIND_LABEL, recentAvg, recentSum, running, runningSites, siteHealth, sumSeries, systemHealth, useHistory, useRanges, useUsual, val, voiceKeys, type DashSite, type DashSystem, type Usual } from "./data.ts";
 import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 
 /** `a / b` step by step (errors per frame from the two rates). */
@@ -26,10 +27,10 @@ function scaled(a: SeriesData | undefined, mul: number, cap = Infinity): SeriesD
   return { ...a, v: a.v.map(f), lo: a.lo.map(f), hi: a.hi.map(f) };
 }
 
-/** Voice frames that couldn't be decoded, %, over the last `sinceS` (live). */
-export function voiceBadPct(name: string, sinceS = 600): number | null {
-  const p = perLive(K.sys(name, "voice/bad"), K.sys(name, "voice/frames"), sinceS);
-  return p === null ? null : 100 * p;
+/** Voice frames that couldn't be decoded, %, over the last `sinceS` (live), of every copy of a call heard under `scopes` (a system's, or one site's). */
+export function voiceBadPct(scopes: string[], sinceS = 600): number | null {
+  const n = recentSum(voiceKeys(scopes, "frames"), sinceS) ?? 0;
+  return n > 0 ? (100 * (recentSum(voiceKeys(scopes, "bad"), sinceS) ?? 0)) / n : null;
 }
 
 /** How a bad-frame share reads. */
@@ -41,12 +42,10 @@ export const BAD_MAX = 20;
 const PHASE_WARN = 15;
 const PHASE_BAD = 20;
 
-const MODE_LABEL: Record<NonNullable<ChannelSnapshot["mode"]>, string> = { fm: "FM", am: "AM", p25: "P25", dmr: "DMR", nxdn48: "NXDN 4800", nxdn96: "NXDN 9600" };
-
 /** What a channel is: a trunked one's role, a conventional one's mode and names ("P25 · Fire Dispatch"). */
 export function channelWhat(c: ChannelSnapshot): string {
   if (!c.mode) return c.kind;
-  return c.names?.length ? `${MODE_LABEL[c.mode]} · ${c.names.join(", ")}` : MODE_LABEL[c.mode];
+  return c.names?.length ? `${modeInfo(c.mode).short} · ${c.names.join(", ")}` : modeInfo(c.mode).short;
 }
 
 /** A channel's demodulation quality: the eye opening, or CQPSK's phase error. */
@@ -93,8 +92,8 @@ function freqHints(rows: FreqRow[], s: AppState): ReactNode[] {
   return out.slice(0, 4);
 }
 
-/** A site's control channel (a conventional system: its voice), and its system's voice when `voice`. */
-function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x: DashSystem; site?: DashSite; usual: Usual | null; freqs?: FreqRow[]; voice?: boolean }) {
+/** A site's control channel and its copies' voice (a conventional system: its voice), with `freqs` when given. */
+function DecodeCard({ s, x, site, usual, freqs }: { s: AppState; x: DashSystem; site?: DashSite; usual: Usual | null; freqs?: FreqRow[] }) {
   const h = site ? siteHealth(s, site, usual) : systemHealth(s, x);
   const k = (n: string) => K.sys(x.name, n);
   const cc = (n: string) => (site ? K.cc(site, n) : K.sys(x.name, `cc/${n}`));
@@ -106,9 +105,10 @@ function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x
   // takes several TSBKs' air.
   const airSym = recentAvg(cc("airSym"), 60);
   const air = airSym === null ? null : Math.min(100, airSym / 48);
-  const vbad = voiceBadPct(x.name);
-  const vf = recentAvg(k("voice/frames"), 600) ?? 0;
-  const ve = recentAvg(k("voice/errors"), 600) ?? 0;
+  const scopes = site ? [site.key] : x.scopes;
+  const vbad = voiceBadPct(scopes);
+  const vf = recentSum(voiceKeys(scopes, "frames"), 600) ?? 0;
+  const ve = recentSum(voiceKeys(scopes, "errors"), 600) ?? 0;
   const syncs = recentAvg(cc("syncs"), 60) ?? 0;
   const misses = (recentAvg(cc("nidFails"), 60) ?? 0) + (recentAvg(cc("flywheels"), 60) ?? 0);
   const sep = val(s, cc("sep"));
@@ -199,7 +199,7 @@ function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x
             sub={x.status ? <Figs inline items={[{ k: "On air", v: x.status.activeCalls }, { k: "Rate", v: num((recentAvg(k("calls"), 600) ?? 0) * 60, 1), u: "/min" }]} /> : "Not recording"}
           />
         )}
-        {voice && <Stat
+        {<Stat
           label="Voice lost"
           value={vbad === null ? "—" : num(vbad, 1)}
           unit={vbad === null ? undefined : "%"}
@@ -208,7 +208,7 @@ function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x
           hint={vf > 0 ? "Unusable voice frames, 10 min; under 2% is clean" : "No digital voice in the last 10 min"}
         />}
       </div>
-      {voice && freqs && freqs.length > 0 && (
+      {freqs && freqs.length > 0 && (
         <div className="freq-strip">
           <HeatStrip
             v={freqs.map((f) => f.badPct)}
@@ -234,7 +234,10 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
   const site = x?.sites.find((y) => y.name === siteName) ?? x?.sites[0];
   const k = (n: string) => K.sys(name, n);
   const cc = (n: string) => (site ? K.cc(site, n) : k(`cc/${n}`));
-  const hist = useHistory([cc("good"), cc("bad"), cc("airSym"), cc("sep"), cc("phaseErr"), cc("snr"), cc("offset"), k("voice/frames"), k("voice/bad"), k("calls"), k("airMs")], range, 360);
+  // Voice: the site's own copies (a conventional system: all its channels').
+  const scopes = site ? [site.key] : x?.scopes ?? [];
+  const [vFrames, vBad] = [voiceKeys(scopes, "frames"), voiceKeys(scopes, "bad")];
+  const hist = useHistory([cc("good"), cc("bad"), cc("airSym"), cc("sep"), cc("phaseErr"), cc("snr"), cc("offset"), ...vFrames, ...vBad, k("calls"), k("airMs")], range, 360);
   const usual = useUsual([cc("good")]);
   // (The registry keeps a week of each frequency's hours: a longer span shows that week.)
   const freqHours = range === "1h" || range === "24h" ? 24 : 168;
@@ -258,49 +261,8 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
         {x.sites.length > 1 && site && <Choice value={site.name} options={x.sites.map((y) => ({ v: y.name, label: y.name }))} onChange={(v) => setView("decode", name, v)} label="Site" />}
       </BackBar>
       <DecodeCard s={s} x={x} site={site} usual={usual[cc("good")]} freqs={rows} />
-      {st && x.kind !== "dmr" && x.kind !== "nxdn" && (
-        <div className="kv small">
-          <span>
-            NAC <b className="mono">{hex(st.identity.nac)}</b>
-          </span>
-          <span>
-            WACN <b className="mono">{hex(st.identity.wacn)}</b>
-          </span>
-          <span>
-            SysID <b className="mono">{hex(st.identity.sysId)}</b>
-          </span>
-          <span>
-            Site <b className="mono">{st.identity.site != null ? `${st.identity.rfss ?? "?"}-${st.identity.site}` : "—"}</b>
-          </span>
-          {!!st.callsigns?.length && (
-            <span title="The FCC call signs its control channel's base station IDs say, each for a channel">
-              Call sign{st.callsigns.length > 1 ? "s" : ""}{" "}
-              {st.callsigns.map((x, i) => (
-                <Fragment key={x.callSign}>
-                  {i > 0 && ", "}
-                  <b className="mono">{x.callSign}</b>
-                  {x.freqHz ? <span className="muted">{` ${formatMhz(x.freqHz, 4)}`}</span> : null}
-                </Fragment>
-              ))}
-            </span>
-          )}
-          <span title="Calls saved since start">
-            Calls <b>{x.status?.callsConcluded ?? 0}</b>
-          </span>
-          <span>
-            Active <b>{x.status?.activeCalls ?? 0}</b>
-          </span>
-        </div>
-      )}
-      {x.kind === "conventional" && x.status && (
-        <div className="kv small">
-          <span title="Calls saved since start">
-            Calls <b>{x.status.callsConcluded}</b>
-          </span>
-          <span>
-            Active <b>{x.status.activeCalls}</b>
-          </span>
-        </div>
+      {(st || (x.kind === "conventional" && x.status)) && (
+        <SiteIdentityLine kind={x.kind} st={st ?? null} dmr={here.find((y) => y.dmr)?.dmr ?? null} calls={x.status?.callsConcluded ?? 0} active={x.status?.activeCalls ?? 0} />
       )}
       {live && live.channels.length > 0 && (
         <Card title="Channels now">
@@ -379,7 +341,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
           </Card>
         )}
         <Card title="Voice frames lost">
-          <TimeSeries lines={[{ label: "Lost, %", color: "var(--serious)", data: ratio(hist?.[k("voice/bad")], hist?.[k("voice/frames")], 100) }]} zero fmt={(v) => v.toFixed(1)} empty="No voice decoded yet." />
+          <TimeSeries lines={[{ label: "Lost, %", color: "var(--serious)", data: ratio(sumSeries(hist, vBad), sumSeries(hist, vFrames), 100) }]} zero fmt={(v) => v.toFixed(1)} empty="No voice decoded yet." />
         </Card>
         {x.kind !== "conventional" && (
           <Card title="Signal and demodulation">
@@ -467,10 +429,73 @@ export function DecodePage() {
         {systems.flatMap((x) => {
           const rows = freqs?.find((f) => f.system === x.name)?.rows as FreqRow[] | undefined;
           return x.sites.length
-            ? x.sites.map((y, i) => <DecodeCard key={`${x.name}/${y.name}`} s={s} x={x} site={y} usual={usual[K.cc(y, "good")]} freqs={rows} voice={i === 0} />)
+            ? x.sites.map((y, i) => <DecodeCard key={`${x.name}/${y.name}`} s={s} x={x} site={y} usual={usual[K.cc(y, "good")]} freqs={i === 0 ? rows : undefined} />)
             : [<DecodeCard key={x.name} s={s} x={x} usual={null} freqs={rows} />];
         })}
       </div>
+    </div>
+  );
+}
+
+/** Under the graphs: what the site says it is (its identity, as each protocol states it; a DMR
+ *  Tier III / Capacity Max site also its System Identity Code's model and category), its calls. */
+export function SiteIdentityLine(props: { kind: DashSystem["kind"]; st: SiteStatus | null; dmr: DmrSiteStatus | null; calls: number; active: number }) {
+  const { kind, st, dmr } = props;
+  const id = st?.identity;
+  const code = dmr?.sysCode;
+  // [label, value, title]
+  const fields: [string, ReactNode, string?][] = !id
+    ? []
+    : kind === "dmr"
+      ? [
+          ["CC", id.colorCode],
+          ["Network", id.network],
+          ["Site", id.site],
+          ...(code
+            ? ([
+                ["Sys code", code.code.toString(16).toUpperCase().padStart(4, "0"), "System Identity Code, from the control channel"],
+                ["Model", code.model, "Network model: how the code splits between network and site"],
+                ["Category", code.category, "Which category of radio may use the site"],
+              ] as [string, ReactNode, string][])
+            : []),
+        ]
+      : kind === "nxdn"
+        ? [
+            ["RAN", id.ran],
+            ["System", id.sysId != null ? hex(id.sysId) : null],
+            ["Site", id.site],
+          ]
+        : [
+            ["NAC", hex(id.nac)],
+            ["WACN", hex(id.wacn)],
+            ["SysID", hex(id.sysId)],
+            ["Site", id.site != null ? `${id.rfss ?? "?"}-${id.site}` : null],
+          ];
+  return (
+    <div className="kv small">
+      {fields.map(([k, v, title]) => (
+        <span key={k} title={title}>
+          {k} <b className="mono">{v ?? "—"}</b>
+        </span>
+      ))}
+      {!!st?.callsigns?.length && (
+        <span title="The FCC call signs its control channel's base station IDs say, each for a channel">
+          Call sign{st.callsigns.length > 1 ? "s" : ""}{" "}
+          {st.callsigns.map((x, i) => (
+            <Fragment key={x.callSign}>
+              {i > 0 && ", "}
+              <b className="mono">{x.callSign}</b>
+              {x.freqHz ? <span className="muted">{` ${formatMhz(x.freqHz, 4)}`}</span> : null}
+            </Fragment>
+          ))}
+        </span>
+      )}
+      <span title="Calls saved since start">
+        Calls <b>{props.calls}</b>
+      </span>
+      <span>
+        Active <b>{props.active}</b>
+      </span>
     </div>
   );
 }

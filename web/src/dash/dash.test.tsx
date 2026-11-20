@@ -9,7 +9,7 @@ import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { coverage, dashSystems, pageHealth, rangesFor } from "./data.ts";
 import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
-import { DecodePage } from "./Decode.tsx";
+import { DecodePage, SiteIdentityLine } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { OriginNote, RadioPage, TalkgroupNamesEditor } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
@@ -20,7 +20,7 @@ import { StorageView, tablesOf } from "./Storage.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>, adjacent: AdjacentSite[] = []): SiteStatus => ({
-  index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
+  index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000, source: 0,
   identity: { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: null, ...identity },
   good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent,
 });
@@ -79,6 +79,29 @@ test("Decode: a card per site; a system's page picks the site", () => {
   assert.doesNotMatch(page, /No system called/);
 });
 
+test("Decode: each site's card shows its own copies' voice lost, not its system's", () => {
+  twoSites();
+  feedSeries(Date.now() / 1000, { "sys/dcfd/site/south/voice/imbe/frames": 100, "sys/dcfd/site/south/voice/imbe/bad": 10, "sys/dcfd/voice/ambe/frames": 50, "sys/dcfd/voice/ambe/bad": 0 });
+  setView("decode");
+  const cards = renderToString(<DecodePage />).split("<section").map(text);
+  const voice = (title: string) => cards.find((c) => c.includes(title))?.match(/Voice lost ([—0-9.]+)/)?.[1];
+  assert.equal(voice("dcfd / south"), "10.0", "south's own frames");
+  assert.equal(voice("dcfd / dcfd"), "0.0", "the first site's, not the system's");
+});
+
+test("Decode: a DMR site's page says its colour code, network and site; an NXDN site's its RAN, system and site", () => {
+  const c = defaultConfig();
+  c.systems.push(newSystem(c, { shortName: "cap", type: "dmr", controlChannelsHz: [452_175_000] }), newSystem(c, { shortName: "nx", type: "nxdn", controlChannelsHz: [451_000_000] }));
+  running(c, [
+    system(0, "cap", [site(0, "cap", { nac: null, wacn: null, sysId: null, rfss: null, colorCode: 0, network: 1, site: 16 })]),
+    system(1, "nx", [site(1, "nx", { nac: null, wacn: null, sysId: 0x123, rfss: null, ran: 5, site: 2 })]),
+  ]);
+  setView("decode", "cap");
+  assert.match(text(renderToString(<DecodePage />)), /CC 0 Network 1 Site 16/);
+  setView("decode", "nx");
+  assert.match(text(renderToString(<DecodePage />)), /RAN 5 System 123 Site 2/);
+});
+
 test("Decode: a site's neighbours by address (status); its patches once watched (decodeDetail)", () => {
   twoSites([], [
     { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 9, freqHz: 853_000_000 },
@@ -129,6 +152,19 @@ test("RF: the control channels of adjacent sites on a source, faint, by address;
   assert.doesNotMatch(page, /1-7/, "off every source");
 });
 
+test("Decode: a DMR site's identity on the one identity line: CC, network, site, then its system code's model and category, calls", () => {
+  const st = site(0, "cap", { colorCode: 4, network: 12, site: 4 });
+  const dmr = { variant: "DMR Tier III", colorCode: 4, sysCode: { code: 0xb013, model: "Large" as const, category: "A+B" as const }, rest: null, keyed: false, channels: [], carriers: [] };
+  const html = renderToString(<SiteIdentityLine kind="dmr" st={st} dmr={dmr} calls={7} active={1} />).replace(/<!-- -->/g, "");
+  for (const want of ['CC <b class="mono">4', 'Network <b class="mono">12', 'Site <b class="mono">4', ">B013<", ">Large<", ">A+B<", "Calls <b>7", "Active <b>1"]) assert.ok(html.includes(want), `${want} in ${html}`);
+  // Each said once: the type, rest channel and keyed are the DMR panel's.
+  assert.equal(html.match(/CC </g)?.length, 1);
+  assert.ok(!html.includes("Tier III"));
+  // Before the site detail arrives: the identity and calls, no code.
+  const bare = renderToString(<SiteIdentityLine kind="dmr" st={st} dmr={null} calls={0} active={0} />);
+  assert.ok(!bare.includes("Sys code") && bare.includes("Network") && bare.includes("Calls"));
+});
+
 test("Decode: a site's FCC call sign, once its control channel has said it", () => {
   const c = defaultConfig();
   c.systems.push(newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_000_000] }));
@@ -174,6 +210,20 @@ test("Radio: a system's page has its calls on the air now, saying the site and t
   assert.match(page, /Control channel log/);
 });
 
+test("Radio: an MDC1200 radio's ID is shown in hex, as radios are programmed (#167); the same number elsewhere in decimal", () => {
+  twoSites([
+    { id: 7, system: 0, systemName: "dcfd", site: "dcfd", alsoOn: [], talkgroup: 100, alphaTag: "Fire", freqHz: 851_600_000, slot: null, state: "recording", reason: null, sources: [7187], startS: 1 },
+    { id: 8, system: 1, systemName: "other", site: "other", alsoOn: [], talkgroup: 555, alphaTag: "Elsewhere", freqHz: 852_600_000, slot: null, state: "recording", reason: null, sources: [7187], startS: 1 },
+  ]);
+  transport.onMessage({ type: "mdcUnits", system: "dcfd", units: [7187] });
+  setView("radio", "dcfd");
+  assert.match(text(renderToString(<RadioPage />)), /100 Fire .* 1C13 /);
+  setView("radio", "other");
+  const other = text(renderToString(<RadioPage />));
+  assert.match(other, /555 Elsewhere .* 7187 /);
+  assert.doesNotMatch(other, /1C13/);
+});
+
 test("Radio: a talkgroup's names are edited on its page, as its talkgroup file's row, the system's tags offered; and where they came from said", () => {
   twoSites();
   const origin = { kind: "radioReference" as const, at: Math.floor(Date.now() / 1000) - 7200 };
@@ -209,7 +259,7 @@ test("Radio: a system's page goes back as Decode's does, with the systems beside
 
 test("Radio: calls missed on one of several systems name it, in the navigation's light and on its card", () => {
   twoSites();
-  feedSeries(Date.now() / 1000, { "sys/other/why/no_source": 1 });
+  feedSeries(Date.now() / 1000, { "sys/other/calls/why/noSource": 1 });
   const h = pageHealth(snapshot()).radio;
   assert.equal(h.level, "warn");
   assert.match(h.why, /^other: .*outside every source's band/);
@@ -248,7 +298,7 @@ test("Radio: a system's Tones card names its signals and goes to them in Setup; 
 
 test("Radio: a warning of calls out of band links to the frequencies, on the Overview and the system's page", () => {
   twoSites();
-  feedSeries(Date.now() / 1000, { "sys/other/why/no_source": 1 });
+  feedSeries(Date.now() / 1000, { "sys/other/calls/why/noSource": 1 });
   setView("overview");
   assert.match(renderToString(<Overview />), /<button class="linkish why-link">Missing calls: outside every source(?:'|&#x27;)s band(?:<!-- -->)? <span aria-hidden="true">→/);
   setView("radio", "other");

@@ -16,9 +16,39 @@ export const K = {
   sys: (short: string, k: string) => `sys/${keyPart(short)}/${k}`,
   /** A site's control channel series (the recorder's SiteConfig::stats_key). */
   cc: (site: DashSite, k: string) => `${site.key}/cc/${k}`,
+  /** A conventional frequency's series key (the recorder's metrics::channel_key). */
+  ch: (short: string, hz: number) => `sys/${keyPart(short)}/ch/${Math.round(hz)}`,
   src: (label: string, k: string) => `src/${keyPart(label)}/${k}`,
   plg: (id: string, k: string) => `plg/${keyPart(id)}/${k}`,
 };
+
+/** Series `name` under each of `scopes` (a system's, a site's: `[site.key]`). */
+export const scoped = (scopes: string[], name: string) => scopes.map((k) => `${k}/${name}`);
+
+/** The vocoders a site's or channel's frames are counted by (`voice/<codec>/…`). */
+export const CODECS = ["imbe", "ambe"];
+
+/** Voice series `name` (`frames`, `bad`, `errors`) of every codec under `scopes`. */
+export const voiceKeys = (scopes: string[], name: string) => CODECS.flatMap((c) => scoped(scopes, `voice/${c}/${name}`));
+
+/** [`recentAvg`] of `keys`, added up (null: none of them has any). */
+export function recentSum(keys: string[], sinceS: number): number | null {
+  const v = keys.map((k) => recentAvg(k, sinceS)).filter((x): x is number => x !== null);
+  return v.length ? v.reduce((a, b) => a + b, 0) : null;
+}
+
+/** History series `keys` added up step by step (each step null where none of them has a value). */
+export function sumSeries(hist: Record<string, SeriesData> | null | undefined, keys: string[]): SeriesData | undefined {
+  const all = keys.map((k) => hist?.[k]).filter((x): x is SeriesData => !!x);
+  if (!all.length) return undefined;
+  const [a] = all;
+  const same = all.filter((x) => x.t0 === a.t0 && x.stepS === a.stepS);
+  const v = a.v.map((_, i) => {
+    const xs = same.map((x) => x.v[i]).filter((x): x is number => x !== null);
+    return xs.length ? xs.reduce((p, q) => p + q, 0) : null;
+  });
+  return { ...a, v, lo: v.map(() => null), hi: v.map(() => null) };
+}
 
 /** A value now, from the latest stats / host message. */
 export function val(s: AppState, key: string): number | null {
@@ -53,6 +83,9 @@ export interface DashSystem {
   status: SystemStatus | null;
   /** Its sites being recorded (a conventional system: none). */
   sites: DashSite[];
+  /** Where its copies of calls are counted (`<key>/calls/…`, `<key>/voice/…`): each site's key,
+   * or (conventional) each channel's. A system's figures are their sum ([`scoped`]). */
+  scopes: string[];
 }
 
 /** One site of a dashboard system. */
@@ -76,12 +109,13 @@ export function dashSystems(s: AppState): DashSystem[] {
       const name = siteNameOf(x, site);
       return { name, key: siteKey(x.shortName, name), status: status?.sites.find((y) => y.name === name) ?? null };
     });
-    return { name: x.shortName, kind: (x.type ?? "p25") as DashSystem["kind"], status, sites };
+    return { name: x.shortName, kind: (x.type ?? "p25") as DashSystem["kind"], status, sites, scopes: sites.map((y) => y.key) };
   });
   for (const c of s.config.conventional) {
     if (c.enabled === false || !c.channels.some((ch) => ch.enabled)) continue;
     const status = s.status?.systems.find((y) => y.shortName === c.shortName) ?? null;
-    out.push({ name: c.shortName, kind: "conventional", status, sites: [] });
+    const scopes = [...new Set(c.channels.filter((ch) => ch.enabled).map((ch) => K.ch(c.shortName, ch.freqHz)))];
+    out.push({ name: c.shortName, kind: "conventional", status, sites: [], scopes });
   }
   return out;
 }
@@ -424,8 +458,8 @@ export const OUT_OF_BAND = "outOfBand";
 /** A system's calls lost for want of a recorder or a source, last few minutes: which of the two. */
 export function systemRadioHealth(s: AppState, x: DashSystem): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  const busy = (recentAvg(K.sys(x.name, "why/no_recorder"), 300) ?? 0) > 0;
-  const outside = (recentAvg(K.sys(x.name, "why/no_source"), 300) ?? 0) > 0;
+  const busy = (recentSum(scoped(x.scopes, "calls/why/noRecorder"), 300) ?? 0) > 0;
+  const outside = (recentSum(scoped(x.scopes, "calls/why/noSource"), 300) ?? 0) > 0;
   const at: Place = ["radio", x.name, OUT_OF_BAND];
   if (busy && outside) return { level: "warn", why: "Missing calls: no free recorder, and outside every source's band", at };
   if (busy) return { level: "warn", why: "Missing calls: no free recorder — add recorders" };

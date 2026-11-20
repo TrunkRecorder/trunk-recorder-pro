@@ -1,0 +1,38 @@
+{
+  "v": 1,
+  "node": { "systemId": 1234, "apiKey": "00000000-0000-0000-0000-000000000000" },
+  "recorder": { "name": "trunk-recorder-pro", "version": "0.3.8", "upS": 86400.0 },
+  "window": { "start": 1794590100.0, "end": 1794590400.0, "seq": 412 },
+  "sites": [
+    {
+      "name": "Downtown",
+      "protocol": "p25",
+      "id": { "nac": 928, "rfss": 1, "site": 5, "sysId": 939, "wacn": 781824 },
+      "cc": { "hz": 854787500, "lockedS": 300.0, "good": 11200, "bad": 410, "airSym": 1180000, "symbolRate": 4800,
+              "snrDb": 15.0, "phaseErrDeg": 17.2 },
+      "calls": { "started": 812, "recorded": 790, "notRecorded": { "encrypted": 0, "noRecorder": 3, "noSource": 19 } },
+      "voice": { "imbe": { "frames": 0, "bad": 0, "errors": 0 }, "ambe": { "frames": 9167, "bad": 862, "errors": 4120 } }
+    }
+  ],
+  "channels": [
+    {
+      "hz": 155520000,
+      "mode": "fm",
+      "name": "County Fire Dispatch",
+      "access": "CTCSS 151.4",
+      "heardS": 300.0,
+      "noiseDb": -62.1,
+      "opens": 14,
+      "openS": 96.0,
+      "calls": 12,
+      "openedByOther": 2,
+      "signalDb": -40.9,
+      "snrDb": 18.1
+    }
+  ],
+  "radios": [
+    { "name": "800", "kind": "airspy", "seconds": 300.0, "droppedS": 0.0, "clipPct": 0.0, "ppmError": -0.03 },
+    { "name": "VHF", "kind": "rtlsdr", "seconds": 300.0, "droppedS": 1.0, "clipPct": 0.02, "ppmError": 0.4 }
+  ],
+  "clock": { "sync": "ntp", "systemOffsetMs": 12.0 }
+}

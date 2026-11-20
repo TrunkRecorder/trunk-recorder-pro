@@ -18,7 +18,7 @@
 //!   and `Bandwidth kHz` are additions.
 //! - `Frequency`: MHz when it has a decimal point (and is under 10 000), else Hz.
 //! - `Mode`: `fm` / `analog` / `A`, `am`, `p25` / `digital` / `D`, `dmr`,
-//!   `nxdn48` (or `nxdn`) / `nxdn96`; empty = fm.
+//!   `nxdn48` (or `nxdn`) / `nxdn96`, `auto` (or `any`): whichever is on it; empty = fm.
 //! - `TG Number`: what calls are filed under; empty = the talkgroup the air
 //!   names (p25, dmr, nxdn), else the frequency in kHz (further rows on the
 //!   same frequency: that and a digit, 1543251, 1543252 …).
@@ -43,8 +43,10 @@
 //!   mark and decimal commas (with semicolons) are accepted, as Excel
 //!   writes them in some locales. Blank rows and `#` comments are skipped.
 
-use crate::config::{Channel, ChannelMode};
-use trunk_core::trunk::Access;
+use trunk_core::nxdn::Rate;
+use trunk_core::trunk::{Access, ConvMode};
+
+use crate::config::Channel;
 
 /// The columns [`write`] produces.
 pub const HEADER: &str = "TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable,AutoTune";
@@ -141,20 +143,19 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             continue;
         };
         let raw = at(c_tone);
+        // (Trunk Recorder's and other files' names for them as well as the config's.)
         let mode = match at(c_mode).to_lowercase().as_str() {
-            "" if raw.to_uppercase().contains("NAC") || raw.starts_with('$') => ChannelMode::P25,
-            "" if raw.to_uppercase().starts_with("CC") => ChannelMode::Dmr,
-            "" if raw.to_uppercase().starts_with("RAN") => ChannelMode::Nxdn48,
-            "" | "fm" | "nfm" | "analog" | "a" => ChannelMode::Fm,
-            "am" => ChannelMode::Am,
-            "p25" | "digital" | "d" => ChannelMode::P25,
-            "dmr" => ChannelMode::Dmr,
-            "nxdn" | "nxdn48" => ChannelMode::Nxdn48,
-            "nxdn96" => ChannelMode::Nxdn96,
-            _ => {
+            "" if raw.to_uppercase().contains("NAC") || raw.starts_with('$') => ConvMode::P25,
+            "" if raw.to_uppercase().starts_with("CC") => ConvMode::Dmr,
+            "" if raw.to_uppercase().starts_with("RAN") => ConvMode::Nxdn(Rate::N48),
+            "" | "nfm" | "analog" | "a" => ConvMode::Fm,
+            "digital" | "d" => ConvMode::P25,
+            "nxdn" => ConvMode::Nxdn(Rate::N48),
+            "any" => ConvMode::Auto,
+            m => ConvMode::parse(m).unwrap_or_else(|| {
                 bad_mode.push(row);
-                ChannelMode::Fm
-            }
+                ConvMode::Fm
+            }),
         };
         let talkgroup = match at(c_tg) {
             "" => None,
@@ -180,7 +181,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         let bandwidth_khz = match at(c_bw) {
             "" => None,
             s => match (if decimal_comma { s.replace(',', ".") } else { s.to_string() }).parse::<f64>() {
-                Ok(v) if (lo..=hi).contains(&v) && matches!(mode, ChannelMode::Fm | ChannelMode::Am) => Some(v),
+                Ok(v) if (lo..=hi).contains(&v) && mode.has_analog_receiver() => Some(v),
                 _ => {
                     bad_bw.push(row);
                     None
@@ -190,12 +191,11 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         let enabled = !matches!(at(c_enable).to_lowercase().as_str(), "false" | "no" | "0" | "off");
         let auto_tune = matches!(at(c_tune).to_lowercase().as_str(), "true" | "yes" | "1" | "on");
         search |= raw.eq_ignore_ascii_case("s");
-        let conv = mode.conv();
         let (slot, mtg) = (at(c_slot), at(c_mtg));
         let num = |s: &str| if s.is_empty() { Ok(None) } else { s.parse::<u32>().map(Some).map_err(|_| format!("\"{s}\" isn't a number")) };
         let access = num(slot)
             .and_then(|s| Ok((s.map(|s| u8::try_from(s).unwrap_or(u8::MAX)), num(mtg)?)))
-            .and_then(|(s, t)| Access::join(conv, raw, s, t));
+            .and_then(|(s, t)| Access::join(mode, raw, s, t));
         let (code, slot, match_talkgroup) = match access {
             Ok(a) => a.map_or((String::new(), None, None), Access::parts),
             Err(e) => {
@@ -231,7 +231,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         out.notes.push(format!("Skipped row(s) {} — no usable frequency.", rows_list(&bad_freq)));
     }
     if !bad_mode.is_empty() {
-        out.notes.push(format!("Row(s) {}: unknown Mode (use fm, am, p25, dmr, nxdn48 or nxdn96) — read as fm.", rows_list(&bad_mode)));
+        out.notes.push(format!("Row(s) {}: unknown Mode (use {}) — read as fm.", rows_list(&bad_mode), ConvMode::names()));
     }
     if !bad_tg.is_empty() {
         out.notes.push(format!("Row(s) {}: TG Number isn't a positive whole number — using the default.", rows_list(&bad_tg)));
@@ -281,14 +281,7 @@ pub fn write(channels: &[Channel]) -> String {
             cell(&c.code),
             c.slot.map_or(String::new(), |s| s.to_string()),
             c.match_talkgroup.map_or(String::new(), |t| t.to_string()),
-            match c.mode {
-                ChannelMode::Fm => "fm".into(),
-                ChannelMode::Am => "am".into(),
-                ChannelMode::P25 => "p25".into(),
-                ChannelMode::Dmr => "dmr".into(),
-                ChannelMode::Nxdn48 => "nxdn48".into(),
-                ChannelMode::Nxdn96 => "nxdn96".into(),
-            },
+            c.mode.as_str().into(),
             cell(&c.name),
             cell(&c.description),
             cell(&c.tag),
@@ -325,9 +318,9 @@ mod tests {
         assert_eq!(p.channels.len(), 7);
         let codes: Vec<_> = p.channels.iter().map(|c| (c.code.as_str(), c.slot, c.match_talkgroup)).collect();
         assert_eq!(codes, [("94.8", None, None), ("151.4", None, None), ("D023N", None, None), ("", None, None), ("", None, None), ("293", None, None), ("1", Some(2), Some(201))]);
-        assert_eq!((p.channels[5].mode, p.channels[6].mode), (ChannelMode::P25, ChannelMode::Dmr));
+        assert_eq!((p.channels[5].mode, p.channels[6].mode), (ConvMode::P25, ConvMode::Dmr));
         let (a, b) = (&p.channels[0], &p.channels[1]);
-        assert_eq!((a.freq_hz, a.talkgroup, a.mode, a.enabled), (462_275_000.0, Some(300), ChannelMode::Fm, true));
+        assert_eq!((a.freq_hz, a.talkgroup, a.mode, a.enabled), (462_275_000.0, Some(300), ConvMode::Fm, true));
         assert_eq!(a.name, "Town A Police");
         assert_eq!((b.freq_hz, b.enabled, b.description.as_str()), (462_287_500.0, false, "Trash, Recycling"));
         let notes = p.notes.join(" ");
@@ -342,7 +335,7 @@ mod tests {
         let chans = vec![
             Channel {
                 freq_hz: 154_431_250.0,
-                mode: ChannelMode::Fm,
+                mode: ConvMode::Fm,
                 name: "Fire, Main".into(),
                 talkgroup: Some(1001),
                 description: "Say \"hi\"".into(),
@@ -357,7 +350,7 @@ mod tests {
             },
             Channel {
                 freq_hz: 460_125_000.0,
-                mode: ChannelMode::P25,
+                mode: ConvMode::P25,
                 name: "PD Tac".into(),
                 talkgroup: None,
                 description: String::new(),
@@ -372,7 +365,7 @@ mod tests {
             },
             Channel {
                 freq_hz: 451_500_000.0,
-                mode: ChannelMode::Dmr,
+                mode: ConvMode::Dmr,
                 name: "Dispatch".into(),
                 talkgroup: Some(9001),
                 description: String::new(),
@@ -396,7 +389,7 @@ mod tests {
         // Excel in a decimal-comma locale: semicolons, a byte-order mark, 154,43.
         let eu = parse("\u{feff}Frequency;Mode;Alpha Tag;Squelch dB\r\n154,43;P25;Tac;12,5\r\n").unwrap();
         assert_eq!(eu.channels[0].freq_hz, 154_430_000.0);
-        assert_eq!(eu.channels[0].mode, ChannelMode::P25);
+        assert_eq!(eu.channels[0].mode, ConvMode::P25);
         assert_eq!(eu.channels[0].squelch_db, Some(12.5));
         assert!(parse("Name,Mode\nx,fm\n").unwrap_err().contains("No Frequency column"));
     }
@@ -430,10 +423,24 @@ mod tests {
     }
 
     #[test]
+    fn auto_channels_read_and_write() {
+        let p = parse("Frequency,Mode,Alpha Tag,Code,Bandwidth kHz\n462.5625,auto,FRS 1,,\n462.5875,ANY,FRS 2,,16\n462.6125,auto,FRS 3,100.0,\n").unwrap();
+        assert!(p.channels.iter().all(|c| c.mode == ConvMode::Auto), "{:?}", p.channels.iter().map(|c| c.mode).collect::<Vec<_>>());
+        // A width is its analog receiver's (a 20 kHz GMRS channel), as an FM channel's is.
+        assert_eq!(p.channels[1].bandwidth_khz, Some(16.0));
+        assert!(!p.notes.iter().any(|n| n.contains("Bandwidth")), "{:?}", p.notes);
+        // A tone it can't have is said so, and left out.
+        assert_eq!(p.channels[2].code, "");
+        assert!(p.notes.iter().any(|n| n.contains("row 4") && n.contains("auto channels carry no tone or code")), "{:?}", p.notes);
+        assert!(write(&p.channels).contains(",auto,"));
+        assert_eq!(parse(&write(&p.channels)).unwrap().channels, p.channels);
+    }
+
+    #[test]
     fn am_and_bandwidth_round_trip() {
         let p = parse("Frequency,Mode,Alpha Tag,Bandwidth kHz\n119.1,am,Tower,\n128.1,AM,Approach,6\n154.43,fm,Fire,16\n460.125,p25,PD,16\n").unwrap();
         let got: Vec<_> = p.channels.iter().map(|c| (c.mode, c.bandwidth_khz)).collect();
-        assert_eq!(got, [(ChannelMode::Am, None), (ChannelMode::Am, Some(6.0)), (ChannelMode::Fm, Some(16.0)), (ChannelMode::P25, None)]);
+        assert_eq!(got, [(ConvMode::Am, None), (ConvMode::Am, Some(6.0)), (ConvMode::Fm, Some(16.0)), (ConvMode::P25, None)]);
         assert!(p.notes.iter().any(|n| n.contains("Row(s) 5: Bandwidth")), "{:?}", p.notes);
         let back = parse(&write(&p.channels)).unwrap();
         assert_eq!(back.channels, p.channels);

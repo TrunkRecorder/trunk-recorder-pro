@@ -779,6 +779,8 @@ impl Profile {
     }
 }
 
+serde_by_name!(Profile, name, from_name, "vocoder");
+
 /// One vocoder stream (a P25 Phase 1 call, or one Phase 2 timeslot). Frames
 /// must arrive in order; a new call wants [`Decoder::reset`].
 pub struct Decoder {

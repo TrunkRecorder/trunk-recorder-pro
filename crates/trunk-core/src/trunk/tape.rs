@@ -54,25 +54,33 @@ impl Tapes {
     }
 }
 
-/// What a voice channel's decoder was told, from sample `sample` on.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// What a voice channel's decoder was told, from sample `sample` on. As a SigMF annotation of the
+/// tape's file (its `core:sample_start`, the rest the `trp` extension's).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TapeMark {
+    #[serde(rename = "core:sample_start")]
     pub sample: u64,
+    #[serde(rename = "trp:voice_params")]
     pub params: VoiceParams,
     /// Which slots were being listened to.
+    #[serde(rename = "trp:slots")]
     pub slots: [bool; 2],
+    #[serde(rename = "trp:squelch")]
     pub squelch: f32,
 }
 
-/// A voice channel, from its pre-roll to when it closed.
-#[derive(Clone, Debug)]
+/// A voice channel, from its pre-roll to when it closed. Its fields but the marks and IQ are its
+/// file's `trp:channel` (the marks are annotations, the IQ the data).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct VoiceTape {
     pub freq_hz: f64,
     pub spec: VoiceSpec,
     /// Samples in its decoder's first push, and each later one.
     pub first: usize,
     pub block: usize,
+    #[serde(skip)]
     pub marks: Vec<TapeMark>,
+    #[serde(skip)]
     pub iq: Vec<Complex32>,
     /// It went on past the longest kept.
     pub truncated: bool,
@@ -108,17 +116,22 @@ impl VoiceTape {
 }
 
 /// A control channel carrier's latest samples.
-#[derive(Clone, Debug)]
+/// Its fields but the IQ are its file's `trp:channel` (beside the band plan it was decoding with).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ControlTape {
     pub site: u16,
     pub carrier: usize,
     /// The carrier's frequency.
+    #[serde(default)]
     pub freq_hz: f64,
+    #[serde(default)]
     pub rate: f64,
     /// Samples in each push.
     pub block: usize,
     /// When its first sample was, s on the engine's clock.
+    #[serde(rename = "t0_s")]
     pub t0: f64,
+    #[serde(skip)]
     pub iq: VecDeque<Complex32>,
 }
 
@@ -174,7 +187,7 @@ mod tests {
     fn a_voice_tape_notes_what_its_decoder_was_told_when_it_changes() {
         let mut t = VoiceTape::new(spec(1000.0), 851e6);
         let iq = [Complex32::new(1.0, 0.0); 10];
-        let key = VoiceParams { tdma_key: Some((1, 2, 3)), nac: Some(1) };
+        let key = VoiceParams { tdma_key: Some((1, 2, 3)), nac: Some(1), ..Default::default() };
         t.run(&iq, VoiceParams::default(), [true, false], 0.5);
         t.run(&iq[..4], VoiceParams::default(), [true, false], 0.5);
         t.run(&iq[..4], key, [true, false], 0.5);

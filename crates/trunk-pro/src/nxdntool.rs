@@ -29,6 +29,7 @@ use trunk_core::mbe::{self, FRAME_SAMPLES};
 use trunk_core::nxdn::channel::{self, SacchAssembler};
 use trunk_core::nxdn::frame::{Body, Frame, Framer, RfChannel};
 use trunk_core::nxdn::layer3::{Context, Message};
+use trunk_core::nxdn::trunking::{NxdnConfig, Site};
 use trunk_core::nxdn::Rate;
 
 use crate::toolkit::{AudioOut, Capture};
@@ -170,10 +171,15 @@ pub fn run(a: &Args) {
     let (mut syms, mut frames) = (Vec::new(), Vec::<Frame>::new());
     let t0 = Instant::now();
     let mut last_msg = String::new();
+    // The recorder's own count of the channel as a Type-C control channel
+    // (what replay and the dashboard show): its receiver beside this one.
+    let mut site = Site::new(&[freq], rate, NxdnConfig { rate: nxdn, ..Default::default() });
     cap.channelize(&mut chz, |chz| {
         syms.clear();
         frames.clear();
-        rx.push(chz.output(head).unwrap(), &mut syms);
+        let iq = chz.output(head).unwrap();
+        site.push(0, iq, 0.0, rate, &mut Vec::new());
+        rx.push(iq, &mut syms);
         for s in &syms {
             framer.push(s, &mut frames);
         }
@@ -279,6 +285,10 @@ pub fn run(a: &Args) {
     eprintln!("frames {} (syncs {}{}), LICH valid {}", c.frames, framer.syncs, if framer.inverted { ", inverted" } else { "" }, c.lich);
     eprintln!("LICH values: {}", c.by_kind.iter().map(|(k, n)| format!("{k}:{n}")).collect::<Vec<_>>().join(" "));
     eprintln!("CAC {}  SACCH {}  FACCH1 {}  UDCH/FACCH2 {}", pct(c.cac), pct(c.sacch), pct(c.facch1), pct(c.udch));
+    let (good, bad) = site.counts();
+    if good > 0 {
+        eprintln!("as a control channel: {} of its frames decoded (the recorder's count: frames without a LICH tried as CAC, and the slots lost while unlocked)", pct((good, good + bad)));
+    }
     if c.vcw > 0 {
         eprintln!("voice codewords {}: ≤1 error {:.1} %, mean errors {:.2}", c.vcw, 100.0 * c.vcw_clean as f64 / c.vcw as f64, c.vcw_errs as f64 / c.vcw as f64);
         if !c.vocoded.is_empty() {

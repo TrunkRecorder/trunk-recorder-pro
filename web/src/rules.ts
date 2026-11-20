@@ -205,8 +205,6 @@ export interface AdviceScore {
   reached: number;
   /** Sources something needs. */
   needed: number;
-  /** Of those, the ones past their dependable top rate (an RTL-SDR past 2.56 MSPS). */
-  unsteady: number;
   /** Their sample rates together, Hz. */
   rateHz: number;
   /** Sources whose centre or rate changes. */
@@ -324,4 +322,51 @@ export type Step = { hz: number[]; s: number };
 /** What a tone pattern (as the call JSON's `tone_patterns` and the tones log have it) sounds like, step by step. */
 export function toneSteps(p: { pattern: TonePatternKind; tones: number[]; lengths: number[]; digits?: string; knox?: boolean; cycles?: number }): Step[] {
   return JSON.parse(rules().toneSteps(JSON.stringify(p)));
+}
+
+/** What a row of a conventional mode can say: the recorder's ConvMode (convModes). */
+export interface ModeFacts {
+  mode: Channel["mode"];
+  /** In a message ("AM channels carry no tone or code"). */
+  name: string;
+  /** What tells its rows on a frequency apart ("tone", "NAC or talkgroup"); none: one row, no code. */
+  codeName: string | null;
+  takesCode: boolean;
+  /** Every transmission names its talkgroup, which a row can match (and AutoTune use): the digital modes. */
+  matchesTalkgroup: boolean;
+  /** A call's talkgroup may be the air's: the digital modes, and auto when it settles on one. */
+  airNamesTalkgroup: boolean;
+  /** FM or AM and nothing else. */
+  analog: boolean;
+  /** Has an analog receiver, whose bandwidth and Demodulation settings it takes: analog, and auto. */
+  analogReceiver: boolean;
+  /** Has an FM receiver (tones, de-emphasis). */
+  hasFm: boolean;
+  /** A row can pick a slot: DMR. */
+  slotted: boolean;
+}
+
+/** Every conventional mode, in the order Setup lists them (modes.ts adds how each is shown). */
+export function convModes(): ModeFacts[] {
+  return JSON.parse(rules().convModes()) as ModeFacts[];
+}
+
+/** A row's code, and the slot and talkgroup it records (absent: any). */
+export interface AccessParts {
+  code: string;
+  slot?: number;
+  matchTalkgroup?: number;
+}
+
+/**
+ * A row's Code column for its mode, as the recorder reads it (Access::parse): FM's tone or DCS code,
+ * P25's NAC and talkgroup, DMR's colour code, slot and talkgroup, NXDN's RAN and group; or why not.
+ */
+export function parseAccess(mode: Channel["mode"], text: string): AccessParts | { error: string } {
+  return JSON.parse(rules().accessParse(mode, text)) as AccessParts | { error: string };
+}
+
+/** Whether two rows of `mode` record the same transmissions (a DCS code and its alias too): Access::same. */
+export function sameAccess(mode: Channel["mode"], a: AccessParts, b: AccessParts): boolean {
+  return rules().accessSame(mode, JSON.stringify(a), JSON.stringify(b));
 }

@@ -126,8 +126,28 @@ RAN.
   layouts; DSD-FME doesn't decode them), not yet checked on the air.
 - **Control loss** was over-counted: every carrier's frames counted, so
   voice channels' looked like lost CAC (replay 614 good / 110 bad against
-  `tool nxdn`'s 613 / 36). Fixed: only the control channel's CAC frames.
-- Captures asked for, for the corpus and for `tool snr` on real NXDN.
+  `tool nxdn`'s 613 / 36). Fixed (v0.3.7): only the control channel's CAC
+  frames.
+- **…and then under-counted.** On a weak capture (corpus 54c7a6290c5c98ab,
+  Green Mountain at 3–11 dB) the framer had no frames at all for ~49 s of a
+  fade: 612 slots that neither `tool nxdn` (CAC / LICH-valid: 86.8 %) nor
+  replay (59 %) counted. A control channel sends a frame every 80 ms, so
+  loss is now by time, as P25's: 563 of 1,495 (38 %).
+- **The LICH goes first.** 304 frames there had a good sync word (101 with
+  0–1 bit errors) but no valid LICH: 8 symbols with one parity bit, where
+  the CAC has a CRC-16. On a control carrier they're now tried as CAC:
+  466 → 563 there, 1,378 → 1,495 (all) on corpus f4180fc8223aa039, 641 →
+  658 on Brynion (13fc93ee06f4aaf8). Calls identical; two grants heard a
+  frame or three sooner.
+- **The framer could stay on a slipped grid.** After a carrier drop the
+  receiver's timing can slip; an idle control channel's frames repeat, so on
+  the slipped grid the same 8 symbols could pass as a LICH every frame,
+  which kept the framer from ever moving to the real sync. It now moves
+  whenever the grid's own sync was missed (synthesized fade test).
+- Captures received (corpus, 2026-11-13): three wideband (Green Mountain /
+  Chehalem ×2, Brynion / Chehalis / Boistfort), the Brynion voice call, two
+  no-audio voice captures. Chehalis (CAC 41 / 61 at ~¼ of Brynion's frames)
+  is the weak-signal case for `tool snr` once it has an NXDN kind.
 
 ## Not known, or not done
 

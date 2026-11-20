@@ -53,6 +53,18 @@ test("Setup: a source's card says the suggested centre and rate, and the sources
   assert.doesNotMatch(text(renderToString(<SourceCard c={c} i={0} advice={null} />)), /Suggested/, "no advice: no line");
 });
 
+test("Setup: an RTL-SDR past 2.4 MSPS is warned of, and advice never takes one past it", () => {
+  const c = tooLow();
+  assert.doesNotMatch(text(renderToString(<SourceCard c={c} i={0} advice={null} />)), /May drop samples/);
+  c.sources[0].rateHz = 3_200_000;
+  assert.match(text(renderToString(<SourceCard c={c} i={0} advice={null} />)), /May drop samples · 2.4 is dependable/);
+  c.sources[0].rateHz = 2_400_000;
+  // Voice channels 3 MHz across: one RTL-SDR at 3.2 would reach them all, but advice stays at 2.4 or below.
+  c.systems[0].sites[0].voiceChannelsHz = [851_512_500, 852_512_500, 853_812_500];
+  const a = sourceAdvice(c, [undefined]);
+  assert.ok(!a || a.sources.every((s) => s.rateHz <= 2_400_000), JSON.stringify(a));
+});
+
 test("Use: back on auto when auto places it where the advice says; the rate written in", async () => {
   const c = tooLow();
   const a = sourceAdvice(c, [undefined])!;

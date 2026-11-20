@@ -19,7 +19,7 @@ pub use squelch::SquelchTiming;
 
 /// How an analog channel is demodulated (a conventional system and its
 /// channels choose; trunked analog calls take [`AnalogTuning::default`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AnalogTuning {
     /// One-sided passband of the channel filter / carrier meter, Hz.
     pub half_bw_hz: f64,
@@ -29,6 +29,7 @@ pub struct AnalogTuning {
     pub level_tau_s: f64,
     /// AM: the audio high-pass's corner, Hz (0: none).
     pub low_cut_hz: f64,
+    #[serde(flatten)]
     pub squelch: SquelchTiming,
     /// FM: leave out data bursts (EDACS's 9600 baud signalling at the start
     /// of a transmission, on the voice channel): [`fm::DataBurst`].
@@ -47,6 +48,12 @@ impl AnalogTuning {
     /// 225 MHz (UHF military air), where transmitters stray further.
     pub fn am(freq_hz: f64) -> Self {
         AnalogTuning { half_bw_hz: am::default_half_bw(freq_hz), ..Default::default() }
+    }
+
+    /// The cutoff a channel's head opens at to carry its passband, Hz: 1.5 kHz past it (7 kHz for
+    /// narrowband FM), so the channel filter narrows it, not the head's skirt.
+    pub fn head_cutoff_hz(&self) -> f64 {
+        self.half_bw_hz + 1500.0
     }
 }
 

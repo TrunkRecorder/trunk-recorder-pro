@@ -783,9 +783,10 @@
         "host",
         "keys",
         "calls",
-        "history"
+        "history",
+        "tuneGain"
       ],
-      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open"
+      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open\n- `tuneGain`: tuning a radio's gain while recording (`tuneGain`, `tune`)"
     },
     "CaptureRule": {
       "type": "object",
@@ -956,7 +957,8 @@
             "p25",
             "dmr",
             "nxdn48",
-            "nxdn96"
+            "nxdn96",
+            "auto"
           ]
         },
         "name": {
@@ -1085,7 +1087,8 @@
             "p25",
             "dmr",
             "nxdn48",
-            "nxdn96"
+            "nxdn96",
+            "auto"
           ],
           "description": "A conventional channel: its mode."
         },
@@ -1834,13 +1837,53 @@
             "string",
             "null"
           ],
-          "description": "\"DMR Capacity Plus\" | \"DMR Capacity Max\" | \"DMR Connect Plus\" | \"DMR Tier III\" | null (not known yet)."
+          "description": "\"DMR Capacity Plus\" | \"DMR Capacity Max\" | \"DMR Connect Plus\" | \"DMR Tier III\" | \"Hytera XPT\" | null (not known yet)."
         },
         "colorCode": {
           "type": [
             "number",
             "null"
           ]
+        },
+        "sysCode": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "number"
+                },
+                "model": {
+                  "type": "string",
+                  "enum": [
+                    "Tiny",
+                    "Small",
+                    "Large",
+                    "Huge"
+                  ]
+                },
+                "category": {
+                  "type": "string",
+                  "enum": [
+                    "reserved",
+                    "A",
+                    "B",
+                    "A+B"
+                  ]
+                }
+              },
+              "required": [
+                "code",
+                "model",
+                "category"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tier III / Capacity Max: the System Identity Code its control channel sends, its model (how it splits into the network and site the site's `identity` carries) and which category of radio may use the site."
         },
         "rest": {
           "anyOf": [
@@ -1955,6 +1998,7 @@
       "required": [
         "variant",
         "colorCode",
+        "sysCode",
         "rest",
         "keyed",
         "channels",
@@ -2290,6 +2334,30 @@
             "type",
             "system",
             "csv"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "mdcUnits"
+            },
+            "system": {
+              "type": "string"
+            },
+            "units": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "units"
           ],
           "additionalProperties": false
         },
@@ -2921,6 +2989,92 @@
             "rateHz",
             "source",
             "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "phase": {
+              "type": "string",
+              "enum": [
+                "planned",
+                "running",
+                "done",
+                "stopped",
+                "failed"
+              ]
+            },
+            "source": {
+              "type": "number"
+            },
+            "radio": {
+              "type": "string"
+            },
+            "plan": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The plan for the radio's kind, a line a step: which stage moves first, which way, in what steps."
+            },
+            "scored": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "watched": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "start": {
+              "$ref": "#/definitions/GainSetting"
+            },
+            "tried": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/TuneTry"
+              }
+            },
+            "now": {
+              "$ref": "#/definitions/GainSetting"
+            },
+            "estimateS": {
+              "type": "number"
+            },
+            "elapsedS": {
+              "type": "number"
+            },
+            "best": {
+              "$ref": "#/definitions/GainSetting"
+            },
+            "applied": {
+              "type": "boolean"
+            },
+            "error": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "tune"
+            }
+          },
+          "required": [
+            "applied",
+            "elapsedS",
+            "estimateS",
+            "phase",
+            "plan",
+            "radio",
+            "scored",
+            "source",
+            "start",
+            "tried",
+            "type",
+            "watched"
           ]
         },
         {
@@ -4328,6 +4482,48 @@
           "additionalProperties": false
         }
       ]
+    },
+    "GainCmp": {
+      "type": "object",
+      "properties": {
+        "diff": {
+          "type": "number"
+        },
+        "se": {
+          "type": "number"
+        },
+        "incumbent": {
+          "type": "number"
+        },
+        "candidate": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "diff",
+        "se",
+        "incumbent",
+        "candidate"
+      ],
+      "additionalProperties": false,
+      "description": "How a candidate gain compared with the one it would replace, over the rounds: `diff` (candidate less incumbent, 0–100 points) and its standard error `se`."
+    },
+    "GainSetting": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "items": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "maxItems": 2
+      },
+      "description": "A gain as set: each knob (`lna`, `mixer`, `vga`, `amp`, `pga`; `step`: an Airspy table's; `gain`: the overall dB) and its value."
     },
     "HeardCode": {
       "type": "object",
@@ -7091,10 +7287,28 @@
             "number",
             "null"
           ]
+        },
+        "colorCode": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "network": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "ran": {
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
-      "description": "A site's identity (NAC, WACN, System ID are hex on the air): what a site in the config expects (absent: any), and what a control channel said of itself in status and the survey (absent: not heard yet). Compare with `!= null`."
+      "description": "A site's identity (NAC, WACN, System ID are hex on the air): what a site in the config expects (absent: any), and what a control channel said of itself in status and the survey (absent: not heard yet). Compare with `!= null`. P25 states nac…site; SmartNet sysId, site; DMR colorCode (Tier III also network, site, as sent); NXDN ran (Type-C also sysId, its system, and site)."
     },
     "SiteStatus": {
       "type": "object",
@@ -7114,6 +7328,13 @@
             "number",
             "null"
           ]
+        },
+        "source": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The source (its index) its control channel is received on; null while none is open."
         },
         "identity": {
           "$ref": "#/definitions/SiteIdentity"
@@ -7210,6 +7431,7 @@
         "name",
         "nowS",
         "controlChannelHz",
+        "source",
         "identity",
         "good",
         "bad",
@@ -9742,6 +9964,95 @@
         },
         {
           "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "number"
+            },
+            "systems": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Score only these systems (short names); the radio's others are watched and guarded by `protect` (points)."
+            },
+            "protect": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sliceS": {
+              "type": "number"
+            },
+            "settleS": {
+              "type": "number"
+            },
+            "rounds": {
+              "type": "number"
+            },
+            "maxSteps": {
+              "type": "number"
+            },
+            "margin": {
+              "type": "number"
+            },
+            "mode": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "linearity",
+                "sensitivity",
+                "manual",
+                null
+              ],
+              "description": "An Airspy's or HydraSDR's: search this gain mode instead."
+            },
+            "try": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/GainSetting"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Compare this one setting with the radio's, and nothing else."
+            },
+            "apply": {
+              "type": "boolean"
+            },
+            "check": {
+              "type": "boolean",
+              "description": "Only say what it would do: answered with a `tune` of phase `planned`."
+            },
+            "type": {
+              "type": "string",
+              "const": "tuneGain"
+            }
+          },
+          "required": [
+            "source",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tuneStop"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
           "properties": {
             "type": {
               "type": "string",
@@ -10414,6 +10725,99 @@
           "additionalProperties": false
         }
       ]
+    },
+    "TuneSystemFigures": {
+      "type": "object",
+      "properties": {
+        "system": {
+          "type": "string"
+        },
+        "scored": {
+          "type": "boolean",
+          "description": "Scored, not only watched."
+        },
+        "controlPct": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "voiceLostPct": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "phaseErr": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "snrDb": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "required": [
+        "system",
+        "scored",
+        "controlPct"
+      ],
+      "additionalProperties": false,
+      "description": "One system's figures in a comparison: [incumbent, candidate]."
+    },
+    "TuneTry": {
+      "type": "object",
+      "properties": {
+        "candidate": {
+          "$ref": "#/definitions/GainSetting"
+        },
+        "against": {
+          "$ref": "#/definitions/GainSetting"
+        },
+        "cmp": {
+          "$ref": "#/definitions/GainCmp",
+          "description": "None: refused (`why`)."
+        },
+        "kept": {
+          "type": "boolean"
+        },
+        "why": {
+          "type": "string"
+        },
+        "systems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TuneSystemFigures"
+          }
+        },
+        "clipPct": {
+          "type": "number"
+        },
+        "finalCheck": {
+          "type": "boolean",
+          "description": "The best against where it started."
+        }
+      },
+      "required": [
+        "candidate",
+        "against",
+        "kept",
+        "systems",
+        "clipPct"
+      ],
+      "additionalProperties": false
     },
     "UnitName": {
       "type": "object",

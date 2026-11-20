@@ -8,14 +8,14 @@ import { formatMhz, systemColor } from "../config.ts";
 import { callsQuery, editTalkgroup, nameUnit, radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
 import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "../NameFields.tsx";
 import { originText } from "../origins.ts";
-import { isPattern, ownUnitName } from "../units.ts";
+import { isPattern, ownUnitName, unitIdMatches } from "../units.ts";
 import { BackBar, Bipartite, Card, Choice, Fig, Figs, Heatmap, HeatStrip, Histogram, Info, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
 import type { CallEntry, CipherSeen, LengthHistogram, Origin, OutOfBandRow, RadioResult, TgRow, UnitRow } from "../protocol.ts";
 import { playable, playNow } from "../listen.ts";
-import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
+import { ActiveCalls, aliasOf, Log, unitIdOf } from "./Calls.tsx";
 import { Tones } from "./Tones.tsx";
-import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
+import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, scoped, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
 
 type Hours = "24" | "168";
 const HOURS: { v: Hours; label: string }[] = [
@@ -24,15 +24,20 @@ const HOURS: { v: Hours; label: string }[] = [
 ];
 
 /** Why calls weren't recorded (and were), in the order shown; `at`: the part of the system's page listing them. */
+/** What became of a site's or channel's copies of calls: recorded, or why not (`calls/why/<k>`); "monitored" is what's left of `calls/started`. */
 const REASONS: { k: string; label: string; color: string; hint: string; at?: string }[] = [
   { k: "recorded", label: "Recorded", color: "var(--series-1)", hint: "" },
   { k: "monitored", label: "Followed only", color: "var(--series-3)", hint: "Followed, not recorded" },
   { k: "ignored", label: "Ignored", color: "var(--muted-mark)", hint: "Set to Ignore in the talkgroup file" },
   { k: "encrypted", label: "Encrypted", color: "var(--series-6)", hint: "Encrypted calls are off" },
-  { k: "unknown_tg", label: "Not in file", color: "var(--series-4)", hint: "Unknown talkgroups are off" },
-  { k: "no_recorder", label: "No recorder", color: "var(--critical)", hint: "All recorders busy" },
-  { k: "no_source", label: "Out of band", color: "var(--serious)", hint: "No source covers the frequency: which ones", at: OUT_OF_BAND },
+  { k: "unknownTg", label: "Not in file", color: "var(--series-4)", hint: "Unknown talkgroups are off" },
+  { k: "noRecorder", label: "No recorder", color: "var(--critical)", hint: "All recorders busy" },
+  { k: "noSource", label: "Out of band", color: "var(--serious)", hint: "No source covers the frequency: which ones", at: OUT_OF_BAND },
+  { k: "noFrequency", label: "No channel table", color: "var(--series-5)", hint: "Granted on a channel never turned into a frequency" },
 ];
+
+/** A reason's series under one scope. */
+const reasonKey = (k: string) => (k === "recorded" ? "calls/recorded" : `calls/why/${k}`);
 
 const hourLabel = (hours: number) => (i: number) => {
   const t = (Math.floor(Date.now() / 3600_000) - (hours - 1 - i)) * 3600;
@@ -116,9 +121,14 @@ function unitNameHint(mode: string, heard: string | undefined): string | undefin
 
 // ── the system ───────────────────────────────────────────────────────────────
 
-function Reasons({ name, range, health }: { name: string; range: "24h" | "7d"; health: Health }) {
-  const hist = useHistory(REASONS.map((r) => K.sys(name, `why/${r.k}`)), range, 48);
-  const counts = REASONS.map((r) => Math.round(total(hist?.[K.sys(name, `why/${r.k}`)]) ?? 0));
+function Reasons({ x, range, health }: { x: DashSystem; range: "24h" | "7d"; health: Health }) {
+  const name = x.name;
+  // Every site's and channel's copies, added up.
+  const counted = REASONS.filter((r) => r.k !== "monitored");
+  const hist = useHistory([...scoped(x.scopes, "calls/started"), ...counted.flatMap((r) => scoped(x.scopes, reasonKey(r.k)))], range, 48);
+  const of = (key: string) => scoped(x.scopes, key).reduce((a, k) => a + (total(hist?.[k]) ?? 0), 0);
+  const told = counted.reduce((a, r) => a + of(reasonKey(r.k)), 0);
+  const counts = REASONS.map((r) => Math.round(r.k === "monitored" ? Math.max(0, of("calls/started") - told) : of(reasonKey(r.k))));
   const sum = counts.reduce((a, b) => a + b, 0);
   return (
     <Card title="Call outcomes" level={health.level} why={health.why} onWhy={goTo(health)}>
@@ -247,7 +257,7 @@ function Talkgroups({ sys, rows, hours }: { sys: DashSystem; rows: TgRow[]; hour
 function Units({ s, sys, rows, total: n }: { s: AppState; sys: DashSystem; rows: UnitRow[]; total: number }) {
   const [q, setQ] = useState("");
   const f = q.trim().toLowerCase();
-  const shown = rows.filter((r) => !f || String(r.unit).includes(f) || (aliasOf(s, sys.name, r.unit) ?? r.alias).toLowerCase().includes(f));
+  const shown = rows.filter((r) => !f || unitIdMatches(s.mdcUnits[sys.name], r.unit, f) || (aliasOf(s, sys.name, r.unit) ?? r.alias).toLowerCase().includes(f));
   return (
     <Card title={`Radios (${compact(n)})`} actions={<input className="search" placeholder="Find a radio…" value={q} onChange={(e) => setQ(e.target.value)} />}>
       <div className="table-wrap tall">
@@ -267,7 +277,7 @@ function Units({ s, sys, rows, total: n }: { s: AppState; sys: DashSystem; rows:
               return (
                 <tr key={r.unit} onClick={() => setView("radio", sys.name, "unit", r.unit)}>
                   <td>
-                    {alias ? <b>{alias}</b> : null} <span className="mono muted">{r.unit}</span>
+                    {alias ? <b>{alias}</b> : null} <span className="mono muted">{unitIdOf(s, sys.name, r.unit)}</span>
                     {r.new && <span className="badge new">NEW</span>}
                   </td>
                   <td className="mono">{r.aff ?? "—"}</td>
@@ -294,7 +304,7 @@ function Network({ s, sys, tgs, units }: { s: AppState; sys: DashSystem; tgs: Tg
   const tgTop = [...tgSet].sort((a, b) => b[1] - a[1]).slice(0, 14);
   const name = (tg: number) => tgs.find((r) => r.tg === tg)?.alphaTag || String(tg);
   const left: Node[] = tgTop.map(([tg, n]) => ({ id: `t${tg}`, label: name(tg), weight: n }));
-  const right: Node[] = top.map((u) => ({ id: `u${u.unit}`, label: aliasOf(s, sys.name, u.unit) || u.alias || String(u.unit), weight: u.tx }));
+  const right: Node[] = top.map((u) => ({ id: `u${u.unit}`, label: aliasOf(s, sys.name, u.unit) || u.alias || unitIdOf(s, sys.name, u.unit), weight: u.tx }));
   const edges = top.flatMap((u) => u.tgs.filter(([tg]) => tgSet.has(tg) && tgTop.some((t) => t[0] === tg)).map(([tg, n]) => ({ a: `t${tg}`, b: `u${u.unit}`, w: n })));
   if (left.length < 2 || right.length < 2) return null;
   return (
@@ -426,7 +436,7 @@ function SystemView({ s, sys, focus }: { s: AppState; sys: DashSystem; focus?: s
       </div>
       <ActiveCalls s={s} system={sys.name} />
       <div className="columns">
-        <Reasons name={sys.name} range={hours === "24" ? "24h" : "7d"} health={systemRadioHealth(s, sys)} />
+        <Reasons x={sys} range={hours === "24" ? "24h" : "7d"} health={systemRadioHealth(s, sys)} />
         <Lengths h={lenR?.histogram} />
       </div>
       <OutOfBand s={s} sys={sys} rows={freqsR?.outOfBand ?? []} hours={h} focus={focus === OUT_OF_BAND} />
@@ -510,7 +520,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
               {talkers.map((t) => (
                 <li key={t.unit} className="opens" onClick={() => setView("radio", sys.name, "unit", t.unit)}>
                   <button className="linkish">
-                    {aliasOf(s, sys.name, t.unit) ?? (t.alias || t.unit)}
+                    {aliasOf(s, sys.name, t.unit) ?? (t.alias || unitIdOf(s, sys.name, t.unit))}
                   </button>
                   <span className="bar" style={{ width: `${(t.n / maxN) * 100}%` }} />
                   <b className="mono">{t.n}</b>
@@ -530,7 +540,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
               <div className="row">
                 {(r.affiliated ?? []).map((a) => (
                   <button key={a.unit} className="chip" onClick={() => setView("radio", sys.name, "unit", a.unit)}>
-                    {aliasOf(s, sys.name, a.unit) ?? (a.alias || a.unit)}
+                    {aliasOf(s, sys.name, a.unit) ?? (a.alias || unitIdOf(s, sys.name, a.unit))}
                   </button>
                 ))}
               </div>
@@ -648,7 +658,8 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
   const r = usePolled(`unit:${sys.name}:${unit}`, () => radioQuery({ what: "unit", system: sys.name, key: unit }), running(s) ? 15_000 : 0) as RadioResult | null;
   const row = r?.row as UnitRow | null | undefined;
   if (!r) return <p className="empty">Loading…</p>;
-  if (!row) return <p className="empty">Radio {unit} hasn't been heard on {sys.name}.</p>;
+  const id = unitIdOf(s, sys.name, unit);
+  if (!row) return <p className="empty">Radio {id} hasn't been heard on {sys.name}.</p>;
   const alias = aliasOf(s, sys.name, unit) ?? row.alias;
   const own = ownUnitName(s.unitNames[sys.name], unit);
   const mode = (s.config?.systems.find((x) => x.shortName === sys.name)?.unitNames ?? s.config?.conventional.find((x) => x.shortName === sys.name)?.unitNames)?.mode || "user";
@@ -660,8 +671,8 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
     <div className="stack">
       <section className="hero">
         <div>
-          <h2 className="big">{alias || `Radio ${unit}`}</h2>
-          <Figs inline items={[{ k: "Unit", v: unit }, { k: "First heard", v: clockAt(row.first) }, { k: "Last", v: ago(row.last) }]} />
+          <h2 className="big">{alias || `Radio ${id}`}</h2>
+          <Figs inline items={[{ k: "Unit", v: id }, id !== String(unit) && { k: "Decimal", v: unit }, { k: "First heard", v: clockAt(row.first) }, { k: "Last", v: ago(row.last) }]} />
           {own?.origin && (
             <p className="muted small">
               <OriginNote origin={own.origin} />
@@ -704,9 +715,9 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
             <p className="empty">Not heard transmitting yet.</p>
           ) : (
             <RadialEgo
-              center={{ label: alias ? alias.slice(0, 12) : String(unit), sub: alias ? String(unit) : undefined }}
+              center={{ label: alias ? alias.slice(0, 12) : id, sub: alias ? id : undefined }}
               inner={tgs.map((t) => ({ id: `t${t.tg}`, label: t.alphaTag || String(t.tg), weight: t.n }))}
-              outer={partners.map((p) => ({ id: `u${p.unit}`, label: aliasOf(s, sys.name, p.unit) || p.alias || String(p.unit), weight: p.n }))}
+              outer={partners.map((p) => ({ id: `u${p.unit}`, label: aliasOf(s, sys.name, p.unit) || p.alias || unitIdOf(s, sys.name, p.unit), weight: p.n }))}
               onClick={(n) => (n.id.startsWith("t") ? setView("radio", sys.name, "tg", n.id.slice(1)) : setView("radio", sys.name, "unit", n.id.slice(1)))}
             />
           )}

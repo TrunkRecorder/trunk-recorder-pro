@@ -1,6 +1,6 @@
 //! Device discovery, configuration and shared hardware ownership.
 use crate::{
-    DeviceDescriptor, DirectSampling, GainConfig, Result, TunerKind,
+    Board, DeviceDescriptor, DirectSampling, GainConfig, Result, TunerKind,
     config::{Config, ConfigBuilder, F32Iq, RawIq, SampleMode},
     discovery::Selector,
     maybe_future::{MaybeFutureExt, ready},
@@ -19,8 +19,8 @@ pub struct DeviceInfo {
     pub descriptor: DeviceDescriptor,
     /// Detected tuner family.
     pub tuner: TunerKind,
-    /// Whether USB branding identifies an RTL-SDR Blog V4.
-    pub rtl_sdr_blog_v4: bool,
+    /// The board its USB strings name.
+    pub board: Board,
 }
 
 /// Owned device handle with a separately owned receive stream.

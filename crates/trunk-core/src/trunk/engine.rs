@@ -39,6 +39,7 @@ use super::record::{save_call, RecordedOn, SaveContext};
 use super::recorded::Recorded;
 use super::inband::InBandSpec;
 use super::record::{Concluded, SaveRules};
+use super::tally::FrameCount;
 use super::talkgroups::Talkgroups;
 
 use super::wall::WallEpoch;
@@ -412,14 +413,22 @@ pub struct SiteStatus {
     pub short_name: String,
     /// The site's name ([`SiteConfig::name`]).
     pub site_name: String,
+    /// Its series' key ([`SiteKey::stats_key`]).
+    pub key: String,
+    /// Its protocol, as calls name it (`p25`, `smartnet`…: [`Protocol::kind`]).
+    pub kind: &'static str,
     /// Its control channel's clock.
     pub now_s: f64,
     pub control_channel_hz: Option<u64>,
+    /// The source its control channel is received on (none: hunting with none open).
+    pub source: Option<usize>,
     pub identity: Identity,
     pub good: u64,
     pub bad: u64,
     /// What `good` and `bad` count ([`super::control::ControlChannel::blocks`]).
     pub blocks: &'static str,
+    /// Its control channel's symbol rate, when it counts the air its blocks account for.
+    pub symbol_rate: Option<u32>,
     /// The identity fields its protocol states.
     pub id_fields: &'static [IdField],
     pub modulation: &'static str,
@@ -498,7 +507,10 @@ pub struct ChannelSnapshot {
     pub calls: usize,
     /// A conventional channel: its rows' names, each once.
     pub names: Vec<String>,
+    /// A conventional channel: the code its rows record by, when they share one.
+    pub access: Option<String>,
 }
+
 
 /// What a channel is to the engine ([`ChannelSnapshot`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -537,6 +549,16 @@ struct Want {
     quality: ChannelQuality,
     calls: usize,
     names: Vec<String>,
+    access: Option<String>,
+}
+
+/// A channel whose level [`Engine::report`] measures: its series' key (a control channel's
+/// `…/cc`), source and frequency; conventional, whether it's open.
+struct Leveled {
+    key: String,
+    src: usize,
+    hz: f64,
+    open: Option<bool>,
 }
 
 /// Noise profile slices per source for the dashboard.
@@ -683,6 +705,51 @@ struct Channel {
     noise: f64,
     /// What it received ([`EngineConfig::tapes`]).
     tape: Option<VoiceTape>,
+    /// What each slot with no call on it decoded ([`Unclaimed`]).
+    unclaimed: [Unclaimed; 2],
+}
+
+/// A voice channel's outputs for a slot no call is on, a pre-roll's worth,
+/// each with the talkgroup the voice channel named for it then. A call put
+/// on the slot later (the other TDMA slot of a channel already open) takes
+/// the latest not named for another talkgroup, as a new channel's pre-roll
+/// gives it its start: the control channel tells of a grant some time after
+/// the voice began.
+#[derive(Default)]
+struct Unclaimed {
+    outs: VecDeque<(u64, Option<u32>, TrackerOut)>,
+    /// Channel samples decoded, and how many of them it keeps.
+    pos: u64,
+    keep: u64,
+}
+
+impl Unclaimed {
+    fn new(keep: u64) -> Self {
+        Unclaimed { keep, ..Default::default() }
+    }
+
+    /// `n` more channel samples decoded.
+    fn advance(&mut self, n: usize) {
+        self.pos += n as u64;
+        while self.outs.front().is_some_and(|(at, _, _)| at + self.keep < self.pos) {
+            self.outs.pop_front();
+        }
+    }
+
+    fn push(&mut self, talkgroup: Option<u32>, o: TrackerOut) {
+        if self.keep > 0 {
+            self.outs.push_back((self.pos, talkgroup, o));
+        }
+    }
+
+    /// What a call on `talkgroup` takes: the latest outputs named for it, or
+    /// for none yet (a transmission joined late).
+    fn claim(&mut self, talkgroup: u32) -> impl Iterator<Item = TrackerOut> {
+        let n = self.outs.iter().rev().take_while(|(_, tg, _)| tg.is_none_or(|g| g == talkgroup)).count();
+        let outs = std::mem::take(&mut self.outs);
+        let skip = outs.len() - n;
+        outs.into_iter().skip(skip).map(|(_, _, o)| o)
+    }
 }
 
 /// A call on a voice channel's slot, and the talkgroup it was granted for.
@@ -966,21 +1033,28 @@ impl Radio {
             t.run(iq, *params, slots, squelch);
         }
         ch.voice.set_params(params);
-        // Vocode only the slots somebody is recording.
         ch.voice.listen(ch.calls.map(|c| c.map(|c| c.talkgroup)));
         let mut out = Vec::new();
         ch.voice.push(iq, &mut out);
+        for u in &mut ch.unclaimed {
+            u.advance(iq.len());
+        }
         if flush {
             ch.voice.flush(&mut out);
         }
         tout.extend(out.into_iter().map(|v| (v.slot as usize, v.out)));
     }
 
-    /// Hand a channel's outputs to the calls on its slots.
-    fn route(ch: &Channel, tout: &mut Vec<(usize, TrackerOut)>, pending: &mut Vec<(u16, CallId, TrackerOut)>) {
+    /// Hand a channel's outputs to the calls on its slots (a slot's with
+    /// none, kept for one put on it later).
+    fn route(ch: &mut Channel, tout: &mut Vec<(usize, TrackerOut)>, pending: &mut Vec<(u16, CallId, TrackerOut)>) {
         for (slot, o) in tout.drain(..) {
-            if let Some(c) = ch.calls[slot & 1] {
-                pending.push((ch.site, c.id, o));
+            match ch.calls[slot & 1] {
+                Some(c) => pending.push((ch.site, c.id, o)),
+                None => {
+                    let tg = ch.voice.air(slot as u8 & 1).talkgroup;
+                    ch.unclaimed[slot & 1].push(tg, o);
+                }
             }
         }
     }
@@ -1009,6 +1083,8 @@ impl SysHost<'_> {
         if let Some(ch) = rx.channels.get_mut(&key) {
             if ch.voice.kind() == kind {
                 ch.calls[slot] = Some(OnSlot::of(call));
+                // What the slot already heard of it.
+                r.pending.extend(ch.unclaimed[slot].claim(call.talkgroup).map(|o| (self.site, call.id, o)));
                 return;
             }
             // The frequency carries another kind of call now (P25 Dynamic
@@ -1049,12 +1125,14 @@ impl SysHost<'_> {
         let tape = r.tape_sink.on().then(|| VoiceTape::new(spec, call.freq_hz as f64));
         let mut calls = [None, None];
         calls[slot] = Some(OnSlot::of(call));
-        let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tuning, meter: ChannelFilter::new(rate), noise, tape };
+        let keep = (r.preroll_s * rate) as u64;
+        let unclaimed = [Unclaimed::new(keep), Unclaimed::new(keep)];
+        let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tuning, meter: ChannelFilter::new(rate), noise, tape, unclaimed };
         // Pre-roll: decode the replayed air now.
         let params = rx.voice_params.get(self.site as usize).copied().unwrap_or_default();
         rx.tout.clear();
         Radio::run_channel(&mut ch, &pre, &params, &mut rx.tout, false);
-        Radio::route(&ch, &mut rx.tout, &mut r.pending);
+        Radio::route(&mut ch, &mut rx.tout, &mut r.pending);
         rx.channels.insert(key, ch);
     }
 
@@ -1276,6 +1354,14 @@ impl Trunk {
     }
 
     /// Hunting: the control channel open, its source and frequency.
+    /// The source its control channel is received on (none: searching).
+    fn control_source(&self) -> Option<usize> {
+        match &self.listening {
+            Listening::Watching(carriers) => carriers.iter().find(|c| Some(c.hz.round() as u64) == self.cc_hz).map(|c| c.source),
+            _ => self.hunted().map(|(src, _)| src),
+        }
+    }
+
     fn hunted(&self) -> Option<(usize, f64)> {
         match (&self.listening, self.cc_hz) {
             (Listening::Hunting(h), Some(hz)) => Some((h.source, hz as f64)),
@@ -1527,21 +1613,25 @@ impl Trunk {
 
     fn status(&self, radio: &Radio, sys: &SystemConfig) -> SiteStatus {
         // (One lock at a time: a temporary guard lasts the whole expression.)
-        let (modulation, blocks, protocol) = {
+        let (modulation, blocks, symbol_rate, protocol) = {
             let c = self.cc();
-            (c.modulation(), c.blocks(), c.status())
+            (c.modulation(), c.blocks(), c.symbol_rate(), c.status())
         };
         SiteStatus {
             site: self.site,
             system: self.system,
             short_name: sys.short_name.clone(),
             site_name: self.cfg.name.clone(),
+            key: sys.site_key(&self.cfg).stats_key(),
+            kind: self.cfg.protocol.kind(),
             now_s: self.now_s,
             control_channel_hz: self.cc_hz,
+            source: self.control_source(),
             identity: self.identity.clone(),
             good: self.good,
             bad: self.bad,
             blocks,
+            symbol_rate,
             id_fields: self.id_fields,
             modulation,
             active_calls: self.calls.calls.len(),
@@ -1838,17 +1928,18 @@ impl Core {
                 quality: c.quality,
                 calls: c.calls,
                 names: c.names.iter().map(|n| n.to_string()).collect(),
+                access: c.access,
             })
             .collect();
         (control, conv)
     }
 
     /// [`Engine::report`]'s part only the engine knows: each trunked system's
-    /// calls and control channel decoding, and the engine's counts. Returns
-    /// the hunted control channels (system key, source, Hz), whose level the
-    /// sources measure.
-    fn report_systems(&self, sink: &mut dyn Sink) -> Vec<(String, usize, f64)> {
-        let mut hunted = Vec::new();
+    /// calls, each site's control channel decoding and copies of calls, each
+    /// conventional channel's, and the engine's counts. Returns the channels
+    /// whose level the sources measure ([`Leveled`]).
+    fn report_systems(&self, sink: &mut dyn Sink) -> Vec<Leveled> {
+        let mut levels = Vec::new();
         // Calls per trunked system, all its sites'.
         for (i, s) in self.systems.iter().enumerate().filter(|(_, s)| !s.cfg.is_conventional()) {
             let calls = self.trunks.iter().filter(|t| t.system as usize == i).flat_map(|t| t.calls.calls.iter());
@@ -1857,9 +1948,13 @@ impl Core {
             k.gauge("active", active as f64);
             k.gauge("recording", recording as f64);
         }
-        for t in self.trunks.iter().filter(|t| t.running()) {
+        for t in self.trunks.iter() {
             let key = self.systems[t.system as usize].cfg.site_key(&t.cfg).stats_key();
             let mut k = Scoped::new(sink, key.clone());
+            t.calls.tally.report(&mut k);
+            if !t.running() {
+                continue;
+            }
             let mut al = Scoped::new(&mut k, "aliasLc");
             for (name, n) in ["protected", "clear", "fragment", "mac"].iter().zip(t.alias_lc) {
                 al.counter(name, n);
@@ -1871,13 +1966,20 @@ impl Core {
             // What its protocol measures (framing, eye opening, deviation…).
             t.cc().report(&mut cc);
             if let Some((src, hz)) = t.hunted() {
-                hunted.push((key, src, hz));
+                levels.push(Leveled { key: format!("{key}/cc"), src, hz, open: None });
             }
+        }
+        for c in self.conv.channels() {
+            let key = metrics::channel_key(&self.systems[c.system].cfg.short_name, c.freq_hz);
+            let mut k = Scoped::new(sink, key.clone());
+            c.tally.report(&mut k);
+            k.gauge("open", c.open as u8 as f64);
+            levels.push(Leveled { key, src: c.source, hz: c.freq_hz, open: Some(c.open) });
         }
         sink.gauge("eng/recording", self.radio.recordings.len() as f64);
         sink.gauge("eng/channels", (self.radio.channel_count() + self.conv.open_count()) as f64);
         sink.gauge("eng/recorders", self.radio.max_recorders as f64);
-        hunted
+        levels
     }
 
     /// Replace the talkgroup table of the system named `short_name` while
@@ -2013,6 +2115,7 @@ impl Core {
                 ConvOut::Call(e) => self.call_event(e),
                 ConvOut::Event(e) => self.events.push(e),
                 ConvOut::End { call, rec, on, tune_ref } => {
+                    self.conv.copy_end(&call, FrameCount::of(&rec.frames.errors));
                     // (A call not recorded — an ignored talkgroup, say — took in no audio: nothing to save, nothing to score.)
                     if call.recording {
                         if tune_ref {
@@ -2278,7 +2381,7 @@ impl Core {
 
     /// A call ended: save it, or (multi-site) the best of its copies once the last one ends. What that tells.
     fn conclude(&mut self, call: &Call) -> Option<Event> {
-        let mut rest = Vec::new();
+        let (mut rest, mut decoded) = (Vec::new(), FrameCount::default());
         let held = self.radio.recordings.remove(&call.id).map(|mut r| {
             // What it ended on: news now, before the call is trimmed.
             let news = r.rec.finish();
@@ -2286,6 +2389,7 @@ impl Core {
             self.radio.free_nums.push(r.on.recorder);
             // AutoTune: every call (each site's copy, encrypted ones too).
             self.radio.score_call(r.on.source, call, r.rec.freq_error_hz());
+            decoded = FrameCount::of(&r.rec.frames.errors);
             // (A call whose record never learned it was decrypted, because it was already gone when the news came, is saved
             // as the decrypted call it is.)
             let mut call = call.clone();
@@ -2298,6 +2402,10 @@ impl Core {
             h.trim(self.systems.get(h.call.system as usize).map_or(0.0, |s| s.cfg.save.min_transmission_s));
             h
         });
+        // Its site's copies: every one, saved or not, with all it decoded.
+        if let Some(t) = call.site.and_then(|s| self.trunks.get_mut(s as usize)) {
+            t.calls.tally.copy_end(call, decoded);
+        }
         // (As it is saved: decrypted, though its record learned so only after it had gone.)
         let decrypted = held.as_ref().map_or(call, |h| &h.call).decrypted_voice(false);
         self.tone_patterns(call, rest, decrypted, call.last_audio_s);
@@ -2474,6 +2582,7 @@ impl Engine {
         p.iter().map(|&v| metrics::bin_dbfs(v, s.chz.fft_size())).collect()
     }
 
+
     /// Every channel listened to now — control channels, voice channels,
     /// conventional channels — with its power and the floor under it. About
     /// a millisecond's work: for the dashboard, once a second at most. (What
@@ -2495,6 +2604,7 @@ impl Engine {
                 quality: w.quality,
                 calls: w.calls,
                 names: w.names.clone(),
+                access: w.access.clone(),
             }
         };
         let (mut control_out, mut conv_out): (Vec<Option<ChannelSnapshot>>, Vec<Option<ChannelSnapshot>>) = (control.iter().map(|_| None).collect(), conv.iter().map(|_| None).collect());
@@ -2540,10 +2650,10 @@ impl Engine {
             }
             k.gauge("tune", s.tune_ppm);
         }
-        let hunted = self.core().report_systems(sink);
-        // A hunted control channel's level above the floor under it.
-        for (key, src, hz) in hunted {
-            let r = self.shared.rx[src].lock().unwrap();
+        let levels = self.core().report_systems(sink);
+        // Each channel's level, and the floor under it.
+        for l in levels {
+            let r = self.shared.rx[l.src].lock().unwrap();
             let s = &r.src;
             if s.chz.sample_position() == 0 {
                 continue;
@@ -2551,12 +2661,17 @@ impl Engine {
             let n = s.chz.fft_size();
             let mut p = vec![0.0f64; PROFILE_SLICES];
             s.chz.noise_profile(&mut p);
-            let (sig, noise) = (metrics::bin_dbfs(s.chz.band_power(s.offset(hz), CC_HALF_HZ), n), metrics::bin_dbfs(slice_at(&p, s, hz), n));
-            let mut k = Scoped::new(sink, key);
-            let mut cc = Scoped::new(&mut k, "cc");
-            cc.gauge("signal", sig);
-            cc.gauge("noise", noise);
-            cc.gauge("snr", sig - noise);
+            let (sig, noise) = (metrics::bin_dbfs(s.chz.band_power(s.offset(l.hz), CC_HALF_HZ), n), metrics::bin_dbfs(slice_at(&p, s, l.hz), n));
+            let mut k = Scoped::new(sink, l.key);
+            k.gauge("noise", noise);
+            match l.open {
+                // A control channel sends without a pause; a conventional one, while open.
+                None | Some(true) => {
+                    k.gauge("signal", sig);
+                    k.gauge("snr", sig - noise);
+                }
+                Some(false) => k.gauge("closed", sig),
+            }
         }
     }
     /// Replace the talkgroup table of the system named `short_name` (trunked
@@ -2780,6 +2895,28 @@ mod tests {
     use super::*;
     use super::super::calls::Voice;
     use super::super::voice::VoiceKind;
+
+    /// A call put on a slot later takes what the slot heard of it: the
+    /// latest outputs not named for another talkgroup, a pre-roll's worth.
+    #[test]
+    fn a_slot_keeps_what_it_heard_for_a_call_put_on_it() {
+        let info = |source: u32| TrackerOut::Info { source: Some(source), flags: super::super::calls::Flags::default() };
+        let mut u = Unclaimed::new(100);
+        u.push(Some(7), info(1));
+        u.advance(50);
+        u.push(Some(9), info(2));
+        u.push(None, info(3));
+        u.push(Some(9), info(4));
+        assert_eq!(u.claim(9).collect::<Vec<_>>(), [info(2), info(3), info(4)], "not the other talkgroup's");
+        assert_eq!(u.claim(9).count(), 0, "taken once");
+        u.push(None, info(5));
+        u.advance(101);
+        u.push(None, info(6));
+        assert_eq!(u.claim(9).collect::<Vec<_>>(), [info(6)], "a pre-roll's worth");
+        let mut off = Unclaimed::new(0);
+        off.push(None, info(1));
+        assert_eq!(off.claim(9).count(), 0, "no pre-roll: nothing kept");
+    }
 
     #[test]
     fn pins_choose_the_first_allowed_source_that_reaches() {
@@ -3012,6 +3149,12 @@ mod tests {
     /// [`two_sites`], east's copy keeping audio for only `east_audio` of its
     /// frames, calls kept from `min_call_s`, and the systems preferring `system_prefers`.
     fn two_sites_with(east_good: usize, prefer: &str, dedupe: bool, east_audio: usize, min_call_s: f64, system_prefers: &str) -> (Vec<Event>, [CallId; 3]) {
+        let (mut e, ids) = two_sites_core(east_good, prefer, dedupe, east_audio, min_call_s, system_prefers);
+        (e.drain_events(), ids)
+    }
+
+    /// [`two_sites_with`]'s engine, its events not yet taken.
+    fn two_sites_core(east_good: usize, prefer: &str, dedupe: bool, east_audio: usize, min_call_s: f64, system_prefers: &str) -> (Core, [CallId; 3]) {
         use super::super::frames::{Codec, VoiceFrame};
         let tgs: Talkgroups = [(101, super::super::talkgroups::Talkgroup { number: 101, preferred_site: prefer.into(), ..Default::default() })].into_iter().collect();
         let save = SaveRules { normalize: false, min_call_s, ..Default::default() };
@@ -3046,7 +3189,34 @@ mod tests {
             tick(&mut e, i, 10.0);
             e.emit_call_events();
         }
-        (e.drain_events(), ids)
+        (e, ids)
+    }
+
+    /// Each site counts its own copy of a call heard on two, with the frames it decoded,
+    /// whichever copy is saved.
+    #[test]
+    fn each_site_counts_its_own_copy_and_its_frames() {
+        let (e, _) = two_sites_core(80, "", true, 100, 0.0, "");
+        let imbe = |site: usize| e.trunks[site].calls.tally.voice(super::super::frames::Codec::Imbe);
+        for site in [0, 1, 2] {
+            let t = &e.trunks[site].calls.tally;
+            assert_eq!((t.started, t.recorded), (1, 1), "site {site}");
+        }
+        assert_eq!((imbe(0).frames, imbe(0).bad), (100, 20), "east's copy, not saved: its own frames");
+        assert_eq!((imbe(1).frames, imbe(1).bad), (100, 0), "west's, saved");
+        // As series, under each site's key.
+        #[derive(Default)]
+        struct Counters(std::collections::BTreeMap<String, u64>);
+        impl Sink for Counters {
+            fn counter(&mut self, name: &str, total: u64) {
+                self.0.insert(name.to_string(), total);
+            }
+            fn gauge(&mut self, _: &str, _: f64) {}
+        }
+        let mut c = Counters::default();
+        e.report_systems(&mut c);
+        assert_eq!((c.0.get("sys/dc/site/east/calls/started"), c.0.get("sys/dc/site/east/voice/imbe/bad")), (Some(&1), Some(&20)));
+        assert_eq!(c.0.get("sys/dc/site/west/voice/imbe/frames"), Some(&100));
     }
 
     /// A frequency that carried a Phase 1 call is granted for Phase 2 (P25
