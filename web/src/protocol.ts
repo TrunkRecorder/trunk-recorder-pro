@@ -1291,6 +1291,8 @@ export interface PluginSchema {
   "x-system"?: boolean;
   /** A list of systems' short names: drawn as the systems to tick. */
   "x-systems"?: boolean;
+  /** (On a plugin's settings, `config`.) The same for every system: systems don't override them, and its card isn't on theirs. */
+  "x-global"?: boolean;
   /** A list of tones typed in (each `{pattern, tonesHz, digits, lengthsS, toleranceHz}`, as a signal's): drawn as tones to build, with ▶. */
   "x-tones"?: boolean;
   /** A list of signals, as `system:ID`: drawn as every system's signals to tick. */

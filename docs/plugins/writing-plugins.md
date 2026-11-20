@@ -265,6 +265,12 @@ that system's overrides applied, and use `Setup::config` only for what isn't any
 uploader that builds one client per server and starts its `CallQueue` with `start_by`, keyed by
 server, handles it all.
 
+A plugin whose settings mean the same for every system (one connection to a broker, one set of
+rules) marks them `"x-global": true` with `#[schemars(extend("x-global" = true))]` on `Config`.
+Systems then don't show its settings to override, the recorder ignores any already saved (with a
+warning in the log), and its card isn't on a system's card unless it has a `SystemConfig`. Choosing
+systems for it is then a setting of its own, such as an `"x-systems"` list.
+
 ### Settings and the form
 
 Derive `JsonSchema` (and `Serialize`, so defaults appear in the form) on your settings structs, with
@@ -286,7 +292,7 @@ The form understands:
 | `"x-system": true` on a string | A menu of the recorder's systems; follows renames |
 | `"x-required": true` | Must be filled in; until it is, the plugin (or that system) shows as not set up. Mark it with `#[schemars(extend("x-required" = true))]` |
 | array whose items are an `enum` | The choices, to tick |
-| `"x-systems": true` on an array of strings | The recorder's systems, to tick |
+| `"x-systems": true` on an array of strings | The recorder's systems, to tick; follows renames |
 | `"x-talkgroups": true` on an array of strings | Talkgroups, typed as everywhere in the app (spaces, commas or semicolons between; `1000 - 1099` one range), and each checked. `Talkgroups` sets it |
 | `"x-signals": true` on an array of strings | Every system's [signals](../guides/signals.md), to tick, as `system:ID` |
 | `"x-ref": "<list>"` | Items of the top-level array `<list>` (by their `id`, else their `name`): a menu on a string, items to tick on an array. Renaming an item renames what names it |

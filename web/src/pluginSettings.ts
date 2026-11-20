@@ -12,7 +12,7 @@ export function fieldsOf(schema: PluginSchema | undefined): [string, PluginSchem
   return order.filter((k) => props[k]).map((k) => [k, props[k]]);
 }
 
-/** A system was renamed: plugin settings that name it (`x-system` fields) follow. Changes `x`. */
+/** A system was renamed: plugin settings that name it (`x-system` fields, `x-systems` lists) follow. Changes `x`. */
 export function renameSystemRefs(x: Config, from: string, to: string, plugins: PluginInfo[]): void {
   if (!from || from === to) return;
   const walk = (schema: PluginSchema | undefined, v: unknown) => {
@@ -20,6 +20,7 @@ export function renameSystemRefs(x: Config, from: string, to: string, plugins: P
     const obj = v as PluginValues;
     for (const [k, f] of fieldsOf(schema)) {
       if (f["x-system"] && obj[k] === from) obj[k] = to;
+      else if (f["x-systems"] && Array.isArray(obj[k])) obj[k] = (obj[k] as unknown[]).map((n) => (n === from ? to : n));
       else if (f.type === "object") walk(f, obj[k]);
       else if (f.type === "array" && f.items?.type === "object" && Array.isArray(obj[k])) for (const item of obj[k] as unknown[]) walk(f.items, item);
     }

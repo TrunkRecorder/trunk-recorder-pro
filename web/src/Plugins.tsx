@@ -88,9 +88,15 @@ function systemSetUp(m: PluginManifest, values: PluginValues | undefined, inheri
   return fieldsOf(m.system_config).some(([k]) => !emptyValue(values?.[k]) || !emptyValue(inherited?.[k]));
 }
 
+/** Its settings are the same for every system (`x-global`): no system overrides them. */
+const isGlobal = (m: PluginManifest) => !!m.config?.["x-global"];
+
+/** What a copy overrides of the plugin's settings (none, when they're the same for every system). */
+const overrideOf = (m: PluginManifest, copy: PluginValues | undefined): PluginValues => (isGlobal(m) ? {} : copyOverride(copy));
+
 /** …and one copy of it: its own settings, and the plugin's with what it overrides. */
 function copySetUp(m: PluginManifest, copy: PluginValues | undefined, every: PluginValues | undefined): boolean {
-  return systemSetUp(m, copyOwn(copy), every) && missing(m.config, copyOverride(copy), every).length === 0;
+  return systemSetUp(m, copyOwn(copy), every) && missing(m.config, overrideOf(m, copy), every).length === 0;
 }
 
 /** …and every copy of it, when it has several. */
@@ -105,7 +111,7 @@ function pluginNeeds(m: PluginManifest, c: Config, id: string): string[] {
   const every = c.plugins?.[id]?.settings;
   const copies = systemsOf(c).flatMap((x) => x.copies(id));
   const unset = requiredOf(m.config).filter((k) => emptyValue(every?.[k]));
-  return copies.length ? unset.filter((k) => copies.some((v) => emptyValue(copyOverride(v)[k]))) : unset;
+  return copies.length ? unset.filter((k) => copies.some((v) => emptyValue(overrideOf(m, v)[k]))) : unset;
 }
 
 const labelOf = (schema: PluginSchema | undefined, k: string) => schema?.properties?.[k]?.title ?? spell(k);
@@ -566,7 +572,10 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
   const c = s.config;
   if (!c || !s.plugins) return null;
   const sys = systemAt(c, props.system);
-  const plugins = s.plugins.plugins.filter((p) => pluginOn(c, p.id) && p.manifest && (hasFields(p.manifest.system_config) || hasFields(p.manifest.config)));
+  // (One whose settings are the same for every system has nothing here but settings of its own.)
+  const plugins = s.plugins.plugins.filter(
+    (p) => pluginOn(c, p.id) && p.manifest && (hasFields(p.manifest.system_config) || (hasFields(p.manifest.config) && !isGlobal(p.manifest))),
+  );
   // A copy of its own makes sense for a plugin that's told which systems are its.
   const copyable = plugins.filter((p) => hasFields(p.manifest!.system_config));
   if (!sys || !sys.shortName || plugins.length === 0) return null;
@@ -582,7 +591,7 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
         const copies = pluginCopies(sys.plugins?.[p.id]);
         const idOf = (i: number) => `sp-${p.id}-${sys.shortName}${i ? `-${i + 1}` : ""}`;
         return (copies.length ? copies : [undefined]).map((values, i) => {
-          const over = copyOverride(values);
+          const over = overrideOf(m, values);
           const to = destinationOf(m, over);
           return (
             <fieldset className="plugin-group" key={`${p.id}-${i}`}>
@@ -607,7 +616,7 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
                   </Held>
                 </>
               )}
-              {hasFields(m.config) && (
+              {hasFields(m.config) && !isGlobal(m) && (
                 <Held id={`override:${sys.shortName}:${p.id}:${i}`} name={m.name} saved={over} save={(v) => setSystemPluginOverride(props.system, p.id, v, i)} restarts>
                   {(o, change) => <PluginOverride m={m} over={o} every={every} system={sys.shortName} id={`${idOf(i)}-ov`} onChange={change} />}
                 </Held>

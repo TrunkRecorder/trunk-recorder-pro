@@ -241,7 +241,12 @@ impl PluginHost {
                     for (name, entry) in std::mem::take(&mut s.systems) {
                         let (own, merged, unknown) = resolve(m.config.as_ref(), &s.config, entry);
                         for k in unknown {
-                            notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{name}: \"{k}\" isn't one of its settings, so it can't be overridden; ignored") });
+                            let text = if global(m.config.as_ref()) {
+                                format!("{name}: \"{k}\" is overridden, but its settings are the same for every system; ignored")
+                            } else {
+                                format!("{name}: \"{k}\" isn't one of its settings, so it can't be overridden; ignored")
+                            };
+                            notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text });
                         }
                         for f in unset_required(m.config.as_ref(), merged.as_ref().unwrap_or(&s.config)) {
                             note_unset(f, &name);
@@ -570,15 +575,24 @@ impl Drop for PluginHost {
 /// settings it overrides: `{ "apiKey": "…", "override": { "server": "…" } }`.
 pub const OVERRIDE: &str = "override";
 
+/// Whether a plugin's settings (`schema`) are the same for every system
+/// (`"x-global": true`): no system overrides them.
+fn global(schema: Option<&Value>) -> bool {
+    schema.and_then(|s| s.get("x-global")) == Some(&Value::Bool(true))
+}
+
 /// A system's settings for a plugin (`entry`): its own (without
 /// [`OVERRIDE`]); the plugin's (`config`) with what it overrides (None: it
 /// overrides none); and the keys it overrides that the plugin's `schema`
-/// has no setting for (left out).
+/// has no setting for, or all of them when its settings are [`global`] (left out).
 fn resolve(schema: Option<&Value>, config: &Value, mut entry: Value) -> (Value, Option<Value>, Vec<String>) {
     let over = match entry.as_object_mut().and_then(|o| o.remove(OVERRIDE)) {
         Some(Value::Object(o)) if !o.is_empty() => o,
         _ => return (entry, None, Vec::new()),
     };
+    if global(schema) {
+        return (entry, None, over.into_iter().filter(|(_, v)| !v.is_null()).map(|(k, _)| k).collect());
+    }
     let props = schema.and_then(|s| s.get("properties")).and_then(Value::as_object);
     let mut merged = config.as_object().cloned().unwrap_or_default();
     let mut unknown = Vec::new();
@@ -1094,6 +1108,11 @@ mod tests {
         assert_eq!(unknown, ["colour"]);
         assert_eq!(resolve(Some(&schema), &config, json!({ "apiKey": "k" })), (json!({ "apiKey": "k" }), None, vec![]));
         assert_eq!(resolve(Some(&schema), &config, json!({ "apiKey": "k", "override": {} })).1, None);
+        // A plugin whose settings are the same for every system: nothing is overridden.
+        let mut same = schema.clone();
+        same["x-global"] = json!(true);
+        let (own, merged, ignored) = resolve(Some(&same), &config, json!({ "apiKey": "k", "override": { "server": "https://b" } }));
+        assert_eq!((own, merged, ignored), (json!({ "apiKey": "k" }), None, vec!["server".to_string()]));
         // Nothing for the whole recorder: the override is all there is.
         assert_eq!(resolve(Some(&schema), &Value::Null, json!({ "override": { "server": "https://b" } })).1, Some(json!({ "server": "https://b" })));
     }
