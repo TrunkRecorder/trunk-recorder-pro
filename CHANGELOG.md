@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.3.9] — 2026-11-20
+
 - **A newer release, said in the sidebar** (#173, from jlutz33): once a day, and at start, the recorder asks GitHub for
   its latest release; when it's newer than the one running, **v… available** beside the version links to it. Nothing is
   downloaded. On by default; **Check for updates** on the Platform page's Network card (`monitor.checkUpdates`) turns
