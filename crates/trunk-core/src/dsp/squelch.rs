@@ -26,7 +26,7 @@ use num_complex::Complex32;
 use super::fm::AUDIO_RATE;
 
 /// How the gate opens and closes.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SquelchTiming {
     /// The carrier must hold this long before the gate opens, s (a
     /// neighbour keying up splatters for an instant).

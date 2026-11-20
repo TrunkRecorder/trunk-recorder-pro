@@ -195,15 +195,18 @@ The file has no header. Each line is a unit ID and its name:
 # Fire department radios
 1234,Engine 12
 1235,Truck 4
+0x1C13,Medic 13
 /^7(\d{3})$/,Medic $1
 ```
 
-- A plain number names only that radio.
+- A plain number names only that radio. It's decimal: `1013` is radio 1013.
+- A number after `0x` is hex, as MDC1200 IDs are programmed: `0x1C13` is radio 7187. It's kept as
+  the decimal ID, so **Download** writes `7187,Medic 13`, as Trunk Recorder reads it.
 - A pattern between slashes is a regular expression matched against the unit ID. The name can use
   its groups as `$1` or `\1`: the line above names radio 7042 "Medic 042".
 - The first line that matches wins.
 - Lines starting with `#` are skipped, and so are lines whose pattern isn't a valid regular
-  expression.
+  expression or whose ID after `0x` isn't hex (the card counts them as **unreadable**).
 
 Next to **Load CSV…**, a menu chooses which names come first, between this file and the talker
 aliases radios send (below). It is Trunk Recorder's `unitTagsMode`:
