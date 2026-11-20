@@ -1456,7 +1456,9 @@ mod tests {
         assert_eq!((&t["on"], &t["at_unix_ms"], &t["call"]["talkgroup"], &t["call"]["unit_ids"], &t["call"]["not_saved"], &t["call"]["recorder"]), (&json!("call.not_saved"), &json!(1_234_567), &json!(7), &json!([1201]), &json!("silent"), &json!(3)));
         assert!(!t.to_string().contains("SECRET"));
         // Every fact of a call is one the allow-list decided on.
-        let fields: Vec<String> = serde_json::to_value(trunk_app::facts::CallFacts::default()).unwrap().as_object().unwrap().keys().cloned().collect();
+        // (Sorted: a workspace build has serde_json's preserve_order.)
+        let mut fields: Vec<String> = serde_json::to_value(trunk_app::facts::CallFacts::default()).unwrap().as_object().unwrap().keys().cloned().collect();
+        fields.sort();
         let mut listed: Vec<String> = CALL_KEYS.iter().map(|k| k.to_string()).collect();
         listed.sort();
         assert_eq!(fields, listed);
