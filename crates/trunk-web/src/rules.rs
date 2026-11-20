@@ -7,6 +7,7 @@
 use trunk_app::config::usable_half_width;
 use trunk_app::place::{place_sources, Placing, Targets};
 use trunk_app::Config;
+use trunk_core::trunk::{Access, ConvMode};
 use wasm_bindgen::prelude::*;
 
 fn read(json: &str) -> Result<Config, String> {
@@ -249,6 +250,64 @@ pub fn channels_parse(text: &str) -> String {
 #[wasm_bindgen(js_name = channelsWrite)]
 pub fn channels_write(json: &str) -> String {
     serde_json::from_str::<Vec<trunk_app::config::Channel>>(json).map_or_else(|_| String::new(), |c| trunk_app::channels::write(&c))
+}
+
+/// Each conventional mode and what a row of it can say ([`ConvMode`]'s questions), in the order Setup
+/// lists them: JSON `[{ mode, name, codeName?, takesCode, matchesTalkgroup, airNamesTalkgroup, analog,
+/// analogReceiver, hasFm, slotted }]`.
+#[wasm_bindgen(js_name = convModes)]
+pub fn conv_modes() -> String {
+    let modes: Vec<_> = ConvMode::ALL
+        .iter()
+        .map(|&m| {
+            serde_json::json!({
+                "mode": m, "name": m.name(), "codeName": m.code_name(), "takesCode": m.takes_code(),
+                "matchesTalkgroup": m.matches_talkgroup(), "airNamesTalkgroup": m.air_names_talkgroup(), "analog": m.analog(),
+                "analogReceiver": m.has_analog_receiver(), "hasFm": m.has_fm(), "slotted": m.slotted(),
+            })
+        })
+        .collect();
+    serde_json::Value::from(modes).to_string()
+}
+
+/// A row's Code column for `mode` as the recorder reads it ([`Access::parse`]), split into its parts
+/// ([`Access::parts`]): JSON `{ code, slot?, matchTalkgroup? }`, or `{ error }`.
+#[wasm_bindgen(js_name = accessParse)]
+pub fn access_parse(mode: &str, text: &str) -> String {
+    let Some(mode) = ConvMode::parse(mode) else { return serde_json::json!({ "error": format!("unknown mode `{mode}`") }).to_string() };
+    match Access::parse(mode, text) {
+        Ok(a) => access_json(a),
+        Err(e) => serde_json::json!({ "error": e }).to_string(),
+    }
+}
+
+/// Whether two rows of `mode` (each `{ code, slot?, matchTalkgroup? }`) record the same transmissions
+/// ([`Access::same`]: a DCS code and its alias too). A row that doesn't read is the same as none.
+#[wasm_bindgen(js_name = accessSame)]
+pub fn access_same(mode: &str, a_json: &str, b_json: &str) -> bool {
+    let Some(mode) = ConvMode::parse(mode) else { return false };
+    let read = |json: &str| {
+        let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+        let n = |k: &str| v[k].as_u64();
+        Access::join(mode, v["code"].as_str().unwrap_or(""), n("slot").map(|s| s as u8), n("matchTalkgroup").map(|t| t as u32)).ok().flatten()
+    };
+    match (read(a_json), read(b_json)) {
+        (Some(a), Some(b)) => a.same(b),
+        (a, b) => a.is_none() && b.is_none(),
+    }
+}
+
+/// `{ code, slot?, matchTalkgroup? }` for what a row records (none: `{ code: "" }`).
+fn access_json(a: Option<Access>) -> String {
+    let (code, slot, tg) = a.map_or((String::new(), None, None), Access::parts);
+    let mut v = serde_json::json!({ "code": code });
+    if let Some(s) = slot {
+        v["slot"] = s.into();
+    }
+    if let Some(t) = tg {
+        v["matchTalkgroup"] = t.into();
+    }
+    v.to_string()
 }
 
 /// Why a SmartNet band plan can't be used, or none.

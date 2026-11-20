@@ -223,11 +223,12 @@ So each extra channel costs an M-point inverse FFT, not another full-rate filter
 | NXDN96 | 6,250 Hz |
 | SmartNet control channel | 5,000 Hz |
 | SmartNet analog voice | 7,000 Hz |
-| Conventional FM / AM | 7,000 Hz, widened or narrowed with the channel's `bandwidthKhz` |
+| Conventional FM / AM / auto | 7,000 Hz, widened or narrowed with the channel's `bandwidthKhz` (`AnalogTuning::head_cutoff_hz`: its passband + 1.5 kHz) |
 
 A trunked voice channel opens at `VoiceKind::cutoff_hz()`; a conventional channel's widths
 (detector band, head cutoff, carrier meter) are worked out once per frequency by
-`ChannelShape::of`, a digital one's head as a trunked channel of its kind.
+`ChannelShape::of`, a digital one's head as a trunked channel of its kind, an auto one's as its
+analog receiver's (the digital receivers' matched filters take the wider band).
 
 **Pre-roll.** Every block's full spectrum is kept in a ring holding
 `max(prerollS, conventional pre-roll 0.3 s, 0.1 s)` of history (1 s by default; about 196
@@ -404,6 +405,24 @@ learned and left out (`LineWatch`).
    DMR and NXDN channels name talkgroups by its own system's talkgroup file. It is still its own
    call lifecycle (a call opens on energy or a tone and ends with its carrier), not a grant source
    for `CallManager`.
+
+
+**Modes.** A channel's `ConvMode` is the decoder it opens (`ConvMode::kind`), and what a row of
+it can say follows from that decoder's receivers (`VoiceKind::receivers`): analog or not, an FM
+receiver (tones), an analog one (bandwidth, `demod`), a talkgroup to match, a slot
+(`ConvMode::slotted`), and what tells its rows apart (`code_name`; none for AM and auto). Setup
+asks the same methods through trunk-web (`convModes`), and reads a row's code with
+`Access::parse` (`accessParse`).
+
+**Auto** (`voice::Auto`, mode `auto`): the five receivers decode the same IQ and their outputs
+are held. Each output scores by `TrackerOut::evidence`: a voice frame 1, a checked message (talker,
+cipher, position…) 9. A digital receiver reaching 18 is settled on (10 when the channel closes
+first); otherwise analog is, 2 s after the channel opened. Then the settled receiver's held
+outputs go on, the others are dropped, every `VoiceDecoder` call goes to it alone, and the call's
+start is when that receiver's voice began. Until then `carrier()` is the FM receiver's;
+afterwards the settled one's, or the carrier meter for a digital one. The channel reports its mode
+as `auto` until it settles (`Chan::mode`); an undecided channel that closes is flushed so a
+short key-up still settles.
 
 ### 4.8 Vocoders and saving
 
@@ -685,6 +704,7 @@ times out and is not retried. The talkgroup CSV `Priority` column only matters w
 | `Nxdn(rate)` | `C4fm` (NXDN) → `NxdnVoice` → AMBE+2 |
 | `Analog` | `Nbfm` (its unit IDs and tones are found with the call's: section 4.9) |
 | `Am` | `Am` (conventional only) |
+| `Auto` | Each of `VoiceKind::Auto.receivers()` (`Analog`, `Fdma`, `Dmr`, `Nxdn(N48)`, `Nxdn(N96)`) on the same IQ, until one is settled on (section 4.7) |
 
 ### 6.4 While recording
 
@@ -1306,7 +1326,7 @@ system) is rewritten on load by `migrate::config`; the desktop app saves it upgr
 | `squelchDb` | 8 | open threshold above the noise floor |
 | `demod` | {} | analog: `fmDeemphasis`, `amLevel` (fast / slow), `amLowCutHz` (0–600), `squelchOpenMs` (0–500), `squelchHangMs` (0–1000) |
 | `channelFile` | "" | CSV path; when set, `channels` is read from it |
-| `channels[]` | [] | `{freqHz (required), mode: fm/am/p25/dmr/nxdn48/nxdn96, name, talkgroup, code, slot (DMR, 1/2), matchTalkgroup (P25/DMR/NXDN), description, tag, group, squelchDb, bandwidthKhz (analog, 4–20), enabled}` |
+| `channels[]` | [] | `{freqHz (required), mode: fm/am/p25/dmr/nxdn48/nxdn96/auto, name, talkgroup, code, slot (DMR, 1/2), matchTalkgroup (P25/DMR/NXDN), description, tag, group, squelchDb, bandwidthKhz (fm/am/auto, 4–20), enabled}` |
 | `recording`, `plugins`, `pluginDelays`, `unitNames`, `keys` | | as for systems |
 
 Its P25, DMR and NXDN channels name the talkgroups they hear by its own talkgroup file

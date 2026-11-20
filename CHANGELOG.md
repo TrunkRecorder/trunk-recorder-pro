@@ -63,6 +63,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   0.2 % of a core while it carries voice.
 - **P25 Phase 2 voice heard before the scrambling is known waits for it** (up to 2 s), instead of being dropped: the
   first calls after the recorder starts, before the control channel names the WACN and System ID, keep their start.
+- **A conventional channel can be `auto`: whatever is on it.** For a frequency that may carry analog or
+  digital, FRS and GMRS's say, the mode `auto` (`any` in a channel file; **Auto** in Setup) runs analog FM
+  and the P25, DMR and NXDN receivers on it together and settles on the one that hears its protocol: a
+  digital one once it has decoded a couple of frames of voice or two of anything else only a checked frame
+  carries, else analog FM two seconds after the channel opened. The call is recorded as what it settled
+  on (`voice_mode`, talkgroup, NAC / colour code / RAN as for a channel of that mode), with its analog
+  audio whole. Its **Bandwidth** is its analog receiver's (16 kHz for GMRS's 20 kHz channels). It is one
+  row to a frequency, without a code, and costs more CPU than a channel of one mode while it is undecided.
 
 ## [0.3.8] — 2026-11-14
 

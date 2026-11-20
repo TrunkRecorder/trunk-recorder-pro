@@ -141,7 +141,7 @@ export interface Radios {
  */
 export interface Channel {
   freqHz: number;
-  mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96";
+  mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96" | "auto";
   name: string;
   talkgroup?: number;
   /** The code it records: FM's CTCSS tone or DCS code ("151.4", "D023N"), P25's NAC ("293"), DMR's colour code ("1"), NXDN's RAN ("5"); absent / "": any. */

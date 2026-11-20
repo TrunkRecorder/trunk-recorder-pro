@@ -1236,8 +1236,9 @@ impl Demod {
 
     /// Channel `c`'s tuning: the mode's (and frequency's) defaults, with these and its bandwidth.
     fn tuning(&self, c: &Channel) -> AnalogTuning {
-        let mut t = if c.mode == ChannelMode::Am { AnalogTuning::am(c.freq_hz) } else { AnalogTuning::default() };
-        if let Some(khz) = c.bandwidth_khz {
+        let mut t = if c.mode == ConvMode::Am { AnalogTuning::am(c.freq_hz) } else { AnalogTuning::default() };
+        // (Its analog receiver's: an auto channel opens as wide as it.)
+        if let Some(khz) = c.bandwidth_khz.filter(|_| c.mode.has_analog_receiver()) {
             t.half_bw_hz = khz * 500.0;
         }
         if self.fm_deemphasis == Some(false) {
@@ -1259,43 +1260,12 @@ impl Demod {
     }
 }
 
-choice! {
-    pub enum ChannelMode {
-        /// Analog FM (narrowband unless its bandwidth says wide).
-        #[default]
-        Fm = "fm",
-        /// Analog AM (airband).
-        Am = "am",
-        /// P25 Phase 1.
-        P25 = "p25",
-        /// DMR (both slots).
-        Dmr = "dmr",
-        /// NXDN at 4800 bps (6.25 kHz).
-        Nxdn48 = "nxdn48",
-        /// NXDN at 9600 bps (12.5 kHz).
-        Nxdn96 = "nxdn96",
-    }
-}
-
-impl ChannelMode {
-    pub fn conv(self) -> ConvMode {
-        match self {
-            ChannelMode::Fm => ConvMode::Fm,
-            ChannelMode::Am => ConvMode::Am,
-            ChannelMode::P25 => ConvMode::P25,
-            ChannelMode::Dmr => ConvMode::Dmr,
-            ChannelMode::Nxdn48 => ConvMode::Nxdn(trunk_core::nxdn::Rate::N48),
-            ChannelMode::Nxdn96 => ConvMode::Nxdn(trunk_core::nxdn::Rate::N96),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
     pub freq_hz: f64,
     #[serde(default)]
-    pub mode: ChannelMode,
+    pub mode: ConvMode,
     /// Short name (Trunk Recorder's alpha tag).
     #[serde(default)]
     pub name: String,
@@ -1378,7 +1348,7 @@ pub fn keep_p25_numbers(channels: &mut [Channel]) -> usize {
     for i in 0..channels.len() {
         let c = &channels[i];
         let shared = channels.iter().filter(|o| (o.freq_hz - c.freq_hz).abs() < 1.0).count() > 1;
-        if c.mode == ChannelMode::P25 && shared && c.talkgroup.is_none() {
+        if c.mode == ConvMode::P25 && shared && c.talkgroup.is_none() {
             channels[i].talkgroup = Some(defaults[i]);
             n += 1;
         }
@@ -1387,25 +1357,16 @@ pub fn keep_p25_numbers(channels: &mut [Channel]) -> usize {
 }
 
 impl Channel {
-    pub fn conv_mode(&self) -> ConvMode {
-        self.mode.conv()
-    }
-
-    /// FM or AM.
-    pub fn analog(&self) -> bool {
-        matches!(self.mode, ChannelMode::Fm | ChannelMode::Am)
-    }
-
     /// What it records (code, slot and talkgroup), read for its mode.
     pub fn parsed_access(&self) -> Result<Option<Access>, String> {
-        Access::join(self.conv_mode(), &self.code, self.slot, self.match_talkgroup)
+        Access::join(self.mode, &self.code, self.slot, self.match_talkgroup)
     }
 
     /// `code`, `slot` and `matchTalkgroup` from one string as people write
     /// it (`CC1 TS2 TG201`, `NAC 293 TG 1`, `151.4`): the old `tone`, a
     /// RadioReference paste. Left as it is if it doesn't read.
     pub fn set_access(&mut self, text: &str) -> Result<(), String> {
-        let (code, slot, tg) = Access::parse(self.conv_mode(), text)?.map_or((String::new(), None, None), Access::parts);
+        let (code, slot, tg) = Access::parse(self.mode, text)?.map_or((String::new(), None, None), Access::parts);
         (self.code, self.slot, self.match_talkgroup) = (code, slot, tg);
         Ok(())
     }
@@ -1415,12 +1376,12 @@ impl Channel {
         let named = !(self.name.is_empty() && self.description.is_empty() && self.tag.is_empty() && self.group.is_empty());
         ConvChannel {
             freq_hz: self.freq_hz,
-            mode: self.conv_mode(),
+            mode: self.mode,
             talkgroup: self.talkgroup,
             default_talkgroup,
             info: named.then(|| Talkgroup {
                 number: tg,
-                mode: if self.analog() { "A".into() } else { "D".into() },
+                mode: self.mode.talkgroup_mode().into(),
                 alpha_tag: self.name.clone(),
                 description: self.description.clone(),
                 tag: self.tag.clone(),
@@ -3244,7 +3205,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.conventional[0].squelch_db, 8.0);
-        assert_eq!(c.conventional[0].channels[2].mode, ChannelMode::Fm);
+        assert_eq!(c.conventional[0].channels[2].mode, ConvMode::Fm);
         // No control channels: the centre is placed over the enabled channels.
         assert_eq!(c.problem(), None);
         let center = c.resolved_centers()[0];
@@ -3644,7 +3605,7 @@ mod tests {
     fn rows_sharing_a_frequency() {
         let row = |tone: &str, tg: Option<u32>| Channel {
             freq_hz: 154_325_000.0,
-            mode: ChannelMode::Fm,
+            mode: ConvMode::Fm,
             name: String::new(),
             talkgroup: tg,
             description: String::new(),
@@ -3679,7 +3640,7 @@ mod tests {
         c.conventional[0].channels[3].slot = Some(1);
         assert!(c.problem().unwrap().contains("only DMR has slots"), "{:?}", c.problem());
         // P25 rows split by talkgroup, a typed number filed under, the others the air's.
-        let p25 = |code: &str, tg: Option<u32>, m: Option<u32>| Channel { freq_hz: 154_325_000.0, mode: ChannelMode::P25, code: code.into(), match_talkgroup: m, ..row("", tg) };
+        let p25 = |code: &str, tg: Option<u32>, m: Option<u32>| Channel { freq_hz: 154_325_000.0, mode: ConvMode::P25, code: code.into(), match_talkgroup: m, ..row("", tg) };
         c.conventional[0].channels = vec![p25("293", Some(45351), Some(1)), p25("293", None, Some(2)), p25("293", None, None)];
         assert_eq!(c.problem(), None);
         let e = c.engine_channels();
@@ -3697,7 +3658,7 @@ mod tests {
         let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
         c.conventional[0].channels = vec![Channel {
             freq_hz: 154_430_000.0,
-            mode: ChannelMode::Fm,
+            mode: ConvMode::Fm,
             name: "Fire".into(),
             talkgroup: None,
             description: String::new(),
@@ -3804,7 +3765,7 @@ mod tests {
         let c = Config::from_json(r#"{ "systems": [{ "shortName": "a", "type": "P25", "sites": [{ "controlChannelsHz": [1], "modulation": "QPSK" }], "unitNames": { "mode": " OTA " } }],
             "conventional": [{ "shortName": "c", "channels": [{ "freqHz": 1, "mode": "NXDN48" }] }], "recording": { "vocoder": "Fixed-Point", "m4a": { "encoder": "FFmpeg" } } }"#).unwrap();
         assert_eq!((c.systems[0].kind, c.systems[0].sites[0].modulation, c.systems[0].unit_names.mode), (SystemKind::P25, Modulation::Qpsk, UnitNamesMode::Ota));
-        assert_eq!((c.conventional[0].channels[0].mode, c.recording.vocoder, c.recording.m4a.encoder), (ChannelMode::Nxdn48, Vocoder::Fixed, M4aEncoder::Ffmpeg));
+        assert_eq!((c.conventional[0].channels[0].mode, c.recording.vocoder, c.recording.m4a.encoder), (ConvMode::Nxdn(trunk_core::nxdn::Rate::N48), Vocoder::Fixed, M4aEncoder::Ffmpeg));
         let saved = serde_json::to_string(&c).unwrap();
         assert!(saved.contains(r#""type":"p25""#) && saved.contains(r#""modulation":"qpsk""#) && saved.contains(r#""mode":"ota""#) && saved.contains(r#""vocoder":"fixed""#), "{saved}");
         let e = Config::from_json(r#"{ "systems": [{ "shortName": "a", "type": "p26" }] }"#).unwrap_err().to_string();
@@ -3843,6 +3804,40 @@ mod tests {
         let mut c = Config::default();
         c.sources = vec![Source { name: "Whip".into(), kind: SourceKind::Hackrf { serial: String::new(), lna_db: 4, vga_db: 20, amp: false, bias_tee: false }, ..plain }];
         assert!(c.problem().unwrap().starts_with("Source 1 (Whip): "), "{:?}", c.problem());
+    }
+
+    #[test]
+    fn a_channel_can_be_auto() {
+        let c: Config = serde_json::from_str(
+            r#"{
+                "conventional": [{ "shortName": "frs", "channels": [
+                    { "freqHz": 462562500, "mode": "auto", "name": "FRS 1" },
+                    { "freqHz": 462587500, "mode": "auto", "name": "FRS 2", "bandwidthKhz": 16 }] }],
+                "sources": [{ "type": "file", "path": "a.cu8", "centerHz": 462500000, "rateHz": 2400000, "realtime": false }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(c.problem(), None);
+        let e = c.engine_config(0.0, &Default::default());
+        assert!(e.conventional.iter().all(|x| x.mode == trunk_core::trunk::ConvMode::Auto));
+        assert_eq!(e.conventional[1].analog.half_bw_hz, 8000.0, "its analog receiver's width, as an FM channel's");
+        // Written back as it was read, every mode by its name; one not listed is refused, naming them.
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""mode":"auto""#));
+        for m in trunk_core::trunk::ConvMode::ALL {
+            assert_eq!(serde_json::from_value::<trunk_core::trunk::ConvMode>(serde_json::to_value(m).unwrap()).unwrap(), m);
+        }
+        assert_eq!(serde_json::from_str::<trunk_core::trunk::ConvMode>(r#""""#).unwrap(), trunk_core::trunk::ConvMode::Fm);
+        let bad = serde_json::from_str::<trunk_core::trunk::ConvMode>(r#""tdma""#).unwrap_err().to_string();
+        assert!(bad.contains("fm, am, p25, dmr, nxdn48, nxdn96 or auto"), "{bad}");
+        // It has no code to hold: a tone on it stops Start, naming the frequency.
+        let mut bad = c.clone();
+        bad.conventional[0].channels[0].code = "100.0".into();
+        assert!(bad.problem().unwrap().contains("auto channels carry no tone or code"), "{:?}", bad.problem());
+        // Nor can a frequency be listed twice.
+        let mut twice = c.clone();
+        let first = twice.conventional[0].channels[0].clone();
+        twice.conventional[0].channels.push(first);
+        assert!(twice.problem().unwrap().contains("is auto"), "{:?}", twice.problem());
     }
 
     #[test]

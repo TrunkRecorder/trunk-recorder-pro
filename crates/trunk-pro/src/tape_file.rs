@@ -12,12 +12,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
 use trunk_app::config::{Config, NameLists};
-use trunk_core::dsp::squelch::SquelchTiming;
 use trunk_core::dsp::AnalogTuning;
-use trunk_core::mbe::Profile;
-use trunk_core::nxdn::Rate;
 use trunk_core::p25::diversity::BankConfig;
-use trunk_core::p25::frame::FramerOptions;
 use trunk_core::trunk::control::{self, ControlChannel};
 use trunk_core::trunk::tape::{ControlTape, TapeMark, VoiceTape};
 use trunk_core::trunk::voice::{self, TrackerOut, VoiceKind, VoiceParams, VoiceSpec};
@@ -28,103 +24,11 @@ use crate::toolkit::hex;
 
 const COLLECTION: &str = "capture.sigmf-collection";
 
-fn kind_name(k: VoiceKind) -> &'static str {
-    match k {
-        VoiceKind::Fdma => "p25",
-        VoiceKind::Tdma => "p25_phase2",
-        VoiceKind::Analog => "fm",
-        VoiceKind::Am => "am",
-        VoiceKind::Dmr => "dmr",
-        VoiceKind::Nxdn(Rate::N48) => "nxdn48",
-        VoiceKind::Nxdn(Rate::N96) => "nxdn96",
-        VoiceKind::ProVoice => "provoice",
-    }
-}
-
-fn kind_of(s: &str) -> Option<VoiceKind> {
-    Some(match s {
-        "p25" => VoiceKind::Fdma,
-        "p25_phase2" => VoiceKind::Tdma,
-        "fm" => VoiceKind::Analog,
-        "am" => VoiceKind::Am,
-        "dmr" => VoiceKind::Dmr,
-        "nxdn48" => VoiceKind::Nxdn(Rate::N48),
-        "nxdn96" => VoiceKind::Nxdn(Rate::N96),
-        "provoice" => VoiceKind::ProVoice,
-        _ => return None,
-    })
-}
-
-fn profile_name(p: Profile) -> &'static str {
-    match p {
-        Profile::Mbelib => "mbelib",
-        Profile::Enhanced => "enhanced",
-        Profile::Fixed => "fixed",
-    }
-}
-
-fn profile_of(s: &str) -> Option<Profile> {
-    Some(match s {
-        "mbelib" => Profile::Mbelib,
-        "enhanced" => Profile::Enhanced,
-        "fixed" => Profile::Fixed,
-        _ => return None,
-    })
-}
-
-fn spec_json(s: &VoiceSpec) -> Value {
-    let (b, a) = (&s.bank, &s.analog);
-    json!({
-        "kind": kind_name(s.kind),
-        "rate": s.rate,
-        "t0_s": s.t0,
-        "seed": s.seed,
-        "vocoder": profile_name(s.vocoder),
-        "bank": { "cqpsk": b.cqpsk, "cqpsk_eq": b.cqpsk_eq, "c4fm": b.c4fm, "eq_taps": b.eq_taps, "eq_mu": b.eq_mu, "soft": b.soft, "detect": b.detect, "flywheel": b.framer.flywheel, "flywheel_errs": b.framer.flywheel_errs, "nid_recover": b.framer.nid_recover, "nid_max_errs": b.framer.nid_max_errs },
-        "squelch": s.squelch,
-        "subaudible": s.subaudible,
-        "analog": { "half_bw_hz": a.half_bw_hz, "deemph_tau_s": a.deemph_tau_s, "level_tau_s": a.level_tau_s, "low_cut_hz": a.low_cut_hz, "open_s": a.squelch.open_s, "hang_s": a.squelch.hang_s, "data_mute": a.data_mute },
-        "ignore_hz": s.ignore_hz,
-    })
-}
-
-fn spec_from(v: &Value) -> Option<VoiceSpec> {
-    let (b, a) = (&v["bank"], &v["analog"]);
-    let f = |x: &Value| x.as_f64();
-    let t = |x: &Value| x.as_bool();
-    let u = |x: &Value| x.as_u64();
-    Some(VoiceSpec {
-        kind: kind_of(v["kind"].as_str()?)?,
-        rate: f(&v["rate"])?,
-        t0: f(&v["t0_s"])?,
-        seed: u(&v["seed"])? as u32,
-        vocoder: profile_of(v["vocoder"].as_str()?)?,
-        bank: BankConfig {
-            cqpsk: t(&b["cqpsk"])?,
-            cqpsk_eq: t(&b["cqpsk_eq"])?,
-            c4fm: t(&b["c4fm"])?,
-            eq_taps: u(&b["eq_taps"])? as usize,
-            eq_mu: f(&b["eq_mu"])? as f32,
-            soft: t(&b["soft"])?,
-            detect: t(&b["detect"])?,
-            framer: FramerOptions { flywheel: t(&b["flywheel"])?, flywheel_errs: u(&b["flywheel_errs"])? as u32, nid_recover: t(&b["nid_recover"])?, nid_max_errs: u(&b["nid_max_errs"])? as u32 },
-        },
-        squelch: f(&v["squelch"])? as f32,
-        subaudible: t(&v["subaudible"])?,
-        analog: AnalogTuning { half_bw_hz: f(&a["half_bw_hz"])?, deemph_tau_s: f(&a["deemph_tau_s"])?, level_tau_s: f(&a["level_tau_s"])?, low_cut_hz: f(&a["low_cut_hz"])?, squelch: SquelchTiming { open_s: f(&a["open_s"])?, hang_s: f(&a["hang_s"])? }, data_mute: t(&a["data_mute"])? },
-        ignore_hz: v["ignore_hz"].as_array()?.iter().filter_map(|p| Some((f(&p[0])?, f(&p[1])?))).collect(),
-        keys: None,
-    })
-}
-
-fn mark_json(m: &TapeMark) -> Value {
-    json!({ "core:sample_start": m.sample, "core:label": "decoder", "trp:voice_params": m.params, "trp:slots": m.slots, "trp:squelch": m.squelch })
-}
-
-fn mark_from(v: &Value) -> Option<TapeMark> {
-    let params = VoiceParams::deserialize(&v["trp:voice_params"]).ok()?;
-    let slots = v["trp:slots"].as_array()?;
-    Some(TapeMark { sample: v["core:sample_start"].as_u64()?, params, slots: [slots.first()?.as_bool()?, slots.get(1)?.as_bool()?], squelch: v["trp:squelch"].as_f64()? as f32 })
+/// A decoder mark as its SigMF annotation.
+fn annotation(m: &TapeMark) -> Value {
+    let mut v = serde_json::to_value(m).unwrap_or_default();
+    v["core:label"] = "decoder".into();
+    v
 }
 
 /// As `cf32_le`, what a head put out.
@@ -166,12 +70,12 @@ fn write_folder(dir: &Path, global: Value, freq_hz: f64, annotations: Vec<Value>
 pub fn write_voice(dir: &Path, t: &VoiceTape, extra: Value) -> Result<(), String> {
     let mut global = json!({
         "core:sample_rate": t.spec.rate,
-        "core:description": format!("{} voice channel", kind_name(t.spec.kind)),
+        "core:description": format!("{} voice channel", t.spec.kind.name()),
         "trp:tier": "voice",
-        "trp:channel": { "freq_hz": t.freq_hz, "first": t.first, "block": t.block, "truncated": t.truncated, "spec": spec_json(&t.spec) },
+        "trp:channel": t,
     });
     merge(&mut global, extra);
-    write_folder(dir, global, t.freq_hz, t.marks.iter().map(mark_json).collect(), &iq_bytes(t.iq.iter().copied()))
+    write_folder(dir, global, t.freq_hz, t.marks.iter().map(annotation).collect(), &iq_bytes(t.iq.iter().copied()))
 }
 
 /// `config`: the systems it's of, as a capture's `trp:config`, its sources aside.
@@ -182,9 +86,10 @@ pub fn write_control(dir: &Path, t: &ControlTape, freq_hz: f64, config: &Value, 
         "core:sample_rate": t.rate,
         "core:description": "Control channel",
         "trp:tier": "control",
-        "trp:channel": { "site": t.site, "carrier": t.carrier, "block": t.block, "t0_s": t.t0, "bandplan": bandplan },
+        "trp:channel": t,
         "trp:config": config,
     });
+    global["trp:channel"]["bandplan"] = bandplan.into();
     merge(&mut global, extra);
     write_folder(dir, global, freq_hz, vec![], &iq_bytes(t.iq.iter().copied()))
 }
@@ -211,10 +116,8 @@ fn slot_hash(slot: usize) -> String {
 
 /// A voice tape through its decoder, as live: pushed as it was, told what it was when it was.
 fn run_voice(meta: &Value, iq: &[Complex32], freq_hz: u64) -> Result<Results, String> {
-    let c = &meta["global"]["trp:channel"];
-    let spec = spec_from(&c["spec"]).ok_or("This tape's trp:channel can't be read")?;
-    let marks = meta["annotations"].as_array().ok_or("No annotations")?.iter().filter_map(mark_from).collect::<Vec<_>>();
-    let (first, block) = (c["first"].as_u64().unwrap_or(0) as usize, c["block"].as_u64().unwrap_or(0) as usize);
+    let VoiceTape { spec, first, block, .. } = VoiceTape::deserialize(&meta["global"]["trp:channel"]).map_err(|e| format!("This tape's trp:channel can't be read: {e}"))?;
+    let marks = meta["annotations"].as_array().ok_or("No annotations")?.iter().filter_map(|a| TapeMark::deserialize(a).ok()).collect::<Vec<_>>();
     let mut d = voice::build(&spec);
     let mut out = Vec::new();
     let (mut pos, mut m) = (0, 0);
@@ -267,7 +170,8 @@ fn run_control(meta: &Value, iq: &[Complex32]) -> Result<Results, String> {
     let c = &g["trp:channel"];
     let cfg = Config::from_value(g["trp:config"].clone()).map_err(|e| format!("Its trp:config: {e}"))?;
     let engine = cfg.engine_config(0.0, &NameLists::new());
-    let index = c["site"].as_u64().unwrap_or(0) as usize;
+    let tape = ControlTape::deserialize(c).map_err(|e| format!("This tape's trp:channel can't be read: {e}"))?;
+    let index = tape.site as usize;
     let (_, site) = sites(&engine.systems).nth(index).ok_or("Its site isn't in its trp:config")?;
     let rate = g["core:sample_rate"].as_f64().ok_or("No sample rate")?;
     let mut d: Box<dyn ControlChannel> = control::build(site, rate);
@@ -275,7 +179,7 @@ fn run_control(meta: &Value, iq: &[Complex32]) -> Result<Results, String> {
     if let Some(b) = c["bandplan"].as_str().filter(|b| !b.is_empty()) {
         d.load_bandplan(b);
     }
-    let (block, carrier, t0) = (c["block"].as_u64().unwrap_or(0).max(1) as usize, c["carrier"].as_u64().unwrap_or(0) as usize, c["t0_s"].as_f64().unwrap_or(0.0));
+    let (block, carrier, t0) = (tape.block.max(1), tape.carrier, tape.t0);
     let mut steps = Vec::new();
     for (i, chunk) in iq.chunks(block).enumerate() {
         d.push(carrier, chunk, t0 + (i * block) as f64 / rate, rate, &mut steps);
@@ -330,26 +234,43 @@ pub fn cli(a: &crate::Args) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trunk_core::mbe::Profile;
 
     #[test]
     fn a_decoders_settings_read_back_the_same() {
         let spec = VoiceSpec { kind: VoiceKind::Tdma, rate: 37500.0, t0: 1.5, seed: 77, vocoder: Profile::Enhanced, bank: BankConfig { soft: false, ..Default::default() }, squelch: 0.25, subaudible: true, analog: AnalogTuning { data_mute: true, ..Default::default() }, ignore_hz: vec![(1.0, 2.0)], keys: None };
-        let back = spec_from(&spec_json(&spec)).unwrap();
+        let v = serde_json::to_value(&spec).unwrap();
+        let back = VoiceSpec::deserialize(&v).unwrap();
         assert_eq!(format!("{spec:?}"), format!("{back:?}"));
-        for k in [VoiceKind::Fdma, VoiceKind::Tdma, VoiceKind::Analog, VoiceKind::Am, VoiceKind::Dmr, VoiceKind::Nxdn(Rate::N48), VoiceKind::Nxdn(Rate::N96), VoiceKind::ProVoice] {
-            assert_eq!(kind_of(kind_name(k)), Some(k));
+        // As tapes were written before their types wrote themselves, so those still replay.
+        let (b, a) = (&spec.bank, &spec.analog);
+        let before = json!({
+            "kind": "p25_phase2", "rate": 37500.0, "t0_s": 1.5, "seed": 77, "vocoder": "enhanced",
+            "bank": { "cqpsk": b.cqpsk, "cqpsk_eq": b.cqpsk_eq, "c4fm": b.c4fm, "eq_taps": b.eq_taps, "eq_mu": b.eq_mu, "soft": false, "detect": b.detect, "flywheel": b.framer.flywheel, "flywheel_errs": b.framer.flywheel_errs, "nid_recover": b.framer.nid_recover, "nid_max_errs": b.framer.nid_max_errs },
+            "squelch": 0.25, "subaudible": true,
+            "analog": { "half_bw_hz": a.half_bw_hz, "deemph_tau_s": a.deemph_tau_s, "level_tau_s": a.level_tau_s, "low_cut_hz": a.low_cut_hz, "open_s": a.squelch.open_s, "hang_s": a.squelch.hang_s, "data_mute": true },
+            "ignore_hz": [[1.0, 2.0]],
+        });
+        assert_eq!(v, before);
+        for k in VoiceKind::ALL {
+            assert_eq!(serde_json::from_value::<VoiceKind>(serde_json::to_value(k).unwrap()).unwrap(), k);
         }
+        assert!(serde_json::from_value::<VoiceKind>(json!("p26")).unwrap_err().to_string().contains("`p26` isn't a voice kind"));
+        let mark = TapeMark { sample: 4800, params: VoiceParams { tdma_key: Some((1, 2, 3)), nac: Some(0x293), dmr: None }, slots: [true, false], squelch: 0.5 };
+        let ann = annotation(&mark);
+        assert_eq!(ann, json!({ "core:sample_start": 4800, "core:label": "decoder", "trp:voice_params": { "tdma_key": [1, 2, 3], "nac": 0x293, "dmr": null }, "trp:slots": [true, false], "trp:squelch": 0.5 }));
+        assert_eq!(TapeMark::deserialize(&ann).unwrap(), mark);
     }
 
     #[test]
     fn marks_read_back_and_hold_no_talkgroup() {
         let m = TapeMark { sample: 9, params: VoiceParams { tdma_key: Some((1, 2, 3)), nac: Some(4), dmr: Some(trunk_core::dmr::Variant::Xpt) }, slots: [true, false], squelch: 0.5 };
-        let v = mark_json(&m);
-        assert_eq!(mark_from(&v), Some(m));
+        let v = annotation(&m);
+        assert_eq!(TapeMark::deserialize(&v).unwrap(), m);
         assert!(!v.to_string().contains("talkgroup"));
         // A tape made before a field was added reads with it unset.
         let mut older = v;
         older["trp:voice_params"].as_object_mut().unwrap().remove("dmr");
-        assert_eq!(mark_from(&older).unwrap().params.dmr, None);
+        assert_eq!(TapeMark::deserialize(&older).unwrap().params.dmr, None);
     }
 }
