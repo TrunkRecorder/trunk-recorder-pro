@@ -38,11 +38,11 @@ pub struct Fact {
 fn sample(on: &str) -> Option<Value> {
     let call = json!({ "system": "x", "site": "x", "talkgroup": 1, "freq": 1, "start_time": 1.0, "call_length": 1.0, "clean_voice_pct": 1.0, "snr": 1.0, "signal": 1.0, "noise": 1.0, "freq_error": 1, "encrypted": false, "decrypted": false, "emergency": false, "analog": false, "tdma_slot": 0, "units": 1 });
     let control = json!({ "system": "x", "site": "x", "freq_hz": 1 });
-    let source = json!({ "index": 0, "pct": 1.0, "per_s": 1.0 });
+    let source = json!({ "index": 0, "pct": 1.0, "per_s": 1.0, "peak_db": 1.0 });
     Some(match on {
         "call.end" | "call.not_saved" => json!({ "call": call }),
         "control.lost" | "control.regained" => json!({ "control": control }),
-        "source.clipping" | "source.drops" => json!({ "source": source }),
+        "source.clipping" | "source.drops" | "source.quiet" => json!({ "source": source }),
         "note.warning" => json!({ "note": { "system": "x", "site": "x", "text": "x" } }),
         "tick" => json!({ "site": { "system": "x", "name": "x", "good": 1, "bad": 1, "failed_pct": 1.0, "messages": 1 } }),
         "schedule" => json!({}),
@@ -50,7 +50,7 @@ fn sample(on: &str) -> Option<Value> {
     })
 }
 
-pub const EVENTS: &[&str] = &["call.end", "call.not_saved", "control.lost", "control.regained", "source.clipping", "source.drops", "note.warning", "tick", "schedule"];
+pub const EVENTS: &[&str] = &["call.end", "call.not_saved", "control.lost", "control.regained", "source.clipping", "source.drops", "source.quiet", "note.warning", "tick", "schedule"];
 
 fn context(facts: &Value) -> Context<'static, 'static> {
     let mut c = Context::default();
@@ -269,15 +269,17 @@ pub fn call_facts(r: &CallRecord) -> Value {
     } })
 }
 
-/// A recent event as a fact, if a rule could be on it.
+/// A recent event (a `monitorEvent`, [`trunk_app::stats::MonitorEvent::to_json`]) as a fact, if a
+/// rule could be on it. `labels`: the sources' series names, as events name them.
 fn monitor_fact(e: &Value, labels: &[String]) -> Option<Fact> {
-    let source = |e: &Value| json!({ "index": e["source"].as_str().and_then(|s| labels.iter().position(|l| l == s)).unwrap_or(0), "pct": e["pct"], "per_s": e["perS"] });
+    let source = |e: &Value| json!({ "index": e["source"].as_str().and_then(|s| labels.iter().position(|l| l == s)).unwrap_or(0), "pct": e["pct"], "per_s": e["perS"], "peak_db": e["peakDb"] });
     let control = |e: &Value| json!({ "system": e["system"], "site": e["site"].as_str().unwrap_or(""), "freq_hz": e["freqHz"] });
-    Some(match e["type"].as_str()? {
+    Some(match e["kind"].as_str()? {
         "controlLost" => Fact { on: "control.lost", facts: json!({ "control": control(e) }) },
         "controlRegained" => Fact { on: "control.regained", facts: json!({ "control": control(e) }) },
         "sourceClipping" => Fact { on: "source.clipping", facts: json!({ "source": source(e) }) },
         "sourceDrops" => Fact { on: "source.drops", facts: json!({ "source": source(e) }) },
+        "sourceQuiet" => Fact { on: "source.quiet", facts: json!({ "source": source(e) }) },
         _ => return None,
     })
 }
@@ -525,7 +527,7 @@ fn rule_json(rule: &CaptureRule) -> Value {
 pub fn spawn(ctx: Arc<Ctx>, cfg: &Config) -> Option<SyncSender<Fact>> {
     let rules = RuleSet::new(&cfg.diagnostics);
     let (tx, rx) = mpsc::sync_channel::<Fact>(256);
-    let labels = cfg.sources.iter().map(|s| s.label()).collect();
+    let labels = cfg.sources.iter().map(|s| trunk_core::metrics::key_part(&s.label())).collect();
     let mut w = Worker { ctx, cfg: cfg.clone(), rules, labels, seen_t: crate::clock::unix_s(), tapes: VecDeque::new(), wanted: Vec::new(), later: Vec::new(), last_tick: Instant::now(), counts: BTreeMap::new(), taping: cfg.diagnostics.needs_tapes(), taping_since: Instant::now() };
     let spawned = std::thread::Builder::new().name("iq-rules".into()).spawn(move || loop {
         match rx.recv_timeout(Duration::from_secs(1)) {
@@ -648,8 +650,14 @@ mod tests {
 
     #[test]
     fn a_monitor_event_names_a_radio_by_number() {
-        let f = monitor_fact(&json!({ "type": "sourceClipping", "source": "RTL-SDR SN 91", "pct": 2.5 }), &["RTL-SDR SN 200".to_string(), "RTL-SDR SN 91".to_string()]).unwrap();
+        use trunk_app::stats::MonitorEvent;
+        let labels = ["RTL-SDR SN 200".to_string(), "RTL-SDR SN 91".to_string()];
+        // (As the monitor has them: `type` monitorEvent, the event's `kind`.)
+        let f = monitor_fact(&MonitorEvent::SourceClipping { source: "RTL-SDR SN 91".into(), pct: 2.5 }.to_json(1.0), &labels).unwrap();
         assert_eq!((f.on, &f.facts["source"]["index"], &f.facts["source"]["pct"]), ("source.clipping", &json!(1), &json!(2.5)));
-        assert!(monitor_fact(&json!({ "type": "tgFirstSeen" }), &[]).is_none());
+        let f = monitor_fact(&MonitorEvent::SourceQuiet { source: "RTL-SDR SN 91".into(), peak_db: -32.0 }.to_json(1.0), &labels).unwrap();
+        assert_eq!((f.on, &f.facts["source"]["index"], &f.facts["source"]["peak_db"]), ("source.quiet", &json!(1), &json!(-32.0)));
+        assert!(sample(f.on).is_some(), "a rule can be on it");
+        assert!(monitor_fact(&MonitorEvent::TgFirstSeen { system: "x".into(), talkgroup: 1, alpha_tag: String::new() }.to_json(1.0), &[]).is_none());
     }
 }

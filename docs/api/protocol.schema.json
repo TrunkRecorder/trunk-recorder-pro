@@ -3774,6 +3774,7 @@
                 "controlRegained",
                 "sourceDrops",
                 "sourceClipping",
+                "sourceQuiet",
                 "sourceRecovered",
                 "pluginHealth",
                 "linkDown",
@@ -3843,6 +3844,10 @@
             },
             "pct": {
               "type": "number"
+            },
+            "peakDb": {
+              "type": "number",
+              "description": "sourceQuiet: its peaks over the last minute, averaged, dBFS (gain too low)."
             },
             "plugin": {
               "type": "string"

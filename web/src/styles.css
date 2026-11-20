@@ -1545,5 +1545,7 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .site-row .site-figs { justify-self: end; display: inline-flex; gap: 10px; }
 .src-unused { gap: 8px; margin-top: 10px; font-size: 13.5px; }
 .src-unused .chip { font-size: 12.5px; }
+.src-tune { gap: 6px 14px; margin-top: 10px; font-size: 13.5px; flex-wrap: wrap; }
+.src-tune .chip { font-size: 12.5px; }
 .src-facts { gap: 6px 18px; margin-top: 10px; font-size: 14px; }
 .line-list li .figs.inline { gap: 4px 12px; font-size: 13.5px; }

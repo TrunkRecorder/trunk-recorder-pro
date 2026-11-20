@@ -444,7 +444,7 @@ The presets cover the common problems. You can add your own as JSON, under `diag
 |---|---|
 | `call.end`, `call.not_saved` | `call.system`, `site`, `talkgroup`, `freq`, `start_time` (Unix s), `call_length`, `clean_voice_pct`, `snr`, `signal`, `noise`, `freq_error`, `encrypted`, `decrypted`, `emergency`, `analog`, `tdma_slot`, `units` |
 | `control.lost`, `control.regained` | `control.system`, `site`, `freq_hz` |
-| `source.clipping`, `source.drops` | `source.index`, `pct`, `per_s` |
+| `source.clipping`, `source.drops`, `source.quiet` | `source.index`, `pct`, `per_s`, `peak_db` (quiet: the last minute's peaks, dBFS) |
 | `note.warning` | `note.system`, `site`, `text` |
 | `tick` (every 10 s, each site) | `site.system`, `name`, `good`, `bad`, `failed_pct`, `messages` |
 | `schedule` | nothing |

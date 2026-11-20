@@ -233,6 +233,8 @@ export function eventText(e: MonitorEvent): string {
       return `${e.source}: dropping samples`;
     case "sourceClipping":
       return `${e.source}: clipping ${e.pct}%`;
+    case "sourceQuiet":
+      return `${e.source}: gain low · peaks ${e.peakDb} dBFS`;
     case "sourceRecovered":
       return `${e.source}: clean again`;
     case "pluginHealth":
@@ -270,7 +272,9 @@ function eventTip(e: MonitorEvent): string | undefined {
     case "clockStep":
       return (e.byMs ?? 0) > 0 ? "Its time service set it, or the computer slept" : undefined;
     case "sourceClipping":
-      return "Samples at full scale";
+      return "Samples at full scale: lower the gain, or Tune gain on its RF card";
+    case "sourceQuiet":
+      return "Samples a few ADC steps tall for a minute: raise the gain, or Tune gain on its RF card";
     default:
       return undefined;
   }
@@ -289,6 +293,7 @@ function eventPlace(e: MonitorEvent): () => void {
       return () => setView("decode", e.system ?? "");
     case "sourceDrops":
     case "sourceClipping":
+    case "sourceQuiet":
     case "sourceRecovered":
       return () => setView("rf");
     case "pluginHealth":
