@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn each_codeword_comes_from_the_copy_that_decodes_it_best() {
         // A 4V burst of four known codewords, and two copies of it each damaged in a different one.
-        let words: Vec<[u8; 49]> = (0..4u8).map(|k| std::array::from_fn(|i| ((i as u8 * 7 + k * 3) % 5 == 0) as u8)).collect();
+        let words: Vec<[u8; 49]> = (0..4u8).map(|k| std::array::from_fn(|i| ((i * 7 + k as usize * 3) % 5 == 0) as u8)).collect();
         let mut clean = [0u8; BURST_DIBITS];
         for (w, &a) in words.iter().zip(&VCW_AT_4V) {
             clean[a..a + VCW_DIBITS].copy_from_slice(&crate::ambe::encode_vcw(w));
