@@ -90,6 +90,7 @@ What the dashboard's **Platform** page checks.
 | `networkChecks` | | `true` | boolean | `false` stops both `checkHosts` and the time server (`timeServer`) without forgetting them, for a computer whose connection something else already watches. The **Checks** switch on the Platform page's Network card. Applies at once |
 | `timeServer` | | `"pool.ntp.org"` | string | The time server asked how far off the computer's clock is: one SNTP query (a 48-byte UDP packet each way, port 123 unless given as `host:port`; an IPv6 address in brackets) every 15 minutes, every 2 after it doesn't answer. It only measures; the operating system's time service keeps the clock. A server on your network (your router, a GPS clock) works too. A server that doesn't answer isn't counted as the network down. `""` = not asked. **Time server** on the Network card. Applies at once |
 | `clockWarnMs` | | `250` | number | The clock off by this many milliseconds or more: the Platform light turns amber, an event says so, and calls are marked `clock_off`. Red at 5 s, or 4 times this if that's more. Raise it if your calls don't need to line up with other recorders'. Applies at once. Config only |
+| `checkUpdates` | | `true` | boolean | Ask GitHub (`api.github.com`) once a day, and at start, for the app's latest release: when it's newer than the one running, the sidebar shows **v… available** beside the version, linking to it. Nothing is downloaded or installed. `false` for a closed network or a metered link. Not paused by `networkChecks`, which is about watching the connection. **Check for updates** on the Network card. Applies at once |
 
 ### What the recorder connects to
 
@@ -98,6 +99,7 @@ For a network administrator: everything the recorder contacts over the network, 
 | What | Where | When |
 |---|---|---|
 | The time server | `timeServer` (`pool.ntp.org`), UDP 123 | Every 15 minutes. `""` or the **Checks** switch off: never |
+| The app's latest release | `api.github.com`, HTTPS | At start and once a day. `checkUpdates` off: never |
 | Hosts to check | `checkHosts`, TCP | Every `checkEveryS`. None by default |
 | Plugins | The services you set them up for (Broadcastify Calls, OpenMHz, an MQTT broker…) | As they send calls. Each plugin reports how its services answer, and the Platform page's **Connections** list shows them without any traffic of its own |
 | The plugin and interface lists | `raw.githubusercontent.com`, and GitHub releases to install | When you open the store or install something |
@@ -106,5 +108,5 @@ For a network administrator: everything the recorder contacts over the network, 
 | The capture corpus | `trunkrecorder.pro`, `iq.trunkrecorder.pro` | Only when you send a capture |
 
 Up to 0.3.5 the recorder checked `1.1.1.1:443` and `dns.google:443` every 15 s by default. On networks that
-watch for DNS over HTTPS, that looked like DoH (#148). It no longer contacts anything unless something above
-asks for it.
+watch for DNS over HTTPS, that looked like DoH (#148). Now it contacts only what's listed above: by default the
+time server and GitHub for the latest release (each can be turned off), the rest only once you set it up.

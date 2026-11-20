@@ -11,7 +11,7 @@ import { updateConfig, useApp, useTopic, type StatsRange } from "../controller.t
 import { Card, Choice, Fig, Figs, HeatStrip, Info, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
 import { ago, bytes, clockAt, dur, ms, num, pct } from "../fmt.ts";
 import { connections, connectionsSummary, platformHealth, total, useHistory, useRanges } from "./data.ts";
-import { Field, NumberInput, TextArea, TextInput } from "../inputs.tsx";
+import { Field, NumberInput, TextArea, TextInput, Toggle } from "../inputs.tsx";
 import { Switch } from "../SetupLayout.tsx";
 import { StorageView } from "./Storage.tsx";
 
@@ -290,7 +290,7 @@ export function PlatformPage() {
 /** A host the checks can connect to: `name:port`, `1.2.3.4:port` or `[v6]:port`. */
 const HOST_PORT = /^(\[[0-9a-fA-F:.]+\]|[^\s:/[\]]+):\d{1,5}$/;
 
-/** What the recorder itself sends to see the network answers: hosts to check, how often, and the time server. Each applies at once. */
+/** What the recorder itself sends: hosts to check, how often, the time server, and the daily look for a newer release. Each applies at once. */
 function NetworkSettings({ m }: { m: MonitorSettings }) {
   const bad = m.checkHosts.filter((h) => !HOST_PORT.test(h));
   const set = (f: (x: MonitorSettings) => void) => updateConfig((c) => void (c.monitor && f(c.monitor)));
@@ -305,7 +305,7 @@ function NetworkSettings({ m }: { m: MonitorSettings }) {
           ) : (
             <>
               host:port per line, e.g. your router
-              <Info>Connected to (TCP) to keep the network's history. None: no traffic of the recorder's own.</Info>
+              <Info>Connected to (TCP) to keep the network's history. None: none connected to.</Info>
             </>
           )
         }
@@ -325,6 +325,13 @@ function NetworkSettings({ m }: { m: MonitorSettings }) {
       >
         <TextInput className="mono" value={m.timeServer} placeholder="pool.ntp.org" onChange={(t) => set((x) => void (x.timeServer = t))} />
       </Field>
+      <Toggle
+        label="Check for updates"
+        hint="GitHub, once a day"
+        info="Asks github.com for the latest release; a newer one shows beside the version in the sidebar."
+        checked={m.checkUpdates}
+        onChange={(v) => set((x) => void (x.checkUpdates = v))}
+      />
     </div>
   );
 }

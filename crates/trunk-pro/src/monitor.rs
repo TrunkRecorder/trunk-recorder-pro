@@ -34,6 +34,9 @@ const SPOOL_CRITICAL_PCT: f64 = 10.0;
 const SWEEP_EVERY: Duration = Duration::from_secs(600);
 /// How often Spotlight is asked again (and when the recordings folder changes).
 const SPOTLIGHT_EVERY: Duration = Duration::from_secs(24 * 3600);
+/// Where the app's releases are, and how often it asks for the latest (`monitor.checkUpdates`).
+const APP_REPO: &str = "TrunkRecorder/trunk-recorder-pro";
+const UPDATE_EVERY: Duration = Duration::from_secs(24 * 3600);
 /// How often the store's tables and indexes are measured (SQLite reads
 /// each page's header to, so not every tick).
 const SIZES_EVERY: Duration = Duration::from_secs(15 * 60);
@@ -67,6 +70,8 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
     let mut spool = SpoolWatch::default();
     let spotlight: Arc<Mutex<Option<Value>>> = Default::default();
     let mut spotlight_for: Option<(String, Instant)> = None;
+    let update: Arc<Mutex<Option<Value>>> = Default::default();
+    let mut update_checked: Option<Instant> = None;
     let sizes: Arc<Mutex<Option<crate::db::store::StoreSizes>>> = Default::default();
     // (PostgreSQL's server's write-ahead log, read with the sizes.)
     let server_wal: Arc<Mutex<Option<i64>>> = Default::default();
@@ -93,6 +98,23 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
             let out = spotlight.clone();
             let _ = std::thread::Builder::new().name("spotlight".into()).spawn(move || *out.lock().unwrap() = crate::spotlight::check(Path::new(&capture)));
         }
+        if ctx.config.lock().unwrap().monitor.check_updates {
+            if update_checked.is_none_or(|at| at.elapsed() >= UPDATE_EVERY) {
+                update_checked = Some(Instant::now());
+                let out = update.clone();
+                let _ = std::thread::Builder::new().name("update-check".into()).spawn(move || {
+                    // Not answered (offline, rate-limited): what was known stays, asked again tomorrow.
+                    if let Ok(latest) = crate::store::latest_release(APP_REPO) {
+                        *out.lock().unwrap() = newer_app(latest, env!("CARGO_PKG_VERSION"));
+                    }
+                });
+            }
+        } else {
+            // Turned off: nothing claimed, and asked at once when it's turned on again.
+            update_checked = None;
+            *update.lock().unwrap() = None;
+        }
+        p["update"] = update.lock().unwrap().clone().unwrap_or(Value::Null);
         p["spotlight"] = spotlight.lock().unwrap().clone().unwrap_or(Value::Null);
         // The store's tables and indexes, measured on a thread of their own:
         // in the platform message (Platform → Storage) and its history (`store/<name>`).
@@ -199,5 +221,36 @@ impl SpoolWatch {
             ctx.event(MonitorEvent::SpoolRecovered { free_pct });
         }
         self.level = level;
+    }
+}
+
+/// The app's latest release (tag, page) as the dashboard shows it, `{version, url}`: only when
+/// it's newer than `running` (so the dashboard needs no "up to date" of its own).
+fn newer_app((tag, url): (String, String), running: &str) -> Option<Value> {
+    crate::store::newer(&tag, running).then(|| json!({ "version": tag.trim_start_matches('v'), "url": url }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_newer_release_is_shown_and_no_other() {
+        let rel = |t: &str| (t.to_string(), format!("https://github.com/{APP_REPO}/releases/tag/{t}"));
+        assert_eq!(newer_app(rel("v0.4.0"), "0.3.8"), Some(json!({ "version": "0.4.0", "url": format!("https://github.com/{APP_REPO}/releases/tag/v0.4.0") })));
+        assert_eq!(newer_app(rel("v0.3.8"), "0.3.8"), None, "the one running");
+        assert_eq!(newer_app(rel("v0.3.7"), "0.3.8"), None, "older");
+        assert!(newer_app(rel("v0.4.0"), "0.4.0-rc1").is_some(), "a release after its prerelease");
+        assert_eq!(newer_app(rel("nightly"), "0.3.8"), None, "not a version");
+    }
+
+    /// Asks the real GitHub API (needs the network): `cargo test -p trunk-pro -- --ignored live`.
+    #[test]
+    #[ignore]
+    fn live_latest_release() {
+        let (tag, url) = crate::store::latest_release(APP_REPO).unwrap();
+        println!("latest: {tag} {url}");
+        assert!(newer_app((tag.clone(), url.clone()), "0.0.1").is_some() && url.starts_with("https://github.com/"));
+        assert!(newer_app((tag.clone(), url), tag.trim_start_matches('v')).is_none(), "already on it: nothing newer");
     }
 }

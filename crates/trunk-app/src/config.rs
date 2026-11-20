@@ -2056,11 +2056,14 @@ pub struct MonitorSettings {
     /// The clock off by this much or more, ms: a warning, and calls marked
     /// `clock_off` (a problem at 5 s, or 4 times this). Applies at once.
     pub clock_warn_ms: f64,
+    /// Ask GitHub once a day for the app's latest release: the dashboard
+    /// says when there's a newer one. Applies at once.
+    pub check_updates: bool,
 }
 
 impl Default for MonitorSettings {
     fn default() -> Self {
-        MonitorSettings { check_hosts: Vec::new(), check_every_s: 15, network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0 }
+        MonitorSettings { check_hosts: Vec::new(), check_every_s: 15, network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0, check_updates: true }
     }
 }
 
