@@ -569,6 +569,32 @@ test("RF: a HackRF's stages, and the sample clock's error once measured", () => 
   assert.match(text(renderToString(<RfPage />)), /LNA 24 · VGA 30 · amp/);
 });
 
+test("RF: a source whose gain is low says so and offers Tune gain; the tuning's progress, then what it kept", () => {
+  const c = defaultConfig();
+  c.sources = [{ type: "rtlsdr", serial: "1", gainDb: 25.4, agc: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0 }];
+  running(c, []);
+  const src: SourceStatus = { index: 0, label: "RTL-SDR SN 1", centerHz: 851_000_000, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: c.sources[0] };
+  transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [src], load: 0, calls: [] });
+  // The corpus capture: peaks about −32 dBFS, a minute of them (the recorder's `quiet`).
+  transport.onMessage({ type: "stats", t: Date.now() / 1000, values: { "src/RTL-SDR SN 1/peak": -32, "src/RTL-SDR SN 1/clipPct": 0, "src/RTL-SDR SN 1/quiet": 1 } });
+  setView("rf");
+  let page = text(renderToString(<RfPage />));
+  assert.match(page, /Peaks -32 dBFS · gain low — raise the gain/, "no tuner here: the fix by hand");
+  assert.doesNotMatch(page, /Tune gain/);
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "tuneGain"] });
+  page = text(renderToString(<RfPage />));
+  assert.match(page, /Peaks -32 dBFS · gain low — Tune gain/);
+  assert.match(renderToString(<RfPage />), /<button class="btn primary small"[^>]*>Tune gain<\/button>/, "the button, standing out");
+  const report = { source: 0, radio: "Source 1", plan: [], scored: ["dcfd"], watched: [], start: [["gain", 25.4]] as [string, number][], estimateS: 1482, applied: false };
+  transport.onMessage({ type: "tune", ...report, phase: "running", tried: [], now: [["gain", 33.8]], elapsedS: 60 });
+  page = text(renderToString(<RfPage />));
+  assert.match(page, /Tuning Elapsed 1 m of ~25 m Tried 0 Trying 33\.8 dB Stop/);
+  transport.onMessage({ type: "tune", ...report, phase: "done", tried: [], best: [["gain", 33.8]], applied: true, elapsedS: 600 });
+  page = text(renderToString(<RfPage />));
+  assert.match(page, /Tune gain Kept 33\.8 dB Tried 0 Took 10 m/);
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR SN 1: gain low · peaks -32 dBFS");
+});
+
 test("RF: a source nothing needs says it can probably go; one in use doesn't", () => {
   const c = defaultConfig();
   const rtl = (serial: string, centerHz: number): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, centerHz, rateHz: 2_400_000, ppm: 0 });

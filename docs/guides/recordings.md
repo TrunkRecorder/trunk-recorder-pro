@@ -442,12 +442,16 @@ The presets cover the common problems. You can add your own as JSON, under `diag
 
 | `on` | What a condition can name |
 |---|---|
-| `call.end`, `call.not_saved` | `call.system`, `site`, `talkgroup`, `freq`, `start_time` (Unix s), `call_length`, `clean_voice_pct`, `snr`, `signal`, `noise`, `freq_error`, `encrypted`, `decrypted`, `emergency`, `analog`, `tdma_slot`, `units` |
+| `call.end`, `call.not_saved` | `call.system`, `site`, `talkgroup`, `freq`, `start_time`, `stop_time` (Unix s), `call_length`, `clean_voice_pct`, `snr`, `signal`, `noise`, `freq_error`, `encrypted`, `decrypted`, `emergency`, `analog`, `voice` (`p25`, `dmr`, `fm`, …), `tdma_slot`, `units` (how many radios), `unit_ids`, `recorder`, `source`; `call.not_saved` also `not_saved` (`silent` or `short`), `audio_s`, `frames`, `bad_frames` |
 | `control.lost`, `control.regained` | `control.system`, `site`, `freq_hz` |
-| `source.clipping`, `source.drops` | `source.index`, `pct`, `per_s` |
+| `source.clipping`, `source.drops`, `source.quiet` | `source.index`, `pct`, `per_s`, `peak_db` (quiet: the last minute's peaks, dBFS) |
 | `note.warning` | `note.system`, `site`, `text` |
 | `tick` (every 10 s, each site) | `site.system`, `name`, `good`, `bad`, `failed_pct`, `messages` |
 | `schedule` | nothing |
+
+A wideband capture a rule made says what set it off (`trp:trigger`: the event's facts, a note's text aside, and
+when, seconds into the capture) and what the recording was doing then (`trp:state`: recorders in use, each DMR / NXDN
+site's channel table): see [the `trp` extension](../sigmf/trp.sigmf-ext.md).
 
 A rule that can't run is refused when it's saved. `budget` beside `rules` sets `capturesPerDay`, `mbPerDay` and
 `ramMb`, the memory held for looking back.

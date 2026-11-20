@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! engine / DSP parts ── Instrumented::report ──┐
-//! SampleMeter (headroom, clipping) ────────────┤
+//! SampleMeter (headroom, clipping, quiet) ─────┤
 //! engine: each site's and channel's copies ─────┤
 //! Tally (calls, airtime, audio)────────────────┴─► Aggregator ─► `stats` (1 s)
 //!                                                       ├──────► Rollup (1 min) ─► History / stats files
@@ -250,8 +250,8 @@ pub struct Stats {
     busy_mark: f64,
     /// Control channels decoding at the last tick, by system.
     locked: HashMap<String, bool>,
-    /// Per source: dropping, clipping at the last tick.
-    trouble: Vec<(bool, bool)>,
+    /// Per source: dropping, clipping, quiet at the last tick.
+    trouble: Vec<[bool; 3]>,
     /// Calls this minute, per system (CallVolume for watchers).
     minute_calls: BTreeMap<String, u32>,
     /// Air time counted so far of each call in progress, ms (counted as it
@@ -268,7 +268,7 @@ impl Stats {
         Stats {
             agg: Aggregator::default(),
             meters: names.iter().map(|_| Default::default()).collect(),
-            trouble: vec![(false, false); names.len()],
+            trouble: vec![[false; 3]; names.len()],
             names,
             tally: Tally::default(),
             day: Day::default(),
@@ -460,7 +460,7 @@ impl Stats {
     }
 
     /// Events on a change of state: a control channel lost or regained, a
-    /// source starting to drop samples or clip.
+    /// source starting to drop samples, clip or go quiet (gain too low).
     fn edges(&mut self, engine: &Engine, out: &mut Vec<Output>) {
         let systems = engine.systems();
         let sites: Vec<_> = trunk_core::trunk::sites(&systems).collect();
@@ -480,15 +480,18 @@ impl Stats {
             let n = &self.names[i];
             let drops = self.agg.get(&format!("src/{n}/dropped")).unwrap_or(0.0) as f64;
             let clip = self.agg.get(&format!("src/{n}/clipPct")).unwrap_or(0.0) as f64;
-            let (was_d, was_c) = self.trouble[i];
-            let (d, c) = (drops > 0.0, clip > CLIP_PCT);
-            self.trouble[i] = (d, c);
+            let quiet = self.meters[i].lock().unwrap().quiet();
+            let [was_d, was_c, was_q] = self.trouble[i];
+            let (d, c, q) = (drops > 0.0, clip > CLIP_PCT, quiet.is_some());
+            self.trouble[i] = [d, c, q];
             let source = n.clone();
             if d && !was_d {
                 self.emit(MonitorEvent::SourceDrops { source, per_s: drops }, out);
             } else if c && !was_c {
                 self.emit(MonitorEvent::SourceClipping { source, pct: (clip * 10.0).round() / 10.0 }, out);
-            } else if (was_d || was_c) && !d && !c {
+            } else if let Some(db) = quiet.filter(|_| !was_q) {
+                self.emit(MonitorEvent::SourceQuiet { source, peak_db: db.round() }, out);
+            } else if (was_d || was_c || was_q) && !d && !c && !q {
                 self.emit(MonitorEvent::SourceRecovered { source }, out);
             }
         }

@@ -368,7 +368,7 @@ pub enum Event {
     UnitPosition { system: u16, unit: u32, lat: f64, lon: f64, talkgroup: u32 },
     Concluded(Concluded),
     /// A recorded call wasn't saved: no audio, or less than its system's minimum.
-    NotSaved(Call),
+    NotSaved(super::record::Unsaved),
     /// Multi-site: `call` was another site's copy of `kept` (saved instead).
     Duplicate { call: Call, kept: Call },
     /// A conventional transmission no channel row took (it had another
@@ -2474,8 +2474,8 @@ impl Core {
                 self.events.push(Event::Concluded(k));
                 true
             }
-            Err(call) => {
-                self.events.push(Event::NotSaved(call));
+            Err(u) => {
+                self.events.push(Event::NotSaved(u));
                 false
             }
         }
@@ -3617,7 +3617,7 @@ mod tests {
         // East decodes best, but kept too little audio to be saved: west's copy is.
         let (ev, [east, west, far]) = two_sites_with(100, "", true, 10, 1.0, "");
         assert_eq!(saved(&ev), [far, west]);
-        assert!(ev.iter().any(|x| matches!(x, Event::NotSaved(c) if c.id == east)));
+        assert!(ev.iter().any(|x| matches!(x, Event::NotSaved(u) if u.call.id == east && u.why == "short" && u.audio_s > 0.0 && u.audio_s < 1.0)));
         assert!(!ev.iter().any(|x| matches!(x, Event::Duplicate { .. })));
     }
 

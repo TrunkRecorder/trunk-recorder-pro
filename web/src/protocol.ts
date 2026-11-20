@@ -1533,7 +1533,7 @@ export interface DirListing {
 // ── The dashboard ────────────────────────────────────────────────────────────
 //
 // Series are named by `/`-separated keys (crates/trunk-app/src/stats):
-//   src/<label>/{noise,peak,clipPct,samples,dropped,errors,ppm,tune}
+//   src/<label>/{noise,peak,clipPct,quiet,samples,dropped,errors,ppm,tune}
 //   sys/<shortName>/{active,recording,calls,airMs,audioBytes,notSaved,dup}
 //   <site>/cc/{good,bad,locked,syncs,nidFails,flywheels,eqResets,frames,sep,offset,signal,noise,snr,inSync,deviation,airSym,syncLossSym,phaseErr}
 //   <site>, <channel>: calls/{started,recorded,skipped}  calls/why/<ignored|unknownTg|encrypted|noSource|noRecorder|noFrequency>
@@ -1604,6 +1604,7 @@ export interface MonitorEventBody {
     | "controlRegained"
     | "sourceDrops"
     | "sourceClipping"
+    | "sourceQuiet"
     | "sourceRecovered"
     | "pluginHealth"
     | "linkDown"
@@ -1635,6 +1636,8 @@ export interface MonitorEventBody {
   source?: string;
   perS?: number;
   pct?: number;
+  /** sourceQuiet: its peaks over the last minute, averaged, dBFS (gain too low). */
+  peakDb?: number;
   plugin?: string;
   state?: string;
   message?: string;

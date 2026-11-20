@@ -24,6 +24,8 @@
 //!     --record-encrypted  --keep-silent  --no-unknown  --capture-frames  --quiet
 //!     --keys keys.json|keys.ekc [--keys-password-file F] (P25 encryption keys for every system: see trunk-app's keys.rs)
 //!     --messages (print every control channel message)
+//!     --summary FILE (each site's control channel blocks as JSON, over all of
+//!     it and, for one of our captures, over the part its live figures cover)
 //!     --min-call s  --max-call s  --min-transmission s (drop short calls, split long
 //!     ones, leave out short transmissions)  --auto-tune (correct the sources'
 //!     frequency error as measured on the control channels; reported either way)
@@ -249,7 +251,8 @@ usage:
       channels, or both). --format cu8|cs16|cf32 (else from the extension),
       --guard Hz (each band edge left unused; 75000), --auto-tune (correct
       the frequency error measured on the control channel), --messages
-      (print every control channel message), --quiet.
+      (print every control channel message), --summary file (each site's
+      control channel blocks as JSON), --quiet.
   trunk-pro survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,biz-uhf,biz-vhf,t-band] [--gain dB | --no-gain] [--ppm 0] [--rate Hz] [--seconds 30]
   trunk-pro survey <capture> --center Hz --rate Hz [--format cu8|cs16|cf32]
   trunk-pro survey [--radio '{\"type\":\"bladerf\",…}'] --freqs 851.0125,852.5 [--type p25|smartnet|edacs|dmr|nxdn] [--listen s]
@@ -585,6 +588,17 @@ fn replay(a: &Args) {
     let air_s = ((data[0].1 - starts[0]) / formats[0].bytes_per_sample()) as f64 / rate0;
     let mut buf = Vec::new();
     let t0 = Instant::now();
+    // One of our captures: each site's counts where the part its live figures cover starts and ends.
+    let live_window = capture.as_ref().and_then(|c| c.live_window);
+    let mut marks: [Option<Vec<corpus::SiteFrames>>; 2] = [None, None];
+    let mut mark = |t: f64, engine: &Engine| {
+        for (m, at) in marks.iter_mut().zip(live_window.map_or([f64::INFINITY; 2], |w| [w.0, w.1])) {
+            if m.is_none() && t >= at {
+                *m = Some(corpus::SiteFrames::of(&engine.status()));
+            }
+        }
+    };
+    mark(0.0, &engine);
     // Interleave the sources in ~13.6 ms chunks (rtl_sdr's 32768-sample transfers
     // at 2.4 MSPS), so their clocks advance together as they would live.
     let chunk_s = 32768.0 / 2_400_000.0;
@@ -629,13 +643,20 @@ fn replay(a: &Args) {
                     })
                     .expect("thread");
             }
+            let n0 = (rate0 * chunk_s) as usize;
             while running.load(std::sync::atomic::Ordering::SeqCst) > 0 {
                 written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+                let k = done[0].load(std::sync::atomic::Ordering::SeqCst);
+                if k != usize::MAX {
+                    mark((k * n0) as f64 / rate0, &engine);
+                }
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         });
     } else {
         let mut pos = starts.clone();
+        // Source 0's samples pushed, lost ones too: the air replayed so far.
+        let mut fed0 = 0u64;
         loop {
             let mut any = false;
             for (i, (file, len)) in data.iter_mut().enumerate() {
@@ -646,6 +667,7 @@ fn replay(a: &Args) {
                 if let Some(&(at, lost)) = gaps[i].front() {
                     if at <= pos[i] {
                         engine.push_gap(i, lost);
+                        fed0 += if i == 0 { lost } else { 0 };
                         gaps[i].pop_front();
                         any = true;
                     } else {
@@ -659,11 +681,13 @@ fn replay(a: &Args) {
                         config::SampleFormat::Cu8 => engine.push_u8(i, &buf),
                         f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &buf)),
                     }
+                    fed0 += if i == 0 { (buf.len() / bps) as u64 } else { 0 };
                     pos[i] = end;
                     any = true;
                 }
             }
             written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+            mark(fed0 as f64 / rate0, &engine);
             if !any {
                 break;
             }
@@ -679,6 +703,7 @@ fn replay(a: &Args) {
         let _ = fs::write(p, engine.bandplan(i));
     }
     let st = engine.status();
+    mark(f64::INFINITY, &engine);
     println!("\n{air_s:.1} s of air in {cpu:.2} s ({:.0}× real time). {written} call(s) written to {out_dir}/", air_s / cpu);
     for s in &st.sites {
         let id = s.identity.describe(s.id_fields);
@@ -694,10 +719,22 @@ fn replay(a: &Args) {
             s.mismatch.as_ref().map_or(String::new(), |m| format!(" — NOT FOLLOWED: {m}")),
         );
     }
+    let window = live_window.zip(marks[0].as_ref().zip(marks[1].as_ref())).map(|((from_s, to_s), (start, end))| corpus::WindowFrames { from_s, to_s, sites: corpus::SiteFrames::between(start, end) });
+    if let Some(w) = &window {
+        println!("  As live counted, {:.1}–{:.1} s:", w.from_s, w.to_s);
+        for s in &w.sites {
+            println!("    {}: CC {} good / {} bad", if s.site == s.system { s.system.clone() } else { format!("{}/{}", s.system, s.site) }, s.good, s.bad);
+        }
+    }
     for (i, t) in st.sources.iter().enumerate() {
         if let Some(e) = t.error_ppm {
             println!("  source {}: frequency error {e:+.2} ppm, corrected by {:+.2} ppm", i + 1, t.applied_ppm);
         }
+    }
+    // --summary FILE: the sites' counts as JSON (tool submission's check).
+    if let Some(p) = a.get("summary") {
+        let summary = corpus::ReplaySummary { air_s, sites: corpus::SiteFrames::of(&st), live_window: window };
+        fs::write(p, serde_json::to_string_pretty(&summary).unwrap_or_default()).unwrap_or_else(|e| die(&format!("{p}: {e}")));
     }
 }
 

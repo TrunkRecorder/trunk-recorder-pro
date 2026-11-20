@@ -37,7 +37,7 @@ const FOLDER: &str = "iq-captures";
 const COLLECTION: &str = "capture.sigmf-collection";
 pub(crate) const DIAGNOSTICS: &str = "diagnostics.json";
 const MIN_S: u32 = 5;
-const MAX_S: u32 = 300;
+pub(crate) const MAX_S: u32 = 300;
 /// Blocks queued for a writer: seconds of samples, however a radio cuts them.
 pub(crate) const QUEUE: usize = 512;
 /// Every radio starts with its first block after this, so they start together.
@@ -308,6 +308,8 @@ pub struct Captures {
     next_key: AtomicU64,
     /// A capture is being sent ([`crate::iq_send`]).
     pub sending: Mutex<bool>,
+    /// The sites' counts lately, oldest first, while capture rules look back: where a capture's `trp:live` starts.
+    counts: Mutex<VecDeque<Counts>>,
 }
 
 impl Captures {
@@ -328,6 +330,15 @@ impl Captures {
         }
         *self.taps.lock().unwrap() = taps.clone();
         taps
+    }
+
+    /// The sites' counts now, kept for `keep_s`.
+    pub fn counted(&self, c: Counts, keep_s: f64) {
+        let mut q = self.counts.lock().unwrap();
+        while q.front().is_some_and(|o| o.at_ms < c.at_ms - keep_s * 1000.0) {
+            q.pop_front();
+        }
+        q.push_back(c);
     }
 
     /// Where the session's capture rules take facts.
@@ -367,6 +378,7 @@ impl Captures {
     pub fn session_ended(&self) {
         *self.rules.lock().unwrap() = None;
         self.waiting.lock().unwrap().clear();
+        self.counts.lock().unwrap().clear();
         for t in self.taps.lock().unwrap().drain(..) {
             t.cancel("Recording stopped during the capture.");
         }
@@ -385,6 +397,38 @@ fn live(ctx: &Ctx) -> Option<Live> {
     let (done, answer) = mpsc::channel();
     ctx.tell_engine(EngineCmd::IqLive { done });
     answer.recv_timeout(Duration::from_secs(5)).ok()
+}
+
+/// The session now, and when (Unix ms).
+fn live_now(ctx: &Ctx) -> Option<(Live, f64)> {
+    live(ctx).map(|l| (l, crate::clock::unix_ms() as f64))
+}
+
+/// Each site's decoding counts at a moment: a capture's `trp:live` is the difference of two.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Counts {
+    /// When, Unix ms.
+    pub at_ms: f64,
+    /// Each site's (site, good, bad, calls concluded).
+    pub sites: Vec<(u16, u64, u64, u64)>,
+    pub calls: u64,
+}
+
+impl Counts {
+    pub fn of(s: &Status, at_ms: f64) -> Counts {
+        Counts { at_ms, sites: s.sites.iter().map(|y| (y.site, y.good, y.bad, y.calls_concluded)).collect(), calls: s.calls_concluded }
+    }
+}
+
+/// The counts a capture's live figures start from: of those kept while rules
+/// look back (`kept`, oldest first), the first taken once its first sample
+/// was (`start_ms`); else those taken as it was asked for (`asked`), just
+/// before its first sample when it doesn't look back.
+fn window_start(kept: &[Counts], asked: Counts, start_ms: f64) -> Counts {
+    if asked.at_ms < start_ms {
+        return asked;
+    }
+    kept.iter().find(|c| c.at_ms >= start_ms && c.at_ms < asked.at_ms).cloned().unwrap_or(asked)
 }
 
 /// A file a radio's samples take, per sample.
@@ -407,6 +451,7 @@ pub fn estimate(cfg: &Config, seconds: f64) -> u64 {
 }
 
 /// A capture of every radio.
+#[derive(Clone)]
 pub struct Request {
     /// Seconds from now, and already received.
     pub after_s: f64,
@@ -415,6 +460,8 @@ pub struct Request {
     /// `bug`, `healthy` or `rule`.
     pub purpose: &'static str,
     pub rule: Option<Value>,
+    /// What set its rule off ([`trigger`]).
+    pub trigger: Option<Value>,
 }
 
 /// A capture asked for by hand that waits on the air: the capture rules' thread makes it.
@@ -458,7 +505,7 @@ pub fn start(ctx: &Arc<Ctx>, what: CaptureWhat, seconds: u32, note: &str, proble
             if !(MIN_S..=MAX_S).contains(&seconds) {
                 return Err(format!("A capture is {MIN_S} to {MAX_S} seconds long."));
             }
-            return begin_capture(ctx, &Request { after_s: seconds as f64, before_s: 0.0, note, purpose, rule: None });
+            return begin_capture(ctx, &Request { after_s: seconds as f64, before_s: 0.0, note, purpose, rule: None, trigger: None });
         }
         CaptureWhat::Control { site } => {
             if !(MIN_S..=CONTROL_MAX_S).contains(&seconds) {
@@ -534,7 +581,7 @@ fn begin(ctx: &Arc<Ctx>, cfg: &Config, taps: Vec<Arc<Tap>>, name: &str, req: &Re
     }
     let dir = root.join(name);
     fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let before = live(ctx).ok_or("The recording isn't answering, so nothing was captured.")?;
+    let before = live_now(ctx).ok_or("The recording isn't answering, so nothing was captured.")?;
     let centers = cfg.resolved_centers();
     let failed = Arc::new(Mutex::new(None));
     let not_before = Instant::now() + START_DELAY;
@@ -559,12 +606,14 @@ fn begin(ctx: &Arc<Ctx>, cfg: &Config, taps: Vec<Arc<Tap>>, name: &str, req: &Re
         let (stop, dir, recordings) = (stop_watching.clone(), dir.clone(), PathBuf::from(&cfg.recording.capture_dir));
         std::thread::Builder::new().name("iq-watch".into()).spawn(move || crate::diagnostics::watch(&activity, &dir, &recordings, &stop)).map_err(|e| e.to_string())?
     };
-    let (ctx, cfg, dir, name, what) = (ctx.clone(), cfg.clone(), dir, name.to_string(), (req.note.clone(), req.purpose, req.rule.clone()));
+    let (ctx, cfg, dir, name, req) = (ctx.clone(), cfg.clone(), dir, name.to_string(), req.clone());
     let finished = move || {
         let results: Vec<_> = writers.into_iter().map(|w| w.join().unwrap_or_else(|_| Err("A capture writer failed.".into()))).collect();
+        // (As the last samples were written: what live decoded ends here.)
+        let after = live_now(&ctx);
         stop_watching.store(true, Ordering::Relaxed);
         let watched = watching.join().unwrap_or(Value::Null);
-        let saved = failed.lock().unwrap().take().map_or_else(|| save(&ctx, &cfg, &dir, &what, &before, results, &watched), Err);
+        let saved = failed.lock().unwrap().take().map_or_else(|| save(&ctx, &cfg, &dir, &req, &before, after, results, &watched), Err);
         match &saved {
             Ok(()) => log::info!("IQ capture saved: {}", dir.display()),
             Err(e) => {
@@ -745,13 +794,20 @@ fn decode_talkgroups(names: &NameLists) -> Value {
     Value::Object(rows.collect())
 }
 
-/// How decoding went while the capture was made: what a replay of it should come close to.
-fn live_summary(before: &Status, after: &Status) -> Value {
+/// Seconds from `start_ms` to `ms`, to the millisecond.
+fn seconds_from(start_ms: f64, ms: f64) -> f64 {
+    (ms - start_ms).round() / 1000.0
+}
+
+/// How decoding went while the capture was made, from `from` to `after` (at
+/// `after_ms`): what a replay of the same part of it (`from_s` to `to_s`,
+/// seconds from `start_ms`, where replay starts) should come close to.
+fn live_summary(from: &Counts, after: &Status, after_ms: f64, start_ms: f64) -> Value {
     let sites: Vec<Value> = after
         .sites
         .iter()
         .map(|a| {
-            let b = before.sites.iter().find(|b| b.site == a.site);
+            let b = from.sites.iter().find(|b| b.0 == a.site).map_or((0, 0, 0), |b| (b.1, b.2, b.3));
             json!({
                 "system": a.short_name,
                 "site": a.site_name,
@@ -762,29 +818,87 @@ fn live_summary(before: &Status, after: &Status) -> Value {
                 "sysid": a.identity.sys_id(),
                 "rfss": a.identity.rfss(),
                 "site_id": a.identity.site(),
-                "messages_good": a.good - b.map_or(0, |b| b.good),
-                "messages_bad": a.bad - b.map_or(0, |b| b.bad),
-                "calls": a.calls_concluded - b.map_or(0, |b| b.calls_concluded),
+                "messages_good": a.good.saturating_sub(b.0),
+                "messages_bad": a.bad.saturating_sub(b.1),
+                "calls": a.calls_concluded.saturating_sub(b.2),
             })
         })
         .collect();
-    json!({ "sites": sites, "calls": after.calls_concluded - before.calls_concluded })
+    json!({ "from_s": seconds_from(start_ms, from.at_ms), "to_s": seconds_from(start_ms, after_ms), "sites": sites, "calls": after.calls_concluded.saturating_sub(from.calls) })
 }
 
-fn save(ctx: &Ctx, cfg: &Config, dir: &Path, what: &(String, &'static str, Option<Value>), before: &Live, results: Vec<Result<Written, String>>, watched: &Value) -> Result<(), String> {
+/// What a capture keeps of the facts of the event that set its rule off
+/// (`trp:trigger`), by allow-lists as `trp:config` is: a note's text stays
+/// out (it could say anything; the rule's condition says what it looked for).
+const TRIGGER_KEYS: &[(&str, &[&str])] = &[
+    ("call", CALL_KEYS),
+    ("control", &["system", "site", "freq_hz"]),
+    ("source", &["index", "pct", "per_s"]),
+    ("note", &["system", "site"]),
+    ("site", &["system", "name", "good", "bad", "failed_pct", "messages"]),
+];
+/// Of [`trunk_app::facts::CallFacts`]: all of it, as a call's JSON has it (the talkgroup and radios by number).
+const CALL_KEYS: &[&str] = &["system", "site", "talkgroup", "freq", "start_time", "stop_time", "call_length", "clean_voice_pct", "snr", "signal", "noise", "freq_error", "encrypted", "decrypted", "emergency", "analog", "voice", "tdma_slot", "units", "unit_ids", "not_saved", "audio_s", "frames", "bad_frames", "recorder", "source"];
+
+/// What set a rule off, `on` with `facts`, at `at_ms` (Unix ms), as its capture keeps it.
+pub fn trigger(on: &str, facts: &Value, at_ms: f64) -> Value {
+    let mut t = json!({ "on": on, "at_unix_ms": at_ms.round() as i64 });
+    for (k, keys) in TRIGGER_KEYS {
+        if let Some(v) = facts.get(*k) {
+            t[*k] = keep(v, keys);
+        }
+    }
+    t
+}
+
+/// What the recording was doing when the capture was asked for, that a replay
+/// can't tell: recorders in use, and each DMR / NXDN site's channel table and
+/// carriers as learned so far.
+fn engine_state(s: &Status, at_s: f64) -> Value {
+    let sites: Vec<Value> = s
+        .sites
+        .iter()
+        .map(|y| {
+            let (dmr, nxdn) = trunk_app::session::protocol_detail(&y.protocol, &|tg| json!(tg));
+            let mut v = json!({ "system": y.short_name, "site": y.site_name, "active_calls": y.active_calls, "recording": y.recording });
+            if let Some(d) = dmr {
+                v["dmr"] = d;
+            }
+            if let Some(n) = nxdn {
+                v["nxdn"] = n;
+            }
+            v
+        })
+        .collect();
+    json!({ "at_s": at_s, "active_calls": s.active_calls, "recording": s.recording, "channels_open": s.channels_open, "sites": sites })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save(ctx: &Ctx, cfg: &Config, dir: &Path, req: &Request, before: &(Live, f64), after: Option<(Live, f64)>, results: Vec<Result<Written, String>>, watched: &Value) -> Result<(), String> {
     let written = results.into_iter().collect::<Result<Vec<_>, _>>()?;
-    let (note, purpose, rule) = what;
-    let after = live(ctx).ok_or("The recording ended during the capture.")?;
+    let (after, after_ms) = after.ok_or("The recording ended during the capture.")?;
     let names = ctx.names.lock().unwrap().clone();
     let centers = cfg.resolved_centers();
+    // (Seconds into the capture are from where replay starts: the moment the last radio's first sample came.)
+    let start_ms = written.iter().map(|w| w.start_ms).fold(0.0, f64::max);
+    let kept: Vec<Counts> = ctx.iq.counts.lock().unwrap().iter().cloned().collect();
+    let from = window_start(&kept, Counts::of(&before.0.status, before.1), start_ms);
+    let trigger = req.trigger.clone().map(|mut t| {
+        let at = t["at_unix_ms"].as_f64().unwrap_or(before.1);
+        t["at_s"] = json!(seconds_from(start_ms, at));
+        t
+    });
     let context = json!({
         "trp:config": decode_config(cfg, &written),
         "trp:talkgroups": decode_talkgroups(&names),
         "trp:bandplans": after.bandplans,
-        "trp:live": live_summary(&before.status, &after.status),
-        "trp:purpose": purpose,
-        "trp:rule": rule,
+        "trp:live": live_summary(&from, &after.status, after_ms, start_ms),
+        "trp:state": engine_state(&before.0.status, seconds_from(start_ms, before.1)),
+        "trp:purpose": req.purpose,
+        "trp:rule": req.rule,
+        "trp:trigger": trigger,
     });
+    let note = &req.note;
     let mut streams = Vec::new();
     for (i, w) in written.iter().enumerate() {
         let source = keep(&serde_json::to_value(&cfg.sources[i]).unwrap_or_default(), RADIO_KEYS);
@@ -1018,6 +1132,8 @@ pub struct Opened {
     pub config_json: Option<Value>,
     pub names: NameLists,
     pub bandplans: Vec<String>,
+    /// The part of it (s, from where replay starts) its live figures (`trp:live`) cover.
+    pub live_window: Option<(f64, f64)>,
 }
 
 /// Whether `path` names a SigMF capture: a meta or collection file, or a capture's folder.
@@ -1129,7 +1245,9 @@ pub fn open(path: &str) -> Result<Opened, String> {
         names.insert(system.clone(), SystemNames { talkgroups, ..Default::default() });
     }
     let bandplans = g["trp:bandplans"].as_array().into_iter().flatten().map(|b| b.as_str().unwrap_or("").to_string()).collect();
-    Ok(Opened { recordings, config, config_json: g.get("trp:config").cloned(), names, bandplans })
+    let live = &g["trp:live"];
+    let live_window = live["from_s"].as_f64().zip(live["to_s"].as_f64());
+    Ok(Opened { recordings, config, config_json: g.get("trp:config").cloned(), names, bandplans, live_window })
 }
 
 #[cfg(test)]
@@ -1284,7 +1402,7 @@ mod tests {
         a.gaps = vec![(40, 5), (1500, 2)];
         let mut b = written(SampleFormat::Cs16);
         b.start_ms += 1000.0;
-        let c = json!({ "trp:bandplans": ["plan"] });
+        let c = json!({ "trp:bandplans": ["plan"], "trp:live": { "from_s": 0.5, "to_s": 40.0 } });
         let source = json!({ "type": "rtlsdr", "autoTune": true, "guardHz": 50000.0 });
         for (name, w, hz) in [("source-0", &a, 100e6), ("source-1", &b, 200e6)] {
             let m = recording_meta(w, hz, 1000.0, source.clone(), "a note", &c);
@@ -1299,12 +1417,67 @@ mod tests {
         assert_eq!((x.skip, y.skip), (1000, 0), "started a second before the other");
         assert!(x.auto_tune && x.guard_hz == 50000.0);
         assert_eq!(o.bandplans, ["plan"]);
+        assert_eq!(o.live_window, Some((0.5, 40.0)));
         assert!(o.config.is_none());
         assert_eq!(x.gaps, vec![(1500, 2)], "a gap in what's left out doesn't count");
 
         fs::write(dir.join("source-0.sigmf-meta"), "{}").unwrap();
         assert!(open(dir.to_str().unwrap()).err().unwrap().contains("hash"));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn counts(at_ms: f64, good: u64) -> Counts {
+        Counts { at_ms, sites: vec![(0, good, 1, 2)], calls: 2 }
+    }
+
+    #[test]
+    fn live_figures_start_where_the_capture_does() {
+        let kept = [counts(1000.0, 10), counts(2000.0, 20), counts(3000.0, 30), counts(4000.0, 40)];
+        // Looked back: asked at 3.5 s, its first sample from 1.5 s.
+        assert_eq!(window_start(&kept, counts(3500.0, 35), 1500.0), kept[1], "the first counted once it began");
+        assert_eq!(window_start(&kept, counts(3500.0, 35), 500.0), kept[0]);
+        assert_eq!(window_start(&[], counts(3500.0, 35), 1500.0), counts(3500.0, 35), "none kept: from when it was asked");
+        // Didn't look back: asked just before its first sample.
+        assert_eq!(window_start(&kept, counts(3500.0, 35), 3800.0), counts(3500.0, 35));
+
+        let mut after = Status { calls_concluded: 7, ..Default::default() };
+        after.sites.push(trunk_core::trunk::SiteStatus { site: 0, short_name: "dcfd".into(), good: 455, bad: 4, calls_concluded: 5, ..Default::default() });
+        let v = live_summary(&kept[1], &after, 41_500.0, 1500.0);
+        assert_eq!((v["from_s"].as_f64(), v["to_s"].as_f64()), (Some(0.5), Some(40.0)), "seconds into the capture");
+        assert_eq!((&v["sites"][0]["messages_good"], &v["sites"][0]["messages_bad"], &v["sites"][0]["calls"], &v["calls"]), (&json!(435), &json!(3), &json!(3), &json!(5)));
+    }
+
+    #[test]
+    fn a_trigger_keeps_its_facts_by_allow_list() {
+        let call = trunk_app::facts::CallFacts { system: "capplus".into(), talkgroup: 7, freq: 463_375_000, unit_ids: vec![1201], not_saved: "silent".into(), frames: 12, recorder: 3, ..Default::default() };
+        let mut facts = call.facts();
+        facts["call"]["SECRET"] = "a field nobody thought about".into();
+        let t = trigger("call.not_saved", &facts, 1_234_567.4);
+        assert_eq!((&t["on"], &t["at_unix_ms"], &t["call"]["talkgroup"], &t["call"]["unit_ids"], &t["call"]["not_saved"], &t["call"]["recorder"]), (&json!("call.not_saved"), &json!(1_234_567), &json!(7), &json!([1201]), &json!("silent"), &json!(3)));
+        assert!(!t.to_string().contains("SECRET"));
+        // Every fact of a call is one the allow-list decided on.
+        // (Sorted: a workspace build has serde_json's preserve_order.)
+        let mut fields: Vec<String> = serde_json::to_value(trunk_app::facts::CallFacts::default()).unwrap().as_object().unwrap().keys().cloned().collect();
+        fields.sort();
+        let mut listed: Vec<String> = CALL_KEYS.iter().map(|k| k.to_string()).collect();
+        listed.sort();
+        assert_eq!(fields, listed);
+        let t = trigger("note.warning", &json!({ "note": { "system": "x", "site": "y", "text": "SECRET-ALIAS" } }), 0.0);
+        assert!(!t.to_string().contains("SECRET") && t["note"]["site"] == "y", "a note's text stays out");
+        assert_eq!(trigger("schedule", &json!({}), 5.0), json!({ "on": "schedule", "at_unix_ms": 5 }));
+    }
+
+    #[test]
+    fn the_state_says_what_a_dmr_site_had_learned() {
+        use trunk_core::dmr::trunking::{ChannelEntry, SiteStatus as DmrSite};
+        let dmr = DmrSite { channels: vec![ChannelEntry { lcn: 1, hz: 463_375_000, configured: false }], ..Default::default() };
+        let mut s = Status { recording: 2, active_calls: 1, ..Default::default() };
+        s.sites.push(trunk_core::trunk::SiteStatus { short_name: "capplus".into(), recording: 2, protocol: trunk_core::trunk::ProtocolStatus::Dmr(dmr), ..Default::default() });
+        s.sites.push(trunk_core::trunk::SiteStatus { short_name: "dcfd".into(), ..Default::default() });
+        let v = engine_state(&s, -12.5);
+        assert_eq!((&v["at_s"], &v["recording"], &v["sites"][0]["recording"]), (&json!(-12.5), &json!(2), &json!(2)));
+        assert_eq!(v["sites"][0]["dmr"]["channels"][0], json!({ "lcn": 1, "freqHz": 463_375_000u64, "configured": false }));
+        assert!(v["sites"][1].get("dmr").is_none(), "a P25 site has none");
     }
 
     #[test]

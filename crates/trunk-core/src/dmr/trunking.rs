@@ -21,7 +21,7 @@
 //!
 //! The learned table is kept like a band plan ([`Site::map_to_string`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use num_complex::Complex32;
 
@@ -193,6 +193,9 @@ pub struct Site {
     /// Logical channel → frequency, from the air (announced or learned).
     pub table: ChannelTable,
     pending: Vec<Pending>,
+    /// Channels learned from a call that came up where it was granted: the
+    /// surest evidence, so a rest channel's site status doesn't move them.
+    placed_by_call: BTreeSet<u32>,
     /// Capacity Plus: the rest channel's logical slot number and frequency.
     pub rest: Option<(u32, u64)>,
     /// Keyed CRCs seen (restricted access).
@@ -250,6 +253,7 @@ impl Site {
             table: ChannelTable::new(cfg.lcn_table.clone()),
             cfg,
             pending: Vec::new(),
+            placed_by_call: BTreeSet::new(),
             rest: None,
             keyed: false,
             n_control,
@@ -557,6 +561,9 @@ impl Site {
     /// slot sends site status on the other, naming the rest channel elsewhere,
     /// and one in hang time may send it on both for a while; the rest channel
     /// sends it on both, naming itself, for as long as it is the rest channel.
+    /// But on some sites an idle repeater stays keyed, sending it on both too:
+    /// while another carrier does the same, neither is known to be the rest
+    /// channel, and a channel a call placed is never moved by this.
     fn rest_channel(&mut self, n: u32, idx: usize, t: f64) {
         let (lcn, _) = lsn(n);
         let c = &mut self.carriers[idx];
@@ -566,8 +573,10 @@ impl Site {
             _ if both => Some((lcn, t)),
             _ => None,
         };
-        if c.rest_run.is_some_and(|(_, since)| t - since >= REST_RUN_S) {
-            let hz = c.hz;
+        let run = c.rest_run.is_some_and(|(_, since)| t - since >= REST_RUN_S);
+        let hz = c.hz;
+        let rival = self.carriers.iter().enumerate().any(|(i, o)| i != idx && o.rest_run.is_some_and(|(l, _)| l == lcn) && o.status_s.iter().all(|&s| t - s < 1.0));
+        if run && !rival && !self.placed_by_call.contains(&lcn) {
             self.set_learned(lcn, hz, "it is the rest channel");
         }
         self.rest = Some((n, self.resolve(lcn).unwrap_or(0)));
@@ -587,6 +596,7 @@ impl Site {
             let p = self.pending.remove(i);
             if self.resolve(p.lcn).is_none() || self.table.is_learned(p.lcn) {
                 self.set_learned(p.lcn, hz, &format!("talkgroup {tg} granted there came up on it"));
+                self.placed_by_call.insert(p.lcn);
             }
         }
     }
@@ -730,7 +740,8 @@ impl Site {
         for &(n, tg) in &busy {
             let (lcn, s) = lsn(n);
             if let Some(tg) = tg.filter(|&g| g != 0) {
-                if self.resolve(lcn).is_none() {
+                // (Learned only from site status, it's a guess the call can correct.)
+                if self.resolve(lcn).is_none() || self.table.is_learned(lcn) && !self.placed_by_call.contains(&lcn) {
                     self.pending.retain(|q| !(q.lcn == lcn && q.slot == s));
                     self.pending.push(Pending { lcn, slot: s, talkgroup: tg, low8: true, t });
                 }
@@ -853,6 +864,34 @@ mod tests {
             s.csbk(1, 1, &csbk([0xbe, 0x10, 0xe3, 0, 0, 0, 0, 0, 0, 0]), None, t + 0.03, &mut out);
         }
         assert_eq!((s.rest, s.resolve(2)), (Some((3, 463_000_000)), Some(463_000_000)));
+    }
+
+    /// As heard on a two-repeater site (461.45 / 463.225 MHz): both stay keyed,
+    /// sending site status on both slots that names rest LSN 1, so neither is
+    /// taken for channel 1 (it flipped between them). A call places it.
+    #[test]
+    fn capacity_plus_two_keyed_repeaters_dont_teach_the_rest_channel() {
+        let mut s = Site::new(&[461_450_000.0, 463_225_000.0], 24_000.0, DmrConfig::default());
+        let mut out = Vec::new();
+        let status = |s: &mut Site, idx: usize, t: f64, busy: [u8; 2], out: &mut Vec<Message>| {
+            s.csbk(idx, 1, &csbk([0xbe, 0x10, 0xe1, 0, 0, 0, 0, 0, 0, 0]), None, t, out);
+            s.csbk(idx, 0, &csbk([0xbe, 0x10, 0xc1, busy[0], busy[1], 0, 0, 0, 0, 0]), None, t + 0.03, out);
+        };
+        for i in 0..20 {
+            let t = i as f64 * 0.3;
+            status(&mut s, 0, t, [0, 0], &mut out);
+            status(&mut s, 1, t + 0.1, [0, 0], &mut out);
+        }
+        assert_eq!(s.resolve(1), None, "{:?}", s.notes);
+        // LSN 1 busy with talkgroup …12, which comes up on 461.45 slot 1.
+        status(&mut s, 0, 6.0, [0x80, 12], &mut out);
+        s.learn(12, 0, 461_450_000);
+        assert_eq!(s.resolve(1), Some(461_450_000));
+        // Now 463.225 alone names LSN 1 on both slots for a while: still 461.45.
+        for i in 0..20 {
+            status(&mut s, 1, 10.0 + i as f64 * 0.3, [0, 0], &mut out);
+        }
+        assert_eq!(s.resolve(1), Some(461_450_000), "{:?}", s.notes);
     }
 
     /// Set bits `a..b` of a block to `v`.

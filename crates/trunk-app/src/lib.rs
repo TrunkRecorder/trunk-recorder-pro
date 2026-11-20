@@ -9,6 +9,7 @@ pub mod calls;
 pub mod channels;
 pub mod config;
 pub mod ekc;
+pub mod facts;
 pub mod filename;
 pub mod gain;
 pub mod heard;
