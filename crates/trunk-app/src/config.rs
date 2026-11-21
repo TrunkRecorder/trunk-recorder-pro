@@ -1620,6 +1620,10 @@ pub struct PluginSetup {
     /// Give it calls decrypted with the recorder's keys (their audio and files). Off: none are.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub share_decrypted: bool,
+    /// The systems it's turned off for: nothing about them is sent to it (one that takes
+    /// every system's figures, `totals`, can't be: [`trunk_recorder_plugin::Manifest::per_system`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub systems_off: Vec<SystemId>,
 }
 
 /// Plugins wait this long for some calls: those its fields pick, each left

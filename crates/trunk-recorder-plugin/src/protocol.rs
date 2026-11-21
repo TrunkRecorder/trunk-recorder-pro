@@ -64,6 +64,14 @@ pub mod topic {
     pub fn is_live(topic: &str) -> bool {
         topic == AUDIO || topic == VOICE
     }
+
+    /// What it sends can be kept from a plugin system by system, so a plugin
+    /// taking only such topics can be turned off for a system ([`super::Manifest::per_system`]):
+    /// every topic but [`TOTALS`], whose series add up every system's. Of [`STATUS`],
+    /// a plugin is sent the systems it's on for; of [`LOG`], lines about no one system too.
+    pub fn per_system(topic: &str) -> bool {
+        topic != TOTALS
+    }
 }
 
 /// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
@@ -101,6 +109,12 @@ pub struct Manifest {
     /// object); the form repeats it under each system.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_config: Option<Value>,
+    /// Those of its settings ([`Manifest::config`], top-level keys) a system
+    /// may set again for itself (another server for it, say), which it reads
+    /// from [`SystemInfo::settings`]. None (the default): every system has the
+    /// plugin's settings, and a system's card in Setup offers none of them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub system_overrides: Vec<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub homepage: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -164,6 +178,10 @@ impl Manifest {
     }
     pub fn wants_format(&self, format: &str) -> bool {
         self.audio_formats.iter().any(|f| f == format)
+    }
+    /// It can be turned off for a system: each topic it takes is [`topic::per_system`].
+    pub fn per_system(&self) -> bool {
+        self.subscribe.iter().all(|t| topic::per_system(t))
     }
 }
 
@@ -242,7 +260,8 @@ pub struct Hello {
     /// The plugin's settings, as the user entered them (see [`Manifest::config`]);
     /// each system's, with its overrides, are in [`SystemInfo::settings`].
     pub config: Value,
-    /// Every system calls can come from, including conventional channels.
+    /// Every system calls can come from, including conventional channels;
+    /// not those the plugin is turned off for (nothing about them is sent).
     pub systems: Vec<SystemInfo>,
     /// Where calls are stored.
     pub capture_dir: PathBuf,
@@ -297,7 +316,8 @@ pub struct SystemInfo {
     /// null when the user left them empty.
     pub config: Value,
     /// The plugin's own settings ([`Hello::config`]) as they are for this
-    /// system: a system can override some of them (another server, say).
+    /// system: a system can set again those [`Manifest::system_overrides`]
+    /// names (another server, say).
     /// Null: as in `Hello::config`.
     #[serde(skip_serializing_if = "Value::is_null")]
     pub settings: Value,
@@ -1588,6 +1608,18 @@ pub mod base64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plugin can be off for a system unless it takes every system's
+    /// figures; it offers no system its settings unless it names them.
+    #[test]
+    fn what_a_plugin_lets_systems_do() {
+        let takes = |t: &[&str]| Manifest { subscribe: t.iter().map(|x| x.to_string()).collect(), ..Default::default() };
+        assert!(takes(&[topic::CALL_CONCLUDED, topic::STATUS, topic::LOG]).per_system() && takes(&[]).per_system());
+        assert!(!takes(&[topic::CALL_START, topic::TOTALS]).per_system());
+        let m: Manifest = serde_json::from_str(r#"{"id":"x","system_overrides":["server"]}"#).unwrap();
+        assert_eq!(m.system_overrides, ["server"]);
+        assert!(!serde_json::to_string(&Manifest::default()).unwrap().contains("system_overrides"), "none: left out");
+    }
 
     /// A Trunk Recorder file (flags as booleans, a field this crate doesn't
     /// name) reads; written back, flags are 0/1 as the recorder's own files

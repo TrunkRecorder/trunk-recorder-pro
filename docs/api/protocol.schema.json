@@ -6027,6 +6027,10 @@
           ],
           "description": "Null when it can't be asked (see `problem`)."
         },
+        "perSystem": {
+          "type": "boolean",
+          "description": "It can be turned off for a system: everything it takes is one system's (not `totals`)."
+        },
         "problem": {
           "type": [
             "string",
@@ -6042,6 +6046,7 @@
         "path",
         "custom",
         "manifest",
+        "perSystem",
         "problem",
         "runtime"
       ],
@@ -6169,6 +6174,13 @@
         },
         "system_config": {
           "$ref": "#/definitions/PluginSchema"
+        },
+        "system_overrides": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Those of its settings (`config`'s top-level keys) a system may set again for itself; none: every system has the plugin's."
         },
         "homepage": {
           "type": "string"
@@ -6561,6 +6573,13 @@
         "shareDecrypted": {
           "type": "boolean",
           "description": "Give it calls decrypted with the recorder's keys (their audio and files). Off: none are."
+        },
+        "systemsOff": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The systems (by `id`) it's turned off for: nothing about them is sent to it. Only for a plugin that can be (`PluginInfo.perSystem`)."
         }
       },
       "required": [

@@ -41,8 +41,8 @@ pub enum Offer {
 
 /// Where held things go when they're due: the running plugins.
 pub trait Outlet: Send + Sync {
-    /// Give plugin `label` the line `line` (`decrypted`: of a call decrypted with our keys).
-    fn offer(&self, label: &str, line: &Arc<str>, decrypted: bool) -> Offer;
+    /// Give plugin `label` the line `line`, which is `about` that (Gone: it may not have it).
+    fn offer(&self, label: &str, line: &Arc<str>, about: &About) -> Offer;
 }
 
 /// Live things held, at most; beyond this they're dropped (counted as the plugin's queue's are).
@@ -308,7 +308,7 @@ impl Hold {
                         continue;
                     }
                     To::Nobody | To::Host(None) => Offer::Gone,
-                    To::Host(Some(o)) => o.offer(&item.plugin, &item.line, item.about.decrypted),
+                    To::Host(Some(o)) => o.offer(&item.plugin, &item.line, &item.about),
                 };
                 match offer {
                     Offer::Sent => given.push(item),
@@ -380,8 +380,8 @@ mod tests {
         full: Mutex<bool>,
     }
     impl Outlet for Plugins {
-        fn offer(&self, label: &str, line: &Arc<str>, decrypted: bool) -> Offer {
-            if label == "gone" || (decrypted && label != "trusted") {
+        fn offer(&self, label: &str, line: &Arc<str>, about: &About) -> Offer {
+            if label == "gone" || (about.decrypted && label != "trusted") {
                 return Offer::Gone;
             }
             if *self.full.lock().unwrap() {

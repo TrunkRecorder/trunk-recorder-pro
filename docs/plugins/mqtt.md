@@ -29,7 +29,9 @@ queue and what has been sent are on the plugin's card on the Plugins page's Heal
 ## Settings
 
 All for the whole recorder (Setup > **Plugins**, or `plugins.mqtt.settings` in `config.json`);
-there are no per-system settings.
+there are no per-system settings. To publish nothing about a system (not its calls, radio activity
+or status, and no Home Assistant entities for it), turn it off under **Systems** on the plugin's
+card (`systemsOff`).
 
 | Key | Default | Description |
 |---|---|---|

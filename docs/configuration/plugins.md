@@ -32,6 +32,7 @@ The top-level `plugins` object is keyed by plugin id. Each entry:
 | `settings` | | `null` | any | Its settings for the whole recorder, as the plugin's own schema describes them (the `config` schema in its manifest; `trunk-pro plugin describe <executable>` prints it) |
 | `path` | | `""` | string | Run this executable instead of the installed one: a build of your own, while developing a plugin. Use an absolute path |
 | `shareDecrypted` | | `false` | bool | Give it calls decrypted with your keys (their audio and files). See [Decrypted calls](../plugins/README.md#decrypted-calls) |
+| `systemsOff` | | `[]` | integer array | The systems (by `id`) it's turned off for: nothing about them is sent to it. Not for a plugin that takes `totals` (every system's figures): it's on for all of them, with a warning in its log. In Setup: **Systems** on its card |
 
 A plugin with no entry is off. Unknown keys in an entry are dropped on save.
 
@@ -52,9 +53,9 @@ with it; renaming it by hand in the file is fine too, since the settings live in
 
 ### Overriding the recorder-wide settings
 
-`override` in a system's settings for a plugin changes any of the plugin's recorder-wide `settings`
-for that system alone, such as sending its calls to another server. Settings it leaves out are the
-recorder-wide ones. A required setting, such as Rdio Scanner's server, can be left empty
+`override` in a system's settings for a plugin changes those of the plugin's recorder-wide
+`settings` the plugin lets a system set again (`system_overrides` in its manifest), for that system
+alone, such as sending its calls to another server. Settings it leaves out are the recorder-wide ones. A required setting, such as Rdio Scanner's server, can be left empty
 recorder-wide when every system that uses the plugin overrides it.
 
 ```json
@@ -63,8 +64,9 @@ recorder-wide when every system that uses the plugin overrides it.
                                 "override": { "server": "https://rdio.example.org" } } } }
 ```
 
-In Setup, each plugin on a system's card has a *shared settings* section for this. Keys
-the plugin has no setting for are ignored, with a warning in its log. An uploader keeps a separate
+In Setup, each plugin that offers some has a *shared settings* section on a system's card for this.
+Any other key is ignored, with a warning in its log; its card in Setup → Plugins lists the systems
+with such keys (**Ignored overrides**), and **Remove** clears them. An uploader keeps a separate
 queue for each server it sends to, so a server that's down doesn't hold up uploads to the others.
 
 ### Several copies of a plugin

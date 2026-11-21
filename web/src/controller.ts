@@ -1190,6 +1190,36 @@ export function setPluginEnabled(id: string, enabled: boolean): void {
   });
 }
 /** Whether a plugin is given calls decrypted with the recorder's keys. */
+/** Plugin `id` on or off for the system with id `system` (`systemsOff`). */
+export function setPluginSystemOn(id: string, system: number, on: boolean): void {
+  updateConfig((x) => {
+    const all = (x.plugins ??= {});
+    const p = { ...(all[id] ?? { enabled: false }) };
+    const off = (p.systemsOff ?? []).filter((y) => y !== system);
+    if (!on) off.push(system);
+    if (off.length) p.systemsOff = off.sort((a, b) => a - b);
+    else delete p.systemsOff;
+    all[id] = p;
+  });
+}
+
+/** Remove what systems set again of plugin `id`'s settings that it doesn't let them (`offered`: those it does): the recorder ignores those. */
+export function dropIgnoredOverrides(id: string, offered: string[]): void {
+  updateConfig((x) => {
+    for (const sys of [...x.systems, ...x.conventional]) {
+      const v = sys.plugins?.[id];
+      if (v === undefined || v === null) continue;
+      const copies = pluginCopies(v).map((c) => {
+        const over = Object.fromEntries(Object.entries(copyOverride(c)).filter(([k]) => offered.includes(k)));
+        return Object.keys(over).length ? { ...copyOwn(c), [OVERRIDE]: over } : copyOwn(c);
+      });
+      if (copies.length === 1 && !Object.keys(copies[0]).length) delete sys.plugins![id];
+      else sys.plugins![id] = copies.length === 1 ? copies[0] : copies;
+      if (!Object.keys(sys.plugins!).length) delete sys.plugins;
+    }
+  });
+}
+
 export function setPluginShareDecrypted(id: string, share: boolean): void {
   updateConfig((x) => {
     const all = (x.plugins ??= {});

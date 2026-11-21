@@ -1265,7 +1265,7 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
     let host = ctx.plugins.host();
     let r = f.rules;
-    let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.decrypted));
+    let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.system, f.decrypted));
     let p = plugins::plan(r, to_plugins, encoder.is_some());
     let (keep_wav, keep_m4a, keep_json, keep_audio) = (p.keep_wav, p.keep_m4a, p.keep_json, p.keep_audio);
     let base = dir.join(&f.rel);
